@@ -60,6 +60,12 @@ const LP_ADJTYPE_FOR = {
   interest_only: 'SimpleRateAdjustment',
   escrow_waiver: 'SimpleRateAdjustment',
   non_warrantable: 'SimpleRateAdjustment',
+  // Short-Term Rental — the rate sheet's "Rental Type" row, encoded 2026-08-17. Grouped with its
+  // measured "Other - …" siblings. NOTE this adjType is the ONE fixture here that has NOT been
+  // confirmed against a live Lender Price response (the sheet gives the VALUES, not LP's shape), and
+  // the sheet's UNMEASURED says so. If LP turns out to use a different adjType the classifier falls
+  // through to `other:<reason>` and the harness SURFACES a disagreement rather than merging silently.
+  short_term_rental: 'SimpleRateAdjustment',
 };
 // The grid has no llpaTables row, so its representative reason is the documented live one.
 const GRID_REASON = 'DSCR (All) - 780+ / CLTV >65.01 % <= 70.0 %';

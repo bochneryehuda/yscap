@@ -6,11 +6,28 @@
  * is NEVER trusted until the agreement harness proves it matches Lender Price to the penny (owner HARD
  * RULE 2026-08-17). buildDeephavenGrid() → a deephaven-grid.gridToRateSheet input.
  *
- * THE SIGN, written down because it is a money rule: Lender Price quotes LLPAs COST-POSITIVE (a positive
- * value WORSENS the price — FICO 640 costs +2.5..+3.875 points). deephaven-grid.gridToRateSheet expects
- * PREMIUM-POSITIVE cells (positive IMPROVES the price). So EVERY Lender Price value is NEGATED here
- * (`cost(v) = -v`). This is proven end-to-end in the test, which reproduces Lender Price's OWN itemized
- * values from the captured live battery.
+ * ⛔ THE SIGN — a money rule, and the one this sheet got WRONG until 2026-08-17. READ THIS BEFORE
+ * TOUCHING A NUMBER.
+ *
+ * Lender Price DISPLAYS an itemized LLPA as an ABSOLUTE MAGNITUDE — its screen does NOT carry the
+ * direction. The DIRECTION lives on the rate sheet, and ONLY on the rate sheet. This sheet was
+ * originally reconstructed from LP's displayed values and then negated uniformly (`cost(v) = -v`),
+ * which encoded every genuine CREDIT as a CHARGE (wrong by TWICE its value) and got every genuine
+ * CHARGE right only by accident. Proven live: at FICO 760 / CLTV 50% / NY / coupon 7.500 LP reports
+ * `adjustmentPoints = -0.5`, which is exactly `-(0.875 credit) + (0.375 NY charge)` — the 0.875 is a
+ * CREDIT, and we had it as a charge. Likewise DSCR ≥ 1.25 IMPROVES the price by 0.25; we charged 0.25.
+ *
+ * SO: the SOURCE OF TRUTH IS THE EXCEL, never LP's displayed magnitudes —
+ * `docs/longterm/ppe-research/matrices/deephaven-dscr-ratesheet-corr-t0.json`, extracted verbatim.
+ * That sheet is PREMIUM-POSITIVE (a positive value IMPROVES the price), which is exactly what
+ * deephaven-grid.gridToRateSheet expects, so **an Excel cell maps DIRECTLY onto a grid cell with NO
+ * negation**. Every `SHEET_*` table below is the JSON's own signed value, cell for cell.
+ *
+ * The full chain, so it can be checked rather than trusted: sheet value V → deephaven-grid
+ * `priceAdjMilli(V) = -V` → engine `adjMilli` → `costMilli = adjMilli` → `price = base - Σ costMilli`.
+ * Therefore `price = base + Σ V`: a POSITIVE V raises the price. A credit is positive; a charge is
+ * negative. TEST ON THE PRICE, NEVER ON THE MAGNITUDE — the magnitudes matched while the signs did
+ * not, which is precisely why the old suite passed on a sheet that mispriced every strong-credit loan.
  *
  * SCOPE — the FULLY-CONFIRMED core plus the CLTV-segmented add-ons, each value re-derived directly from
  * the captured live battery (never guessed):
@@ -19,17 +36,21 @@
  *   • the SEPARATE additive DSCR-band table (≥1.25 flat; 1.00–1.24 baseline 0; <1.00 CLTV-segmented);
  *   • the flat DC/MA/NJ/NY state adder;
  *   • §7 cash-out refinance (split at FICO 720), condo, and 2–4 units — all CLTV-segmented;
- *   • the FOUR families measured live 2026-08-17 — interest-only, escrow-waiver, non-warrantable
- *     (which REPLACES the condo line), and the 2D loan-amount table (>1.5M / >2M / <150k / <125k × CLTV).
- * DELIBERATELY OMITTED (never guessed — see UNMEASURED): the two loan-amount n/e cells (>$2M @ 75/80 and
- * <$125k @ 80 — inferred LTV caps, not encoded as eligibility overlays), the prepay-structure LLPA (the
- * 5%-Fixed credit is measured but not yet wired into Layer-1), non-warrantable on a non-condo, and the
- * cash-out FICO<720 @ 80% cell (n/e). The harness honestly reports a "missing on our side" for any of these.
+ *   • interest-only, escrow-waiver, non-warrantable (which REPLACES the condo line), and the 2D
+ *     loan-amount table (>2M / >1.5M / <250k / <150k / <125k × CLTV);
+ *   • Short-Term Rental (rental-type row) — added 2026-08-17 from the sheet.
+ * DELIBERATELY OMITTED (never guessed — see UNMEASURED): the loan-amount / cash-out / STR n/e cells
+ * (inferred LTV caps, not encoded as eligibility overlays), the prepay-structure LLPA and the max-price
+ * caps / lock + extension pricing (all present in the JSON but a SEPARATE build — see UNMEASURED), the
+ * sheet's Foreign National row (a borrower-type dimension, not a FICO band — no fact to key it on), and
+ * non-warrantable on a non-condo. The harness honestly reports a "missing on our side" for any of these.
  *
  * LT-only. No RTL imports, no network, no DB.
  */
 
-// Lender Price value (cost-positive) → deephaven-grid cell/adj (premium-positive).
+// Sheet (premium-positive) → the LP-frame magnitude LP would DISPLAY for the same cell. Retained only
+// to derive the deprecated LP_TABLES view below and to state the relationship in one place; it is NOT
+// applied to any cell any more — a sheet value goes into the grid untouched.
 const cost = (v) => (v == null ? null : -v);
 
 // ---- §3 base ladder: [coupon, basePoints]. price = 100 − basePoints -----------------------------
@@ -51,64 +72,83 @@ const CLTV_BANDS = [
   { min: null, max: 50.5 }, { min: 50.5, max: 55.5 }, { min: 55.5, max: 60.5 }, { min: 60.5, max: 65.5 },
   { min: 65.5, max: 70.5 }, { min: 70.5, max: 75.5 }, { min: 75.5, max: 80.5 },
 ];
-// §4 cells, LENDER PRICE cost-positive values (rows = FICO band above, cols = CLTV band above).
-// null = `n/e` (the DSCR-matching container declined → an ineligibility, never a priced 0).
-const FICO_CLTV_LP = [
-  [1.000, 0.750, 0.625, 0.500, 0.125, 0.250, 0.750],
-  [0.875, 0.750, 0.625, 0.500, 0.125, 0.250, 1.125],
-  [0.750, 0.625, 0.500, 0.375, 0.125, 0.500, 1.500],
-  [0.625, 0.500, 0.375, 0.125, 0.375, 0.875, 1.875],
-  [0.250, 0.125, 0.000, 0.250, 1.000, 1.500, 2.625],
-  [0.000, 0.250, 0.500, 0.750, 1.625, 2.500, null],
-  [0.500, 0.750, 1.000, 1.250, 2.125, 3.750, null],
-  [2.500, 2.750, 3.000, 3.375, 3.875, null, null],
+// §4 cells — VERBATIM from the rate sheet (matrices/deephaven-dscr-ratesheet-corr-t0.json,
+// `priceAdjustmentsFicoByCltv`), PREMIUM-POSITIVE: + IMPROVES the price, − WORSENS it. Rows = FICO band
+// above, cols = CLTV band above. `null` = the sheet's own "N/A" (an ineligibility, never a priced 0).
+// A strong file at low leverage earns a CREDIT and a weak file at high leverage pays a CHARGE — the
+// sign flips left-to-right and top-to-bottom, which is the shape the old all-positive encoding lost.
+// The sheet's 9th row (Foreign National) is deliberately NOT here: it is a borrower TYPE, not a FICO
+// band, and there is no fact to key it on. See UNMEASURED.
+const SHEET_FICO_CLTV = [
+  [1.000, 0.750, 0.625, 0.500, 0.125, -0.250, -0.750],  // 780+
+  [0.875, 0.750, 0.625, 0.500, 0.125, -0.250, -1.125],  // 760–779
+  [0.750, 0.625, 0.500, 0.375, -0.125, -0.500, -1.500], // 740–759
+  [0.625, 0.500, 0.375, 0.125, -0.375, -0.875, -1.875], // 720–739
+  [0.250, 0.125, 0.000, -0.250, -1.000, -1.500, -2.625],// 700–719
+  [0.000, -0.250, -0.500, -0.750, -1.625, -2.500, null],// 680–699
+  [-0.500, -0.750, -1.000, -1.250, -2.125, -3.750, null],// 660–679
+  [-2.500, -2.750, -3.000, -3.375, -3.875, null, null], // 640–659
 ];
 
 // ---- §5 DSCR-band add-on (SEPARATE additive; dscr fact is MILLI: 1.25 → 1250, 1.00 → 1000) --------
-// ≥1.25 flat +0.25; 1.00–1.24 baseline 0 (no entry); <1.00 CLTV-segmented, per CLTV band (percent).
-const DSCR_LT100_BY_CLTV = [
-  { cltv: { min: null, max: 50.5 }, lp: 0.750 },
-  { cltv: { min: 50.5, max: 55.5 }, lp: 0.875 },
-  { cltv: { min: 55.5, max: 60.5 }, lp: 1.000 },
-  { cltv: { min: 60.5, max: 65.5 }, lp: 1.250 },
-  { cltv: { min: 65.5, max: 70.5 }, lp: 1.500 },
-  { cltv: { min: 70.5, max: 75.5 }, lp: 2.000 },
-  // 75–80 for DSCR<1.00 is n/e (eligibility caps LTV at ≤75% for DSCR<1.00) — no priced entry.
+// Sheet block `priceAdjustmentsDscr`, PREMIUM-POSITIVE. A strong DSCR is a CREDIT: ≥1.25 is +0.25 flat
+// across every CLTV, which IMPROVES the price — proven live (DSCR 1.30 → 105.925 vs DSCR 1.20 →
+// 105.675, i.e. 0.25 BETTER). This is the row the old encoding had exactly backwards as a 0.25 charge.
+const SHEET_DSCR_GE125 = 0.25;
+// The sheet labels its middle row "1.15 – 1.24" and lists no row at all for 1.00–1.14, but LP's own
+// container is "1.00-1.24" and a live probe at DSCR 1.10 priced IDENTICALLY to 1.20 — so the whole
+// 1.00–1.24 span is the 0 baseline and carries no entry. Measured, not assumed.
+const SHEET_DSCR_LT100_BY_CLTV = [
+  { cltv: { min: null, max: 50.5 }, sheet: -0.750 },
+  { cltv: { min: 50.5, max: 55.5 }, sheet: -0.875 },
+  { cltv: { min: 55.5, max: 60.5 }, sheet: -1.000 },
+  { cltv: { min: 60.5, max: 65.5 }, sheet: -1.250 },
+  { cltv: { min: 65.5, max: 70.5 }, sheet: -1.500 },
+  { cltv: { min: 70.5, max: 75.5 }, sheet: -2.000 },
+  // 75–80 for DSCR<1.00 is the sheet's own "N/A" (eligibility caps LTV at ≤75%) — no priced entry.
 ];
 const cltvMilliPredicate = (cb) => ({ fact: 'ltv', op: 'between', value: [cb.min == null ? 0 : cb.min * 1000, (cb.max == null ? 100 : cb.max) * 1000] });
 
-// ---- §7 add-on LLPAs, CLTV-segmented (MEASURED live 2026-08-17 from the captured battery — every value
-// re-derived directly from the sweep report, never guessed). Values are LENDER PRICE cost-positive; each
-// aligns index-for-index with CLTV_BANDS (50/55/60/65/70/75/80). A 0 emits NO adjustment (LP emits no
-// line for a zero band); `null` = n/e (an eligibility cap, no priced entry). ----------------------------
-const CASHOUT_GE720_BY_CLTV = [0, 0.125, 0.250, 0.250, 0.500, 0.875, 2.625]; // "Cash Out Refinance, FICO >= 720"
-const CASHOUT_LT720_BY_CLTV = [0.250, 0.375, 0.375, 0.500, 0.750, 1.000, null]; // "…, FICO < 720"; 80% is n/e (LTV cap)
-const CONDO_BY_CLTV = [0, 0, 0, 0.125, 0.125, 0.250, 0.500]; // "Condo" (AllCondoRateAdjustment)
-const UNITS_BY_CLTV = [0.250, 0.250, 0.500, 0.500, 0.750, 1.000, 1.500]; // "2-4 Units" (UnitRateAdjustment)
-// The FOUR add-on families MEASURED live against Lender Price 2026-08-17 (docs/longterm/ppe-research/
-// DEEPHAVEN-MISSING-LLPA-MEASURED.md) — every value verified constant across all 56 coupons on both
-// priced containers. cost-positive, index-aligned to CLTV_BANDS [50,55,60,65,70,75,80].
-const IO_BY_CLTV = [0.250, 0.250, 0.250, 0.500, 0.625, 0.750, 1.250];      // "Other - Interest Only"
-const ESCROW_BY_CLTV = [0.250, 0.250, 0.250, 0.250, 0.250, 0.250, 0.250];   // "Other - Escrow Waiver" (flat +0.25)
-const NONWARR_BY_CLTV = [0.750, 0.750, 0.750, 0.750, 0.750, 1.000, 1.000];  // "Other - Non-Warrantable" (REPLACES the Condo line)
+// ---- §7 add-on LLPAs, CLTV-segmented — VERBATIM from the rate sheet's `priceAdjustmentsOther` block,
+// PREMIUM-POSITIVE (− WORSENS the price). Every one of these families is a CHARGE on the sheet, which is
+// why the old uniformly-negated encoding happened to produce the right number here while the FICO grid
+// and the DSCR row were wrong. Each aligns index-for-index with CLTV_BANDS (50/55/60/65/70/75/80).
+// A 0 emits NO adjustment (the sheet has no charge in that band); `null` = the sheet's own "N/A"
+// (an eligibility cap, no priced entry — never a guessed 0). ---------------------------------------
+const SHEET_CASHOUT_GE720 = [0, -0.125, -0.250, -0.250, -0.500, -0.875, -2.625]; // "Cash-Out | FICO ≥ 720"
+const SHEET_CASHOUT_LT720 = [-0.250, -0.375, -0.375, -0.500, -0.750, -1.000, null]; // "Cash-Out | FICO < 720"; 80% N/A
+const SHEET_CONDO = [0, 0, 0, -0.125, -0.125, -0.250, -0.500];              // "Condo" (AllCondoRateAdjustment)
+const SHEET_UNITS = [-0.250, -0.250, -0.500, -0.500, -0.750, -1.000, -1.500]; // "2-4 Units" (UnitRateAdjustment)
+const SHEET_IO = [-0.250, -0.250, -0.250, -0.500, -0.625, -0.750, -1.250];   // "Interest Only"
+const SHEET_ESCROW = [-0.250, -0.250, -0.250, -0.250, -0.250, -0.250, -0.250]; // "Escrow Waiver" (flat −0.25)
+const SHEET_NONWARR = [-0.750, -0.750, -0.750, -0.750, -0.750, -1.000, -1.000]; // "Non-Warrantable" (REPLACES Condo)
+// "Rental Type — Short-Term Rental": a flat −0.5 charge across CLTV, N/A at 80%. On the sheet and never
+// encoded until now. Keyed on the established `short_term_rental` boolean fact (advanced-facts.js), the
+// same fact Layer-2's overlay rules already read, so the two layers cannot disagree about what STR means.
+const SHEET_SHORT_TERM_RENTAL = [-0.500, -0.500, -0.500, -0.500, -0.500, -0.500, null];
 // Loan-amount is 2D (tier × CLTV); tiers are mutually exclusive (most-specific fires). 0 = a real zero
-// band (no line); null = n/e (the matching DSCR container declined — an INFERRED LTV cap, left unpriced).
-const LOANAMT_GT_1_5M_BY_CLTV = [0, 0, 0, 0.125, 0.250, 0.250, 0.250];      // "Loan Amount - > 1,500,000" (1.5M < loan <= 2.0M)
-const LOANAMT_GT_2_0M_BY_CLTV = [0.250, 0.250, 0.375, 0.500, 0.500, null, null]; // "Loan Amount - > 2,000,000" (75/80 n/e: >$2M → LTV <=70%)
-const LOANAMT_LT_150K_BY_CLTV = [1.250, 1.250, 1.250, 1.500, 1.500, 1.500, 1.750]; // "Loan Amount - < 150,000" (125k <= loan < 150k)
-const LOANAMT_LT_125K_BY_CLTV = [1.750, 1.750, 2.000, 2.250, 2.250, 2.500, null]; // "Loan Amount - < 125,000" (80 n/e: small-loan @80% declines)
+// band (no line); null = the sheet's own "N/A" (an INFERRED LTV cap, left unpriced).
+const SHEET_LOANAMT_GT_1_5M = [0, 0, 0, -0.125, -0.250, -0.250, -0.250];     // "> 1,500,000" (1.5M < loan <= 2.0M)
+const SHEET_LOANAMT_GT_2_0M = [-0.250, -0.250, -0.375, -0.500, -0.500, null, null]; // "> 2,000,000" (75/80 N/A)
+// "< 250,000": zero in every band EXCEPT 80% CLTV (−0.125). On the sheet and never encoded until now;
+// it is the 150k–250k tier, sitting directly above the existing < 150,000 tier.
+const SHEET_LOANAMT_LT_250K = [0, 0, 0, 0, 0, 0, -0.125];                    // "< 250,000" (150k <= loan < 250k)
+const SHEET_LOANAMT_LT_150K = [-1.250, -1.250, -1.250, -1.500, -1.500, -1.500, -1.750]; // "< 150,000" (125k–150k)
+const SHEET_LOANAMT_LT_125K = [-1.750, -1.750, -2.000, -2.250, -2.250, -2.500, null];   // "< 125,000" (80 N/A)
+// "State**" — DC / MA / NJ / NY, flat. Sheet footnote O41.
+const SHEET_STATE = -0.375;
 const cltvBandLabel = (cb) => (cb.min == null ? 'CLTV To 50.0%' : `CLTV ${cb.min - 0.5}–${cb.max - 0.5}%`);
 
 function buildDeephavenGrid() {
   const dscrTables = [];
-  // ≥1.25 flat +0.25, all CLTV
-  dscrTables.push({ dimension: 'dscr', code: 'dhvn_dscr_ge125', reason: 'DSCR Ratio - DSCR >= 1.25', predicate: { fact: 'dscr', op: 'gte', value: 1250 }, adj: cost(0.25) });
-  // <1.00, CLTV-segmented
-  for (const seg of DSCR_LT100_BY_CLTV) {
+  // ≥1.25 — a CREDIT of +0.25 flat across every CLTV (it IMPROVES the price).
+  dscrTables.push({ dimension: 'dscr', code: 'dhvn_dscr_ge125', reason: 'DSCR Ratio - DSCR >= 1.25', predicate: { fact: 'dscr', op: 'gte', value: 1250 }, adj: SHEET_DSCR_GE125 });
+  // <1.00, CLTV-segmented — charges.
+  for (const seg of SHEET_DSCR_LT100_BY_CLTV) {
     dscrTables.push({
       dimension: 'dscr', code: `dhvn_dscr_lt100_${seg.cltv.min == null ? 'to' : seg.cltv.min}`,
       reason: `DSCR Ratio - DSCR < 1.00 / CLTV ${seg.cltv.min == null ? '<= 50' : seg.cltv.min + '–' + seg.cltv.max}`,
-      predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, cltvMilliPredicate(seg.cltv)] }, adj: cost(seg.lp),
+      predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, cltvMilliPredicate(seg.cltv)] }, adj: seg.sheet,
     });
   }
 
@@ -116,34 +156,40 @@ function buildDeephavenGrid() {
   // null band emits NOTHING (LP itemizes no line there), so a non-add-on scenario is untouched.
   const addonTables = [];
   CLTV_BANDS.forEach((cb, i) => {
-    const co720 = CASHOUT_GE720_BY_CLTV[i];
-    if (co720) addonTables.push({ dimension: 'cashout', code: `dhvn_cashout_ge720_${i}`, reason: `Other - Cash Out Refinance, FICO >= 720 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'purpose', op: 'eq', value: 'cashout' }, { fact: 'fico', op: 'gte', value: 720 }, cltvMilliPredicate(cb)] }, adj: cost(co720) });
-    const coLt = CASHOUT_LT720_BY_CLTV[i];
-    if (coLt) addonTables.push({ dimension: 'cashout', code: `dhvn_cashout_lt720_${i}`, reason: `Other - Cash Out Refinance, FICO < 720 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'purpose', op: 'eq', value: 'cashout' }, { fact: 'fico', op: 'lt', value: 720 }, cltvMilliPredicate(cb)] }, adj: cost(coLt) });
-    const condo = CONDO_BY_CLTV[i];
+    const co720 = SHEET_CASHOUT_GE720[i];
+    if (co720) addonTables.push({ dimension: 'cashout', code: `dhvn_cashout_ge720_${i}`, reason: `Other - Cash Out Refinance, FICO >= 720 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'purpose', op: 'eq', value: 'cashout' }, { fact: 'fico', op: 'gte', value: 720 }, cltvMilliPredicate(cb)] }, adj: co720 });
+    const coLt = SHEET_CASHOUT_LT720[i];
+    if (coLt) addonTables.push({ dimension: 'cashout', code: `dhvn_cashout_lt720_${i}`, reason: `Other - Cash Out Refinance, FICO < 720 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'purpose', op: 'eq', value: 'cashout' }, { fact: 'fico', op: 'lt', value: 720 }, cltvMilliPredicate(cb)] }, adj: coLt });
+    const condo = SHEET_CONDO[i];
     // condo is gated on non_warrantable != true: a NON-warrantable condo emits the Non-Warrantable line
     // INSTEAD of the plain Condo line (measured — LP suppresses the Condo line there). lpScenarioToFacts
     // always emits non_warrantable (false/true), so a warrantable condo (false) still fires this line.
-    if (condo) addonTables.push({ dimension: 'property_type', code: `dhvn_condo_${i}`, reason: `Other - Condo / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'property_type', op: 'in', value: ['Condo', 'Condos'] }, { fact: 'non_warrantable', op: 'neq', value: true }, cltvMilliPredicate(cb)] }, adj: cost(condo) });
-    const units = UNITS_BY_CLTV[i];
-    if (units) addonTables.push({ dimension: 'units', code: `dhvn_units_${i}`, reason: `Other - 2-4 Units / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'units', op: 'gte', value: 2 }, cltvMilliPredicate(cb)] }, adj: cost(units) });
-    // ── the FOUR families measured live 2026-08-17 (Interest Only, Escrow Waiver, Non-Warrantable, Loan
-    //    amount). A 0 or null band emits NOTHING, so a scenario carrying none of these is untouched. ──
-    const io = IO_BY_CLTV[i];
-    if (io) addonTables.push({ dimension: 'interest_only', code: `dhvn_io_${i}`, reason: `Other - Interest Only / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'interest_only', op: 'eq', value: true }, cltvMilliPredicate(cb)] }, adj: cost(io) });
-    const ew = ESCROW_BY_CLTV[i];
-    if (ew) addonTables.push({ dimension: 'escrow_waiver', code: `dhvn_escrow_${i}`, reason: `Other - Escrow Waiver / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'escrow_waiver', op: 'eq', value: true }, cltvMilliPredicate(cb)] }, adj: cost(ew) });
-    const nw = NONWARR_BY_CLTV[i];
-    if (nw) addonTables.push({ dimension: 'non_warrantable', code: `dhvn_nonwarr_${i}`, reason: `Other - Non-Warrantable / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'non_warrantable', op: 'eq', value: true }, cltvMilliPredicate(cb)] }, adj: cost(nw) });
+    if (condo) addonTables.push({ dimension: 'property_type', code: `dhvn_condo_${i}`, reason: `Other - Condo / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'property_type', op: 'in', value: ['Condo', 'Condos'] }, { fact: 'non_warrantable', op: 'neq', value: true }, cltvMilliPredicate(cb)] }, adj: condo });
+    const units = SHEET_UNITS[i];
+    if (units) addonTables.push({ dimension: 'units', code: `dhvn_units_${i}`, reason: `Other - 2-4 Units / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'units', op: 'gte', value: 2 }, cltvMilliPredicate(cb)] }, adj: units });
+    // ── Interest Only, Escrow Waiver, Non-Warrantable, Short-Term Rental, Loan amount. A 0 or null band
+    //    emits NOTHING, so a scenario carrying none of these is untouched. ──
+    const io = SHEET_IO[i];
+    if (io) addonTables.push({ dimension: 'interest_only', code: `dhvn_io_${i}`, reason: `Other - Interest Only / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'interest_only', op: 'eq', value: true }, cltvMilliPredicate(cb)] }, adj: io });
+    const ew = SHEET_ESCROW[i];
+    if (ew) addonTables.push({ dimension: 'escrow_waiver', code: `dhvn_escrow_${i}`, reason: `Other - Escrow Waiver / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'escrow_waiver', op: 'eq', value: true }, cltvMilliPredicate(cb)] }, adj: ew });
+    const nw = SHEET_NONWARR[i];
+    if (nw) addonTables.push({ dimension: 'non_warrantable', code: `dhvn_nonwarr_${i}`, reason: `Other - Non-Warrantable / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'non_warrantable', op: 'eq', value: true }, cltvMilliPredicate(cb)] }, adj: nw });
+    // Short-Term Rental — the sheet's "Rental Type" row. Keyed on the shared `short_term_rental` fact.
+    const str = SHEET_SHORT_TERM_RENTAL[i];
+    if (str) addonTables.push({ dimension: 'short_term_rental', code: `dhvn_str_${i}`, reason: `Other - Short-Term Rental / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'short_term_rental', op: 'eq', value: true }, cltvMilliPredicate(cb)] }, adj: str });
     // loan-amount tiers — mutually exclusive by construction (the > 1.5M tier is bounded <= 2.0M):
-    const la15 = LOANAMT_GT_1_5M_BY_CLTV[i];
-    if (la15) addonTables.push({ dimension: 'loan_amount', code: `dhvn_loanamt_gt15_${i}`, reason: `Loan Amount - > 1,500,000 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'loan_amount', op: 'gt', value: 1500000 }, { fact: 'loan_amount', op: 'lte', value: 2000000 }, cltvMilliPredicate(cb)] }, adj: cost(la15) });
-    const la20 = LOANAMT_GT_2_0M_BY_CLTV[i];
-    if (la20) addonTables.push({ dimension: 'loan_amount', code: `dhvn_loanamt_gt20_${i}`, reason: `Loan Amount - > 2,000,000 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'loan_amount', op: 'gt', value: 2000000 }, cltvMilliPredicate(cb)] }, adj: cost(la20) });
-    const la150 = LOANAMT_LT_150K_BY_CLTV[i];
-    if (la150) addonTables.push({ dimension: 'loan_amount', code: `dhvn_loanamt_lt150_${i}`, reason: `Loan Amount - < 150,000 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'loan_amount', op: 'gte', value: 125000 }, { fact: 'loan_amount', op: 'lt', value: 150000 }, cltvMilliPredicate(cb)] }, adj: cost(la150) });
-    const la125 = LOANAMT_LT_125K_BY_CLTV[i];
-    if (la125) addonTables.push({ dimension: 'loan_amount', code: `dhvn_loanamt_lt125_${i}`, reason: `Loan Amount - < 125,000 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'loan_amount', op: 'lt', value: 125000 }, cltvMilliPredicate(cb)] }, adj: cost(la125) });
+    const la15 = SHEET_LOANAMT_GT_1_5M[i];
+    if (la15) addonTables.push({ dimension: 'loan_amount', code: `dhvn_loanamt_gt15_${i}`, reason: `Loan Amount - > 1,500,000 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'loan_amount', op: 'gt', value: 1500000 }, { fact: 'loan_amount', op: 'lte', value: 2000000 }, cltvMilliPredicate(cb)] }, adj: la15 });
+    const la20 = SHEET_LOANAMT_GT_2_0M[i];
+    if (la20) addonTables.push({ dimension: 'loan_amount', code: `dhvn_loanamt_gt20_${i}`, reason: `Loan Amount - > 2,000,000 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'loan_amount', op: 'gt', value: 2000000 }, cltvMilliPredicate(cb)] }, adj: la20 });
+    // "< 250,000" — the 150k–250k tier, zero everywhere except 80% CLTV.
+    const la250 = SHEET_LOANAMT_LT_250K[i];
+    if (la250) addonTables.push({ dimension: 'loan_amount', code: `dhvn_loanamt_lt250_${i}`, reason: `Loan Amount - < 250,000 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'loan_amount', op: 'gte', value: 150000 }, { fact: 'loan_amount', op: 'lt', value: 250000 }, cltvMilliPredicate(cb)] }, adj: la250 });
+    const la150 = SHEET_LOANAMT_LT_150K[i];
+    if (la150) addonTables.push({ dimension: 'loan_amount', code: `dhvn_loanamt_lt150_${i}`, reason: `Loan Amount - < 150,000 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'loan_amount', op: 'gte', value: 125000 }, { fact: 'loan_amount', op: 'lt', value: 150000 }, cltvMilliPredicate(cb)] }, adj: la150 });
+    const la125 = SHEET_LOANAMT_LT_125K[i];
+    if (la125) addonTables.push({ dimension: 'loan_amount', code: `dhvn_loanamt_lt125_${i}`, reason: `Loan Amount - < 125,000 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'loan_amount', op: 'lt', value: 125000 }, cltvMilliPredicate(cb)] }, adj: la125 });
   });
 
   return {
@@ -154,11 +200,12 @@ function buildDeephavenGrid() {
       dscr: { min: null, max: null }, // DSCR-INDEPENDENT ("DSCR (All)")
       ficoBands: FICO_BANDS,
       cltvBands: CLTV_BANDS,
-      cells: FICO_CLTV_LP.map((row) => row.map(cost)),
+      // The sheet's own signed cells, straight in — NO negation (see THE SIGN at the top of this file).
+      cells: SHEET_FICO_CLTV.map((row) => row.slice()),
     }],
     llpaTables: [
       // §6 state adder — DC/MA/NJ/NY flat +0.375
-      { dimension: 'state', code: 'dhvn_state', reason: 'Other - State of DC, MA, NJ, NY', predicate: { fact: 'state', op: 'in', value: ['DC', 'MA', 'NJ', 'NY'] }, adj: cost(0.375) },
+      { dimension: 'state', code: 'dhvn_state', reason: 'Other - State of DC, MA, NJ, NY', predicate: { fact: 'state', op: 'in', value: ['DC', 'MA', 'NJ', 'NY'] }, adj: SHEET_STATE },
       ...dscrTables,
       ...addonTables,
     ],
@@ -188,21 +235,42 @@ function buildDeephavenGrid() {
   };
 }
 
-// The Lender Price tables this sheet encodes, kept beside the grid so the test can reproduce LP's OWN
-// itemized values (the offline agreement oracle) without re-deriving them.
-const LP_TABLES = {
-  BASE, FICO_BANDS, CLTV_BANDS, FICO_CLTV_LP, DSCR_LT100_BY_CLTV,
-  CASHOUT_GE720_BY_CLTV, CASHOUT_LT720_BY_CLTV, CONDO_BY_CLTV, UNITS_BY_CLTV,
-  IO_BY_CLTV, ESCROW_BY_CLTV, NONWARR_BY_CLTV,
-  LOANAMT_GT_1_5M_BY_CLTV, LOANAMT_GT_2_0M_BY_CLTV, LOANAMT_LT_150K_BY_CLTV, LOANAMT_LT_125K_BY_CLTV,
+// THE SOURCE OF TRUTH, exported so the test asserts against the SHEET rather than re-deriving it.
+// Every value here is the Excel's own signed cell (premium-positive: + improves the price).
+const SHEET_TABLES = {
+  BASE, FICO_BANDS, CLTV_BANDS,
+  FICO_CLTV: SHEET_FICO_CLTV,
+  DSCR_GE125: SHEET_DSCR_GE125,
+  DSCR_LT100_BY_CLTV: SHEET_DSCR_LT100_BY_CLTV,
+  CASHOUT_GE720: SHEET_CASHOUT_GE720, CASHOUT_LT720: SHEET_CASHOUT_LT720,
+  CONDO: SHEET_CONDO, UNITS: SHEET_UNITS, IO: SHEET_IO, ESCROW: SHEET_ESCROW,
+  NONWARR: SHEET_NONWARR, SHORT_TERM_RENTAL: SHEET_SHORT_TERM_RENTAL, STATE: SHEET_STATE,
+  LOANAMT_GT_1_5M: SHEET_LOANAMT_GT_1_5M, LOANAMT_GT_2_0M: SHEET_LOANAMT_GT_2_0M,
+  LOANAMT_LT_250K: SHEET_LOANAMT_LT_250K, LOANAMT_LT_150K: SHEET_LOANAMT_LT_150K,
+  LOANAMT_LT_125K: SHEET_LOANAMT_LT_125K,
 };
 
-// What is deliberately NOT in this sheet yet (never guessed) — fill from a targeted re-measure battery.
+// DEPRECATED — the LP-frame MAGNITUDE view (what Lender Price would DISPLAY), derived from the sheet so
+// the two can never drift. Kept only so an existing reader does not break; it carries NO direction, and
+// asserting on it is exactly the mistake that let a mispriced sheet pass. Assert on the PRICE instead.
+const LP_TABLES = {
+  BASE, FICO_BANDS, CLTV_BANDS,
+  FICO_CLTV_LP: SHEET_FICO_CLTV.map((row) => row.map(cost)),
+  DSCR_LT100_BY_CLTV: SHEET_DSCR_LT100_BY_CLTV.map((s) => ({ cltv: s.cltv, lp: cost(s.sheet) })),
+};
+
+// What is deliberately NOT in this sheet (never guessed) — fill from a targeted re-measure battery.
 const UNMEASURED = [
-  'cash-out FICO<720 @ CLTV 80% (n/e in the battery — cash-out LTV cap; confirm before encoding as eligibility)',
-  'loan-amount n/e cells: >$2.0M @ CLTV 75/80 and <$125k @ CLTV 80 (INFERRED LTV caps — >$2M→LTV<=70%, small-loan@80% declines — measured as "no price", not yet encoded as eligibility overlays)',
-  'prepay-structure LLPA: the 5%-Fixed credit is MEASURED (+0.500 vs the standard 5-yr step-down) but not yet wired into the Layer-1 sheet — deferred until the margin/adjustmentPoints layer is reconciled',
+  'cash-out FICO<720 @ CLTV 80%, STR @ CLTV 80% (the sheet says N/A — an LTV cap; confirm before encoding as eligibility)',
+  'loan-amount N/A cells: >$2.0M @ CLTV 75/80 and <$125k @ CLTV 80 (INFERRED LTV caps — >$2M→LTV<=70%, small-loan@80% declines — not yet encoded as eligibility overlays)',
+  'the PREPAY LLPA family (6 terms × LLPA Other / LLPA 5% Fixed) — fully specified in the rate-sheet JSON (maxPricePrepayBuydown) but OUT OF SCOPE here: it is a separate build with the margin/adjustmentPoints layer',
+  'MAX-PRICE caps — per prepay term AND the loan-amount tiers (105 / 104.5 / 103.5) with the 98.000 floor and the sheet\'s "lower of the two" rule — fully specified in the JSON, out of scope here',
+  'LOCK-TERM (45/60) and EXTENSION pricing — fully specified in the JSON (termExtensionAdjustments); we price only the 30-day base, out of scope here',
+  'the sheet\'s Foreign National row — a borrower TYPE, not a FICO band; there is no fact to key it on, so it is not encoded (would need a foreign_national dimension)',
   'non-warrantable on a non-condo (SFR) — the NW line was measured only on a condo',
+  'Short-Term Rental: the VALUES are the sheet\'s, but Lender Price\'s own adjType/reason for this family is UNCONFIRMED (never measured live), so the agreement harness may surface it as a one-sided difference until a live probe pins the LP shape',
+  'BASE LADDER: the sheet quotes 0.25 HIGHER than every live LP measurement at every coupon (e.g. 7.500 → sheet 105.425 vs LP 105.175). Our BASE is kept on the LP-measured values so the FINAL PRICE agrees with LP; the 0.25 is unexplained (likely Lender Paid Comp, per the sheet\'s own max-price note) and needs one business answer before the base is moved',
+  'PRICE ROUNDING: the program falls back to the pricer default of nearest-1/8, but LP\'s own quotes are NOT eighth-rounded (105.175 and 105.675 are not multiples of 0.125), so the rounded price cannot tie out to LP. The rate sheet says nothing about rounding, so nothing is invented here — the sheet\'s composed price (rawPriceMilli) is what agrees with LP to the penny, and the agreement harness must compare on that until the real rounding rule is confirmed',
 ];
 
-module.exports = { buildDeephavenGrid, LP_TABLES, UNMEASURED, _internals: { cost } };
+module.exports = { buildDeephavenGrid, SHEET_TABLES, LP_TABLES, UNMEASURED, _internals: { cost } };

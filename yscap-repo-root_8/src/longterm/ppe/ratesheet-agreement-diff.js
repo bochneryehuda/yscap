@@ -82,6 +82,12 @@ function deephavenLpDimension(llpa) {
     if (/interest\s*only/i.test(r)) return 'interest_only';
     if (/escrow\s*waiver/i.test(r)) return 'escrow_waiver';
     if (/non.?warrantable/i.test(r)) return 'non_warrantable';
+    // Short-Term Rental — the sheet's "Rental Type" row. The VALUES are the sheet's, but LP's own
+    // adjType for this family is UNCONFIRMED (never probed live), so this branch is keyed on the reason
+    // and grouped with its measured "Other - …" siblings. If LP turns out to use a different adjType the
+    // classifier falls through to `other:<reason>`, which SURFACES as a disagreement rather than being
+    // silently merged — the fail-safe this whole reconciliation is built on. See sheet UNMEASURED.
+    if (/short.?term\s*rental/i.test(r)) return 'short_term_rental';
     return `other:${norm(r) || 'simple'}`;
   }
   if (t === 'statesrateadjustment') return 'state';
