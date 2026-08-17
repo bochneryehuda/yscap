@@ -98,6 +98,17 @@ export const ltApi = {
     return ltGet(lt(`/ppe/parity-cells${q ? `?${q}` : ''}`));
   },
 
+  // WHICH Lender Price programs each of our rate sheets is measured against (db/574).
+  //
+  // The write door has existed since the scope columns landed and nothing could reach it: it needs a
+  // program's id, and no read surface published one — so no sheet could be scoped at all, and an
+  // unscoped sheet's shadow comparison ABSTAINS. On a findings screen an abstention is
+  // indistinguishable from two engines agreeing, which is why the list reports what is UNSCOPED
+  // rather than only what is set. Reading is open; writing is admin-only on the server, and the
+  // screen calls it anyway so the refusal is shown.
+  ppePrograms: () => ltGet(lt('/ppe/programs')),
+  ppeSetProgramLpScope: (id, body) => ltPost(lt(`/ppe/programs/${encodeURIComponent(id)}/lp-scope`), body),
+
   // The per-investor rule loop (P5/P7). Lender Price's own declines are mined into
   // PROPOSALS; a human accepts one and it becomes a real rule our engine enforces.
   // Nothing here is auto-applied — accept and dismiss are the only two ways a

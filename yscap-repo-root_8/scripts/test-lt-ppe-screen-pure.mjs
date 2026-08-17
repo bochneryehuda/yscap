@@ -197,5 +197,39 @@ ok(/to="\/internal\/lt\/ppe"/.test(layout), 'ROUTE-3 …and the long-term nav li
   ok(/points\(row\.worstAbsMilli\)/.test(code), 'P9-14 …and the worst gap goes through it, never raw');
 }
 
+// ---------------------------------------------------------------------------
+// 8) What each sheet is compared AGAINST (db/574) — the scope editor
+// ---------------------------------------------------------------------------
+{
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  ok(/ltApi\.ppePrograms\(\)/.test(code), 'SCOPE-1 the screen lists the programs');
+  ok(/ltApi\.ppeSetProgramLpScope\(/.test(code), 'SCOPE-2 …and can write a scope');
+
+  // AN UNSCOPED PROGRAM IS THE POINT OF THE LIST. Its comparison stands down, which on the findings
+  // list above is indistinguishable from two engines agreeing — so it is shown, flagged, and never
+  // filtered out of the list that exists to find it.
+  ok(/programs\.programs\.map\(/.test(code),
+    'SCOPE-3 every program is listed — never filtered to the scoped ones, which are the ones that need nothing');
+  ok(/not scoped — its comparison stands down/.test(code),
+    'SCOPE-4 …and an unscoped one says what that MEANS, not just that a field is empty');
+  ok(/programs\.note/.test(code), 'SCOPE-5 …with the server\'s own count of how many are unscoped');
+
+  // CLEARING IS EXPLICIT. The server refuses a body with no `scope` key rather than reading it as
+  // "clear it", because clearing turns every future comparison into an abstention.
+  ok(/clear \? null :/.test(code), 'SCOPE-6 clearing sends an explicit null, never an absent key');
+  ok(/Clear it — stand the comparison down/.test(code), 'SCOPE-7 …and the button says what clearing does');
+
+  // THE SILENT FAILURE THE PREVIEW ANSWERS: a pattern one character wrong matches nothing and
+  // abstains politely forever. Zero matches must be CALLED OUT, never drawn as an empty list.
+  ok(/preview\.matched\.length === 0/.test(code),
+    'SCOPE-8 a scope that picks nothing is called out rather than shown as an empty list');
+  ok(/lpProgramNames/.test(code), 'SCOPE-9 …from names the person pasted, checked by the server that stored it');
+
+  // The write is admin-only on the server; this screen shows the control anyway and surfaces the
+  // refusal per row — a hidden button is indistinguishable from a broken one.
+  ok(/scopeRowError\[p\.id\]/.test(code), 'SCOPE-10 a refusal is held per program, never shown on another row');
+}
+
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
 process.exit(failures ? 1 : 0);

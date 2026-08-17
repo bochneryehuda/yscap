@@ -88,15 +88,16 @@ console.log('/api/lt/ppe/* — the PPE HTTP surface');
 // 1) the router itself
 // ---------------------------------------------------------------------------
 ok(typeof route === 'function' && typeof route.use === 'function', 'the module IS an express router (server.js can mount it)');
-// 18 since the PER-CELL PARITY SERIES read landed (how a band has behaved across runs — db/575).
+// 19 since the PROGRAM LIST landed — the read that finally makes the db/574 scope writer reachable
+// (its door needs a program UUID that no read surface published, so no sheet could be scoped at all).
 // This count is a deliberate guard: adding a handler without exporting/testing it should FAIL here, so
 // bump it in the same commit that adds one — never delete the assertion to make a build green.
-ok(Object.keys(H).length === 18, `all 18 handlers are exported for testing (${Object.keys(H).length})`);
+ok(Object.keys(H).length === 19, `all 19 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
 for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',
   'listRulesRoute', 'mineSuggestionsRoute', 'ruleCoverageRoute',
-  'getProgramLpScopeRoute', 'setProgramLpScopeRoute', 'parityCellsRoute']) {
+  'getProgramLpScopeRoute', 'setProgramLpScopeRoute', 'parityCellsRoute', 'listProgramsRoute']) {
   ok(typeof H[name] === 'function', `the ${name} handler is exported by name`);
 }
 
@@ -620,6 +621,48 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
     const parsed = { ready: true, lenderCount: 1, itemCount: 1, reasonCount: 1, lenders: [{ lender: 'L', investor: 'Deephaven', items: [{ program: 'DSCR 30', reasons: [{ rule: 'FICO - below 660', adjType: 'FicoRateAdjustment' }] }] }] };
     const r = await call(H.mineSuggestionsRoute, { body: { disqualified: parsed } });
     ok(r.code === 200 && r.body.ok && r.body.suggestionCount === 1 && r.body.investorCount === 1, 'mine from a parsed disqualified result saves the suggestion + reports counts');
+    dbStub.next = null;
+  }
+
+  // ---- the program list: the read that makes the db/574 scope writer reachable -------------------
+  //
+  // An UNSCOPED program's shadow comparison abstains — deliberately, because Lender Price answers with
+  // every program it sells and ours prices one — and on a findings screen an abstention is
+  // indistinguishable from two engines that agree. So the count of unscoped programs is the number
+  // this route exists to publish, and it must be stated rather than left to be inferred from a list.
+  {
+    const row = (over) => Object.assign({
+      id: 'p1', code: 'DHVN-DSCR', name: 'Deephaven DSCR', investor_id: 'i1',
+      investor_code: 'DHVN', investor_name: 'Deephaven Mortgage',
+      lp_investor: null, lp_lender: null, lp_program: null, lp_product: null, lp_program_like: null,
+      lp_scope_set_at: null, lp_scope_set_by: null,
+    }, over);
+
+    dbStub.next = () => ({ rows: [row({}), row({ id: 'p2', code: 'DHVN-DSCR-HI', lp_program_like: '^dscr' })] });
+    const r = await call(H.listProgramsRoute, { query: {} });
+    ok(r.code === 200 && r.body.ok, 'PROG-1 the program list answers');
+    ok(r.body.programs.length === 2, 'PROG-2 …with every program in the scope');
+    ok(r.body.programs[0].id === 'p1' && r.body.programs[0].investorName === 'Deephaven Mortgage',
+      'PROG-3 …each carrying the id the scope writer needs, and the investor it belongs to');
+    ok(r.body.programs[0].lpScope === null, 'PROG-4 an unscoped program reports NO scope, not an empty one');
+    ok(r.body.programs[1].lpScope && r.body.programs[1].lpScope.programLike === '^dscr',
+      'PROG-5 …and a scoped one reports the pattern it is measured against');
+    ok(typeof r.body.programs[1].describe === 'string' && r.body.programs[1].describe.length > 0,
+      'PROG-6 …described in words, so a pattern is readable by whoever has to confirm it');
+    ok(r.body.unscoped === 1, 'PROG-7 the unscoped programs are COUNTED');
+    ok(typeof r.body.note === 'string' && /abstains/.test(r.body.note),
+      'PROG-8 …and said out loud — an abstaining comparison reads exactly like agreement');
+
+    // Nothing unscoped → no warning. A note that never goes away is a note nobody reads.
+    dbStub.next = () => ({ rows: [row({ lp_program_like: '^dscr' })] });
+    const clean = await call(H.listProgramsRoute, { query: {} });
+    ok(clean.body.unscoped === 0 && clean.body.note === null, 'PROG-9 a fully scoped book raises no note');
+
+    // No programs at all is not an abstention warning either — there is nothing to scope.
+    dbStub.next = () => ({ rows: [] });
+    const empty = await call(H.listProgramsRoute, { query: {} });
+    ok(empty.code === 200 && empty.body.programs.length === 0 && empty.body.note === null,
+      'PROG-10 an empty book answers empty, with no warning about programs that do not exist');
     dbStub.next = null;
   }
 

@@ -203,6 +203,63 @@ export default function LtPpe() {
     } finally { setBusy(false); }
   };
 
+  // ---- which Lender Price programs each of our sheets is measured against (db/574) ---------------
+  // The scope decides what our engine is compared TO. Without one the comparison abstains — on
+  // purpose, because Lender Price answers with every program it sells and ours prices one — and an
+  // abstention looks exactly like agreement on the list above. So this card leads with what is
+  // UNSCOPED, and the write shows the pattern's own preview before it is trusted.
+  const [programs, setPrograms] = useState(null);
+  const [programsError, setProgramsError] = useState('');
+  const [scoping, setScoping] = useState(null);
+  const [scopeLike, setScopeLike] = useState('');
+  const [scopeExact, setScopeExact] = useState('');
+  const [scopeNames, setScopeNames] = useState('');
+  const [scopeResult, setScopeResult] = useState(null);
+  const [scopeRowError, setScopeRowError] = useState({});
+
+  const loadPrograms = useCallback(() => {
+    ltApi.ppePrograms()
+      .then((r) => { setPrograms(r); setProgramsError(''); })
+      // Said, never swallowed: an empty list here would read as "there is nothing to scope", which is
+      // the same picture a fully-scoped book shows.
+      .catch((e) => { setPrograms(null); setProgramsError(e.message || 'Could not read the programs.'); });
+  }, []);
+  useEffect(loadPrograms, [loadPrograms]);
+
+  const openScope = (p) => {
+    if (scoping === p.id) { setScoping(null); return; }
+    setScoping(p.id);
+    setScopeLike((p.lpScope && p.lpScope.programLike) || '');
+    setScopeExact((p.lpScope && p.lpScope.program) || '');
+    setScopeNames('');
+    setScopeResult(null);
+    setScopeRowError((e) => ({ ...e, [p.id]: null }));
+  };
+
+  const saveScope = async (p, clear) => {
+    setBusy(true);
+    setScopeRowError((e) => ({ ...e, [p.id]: null }));
+    try {
+      // The names are pasted from a capture, one per line. They are sent so the SERVER can say which
+      // ones this scope actually selects — the silent failure of a scope is a pattern one character
+      // wrong, which matches nothing and abstains politely forever.
+      const lpProgramNames = scopeNames.split('\n').map((s) => s.trim()).filter(Boolean);
+      const scope = clear ? null : {
+        programLike: scopeLike.trim() || undefined,
+        program: scopeExact.trim() || undefined,
+      };
+      const r = await ltApi.ppeSetProgramLpScope(p.id, { scope, lpProgramNames });
+      setScopeResult({ id: p.id, ...r });
+      if (clear) setScoping(null);
+      loadPrograms();
+    } catch (e) {
+      // The server refuses a non-admin, a pattern it will not run (a repeated group that itself
+      // repeats), and a body with no `scope` key at all — each with its own wording, which is what
+      // tells the person which of the three happened.
+      setScopeRowError((prev) => ({ ...prev, [p.id]: e.message || 'That scope was refused.' }));
+    } finally { setBusy(false); }
+  };
+
   // ---- WHERE the two engines disagree, run after run (P9) ---------------------------------------
   // The scoreboard below carries ONE agreement rate per day; this is the same measurement per band,
   // which is what turns "we disagree" into "we disagree HERE, and have for three weeks".
@@ -466,6 +523,110 @@ export default function LtPpe() {
                 </div>
                 {sugRowError[s.id] && (
                   <div style={{ marginTop: 8, fontSize: 13, color: '#8A2F2F' }}>{sugRowError[s.id]}</div>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* ---- what each sheet is compared AGAINST (db/574) ---- */}
+      <div style={card}>
+        <h2 style={h2}>What each rate sheet is compared against</h2>
+        <p style={sub}>
+          Lender Price answers one request with every program it sells; our engine prices one. Until a
+          sheet says which of their programs it belongs beside, the comparison stands down rather than
+          measure ours against a family it was never built for — and a comparison that stood down looks
+          exactly like two engines agreeing. This is where that is set, and where you can see what a
+          pattern actually picks before trusting it.
+        </p>
+
+        {programsError && <p style={{ ...sub, color: '#8A2F2F' }}>{programsError}</p>}
+        {programs && programs.note && <p style={{ ...sub, color: '#7A5C25' }}>{programs.note}</p>}
+        {programs && programs.programs.length === 0 && !programsError && (
+          <p style={{ ...sub, marginBottom: 0 }}>No programs are set up yet, so there is nothing to compare.</p>
+        )}
+
+        {programs && programs.programs.map((p) => (
+          <div key={p.id} style={{ borderTop: '1px solid rgba(20,27,34,.10)', padding: '12px 0' }}>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <div style={eyebrow}>{p.investorName || p.investorCode || 'no investor'}</div>
+                <div style={{ fontSize: 14, color: INK, fontWeight: 600 }}>{p.name || p.code || p.id}</div>
+                <div style={{ marginTop: 6 }}>
+                  {p.lpScope
+                    ? <Pill tone="good">{p.describe}</Pill>
+                    : <Pill tone="warn">not scoped — its comparison stands down</Pill>}
+                </div>
+              </div>
+              <button className="btn ghost" disabled={busy} onClick={() => openScope(p)}>
+                {scoping === p.id ? 'Cancel' : (p.lpScope ? 'Change' : 'Set')}
+              </button>
+            </div>
+
+            {scoping === p.id && (
+              <div style={{ marginTop: 10 }}>
+                <label style={{ ...eyebrow, display: 'block', marginBottom: 4 }}>Family pattern</label>
+                <input
+                  className="input"
+                  style={{ width: '100%', marginBottom: 8 }}
+                  placeholder="^dscr — matches every program whose name starts that way"
+                  value={scopeLike}
+                  onChange={(e) => setScopeLike(e.target.value)}
+                />
+                <label style={{ ...eyebrow, display: 'block', marginBottom: 4 }}>Or one exact program name</label>
+                <input
+                  className="input"
+                  style={{ width: '100%', marginBottom: 8 }}
+                  placeholder="Leave blank unless it really is a single named program"
+                  value={scopeExact}
+                  onChange={(e) => setScopeExact(e.target.value)}
+                />
+                <label style={{ ...eyebrow, display: 'block', marginBottom: 4 }}>
+                  Program names from a capture, one per line (optional)
+                </label>
+                <textarea
+                  className="input"
+                  rows={3}
+                  style={{ width: '100%', marginBottom: 8 }}
+                  placeholder="Paste the program names Lender Price returned. Saving then says which of them this scope picks — a pattern one character wrong picks nothing and says nothing."
+                  value={scopeNames}
+                  onChange={(e) => setScopeNames(e.target.value)}
+                />
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn" disabled={busy} onClick={() => saveScope(p, false)}>Save the scope</button>
+                  {p.lpScope && (
+                    <button className="btn ghost" disabled={busy} onClick={() => saveScope(p, true)}>
+                      Clear it — stand the comparison down
+                    </button>
+                  )}
+                </div>
+                {scopeRowError[p.id] && (
+                  <div style={{ marginTop: 8, fontSize: 13, color: '#8A2F2F' }}>{scopeRowError[p.id]}</div>
+                )}
+                {scopeResult && scopeResult.id === p.id && (
+                  <div style={{ marginTop: 10, fontSize: 13, color: SLATE }}>
+                    <div style={{ marginBottom: 4 }}>Saved: {scopeResult.describe}</div>
+                    {/* THE POINT OF THE PREVIEW: a scope that picks nothing is the silent failure this
+                        whole card exists to prevent, so zero matches is called out rather than shown
+                        as an empty list. */}
+                    {scopeResult.preview && (
+                      scopeResult.preview.matched.length === 0
+                        ? (
+                          <div style={{ color: '#8A2F2F' }}>
+                            This scope picks NONE of the {scopeResult.preview.matched.length + scopeResult.preview.unmatched.length} names
+                            you pasted, so the comparison will still stand down. Check the pattern.
+                          </div>
+                        )
+                        : (
+                          <div>
+                            Picks {scopeResult.preview.matched.length} of{' '}
+                            {scopeResult.preview.matched.length + scopeResult.preview.unmatched.length}:{' '}
+                            {scopeResult.preview.matched.join(', ')}
+                          </div>
+                        )
+                    )}
+                  </div>
                 )}
               </div>
             )}

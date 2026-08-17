@@ -213,6 +213,29 @@ async function listPrograms(db, scope, investorId) {
   return r.rows;
 }
 
+/**
+ * Every program in the scope, with the investor it belongs to.
+ *
+ * `listPrograms` answers "this investor's programs" and needs an investor id to do it — which is the
+ * wrong shape for the one question a scope screen has to answer: WHICH programs have no Lender Price
+ * scope yet? An unscoped program's shadow comparison abstains, silently and forever, and a per-investor
+ * read cannot see the ones hanging off no investor at all (`investor_id IS NULL`), so the very rows most
+ * likely to be unscoped are the ones a per-investor loop would never show.
+ *
+ * The join is LEFT: a program whose investor row has gone is still a program, and dropping it here
+ * would take it off the list that exists to find unscoped programs.
+ */
+async function listAllPrograms(db, scope = 'company') {
+  const r = await db.query(
+    `SELECT p.*, i.code AS investor_code, i.name AS investor_name
+       FROM lt_ppe_program p
+       LEFT JOIN lt_ppe_investor i ON i.id = p.investor_id AND i.scope = p.scope
+      WHERE p.scope = $1
+      ORDER BY COALESCE(i.name, i.code, ''), p.created_at DESC`,
+    [scope]);
+  return r.rows;
+}
+
 // ---- rate-sheet store (db/560) — versions, grids, LLPAs, limits ------------
 
 // Create (or idempotently update) a rate-sheet version under a program. A version is the effective-
@@ -349,7 +372,8 @@ module.exports = {
   normAlias,
   loadSettingOverrides, resolveSettings, resolveSetting, setSetting, clearSetting,
   investorScope, resolveMarginHoldbackForInvestor,
-  findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms, setProgramLpScope,
+  findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms, listAllPrograms,
+  setProgramLpScope,
   createRateSheetVersion, replaceBasePrices, replaceAdjustments, setPriceLimit,
   loadRateSheet, publishRateSheetVersion, currentRateSheetVersion,
 };

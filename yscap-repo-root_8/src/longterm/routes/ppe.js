@@ -979,6 +979,53 @@ async function listRulesRoute(req, res) {
 // confidently against the wrong thing rather than failing. `lp-scope.validateScope`
 // bounds and grammar-checks it before a character reaches the database.
 
+// ---------------------------------------------------------------------------
+// GET /programs — every program, and whether it is scoped to Lender Price yet
+// ---------------------------------------------------------------------------
+//
+// The scope WRITER has existed since db/574 and nothing could reach it: `GET /investors` lists
+// investors, and the write door needs a program's UUID, which no read surface published. So the
+// answer to "which of our rate sheets are being compared against Lender Price at all?" was
+// unavailable, and the honest answer today is "none of them" — an unscoped program's comparison
+// ABSTAINS, which on a findings screen is indistinguishable from two engines that agree.
+//
+// READ-OPEN, WRITE-ADMIN, deliberately. The write is `requirePpeAdmin` (a scope decides which of
+// Lender Price's programs our sheet is measured against — a wrong one produces confident agreement
+// with the wrong thing). The read is not, because the thing worth seeing here is the ABSENCE of a
+// scope, and hiding that from a non-admin leaves them reading an empty findings list as good news.
+
+async function listProgramsRoute(req, res) {
+  const scope = readScope(req);
+  const rows = await store.listAllPrograms(db, scope);
+  const programs = rows.map((row) => {
+    const saved = lpScopeLib.scopeFromRow(row);
+    return {
+      id: row.id,
+      code: row.code || null,
+      name: row.name || null,
+      investorId: row.investor_id || null,
+      investorCode: row.investor_code || null,
+      investorName: row.investor_name || null,
+      lpScope: saved,
+      describe: lpScopeLib.describeScope(saved),
+      setAt: row.lp_scope_set_at || null,
+      setBy: row.lp_scope_set_by || null,
+    };
+  });
+  const unscoped = programs.filter((p) => !p.lpScope).length;
+  return res.json({
+    ok: true,
+    scope,
+    programs,
+    unscoped,
+    // Counted and SAID. A program with no scope does not compare against everything — it compares
+    // against nothing, on purpose, and that is why its findings list is empty.
+    note: unscoped
+      ? `${unscoped} of ${programs.length} program${programs.length === 1 ? '' : 's'} ${unscoped === 1 ? 'has' : 'have'} no Lender Price scope, so ${unscoped === 1 ? 'its' : 'their'} shadow comparison abstains.`
+      : null,
+  });
+}
+
 async function getProgramLpScopeRoute(req, res) {
   const scope = readScope(req);
   const programId = uuidOf(req.params.id);
@@ -1037,6 +1084,7 @@ router.get('/scoreboard', wrap(scoreboardRoute, 'lt_ppe_scoreboard_error'));
 router.get('/suggestions', wrap(listSuggestionsRoute, 'lt_ppe_suggestions_error'));
 router.get('/rules', wrap(listRulesRoute, 'lt_ppe_rules_error'));
 router.get('/parity-cells', wrap(parityCellsRoute, 'lt_ppe_parity_cells_error'));
+router.get('/programs', wrap(listProgramsRoute, 'lt_ppe_programs_error'));
 router.post('/quote', wrap(quoteRoute, 'lt_ppe_quote_error'));
 router.post('/breakdown', wrap(breakdownRoute, 'lt_ppe_breakdown_error'));
 
@@ -1053,7 +1101,7 @@ module.exports = router;
 module.exports.handlers = {
   health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
-  ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute,
+  ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
