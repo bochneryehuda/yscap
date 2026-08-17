@@ -1569,3 +1569,91 @@ pure façade test cannot see what the route hands it, and that is exactly where 
 **Eighteen mutations** of the production code were each proven to fail them; two initially came back
 GREEN and both were real gaps in the suite, not in the code — the supersession of the ladder's poorer
 eligibility row, and an unreadable capture degrading into a decline. Each earned an assertion.
+
+---
+
+### §2.22 — THE SCOPE THAT MAKES THE DEEP COMPARISON USABLE, AND THE ONE REGEX DOOR IN THE SYSTEM (2026-08-17)
+
+§2.21 left one thing open and said so: with the deep comparison wired but nothing telling it WHICH of
+Lender Price's programs to compare against, a live quote **abstained** — honest, and not yet useful.
+This closes it (db/574, task #85).
+
+**IT LIVES ON THE PROGRAM, NOT THE SHEET VERSION.** A Lender Price scope is a statement about the
+investor's product family, and it survives every reprice of the sheet; hanging it off the version would
+mean restating it on each one, which is how a scope quietly goes missing on the reprice nobody was
+watching. `loadProgram` reads it off the owning program row and hands it to the façade.
+
+**NO BACKFILL, DELIBERATELY.** Every existing program keeps a NULL scope and therefore keeps abstaining,
+which is byte-identical to the behaviour that shipped an hour earlier. There is nothing here to derive a
+scope FROM — it is a fact about an outside vendor's catalogue — and a guessed one does not fail, it
+compares confidently against the wrong program. That is strictly worse than comparing nothing.
+
+**IT IS THE ONE SOURCE.** The transitional request-body filter from §2.21 is REMOVED rather than left
+beside the stored one. Two sources for one fact are free to disagree, and the second one was reachable
+from a route that is not admin-gated.
+
+**AND THAT MATTERS BECAUSE THIS IS THE ONLY DOOR IN THE SYSTEM THAT ACCEPTS A REGULAR EXPRESSION THE
+SERVER WILL THEN RUN.** The family pattern is not optional: Lender Price splits ONE Deephaven DSCR sheet
+into THREE programs by band, so no exact name can name the family our sheet models. So `lp-scope.js`
+`safePattern` bounds and grammar-checks every pattern before a character reaches the database, and the
+write door is admin-gated. Four refusals, each for a stated reason:
+
+1. **The nested quantifier** — `(a+)+`, `(a*)*`, `(a|a)*`, `(a+){2,5}`. This is the shape that actually
+   causes catastrophic backtracking: the engine has exponentially many ways to split the input between
+   the two quantifiers and, on a NON-match, tries all of them. `?` is allowed as the outer quantifier
+   because one repetition has nothing to split.
+2. **A pattern that matches everything** — and this one is PROVABLE rather than a heuristic: for an
+   unanchored pattern, matching the empty string is exactly equivalent to matching every possible name.
+   So `.*` and `x?` are refused with the reason that they are the same as having no scope, except
+   silently — the unscoped case abstains and SAYS so.
+3. **Look-around and back-references.** Backtracking amplifiers, and a program-name pattern has no use
+   for either.
+4. **Length.**
+
+**IT IS A CONSERVATIVE FILTER, NOT A PROOF, AND IT IS WRITTEN DOWN AS ONE.** Deciding "will this pattern
+blow up" in general is not something a scanner settles. What it does is refuse the shapes that cause it
+and that this feature does not need. The realistic threat here is an admin's typo, not an attacker — the
+value is admin-written and stored — but a pathological pattern hangs the pricing route for everyone, on
+every quote, until somebody edits the database by hand, so it is checked when written rather than trusted.
+
+**THE VALIDATOR HAD A REAL BUG, FOUND BY ITS OWN TEST.** A closed group's contents were not propagating
+to its parent, so the nested check was only one level deep: in `((a+))+` the `+` belongs to the inner
+group, the middle group looks empty, and the outer repetition sailed straight through — the exact shape
+the scan exists to refuse, one bracket further out. The property is "does this body contain a quantifier
+or an alternation ANYWHERE", so it has to propagate outward.
+
+**A VALIDATOR THAT REFUSES THE REAL PATTERN IS ONE NOBODY CAN USE**, and the pressure then is to weaken
+the rule that matters. So the suite pins the ACCEPTANCES as hard as the refusals — the real Deephaven
+family pattern, an unquantified alternation, escapes and anchors, a character class containing quantifier
+CHARACTERS. Two of those needed sharpening: `[+*]DSCR` and `DSCR\+Plus` pass even with class and escape
+tracking removed, because nothing is quantifying a group; only `(DSCR[+*])+` and `(DSCR\+)+` discriminate.
+Both were added after the mutation for them came back green.
+
+**THE SILENT FAILURE OF A STORED SCOPE, AND WHAT ANSWERS IT.** A pattern one character wrong matches
+nothing; the comparison then abstains politely, forever, and it is indistinguishable from a feature nobody
+switched on. `previewScope` takes the program names from a capture and reports which ones the scope
+actually selects, on the write response — a guess becomes an answer at the moment the scope is written.
+It deliberately claims NO names for an investor-only scope: telling somebody all five matched would report
+their pattern as working when they have not written one.
+
+**TWO SMALLER THINGS, both the same class of "one source":** the scope write names EVERY column, so a
+partial body clears the keys it omits instead of leaving a blend nobody chose; and a body with no `scope`
+key is REFUSED rather than read as "clear it", because clearing turns every future comparison on that
+program into an abstention and has to be asked for.
+
+**A GUARD ELSEWHERE HAD TO BE CORRECTED, and it was the guard's WORDING that was wrong, not its point.**
+`test-lt-schema-drift-pure` asserted that a stale schema map "excuses only a TABLE the map has not caught
+up with yet" — while `compareLtSchema` has always excused a missing table AND a missing COLUMN alike, both
+being the ordinary shape of a migration landing after the photograph was taken. The narrow wording held
+only because no earlier change had added a column to an existing long-term table while the map was stale;
+db/574 is the first that does. The surplus direction — the database has a column the schema does not
+declare — is still never excused, and there is now an assertion saying so, so "stale" cannot become a way
+to hide an undeclared column.
+
+Suite: `scripts/test-lt-ppe-lp-scope.js` (102 assertions). **Fifteen mutations** of the production code
+were each proven to fail it; one came back GREEN first — character-class tracking — and that was a gap in
+the suite's accept-cases, now closed with the two patterns that discriminate.
+
+**RESIDUAL:** no program has a scope yet, because none can be derived and none may be guessed. Until a
+human states one per program, live comparisons keep abstaining with the reason — the machinery is on the
+path, waiting for the statement.

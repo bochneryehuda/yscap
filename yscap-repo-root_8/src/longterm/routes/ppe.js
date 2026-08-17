@@ -53,6 +53,7 @@ const settingsStore = require('../settings/store');
 const ppeSettings = require('../ppe/settings');
 const store = require('../ppe/store');
 const facade = require('../ppe/facade');
+const lpScopeLib = require('../ppe/lp-scope');
 const quote = require('../ppe/quote');
 const canary = require('../ppe/canary');
 const finding = require('../ppe/finding');
@@ -170,7 +171,12 @@ async function loadProgram(scope, versionId) {
     if (!program || !Array.isArray(program.baseGrid) || !program.baseGrid.length) {
       return { program: null, reason: 'program_has_no_base_grid' };
     }
-    return { program, reason: null };
+    // WHICH Lender Price programs a comparison against this sheet is about (db/574). It rides on the
+    // owning PROGRAM row, not the sheet version, because it is a statement about the investor's
+    // product family and survives every reprice of the sheet. NULL is the norm until a human states
+    // it, and null means "not scoped" — the comparison then abstains and says so, never compares our
+    // one ladder against a merge of Lender Price's seventeen.
+    return { program, lpScope: lpScopeLib.scopeFromRow(sheet.program), reason: null };
   } catch (e) {
     return { program: null, reason: `program_load_failed: ${String((e && e.message) || e).slice(0, 120)}` };
   }
@@ -195,32 +201,6 @@ const K = {
   marginTolerance: 'validation.margin_tolerance_milli',
   basePriceTolerance: 'validation.base_price_tolerance_milli',
 };
-
-// A caller-supplied Lender Price scope, reduced to plain strings and to the keys that are compared by
-// EQUALITY.
-//
-// `programLike` — the family PATTERN — is deliberately NOT accepted over HTTP, even though it is the
-// key the Deephaven DSCR family actually needs. It is compiled with `new RegExp(...)` downstream, and
-// this route is not admin-gated, so honouring it here would let any caller hand the server a pattern
-// to compile and run: a few characters of nested quantifier is a request that never returns. The
-// family pattern stays a SERVER-SIDE concept — the agreement harness passes it in directly, and the
-// durable per-sheet scope (the recorded follow-up) will too.
-//
-// A filter that ends up empty is returned as null, which the façade reads as "not scoped" and abstains
-// on — never as "match everything". A filter that silently matches everything is the exact failure the
-// family pattern exists to prevent.
-const LP_FILTER_KEYS = ['program', 'product', 'lender', 'investor'];
-const LP_FILTER_MAX = 200;
-
-function lpFilterOf(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const out = {};
-  for (const k of LP_FILTER_KEYS) {
-    const v = raw[k];
-    if (typeof v === 'string' && v.trim() && v.length <= LP_FILTER_MAX) out[k] = v.trim();
-  }
-  return Object.keys(out).length ? out : null;
-}
 
 async function resolveSettingsSafe(scope) {
   try {
@@ -414,7 +394,7 @@ async function quoteRoute(req, res) {
   const investor = b.investor ? String(b.investor) : null;
 
   const { values: settings } = await resolveSettingsSafe(scope);
-  const { program, reason: noProgram } = await loadProgram(scope, b.rateSheetVersionId);
+  const { program, lpScope, reason: noProgram } = await loadProgram(scope, b.rateSheetVersionId);
   const lp = require('../lenderprice/client');
   const nowMs = Date.now();
 
@@ -469,15 +449,22 @@ async function quoteRoute(req, res) {
       marginToleranceMilli: settings[K.marginTolerance],
       basePriceToleranceMilli: settings[K.basePriceTolerance],
       settings,
-      // WHICH Lender Price programs this comparison is about. Lender Price answers one
-      // request with EVERY program it sells (17 on the live Deephaven capture, across
-      // several investors and product lines) while our engine prices ONE, so the scope
-      // has to be STATED — our `program` is a rate-sheet version, not Lender Price's
-      // program name, and inferring one from it would be a guess about somebody else's
-      // product catalogue. Unscoped, the façade abstains with that reason rather than
-      // comparing our one ladder against a merge of seventeen. A durable per-sheet
-      // scope is the follow-up; until then a caller that knows its family says so here.
-      lpFilter: lpFilterOf(b.lpFilter),
+      // WHICH Lender Price programs this comparison is about — the sheet's OWN stored scope
+      // (db/574), and the ONLY source of it. Lender Price answers one request with EVERY
+      // program it sells (17 on the live Deephaven capture, across several investors and
+      // product lines) while our engine prices ONE, so the scope has to be STATED: our
+      // `program` is a rate-sheet version of our authoring, not Lender Price's program
+      // name, and inferring one from it would be a guess about somebody else's product
+      // catalogue. Unscoped, the façade abstains with that reason rather than comparing our
+      // one ladder against a merge of seventeen.
+      //
+      // DELIBERATELY NOT READ FROM THE REQUEST BODY. A caller-supplied scope would be a
+      // SECOND source for one fact, free to disagree with the stored statement and to point
+      // a comparison at a program nobody chose — and `programLike` is compiled with
+      // `new RegExp(...)` while this route is not admin-gated, so honouring one over HTTP
+      // would let any caller hand the server a pattern to compile and run. The scope is set
+      // once, by an admin, through POST /programs/:id/lp-scope.
+      lpFilter: lpScope,
     },
   );
 
@@ -900,6 +887,65 @@ async function listRulesRoute(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// The program's LENDER PRICE SCOPE — which of their programs we compare against
+// ---------------------------------------------------------------------------
+//
+// ADMIN-GATED, and that is not merely tidiness. `programLike` is compiled with
+// `new RegExp(...)`, so this is the one door in the system that accepts a pattern
+// the server will run; and a scope points every future comparison on this program
+// at one Lender Price program out of seventeen, so a wrong one compares
+// confidently against the wrong thing rather than failing. `lp-scope.validateScope`
+// bounds and grammar-checks it before a character reaches the database.
+
+async function getProgramLpScopeRoute(req, res) {
+  const scope = readScope(req);
+  const programId = uuidOf(req.params.id);
+  if (!programId) return res.status(400).json({ error: 'That is not a program id.' });
+  const r = await db.query('SELECT * FROM lt_ppe_program WHERE scope = $1 AND id = $2', [scope, programId]);
+  const row = r.rows[0];
+  if (!row) return res.status(404).json({ error: 'No such program.' });
+  const saved = lpScopeLib.scopeFromRow(row);
+  return res.json({
+    ok: true, scope, programId, lpScope: saved, describe: lpScopeLib.describeScope(saved),
+    setAt: row.lp_scope_set_at || null, setBy: row.lp_scope_set_by || null,
+    // Said out loud rather than left as an empty object, because an unscoped program does not
+    // silently compare against everything — it compares against NOTHING, on purpose, and somebody
+    // looking at this screen needs to know that is why their findings list is empty.
+    note: saved ? null : 'This program has no Lender Price scope, so its shadow comparison abstains: Lender Price answers with every program it sells and ours prices one, and comparing the two would be meaningless.',
+  });
+}
+
+async function setProgramLpScopeRoute(req, res) {
+  const scope = readScope(req);
+  const programId = uuidOf(req.params.id);
+  if (!programId) return res.status(400).json({ error: 'That is not a program id.' });
+  const b = req.body || {};
+
+  // A body with no `scope` key at all is REFUSED rather than read as "clear it". Clearing a scope
+  // silently turns every future comparison on this program into an abstention, which looks exactly
+  // like the feature being switched off — so it has to be asked for, explicitly, as `scope: null`.
+  if (!Object.prototype.hasOwnProperty.call(b, 'scope')) {
+    return res.status(400).json({ error: 'Send a `scope` object naming which Lender Price programs to compare against — or `scope: null` to clear it.' });
+  }
+  const v = lpScopeLib.validateScope(b.scope);
+  if (!v.ok) return res.status(400).json({ error: v.error, field: v.field || null });
+
+  const row = await store.setProgramLpScope(db, scope, programId, v.scope, (req.actor && req.actor.id) || null);
+  if (!row) return res.status(404).json({ error: 'No such program.' });
+  const saved = lpScopeLib.scopeFromRow(row);
+
+  // THE SILENT FAILURE THIS ANSWERS: a pattern with one character wrong matches nothing, the
+  // comparison abstains politely forever, and it is indistinguishable from a feature nobody turned
+  // on. Paste the program names from a capture as `lpProgramNames` and the response says which ones
+  // this scope actually selects — a guess becomes an answer, at the moment the scope is written.
+  const preview = Array.isArray(b.lpProgramNames) ? lpScopeLib.previewScope(saved, b.lpProgramNames) : null;
+  return res.json({
+    ok: true, scope, programId, lpScope: saved, describe: lpScopeLib.describeScope(saved),
+    cleared: !saved, preview,
+  });
+}
+
+// ---------------------------------------------------------------------------
 
 router.get('/health', wrap(health, 'lt_ppe_health_error'));
 router.get('/settings', wrap(getSettings, 'lt_ppe_settings_error'));
@@ -917,15 +963,16 @@ router.get('/rules/coverage', requirePpeAdmin, wrap(ruleCoverageRoute, 'lt_ppe_r
 router.post('/suggestions/:id/accept', requirePpeAdmin, wrap(acceptSuggestionRoute, 'lt_ppe_accept_error'));
 router.post('/suggestions/:id/dismiss', requirePpeAdmin, wrap(dismissSuggestionRoute, 'lt_ppe_dismiss_error'));
 router.post('/suggestions/mine', requirePpeAdmin, wrap(mineSuggestionsRoute, 'lt_ppe_mine_error'));
+router.get('/programs/:id/lp-scope', requirePpeAdmin, wrap(getProgramLpScopeRoute, 'lt_ppe_lp_scope_read_error'));
+router.post('/programs/:id/lp-scope', requirePpeAdmin, wrap(setProgramLpScopeRoute, 'lt_ppe_lp_scope_write_error'));
 
 module.exports = router;
 module.exports.handlers = {
   health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
-  ruleCoverageRoute,
+  ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute,
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
   MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel,
-  lpFilterOf, LP_FILTER_KEYS, LP_FILTER_MAX,
 };

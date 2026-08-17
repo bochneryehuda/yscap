@@ -1208,6 +1208,20 @@ model LtPpeProgram {
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  /// WHICH of Lender Price's programs a shadow comparison against this program is about (db/574).
+  /// Lender Price answers one request with every program it sells while our engine prices one, so the
+  /// scope is STATED here; NULL means "not scoped" and the comparison abstains and says so.
+  /// `lpProgramLike` is a program-FAMILY pattern, because Lender Price splits one Deephaven DSCR sheet
+  /// into three programs by DSCR band and no exact name can name that family. It is bounded and
+  /// grammar-checked by `ppe/lp-scope.safePattern` before it is ever written.
+  lpInvestor     String?   @map("lp_investor")
+  lpLender       String?   @map("lp_lender")
+  lpProgram      String?   @map("lp_program")
+  lpProduct      String?   @map("lp_product")
+  lpProgramLike  String?   @map("lp_program_like")
+  lpScopeSetBy   String?   @map("lp_scope_set_by") @db.Uuid
+  lpScopeSetAt   DateTime? @map("lp_scope_set_at") @db.Timestamptz(6)
+
   investor          LtPpeInvestor?          @relation(fields: [investorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   rateSheetVersions LtPpeRateSheetVersion[]
   rules             LtPpeRule[]

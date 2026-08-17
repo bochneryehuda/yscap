@@ -152,8 +152,21 @@ surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
   the route's own no-program rule exists to prevent. Reproduced before the fix, guarded after it.
 - **Scope is STATED, never inferred.** Lender Price answers one request with every program it sells (17 on
   the live Deephaven capture); our engine prices one. Unscoped, **both halves abstain with the reason** rather
-  than compare our ladder against a merge. `programLike` (a compiled RegExp) is deliberately **not accepted
-  over HTTP** — `/quote` is not admin-gated. A durable per-sheet LP scope is the remaining follow-up.
+  than compare our ladder against a merge.
+- **DONE — the durable scope (db/574, 2026-08-17).** Each PROGRAM carries its own Lender Price scope
+  (`lp_investor` / `lp_lender` / `lp_program` / `lp_product` / `lp_program_like`), set through the admin-gated
+  `POST /programs/:id/lp-scope` and read by `loadProgram` into `opts.lpFilter`. It lives on the program, not
+  the sheet version, because it is a statement about the investor's product family and survives every reprice.
+  **NO backfill** — a guessed scope points a comparison confidently at the wrong program, which is worse than
+  comparing nothing. `programLike` is a FAMILY pattern because Lender Price splits one Deephaven DSCR sheet
+  into three programs by band. It is the **one** source: the transitional request-body filter is REMOVED, so
+  two sources can never disagree and no caller can hand `/quote` (not admin-gated) a RegExp to run.
+  `lp-scope.safePattern` bounds and grammar-checks every pattern — it refuses the nested-quantifier shape, a
+  pattern that matches everything (provably: for an unanchored pattern, matching the empty string IS matching
+  every name), look-around and back-references — while still accepting the real Deephaven family pattern.
+  `previewScope` answers "which program names does this actually select?" at the moment it is written, because
+  the failure of a stored scope is otherwise SILENT: one character wrong matches nothing and looks exactly like
+  a feature nobody switched on. Test `scripts/test-lt-ppe-lp-scope.js` (102); 15 mutations proven to fail it.
 - Tests `scripts/test-lt-ppe-facade-deep.js` (74) + `scripts/test-lt-ppe-quote-deep-wiring.js` (22); 18
   mutations of the production code were each proven to fail them.
 

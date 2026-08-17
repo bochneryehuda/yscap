@@ -17,6 +17,7 @@
  */
 const settings = require('./settings');
 const { resolveMarginHoldback } = require('./margin-holdback');
+const lpScope = require('./lp-scope');
 
 // Load a tenant's setting OVERRIDES as a { key: value } map. Only keys that are
 // real definitions are returned; an unknown/legacy key is ignored. Never throws —
@@ -175,6 +176,35 @@ async function createProgram(db, scope, { investorId = null, code, name, channel
   return r.rows[0];
 }
 
+/**
+ * Set (or CLEAR) a program's Lender Price scope — which of Lender Price's programs a comparison
+ * against this program is about (db/574; see lp-scope.js for why it must be stated rather than
+ * inferred, and why the family PATTERN is what the Deephaven DSCR split actually needs).
+ *
+ * EVERY scope column is written on every call, so a partial body CLEARS the keys it omits rather than
+ * leaving them at their previous value. A half-updated scope is the dangerous outcome: it points the
+ * comparison at some blend of the old statement and the new one, which nobody chose and nobody can
+ * see. Passing null clears the scope entirely, which is a legitimate, explicit outcome — with no scope
+ * the comparison abstains and says so.
+ *
+ * The scope must already be VALIDATED (`lpScope.validateScope`); this writes what it is given.
+ * Returns the updated row, or null when there is no such program in this tenant scope.
+ */
+async function setProgramLpScope(db, scope, programId, validatedScope, setBy = null) {
+  const c = lpScope.scopeToColumns(validatedScope);
+  const any = validatedScope && Object.keys(validatedScope).length;
+  const r = await db.query(
+    `UPDATE lt_ppe_program
+        SET lp_investor = $3, lp_lender = $4, lp_program = $5, lp_product = $6, lp_program_like = $7,
+            lp_scope_set_by = $8, lp_scope_set_at = CASE WHEN $9::boolean THEN now() ELSE NULL END,
+            updated_at = now()
+      WHERE scope = $1 AND id = $2
+      RETURNING *`,
+    [scope, programId, c.lp_investor, c.lp_lender, c.lp_program, c.lp_product, c.lp_program_like,
+      any ? setBy : null, !!any]);
+  return r.rows[0] || null;
+}
+
 // List an investor's programs.
 async function listPrograms(db, scope, investorId) {
   const r = await db.query(
@@ -263,7 +293,16 @@ async function loadRateSheet(db, versionId) {
   const bp = await db.query('SELECT * FROM lt_ppe_base_price WHERE version_id = $1 ORDER BY note_rate_milli_pct, lock_days', [versionId]);
   const adj = await db.query('SELECT * FROM lt_ppe_adjustment WHERE version_id = $1 ORDER BY priority, id', [versionId]);
   const pl = await db.query('SELECT * FROM lt_ppe_price_limit WHERE version_id = $1', [versionId]);
-  return { version: v.rows[0], basePrices: bp.rows, adjustments: adj.rows, priceLimit: pl.rows[0] || null };
+  // The owning PROGRAM row rides along, because that is where the Lender Price SCOPE lives (db/574)
+  // and the pricing route needs it in the same breath it loads the sheet. Best-effort: a sheet whose
+  // program cannot be read still prices — it just compares against nothing and says so, which is the
+  // same honest outcome as a program nobody has scoped yet.
+  let program = null;
+  try {
+    const p = await db.query('SELECT * FROM lt_ppe_program WHERE id = $1', [v.rows[0].program_id]);
+    program = p.rows[0] || null;
+  } catch (_) { program = null; }
+  return { version: v.rows[0], program, basePrices: bp.rows, adjustments: adj.rows, priceLimit: pl.rows[0] || null };
 }
 
 // Publish a version: mark it published + effective from now, and CLOSE the prior published version's
@@ -310,7 +349,7 @@ module.exports = {
   normAlias,
   loadSettingOverrides, resolveSettings, resolveSetting, setSetting, clearSetting,
   investorScope, resolveMarginHoldbackForInvestor,
-  findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms,
+  findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms, setProgramLpScope,
   createRateSheetVersion, replaceBasePrices, replaceAdjustments, setPriceLimit,
   loadRateSheet, publishRateSheetVersion, currentRateSheetVersion,
 };

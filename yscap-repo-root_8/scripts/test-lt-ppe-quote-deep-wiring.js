@@ -53,32 +53,25 @@ function main() {
   ok(/basePriceToleranceMilli:\s*settings\[K\.basePriceTolerance\]/.test(quoteBody), 'W9 …as does the base-price tolerance');
 
   // ---- the Lender Price scope ---------------------------------------------
-  ok(/lpFilter:\s*lpFilterOf\(/.test(quoteBody), 'W10 the scope is passed through the validator');
+  // The scope comes from the sheet's OWN stored statement (db/574), loaded beside the program, and
+  // from nowhere else. Its own validation lives in `lp-scope.js` and is tested there
+  // (scripts/test-lt-ppe-lp-scope.js); what belongs HERE is that the route reads it from the right
+  // place and hands it to the comparison.
+  ok(/const \{ program, lpScope, reason: noProgram \} = await loadProgram\(/.test(quoteBody),
+    'W10 the quote route loads the sheet\'s stored scope alongside the program');
+  ok(/lpFilter:\s*lpScope\b/.test(quoteBody), 'W11 …and hands exactly that to the comparison');
+
+  // A SECOND SOURCE IS THE THING TO KEEP OUT. The transitional request-body scope that shipped with
+  // the deep comparison is gone: two sources for one fact are free to disagree, and a caller-supplied
+  // scope could silently point a comparison at a program nobody chose. `programLike` is compiled with
+  // `new RegExp(...)` and /quote is NOT admin-gated, so accepting one over HTTP would additionally let
+  // any caller hand the server a pattern to compile and run — a few characters of nested quantifier is
+  // a request that never returns.
+  ok(!/b\.lpFilter/.test(CODE), 'W12 the scope is NEVER read from the request body');
+  ok(!/lpFilterOf/.test(CODE), 'W13 …and the transitional body-reader is gone, not merely unused');
 
   const routes = require('../src/longterm/ppe/facade'); // pure, no DB
-  eq(typeof routes.priceWithShadow, 'function', 'W11 the façade is the thing being wired');
-
-  // ---- lpFilterOf: the validator itself (pure, re-declared here from source) -
-  // eslint-disable-next-line no-new-func
-  const lpFilterOf = new Function(`${CODE.match(/const LP_FILTER_KEYS[\s\S]*?\n}/)[0]}\nreturn lpFilterOf;`)();
-
-  eq(lpFilterOf(null), null, 'F1 no filter → null (not scoped), never an empty match-everything');
-  eq(lpFilterOf({}), null, 'F2 an empty object → null');
-  eq(lpFilterOf([]), null, 'F3 an array → null');
-  eq(lpFilterOf({ program: '   ' }), null, 'F4 whitespace is not a scope');
-  assert.deepStrictEqual(lpFilterOf({ program: ' DSCR 30 Yr Fixed ' }), { program: 'DSCR 30 Yr Fixed' }, 'F5 a real program is trimmed and kept');
-  n += 1;
-  assert.deepStrictEqual(lpFilterOf({ investor: 'Deephaven', lender: 'Deephaven' }), { investor: 'Deephaven', lender: 'Deephaven' }, 'F6 several equality keys are kept');
-  n += 1;
-
-  // THE ONE THAT MATTERS: `programLike` is compiled with `new RegExp(...)` downstream and /quote is
-  // NOT admin-gated, so accepting it over HTTP would let any caller hand the server a pattern to
-  // compile and run. A few characters of nested quantifier is a request that never returns.
-  eq(lpFilterOf({ programLike: '(a+)+$' }), null, 'F7 a regex pattern is REFUSED over HTTP');
-  assert.deepStrictEqual(lpFilterOf({ program: 'P', programLike: '(a+)+$' }), { program: 'P' }, 'F8 …and dropped without taking the rest of the filter with it');
-  n += 1;
-  eq(lpFilterOf({ program: 'x'.repeat(5000) }), null, 'F9 an absurdly long value is refused');
-  eq(lpFilterOf({ program: 42 }), null, 'F10 a non-string is refused');
+  eq(typeof routes.priceWithShadow, 'function', 'W14 the façade is the thing being wired');
 
   console.log(`ok - lt ppe /quote deep wiring (${n} assertions)`);
 }
