@@ -34,6 +34,7 @@ const db = require('../db');
 const audience = require('../audience');
 const productTerm = require('../product-term');
 const settingsStore = require('../settings/store');
+const stages = require('../stages');
 
 /** Is the borrower-facing long-term side switched on? Fails CLOSED. */
 async function longTermVisible() {
@@ -48,19 +49,34 @@ async function longTermVisible() {
   }
 }
 
-/** Everything the client is allowed to know about one of their long-term files. */
-function shape(row) {
+/**
+ * Everything the client is allowed to know about one of their long-term files.
+ *
+ * THE STATUS IS THE ONE WRITTEN FOR A BORROWER, never the stored key. There are
+ * three layers of wording on this side — Encompass's 19 milestones, our 9 stages,
+ * and the tenant's own consumer wording per milestone (`consumer_status`, db/547) —
+ * and only the third was written to be read by a client: it turns "Started" into
+ * "Collecting Information" and every milestone from Doc Signing onward into
+ * "Funded". `stages.consumerStatusOf` is the ONE definition of that layer, so this
+ * screen and anything else client-facing can never word one milestone two ways.
+ *
+ * It falls back to our stage's LABEL and never to `stage_key`: printing
+ * `clear_to_close` at a borrower is showing them a database value. With neither, it
+ * says NOTHING — a status invented for a client is worse than a blank one.
+ */
+function shape(row, stageCfg) {
   const verdict = productTerm.classifyProduct({
     programName: row.program_name, termMonths: row.term_months,
   });
   const scrub = (v) => (v == null ? null : audience.scrubInvestorNames(String(v), 'borrower'));
+
+  const consumer = stages.consumerStatusOf({ consumer_status: row.consumer_status });
+  const ourStage = (stageCfg.stages || []).find((s) => s.key === row.stage_key);
+
   return {
     id: row.id,
     file: row.loan_number || '(not numbered yet)',
-    // Encompass's own words for where the file is. They name a stage of OUR
-    // process, not a buyer, and they are what the borrower is asking about when
-    // they ask "where is my loan up to".
-    status: scrub(row.stage_key),
+    status: scrub(consumer || (ourStage && ourStage.label) || null),
     milestone: scrub(row.milestone_name),
     loanAmount: row.loan_amount == null ? null : Number(row.loan_amount),
     termMonths: verdict.termMonths,
@@ -86,21 +102,32 @@ router.get('/loans', async (req, res) => {
     const borrowerId = req.actor && req.actor.id;
     if (!borrowerId) return res.status(401).json({ error: 'Please sign in again.' });
 
+    // A LEFT JOIN, deliberately: a milestone the tenant has not published consumer
+    // wording for — or one added since we last read the list — must still return
+    // the loan. An INNER join would make a client's own file disappear because of
+    // a gap in OUR reference data, which is the worst possible failure here.
     const { rows } = await db.query(
-      `SELECT id, loan_number, stage_key, milestone_name, loan_amount,
-              term_months, program_name, encompass_synced_at
-         FROM lt_loans
-        WHERE borrower_id = $1::uuid
-        ORDER BY encompass_synced_at DESC NULLS LAST, loan_number NULLS LAST`,
+      `SELECT l.id, l.loan_number, l.stage_key, l.milestone_name, l.loan_amount,
+              l.term_months, l.program_name, l.encompass_synced_at,
+              m.consumer_status
+         FROM lt_loans l
+         LEFT JOIN lt_encompass_milestones m ON m.milestone_name = l.milestone_name
+        WHERE l.borrower_id = $1::uuid
+        ORDER BY l.encompass_synced_at DESC NULLS LAST, l.loan_number NULLS LAST`,
       [borrowerId],
     );
+
+    // The stage list is only the FALLBACK wording, so a settings read that fails
+    // must not fail the request — the consumer status is what normally answers.
+    const { settings: stageSettings } = await settingsStore.load().catch(() => ({ settings: {} }));
+    const stageCfg = stages.configFrom(stageSettings || {});
 
     // ONLY THE LONG-TERM ONES. The long-term pipeline mirrors the WHOLE Encompass
     // book — no folder separates the two products at the source — so without this
     // the switch would show a borrower their short-term files a second time, under
     // a heading saying they are long-term. The rule is `product-term.js`, the same
     // one the staff census reads, so the two can never disagree about a file.
-    const loans = rows.map(shape).filter((r) => r.product === productTerm.PRODUCT.LONG);
+    const loans = rows.map((r) => shape(r, stageCfg)).filter((r) => r.product === productTerm.PRODUCT.LONG);
 
     res.json({
       enabled: true,

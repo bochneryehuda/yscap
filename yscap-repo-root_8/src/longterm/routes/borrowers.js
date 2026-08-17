@@ -84,6 +84,11 @@ router.get('/', async (req, res) => {
     res.json({
       ...out,
       links: existing,
+      // Whether THIS person may decide, so the screen shows the buttons to
+      // somebody who can press them. It is the SAME gate the write routes apply
+      // (`mayManagePeople`) — this is a hint for the screen and never the
+      // authorization, which stays on the doors that change something.
+      canManage: access.mayManagePeople(req.actor, settings),
       rule: {
         matchedOn: 'email',
         // Said out loud on the payload because the screen must not imply PILOT

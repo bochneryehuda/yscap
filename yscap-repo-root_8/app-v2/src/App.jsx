@@ -32,6 +32,9 @@ import NotificationSettings from './screens/NotificationSettings.jsx';
 // ("rtl-import app-v2/src/App.jsx" in docs/LONG-TERM-AUTHORIZED-COPIES.md).
 import LtPipeline from './longterm/LtPipeline.jsx';
 import LtPeople from './longterm/LtPeople.jsx';
+import LtBook from './longterm/LtBook.jsx';
+import LtBorrowers from './longterm/LtBorrowers.jsx';
+import BorrowerLongTermScreen from './longterm/BorrowerLongTerm.jsx';
 import LtConditions from './longterm/LtConditions.jsx';
 import LtSync from './longterm/LtSync.jsx';
 import LtSettings from './longterm/LtSettings.jsx';
@@ -215,6 +218,12 @@ export default function App() {
 
           {/* borrower */}
           <Route path="/dashboard" element={<Private><Dashboard /></Private>} />
+          {/* The CLIENT's long-term side. Its own page rather than a panel on the
+              dashboard, because the authorization ledger lets this router MOUNT
+              long-term code and says plainly that no other RTL screen may import
+              an LT component. It also matches the staff switch, which has always
+              moved between two sides rather than folding one into the other. */}
+          <Route path="/long-term" element={<Private><BorrowerLongTermScreen /></Private>} />
           <Route path="/tasks" element={<Private><Tasks /></Private>} />
           <Route path="/apply" element={<Private><Apply /></Private>} />
           <Route path="/apply/:draftId" element={<Private><Apply /></Private>} />
@@ -240,7 +249,9 @@ export default function App() {
               Nothing here is merged into an RTL screen; the top-bar switch moves
               between the two sides. */}
           <Route path="/internal/lt" element={<StaffPrivate><LtPipeline /></StaffPrivate>} />
+          <Route path="/internal/lt/book" element={<StaffPrivate><LtBook /></StaffPrivate>} />
           <Route path="/internal/lt/people" element={<StaffPrivate><LtPeople /></StaffPrivate>} />
+          <Route path="/internal/lt/borrowers" element={<StaffPrivate><LtBorrowers /></StaffPrivate>} />
           <Route path="/internal/lt/conditions" element={<StaffPrivate><LtConditions /></StaffPrivate>} />
           <Route path="/internal/lt/sync" element={<StaffPrivate><LtSync /></StaffPrivate>} />
           <Route path="/internal/lt/settings" element={<StaffPrivate><LtSettings /></StaffPrivate>} />

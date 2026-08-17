@@ -8,7 +8,7 @@
 // The one rule: a path here always starts `/api/lt/`. Anything else belongs to the
 // other product.
 
-import { ltGet, ltPost, ltPut, ltPatch, ltDel } from './http.js';
+import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload } from './http.js';
 
 const lt = (p) => `/api/lt${p}`;
 
@@ -29,6 +29,30 @@ export const ltApi = {
     return ltGet(lt(`/pipeline${q ? `?${q}` : ''}`));
   },
   loan: (id) => ltGet(lt(`/pipeline/${encodeURIComponent(id)}`)),
+
+  // THE BORROWER'S OWN long-term files. Behind BORROWER authentication (the
+  // /api/lt/my seam), unlike everything else here — so it is the one call on this
+  // client a client makes. No id is sent: the scope comes from the session.
+  //
+  // It answers 200 with `enabled:false` when the owner has not switched the
+  // borrower-facing side on, so the portal can tell "off" from "broken".
+  myLoans: () => ltGet(lt('/my/loans')),
+
+  // The BOOK — the owner's census of every long-term file, with the folder, the
+  // status and the milestone each one sits in, plus how much of the borrower and
+  // officer mapping is done. The spreadsheet is the SAME census from the same
+  // route, so the screen and the download can never disagree about a count.
+  book: () => ltGet(lt('/book')),
+  bookCsv: () => ltDownload(lt('/book/export.csv'), 'long-term-book.csv'),
+
+  // The BORROWER map — which PILOT borrower profile each long-term loan belongs
+  // to. Confirming one is what puts a file on a client's own login, so every one
+  // of these is a suggestion until an administrator presses the button.
+  borrowerMap: () => ltGet(lt('/borrowers')),
+  confirmBorrower: (email, borrowerId, opts = {}) =>
+    ltPost(lt('/borrowers/confirm'), { email, borrowerId, ...(opts.force ? { force: true } : {}) }),
+  rejectBorrower: (email) => ltPost(lt('/borrowers/reject'), { email }),
+  unlinkBorrower: (email) => ltPost(lt('/borrowers/unlink'), { email }),
 
   // The people map.
   people: () => ltGet(lt('/people')),

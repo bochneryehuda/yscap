@@ -110,7 +110,15 @@ async function confirmLink(email, borrowerId, actorId, opts = {}) {
       if (nm && !names.some((n) => nameLooksLike(n, nm))) names.push(nm);
     }
     if (names.length > 1 && opts.force !== true) {
-      throw refuse(409, `Encompass has more than one borrower name on that email address (${names.join(', ')}), so these loans are not all the same person. Link them one at a time instead.`);
+      // THE REMEDY NAMED HERE HAS TO BE ONE SOMEBODY CAN ACTUALLY CARRY OUT.
+      // There is no per-loan link door — the decision is recorded about the
+      // ADDRESS on purpose, so that one confirmation governs the loans that arrive
+      // later — and telling an admin to "link them one at a time" pointed at a
+      // button that does not exist. The fix is at the SOURCE: give each person
+      // their own email on their own loans in Encompass, and the next sync brings
+      // two addresses we can answer separately. Encompass is read-only to PILOT,
+      // so we cannot do it from here, and saying so is the honest half.
+      throw refuse(409, `Encompass has more than one borrower name on that email address (${names.join(', ')}), so these loans are not all the same person. Give each of them their own email address on their own loans in Encompass — the next sync will then ask about each person separately.`);
     }
 
     await dbc.query(

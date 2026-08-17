@@ -168,6 +168,48 @@ async function main() {
     loanIds.push(investorLoan);
 
     // -------------------------------------------------------------------------
+    // G. THE STATUS A CLIENT READS IS THE ONE WRITTEN FOR A CLIENT.
+    //
+    // There are three layers of wording on this side — Encompass's 19 milestones,
+    // our 9 stages, and the tenant's own consumer wording per milestone
+    // (`lt_encompass_milestones.consumer_status`, db/547). Only the third was
+    // written to be read by a borrower, and the door used to send `stage_key`
+    // verbatim: a client checking their loan was shown a database value.
+    //
+    // The two halves are asserted separately because they fail differently: the
+    // consumer wording WINNING, and the fallback never being the raw key.
+    // -------------------------------------------------------------------------
+    const consumer = await call(me);
+    const mine = consumer.body.loans.find((l) => l.file.endsWith('mine-long'));
+    ok(mine, 'the borrower\'s long-term file is returned');
+    eq(mine.status, 'Submitted for Approval',
+      'the status is the tenant\'s own CONSUMER wording for that milestone (db/547)');
+    ok(mine.status !== 'submittal',
+      '…never the stored stage key — a client must not be shown a database value');
+    eq(mine.milestone, 'Submittal', 'the milestone itself is still reported as Encompass names it');
+
+    // A milestone with no consumer wording — one added since we last read the
+    // list, or one the tenant never published — must still return the loan (the
+    // LEFT JOIN) and must fall back to our stage's LABEL, never its key.
+    const oddId = await seedLoan('odd', me, 360, 'Investor DSCR 30 YEAR FRM');
+    await db.query(
+      `UPDATE lt_loans SET milestone_name = $2, stage_key = 'clear_to_close' WHERE id = $1::uuid`,
+      [oddId, `${tag} milestone nobody has published`],
+    );
+    const odd = await call(me);
+    const oddRow = odd.body.loans.find((l) => l.file.endsWith('odd'));
+    ok(oddRow, 'a loan whose milestone has no consumer wording is STILL returned — the join is a LEFT one');
+    eq(oddRow.status, 'Clear to Close', '…and falls back to our stage\'s LABEL');
+    ok(oddRow.status !== 'clear_to_close', '…never the raw key');
+
+    // With neither, it says NOTHING. A status invented for a client is worse than
+    // a blank one, and the screen prints its own neutral wording instead.
+    await db.query(`UPDATE lt_loans SET stage_key = NULL WHERE id = $1::uuid`, [oddId]);
+    const bare = await call(me);
+    const bareRow = bare.body.loans.find((l) => l.file.endsWith('odd'));
+    eq(bareRow.status, null, 'with no wording anywhere the door invents nothing');
+
+    // -------------------------------------------------------------------------
     // F. THE SETTINGS READ FAILS CLOSED. An unreadable setting is not permission to
     //    show a client an unfinished product.
     // -------------------------------------------------------------------------

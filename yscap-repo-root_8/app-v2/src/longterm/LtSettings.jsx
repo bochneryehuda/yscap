@@ -109,13 +109,53 @@ function SettingRow({ setting, canManage, pending, onChange, onReset }) {
       </select>
     );
   } else if (kind === 'list') {
+    const chosen = new Set((value || []).map(String));
+    // WHAT THE BOOK ACTUALLY USES, offered as chips (the server's `suggestions`).
+    // A list of exact names somebody has to know by heart is a box nobody can fill
+    // in — this one needs the tenant's own Encompass folder names — so the server
+    // counts them off the real book and the person picks. It stays a FREE TEXT box
+    // underneath: a name that is not in the book yet must still be typeable, or a
+    // folder that has no files today could never be set up in advance.
+    const suggestions = Array.isArray(setting.suggestions) ? setting.suggestions : [];
+    const toggle = (name) => {
+      const next = chosen.has(name)
+        ? (value || []).filter((v) => String(v) !== name)
+        : [...(value || []), name];
+      onChange(next);
+    };
     control = (
-      <textarea
-        className="input" rows={Math.min(8, Math.max(2, (value || []).length + 1))}
-        value={(value || []).join('\n')}
-        onChange={(e) => onChange(e.target.value.split('\n').map((s) => s.trim()).filter(Boolean))}
-        placeholder="One per line"
-      />
+      <>
+        <textarea
+          className="input" rows={Math.min(8, Math.max(2, (value || []).length + 1))}
+          value={(value || []).join('\n')}
+          onChange={(e) => onChange(e.target.value.split('\n').map((s) => s.trim()).filter(Boolean))}
+          placeholder="One per line"
+        />
+        {suggestions.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 2 }}>
+            {suggestions.map((s) => {
+              const name = String(s.value != null ? s.value : s);
+              const on = chosen.has(name);
+              return (
+                <button key={name} type="button" disabled={!canManage}
+                  onClick={() => toggle(name)}
+                  title={on ? 'Remove it from the list' : 'Add it to the list'}
+                  style={{
+                    cursor: canManage ? 'pointer' : 'default', fontSize: 12,
+                    padding: '3px 10px', borderRadius: 999,
+                    border: on ? '1px solid #AE8746' : '1px solid #EAE4D7',
+                    background: on ? '#FBF6EC' : '#FFFFFF', color: '#141B22',
+                  }}>
+                  {name}
+                  {s.count != null && (
+                    <span style={{ color: '#4B585C', marginLeft: 5 }}>{s.count}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </>
     );
   } else {
     control = (

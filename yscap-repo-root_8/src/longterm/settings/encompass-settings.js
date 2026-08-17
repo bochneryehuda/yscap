@@ -388,14 +388,21 @@ const SETTINGS = [
     description: 'Which columns the long-term pipeline shows, in order.' },
   { key: 'pipeline.inactiveFolders', group: 'Pipeline', label: 'Loan folders that mean the deal is over',
     type: 'list', default: [],
+    // The screen offers the folder names the book ACTUALLY uses, with a count each.
+    // See `src/longterm/observed.js` for why that is now possible.
+    suggestFrom: 'loanFolders',
     description: 'Encompass loan folders whose files are finished — declined, withdrawn, trashed. '
       + 'The pipeline opens on the live book and puts these one click away, in the same table. '
       + 'A folder NOT on this list always counts as live, so leaving it empty (the default) '
       + 'shows every file exactly as before.',
-    evidence: 'Folder names are this tenant\'s own and the endpoint that lists them answers 403, '
-      + 'so we cannot read them and must not guess: treating a folder called "Archive" as finished '
-      + 'on a hunch would silently empty part of an officer\'s pipeline. Until somebody types the '
-      + 'real names here, nothing is hidden from anybody.' },
+    evidence: 'CORRECTED 2026-08-17. This used to read "the endpoint that lists them answers 403, '
+      + 'so we cannot read them" — true of the endpoint, and FALSE of the fact. Every mirrored loan '
+      + 'carries its own folder (`lt_loans.loan_folder`, from CX.LOAN.FOLDER.CURRENT), so the names '
+      + 'and their file counts are already here and the screen now offers them. What has NOT changed '
+      + 'is the half that matters: which of those folders MEAN the deal is over is a business rule '
+      + 'nobody here may guess — treating a folder called "Archive" as finished on a hunch would '
+      + 'silently empty part of an officer\'s pipeline. So the names are offered and a human picks; '
+      + 'until somebody picks, nothing is hidden from anybody.' },
 
   // ── The product switch (owner-directed 2026-08-14) ────────────────────────
   // "everybody should have a switch on his login to switch to the long-term side".

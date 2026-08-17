@@ -14,24 +14,39 @@ const router = express.Router();
 const access = require('../access');
 const productBook = require('../product-book');
 const settingsStore = require('../settings/store');
+const stages = require('../stages');
 
 async function viewerFor(req) {
   const { settings } = await settingsStore.load().catch(() => ({ settings: {} }));
   return {
     access: access.accessFor(req.actor, settings),
     staffId: req.actor && req.actor.id,
+    settings,
   };
 }
 
 // GET /api/lt/book — every long-term file the viewer may see, plus the three
 // buckets that account for everything this rule could not place.
+//
+// It also carries OUR OWN STATUS NAMES (`stages`), for the same reason the
+// pipeline does: a row stores `stage_key`, and a census that printed
+// `clear_to_close` at the owner would be reporting a database value rather than a
+// status anybody uses. The list is `stages.configFrom(settings)`, which is the ONE
+// definition both screens read — so renaming a status is a settings change and the
+// census and the pipeline can never end up calling one stage two things.
 router.get('/', async (req, res) => {
   try {
     const viewer = await viewerFor(req);
     const book = await productBook.longTermBook(viewer, { cap: req.query.cap });
+    const cfg = stages.configFrom(viewer.settings || {});
     res.json({
       ...book,
       byFolder: productBook.groupBook(book.longTerm),
+      // `includeUnmapped` because the census must account for EVERY file: a
+      // milestone nobody has mapped lands on `other`, and a list that omitted it
+      // would leave those rows printing a bare key on the one screen whose whole
+      // job is that nothing is unaccounted for.
+      stages: stages.stageList({ stages: cfg.stages, includeUnmapped: true }),
     });
   } catch (e) {
     console.error('[lt-book] failed:', e && e.message ? e.message : e);
@@ -50,6 +65,16 @@ router.get('/export.csv', async (req, res) => {
     const viewer = await viewerFor(req);
     const book = await productBook.longTermBook(viewer, { cap: req.query.cap });
 
+    // The spreadsheet prints the STATUS NAME, exactly as the screen does — the
+    // same list, resolved the same way, so the download and the screen can never
+    // call one stage two things. A key with no name falls back to the key rather
+    // than to a blank cell: an unmapped status is a fact worth seeing.
+    const cfg = stages.configFrom(viewer.settings || {});
+    const stageNames = new Map(
+      stages.stageList({ stages: cfg.stages, includeUnmapped: true }).map((s) => [s.key, s.label]),
+    );
+    const statusName = (key) => (key ? (stageNames.get(key) || key) : '');
+
     // Every field is quoted and its own quotes doubled — a borrower name with a
     // comma in it must not become two columns, and a name starting with `=` must
     // not be read by Excel as a formula (the leading apostrophe is the standard
@@ -65,7 +90,7 @@ router.get('/export.csv', async (req, res) => {
     const lines = [head.map(cell).join(',')];
     for (const r of book.longTerm) {
       lines.push([
-        r.file, r.borrowerName, r.folder, r.status, r.milestone,
+        r.file, r.borrowerName, r.folder, statusName(r.status), r.milestone,
         r.termMonths, r.programName, r.loanAmount,
         r.borrowerLinked ? 'yes' : 'no', r.officerLinked ? 'yes' : 'no', r.officerName,
       ].map(cell).join(','));
