@@ -501,6 +501,19 @@ units — all sign-negated like the state/DSCR tables, a 0/n-e band emits no lin
 `UnitRateAdjustment → 'units'` classifier branch was added so the reconcile pairs the 2–4
 units line. `test-lt-ppe-deephaven-dscr-sheet.js` reproduces all 28 add-on values.
 
+**Vocabulary-drift guard (2026-08-17):** the reconcile pairs our engine's LLPA adjustments
+against Lender Price's by a shared DIMENSION string, so a new LLPA family added to the sheet
+under a dimension `deephavenLpDimension` has no branch for would land the two sides in
+different buckets — a PERMANENT FALSE DISAGREEMENT at the E3 gate on that scenario class, even
+when the money is identical. `test-lt-ppe-llpa-dimension-parity.js` collects the dimension set
+the BUILT sheet emits (fico×CLTV grid + every `llpaTables[]` entry) and proves each pairs back
+through the classifier from a representative LP LLPA (real adjType + the sheet's OWN reason, so
+reason-drift is caught too); the coverage assertion FAILS THE BUILD if a sheet family has no
+paired branch, forcing the classifier to be taught before the gate can false-block. The
+failure mode itself is mutation-proven (removing a branch turns the pairing + both end-to-end
+reconcile checks red). This is the LLPA-side analogue of the disqualify crosswalk's dead-map
+guard (`test-lt-ppe-disqualify-crosswalk-facts.js`); both de-risk adding investor #2's sheet.
+
 ### §2.6 — DEEP 300-scenario live verification (2026-08-17) — full report: `ppe-research/DEEPHAVEN-LP-LIVE-FINDINGS-2026-08-17.md`
 
 A read-only live run of the full ~300-scenario battery against LP (filtered to
