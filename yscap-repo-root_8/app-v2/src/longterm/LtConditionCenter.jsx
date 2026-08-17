@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ltApi } from './api.js';
+import { groupConditions, groupDone, groupSummary } from './conditionGroups.js';
 import { plain, day } from './format.js';
 
 /**
@@ -184,17 +185,45 @@ function DocumentRow({ item }) {
   );
 }
 
-/** Conditions, grouped by the gate they block. Encompass's own `prior_to` IS the
- *  grouping — an unstated one gets its own honest bucket rather than being folded
- *  into a real gate it may not belong to. */
-function groupConditions(items) {
-  const groups = new Map();
-  for (const it of items) {
-    const g = it.group || 'Not stated';
-    if (!groups.has(g)) groups.set(g, []);
-    groups.get(g).push(it);
-  }
-  return [...groups.entries()];
+/**
+ * One gate's worth of conditions, foldable.
+ *
+ * THE COUNT IS ON THE HEADER, so it survives being folded away. A file here
+ * carries up to 67 conditions; a page of open sections is a wall, and a page of
+ * closed ones that do not say what is inside is worse — you have to open every
+ * one to find the work.
+ *
+ * IT OPENS ITSELF WHERE THE WORK IS. A gate with something still outstanding is
+ * open; one that is entirely done starts folded. Somebody arriving at a file
+ * should be looking at what is left, not at what they finished last week — and a
+ * click still puts any of it back.
+ *
+ * `<details>` rather than state of our own: it folds with no JavaScript, keeps
+ * the keyboard and screen-reader behaviour a browser already implements, and the
+ * contents stay in the page for a find-in-page search.
+ */
+function ConditionGroup({ group }) {
+  const done = groupDone(group);
+  return (
+    <details open={!done} style={{ marginBottom: 12 }}>
+      {/* The flex row is INSIDE the summary, never on it: a `display:flex`
+          summary loses the browser's own disclosure triangle, and a section that
+          folds with nothing to say it folds is a section nobody opens. */}
+      <summary style={{ cursor: 'pointer', margin: '6px 0', color: MUTED }}>
+        <span style={{ display: 'inline-flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+            {plain(group.name)}
+          </span>
+          <span style={{ fontSize: 12, color: done ? MUTED : INK, fontWeight: done ? 400 : 600 }}>
+            {groupSummary(group)}
+          </span>
+        </span>
+      </summary>
+      <div style={{ display: 'grid', gap: 8, minWidth: 0, marginTop: 6 }}>
+        {group.items.map((it) => <ConditionCard key={it.id} item={it} />)}
+      </div>
+    </details>
+  );
 }
 
 export default function LtConditionCenter({ loanId }) {
@@ -266,16 +295,8 @@ export default function LtConditionCenter({ loanId }) {
               {conditions.open} of {conditions.total} outstanding
             </span>
           </h3>
-          {groupConditions(conditions.items).map(([group, items]) => (
-            <div key={group} style={{ marginBottom: 12 }}>
-              <div style={{
-                fontSize: 11, textTransform: 'uppercase', letterSpacing: '.04em',
-                color: MUTED, margin: '6px 0 6px',
-              }}>{group}</div>
-              <div style={{ display: 'grid', gap: 8, minWidth: 0 }}>
-                {items.map((it) => <ConditionCard key={it.id} item={it} />)}
-              </div>
-            </div>
+          {groupConditions(conditions.items).map((g) => (
+            <ConditionGroup key={g.name} group={g} />
           ))}
         </section>
       ) : null}

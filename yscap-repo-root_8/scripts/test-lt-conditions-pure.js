@@ -318,6 +318,16 @@ check(!/ltPost|ltPut|ltPatch|ltDel|method:\s*['"](POST|PUT|PATCH|DELETE)/i.test(
 check(/ltApi\.conditionCenter\(/.test(centerSrc),
   '…and it reads through the one Long-Term client, so it can only reach /api/lt');
 
+// The fold and the count are a RULE, and it lives where it can be run
+// (`conditionGroups.js`, proved by test-lt-condition-groups-pure.mjs). A copy
+// inlined back into the JSX is unrunnable, so the first thing to drift would be
+// the one thing a folded section still shows.
+check(/from '\.\/conditionGroups\.js'/.test(centerSrc)
+  && /groupDone\(/.test(centerSrc) && /groupSummary\(/.test(centerSrc),
+  'the screen asks the shared rule whether a gate is finished and what its header says — it never decides either in the markup');
+check(!/group\.open === 0|group\.open !== 0/.test(centerSrc),
+  '…and does not re-derive "finished" beside it, which is how a section comes to sit open saying "all done"');
+
 // A condition is never DELETED anywhere in the mirror.
 check(!/DELETE\s+FROM\s+lt_conditions|DELETE\s+FROM\s+lt_documents/i.test(syncSrc),
   'and nothing is ever deleted: a row Encompass no longer lists is marked removed, because the record of what was once asked for has to survive');
