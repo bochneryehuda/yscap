@@ -419,6 +419,31 @@ const SETTINGS = [
     evidence: 'Long-Term is a side build and is not live, so the default must stay RTL — '
       + 'nobody should be moved to the new side by a deploy.' },
 
+  // THE BORROWER'S OWN SWITCH — BUILT READY, AND SWITCHED OFF.
+  //
+  // The owner (2026-08-16): *"The borrower should also have, in their login, the
+  // option to switch from long-term to short-term."* Asked whether to turn it on,
+  // they answered *"build it ready"* — so it is wired end to end and this one
+  // setting is the whole of what stands between it and the client's screen.
+  //
+  // DEFAULT FALSE, AND IT MUST STAY FALSE UNTIL THE OWNER SAYS OTHERWISE. Long-Term
+  // is a side build with no borrowers and no production traffic (charter §1), and
+  // the borrower mapping is confirmed a person at a time — so on the day this is
+  // flipped, a borrower sees the long-term files that have been CONFIRMED as theirs
+  // and nothing else. Turning it on by deploy would show clients a product we have
+  // not finished, which is the one thing "build it ready" was meant to avoid.
+  //
+  // It is a COMPANY setting, not a per-user one: this is a decision about whether
+  // the product is live, not a preference.
+  { key: 'borrower.longTermVisible', group: 'Interface',
+    label: 'Show long-term files on the borrower login',
+    type: 'boolean', default: false,
+    description: 'When this is off, a borrower sees only their short-term (RTL) files and no '
+      + 'switch at all. When it is on, a borrower can switch to the long-term side and see '
+      + 'the long-term files that have been confirmed as theirs.',
+    evidence: 'Owner-directed 2026-08-16: build the borrower switch READY but leave it off '
+      + 'until they say go. Long-Term is not live to borrowers.' },
+
   // ── Rate lock (phase 7) ───────────────────────────────────────────────────
   // Every lock-SPECIFIC endpoint on this tenant answers 403, so the posture is read
   // from the loan itself: the `rateLock` entity where it answers, and these two

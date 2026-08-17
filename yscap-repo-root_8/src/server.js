@@ -461,7 +461,14 @@ app.use('/api/tpo', require('./routes/tpo'));
   // staff login; it is OFF (404s) unless LP_DIAG_TOKEN is set. Still src/server.js →
   // src/longterm/routes/ — the permitted seam.
   app.use('/api/lt/_diag/lenderprice', require('./longterm/routes/lenderprice-diag'));
-  const { requireAuth, requireStaff } = require('./auth');
+  const { requireAuth, requireStaff, requireBorrower } = require('./auth');
+  // THE BORROWER'S OWN long-term files — the client-facing half of the owner's
+  // switch (2026-08-16). Mounted BEFORE the staff-gated /api/lt because that one
+  // refuses a borrower session, and a client surface cannot live behind it. Still
+  // /api/lt/* and still src/longterm/routes/ — the same permitted seam, a different
+  // door. It is SWITCHED OFF by default (`borrower.longTermVisible`) and answers
+  // "off" rather than erroring, so turning it on is one setting, not a deploy.
+  app.use('/api/lt/my', requireAuth, requireBorrower, require('./longterm/routes/my-loans'));
   app.use('/api/lt', requireAuth, requireStaff, require('./longterm').router);
 }
 // Sitewire construction-draw desk + admin. The router applies requireAuth +
