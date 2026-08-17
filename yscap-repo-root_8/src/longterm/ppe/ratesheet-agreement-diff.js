@@ -61,14 +61,46 @@ function lpLlpaDimension(llpa) {
 
 function isNum(x) { return typeof x === 'number' && Number.isFinite(x); }
 
+// REASON-AWARE dimension classifier for the LIVE Deephaven sheet (measured 2026-08-17). The default
+// crosswalk keys on adjType alone, which is WRONG for Deephaven because one adjType carries two
+// different LLPAs: FicoRateAdjustment is BOTH the FICO×CLTV cell ("DSCR (All)") and cash-out ("Cash
+// Out Refinance"), and SimpleRateAdjustment is BOTH the DSCR band ("DSCR Ratio") and the prepay penalty
+// ("5 Year Prepay"). And our real grid keeps FICO / DSCR / STATE as SEPARATE dimensions (it does NOT
+// fold DSCR into the FICO cell), so the classifier must too. Pass this as reconcileLlpas' opts.dimensionOf.
+function deephavenLpDimension(llpa) {
+  if (!llpa || typeof llpa !== 'object') return null;
+  const t = norm(llpa.adjType);
+  const r = String(llpa.reason || '');
+  if (t === 'ficorateadjustment') {
+    if (/cash\s*out/i.test(r)) return 'cashout';
+    return 'fico_cltv_dscr'; // "DSCR (All) - <fico> / CLTV <band>"
+  }
+  if (t === 'simplerateadjustment') {
+    if (/dscr\s*ratio/i.test(r)) return 'dscr';
+    if (/prepay/i.test(r)) return 'prepay';
+    return `other:${norm(r) || 'simple'}`;
+  }
+  if (t === 'statesrateadjustment') return 'state';
+  if (t === 'loanamountrateadjustment') return 'loan_amount';
+  if (/condo/i.test(t)) return 'property_type';
+  return lpLlpaDimension(llpa); // fall back to the adjType-only crosswalk
+}
+
 /**
  * Itemized per-dimension LLPA reconciliation for ONE matched rung pair.
  *   ourAdjustments — ours.ladder[r].adjustments[]  ({ dimension, adjMilli, reason, code })
  *   lpLlpas        — lp.rungs[r].llpas[]           ({ adjType, group, reason, valueMilli })
+ *   opts.dimensionOf(llpa) — optional classifier for the LP side (default: lpLlpaDimension, the
+ *     adjType-only crosswalk). The live Deephaven harness passes deephavenLpDimension (reason-aware).
+ *   opts.ignore — optional Set/array of dimensions to DROP from the LP side before comparing (e.g.
+ *     'prepay' while our sheet does not model prepay yet — so a known-unmodelled axis is not counted as
+ *     a disagreement, but is still surfaced separately by the caller).
  * Returns { itemized:[{ dimension, ourMilli, lpMilli, deltaMilli, ourReason, lpReason }], agree,
  *           worstDeltaMilli }. `agree` is true only when EVERY row's deltaMilli === 0.
  */
-function reconcileLlpas(ourAdjustments, lpLlpas) {
+function reconcileLlpas(ourAdjustments, lpLlpas, opts = {}) {
+  const dimensionOf = typeof opts.dimensionOf === 'function' ? opts.dimensionOf : lpLlpaDimension;
+  const ignore = opts.ignore instanceof Set ? opts.ignore : new Set(Array.isArray(opts.ignore) ? opts.ignore : []);
   const ours = new Map();   // dimension -> { milli, reasons:Set }
   const theirs = new Map();
   for (const a of (Array.isArray(ourAdjustments) ? ourAdjustments : [])) {
@@ -81,7 +113,8 @@ function reconcileLlpas(ourAdjustments, lpLlpas) {
   }
   for (const l of (Array.isArray(lpLlpas) ? lpLlpas : [])) {
     if (!l || typeof l !== 'object') continue;
-    const dim = lpLlpaDimension(l) || `other:${norm(l.reason) || 'unknown'}`;
+    const dim = dimensionOf(l) || `other:${norm(l.reason) || 'unknown'}`;
+    if (ignore.has(dim)) continue;
     const v = isNum(l.valueMilli) ? l.valueMilli : 0;
     const cur = theirs.get(dim) || { milli: 0, reasons: new Set() };
     cur.milli += v; if (l.reason) cur.reasons.add(String(l.reason));
@@ -133,4 +166,4 @@ function boundsProbe(ourRung, lpPriceMilli) {
   return { agree, checks: { samePrice, clampFaithful }, detail };
 }
 
-module.exports = { reconcileLlpas, boundsProbe, lpLlpaDimension, _internals: { ADJTYPE_TO_DIMENSION, norm } };
+module.exports = { reconcileLlpas, boundsProbe, lpLlpaDimension, deephavenLpDimension, _internals: { ADJTYPE_TO_DIMENSION, norm } };

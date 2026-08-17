@@ -91,7 +91,12 @@ function errorVerdict(tag, side, e) {
  *   ours(scenario)  — async → quote.quoteProgram result { eligible, ladder[], declines[] }
  *   lp(scenario)    — async → { full, disqualified } (client.parseFull / parseDisqualified shapes)
  *   opts — { filter:{program,product,lender,investor}, rateScale, priceScale, settings,
- *            priceToleranceMilli, rateToleranceMilli, marginToleranceMilli, basePriceToleranceMilli }
+ *            priceToleranceMilli, rateToleranceMilli, marginToleranceMilli, basePriceToleranceMilli,
+ *            lpDimensionOf(llpa)  — reason-aware LP→dimension classifier for reconcileLlpas (the live
+ *              Deephaven harness passes ratesheet-agreement-diff.deephavenLpDimension); default folds by
+ *              adjType only,
+ *            ignoreDimensions     — LP dimensions to drop from the fine reconcile (e.g. ['prepay'] while
+ *              our sheet does not model prepay yet — surfaced separately, not counted as a disagreement) }
  */
 async function runOne(scenario, ours, lp, opts) {
   const o = opts || {};
@@ -129,28 +134,40 @@ async function runOne(scenario, ours, lp, opts) {
   const lpEligible = lpNorm.eligible && !lpDeclined;
   const rungReconciles = [];
   const bounds = [];
-  let fineAgree = true;
+  let reconcileAgree = true;
+  let boundsAgree = true;
   if (ourEligible && lpEligible) {
     for (const orr of (our.ladder || [])) {
       if (!isNum(orr.rate)) continue;
       const lpr = matchByRate(lpRungs, orr.rate, rateTol);
       if (!lpr) continue; // a coupon we price that LP does not — coarse already flagged it
-      const rec = reconcileLlpas(ourAdjustmentsOf(orr), lpr.llpas || []);
+      const rec = reconcileLlpas(ourAdjustmentsOf(orr), lpr.llpas || [], { dimensionOf: o.lpDimensionOf, ignore: o.ignoreDimensions });
       const bp = boundsProbe(
         { finalPriceMilli: orr.finalPriceMilli, floorMilli: orr.floorMilli, capMilli: orr.capMilli, clamped: orr.clamped },
         lpr.priceMilli,
       );
-      if (!rec.agree || !bp.agree) fineAgree = false;
+      if (!rec.agree) reconcileAgree = false;
+      if (!bp.agree) boundsAgree = false;
       rungReconciles.push({ rate: orr.rate, agree: rec.agree, worstDeltaMilli: rec.worstDeltaMilli, itemized: rec.itemized });
       bounds.push({ rate: orr.rate, agree: bp.agree, checks: bp.checks, detail: bp.detail });
     }
   }
+  // The FINE gate is the per-dimension LLPA reconcile ALWAYS; the cap/floor bounds probe counts unless
+  // skipped. `skipBounds` is for a sheet with no cap/floor whose net price carries a margin the
+  // rate-sheet agreement is not about (Deephaven: the displayed price is base net of an unreconciled
+  // origination/margin, so the net-price comparison is a compensation-layer question, not an LLPA one).
+  const fineAgree = reconcileAgree && (o.skipBounds ? true : boundsAgree);
 
   // INCOMPARABLE = LP gave no usable signal for our filter (not ready / nothing matched). A both-decline
   // is NOT incomparable — it is a real ELIGIBILITY agreement (the owner's "run a few ineligible ones and
   // confirm the disqualifier matches"), so it counts, and the coarse eligibility axis decides it.
   const incomparable = !lpHasSignal;
-  const agree = !incomparable && coarse.verdict === 'agree' && fineAgree;
+  // `coarseIgnore` drops margin-laden coarse axes from the GATE (still fully reported): on the live
+  // Deephaven sheet `final_price` and `llpa_total` compare LP's displayed price / adjustmentPoints,
+  // which carry the origination/margin, NOT the LLPA stack — so they are a compensation-layer question.
+  const coarseIgnore = o.coarseIgnore instanceof Set ? o.coarseIgnore : new Set(Array.isArray(o.coarseIgnore) ? o.coarseIgnore : []);
+  const gatingCoarse = ((coarse && coarse.differences) || []).filter((d) => !coarseIgnore.has(d.category));
+  const agree = !incomparable && gatingCoarse.length === 0 && fineAgree;
   const worstDeltaMilli = rungReconciles.reduce(
     (m, r) => (Math.abs(r.worstDeltaMilli) > Math.abs(m) ? r.worstDeltaMilli : m), 0,
   );

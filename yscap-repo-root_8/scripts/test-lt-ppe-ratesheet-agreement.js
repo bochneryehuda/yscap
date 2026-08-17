@@ -100,6 +100,18 @@ async function main() {
     && rec.itemized.some((it) => it.dimension === 'loan_amount' && it.deltaMilli === 200),
     '  and names BOTH offending dimensions (purpose −200 / loan_amount +200)');
 
+  // ---- 2b) coarseIgnore + skipBounds: a margin-only net-price difference is NOT gated ------------
+  // LP agrees on every itemized LLPA but its DISPLAYED price differs by a margin (Deephaven: LP's
+  // price carries an unreconciled origination the LLPA stack is not folded into). The itemized
+  // reconcile agrees; only final_price / llpa_total / bounds differ. Gating those out → agree.
+  const marginOpts = AGREE_OPTS.map((o2) => ({ ...o2, priceBuild: { ...o2.priceBuild, price: o2.priceBuild.price + 1.25 } }));
+  const lpMargin = () => ({ full: lpFull(marginOpts), disqualified: { ready: true, lenders: [] } });
+  const strict = await agreement.runOne(CASHOUT, ours, lpMargin, OPTS);
+  ok(strict.agree === false && strict.rungReconciles.every((r) => r.agree),
+    'MARGIN: a net-price-only difference disagrees under the strict gate (but every LLPA reconciles)');
+  const lenient = await agreement.runOne(CASHOUT, ours, lpMargin, { ...OPTS, coarseIgnore: ['final_price', 'llpa_total', 'margin'], skipBounds: true });
+  ok(lenient.agree === true, '…and with coarseIgnore + skipBounds (the compensation layer) the rate-sheet agreement holds');
+
   // ---- 3) an ELIGIBILITY agreement (both decline) COUNTS as agreement ---------------------------
   const bothDecline = await agreement.runOne(NY, ours, () => ({ full: { programs: [] }, disqualified: lpDisq([{ rule: 'state', adjType: 'StatesRateAdjustment' }]) }), OPTS);
   ok(bothDecline.agree === true && !bothDecline.incomparable && !bothDecline.ourEligible && !bothDecline.lpEligible,

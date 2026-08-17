@@ -84,5 +84,35 @@ ok(mutated.itemized.filter((x) => x.deltaMilli !== 0).length === 1
   && mutated.itemized.find((x) => x.dimension === 'fico_cltv_dscr').deltaMilli === 125,
   '…and EXACTLY one dimension (fico_cltv_dscr, +125) is flagged — the control stays green');
 
+// ---- the REASON-AWARE Deephaven classifier + reconcile opts (live 2026-08-17) ------------------
+const { deephavenLpDimension } = require('../src/longterm/ppe/ratesheet-agreement-diff');
+ok(deephavenLpDimension({ adjType: 'FicoRateAdjustment', reason: 'DSCR (All) - 780+ / CLTV >65.01 % <= 70.0 %' }) === 'fico_cltv_dscr', 'Deephaven: FicoRateAdjustment "DSCR (All)" → fico_cltv_dscr');
+ok(deephavenLpDimension({ adjType: 'FicoRateAdjustment', reason: 'Other - Cash Out Refinance, FICO >= 720 / CLTV ...' }) === 'cashout', 'Deephaven: FicoRateAdjustment "Cash Out" → cashout (NOT the FICO cell)');
+ok(deephavenLpDimension({ adjType: 'SimpleRateAdjustment', reason: 'DSCR Ratio - DSCR >= 1.25 / CLTV ...' }) === 'dscr', 'Deephaven: SimpleRateAdjustment "DSCR Ratio" → dscr (separate, not folded into the FICO cell)');
+ok(deephavenLpDimension({ adjType: 'SimpleRateAdjustment', reason: '5 Year Prepay Penalty' }) === 'prepay', 'Deephaven: SimpleRateAdjustment "5 Year Prepay" → prepay');
+ok(deephavenLpDimension({ adjType: 'StatesRateAdjustment', reason: 'Other - State of DC, MA, NJ, NY / CLTV ...' }) === 'state', 'Deephaven: StatesRateAdjustment → state');
+
+// our real grid keeps fico / dscr / state SEPARATE — reconcile with the reason-aware classifier
+const ourDh = [
+  { dimension: 'fico_cltv_dscr', adjMilli: 125, reason: 'FICO 780 × CLTV 70' },
+  { dimension: 'dscr', adjMilli: 250, reason: 'DSCR ≥1.25' },
+  { dimension: 'state', adjMilli: 375, reason: 'NY' },
+];
+const lpDh = [
+  { adjType: 'FicoRateAdjustment', reason: 'DSCR (All) - 780+ / CLTV >65.01 % <= 70.0 %', valueMilli: 125 },
+  { adjType: 'SimpleRateAdjustment', reason: 'DSCR Ratio - DSCR >= 1.25 / CLTV >65.01 % <= 70.0 %', valueMilli: 250 },
+  { adjType: 'StatesRateAdjustment', reason: 'Other - State of DC, MA, NJ, NY / CLTV >65.01 % <= 70.0 %', valueMilli: 375 },
+];
+const rDh = reconcileLlpas(ourDh, lpDh, { dimensionOf: deephavenLpDimension });
+ok(rDh.agree === true, 'Deephaven reconcile: our separate fico/dscr/state each line up with LP itemized (agree)');
+// the DEFAULT classifier would FOLD dscr into fico_cltv_dscr and DISAGREE — proving the classifier matters
+const rFolded = reconcileLlpas(ourDh, lpDh);
+ok(rFolded.agree === false, '…and the default adjType-only crosswalk would MIS-fold and disagree (why the classifier is needed)');
+
+// opts.ignore drops a not-yet-modelled axis (prepay) so it is not counted as a disagreement
+const lpWithPrepay = [...lpDh, { adjType: 'SimpleRateAdjustment', reason: '5 Year Prepay Penalty', valueMilli: 625 }];
+ok(reconcileLlpas(ourDh, lpWithPrepay, { dimensionOf: deephavenLpDimension }).agree === false, 'an unignored prepay line disagrees (we do not model prepay yet)');
+ok(reconcileLlpas(ourDh, lpWithPrepay, { dimensionOf: deephavenLpDimension, ignore: ['prepay'] }).agree === true, 'opts.ignore:["prepay"] drops the unmodelled axis → the modelled dimensions still agree');
+
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

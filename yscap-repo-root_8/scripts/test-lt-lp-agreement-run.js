@@ -35,6 +35,9 @@ const client = require('../src/longterm/lenderprice/client');
 const legs = require('../src/longterm/ppe/lp-agreement-legs');
 const { runRatesheetAgreement } = require('../src/longterm/ppe/ratesheet-agreement');
 const { rateSheetToProgram } = require('../src/longterm/ppe/ratesheet');
+const { gridToRateSheet } = require('../src/longterm/ppe/deephaven-grid');
+const { buildDeephavenGrid } = require('../src/longterm/ppe/deephaven-dscr-sheet');
+const { deephavenLpDimension } = require('../src/longterm/ppe/ratesheet-agreement-diff');
 const { buildAgreementScenarios } = require('../src/longterm/ppe/agreement-scenarios');
 const settings = require('../src/longterm/ppe/settings');
 
@@ -58,13 +61,17 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
     + 'The whole harness (comparators + orchestrator + adapters) is built and unit-tested offline; '
     + 'it runs the moment those three values are set.');
 
-  // 2) the sheet-under-test → our program
+  // 2) the sheet-under-test → our program. Default: the built-in, LP-validated Deephaven DSCR sheet
+  // (deephaven-dscr-sheet.js). Override with --sheet <path> to a rateSheetToProgram input JSON.
   const sheetPath = arg('--sheet', process.env.LT_SHEET_UNDER_TEST);
-  if (!sheetPath) die(3, 'No sheet-under-test. Pass --sheet <path> or set LT_SHEET_UNDER_TEST. '
-    + '(This is your independent-analysis candidate; it is never trusted until this run agrees with Lender Price.)');
+  const builtin = !sheetPath;
   let program;
-  try { program = rateSheetToProgram(readJson(sheetPath), { source: sheetPath }); }
-  catch (e) { die(3, `Could not build a program from ${sheetPath}: ${e.message}`); }
+  try {
+    program = builtin
+      ? rateSheetToProgram(gridToRateSheet(buildDeephavenGrid()), { code: 'DHVN_DSCR30', name: 'Deephaven DSCR 30yr', investorCode: 'DHVN' })
+      : rateSheetToProgram(readJson(sheetPath), { source: sheetPath });
+  } catch (e) { die(3, `Could not build a program from ${builtin ? 'the built-in Deephaven sheet' : sheetPath}: ${e.message}`); }
+  console.log(`Sheet-under-test: ${builtin ? 'built-in Deephaven DSCR (v12.7.25 confirmed subset)' : sheetPath}`);
 
   // 3) scenarios
   const scPath = arg('--scenarios', process.env.LT_SCENARIOS);
@@ -84,6 +91,15 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
     filter,
     settings: s,
     priceToleranceMilli: s['validation.price_tolerance_milli'],
+    // the live Deephaven sheet itemizes reason-ambiguous adjTypes; classify by reason, and do not count
+    // the not-yet-modelled prepay axis as a disagreement (it is surfaced separately).
+    lpDimensionOf: builtin ? deephavenLpDimension : undefined,
+    ignoreDimensions: builtin ? ['prepay'] : undefined,
+    // The rate-sheet AGREEMENT is eligibility + base price + itemized LLPAs. LP's displayed price and
+    // adjustmentPoints carry an unreconciled origination/margin (NOT the LLPAs), and Deephaven has no
+    // cap/floor — so those net-price axes are a compensation-layer question, reported but not gated.
+    coarseIgnore: builtin ? ['final_price', 'llpa_total', 'margin'] : undefined,
+    skipBounds: builtin,
     concurrency: Number(arg('--concurrency', '2')) || 2,
     onResult,
   });
