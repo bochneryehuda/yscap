@@ -9,7 +9,7 @@
  *
  * LT-only. No network, no DB, no RTL imports.
  */
-const { gridToRateSheet } = require('../src/longterm/ppe/deephaven-grid');
+const { gridToRateSheet, rateSheetToGrid } = require('../src/longterm/ppe/deephaven-grid');
 const { rateSheetToProgram } = require('../src/longterm/ppe/ratesheet');
 const { quoteProgram } = require('../src/longterm/ppe/quote');
 
@@ -92,6 +92,22 @@ ok(!!rung, 'the 6.750 / 30Y rung is present (102850 base)');
 // 102.850 + 0.500 (fico×cltv×dscr) − 0.250 (margin) = 103.100
 ok(rung && rung.finalPriceMilli === 103100, 'the rung prices to 103.100 (base 102.850 + 0.500 LLPA − 0.250 margin)');
 ok(rung && rung.adjustments.some((a) => a.code === hi.code), 'the +0.500 LLPA is itemized on the rung by its stable code');
+
+// ---- the INVERSE: sheet → grid → sheet' reproduces the same DATA (E3 editor) --
+// The editor renders a stored sheet as a grid; saving an untouched grid must reproduce the same rules.
+const grid2 = rateSheetToGrid({ basePrices: R.basePrices, adjustments: R.adjustments, ineligibilities: R.ineligibilities, priceLimit: R.priceLimit });
+const R2 = gridToRateSheet(grid2);
+ok(R2.problems.length === 0, 'the reconstructed grid re-converts with zero problems');
+// base prices (data-only projection, order-independent)
+const baseKey = (b) => `${b.note_rate_milli_pct}/${b.lock_days}/${b.product}/${b.price_milli}`;
+ok(JSON.stringify(R.basePrices.map(baseKey).sort()) === JSON.stringify(R2.basePrices.map(baseKey).sort()), 'base prices round-trip exactly (rate, lock, product, price)');
+// adjustments (data-only: bounds + predicate + adj_milli; codes are regenerable labels, not data)
+const adjKey = (a) => `${a.dimension}|${a.fico_min}|${a.fico_max}|${a.ltv_min}|${a.ltv_max}|${a.dscr_min}|${a.dscr_max}|${JSON.stringify(a.predicate || null)}|${a.adj_milli}`;
+ok(JSON.stringify(R.adjustments.map(adjKey).sort()) === JSON.stringify(R2.adjustments.map(adjKey).sort()), 'every adjustment round-trips exactly (bounds, predicate, signed adj_milli)');
+// ineligibilities (the N/A boxes) round-trip in place
+const inKey = (e) => `${e.fico_min}|${e.fico_max}|${e.ltv_min}|${e.ltv_max}|${e.dscr_min}|${e.dscr_max}`;
+ok(JSON.stringify(R.ineligibilities.map(inKey).sort()) === JSON.stringify(R2.ineligibilities.map(inKey).sort()), 'the N/A (ineligible) boxes round-trip to the same cells');
+ok(R2.ineligibilities.length === 1 && R.ineligibilities.length === 1, 'exactly the one N/A box survives the round trip (never lost, never multiplied)');
 
 // ---- FAIL CLOSED: malformed input is a problem, never silently priced -----
 const bad = gridToRateSheet({
