@@ -222,6 +222,34 @@ surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
   - Tests `test-lt-ppe-agreement-gate.js` (pure, stub db) + the refusal asserted at the publish itself
     in `test-lt-ppe-ratesheet-db.js`. Verified against a real Postgres built by the full 572-migration
     chain; eight mutations of the production rule were each proven to turn the suite red.
+- **DONE (2026-08-17) — the gate has a MEASURING half: `POST /rate-sheets/:id/agreement/run`.** The
+  four states above were the right vocabulary and the gate was still only half a gate: **nothing called
+  the harness**, so no run could be recorded and the only exit was the override. A gate whose one exit
+  is "publish it anyway" is a gate in name. The route runs the canonical 299-scenario battery
+  (`agreement-scenarios.js`) through `ratesheet-agreement.js` and records the verdict — so a sheet
+  becomes publishable because it was MEASURED. There is deliberately still no route that accepts a
+  result in a request body, and `test-lt-ppe-console-db` D8 now asserts exactly one recorder whose
+  input is the harness's own return value.
+  - **PULLED, never scheduled** — the battery prices against a paid vendor, so a timer firing it is the
+    owner's call, the same line drawn for the canary tick.
+  - **It refuses before it spends:** no program / no base grid (422), upstream not configured (503),
+    another tenant's version (404), and **no Lender Price scope (422 `no_lp_scope`)** — LP answers with
+    its whole catalogue while our sheet prices one ladder, and a PASS from an unscoped run would open
+    the gate on a measurement of the wrong question.
+  - **A fifth state was needed: `nothing_comparable`.** `gateMet` requires `comparable > 0`, so a run
+    where LP gave no usable answer fails with zero disagreements and zero errors. Calling that "it
+    disagrees" sends somebody to fix a sheet that may be correct.
+  - **A record that does not land is a 500 (`not_recorded`) carrying the summary**, never a 200 with a
+    quiet `recorded:false` — that is exactly how somebody watches a run succeed, presses Publish, and
+    is refused with `never_measured` with no way to find out why.
+  - **Two silent defects came out of the testing**, both of which ran green while measuring nothing:
+    the battery builder returns `{scenarios,count,byGroup}` and the route read `.length` off the object
+    (so the harness received an empty list and recorded a verdict over ZERO scenarios), and
+    `summarize()` names the count `total` while `recordRun` read `s.scenarios` (so every real run
+    stored 0 in the column the gate reads). Both are pinned by mutation-proven assertions.
+  - Test `test-lt-ppe-agreement-run-db.js` (real Postgres, stubbed LP client, sections A–F; every
+    assertion proven to fail by mutating the guard it protects). **It still cannot RUN** — the route
+    refuses `upstream_not_configured` until the owner rotates the Lender Price login.
 - **TO-BUILD:** **no promote-to-live HTTP route exists** — the gate is reachable only in code. Add the
   route + the human promote/rollback action (P10). The agreement gate above is the E3 half of the same
   question (may this SHEET be trusted); promote-to-live is the P10 half (may this PROGRAM go live).
@@ -260,8 +288,12 @@ surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
   - **Only a DRAFT is editable.** A published sheet is what live quotes price from; it is superseded
     by a new version, never rewritten underneath them, and the refusal says so.
   - **Nobody types an agreement result.** There is deliberately NO route recording a passing run from
-    a request body — that would satisfy the gate with nothing compared. The human path is the
-    recorded override.
+    a request body — that would satisfy the gate with nothing compared. **A tenth route,
+    `POST /rate-sheets/:id/agreement/run`, was added the same day (§2.10): it RUNS the harness and
+    records what the harness returned**, which is the opposite of typing one in. The guard that used to
+    read "no route records a run" was narrowed to what it was always protecting — exactly one recorder,
+    fed the harness's own result — because the broad form would have banned the measuring half forever.
+    The recorded override remains the other way past the gate.
   - **A LATENT DEFECT FIXED ON THE WAY:** `replaceBasePrices`/`replaceAdjustments` took a scope and
     DELETEd by `version_id` alone. Unreachable while nothing called them; armed the moment a door
     opened. Both are scoped now, guarded at the store layer (see the note in §2.9's suites below).

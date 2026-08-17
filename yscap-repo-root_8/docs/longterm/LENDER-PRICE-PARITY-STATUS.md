@@ -2000,7 +2000,8 @@ than it checks is worse than a thin test, because somebody later trusts the head
 §2.29 each record the same shape — complete, unit-tested machinery with no caller — found one at a
 time, by hand, five times. `scripts/check-lt-reachability.js` walks `require()` from what the server
 actually mounts and boots and compares the unreachable set against the authored ledger
-`docs/longterm/LT-UNREACHED.md`. **92 of 130 Long-Term modules are reachable.** The SET is computed and
+`docs/longterm/LT-UNREACHED.md`. **92 of 130 Long-Term modules were reachable when this was written; it
+is 95 now — §2.31 wired three of them, and the check is what said so.** The SET is computed and
 only the REASONS are written down, so a module built with no caller and no record now fails the check,
 and so does a ledger row that has quietly become reachable — a ledger that overstates what is unwired
 is one nobody trusts. It is deliberately NOT a ban: half this engine is written ahead of its wiring on
@@ -2016,10 +2017,11 @@ as "the ONE definition of that", which reads exactly like a module that is wired
 leak and calling it one would be alarmism:** Long-Term is a visibility-only side build with no
 borrowers, no production traffic and no client-facing surface for a name to reach. The risk is the day
 one ships, when the guard will be assumed present because the codebase says it is the one definition.
-And `ratesheet-agreement.js` — the harness that MEASURES the ≥200-scenario rule — is uncalled too, so
-no run can be recorded, so the publish gate of §2.27 can today be passed only by the recorded
-override. That is expected while the Lender Price login awaits rotation, and it is precisely why the
-override exists; recording it stops a gate with no measuring half being mistaken for a working one.
+And `ratesheet-agreement.js` — the harness that MEASURES the ≥200-scenario rule — was uncalled too, so
+no run could be recorded and the publish gate of §2.27 could be passed only by the recorded override.
+**That one is now wired (§2.31), which is why the count above moved and why the ledger's three rows for
+it are struck off.** The override still exists and is still the right thing while the Lender Price
+login awaits rotation; what changed is that it is no longer the ONLY way past the gate.
 
 **THE ANALYSER'S OWN FIRST CUT WAS CONFIDENTLY WRONG, which is the lesson worth keeping.** It stripped
 block comments by SPAN, and these files carry route paths like `/api/lt/*` inside their headers: the
@@ -2037,3 +2039,67 @@ ledger ignored — and the stale direction was proven against the REAL repo by w
 watching both it and its transitive `ratesheet-diff.js` be reported. The test additionally asserts the
 analysis is NON-TRIVIAL (130 modules seen, 92 reached), because every set-comparison assertion in it
 would pass just as happily against two empty sets.
+
+**§2.31 — THE GATE HAS A MEASURING HALF (2026-08-17).** §2.27 made the owner's HARD RULE enforceable —
+a rate sheet may not go live until it has been measured against Lender Price on ≥200 comparable
+scenarios and agreed — and db/576 gave the verdict a durable home. §2.30 then found the hole in it:
+**nothing ever called the harness.** No run could be recorded, so the only way past the gate was the
+recorded override, and a gate whose only exit is "publish it anyway" is a gate in name. `POST
+/api/lt/ppe/rate-sheets/:id/agreement/run` (admin-gated) is the measuring half: it resolves the version
+in scope, runs the canonical 299-scenario battery through `ratesheet-agreement`, records the verdict
+through `agreement-store`, and answers with the gate's new reading. **A sheet can now become
+publishable because it was MEASURED, not because somebody decided.** It is PULLED, never scheduled —
+the battery prices against a paid vendor, so a background loop firing it is the owner's decision, the
+same line drawn for the canary tick.
+
+**IT REFUSES BEFORE IT SPENDS, four ways, and each refusal is the cheap answer to an expensive
+mistake.** No program or no base grid → 422 (`quote.quoteProgram` throws without one, so every scenario
+would come back an `engine_error` and the summary would read like a catastrophe). Upstream not
+configured → 503 (the state this sheet is in until the Lender Price login is rotated; a battery of
+error verdicts costs money and says nothing about agreement). Another tenant's version → 404. And, new
+here, **no Lender Price scope → 422 `no_lp_scope`**: Lender Price answers a scenario with its WHOLE
+catalogue while our sheet prices ONE ladder, so an unscoped run reconciles ours against a merge of
+theirs — and a PASS from that run is the worst outcome available, because it opens the publish gate on
+a measurement of a question nobody asked.
+
+**THREE DEFECTS WERE FOUND BY WRITING THE TEST, and the first two are the same shape: code that ran
+green while doing nothing.** (1) `buildAgreementScenarios()` returns `{ scenarios, count, byGroup }`,
+not an array. The route read `.length` off that object — `undefined` — so nothing was capped and the
+OBJECT was handed to the harness, which reads a non-array as an EMPTY list. Every run measured **zero**
+scenarios, summarized them as a clean nothing, and recorded a verdict against a sheet it had never
+compared. Nothing threw. (2) `summarize()` names the battery size `total`; `recordRun` read
+`s.scenarios`, so every real run stored **0** in the column the publish gate reads months later, beside
+comparable and agreed counts in the hundreds. (3) the stored Lender Price scope was resolved and then
+dropped on the floor, which is what the new refusal above closes. **The lesson is the one this file
+keeps re-learning: a green run is not evidence that anything was measured — assert the COUNT, and
+assert the upstream was actually asked.**
+
+**THE GATE GAINED A THIRD ANSWER.** `gateMet` is `errors === 0 && disagreed === 0 && comparable > 0`,
+so a run where Lender Price returned no usable answer on a single scenario — a degraded upstream, a
+lost entitlement, a filter matching none of its programs — fails the gate with **zero disagreements and
+zero errors**. Reporting that as "this sheet disagrees" sends somebody to fix a sheet that may be
+perfectly correct, so `nothing_comparable` is its own reason with its own wording. It is not proven
+either: a run that compared nothing proves nothing. That is the same refusal-to-collapse the module
+already applied to "never measured" versus "measured and failed".
+
+**A RECORD THAT DID NOT LAND IS ANSWERED AS A FAILURE** (500 `not_recorded`), carrying the summary so
+the battery that was already paid for is not thrown away. A 200 there is precisely how somebody watches
+a run succeed, presses Publish, is refused with `never_measured`, and has no way to find out why.
+
+Proven by `scripts/test-lt-ppe-agreement-run-db.js` against a real Postgres with the Lender Price
+client stubbed (sections A–F: the four refusals with nothing priced and nothing recorded; the whole
+299-scenario battery actually run and the upstream asked 299 times; the ledger row carrying the real
+count; `nothing_comparable`; a measured DISAGREEMENT refusing the publish as disagreeing rather than as
+unmeasured; the scope filtering another investor's decline out; the cap reporting what it dropped; a
+measured PASS publishing with no override anywhere on the ledger; and the failed record). **Every
+assertion was proven to fail by mutating the guard it protects** — the battery object, the key name,
+the dropped scope, the collapsed gate answer, the `configured()` refusal, the unscoped refusal, the
+truncation report, the record failure. `test-lt-ppe-console-db` D8 was NARROWED rather than deleted:
+"no route records a run" was true only while nothing could measure a sheet, and reading it as the rule
+would have banned the measuring half forever — it now asserts exactly one recorder and that what it
+stores is the harness's own result, never a request body. Both halves were proven to bite. 95/95 LT PPE
+suites pass against a real Postgres.
+
+**IT STILL CANNOT RUN.** The route refuses up front with `upstream_not_configured` until the owner
+rotates the Lender Price login in the vendor portal. That is the honest state: the machinery is
+complete and proven against a stub, and not one live scenario has been compared through it.
