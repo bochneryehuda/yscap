@@ -341,9 +341,16 @@ from scenario values and the two address items below**: 0 null-vs-omit divergenc
 - The **derived `city`** is DELIBERATELY not derived from a ZIP (the `clearScenarioOwnedFields`
   comment: "per-deal city — never derived from a ZIP, so a stale one survives every
   enrichment"), and `city` is a documented known-uncarried fact. Cosmetic-only; not a gap.
-- **STILL OPEN (live capture, not offline):** the **Prepay Buyout** special-mortgage
-  option — tracked under §5 derived SMO selectors; closing it needs a live SMO-registry
-  capture, not a code change here.
+- **Prepay Buyout — live SMO-registry captured 2026-08-17** (full list:
+  `ppe-research/LP-SMO-REGISTRY-2026-08-17.md`, 193 tokens). Honest finding: there is
+  **no SMO token literally named "Prepay Buyout"** in this tenant's registry. The
+  prepay-relevant tokens are the declining `N Yr PPP` series (`1–5 Yr PPP`, `No PPP`)
+  and the flat **`5% Flat Prepay`** promo (id `6373fe9dce8ad00001a1b87e` — the live
+  token for the D33 5% Fixed promo model). Mapping the frontend's captured "Prepay
+  Buyout" option to a specific token/field still needs the actual frontend request
+  capture beside this list — it is NOT guessed. So the offline §2.1 work is done and
+  the SMO space is now captured; the one residual is that frontend-request-vs-token
+  mapping.
 
 ### §2.2 — the ≥200-scenario AGREEMENT harness is BUILT; the only blocker is the login (2026-08-17)
 
