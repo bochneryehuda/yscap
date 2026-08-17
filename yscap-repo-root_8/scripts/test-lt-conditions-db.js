@@ -45,13 +45,20 @@ const GUID = 'test-lt-cond-guid-0001';
 
 /** The stub tenant. `apiGet` is the ONLY method the sync may call — if it ever
  *  reaches for a write, this object does not have one and the run fails loudly. */
-function stubClient(conditions, documents) {
+function stubClient(conditions, documents, comments = {}) {
   const calls = [];
   return {
     calls,
     configured: () => true,
     async apiGet(path) {
       calls.push(path);
+      // The thread path is checked FIRST — it is the specific one.
+      const thread = path.match(/\/conditions\/([^/]+)\/comments$/);
+      if (thread) {
+        const id = decodeURIComponent(thread[1]);
+        if (comments[id] === 'boom') throw new Error('Encompass said no');
+        return comments[id] || [];
+      }
       if (/\/conditions$/.test(path)) return conditions;
       if (/\/documents$/.test(path)) return documents;
       throw new Error(`the sync asked for a path this test did not expect: ${path}`);
@@ -110,8 +117,11 @@ async function main() {
     check(c1.ok && c1.stored === 2, 'both conditions are mirrored');
     check(d1.ok && d1.stored === 2, 'both eFolder documents are mirrored');
     check(d1.attachments === 1, 'the one attachment is mirrored as its own row');
-    check(client.calls.every((p) => /\/conditions$|\/documents$/.test(p)),
-      'and the sync asked for nothing but those two reads');
+    check(client.calls.every((p) => /\/conditions$|\/documents$|\/conditions\/[^/]+\/comments$/.test(p)),
+      'and the sync asked for nothing but the condition list, the eFolder, and the thread on a condition that HAS one');
+    check(client.calls.filter((p) => /\/comments$/.test(p)).length === 1
+      && client.calls.some((p) => p.endsWith('/conditions/c-A/comments')),
+      'the thread is read ONLY where Encompass says there is one — c-A carries a count, c-B does not, and a condition with nothing to say costs no call at all');
 
     const attach = await db.query(
       `SELECT a.encompass_uri, a.file_size FROM lt_document_attachments a
@@ -213,6 +223,75 @@ async function main() {
       'the eFolder needs list counts what is still wanted');
     check(center.sync.conditionsSyncedAt instanceof Date,
       'and the screen can say when this was last read, so it is not asking to be believed on nothing');
+
+    // ── The conversation on a condition ─────────────────────────────────────
+    console.log('\nthe thread on a condition');
+
+    const M1 = { id: 'm-1', comments: 'Sent the request to the borrower.', createdBy: { entityId: '17', entityName: 'Malky' }, dateCreated: '2026-06-02T10:00:00Z' };
+    const M2 = { id: 'm-2', comments: 'Operating agreement received — checking the members.', createdBy: { entityId: '42', entityName: 'Evolve API' }, dateCreated: '2026-06-03T11:30:00Z' };
+    const M_NO_ID = { comments: 'A comment that arrived without an id.', createdBy: { entityName: 'Nobody' }, dateCreated: '2026-06-04T09:00:00Z' };
+
+    // Encompass says THREE; two of them can be keyed and one cannot.
+    const CHATTY = { ...COND_A, commentsCount: 3 };
+    const client7 = stubClient([CHATTY, COND_B], [DOC_1, DOC_2], { 'c-A': [M1, M2, M_NO_ID] });
+    const c7 = await sync.syncConditionsForLoan(loanId, GUID, { client: client7 });
+    check(c7.ok && c7.comments && c7.comments.stored === 2,
+      'the thread is mirrored beside the condition — a table nobody fills can only ever answer "nothing"');
+    check(c7.comments.unreadable === 1,
+      'and a comment with NO id is COUNTED, not stored: the key is partial, so storing it would insert the same sentence again on every pass — and inventing an id would put our own value in a column that says it came from Encompass');
+
+    const thread1 = await db.query(
+      `SELECT m.encompass_comment_id, m.body, m.author_name, m.commented_at
+         FROM lt_condition_comments m JOIN lt_conditions c ON c.id = m.condition_id
+        WHERE c.loan_id = $1::uuid ORDER BY m.commented_at`, [loanId]);
+    check(thread1.rows.length === 2 && thread1.rows[0].author_name === 'Malky',
+      'each comment is its own row, with who said it and when');
+
+    // A second read UPDATES — that is a claim about the PARTIAL unique index and
+    // its ON CONFLICT predicate, which only Postgres can settle.
+    const edited = { ...M2, comments: 'Operating agreement received — members confirmed.' };
+    const client8 = stubClient([CHATTY, COND_B], [DOC_1, DOC_2], { 'c-A': [M1, edited] });
+    await sync.syncConditionsForLoan(loanId, GUID, { client: client8 });
+    const thread2 = await db.query(
+      `SELECT m.encompass_comment_id, m.body FROM lt_condition_comments m
+         JOIN lt_conditions c ON c.id = m.condition_id
+        WHERE c.loan_id = $1::uuid ORDER BY m.commented_at`, [loanId]);
+    check(thread2.rows.length === 2, 'reading it again stores no duplicate');
+    check(/members confirmed/.test(thread2.rows[1].body),
+      'and a comment that was EDITED is updated in place');
+
+    // A thread we cannot read must never cost us the conditions.
+    const angryThread = stubClient([CHATTY, COND_B], [DOC_1, DOC_2], { 'c-A': 'boom' });
+    const c9 = await sync.syncConditionsForLoan(loanId, GUID, { client: angryThread });
+    check(c9.ok === true && c9.comments.failed === 1 && c9.comments.stored === 0,
+      'a thread that will not read is REPORTED, and the conditions still land — losing the conditions over a comments outage would be the expensive direction');
+    const survivingThread = await db.query(
+      `SELECT count(*)::int AS n FROM lt_condition_comments m
+         JOIN lt_conditions c ON c.id = m.condition_id WHERE c.loan_id = $1::uuid`, [loanId]);
+    check(survivingThread.rows[0].n === 2,
+      '…and the comments we already hold are left alone: an absence is not a withdrawal');
+
+    // The cap is MEASURED, not assumed from a full page.
+    const bothChatty = stubClient(
+      [CHATTY, { ...COND_B, commentsCount: 2 }], [DOC_1, DOC_2],
+      { 'c-A': [M1], 'c-B': [M2] },
+    );
+    await sync.syncConditionsForLoan(loanId, GUID, { client: bothChatty });
+    const capped = await sync.syncCommentsForLoan(loanId, GUID, { client: bothChatty, commentCap: 1 });
+    check(capped.threads === 1 && capped.more === true,
+      'a capped pass says there are more — a silent cap reads as "that is everything there was"');
+
+    // What the screen gets, and what a client does NOT.
+    const staffCenter = await read.centerForLoan(loanId, { audience: 'internal' });
+    const staffCond = staffCenter.conditions.items.find((i) => i.encompassId === 'c-A');
+    check(!!staffCond && staffCond.comments.length >= 1 && !!staffCond.comments[0].author,
+      'the screen gets the conversation, with its author');
+    check(staffCond.commentCount === 3,
+      'and Encompass\'s OWN count beside it, so a thread shorter than the count can say so instead of reading as the whole story');
+    const clientCenter = await read.centerForLoan(loanId, { audience: 'borrower' });
+    const clientCond = clientCenter.conditions.items.find((i) => i.encompassId === 'c-A');
+    check(!!clientCond && clientCond.comments.length === 0 && clientCond.commentCount === null,
+      'a client is sent neither the conversation nor the count — a comment is our own reasoning about their file, and the investor scrub knows about NAMES, not about a paragraph of internal thinking');
 
     // ── A failure is recorded on the loan, not swallowed ────────────────────
     console.log('\na loan that cannot be read says so');

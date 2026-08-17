@@ -30,11 +30,24 @@ export default function LtSync() {
   // The Condition Centre rides the same pass, so its outcome is reported in the
   // same sentence — including its REFUSAL, which is the ordinary state while the
   // feature is switched off and must never read as a failure.
+  // What the threads did is only ever ADDED when there is something to say — a
+  // pass that read every conversation cleanly should not make somebody read a
+  // sentence about it. A cap or a thread that would not read always says so.
+  const threadNote = (t) => {
+    if (!t || !t.threads) return '';
+    const trouble = [];
+    if (t.failed) trouble.push(`${t.failed} could not be read`);
+    if (t.unreadable) trouble.push(`${t.unreadable} comment${t.unreadable === 1 ? '' : 's'} came in a form we could not file`);
+    if (t.more) trouble.push('more conversations still to go');
+    return trouble.length ? ` Conversations: ${trouble.join('; ')}.` : '';
+  };
+
   const conditionNote = (c) => {
     if (!c) return '';
     if (c.ok === false) return ` Conditions: ${c.reason}`;
     if (!c.due) return ' Conditions were already up to date.';
-    return ` Conditions: read ${c.read} of ${c.due} loans${c.failed ? `, ${c.failed} could not be read` : ''}${c.more ? ' (more still to go)' : ''}.`;
+    return ` Conditions: read ${c.read} of ${c.due} loans${c.failed ? `, ${c.failed} could not be read` : ''}${c.more ? ' (more still to go)' : ''}.`
+      + threadNote(c.comments);
   };
 
   const run = async () => {
@@ -57,7 +70,8 @@ export default function LtSync() {
       const out = await ltApi.runConditionSync({ refreshHours: 0 });
       setNote(out.ok === false
         ? out.reason
-        : `Conditions: read ${out.read} of ${out.due} loans${out.failed ? `, ${out.failed} could not be read` : ''}${out.more ? ' (more still to go — run it again)' : ''}.`);
+        : `Conditions: read ${out.read} of ${out.due} loans${out.failed ? `, ${out.failed} could not be read` : ''}${out.more ? ' (more still to go — run it again)' : ''}.`
+          + threadNote(out.comments));
       load();
     } catch (e) { setNote(e.message || 'Could not read the conditions.'); }
     finally { setBusy(false); }

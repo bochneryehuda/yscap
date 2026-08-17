@@ -428,6 +428,11 @@ because their user *is* the broker; ours cannot. `AUDIENCE-RULES.md` outranks an
 > on `lt_loans`); a read-only sync (`src/longterm/conditions/sync.js`) called from BOTH the
 > whole-book pass and its own admin-only door `POST /api/lt/sync/conditions`; a read layer
 > (`read.js`) and a GET-only router; and the screen `LtConditionCenter.jsx` on the loan.
+> The CONVERSATION on a condition is mirrored too, read only where Encompass's own
+> count says there is one (so a quiet loan costs no extra call) and shown beside the
+> condition — INTERNAL only, because a comment is our own reasoning about the file.
+> Its payload shape is recorded as UNVERIFIED (`COMMENT_SHAPE`), and the mirror is
+> written to fail loudly rather than duplicate if we turn out to be wrong about it.
 >
 > **What has NOT changed:**
 >

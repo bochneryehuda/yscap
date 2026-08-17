@@ -116,7 +116,37 @@ async function conditionsForLoan(loanId, opts = {}) {
     });
   }
 
-  const items = rows.map((r) => describeCondition(r, docsByCondition.get(r.id) || [], forClient));
+  // THE THREAD IS INTERNAL, FULL STOP — never fetched for a client.
+  //
+  // A condition comment is underwriter-to-underwriter text: our own reasoning,
+  // our own references, and whoever we are talking to about the file. The text
+  // written FOR a client is `external_description`, and that split is already the
+  // model's. The investor-name scrub covers a name, not a paragraph of internal
+  // thinking, so the safe answer here is not to send it rather than to clean it.
+  const threads = (!forClient && rows.length)
+    ? (await db.query(
+      `SELECT m.condition_id, m.id, m.body, m.author_name, m.commented_at
+         FROM lt_condition_comments m
+        WHERE m.condition_id = ANY($1::uuid[])
+        ORDER BY m.commented_at ASC NULLS LAST, m.created_at ASC`,
+      [rows.map((r) => r.id)],
+    )).rows
+    : [];
+
+  const threadByCondition = new Map();
+  for (const m of threads) {
+    if (!threadByCondition.has(m.condition_id)) threadByCondition.set(m.condition_id, []);
+    threadByCondition.get(m.condition_id).push({
+      id: m.id,
+      body: m.body,
+      author: m.author_name,
+      at: m.commented_at,
+    });
+  }
+
+  const items = rows.map((r) => describeCondition(
+    r, docsByCondition.get(r.id) || [], forClient, threadByCondition.get(r.id) || [],
+  ));
 
   // Unapproved first, then oldest first — a stable order, so the list does not
   // reshuffle under somebody's cursor between two reads.
@@ -126,7 +156,7 @@ async function conditionsForLoan(loanId, opts = {}) {
 }
 
 /** One condition, described for a screen. */
-function describeCondition(r, documents, forClient) {
+function describeCondition(r, documents, forClient, thread = []) {
   // A client sees the EXTERNAL description — that is what it is for — and never
   // the internal one, which routinely carries our own references and reasoning.
   const body = forClient
@@ -152,7 +182,16 @@ function describeCondition(r, documents, forClient) {
     owner: forClient ? null : r.owner_role,
     assignedTo: forClient ? null : r.assigned_to,
     daysToReceive: r.days_to_receive,
-    comments: r.comments_count,
+
+    // BOTH numbers, deliberately. `commentCount` is ENCOMPASS's own count and
+    // `comments` is the thread we actually hold; they disagree when a read was
+    // capped, a call failed, or a comment arrived in a shape we could not key.
+    // Reporting one figure for both would turn any of those into a silent
+    // "there is nothing more to see".
+    // A client is told neither — "3 comments you may not read" is worse than
+    // silence, and the count alone still says how much was discussed about them.
+    commentCount: forClient ? null : r.comments_count,
+    comments: forClient ? [] : thread,
     createdAt: r.encompass_created_at,
     updatedAt: r.encompass_modified_at,
     syncedAt: r.encompass_synced_at,

@@ -58,6 +58,50 @@ function StatusPill({ open, stated, status }) {
   );
 }
 
+/**
+ * The conversation on one condition, as Encompass holds it.
+ *
+ * READ-ONLY, like everything else here — there is no box to type in, because
+ * writing a comment back is a WRITE to Encompass and the pad has not authorised
+ * one. It is INTERNAL: the server sends no thread at all to a client.
+ *
+ * WHEN OUR THREAD IS SHORTER THAN ENCOMPASS'S COUNT, IT SAYS SO. That gap is
+ * real — a capped read, a call that failed, a comment in a shape we could not
+ * key — and showing four of six comments with no note would read as "that is
+ * everything that was said", which is the one thing a thread must never do.
+ */
+function ConditionThread({ item }) {
+  const thread = Array.isArray(item.comments) ? item.comments : [];
+  const stated = Number(item.commentCount) || 0;
+  const missing = Math.max(0, stated - thread.length);
+  if (!thread.length && !missing) return null;
+
+  return (
+    <div style={{ marginTop: 8, borderTop: `1px dashed ${LINE}`, paddingTop: 7 }}>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.04em', color: MUTED, marginBottom: 4 }}>
+        Conversation
+      </div>
+      {thread.map((c) => (
+        <div key={c.id} style={{ margin: '0 0 6px', minWidth: 0 }}>
+          <div style={{ fontSize: 12, color: MUTED }}>
+            {plain(c.author)}{c.at ? ` · ${day(c.at)}` : ''}
+          </div>
+          <div style={{ color: INK, fontSize: 13, lineHeight: 1.5, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
+            {c.body || '—'}
+          </div>
+        </div>
+      ))}
+      {missing ? (
+        <div style={{ fontSize: 12, color: MUTED }}>
+          {thread.length
+            ? `Encompass counts ${stated} comment${stated === 1 ? '' : 's'} on this condition — ${missing} ${missing === 1 ? 'has' : 'have'} not been read across yet.`
+            : `Encompass counts ${stated} comment${stated === 1 ? '' : 's'} on this condition, and none has been read across yet.`}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** One condition, with the documents that answer it underneath. The documents
  *  come from INVERTING the link — Encompass has no condition→documents endpoint,
  *  so the server builds this and the screen only draws it. */
@@ -84,8 +128,10 @@ function ConditionCard({ item }) {
         {item.owner ? <span>Owner: {plain(item.owner)}</span> : null}
         {item.assignedTo ? <span>With: {plain(item.assignedTo)}</span> : null}
         <span>Added {day(item.createdAt)}</span>
-        {item.comments ? <span>{item.comments} comment{item.comments === 1 ? '' : 's'}</span> : null}
+        {item.commentCount ? <span>{item.commentCount} comment{item.commentCount === 1 ? '' : 's'}</span> : null}
       </div>
+
+      <ConditionThread item={item} />
 
       {item.documents && item.documents.length ? (
         <div style={{ marginTop: 8, borderTop: `1px dashed ${LINE}`, paddingTop: 7 }}>

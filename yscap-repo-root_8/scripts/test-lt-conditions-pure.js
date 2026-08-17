@@ -229,6 +229,28 @@ check(clientView.body === 'Please send the operating agreement.',
 check(clientView.owner === null && clientView.assignedTo === null,
   'and never who inside the company owns it');
 
+// The THREAD is internal in the strongest sense: not scrubbed, not summarised —
+// absent. A comment is our own reasoning about their file, and the scrub knows
+// about investor NAMES, not about a paragraph of internal thinking.
+const THREAD = [{ id: 'm1', body: 'Deephaven asked for the OA', author: 'Malky', at: '2026-06-02T10:00:00Z' }];
+const clientThread = read._internals.describeCondition(
+  { id: 'r', status_open: true, comments_count: 3 }, [], true, THREAD,
+);
+check(Array.isArray(clientThread.comments) && clientThread.comments.length === 0,
+  'a client is never sent the conversation on their condition — it is withheld, not cleaned');
+check(clientThread.commentCount === null,
+  '…and not told how much was said either: "3 comments you may not read" is worse than silence');
+
+const staffThread = read._internals.describeCondition(
+  { id: 'r', status_open: true, comments_count: 3 }, [], false, THREAD,
+);
+check(staffThread.comments.length === 1 && staffThread.comments[0].body === 'Deephaven asked for the OA',
+  'staff read the conversation as written');
+check(staffThread.commentCount === 3,
+  'and BOTH numbers travel — Encompass counts three, we hold one, and the screen can say so');
+check(read._internals.describeCondition({ id: 'r', status_open: true }, [], false).comments.length === 0,
+  'a condition with no thread reports an empty one rather than nothing at all');
+
 // ── Pressing the button by hand ─────────────────────────────────────────────
 // A person asking for a pass means "read them again NOW". Reading a refresh age
 // of 0 as "unset" would silently give them the ordinary 12-hour age and re-read

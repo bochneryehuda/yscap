@@ -47,6 +47,17 @@ const DEFAULT_READ_BUDGET = 20;
 const DEFAULT_REFRESH_HOURS = 12;
 
 /**
+ * How many condition THREADS one loan will read.
+ *
+ * The comments resource is one HTTP call PER CONDITION, and a delegated file here
+ * carries up to 67 conditions — so this is the only part of the mirror whose cost
+ * grows with the file rather than with the book. The cap is REPORTED, never
+ * silent: "we read 40 threads and there are more" is the difference between a
+ * sweep that is keeping up and one that never will.
+ */
+const DEFAULT_COMMENT_CAP = 40;
+
+/**
  * Is the Condition Center switched on?
  *
  * FAILS CLOSED. An unreadable settings table answers "off" — with the feature
@@ -183,7 +194,18 @@ async function syncConditionsForLoan(loanId, loanGuid, opts = {}) {
       [loanId, syncedAt],
     );
     await dbc.query('COMMIT');
-    return { ok: true, stored: read.rows.length, seen: read.seen, unreadable: read.unreadable, retired, resolved };
+
+    // THE THREADS COME AFTER THE COMMIT, and outside this connection. They are
+    // one HTTP call per condition, so holding the transaction open across them
+    // would pin a pooled connection for the length of a network round trip per
+    // condition — and a comments outage would then roll back conditions that
+    // read perfectly. Its failures are REPORTED beside the conditions instead.
+    const comments = await syncCommentsForLoan(loanId, loanGuid, opts);
+
+    return {
+      ok: true, stored: read.rows.length, seen: read.seen, unreadable: read.unreadable,
+      retired, resolved, comments,
+    };
   } catch (e) {
     try { await dbc.query('ROLLBACK'); } catch { /* the connection is going back either way */ }
     await recordError(loanId, 'conditions', (e && e.message) || String(e));
@@ -191,6 +213,132 @@ async function syncConditionsForLoan(loanId, loanGuid, opts = {}) {
   } finally {
     dbc.release();
   }
+}
+
+// ── Writing one condition's thread ──────────────────────────────────────────
+
+/**
+ * Upsert one comment on one condition.
+ *
+ * The unique index is PARTIAL (`WHERE encompass_comment_id IS NOT NULL`), and a
+ * partial index cannot be inferred without repeating its predicate — so the
+ * `ON CONFLICT` carries the same `WHERE`. Leaving it off is a 42P10 at runtime,
+ * inside a catch, which reads as "the thread would not store" forever.
+ */
+async function upsertComment(dbc, conditionId, c, syncedAt) {
+  await dbc.query(
+    `INSERT INTO lt_condition_comments
+       (id, condition_id, encompass_comment_id, body, author_name, author_id,
+        commented_at, raw, encompass_synced_at)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+     ON CONFLICT (condition_id, encompass_comment_id) WHERE encompass_comment_id IS NOT NULL
+     DO UPDATE SET
+       body                = EXCLUDED.body,
+       author_name         = EXCLUDED.author_name,
+       author_id           = EXCLUDED.author_id,
+       commented_at        = EXCLUDED.commented_at,
+       raw                 = EXCLUDED.raw,
+       encompass_synced_at = EXCLUDED.encompass_synced_at`,
+    [conditionId, c.encompassCommentId, c.body, c.authorName, c.authorId,
+      c.commentedAt, c.raw === undefined ? null : JSON.stringify(c.raw), syncedAt],
+  );
+}
+
+/**
+ * Read + mirror the THREADS on one loan's conditions.
+ *
+ * ONLY where Encompass's own `commentsCount` says there is something to read, so
+ * a loan whose conditions have no comments costs ZERO extra calls — the count
+ * rides on the condition itself, which we have already stored.
+ *
+ * IT NEVER FAILS THE LOAN. The conditions are committed before this runs; a
+ * thread we could not read is COUNTED and reported beside them, because losing
+ * the conditions over a comments outage would be the expensive direction.
+ *
+ * A COMMENT WITH NO ID IS COUNTED, NOT STORED — and that is deliberate. The
+ * comment payload's exact shape is UNVERIFIED against the live tenant (the
+ * endpoint is verified; its fields are not). The unique index only covers a
+ * non-null id, so an id-less comment could not be de-duplicated and would insert
+ * a fresh copy of the same sentence on every pass. The alternatives are worse:
+ * synthesising an identity puts a value we invented in a column that says it came
+ * from Encompass, and delete-then-reinsert breaks this module's own rule that
+ * nothing is ever deleted. So it is reported as `unreadable`, and if the live
+ * payload turns out to carry no ids that number climbs immediately and loudly —
+ * which is what a verified shape then fixes.
+ *
+ * NOTHING IS RETIRED. A comment withdrawn in Encompass stays mirrored: the table
+ * has no removal flag, and inventing one from an absence (a capped read, a failed
+ * call) would mark a live thread deleted. The condition carries Encompass's OWN
+ * count beside our thread, so a disagreement is visible rather than hidden.
+ */
+async function syncCommentsForLoan(loanId, loanGuid, opts = {}) {
+  const client = opts.client || lazy.client;
+  const syncedAt = opts.now || new Date();
+  const asked = Number(opts.commentCap);
+  const cap = Number.isFinite(asked) && asked > 0 ? Math.trunc(asked) : DEFAULT_COMMENT_CAP;
+
+  let targets = [];
+  const pick = await lazy.db.getClient();
+  try {
+    // cap + 1, so "there are more" is MEASURED rather than assumed from a full page.
+    const { rows } = await pick.query(
+      `SELECT id, encompass_condition_id
+         FROM lt_conditions
+        WHERE loan_id = $1::uuid
+          AND is_removed = false
+          AND comments_count > 0
+        ORDER BY encompass_modified_at DESC NULLS LAST, encompass_created_at DESC NULLS LAST
+        LIMIT $2`,
+      [loanId, cap + 1],
+    );
+    targets = rows;
+  } finally {
+    pick.release();
+  }
+
+  const more = targets.length > cap;
+  if (more) targets = targets.slice(0, cap);
+
+  let read = 0;
+  let stored = 0;
+  let failed = 0;
+  let unreadable = 0;
+
+  for (const t of targets) {
+    let payload;
+    try {
+      payload = await client.apiGet(
+        `/encompass/v3/loans/${encodeURIComponent(loanGuid)}/conditions/${encodeURIComponent(t.encompass_condition_id)}/comments`,
+      );
+    } catch {
+      failed += 1;
+      continue;
+    }
+
+    const list = Array.isArray(payload)
+      ? payload
+      : (payload && Array.isArray(payload.comments) ? payload.comments : []);
+
+    const dbc = await lazy.db.getClient();
+    try {
+      await dbc.query('BEGIN');
+      for (const raw of list) {
+        const c = mapper.readComment(raw);
+        if (!c || !c.encompassCommentId) { unreadable += 1; continue; }
+        await upsertComment(dbc, t.id, c, syncedAt);
+        stored += 1;
+      }
+      await dbc.query('COMMIT');
+      read += 1;
+    } catch {
+      try { await dbc.query('ROLLBACK'); } catch { /* the connection is going back either way */ }
+      failed += 1;
+    } finally {
+      dbc.release();
+    }
+  }
+
+  return { threads: targets.length, read, stored, failed, unreadable, more, cap };
 }
 
 // ── Writing one loan's eFolder ──────────────────────────────────────────────
@@ -485,9 +633,20 @@ async function syncOnce(opts = {}) {
   let read = 0;
   let failed = 0;
   const failures = [];
+  // The threads are counted ACROSS the pass, or the per-loan cap and every thread
+  // that would not read would be dropped on the floor here — the sweep's own
+  // report is the only place anybody would ever see them.
+  const comments = { threads: 0, read: 0, stored: 0, failed: 0, unreadable: 0, more: false };
+
   for (const loan of due) {
     const c = await syncConditionsForLoan(loan.id, loan.guid, { client, now: opts.now });
     const d = await syncDocumentsForLoan(loan.id, loan.guid, { client, now: opts.now });
+    if (c.comments) {
+      for (const k of ['threads', 'read', 'stored', 'failed', 'unreadable']) {
+        comments[k] += Number(c.comments[k]) || 0;
+      }
+      comments.more = comments.more || c.comments.more === true;
+    }
     if (c.ok && d.ok) read += 1;
     else {
       failed += 1;
@@ -497,16 +656,18 @@ async function syncOnce(opts = {}) {
 
   // The cap is REPORTED, never silent: "we read 20 and there are more" is the
   // difference between a sweep that is keeping up and one that never will.
-  return { ok: true, due: due.length, read, failed, failures, budget, more: due.length === budget };
+  return { ok: true, due: due.length, read, failed, failures, budget, more: due.length === budget, comments };
 }
 
 module.exports = {
   DEFAULT_READ_BUDGET,
   DEFAULT_REFRESH_HOURS,
+  DEFAULT_COMMENT_CAP,
   enabled,
   refreshHoursFor,
+  syncCommentsForLoan,
   syncConditionsForLoan,
   syncDocumentsForLoan,
   syncOnce,
-  _internals: { upsertCondition, upsertDocument, upsertAttachment, upsertLink, resolveLinks, retireMissingConditions, retireMissingDocuments, dueLoans },
+  _internals: { upsertCondition, upsertComment, upsertDocument, upsertAttachment, upsertLink, resolveLinks, retireMissingConditions, retireMissingDocuments, dueLoans },
 };
