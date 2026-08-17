@@ -1846,3 +1846,51 @@ chronically bad. It is covered now. Two of the new screen guards also came back 
 mutated, both matching a NAME the mutation left behind (`parity.series` still matches inside
 `parity.seriesTruncated`); they are pinned to their composed form, and every guard in that section now
 runs against comment-stripped source so a test can never be satisfied by the comment explaining it.
+
+**§2.27 — THE ⛔ HARD RULE WAS ENFORCED NOWHERE (2026-08-17; db/576).** The fourth find of the same
+shape as §2.25, §2.26 and the canary schedule, and the most expensive of them: **complete machinery
+with no caller, whose absence looked exactly like success.** The owner's hard rule is that a rate sheet
+agrees with Lender Price — every LLPA, every eligibility and ineligibility, the max and the min price,
+to the penny, over ~200 scenarios — BEFORE it is trusted. `ratesheet-agreement.js` measures precisely
+that and returns `summary.gateMet`. A sweep of `src/longterm/ppe/*.js` found the module required by
+**nothing in `src/`**, `gateMet` mentioned in the harness and in tests and nowhere else, and
+`publishRateSheetVersion` — the moment a sheet becomes the one every quote prices from — flipping the
+status with no reference to any of it. The verdict existed for as long as the function's return value
+was on the stack and was then discarded. So the rule was real, written down in three places, and any
+sheet could be published, and priced from, with not one scenario ever compared.
+
+**WHAT THE FIX HAD TO GET RIGHT, beyond keeping the answer.** *(1)* The four states are four different
+answers — nobody measured it, it disagrees, it agreed on too few scenarios, and we could not read the
+record — and they send a reader to four different places, so they are never collapsed; in particular an
+unreadable ledger is reported as its own reason rather than as "never measured", because "we could not
+check" is the state most likely to occur exactly when something else is already wrong. *(2)* It fails
+CLOSED: the whole point is that an unproven sheet must not be publishable. *(3)* The SCALE test belongs
+to *trusting* a sheet, not to *measuring* one — `gateMet` is already
+`errors===0 && disagreed===0 && comparable>0`, which three scenarios satisfy, so the ≥200 lives in the
+gate as a named constant (read in review, not found in a row somebody edited) and counts only the
+COMPARABLE scenarios. *(4)* The decision is PURE (`gateDecision` takes the stored rows), because a rule
+that lives inside an IO wrapper is a rule no offline test can reach — and this one decides whether a
+rate sheet may go live. *(5)* It reads the LATEST word only: taking "has it ever passed?" would make
+every regression invisible for the life of the version.
+
+**THE OVERRIDE IS PART OF THE DESIGN.** On the day this lands no sheet has a recorded run and the
+harness needs live Lender Price credentials to produce one — so a gate whose only remedy is a state
+nothing can produce is a dead end, which is the class this file has already recorded twice. A publish
+may proceed against an unproven sheet only when somebody asks for it explicitly and says why, recorded
+as a row of its own with their name on it; `gate_met` stays NULL there, because writing false would
+claim the sheet was measured and failed — a different and more damning statement than "unmeasured" —
+and an override is never afterwards counted as proof of agreement. **When the recording fails the
+publish does not proceed: the record IS the authorization.** The point is never to make refusal
+impossible to get past; it is to make getting past it impossible to do silently. No backfill, and none
+is possible: no agreement run has ever been recorded anywhere, so there is nothing to import, and
+marking existing sheets proven would invent the exact evidence the table exists to require.
+
+**HOW IT WAS PROVEN.** `test-lt-ppe-agreement-gate.js` runs pure against a recording stub, and the
+refusal is additionally asserted at the publish itself in `test-lt-ppe-ratesheet-db.js` — the suite
+that would notice if the gate were ever unwired from the publish path — where the refused version is
+also read back and confirmed still a draft. Both were run against a REAL Postgres built by the full
+572-migration chain from empty, which is what proves db/576 applies in order in the real chain rather
+than only in isolation. Eight mutations of the production rule were each proven to turn a suite red:
+removing the refusal, dropping the failed-override guard, disabling the scale test, making the
+unreadable ledger read as a pass, ignoring the override verdict, leaving the history unsorted, dropping
+the author requirement, and dropping the reason floor.

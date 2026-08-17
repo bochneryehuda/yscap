@@ -67,7 +67,8 @@ versioned/effective-dated/audited. *(MEGA §1.)*
 ### 2.2 Data model `lt_ppe_*` — **PARTIAL**
 - **DONE:** investor + alias + program anchors (db/558); rate-sheet version + base-price grid + LLPA
   adjustment + price-limit tables (db/560); findings ledger (db/561); shadow-run series (db/565);
-  cutover ledger (db/566); canary schedule (db/570); LP disqualify store (db/559).
+  cutover ledger (db/566); canary schedule (db/570); LP disqualify store (db/559); the ≥200-scenario
+  agreement ledger (db/576 — §2.10 below).
 - **DONE (2026-08-17, db/571):** the first-class **`lt_ppe_rule` / ruleset table** for *eligibility &
   bound* rules, plus `lt_ppe_rule_suggestion` (the proposal queue). Read/written through
   `ppe/rule-store.js`; §2.6 below is its consumer. The paragraph that follows described the gap it
@@ -186,8 +187,44 @@ surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
 ### 2.10 Per-investor onboarding & cutover — **PARTIAL**
 - **DONE (engine):** `cutover.js` (draft→shadow→live→retired gate), `cutover-ledger.js` + `cutover-store.js`
   (append-only decision history), the scoreboard. *(MEGA §11.)*
+- **DONE (2026-08-17) — the ⛔ ≥200-scenario agreement gate is ENFORCED, at the publish (db/576).**
+  `ratesheet-agreement.js` has always MEASURED the owner's hard rule and returned `summary.gateMet`;
+  nothing kept the answer. The verdict lived as long as the return value was on the stack and was then
+  discarded, and `publishRateSheetVersion` — the moment a sheet becomes the one every quote prices from
+  — never asked. So the rule was written down in three places and enforced in none: any sheet could be
+  published, and priced from, with not one scenario ever compared. `lt_ppe_ratesheet_agreement` is the
+  missing memory (one row per run, append-only — a later run that disagrees with an earlier one is a
+  second fact about the sheet, not a correction of the first), `agreement-store.js` holds the one PURE
+  definition of "proven" (`gateDecision`), and the publish now consults it.
+  - **Four states, never collapsed:** *nobody measured it* (fixed by running the harness), *it
+    disagrees* (fixed by fixing the sheet), *it agreed on too few scenarios*, and *we could not read the
+    record*. They send a reader to four different places, so they are four reasons and four messages.
+  - **It fails CLOSED.** An unreadable ledger answers `unreadable` — never a pass, and deliberately not
+    `never_measured`, because "we could not check" is the state most likely to occur exactly when
+    something else is already wrong.
+  - **The SCALE test lives in the gate, not the harness.** `gateMet` is already
+    `errors===0 && disagreed===0 && comparable>0`, which a battery of three scenarios satisfies — true,
+    and not the owner's rule. `MIN_COMPARABLE_SCENARIOS` is a named constant so it is read in code
+    review rather than found in a row somebody edited, and a run is counted on its COMPARABLE
+    scenarios (200 scenarios of which 190 were incomparable proves almost nothing).
+  - **The override is part of the design, not a hole in it.** On the day this lands no sheet has a
+    recorded run and the harness needs live Lender Price credentials to produce one, so a gate whose
+    only remedy is a state nothing can produce is a dead end. A publish may proceed against an unproven
+    sheet only when somebody asks explicitly and says why, recorded as its own row with their name on
+    it. `gate_met` stays NULL there — writing false would claim the sheet was measured and failed,
+    which is a different and more damning statement than "unmeasured" — and an override is never
+    counted as proof of agreement afterwards. **When the recording fails the publish does not proceed:
+    the record IS the authorization.** The point is never to make refusal impossible to get past; it is
+    to make getting past it impossible to do silently.
+  - **No backfill, and none is possible** — no agreement run has ever been recorded anywhere, so there
+    is nothing to import, and marking existing sheets proven would invent the exact evidence the table
+    exists to require.
+  - Tests `test-lt-ppe-agreement-gate.js` (pure, stub db) + the refusal asserted at the publish itself
+    in `test-lt-ppe-ratesheet-db.js`. Verified against a real Postgres built by the full 572-migration
+    chain; eight mutations of the production rule were each proven to turn the suite red.
 - **TO-BUILD:** **no promote-to-live HTTP route exists** — the gate is reachable only in code. Add the
-  route + the human promote/rollback action (P10).
+  route + the human promote/rollback action (P10). The agreement gate above is the E3 half of the same
+  question (may this SHEET be trusted); promote-to-live is the P10 half (may this PROGRAM go live).
 
 ### 2.11 Interfaces (admin surface) — **PARTIAL**
 - **DONE:** `/api/lt/ppe/*` (health, settings, investors, findings, scoreboard, quote, decide-finding,
