@@ -135,22 +135,39 @@ function evaluateEligibility(facts) {
     if (isNum(dscr) && dscr < 1000) add('dhvn_io_min_dscr', 'dscr', 'Interest-Only: Min DSCR 1.00x', 'Overlay: Interest Only');
   }
 
-  // --- property-type eligibility ----------------------------------------------------------------
-  // Row homes ineligible; Condos & Non-Warrantable Condos capped at 80% LTV (already <= global, kept
-  // for fidelity). Matched on the LP property_type vocabulary; an unrecognized value no-ops (fail-safe).
-  const pt = String(f.property_type || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (/rowhome|rowhouse/.test(pt)) add('dhvn_row_home', 'property_type', 'Row Homes ineligible', 'Property Types: Row Homes Ineligible');
-  if (/condo/.test(pt) && isNum(ltv) && ltv > 80000) add('dhvn_condo_max_ltv', 'property_type', 'Condos & Non-Warrantable Condos: Max 80% LTV', 'Property Types: Condo max 80% LTV');
+  // --- subordinate financing NOT allowed (matrix R40) -------------------------------------------
+  if (isNum(f.subordinate_amount) && f.subordinate_amount > 0) add('dhvn_subordinate', 'subordinate_amount', 'Subordinate Financing not allowed', 'Subordinate Financing: Not Allowed');
 
-  // --- overlays we CANNOT verify (facts not carried) — flagged, never guessed, never a decline ---
+  // --- property-type & units eligibility --------------------------------------------------------
+  // This program is 1–4 units + condominiums ONLY (owner 2026-08-17; DSCR matrix Property Types: SFR,
+  // PUD, Townhome, 2-4 Units, Condos & Non-Warrantable Condos). Two REAL restrictions: Row Homes
+  // ineligible; 5+ units ineligible. There is DELIBERATELY no property-type LTV cut here: the DSCR
+  // program's max LTV is ALREADY 80% for every grid cell, so the matrix's "Condos … Max 80% LTV" note is
+  // the program maximum, not a reduction (that 80% cut is a real reduction only on the higher-LTV
+  // owner-occupied programs). Property-type DIFFERENCES on DSCR are priced as LLPAs in the rate sheet
+  // (condo AllCondoRateAdjustment, 2-4 units UnitRateAdjustment — already encoded), NOT eligibility cuts.
+  // Matched on the LP property_type vocabulary; an unrecognized value no-ops (never disqualify on a label
+  // we don't know). Non-warrantable condos are ELIGIBLE (up to the same 80% max as everything else).
+  const pt = String(f.property_type || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (isNum(f.units) && f.units >= 5) add('dhvn_units_5plus', 'units', '5+ units ineligible (program is 1–4 units + condos)', 'Property Types: 1-4 Units + Condos only');
+  if (/rowhome|rowhouse/.test(pt)) add('dhvn_row_home', 'property_type', 'Row Homes ineligible', 'Property Types: Row Homes Ineligible');
+
+  // --- overlays we CANNOT verify (facts not carried) — flagged, never guessed, never a decline. These
+  // are the complete set from the DSCR sheet; each needs a NEW scenario fact before it can be enforced,
+  // so it is reported here rather than silently omitted (the whole point of an honest second layer). ---
   const unverifiable = [];
   const flag = (overlay, needs) => unverifiable.push({ overlay, needs });
-  flag('Declining market: Max LTV -5%', 'declining_market fact (appraisal-driven)');
-  flag('Short-Term Rental: Min DSCR 1.15, Min FICO 720, -5% LTV (75% max)', 'short_term_rental fact');
+  flag('Rural: Max 65% LTV, DSCR > 1.0x, Long-Term Rent only, <=10 acres no ag/farm use', 'rural_property + acreage facts');
+  flag('Short-Term Rental: Min DSCR 1.15, Min FICO 720, -5% LTV (75% max), no FTI/2+unit/rural', 'short_term_rental fact');
   flag('First-Time Investor: Min DSCR 1.00, Min FICO 700, long-term rental only', 'first_time_investor fact');
-  flag('Foreign National: max loan $1.5M, caps 70/60, DSCR >= 1.00 only', 'foreign_national fact');
+  flag('First-Time Homebuyer: ineligible unless 2+ borrowers with one non-FTHB', 'first_time_homebuyer fact');
+  flag('Foreign National: max loan $1.5M, LTV caps 70/60, DSCR >= 1.00 only', 'foreign_national fact');
+  flag('Declining market: Max LTV -5%', 'declining_market fact (appraisal-driven)');
+  flag('Vacant/Unleased: ineligible for R/T & C/O refi; -5% LTV on refi; 2+unit max 1 vacant', 'vacancy/leased fact');
+  flag('Renovation cash-out: appraised value under 6mo ownership at max 75% LTV', 'renovation + seasoning facts');
   flag('Philadelphia, PA: Max LTV -10%', 'city fact (state alone is insufficient)');
   flag('Ineligible geos: HI lava zones 1&2; Baltimore City, MD', 'sub-state city / lava-zone fact');
+  flag('Loan < $100,000: delegated delivery only', 'delivery_channel fact (advisory, not a decline)');
 
   return { eligible: reasons.length === 0, reasons, maxLtvMilli, cell: cell.status === 'priced' ? cell.cell : null, gridStatus: cell.status, unverifiable };
 }

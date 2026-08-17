@@ -1,0 +1,68 @@
+========== SHEET 3: DSCR ==========
+R1:  | DSCR | Correspondent |  |  |  | Effective Date:
+08/04/26
+R6:  | Email: correspondentlock@deephavenmortgage.com       Phone: (844) 346-2677 - Option 3
+R9:  | Eligibility Matrix | DSCR ≥ 1.00 |  |  | DSCR < 1.00 |  |  |  | Program Parameters
+R10:  | Loan Amount | FICO | Purchase & R/T |  | 24 |  | Purchase / Rate Term |  | 24 |  | Limits |  |  |  |  |  | 62
+R11:  | ≤ $1,500,000 | 720 | 0.8 |  | 0.8 |  | 0.75 |  | 0.7 |  | Minimum Loan Amount (DSCR ≥ 1.00x) |  |  |  |  |  | 75000
+R12:  | 700 |  | 0.8 |  | 0.75 |  | 0.75 |  | 0.65 |  | Minimum Loan Amount (DSCR < 1.00x) |  |  |  |  |  | 200000
+R13:  | 680 |  | 0.75 |  | 0.75 |  | 0.7 |  | 0.65 |  | 11 |  |  |  |  |  | 2500000
+R14:  | 640 |  | 0.7 |  | 0.7 |  | N/A |  | N/A |  | Maximum Cash Out | LTV ≤ 65% |  |  |  |  |  | 1000000
+R15:  | Foreign National |  | 0.7 |  | 0.6 |  | N/A |  | N/A |  | Maximum Cash Out | LTV > 65% |  |  |  |  |  | 500000
+R16:  | ≤ $2,000,000 | 700 | 0.8 |  | 0.75 |  | 0.7 |  | 0.65 |  | Foreign National Maximum Loan Amount |  |  |  |  |  | 1500000
+R17:  | 680 |  | 0.75 |  | 0.75 |  | 0.65 |  | 0.65 |  | 8
+R18:  | 660 |  | 0.65 |  | 0.65 |  | N/A |  | N/A |  | 5/6 ARM   5/6 ARM-IO   15Y/30Y Fixed   30Y Fixed-IO
+R19:  | ≤ $2,500,000 | 700 | 0.7 |  | 0.7 |  | 0.6 |  | 0.6 |  | Interest Only Features
+R20:  | 660 |  | 0.65 |  | 0.65 |  | N/A |  | N/A |  | Product |  |  |  |  |  | 21 |  | Amort | Maturity
+R21:  | Mortgage History | 0x30x12 |  |  | 30Y Fixed-IO |  |  |  |  |  |  |  |  |  |  |  | 10 Years |  | 20 Years | 30 Years
+R22:  | BK / FC / SS / DIL Seasoning | 36 Months |  |  | 5/6 ARM-IO |  |  |  |  |  |  |  |  |  |  |  | 10 Years |  | 20 Years | 30 Years
+R24:  | Other
+R25:  | Occupancy | Business Purpose Investment Properties only
+R26:  | Property Types | SFR, PUD, Townhome (Row Homes Ineligible), 2-4 Units, Condos & Non-Warrantable Condos (Max 80% LTV)
+R27:  | Rural Properties: Max 65% LTV / Purchase, R/T, and C/O (Long Term Rent only & DSCR > 1.0x), Rural max acreage limited to 10 acres with no agricultural and/or farm use
+R28:  | Short Term Rentals | Property Guard report required on all STR transactions | Min DSCR 1.15x | 5% LTV reduction vs matrix (75% Max) | Min FICO 720 | No First Time Investor / 2+ Unit / Rural / Unique Properties.
+R29:  | Refinace eligible with documented 12mo history of short term rental income.
+R30:  | Purchase -  AirDNA to be used for monthly rental income. Min 60% Occupancy Rate. Property income for qualifying: 80% of annual revenue divided by 12. Must be able to document ST rental
+R31:  | operator experience in last 12 months.
+R32:  | Reserves | Standard: 3 Months PITIA (Loan Amount ≤ $1mm) | 6 Months PITIA (Loan Amount > $1mm)
+R33:  | DSCR < 1.00x - 6 Months PITIA  | Foreign Nationals - 6 Months PITIA
+R34:  | Cash Out Amount | $1,000,000 Max Cash-Out (overlays apply); Cash-Out may be used towards reserves
+R35:  | Refinance Ownership Seasoning / Valuation | Ownership Seasoning | 0-6 Months |  |  | > 6 Months
+R36:  | Rate/Term |  | Lesser of Purchase Price + Improvements (or) Appraisal |  |  | Appraised Value
+R37:  | 24 |  | Lesser of Purchase Price + Improvements (or) Appraisal |  |  | Appraised Value
+R38:  | RTL / Renovation Cash Out |  | If purchased & renovated per appraisal w/ SSR of 2.5 and below; can use appraised value under (6) months ownership w/ max 75% LTV. See Guidelines for details.
+R39:  | Interest Only | Max LTV 80%; Min DSCR 1.00x
+R40:  | Subordinate Financing | Not Allowed
+R41:  | DSCR | DSCR = Gross Rents / PITIA (fully amortizing) or Gross Rents / ITIA (interest only loans)
+R42:  | DSCR < 1.00 | Minimum DSCR 0.75x
+R43:  | Vacant / Unleased properties ineligible for rate/term or cash-out refinances
+R44:  | No Rural Properties; Major Markets; No Rural locations
+R45:  | Loan Amounts < $125,000 | Max LTV is redcuced to 75%; Loan Amounts < $100k are limited to delegated delivery only
+R46:  | Lease / Gross Income | Lesser of Estimated Market Rent from Form 1007 or monthly rent from existing lease - higher lease rent allowed with (3) months receipt
+R47:  | Unleased Properties: 5% LTV reduction required on refinances, no LTV reduction for Purchase transactions
+R48:  | Unleased Properties (2+ unit): Max 1 vacant unit on refinances
+R49:  | Citizenship | US Citizens; Permanent Resident Aliens; Non-Permanent Resident Aliens (w/ US Credit).  Foreign Nationals: See guidelines for details.  Min DSCR Foreign National 1.00x
+R50:  | Assets | Sourced or seasoned for 30 days; Gift Funds allowed - See Guidelines for details.
+R51:  | Appraisal Review Product | FNMA CU score or FHLMC LCA score of 2.5; OR Approved AVM with valuation within 10% of appraised value and Confidence Factor ≥ 87% and FSD ≤ .13; OR Clear Capital CDA or like type product with
+R52:  | valuation within 10% of appraised value or field review
+R53:  | Full 2nd Appraisal required for the following transactions (i) Loan Amount > $2M, or loan amount with purpose C/O and loan amount >$1.5MM;  Form 216 can be utilized to obtain rental data if needed on
+R54:  | multi-family properties
+R55:  | First-Time Investor | Min DSCR 1.00, Min FICO 700, Long-Term Rental Only.
+R56:  | First-Time Homebuyers | Not Eligible; however if there are two or more borrowers and at least one if not a first-time homebuyer, the loan is eligible
+R57:  | Eligible Borrowers | Standard: Defined as borrowers with 12-month history of investment property ownership in the most recent 12 months
+R58:  | LLC Borrowing Entities: Domestic LLC required; US Citizen / Perm Resident / Non-Perm / Foreign National guarantors allowed - see guidelines for details
+R59:  | Credit | Standard: 3 tradelines reporting for 12+ months or 2 tradelines reporting for 24+ months all with activity in the last 12 months or one mortgage or installment tradeline for 36+ months with 12
+R60:  | months activity in the last 12 months.      Acceptable tradelines must show 0x60 in most recent 12 months from application date.
+R61:  | Qualifying FICO: The higher middle score when 3 agency scores are provided or the lower score when only 2 agency scores are provided, of all borrowers / guarantors.
+R62:  | Tradeline requirement is waived if the borrower's credit report reflects scores from all (3) bureaus & qualifying FICO score is 700+
+R63:  | Compliance | Compliance with all applicable federal and state regulations
+R64:  | Declining Markets | If property is located in a declining market as indicated by the appraisal, Max LTV is reduced by 5%
+R65:  | Prepayment Penalty | Investment Only; Standard = % of amount prepaid (partial or full prepayment): 5‐year penalty with 5%, 4%, 3%, 2%, 1% stepdown fee structure; OR 4-year penalty with 5%, 4%, 3%, 2%
+R66:  | stepdown fee structure; OR 3‐year penalty with 5%, 4%, 3% stepdown fee structure; OR 2‐year penalty with 3% stepdown fee structure (year 1 and year 2 = 3%); OR 1‐year penalty with 3% fee.
+R67:  | Please see Deephaven Operational Prepayment Penalty Matrices for State restrictions.
+R68:  | Seller Concessions | Up to 6% towards closing
+R69:  | Geographic Limitations | Philadelphia, PA:  Max LTV is reduced by 10% for all occupancies
+R70:  | Ineligible Geos | Delegated: HI - lava zones 1 & 2; Baltimore City, MD                    Non-Delegated: HI - lava zones 1 & 2; Baltimore City, MD
+R71:  | Deephaven Mortgage® LLC. All rights reserved. This material is intended solely for the use of licensed mortgage bankers. Distribution to consumers is strictly prohibited. Program and rates are subject to change without notice. Not available in all states. Terms subject to qualification. Disclosures & Licenses: https://deephavenmortgage.com/disclosures-and-licenses/  NMLS Consumer Access:http://nmlsconsumeraccess.org/  
+NMLS #958425
+

@@ -88,7 +88,18 @@ ok(elig({ interest_only: true, dscr: 1000, ltv: ltv(75), fico: 720, loan_amount:
 // ---- property type ----------------------------------------------------------------------------
 ok(!elig({ property_type: 'RowHome' }) && codes({ property_type: 'RowHome' }).includes('dhvn_row_home'), 'Row Home → ineligible');
 ok(elig({ property_type: 'SingleFamily' }), 'SingleFamily prices');
-ok(!elig({ property_type: 'Condo', ltv: ltv(81), fico: 780, loan_amount: 400000, dscr: 1250 }), 'Condo over 80% LTV → declined (condo max 80%)');
+ok(!elig({ units: 5 }) && codes({ units: 5 }).includes('dhvn_units_5plus'), '5+ units → ineligible (program is 1-4 units + condos only)');
+ok(elig({ units: 4, ltv: ltv(70) }), '4 units at 70% prices');
+// DSCR max LTV is 80% for EVERY cell, so there is NO property-type-specific LTV cut below 80 — a condo
+// or 2-4 unit at 80% prices exactly like a SFR (property-type differences are LLPAs in the rate sheet).
+ok(elig({ property_type: 'Condo', units: 1, ltv: ltv(80), fico: 720, loan_amount: 400000, dscr: 1250 }), 'Condo at 80% LTV prices (no property-type LTV cut below the 80% program max)');
+ok(elig({ property_type: 'NonWarrantableCondo', units: 1, ltv: ltv(80), fico: 720, loan_amount: 400000, dscr: 1250 }), 'Non-Warrantable Condo at 80% LTV prices (eligible, no special cut on DSCR)');
+ok(elig({ units: 2, ltv: ltv(80), fico: 720, loan_amount: 400000, dscr: 1250 }), '2 units at 80% LTV prices (no 2-4-unit LTV cut below 80 on DSCR)');
+ok(codes({}).indexOf('dhvn_condo_max_ltv') === -1 && codes({}).indexOf('dhvn_2to4_max_ltv') === -1, 'no redundant condo/2-4 "max 80%" rules exist (80% is the DSCR program max, not a cut)');
+
+// ---- subordinate financing not allowed (matrix R40) -------------------------------------------
+ok(!elig({ subordinate_amount: 50000 }) && codes({ subordinate_amount: 50000 }).includes('dhvn_subordinate'), 'subordinate financing (amount > 0) → ineligible (Subordinate Financing: Not Allowed)');
+ok(elig({ subordinate_amount: 0 }), 'no subordinate financing → eligible');
 
 // ---- unverifiable overlays are flagged, never silently applied --------------------------------
 const uv = evaluateEligibility(base({})).unverifiable;
