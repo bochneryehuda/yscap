@@ -1,0 +1,59 @@
+{
+	"message": {
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			    }],
+			"statusResponses": [{
+				"statusCode": "0",
+				"statusCondition": "Success",
+				"statusDescription": "Acknowledgement",
+				"statusName": "ACK"
+			}]
+		},
+		"products": [{
+			"payments": [{
+					"paymentAccountCardHolderFirstName": "API",
+					"paymentAccountCardHolderLastName": "Testing",
+					"paymentAccountCardHolderAddress1": "501 NE 122nd St",
+					"paymentAccountCardHolderAddress2": "Apt B",
+					"paymentAccountCardHolderCity": "OKLAHOMA CITY",
+					"paymentAccountCardHolderState": "OK",
+					"paymentAccountCardHolderPostalCode": "73114",
+					"paymentAccountCardHolderPhone": "555-222-5555",
+					"paymentAccountCardHolderEmail": "brittthompson@corelogic.com",
+					"paymentAccountIdentifier": "4012888888881881",
+					"paymentAccountCardSecurityCode": "111",
+					"paymentAccountCardExpirationMonth": "01",
+					"paymentAccountCardExpirationYear": "2022",
+					"paymentTotalAmount": "1.00",
+					"paymentProfileUpdate": "1",
+					"billingProfileUpdate": "1",
+					"paymentTransactionId": "40064185551",
+					"paymentStatusResponse": "Success"
+				},
+				{
+					"paymentAccountCardHolderFirstName": "API",
+					"paymentAccountCardHolderLastName": "Testing",
+					"paymentAccountCardHolderAddress1": "501 NE 122nd St",
+					"paymentAccountCardHolderAddress2": "Apt B",
+					"paymentAccountCardHolderCity": "OKLAHOMA CITY",
+					"paymentAccountCardHolderState": "OK",
+					"paymentAccountCardHolderPostalCode": "73114",
+					"paymentAccountCardHolderPhone": "555-222-5555",
+					"paymentAccountCardHolderEmail": "brittthompson@corelogic.com",
+					"paymentAccountIdentifier": "4012888888881881",
+					"paymentAccountCardSecurityCode": "111",
+					"paymentAccountCardExpirationMonth": "01",
+					"paymentAccountCardExpirationYear": "2022",
+					"paymentTotalAmount": "1.00",
+					"paymentProfileUpdate": "0",
+					"billingProfileUpdate": "0",
+					"paymentTransactionId": "40064185551",
+					"paymentStatusResponse": "Success"
+				}
+			]
+		}]
+	}
+}

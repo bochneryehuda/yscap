@@ -117,7 +117,52 @@ async function offline() {
     { noteRate: 6.125, finalPrice: 100.5, ratePeriod: 30 }] } }], disqualifiedData: [{}, {}, {}] };
   const ps = lp.parse(structured);
   ok(ps.programCount === 1 && ps.programs[0].minRate === 6.125, 'parser reads qualifiedNonQMData.resultRates.rateSet');
-  ok(ps.disqualifiedCount === 3, 'parser counts disqualified programs');
+
+  // §37.13 — THE INELIGIBLE COUNT, AGAINST THE SHAPE THE VENDOR ACTUALLY RETURNS.
+  //
+  // This assertion used to read `parse({... disqualifiedData: [{}, {}, {}]}).disqualifiedCount === 3`
+  // — an ARRAY, at the top level, with no `results` wrapper. The vendor returns NONE of that: the
+  // real `results.disqualifiedData` is an OBJECT, the root of the same four-level grouped tree the
+  // qualified side uses (ROOT → CriteriaFromLineResultKey → RateKey → LenderKey → leafs[]), and
+  // `leaf.disqualified` is a boolean. The old implementation summed array LENGTHS at those keys, so
+  // against the real response it was structurally incapable of returning anything but 0 — and it
+  // reached the API as `meta.disqualifiedCount`, reporting "0 products were ineligible" on top of a
+  // tree of ineligible products.
+  //
+  // It survived precisely BECAUSE of the fixture: a shape invented to satisfy the implementation
+  // proves only that the implementation matches the invention. So the fixture is now the vendor's
+  // real one, transcribed from a captured response, and the count comes from the walk that already
+  // reads that tree correctly.
+  ok(ps.disqualifiedCount === 0,
+    'a shape the vendor never returns counts ZERO ineligible — the old fixture claimed 3');
+  const realDisq = { results: { disqualifiedData: {
+    key: [], keyLabel: 'ROOT', type: null, childs: [{
+      key: ['Fixed', '30 Years', 'Purchase', 'Conventional', '400000.0', ''],
+      keyLabel: '30 Years Fixed Conventional Purchase', type: 'CriteriaFromLineResultKey', leafs: [], childs: [{
+        key: ['6.5'], keyLabel: '6.5', type: 'RateKey', leafs: [], childs: [{
+          key: ['Some Lender', 'true'], keyLabel: 'Some Lender', type: 'LenderKey',
+          plenderId: '"554ceedbd4c609e45581342e"', childs: [],
+          leafs: [
+            { companyName: 'Some Lender', programName: 'DSCR 30 Yr Fixed', rate: 6.5, disqualified: true,
+              groupAdjustmentProperties: [{ disqualifyAdjustments: [
+                { key: 'FICO - below 660', adjType: 'FicoRateAdjustment', type: 'LLPA', valueType: 'Points' },
+                { key: 'Max LTV exceeded / CLTV > 80.0 %', adjType: 'CapAdjustment', type: 'LLPA', valueType: 'Points' },
+              ] }] },
+            { companyName: 'Some Lender', programName: 'DSCR 30 Yr Fixed IO', rate: 6.75, disqualified: true,
+              groupAdjustmentProperties: [{ disqualifyAdjustments: [
+                { key: 'Interest Only not available in NY', adjType: 'StatesRateAdjustment', type: 'LLPA', valueType: 'Points' },
+              ] }] },
+          ],
+        }],
+      }],
+    }], leafs: [],
+  } } };
+  const dqParsed = lp.parse(realDisq);
+  ok(dqParsed.disqualifiedCount === 2,
+    'the REAL vendor tree shape counts its ineligible leaves (this was permanently 0 before)');
+  const dqWalk = lp.parseDisqualified(realDisq);
+  ok(dqWalk.itemCount === 2 && dqWalk.reasonCount === 3 && dqWalk.lenderCount === 1,
+    'and parse() agrees with parseDisqualified, which walks the same tree');
 
   // 12) Disqualify workflow flags: off by default (qualified path), on when requested.
   const kick = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25 }, { disqualify: { cached: false } });
@@ -358,19 +403,34 @@ async function offline() {
   ok(vl({ state: 'NJ', countyFps: 'abc' }).code === 'invalid_county_fips', '§26.3 non-5-digit countyFps → 422 invalid_county_fips');
 
   // 25) §26.5 — validateScenario builds+validates LOCALLY (zero upstream) and 422s a bad request.
-  const okScn = sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 375000, dscr: 1.25, zip: '07036', state: 'NJ', county: 'Union', countyFps: '34039' });
+  const okScn = sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 375000, dscr: 1.25, fico: 760, zip: '07036', state: 'NJ', county: 'Union', countyFps: '34039' });
   ok(okScn.ok === true && okScn.request && okScn.request.criteria.loanPurpose === 'Purchase', '§26.5 a complete scenario validates and returns the built request');
-  ok(sm.validateScenario({ purpose: 'banana', state: 'NJ', countyFps: '34039' }).error === 'unknown_loan_purpose', '§26.5 unknown purpose → 422 unknown_loan_purpose');
+  ok(sm.validateScenario({ purpose: 'banana', state: 'NJ', countyFps: '34039', fico: 760 }).error === 'unknown_loan_purpose', '§26.5 unknown purpose → 422 unknown_loan_purpose');
   // §26.3 CONTRACT CHANGE — a ZIP now FILLS the county, so ZIP+state is no longer an incomplete
   // location end-to-end (that is the whole ZIP-enrichment feature). The underlying validateLocation
   // rule is UNCHANGED and still proven directly above (line ~354). What must still 422 is a location
   // the enrichment genuinely cannot complete, asserted on the next line.
-  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '07036', state: 'NJ' }).ok === true,
+  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '07036', state: 'NJ', fico: 760 }).ok === true,
     '§26.3 ZIP + state is completed by the county lookup (no longer missing_county_fips)');
-  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '30301', state: 'GA' }).error === 'zip_not_found',
+  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '30301', state: 'GA', fico: 760 }).error === 'zip_not_found',
     '§26.5 a location the ZIP lookup cannot complete still 422s (fails closed)');
-  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, citizenship: 'Martian' }).error === 'invalid_field_value', '§26.5 invalid registry value → 422 invalid_field_value (moved BEFORE the upstream call)');
-  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).status === 422 || sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5 }).ok === true, '§26.5 validateScenario returns a shaped result');
+  // The fixture now carries a location. Not a weakening: this assertion's SUBJECT is that a bad
+  // registry VALUE is refused before any upstream call, and it never meant to also assert that a
+  // locationless scenario prices. It did price — silently, in the captured base's New Jersey town —
+  // which is the rule below.
+  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, zip: '11211', citizenship: 'Martian', fico: 760 }).error === 'invalid_field_value', '§26.5 invalid registry value → 422 invalid_field_value (moved BEFORE the upstream call)');
+  // A PRICED SCENARIO MUST SAY WHERE THE PROPERTY IS (re-audit of #1220). Before the address became
+  // scenario-owned this silently inherited the captured base's address and priced a deal in Linden,
+  // NJ wherever it actually was; afterwards it would have sent no state and no county at all.
+  // Both are wrong and they fail differently, so it is refused by name.
+  {
+    const noLoc = sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760 });
+    ok(noLoc.ok === false && noLoc.error === 'location_required', '§26.3 a scenario with NO location is refused (never priced in the capture\'s town)');
+    ok(/5-digit ZIP is enough/.test(noLoc.message || ''), '§26.3 …and the refusal says the cheapest way to satisfy it');
+    ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760, zip: '11211' }).ok === true,
+      '§26.3 …while a bare ZIP alone still satisfies it (enrichment runs first)');
+  }
+  ok(sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760 }).status === 422 || sm.validateScenario({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760 }).ok === true, '§26.5 validateScenario returns a shaped result');
 
   // 26) §27 STRICT INPUT VALIDATION — the silent-mispricing class (HTTP 200 with a wrong answer).
   const G = { purpose: 'Purchase', value: 500000, loan: 375000, fico: 760, dscr: 1.25, propertyType: 'SingleFamily', state: 'NJ', countyFps: '34039' };
@@ -379,22 +439,22 @@ async function offline() {
   ok(vErr({ ...G, propertyType: 'Castle' }) === 'unknown_property_type', '§27.5 unknown property type → 422 (never priced as single-family)');
   ok(vErr({ ...G, io: 'false' }) === 'non_boolean_value', '§27.6 string "false" boolean → 422 (never coerced to true)');
   ok(vErr({ ...G, ltv: 50 }) === 'ltv_conflict', '§27.7 conflicting LTV (50% vs 75% calc) → 422');
-  ok(sm.validateScenario({ ...G, ltv: 75 }).ok === true, '§27.7 agreeing LTV (75) is accepted');
+  ok(sm.validateScenario({ ...G, ltv: 75, fico: 760 }).ok === true, '§27.7 agreeing LTV (75) is accepted');
   ok(vErr({ ...G, loan: 600000 }) === 'loan_exceeds_value', '§27.10 loan > value (LTV > 100%) → 422');
   ok(vErr({ ...G, fico: 999 }) === 'out_of_range', '§27.10 FICO 999 → 422 out_of_range');
   ok(vErr({ ...G, dscr: -1 }) === 'out_of_range', '§27.10 DSCR -1 → 422 (sign no longer stripped to +1)');
   // Term/lock capability lists now match the LIVE frontend (audit §7): terms 5 + 8..30 + 40, locks
   // 10/12/15/21/25/30/40/45/60/75/90/120/180. So 17-year is VALID (it is within 8..30); a 7-year term
   // (a gap between 5 and 8) is the unsupported case.
-  ok(sm.validateScenario({ ...G, termYears: 17 }).ok === true, '§27.8 17-year term is now accepted (within the live 8..30 range)');
+  ok(sm.validateScenario({ ...G, termYears: 17, fico: 760 }).ok === true, '§27.8 17-year term is now accepted (within the live 8..30 range)');
   ok(vErr({ ...G, termYears: 7 }) === 'unsupported_term', '§27.8 7-year term → 422 unsupported_term (gap between 5 and 8)');
-  ok(sm.validateScenario({ ...G, termYears: 15 }).ok === true, '§27.8 15-year term is accepted');
+  ok(sm.validateScenario({ ...G, termYears: 15, fico: 760 }).ok === true, '§27.8 15-year term is accepted');
   ok(vErr({ ...G, lockDays: 22 }) === 'unsupported_lock', '§27.8 22-day lock → 422 unsupported_lock (not in the live list)');
-  ok(sm.validateScenario({ ...G, lockDays: 120 }).ok === true, '§27.8 120-day lock is now accepted (live list)');
+  ok(sm.validateScenario({ ...G, lockDays: 120, fico: 760 }).ok === true, '§27.8 120-day lock is now accepted (live list)');
   ok(vErr({ ...G, lockDays: 14 }) === 'unsupported_lock', '§27.8 14-day lock → 422 (the stale base offered it; the live frontend never does)');
-  ok(sm.validateScenario({ ...G, lockDays: 45 }).ok === true, '§27.8 45-day lock is accepted');
+  ok(sm.validateScenario({ ...G, lockDays: 45, fico: 760 }).ok === true, '§27.8 45-day lock is accepted');
   ok(vErr({ ...G, units: 4 }) === 'units_conflict', '§27.10 single-family + 4 units → 422 units_conflict');
-  ok(sm.validateScenario({ ...G, propertyType: 'Unit2_4', units: 3 }).ok === true, '§27.10 2–4 unit + 3 units is accepted');
+  ok(sm.validateScenario({ ...G, propertyType: 'Unit2_4', units: 3, fico: 760 }).ok === true, '§27.10 2–4 unit + 3 units is accepted');
   ok(vErr({ ...G, value: '1e3' }) === 'invalid_number', '§27.10 exponent string "1e3" → 422 (not corrupted to 13)');
   // strictNum preserves the sign; num (builder) no longer strips it.
   ok(sm._internals.strictNum('-1') === -1 && sm._internals.strictNum('1e3') === undefined && sm._internals.strictNum('$500,000') === 500000, '§27.10 strictNum preserves sign, rejects exponent, tolerates currency');
@@ -432,23 +492,24 @@ async function offline() {
   // only a frontend bug. So the amount is accepted + validated + retained INTERNALLY, but NEVER
   // transmitted as a criteria field and NEVER as an invented key.
   delete process.env.LP_CASHOUT_AMOUNT_FIELD;
-  ok(sm.validateScenario({ purpose: 'Cash out', value: 5e5, loan: 3e5, cashoutAmount: 50000, state: 'NJ', countyFps: '34039' }).ok === true, 'cash-out amount is an accepted, validated field');
-  ok(sm.validateScenario({ purpose: 'Cash out', value: 5e5, loan: 3e5, cashoutAmount: -5, state: 'NJ', countyFps: '34039' }).error === 'out_of_range', 'a negative cash-out amount is rejected');
+  ok(sm.validateScenario({ purpose: 'Cash out', value: 5e5, loan: 3e5, cashoutAmount: 50000, state: 'NJ', countyFps: '34039', fico: 760 }).ok === true, 'cash-out amount is an accepted, validated field');
+  ok(sm.validateScenario({ purpose: 'Cash out', value: 5e5, loan: 3e5, cashoutAmount: -5, state: 'NJ', countyFps: '34039', fico: 760 }).error === 'out_of_range', 'a negative cash-out amount is rejected');
   const coTx = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5, cashoutAmount: 47321 });
-  ok(coTx.criteria.cashoutAmount === undefined && JSON.stringify(coTx).includes('47321') === false, '§32.2 cash-out amount is NOT transmitted (criteria.cashoutAmount absent, value not in the wire)');
+  ok(coTx.criteria.cashoutAmount === 47321 && JSON.stringify(coTx).includes('47321'), 'cash-out amount IS transmitted as numeric criteria.cashoutAmount (the captured vendor field)');
   ok(coTx[sm.CASHOUT_INTERNAL] === 47321, '§32.2 cash-out amount is retained internally (Symbol-keyed, not serialized)');
   ok(!Object.keys(coTx.dynamicPropertiesMap).some((k) => k === 'undefined'), 'no invented dynamicPropertiesMap.undefined key is ever emitted');
   const noCo = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5 });
   ok(noCo.criteria.cashoutAmount === undefined && noCo[sm.CASHOUT_INTERNAL] === undefined, 'no cash-out amount supplied → nothing set, nothing retained');
-  // The operator escape hatch transmits a CONFIRMED dynamic field (set only once a capture confirms one).
+  // The operator escape hatch is RETIRED — it addressed a dynamic property that never existed, so it
+  // was a guess waiting to be configured. Setting it must now do nothing at all.
   process.env.LP_CASHOUT_AMOUNT_FIELD = 'CashInHand';
   const tx = lp.buildSearch({ purpose: 'CashOut', value: 5e5, loan: 3e5, cashoutAmount: 47321 });
-  ok(tx.criteria.cashoutAmount === undefined && tx.dynamicPropertiesMap.CashInHand && tx.dynamicPropertiesMap.CashInHand.value === 47321, 'the operator escape hatch transmits under the configured dynamic key ONLY (criteria still never set)');
+  ok(tx.dynamicPropertiesMap.CashInHand === undefined && tx.criteria.cashoutAmount === 47321, 'the retired escape hatch writes no dynamic property; the amount rides its one captured path');
   delete process.env.LP_CASHOUT_AMOUNT_FIELD;
 
   // 31) AUDIT §3 — appraised value is NOT manufactured from the estimated value.
   const buyAppr = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000 });
-  ok(buyAppr.criteria.appraisedValue === 5e5, '§3 purchase: appraised = value (frontend mirrors it)');
+  ok(buyAppr.criteria.appraisedValue === null, 'purchase: appraised value is BLANK unless separately entered — never mirrored from the price');
   const coBlank = lp.buildSearch({ purpose: 'CashOut', value: 6e5, loan: 42e4 });
   ok(coBlank.criteria.appraisedValue === null, '§3 cash-out with no appraisal: appraised is BLANK, not the $600k estimated value');
   const refiBlank = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5 });
@@ -480,20 +541,20 @@ async function offline() {
   ok(vErr({ ...G, attachment: 'Sideways' }) === 'invalid_attachment', '§6 an invalid attachment → 422 invalid_attachment');
 
   // 34) AUDIT — isolated LTV range is checked whether or not value+loan were supplied.
-  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 105, state: 'NJ', countyFps: '34039' }).error === 'ltv_out_of_range', 'a bare LTV of 105% → 422 ltv_out_of_range');
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 105, state: 'NJ', countyFps: '34039', fico: 760 }).error === 'ltv_out_of_range', 'a bare LTV of 105% → 422 ltv_out_of_range');
   // §35.2/§36.2 CONTRACT CHANGE — a LONE ltv is no longer a priceable scenario. The amount triangle
   // needs any TWO of value / loan / ltv (the third is derived), so one amount alone is refused as
   // insufficient_amounts rather than sent upstream with a null purchase price. The RANGE checking
   // these two rows were written for is unchanged and still proven by the 105% case above (it fires
   // before the triangle rule), and by the in-range rows below which now supply a second amount.
-  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 95, state: 'NJ', countyFps: '34039' }).error === 'insufficient_amounts', 'a bare LTV of 95% alone → 422 insufficient_amounts (needs two of value/loan/ltv)');
-  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 95, loan: 4e5, state: 'NJ', countyFps: '34039' }).ok === true, 'an in-range LTV of 95% WITH a loan is accepted (value derived)');
-  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 0.7, loan: 4e5, state: 'NJ', countyFps: '34039' }).ok === true, 'a fractional LTV of 0.70 with a loan is accepted');
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 95, state: 'NJ', countyFps: '34039', fico: 760 }).error === 'insufficient_amounts', 'a bare LTV of 95% alone → 422 insufficient_amounts (needs two of value/loan/ltv)');
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 95, loan: 4e5, state: 'NJ', countyFps: '34039', fico: 760 }).ok === true, 'an in-range LTV of 95% WITH a loan is accepted (value derived)');
+  ok(sm.validateScenario({ purpose: 'Purchase', ltv: 0.7, loan: 4e5, state: 'NJ', countyFps: '34039', fico: 760 }).ok === true, 'a fractional LTV of 0.70 with a loan is accepted');
 
   // 35) GOLDEN FIXTURE A — the audit's canonical DSCR purchase (permanent request-structure fixture).
   const goldA = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000, fico: 760, dscr: 1.25,
     propertyType: 'SingleFamily', prepayMonths: 60, borrowerType: 'LLC', zip: '07036', state: 'NJ', countyFps: '34039' });
-  ok(goldA.criteria.loanPurpose === 'Purchase' && goldA.criteria.purchasePrice === 5e5 && goldA.criteria.appraisedValue === 5e5, 'GOLDEN A: purchase 500k, appraised 500k');
+  ok(goldA.criteria.loanPurpose === 'Purchase' && goldA.criteria.purchasePrice === 5e5 && goldA.criteria.appraisedValue === null, 'GOLDEN A: purchase 500k, appraised BLANK (not mirrored)');
   ok(goldA.criteria.loanAmount === 375000 && Math.abs(goldA.criteria.ltv - 0.75) < 1e-9, 'GOLDEN A: loan 375k, LTV 0.75');
   ok(goldA.criteria.fico === 760 && goldA.criteria.dscr === 1.25, 'GOLDEN A: FICO 760 / DSCR 1.25');
   ok(goldA.criteria.loanYear === 30 && goldA.brokerCriteria.dayLocks === 30, 'GOLDEN A: 30yr / 30-day lock');
@@ -511,7 +572,7 @@ async function offline() {
   ok(goldB.criteria.interestOnly === true, 'GOLDEN B: interest-only');
   ok(goldB.property.propertyType === 'Condos' && goldB.property.attachmentType === 'Detached' && goldB.criteria.nonWarrantableProject === true, 'GOLDEN B: non-warrantable condo, detached');
   ok(goldB.criteria.loanYear === 15 && goldB.brokerCriteria.dayLocks === 15, 'GOLDEN B: 15yr / 15-day lock');
-  ok(goldB.criteria.cashoutAmount === undefined && goldB[sm.CASHOUT_INTERNAL] === 50000, 'GOLDEN B: §32.2 cashoutAmount 50000 is retained internally, NOT transmitted (fail-closed)');
+  ok(goldB.criteria.cashoutAmount === 50000 && goldB[sm.CASHOUT_INTERNAL] === 50000, 'GOLDEN B: cashoutAmount 50000 transmitted on criteria AND retained internally (the two agree)');
 
   // 37) AUDIT — advanced numerics are STRICTLY validated (no more silent coercion of "12abc" → 123).
   ok(vErr({ ...G, monthlyIncome: '12abc' }) === 'invalid_field_value', 'a malformed monthlyIncome → 422 invalid_field_value');
@@ -519,7 +580,7 @@ async function offline() {
   ok(vErr({ ...G, financedProperties: 1.5 }) === 'invalid_field_value', 'a fractional financedProperties → 422 (integer required)');
   ok(vErr({ ...G, dti: 150 }) === 'invalid_field_value', 'a DTI of 150 is out of range (max 100) → 422');
   ok(vErr({ ...G, monthlyDebt: -5 }) === 'invalid_field_value', 'a negative monthlyDebt → 422');
-  ok(sm.validateScenario({ ...G, monthlyIncome: 8000, monthlyDebt: 2000, numberOfBorrowers: 2, dti: 43 }).ok === true, 'valid advanced numerics are accepted');
+  ok(sm.validateScenario({ ...G, monthlyIncome: 8000, monthlyDebt: 2000, numberOfBorrowers: 2, dti: 43, fico: 760 }).ok === true, 'valid advanced numerics are accepted');
   const advReq = lp.buildSearch({ ...G, monthlyIncome: 8000, numberOfBorrowers: 2, dti: 43 });
   ok(advReq.criteria.monthlyIncome === 8000 && advReq.criteria.numberOfBorrower === 2 && Math.abs(advReq.criteria.clientDti - 0.43) < 1e-9, 'valid advanced numerics are actually applied to the request');
 

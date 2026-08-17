@@ -91,6 +91,12 @@ Never introduce a float price/rate on a stored or compared value; never re-deriv
   reusable call and packages the result for every consumer — `records` (→ `finding-store.persistRun`),
   `runRecord` (→ the `scoreboard.assemble` series), `report` (→ a human). It MEASURES one run; it never
   DECIDES (cutover) and never PERSISTS (finding-store).
+- **`canary-schedule.js`** (§10.3a) — the PURE decision of WHEN a canary runs and on WHAT. Validates a
+  saved schedule (cadence bounds, exactly one non-empty battery) and answers due/not-due against an
+  INJECTED clock and the last-run instant read from the run series the canary already writes (never a
+  second stamp of its own — the one that drifts is the one the gate reads). Its hard rule: **a schedule
+  never invents a battery**; an absent one refuses and says why, because a made-up battery still
+  produces an agreement rate and that number feeds the promotion gate. Fails toward NOT running.
 - **`scoreboard.js`** (§10.5) — the continuous-measurement layer BETWEEN the canary and the gate:
   collapses a dated series of run records into the `{ canaryAgreementRate, dailyNewFindings }` shape
   `cutover` consumes plus a `trend` an admin reads. It MEASURES; `assemble` DELEGATES the eligibility
@@ -131,11 +137,28 @@ DB; `-db` suites add a round-trip when `DATABASE_URL` is set). All suites are cu
 
 ## Pending (deliberately not built yet)
 
-- **The `/api/lt/*` route** mounting `facade.js` against the real LP client + `quote.js` + the store,
-  and a scheduler (or an admin "run canary now" button) that calls `canary.runCanary` →
-  `finding-store.persistRun` → `scoreboard.assemble` on a cadence.
-- **The admin UI** (§12) — the scoreboard/trend surface, the findings ledger with `divergence`
-  diagnoses, and the human-gated cutover-ledger promote/rollback controls.
-- **Wiring these suites into CI's `package.json` test chain** (kept out of the conflict-prone chain
-  until merge time; `test-lt-ppe-all.js` is the single entry to add — it auto-discovers every
-  `test-lt-ppe-*.js`).
+- **The canary WORKER.** The cadence DECISION now exists (`canary-schedule.js`, below) and is fully
+  tested; what is still missing is the thin IO wrapper around it — the tick that reads each scope's
+  saved schedule, takes a per-scope Postgres advisory lock (so N Render instances fire one battery,
+  not N), re-checks due-ness under the lock, calls the same `runCanary` → persist path the admin
+  button uses, and is OFF unless switched on. Deliberately not half-wired: a scheduler that fires
+  live vendor batteries is a "stage anything that touches production" change, and the piece worth
+  getting right first was the rule, not the plumbing.
+- **Storing a saved battery.** `canary-schedule` describes what a schedule must contain; nothing
+  persists one yet (no table, no `PUT /canary/schedule`). Note the ordering constraint that follows
+  from the module's one hard rule: the worker cannot ship before the store, because a schedule with
+  no saved battery never runs — and it must never invent one.
+
+_(Done 2026-08-16 — **the `/api/lt/ppe/*` route and the admin UI both shipped**; this section used to
+list them as pending and was simply stale. The route mounts `facade.js` against the real LP client +
+`quote.js` + the store and carries `POST /canary` (the "run canary now" button) → `canary.runCanary`
+→ `finding-store.persistRun` + `run-store.persistRun` → `GET /scoreboard`. The admin screen carries
+the scoreboard/trend surface, the findings ledger with `divergence` diagnoses, and the human-gated
+promote/rollback controls.)_
+_(Done 2026-08-16 — **the suites now run in CI.** `node scripts/test-lt-ppe-all.js` is wired into
+`package.json`'s `test` chain as ONE entry, right after `test-lt-dscr-routes.js`. One entry, not 27,
+because the aggregator auto-discovers every `test-lt-ppe-*.js` — so a suite added later is picked up
+with no second list to keep in step. That it goes RED was PROVEN, not assumed: flipping the
+cost-positive sign in `pricing.js` (`base + Σcost` instead of `base − Σcost`, i.e. a fee that RAISES
+the price) turned 4 suites red and the aggregator exited 1; reverted, it exits 0. Until now all 27
+suites existed and CI ran none of them.)_

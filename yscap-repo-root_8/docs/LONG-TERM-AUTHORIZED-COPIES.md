@@ -119,6 +119,19 @@ rtl-import app-v2/src/components/StaffLayout.jsx
 
 # ZIP → city / state / county name / county FIPS, so a Long-Term DSCR quote can
 # be priced from a ZIP instead of demanding a county FIPS from the caller.
+#
+# AUTHORIZED BUT NOT USED — kept deliberately, and it must not be read as a
+# description of what shipped. On inspection the module could not answer this
+# question: `resolveCounty` returns a county NAME and no FIPS (the pricer needs
+# the 5-digit FIPS), it refuses a bare ZIP (it is built for a full street
+# address, for the RTL order desk's rooftop-precision rule), and it needs a
+# DATABASE_URL for its cache — so it cannot run inside the pure pricing path.
+# What shipped instead is `src/longterm/lenderprice/zip-county.js`: the Census
+# Bureau's own ZCTA-to-county table, generated + committed, pure and offline.
+# That is NOT a crossing, so nothing here is required to make it legal. The
+# owner's permission stands and is broader than what was used; if a future
+# Long-Term surface genuinely needs the RTL geocoder, this line already covers
+# it. See the log row below.
 import src/lib/address-canon.js
 ```
 
@@ -132,7 +145,7 @@ import src/lib/address-canon.js
 | 2026-08-03 | `import app-v2/src/components/BorrowerProfilePanel.jsx` — the ONE shared borrower editor, mounted on a long-term file | RTL → LT | *"officers should be able to change the borrower profile on long term files"* — confirmed in the same breath as *"keep borrower read only"*, so the edit goes through the existing shared editor and the existing borrower endpoint; Long-Term code still never writes `borrowers` | #975 |
 | 2026-08-03 | `sql-ref borrower_officers` + `sql-write borrower_officers` — Long-Term records the officer↔person link | RTL → LT | Required to make the line above actually work: a non-privileged officer may only open a borrower profile they have a recorded relationship to, and today that means an **RTL** file. `borrower_officers` (db/327) is the identity-zone link built for precisely this — *"the client who has only ever done non-RTL business with them, so there is no file to match on"* | #975 |
 | 2026-08-14 | `rtl-import app-v2/src/App.jsx` + `rtl-import app-v2/src/components/StaffLayout.jsx` — the FRONT-END mount seam: the router mounts the Long-Term screens, and the staff shell renders the Short-Term / Long-Term switch | LT → RTL | *"You were authorized to touch that switch of the short-term shell."* Asked directly, because rule 5 forbids touching RTL to make LT work and the switch cannot exist without it. Deliberately as narrow as the back-end seam (`src/server.js`): these two files may reference LT code ONLY to mount it and to render the switch — no RTL screen may import an LT component for its own use, and no LT logic may move into a shared file | this PR |
-| 2026-08-16 | `import src/lib/address-canon.js` — ZIP → city/state/county/county-FIPS lookup for the Long-Term DSCR pricer | RTL → LT | *"Yes, you have my written OK to reuse that."* Asked as one specific question: the vendor's own screen turns a ZIP into the full location before pricing, while our connector required the caller to supply the county FIPS and refused an incomplete location. Scoped to this one module used as a READ-ONLY lookup — NOT the RTL address writers, and Long-Term still rewrites no RTL address record | this PR |
+| 2026-08-16 | `import src/lib/address-canon.js` — ZIP → city/state/county/county-FIPS lookup for the Long-Term DSCR pricer | RTL → LT | *"Yes, you have my written OK to reuse that."* Asked as one specific question: the vendor's own screen turns a ZIP into the full location before pricing, while our connector required the caller to supply the county FIPS and refused an incomplete location. Scoped to this one module used as a READ-ONLY lookup — NOT the RTL address writers, and Long-Term still rewrites no RTL address record. **CORRECTION (2026-08-16, same day): the authorized module was ultimately NOT used.** It returns a county NAME with no FIPS, refuses a bare ZIP (it is built for a full street address), and needs a `DATABASE_URL` — none of which suits a pure pricing path, and the owner separately corrected the premise: the screen is ZIP-driven, no street address is involved. The shipped answer is `src/longterm/lenderprice/zip-county.js` + a committed Census ZCTA table — LT-only, so not a crossing at all. The permission stands and is recorded here as granted, not as a description of the shipment | #1220 |
 | 2026-08-14 | **The Encompass integration — brought into Long-Term as a self-contained BY-VALUE copy** (logic, authorization, requests, credentials mechanism, field map). Lives entirely in `src/longterm/encompass/**`. | RTL → LT | *"Pull in and copy: the logic of Encompass integration, the credentials of Encompass integration, the requests, the authorization. We need to start long-term loans with a full Encompass understanding … take also all the fields from this mapping and bring it in."* This is a specific, owner-directed exception to the 2026-08-03 "no shared integrations" line below (Encompass only; everything else still stays separate). | this PR |
 
 ### Note on the Encompass copy (2026-08-14)

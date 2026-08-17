@@ -1,0 +1,13 @@
+{
+    "message": {
+        "createdDatetime": "2021-04-15T19:02:01.942Z",
+        "clientSystem": {
+            "referenceIdentifiers": [
+                {
+                    "referenceIdentifierType": "ApiKey",
+                    "referenceIdentifierValue": "{apikeyValue}"
+                }
+            ]
+        }
+    }
+}

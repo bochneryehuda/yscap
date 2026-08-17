@@ -32,6 +32,23 @@ export const money2 = (v) => (v == null || v === '' ? '—'
 export const pct = (v) => (v == null || v === '' ? '—' : `${Number(v)}%`);
 
 /**
+ * A FRACTION written as a percent — 0.97 → "97.0%".
+ *
+ * The sibling of `pct` and NOT interchangeable with it, which is exactly why it lives
+ * here rather than being hand-written wherever a fraction turns up. The loan columns
+ * hold whole percents (72.500 means 72.5%); the PPE agreement rate is a fraction of
+ * scenarios that matched, because that is what dividing two counts gives you. Feeding
+ * a fraction to `pct` prints "0.97%" on a shadow engine agreeing 97% of the time — a
+ * go-live gate reading as catastrophically broken — and feeding a whole percent to
+ * this one prints "7250.0%". Neither is a rounding difference; both are the wrong
+ * number, so the two conversions are named separately and each says what it takes.
+ *
+ * Non-finite is a dash for the standing reason: an agreement rate nobody has measured
+ * must never be drawn as 0%.
+ */
+export const rate = (v) => (typeof v === 'number' && Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : '—');
+
+/**
  * A ratio — DSCR — to three places with the trailing zeros trimmed.
  *
  * This is the INCUMBENT rule, already written out by hand in three places (the summary

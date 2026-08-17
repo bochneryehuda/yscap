@@ -1,0 +1,66 @@
+{
+    "responseData": {
+        "responseType": "Investors",
+        "count": 2,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "contact_name",
+                        "fieldValue": "Generic Investor"
+                    },
+                    {
+                        "fieldName": "user_email",
+                        "fieldValue": "info@appraisalscope.com"
+                    },
+                    {
+                        "fieldName": "user_id",
+                        "fieldValue": "323"
+                    },
+                    {
+                        "fieldName": "user_company_name",
+                        "fieldValue": "Generic Investor"
+                    },
+                    {
+                        "fieldName": "last_name",
+                        "fieldValue": "Investor"
+                    },
+                    {
+                        "fieldName": "first_name",
+                        "fieldValue": "Generic"
+                    }
+                ]
+            },
+            {
+                "num": 2,
+                "fieldlist": [
+                    {
+                        "fieldName": "contact_name",
+                        "fieldValue": "Happy Investorson"
+                    },
+                    {
+                        "fieldName": "user_email",
+                        "fieldValue": "investor@fake.com"
+                    },
+                    {
+                        "fieldName": "user_id",
+                        "fieldValue": "447"
+                    },
+                    {
+                        "fieldName": "user_company_name",
+                        "fieldValue": "Super Investor"
+                    },
+                    {
+                        "fieldName": "last_name",
+                        "fieldValue": "Investorson"
+                    },
+                    {
+                        "fieldName": "first_name",
+                        "fieldValue": "Happy"
+                    }
+                ]
+            }
+        ]
+    }
+}

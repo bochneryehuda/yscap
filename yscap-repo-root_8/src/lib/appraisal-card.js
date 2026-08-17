@@ -86,10 +86,16 @@ function validateCardInput(b) {
 // CVV at rest with the GCM helper, upserts the per-file card, and moves the
 // `appraisal_card` condition to 'received' (sign-off stays separate). Never logs
 // card data. Returns a non-secret summary { last4, brand }.
-async function saveApplicationCard({ appId, borrowerId, number, cvc, expMonth, expYear, zip }) {
+async function saveApplicationCard({ appId, borrowerId, number, cvc, expMonth, expYear, zip, dbc }) {
+  // OPTIONAL `dbc` — the repo's usual trailing-connection pattern. Saving a card
+  // and charging it are one action from the user's side (`amc/payment.js` NEW_CARD
+  // saves then charges), so the save has to be able to run on the caller's own
+  // connection; on the pool it would be invisible to a transaction that had not
+  // committed. Defaults to the pool, so every existing caller is unchanged.
+  const q = (dbc && typeof dbc.query === 'function') ? dbc : db;
   const brand = cardBrand(number);
   const enc = C.encryptSSN(JSON.stringify({ number, cvc })).toString('base64');
-  await db.query(
+  await q.query(
     `INSERT INTO application_payment_cards (application_id,borrower_id,card_encrypted,last4,brand,exp_month,exp_year,billing_zip)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      ON CONFLICT (application_id) DO UPDATE SET
@@ -97,7 +103,10 @@ async function saveApplicationCard({ appId, borrowerId, number, cvc, expMonth, e
        exp_month=EXCLUDED.exp_month, exp_year=EXCLUDED.exp_year, billing_zip=EXCLUDED.billing_zip,
        borrower_id=EXCLUDED.borrower_id, updated_at=now()`,
     [appId, borrowerId, enc, last4Of(number), brand, expMonth, expYear, zip]);
-  await db.query(
+  // The SAME handle — the card and the condition it fills must land together, or a
+  // caller inside a transaction gets a card with no condition (or the reverse) the
+  // moment anything rolls back.
+  await q.query(
     `UPDATE checklist_items SET status='received', updated_at=now()
       WHERE application_id=$1 AND tool_key='appraisal_card'`, [appId]);
   return { last4: last4Of(number), brand };

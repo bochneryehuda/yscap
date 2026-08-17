@@ -33,6 +33,9 @@ const store = new Map();
 const fakeStorage = { save: async (buf, { filename } = {}) => { const ref = 'ref-' + uuid(); store.set(ref, { buf, filename }); return { ref, provider: 'local' }; } };
 
 async function main() {
+  // DB-gated: `npm test` runs this whole chain in the no-database CI job too,
+  // so a suite that dials a database must skip rather than take the build down.
+  await require(__dirname + "/lib/db-gate").skipUnlessDb("esign-selftest-artifacts");
   await require(REPO + '/src/migrate-boot').ensureSchema();
   const envRowId = uuid();
   try {

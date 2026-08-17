@@ -1,0 +1,87 @@
+{
+    "responseData": {
+        "responseType": "Payment Options",
+        "count": 6,
+        "paymentFormAvailable": "1",
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Authorize and Capture"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "authorize_and_capture"
+                    }
+                ]
+            },
+            {
+                "num": 2,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Bank Account"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "bank_account"
+                    }
+                ]
+            },
+            {
+                "num": 3,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Send Payment Request To Your Customer"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "send_invoice"
+                    }
+                ]
+            },
+            {
+                "num": 4,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Bill Me/Prepaid Check"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "bill_me"
+                    }
+                ]
+            },
+            {
+                "num": 5,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Split Payment"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "split_payment"
+                    }
+                ]
+            },
+            {
+                "num": 6,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Partial Payment"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "partial_payment"
+                    }
+                ]
+            }
+        ]
+    }
+}

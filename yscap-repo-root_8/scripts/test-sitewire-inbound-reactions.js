@@ -70,6 +70,13 @@ async function notifyCount(appId) {
     console.log(`\n${P} passed, ${F} failed`);
   } catch (e) { console.error('THREW', e && e.message, e && e.stack); F++; }
   finally {
+    // DRAIN BEFORE TEARING DOWN. The reconcile above notifies through routes, and the
+    // email fan-out is fire-and-forget (a web request must never wait on an email), so a
+    // sent_emails INSERT can still be in flight here — pointing at a notifications row
+    // this teardown deletes. The two lock each other and Postgres kills one: deadlock
+    // detected (40P01), which fails a suite whose assertions all passed. A no-op when
+    // nothing is in flight.
+    try { await require('../src/lib/notify').drainEmails(); } catch (_) { /* never blocks teardown */ }
     try { for (const id of ids) { await db.query(`DELETE FROM sitewire_pull_field_change WHERE application_id=$1`, [id]); await db.query(`DELETE FROM sitewire_draws WHERE application_id=$1`, [id]); await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [id]); await db.query(`DELETE FROM notifications WHERE application_id=$1`, [id]); const bb = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [id])).rows[0]; await db.query(`DELETE FROM applications WHERE id=$1`, [id]); if (bb) await db.query(`DELETE FROM borrowers WHERE id=$1`, [bb.borrower_id]); } if (staffId) await db.query(`DELETE FROM staff_users WHERE id=$1`, [staffId]); } catch (_) {}
     try { await db.pool.end(); } catch (_) {}
     if (F) process.exit(1);

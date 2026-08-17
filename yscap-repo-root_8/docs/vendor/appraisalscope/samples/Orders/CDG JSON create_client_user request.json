@@ -1,0 +1,46 @@
+
+{
+	"message": {
+		"clientSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ApiKey",
+				"referenceIdentifierValue": "{{api_key}}"
+	    		},
+				{
+					"referenceIdentifierType": "ClientOrderNumber",
+					"referenceIdentifierValue": "1234AB"
+				}]
+		},
+		"deals": [{
+			"parties": [{
+					"partyRoleType": "processor",
+					"partyRoleIdentifier": "42986",
+					"identifier": "3",
+					"partyContacts": [{
+						"contactFirstName": "Sammy",
+						"contactLastName": "Smith",
+						"loginAccountIdentifier": "apivptest4",
+						"loginAccountPassword": "Happy123!",
+						"contacts": [{
+							"contactEmail": "cp@test.com",
+							"contactPhone": "555-555-5555"
+						}]
+					}]
+				},
+				{
+					"partyRoleType": "LenderBranch",
+					"partyRoleIdentifier": "101",
+					"identifier": "4"
+				}
+
+			]
+		}],
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ServiceProviderSubDomain",
+				"referenceIdentifierValue": "integrations.uat"
+			}]
+		},
+		"requestActionType": "Create_Client_User"
+	}
+}

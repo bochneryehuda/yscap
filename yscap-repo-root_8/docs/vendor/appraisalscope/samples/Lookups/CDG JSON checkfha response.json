@@ -1,0 +1,17 @@
+{
+    "responseData": {
+        "responseType": "FHA Indicator",
+        "count": 1,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "result",
+                        "fieldValue": "No"
+                    }
+                ]
+            }
+        ]
+    }
+}

@@ -186,9 +186,19 @@ function call(server, method, p, token, body) {
 
   } catch (e) { console.error(e); fail++; }
   finally {
+    // Wait for the fire-and-forget email fan-out before tearing down: its
+    // sent_emails INSERT is still in flight when the fan-out resolves, and it
+    // deadlocks with the DELETEs below (notify.js documents this and exports
+    // drainEmails for exactly this).
+    await require('../src/lib/notify').drainEmails().catch(() => {});
     email.sendMail = realSendMail;
     console.log(`\ntest-tpo-orders-db: ${pass} passed, ${fail} failed`);
     await new Promise((r) => server.close(r));
+    // DRAIN BEFORE ENDING THE POOL. The email fan-out is fire-and-forget (a web request
+    // must never wait on an email), so its sent_emails INSERT can still be in flight —
+    // and it would find the pool gone ("Cannot use a pool after calling end"). A no-op
+    // when nothing is in flight.
+    try { await require('../src/lib/notify').drainEmails(); } catch (_) { /* never blocks teardown */ }
     try { await db.pool.end(); } catch (_) {}
     process.exit(fail ? 1 : 0);
   }

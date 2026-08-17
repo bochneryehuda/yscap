@@ -1,0 +1,695 @@
+[
+ {
+  "smoName": "1 Yr PPP",
+  "smoId": "592868b74cedfd00015bdd61",
+  "fieldId": "PrepayTerm",
+  "value": "12 Months",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "1 Yr Tax Return",
+  "smoId": "57f2f4cae4b071ea7b978632",
+  "fieldId": "IncomeDocType",
+  "value": "1YrTaxReturn",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "1099",
+  "smoId": "5f36ae88ce8ad0000124dd25",
+  "fieldId": "IncomeDocType",
+  "value": "1099 - 24M",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "12 Month Business Bank Statements",
+  "smoId": "583d9d96e4b06f18ab238ca6",
+  "fieldId": "IncomeDocType",
+  "value": "12MoBusinessBankStatements",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "CPA Prepared P&L",
+  "smoId": "5f3700cdce8ad00001a67510",
+  "fieldId": "IncomeDocType",
+  "value": "12MoCPAPreparedPL",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "12 Month Income & Expense Statement",
+  "smoId": "5f443fc2ce8ad00001df17de",
+  "fieldId": "IncomeDocType",
+  "value": "12MonthIncomeExpenseStatement",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "12 Month Personal Bank Statements",
+  "smoId": "583d9d96e4b06f18ab238ca7",
+  "fieldId": "IncomeDocType",
+  "value": "12MoPersonalBankStatements",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "12 Month Tax Prepared P&L",
+  "smoId": "5f4e7676ce8ad00001d299cf",
+  "fieldId": "IncomeDocType",
+  "value": "12MonthTaxPreparedPL",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "2 Yr PPP",
+  "smoId": "592868b74cedfd00015bdd62",
+  "fieldId": "PrepayTerm",
+  "value": "24 Months",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "24 Month Business Bank Statements",
+  "smoId": "583d9d96e4b06f18ab238ca9",
+  "fieldId": "IncomeDocType",
+  "value": "24MoBusinessBankStatements",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "24 Month CPA Prepared P&L",
+  "smoId": "5f3ac007ce8ad00001b0aab6",
+  "fieldId": "IncomeDocType",
+  "value": "24MoCPAPreparedPL",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "24 Month Personal Bank Statements",
+  "smoId": "583d9d96e4b06f18ab238ca8",
+  "fieldId": "IncomeDocType",
+  "value": "24MoPersonalBankStatements",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "24 Month Tax Prepared P&L",
+  "smoId": "5f4e7676ce8ad00001d299ce",
+  "fieldId": "IncomeDocType",
+  "value": "24MonthTaxPreparedPL",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "3 Yr PPP",
+  "smoId": "592868b74cedfd00015bdd63",
+  "fieldId": "PrepayTerm",
+  "value": "36 Months",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "4 Yr PPP",
+  "smoId": "583608ece4b075381a196a57",
+  "fieldId": "PrepayTerm",
+  "value": "48 Months",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "5 Yr PPP",
+  "smoId": "58263ae7e4b0e7f399741293",
+  "fieldId": "PrepayTerm",
+  "value": "60 Months",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Alt Doc - 12 Months",
+  "smoId": "57f2f4cae4b071ea7b978317",
+  "fieldId": "IncomeDocType",
+  "value": "AltDoc12Months",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Alt Doc - 24 Months",
+  "smoId": "57f2f4cae4b071ea7b9782ea",
+  "fieldId": "IncomeDocType",
+  "value": "AltDoc24Months",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Asset Depletion",
+  "smoId": "57f2f4cae4b071ea7b977fdf",
+  "fieldId": "IncomeDocType",
+  "value": "AssetDepletion",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Asset Qualifier",
+  "smoId": "57f2f4cae4b071ea7b9780f2",
+  "fieldId": "IncomeDocType",
+  "value": "AssetQualifier",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Bankruptcy >=7 Years",
+  "smoId": "57f2f4cae4b071ea7b978e80",
+  "fieldId": "BankruptcySeasoning",
+  "value": "7+ Years",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Unseasoned Short Sale",
+  "smoId": "5849cc4ce4b05fb99af8934a",
+  "fieldId": "BankruptcySeasoning",
+  "value": "< 2 Years",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "BK > 4 Years",
+  "smoId": "57f2f4cae4b071ea7b979002",
+  "fieldId": "BankruptcySeasoning",
+  "value": "4-7 Years",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "BK >= 2 Yrs",
+  "smoId": "5df2a109e03dd800016f5987",
+  "fieldId": "BankruptcySeasoning",
+  "value": "2-4 Years",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "DSCR",
+  "smoId": "5f37104ace8ad000014c7abe",
+  "fieldId": "IncomeDocType",
+  "value": "DSCR",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "DIL >=1 Yrs",
+  "smoId": "6021afb8ce8ad00001daa2ae",
+  "fieldId": "Global_DEEDINLIEU",
+  "value": "DIL_1yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "DIL >=2 Yrs",
+  "smoId": "57f2f4cae4b071ea7b978fa0",
+  "fieldId": "Global_DEEDINLIEU",
+  "value": "DIL_2yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "DIL >=3 Yrs",
+  "smoId": "57f2f4cae4b071ea7b97971d",
+  "fieldId": "Global_DEEDINLIEU",
+  "value": "DIL_3yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "DIL >=4 Yrs",
+  "smoId": "594ada6d4cedfd000160b3e9",
+  "fieldId": "Global_DEEDINLIEU",
+  "value": "DIL_4yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "DIL >=5 Yrs",
+  "smoId": "5a147e3b4cedfd000130197f",
+  "fieldId": "Global_DEEDINLIEU",
+  "value": "DIL_5yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "DIL >=7 Years",
+  "smoId": "57f2f4cae4b071ea7b97812b",
+  "fieldId": "Global_DEEDINLIEU",
+  "value": "DIL_7yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "DIL >=Settled",
+  "smoId": "57f2f4cae4b071ea7b9791fb",
+  "fieldId": "Global_DEEDINLIEU",
+  "value": "DIL_Set",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "DSCR <1.15",
+  "smoId": "59235dd24cedfd0001c137ff",
+  "fieldId": "DSCRRATIO",
+  "value": "DSCR<1",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "DSCR >=1.00",
+  "smoId": "5f443dcbce8ad00001a03782",
+  "fieldId": "DSCRRATIO",
+  "value": "DSCR>=1",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "DSCR >=1.25 - J",
+  "smoId": "59235dd24cedfd0001c137fe",
+  "fieldId": "DSCRRATIO",
+  "value": "1.25",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Forbearance <=180 days",
+  "smoId": "5f69119ece8ad00001a59cba",
+  "fieldId": "GLOBAL_Forbearances",
+  "value": "Forbear6mo",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Forbearance <=90 days",
+  "smoId": "5f69119ece8ad00001a59cb8",
+  "fieldId": "GLOBAL_Forbearances",
+  "value": "Forbear3mo",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Forbearance >=18 Months",
+  "smoId": "57f2f4e4e4b071ea7b97d3f6",
+  "fieldId": "GLOBAL_Forbearances",
+  "value": "ForbearOver18mo",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Foreclosure >=2 Yrs",
+  "smoId": "58260c69e4b086e7ebabb082",
+  "fieldId": "Global_FORECLOSURES",
+  "value": "FC_2yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Foreclosure >=1 Yrs",
+  "smoId": "6021b010ce8ad00001e0fab3",
+  "fieldId": "Global_FORECLOSURES",
+  "value": "FC_1yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Foreclosure >=3 Years",
+  "smoId": "57f2f4cae4b071ea7b978edf",
+  "fieldId": "Global_FORECLOSURES",
+  "value": "FC_3yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Foreclosure >=4 Yrs",
+  "smoId": "58260c69e4b086e7ebabb083",
+  "fieldId": "Global_FORECLOSURES",
+  "value": "FC_4yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Foreclosure >=5 Yrs",
+  "smoId": "58360a5be4b075381a1b7c00",
+  "fieldId": "Global_FORECLOSURES",
+  "value": "FC_5yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Seasoned Foreclosure > 7 years",
+  "smoId": "58ac82efc9e77c00012fab04",
+  "fieldId": "Global_FORECLOSURES",
+  "value": "FC_7yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Foreclosure >=Settled",
+  "smoId": "57f2f4cae4b071ea7b97947a",
+  "fieldId": "Global_FORECLOSURES",
+  "value": "FC_Settle",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "ITIN",
+  "smoId": "581a41efe4b03ef9dcc9a21d",
+  "fieldId": "Citizenship",
+  "value": "ForeignNationalwithITIN)",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "ITIN",
+  "smoId": "581a41efe4b03ef9dcc9a21d",
+  "fieldId": "Citizenship",
+  "value": "ITIN",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Foreign National",
+  "smoId": "57f2f4cae4b071ea7b97804a",
+  "fieldId": "Citizenship",
+  "value": "Foreign National",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Foreign National",
+  "smoId": "57f2f4cae4b071ea7b97804a",
+  "fieldId": "Citizenship",
+  "value": "ForeignNationalnoITIN)",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Limited Trade Lines",
+  "smoId": "57f2f4cbe4b071ea7b97987c",
+  "fieldId": "Tradelines",
+  "value": "Limited",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Mortgage Loan Charge-Off >=2 Yrs",
+  "smoId": "5835a747e4b0753819a1884d",
+  "fieldId": "GLOBAL_MortgageLoanChargeOffs",
+  "value": "MLCO2yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Mortgage Loan Charge-Off >=4 Yrs",
+  "smoId": "595523304cedfd000134de73",
+  "fieldId": "GLOBAL_MortgageLoanChargeOffs",
+  "value": "MLCO4yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Mortgage Loan Charge-Off >=Settled",
+  "smoId": "5835b01ee4b0753819a39938",
+  "fieldId": "GLOBAL_MortgageLoanChargeOffs",
+  "value": "MLCOSet",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "No PPP",
+  "smoId": "592868b74cedfd00015bdd64",
+  "fieldId": "PrepayTerm",
+  "value": "None",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "No Ratio",
+  "smoId": "58261542e4b0e7f39944da6e",
+  "fieldId": "DSCRRATIO",
+  "value": "NoDSCR",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Non Permanent Resident",
+  "smoId": "57f2f4cae4b071ea7b978149",
+  "fieldId": "Citizenship",
+  "value": "Non-Perm Resident",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Permanent Resident Alien",
+  "smoId": "57f2f4cae4b071ea7b977fca",
+  "fieldId": "Citizenship",
+  "value": "Perm Resident",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Short Sale >=2 Yrs",
+  "smoId": "5835a7e6e4b0753819a1d762",
+  "fieldId": "Global_SHORTSALES",
+  "value": "SS_2yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Short Sale >=Settled",
+  "smoId": "57f2f4cae4b071ea7b979194",
+  "fieldId": "Global_SHORTSALES",
+  "value": "SS_Set",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Short Sale >=3 Yrs",
+  "smoId": "57f2f4cbe4b071ea7b979791",
+  "fieldId": "Global_SHORTSALES",
+  "value": "SS_3yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Short Sale >=4 Yrs",
+  "smoId": "57f2f4cae4b071ea7b978f3f",
+  "fieldId": "Global_SHORTSALES",
+  "value": "SS_4yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Short Sale >=1 Yrs",
+  "smoId": "6021b042ce8ad00001e326e2",
+  "fieldId": "Global_SHORTSALES",
+  "value": "SS_1yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Short Sale >=5 Yrs",
+  "smoId": "5a147e3b4cedfd0001301980",
+  "fieldId": "Global_SHORTSALES",
+  "value": "SS_5yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Short Sale >=7 Years",
+  "smoId": "588a9651e4b0a09ecf19bab1",
+  "fieldId": "Global_SHORTSALES",
+  "value": "SS_7yr",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "No Mortgage History",
+  "smoId": "5835b01ee4b0753819a39937",
+  "fieldId": "GLOBAL_NoMortgageHistory",
+  "value": "!0",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Cashout - Debt Consolidation",
+  "smoId": "5983acec4cedfd0001283172",
+  "fieldId": "GLOBAL_CashOutDebtConsolidation",
+  "value": "!0",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Mixed Use",
+  "smoId": "587d19ece4b0cbf1cd32e833",
+  "fieldId": "GLOBAL_MixedUse",
+  "value": "!0",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "VOE Only",
+  "smoId": "5aa703ed4cedfd000121e263",
+  "fieldId": "IncomeDocType",
+  "value": "VOEOnly",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "1-0 Buydown",
+  "smoId": "57f2f4cae4b071ea7b977fb2",
+  "fieldId": "Global_BUYDOWN",
+  "value": "_1_0",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "12 Month Business Bank Statements",
+  "smoId": "583d9d96e4b06f18ab238ca6",
+  "fieldId": "Income Doc Type",
+  "value": "12MoBusinessBankStatements",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "CPA Prepared P&L",
+  "smoId": "5f3700cdce8ad00001a67510",
+  "fieldId": "Income Doc Type",
+  "value": "12MoCPAPreparedPL",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "12 Month Income & Expense Statement",
+  "smoId": "5f443fc2ce8ad00001df17de",
+  "fieldId": "Income Doc Type",
+  "value": "12MonthIncomeExpenseStatement",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "12 Month Personal Bank Statements",
+  "smoId": "583d9d96e4b06f18ab238ca7",
+  "fieldId": "Income Doc Type",
+  "value": "12MoPersonalBankStatements",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "12 Month Tax Prepared P&L",
+  "smoId": "5f4e7676ce8ad00001d299cf",
+  "fieldId": "Income Doc Type",
+  "value": "12MonthTaxPreparedPL",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "2 Month Bank Statements",
+  "smoId": "59443aee4cedfd0001f8539e",
+  "fieldId": "Income Doc Type",
+  "value": "2MonthBankStatements",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "2-1 Buydown",
+  "smoId": "57f2f4cae4b071ea7b977fac",
+  "fieldId": "Global_BUYDOWN",
+  "value": "_2_1",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "24 Month Business Bank Statements",
+  "smoId": "583d9d96e4b06f18ab238ca9",
+  "fieldId": "Income Doc Type",
+  "value": "24MoBusinessBankStatements",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "24 Month CPA Prepared P&L",
+  "smoId": "5f3ac007ce8ad00001b0aab6",
+  "fieldId": "Income Doc Type",
+  "value": "24MoCPAPreparedPL",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "24 Month Personal Bank Statements",
+  "smoId": "583d9d96e4b06f18ab238ca8",
+  "fieldId": "Income Doc Type",
+  "value": "24MoPersonalBankStatements",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "24 Month Tax Prepared P&L",
+  "smoId": "5f4e7676ce8ad00001d299ce",
+  "fieldId": "Income Doc Type",
+  "value": "24MonthTaxPreparedPL",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "3 Months Business Bank Statements",
+  "smoId": "57f2f4cae4b071ea7b978973",
+  "fieldId": "Income Doc Type",
+  "value": "3MonthsBusinessBankStatements",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "3 Months Personal Bank Statements",
+  "smoId": "57f2f4cbe4b071ea7b979e52",
+  "fieldId": "Income Doc Type",
+  "value": "3MonthsPersonalBankStatements",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Alt Doc - 12 Months",
+  "smoId": "57f2f4cae4b071ea7b978317",
+  "fieldId": "Income Doc Type",
+  "value": "AltDoc12Months",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Alt Doc - 24 Months",
+  "smoId": "57f2f4cae4b071ea7b9782ea",
+  "fieldId": "Income Doc Type",
+  "value": "AltDoc24Months",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Alternative Credit Program",
+  "smoId": "585aaf3ee4b0cc5a2b6fd108",
+  "fieldId": "Income Doc Type",
+  "value": "AlternativeCreditProgram",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Alternative Doc",
+  "smoId": "57f2f4cae4b071ea7b9780d7",
+  "fieldId": "Income Doc Type",
+  "value": "AlternativeDoc",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Asset Depletion",
+  "smoId": "57f2f4cae4b071ea7b977fdf",
+  "fieldId": "Income Doc Type",
+  "value": "AssetDepletion",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Asset Qualifier",
+  "smoId": "57f2f4cae4b071ea7b9780f2",
+  "fieldId": "Income Doc Type",
+  "value": "AssetQualifier",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Borrower Prepared P&L",
+  "smoId": "57f2f4cae4b071ea7b978d0f",
+  "fieldId": "Income Doc Type",
+  "value": "BorrowerPreparedPL",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Condotel",
+  "smoId": "57f2f4cae4b071ea7b978548",
+  "fieldId": "GLOBAL_CONDOTYPE",
+  "value": "Condo_tel",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "DSCR",
+  "smoId": "5f37104ace8ad000014c7abe",
+  "fieldId": "Income Doc Type",
+  "value": "DSCR",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Delayed Financing",
+  "smoId": "5df2cb60e03dd80001699ce2",
+  "fieldId": "GLOBAL_DELAYEDFINANCING",
+  "value": "true",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Full Doc",
+  "smoId": "57f2f4cbe4b071ea7b97a286",
+  "fieldId": "Income Doc Type",
+  "value": "Full Doc - 24M",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Prepay Buyout",
+  "smoId": "5f64dbe6ce8ad00001f91b69",
+  "fieldId": "PrepayTerm",
+  "value": "index > 0",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Relocation Loan",
+  "smoId": "5a5694394cedfd0001295a23",
+  "fieldId": "Global_RELOCATIONLOAN",
+  "value": "TRUE",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Reserves <6 Months",
+  "smoId": "585c131ce4b08ced94320242",
+  "fieldId": "GLOBAL_RESERVES",
+  "value": "Reserve_none",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Reserves <6 Months",
+  "smoId": "585c131ce4b08ced94320242",
+  "fieldId": "GLOBAL_RESERVES",
+  "value": "Reserves_3",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "Short Sale",
+  "smoId": "582b7bbfe4b0e7f39ab0eda1",
+  "fieldId": "Global_SHORTSALES",
+  "value": "index > 0",
+  "type": "DYN_TO_SMO"
+ },
+ {
+  "smoName": "VOE Only",
+  "smoId": "5aa703ed4cedfd000121e263",
+  "fieldId": "Income Doc Type",
+  "value": "VOEOnly",
+  "type": "DYN_TO_SMO"
+ }
+]

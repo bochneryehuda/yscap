@@ -1,0 +1,99 @@
+{
+    "responseData": {
+        "responseType": "Loan Types",
+        "count": 7,
+        "responseFields": [
+            {
+                "num": 1,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "New Construction"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "4"
+                    }
+                ]
+            },
+            {
+                "num": 2,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Foreclosure/REO"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "5"
+                    }
+                ]
+            },
+            {
+                "num": 3,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Reverse Mortgage"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "6"
+                    }
+                ]
+            },
+            {
+                "num": 4,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Other"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "7"
+                    }
+                ]
+            },
+            {
+                "num": 5,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "FHA"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "9"
+                    }
+                ]
+            },
+            {
+                "num": 6,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "203k"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "10"
+                    }
+                ]
+            },
+            {
+                "num": 7,
+                "fieldlist": [
+                    {
+                        "fieldName": "name",
+                        "fieldValue": "Conventional"
+                    },
+                    {
+                        "fieldName": "id",
+                        "fieldValue": "15"
+                    }
+                ]
+            }
+        ]
+    }
+}

@@ -20,13 +20,22 @@ const RETRYABLE = [502, 503, 504];
 const RETRY_DELAYS = [700, 1800, 3500];   // ~6s total — covers a restart blip
 
 function friendlyError(status, data) {
-  if (data && data.error) return data.error;
-  if (RETRYABLE.includes(status)) return 'The server is briefly unavailable (it may be restarting) — please try again in a moment.';
-  if (status === 401) return 'Your session has expired — please sign in again.';
-  if (status === 403) return 'You don’t have access to that.';
-  if (status === 404) return 'That item could not be found.';
-  if (status === 413) return 'That file is too large to upload.';
-  return `Something went wrong (HTTP ${status}) — please try again.`;
+  const base = (data && data.error) ? data.error
+    : RETRYABLE.includes(status) ? 'The server is briefly unavailable (it may be restarting) — please try again in a moment.'
+    : status === 401 ? 'Your session has expired — please sign in again.'
+    : status === 403 ? 'You don’t have access to that.'
+    : status === 404 ? 'That item could not be found.'
+    : status === 413 ? 'That file is too large to upload.'
+    : `Something went wrong (HTTP ${status}) — please try again.`;
+  // A "server error" ON ITS OWN TELLS NOBODY ANYTHING (owner-directed 2026-08-16).
+  // The server now attaches the real reason to every 5xx it can explain — for a
+  // STAFF session only — plus a reference that names the exact row in the
+  // request log. Both are put in front of the person looking at the screen, on
+  // every screen at once, because this is the one place an error becomes words.
+  const detail = data && typeof data.detail === 'string' ? data.detail.trim() : '';
+  const ref = data && typeof data.reference === 'string' ? data.reference.trim() : '';
+  return [detail && !base.includes(detail) ? `${base} — ${detail}` : base,
+    ref ? `(ref ${ref})` : ''].filter(Boolean).join(' ');
 }
 
 // Session ended mid-use: clear the token ONCE, remember WHY, and let the router
@@ -595,6 +604,11 @@ export const api = {
   amcPlaceOrder:    (appId, body) => req('POST', `/api/amc/files/${appId}/order`, body),
   amcSaveCard:      (appId, body) => req('POST', `/api/amc/files/${appId}/card`, body),
   amcOrder:         (orderId) => req('GET', `/api/amc/orders/${orderId}`),
+  // PAYING an AppraisalScope order. `amcPayment` is the read a screen does BEFORE
+  // offering a button — is it already paid, is one going through, can this file's
+  // card actually be charged — and reveals no card number. `amcPay` is the press.
+  amcPayment:       (orderId) => req('GET', `/api/amc/orders/${orderId}/payment`),
+  amcPay:           (orderId, body) => req('POST', `/api/amc/orders/${orderId}/pay`, body || {}),
   amcCancelOrder:   (orderId, reason) => req('POST', `/api/amc/orders/${orderId}/cancel`, { reason }),
   amcComments:      (orderId) => req('GET', `/api/amc/orders/${orderId}/comments`),
   amcPostComment:   (orderId, body) => req('POST', `/api/amc/orders/${orderId}/comments`, { body }),

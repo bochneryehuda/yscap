@@ -1,0 +1,32 @@
+{
+	"message": {
+		"digitalGatewaySystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "DigitalGatewayOrderNumber",
+				"referenceIdentifierValue": "CLGGL100417"
+			}],
+			"statusResponses": [{
+				"statusCode": "0",
+				"statusCondition": "Success",
+				"statusDescription": "Acknowledgement",
+				"statusName": "ACK"
+			}]
+		},
+		"deals": [{
+			"loans": [{
+				"loanidentifiers": {
+					"lenderLoanIdentifier": "2020092901"
+				}
+			}],
+			"properties": [{
+				"appraisalIdentifier": "UAT2021"
+			}]
+		}],
+		"serviceProviderSystem": {
+			"referenceIdentifiers": [{
+				"referenceIdentifierType": "ServiceProviderOrderdentifier",
+				"referenceIdentifierValue": "SP345"
+			}]
+		}
+	}
+}

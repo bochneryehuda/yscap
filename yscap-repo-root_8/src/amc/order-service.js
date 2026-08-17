@@ -666,6 +666,19 @@ async function createOrder(db, appId, opts = {}) {
   const ack = cdg.parseAck(resp);
   const updated = await applyAck(db, order.id, ack, resp);
   await journal(db, { orderId: order.id, appId, action: spec.requestAction, request: built, response: resp, ok: true, staffId: opts.staffId });
+  // THE INVESTOR'S APPRAISAL REQUIREMENTS GO ON THE ORDER, right after it is
+  // placed (owner-directed 2026-08-16), so the appraiser is told up front what
+  // the report will be reviewed against instead of finding out from a revision
+  // request. Nothing here can fail the order: the appraisal is already placed,
+  // the poster never throws, and it names no capital partner (an AMC is an
+  // outside company). It IS awaited — one message on a request that has already
+  // made several, in exchange for the message not being lost if the process is
+  // recycled the moment the response goes out. A failure is logged + journalled,
+  // never surfaced as a failed order.
+  try {
+    await require('../lib/appraisal/order-requirements-post')
+      .postForAmcOrder(db, updated || order, { staffId: opts.staffId });
+  } catch (_) { /* the order stands regardless */ }
   // The Orders desk mirrors this order (lib/appraisal-order-mirror.js). Fired,
   // never awaited: the desk is a projection and must never delay or fail a placement.
   require('../lib/appraisal-order-mirror').fire(appId);
@@ -735,6 +748,20 @@ async function listOrders(db, appId) {
             dryrun, last_error, last_status_response, cancel_reason, cancel_requested_at,
             cancel_requested_by, request_payload, created_at, ordered_at, completed_at,
             last_polled_at, updated_at,
+            -- WHO is doing it, WHEN they are going out and WHAT it costs, read from
+            -- AppraisalScope's own record by the detail poll (src/amc/detail.js).
+            -- The status lookup answers none of these, and until db/567 the screen
+            -- could only say "ordered" about an order the vendor had already
+            -- assigned, booked an inspection for and priced. last_detail_response
+            -- is deliberately NOT selected: it is the audit copy of the whole
+            -- envelope and the screen shows the read figures, not the envelope.
+            appraiser_name, appraiser_company, appraiser_email, appraiser_phone,
+            appraiser_city, appraiser_state, appraiser_license,
+            vendor_due_date, inspection_date, vendor_completed_date,
+            assigned_at_text, accepted_at_text, inspection_scheduled_at_text,
+            inspection_completed_at_text, report_uploaded_at_text, vendor_updated_at_text,
+            client_fee, form_fee, job_fee, management_fee,
+            due_amount, paid_amount, invoiced_amount, detail_polled_at,
             -- How many messages the AMC has sent that nobody has read yet. Class has
             -- carried this since it shipped; NAN never did, so an inbound comment
             -- arrived with nothing on the screen to say so and the "mark read" door

@@ -1,0 +1,86 @@
+-- ============================================================================
+-- db/569 — borrower email optional
+--
+-- WHAT THIS CHANGES, AND WHY.
+--
+-- Owner-reported 2026-08-16, with a screenshot: typing a co-borrower's name, DOB
+-- and Social into the Co-borrower panel and pressing "Save co-borrower" answered
+-- a red "server error". Reproduced on a real Postgres, from the real endpoint,
+-- with the owner's exact payload:
+--
+--   POST /api/staff/applications/:id/co-borrower  {firstName, lastName, dob, ssn}
+--     → 23502  null value in column "email" of relation "borrowers"
+--              violates not-null constraint
+--     → the route's catch-all → 500 {"error":"server error"}
+--
+-- The same call WITH an email typed in answers 200. So the failure is exactly
+-- the field the screen itself labels "EMAIL (OPTIONAL — NEEDED LATER TO INVITE
+-- OR SIGN)".
+--
+-- THE ROOT CAUSE IS THIS COLUMN, NOT THE ROUTE. `attachCoBorrowerToApp` (the one
+-- function BOTH the co-borrower panel and staff file-creation share) binds NULL
+-- when the box is blank, and says so in its own comment — owner-directed
+-- 2026-08-05, "allow it at intake", because you often have the second borrower's
+-- name long before their email: "Storing NULL (not '') keeps every email-less
+-- co-borrower a DISTINCT identity record — an empty string would collide two
+-- different people on the email unique index." That reasoning is right and the
+-- column simply never allowed it, so the feature could not work from either
+-- door on any file, ever.
+--
+-- The constraint is also what the sync's shadow addresses exist to dodge, in its
+-- own words (src/clickup/ingest.js): a ClickUp task with no contact was "handed a
+-- synthetic `noemail+<task>@clickup.local` address purely because `borrowers.email`
+-- carried a blanket UNIQUE constraint" — and those nameless shadow profiles are
+-- the ones that "silently absorbed a borrower's SSN and then blocked a staffer
+-- from typing that SSN on the person's real profile". db/318 already removed the
+-- blanket UNIQUE (it is now the partial `borrowers_email_owner_uk`, so two real
+-- people may share one mailbox). This removes the other half. Minting a second
+-- flavour of fake address would have been the cheap shape: fake data that then
+-- has to be recognised and hidden on every screen, in every email, and in the
+-- invite button — which would light up and post to nobody.
+--
+-- WHY NULL IS SAFE HERE, checked rather than assumed:
+--   • Uniqueness — both indexes on this column (`borrowers_email_owner_uk`,
+--     partial and unique; `idx_borrowers_email`, not unique) treat NULLs as
+--     distinct, so any number of email-less people coexist and none collides.
+--   • `ON CONFLICT (email) …` — 11 call sites. A NULL matches no index entry, so
+--     the arbiter simply never fires and the INSERT proceeds. Inference of a
+--     partial index still needs its WHERE clause repeated, unchanged by this.
+--   • Sign-in — `auth` looks people up with `WHERE b.email = $1` against a typed
+--     address, and NULL never equals anything, so an email-less profile is
+--     unreachable by the login path rather than ambiguously reachable.
+--   • The notify fan-out was ALREADY written for this: it selects
+--     `WHERE COALESCE(b.email,'') <> ''` and `_borrowerEmail` returns [] on a
+--     falsy address. Nothing tries to email a person who has no address.
+-- `borrower_auth.email` (the LOGIN identity) is a different column on a different
+-- table and stays NOT NULL — a portal account without an address is meaningless.
+--
+-- IDEMPOTENT. `DROP NOT NULL` on a column that is already nullable is a no-op in
+-- Postgres, so this replays cleanly on every boot forever.
+--
+-- BACKFILL: NONE, and deliberately. Every existing row satisfies the looser
+-- constraint by definition, so there is nothing to migrate. Existing synthetic
+-- `noemail+…@clickup.local` / `@import.local` addresses are LEFT EXACTLY AS THEY
+-- ARE: they are matched by name in `clickup/transforms.isShadowEmail` and in the
+-- ClickUp merge rules, and rewriting them to NULL in bulk would change how the
+-- sync resolves those profiles — a much larger, riskier change than the bug in
+-- front of us, and one nobody asked for. Going forward, a person with no email
+-- simply has no email.
+--
+-- PRODUCT SEPARATION. `borrowers` is the SHARED IDENTITY zone (CLAUDE.md rule 2),
+-- not RTL's and not Long-Term's. This relaxes a constraint on the shared person
+-- record; it adds nothing, references nothing, and gives neither product a
+-- column the other does not have.
+-- ============================================================================
+
+ALTER TABLE borrowers ALTER COLUMN email DROP NOT NULL;
+
+
+-- ── after this lands ────────────────────────────────────────────────────────
+-- The schema map (docs/schema/) describes the database these migrations build,
+-- so this file makes it stale. CI refreshes it on this pull request by itself;
+-- if you would rather do it by hand, with DATABASE_URL pointing at a database
+-- built from these migrations:
+--
+--   npm run schema:snapshot     # refresh the inventory from the database
+--   npm run schema:restamp      # re-stamp the map header (no database needed)

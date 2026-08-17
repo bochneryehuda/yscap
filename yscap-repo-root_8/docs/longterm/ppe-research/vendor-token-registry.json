@@ -1,0 +1,558 @@
+{
+  "_comment": "GENERATED — do not hand-edit. Refresh with: node docs/longterm/ppe-research/token-registry-check.js --snapshot",
+  "_source": "GET /rest/v1/lp-ppe-integration/company/config/{companyId}, Accept: application/json-no-enum",
+  "_readAt": "2026-08-16",
+  "_fields": 75,
+  "values": {
+    "AddlOccupancyType": [
+      "Long_Term_Rental_Property",
+      "Short_Term_Rental_Property"
+    ],
+    "BankruptcyChapter": [
+      "Chapter 7",
+      "Chapter 11",
+      "Chapter 13"
+    ],
+    "BankruptcySeasoning": [
+      "Never",
+      "Settled",
+      "< 2 Years",
+      "2-4 Years",
+      "< 3 years",
+      "< 4 Years",
+      "4-7 Years",
+      "7+ Years"
+    ],
+    "BankruptcyStatus": [
+      "Open",
+      "Discharged",
+      "Dismissed"
+    ],
+    "brokerCriteria.ausList": [
+      "DU",
+      "LP",
+      "GUS",
+      "MUW",
+      "None"
+    ],
+    "brokerCriteria.qmTypes": [
+      "All",
+      "QM",
+      "NONQM"
+    ],
+    "Citizenship": [
+      "US Citizen",
+      "Perm Resident",
+      "Non-Perm Resident",
+      "Foreign National",
+      "ForeignNationalwithITIN)",
+      "ForeignNationalnoITIN)",
+      "ITIN"
+    ],
+    "criteria.affordableHousingTypes": [
+      "None",
+      "HomeReady",
+      "HomePossible",
+      "HFAPreferred",
+      "HFAPreferredRiskSharing",
+      "StateBond"
+    ],
+    "criteria.balloon": [
+      "true",
+      "false"
+    ],
+    "criteria.buyDown": [
+      "_3_2_1",
+      "_2_1",
+      "_1_1",
+      "_1_0"
+    ],
+    "criteria.compensationType": [
+      "LenderCompPlan",
+      "BorrowerCompPlan"
+    ],
+    "criteria.escrowWaiver": [
+      "true",
+      "false"
+    ],
+    "criteria.firstTimeHomeBuyer": [
+      "true",
+      "false"
+    ],
+    "criteria.fundingFeeFinanced": [
+      "YES",
+      "NO",
+      "EXEMPT"
+    ],
+    "criteria.guranteeFeeFinanced": [
+      "YES",
+      "NO"
+    ],
+    "criteria.interestOnly": [
+      "true",
+      "false"
+    ],
+    "criteria.lenderFeeWaiver": [
+      "true",
+      "false"
+    ],
+    "criteria.lienPriorityType": [
+      "FirstLien",
+      "SecondLien"
+    ],
+    "criteria.loanPurpose": [
+      "Purchase",
+      "Refinance",
+      "StreamLineRefinance",
+      "CashoutRefinance",
+      "Construction",
+      "ConstructionPerm",
+      "VAIRRRL"
+    ],
+    "criteria.mortgageTypes": [
+      "Conventional",
+      "FHA",
+      "VA",
+      "UsdaRural",
+      "HELOC",
+      "HomeEquity"
+    ],
+    "criteria.nonOccCoBorrower": [
+      "true",
+      "false"
+    ],
+    "criteria.nonWarrantableProject": [
+      "true",
+      "false"
+    ],
+    "criteria.numberOfBorrower": [
+      "1",
+      "2",
+      "3",
+      "4"
+    ],
+    "criteria.ownProperties": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "10"
+    ],
+    "criteria.paymentInterestType": [
+      "FullPITI",
+      "InterestOnly",
+      "InterestPlusFixedPrinciple"
+    ],
+    "criteria.pmiType": [
+      "None",
+      "LPMI",
+      "BPMI"
+    ],
+    "criteria.propertyUse": [
+      "PrimaryResidence",
+      "SecondaryVacation",
+      "Investment"
+    ],
+    "criteria.renovationLoan": [
+      "true",
+      "false"
+    ],
+    "criteria.rural": [
+      "true",
+      "false"
+    ],
+    "criteria.selfEmployed": [
+      "true",
+      "false"
+    ],
+    "criteria.studentLoanIndicator": [
+      "true",
+      "false"
+    ],
+    "criteria.ufmipFinanced": [
+      "YES",
+      "NO"
+    ],
+    "criteria.vaUsageType": [
+      "First_Use",
+      "Subsequent_Use"
+    ],
+    "criteria.veteranType": [
+      "Active_Or_Veteran",
+      "Reserves_Or_National_Guard",
+      "National_Guard"
+    ],
+    "dayLocksCriteria": [
+      "10",
+      "12",
+      "15",
+      "21",
+      "25",
+      "30",
+      "40",
+      "45",
+      "60",
+      "75",
+      "90",
+      "120",
+      "180"
+    ],
+    "FirstTimeInvestor": [
+      "true",
+      "false"
+    ],
+    "GLOBAL_BorrowerType": [
+      "Individual",
+      "Corporation",
+      "Partnership",
+      "Trust",
+      "Non-Profit",
+      "LLC"
+    ],
+    "GLOBAL_CDFI": [
+      "true",
+      "false"
+    ],
+    "Global_COMMUNITYSECOND": [
+      "true",
+      "false"
+    ],
+    "GLOBAL_CONDOTYPE": [
+      "Condo_Det",
+      "Condo_Garden",
+      "Condo_Low",
+      "Condo_Mid",
+      "Condo_High",
+      "Condo_tel",
+      "Condo_Manuf",
+      "Condo_NonWar"
+    ],
+    "GLOBAL_Cross_Collateralization_Product": [
+      "true",
+      "false"
+    ],
+    "Global_DEEDINLIEU": [
+      "DIL_Null",
+      "DIL_Set",
+      "DIL_1yr",
+      "DIL_2yr",
+      "DIL_3yr",
+      "DIL_4yr",
+      "DIL_5yr",
+      "DIL_7yr"
+    ],
+    "GLOBAL_DELAYEDFINANCING": [
+      "true",
+      "false"
+    ],
+    "Global_DSCR_Asset_Depletion": [
+      "No",
+      "Yes"
+    ],
+    "GLOBAL_Forbearances": [
+      "Forbear3mo",
+      "Forbear6mo",
+      "ForbearOver18mo",
+      "ForbearNone"
+    ],
+    "Global_FORECLOSURES": [
+      "FC_Null",
+      "FC_Settle",
+      "FC_1yr",
+      "FC_2yr",
+      "FC_3yr",
+      "FC_4yr",
+      "FC_7yr",
+      "FC_5yr"
+    ],
+    "GLOBAL_HOMEEQUITYTYPE": [
+      "StandAloneSecond",
+      "PiggyBackPurchase",
+      "PiggyBackRefi",
+      "FirstLienHE"
+    ],
+    "Global_Living_Rent_Free": [
+      "true",
+      "false"
+    ],
+    "GLOBAL_MixedUse": [
+      "true",
+      "false"
+    ],
+    "GLOBAL_NativeAmerican": [
+      "true",
+      "false"
+    ],
+    "GLOBAL_NoMortgageHistory": [
+      "true",
+      "false"
+    ],
+    "Global_PREPAYMENTPENALTY": [
+      "true",
+      "false"
+    ],
+    "Global_RELOCATIONLOAN": [
+      "true",
+      "false"
+    ],
+    "GLOBAL_RESERVES": [
+      "Reserve_none",
+      "Reserves_3",
+      "Reserve_6",
+      "Reserves_12",
+      "Reserves_18",
+      "Reserves_24",
+      "Reserves_9",
+      "Reserves_36"
+    ],
+    "GLOBAL_Section184": [
+      "true",
+      "false"
+    ],
+    "Global_SHORTSALES": [
+      "SS_Null",
+      "SS_Set",
+      "SS_1yr",
+      "SS_2yr",
+      "SS_3yr",
+      "SS_4yr",
+      "SS_5yr",
+      "SS_7yr"
+    ],
+    "IncomeDocType": [
+      "Full Doc - 24M",
+      "Full Doc - 12M",
+      "DSCR",
+      "24MoPersonalBankStatements",
+      "24MoBusinessBankStatements",
+      "12MoPersonalBankStatements",
+      "12MoBusinessBankStatements",
+      "Community - No income/No employment/No DTI",
+      "24MoCPAPreparedPL",
+      "24MonthTaxPreparedPL",
+      "24MoCPAPreparedPLwBKStmt",
+      "24MonthTaxPreparedPLwBkStmt",
+      "12MoCPAPreparedPL",
+      "12MonthTaxPreparedPL",
+      "12MoCPAPreparedPLwBKStmt",
+      "12MonthTaxPreparedPLwBKStmt",
+      "1YrTaxReturn",
+      "AltDoc12Months",
+      "AltDoc24Months",
+      "Asset Utilization",
+      "AssetQualifier",
+      "AssetDepletion",
+      "1099 - 24M",
+      "1099 - 12M",
+      "VOEOnly"
+    ],
+    "Lateinlast12months": [
+      "true",
+      "false"
+    ],
+    "Lateinlast24months": [
+      "true",
+      "false"
+    ],
+    "loanTypeCriteria": [
+      "Fixed",
+      "Variable"
+    ],
+    "MORT120LATESLAST12M": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4"
+    ],
+    "MORT120LATESLAST24M": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4"
+    ],
+    "MORT30LATESLAST12M": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4"
+    ],
+    "MORT30LATESLAST24M": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4"
+    ],
+    "MORT60LATESLAST12M": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4"
+    ],
+    "MORT60LATESLAST24M": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4"
+    ],
+    "MORT90LATESLAST12M": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4"
+    ],
+    "MORT90LATESLAST24M": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4"
+    ],
+    "PrePayment_Plan_Type": [
+      "Standard",
+      "Fixed5",
+      "Fixed4",
+      "Fixed3",
+      "Fixed2",
+      "Fixed1",
+      "54333",
+      "54321",
+      "5433",
+      "5432",
+      "4321",
+      "543",
+      "321",
+      "54",
+      "21",
+      "6MosInt",
+      "StepDown",
+      "Other"
+    ],
+    "PrepayTerm": [
+      "48 Months",
+      "None",
+      "12 Months",
+      "24 Months",
+      "36 Months",
+      "60 Months"
+    ],
+    "property.address.state": [
+      "AL",
+      "AK",
+      "AZ",
+      "AR",
+      "AS",
+      "CA",
+      "CO",
+      "CT",
+      "DE",
+      "DC",
+      "FL",
+      "GA",
+      "GU",
+      "HI",
+      "ID",
+      "IL",
+      "IN",
+      "IA",
+      "KS",
+      "KY",
+      "LA",
+      "ME",
+      "MD",
+      "MA",
+      "MI",
+      "MN",
+      "MS",
+      "MO",
+      "MT",
+      "NE",
+      "NV",
+      "NH",
+      "NJ",
+      "NM",
+      "NY",
+      "NC",
+      "ND",
+      "CM",
+      "OH",
+      "OK",
+      "OR",
+      "PA",
+      "PR",
+      "RI",
+      "SC",
+      "SD",
+      "TN",
+      "TX",
+      "TT",
+      "UT",
+      "VT",
+      "VA",
+      "VI",
+      "WA",
+      "WV",
+      "WI",
+      "WY"
+    ],
+    "property.attachmentType": [
+      "Attached",
+      "Detached",
+      "SemiDetached"
+    ],
+    "property.propertyType": [
+      "SingleFamily",
+      "PlannedUnitDevelopment",
+      "UnitDwelling_2_4",
+      "Modular",
+      "Townhouse",
+      "Condos",
+      "DetachedCondominium",
+      "HighRiseCondo",
+      "SiteCondo",
+      "CondoGarden",
+      "MidRiseCondo",
+      "CondoTel",
+      "ManufacturedHousingDoubleWide",
+      "ManufacturedHousingSingleWide",
+      "Cooperative",
+      "MultiFamily",
+      "ManufacturedHousing",
+      "ManufacturedHomeCondominium",
+      "ManufacturedHousingMultiWide",
+      "ManufacturedHomeCondominiumOrPUDOrCooperative"
+    ],
+    "Tradelines": [
+      "Limited",
+      "2 for 24+ Months",
+      "3 for 12+ Months"
+    ],
+    "varLoanTypeCriteria": [
+      "_1_6",
+      "_1_1",
+      "_2_1",
+      "_3_1",
+      "_3_6",
+      "_5_1",
+      "_5_5",
+      "_5_6",
+      "_7_1",
+      "_7_6",
+      "_10_1",
+      "_10_6",
+      "_6m_6",
+      "_1m_1m"
+    ]
+  }
+}

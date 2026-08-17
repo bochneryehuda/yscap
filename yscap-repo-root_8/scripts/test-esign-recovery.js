@@ -42,6 +42,9 @@ const goodInputs = () => ({ subject: 'x', documents: [{ base64: 'AAAA', document
   signers: [{ recipientId: 1, name: 'B', email: 'b@example.com', routingOrder: 1, tabsByDoc: { 1: { sign: ['/s/'] } } }] });
 
 (async () => {
+  // DB-gated: `npm test` runs this whole chain in the no-database CI job too,
+  // so a suite that dials a database must skip rather than take the build down.
+  await require(__dirname + "/lib/db-gate").skipUnlessDb("esign-recovery");
   const dcfg = require(R + '/src/config').docusign;
   dcfg.testMode = false;    // send-mechanics as if live (gate tested elsewhere)
   dcfg.sendEnabled = true;  // master switch ON — the engine now refuses to send when it's off

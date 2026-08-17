@@ -12,16 +12,23 @@
  *   | None      | "Reserve_none"  |   (also reachable via 0)
  *   | 3 Months  | "Reserves_3"    |
  *   | 6 Months  | "Reserve_6"     |   ← SINGULAR (the confirmed inconsistency)
+ *   | 9 Months  | "Reserves_9"    |
  *   | 12 Months | "Reserves_12"   |
  *   | 18 Months | "Reserves_18"   |
  *   | 24 Months | "Reserves_24"   |
+ *   | 36 Months | "Reserves_36"   |
+ *
+ * These are EIGHT because the vendor's own registry publishes eight. 9 and 36 were missing until
+ * §37.14 read the published list and then MEASURED them live: they price identically to 12/24
+ * (394 options / 11 programs), while a deliberately made-up token answered 200 with 371/10 — a
+ * whole lender program lost, silently. That is what the refusal below is protecting against.
  *
  * "None" (Reserve_none) is DISTINCT from blank/inherit (JSON null); we do NOT expose blank — the DSCR
  * profile always emits a reserves value. An unknown value → 422 (never a guessed token).
  *
  * PROVEN TO FAIL: "fix" Reserve_6 → Reserves_6 (or any token) and the exact-token assertion goes red;
  * drop the reservesMonths wiring in buildSearch and PAYLOAD-* goes red; remove the throw and the 422
- * assertion goes red.
+ * assertion goes red; drop 9 or 36 back out of the table and TABLE/VENDOR-* go red.
  *
  * LT-only. No network, no DB, no RTL imports.
  */
@@ -32,7 +39,10 @@ let pass = 0, fail = 0;
 function ok(cond, label) { if (cond) { pass++; console.log('  ok   ' + label); } else { fail++; console.log('  FAIL ' + label); } }
 const dyn = (m, k) => (m.dynamicPropertiesMap && m.dynamicPropertiesMap[k] && typeof m.dynamicPropertiesMap[k] === 'object'
   ? m.dynamicPropertiesMap[k].value : (m.dynamicPropertiesMap ? m.dynamicPropertiesMap[k] : undefined));
-const S = { purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, state: 'NJ', countyFps: '34039' };
+// fico is REQUIRED (§37.11): Lender Price answers HTTP 500 with no explanation when the field is
+// null OR absent, measured live both ways. It is on the fixture so these suites test their own
+// subject rather than re-testing that refusal.
+const S = { purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, state: 'NJ', countyFps: '34039', fico: 760 };
 
 console.log('§32.4 reserves selector table');
 
@@ -42,18 +52,39 @@ const TABLE = [
   { in: 0,      tok: 'Reserve_none' },
   { in: 3,      tok: 'Reserves_3' },
   { in: 6,      tok: 'Reserve_6' },   // SINGULAR
+  { in: 9,      tok: 'Reserves_9' },
   { in: 12,     tok: 'Reserves_12' },
   { in: 18,     tok: 'Reserves_18' },
   { in: 24,     tok: 'Reserves_24' },
+  { in: 36,     tok: 'Reserves_36' },
 ];
+// The throw is CAUGHT rather than allowed to escape: mapReserves refuses an unmapped value, so a
+// token dropped out of the table would CRASH this loop and take the whole suite — every later
+// assertion included — down with it. A crash reads as "the test failed" and is not the same proof
+// as a named assertion going red on the one row that moved.
 for (const t of TABLE) {
-  ok(mapReserves(t.in) === t.tok, `TABLE reservesMonths=${JSON.stringify(t.in)} → "${t.tok}"`);
+  let got = null;
+  try { got = mapReserves(t.in); } catch (e) { got = `threw ${e.code}`; }
+  ok(got === t.tok, `TABLE reservesMonths=${JSON.stringify(t.in)} → "${t.tok}"`);
 }
 
 // ---- the singular/plural inconsistency is pinned --------------------------
 ok(mapReserves(6) === 'Reserve_6', 'QUIRK-1 6 months → SINGULAR "Reserve_6" (NOT "Reserves_6")');
-ok(mapReserves(3) === 'Reserves_3' && mapReserves(12) === 'Reserves_12' && mapReserves(18) === 'Reserves_18' && mapReserves(24) === 'Reserves_24',
-  'QUIRK-2 3/12/18/24 months → PLURAL "Reserves_N"');
+const tok = (n) => { try { return mapReserves(n); } catch (e) { return `threw ${e.code}`; } };
+ok([3, 9, 12, 18, 24, 36].every((n) => tok(n) === `Reserves_${n}`),
+  'QUIRK-2 3/9/12/18/24/36 months → PLURAL "Reserves_N"');
+
+// ---- the table is the VENDOR'S list, not a subset of it --------------------
+// The vendor's registry publishes exactly these eight for GLOBAL_RESERVES. Carrying fewer is not a
+// safe simplification — it silently refuses a requirement a caller may legitimately have (which is
+// how 9 and 36 were missing), and carrying MORE would mean sending a token the vendor never
+// published, which prices 200 with a whole lender program missing rather than erroring.
+const VENDOR_PUBLISHED = ['Reserve_none', 'Reserves_3', 'Reserve_6', 'Reserves_9', 'Reserves_12', 'Reserves_18', 'Reserves_24', 'Reserves_36'];
+const emitted = [...new Set(Object.values(sm._internals.RESERVES_TOKENS))];
+ok(VENDOR_PUBLISHED.every((t) => emitted.includes(t)),
+  'VENDOR-1 every token the vendor publishes is reachable (nothing the caller may legitimately ask for is refused)');
+ok(emitted.every((t) => VENDOR_PUBLISHED.includes(t)),
+  'VENDOR-2 every token we can emit is one the vendor publishes (no invented token can reach the wire)');
 ok(mapReserves('none') === 'Reserve_none', 'QUIRK-3 None → "Reserve_none" (singular)');
 
 // ---- omitted → null (caller takes the profile default) ---------------------
@@ -65,7 +96,10 @@ ok(mapReserves('None') === 'Reserve_none' && mapReserves(' 24 ') === 'Reserves_2
   'TOLERANT case/whitespace insensitive ("None", " 24 ", "NONE")');
 
 // ---- unknown → throw (never a guessed token) ------------------------------
-for (const bad of [9, '5', 36, 'lots', 6.5]) {
+// 9 and 36 are deliberately NOT here any more — the vendor publishes them (VENDOR-1 above). What
+// stays refused is a month count the vendor has no token for, at any plausibility: 5 is the shape
+// a caller would most naturally invent, and it prices 200-with-fewer-programs if it ever escapes.
+for (const bad of [5, '5', 30, 48, 'lots', 6.5]) {
   let code = null;
   try { mapReserves(bad); } catch (e) { code = e.code; }
   ok(code === 'unknown_reserves', `UNKNOWN reservesMonths=${JSON.stringify(bad)} → throws unknown_reserves (no guessed token)`);
@@ -89,7 +123,7 @@ ok(built.dynamicPropertiesMap.GLOBAL_RESERVES && built.dynamicPropertiesMap.GLOB
 const route = require('../src/longterm/routes/dscr-pricer');
 const { unsupportedFields, effectiveOf } = route._internals;
 ok(unsupportedFields({ reservesMonths: 12, purpose: 'Purchase' }).length === 0, 'ROUTE-1 reservesMonths is a supported route field');
-const bad = sm.validateScenario({ ...S, reservesMonths: 9 });
+const bad = sm.validateScenario({ ...S, reservesMonths: 5 });
 ok(bad.ok === false && bad.status === 422 && bad.error === 'unknown_reserves' && bad.field === 'reservesMonths',
   'ROUTE-2 an unknown reserves is rejected 422 unknown_reserves before any upstream call');
 const good = sm.validateScenario({ ...S, reservesMonths: 18 });

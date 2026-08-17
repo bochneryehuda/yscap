@@ -199,6 +199,11 @@ function call(server, method, p, token, body) {
   } finally {
     // teardown — delete every row this run created (sfx-scoped).
     try {
+      // Wait for the fire-and-forget email fan-out before tearing down: its
+      // sent_emails INSERT is still in flight when the fan-out resolves, and it
+      // deadlocks with the DELETEs below (notify.js documents this and exports
+      // drainEmails for exactly this).
+      await require('../src/lib/notify').drainEmails().catch(() => {});
       const like = `%${sfx}%`;
       await db.query(`DELETE FROM applications WHERE borrower_id IN (SELECT id FROM borrowers WHERE email LIKE $1)`, [like]);
       await db.query(`DELETE FROM applications WHERE tpo_firm_id IN (SELECT id FROM tpo_firms WHERE name LIKE $1)`, [like]);

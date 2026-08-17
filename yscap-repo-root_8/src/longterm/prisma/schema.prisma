@@ -1397,3 +1397,43 @@ model LtPpeShadowRun {
   @@index([scope, investor, program, dayMs], map: "lt_ppe_shadow_run_series_idx")
   @@map("lt_ppe_shadow_run")
 }
+
+model LtPpeCutoverLedger {
+  id         String   @id @default(uuid()) @db.Uuid
+  scope      String   @default("company")
+  investor   String   @default("")
+  seq        Int
+  action     String
+  fromMode   String   @map("from_mode")
+  toMode     String   @map("to_mode")
+  decidedBy  String   @map("decided_by")
+  decidedAt  BigInt   @map("decided_at")
+  reason     String
+  eligible   Boolean  @default(false)
+  scoreboard Json?    @db.JsonB
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([scope, investor, seq], map: "lt_ppe_cutover_ledger_seq_uk")
+  @@index([scope, investor, seq], map: "lt_ppe_cutover_ledger_history_idx")
+  @@map("lt_ppe_cutover_ledger")
+}
+
+model LtPpeCanarySchedule {
+  id                 String   @id @default(uuid()) @db.Uuid
+  scope              String   @default("company")
+  investor           String   @default("")
+  enabled            Boolean  @default(false)
+  intervalMs         BigInt   @map("interval_ms")
+  batteryKind        String   @map("battery_kind")
+  battery            Json     @db.JsonB
+  rateSheetVersionId String?  @map("rate_sheet_version_id") @db.Uuid
+  concurrency        Int?
+  note               String?
+  updatedBy          String   @map("updated_by")
+  updatedAt          BigInt   @map("updated_at")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([scope, investor], map: "lt_ppe_canary_schedule_scope_uk")
+  @@index([scope, enabled], map: "lt_ppe_canary_schedule_enabled_idx")
+  @@map("lt_ppe_canary_schedule")
+}

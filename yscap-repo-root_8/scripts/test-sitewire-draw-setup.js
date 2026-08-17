@@ -38,6 +38,9 @@ function api(method, path, body, token) {
 }
 
 async function main() {
+  // DB-gated: `npm test` runs this whole chain in the no-database CI job too,
+  // so a suite that dials a database must skip rather than take the build down.
+  await require(__dirname + "/lib/db-gate").skipUnlessDb("sitewire-draw-setup");
   const app = require(REPO + '/src/server.js');
   // migrate-boot runs on require; migrations are pre-applied so this settles fast — wait for the DB.
   for (let i = 0; i < 40; i++) {

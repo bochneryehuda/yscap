@@ -587,8 +587,12 @@ async function auditEvents(appId, limit) {
          OR (al.entity_type IN ('checklist_item','condition') AND al.entity_id IN
               (SELECT id FROM checklist_items WHERE application_id=$1
                UNION ALL SELECT id FROM conditions WHERE application_id=$1))
-      ORDER BY al.created_at DESC LIMIT $2`, [appId, limit]);
-  const events = r.rows.map((a) => {
+      -- One row MORE than we want, so "was this cut short?" is measured rather
+      -- than inferred from rows === limit (see trailEvents). The extra is
+      -- dropped below, so the events are exactly what they always were.
+      ORDER BY al.created_at DESC LIMIT $2`, [appId, limit + 1]);
+  const truncated = r.rows.length > limit;
+  const events = r.rows.slice(0, limit).map((a) => {
     const d = parseDetail(a.detail);
     const known = AUDIT_RENDER[a.action];
     const meta = describeAction(a.action);
@@ -620,7 +624,7 @@ async function auditEvents(appId, limit) {
   });
   // The audit log is the biggest source on a busy file and caps independently
   // of the outer window, so it is the one most likely to be quietly short.
-  return withRowCount(events, r.rows.length, limit);
+  return withTruncation(events, truncated, limit);
 }
 
 // ── 6. Notifications raised on this file ───────────────────────────────────
@@ -1512,26 +1516,42 @@ const TRAILS = [
 ];
 
 async function trailEvents(appId, trail) {
-  const r = await db.query(trail.sql, [appId]);
+  // TRUNCATION IS MEASURED, NOT INFERRED — the root cause of the owner's
+  // 2026-08-16 report ("This log is incomplete · closing milestones: read 1
+  // records, which is all this page reads").
+  //
+  // The old rule was `rows >= LIMIT` ⇒ "this trail was cut short". That reads a
+  // trail's LIMIT as a BOUND when it can equally be a STATEMENT OF SHAPE:
+  // `application_id` is the PRIMARY KEY of `closing_workflow`, so that trail can
+  // structurally never have a second row and is written `LIMIT 1` to say so —
+  // every file that has ever reached closing read 1 of 1, and the whole audit
+  // log declared itself incomplete, in red, permanently, on the files that
+  // matter most. Every other trail carries the same latent false alarm the day a
+  // file holds exactly `LIMIT` rows.
+  //
+  // So ask the database instead of guessing: run the trail's own SQL with its
+  // LIMIT raised by one. If the extra row comes back the trail really was cut
+  // short; the extra is dropped before mapping, so the events are byte-for-byte
+  // what they always were and only the VERDICT changes.
+  const cap = capOf(trail.sql);
+  const r = await db.query(cap ? overRead(trail.sql, cap) : trail.sql, [appId]);
+  const rows = cap ? r.rows.slice(0, cap) : r.rows;
   const out = [];
-  for (const rec of r.rows) {
+  for (const rec of rows) {
     for (const e of (trail.map(rec) || [])) if (e && e.at) out.push(e);
   }
   // The number of EVENTS is not the number of ROWS — one envelope emits a sent,
-  // a signed and a voided event — so the truncation check below cannot count
-  // events. Report the raw row count so it can tell "this trail hit its LIMIT"
-  // from "this trail is chatty".
-  return withRowCount(out, r.rows.length, capOf(trail.sql));
+  // a signed and a voided event — so the truncation check cannot count events.
+  return withTruncation(out, cap ? r.rows.length > cap : false, cap);
 }
 
 /**
- * Tag a source's events with what its own query actually read, so `staffFeed`
- * can report a trail that hit its LIMIT. Non-enumerable: this must never reach
- * the wire or change how the array behaves anywhere else.
+ * Tag a source's events with whether its own query was CUT SHORT. Non-enumerable:
+ * this must never reach the wire or change how the array behaves anywhere else.
  */
-function withRowCount(events, rows, cap) {
+function withTruncation(events, truncated, cap) {
   if (!cap) return events;
-  Object.defineProperty(events, '__rows', { value: rows, enumerable: false });
+  Object.defineProperty(events, '__truncated', { value: !!truncated, enumerable: false });
   Object.defineProperty(events, '__cap', { value: cap, enumerable: false });
   return events;
 }
@@ -1540,6 +1560,11 @@ function withRowCount(events, rows, cap) {
 function capOf(sql) {
   const m = /LIMIT\s+(\d+)\s*$/i.exec(String(sql || '').trim());
   return m ? Number(m[1]) : null;
+}
+
+/** The same SQL asking for one more row than it wants — the truncation probe. */
+function overRead(sql, cap) {
+  return String(sql).replace(/LIMIT\s+\d+\s*$/i, `LIMIT ${cap + 1}`);
 }
 
 // ── 12. The request log — every HTTP call that touched this file ───────────
@@ -1637,21 +1662,22 @@ async function staffFeed(appId, opts) {
     }));
   }
 
-  // (3) A SINGLE TRAIL HIT ITS OWN CAP. Each source caps independently, so a
-  // file with 900 audit rows loses 100 of them even when the merged total is
-  // under `limit` and (2) stays silent. Reported by NAME so the reader knows
-  // which part of the record is partial, rather than being told the whole log
-  // is short and left to guess where.
-  // A source only reports here if it MEASURED itself (see withRowCount) — a
-  // source that cannot say how many rows it read is never guessed about.
+  // (3) A SINGLE TRAIL WAS CUT SHORT. Each source caps independently, so a file
+  // with 900 audit rows loses 100 of them even when the merged total is under
+  // `limit` and (2) stays silent. Reported by NAME so the reader knows which
+  // part of the record is partial, rather than being told the whole log is
+  // short and left to guess where.
+  // A source only reports here if it PROVED it (see trailEvents: the query asks
+  // for one row more than it wants, so a trail whose LIMIT merely states its
+  // shape — `closing_workflow` is one row per file — can no longer cry wolf).
   const capped = jobs
-    .map((j, i) => ({ name: j[0], rows: lists[i] && lists[i].__rows, cap: lists[i] && lists[i].__cap }))
-    .filter((s) => s.cap && s.rows >= s.cap);
+    .map((j, i) => ({ name: j[0], cap: lists[i] && lists[i].__cap, truncated: !!(lists[i] && lists[i].__truncated) }))
+    .filter((s) => s.truncated);
   if (capped.length) {
     all.unshift(row({
       at: null, kind: 'security', cat: 'other', source: 'meta', actor: 'system',
       verb: `${capped.length} of the file's trails hit their own limit — those parts are PARTIAL`,
-      label: capped.map((s) => `${s.name}: read ${s.rows} records, which is all this page reads — there may be older ones`).join('\n'),
+      label: capped.map((s) => `${s.name}: only the most recent ${s.cap} are on this page — there are older ones`).join('\n'),
       detail: { cappedSources: capped },
     }));
   }

@@ -112,13 +112,63 @@ console.log('\n4. who actually performs it differs, and is never blurred');
   ok(rv.every((o) => o.does === O.DOES.VENDOR),
     'Richer Values carries out all three itself');
 
-  // Class Valuation's client has NO payment call of any kind, and AppraisalScope's
-  // payment actions have no verified request shape. Both are back-office, and a
-  // future verified endpoint moves them in ONE place.
-  for (const v of ['nan', 'class']) {
-    ok(O.optionsFor(v, { cardOnFile: { present: true } }).every((o) => o.does === O.DOES.BACK_OFFICE),
-      `${O.VENDOR_NAME[v]} is recorded for the back office — nothing here claims to charge it`);
+  // APPRAISALSCOPE MOVED TO `vendor` ON 2026-08-16, owner-directed: *"I want to be
+  // a real vendor charge, yes. I want them to charge the credit card that I'm
+  // importing."* It was back-office for exactly one reason — no payment request had
+  // been verified against their contract — and that reason is gone: their own
+  // client package is in the repository and cdg.js builds their requests from it.
+  ok(O.optionsFor('nan', { cardOnFile: { present: true } }).every((o) => o.does === O.DOES.VENDOR),
+    'AppraisalScope carries out all three itself now');
+
+  // Class Valuation's client still has NO payment call of any kind, so it stays
+  // back-office. This is the assertion that keeps the distinction honest.
+  ok(O.optionsFor('class', { cardOnFile: { present: true } }).every((o) => o.does === O.DOES.BACK_OFFICE),
+    'Class Valuation is recorded for the back office — nothing here claims to charge it');
+}
+
+console.log('\n4b. a company may only be marked `vendor` if the request actually exists');
+{
+  // THE GUARD THAT REPLACES "AppraisalScope is back-office". The old assertion
+  // protected one thing: that this table never claims a capability the code does
+  // not have. Marking a row `vendor` when nothing can perform it puts a charge
+  // button in front of a person that either does nothing or, far worse, sends a
+  // guessed request at a money endpoint. So rather than pinning one vendor's
+  // answer, this pins the RULE — and it keeps biting for whichever vendor is
+  // wired up next.
+  const fs = require('fs');
+  const path = require('path');
+  const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
+  // What each vendor's payment code must contain for each way it claims to perform.
+  // A method named here is only credible if the named module really builds/sends it.
+  const PROOF = {
+    nan: {
+      module: 'src/amc/payment.js',
+      PAYMENT_LINK: /buildSendInvoice/,
+      CARD_ON_FILE: /buildPaymentAuthCapture/,
+      NEW_CARD: /buildPaymentAuthCapture/,
+    },
+    rv: {
+      module: 'src/richervalues/payment.js',
+      PAYMENT_LINK: /sendPaymentLink/,
+      CARD_ON_FILE: /payForOrder/,
+      NEW_CARD: /payForOrder/,
+      COMPANY_CARD: /payForOrder/,
+    },
+  };
+  for (const v of O.VENDORS) {
+    for (const m of O.methodsFor(v)) {
+      if (O.capability(v, m).does !== O.DOES.VENDOR) continue;
+      const proof = PROOF[v];
+      ok(!!proof, `${O.VENDOR_NAME[v]} claims to perform ${m} — and there is a module named for it`);
+      if (!proof) continue;
+      const src = read(proof.module);
+      ok(proof[m] && proof[m].test(src),
+        `${O.VENDOR_NAME[v]}'s ${m} is really built in ${proof.module}, not just claimed in the table`);
+    }
   }
+  // And the inverse: a back-office row must NOT be quietly performing anything.
+  ok(O.capability('class', 'CARD_ON_FILE').does === O.DOES.BACK_OFFICE,
+    'Class Valuation still has no payment call, so its rows stay honest about that');
 }
 
 console.log('\n5. the card-on-file option is DISABLED WITH A REASON, never hidden');
@@ -173,18 +223,26 @@ console.log('\n8. "to be paid" and "paid" are different sentences');
 {
   const chosen = O.describeIntent({ vendor: 'nan', method: 'PAYMENT_LINK', settled_at: null });
   ok(/^To be paid/.test(chosen.head), 'an unsettled link reads as still to be paid');
-  ok(chosen.awaitingBackOffice, 'and on AppraisalScope it is waiting on a person here');
 
   const paid = O.describeIntent({ vendor: 'nan', method: 'PAYMENT_LINK', settled_at: new Date() });
   ok(/^Paid/.test(paid.head) && paid.settled, 'once settled it reads as paid');
   ok(!paid.awaitingBackOffice, 'and stops asking anybody to do anything');
 
-  // THE DISTINCTION THAT MATTERS: an unsettled Richer Values payment is waiting on
-  // the VENDOR or the BORROWER, not on our back office. Telling the desk to go and
-  // charge it would be wrong.
-  const rvPending = O.describeIntent({ vendor: 'rv', method: 'PAYMENT_LINK', settled_at: null });
-  ok(!rvPending.awaitingBackOffice,
-    'an unsettled Richer Values link is NOT on the back office\'s list — they sent it');
+  // THE DISTINCTION THAT MATTERS, and it now covers TWO vendors: an unsettled
+  // payment on a company that performs its own payments is waiting on the VENDOR or
+  // the BORROWER, never on our back office. Telling the desk to go and charge it
+  // would be wrong — and it moved from one vendor to two on 2026-08-16 when
+  // AppraisalScope's payment requests were built, which is exactly the kind of
+  // change a per-vendor hard-coded expectation would have hidden.
+  for (const v of ['rv', 'nan']) {
+    const pending = O.describeIntent({ vendor: v, method: 'PAYMENT_LINK', settled_at: null });
+    ok(!pending.awaitingBackOffice,
+      `an unsettled ${O.VENDOR_NAME[v]} link is NOT on the back office's list — they sent it`);
+  }
+  // And the one company that IS still waiting on a person says so.
+  const classPending = O.describeIntent({ vendor: 'class', method: 'PAYMENT_LINK', settled_at: null });
+  ok(classPending.awaitingBackOffice,
+    'a Class Valuation instruction is still waiting on somebody here — nothing can carry it out');
 
   ok(O.describeIntent(null) === null && O.describeIntent({}) === null,
     'nothing chosen yet describes as nothing, rather than as an empty instruction');
