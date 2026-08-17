@@ -20,6 +20,7 @@ const db = require('../db');
 const workflow = require('./workflow');
 const notify = require('./notify');
 const drawLabel = require('./draw-label');   // "Draw 2" — the ONE way a draw is named in a subject
+const drawCommitted = require('./draw-committed');   // "how much of this line is already spoken for"
 const routing = require('../sitewire/routing');
 // The ONE draw-email composer (CLAUDE.md draw rule 15). A portal request has no Sitewire draw to
 // read yet, so its own row is the money source — converted through the same `drawMoney` as every
@@ -56,12 +57,14 @@ async function composerLines(appId) {
   // not fully approved as if it were; if it is amended or declined the money frees itself again,
   // because these are live sums, not a stored balance). The old `d.status='approved'` filter let the
   // borrower compose a second request against money a draw in flight had already claimed.
-  const appr = (await db.query(
-    `SELECT r.sitewire_job_item_id AS jid, COALESCE(SUM(COALESCE(r.approved_cents,0)),0)::bigint AS appr
-       FROM sitewire_draw_requests r JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id
-      WHERE d.application_id=$1
-      GROUP BY r.sitewire_job_item_id`, [appId])).rows;
-  const apprBy = new Map(appr.map((a) => [Number(a.jid), Number(a.appr)]));
+  //
+  // …and "already committed" is `draw-committed.js`, the ONE definition, because a
+  // PHYSICAL draw is not in Sitewire's ledger for most of its life. Sitewire refuses a
+  // manual draw entry, so a Trinity draw lives here as a portal request and only reaches
+  // Sitewire once approved, as a historical draw — and its per-line rows appear only when
+  // the reconcile next runs. Reading `sitewire_draw_requests` alone therefore offered the
+  // borrower money they had already been paid, in the window between the two.
+  const apprBy = await drawCommitted.committedByJobItem(appId);
   for (const l of lines) l.remaining_cents = Math.max(0, l.budgeted_cents - (apprBy.get(l.sitewire_job_item_id) || 0));
   return lines;
 }

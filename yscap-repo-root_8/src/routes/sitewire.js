@@ -931,15 +931,34 @@ router.get('/files/:id/portal-draws', requireDrawView, async (req, res) => {
   } catch (e) { console.warn('[sitewire] portal-draws error:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
-router.post('/files/:id/portal-draws', requirePermission('manage_draws'), async (req, res) => {
+// SUBMITTING a draw request is a BORROWER'S action, so a loan officer may do it too
+// (owner-directed 2026-08-17: *"the rule was that the loan officer can only do stuff that
+// a borrower can do"*). It is gated on `view_draws` OR `manage_draws` — the same pairing
+// the read routes already use, and the same principle behind `view_draws` itself, which
+// lets a loan officer accept or dispute a finding ON THE BORROWER'S BEHALF.
+//
+// THIS IS NOT A WIDENING OF `manage_draws`, and it must not become one. The draw DESK —
+// setting approved amounts, approving, amending, reopening, recording a release, pushing
+// the file to Sitewire — stays `manage_draws` (Draw Coordinator / Processor / Admin),
+// exactly as owner-directed on 2026-07-20. A loan officer can ASK for a draw; only the
+// desk decides one. The two extra powers here are deliberately withheld from an officer
+// for the same reason: `allowOver` composes a request ABOVE a line's remaining budget and
+// `allowParallel` opens a second draw while one is already running — both are desk
+// judgements a borrower could never make, so they need the desk capability even though
+// creating the request does not.
+router.post('/files/:id/portal-draws', requireDrawView, async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
     const portalDraws = require('../lib/portal-draws');
     const b = req.body || {};
+    const isDesk = can(req.actor, 'manage_draws');
+    if (!isDesk && (b.allow_over === true || b.allow_parallel === true)) {
+      return res.status(403).json({ error: 'Only the draw desk can go over a line’s remaining budget or open a second draw alongside one already running.' });
+    }
     const row = await portalDraws.createRequest(appId, Array.isArray(b.entries) ? b.entries : [], {
       source: 'staff', staffId: req.actor.id,
-      allowOver: b.allow_over === true, allowParallel: b.allow_parallel === true,
+      allowOver: isDesk && b.allow_over === true, allowParallel: isDesk && b.allow_parallel === true,
       note: b.note ? String(b.note) : null,
     });
     res.json({ ok: true, request: row });
