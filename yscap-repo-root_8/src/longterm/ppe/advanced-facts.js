@@ -107,6 +107,25 @@ function advancedSection() {
   }));
 }
 
+/**
+ * Read the advanced facts from a scenario, REGISTRY-DRIVEN, applying each fact's type + default. A
+ * boolean fact is coerced (`!!`) and defaults to its registry default when omitted; an enum fact takes
+ * the scenario value only if it is a VALID enum member (else the default — an unknown value never
+ * sneaks through). A number fact passes through. Add a fact to the registry and it flows here for free.
+ * PURE. Used by lpScenarioToFacts so every advanced fact reaches the engine facts (and the overlay).
+ */
+function advancedFactsFromScenario(sc) {
+  const s = sc || {};
+  const out = {};
+  for (const f of ADVANCED_FACTS) {
+    const v = s[f.key];
+    if (f.type === 'boolean') out[f.key] = v === undefined || v === null ? !!f.default : !!v;
+    else if (f.type === 'enum') out[f.key] = (v != null && f.enumValues.includes(v)) ? v : f.default;
+    else out[f.key] = v === undefined || v === null ? f.default : v;
+  }
+  return out;
+}
+
 module.exports = {
   ADVANCED_FACTS,
   getAdvancedFact,
@@ -114,4 +133,5 @@ module.exports = {
   isAdvancedFact,
   overlayOnlyKeys,
   advancedSection,
+  advancedFactsFromScenario,
 };

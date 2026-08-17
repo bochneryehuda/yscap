@@ -17,6 +17,7 @@ const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
 const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
 const { lpScenarioToFacts } = require('../ppe/lp-agreement-legs');
 const { evaluateInformational } = require('../ppe/informational');
+const { advancedFactKeys } = require('../ppe/advanced-facts');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -88,6 +89,9 @@ const SUPPORTED_FIELDS = new Set([
   // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
   // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
   ...REGISTRY_FIELDS,
+  // The ADVANCED overlay facts (D27–D29) — occupancy/rural/STR/FTI/FTHB/foreign_national/
+  // declining_market/renovation. Registry-driven so a fact added there is accepted here automatically.
+  ...advancedFactKeys(),
 ]);
 // Request-envelope keys the ROUTE consumes (not pricing inputs) — always allowed.
 const META_FIELDS = new Set(['scenario', 'debug', 'full', 'raw', 'poll', 'disqualify', 'maxWaitMs', 'pollMs', 'companyId',

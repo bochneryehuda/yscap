@@ -23,6 +23,7 @@
  * this module only PLUMBS it. LT-only. No RTL imports.
  */
 const { quoteProgram } = require('./quote');
+const { advancedFactsFromScenario } = require('./advanced-facts');
 
 // The three credentials client.credentials() reads. Named here only to report WHICH are missing (the
 // client exposes a boolean, not the gap). Keep in step with lenderprice/client.js credentials().
@@ -97,6 +98,13 @@ function lpScenarioToFacts(s) {
     // skip the NJ rule) — the default is a concrete, owner-set LLC.
     borrower_type: sc.borrowerType || sc.borrower_type || 'LLC',
     subordinate_amount: num(sc.subordinateLoanAmount) != null ? num(sc.subordinateLoanAmount) : (num(sc.subordinate_amount) || 0),
+    // The ADVANCED overlay facts (D27–D29), registry-driven so the Advanced section, the fact
+    // converter, and the overlay all read one list: occupancy (leased/vacant), rural_property,
+    // short_term_rental, first_time_investor, first_time_homebuyer, foreign_national, declining_market,
+    // renovation. Lender Price does NOT price on these — they are the OVERLAY-ONLY class our matrix can
+    // override LP on, with a reason. Booleans default false, occupancy defaults 'leased'. Enforcement
+    // of each specific cut is gated on confirming it from the matrix / LP live (D36); this carries them.
+    ...advancedFactsFromScenario(sc),
   };
 }
 

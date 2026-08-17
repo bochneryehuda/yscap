@@ -84,5 +84,17 @@ ok(AF.isAdvancedFact('rural_property') && !AF.isAdvancedFact('fico') && !AF.isAd
   ok(true, 'every advanced fact effect is the matrix overlay string verbatim');
 }
 
+// ── advancedFactsFromScenario: registry-driven reader with type + default handling ────────────────
+{
+  const all = AF.advancedFactsFromScenario({ occupancy: 'vacant', rural_property: true, short_term_rental: 1 });
+  ok(all.occupancy === 'vacant' && all.rural_property === true && all.short_term_rental === true, 'reads occupancy + booleans (coerced) from a scenario');
+  const def = AF.advancedFactsFromScenario({});
+  ok(def.occupancy === 'leased' && def.rural_property === false && def.foreign_national === false, 'omitted facts take their registry defaults (leased / false)');
+  const bad = AF.advancedFactsFromScenario({ occupancy: 'garbage' });
+  ok(bad.occupancy === 'leased', 'an invalid enum value falls back to the default (never sneaks through)');
+  // every registry fact is present in the output.
+  ok(AF.advancedFactKeys().every((k) => k in def), 'the reader returns every registry fact (registry-driven)');
+}
+
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);
