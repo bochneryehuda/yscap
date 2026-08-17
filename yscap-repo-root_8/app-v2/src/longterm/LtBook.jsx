@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
+// ONE way to write a value down, shared with every other long-term screen — never a
+// second copy here. The census and the pipeline show the same loans, so a `money`
+// written twice is two screens quoting one loan two ways.
+import { money } from './format.js';
 
 /**
  * THE BOOK — the owner's census, on a screen.
@@ -33,8 +37,6 @@ const TABS = [
   { key: 'boundary', label: 'Exactly 36 months', note: 'The rule covers under 36 and over 36 — not 36 itself. These need your answer.' },
   { key: 'unknown', label: 'No program, no term', note: 'Nothing on the file says which product it is.' },
 ];
-
-const money = (n) => (n == null ? '—' : `$${Math.round(Number(n)).toLocaleString('en-US')}`);
 
 export default function LtBook() {
   const [data, setData] = useState(null);

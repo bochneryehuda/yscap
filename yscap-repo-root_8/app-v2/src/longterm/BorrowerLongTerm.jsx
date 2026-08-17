@@ -1,6 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ltApi } from './api.js';
+// ONE way to write a value down, shared with every other long-term screen. Writing
+// a `money` or a `day` here would be a second copy, and the two drift: the file
+// screen's `day` carries a calendar-day guard the pipeline's copy had lost, so a
+// DATE column printed the day BEFORE in every US timezone until they were merged.
+import { money, day } from './format.js';
 
 /**
  * THE CLIENT'S OWN LONG-TERM SIDE — and the switch back.
@@ -40,9 +45,6 @@ import { ltApi } from './api.js';
  * Colours are explicit darks per the HARD RULE — every `--ink*` token in this
  * palette is a LIGHT paper colour and would render white-on-white.
  */
-
-const money = (n) => (n == null ? '—' : `$${Math.round(Number(n)).toLocaleString('en-US')}`);
-const day = (s) => { try { return s ? new Date(s).toLocaleDateString() : ''; } catch { return ''; } };
 
 /** Ask the server what this client's long-term side holds. Never throws at a client. */
 export function useLongTermSide() {
