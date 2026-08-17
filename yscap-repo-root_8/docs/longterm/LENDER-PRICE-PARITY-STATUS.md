@@ -867,3 +867,55 @@ direction is untouched: LP declining the **whole** scope while we price is still
 **This is the concrete blocker behind task #80.** Until we know how LP selects a band, the disqualify
 side of the E3 gate cannot resolve on any `dscr >= 1.25` scenario — and the eligible-side 82.71 %
 (§2.6) is measured with `--no-disqualify`, so it does not answer this question either.
+
+
+---
+
+### §2.10 — OUR OWN TWO ELIGIBILITY LAYERS DISAGREED ON 164 CELLS, AND FIXING IT EXPOSED A VENDOR CONFLICT (2026-08-17)
+
+**R10 divergence B, closed.** Layer 1 (the rate sheet) carried a FLAT eligibility envelope — max LTV 80,
+DSCR<1.00 → 75, DSCR<1.00 & FICO<700 → 70, min FICO 640 — while Layer 2 (the matrix) carries the real
+FOUR-AXIS grid: loan TIER × FICO floor × purpose × DSCR band. Layer 1 knew nothing about the tiers.
+Re-measured over a 1,152-cell sweep: **164 divergences, every one in the same direction — Layer 1
+ELIGIBLE where Layer 2 declines.**
+
+Layer 2 was already authoritative for the program verdict, so this was not over-lending in production —
+but Layer 1 is the leg the agreement harness prices, and a rate-sheet layer that answers "eligible" on a
+loan the matrix refuses is a wrong answer waiting for the day something reads it directly.
+
+**The grid was not the only gap.** The drift sweep found **six further matrix overlays Layer 1 had no
+equivalent for at all**: the small-loan LTV reduction (<$125k → 75%), the interest-only cap and its DSCR
+floor, both cash-out proceeds caps, the subordinate-financing prohibition, the 5+ unit cut and the Row
+Home cut. Five of them were invisible to the first sweep because it held `units = 1`, no subordinate
+lien, no interest-only, a SingleFamily property and no cash-out amount — **a sweep that does not VARY a
+fact proves nothing about that fact**, so the drift test now varies all of them and asserts each one
+actually bites.
+
+Result: **370,656 cells swept, boundary-heavy on every axis, zero disagreement in either direction.**
+The grid is transcribed a SECOND time on purpose (different shape — half-open FICO ranges here,
+descending floors there) so the drift test is a real check rather than a tautology; importing one layer
+into the other would destroy the property that makes them catch each other.
+
+**Two honesty notes worth keeping.**
+
+- **Four of the six N/A cells cannot be proven by the sweep.** Mutating a T1 or T2 N/A cell to a real cap
+  leaves the drift test green, because every N/A cell is a DSCR<1.00 cell and those four span FICO ranges
+  entirely below 680 — which the pre-existing flat rule `dhvn_min_fico_lt100` already refuses. Only T3's
+  cell reaches FICO 680–699 and is observable end to end. Redundancy that agrees is fine; deleting one
+  encoding because the suite stays green is how the rule is lost. Each N/A cell's compiled predicate is
+  therefore fired **directly**, per cell, and the overlap is recorded beside the flat rule in the source.
+- **The pricing suite now measures through an envelope-free twin.** Otherwise gating a cell off would
+  silently convert "this cell is unreachable" into "this cell's price is no longer checked", and the
+  vendor's own number would go unverified forever with a green suite.
+
+**⚠ OPEN — an owner question, deliberately not resolved (task #81).** The Excel prints a real adjustment
+of **−3.75 at FICO 660–679 / CLTV 75** while the matrix caps that FICO band at **70%** in every tier,
+purpose and DSCR band — so the vendor prices a cell its own matrix makes unreachable. The mirror assumes
+the **matrix governs eligibility and the sheet governs price** (a priced cell states what the adjustment
+would be, not that the loan is eligible; the sheet's own N/A boxes remain its eligibility statement).
+That is the safe reading and it changed nothing a borrower sees. If the SHEET actually governs, we now
+decline loans Deephaven would do — the expensive direction — which is exactly why it is an owner call.
+
+Test `scripts/test-lt-ppe-l1-l2-ltv-grid.js` (39 assertions). Mutations proven red: all six overlays
+removed (8 failures), the small-loan cap removed (2), the per-tier FICO floors weakened (4), one T3 cap
+loosened 70→80 (1), the small-loan threshold moved (2), the T3 N/A cell given a cap (2).

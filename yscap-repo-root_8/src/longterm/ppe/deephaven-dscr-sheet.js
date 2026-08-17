@@ -137,6 +137,148 @@ const SHEET_LOANAMT_LT_150K = [-1.250, -1.250, -1.250, -1.500, -1.500, -1.500, -
 const SHEET_LOANAMT_LT_125K = [-1.750, -1.750, -2.000, -2.250, -2.250, -2.500, null];   // "< 125,000" (80 N/A)
 // "State**" — DC / MA / NJ / NY, flat. Sheet footnote O41.
 const SHEET_STATE = -0.375;
+
+// ---- §2b THE MAX-LTV GRID — INDEPENDENTLY TRANSCRIBED, DELIBERATELY A SECOND COPY ----------------
+//
+// WHAT WAS WRONG (R10 divergence B, measured 2026-08-17). This layer's eligibility envelope was three
+// FLAT rules — max LTV 80, DSCR<1.00 → 75, DSCR<1.00 & FICO<700 → 70 — plus a single flat min FICO of
+// 640. The real matrix is a FOUR-AXIS grid: loan TIER × FICO floor × purpose × DSCR band. So this layer
+// knew nothing about the tiers, and on a $1.75M or $2.25M loan it priced cells the matrix refuses:
+// re-measured over a 1,152-cell sweep, **164 divergences, every single one in the same direction — this
+// layer ELIGIBLE where Layer 2 declines.** The dominant causes are exactly the two the grid encodes:
+// the per-tier FICO FLOORS (T2/T3 require 660, this layer only ever checked 640) and the tier-aware LTV
+// caps (T2/T3 drop to 65/70/60).
+//
+// WHY A SECOND COPY IS THE RIGHT ANSWER HERE, when this repo's standing rule is "one definition, never a
+// second copy". The two layers exist to CATCH EACH OTHER: Layer 1 is the rate sheet transcribed from the
+// vendor's Excel, Layer 2 is the eligibility matrix transcribed from the published product matrix, and
+// the whole point of keeping them independent is that a transcription error in one is caught by the
+// other. Importing Layer 2's `GRID` here would collapse them into one source and destroy that property —
+// a typo would simply be agreed with, twice. So this is transcribed AGAIN, from the matrix, in a
+// DIFFERENT SHAPE (explicit half-open FICO ranges here; descending floors + "highest floor met" there),
+// which is what makes the drift test a real check rather than a tautology: two different shapes that must
+// still produce the same verdict on every cell. `scripts/test-lt-ppe-l1-l2-ltv-grid.js` sweeps the whole
+// space and fails on ANY disagreement, in EITHER direction.
+//
+// UNITS: fico RAW, ltv MILLI-percent (80% → 80000), dscr MILLI (1.00 → 1000), loan RAW dollars.
+// A `null` cap is the matrix's own N/A — INELIGIBLE at any LTV, never a guessed cap.
+// FICO ranges are HALF-OPEN [min, max) so a score can never fall in two rows (this repo's stated
+// defense against the classic "740 is in two bands" bug); `max: null` = no upper bound.
+const SHEET_LTV_GRID = [
+  { tier: 'T1', loanMinExclusive: null, loanMax: 1500000, tierMinFico: 640, rows: [
+    { fico: [720, null], purchase_ge1: 80, cashout_ge1: 80, purchase_lt1: 75,   cashout_lt1: 70 },
+    { fico: [700, 720],  purchase_ge1: 80, cashout_ge1: 75, purchase_lt1: 75,   cashout_lt1: 65 },
+    { fico: [680, 700],  purchase_ge1: 75, cashout_ge1: 75, purchase_lt1: 70,   cashout_lt1: 65 },
+    { fico: [640, 680],  purchase_ge1: 70, cashout_ge1: 70, purchase_lt1: null, cashout_lt1: null },
+  ] },
+  { tier: 'T2', loanMinExclusive: 1500000, loanMax: 2000000, tierMinFico: 660, rows: [
+    { fico: [700, null], purchase_ge1: 80, cashout_ge1: 75, purchase_lt1: 70,   cashout_lt1: 65 },
+    { fico: [680, 700],  purchase_ge1: 75, cashout_ge1: 75, purchase_lt1: 65,   cashout_lt1: 65 },
+    { fico: [660, 680],  purchase_ge1: 65, cashout_ge1: 65, purchase_lt1: null, cashout_lt1: null },
+  ] },
+  { tier: 'T3', loanMinExclusive: 2000000, loanMax: 2500000, tierMinFico: 660, rows: [
+    { fico: [700, null], purchase_ge1: 70, cashout_ge1: 70, purchase_lt1: 60,   cashout_lt1: 60 },
+    { fico: [660, 700],  purchase_ge1: 65, cashout_ge1: 65, purchase_lt1: null, cashout_lt1: null },
+  ] },
+];
+
+// The loan-tier predicate. `loanMinExclusive` is EXCLUSIVE and `loanMax` INCLUSIVE, matching the
+// matrix's own half-open-by-dollar tiering (T1 loan<=1.5M, T2 1.5M<loan<=2.0M, T3 2.0M<loan<=2.5M), so
+// a loan of exactly $1,500,000 is T1 in both layers rather than falling into two tiers or neither.
+const tierPredicate = (t) => (t.loanMinExclusive == null
+  ? [{ fact: 'loan_amount', op: 'lte', value: t.loanMax }]
+  : [{ fact: 'loan_amount', op: 'gt', value: t.loanMinExclusive }, { fact: 'loan_amount', op: 'lte', value: t.loanMax }]);
+
+// The FICO row predicate — half-open [min, max).
+const ficoPredicate = (r) => (r.fico[1] == null
+  ? [{ fact: 'fico', op: 'gte', value: r.fico[0] }]
+  : [{ fact: 'fico', op: 'gte', value: r.fico[0] }, { fact: 'fico', op: 'lt', value: r.fico[1] }]);
+
+// Purpose CLASS. The matrix has two columns — cash-out, and everything else (purchase / rate-term) — so
+// the non-cash-out side is expressed as "not cashout" rather than by listing purposes: a purpose we have
+// not seen must fall on the SAME side the matrix puts it, and the matrix's own column is the residual.
+const purposePredicate = (pc) => [{ fact: 'purpose', op: pc === 'cashout' ? 'eq' : 'neq', value: 'cashout' }];
+const dscrBandPredicate = (band) => [{ fact: 'dscr', op: band === 'ge1' ? 'gte' : 'lt', value: 1000 }];
+
+/**
+ * Compile SHEET_LTV_GRID into this layer's eligibility rules. Two kinds come out of each cell:
+ *   • an N/A cell  → a decline on the cell alone (ineligible at ANY leverage);
+ *   • a real cap   → a decline when the scenario's LTV exceeds it.
+ * Plus one per-tier minimum-FICO decline for the tiers that have a floor above the program's own 640.
+ *
+ * Every rule can only ever DECLINE, so adding them can only ever TIGHTEN this layer — it is structurally
+ * incapable of making a loan eligible that was not. That is what makes it safe to land beside the
+ * existing flat envelope rules rather than replacing them: those stay as a backstop for a scenario whose
+ * loan amount is absent, where no tier predicate can fire at all (the rules engine fails SAFE to false on
+ * a missing fact, so without them such a scenario would have NO leverage cap).
+ */
+function ltvGridEligibility() {
+  const out = [];
+  for (const t of SHEET_LTV_GRID) {
+    if (t.tierMinFico > 640) {
+      out.push({
+        code: `dhvn_min_fico_${t.tier.toLowerCase()}`,
+        declineReason: `Loan > $${(t.loanMinExclusive / 1000000).toFixed(1)}MM: Min FICO ${t.tierMinFico}`,
+        predicate: { all: [...tierPredicate(t), { fact: 'fico', op: 'lt', value: t.tierMinFico }] },
+      });
+    }
+    for (const r of t.rows) {
+      for (const pc of ['purchase', 'cashout']) {
+        for (const band of ['ge1', 'lt1']) {
+          const cap = r[`${pc}_${band}`];
+          const where = [...tierPredicate(t), ...ficoPredicate(r), ...purposePredicate(pc), ...dscrBandPredicate(band)];
+          const who = `${t.tier} FICO ${r.fico[0]}${r.fico[1] == null ? '+' : `–${r.fico[1] - 1}`}, ${pc === 'cashout' ? 'cash-out' : 'purchase/rate-term'}, DSCR ${band === 'ge1' ? '>= 1.00' : '< 1.00'}`;
+          if (cap == null) {
+            out.push({ code: `dhvn_na_${t.tier.toLowerCase()}_${r.fico[0]}_${pc}_${band}`, declineReason: `Not eligible: ${who}`, predicate: { all: where } });
+          } else {
+            out.push({ code: `dhvn_ltv_${t.tier.toLowerCase()}_${r.fico[0]}_${pc}_${band}`, declineReason: `Max LTV/CLTV ${cap}%: ${who}`, predicate: { all: [...where, { fact: 'ltv', op: 'gt', value: cap * 1000 }] } });
+          }
+        }
+      }
+    }
+  }
+  return out.concat(OVERLAY_ELIGIBILITY);
+}
+
+// ---- §2c THE SIX OVERLAYS THIS LAYER NEVER CARRIED ----------------------------------------------
+//
+// The Max-LTV grid was not the only thing missing. Layer 2 enforces SIX further matrix overlays that
+// this layer had NO equivalent for at all, so a scenario touching any of them priced here while the
+// matrix refused it. They were found by the drift sweep, not by reading: the first sweep held units=1,
+// no subordinate lien, no interest-only, a SingleFamily property and no cash-out amount, so five of the
+// six could not fire and the sixth (the small-loan cap) needed a loan under $125,000, which the coarse
+// reproduction never reached — a sweep that does not VARY a fact cannot prove anything about it, which
+// is why the drift test now varies every one of them and asserts that it does.
+//
+// Transcribed independently from the matrix, same discipline as the grid above: each can only DECLINE,
+// so it can only tighten this layer. Units are the engine's: ltv MILLI-percent, dscr MILLI, dollars raw.
+const OVERLAY_ELIGIBILITY = [
+  // Small-loan LTV reduction. Note this is a SEPARATE cut from the grid cap and is the more restrictive
+  // of the two wherever it fires — a $100k loan at 79% is inside its grid cell and still refused here.
+  { code: 'dhvn_small_loan_ltv', declineReason: 'Loan < $125,000: Max LTV 75%',
+    predicate: { all: [{ fact: 'loan_amount', op: 'lt', value: 125000 }, { fact: 'ltv', op: 'gt', value: 75000 }] } },
+  // Interest-only overlay — its own leverage cap AND its own DSCR floor, both stricter than the program's.
+  { code: 'dhvn_io_max_ltv', declineReason: 'Interest-Only: Max LTV 80%',
+    predicate: { all: [{ fact: 'interest_only', op: 'eq', value: true }, { fact: 'ltv', op: 'gt', value: 80000 }] } },
+  { code: 'dhvn_io_min_dscr', declineReason: 'Interest-Only: Min DSCR 1.00x',
+    predicate: { all: [{ fact: 'interest_only', op: 'eq', value: true }, { fact: 'dscr', op: 'lt', value: 1000 }] } },
+  // Cash-out proceeds caps — the limit steps DOWN as leverage rises, so both halves are needed; encoding
+  // only the higher one would let a $900k cash-out through at 80% LTV.
+  { code: 'dhvn_cashout_le65', declineReason: 'Max Cash-Out $1,000,000 (LTV <= 65%)',
+    predicate: { all: [{ fact: 'purpose', op: 'eq', value: 'cashout' }, { fact: 'ltv', op: 'lte', value: 65000 }, { fact: 'cashout_amount', op: 'gt', value: 1000000 }] } },
+  { code: 'dhvn_cashout_gt65', declineReason: 'Max Cash-Out $500,000 (LTV > 65%)',
+    predicate: { all: [{ fact: 'purpose', op: 'eq', value: 'cashout' }, { fact: 'ltv', op: 'gt', value: 65000 }, { fact: 'cashout_amount', op: 'gt', value: 500000 }] } },
+  // Subordinate financing is not allowed at all on this program (matrix R40).
+  { code: 'dhvn_subordinate', declineReason: 'Subordinate Financing not allowed',
+    predicate: { fact: 'subordinate_amount', op: 'gt', value: 0 } },
+  // 5+ units — the program is 1–4 units plus condominiums.
+  { code: 'dhvn_units_5plus', declineReason: '5+ units ineligible (program is 1–4 units + condos)',
+    predicate: { fact: 'units', op: 'gte', value: 5 } },
+  // Row Homes. Matched on the LP property-type vocabulary, the same spellings Layer 2 normalizes to; an
+  // unrecognized label no-ops in BOTH layers — neither may disqualify on a name it does not know.
+  { code: 'dhvn_row_home', declineReason: 'Row Homes ineligible',
+    predicate: { fact: 'property_type', op: 'in', value: ['RowHome', 'Row Home', 'RowHouse', 'Row House', 'rowhome', 'rowhouse'] } },
+];
 const cltvBandLabel = (cb) => (cb.min == null ? 'CLTV To 50.0%' : `CLTV ${cb.min - 0.5}–${cb.max - 0.5}%`);
 
 function buildDeephavenGrid() {
@@ -213,6 +355,12 @@ function buildDeephavenGrid() {
     // RAW, ltv MILLI-percent (80% → 80000), dscr MILLI (1.00 → 1000), loan_amount RAW dollars.
     eligibility: [
       { code: 'dhvn_min_fico', declineReason: 'Min FICO 640', predicate: { fact: 'fico', op: 'lt', value: 640 } },
+      // DO NOT DELETE THIS ON THE STRENGTH OF THE §2b GRID. It OVERLAPS the grid's N/A cells — every N/A
+      // cell is a DSCR < 1.00 cell, and four of the six span FICO ranges entirely below 680 — so the two
+      // encodings agree and no end-to-end sweep can tell them apart there (measured: mutating a T1 or T2
+      // N/A cell to a real cap leaves the drift test green; only T3's cell, which reaches FICO 680–699,
+      // is observable). Redundancy that agrees is fine; deleting one because the suite stays green is how
+      // the rule is lost. The N/A mechanism is proven directly, per cell, in the drift test's §6b.
       { code: 'dhvn_min_fico_lt100', declineReason: 'DSCR < 1.00: Min FICO 680', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'fico', op: 'lt', value: 680 }] } },
       { code: 'dhvn_max_ltv', declineReason: 'Max LTV/CLTV 80%', predicate: { fact: 'ltv', op: 'gt', value: 80000 } },
       { code: 'dhvn_max_ltv_lt100', declineReason: 'DSCR < 1.00: Max LTV 75%', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'ltv', op: 'gt', value: 75000 }] } },
@@ -226,6 +374,9 @@ function buildDeephavenGrid() {
       { code: 'dhvn_min_loan_ge1', declineReason: 'Minimum Loan Amount $75,000 (DSCR >= 1.00x)', predicate: { all: [{ fact: 'dscr', op: 'gte', value: 1000 }, { fact: 'loan_amount', op: 'lt', value: 75000 }] } },
       { code: 'dhvn_min_loan_lt1', declineReason: 'Minimum Loan Amount $200,000 (DSCR < 1.00x)', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'loan_amount', op: 'lt', value: 200000 }] } },
       { code: 'dhvn_max_loan', declineReason: 'Maximum Loan Amount $2.5MM', predicate: { fact: 'loan_amount', op: 'gt', value: 2500000 } },
+      // §2b — the 4-axis Max-LTV grid + per-tier FICO floors (R10 divergence B). Every rule here can
+      // only DECLINE, so this can only tighten; the flat rules above stay as the no-loan-amount backstop.
+      ...ltvGridEligibility(),
     ],
     priceLimit: {
       // §8 — no Deephaven price cap/floor was observed; loan size enters via a (not-yet-encoded)
@@ -273,4 +424,8 @@ const UNMEASURED = [
   'PRICE ROUNDING: the program falls back to the pricer default of nearest-1/8, but LP\'s own quotes are NOT eighth-rounded (105.175 and 105.675 are not multiples of 0.125), so the rounded price cannot tie out to LP. The rate sheet says nothing about rounding, so nothing is invented here — the sheet\'s composed price (rawPriceMilli) is what agrees with LP to the penny, and the agreement harness must compare on that until the real rounding rule is confirmed',
 ];
 
-module.exports = { buildDeephavenGrid, SHEET_TABLES, LP_TABLES, UNMEASURED, _internals: { cost } };
+// SHEET_LTV_GRID + ltvGridEligibility are exported for the L1↔L2 drift test ONLY — it asserts the
+// transcription's own shape (contiguous half-open FICO rows, partitioned loan tiers) as well as the
+// verdicts. Nothing in production may read them to SHORT-CIRCUIT the mirror: the two layers must stay
+// independently transcribed, or the drift test becomes a tautology (see §2b).
+module.exports = { buildDeephavenGrid, SHEET_TABLES, LP_TABLES, UNMEASURED, _internals: { cost, SHEET_LTV_GRID, ltvGridEligibility } };

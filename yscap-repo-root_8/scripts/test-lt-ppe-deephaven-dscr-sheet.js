@@ -51,6 +51,36 @@ function priceAt(sc) {
   const rung = r.ladder.find((x) => x.rate === RATE);
   return rung ? rung.rawPriceMilli / 1000 : null;
 }
+
+// ---- PRICING IS MEASURED THROUGH AN ENVELOPE-FREE TWIN, AND THAT IS DELIBERATE -------------------
+//
+// Sections 3 and 4 verify the vendor's own LLPA NUMBERS, cell by cell, against the Excel. They must
+// keep doing that for EVERY cell the Excel prints — including the cells the ELIGIBILITY envelope
+// refuses, because the rate sheet and the product matrix are two different vendor documents and they
+// do not fully agree. MEASURED 2026-08-17: the sheet prints a real adjustment of −3.75 at FICO 660–679
+// / CLTV 75, while the matrix caps that FICO band at 70% LTV in every tier, purpose and DSCR band — so
+// that cell is priced by one document and unreachable per the other.
+//
+// Routing those assertions through the ordinary quote would silently turn "this cell is gated off" into
+// "this cell's price is no longer checked", and the vendor's number would go unverified forever with a
+// green suite. So the PRICE is measured on a twin built from the SAME grid with the eligibility rules
+// removed, and eligibility keeps its own dedicated proofs (section 7 here, and the full L1↔L2 drift
+// sweep in test-lt-ppe-l1-l2-ltv-grid.js). The two questions are separate and are asked separately.
+// The twin keeps the sheet's OWN `fico_cltv_dscr` N/A cuts and drops only the envelope. That split is
+// the point, not a convenience: an N/A box in the Excel's own grid IS the rate sheet saying "not at this
+// leverage" (§2.8 — the sheet's N/A cells are eligibility cuts), so section 3 is right to demand a
+// decline there; the bounds and the matrix-derived grid are the OTHER document speaking, and those are
+// what must not silence a price assertion. Stripping both was the first cut of this twin, and it turned
+// four real N/A cells into priced ones — caught by this suite's own expected-an-N/A-decline assertion.
+const pricingProgram = rateSheetToProgram(
+  { ...sheet, ineligibilities: sheet.ineligibilities.filter((i) => i.dimension === 'fico_cltv_dscr') },
+  { code: 'DHVN_DSCR30_PRICING', name: 'Deephaven DSCR 30yr (pricing only)', investorCode: 'DHVN' });
+function priceOnlyAt(sc) {
+  const r = quoteProgram({ scenario: sc, program: pricingProgram, settings: S });
+  if (!r.eligible) return null;
+  const rung = r.ladder.find((x) => x.rate === RATE);
+  return rung ? rung.rawPriceMilli / 1000 : null;
+}
 function declinesOf(sc) { const r = quote(sc); return r.eligible ? [] : (r.declines || []); }
 // The bare base price at 7.500 — the sheet's own ladder, before any adjustment.
 const BARE = (() => {
@@ -164,7 +194,7 @@ for (const st of ['CA', 'FL', 'TX']) {
   SHEET_TABLES.FICO_CLTV.forEach((row, fi) => {
     row.forEach((cell, ci) => {
       const cltv = [50, 55, 60, 65, 70, 75, 80][ci];
-      const p = priceAt(sc({ cltv, fico: FICO_REP[fi], dscr: 1200 }));
+      const p = priceOnlyAt(sc({ cltv, fico: FICO_REP[fi], dscr: 1200 }));
       checked += 1;
       if (cell == null) {
         if (p == null) good += 1; else miss.push(`fico${FICO_REP[fi]}/cltv${cltv}: expected an N/A decline, priced ${p}`);
@@ -199,8 +229,8 @@ for (const st of ['CA', 'FL', 'TX']) {
   for (const [label, table, hold, trigger] of FAMILIES) {
     CLTVS.forEach((cltv, i) => {
       const want = table[i];
-      const plain = priceAt(sc({ cltv, dscr: 1200, ...hold }));
-      const withIt = priceAt(sc({ cltv, dscr: 1200, ...hold, ...trigger }));
+      const plain = priceOnlyAt(sc({ cltv, dscr: 1200, ...hold }));
+      const withIt = priceOnlyAt(sc({ cltv, dscr: 1200, ...hold, ...trigger }));
       checked += 1;
       // A null band is the sheet's own N/A. Our sheet prices no line there (the LTV cap is a separate
       // open item), so the price must be UNCHANGED — never a guessed charge.
@@ -283,7 +313,12 @@ for (const st of ['CA', 'FL', 'TX']) {
 
 // ═══ 7. ELIGIBILITY — unchanged by this work, re-proven on the price ═══════════════════════════════
 ok(sheet.ineligibilities.filter((i) => i.dimension === 'fico_cltv_dscr').length === 4, 'four N/A grid boxes decline (680/80, 660/80, 640/75, 640/80)');
-ok(sheet.ineligibilities.length === 13, 'ineligibilities = 4 N/A boxes + 9 explicit bound rules');
+// 59 = the 4 N/A grid boxes + 9 flat bound rules + the 46 compiled §2b/§2c envelope rules (the 4-axis
+// Max-LTV grid, the per-tier FICO floors and the six matrix overlays this layer used to lack entirely).
+// ADDING an eligibility rule is expected to move this number — BUMP IT, and say in the commit what the
+// new rule is. Do NOT delete this assertion to make a build green: it is the one line that notices a
+// rule silently disappearing, which is the direction that over-lends.
+ok(sheet.ineligibilities.length === 59, `ineligibilities = 4 N/A boxes + 9 bound rules + 46 grid/overlay rules (got ${sheet.ineligibilities.length})`);
 function declines(scn, re) { return declinesOf(scn).some((d) => re.test(d.reason)); }
 ok(declines(sc({ cltv: 70, fico: 600, dscr: 1250, state: 'NY' }), /Min FICO 640/), 'FICO 600 declines: Min FICO 640');
 ok(declines(sc({ cltv: 85, dscr: 1250, state: 'NY' }), /Max LTV/), 'LTV 85% declines: Max LTV 80%');
