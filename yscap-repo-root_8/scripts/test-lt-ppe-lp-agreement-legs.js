@@ -34,6 +34,20 @@ ok(q.eligible && q.ladder.length === 1 && q.ladder[0].finalPriceMilli === 102100
 try { legs.buildOursLeg(null); ok(false, 'buildOursLeg refuses a missing program'); }
 catch (_) { ok(true, 'buildOursLeg refuses a missing program (the sheet-under-test)'); }
 
+// ---- lpScenarioToFacts: LP scenario → engine facts, in the grid's scales -----------------------
+const f1 = legs.lpScenarioToFacts({ value: 500000, loan: 375000, fico: 760, dscr: 1.25, purpose: 'Cash out', state: 'NY', cashoutAmount: 50000, prepayTerm: '60 Months' });
+ok(f1.ltv === 75000, 'lpScenarioToFacts: ltv derived from loan/value → milli-percent (0.75 → 75000)');
+ok(f1.dscr === 1250 && f1.fico === 760 && f1.loan_amount === 375000, '  dscr milli (1.25→1250), fico raw, loan_amount raw');
+ok(f1.purpose === 'cashout' && f1.cashout_amount === 50000 && f1.prepay_months === 60, '  purpose normalized, cashout amount + prepay months carried');
+ok(f1.property_type === 'SingleFamily' && f1.units === 1, '  property_type + units default');
+ok(legs.lpScenarioToFacts({ value: 500000, ltv: 70 }).ltv === 70000 && legs.lpScenarioToFacts({ ltv: 0.7 }).ltv === 70000, '  ltv accepts a percentage (70) or a ratio (0.70)');
+ok(legs.lpScenarioToFacts({ purpose: 'Refinance' }).purpose === 'refinance' && legs.lpScenarioToFacts({ purpose: 'Purchase' }).purpose === 'purchase', '  purpose "Refinance"/"Purchase" normalized');
+ok(legs.lpScenarioToFacts({ prepayTerm: 'No Prepay' }).prepay_months === 0, '  "No Prepay" → 0 months');
+// buildOursLeg with factsFromLp:true prices a LENDER PRICE scenario through the conversion
+const oursLp = legs.buildOursLeg(PROGRAM, SETTINGS, { factsFromLp: true });
+const qLp = oursLp({ value: 500000, loan: 400000, fico: 740, dscr: 1.5, purpose: 'Cash out', state: 'TX', prepayTerm: '60 Months' });
+ok(qLp.eligible && qLp.ladder[0].finalPriceMilli === 102100, 'buildOursLeg factsFromLp: prices an LP scenario (Cash out triggers the cashout rule → 102.100)');
+
 // ---- a STUB LP client (no network) -------------------------------------------------------------
 function stubClient(over = {}) {
   return {

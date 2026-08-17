@@ -28,15 +28,74 @@ const { quoteProgram } = require('./quote');
 // client exposes a boolean, not the gap). Keep in step with lenderprice/client.js credentials().
 const LP_CRED_ENV = ['LP_USERNAME', 'LP_PASSWORD', 'LP_CLIENT_SECRET'];
 
+function num(x) { const n = Number(x); return Number.isFinite(n) ? n : null; }
+
+// Lender Price loan purpose → our engine's purpose fact. LP uses "Purchase" / "Refinance" / "Cash out".
+function normPurpose(p) {
+  const k = String(p == null ? '' : p).toLowerCase().replace(/[^a-z]/g, '');
+  if (k.includes('cashout')) return 'cashout';
+  if (k.includes('refinance') || k === 'refi') return 'refinance';
+  return 'purchase';
+}
+// "60 Months" / "No Prepay" → a number of months (0 = no prepay). Unreadable → null.
+function prepayMonths(v) {
+  const s = String(v == null ? '' : v).toLowerCase();
+  if (/no\s*prepay|none/.test(s)) return 0;
+  const m = s.match(/(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * A Lender Price SCENARIO (value/loan/fico/dscr/purpose/state/… — the client.price shape) → OUR engine's
+ * pricing FACTS, in the SCALES the rate-sheet grid already uses (deephaven-grid.js): fico RAW, ltv
+ * MILLI-PERCENT (ratio × 100000, so 0.75 → 75000), dscr MILLI (× 1000, so 1.25 → 1250), dollars raw.
+ * The long-tail facts (state / purpose / property_type / units / prepay_months / cashout_amount /
+ * interest_only / escrow_waiver / lock_days) are named so the grid's predicate rules can read them; the
+ * grid must emit its band bounds + predicates in this SAME vocabulary (they are built together). ltv is
+ * DERIVED from loan/value when not supplied, exactly as the LP validator derives it. PURE.
+ */
+function lpScenarioToFacts(s) {
+  const sc = s || {};
+  const value = num(sc.value);
+  const loan = num(sc.loan);
+  let ltvRatio = num(sc.ltv);
+  if (ltvRatio != null && ltvRatio > 1) ltvRatio = ltvRatio / 100; // accept a percentage
+  if (ltvRatio == null && value != null && value > 0 && loan != null) ltvRatio = loan / value;
+  const dscr = num(sc.dscr);
+  const units = num(sc.units);
+  return {
+    fico: num(sc.fico),
+    ltv: ltvRatio != null ? Math.round(ltvRatio * 100000) : null,
+    dscr: dscr != null ? Math.round(dscr * 1000) : null,
+    loan_amount: loan,
+    value,
+    purpose: normPurpose(sc.purpose),
+    state: sc.state || null,
+    property_type: sc.propertyType || 'SingleFamily',
+    units: units != null && units > 0 ? units : 1,
+    prepay_months: prepayMonths(sc.prepayTerm),
+    cashout_amount: num(sc.cashoutAmount) || 0,
+    interest_only: !!sc.interestOnly,
+    escrow_waiver: !!sc.escrowWaiver,
+    lock_days: num(sc.lock_days) || 30,
+  };
+}
+
 /**
  * OUR leg: price a scenario off the supplied program (the sheet-under-test) + settings.
  * Returns the quote.quoteProgram result verbatim ({ eligible, ladder[], declines[] }).
+ *   opts.marginHoldback — a resolved per-investor margin (see quote.js).
+ *   opts.factsFromLp    — when true, the incoming scenario is a LENDER PRICE scenario and is converted
+ *                         to engine facts via lpScenarioToFacts first (so one scenario object drives
+ *                         BOTH legs of the harness). Default false: the scenario is already engine facts.
+ * (Back-compat: a non-object 3rd arg is still accepted as marginHoldback.)
  */
-function buildOursLeg(program, settings, marginHoldback) {
+function buildOursLeg(program, settings, opts) {
   if (!program || typeof program !== 'object') throw new Error('buildOursLeg: no program (the sheet-under-test)');
+  const o = (opts && typeof opts === 'object') ? opts : { marginHoldback: opts };
   return function ours(scenario) {
-    const arg = { scenario, program, settings: settings || {} };
-    if (marginHoldback) arg.marginHoldback = marginHoldback;
+    const arg = { scenario: o.factsFromLp ? lpScenarioToFacts(scenario) : scenario, program, settings: settings || {} };
+    if (o.marginHoldback) arg.marginHoldback = o.marginHoldback;
     return quoteProgram(arg);
   };
 }
@@ -88,4 +147,4 @@ function readiness(client, env) {
   return { configured, missing, message };
 }
 
-module.exports = { buildOursLeg, buildLpLeg, readiness, _internals: { LP_CRED_ENV } };
+module.exports = { buildOursLeg, buildLpLeg, readiness, lpScenarioToFacts, _internals: { LP_CRED_ENV, normPurpose, prepayMonths } };

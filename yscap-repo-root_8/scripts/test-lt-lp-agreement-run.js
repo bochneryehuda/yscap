@@ -21,9 +21,8 @@
  *   --sheet       the sheet-under-test (a rateSheetToProgram INPUT, i.e. a ratesheet object). Or set
  *                 LT_SHEET_UNDER_TEST=<path>. This is your INDEPENDENT ANALYSIS candidate — never
  *                 trusted until this run agrees with Lender Price.
- *   --scenarios   a JSON array of scenarios (each a full LP + engine fact set). If omitted, a small
- *                 documented starter matrix is built — replace it with the real ≥200 before trusting a
- *                 PASS. buildMatrix/coverage are the production scenario builders.
+ *   --scenarios   a JSON array of Lender Price scenarios. If omitted, the canonical ≥200-scenario
+ *                 battery (agreement-scenarios.buildAgreementScenarios) is used — every LLPA angle.
  *   --filter-*    narrow Lender Price to one program/investor/lender/product (the sheet's investor).
  *   --no-disqualify   skip the disqualify poll (rungs-only; faster, but does not check ineligibility).
  *   --out         also write the full per-scenario report as JSON.
@@ -31,11 +30,12 @@
  * Nothing about this WRITES a rate sheet anywhere or changes the live pricer. LT-only.
  */
 const fs = require('fs');
+require('../src/config'); // load a bundled .env (LP_USERNAME/LP_PASSWORD/LP_CLIENT_SECRET) before the client reads env
 const client = require('../src/longterm/lenderprice/client');
 const legs = require('../src/longterm/ppe/lp-agreement-legs');
 const { runRatesheetAgreement } = require('../src/longterm/ppe/ratesheet-agreement');
 const { rateSheetToProgram } = require('../src/longterm/ppe/ratesheet');
-const { buildMatrix } = require('../src/longterm/ppe/scenario-matrix');
+const { buildAgreementScenarios } = require('../src/longterm/ppe/agreement-scenarios');
 const settings = require('../src/longterm/ppe/settings');
 
 function arg(name, dflt) {
@@ -46,21 +46,9 @@ function flag(name) { return process.argv.includes(name); }
 function die(code, msg) { console.error(msg); process.exit(code); }
 function readJson(path) { return JSON.parse(fs.readFileSync(path, 'utf8')); }
 
-// A small STARTER matrix — deliberately not the authoritative ≥200. The real battery is supplied via
-// --scenarios (built with buildMatrix + coverage over the live capability lists). Replace before a PASS
-// is trusted; a starter agreement is a smoke test, not the gate.
-function starterScenarios() {
-  const built = buildMatrix({
-    state: ['TX', 'FL', 'NY'],
-    fico: [680, 720, 760, 780],
-    ltv: [60000, 70000, 75000, 80000],
-    dscr: [900, 1150, 1250, 1500],
-    purpose: ['purchase', 'cashout', 'ratelterm'],
-    lock_days: [30],
-    loan_amount: [500000],
-  }, { maxScenarios: 240 });
-  return built.scenarios;
-}
+// The canonical ≥200-scenario battery (agreement-scenarios.js) — every LLPA angle, in Lender Price
+// scenario shape. A caller may still override with --scenarios (e.g. to replay a captured set).
+function defaultScenarios() { return buildAgreementScenarios().scenarios; }
 
 (async () => {
   // 1) readiness — the honest blocker. Without the login there is nothing to compare against.
@@ -80,15 +68,14 @@ function starterScenarios() {
 
   // 3) scenarios
   const scPath = arg('--scenarios', process.env.LT_SCENARIOS);
-  const scenarios = scPath ? readJson(scPath) : starterScenarios();
-  if (!scPath) console.log('WARNING: no --scenarios given; using the small STARTER matrix. A PASS here is a smoke test, not the E3 gate.');
-  console.log(`Scenarios: ${scenarios.length}${scPath ? ` (from ${scPath})` : ' (starter matrix)'}`);
+  const scenarios = scPath ? readJson(scPath) : defaultScenarios();
+  console.log(`Scenarios: ${scenarios.length}${scPath ? ` (from ${scPath})` : ' (canonical agreement battery)'}`);
 
   // 4) the two legs + the run
   const s = settings.resolveAll().values;
   const filter = {};
   for (const k of ['program', 'investor', 'lender', 'product']) { const v = arg(`--filter-${k}`); if (v) filter[k] = v; }
-  const ours = legs.buildOursLeg(program, s);
+  const ours = legs.buildOursLeg(program, s, { factsFromLp: true });
   const lp = legs.buildLpLeg(client, { withDisqualify: !flag('--no-disqualify') });
 
   let done = 0;
