@@ -88,7 +88,7 @@ console.log('/api/lt/ppe/* — the PPE HTTP surface');
 // 1) the router itself
 // ---------------------------------------------------------------------------
 ok(typeof route === 'function' && typeof route.use === 'function', 'the module IS an express router (server.js can mount it)');
-ok(Object.keys(H).length === 8, `all 8 handlers are exported for testing (${Object.keys(H).length})`);
+ok(Object.keys(H).length === 12, `all 12 handlers are exported for testing (${Object.keys(H).length})`);
 
 // It must actually be MOUNTED, or the whole surface is unreachable — the exact
 // state this route was built to end.
@@ -578,6 +578,28 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
     ok(!/router\.(post|put|patch|delete)\('\/(quote|health|settings|investors|findings|scoreboard)'[^)]*requirePpeAdmin/.test(src),
       'ROUTER: reading is NOT admin-gated (an engineer must be able to see why a scenario disagreed)');
     ok(!/mode:\s*\(\)\s*=>\s*'live'/.test(src), 'MODEL: nothing in this route can put the engine in live mode (§1.2)');
+    // The rule loop's two operator actions are admin-gated exactly like deciding a finding.
+    ok(/router\.post\('\/suggestions\/:id\/accept',\s*requirePpeAdmin/.test(src), 'ROUTER: accepting a suggestion is admin-gated');
+    ok(/router\.post\('\/suggestions\/:id\/dismiss',\s*requirePpeAdmin/.test(src), 'ROUTER: dismissing a suggestion is admin-gated');
+    ok(!/router\.get\('\/(suggestions|rules)'[^)]*requirePpeAdmin/.test(src), 'ROUTER: listing suggestions/rules is NOT admin-gated (you must see a proposal to judge it)');
+  }
+
+  // ---- the rule-loop handlers ----------------------------------------------
+  // A non-numeric / zero suggestion id is refused BEFORE any DB work.
+  {
+    const r1 = await call(H.acceptSuggestionRoute, { params: { id: 'abc' }, body: {}, actor: { id: 'u1' } });
+    ok(r1.code === 400, 'accept: a non-numeric suggestion id is refused (400)');
+    const r2 = await call(H.dismissSuggestionRoute, { params: { id: '0' }, body: {}, actor: { id: 'u1' } });
+    ok(r2.code === 400, 'dismiss: a zero suggestion id is refused (400)');
+  }
+  // Listing returns the store rows in a stable shape.
+  {
+    dbStub.next = () => ({ rows: [{ id: 1, investor_label: 'Deephaven', decline_reason: 'FICO - below 660', status: 'open' }] });
+    const r = await call(H.listSuggestionsRoute, { query: {} });
+    ok(r.code === 200 && r.body.ok && r.body.total === 1 && r.body.suggestions[0].decline_reason === 'FICO - below 660', 'list suggestions returns the store rows');
+    const rr = await call(H.listRulesRoute, { query: {} });
+    ok(rr.code === 200 && rr.body.ok && Array.isArray(rr.body.rules), 'list rules returns an array');
+    dbStub.next = null;
   }
 
   accessStub.mayManagePeople = realMayManage;

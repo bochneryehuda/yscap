@@ -297,6 +297,10 @@ owner wants to start.
   declines → save → accept the FICO suggestion → a rule is written + linked → `rulesForProgram` returns
   it → `evaluateRules` declines a 640-FICO loan (our engine now matches Lender Price) while a 720 passes;
   plus idempotency, dismiss, and the needs-human refusal. Nothing auto-applies — a human accepts. 40/40.
+- **HTTP surface wired** (`routes/ppe.js`): `GET /suggestions`, `GET /rules` (open to staff — you must
+  see a proposal to judge it), `POST /suggestions/:id/accept`, `POST /suggestions/:id/dismiss`
+  (admin-gated, exactly like deciding a finding). Accept auto-scopes the rule to the suggestion's
+  investor (resolved from its label) unless one is named. Route test covers the gating + id validation.
 - **What (original).** `db/NNN_lt_ppe_rule.sql`
 - **What.** `db/NNN_lt_ppe_rule.sql` + a store, the persistent home for eligibility/bound rules per
   investor/program (overlay-aware), so an accepted suggestion and a hand-authored rule both persist.

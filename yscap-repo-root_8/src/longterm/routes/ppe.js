@@ -62,6 +62,7 @@ const cutover = require('../ppe/cutover');
 const runStore = require('../ppe/run-store');
 const scenarioMatrix = require('../ppe/scenario-matrix');
 const ratesheet = require('../ppe/ratesheet');
+const ruleStore = require('../ppe/rule-store');
 
 const SCOPE = 'company';
 
@@ -623,20 +624,101 @@ async function scoreboardRoute(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// Rule SUGGESTIONS + rules — the per-investor rule loop (P5/P6/P7)
+// ---------------------------------------------------------------------------
+//
+// The review engine mines Lender Price's declines into per-investor rule
+// SUGGESTIONS (disqualify-analysis). A human accepts one, which writes an
+// lt_ppe_rule that then feeds our engine — so our engine declines exactly what
+// Lender Price declined. NOTHING is auto-applied: accept/dismiss are the two
+// deliberate operator actions, so both are admin-gated, exactly like deciding a
+// finding. Listing is open to any staff member (you have to see a proposal
+// before you can judge it).
+
+async function listSuggestionsRoute(req, res) {
+  const scope = readScope(req);
+  const status = req.query.status ? String(req.query.status) : 'open';
+  const investorLabel = req.query.investor ? String(req.query.investor) : null;
+  const rows = await ruleStore.listSuggestions(db, scope, { status, ...(investorLabel ? { investorLabel } : {}) });
+  return res.json({ ok: true, scope, status, total: rows.length, suggestions: rows });
+}
+
+async function acceptSuggestionRoute(req, res) {
+  const scope = readScope(req);
+  const id = intIn(req.params.id, Number.MAX_SAFE_INTEGER);
+  if (!id) return res.status(400).json({ error: 'Which suggestion? A positive numeric id is required.' });
+  const b = req.body || {};
+  const note = typeof b.note === 'string' ? b.note.trim() : null;
+  const decidedBy = (req.actor && req.actor.id) || null;
+
+  // Scope the accepted rule to the suggestion's investor automatically (resolved
+  // from its verbatim label via the alias table), unless the caller names one
+  // explicitly. A house rule (investor_id null) is the safe fallback when the
+  // label does not resolve — the rule still applies, just to every program.
+  let investorId = b.investorId != null ? b.investorId : null;
+  const programId = b.programId != null ? b.programId : null;
+  if (investorId == null) {
+    const sug = await ruleStore.getSuggestion(db, scope, id);
+    if (sug && sug.investor_label) {
+      const inv = await store.findInvestorByName(db, scope, sug.investor_label);
+      if (inv) investorId = inv.id;
+    }
+  }
+
+  const out = await ruleStore.acceptSuggestion(db, scope, id, { decidedBy, investorId, programId, note });
+  if (!out.ok) {
+    // A needs-human suggestion is a 409 (it exists, it just can't be accepted as-is);
+    // a missing one is 404; a non-open one is 409.
+    const code = out.error === 'not_found' ? 404 : 409;
+    return res.status(code).json({ error: out.error, message: out.error === 'needs_human_mapping'
+      ? 'Lender Price’s reason could not be mapped to a rule automatically. A human must map it first (never guessed).'
+      : `This suggestion cannot be accepted (${out.error}).` });
+  }
+  return res.json({ ok: true, scope, ruleId: out.ruleId, investorId, programId });
+}
+
+async function dismissSuggestionRoute(req, res) {
+  const scope = readScope(req);
+  const id = intIn(req.params.id, Number.MAX_SAFE_INTEGER);
+  if (!id) return res.status(400).json({ error: 'Which suggestion? A positive numeric id is required.' });
+  const b = req.body || {};
+  const note = typeof b.note === 'string' ? b.note.trim() : null;
+  const decidedBy = (req.actor && req.actor.id) || null;
+  const out = await ruleStore.dismissSuggestion(db, scope, id, { decidedBy, note });
+  if (!out.ok) return res.status(409).json({ error: out.error, message: 'Only an open suggestion can be dismissed.' });
+  return res.json({ ok: true, scope });
+}
+
+async function listRulesRoute(req, res) {
+  const scope = readScope(req);
+  const opts = {};
+  if (req.query.investorId) opts.investorId = intIn(req.query.investorId, Number.MAX_SAFE_INTEGER);
+  if (req.query.programId) opts.programId = intIn(req.query.programId, Number.MAX_SAFE_INTEGER);
+  if (req.query.kind) opts.kind = String(req.query.kind);
+  const rows = await ruleStore.listRules(db, scope, opts);
+  return res.json({ ok: true, scope, total: rows.length, rules: rows });
+}
+
+// ---------------------------------------------------------------------------
 
 router.get('/health', wrap(health, 'lt_ppe_health_error'));
 router.get('/settings', wrap(getSettings, 'lt_ppe_settings_error'));
 router.get('/investors', wrap(listInvestorsRoute, 'lt_ppe_investors_error'));
 router.get('/findings', wrap(listFindingsRoute, 'lt_ppe_findings_error'));
 router.get('/scoreboard', wrap(scoreboardRoute, 'lt_ppe_scoreboard_error'));
+router.get('/suggestions', wrap(listSuggestionsRoute, 'lt_ppe_suggestions_error'));
+router.get('/rules', wrap(listRulesRoute, 'lt_ppe_rules_error'));
 router.post('/quote', wrap(quoteRoute, 'lt_ppe_quote_error'));
 
 router.post('/findings/:key/decide', requirePpeAdmin, wrap(decideFindingRoute, 'lt_ppe_decide_error'));
 router.post('/canary', requirePpeAdmin, wrap(canaryRoute, 'lt_ppe_canary_error'));
+router.post('/suggestions/:id/accept', requirePpeAdmin, wrap(acceptSuggestionRoute, 'lt_ppe_accept_error'));
+router.post('/suggestions/:id/dismiss', requirePpeAdmin, wrap(dismissSuggestionRoute, 'lt_ppe_dismiss_error'));
 
 module.exports = router;
 module.exports.handlers = {
   health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, canaryRoute, scoreboardRoute,
+  listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute,
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,

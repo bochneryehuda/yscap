@@ -68,6 +68,12 @@ async function _upsertSuggestion(db, scope, s) {
       s.confidence, s.matchedBy, s.needsHuman, JSON.stringify(s.programs || []), s.occurrences]);
 }
 
+// Read one suggestion by id (any status), or null.
+async function getSuggestion(db, scope, id) {
+  const r = await db.query('SELECT * FROM lt_ppe_rule_suggestion WHERE scope = $1 AND id = $2', [scope, id]);
+  return r.rows[0] || null;
+}
+
 // List suggestions (default: open only). opts { status, investorLabel }.
 async function listSuggestions(db, scope, opts = {}) {
   const where = ['scope = $1'];
@@ -173,6 +179,6 @@ async function rulesForProgram(db, scope, investorId, programId) {
 }
 
 module.exports = {
-  dedupeKeyOf, saveSuggestions, listSuggestions, acceptSuggestion, dismissSuggestion,
+  dedupeKeyOf, saveSuggestions, listSuggestions, getSuggestion, acceptSuggestion, dismissSuggestion,
   listRules, rowToRule, rulesForProgram,
 };
