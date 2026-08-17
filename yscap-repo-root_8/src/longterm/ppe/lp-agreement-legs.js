@@ -84,10 +84,18 @@ function lpScenarioToFacts(s) {
     // could never trip the subordinate-not-allowed rule (deephaven-matrix reads f.subordinate_amount)
     // nor the borrower-type-dependent PPP rules (deephaven-ppp-matrix reads borrower_type — e.g. NJ
     // natural-person → PPP prohibited). Both are ordinary scenario inputs (SUPPORTED_FIELDS
-    // subordinateLoanAmount / borrowerType), NOT advanced-overlay facts. A missing borrower_type is
-    // null so the PPP layer FAILS OPEN (never invents a prohibition on data it does not have); a
-    // missing subordinate amount is 0 so the not-allowed rule stays silent unless a real second exists.
-    borrower_type: sc.borrowerType || sc.borrower_type || null,
+    // subordinateLoanAmount / borrowerType). A missing subordinate amount is 0 so the not-allowed rule
+    // stays silent unless a real second exists.
+    //
+    // BORROWER TYPE DEFAULTS TO LLC (owner-directed 2026-08-17): "our default should be borrower_type
+    // LLC entity, so the New Jersey individual will not be hurt by default … this was the previous
+    // default rule … you can only change this borrower type if you go into Advanced." So an OMITTED
+    // borrower type is the DSCR profile's entity default (LLC) — matching the LP request's own
+    // GLOBAL_BorrowerType='LLC' — and a NJ loan therefore CARRIES a prepay penalty by default (an LLC
+    // is allowed one); only an Advanced switch to an individual/natural-person triggers the NJ/IL
+    // natural-person prohibition. It is NEVER left null (which would fail-open on a wildcard and also
+    // skip the NJ rule) — the default is a concrete, owner-set LLC.
+    borrower_type: sc.borrowerType || sc.borrower_type || 'LLC',
     subordinate_amount: num(sc.subordinateLoanAmount) != null ? num(sc.subordinateLoanAmount) : (num(sc.subordinate_amount) || 0),
   };
 }

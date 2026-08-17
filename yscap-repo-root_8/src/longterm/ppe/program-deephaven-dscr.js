@@ -29,11 +29,14 @@ const INVESTOR = 'Deephaven';
 const PROGRAM_NAME = 'Deephaven DSCR'; // the investor name IS in the program name (owner rule)
 
 // Map engine facts → the PPP layer's input shape. prepay_months > 0 ⇒ a PPP is requested.
+// borrower_type DEFAULTS to LLC (owner-directed 2026-08-17): the product's entity default, so a NJ
+// loan carries a PPP by default (an LLC is allowed one) and only an Advanced switch to an individual
+// triggers the natural-person prohibition. A direct-facts caller that omits it still gets this default.
 function pppInputFromFacts(f) {
   const sc = f || {};
   return {
     state: sc.state,
-    borrowerType: sc.borrower_type,
+    borrowerType: sc.borrower_type || 'LLC',
     units: sc.units,
     lien: 'first', // a DSCR loan is a first lien
     loanAmount: sc.loan_amount,

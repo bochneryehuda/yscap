@@ -49,13 +49,18 @@ ok(fLp.prepay_months === 36 && fLp.interest_only === true && fLp.escrow_waiver =
 const fbt = legs.lpScenarioToFacts({ borrowerType: 'Individual', subordinateLoanAmount: 50000 });
 ok(fbt.borrower_type === 'Individual' && fbt.subordinate_amount === 50000, '  borrower_type + subordinate_amount are carried from an LP scenario');
 const fbtNone = legs.lpScenarioToFacts({ value: 5e5, loan: 4e5 });
-ok(fbtNone.borrower_type === null && fbtNone.subordinate_amount === 0, '  absent borrower_type is null (PPP fails open) + absent subordinate is 0 (rule silent)');
-// End-to-end: an NJ NATURAL-PERSON scenario flowing through lpScenarioToFacts now trips the PPP
-// prohibition (the Layer-3 overlay) — it could not before, because borrower_type was dropped.
+ok(fbtNone.borrower_type === 'LLC' && fbtNone.subordinate_amount === 0, '  absent borrower_type DEFAULTS to LLC (owner rule) + absent subordinate is 0 (rule silent)');
+const prog = require('../src/longterm/ppe/program-deephaven-dscr');
+// DEFAULT (no borrower type given) NJ loan with a PPP requested → ELIGIBLE: the default LLC entity IS
+// allowed a prepay penalty in NJ, so the individual is not hurt by default (owner-directed).
+const njDefault = legs.lpScenarioToFacts({ value: 5e5, loan: 4e5, fico: 740, dscr: 1.25, state: 'NJ', units: 1, prepayMonths: 60 });
+ok(njDefault.borrower_type === 'LLC' && prog.evaluateProgram(njDefault).eligible === true,
+  '  a DEFAULT NJ loan (no borrower type) carries a PPP and is ELIGIBLE (default LLC is allowed one)');
+// Only an ADVANCED switch to an individual/natural-person trips the NJ prohibition.
 const njFacts = legs.lpScenarioToFacts({ value: 5e5, loan: 4e5, fico: 740, dscr: 1.25, state: 'NJ', borrowerType: 'Individual', units: 1, prepayMonths: 60 });
-const njProg = require('../src/longterm/ppe/program-deephaven-dscr').evaluateProgram(njFacts);
+const njProg = prog.evaluateProgram(njFacts);
 ok(njProg.eligible === false && njProg.reasons.some((r) => r.layer === 'ppp_matrix' && /nj/i.test(r.code)),
-  '  an NJ natural-person PPP request declines via the PPP layer through the live-scenario path');
+  '  only an explicit individual (Advanced) NJ PPP request declines via the PPP layer');
 // buildOursLeg with factsFromLp:true prices a LENDER PRICE scenario through the conversion
 const oursLp = legs.buildOursLeg(PROGRAM, SETTINGS, { factsFromLp: true });
 const qLp = oursLp({ value: 500000, loan: 400000, fico: 740, dscr: 1.5, purpose: 'Cash out', state: 'TX', prepayTerm: '60 Months' });
