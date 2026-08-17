@@ -5,6 +5,37 @@
   "_signConvention": "PREMIUM-POSITIVE — a positive value IMPROVES the price (adds to it). This is the OPPOSITE of Lender Price's itemized LLPA convention for the FICO/other families (cost-positive), and it is why deephaven-dscr-sheet.js negates LP values via cost(v)=-v. An Excel cell therefore maps DIRECTLY onto a deephaven-grid premium-positive cell with NO negation.",
   "_baseline": "Base pricing is quoted at a 30-DAY LOCK and a 3-YEAR PREPAY (cell B10: 'Base Pricing (30D) - 3 Yr Prepay'). Both baselines are therefore the ZERO row of their adjustment tables: prepay 3 Year = 0.000, lock 30 day = no row.",
 
+  "sheetMeta": {
+    "_note": "Header rows 2/4/6 — missed on the first read; the EFFECTIVE DATE is what versions this sheet and is what the daily change-detector (D19) must key on.",
+    "title": "DSCR | Correspondent",
+    "effectiveDateSerial": 46248.59375,
+    "effectiveDateUtc": "2026-08-14T14:15:00.000Z",
+    "lockDesk": "correspondentlock@deephavenmortgage.com  Phone: (844) 346-2677 - Option 3"
+  },
+
+  "prepayPricingModels": {
+    "_note": "The owner's three acceptable PPP tiers (2026-08-17), mapped onto this sheet. Confirms the R8 structure library: the sheet has TWO LLPA columns, and the third tier is NOT on the sheet at all — it is our own margin holdback on top of the standard column.",
+    "standard": {
+      "sheetColumn": "P — 'LLPA Other'",
+      "description": "The standard soft-declining structures, priced as standard.",
+      "structureLibrary": "R8 tierSet dh_published / custom_deal (5/4/3/2/1, 5/4/3/2, 5/4/3, 3/3, 3)",
+      "marginHoldbackDeltaMilli": 0
+    },
+    "fixed5Promo": {
+      "sheetColumn": "Q — 'LLPA 5% Fixed'",
+      "description": "Better pricing — an LLPA CREDIT over standard. Measured worth +0.500 at the 5-year term (1.125 vs 0.625).",
+      "structureLibrary": "R8 key 'fixed5' (pricingModel fixed5_promo)",
+      "lpSmoToken": { "name": "5% Flat Prepay", "id": "6373fe9dce8ad00001a1b87e" },
+      "marginHoldbackDeltaMilli": 0
+    },
+    "customSofterOverlay": {
+      "sheetColumn": "NOT ON THE SHEET — priced off the standard column, plus our own holdback",
+      "description": "The more lenient structures. Priced as STANDARD, then an ADDITIONAL margin holdback on top. Deliberately does NOT match LP (it is not an LP LLPA).",
+      "structureLibrary": "R8 tierSet custom_softer — 3/3/3/2/1 (5yr) and 3/3/2/1 (4yr)",
+      "marginHoldbackDeltaMilli": 375
+    }
+  },
+
   "basePricing": {
     "_note": "B10 header. Columns F (15Y Fixed, 5/6 ARM) and J (30Y Fixed) carry IDENTICAL prices on this sheet.",
     "lockDays": 30,

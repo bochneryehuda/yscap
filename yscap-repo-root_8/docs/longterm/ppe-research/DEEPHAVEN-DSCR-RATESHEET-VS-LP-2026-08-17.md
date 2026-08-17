@@ -44,6 +44,27 @@ family the sheet is **premium-positive** (a positive value IMPROVES the price) a
 numbers move the price the same way. The **5% Fixed promotion is worth +0.500 over the standard
 5-year declining penalty** (1.125 − 0.625), confirmed from two independent sources.
 
+### 1a. The three PPP pricing tiers, mapped onto this sheet
+
+The owner's rule (2026-08-17): *the standard prepay is priced as standard (three acceptable
+structures); the 5% Fixed earns better pricing via an LLPA credit; and a more lenient structure
+carries an additional holdback on top of standard.* That is **exactly** the shape of this sheet —
+two LLPA columns, and a third tier that is deliberately not on the sheet at all:
+
+| tier | where it is priced | structures | extra holdback |
+| --- | --- | --- | --- |
+| **Standard** | column P — *"LLPA Other"* | 5/4/3/2/1, 5/4/3/2, 5/4/3, 3/3, 3 (R8 `dh_published`) | — |
+| **5% Fixed (promo)** | column Q — *"LLPA 5% Fixed"* — a **credit** over standard | `fixed5` | — |
+| **Custom softer** | **not on the sheet** — priced off column P, then our own holdback | 3/3/3/2/1 (5yr), 3/3/2/1 (4yr) | **+0.375** |
+
+The architectural line already recorded in R8 holds and is confirmed by the sheet: **an LLPA is on
+the sheet and must match LP; a margin holdback is ours and must NOT.**
+
+**Sheet identity / versioning** (header rows, missed on the first read and now captured): title
+*"DSCR | Correspondent"*, **effective 2026-08-14 14:15 UTC** (Excel serial `46248.59375`) — this
+effective date is what versions the sheet and is what the daily change-detector (D19) must key on —
+lock desk `correspondentlock@deephavenmortgage.com`, (844) 346-2677 option 3.
+
 ## 2. Three more tables we had never encoded
 
 **(a) Max Price tiers by loan amount** (`B42`), with the sheet's own combining rule verbatim (`B48`):
