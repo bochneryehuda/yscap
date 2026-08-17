@@ -1948,3 +1948,50 @@ ownership check itself. **One survived the first pass**: reverting the store's s
 console suite green, because the route refuses such an id before the store is ever reached. The two
 defences are layered, and a test of the outer one proves nothing about the inner — so that guard was
 moved to `test-lt-ppe-store-roundtrip-db.js`, the suite about the layer it actually protects.
+
+**§2.29 — THE GRID WRITE WAS NOT ATOMIC, AND THE CONSOLE NOW HAS A SCREEN (2026-08-17).**
+
+**THE DEFECT, REPRODUCED BEFORE IT WAS FIXED.** `replaceBasePrices` is DELETE-then-INSERT-in-a-loop,
+and on a pool each statement is its own transaction. So an ordinary copy/paste mistake — the same
+cell twice — tripped `lt_ppe_base_price_cell_uk` AFTER the delete had committed, and a live two-row
+sheet became a one-row sheet with an error handed back to the caller. Any INSERT failure does it: a
+value too big for INTEGER, a NOT NULL. The grid is what every quote prices from, so it is the one
+thing here that must never be half-written; both writers now run in one transaction. **And the scope
+fix of §2.28 turned out to be half a fix**, surfaced by the new test rather than by re-reading the
+code: scoping the DELETE stopped one tenant DESTROYING another's grid and left them able to ADD rows
+to it, which matters because `loadRateSheet` selects the grid by `version_id` ALONE — those foreign
+rows would have joined the grid the owner's quotes price from. The writers now refuse a version that
+is not the caller's outright.
+
+**THE SCREEN.** The routes of §2.28 still left onboarding as an API call, so this closes the shape at
+the layer that matters to somebody doing the work. **The grid is PASTED, not re-keyed** — the source
+is an Excel tab and a per-row form for a few hundred cells is a worse tool for the same job — through
+a pure parser whose every rule is about not guessing: nothing is dropped silently (each unusable line
+is listed with its number and reason, and nothing loads while any line is unreadable, because a sheet
+quietly missing its top rate band looks exactly like one that loaded correctly); a cell is refused
+rather than coerced; duplicate cells are found here rather than by the database, which would only say
+"unique constraint"; and each band is written into the pair its own dimension names.
+
+**TWO BUGS IN THE PARSER, BOTH FOUND BY ITS TEST.** A thousands separator in a comma-split line
+(`7.500,30,1,024.5`) splits into four cells and reads the price as a perfectly valid **1** — the one
+coercion every other check misses. It is refused by SHAPE: the fourth column is a product LABEL, so a
+numeric one is a split accident, and refusing on that basis invents no plausible range for a rate or a
+price (a range guessed too tight refuses a real sheet, which is the expensive direction). And the
+adjustment header heuristic swallowed a genuine first data row whose amount was blank, calling it a
+header — precisely the silent drop the module exists to prevent.
+
+**A CORRECTION WORTH RECORDING, because it is a trap this file can hand to the next person.** The
+rounding in the ×1000 conversion was justified with "7.125 * 1000 is 7125.000000000001". That is
+false — 7.125 is exactly representable. The guard is still necessary: a note rate of **8.005** gives
+`8005.000000000001` and an adjustment of **-2.047** gives `-2047.0000000000002`, both plausible sheet
+values and both refused by an INTEGER column. A test written only on the exact values PASSED with the
+rounding removed, which is exactly how that mutation survived the first pass. **When a guard exists
+for floating-point error, assert it on a value that actually exhibits the error.**
+
+**AND TWO GUARDS THAT MATCHED A NAME RATHER THAN A BEHAVIOUR** — the third and fourth time this
+workstream has hit that: `<RateSheetConsole />` is matched by `{false && <RateSheetConsole />}`, which
+renders nothing and is the very defect the assertion exists to catch; and `grid.problems.length > 0`
+also appears in the warning line beside the button, so deleting it from the `disabled` expression left
+the guard green. Both are pinned to composed form now. The render test's header additionally states
+what it does NOT cover, rather than listing five states it never reaches — a header that claims more
+than it checks is worse than a thin test, because somebody later trusts the header.

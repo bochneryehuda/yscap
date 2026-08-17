@@ -267,10 +267,17 @@ surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
     opened. Both are scoped now, guarded at the store layer (see the note in §2.9's suites below).
   - Tests `test-lt-ppe-console-db.js` (the journey end to end over a real Postgres) + section E of
     `test-lt-ppe-store-roundtrip-db.js`; ten mutations proven to bite.
-- **TO-BUILD:** investor/program manager SCREEN, rule-authoring editor, rate-sheet console SCREEN,
-  LLPA manager, settings center, scenario playground, and the **manual-review + suggested-rules UI**
-  (P8). The routes above exist; no `LtPpe.jsx` surface consumes them yet, so onboarding is an API
-  call today. *(MEGA §12.)*
+- **DONE (2026-08-17) — the console SCREEN.** `RateSheetConsole.jsx` on `LtPpe.jsx` walks the whole
+  journey: add the investor, add its program, open a draft sheet, load the grid and the LLPAs, read it
+  back, publish. The gate's verdict is shown BEFORE Publish is pressed, and its refusal carries both
+  ways forward (measure it, or override with a reason). **The grid is PASTED** — the source is an
+  Excel tab, and re-keying a price sheet by hand is how a digit moves — through the pure, unit-tested
+  `ratesheetPaste.js`, which lists every line it could not use with its number and a reason and blocks
+  the load while any line is unreadable. There is deliberately NO control that records an agreement
+  RUN. Style tokens live in `ppeStyles.js` so the two PPE screens cannot drift.
+- **TO-BUILD:** rule-authoring editor, LLPA manager (the console loads them; nothing edits one in
+  place yet), settings center, scenario playground, and the **manual-review + suggested-rules UI**
+  (P8). *(MEGA §12.)*
 
 ### 2.12 The LP connector — **DONE**
 `lenderprice/client.js` (login/token/price/parse/parseFull/parseDisqualified, read-only viewer, fails
