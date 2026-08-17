@@ -517,6 +517,17 @@ interpreter cmp change), and the 42-assertion D36 suite passes unchanged.
 
 ## 3. The request-builder field contract (accepted types)
 
+**The backend now PUBLISHES this contract as a machine-readable manifest (D28, task #55).**
+`GET /api/lt/<pricer>/fields` returns `{ core, advanced, overlay, meta, counts }` — the accepted
+fields split into the sections the frontend's basic vs advanced search UI needs: `core` = the basic
+pricing contract; `advanced` = the registry-backed advanced fields (LP-priced borrower/credit
+criteria); `overlay` = the D27–D29 Advanced OVERLAY facts LP cannot see (each carries its
+label/type/enum/category/effect from `advanced-facts`); `meta` = non-pricing request-envelope keys.
+It is DERIVED from the same segments `SUPPORTED_FIELDS` is built from — the three field sections are
+disjoint and their union is exactly the accepted set — so the manifest can never disagree with what
+the pricer actually accepts (guarded by `test-lt-dscr-fields-manifest.js`). The frontend basic/advanced
+sections + search UI are the remaining half of #55.
+
 Scenario field → upstream path → type → default/validation (as of the fixes
 above). Anything not in this list is **rejected 422** (`unsupported_field`).
 

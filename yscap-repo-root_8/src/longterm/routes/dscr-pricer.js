@@ -17,7 +17,7 @@ const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
 const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
 const { lpScenarioToFacts } = require('../ppe/lp-agreement-legs');
 const { evaluateInformational } = require('../ppe/informational');
-const { advancedFactKeys } = require('../ppe/advanced-facts');
+const { advancedFactKeys, advancedSection } = require('../ppe/advanced-facts');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -72,7 +72,10 @@ function rungDigest(parsed, opts = {}) {
 // never silently ignored — otherwise the caller gets plausible pricing for a DIFFERENT scenario
 // (the "silent substitution" data-integrity bug). Grow this set (and the builder) together as
 // fields are implemented; a not-yet-implemented field is rejected with 422 unsupported_field.
-const SUPPORTED_FIELDS = new Set([
+// The CORE pricing contract — the "basic" search fields (§3). Kept as a named segment (not merged
+// inline) so the field manifest can expose the basic / registry-advanced / overlay split from ONE
+// source of truth instead of a hand-kept UI list.
+const CORE_FIELDS = [
   'purpose', 'value', 'appraisedValue', 'asIsValue', 'loan', 'ltv', 'fico', 'dscr',
   'propertyType', 'units', 'attachment', 'attachmentType', 'nonWarrantable', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
   'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date', 'rentalTerm', 'reservesMonths',
@@ -91,13 +94,13 @@ const SUPPORTED_FIELDS = new Set([
   // scenario that omits it fails OPEN (the rule requires a numeric apr), so this only lets a caller
   // that already knows the APR trip the high-cost rule. Accepted here so it is not 422'd as unsupported.
   'apr',
-  // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
-  // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
-  ...REGISTRY_FIELDS,
-  // The ADVANCED overlay facts (D27–D29) — occupancy/rural/STR/FTI/FTHB/foreign_national/
-  // declining_market/renovation. Registry-driven so a fact added there is accepted here automatically.
-  ...advancedFactKeys(),
-]);
+];
+// SUPPORTED_FIELDS = the CORE contract + the registry-backed advanced fields (borrower criteria +
+// adverse-credit dynamics, each mapping to an exact upstream path/token) + the ADVANCED overlay facts
+// (D27–D29, occupancy/rural/STR/FTI/FTHB/foreign_national/declining_market/renovation, registry-driven).
+// The three segments are DISJOINT (asserted by test-lt-dscr-fields-manifest.js), so their union is the
+// full accepted set and the manifest can partition it without a second list.
+const SUPPORTED_FIELDS = new Set([...CORE_FIELDS, ...REGISTRY_FIELDS, ...advancedFactKeys()]);
 // Request-envelope keys the ROUTE consumes (not pricing inputs) — always allowed.
 const META_FIELDS = new Set(['scenario', 'debug', 'full', 'raw', 'poll', 'disqualify', 'maxWaitMs', 'pollMs', 'companyId',
   // §2.5 — audit-mode rung digest (never a pricing input): the per-program rate ladder for a
@@ -105,6 +108,23 @@ const META_FIELDS = new Set(['scenario', 'debug', 'full', 'raw', 'poll', 'disqua
   'audit', 'programsLimit', 'rungsLimit']);
 function unsupportedFields(sc) {
   return Object.keys(sc || {}).filter((k) => !SUPPORTED_FIELDS.has(k) && !META_FIELDS.has(k));
+}
+// The FIELD MANIFEST (D28) — the machine-readable contract of what the pricer accepts, split into the
+// three sections the frontend's basic/advanced search UI needs, derived ENTIRELY from the existing
+// source-of-truth segments (no hand-kept UI list). `core` = the basic pricing contract; `advanced` =
+// the registry-backed advanced fields (LP-priced borrower/credit criteria); `overlay` = the D27–D29
+// Advanced OVERLAY facts Lender Price cannot see (each carries its label/type/enum/category/effect from
+// the advanced-facts registry); `meta` = request-envelope keys that are not pricing inputs. The three
+// FIELD sections are disjoint and their union is exactly SUPPORTED_FIELDS.
+function buildFieldManifest() {
+  const overlay = advancedSection();
+  return {
+    core: [...CORE_FIELDS],
+    advanced: [...REGISTRY_FIELDS],
+    overlay,
+    meta: [...META_FIELDS],
+    counts: { core: CORE_FIELDS.length, advanced: REGISTRY_FIELDS.length, overlay: overlay.length, meta: META_FIELDS.size, supported: SUPPORTED_FIELDS.size },
+  };
 }
 // The EFFECTIVE scenario actually sent upstream — so a caller can see requested-vs-effective and
 // catch any silent default. Read straight off the built searchRaw payload.
@@ -464,6 +484,12 @@ async function selftest(req, res) {
   res.json({ ok: results.every((x) => x.ok), count: results.length, results });
 }
 
+// GET /fields — the field manifest (D28): the accepted-field contract split into core / advanced /
+// overlay / meta for the frontend's basic vs advanced search sections. Pure (no network, no LP call).
+async function fields(req, res) {
+  res.json({ ok: true, manifest: buildFieldManifest() });
+}
+
 // A router with the endpoints wired. Auth is applied by the mount (staff at /api/lt, or the
 // secret gate at /api/lt/_diag/lenderprice).
 function makeRouter() {
@@ -477,8 +503,10 @@ function makeRouter() {
   router.post('/disqualifications', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));
   router.post('/disqualify', (req, res) => disqualify(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualify_error' })));
   router.post('/selftest', (req, res) => selftest(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_selftest_error' })));
+  // GET /fields — machine-readable accepted-field manifest (core/advanced/overlay/meta). Read-only.
+  router.get('/fields', (req, res) => fields(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_fields_error' })));
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
-  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf, rungDigest, trimPrograms, informationalOf } };
+module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest, fields }, BATTERY, SUPPORTED_FIELDS, META_FIELDS, CORE_FIELDS,
+  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf, rungDigest, trimPrograms, informationalOf, buildFieldManifest } };
