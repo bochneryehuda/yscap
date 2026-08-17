@@ -98,7 +98,7 @@ function lpScenarioToFacts(s) {
     // skip the NJ rule) — the default is a concrete, owner-set LLC.
     borrower_type: sc.borrowerType || sc.borrower_type || 'LLC',
     subordinate_amount: num(sc.subordinateLoanAmount) != null ? num(sc.subordinateLoanAmount) : (num(sc.subordinate_amount) || 0),
-    // APR (Layer-3 PPP) — a handful of state PPP prohibitions key on a HIGH-cost APR (e.g. the IL/NJ
+    // APR (Layer-3 PPP) — ONE state PPP rule keys on a HIGH-cost APR: ILLINOIS (the
     // natural-person `aprGt` rule in deephaven-ppp-matrix). APR is a DERIVED figure (note rate + fees),
     // so this is a PURE PASS-THROUGH: emit it only when a scenario explicitly supplies one, and leave
     // it null otherwise. The PPP matrix FAILS OPEN on a null apr (an `aprGt` rule requires isNum(apr)),

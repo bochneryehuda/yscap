@@ -31,10 +31,15 @@ const CITE = 'Deephaven Operational Prepayment Penalty Matrix, eff March 2026';
 // inclusive; loan-amount comparisons: Lt/Le/Gt/Ge. borrowerType absent = any.
 const STATE_RULES = {
   AK: [{ when: { unitsMax: 4 }, result: 'prohibited' }, { when: { unitsMin: 5, loanAmountGt: 25000 }, result: 'standard' }, { when: {}, result: 'standard' }],
+  // IL — the ONLY state whose PPP rule keys on APR, verbatim from the Deephaven matrix PDF:
+  // business entity 1-4 → standard; natural person 1-4 with APR > 8% → PROHIBITED; natural person 1-4
+  // with APR 8% or less → standard; 5+ → standard. This is the Illinois high-cost / High-Risk Home
+  // Loan Act threshold. DO NOT REMOVE the aprGt rule: the owner confirmed 2026-08-17 it is real ("IL
+  // state had such a rule, of below 8% APR and less") after it was briefly removed in error.
   IL: [
     { when: { borrowerType: 'business_entity', unitsMax: 4 }, result: 'standard' },
-    { when: { borrowerType: 'natural_person', unitsMax: 4, aprGt: 8 }, result: 'prohibited' },
-    { when: { borrowerType: 'natural_person', unitsMax: 4 }, result: 'standard' },
+    { when: { borrowerType: 'natural_person', unitsMax: 4, aprGt: 8 }, result: 'prohibited', note: 'IL high-cost: natural person, APR > 8%' },
+    { when: { borrowerType: 'natural_person', unitsMax: 4 }, result: 'standard', note: 'IL: natural person, APR 8% or less' },
     { when: { unitsMin: 5 }, result: 'standard' },
   ],
   LA: [{ when: { ruralProperty: true }, result: 'prohibited', note: 'rural property' }, { when: {}, result: 'standard' }],
