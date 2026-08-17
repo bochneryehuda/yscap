@@ -71,6 +71,7 @@ const ruleStore = require('../ppe/rule-store');
 const agreementStore = require('../ppe/agreement-store');
 const ratesheetAgreement = require('../ppe/ratesheet-agreement');
 const agreementScenarios = require('../ppe/agreement-scenarios');
+const lpAgreementLegs = require('../ppe/lp-agreement-legs');
 const suggestionMiner = require('../ppe/suggestion-miner');
 const pricingBreakdown = require('../ppe/pricing-breakdown');
 const lpNormalizeFull = require('../ppe/lp-normalize-full');
@@ -1681,9 +1682,19 @@ async function runAgreementRoute(req, res) {
   try {
     run = await ratesheetAgreement.runRatesheetAgreement(
       battery,
+      // BOTH LEGS COME FROM `lp-agreement-legs`, and hand-rolling either one is how this route quietly
+      // measured nothing. The canonical battery is a list of LENDER PRICE scenarios (value/loan/fico/
+      // dscr/purpose/state/zip), NOT engine facts — our engine reads `ltv`/`loan_amount`/`dscr` in
+      // MILLI and a normalized purpose, so handing it the raw LP object leaves nearly every rule
+      // predicate reading an unknown fact and produces a confident, meaningless verdict. And
+      // `client.price` answers `{ ok, raw }`, not the `{ full, disqualified }` the harness consumes:
+      // passing it straight through means `legs.full` is undefined, every scenario is INCOMPARABLE,
+      // and a live run reports "Lender Price gave no usable answer" on a perfectly healthy upstream.
+      // `buildOursLeg({ factsFromLp: true })` and `buildLpLeg` are the ONE definition of each side —
+      // the same pair the live agreement script uses, so the route and the script cannot drift.
       {
-        ours: (sc) => quote.quoteProgram({ scenario: sc, program, settings }),
-        lp: (sc) => lpClient.price(sc),
+        ours: lpAgreementLegs.buildOursLeg(program, settings, { factsFromLp: true }),
+        lp: lpAgreementLegs.buildLpLeg(lpClient, { withDisqualify: true }),
       },
       {
         // The stored scope, never a body value — same reasoning as the shadow route: a caller-supplied

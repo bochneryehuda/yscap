@@ -21,7 +21,11 @@
  *   E. A MEASURED PASS OPENS THE GATE, with no override anywhere near it — the whole point.
  *   F. A RECORD THAT DID NOT LAND IS ANSWERED AS A FAILURE, never as a run that "worked".
  *
- * THREE REAL DEFECTS WERE FOUND BY WRITING IT, and each is pinned below:
+ *   G. BOTH LEGS ARE THE SHARED ONES. The battery is a list of LENDER PRICE scenarios and the client
+ *      answers `{ ok, raw }`; a hand-rolled leg on either side produces a confident verdict about
+ *      nothing, and only a stub shaped like the real vendor can catch it.
+ *
+ * FOUR REAL DEFECTS WERE FOUND BY WRITING IT, and each is pinned below:
  *   · `buildAgreementScenarios()` returns **{ scenarios, count, byGroup }**, not an array. The route
  *     read `.length` off that object (undefined), so nothing was capped and the OBJECT was handed to
  *     the harness — which reads a non-array as an EMPTY list. Every run measured ZERO scenarios,
@@ -30,6 +34,11 @@
  *     stored a scenario count of 0 beside comparable/agreed counts in the hundreds.
  *   · the run was UNSCOPED — the stored Lender Price scope was resolved and then dropped, so our one
  *     ladder would have been reconciled against a merge of the investor's whole catalogue.
+ *   · BOTH LEGS were hand-rolled instead of `lp-agreement-legs`. Our engine was handed the raw Lender
+ *     Price scenario (it reads FACTS — ltv in milli, loan_amount, a normalized purpose — so nearly
+ *     every rule predicate read an absent key), and the harness was handed `client.price` itself,
+ *     whose `{ ok, raw }` is not the `{ full, disqualified }` it consumes: against a real upstream
+ *     every scenario would have come back INCOMPARABLE while the run looked perfectly healthy.
  *
  * The Lender Price client is stubbed through require.cache BEFORE the route loads (there is no
  * upstream here, and there must never be one in a test); the database is real.
@@ -62,13 +71,26 @@ const REQ = (over = {}) => Object.assign(
   }
 
   // ---- the Lender Price stub, installed before the route is required --------------------------
+  //
+  // IT MIMICS THE REAL CLIENT'S CONTRACT, NOT THE HARNESS'S. `client.price` answers `{ ok, raw }` and
+  // the raw payload is turned into the harness's `{ full, disqualified }` by `parseFull` /
+  // `parseDisqualified`. A stub that skipped that and returned the parsed shape directly would pass
+  // whatever the route did with the client — including handing `client.price` straight to the harness,
+  // which against a REAL upstream makes every scenario incomparable while looking perfectly healthy
+  // here. Test like you fly: the stub is the vendor's shape, and the route has to convert it.
   const LP = require.resolve(path.join(__dirname, '..', 'src', 'longterm', 'lenderprice', 'client.js'));
   const lpStub = {
     calls: 0,
+    disqCalls: 0,
     isConfigured: true,
+    // `answer(sc)` returns the already-parsed { full, disqualified } a scenario should produce; the
+    // stub then hands it back through the client's own two-step shape.
     answer: () => ({}),
     configured() { return lpStub.isConfigured; },
-    async price(sc) { lpStub.calls += 1; return lpStub.answer(sc); },
+    async price(sc) { lpStub.calls += 1; return { ok: true, raw: { _stub: lpStub.answer(sc) } }; },
+    parseFull(raw) { return ((raw && raw._stub) || {}).full || { programs: [] }; },
+    async priceDisqualified(sc) { lpStub.disqCalls += 1; return { ok: true, disqualified: { _stub: lpStub.answer(sc) } }; },
+    parseDisqualified(raw) { return ((raw && raw._stub) || {}).disqualified || { ready: false, lenders: [] }; },
   };
   require.cache[LP] = { id: LP, filename: LP, loaded: true, exports: lpStub };
 
@@ -335,6 +357,43 @@ const REQ = (over = {}) => Object.assign(
     const gate = await agreementStore.gateStatus(SCOPE, failing.versionId, { db });
     ok(gate.reason === 'never_measured',
       'F4 …and the gate still reads never_measured, which is exactly why the 200 would have been a lie');
+
+    // =========================================================================
+    // G. BOTH LEGS ARE THE SHARED ONES — a hand-rolled leg measures nothing
+    // =========================================================================
+    console.log('\nG. the two legs\n');
+
+    // The canonical battery is a list of LENDER PRICE scenarios (value/loan/fico/dscr/purpose/state).
+    // Our engine reads FACTS — ltv in milli, loan_amount, a normalized purpose — so a sheet rule keyed
+    // on LTV can only fire once the scenario has been converted. Pricing the raw LP object instead
+    // reads an absent key on nearly every predicate and answers confidently about nothing.
+    const legs = require('../src/longterm/ppe/lp-agreement-legs');
+    const factSheet = await buildSheet('L');
+    await store.replaceAdjustments(db, SCOPE, factSheet.versionId, [
+      { code: 'ltv_70_80', dimension: 'ltv', ltvMin: 65000, ltvMax: 80000, adjMilli: -500, priority: 0 },
+    ]);
+    const { program: factProgram } = await I.loadProgram(SCOPE, factSheet.versionId);
+    const lpScenario = agreementScenarios.buildAgreementScenarios().scenarios
+      .find((s) => s.loan === 350000 && s.value === 500000);   // CLTV 70 — inside the band above
+
+    const withFacts = legs.buildOursLeg(factProgram, {}, { factsFromLp: true })(lpScenario);
+    const rawLp = legs.buildOursLeg(factProgram, {}, {})(lpScenario);
+    const firedIn = (q) => !!(q && q.eligible && (q.ladder || []).some(
+      (r) => (r.adjustments || []).some((a) => a.code === 'ltv_70_80'),
+    ));
+    ok(firedIn(withFacts),
+      'G1 converted to engine facts, the sheet\'s LTV-keyed LLPA fires on a 70% CLTV scenario');
+    ok(!firedIn(rawLp),
+      'G2 …and on the RAW Lender Price scenario it does not — the fact its band reads is not there');
+
+    // A source guard as well as the behaviour, because the run route can only be observed end to end
+    // through a stub, and a stub cannot see WHICH leg builder was used.
+    const routeSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'routes', 'ppe.js'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    ok(/buildOursLeg\(program, settings, \{ factsFromLp: true \}\)/.test(routeSrc),
+      'G3 the run route builds OUR leg through the shared builder, converting from Lender Price scenarios');
+    ok(/buildLpLeg\(lpClient/.test(routeSrc) && !/lp:\s*\(sc\)\s*=>\s*lpClient\.price/.test(routeSrc),
+      'G4 …and THEIR leg through the shared builder, never handing client.price straight to the harness');
   } finally {
     await cleanup();
     if (typeof db.end === 'function') await db.end().catch(() => {});
