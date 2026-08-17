@@ -118,5 +118,17 @@ const smoNames = (forced.criteria.specialMortgageOptions || []).map((o) => o && 
 ok(smoNames.includes('Debt Service Coverage Ratio') && smoNames.includes('DSCR'),
   'SMO-1 the DSCR special-mortgage-option pair is always sent (product stays DSCR)');
 
+// ---- §2.1 frontend-parity forces over a WRONG (production-like) foundation ---
+// A live foundation carrying the config-model values (pmiType None, showUnmatchCompPlan false,
+// fractional monthlyIncome) must NOT diverge from the frontend — buildSearch forces the frontend's.
+const wrongBase = nonDscrBase();
+wrongBase.criteria.pmiType = 'None';
+wrongBase.showUnmatchCompPlan = false;
+wrongBase.criteria.monthlyIncome = 16666.6666667;
+const fp = sm.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760, dscr: 1.25 }, { base: wrongBase });
+ok(fp.criteria.pmiType === 'BPMI', 'PARITY-1 pmiType forced to "BPMI" (over a foundation carrying "None")');
+ok(fp.showUnmatchCompPlan === true, 'PARITY-2 showUnmatchCompPlan forced true (over a foundation carrying false)');
+ok(fp.criteria.monthlyIncome === 16667, 'PARITY-3 monthlyIncome rounded to a whole dollar 16667 (over 16666.666…)');
+
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

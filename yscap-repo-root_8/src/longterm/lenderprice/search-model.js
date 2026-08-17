@@ -681,6 +681,18 @@ function buildSearch(sc = {}, opts = {}) {
   // asserted explicitly so a live base carrying a different saved default never changes the product.
   c.propertyUse = 'Investment';
   c.compensationType = 'BorrowerCompPlan';
+  // §2.1 FRONTEND-PARITY FORCES (2026-08-17 live report). The captured base (`search-base.json`)
+  // already carries the frontend's exact values for these, but a LIVE foundation (the tenant's
+  // defaultSearch, cloned in production) carries the CONFIG-model values instead, and buildSearch did
+  // not force them — so production diverged from the frontend request (pmiType "None" vs "BPMI",
+  // showUnmatchCompPlan false vs true, monthlyIncome 16666.666… vs 16667). These are display/structural
+  // (the live report confirmed they do NOT change the eligible results), so we FORCE the frontend's
+  // values exactly like the DSCR profile above, so a live foundation can never diverge again.
+  c.pmiType = 'BPMI';                         // DSCR investor loan: PMI type mirrors the frontend
+  m.showUnmatchCompPlan = true;               // a search DISPLAY flag the frontend sends true
+  // Monthly income is a DSCR by-product (not a qualifier here); the frontend ROUNDS it to a whole
+  // dollar. Round whatever the foundation carried; leave it absent if it was never set.
+  if (num(c.monthlyIncome) != null) c.monthlyIncome = Math.round(num(c.monthlyIncome));
   // §28.5 — an OMITTED flag inherits the cloned (live) default; only an EXPLICITLY supplied value
   // overwrites it. Previously `!!sc.io` wrote `false` even when io was absent, silently clobbering
   // the live default. A provided value is already a real boolean (strict validation), so 0/false is
