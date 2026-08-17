@@ -53,6 +53,10 @@ function buildAgreementScenarios(opts = {}) {
     prepay: [],
     flags: [],
     state: [],
+    advanced: [],
+    borrower: [],
+    pppstruct: [],
+    eliggrid: [],
     ineligible: [],
   };
   const push = (g, label, s, extra) => groups[g].push({ ...s, _label: label, _group: g, ...(extra || {}) });
@@ -88,7 +92,62 @@ function buildAgreementScenarios(opts = {}) {
   push('flags', 'escrow-waiver', core({ fico: 760, loan: 350000, dscr: 1.25, escrowWaive: true }));
   // H) state sweep at an anchor.
   for (const k of Object.keys(ADDR)) push('state', `state ${k}`, { purpose: 'Purchase', value: 500000, loan: 350000, fico: 760, dscr: 1.25, prepayMonths: 60, ...ADDR[k] });
-  // I) INELIGIBLE probes — the harness must prove the disqualifier matches, not only the price.
+  // J) ADVANCED overlay facts (D27–D29) — each toggled at an eligible anchor, so the battery covers the
+  // advanced section. LP does not see these; our overlay is what reads them (enforcement gated on D36).
+  {
+    const A = { fico: 760, loan: 350000, dscr: 1.25 };
+    push('advanced', 'occupancy vacant', core({ ...A, occupancy: 'vacant' }));
+    push('advanced', 'rural property', core({ ...A, rural_property: true }));
+    push('advanced', 'short-term rental', core({ ...A, short_term_rental: true }));
+    push('advanced', 'first-time investor', core({ ...A, first_time_investor: true }));
+    push('advanced', 'first-time homebuyer', core({ ...A, first_time_homebuyer: true }));
+    push('advanced', 'foreign national', core({ ...A, foreign_national: true }));
+    push('advanced', 'declining market', core({ ...A, declining_market: true }));
+    push('advanced', 'renovation cash-out', core({ ...A, purpose: 'Cash out', cashoutAmount: 50000, renovation: true }));
+  }
+  // K) BORROWER TYPE × PPP (Layer 3) — LLC (default, allowed) vs Individual (natural person) in the
+  // restriction states, with a No-PPP control (never disqualified). Proves the PPP layer end to end.
+  {
+    const B = { purpose: 'Purchase', value: 500000, loan: 350000, fico: 760, dscr: 1.25 };
+    for (const st of ['NJ', 'MA', 'NY']) {
+      push('borrower', `${st} LLC 5yr PPP`, { ...B, prepayMonths: 60, borrowerType: 'LLC', ...ADDR[st] });
+      push('borrower', `${st} Individual 5yr PPP`, { ...B, prepayMonths: 60, borrowerType: 'Individual', ...ADDR[st] });
+      push('borrower', `${st} Individual No-PPP`, { ...B, prepayMonths: 0, borrowerType: 'Individual', ...ADDR[st] });
+    }
+  }
+  // L) PPP STRUCTURE library (D30–D33) — each distinct prepay TERM at an anchor (the structure library's
+  // LP mapping resolves the term); plus the two custom softer overlays (carry ppp_structure_key so the
+  // margin-holdback overlay can add its +0.375). Exercises the prepay dimension across terms.
+  {
+    const P = { purpose: 'Purchase', value: 500000, loan: 350000, fico: 760, dscr: 1.25, ...ADDR.CA };
+    for (const [m, tag] of [[60, '5yr'], [48, '4yr'], [36, '3yr'], [24, '2yr'], [12, '1yr'], [0, 'none']]) {
+      push('pppstruct', `ppp ${tag}`, { ...P, prepayMonths: m });
+    }
+    push('pppstruct', 'custom 3/3/3/2/1 (5yr)', { ...P, prepayMonths: 60, ppp_structure_key: '33321' });
+    push('pppstruct', 'custom 3/3/2/1 (4yr)', { ...P, prepayMonths: 48, ppp_structure_key: '3321' });
+  }
+  // M) ELIGIBILITY GRID tiers (T2/T3) — the per-tier FICO floors + tier-aware caps, at each tier's floor
+  // rows × purpose × DSCR band. Covers the grid cells the flat envelope used to miss (R10 divergence B).
+  {
+    for (const [v, l, tier] of [[2600000, 1750000, 'T2'], [3300000, 2250000, 'T3']]) {
+      for (const fico of [700, 680, 660]) for (const purpose of ['Purchase', 'Cash out']) for (const dscr of [1.25, 0.95]) {
+        const extra = purpose === 'Cash out' ? { cashoutAmount: 50000 } : {};
+        push('eliggrid', `${tier} fico=${fico} ${purpose} dscr=${dscr}`, core({ fico, value: v, loan: l, dscr, purpose, ...extra }));
+      }
+    }
+    // T1 (loan <= $1.5M) — the tier the flat caps already agree on; a full floor × purpose × band sweep.
+    for (const fico of [720, 700, 680, 640]) for (const purpose of ['Purchase', 'Cash out']) for (const dscr of [1.25, 0.95]) {
+      const extra = purpose === 'Cash out' ? { cashoutAmount: 50000 } : {};
+      push('eliggrid', `T1 fico=${fico} ${purpose} dscr=${dscr}`, core({ fico, value: 500000, loan: 350000, dscr, purpose, ...extra }));
+    }
+  }
+  // M2) more property / flag coverage to round out the angles.
+  push('property', 'non-warrantable condo', core({ fico: 760, loan: 400000, dscr: 1.25, propertyType: 'Condo', nonWarrantable: true }));
+  push('property', 'condo 80% cltv', core({ fico: 760, loan: 400000, dscr: 1.25, propertyType: 'Condo' }));
+  push('property', '4 units 80% cltv', core({ fico: 760, loan: 400000, dscr: 1.25, propertyType: 'Unit2_4', units: 4 }));
+  push('flags', 'io + escrow waiver', core({ fico: 760, loan: 350000, dscr: 1.25, io: true, escrowWaive: true }));
+  push('flags', 'io at dscr 1.0', core({ fico: 760, loan: 350000, dscr: 1.0, io: true }));
+  // N) INELIGIBLE probes — the harness must prove the disqualifier matches, not only the price.
   const dq = (label, s) => push('ineligible', label, core(s), { _ineligible: true });
   dq('fico 600', { fico: 600, loan: 350000, dscr: 1.25 });
   dq('ltv 85', { fico: 760, loan: 425000, dscr: 1.25 });
@@ -96,6 +155,13 @@ function buildAgreementScenarios(opts = {}) {
   dq('tiny loan 60k', { fico: 760, value: 100000, loan: 60000, dscr: 1.25 });
   dq('huge loan 3.5M', { fico: 760, value: 5000000, loan: 3500000, dscr: 1.25 });
   dq('fico 640 ltv 80 dscr 0.9', { fico: 640, loan: 400000, dscr: 0.9 });
+  // min-loan DSCR-gated (the R10 fix): $150k @ DSCR 0.90 must decline on the $200k floor.
+  dq('min-loan 150k dscr 0.9', { fico: 760, value: 250000, loan: 150000, dscr: 0.9 });
+  // grid tier FICO floors: 640 in T2/T3 (below the 660 floor) must decline.
+  dq('T2 fico 640', { fico: 640, value: 2600000, loan: 1750000, dscr: 1.25 });
+  dq('T3 fico 640', { fico: 640, value: 3300000, loan: 2250000, dscr: 1.25 });
+  // NJ natural person with a PPP requested → PPP prohibited (Layer 3).
+  push('ineligible', 'NJ Individual PPP prohibited', { purpose: 'Purchase', value: 500000, loan: 350000, fico: 760, dscr: 1.25, prepayMonths: 60, borrowerType: 'Individual', ...ADDR.NJ }, { _ineligible: true });
 
   const keep = Array.isArray(opts.include) && opts.include.length ? new Set(opts.include) : null;
   const scenarios = [];
