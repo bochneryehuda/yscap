@@ -83,6 +83,20 @@ export const ltApi = {
   // Admin-only on the server. Called anyway from a non-admin's screen so the
   // REFUSAL is shown — a hidden button is indistinguishable from a broken one.
   ppeDecideFinding: (key, body) => ltPost(lt(`/ppe/findings/${encodeURIComponent(key)}/decide`), body),
+  // WHERE the two engines disagree, run after run (P9). The scoreboard above carries ONE
+  // agreement rate per day, from which per-band history cannot be recovered later — so this
+  // is the only thing that can answer "has this band been off for three weeks, or was that
+  // one bad afternoon?". The server RANKS by how persistently a cell has disagreed and holds
+  // no threshold: what counts as clean enough belongs to the cutover decision, not to a list.
+  // Passing `dimension` AND `cellKey` narrows to that one cell's day-by-day history.
+  ppeParityCells(params = {}) {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+    }
+    const q = qs.toString();
+    return ltGet(lt(`/ppe/parity-cells${q ? `?${q}` : ''}`));
+  },
 
   // The per-investor rule loop (P5/P7). Lender Price's own declines are mined into
   // PROPOSALS; a human accepts one and it becomes a real rule our engine enforces.

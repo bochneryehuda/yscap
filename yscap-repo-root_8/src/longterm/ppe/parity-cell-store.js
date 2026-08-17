@@ -168,6 +168,50 @@ async function listCells(scope, opts = {}) {
   return (r.rows || []).map(rowToCell);
 }
 
+// A canary writes ONE (investor, program) pair per run, so the distinct pairs in a window are the
+// number of things anybody has ever pointed a canary at — small by nature. Bounded anyway, and the
+// caller compares the length against this so a cap is SAID rather than read as "that is all of them".
+const MAX_SERIES = 200;
+
+/**
+ * WHICH series hold measurements at all, in the window.
+ *
+ * This exists because `listCells` matches (scope, investor, program) EXACTLY: a canary run against an
+ * investor stores that investor's code and a run against nobody stores ''. So a reader that asks for a
+ * key the table does not hold gets an empty list back — and an empty list renders as "nothing has been
+ * measured" while the table is full of measurements, which is the one thing a parity screen must never
+ * say. A reader offers what this returns rather than guessing a key.
+ *
+ * It reports COUNTS, never a verdict: how many days a series was measured on and when it was last
+ * measured. Ordering is most-recently-measured first, which is a recency fact, not a ranking of
+ * badness — that is `persistentlyWorst`'s job, and only inside one series.
+ */
+async function listSeries(scope, opts = {}) {
+  const db = opts.db;
+  const params = [scope];
+  let sql = `SELECT investor, program,
+                    COUNT(*)::int AS measurements,
+                    COUNT(DISTINCT day_ms)::int AS days,
+                    MAX(day_ms) AS last_day_ms,
+                    MIN(day_ms) AS first_day_ms
+               FROM lt_ppe_parity_cell
+              WHERE scope = $1`;
+  const since = num(opts.sinceMs);
+  if (since != null) { params.push(since); sql += ` AND day_ms >= $${params.length}`; }
+  sql += ' GROUP BY investor, program ORDER BY MAX(day_ms) DESC, investor ASC, program ASC';
+  params.push(MAX_SERIES);
+  sql += ` LIMIT $${params.length}`;
+  const r = await db.query(sql, params);
+  return (r.rows || []).map((row) => ({
+    investor: normLabel(row.investor),
+    program: normLabel(row.program),
+    measurements: int(row.measurements),
+    days: int(row.days),
+    lastDayMs: num(row.last_day_ms),
+    firstDayMs: num(row.first_day_ms),
+  }));
+}
+
 /**
  * One cell's history: its measured days, its direction, and how much of the window it was actually
  * measured on.
@@ -230,6 +274,6 @@ function persistentlyWorst(cells, opts = {}) {
 }
 
 module.exports = {
-  persistCells, listCells, cellHistory, persistentlyWorst, rowsFromMatrix, rowToCell,
-  MAX_CELLS_PER_RUN,
+  persistCells, listCells, listSeries, cellHistory, persistentlyWorst, rowsFromMatrix, rowToCell,
+  MAX_CELLS_PER_RUN, MAX_SERIES,
 };

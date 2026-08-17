@@ -244,6 +244,83 @@ async function main() {
   }
 
   // =========================================================================
+  // G0. THE READ ITSELF — narrowing, and the window
+  // =========================================================================
+  //
+  // `listCells` had no coverage at all until a mutation of its window clause was run and the whole
+  // suite stayed green. That is not a hypothetical: a read silently ignoring `sinceMs` returns the
+  // WHOLE series under a "last 30 days" heading, so a band that has been clean for a month reads as
+  // chronically bad off measurements from a quarter ago.
+  {
+    const db = stubDb(() => ({ rows: [] }));
+    await S.listCells('company', { db, investor: 'DHVN', program: 'DSCR', sinceMs: 1690000000000 });
+    const { sql, params } = db.calls[0];
+    ok(/FROM lt_ppe_parity_cell/.test(sql), 'G0-1 the read hits the series table');
+    ok(/scope = \$1 AND investor = \$2 AND program = \$3/.test(sql),
+      'G0-2 …matching the series key EXACTLY — which is why a guessed key comes back empty');
+    ok(/day_ms >= \$4/.test(sql), 'G0-3 …bounded by the window the caller asked about');
+    deep(params, ['company', 'DHVN', 'DSCR', 1690000000000], 'G0-4 …with the window actually bound');
+    ok(/ORDER BY day_ms ASC/.test(sql), 'G0-5 …oldest first, because a trend is read forwards');
+  }
+  {
+    // ONE cell by name — the day-by-day history behind a row.
+    const db = stubDb(() => ({ rows: [] }));
+    await S.listCells('company', { db, dimension: 'fico', cellKey: '700:760' });
+    const { sql, params } = db.calls[0];
+    ok(/dimension = \$4/.test(sql) && /cell_key = \$5/.test(sql), 'G0-6 a named cell narrows on both halves of its identity');
+    deep(params, ['company', '', '', 'fico', '700:760'], 'G0-7 …and an unstated investor/program is the EMPTY key, never a wildcard');
+    ok(!/day_ms >=/.test(sql), 'G0-8 …with no window invented when none was asked for');
+  }
+  {
+    // A row comes back through the same NUMERIC-to-number reader the trend arithmetic needs.
+    const db = stubDb(() => ({ rows: [{ day_ms: '1700000000000', dimension: 'fico', cell_key: 'k', cell_label: 'l', kind: 'band', agreement_rate: '0.5', total: '2', agreed: '1' }] }));
+    const cells = await S.listCells('company', { db });
+    eq(cells.length, 1, 'G0-9 a stored row is read back');
+    eq(cells[0].agreementRate, 0.5, 'G0-10 …with its NUMERIC rate as a number, not the string Postgres returns');
+  }
+
+  // =========================================================================
+  // G. WHICH SERIES HOLD ANYTHING — the read that stops an empty view lying
+  // =========================================================================
+  //
+  // `listCells` matches (scope, investor, program) EXACTLY, so a reader that asks for a key nobody
+  // wrote gets an empty list — which a screen draws as "the engines have never been measured" while
+  // the table is full of measurements. `listSeries` is what lets a reader offer what EXISTS instead
+  // of guessing a key and reporting silence.
+  {
+    const db = stubDb(() => ({
+      rows: [
+        { investor: 'DHVN', program: 'DSCR', measurements: '40', days: '4', last_day_ms: '1700200000000', first_day_ms: '1700000000000' },
+        { investor: null, program: null, measurements: '3', days: '1', last_day_ms: '1699000000000', first_day_ms: '1699000000000' },
+      ],
+    }));
+    const series = await S.listSeries('company', { db, sinceMs: 1690000000000 });
+    eq(series.length, 2, 'G1 every series in the window comes back');
+    eq(series[0].investor, 'DHVN', 'G2 …carrying the investor the canary recorded');
+    eq(series[0].program, 'DSCR', 'G3 …and the program label beside it');
+    eq(series[0].days, 4, 'G4 …with the DAYS it was measured on, not just the row count');
+    eq(series[0].measurements, 40, 'G5 …and the row count too, which is a different question');
+    eq(typeof series[0].lastDayMs, 'number', 'G6 a BIGINT day is read back as a number');
+    // A run recorded against nobody stores '' — never null — because that is the key the read matches.
+    eq(series[1].investor, '', 'G7 a run against no investor reads as the empty key it was stored under');
+    eq(series[1].program, '', 'G8 …and the same for its program');
+    const sql = db.calls[0].sql;
+    ok(/GROUP BY investor, program/.test(sql), 'G9 the series are grouped by the key the cell read matches');
+    ok(/COUNT\(DISTINCT day_ms\)/.test(sql), 'G10 …counting DAYS distinctly, so many cells on one day are one day');
+    ok(/ORDER BY MAX\(day_ms\) DESC/.test(sql), 'G11 …most recently measured first, which is recency and not a ranking of badness');
+    ok(/day_ms >= \$2/.test(sql), 'G12 …bounded by the window the caller asked about');
+    deep(db.calls[0].params, ['company', 1690000000000, S.MAX_SERIES], 'G13 …and capped, so one query cannot be unbounded');
+  }
+  {
+    // No window asked for → no window clause, and the cap still rides.
+    const db = stubDb(() => ({ rows: [] }));
+    const series = await S.listSeries('company', { db });
+    eq(series.length, 0, 'G14 an empty table lists no series');
+    ok(!/day_ms >=/.test(db.calls[0].sql), 'G15 …and an unstated window is not invented as a filter');
+    deep(db.calls[0].params, ['company', S.MAX_SERIES], 'G16 …with the cap as the only other bind');
+  }
+
+  // =========================================================================
   // F. THE COLUMNS ARE REAL, AND THE SERIES IS REACHABLE
   // =========================================================================
   {
@@ -277,6 +354,12 @@ async function main() {
     ok(/cellsTruncated:/.test(routeSrc), 'F10 …and a capped batch is said, never silently short');
     ok(/router\.get\('\/parity-cells'/.test(routeSrc), 'F11 the series is readable');
     ok(/persistentlyWorst/.test(routeSrc), 'F12 …ranked by how persistently a cell has disagreed');
+    // The read matches ONE series exactly, so a reader that guesses a key gets silence back. The
+    // series list is what turns that silence into "the measurements are over there".
+    ok(/await parityCellStore\.listSeries\(/.test(routeSrc),
+      'F12a …and the series that actually hold rows ride with it, so an empty view is never read as an empty table');
+    ok(/seriesTruncated:/.test(routeSrc),
+      'F12b …with a capped series list SAID, because a series a reader cannot see reads as unmeasured');
     // An empty series and a series of clean days look identical on a chart.
     // Keyed on EMPTINESS, in the code rather than in a comment: the sentence existing somewhere in
     // the file says nothing about whether an empty window actually reaches it.

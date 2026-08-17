@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
-import { rate } from './format.js';
+// `day` reads an epoch instant here, not a calendar-date column: a parity cell stores the canary's
+// own `dayMs` verbatim (db/575), which is the moment the run happened. The helper's date-string
+// branch — the one that exists because a DATE column parses as UTC midnight and prints the day
+// before — never applies to it, so the shared helper is the right reading and not a second one.
+import { rate, day } from './format.js';
 
 // ---------------------------------------------------------------------------
 // The Product & Pricing Engine, made visible.
@@ -70,6 +74,23 @@ function Pill({ tone, children }) {
 
 // Severity comes from the server (`review-queue.SEVERITY`); this only chooses a colour.
 const SEV_TONE = { critical: 'bad', high: 'bad', medium: 'warn', low: 'flat', unknown: 'warn' };
+
+/**
+ * A price gap, written in POINTS.
+ *
+ * The parity measurements are canonical integer MILLI-points (`parity-detectors`: 1000 milli = 1
+ * point), because a comparison that rounds cannot tell a real one-thousandth disagreement from a
+ * tolerance. Printing the raw milli on a screen would report a 1.25-point gap as "1250", which reads
+ * as a catastrophe on a rate sheet quoted in points. Missing stays a dash — a band nobody priced has
+ * no gap, and a 0 there would say the two engines agreed exactly.
+ */
+const points = (milli) => (typeof milli === 'number' && Number.isFinite(milli)
+  ? `${(milli / 1000).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')} pts`
+  : '—');
+
+// The direction comes from `scoreboard.trend` — the ONE definition of "improving" in this codebase.
+// Colour only; the word is the server's.
+const TREND_TONE = { improving: 'good', worsening: 'bad', flat: 'flat', unknown: 'flat' };
 
 function Figure({ label, value, hint }) {
   return (
@@ -182,7 +203,65 @@ export default function LtPpe() {
     } finally { setBusy(false); }
   };
 
+  // ---- WHERE the two engines disagree, run after run (P9) ---------------------------------------
+  // The scoreboard below carries ONE agreement rate per day; this is the same measurement per band,
+  // which is what turns "we disagree" into "we disagree HERE, and have for three weeks".
+  //
+  // The series is keyed EXACTLY on (investor, program) as the canary recorded it, so this screen must
+  // never invent a key: asking for one nobody wrote returns an empty list, and an empty list drawn as
+  // "nothing has been measured" beside a table full of measurements is the one lie a parity screen
+  // must not tell. So the picker is built from the server's OWN list of series that hold rows.
+  const [parityDays, setParityDays] = useState(30);
+  const [paritySel, setParitySel] = useState(''); // JSON ["investor","program"], '' = the no-investor series
+  const [parity, setParity] = useState(null);
+  const [parityError, setParityError] = useState('');
+  const [openCell, setOpenCell] = useState(null);
+  const [cellHist, setCellHist] = useState(null);
+  const [cellHistError, setCellHistError] = useState('');
+
+  const parityKey = (inv, prog) => JSON.stringify([inv || '', prog || '']);
+  const parityFilter = useCallback(() => {
+    if (!paritySel) return { investor: '', program: '' };
+    try {
+      const [inv, prog] = JSON.parse(paritySel);
+      return { investor: inv || '', program: prog || '' };
+    } catch (_) { return { investor: '', program: '' }; }
+  }, [paritySel]);
+
+  const loadParity = useCallback(() => {
+    const f = parityFilter();
+    ltApi.ppeParityCells({ days: parityDays, investor: f.investor, program: f.program })
+      .then((r) => { setParity(r); setParityError(''); })
+      // A read failure is SAID. Falling back to an empty list would render as "the engines have never
+      // disagreed", which is the most reassuring possible way to show a broken query.
+      .catch((e) => { setParity(null); setParityError(e.message || 'Could not read the parity measurements.'); });
+    setOpenCell(null);
+    setCellHist(null);
+    setCellHistError('');
+  }, [parityDays, parityFilter]);
+  useEffect(loadParity, [loadParity]);
+
+  const openCellHistory = (row) => {
+    const key = `${row.dimension}|${row.cellKey}`;
+    if (openCell === key) { setOpenCell(null); setCellHist(null); setCellHistError(''); return; }
+    setOpenCell(key);
+    setCellHist(null);
+    setCellHistError('');
+    const f = parityFilter();
+    ltApi.ppeParityCells({
+      days: parityDays, investor: f.investor, program: f.program,
+      dimension: row.dimension, cellKey: row.cellKey,
+    })
+      .then((r) => setCellHist(r && r.history ? r.history : null))
+      .catch((e) => setCellHistError(e.message || 'Could not read that cell\'s history.'));
+  };
+
   const openSuggestions = (suggestions && Array.isArray(suggestions.suggestions) ? suggestions.suggestions : []);
+  const parityRows = (parity && Array.isArray(parity.persistentlyWorst) ? parity.persistentlyWorst : []);
+  const paritySeries = (parity && Array.isArray(parity.series) ? parity.series : []);
+  // A series the picker is NOT currently on, that does hold rows. This is what stops an empty view
+  // being read as "nothing measured" — it names where the measurements actually are.
+  const otherSeries = paritySeries.filter((s) => parityKey(s.investor, s.program) !== (paritySel || parityKey('', '')));
 
   const items = (queue && queue.items) || [];
 
@@ -392,6 +471,159 @@ export default function LtPpe() {
             )}
           </div>
         ))}
+      </div>
+
+      {/* ---- WHERE it disagrees, run after run (P9) ---- */}
+      <div style={card}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <h2 style={h2}>Where it disagrees</h2>
+            <p style={sub}>
+              One agreement rate says the two engines disagree and never where — so one bad credit band
+              and a rate sheet that is wrong everywhere read exactly the same. This is the same
+              measurement per band, kept run after run, so a band that has been off for three weeks
+              looks different from one bad afternoon. It ranks; it sets no pass mark.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <select
+              className="input"
+              style={{ maxWidth: 260 }}
+              value={paritySel}
+              onChange={(e) => setParitySel(e.target.value)}
+            >
+              {/* The default is the series a canary run with no investor writes into — named for what
+                  it is, never as "everything", because the read matches one series exactly. */}
+              <option value="">Runs recorded against no investor</option>
+              {paritySeries.filter((s) => s.investor || s.program).map((s) => (
+                <option key={parityKey(s.investor, s.program)} value={parityKey(s.investor, s.program)}>
+                  {s.investor || 'no investor'}{s.program ? ` · ${s.program}` : ''} — {s.days} day{s.days === 1 ? '' : 's'} measured
+                </option>
+              ))}
+            </select>
+            <select
+              className="input"
+              style={{ maxWidth: 150 }}
+              value={String(parityDays)}
+              onChange={(e) => setParityDays(Number(e.target.value))}
+            >
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="90">Last 90 days</option>
+            </select>
+          </div>
+        </div>
+
+        {parityError && <p style={{ ...sub, color: '#8A2F2F' }}>{parityError}</p>}
+
+        {parity && parityRows.length === 0 && !parityError && (
+          <>
+            {/* The server's own wording for an empty window: this series starts at the first canary
+                run after it was built, and nothing before it can be recovered. */}
+            <p style={{ ...sub, marginBottom: otherSeries.length ? 8 : 0 }}>
+              {parity.note || 'Nothing to show for this series in this window.'}
+            </p>
+            {otherSeries.length > 0 && (
+              <p style={{ ...sub, marginBottom: 0 }}>
+                Measurements do exist elsewhere — {otherSeries.map((s, i) => (
+                  <span key={parityKey(s.investor, s.program)}>
+                    {i > 0 ? ', ' : ''}
+                    <button
+                      className="btn ghost"
+                      style={{ padding: '1px 8px', fontSize: 12 }}
+                      onClick={() => setParitySel(parityKey(s.investor, s.program))}
+                    >
+                      {s.investor || 'no investor'}{s.program ? ` · ${s.program}` : ''} ({s.days}d)
+                    </button>
+                  </span>
+                ))}. This view is one series at a time, so an empty list here is not an empty table.
+              </p>
+            )}
+          </>
+        )}
+
+        {parity && parityRows.length > 0 && (
+          <p style={{ ...sub }}>
+            {parity.measurements} measurement{parity.measurements === 1 ? '' : 's'} in the last{' '}
+            {parity.windowDays} days. Ordered by how many days a band was seen disagreeing — not by how
+            bad the worst day was, because a band that is off every day is the one worth a morning.
+          </p>
+        )}
+
+        {parityRows.map((row) => {
+          const key = `${row.dimension}|${row.cellKey}`;
+          return (
+            <div key={key} style={{ borderTop: '1px solid rgba(20,27,34,.10)', padding: '12px 0' }}>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={eyebrow}>{row.dimension}</div>
+                  <div style={{ fontSize: 14, color: INK, fontWeight: 600 }}>{row.cellLabel || row.cellKey}</div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                    <Pill tone={row.daysWithDisagreement > 0 ? 'warn' : 'good'}>
+                      disagreed on {row.daysWithDisagreement} of {row.daysMeasured} measured day{row.daysMeasured === 1 ? '' : 's'}
+                    </Pill>
+                    {row.trend && <Pill tone={TREND_TONE[row.trend.direction] || 'flat'}>{row.trend.direction}</Pill>}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+                  <Figure
+                    label="Latest agreement"
+                    value={rate(row.latestAgreementRate)}
+                    hint={row.latestAgreementRate == null ? 'no rate measured' : undefined}
+                  />
+                  <Figure label="Worst gap" value={points(row.worstAbsMilli)} hint="absolute, any direction" />
+                  {/* Measured-vs-asked is the honest half: a band measured on two of thirty days has a
+                      direction computed from two points, and showing it beside one measured on all
+                      thirty as though they weigh the same is how a dashboard talks somebody into a
+                      cutover. The gap is never filled in — a day with no loans in a band is an absence
+                      of evidence about that band, not a zero. */}
+                  <Figure
+                    label="Days measured"
+                    value={`${row.daysMeasured}${row.windowDays ? ` of ${row.windowDays}` : ''}`}
+                    hint={row.windowDays && row.daysMeasured < row.windowDays ? 'the rest were not measured' : undefined}
+                  />
+                </div>
+                <button className="btn ghost" onClick={() => openCellHistory(row)}>
+                  {openCell === key ? 'Hide' : 'Day by day'}
+                </button>
+              </div>
+
+              {openCell === key && (
+                <div style={{ marginTop: 10 }}>
+                  {cellHistError && <div style={{ fontSize: 13, color: '#8A2F2F' }}>{cellHistError}</div>}
+                  {!cellHistError && !cellHist && <div style={{ fontSize: 13, color: MUTED }}>Reading…</div>}
+                  {cellHist && (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {/* Only the days this band was actually measured on appear. There is deliberately
+                          no row for a day in between: it would have to be drawn as something, and
+                          anything drawn is a measurement nobody made. */}
+                      {(cellHist.days || []).map((d) => (
+                        <div key={d.dayMs} style={{
+                          border: '1px solid rgba(20,27,34,.12)', borderRadius: 8, padding: '6px 10px',
+                          background: PAPER, minWidth: 96,
+                        }}>
+                          <div style={{ fontSize: 11, color: MUTED }}>{day(d.dayMs)}</div>
+                          <div style={{ fontSize: 14, color: INK, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                            {rate(d.agreementRate)}
+                          </div>
+                        </div>
+                      ))}
+                      {(cellHist.days || []).length === 0 && (
+                        <div style={{ fontSize: 13, color: MUTED }}>No measured days in this window.</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {parity && parity.seriesTruncated && (
+          <p style={{ ...sub, marginTop: 12, marginBottom: 0 }}>
+            More series exist than this list shows, so one may be missing from the picker above.
+          </p>
+        )}
       </div>
 
       {/* ---- the go-live picture ---- */}

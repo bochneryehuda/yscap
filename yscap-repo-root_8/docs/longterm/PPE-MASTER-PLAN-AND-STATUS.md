@@ -458,7 +458,30 @@ owner wants to start.
   which a latest-rate sort inverts. The direction is `scoreboard.trend`, reused so "improving" means
   one thing here. It RANKS and never thresholds. Test
   `scripts/test-lt-ppe-parity-cell-store.js` (118); 18 mutations proven to fail it.
-- **STILL TO-BUILD:** the screen.
+- **DONE — the SCREEN (2026-08-17).** "Where it disagrees" on `LtPpe.jsx`, reading `GET /parity-cells`:
+  the bands that have disagreed on the most days, each with its latest agreement, its worst gap and
+  its direction, and a day-by-day view behind each row. It holds no threshold and does no sorting of
+  its own. Four ways a parity screen can lie are each closed and each mutation-proven:
+  **(a) THE EMPTY-VIEW LIE** — the series is keyed EXACTLY on (investor, program) as the canary wrote
+  it, so asking for a key nobody wrote returns an empty list, which drawn as "nothing has ever been
+  measured" is indistinguishable from a clean book. So the read now also returns
+  `parityCellStore.listSeries` — the series that actually hold rows — the picker is built from THAT,
+  the default is named "runs recorded against no investor" rather than "everything", and an empty view
+  names the series that do hold measurements instead of reporting silence.
+  **(b) THE GAP LIE** — days measured is shown against the window asked about, and days-disagreeing
+  against the same denominator, so a band measured on two of thirty days never sits beside one
+  measured on all thirty as though they weigh the same.
+  **(c) THE ZERO-FILL LIE** — only the days the server returned are drawn, and an unmeasured rate is a
+  dash, never 0%.
+  **(d) THE UNITS LIE** — parity gaps are canonical integer MILLI-points, so a 1.25-point gap printed
+  raw reads as "1250" — a catastrophe on a rate sheet. Converted once, in one helper.
+  Guards: `scripts/test-lt-ppe-screen-pure.mjs` (extended) + `test-lt-ppe-parity-cell-store.js` (146).
+  Along the way `listCells` turned out to have **no coverage at all** — a mutation removing its window
+  clause left the whole suite green, which would have served a whole quarter's measurements under a
+  "last 30 days" heading. It has its own section now, and two of the new screen guards came back GREEN
+  when first mutated because they matched a NAME the mutation left behind (`parity.series` still
+  matched inside `parity.seriesTruncated`); both are pinned to their composed form, and the guards now
+  run against comment-stripped source so a test can never be satisfied by the prose explaining it.
 - **Depends on:** P1, P3. **Owner gate:** ⚠️ tolerances + clean-weeks threshold — Part 4.2/4.3 — which
   gate the CUTOVER decision, not the measurement; the matrix ranks and never thresholds.
 

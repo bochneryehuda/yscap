@@ -743,6 +743,12 @@ async function parityCellsRoute(req, res) {
     sinceMs,
   });
 
+  // WHICH series hold anything at all, regardless of the filter above. `listCells` matches
+  // (scope, investor, program) exactly, so asking for a key nobody wrote returns an empty list —
+  // indistinguishable, on a screen, from "the engines have never been measured". Returning the real
+  // series list means a reader can offer what exists instead of guessing a key and reporting silence.
+  const series = await parityCellStore.listSeries(scope, { db, sinceMs });
+
   // ONE cell asked for by name gets its own history; otherwise the cells that have disagreed on the
   // most days, which is the list worth a human's morning.
   const single = q.dimension && q.cellKey;
@@ -753,6 +759,9 @@ async function parityCellsRoute(req, res) {
     program,
     windowDays: days,
     measurements: cells.length,
+    series,
+    // A capped list is SAID: a reader that cannot see a series reports it as unmeasured.
+    seriesTruncated: series.length >= parityCellStore.MAX_SERIES,
     // Said plainly, because an empty series and a series of clean days look identical on a chart:
     // this table starts at the first canary run after db/575, and nothing before it can be recovered.
     note: cells.length ? null : 'No per-band measurements in this window yet — the series starts at the first canary run after this was built, and earlier runs recorded only a daily total.',

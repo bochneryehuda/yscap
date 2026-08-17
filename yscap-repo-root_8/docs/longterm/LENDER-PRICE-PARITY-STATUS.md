@@ -1815,4 +1815,20 @@ each proven to fail it; four came back GREEN first — three were weak assertion
 than what the code DOES (a call left dangling in a fire-and-forget wrapper still contains the
 function's name), and the fourth was the ordering fixture above.
 
-**RESIDUAL:** there is still no screen. The measurement, the series and the read endpoint exist.
+**THE SCREEN (2026-08-17) — §2.25.** "Where it disagrees" now renders that series on the pricing-engine
+screen, and the work was mostly in the four ways such a screen lies. The one worth recording here is
+that the series is keyed EXACTLY on (investor, program) as the canary wrote it, so a screen that
+guessed a key would get an empty list back and draw it as "the engines have never been measured" —
+beside a table full of measurements. The read therefore also returns the series that actually hold
+rows (`listSeries`), the picker is built from that rather than from anything this screen invents, and
+an empty view names where the measurements are. The other three: days measured is shown against the
+window asked about, only measured days are drawn (no zero-filling a gap), and the milli-point gaps are
+converted once before they reach a screen — printing one raw reports a 1.25-point gap as "1250".
+
+**A COVERAGE HOLE FOUND BY MUTATION.** `listCells` — the read the whole series rides on — had no test
+at all: removing its `sinceMs` clause left every suite green, and the effect would have been a whole
+quarter of measurements served under a "last 30 days" heading, making a band clean for a month read as
+chronically bad. It is covered now. Two of the new screen guards also came back GREEN when first
+mutated, both matching a NAME the mutation left behind (`parity.series` still matches inside
+`parity.seriesTruncated`); they are pinned to their composed form, and every guard in that section now
+runs against comment-stripped source so a test can never be satisfied by the comment explaining it.
