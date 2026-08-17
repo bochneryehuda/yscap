@@ -74,10 +74,10 @@ function assertPricedChain(program, label) {
   const { Pool } = require('pg');
   const db = new Pool({ connectionString: process.env.DATABASE_URL });
   try {
-    for (const f of ['558_lt_ppe_foundation.sql', '560_lt_ppe_ratesheet.sql']) {
+    for (const f of ['558_lt_ppe_foundation.sql', '560_lt_ppe_ratesheet.sql', '576_lt_ppe_ratesheet_agreement_gate.sql']) {
       await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', f), 'utf8'));
     }
-    ok(true, 'db/558 + db/560 applied (idempotent)');
+    ok(true, 'db/558 + db/560 + db/576 applied (idempotent)');
 
     const scope = 'test_rs_' + Math.abs(process.pid || 1);
     await db.query('DELETE FROM lt_ppe_program WHERE scope = $1', [scope]);
@@ -104,12 +104,36 @@ function assertPricedChain(program, label) {
     assertPricedChain(dbProgram, 'DB'); // the stored sheet prices IDENTICALLY to the in-memory one
 
     // publish/current effective-dating lifecycle.
+    //
+    // Publishing now consults the ≥200-scenario Lender Price AGREEMENT gate (db/576) — a sheet nobody
+    // has measured is refused. That is asserted once here, right where publish lives, because this is
+    // the suite that would notice if the gate were ever unwired from the publish path; the gate's own
+    // states are exercised in scripts/test-lt-ppe-agreement-gate.js.
+    const unproven = await store.publishRateSheetVersion(db, scope, ver.id);
+    ok(unproven && unproven.refused && unproven.refused.reason === 'never_measured',
+      'publishing an unmeasured sheet is REFUSED, naming that nobody has measured it');
+    const stillDraft = (await db.query('SELECT status FROM lt_ppe_rate_sheet_version WHERE id = $1', [ver.id])).rows[0];
+    ok(stillDraft.status === 'draft', 'the refused version is untouched — still a draft');
+
+    // Record a passing run so the rest of the lifecycle can be exercised. `agreedSummary` is the shape
+    // ratesheet-agreement.js returns; the gate reads its counts, so it must clear MIN_COMPARABLE_SCENARIOS.
+    const agreementStore = require('../src/longterm/ppe/agreement-store');
+    const agreedSummary = { gateMet: true, scenarios: 240, comparable: 240, agreed: 240, disagreed: 0, errors: 0 };
+    const proveAgreement = async (versionId) => {
+      const rec = await agreementStore.recordRun(scope, {
+        db, versionId, summary: agreedSummary, recordedBy: 'ratesheet-db-test', nowMs: Date.now(),
+      });
+      ok(rec.ok, `an agreement run is recorded for ${versionId.slice(0, 8)}…`);
+    };
+    await proveAgreement(ver.id);
+
     const published = await store.publishRateSheetVersion(db, scope, ver.id);
     ok(published && published.status === 'published' && published.effective_from, 'publish marks it published + effective from now');
     const current = await store.currentRateSheetVersion(db, scope, program.id, 'correspondent');
     ok(current && current.id === ver.id, 'currentRateSheetVersion returns the published version');
     // publishing a v2 supersedes v1.
     const ver2 = await store.createRateSheetVersion(db, scope, { programId: program.id, versionNo: 2, channel: 'correspondent' });
+    await proveAgreement(ver2.id);
     await store.publishRateSheetVersion(db, scope, ver2.id);
     const current2 = await store.currentRateSheetVersion(db, scope, program.id, 'correspondent');
     ok(current2 && current2.id === ver2.id, 'publishing v2 becomes current');

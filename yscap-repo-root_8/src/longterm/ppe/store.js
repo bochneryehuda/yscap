@@ -331,7 +331,54 @@ async function loadRateSheet(db, versionId) {
 // Publish a version: mark it published + effective from now, and CLOSE the prior published version's
 // effective_to (the effective-dating discipline — nothing is deleted, "current" is a thin predicate).
 // One transaction. Returns the published version row.
-async function publishRateSheetVersion(db, scope, versionId) {
+//
+// IT NOW REFUSES AN UNPROVEN SHEET, and this is the enforcement point for the owner's HARD RULE:
+// agree with Lender Price on every LLPA, every eligibility and ineligibility, and the max/min price,
+// to the penny, over ~200 scenarios, BEFORE a sheet is trusted. Publishing is precisely the moment it
+// becomes trusted — it is what every later quote prices from — and until now this function promoted a
+// sheet with no reference to the agreement harness at all. The rule was written in three places and
+// enforced in none.
+//
+// THE OVERRIDE IS NOT A HOLE IN THE GATE, IT IS WHAT KEEPS THE GATE FROM BEING A DEAD END. On the day
+// this lands no sheet has a recorded run, and producing one needs live Lender Price credentials — a
+// refusal whose only remedy is a state nothing can currently reach would simply mean nobody can
+// publish. So `opts.override` publishes anyway, and RECORDS who decided and why (db/576). Refusal is
+// meant to be gettable past; it is not meant to be gettable past silently.
+//
+// Returns the version row on success, or `{ refused: { reason, message } }` — a shape the caller must
+// look at. Throwing would have been the other option and is worse here: this runs inside a transaction
+// the caller owns, and the two existing callers already read the returned row.
+async function publishRateSheetVersion(db, scope, versionId, opts = {}) {
+  const agreementStore = require('./agreement-store');
+
+  // ASKED BEFORE THE TRANSACTION IS OPENED, deliberately: a refusal must not leave a BEGIN hanging,
+  // and the gate read is a plain SELECT that has nothing to do with the publish's own atomicity.
+  const gate = await agreementStore.gateStatus(scope, versionId, { db });
+  if (!gate.proven) {
+    if (!opts.override) {
+      return { refused: {
+        reason: gate.reason,
+        // The gate's OWN wording, never a paraphrase — it names which of the four states this is
+        // ("never measured", "disagrees", "too few scenarios", "could not be read"), and those send a
+        // reader to four different places.
+        message: `${gate.message} Run the Lender Price agreement battery against this sheet, or publish it deliberately with a reason.`,
+        gate,
+      } };
+    }
+    const rec = await agreementStore.recordOverride(scope, {
+      db, versionId, recordedBy: opts.overrideBy, reason: opts.overrideReason, nowMs: opts.nowMs || Date.now(),
+    });
+    // AN OVERRIDE THAT COULD NOT BE RECORDED DOES NOT PUBLISH. The recording IS the authorization — a
+    // publish that proceeded here would be exactly the silent unmeasured promotion the gate exists to
+    // prevent, with the added property that nothing anywhere would say it happened.
+    if (!rec.ok) return { refused: { reason: rec.reason, message: rec.message, gate } };
+  }
+  return publishRateSheetVersionUnchecked(db, scope, versionId);
+}
+
+// The publish itself, unchanged, with the gate lifted off it. Kept separate so the transaction has one
+// job and so the gate above can be read in isolation.
+async function publishRateSheetVersionUnchecked(db, scope, versionId) {
   // Works with LT's db wrapper (getClient) or a raw pg Pool (connect).
   const client = await (typeof db.getClient === 'function' ? db.getClient() : db.connect());
   try {
@@ -375,5 +422,5 @@ module.exports = {
   findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms, listAllPrograms,
   setProgramLpScope,
   createRateSheetVersion, replaceBasePrices, replaceAdjustments, setPriceLimit,
-  loadRateSheet, publishRateSheetVersion, currentRateSheetVersion,
+  loadRateSheet, publishRateSheetVersion, publishRateSheetVersionUnchecked, currentRateSheetVersion,
 };
