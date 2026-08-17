@@ -45,6 +45,17 @@ ok(legs.lpScenarioToFacts({ purpose: 'Refinance' }).purpose === 'refinance' && l
 ok(legs.lpScenarioToFacts({ prepayTerm: 'No Prepay' }).prepay_months === 0, '  legacy "No Prepay" string → 0 months (fallback)');
 const fLp = legs.lpScenarioToFacts({ prepayMonths: 36, io: true, escrowWaive: true });
 ok(fLp.prepay_months === 36 && fLp.interest_only === true && fLp.escrow_waiver === true, '  LP field names prepayMonths/io/escrowWaive are read (not prepayTerm/interestOnly/escrowWaiver)');
+// Layer-2/Layer-3 facts the converter used to DROP: borrower_type (PPP) + subordinate_amount (matrix).
+const fbt = legs.lpScenarioToFacts({ borrowerType: 'Individual', subordinateLoanAmount: 50000 });
+ok(fbt.borrower_type === 'Individual' && fbt.subordinate_amount === 50000, '  borrower_type + subordinate_amount are carried from an LP scenario');
+const fbtNone = legs.lpScenarioToFacts({ value: 5e5, loan: 4e5 });
+ok(fbtNone.borrower_type === null && fbtNone.subordinate_amount === 0, '  absent borrower_type is null (PPP fails open) + absent subordinate is 0 (rule silent)');
+// End-to-end: an NJ NATURAL-PERSON scenario flowing through lpScenarioToFacts now trips the PPP
+// prohibition (the Layer-3 overlay) — it could not before, because borrower_type was dropped.
+const njFacts = legs.lpScenarioToFacts({ value: 5e5, loan: 4e5, fico: 740, dscr: 1.25, state: 'NJ', borrowerType: 'Individual', units: 1, prepayMonths: 60 });
+const njProg = require('../src/longterm/ppe/program-deephaven-dscr').evaluateProgram(njFacts);
+ok(njProg.eligible === false && njProg.reasons.some((r) => r.layer === 'ppp_matrix' && /nj/i.test(r.code)),
+  '  an NJ natural-person PPP request declines via the PPP layer through the live-scenario path');
 // buildOursLeg with factsFromLp:true prices a LENDER PRICE scenario through the conversion
 const oursLp = legs.buildOursLeg(PROGRAM, SETTINGS, { factsFromLp: true });
 const qLp = oursLp({ value: 500000, loan: 400000, fico: 740, dscr: 1.5, purpose: 'Cash out', state: 'TX', prepayTerm: '60 Months' });

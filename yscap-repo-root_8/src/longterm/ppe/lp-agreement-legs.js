@@ -80,6 +80,15 @@ function lpScenarioToFacts(s) {
     interest_only: !!(sc.io || sc.interestOnly),
     escrow_waiver: !!(sc.escrowWaive || sc.escrowWaiver),
     lock_days: num(sc.lock_days) || 30,
+    // Layer-2/Layer-3 facts the pricer carries but this converter used to DROP, so a live LP scenario
+    // could never trip the subordinate-not-allowed rule (deephaven-matrix reads f.subordinate_amount)
+    // nor the borrower-type-dependent PPP rules (deephaven-ppp-matrix reads borrower_type — e.g. NJ
+    // natural-person → PPP prohibited). Both are ordinary scenario inputs (SUPPORTED_FIELDS
+    // subordinateLoanAmount / borrowerType), NOT advanced-overlay facts. A missing borrower_type is
+    // null so the PPP layer FAILS OPEN (never invents a prohibition on data it does not have); a
+    // missing subordinate amount is 0 so the not-allowed rule stays silent unless a real second exists.
+    borrower_type: sc.borrowerType || sc.borrower_type || null,
+    subordinate_amount: num(sc.subordinateLoanAmount) != null ? num(sc.subordinateLoanAmount) : (num(sc.subordinate_amount) || 0),
   };
 }
 
