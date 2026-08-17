@@ -36,6 +36,7 @@ const locks = require('../locks');
 const milestones = require('../milestones');
 const productTerm = require('../product-term');
 const borrowerMatch = require('../borrower-match');
+const application = require('../application/sync');
 
 const lazy = {
   get db() { return require('../db'); },
@@ -230,13 +231,27 @@ async function readLoan(loanId, guid, settings) {
 
   const team = await contacts.syncLoanContacts(loanId, guid, { values });
 
+  // THE SUBJECT PROPERTY RIDES THE PAYLOAD WE ALREADY HAVE. db/549 shipped
+  // `lt_properties` and the file's Property section, the summary rail and the
+  // pipeline's own address and LTV columns all READ it — while nothing wrote it,
+  // so all three answered blank on every loan from the day they shipped. It costs
+  // no call: the figures are on the loan JSON in hand, and any value this caller
+  // already read BY NUMBER wins over the path. Best-effort — a property we could
+  // not read must never undo the loan we just mirrored.
+  let property = null;
+  try {
+    property = await application.syncSubjectProperty(loanId, loan, { values });
+  } catch (e) {
+    property = { ok: false, reason: (e && e.message) || String(e) };
+  }
+
   // The lock posture rides the loan we already have — no lock endpoint is called,
   // and none would answer: every lock-specific endpoint on this tenant is 403.
   const lock = locks.lockFromLoan(loan, values, settings);
   const lockWrite = await locks.writeLock(loanId, lock);
 
   return { ok: true, milestoneName, stageKey, team, milestone: milestoneWrite,
-    lock: { ...lockWrite, posture: lock.posture } };
+    lock: { ...lockWrite, posture: lock.posture }, property };
 }
 
 /**
