@@ -125,8 +125,28 @@ nothing was ordered, changed or cancelled):
   the biggest unknown. Reading a genuinely completed order returned its status, its
   **6 budget lines**, **36 photographs**, its documents, the report and the invoice. Every
   one of those paths had only ever been tested against sample data before today.
+- **The money adds up, on a real finished report.** Re-checked on 2026-08-17: PILOT read
+  that completed inspection's six budget lines, worked out what each one had earned, and
+  the total came to **$30,000.00 — the same figure to the cent that Trinity itself
+  reports** for the job. This is the part that decides what a borrower is paid, and until
+  now it had only ever been checked against practice data. If those two figures ever
+  disagree by more than a rounding cent, PILOT refuses the report and asks for a person
+  rather than releasing a number it cannot stand behind.
 - **All 19 of Trinity's statuses** were read and compared to how we interpret them. All six
   flavours of "Report Completed" are recognised, so a **revised** report is never missed.
+- **Each budget line keeps our own reference, there and back.** This is the part that makes
+  everything else work: we tag every line of the construction budget with our own
+  reference, and the inspector's answer comes back on a line still carrying it. That is
+  how "what did he approve on the roof?" has an answer, and how his figure lands on the
+  right line in Sitewire instead of the wrong one. Checked three ways: it was proven on a
+  real order on the practice system; **Trinity's own published specification uses the very
+  same line format for the practice product and for your live one** — not a similar one,
+  the same one — and their own note on that field says it *"will carry forward to future
+  orders in this project"*; and the live account's own completed report carries exactly
+  that format. On top of that, **every order checks itself**: the moment one is placed we
+  read their budget straight back and compare, line by line, our reference, the cost, the
+  amount requested and how much was already drawn. Anything that does not match shows up
+  in **red on the draw desk** — before the inspection happens, not after.
 - **All five document folders** we file into exist on the live account.
 - **The safety net that stops a duplicate order** (looking an order up by our own reference
   after a lost reply) works against the live system.
