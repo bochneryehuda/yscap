@@ -192,6 +192,11 @@ surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
 ### 2.11 Interfaces (admin surface) — **PARTIAL**
 - **DONE:** `/api/lt/ppe/*` (health, settings, investors, findings, scoreboard, quote, decide-finding,
   canary) + the `LtPpe.jsx` findings/scoreboard/readiness screen (staff-only, wired).
+- **DONE (2026-08-17):** `GET /programs` + the LP-scope editor on `LtPpe.jsx` — the first admin surface
+  that consumes a program writer. It exists because db/574's scope route needs a program UUID no read
+  surface published, so no sheet could be scoped and every shadow comparison abstained silently. The
+  list leads with how many programs are UNSCOPED and says what that means; the form previews which
+  Lender Price program names a pattern actually picks, with zero matches called out.
 - **TO-BUILD:** investor/program manager, rule-authoring editor, rate-sheet console, LLPA manager,
   settings center, scenario playground, and the **manual-review + suggested-rules UI** (P8). No admin
   screen consumes the built `createInvestor`/`createProgram`/rate-sheet writers yet. *(MEGA §12.)*

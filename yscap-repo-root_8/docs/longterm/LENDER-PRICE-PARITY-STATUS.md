@@ -1658,6 +1658,20 @@ the suite's accept-cases, now closed with the two patterns that discriminate.
 human states one per program, live comparisons keep abstaining with the reason — the machinery is on the
 path, waiting for the statement.
 
+**THE DOOR NOW EXISTS (2026-08-17) — §2.26.** The residual above turned out to be worse than "waiting
+for a human": there was nowhere for a human to say it. The write route needs a program's UUID and **no
+read surface published one** — `GET /investors` lists investors and nothing listed PROGRAMS — so the
+statement could not be made at all, from any screen, and its absence looked exactly like nobody having
+got round to it. `GET /programs` (`store.listAllPrograms`) publishes every program with its investor,
+its scope, and the COUNT of programs with none, worded as what it means: their comparison abstains.
+`listPrograms` could not answer it — it takes an investor id, and the programs hanging off no investor
+are the ones most likely to be unscoped. The screen lists every program (never filtered to the scoped
+ones, which are the ones needing nothing), and the write form carries `previewScope`'s whole point: the
+program names pasted from a capture come back marked with which ones the pattern actually picks, and
+**zero matches is called out in red** — a pattern one character wrong picks nothing and abstains
+politely forever. Reading is open, writing stays admin-only: what is worth seeing here is the ABSENCE
+of a scope, and hiding that leaves a non-admin reading an empty findings list as good news.
+
 ---
 
 ### §2.23 — THE PARITY NUMBER COULD NOT SAY *WHERE*, BECAUSE THE FACTS WERE THROWN AWAY (2026-08-17)
