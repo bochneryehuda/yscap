@@ -67,11 +67,24 @@ function lpScenarioToFacts(s) {
   let ltvRatio = num(sc.ltv);
   if (ltvRatio != null && ltvRatio > 1) ltvRatio = ltvRatio / 100; // accept a percentage
   if (ltvRatio == null && value != null && value > 0 && loan != null) ltvRatio = loan / value;
+  // Subordinate financing (one definition, reused by cltv below and subordinate_amount).
+  const subAmt = num(sc.subordinateLoanAmount) != null ? num(sc.subordinateLoanAmount)
+    : (num(sc.subordinate_amount) || 0);
+  // COMBINED loan-to-value: (first lien + any recorded subordinate) / value, in the SAME milli-percent
+  // units as ltv (80% → 80000). Accept an explicit sc.cltv (ratio or percent) first; otherwise DERIVE
+  // it. Needed so a CapAdjustment / "CLTV exceeded" disqualifier the crosswalk maps to fact `cltv` can
+  // actually be evaluated end to end — without a cltv fact the predicate reads an absent key and
+  // rules._evalLeaf fails SAFE to false, so the rule never declines (a silent dead map that fails to
+  // replicate the LP CLTV decline). With no subordinate, cltv == ltv, which is correct.
+  let cltvRatio = num(sc.cltv);
+  if (cltvRatio != null && cltvRatio > 1) cltvRatio = cltvRatio / 100; // accept a percentage
+  if (cltvRatio == null && value != null && value > 0 && loan != null) cltvRatio = (loan + subAmt) / value;
   const dscr = num(sc.dscr);
   const units = num(sc.units);
   return {
     fico: num(sc.fico),
     ltv: ltvRatio != null ? Math.round(ltvRatio * 100000) : null,
+    cltv: cltvRatio != null ? Math.round(cltvRatio * 100000) : null,
     dscr: dscr != null ? Math.round(dscr * 1000) : null,
     loan_amount: loan,
     value,
@@ -108,7 +121,7 @@ function lpScenarioToFacts(s) {
     // natural-person prohibition. It is NEVER left null (which would fail-open on a wildcard and also
     // skip the NJ rule) — the default is a concrete, owner-set LLC.
     borrower_type: sc.borrowerType || sc.borrower_type || 'LLC',
-    subordinate_amount: num(sc.subordinateLoanAmount) != null ? num(sc.subordinateLoanAmount) : (num(sc.subordinate_amount) || 0),
+    subordinate_amount: subAmt,
     // APR (Layer-3 PPP) — ONE state PPP rule keys on a HIGH-cost APR: ILLINOIS (the
     // natural-person `aprGt` rule in deephaven-ppp-matrix). APR is a DERIVED figure (note rate + fees),
     // so this is a PURE PASS-THROUGH: emit it only when a scenario explicitly supplies one, and leave

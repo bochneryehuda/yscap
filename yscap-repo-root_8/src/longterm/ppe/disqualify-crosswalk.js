@@ -93,7 +93,12 @@ function findState(text) {
 // Recognize a feature word in the text and return its fact leaf, or null.
 function featureLeaf(text) {
   const t = String(text || '').toLowerCase();
-  if (/\binterest[\s-]?only\b|\bio\b/.test(t)) return { fact: 'io', op: 'eq', value: true };
+  // The engine's canonical fact is `interest_only` (what lpScenarioToFacts emits) — NOT `io`. A
+  // predicate reading `io` finds no such fact and `rules._evalLeaf` fails SAFE to false, so the rule
+  // never declines: a silent dead map that fails to replicate the LP "Interest Only not available"
+  // decline. Emit the fact the engine actually carries. The crosswalk-fact-vocabulary guard
+  // (test-lt-ppe-disqualify-crosswalk-facts.js) proves every emitted fact is one a scenario produces.
+  if (/\binterest[\s-]?only\b|\bio\b/.test(t)) return { fact: 'interest_only', op: 'eq', value: true };
   if (/\bcash[\s-]?out\b/.test(t)) return { fact: 'purpose', op: 'eq', value: 'cashout' };
   return null;
 }
