@@ -176,6 +176,40 @@ export default function RateSheetConsole() {
     } finally { setBusy(false); }
   };
 
+  // ---- the two checks, and they are not interchangeable -------------------
+  //
+  // COVERAGE is free and offline — which of this sheet's own cells can nothing ever reach. THE RUN
+  // prices the whole canonical battery against Lender Price and records the verdict; it costs money,
+  // and it is the only thing that can open the publish gate by measurement. Both are shown, in that
+  // order, with the cost said out loud: a person about to spend a battery on a sheet with a
+  // transposed band should be told there is a free check first.
+  const [coverage, setCoverage] = useState(null);
+  const [coverageError, setCoverageError] = useState('');
+  const [run, setRun] = useState(null);
+  const [runError, setRunError] = useState('');
+
+  const checkCoverage = async () => {
+    setBusy(true); setCoverageError(''); setCoverage(null); setNote('');
+    try { setCoverage(await ltApi.ppeRateSheetCoverage(sheet.version.id)); } catch (e) {
+      setCoverageError(e.message || 'The cell check could not run.');
+    } finally { setBusy(false); }
+  };
+
+  const runAgreement = async () => {
+    setBusy(true); setRunError(''); setRun(null); setNote('');
+    try {
+      const r = await ltApi.ppeRunRateSheetAgreement(sheet.version.id);
+      setRun(r);
+      // The gate's verdict rides on the sheet read, so the card above must be re-read or it would go
+      // on showing "never measured" beside a run that just finished.
+      await reloadSheet(sheet.version.id);
+    } catch (e) {
+      // A 503 here is the ORDINARY state until the Lender Price login is rotated, not a breakage, and
+      // it is shown as the upstream speaking rather than as the button being broken.
+      setRunError(e.message || 'The agreement run could not start.');
+    } finally { setBusy(false); }
+  };
+
   const programList = (programs && Array.isArray(programs.programs)) ? programs.programs : [];
   const investorList = (investors && Array.isArray(investors.investors)) ? investors.investors : [];
 
@@ -306,6 +340,80 @@ export default function RateSheetConsole() {
               <Problems problems={adj.problems} />
             </>
           )}
+
+          {/* ---- the two checks: the free one first, then the paid one ---- */}
+          <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: 'rgba(20,27,34,.03)', border: '1px solid rgba(20,27,34,.10)' }}>
+            <div style={{ ...eyebrow, marginBottom: 6 }}>Check this sheet</div>
+            <p style={{ margin: '0 0 10px', fontSize: 13, color: SLATE }}>
+              Two different questions. <strong>Its own cells</strong> asks whether any band on this sheet
+              is one no loan can ever land in — it is free, it runs here, and a transposed band is worth
+              fixing before anything is spent. <strong>Measure against Lender Price</strong> prices the
+              whole battery at the vendor and records the verdict; that is what opens the publish gate
+              without an override, and it costs a real battery every time it is pressed.
+            </p>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button className="btn ghost" disabled={busy} onClick={checkCoverage}>Check its own cells (free)</button>
+              <button className="btn ghost" disabled={busy} onClick={runAgreement}>Measure against Lender Price</button>
+            </div>
+
+            {coverageError && <p style={{ margin: '10px 0 0', fontSize: 13, color: DANGER }}>{coverageError}</p>}
+            {coverage && (
+              <div style={{ marginTop: 10, fontSize: 13, color: SLATE }}>
+                <div>
+                  {coverage.rules.reachable} of {coverage.rules.total} cell{coverage.rules.total === 1 ? '' : 's'} reached
+                  and applied, over {coverage.scenarios.generated} generated scenario{coverage.scenarios.generated === 1 ? '' : 's'}.
+                </div>
+                {coverage.rules.unreachable.length > 0 && (
+                  <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: DANGER }}>
+                    {coverage.rules.unreachable.map((u) => (
+                      <li key={u.code || u.reason}><strong>{u.code || '(unnamed cell)'}</strong> — {u.reason}</li>
+                    ))}
+                  </ul>
+                )}
+                {coverage.rules.disagreed.length > 0 && (
+                  <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: CAUTION }}>
+                    {coverage.rules.disagreed.map((d) => (
+                      <li key={d.code || d.reason}><strong>{d.code || '(unnamed cell)'}</strong> — {d.reason}</li>
+                    ))}
+                  </ul>
+                )}
+                {/* A scenario our own engine cannot price is a defect in its own right, so it is shown
+                    here rather than left to be inferred from a coverage number. */}
+                {coverage.scenarios.errorCount > 0 && (
+                  <div style={{ marginTop: 6, color: DANGER }}>
+                    {coverage.scenarios.errorCount} scenario{coverage.scenarios.errorCount === 1 ? '' : 's'} could
+                    not be priced by our own engine — for example: {coverage.scenarios.errors[0].error}
+                  </div>
+                )}
+                <p style={{ margin: '6px 0 0', fontSize: 12, color: MUTED }}>{coverage.note}</p>
+              </div>
+            )}
+
+            {runError && (
+              <p style={{ margin: '10px 0 0', fontSize: 13, color: CAUTION }}>
+                {runError}
+                {/* The ordinary state until the vendor login is rotated — said as the upstream
+                    speaking, never as this button being broken. */}
+              </p>
+            )}
+            {run && (
+              <div style={{ marginTop: 10, fontSize: 13, color: SLATE }}>
+                <div>
+                  Measured {run.scenarios} scenario{run.scenarios === 1 ? '' : 's'}:{' '}
+                  {run.summary.agreed} agreed, {run.summary.disagreed} disagreed, {run.summary.errors} errored,{' '}
+                  {run.summary.comparable} comparable.
+                  {run.truncated > 0 && ` ${run.truncated} scenario${run.truncated === 1 ? '' : 's'} were not run (over the per-run limit).`}
+                </div>
+                <p style={{ margin: '6px 0 0', fontSize: 12, color: run.gate.proven ? SLATE : CAUTION }}>{run.gate.message}</p>
+                {run.recorded === false && (
+                  <p style={{ margin: '6px 0 0', fontSize: 12, color: DANGER }}>
+                    The verdict was NOT recorded ({run.recordError}), so the publish gate still reads this
+                    sheet as unmeasured.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* ---- the gate, said BEFORE Publish is pressed ---- */}
           <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: 'rgba(20,27,34,.03)', border: '1px solid rgba(20,27,34,.10)' }}>

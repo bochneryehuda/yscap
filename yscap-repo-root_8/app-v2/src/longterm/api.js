@@ -150,6 +150,15 @@ export const ltApi = {
   ppeSetAdjustments: (id, rows) => ltPut(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/adjustments`), { rows }),
   ppeSetPriceLimit: (id, body) => ltPut(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/price-limit`), body),
   ppeRateSheetAgreement: (id) => ltGet(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/agreement`)),
+  // The two checks a person runs on a sheet, and they are not interchangeable.
+  //   · COVERAGE is FREE and offline: which of the sheet's own cells can nothing ever reach. Run it
+  //     first — a transposed band should be fixed before a paid battery is spent on the sheet.
+  //   · The RUN prices the whole canonical battery against Lender Price and RECORDS the verdict. It
+  //     costs money and it is the only thing that can open the publish gate by measurement.
+  // Neither takes a result from the caller: this one ASKS the server to measure, and there is still no
+  // method anywhere that records a verdict somebody typed.
+  ppeRateSheetCoverage: (id) => ltGet(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/coverage`)),
+  ppeRunRateSheetAgreement: (id, body = {}) => ltPost(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/agreement/run`), body),
   ppePublishRateSheet: (id, body = {}) => ltPost(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/publish`), body),
 };
 

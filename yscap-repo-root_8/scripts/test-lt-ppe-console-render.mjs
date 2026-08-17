@@ -151,6 +151,24 @@ function renderFirstPaint() {
     'R10 the override needs a real reason before it can be sent');
   ok(/points\(b\.price_milli\)/.test(stripped),
     'R11 milli values are converted before they reach the screen (a raw one prints 101.500 as "101500")');
+
+  // ---- the two checks: both offered, and told apart -----------------------
+  // The routes behind these were reachable by code and by nobody. A button is what closes that, and
+  // WHICH button is pressed matters: one is free and offline, the other spends a battery at a paid
+  // vendor. Pinned to the composed handlers, not to the api method names, which also appear in
+  // `api.js`'s own comments.
+  ok(/onClick=\{checkCoverage\}/.test(stripped) && /ppeRateSheetCoverage\(sheet\.version\.id\)/.test(stripped),
+    'R14 the free cell check is offered, and calls the coverage route');
+  ok(/onClick=\{runAgreement\}/.test(stripped) && /ppeRunRateSheetAgreement\(sheet\.version\.id\)/.test(stripped),
+    'R15 …and so is the Lender Price measurement, which is what opens the gate without an override');
+  ok(/costs a real battery/.test(stripped) || /costs money/.test(stripped),
+    'R16 …with the cost of the paid one said out loud beside the free one');
+  ok(/await reloadSheet\(sheet\.version\.id\);\s*\}\s*catch \(e\) \{\s*\/\/ A 503/.test(src),
+    'R17 a finished run RE-READS the sheet — otherwise the gate line would still say "never measured"');
+  ok(/run\.recorded === false/.test(stripped),
+    'R18 …and a verdict that did not reach the ledger is shown as such, never as a run that worked');
+  ok(/coverage\.scenarios\.errorCount > 0/.test(stripped),
+    'R19 a scenario our OWN engine cannot price is surfaced, not inferred from a coverage number');
 }
 
 // ---- 4. the console is actually MOUNTED on the screen --------------------
