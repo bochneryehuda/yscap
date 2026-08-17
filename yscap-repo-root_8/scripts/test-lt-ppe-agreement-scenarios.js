@@ -39,18 +39,17 @@ const inelig = scenarios.filter((s) => s._group === 'ineligible');
 ok(inelig.length === 6 && inelig.every((s) => s._ineligible === true), 'every ineligible probe is flagged _ineligible');
 ok(scenarios.filter((s) => s._group !== 'ineligible').every((s) => !s._ineligible), 'no priced scenario is flagged ineligible');
 
-// ---- 4) a SAMPLE actually validates against the real Lender Price scenario contract -------------
+// ---- 4) EVERY scenario validates against the real Lender Price scenario contract ----------------
 // Strip our internal keys before handing it to the validator; a LP-invalid scenario must never hide
-// in the battery (it would fail the live run with a scenario error, not a real disagreement).
+// in the battery (it would fail the live run with a client-side scenario error, not a real
+// disagreement — which is exactly how the live battery caught the TwoToFourUnit / NJ-county bugs).
 const strip = (s) => { const o = { ...s }; delete o._label; delete o._group; delete o._ineligible; return o; };
-const sample = [scenarios[0], scenarios[63], scenarios[125], scenarios[189], scenarios[count - 1]];
-let validated = 0;
-for (const s of sample) {
+const bad = [];
+for (const s of scenarios) {
   const v = sm.validateScenario(strip(s));
-  if (v && v.ok === true) validated += 1;
-  else ok(false, `sample scenario "${s._label}" should validate — got ${JSON.stringify(v && (v.error || v.message))}`);
+  if (!v || v.ok !== true) bad.push(`${s._label}: ${v && (v.error || v.message)}`);
 }
-ok(validated === sample.length, `a sample of ${sample.length} scenarios all pass the real LP scenario contract`);
+ok(bad.length === 0, `all ${scenarios.length} scenarios pass the real LP scenario contract${bad.length ? ' — ' + bad.slice(0, 5).join(' | ') : ''}`);
 
 // ---- 5) the include filter narrows to the requested groups -------------------------------------
 const onlyState = buildAgreementScenarios({ include: ['state'] });

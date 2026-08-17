@@ -20,7 +20,7 @@
 // the state-LLPA sweep (DC/MA/NJ/NY carry a state adder on the DSCR sheet; CA/FL/TX should not).
 const ADDR = {
   NY: { state: 'NY', zip: '11211', countyFps: '36047', county: 'Kings', city: 'Brooklyn' },
-  NJ: { state: 'NJ', zip: '07731', countyFps: '34029', county: 'Ocean', city: 'Howell' },
+  NJ: { state: 'NJ', zip: '07731', countyFps: '34025', county: 'Monmouth', city: 'Howell' },
   MA: { state: 'MA', zip: '02118', countyFps: '25025', county: 'Suffolk', city: 'Boston' },
   CA: { state: 'CA', zip: '90001', countyFps: '06037', county: 'Los Angeles', city: 'Los Angeles' },
   FL: { state: 'FL', zip: '33101', countyFps: '12086', county: 'Miami-Dade', city: 'Miami' },
@@ -76,8 +76,8 @@ function buildAgreementScenarios(opts = {}) {
   }
   // E) property type / units / condo at an anchor.
   push('property', 'condo', core({ fico: 760, loan: 350000, dscr: 1.25, propertyType: 'Condo' }));
-  push('property', '2-4 units', core({ fico: 760, loan: 350000, dscr: 1.25, propertyType: 'TwoToFourUnit', units: 2 }));
-  push('property', '3 units', core({ fico: 760, loan: 350000, dscr: 1.25, propertyType: 'TwoToFourUnit', units: 3 }));
+  push('property', '2-4 units', core({ fico: 760, loan: 350000, dscr: 1.25, propertyType: 'Unit2_4', units: 2 }));
+  push('property', '3 units', core({ fico: 760, loan: 350000, dscr: 1.25, propertyType: 'Unit2_4', units: 3 }));
   // F) prepay term at an anchor.
   for (const pp of ['36 Months', '24 Months', '12 Months', 'No Prepay']) push('prepay', `prepay ${pp}`, core({ fico: 760, loan: 350000, dscr: 1.25, prepayTerm: pp }));
   // G) interest-only / escrow waiver at an anchor.
