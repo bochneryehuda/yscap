@@ -22,7 +22,13 @@
  * LT-only. No RTL imports.
  */
 
-const SEVERITY = { ELIGIBILITY: 'eligibility_mismatch', PRICE: 'price_mismatch', RATE: 'rate_mismatch', MISSING_OURS: 'rung_missing_ours', MISSING_THEIRS: 'rung_missing_theirs', INCOMPARABLE: 'incomparable' };
+const overlay = require('./overlay');
+
+// OVERLAY is a THIRD eligibility outcome (owner D29): our matrix declines a scenario Lender Price
+// prices, but ONLY on an overlay-only fact LP cannot see (vacant, rural, STR…) and ONLY with a stated
+// reason. That is an INTENTIONAL, reasoned override of LP — not a parity defect — so it is scored
+// separately (never counted as agreement, never counted as a mismatch). See src/longterm/ppe/overlay.js.
+const SEVERITY = { ELIGIBILITY: 'eligibility_mismatch', OVERLAY: 'eligibility_overlay', PRICE: 'price_mismatch', RATE: 'rate_mismatch', MISSING_OURS: 'rung_missing_ours', MISSING_THEIRS: 'rung_missing_theirs', INCOMPARABLE: 'incomparable' };
 
 // A side is COMPARABLE only when the engine actually produced a result: a ladder array, or an object
 // that STATES eligibility or carries a ladder. Anything else — null, undefined, a primitive, an empty
@@ -83,6 +89,18 @@ function compareScenario(ours, theirs, opts = {}) {
 
   // 1) eligibility.
   if (A.eligible !== B.eligible) {
+    // When the caller supplies OUR declines (opts.ourDeclines — the quote's declines[]), classify the
+    // disagreement: an our-ineligible / LP-eligible divergence that rests ENTIRELY on reasoned
+    // overlay-only facts is an intentional override, scored as OVERLAY, not a defect. Anything else —
+    // and every case when no declines are supplied — is the plain ELIGIBILITY mismatch, byte-identical
+    // to before. `overlay` is surfaced so the scoreboard can bucket a reasoned override apart from a bug.
+    if (Array.isArray(opts.ourDeclines)) {
+      const c = overlay.classifyEligibilityDivergence({ oursEligible: A.eligible, theirsEligible: B.eligible, ourDeclines: opts.ourDeclines });
+      if (c.classification === overlay.CLASS.OVERLAY) {
+        findings.push(tag({ kind: SEVERITY.OVERLAY, detail: c.detail, ourEligible: A.eligible, theirEligible: B.eligible, overlayReasons: c.overlayReasons }));
+        return { agree: false, overlay: true, findings };
+      }
+    }
     findings.push(tag({ kind: SEVERITY.ELIGIBILITY, detail: `we say ${A.eligible ? 'eligible' : 'ineligible'}, Lender Price says ${B.eligible ? 'eligible' : 'ineligible'}`, ourEligible: A.eligible, theirEligible: B.eligible }));
     return { agree: false, findings }; // no point comparing rungs when eligibility itself disagrees
   }

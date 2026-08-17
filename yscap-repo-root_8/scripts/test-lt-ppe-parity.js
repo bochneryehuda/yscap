@@ -197,4 +197,35 @@ const eq = (a, b, msg) => { assert.strictEqual(a, b, msg); n += 1; };
   eq(empty.agreementRate, null, 'summarize: empty agreement rate is null');
 })();
 
+// ---- D29: overlay-with-reason wiring (opts.ourDeclines) ----
+(() => {
+  const O = require('../src/longterm/ppe/overlay');
+  const oursIneligible = { eligible: false };            // our matrix declines
+  const lpEligible = { eligible: true, rungs: [{ rate: 7000, priceMilli: 100000 }] };
+
+  // no ourDeclines → byte-identical plain eligibility mismatch (back-compat)
+  const plain = P.compareScenario(oursIneligible, lpEligible);
+  eq(plain.agree, false, 'no declines: still a disagreement');
+  eq(plain.overlay, undefined, 'no declines: overlay flag absent (byte-identical)');
+  eq(plain.findings[0].kind, P.SEVERITY.ELIGIBILITY, 'no declines: plain eligibility_mismatch');
+
+  // a reasoned overlay decline → scored as OVERLAY, not a defect
+  const ovl = O.overlayDecline('occupancy', 'Vacant/Unleased ineligible for cash-out refi');
+  const asOverlay = P.compareScenario(oursIneligible, lpEligible, { ourDeclines: [ovl] });
+  eq(asOverlay.agree, false, 'overlay: never counted as agreement');
+  eq(asOverlay.overlay, true, 'overlay: surfaced as an intentional override');
+  eq(asOverlay.findings[0].kind, P.SEVERITY.OVERLAY, 'overlay: kind is eligibility_overlay');
+  eq(asOverlay.findings[0].overlayReasons.length, 1, 'overlay: the stated reason is carried');
+
+  // a decline on an LP-visible fact → still a real defect, not hidden behind overlay
+  const asDefect = P.compareScenario(oursIneligible, lpEligible, { ourDeclines: [{ code: 'dhvn_max_ltv', reason: 'ltv max 80 exceeded' }] });
+  eq(asDefect.overlay, undefined, 'defect: LP-visible decline is not an overlay');
+  eq(asDefect.findings[0].kind, P.SEVERITY.ELIGIBILITY, 'defect: real eligibility mismatch');
+
+  // an unreasoned overlay claim → defect, never an overlay pass
+  const asUnreasoned = P.compareScenario(oursIneligible, lpEligible, { ourDeclines: [{ overlay: true, fact: 'occupancy' }] });
+  eq(asUnreasoned.overlay, undefined, 'unreasoned overlay: refused, falls through to mismatch');
+  eq(asUnreasoned.findings[0].kind, P.SEVERITY.ELIGIBILITY, 'unreasoned overlay: still a mismatch');
+})();
+
 console.log(`ok - lt ppe parity comparator (${n} assertions)`);
