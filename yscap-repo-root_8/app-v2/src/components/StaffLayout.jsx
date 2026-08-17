@@ -448,7 +448,8 @@ export default function StaffLayout({ children }) {
             <NavLink className="sb-link" to="/internal/lt" end><NavIcon name="pipeline" />Pipeline</NavLink>
             <NavLink className="sb-link" to="/internal/lt/people"><NavIcon name="team" />People</NavLink>
             <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
-            <NavLink className="sb-link" to="/internal/lt/ppe"><NavIcon name="pricing" />Pricing engine</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/ppe" end><NavIcon name="pricing" />Pricing engine</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/ppe/breakdown"><NavIcon name="pricing" />Pricing transparency</NavLink>
             <NavLink className="sb-link" to="/internal/lt/sync"><NavIcon name="health" />Sync</NavLink>
             <NavLink className="sb-link" to="/internal/lt/settings"><NavIcon name="settings" />Settings</NavLink>
           </>

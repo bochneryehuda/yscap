@@ -64,6 +64,8 @@ const scenarioMatrix = require('../ppe/scenario-matrix');
 const ratesheet = require('../ppe/ratesheet');
 const ruleStore = require('../ppe/rule-store');
 const suggestionMiner = require('../ppe/suggestion-miner');
+const pricingBreakdown = require('../ppe/pricing-breakdown');
+const lpNormalizeFull = require('../ppe/lp-normalize-full');
 
 const SCOPE = 'company';
 
@@ -421,6 +423,89 @@ async function quoteRoute(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// POST /breakdown — the LP-style pricing-transparency view for one scenario
+// ---------------------------------------------------------------------------
+//
+// The "mother interface" (owner-directed 2026-08-17): base price at the top, every
+// itemized LLPA/adjustment with its running effect, and the final price — "same way
+// everything is visible in Lender Price."
+//
+// This route only ASSEMBLES a view over an already-priced scenario; it invents no
+// number. It prices the scenario against our engine's reconstruction (`quote.quoteProgram`
+// → the §5.4 record, which maps 1:1 onto LP's priceBuild) and hands that to the PURE
+// read-model `pricing-breakdown.buildPricingBreakdown`. A rate-sheet version is required —
+// unlike /quote (where LP answers even with no program) there is nothing to break down
+// without a priced sheet, so it REFUSES with the reason rather than returning an empty view.
+//
+// Lender Price's own side is OPTIONAL context, best-effort: pass a parsed `disqualified`
+// (or a `searchKey` we poll) for LP's decline panel, and `lpRaw` to build the breakdown
+// from LP's own sheet instead of our reconstruction (`source:'lp'`). None of it is needed
+// for the core view, and a failure to fetch it never fails the breakdown.
+//
+// A READ: like /quote it is open to any staff member and it does NOT write to the findings
+// ledger (buildPricingBreakdown is pure and nothing here calls recordFinding).
+
+async function breakdownRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const scenario = b.scenario;
+  if (!scenario || typeof scenario !== 'object' || Array.isArray(scenario)) {
+    return res.status(400).json({ error: 'Send a `scenario` object describing the deal.' });
+  }
+  const investor = b.investor ? String(b.investor) : null;
+  const rate = b.rate == null || b.rate === '' ? null : Number(b.rate);
+  if (rate != null && !Number.isFinite(rate)) {
+    return res.status(400).json({ error: '`rate` must be a number (the coupon to feature), or omitted.' });
+  }
+  const source = b.source === 'lp' || b.source === 'ours' ? b.source : null;
+
+  const { values: settings } = await resolveSettingsSafe(scope);
+  const { program, reason: noProgram } = await loadProgram(scope, b.rateSheetVersionId);
+  if (!program) {
+    // Nothing to break down without a priced sheet. Say why, don't return an empty view.
+    return res.status(422).json({ error: 'A breakdown needs a rate-sheet version to price against.', reason: noProgram });
+  }
+
+  let quoteResult;
+  try {
+    quoteResult = quote.quoteProgram({ scenario, program, settings });
+  } catch (e) {
+    return res.status(422).json({ error: 'That scenario could not be priced.', detail: String((e && e.message) || e).slice(0, 160) });
+  }
+
+  const lp = require('../lenderprice/client');
+
+  // Optional: Lender Price's OWN parsed sheet, for a source:'lp' breakdown. Best-effort.
+  let lpFull = null;
+  if (b.lpRaw != null) {
+    try { lpFull = lpNormalizeFull.normalizeLpFull(lp.parseFull(b.lpRaw), { investor }); } catch (_) { lpFull = null; }
+  }
+
+  // Optional: Lender Price's OWN disqualifications, for the decline panel. Best-effort.
+  let lpDisqualified = null;
+  let disqualifyPending = false;
+  if (b.disqualified && typeof b.disqualified === 'object') {
+    try { lpDisqualified = lpNormalizeFull.normalizeLpDisqualified(b.disqualified, { investor }); } catch (_) { lpDisqualified = null; }
+  } else if (b.searchKey) {
+    try {
+      const pr = await lp.pollDisqualifiedByKey(String(b.searchKey));
+      if (pr && (pr.ready || pr.raw || pr.parsed)) {
+        const parsed = pr.parsed || lp.parseDisqualified(pr.raw);
+        lpDisqualified = lpNormalizeFull.normalizeLpDisqualified(parsed, { investor });
+      } else {
+        disqualifyPending = true; // LP is still computing; the breakdown still returns
+      }
+    } catch (_) { lpDisqualified = null; }
+  }
+
+  const breakdown = pricingBreakdown.buildPricingBreakdown({
+    quote: quoteResult, lpFull, lpDisqualified, rate, source,
+  });
+
+  return res.json({ ok: true, scope, investor, disqualifyPending, breakdown });
+}
+
+// ---------------------------------------------------------------------------
 // POST /canary — price a battery beside LP and record what disagreed (admin)
 // ---------------------------------------------------------------------------
 //
@@ -743,6 +828,7 @@ router.get('/scoreboard', wrap(scoreboardRoute, 'lt_ppe_scoreboard_error'));
 router.get('/suggestions', wrap(listSuggestionsRoute, 'lt_ppe_suggestions_error'));
 router.get('/rules', wrap(listRulesRoute, 'lt_ppe_rules_error'));
 router.post('/quote', wrap(quoteRoute, 'lt_ppe_quote_error'));
+router.post('/breakdown', wrap(breakdownRoute, 'lt_ppe_breakdown_error'));
 
 router.post('/findings/:key/decide', requirePpeAdmin, wrap(decideFindingRoute, 'lt_ppe_decide_error'));
 router.post('/canary', requirePpeAdmin, wrap(canaryRoute, 'lt_ppe_canary_error'));
@@ -752,7 +838,7 @@ router.post('/suggestions/mine', requirePpeAdmin, wrap(mineSuggestionsRoute, 'lt
 
 module.exports = router;
 module.exports.handlers = {
-  health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, canaryRoute, scoreboardRoute,
+  health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
 };
 module.exports._internals = {

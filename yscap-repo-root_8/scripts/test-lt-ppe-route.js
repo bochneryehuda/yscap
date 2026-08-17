@@ -88,7 +88,10 @@ console.log('/api/lt/ppe/* — the PPE HTTP surface');
 // 1) the router itself
 // ---------------------------------------------------------------------------
 ok(typeof route === 'function' && typeof route.use === 'function', 'the module IS an express router (server.js can mount it)');
-ok(Object.keys(H).length === 13, `all 13 handlers are exported for testing (${Object.keys(H).length})`);
+// 14 since the pricing-BREAKDOWN handler landed (the LP-style transparency read-model). This count is
+// a deliberate guard: adding a handler without exporting/testing it should FAIL here, so bump it in
+// the same commit that adds one — never delete the assertion to make a build green.
+ok(Object.keys(H).length === 14, `all 14 handlers are exported for testing (${Object.keys(H).length})`);
 
 // It must actually be MOUNTED, or the whole surface is unreachable — the exact
 // state this route was built to end.

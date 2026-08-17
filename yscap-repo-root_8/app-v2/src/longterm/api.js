@@ -75,6 +75,11 @@ export const ltApi = {
     return ltGet(lt(`/ppe/findings${q ? `?${q}` : ''}`));
   },
   ppeScoreboard: (investor) => ltGet(lt(`/ppe/scoreboard?investor=${encodeURIComponent(investor)}`)),
+  // The "mother interface" (owner-directed 2026-08-17) — the LP-style transparency view:
+  // base price, every itemized LLPA/adjustment with its running effect, the final price,
+  // and both engines' eligibility/disqualifications, for ONE scenario. The server assembles
+  // the view over an already-priced scenario; this client never re-does the math.
+  ppeBreakdown: (body) => ltPost(lt('/ppe/breakdown'), body),
   // Admin-only on the server. Called anyway from a non-admin's screen so the
   // REFUSAL is shown — a hidden button is indistinguishable from a broken one.
   ppeDecideFinding: (key, body) => ltPost(lt(`/ppe/findings/${encodeURIComponent(key)}/decide`), body),
