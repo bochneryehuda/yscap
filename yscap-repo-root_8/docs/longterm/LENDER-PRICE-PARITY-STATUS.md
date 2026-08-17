@@ -2157,3 +2157,33 @@ did not reach the ledger is shown as such rather than as a run that worked, and 
 upstream speaking — the ordinary state until the login is rotated — never as the button being broken.
 There is still no control anywhere that records a run somebody typed, and the console's own test
 asserts it.
+
+**§2.34 — A DISAGREEMENT NOW SAYS WHY (2026-08-17).** Every row in the findings ledger said only THAT
+our price differed from Lender Price's and by how much. The first question a reviewer opens a finding
+to ask — *where do I look?* — was the one thing it could not answer, even though `divergence.js` has
+been able to answer it since it was written: it puts our full build-up (base → itemized LLPAs → margin
+→ round → clamp) beside their single number and points at the ONE component whose magnitude most
+closely matches the gap. **Nothing called it.** Seventh instance of the same class.
+
+**IT IS WIRED IN THE FAÇADE, AND THAT IS THE ONLY PLACE IT CAN HONESTLY GO.** The diagnosis needs OUR
+reconstruction record, which exists while the comparison is being made and nowhere afterwards —
+neither producer of findings has ever passed `ourPayload`, so `our_payload` is **NULL on every row in
+the ledger**. A screen re-deriving the explanation later would have to re-price the scenario against
+whatever the sheet says TODAY and would quietly be answering a different question about a different
+sheet. Diagnosing where the evidence is means the explanation is about the run it is attached to, and
+it rides onto the recorded row, so it outlives the request that made it. The findings queue draws it.
+
+**THE RUNG IS MATCHED BY EXACT COUPON, and abstains otherwise.** A near-match would read every LLPA and
+the margin off the wrong rate and then name a suspect with full confidence; *"our reconstruction record
+is unavailable, so the cause cannot be narrowed"* is the honest answer. And the diagnosis is a
+HYPOTHESIS by construction — Lender Price publishes no breakdown of its own, so the suspect is ranked
+purely by numeric proximity and carries its own confidence ('strong' only when a single component
+EXACTLY equals the gap). The screen says "a place to look, not a verdict"; it never claims which side
+is wrong.
+
+**A VACUOUS ASSERTION WAS CAUGHT IN THE WRITING OF ITS OWN TEST, and it is worth recording.** The
+exact-coupon rule was first asserted by driving the whole façade — but the comparator is free to answer
+that scenario with a DIFFERENT finding kind, and it did, so the branch fell through to a hard-coded
+`ok(true)` that proved nothing while printing a pass. It is now asserted on `attachDiagnosis` directly,
+with a CONTROL on the same fixture at the matching coupon, so D8/D9 fail when the rule is relaxed
+rather than when the comparator's mood changes. Three mutations proven to bite.
