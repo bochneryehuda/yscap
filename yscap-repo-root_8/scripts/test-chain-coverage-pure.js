@@ -78,9 +78,14 @@ const QUARANTINE = {
   // a DocuSign recipient may not be both a signer and a CC of one envelope, so
   // the dedup drops them. The suite even asserted that dedup two lines down. It
   // also gained the no-database skip guard it needs to be in the chain at all.
-  'scripts/test-mismo-db.js':
-    'Reads a loan amount back as 0 where it expects 420000 — an import or a '
-    + 'fixture has drifted from the MISMO parser.',
+  // test-mismo-db.js was here and is now REGISTERED. Settled 2026-08-16, and the
+  // quarantine note's guess ("an import or a fixture has drifted from the MISMO
+  // parser") was wrong in an instructive way: nothing had drifted and the parser
+  // is fine. The fixture is a 'Refinance — Cash-Out' that the suite seeds with
+  // raw SQL carrying a purchase price AND an assignment — a state no real door
+  // would accept since the owner-directed 2026-08-02 rule, which the MISMO import
+  // is named as enforcing. The import NORMALISES it; the suite still expected the
+  // contradiction back. Now asserted the other way round, as a guard.
   'scripts/test-register-econversion.js':
     '12 of 14 pass. The two failures assert a 403 for a loan officer sending '
     + 'engaged manual pricing keys, and an "admin_override_stripped" audit row. '
