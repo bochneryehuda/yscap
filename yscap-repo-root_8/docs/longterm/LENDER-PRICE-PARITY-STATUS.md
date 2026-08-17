@@ -1995,3 +1995,45 @@ also appears in the warning line beside the button, so deleting it from the `dis
 the guard green. Both are pinned to composed form now. The render test's header additionally states
 what it does NOT cover, rather than listing five states it never reaches — a header that claims more
 than it checks is worse than a thin test, because somebody later trusts the header.
+
+**§2.30 — THE SIXTH INSTANCE WAS FOUND BY LOOKING FOR ALL OF THEM AT ONCE (2026-08-17).** §2.25 through
+§2.29 each record the same shape — complete, unit-tested machinery with no caller — found one at a
+time, by hand, five times. `scripts/check-lt-reachability.js` walks `require()` from what the server
+actually mounts and boots and compares the unreachable set against the authored ledger
+`docs/longterm/LT-UNREACHED.md`. **92 of 130 Long-Term modules are reachable.** The SET is computed and
+only the REASONS are written down, so a module built with no caller and no record now fails the check,
+and so does a ledger row that has quietly become reachable — a ledger that overstates what is unwired
+is one nobody trusts. It is deliberately NOT a ban: half this engine is written ahead of its wiring on
+purpose, and a gate that failed on all 38 would be switched off within a day. What it bans is doing it
+silently.
+
+**TWO OF THE 38 MATTER BEYOND BOOKKEEPING, and both are stated in the ledger rather than left to be
+rediscovered.** `audience.js` — the investor-name block, the ONE definition behind the owner's HARD
+RULE that a capital provider's name never reaches a borrower or a TPO, built on the registry of 117
+recorded spellings precisely because a hand-typed name is spelled 151 ways — **is called by nothing in
+`src/`**. It carries a thorough test, and three other Long-Term modules cite it in their own comments
+as "the ONE definition of that", which reads exactly like a module that is wired. **This is not a live
+leak and calling it one would be alarmism:** Long-Term is a visibility-only side build with no
+borrowers, no production traffic and no client-facing surface for a name to reach. The risk is the day
+one ships, when the guard will be assumed present because the codebase says it is the one definition.
+And `ratesheet-agreement.js` — the harness that MEASURES the ≥200-scenario rule — is uncalled too, so
+no run can be recorded, so the publish gate of §2.27 can today be passed only by the recorded
+override. That is expected while the Lender Price login awaits rotation, and it is precisely why the
+override exists; recording it stops a gate with no measuring half being mistaken for a working one.
+
+**THE ANALYSER'S OWN FIRST CUT WAS CONFIDENTLY WRONG, which is the lesson worth keeping.** It stripped
+block comments by SPAN, and these files carry route paths like `/api/lt/*` inside their headers: the
+`/*` in one opens a comment the stripper follows to the next `*/`, taking the real requires below it.
+That version found **4** requires in `routes/ppe.js` where there are **29**, and reported the entire
+store layer — `store.js`, `parity-cell-store.js`, `schedule-store.js`, the lot — as dead code. It was
+caught only because one line of its output contradicted something already known to be true. **A map is
+the one artefact whose errors are invisible: everything it says is news, so there is nothing to check
+it against.** Requires are read line by line now, comments skipped per line and never by span, and a
+fixture reproducing the trap is pinned in the gate's test.
+
+Five mutations were proven to turn that test red — the span stripper returning, a commented-out
+require counting as wiring, the resolver silently returning nothing, the entry points dropped, the
+ledger ignored — and the stale direction was proven against the REAL repo by wiring `lock.js` and
+watching both it and its transitive `ratesheet-diff.js` be reported. The test additionally asserts the
+analysis is NON-TRIVIAL (130 modules seen, 92 reached), because every set-comparison assertion in it
+would pass just as happily against two empty sets.
