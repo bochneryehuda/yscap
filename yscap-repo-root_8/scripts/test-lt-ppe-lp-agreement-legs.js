@@ -71,6 +71,24 @@ ok(legs.lpScenarioToFacts({ state: 'CA', zip: '07030' }).state === 'CA' && legs.
 const njZip = prog.evaluateProgram(legs.lpScenarioToFacts({ value: 5e5, loan: 4e5, fico: 740, dscr: 1.25, zip: '07030', borrowerType: 'Individual', units: 1, prepayMonths: 60 }));
 ok(njZip.eligible === false && njZip.reasons.some((r) => r.layer === 'ppp_matrix' && /nj/i.test(r.code)),
   '  a ZIP-ONLY NJ individual PPP request now DECLINES (the measured LP-live divergence is closed)');
+// The zip→state fix ALSO drives the Layer-1 PRICING: the +0.375 DC/MA/NJ/NY state adder must fire for a
+// ZIP-ONLY scenario (the report §4 open item). Build the real Deephaven program and check the top rung.
+{
+  const { buildDeephavenGrid } = require('../src/longterm/ppe/deephaven-dscr-sheet');
+  const { gridToRateSheet } = require('../src/longterm/ppe/deephaven-grid');
+  const { rateSheetToProgram } = require('../src/longterm/ppe/ratesheet');
+  const { quoteProgram } = require('../src/longterm/ppe/quote');
+  const DHVN = rateSheetToProgram(gridToRateSheet(buildDeephavenGrid()), { code: 'DHVN_DSCR30', name: 'Deephaven DSCR 30yr', investorCode: 'DHVN' });
+  const S0 = { 'pricing.correspondent_margin_milli': 0, 'pricing.rounding_mode': 'none' };
+  const stateAdd = (zip) => {
+    const q = quoteProgram({ scenario: legs.lpScenarioToFacts({ value: 5e5, loan: 3e5, fico: 760, dscr: 1.3, purpose: 'Purchase', units: 1, zip }), program: DHVN, settings: S0 });
+    return (q.ladder && q.ladder[0] ? (q.ladder[0].adjustments || []) : []).filter((a) => a && a.code === 'dhvn_state');
+  };
+  const nj = stateAdd('07030'); const ny = stateAdd('10001'); const tx = stateAdd('75001');
+  ok(nj.length === 1 && nj[0].costMilli === 375 && ny.length === 1 && ny[0].costMilli === 375,
+    '  the +0.375 DC/MA/NJ/NY state adder fires for a ZIP-ONLY NJ/NY scenario (zip→state drives Layer-1 pricing)');
+  ok(tx.length === 0, '  a ZIP-only TX scenario gets NO state adder (TX is not a +0.375 state)');
+}
 // APR (Layer-3 PPP) — a PURE PASS-THROUGH: emitted only when a scenario supplies one, else null.
 ok(legs.lpScenarioToFacts({ apr: 9.25 }).apr === 9.25 && legs.lpScenarioToFacts({ value: 5e5 }).apr === null,
   '  apr is carried from an LP scenario, and is null when absent (PPP layer fails OPEN)');
