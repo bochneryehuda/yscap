@@ -37,7 +37,7 @@ function dirtyBase() {
   b.criteria.drawAmount = 77777;
   b.criteria.downPaymentAmount = 66666;
   b.criteria.cashoutAmount = 55555;           // stale cash-in-hand
-  b.criteria.pmiType = 'STALE_STRUCTURAL';    // NOT scenario-owned → must inherit
+  b.criteria.escrowWaiver = true;             // known structural field, NOT scenario-owned + NOT forced → inherits when escrowWaive omitted (pmiType is now a §2.1 forced value)
   b.criteria.interestOnly = true;             // flag default → inherits when io omitted
   b.brokerCriteria.overrideExistingComplan = true; // audit §31.6 compPlan example
   // A stale prepay the audit says must INHERIT when the caller omits prepayMonths (§29.12.3).
@@ -62,7 +62,7 @@ ok(omitted.criteria.purchasePrice === null, 'LEAK-1 stale purchasePrice cleared 
 ok(omitted.criteria.loanAmount === null, 'LEAK-2 stale loanAmount cleared to neutral on omission');
 ok(omitted.criteria.ltv === null, 'LEAK-3 stale ltv cleared to neutral on omission');
 ok(omitted.criteria.fico === null, 'LEAK-4 stale fico cleared to neutral on omission');
-ok(omitted.criteria.dscr === null, 'LEAK-5 stale dscr cleared to neutral on omission');
+ok(omitted.criteria.dscr === 1.5, 'LEAK-5 stale dscr 0.5 cleared and replaced by the profile default 1.5 — never leaks (§32.6)');
 ok(omitted.criteria.subordinateLoanAmount === 0, 'LEAK-6 stale subordinateLoanAmount cleared to 0 (audit §31.6)');
 ok(omitted.criteria.lineAmount === 0, 'LEAK-7 stale lineAmount cleared to 0');
 ok(omitted.criteria.rehabBudget === 0, 'LEAK-8 stale rehabBudget cleared to 0');
@@ -72,7 +72,7 @@ ok(!('cashoutAmount' in omitted.criteria), 'LEAK-11 stale cashoutAmount removed 
 ok(omitted.brokerCriteria.overrideExistingComplan === false, 'LEAK-12 stale comp override cleared to false (audit §31.6)');
 
 // ---- 3) fields OUTSIDE the registry inherit unchanged (not a broad wipe) ---
-ok(omitted.criteria.pmiType === 'STALE_STRUCTURAL', 'INHERIT-1 a structural default (pmiType) survives — clearing is targeted, not a wipe');
+ok(omitted.criteria.escrowWaiver === true, 'INHERIT-1 a structural default (escrowWaiver) survives — clearing is targeted, not a wipe');
 ok(omitted.criteria.interestOnly === true, 'INHERIT-2 the io flag inherits the foundation default when io is omitted');
 // PREPAY IS NOT AN INHERITED FIELD — it is a PROFILE field, and this assertion used to say the
 // opposite. Inheriting was measurably wrong: against this very foundation an omitted prepay produced

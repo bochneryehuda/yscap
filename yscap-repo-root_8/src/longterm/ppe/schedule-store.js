@@ -1,6 +1,6 @@
 'use strict';
 /**
- * LT PPE — the durable home for a canary SCHEDULE (db/567). The bridge between the pure decision
+ * LT PPE — the durable home for a canary SCHEDULE (db/570). The bridge between the pure decision
  * (`canary-schedule.js` — WHEN a canary runs and on WHAT) and the row a human saved.
  *
  * ONE DEFINITION. This bridge decides NOTHING about validity: `save` hands the incoming schedule to

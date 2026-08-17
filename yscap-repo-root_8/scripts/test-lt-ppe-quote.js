@@ -116,5 +116,32 @@ ok(capForLoanAmount(null, 500000) === null, 'no tiers → no cap');
 ok(threw(() => quoteProgram({ scenario: {}, program: { code: 'x', rules: [], baseGrid: [] }, settings: {} })), 'a program with no base grid is refused');
 ok(threw(() => quoteProgram({ scenario: null, program, settings: {} })), 'a missing scenario is refused');
 
+// 10) Layer 2 — the per-investor margin/holdback hook is ADDITIVE and OPT-IN.
+{
+  const S = { 'pricing.correspondent_margin_milli': 250, 'pricing.rounding_mode': 'none' };
+  const scen = { state: 'TX', fico: 740, ltv: 70000, dscr: 1200, purpose: 'purchase', lock_days: 30, loan_amount: 500000 };
+
+  // (a) NO marginHoldback → byte-identical to the settings-driven quote.
+  const baseline = quoteProgram({ scenario: scen, program, settings: S });
+  const noHook = quoteProgram({ scenario: scen, program, settings: S });
+  ok(JSON.stringify(baseline.ladder) === JSON.stringify(noHook.ladder), 'no marginHoldback → ladder byte-identical');
+  ok(baseline.pricingBasis.marginSource === 'settings', 'margin source reported as settings when no hook');
+  ok(baseline.pricingBasis.holdbackMilli === null, 'holdback is null when no hook');
+
+  // (b) A resolved per-investor margin OVERRIDES the settings margin (400 vs 250 → 0.15 lower price).
+  const withMargin = quoteProgram({ scenario: scen, program, settings: S, marginHoldback: { marginMilli: 400, marginSource: 'rule' } });
+  ok(withMargin.pricingBasis.marginMilli === 400 && withMargin.pricingBasis.marginSource === 'rule', 'resolved margin 400 wins over settings 250');
+  ok(withMargin.ladder[1].finalPriceMilli === baseline.ladder[1].finalPriceMilli - 150, 'a 150-milli larger margin lowers the price by exactly 150');
+
+  // (c) holdback is CARRIED for the record but does NOT move the price (money rule pending owner).
+  const withHold = quoteProgram({ scenario: scen, program, settings: S, marginHoldback: { marginMilli: 250, holdbackMilli: 250 } });
+  ok(withHold.pricingBasis.holdbackMilli === 250, 'holdback carried into the reconstruction record');
+  ok(withHold.ladder[1].finalPriceMilli === baseline.ladder[1].finalPriceMilli, 'holdback does NOT change the price (not wired — money rule)');
+
+  // (d) a garbage resolved margin (negative / non-integer) is ignored → settings margin stands.
+  const bad = quoteProgram({ scenario: scen, program, settings: S, marginHoldback: { marginMilli: -5 } });
+  ok(bad.pricingBasis.marginMilli === 250 && bad.pricingBasis.marginSource === 'settings', 'a garbage resolved margin falls back to settings');
+}
+
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);

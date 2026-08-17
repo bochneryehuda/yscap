@@ -14,6 +14,13 @@ const crypto = require('../src/lib/crypto');
 const mismo = require('../src/lib/mismo');
 
 async function main() {
+  // BOTH CI jobs run the one chain and `test` has no database at all, so this must
+  // skip rather than dial one — an unguarded DB suite in the chain takes the build
+  // down, and with it the deploy. The probe is a plain SELECT 1 and answers in
+  // milliseconds; it is deliberately not a try/catch around ensureSchema, which
+  // does not throw when the database is unreachable (it retries ~75s, then
+  // RESOLVES, so the suite would sail past and die on its first real query).
+  await require(__dirname + '/lib/db-gate').skipUnlessDb('mismo');
   // ---- seed a source loan file (unique per run so reruns don't collide) ----
   const tag = Date.now().toString().slice(-9);
   const bemail = `mismo-src-${tag}@example.com`;
@@ -73,7 +80,15 @@ async function main() {
   const na = (await db.query('SELECT * FROM applications WHERE id=$1', [applicationId])).rows[0];
   assert.strictEqual(Number(na.loan_amount), 375000, 'new file loan amount');
   assert.strictEqual(na.loan_type, 'Refinance — Cash-Out', 'new file loan type (real vocab)');
-  assert.strictEqual(Number(na.purchase_price), 420000, 'new file purchase price');
+  // A REFINANCE CARRIES NO PURCHASE PRICE — and this file is 'Refinance — Cash-Out'
+  // (asserted twice above). Owner-directed 2026-08-02: a refinance is sized on the
+  // AS-IS VALUE and never stores a purchase price at ANY door, the MISMO import
+  // named among them. The fixture below writes one with raw SQL, which no real
+  // door would accept, so this asserts the import NORMALISES that contradiction
+  // rather than reproducing it. This block used to expect 420000 — written before
+  // that rule existed, and never once run because the suite was outside the chain.
+  assert.strictEqual(na.purchase_price, null, 'a refinance imports with NO purchase price');
+  assert.strictEqual(Number(na.as_is_value), 400000, 'new file as-is value — the basis a refinance is actually sized on');
   assert.strictEqual(Number(na.arv), 560000, 'new file ARV (from extension)');
   assert.strictEqual(Number(na.rehab_budget), 85000, 'new file rehab budget');
   assert.strictEqual(na.occupancy, 'Investment', 'new file occupancy');
@@ -87,8 +102,17 @@ async function main() {
   assert.strictEqual(Number(na.property_taxes), 6000, 'new file property taxes (from extension)');
   assert.strictEqual(na.title_company, 'ABC Title', 'new file title company (from extension)');
   assert.strictEqual(String(na.expected_closing).slice(0, 10), '2026-08-15', 'new file estimated closing date');
-  assert.strictEqual(na.is_assignment, true, 'new file assignment flag');
-  assert.strictEqual(Number(na.assignment_fee), 20000, 'new file assignment fee');
+  // AND THE ASSIGNMENT IS FORCED OFF ON A REFINANCE — you cannot be assigned a
+  // purchase contract on a property you already own. `fields.assignmentFields` has
+  // done this since #96 and is the same chokepoint that drops the purchase price.
+  // The PARSE still carries the assignment faithfully (parsed.extras really does
+  // hold isAssignment:true, underlyingContractPrice:400000, assignmentFee:20000),
+  // so this pins WHERE the refusal happens: at the write door, not by losing data
+  // on the way in — which is what makes it a guard rather than a coincidence.
+  assert.strictEqual(parsed.extras.isAssignment, true, 'the preview still PARSES the assignment from the file');
+  assert.strictEqual(na.is_assignment, false, '…but a refinance is never stored as an assignment');
+  assert.strictEqual(na.assignment_fee, null, 'no assignment fee on a refinance');
+  assert.strictEqual(na.underlying_contract_price, null, 'no underlying contract price on a refinance');
   assert.strictEqual(na.source, 'mismo_import', 'new file source tag');
   assert.strictEqual(na.status, 'file_intake', 'imported file starts in DATA INTAKE status (not active)');
   assert(na.co_borrower_id, 'new file has a co-borrower');
@@ -116,6 +140,12 @@ async function main() {
   console.log(`  ✓ imported file received its checklist (${items.n} items)`);
 
   console.log('\nMISMO DB integration test passed.');
+  // The import fans out "needs assignment" email, and notify._track()s that write
+  // WITHOUT awaiting it — so the sent_emails INSERT was still in flight when the
+  // pool closed, printing "Cannot use a pool after calling end on the pool". Same
+  // shape #1226 drained in twelve suites; harmless here only because this teardown
+  // has no cleanup DELETE to deadlock against, which is luck rather than design.
+  await require('../src/lib/notify').drainEmails();
   await db.pool.end();
 }
 main().catch((e) => { console.error('FAILED:', e); process.exit(1); });

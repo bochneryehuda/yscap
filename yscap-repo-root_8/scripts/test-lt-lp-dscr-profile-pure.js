@@ -87,10 +87,48 @@ const envReserves = sm.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5,
 ok(dynOf(envReserves, 'GLOBAL_RESERVES') === 'Reserves_12', 'ENV-1 LP_RESERVES_TOKEN overrides the default, still forced over the base Reserves_6');
 if (savedReserves === undefined) delete process.env.LP_RESERVES_TOKEN; else process.env.LP_RESERVES_TOKEN = savedReserves;
 
+// ---- §32.6 DSCR RATIO is a forced profile default (1.5) when omitted -------
+// Measured live: `criteria.dscr: null` collapses 439 pricing rows to 28 from one lender; adding only
+// dscr:1.5 restored the full 439. So an omitted/null dscr must be FORCED to 1.5, nullish (0 preserved).
+const noDscr = sm.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760 }, { base: nonDscrBase() });
+ok(noDscr.criteria.dscr === 1.5, 'FORCE-9 omitted dscr → criteria.dscr 1.5 (never null — null collapses 439 rows to 28)');
+const nullDscr = sm.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760, dscr: null }, { base: nonDscrBase() });
+ok(nullDscr.criteria.dscr === 1.5, 'FORCE-9b explicit null dscr → criteria.dscr 1.5 (the exact PILOT bug)');
+const zeroDscr = sm.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760, dscr: 0 }, { base: nonDscrBase() });
+ok(zeroDscr.criteria.dscr === 0, 'PRESERVE-0 explicit dscr 0 stays 0 (No-DSCR is a real value; nullish, not truthy)');
+const explicitDscr = sm.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760, dscr: 1.25 }, { base: nonDscrBase() });
+ok(explicitDscr.criteria.dscr === 1.25, 'EXPLICIT-5 caller dscr 1.25 wins over the 1.5 default');
+
+// ---- the reporter's exact minimal request → normalized output -------------
+// A minimal request (purpose, value, loan amount, FICO, ZIP) must produce every DSCR-profile default,
+// with dscr defaulted to 1.5. This is the regression that pins the PILOT `dscr: null` fix.
+const minimal = sm.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760, zip: '07001' });
+ok(minimal.criteria.propertyUse === 'Investment', 'MIN propertyUse === "Investment"');
+ok(dynOf(minimal, 'GLOBAL_BorrowerType') === 'LLC', 'MIN borrowerType === "LLC"');
+ok(dynOf(minimal, 'GLOBAL_RESERVES') === 'Reserves_24', 'MIN reserves === "Reserves_24"');
+ok(dynOf(minimal, 'IncomeDocType') === 'DSCR', 'MIN incomeDocType === "DSCR"');
+ok(minimal.criteria.dscr === 1.5, 'MIN dscr === 1.5');
+ok(dynOf(minimal, 'PrepayTerm') === '60 Months', 'MIN prepayTerm === "60 Months"');
+ok(dynOf(minimal, 'PrePayment_Plan_Type') === 'Standard', 'MIN prepayStructure === "Standard"');
+ok(Array.isArray(minimal.termsCriteria) && minimal.termsCriteria.length === 1 && minimal.termsCriteria[0] === 30, 'MIN termsCriteria === [30]');
+ok(Array.isArray(minimal.dayLocksCriteria) && minimal.dayLocksCriteria.length === 1 && minimal.dayLocksCriteria[0] === 30, 'MIN dayLocksCriteria === [30]');
+
 // ---- the DSCR SMO pair is always present (the product selector) -----------
 const smoNames = (forced.criteria.specialMortgageOptions || []).map((o) => o && o.name);
 ok(smoNames.includes('Debt Service Coverage Ratio') && smoNames.includes('DSCR'),
   'SMO-1 the DSCR special-mortgage-option pair is always sent (product stays DSCR)');
+
+// ---- §2.1 frontend-parity forces over a WRONG (production-like) foundation ---
+// A live foundation carrying the config-model values (pmiType None, showUnmatchCompPlan false,
+// fractional monthlyIncome) must NOT diverge from the frontend — buildSearch forces the frontend's.
+const wrongBase = nonDscrBase();
+wrongBase.criteria.pmiType = 'None';
+wrongBase.showUnmatchCompPlan = false;
+wrongBase.criteria.monthlyIncome = 16666.6666667;
+const fp = sm.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760, dscr: 1.25 }, { base: wrongBase });
+ok(fp.criteria.pmiType === 'BPMI', 'PARITY-1 pmiType forced to "BPMI" (over a foundation carrying "None")');
+ok(fp.showUnmatchCompPlan === true, 'PARITY-2 showUnmatchCompPlan forced true (over a foundation carrying false)');
+ok(fp.criteria.monthlyIncome === 16667, 'PARITY-3 monthlyIncome rounded to a whole dollar 16667 (over 16666.666…)');
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);
