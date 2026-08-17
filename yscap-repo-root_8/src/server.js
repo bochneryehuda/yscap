@@ -32,6 +32,14 @@ app.use(require('./lib/security').securityHeaders);
   app.use(ra.middleware);
   app.use(ra.attachAuditError);
 }
+// EVERY "server error" NOW CARRIES ITS REASON (owner-directed 2026-08-16).
+// Mounted here — after the request audit, so it can quote the same request id
+// the response already returns as X-Request-Id and the request log already
+// stores, and above every route so no handler can be written outside it. It
+// captures the cause at the database driver (src/db.js) and attaches it to any
+// 5xx body: a reference for everyone, the real reason for staff. See
+// src/lib/http-fail.js for what may be shown and to whom.
+app.use(require('./lib/http-fail').middleware);
 // Body limit must comfortably exceed a max-size upload AFTER base64 inflation:
 // a MAX_UPLOAD_MB-byte file becomes ~1.37x that as base64 inside the JSON body,
 // plus envelope. A flat 25mb limit silently 413'd legitimate ~19-20MB uploads.
@@ -722,6 +730,9 @@ function isDbUnavailable(e) {
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   if (res.headersSent) return;   // a partial response is already on the wire
+  // Name the cause EXACTLY rather than leaving http-fail to quote whatever the
+  // request last tripped over — this handler is holding the real error.
+  try { require('./lib/http-fail').record(err, `${req.method} ${req.path}`); } catch (_) { /* never break the handler */ }
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'invalid JSON body' });
   if (err.type === 'entity.too.large')  return res.status(413).json({ error: 'upload too large' });
   // Postgres 22P02 = a malformed id (usually a non-UUID :id param) reached a

@@ -236,6 +236,18 @@ router.post('/files/:id/order', async (req, res) => {
       transaction_id: out && out.transactionId != null ? String(out.transactionId) : null,
       request_body: require('../lib/fields').jsonbText(sentBody),
     });
+    // THE INVESTOR'S APPRAISAL REQUIREMENTS GO ON THE ORDER, right after it is
+    // placed (owner-directed 2026-08-16) — the same message NAN gets, from the
+    // same single definition. It runs AFTER `finish` because a note can only be
+    // attached once Class has given the order a number. Nothing here can fail
+    // the order: the appraisal is placed, the poster never throws, and it names
+    // no capital partner (Class is an outside company).
+    if (orderRowId) {
+      try {
+        await require('../lib/appraisal/order-requirements-post')
+          .postForClassOrder(db, orderRowId, appId, { staffId: req.actor && req.actor.id });
+      } catch (_) { /* the order stands regardless */ }
+    }
     res.json({
       ok: true, orderId: out && out.orderId, transactionId: out && out.transactionId,
       apiVersion: preview.apiVersion, uad: preview.uad, body: sentBody,

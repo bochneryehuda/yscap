@@ -186,18 +186,26 @@ function exportCsv(rows, title, all) {
  */
 export default function ActivityFeed({ fetcher, title = 'Activity', limit = 15, compact = false, audit = false, onDepth = null, deep = false }) {
   const [rows, setRows] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [reloadAt, setReloadAt] = useState(0);
   const [showAll, setShowAll] = useState(false);
   const [cat, setCat] = useState('all');
   const [actor, setActor] = useState('all');
   const [q, setQ] = useState('');
   const [openRow, setOpenRow] = useState(null);
 
+  /* A FAILED LOAD IS NOT AN EMPTY FILE (owner-reported 2026-08-16, "it doesn't
+     load well"). This used to `.catch(() => setRows([]))`, so a 500, a timeout
+     or a dropped connection rendered the SAME "Nothing yet." an untouched file
+     renders — on the one surface whose entire worth is that you can trust it.
+     The failure is now kept and shown, with a Try again. */
   useEffect(() => {
     let a = true;
-    setRows(null);
-    fetcher().then((r) => a && setRows(r || [])).catch(() => a && setRows([]));
+    setRows(null); setLoadError(null);
+    fetcher().then((r) => { if (a) { setRows(r || []); setLoadError(null); } })
+      .catch((e) => { if (a) { setRows(null); setLoadError((e && e.message) || 'could not be loaded'); } });
     return () => { a = false; };
-  }, [fetcher]);
+  }, [fetcher, reloadAt]);
 
   const people = useMemo(() => {
     const seen = new Set();
@@ -216,11 +224,38 @@ export default function ActivityFeed({ fetcher, title = 'Activity', limit = 15, 
     });
   }, [rows, cat, actor, q]);
 
-  // The server puts an un-timestamped row at the top when a trail could not be
-  // read. Surfacing it as a banner is what lets a reader trust the rest.
-  const gap = useMemo(() => (rows || []).find((e) => e.source === 'meta'), [rows]);
+  // The server puts un-timestamped rows at the top when the log is short of the
+  // truth — a trail that could not be read, a truncated window, a trail cut off
+  // at its own limit. Surfacing them is what lets a reader trust the rest, and
+  // there can be THREE of them: taking only the first (`.find`) silently hid the
+  // other two from the banner.
+  const gaps = useMemo(() => (rows || []).filter((e) => e.source === 'meta'), [rows]);
 
-  if (!rows) return null;
+  /* Loading and failure both need to render SOMETHING. Returning null made the
+     whole panel disappear while the ~50 trails were read — which is what "it
+     doesn't load well" looks like from the outside: the section is simply not
+     on the page, with nothing to say it is coming. */
+  if (!rows) {
+    const shell = (body) => (
+      <div className="panel" style={{ marginTop: 18, padding: 16 }}>
+        <div className="row" style={{ marginBottom: 6 }}><h3>{title}</h3></div>
+        {body}
+      </div>
+    );
+    if (loadError) {
+      return shell(
+        <div style={{ padding: '8px 10px', borderRadius: 8, border: `1px solid ${DANGER}`, background: 'var(--paper,#F6F3EC)' }}>
+          <div style={{ color: DANGER, fontWeight: 600, fontSize: 13 }}>This log could not be loaded</div>
+          <div style={{ color: INK, fontSize: 12, marginTop: 2 }}>
+            Nothing is missing from the record — this page could not read it. {loadError}
+          </div>
+          <button type="button" className="btn ghost small" style={{ marginTop: 8 }}
+            onClick={() => setReloadAt((n) => n + 1)}>Try again</button>
+        </div>,
+      );
+    }
+    return shell(<p style={{ color: MUTED, fontSize: 13 }}>Loading the file's activity…</p>);
+  }
 
   const shown = (showAll || audit) ? filtered : filtered.slice(0, limit);
 
@@ -272,10 +307,15 @@ export default function ActivityFeed({ fetcher, title = 'Activity', limit = 15, 
         )}
       </div>
 
-      {audit && gap && (
+      {audit && gaps.length > 0 && (
         <div style={{ padding: '8px 10px', marginBottom: 8, borderRadius: 8, border: `1px solid ${DANGER}`, background: 'var(--paper,#F6F3EC)' }}>
           <div style={{ color: DANGER, fontWeight: 600, fontSize: 13 }}>This log is incomplete</div>
-          <div style={{ color: INK, fontSize: 12, whiteSpace: 'pre-line', marginTop: 2 }}>{gap.label}</div>
+          {gaps.map((g, i) => (
+            <div key={i} style={{ color: INK, fontSize: 12, whiteSpace: 'pre-line', marginTop: i ? 6 : 2 }}>
+              <strong>{g.verb}</strong>
+              {g.label ? <><br />{g.label}</> : null}
+            </div>
+          ))}
         </div>
       )}
 
