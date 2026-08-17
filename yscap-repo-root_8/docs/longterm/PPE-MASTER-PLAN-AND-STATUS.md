@@ -432,6 +432,44 @@ fields/Excel-grid→rule design; the disqualify-always workflow + troubleshooter
   each carry their own limits. A "rules view" toggle shows the same thing as rules; you can duplicate a
   rule and tweak one field. *(Research engine B is designing the grid↔rule round-trip on our existing
   lt_ppe_adjustment / lt_ppe_rule tables.)*
+  - **⛔ HARD RULE — LENDER PRICE AGREEMENT BEFORE BUILDING A RATE SHEET (owner-directed 2026-08-17,
+    the owner's own words: "make a hard rule that, before you start continuing to build any kind of rate
+    sheet into our system, you first need to get comfortable with at least 200 scenarios from every
+    certain angle of the rate sheet, to compare with Lender Price to see that you understand the logic
+    and you both agree with every single LLPA, with every single eligibility and every single
+    ineligibility. You need to understand max price and min price… You need to have an agreement with
+    Lender Price before you start building, because if not, it's going to be the biggest mess ever").**
+    This is a GATE, not a suggestion. Building a rate sheet into the system (wiring the grid to a live
+    surface, letting it drive a suggestion, promoting an investor) is FORBIDDEN until, for that
+    investor's rate sheet, ALL of the following hold and are PROVEN:
+    1. **≥ 200 scenarios, from every angle** — FICO bands, CLTV bands, every DSCR band (incl. sub-1.0),
+       purpose (purchase / rate-term / cash-out), loan-amount tiers, term, lock. Built by
+       `scenario-matrix.buildMatrix`, deliberately including scenarios that SHOULD be ineligible.
+    2. **Independent analysis** — build the Deephaven grid → our engine, and state what WE think each
+       scenario prices to (and which are ineligible + why), from the grid alone.
+    3. **Lender Price backing (exact agreement)** — run the SAME scenarios on Lender Price (Deephaven
+       leaves) and confirm, to the penny, agreement on EVERY: base price, **every single LLPA**, final
+       price, **max price (cap) and min price (floor)**, margin, **every eligibility**, and **every
+       ineligibility** (an ineligible scenario returns a disqualifier that MATCHES the rate sheet's
+       disqualifier — same dimension, same reason). Anything that does not agree is a STOP: understand
+       WHY before writing one more line, because a rate sheet built on a misunderstanding is "the biggest
+       mess ever."
+    4. **While building, keep matching** — parity is re-checked continuously as the sheet is built, not
+       once at the end.
+    The grid model below is **BUILT but UNVALIDATED against live Lender Price**, so per this rule it is
+    inert: not trusted, not wired live, not driving suggestions, until the ≥200-scenario agreement passes.
+    - **The harness already exists** and needs no new engine: `scenario-matrix.buildMatrix` (the battery,
+      deterministic, many axes, truncation-reported) + `parity-review.reviewScenario` +
+      `parity-detectors` (base_price / final_price / coupon / margin / **llpa_total** differences AND
+      `disqualification_missing`/`_extra`) + `lp-normalize-full` (carries base rates, adjustment points,
+      **max/min price**, margin, LLPAs in canonical milli units). The one thin piece to add is a
+      per-investor grid-validation report that composes them over the ≥200 battery and emits a
+      per-scenario pass/fail (eligible price+LLPA+cap/floor match AND disqualify match), plus the summary
+      "we agree on N/200, here is every disagreement."
+    - **BLOCKED on two owner action items (both in Part 4):** (a) the Lender Price login was exposed in
+      chat and is compromised — ROTATE it before any live scenario runs; (b) the actual Deephaven Excel
+      (`Corr_Flow_Rate_Sheet__T0__Excel.xlsx`) so the grid is built from the real cells, not the written
+      breakdown. Until both land the live agreement cannot run, so no rate sheet may be built in.
   - **DONE (grid MODEL, 2026-08-17):** `ppe/deephaven-grid.js` `gridToRateSheet` — the pure converter
     from a human Deephaven-shaped grid (coupon rows → base prices; a FICO × CLTV grid segmented by DSCR
     band → LLPA cells; loan-amount / predicate LLPA tables) into the EXACT stored shape the built
