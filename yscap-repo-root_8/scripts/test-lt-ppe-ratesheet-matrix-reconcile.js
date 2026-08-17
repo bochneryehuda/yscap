@@ -110,6 +110,36 @@ for (const u of UNENCODED_BY_LAYER2) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// 3b. THE SHEET'S "N/A" CELLS ARE ELIGIBILITY CUTS, and they must reach our sheet as cuts.
+// An N/A in the FICO x CLTV grid means the investor will not lend at that FICO/leverage at all. The
+// rebuild rewrote every PRICING cell in that grid, so this proves the same pass did not quietly move
+// the ELIGIBILITY envelope — a lost cut would make an ineligible loan quotable, which is worse than a
+// wrong price. Verified against the Excel's own N/A positions, not against a count.
+// ---------------------------------------------------------------------------------------------
+const { buildDeephavenGrid } = require('../src/longterm/ppe/deephaven-dscr-sheet');
+const { gridToRateSheet } = require('../src/longterm/ppe/deephaven-grid');
+const composed = gridToRateSheet(buildDeephavenGrid());
+const cuts = (composed.ineligibilities || []).filter((i) => i.dimension === 'fico_cltv_dscr');
+
+// Count the sheet's N/A cells, split by whether the row is one we encode at all.
+const ENCODED_ROWS = new Set(['780+', '760 - 779', '740 - 759', '720 - 739', '700 - 719', '680 - 699', '660 - 679', '640 - 659']);
+let naEncoded = 0; const naUnencoded = [];
+for (const row of SHEET.priceAdjustmentsFicoByCltv.rows) {
+  for (let ci = 0; ci < row.byCltv.length; ci += 1) {
+    if (row.byCltv[ci] !== 'N/A') continue;
+    if (ENCODED_ROWS.has(row.label)) naEncoded += 1;
+    else naUnencoded.push(`${row.label}@cltv#${ci}`);
+  }
+}
+ok(naEncoded > 0, `the rate sheet carries N/A eligibility cuts on encoded FICO rows (${naEncoded})`);
+ok(cuts.length === naEncoded,
+  `our sheet emits one eligibility cut per encoded N/A cell (${cuts.length} cuts vs ${naEncoded} N/A)`);
+// Foreign National is the one row we do not encode (no fact to key it on) — its N/A cells are
+// therefore EXPECTED to be absent, and that absence is named here rather than silently tolerated.
+ok(naUnencoded.length > 0 && naUnencoded.every((s) => s.startsWith('Foreign National')),
+  `the only unencoded N/A cells are Foreign National's (${naUnencoded.length}) — recorded, not silently dropped`);
+
+// ---------------------------------------------------------------------------------------------
 // 4. The sheet's effective date must be recorded, because a limit is only meaningful with one.
 // ---------------------------------------------------------------------------------------------
 ok(/^2026-08-14T/.test(SHEET.sheetMeta.effectiveDateUtc), `the rate sheet carries its effective date (${SHEET.sheetMeta.effectiveDateUtc})`);
