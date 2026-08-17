@@ -705,8 +705,9 @@ function buildSearch(sc = {}, opts = {}) {
   c.pmiType = 'BPMI';                         // DSCR investor loan: PMI type mirrors the frontend
   m.showUnmatchCompPlan = true;               // a search DISPLAY flag the frontend sends true
   // Monthly income is a DSCR by-product (not a qualifier here); the frontend ROUNDS it to a whole
-  // dollar. Round whatever the foundation carried; leave it absent if it was never set.
-  if (num(c.monthlyIncome) != null) c.monthlyIncome = Math.round(num(c.monthlyIncome));
+  // dollar. The round is done LAST, in wireDiscipline() — NOT here — because applyRegistry (below)
+  // can set a scenario-supplied monthlyIncome AFTER this block, and rounding it only here would miss
+  // that scenario value (it would go out as 16666.666… against the frontend's 16667).
   // §2.3 AUS "All" (2026-08-17 developer report). The frontend defaults AUS to the FULL published
   // set — [DU, LP, GUS, MUW, None] — never a single engine or a trimmed list. A live foundation may
   // carry a SHORTENED brokerCriteria.ausList (a prior session narrowed it), which silently prices
@@ -1008,6 +1009,12 @@ function wireDiscipline(m) {
   // other is a request no reader can honour.
   if (!Array.isArray(m.loanTypeCriteria) || m.loanTypeCriteria.length === 0) m.loanTypeCriteria = [c.loanType];
   else m.loanTypeCriteria = m.loanTypeCriteria.map(() => c.loanType).slice(0, 1);
+
+  // (1b) DSCR by-product: the frontend ROUNDS monthlyIncome to a whole dollar (§2.1 frontend parity).
+  // Forced HERE, last, because it must survive BOTH sources — a live foundation's value AND a
+  // scenario-supplied one that applyRegistry writes after the §2.1 force block. This is the ONE place
+  // it is rounded, so the two paths can never disagree with the frontend (16666.666… vs 16667).
+  if (num(c.monthlyIncome) != null) c.monthlyIncome = Math.round(num(c.monthlyIncome));
 
   // (2) is enforced in validateScenario (a refusal), deliberately NOT here — see the note above.
 
