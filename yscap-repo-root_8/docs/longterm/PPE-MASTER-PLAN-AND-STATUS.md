@@ -283,7 +283,21 @@ owner wants to start.
   that investor, with the LP reason verbatim and a valid predicate; re-running never duplicates it.
 - **Depends on:** P1, P3f, P4, P6. **Owner gate:** ⚠️ suggestions are proposals only; a human accepts.
 
-### P6 — The eligibility/bound rule table  ·  TO-BUILD
+### P6 — The eligibility/bound rule table  ·  **DONE** ✅  (+ P5-store + P7 accept-and-write)
+- **Built.** `db/571_lt_ppe_rule_and_suggestion_store.sql` — `lt_ppe_rule` (the persistent home for
+  eligibility/bound/pricing rules per investor/program, overlay-aware, with provenance:
+  origin=manual|suggested|imported + the verbatim LP decline reason) and `lt_ppe_rule_suggestion` (the
+  proposal store, deduped per distinct disqualification per investor). `rule-store.js` (DB bridge):
+  `saveSuggestions` (idempotent; refreshes only an OPEN row so a decided suggestion never reopens;
+  unmappable reasons stored predicate-NULL + needs_human), `listSuggestions`, **`acceptSuggestion`**
+  (one transaction: writes an `lt_ppe_rule` from the suggestion, links it back, marks accepted; REFUSES
+  a needs-human or non-open suggestion), `dismissSuggestion`, `listRules`, and **`rulesForProgram`**
+  (loads a program's active rules already in the `rules.js` shape — the P7 read that feeds the engine).
+  Test `test-lt-ppe-rule-store-db.js` (pure + DB round-trip) proves the full loop end-to-end: mine LP
+  declines → save → accept the FICO suggestion → a rule is written + linked → `rulesForProgram` returns
+  it → `evaluateRules` declines a 640-FICO loan (our engine now matches Lender Price) while a 720 passes;
+  plus idempotency, dismiss, and the needs-human refusal. Nothing auto-applies — a human accepts. 40/40.
+- **What (original).** `db/NNN_lt_ppe_rule.sql`
 - **What.** `db/NNN_lt_ppe_rule.sql` + a store, the persistent home for eligibility/bound rules per
   investor/program (overlay-aware), so an accepted suggestion and a hand-authored rule both persist.
 - **Why.** `ratesheet.js` anticipates it ("a later rule table"); it does not exist. Prerequisite for P5's
