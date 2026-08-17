@@ -71,6 +71,25 @@ So: **the pad never goes stale mid-use and always ends up with a fresh token**, 
 refresh when possible and by password login otherwise. Nothing extra is needed to
 "get fresh tokens every time" — it is the default path.
 
+## Re-prove it any time (one command)
+
+`scripts/test-lt-lp-login-pad.js` is the hand-run LIVE proof. It exercises all four
+paths and asserts the owner's requirement — a token that is genuinely **fresh** on
+each — printing only a length + sha256 tail, never a token value:
+
+```
+node scripts/test-lt-lp-login-pad.js
+```
+
+It exits 0 on PASS, 0 with a plain "not configured" message when the credentials are
+absent (so it is safe to run anywhere, including CI), and non-zero on a real failure.
+Verified live 2026-08-17: password grant OK (companyId + userId resolved, refresh
+issued), refresh grant returned a fresh access token + a rotated refresh token, and
+`getSession({force:true})` returned a token that differed from the warm one — every
+path fresh, to the token. The two OFFLINE guards remain the CI safety net
+(`test-lt-lp-login-contract.js` pins the wire spec; `test-lt-lp-token-renewal.js`
+pins the fail-safe renewal ladder).
+
 ## Rotation (do this after the test — owner-directed)
 
 The credentials used for this validation were shared in chat, so they must be
