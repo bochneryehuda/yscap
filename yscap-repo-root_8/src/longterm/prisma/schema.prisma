@@ -1437,3 +1437,79 @@ model LtPpeCanarySchedule {
   @@index([scope, enabled], map: "lt_ppe_canary_schedule_enabled_idx")
   @@map("lt_ppe_canary_schedule")
 }
+
+// PPE RULE store (db/571) — the persistent home for eligibility / bound / pricing
+// rules. `ratesheet.js` produces PRICING rules from lt_ppe_adjustment rows, and
+// said in its own words that "eligibility/bound rules live in a later rule table";
+// this is that table. One row per rule code within a (scope, investor, program),
+// with the nullable anchors COALESCEd in the unique index so a house rule
+// (investor_id / program_id NULL) still dedupes cleanly.
+//
+// `id` is a bigint identity, NOT a uuid, matching db/571 — lt_ppe_rule_suggestion
+// references it, so the two must agree. investor_id / program_id are UUID because
+// lt_ppe_investor.id (db/558) and lt_ppe_program.id (db/560) are.
+model LtPpeRule {
+  id              BigInt    @id @default(autoincrement())
+  scope           String    @default("company")
+  investorId      String?   @map("investor_id") @db.Uuid
+  programId       String?   @map("program_id") @db.Uuid
+  code            String
+  kind            String    @default("eligibility")
+  source          String    @default("overlay")
+  predicate       Json?     @db.JsonB
+  declineReason   String?   @map("decline_reason")
+  boundTarget     String?   @map("bound_target")
+  boundOp         String?   @map("bound_op")
+  boundValue      Decimal?  @map("bound_value") @db.Decimal
+  adjustment      Json?     @db.JsonB
+  priority        Int       @default(0)
+  description     String?
+  active          Boolean   @default(true)
+  origin          String    @default("manual")
+  lpDeclineReason String?   @map("lp_decline_reason")
+  effectiveFrom   DateTime  @default(now()) @map("effective_from") @db.Timestamptz(6)
+  effectiveTo     DateTime? @map("effective_to") @db.Timestamptz(6)
+  createdBy       String?   @map("created_by")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([scope, investorId, programId], map: "lt_ppe_rule_lookup_idx")
+  @@map("lt_ppe_rule")
+}
+
+// PPE RULE SUGGESTION store (db/571) — the PROPOSAL half, and never auto-applied.
+// The manual-review engine reads Lender Price's declines and SUGGESTS a rule per
+// investor; a human accepts one, which writes an LtPpeRule and links it back
+// through `created_rule_id`. `dedupe_key` is the analysis' distinct identity
+// (adjType|reasonText) so re-running the review never duplicates a proposal, and a
+// reason the crosswalk cannot map is stored with `predicate` NULL +
+// `needs_human = true` — surfaced for a person, never guessed at.
+model LtPpeRuleSuggestion {
+  id            BigInt    @id @default(autoincrement())
+  scope         String    @default("company")
+  investorId    String?   @map("investor_id") @db.Uuid
+  investorLabel String    @map("investor_label")
+  dedupeKey     String    @map("dedupe_key")
+  code          String
+  kind          String    @default("eligibility")
+  source        String    @default("overlay")
+  predicate     Json?     @db.JsonB
+  declineReason String    @map("decline_reason")
+  adjType       String?   @map("adj_type")
+  fact          String?
+  confidence    String?
+  matchedBy     String?   @map("matched_by")
+  needsHuman    Boolean   @default(false) @map("needs_human")
+  programs      Json      @default("[]") @db.JsonB
+  occurrences   Int       @default(1)
+  status        String    @default("open")
+  createdRuleId BigInt?   @map("created_rule_id")
+  decidedBy     String?   @map("decided_by")
+  decidedAt     DateTime? @map("decided_at") @db.Timestamptz(6)
+  decisionNote  String?   @map("decision_note")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([scope, investorLabel, dedupeKey], map: "lt_ppe_rule_suggestion_uk")
+  @@map("lt_ppe_rule_suggestion")
+}

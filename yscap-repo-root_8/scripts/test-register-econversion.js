@@ -32,6 +32,12 @@ function api(method, path, body, token) {
 }
 
 async function main() {
+  // Both CI jobs run the one chain and `test` has no database, so this must skip
+  // rather than dial one. BEFORE ensureSchema deliberately: ensureSchema does not
+  // throw when the database is unreachable — it retries ~75s and then RESOLVES —
+  // so a guard placed after it catches nothing and the suite dies 75s later on its
+  // first real query, with a stack pointing at the query rather than the cause.
+  await require(__dirname + '/lib/db-gate').skipUnlessDb('register-econversion');
   const app = require(REPO + '/src/server.js');
   const server = app.listen(PORT);
   await require(REPO + '/src/migrate-boot').ensureSchema();
@@ -101,11 +107,30 @@ async function main() {
       { ...vanilla, overrides: { ...vanilla.overrides, purchasePrice: 320000, asIsValue: 320000 }, econVersion: r.body.econVersion }, loTok);
     ok(r.status === 201, `LO re-register AFTER an admin manual registration succeeds (got ${r.status}) — the #148 dead-end is gone`);
 
-    // (8) the server guard itself is intact: an LO who DOES send manual keys is
-    // still refused loudly.
+    // (8) AN LO WHO SENDS MANUAL KEYS IS NO LONGER REFUSED — THEY ARE ESCALATED.
+    // Owner-directed 2026-07-27: the pricing admin zone is open to every staff
+    // role and "nothing is stripped and no role is refused"; the control moved
+    // from a 403 to an ADMIN APPROVAL keyed on deviation from the company
+    // default. The protection did not disappear, it changed shape, so this
+    // asserts the shape it changed INTO rather than the door that was removed:
+    // the register succeeds, the registration is flagged as needing approval,
+    // and an escalation is opened for an admin to decide. The borrower's terms
+    // email is withheld until then (esign/gate reads needs_approval, db/343).
     r = await api('POST', `/api/staff/applications/${APP}/pricing/register`,
       { ...vanilla, overrides: { ...vanilla.overrides, manualPricing: true, ovrRatePct: 9.875 } }, loTok);
-    ok(r.status === 403, `LO sending engaged manual keys is still 403 (got ${r.status})`);
+    ok(r.status === 201, `LO sending engaged manual keys now REGISTERS (got ${r.status})`);
+    const escReg = (await db.query(
+      `SELECT needs_approval FROM product_registrations WHERE application_id=$1 AND is_current`, [APP])).rows[0];
+    ok(escReg && escReg.needs_approval === true, '…and the registration is flagged as needing approval');
+    const escRows = await db.query(
+      `SELECT status, summary FROM manual_program_escalations WHERE application_id=$1 ORDER BY created_at DESC`, [APP]);
+    ok(escRows.rows.length > 0, '…and an escalation was opened for an admin to decide');
+    const escKinds = new Set(escRows.rows.map((x) => {
+      const s = typeof x.summary === 'string' ? JSON.parse(x.summary) : (x.summary || {});
+      return s.kind;
+    }));
+    ok(escKinds.has('pricing_override') || escKinds.has('manual_product'),
+      '…and the escalation names WHY (a pricing override / manual product), not a bare refusal');
 
     // (9) every refusal left an audit trail (#149: diagnosable from logs alone).
     const audits = await db.query(
@@ -113,7 +138,12 @@ async function main() {
         WHERE action='register_product_refused' AND entity_id=$1`, [APP]);
     const reasons = new Set(audits.rows.map((x) => x.reason));
     ok(reasons.has('econ_version_conflict'), 'refusal AUDITED: econ_version_conflict');
-    ok(reasons.has('admin_override_stripped'), 'refusal AUDITED: admin_override_stripped');
+    // `admin_override_stripped` was the audit row for the refusal removed above,
+    // so it can no longer occur — nothing is stripped. The auditable event is now
+    // the ESCALATION, which is what a reviewer would go looking for.
+    const escAudit = await db.query(
+      `SELECT detail FROM audit_log WHERE action='manual_program_escalated' AND entity_id=$1`, [APP]);
+    ok(escAudit.rows.length > 0, 'the escalation is AUDITED: manual_program_escalated');
 
     // (10) borrower surface has the same guard.
     r = await api('GET', `/api/borrower/applications/${APP}/pricing`, null, bTok);

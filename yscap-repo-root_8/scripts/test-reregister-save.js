@@ -1,8 +1,11 @@
 /**
  * #130 (Pinchus Wieder) — re-register saves the new terms, and a vanilla
  * non-admin register is NEVER wrongly refused.
- *   - a non-admin who MEANINGFULLY engages a manual-pricing knob → 403 (loud,
- *     not silently registered with different terms)
+ *   - a non-admin who MEANINGFULLY engages a manual-pricing knob → registers,
+ *     but NEVER SILENTLY: flagged for approval + escalated to an admin
+ *     (owner-directed 2026-07-27 replaced the old 403 with that approval; the
+ *     concern this case has always guarded — "not silently registered with
+ *     different terms" — is what the escalation now answers)
  *   - a non-admin's NORMAL register (manualPricing:false, experience present) → OK
  *   - an admin's manual-pricing register → OK
  * Run: node scripts/test-reregister-save.js
@@ -33,6 +36,12 @@ function api(method, path, body, token) {
 }
 
 async function main() {
+  // Both CI jobs run the one chain and `test` has no database, so this must skip
+  // rather than dial one. BEFORE ensureSchema deliberately: ensureSchema does not
+  // throw when the database is unreachable — it retries ~75s and then RESOLVES —
+  // so a guard placed after it catches nothing and the suite dies 75s later on its
+  // first real query, with a stack pointing at the query rather than the cause.
+  await require(__dirname + '/lib/db-gate').skipUnlessDb('reregister-save');
   const app = require(REPO + '/src/server.js');
   const server = app.listen(PORT);
   await require(REPO + '/src/migrate-boot').ensureSchema();
@@ -67,9 +76,22 @@ async function main() {
     const inp = typeof reg.inputs === 'string' ? JSON.parse(reg.inputs) : reg.inputs;
     ok(Number(inp.rehabBudget) === 40000 && Number(inp.term) === 18, `re-register PERSISTED the new terms (budget=${inp && inp.rehabBudget}, term=${inp && inp.term})`);
 
-    // A non-admin who MEANINGFULLY engages manual pricing → refused loudly.
+    // A non-admin who MEANINGFULLY engages manual pricing REGISTERS — and is
+    // escalated. This used to expect a 403; owner-directed 2026-07-27 opened the
+    // pricing admin zone to every staff role ("nothing is stripped and no role is
+    // refused") and replaced the refusal with an ADMIN APPROVAL. The thing this
+    // case exists to prevent — a SILENT register on different terms — is still
+    // prevented, so it is asserted directly rather than through the old door:
+    // the registration is flagged for approval and an escalation is raised, and
+    // the borrower's terms email is withheld until an admin decides.
     r = await api('POST', `/api/staff/applications/${APP}/pricing/register`, { ...vanilla, overrides: { ...vanilla.overrides, manualPricing: true, ovrRatePct: 9.875 } }, loTok);
-    ok(r.status === 403, `non-admin with manual pricing ENGAGED is refused (not silently registered) — got ${r.status}`);
+    ok(r.status === 201, `non-admin with manual pricing ENGAGED now registers — got ${r.status}`);
+    const eng = (await db.query(
+      `SELECT needs_approval FROM product_registrations WHERE application_id=$1 AND is_current`, [APP])).rows[0];
+    ok(eng && eng.needs_approval === true, '…and it is NEVER SILENT: flagged as needing approval');
+    const engEsc = (await db.query(
+      `SELECT count(*)::int AS n FROM manual_program_escalations WHERE application_id=$1`, [APP])).rows[0];
+    ok(engEsc.n > 0, '…and an admin escalation was raised to decide it');
 
     // An admin CAN use manual pricing.
     r = await api('POST', `/api/staff/applications/${APP}/pricing/register`, { ...vanilla, overrides: { ...vanilla.overrides, manualPricing: true, ovrRatePct: 9.875 } }, admTok);

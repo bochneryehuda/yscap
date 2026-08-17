@@ -86,19 +86,18 @@ const QUARANTINE = {
   // would accept since the owner-directed 2026-08-02 rule, which the MISMO import
   // is named as enforcing. The import NORMALISES it; the suite still expected the
   // contradiction back. Now asserted the other way round, as a guard.
-  'scripts/test-register-econversion.js':
-    '12 of 14 pass. The two failures assert a 403 for a loan officer sending '
-    + 'engaged manual pricing keys, and an "admin_override_stripped" audit row. '
-    + 'BOTH LOOK SUPERSEDED rather than broken: the 2026-07-27 owner-directed '
-    + 'rule opened the pricing admin zone to every staff role and states that '
-    + '"nothing is stripped and no role is refused" — the 403 branches were '
-    + 'REMOVED and approval replaced them. Updating this suite is very likely '
-    + 'the right fix, but it is a claim about the pricing rules and belongs to '
-    + 'whoever owns them, not to a chain-registration pass.',
-  'scripts/test-reregister-save.js':
-    '4 of 5 pass; one re-register assertion fails. Same pricing-rules '
-    + 'neighbourhood as test-register-econversion.js above and probably the '
-    + 'same root cause.',
+  // test-register-econversion.js and test-reregister-save.js were here and are
+  // now REGISTERED. Settled 2026-08-17 by the OWNER, who was asked directly and
+  // confirmed the rule in writing: a loan officer who engages manual pricing
+  // REGISTERS — the 403 is gone — but never silently, and the borrower's term
+  // sheet is withheld until an admin approves. So the protection these two cases
+  // existed to give CHANGED SHAPE rather than disappearing, and asserting the old
+  // 403 (and the "admin_override_stripped" audit row of the stripping era) was
+  // asserting a door that the 2026-07-27 rule deliberately removed. Both suites
+  // now assert the thing that actually protects the file: the registration is
+  // flagged as needing approval, an escalation is opened naming WHY, and the
+  // escalation is audited. Each of those assertions was proven to FAIL with the
+  // approval rule neutralised, with clean runs either side.
 };
 
 /**
