@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**776 objects**, and a database rebuilt from the Prisma
+**782 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 570 numbered migrations in `db/` (highest `db/573`) remain the only thing that builds this database.
+rebuild a database from them.** The 571 numbered migrations in `db/` (highest `db/574`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 340 |
-| Columns | 5561 |
+| Tables | 345 |
+| Columns | 5656 |
 | Triggers | 34 |
 | Functions | 137 |
 | CHECK constraints | 268 |
 | Generated columns | 12 |
-| Partial indexes | 325 |
-| Primary keys | 340 |
-| Foreign keys | 700 |
+| Partial indexes | 331 |
+| Primary keys | 345 |
+| Foreign keys | 706 |
 | Unique constraints | 47 |
-| Indexes (all kinds) | 1173 |
+| Indexes (all kinds) | 1192 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -225,7 +225,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (325)
+## Partial indexes (331)
 
 - **borrower_assistants_borrower_idx** on `borrower_assistants`
 - **borrower_assistants_email_uk** on `borrower_assistants`
@@ -470,6 +470,12 @@ the live database.
 - **ix_property_adjustments_spans** on `property_adjustments`
 - **ix_property_adjustments_zip** on `property_adjustments`
 - **ix_staff_last_active_at** on `staff_users`
+- **lt_condition_comments_enc_uk** on `lt_condition_comments`
+- **lt_conditions_open_idx** on `lt_conditions`
+- **lt_document_attachments_doc_idx** on `lt_document_attachments`
+- **lt_document_conditions_cond_idx** on `lt_document_conditions`
+- **lt_document_conditions_unresolved_idx** on `lt_document_conditions`
+- **lt_documents_status_idx** on `lt_documents`
 - **lt_loan_contacts_override_idx** on `lt_loan_contacts`
 - **lt_loan_contacts_staff_idx** on `lt_loan_contacts`
 - **lt_locks_expiration_idx** on `lt_locks`
@@ -824,7 +830,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (700)
+## Foreign keys (706)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1262,7 +1268,13 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_assets** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_borrower_links** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
 - **lt_borrower_pairs** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_condition_comments** → `lt_conditions` — `FOREIGN KEY (condition_id) REFERENCES lt_conditions(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_conditions** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_declarations** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_document_attachments** → `lt_documents` — `FOREIGN KEY (document_id) REFERENCES lt_documents(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_document_conditions** → `lt_conditions` — `FOREIGN KEY (condition_id) REFERENCES lt_conditions(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_document_conditions** → `lt_documents` — `FOREIGN KEY (document_id) REFERENCES lt_documents(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_documents** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_employments** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_liabilities** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_liabilities** → `lt_reo_properties` — `FOREIGN KEY (reo_property_id) REFERENCES lt_reo_properties(id) ON UPDATE CASCADE ON DELETE SET NULL`
@@ -1600,7 +1612,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 340 primary keys and 1173 indexes is
+Every one of the 345 primary keys and 1192 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
