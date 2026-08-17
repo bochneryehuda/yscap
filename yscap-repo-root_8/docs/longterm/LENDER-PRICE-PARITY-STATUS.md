@@ -2187,3 +2187,30 @@ that scenario with a DIFFERENT finding kind, and it did, so the branch fell thro
 `ok(true)` that proved nothing while printing a pass. It is now asserted on `attachDiagnosis` directly,
 with a CONTROL on the same fixture at the matching coupon, so D8/D9 fail when the rule is relaxed
 rather than when the comparator's mood changes. Three mutations proven to bite.
+
+**§2.35 — AND WHAT CHANGED BETWEEN TWO VERSIONS OF A SHEET (2026-08-17).** `ratesheet-diff.js` has
+always been able to answer the question anybody asks before publishing a new version — which cells
+moved, and which of those are RULE changes rather than ordinary numeric refreshes (§7.4). It had
+nothing to hand it: nothing turned a stored sheet into the flat `{ ruleKey → value }` map it consumes.
+Eighth instance of the class, and this one needed a small new piece rather than only a caller.
+
+**THE KEY IS THE WHOLE DESIGN, and three of its rules were each proven by breaking them.** A key
+describes the CELL, never its row — `replaceBasePrices` deletes and re-inserts, so a key built from the
+row id reports every cell of every sheet as removed-and-added on every save, which is the same as
+reporting nothing (keying on the id turned one repriced coupon into five failed assertions). A coded
+cell's BANDS are their own addressable fact — keyed only on the amount, a band widened from 700–739 to
+700–749 with the same LLPA diffs as NO CHANGE, and a repriced band is exactly what a reviewer is
+looking for. And a CODE beats the bands as the identity, so renaming a band reads as one cell CHANGED
+rather than one removed and one added, which loses the connection between them.
+
+**TWO ROWS ADDRESSING ONE CELL ARE REPORTED, never silently merged.** A map can hold one of them, so an
+unreported duplicate is invisible in every diff from then on — and a sheet carrying two LLPAs for one
+band is a real loading mistake. The first is kept, so the map is deterministic rather than dependent on
+the order the database happened to return.
+
+**IT DECIDES NOTHING.** The §7.4 classification is reported for what it tells a reader — "these are
+small numeric moves, these are rule changes" — and no cell is applied, published or auto-accepted. A
+route that quietly applied a "safe" change to a live sheet would be a very different thing from a diff,
+and auto-apply belongs to the ingest path, which does not exist yet. A first version says so rather
+than reporting an empty diff, which would be the most misleading answer available about a sheet nobody
+has seen before.
