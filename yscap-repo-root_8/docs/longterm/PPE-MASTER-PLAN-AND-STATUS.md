@@ -155,6 +155,45 @@ safe (they only ADD findings). P4–P7 write rules and need the owner's go + Par
 Each step lists: **What · Why (grounded in the LP field paths) · Acceptance test · Depends on · Owner
 gate (if any).**
 
+### P-DQ — Read the disqualify side, per investor, and suggest the rules to import  ·  **DONE (analysis)** ✅
+*Owner-directed first step (2026-08-17): "look at an actual disqualifying scenario and train our system
+how to look on the disqualifying side to find disqualification rules per investor so we can suggest them
+to implement."* This is the disqualify slice of P3f + P4 + P5, built first because it is where the
+owner wants to start.
+- **What (built).** Two pure modules + tests:
+  - `disqualify-crosswalk.js` — turns ONE Lender Price disqualification (`{ adjType, key text }`) into
+    one of our rule predicates, or REFUSES it and flags it for a human. The training insight: the
+    **`adjType` is the dimension** (`FicoRateAdjustment`→FICO, `CapAdjustment`→LTV/CLTV ceiling,
+    `StatesRateAdjustment`→state, `DscrRateAdjustment`→DSCR, `LoanAmountRateAdjustment`→loan amount);
+    the **key text carries the threshold + direction** ("below 660", "> 80.0 %", "Minimum … 680",
+    "Max LTV …"). It reads both "failing-condition" wording and "requirement" wording and collapses
+    both to the *decline* side. Curated, never guessed — an unknown type or unparseable threshold is
+    surfaced, not fabricated (the TOKEN-REGISTRY discipline).
+  - `disqualify-analysis.js` — takes `client.parseDisqualified(raw)` and produces, **per investor**, the
+    distinct disqualification rules as **suggested overlay eligibility rules** (`{ code, kind:'eligibility',
+    source:'overlay', when:<predicate>, declineReason:<LP key verbatim>, adjType, fact, confidence,
+    programs[], occurrences }`), plus an `unmapped[]` list of reasons a human must map. Deduped per
+    distinct rule, with evidence (how many programs each appears on). A suggestion is a PROPOSAL —
+    nothing is written to a program's rules.
+  - `client.disqualifyRulesOf` now also carries `adjType` (additive) so the crosswalk has the dimension.
+- **Grounding.** Built against the REAL vendor key wording committed in `test-lt-lenderprice.js`'s
+  disqualify fixture — `"FICO - below 660"`, `"Max LTV exceeded / CLTV > 80.0 %"`, `"Interest Only not
+  available in NY"` — and proven end-to-end: the suggested predicates, run through `evaluateRules`,
+  decline exactly the loans Lender Price declined (a 640-FICO loan, an 85% CLTV loan, an IO loan in NY),
+  and pass a clean loan.
+- **Acceptance tests.** `test-lt-ppe-disqualify-crosswalk.js` + `test-lt-ppe-disqualify-analysis.js`
+  (both pure, in the aggregate runner; 36/36 suites green).
+- **⚠️ HONEST CONSTRAINT — needs a LIVE disqualify capture to widen the vocabulary.** We do NOT have a
+  real populated `disqualifiedData` response committed (the anchors are request bodies; the schema doc
+  itself lists "capture a REAL populated disqualifiedData leaf" as an open item). The crosswalk is
+  correct for the key shapes we have seen and **refuses the rest** — so it is safe and extends cleanly,
+  but the full per-investor rule vocabulary can only be locked in from a live capture. **That capture
+  needs the Lender Price credentials, which are currently COMPROMISED (pasted in chat) and must be
+  rotated first.** Owner action: rotate `LP_PASSWORD` / `LP_CLIENT_SECRET` / `LP_DIAG_TOKEN`, then a
+  read-only disqualify capture (e.g. against the Deephaven sheet) feeds every real `adjType`/key into
+  the crosswalk map. Until then the engine is built and safe; the map grows as real keys arrive.
+
+
 ### P1 — Feed the FULL Lender Price capture into the comparator  ·  DETECTION  ·  TO-BUILD
 - **What.** Build an LP-side normalizer that consumes `client.parseFull(raw)` + `client.parseDisqualified(raw)`
   (not just `client.parse()`), so the comparator sees, per rung: base rate, note rate, price, the
@@ -286,9 +325,13 @@ For a scenario priced on both engines, detect and categorize each mismatch. (b)(
 
 ## Part 5 — Execution order (number by number)
 
-Detection-only and safe to build now (LP still wins; nothing auto-applies): **P1 → P2 → P3 (a–f) → P9**.
-Rule-writing loop, gated on Part 4.1/4.4 + a human in the loop: **P4 → P6 → P5 → P7 → P8**. Supporting:
-**P10** (after P9). Housekeeping alongside: fix the stale db/567 comments (2.2).
+**DONE so far:** **P-DQ** (the disqualify-side analysis + crosswalk + rule suggestions — owner's first
+step) and Layer-1/Layer-2 margin/holdback (Part 2.3/2.5).
+
+Detection-only and safe to build next (LP still wins; nothing auto-applies): **P1 → P2 → P3 (a–f) → P9**.
+Rule-writing loop, gated on Part 4.1/4.4 + a human in the loop: **P6 → P5-store → P7 → P8** (P4's
+disqualify crosswalk is already built by P-DQ; widen it from a live capture once credentials are
+rotated). Supporting: **P10** (after P9). Housekeeping alongside: fix the stale db/567 comments (2.2).
 
 Progress is tracked against these numbers. Each step is one commit (or a tight set) with `[skip ci]`,
 its tests green, on branch `claude/lender-price-frontend-agent-7g7tm9`, and reported by its P-number so

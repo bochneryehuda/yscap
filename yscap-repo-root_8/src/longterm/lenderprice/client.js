@@ -1424,7 +1424,7 @@ function disqualifyRulesOf(leaf) {
   if (Array.isArray(groups)) for (const g of groups) {
     for (const key of ['disqualifyAdjustments', 'hideDisqualifyAdjustments', 'qualifyAdjustments']) {
       const arr = g && g[key];
-      if (Array.isArray(arr)) for (const a of arr) add(a && (a.key || a.name), { group: g.name || null, value: num(a && (a.llpa != null ? a.llpa : a.adj)) });
+      if (Array.isArray(arr)) for (const a of arr) add(a && (a.key || a.name), { group: g.name || null, adjType: (a && a.adjType) || null, value: num(a && (a.llpa != null ? a.llpa : a.adj)) });
     }
   }
   if (Array.isArray(leaf.conditionActions)) for (const ca of leaf.conditionActions) add(ca && (ca.message || ca.description || ca.key || ca.name), { group: 'condition' });
