@@ -1,0 +1,61 @@
+{
+  "source": "CORR_Flow_Product_Matrices.xlsx / DSCR sheet (Deephaven Correspondent Flow, Effective 08/04/26)",
+  "ltvGrid": {
+    "axes": ["loanAmountTier", "fico", "purpose", "dscrBand"],
+    "columns": {
+      "D": "Purchase & R/T  (DSCR >= 1.00)",
+      "F": "Cash Out        (DSCR >= 1.00)",
+      "H": "Purchase / R-T  (DSCR < 1.00)",
+      "J": "Cash Out        (DSCR < 1.00)"
+    },
+    "note": "N/A = ineligible cell (no priced LTV). Rows are (loan tier, FICO). Foreign National is its own FICO-independent row within the <=1.5M tier.",
+    "tiers": [
+      { "maxLoan": 1500000, "rows": [
+        { "fico": 720, "P_RT_ge1": 0.80, "CO_ge1": 0.80, "P_RT_lt1": 0.75, "CO_lt1": 0.70 },
+        { "fico": 700, "P_RT_ge1": 0.80, "CO_ge1": 0.75, "P_RT_lt1": 0.75, "CO_lt1": 0.65 },
+        { "fico": 680, "P_RT_ge1": 0.75, "CO_ge1": 0.75, "P_RT_lt1": 0.70, "CO_lt1": 0.65 },
+        { "fico": 640, "P_RT_ge1": 0.70, "CO_ge1": 0.70, "P_RT_lt1": null, "CO_lt1": null },
+        { "fico": "ForeignNational", "P_RT_ge1": 0.70, "CO_ge1": 0.60, "P_RT_lt1": null, "CO_lt1": null }
+      ]},
+      { "maxLoan": 2000000, "rows": [
+        { "fico": 700, "P_RT_ge1": 0.80, "CO_ge1": 0.75, "P_RT_lt1": 0.70, "CO_lt1": 0.65 },
+        { "fico": 680, "P_RT_ge1": 0.75, "CO_ge1": 0.75, "P_RT_lt1": 0.65, "CO_lt1": 0.65 },
+        { "fico": 660, "P_RT_ge1": 0.65, "CO_ge1": 0.65, "P_RT_lt1": null, "CO_lt1": null }
+      ]},
+      { "maxLoan": 2500000, "rows": [
+        { "fico": 700, "P_RT_ge1": 0.70, "CO_ge1": 0.70, "P_RT_lt1": 0.60, "CO_lt1": 0.60 },
+        { "fico": 660, "P_RT_ge1": 0.65, "CO_ge1": 0.65, "P_RT_lt1": null, "CO_lt1": null }
+      ]}
+    ]
+  },
+  "programParameters": {
+    "minLoanDscrGe1": 75000,
+    "minLoanDscrLt1": 200000,
+    "maxLoan": 2500000,
+    "maxCashOut_LTV_le65": 1000000,
+    "maxCashOut_LTV_gt65": 500000,
+    "foreignNationalMaxLoan": 1500000
+  },
+  "products": ["5/6 ARM", "5/6 ARM-IO", "15Y/30Y Fixed", "30Y Fixed-IO"],
+  "overlays": {
+    "occupancy": "Business Purpose Investment Properties only",
+    "propertyTypes": "SFR, PUD, Townhome (Row Homes Ineligible), 2-4 Units, Condos & Non-Warrantable Condos (Max 80% LTV)",
+    "shortTermRentals": "Property Guard report required; Min DSCR 1.15x; 5% LTV reduction vs matrix (75% Max); Min FICO 720; No First Time Investor / 2+ Unit / Rural / Unique Properties",
+    "reserves": "3 Months PITIA (loan <= $1mm); 6 Months PITIA (loan > $1mm)",
+    "maxCashOutAmount": "$1,000,000 (overlays apply); cash-out may be used towards reserves",
+    "interestOnly": "Max LTV 80%; Min DSCR 1.00x",
+    "subordinateFinancing": "Not Allowed",
+    "dscrDefinition": "Gross Rents / PITIA (fully amortizing) or Gross Rents / ITIA (interest only)",
+    "dscrLt1Floor": "Minimum DSCR 0.75x",
+    "smallLoan": "Loan < $125,000: Max LTV reduced to 75%; Loan < $100k delegated delivery only",
+    "firstTimeInvestor": "Min DSCR 1.00, Min FICO 700, Long-Term Rental Only",
+    "firstTimeHomebuyer": "Not Eligible unless 2+ borrowers and at least one is not a FTHB",
+    "eligibleBorrowers": "12-month history of investment property ownership in most recent 12 months",
+    "decliningMarkets": "Max LTV reduced by 5%",
+    "sellerConcessions": "Up to 6% towards closing",
+    "prepaymentPenalty": "Investment only; 5yr (5/4/3/2/1) or 4yr (5/4/3/2) stepdown",
+    "geographicLimits": "Philadelphia, PA: Max LTV reduced by 10% all occupancies",
+    "ineligibleGeos": "HI lava zones 1 & 2; Baltimore City, MD",
+    "citizenship": "US Citizens; Permanent Resident Aliens; Non-Permanent Resident Aliens (w/ US Credit); Foreign Nationals (Min DSCR 1.00x)"
+  }
+}

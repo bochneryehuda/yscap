@@ -1,0 +1,275 @@
+
+========== SHEET 1: Expanded Prime ==========
+R1:  | Expanded Prime | Correspondent |  |  |  | Effective Date:
+08/04/26
+R6:  | Email: correspondentlock@deephavenmortgage.com       Phone: (844) 346-2677 - Option 3
+R8:  | Program Max LTVs | Primary Residence |  |  |  | Second Home & Investment |  |  |  | 2 |  |  |  |  | 3
+R10:  | Full Doc |  |  |  |  | Alternative Doc |  | Full Doc |  | Alternative Doc
+R11:  | Loan Amount | Reserves | 6 |  | Purch. & R/T | C/O | Purch. & R/T | C/O | Purch. & R/T | C/O | Purch. & R/T | C/O | 7 |  | Limits
+R12:  | ≤ $1,500,000 | 6 Months | 720 |  | 90% ** | 0.8 | 90% ** | 0.8 | 0.85 | 0.8 | 0.85 | 0.8 | 13 |  | ● Max 80% LTV | 10 |  |  | 100000
+R13:  | 680 |  |  |  | 0.85 | 0.8 | 0.85 | 0.8 | 0.8 | 0.75 | 0.8 | 0.75 | P&L Only
+(w/ 2mo BS) |  | ● Qualify off Alt Doc grids | 11 |  |  | 3500000
+R14:  | 660 |  |  |  | 0.8 | 0.75 | 0.8 | 0.75 | 0.75 | 0.7 | 0.75 | 0.7 | ● Max 80% LTV (Purchase) |  |  | Maximum Cash Out LTVs ≤ 65% |  |  | Unlimited
+R15:  | ≤ $2,000,000 | 6 Months | 700 |  | 0.85 | 0.8 | 0.85 | 0.8 | 0.75 | 0.75 | 0.75 | 0.75 | ● Max 70% LTV (Refinance) |  |  | Maximum Cash Out LTVs > 65% |  |  | 500000
+R16:  | 660 |  |  |  | 0.8 | 0.75 | 0.8 | 0.75 | 0.7 | 0.7 | 0.7 | 0.7 | P&L Only
+(w/o BS) |  | ● Qualify off Alt Doc grids | Maximum Cash Out, NOO |  |  | 1000000
+R17:  | ≤ $2,500,000 | 9 Months | 700 |  | 0.8 | 0.75 | 0.8 | 0.75 | 0.75 | 0.7 | 0.75 | 0.7 |  | ● Max 70% LTV (Purchase) |  | 14 |  |  | 1x30x12
+R18:  | 660 |  |  |  | 0.75 | 0.7 | 0.75 | 0.7 | 0.7 | 0.65 | 0.7 | 0.65 | ● Max 60% LTV (Refinance) |  |  | 15 |  |  | 48 Months
+R19:  | ≤ $3,000,000 | 12 Months | 700 |  | 0.8 | 0.75 | 0.8 | 0.75 | 0.7 | 0.65 | 0.7 | 0.65 | ● Min FICO 720 |  |  | BK Seasoning |  |  | 48 Months
+R20:  | 680 |  |  |  | 0.75 | 0.7 | 0.75 | 0.7 | 0.65 | 0.6 | 0.65 | 0.6 | ● Max $2.0MM Loan Amt |  |  | 16 |  |  | 2500
+R21:  | ≤ $3,500,000 | 12 Months | 700 |  | 0.7 | N/A | 0.7 | N/A | N/A | N/A | N/A | N/A | 1 |  | ● No subordinate financing | Standard Debt Ratio |  |  | 0.55000000000000004
+R22:  | ** Up to 90%; Max 89.99% | 19 |  |  |  |  |  |  |  |  |  |  |  |  |  | 8
+R23:  | Income | may apply |  |  |  |  |  |  |  |  |  |  |  |  |  | 15Y/30Y/40Y Fixed   30Y/40Y Fixed-IO    5/6 ARM    30Y/40Y 5/6 ARM-IO
+R24:  | Full Documentation | 1 Yr W-2s or Tax Returns (Full Doc - 12M) |  |  | ● FTHB is not eligible
+R25:  | Asset Utilization | Max 80% LTV/CLTV  (Full Doc Matrix); Purchase, Rate/Term and |  |  | Interest Only Features |  |  |  |  |  |  |  |  |  | Property Type |  |  |  | LTV Max
+R26:  | Cash-Out (Cash-Out limited to Primary Residence Only) |  |  |  | 21 |  |  |  |  |  |  |  |  |  | Amort | Maturity | Condominium |  | 90% **
+R27:  | Alternative Documentation
+(Must be S/E for 2 yrs.  See Guidelines for details.) | 12 Months Personal (or) Business Bank Statements |  |  | 10 Years |  |  |  |  |  |  |  |  |  | 20 Years | 30 Years | Non-Warrantable Condo & 2-4 Unit |  | 0.8
+R28:  | 12 Months 1099 Income |  |  |  | Rural (Purchase Only) |  |  |  |  |  |  |  |  |  |  |  |  |  | 0.75
+R29:  | 12 Month Profit & Loss Statement |  |  |  | 10 Years |  |  |  |  |  |  |  |  |  | 30 Years | 40 Years | Rural R/T & C/O |  | 0.7
+R32:  | Other
+R33:  | Occupancy | Primary, Second Homes, Investment Properties
+R34:  | Property Types | SFR, PUD, Townhomes (Row Homes Ineligible), Condos, 2-4 Unit & Rural.     2-4 Units & Non-Warrantable Condos are Max 80% LTV.
+R35:  | Rural-Max 75% LTV w/Purchase and max 70% LTV with R/T & C/O; Rural max acreage limited to 10 acres with no agricultural and/or farm use
+R36:  | Cash Out | Max Cash-Out ≤ 65% LTV is Unlimited.  Max Cash Out > 65% LTV is $500,000
+R37:  | Cash-Out Proceeds may be used for reserve requirements
+R38:  | Cash-Out using appraised value w/ 6 month ownership seasoning allowed.  Max 75% LTV and CDA or SSR of 2.5 or less required
+R39:  | DTI >50% | Primary residence only; Min 700 FICO; Max 80% LTV / CLTV; No FTHB
+R40:  | Declining Markets | If property is located in a declining market as indicated by the appraisal, Max LTV is reduced by 5%
+R41:  | Asset Utilization | Maxed at 80% CLTV and available on Purchase and Rate/Term for all occupancies;  Available on Cash-Out for Primary Residence Only
+R42:  | Subordinate Financing | Max CLTV = Grid Max LTV (Institutional seconds only)
+R43:  | Citizenship | US Citizens; Permanent Resident Aliens; Non-Permanent Resident Aliens (w/ US Credit)
+R44:  | Appraisal Review Product | FNMA CU score or FHLMC LCA score of 2.5; OR Approved AVM with valuation within 10% of appraised value and Confidence Factor ≥ 87% and FSD ≤ .13; OR Clear Capital CDA or like type product with
+R45:  | valuation within 10% of appraised value or field review
+R46:  | Full 2nd Appraisal required for the following transactions (i) Loan Amount > $2M
+R47:  | Assets | Sourced or seasoned for 30 days; Gift Funds allowed - See Guidelines for details.
+R48:  | Credit | Standard: 3 tradelines reporting for 12+ months or 2 tradelines reporting for 24+ months all with activity in the last 12 months or one mortgage or installment tradeline for 36+ months with 12 months activity
+R49:  | in the last 12 months.  Max 0x60x12 reporting on acceptable tradelines.   Qualifying FICO: The middle score of 3 or lower score when only 2 agency scores are provided, of primary wage earner
+R50:  | Tradeline requirement is waived if primary wage earner credit report reflects scores from all (3) bureaus & qualifying FICO score is 700+
+R51:  | Compliance | Escrows required for HPML loans; Compliance with all applicable federal and state regulations;  No Section 32 or state high cost
+R52:  | Prepayment Penalty | Investment Only; Standard = % of amount prepaid (partial or full prepayment): 5‐year penalty with 5%, 4%, 3%, 2%, 1% stepdown fee structure; OR 4-year penalty with 5%, 4%, 3%, 2%
+R53:  | stepdown fee structure; OR 3‐year penalty with 5%, 4%, 3% stepdown fee structure; OR 2‐year penalty with 3% stepdown fee structure (year 1 and year 2 = 3%); OR 1‐year penalty with 3% fee.
+R54:  | Please see Deephaven Operational Prepayment Penalty Matrices for State restrictions.
+R55:  | Seller Concessions | Up to 6% towards closing for all occupancies.
+R56:  | Geographic Limitations | Philadelphia, PA:  Max LTV is reduced by 10% for all occupancies
+R57:  | Ineligible Geos | Delegated:  Primary & Second Home - NY. All Ocupancies: HI - lava zones 1 & 2; All Occpancies: Baltimore City, MD
+R58:  | Non-Delegated:  Primary & Second Home - NY.  All Occupancies: HI - lava zones 1 & 2;  All Occupancies: Baltimore City, MD
+R59:  | Deephaven Mortgage® LLC. All rights reserved. This material is intended solely for the use of licensed mortgage bankers. Distribution to consumers is strictly prohibited. Program and rates are subject to change without notice.
+R60:  | Not available in all states. Terms subject to qualification. Disclosures & Licenses: https://deephavenmortgage.com/disclosures-and-licenses/  NMLS Consumer Access:http://nmlsconsumeraccess.org/  NMLS #958425
+
+========== SHEET 2: Non Prime ==========
+R1:  | Non-Prime | Correspondent |  |  |  | Effective Date:
+08/04/26
+R6:  | Email: correspondentlock@deephavenmortgage.com       Phone: (844) 346-2677 - Option 3
+R9:  | Program Max LTVs | Primary Residence |  |  |  |  | Second Homes & Investment |  |  |  | 3
+R10:  | Standard |  |  |  |  |  | Recent Event
+R11:  | Loan Amount | Reserves | 6 |  | Purch & R/T |  | Cash Out | Purch & R/T | Cash Out | Purchase & R/T | 24 |  | Limits
+R12:  | ≤ $2,000,000 | 3 Months | 700 |  | 0.8 |  | 0.8 | 0.7 | N/A | 0.75 | 0.65 |  | 10 |  |  | 100000
+R13:  | 660 |  |  |  | 0.8 |  | 0.75 | 0.7 | N/A | 0.75 | 0.6 |  | 11 |  |  | 2000000
+R14:  | 620 |  |  |  | 0.75 |  | 0.65 | 0.7 | N/A | 0.7 | N/A |  | 12 |  |  | 500000
+R15:  | Mortgage History | 0x60x12 |  |  |  |  | 1x120x12 |  | 0x60x12 |  | 16 |  |  |  |  | 1500
+R16:  | FC / SS / DIL Seasoning | 24 Months |  |  |  |  | Settled |  | 24 Months |  | Standard Max DTI |  |  |  |  | 0.5
+R17:  | Chapter 13 Seasoning | 24 Months |  |  |  |  | Discharged/Dismissed |  | 24 Months |  | 8
+R18:  | Chapter 7 & 11 Seasoning | 24 Months |  |  |  |  | Discharged/Dismissed |  | 24 Months |  | 15Y/30Y/40Y Fixed     30Y/40Y Fixed-IO     5/6 ARM                    30Y/40Y 5/6 ARM-IO
+R20:  | Income | Interest Only Features
+R21:  | Full Documentation | 1 Yr W-2 or Tax Return |  |  | 21 |  |  |  |  |  |  |  |  |  |  | Amort | Maturity
+R22:  | Alternative Documentation
+(See Guidelines for details) | 12 Months Personal (or) Business Bank Statements |  |  | 10 Years |  |  |  |  |  |  |  |  |  |  | 20 Years | 30 Years
+R23:  | 12 Months 1099 Income |  |  |  | 10 Years |  |  |  |  |  |  |  |  |  |  | 30 Years | 40 Years
+R24:  | 12 Month Profit & Loss Statement - See Other for Details
+R26:  | Other
+R27:  | Occupancy | Primary, Second Homes, Investment Properties.   Investment - no subordinate financing and no FTHB.
+R28:  | Property Types | SFR, PUD, Townhomes (Row Homes Ineligible), Condos, 2-4 Unit & Rural.     2-4 Units & Non-Warrantable Condos are Max 80% LTV.
+R29:  | Rural-Max 75% LTV w/Purchase and max 70% LTV with R/T & C/O; Rural max acreage limited to 10 acres w/no agricultural and/or farm use
+R30:  | Profit & Loss Only | 2 Mo BS required | Min FICO - 660 | Max LTV 80% (Purchase) / 70% (Refinance)
+R31:  | Appraisal Review Product | FNMA CU score or FHLMC LCA score of 2.5; OR Approved AVM with valuation within 10% of appraised value and Confidence Factor ≥ 87% and FSD ≤ .13; OR Clear Capital CDA or like type product with
+R32:  | valuation within 10% of appraised value or field review
+R33:  | Full 2nd Appraisal required for the following transactions (i) Loan Amount > $2M
+R34:  | Cash Out | Maximum Cash Out = $500,000; Cash Out may be used for reserve requirements
+R35:  | Residual Income | $1,500 plus an additional $150 per dependent
+R36:  | Interest Only | Max LTV 80%
+R37:  | Subordinate Financing | Max CLTV = Grid Max LTV (Institutional seconds only)
+R38:  | Citizenship | US Citizen, Permanent Resident Alien & Non-Permanent Resident Alien (w/ US Credit)
+R39:  | Assets | Sourced or seasoned for 30 days; Gift Funds allowed - See Guidelines for details
+R40:  | Credit | Standard: 3 tradelines reporting for 12+ months or 2 tradelines reporting for 24+ months all with activity in the last 12 months or 1 mortgage or installment tradeline for 36+ months with 12 months activity
+R41:  | in the last 12 months. Limited: No minimum tradeline requirements
+R42:  | Qualifying FICO: The middle score if 3 agency scores are provided or lower score when only 2 agency scores are provided, of primary wage earner
+R43:  | Tradeline requirement is waived if primary wage earner credit report reflects scores from all (3) bureaus & qualifying FICO score is 700+
+R44:  | Compliance | Escrows required for HPML loans; Compliance with all applicable federal and state regulations; No Section 32 or state high cost
+R45:  | Declining Markets | If property is located in a declining market as indicated by the appraisal, Max LTV is reduced by 5%
+R46:  | Seller Concessions | Up to 6% towards closing for all occupancies.
+R47:  | Prepayment Penalty | Investment Only; Standard = % of amount prepaid (partial or full prepayment): 5‐year penalty with 5%, 4%, 3%, 2%, 1% stepdown fee structure; OR 4-year penalty with 5%, 4%, 3%, 2%
+R48:  | stepdown fee structure; OR 3‐year penalty with 5%, 4%, 3% stepdown fee structure; OR 2‐year penalty with 3% stepdown fee structure (year 1 and year 2 = 3%); OR 1‐year penalty with 3% fee.
+R49:  | Please see Deephaven Operational Prepayment Penalty Matrices for State restrictions.
+R50:  | Geographic Limitations | Philadelphia, PA:  Max LTV is reduced by 10% for all occupancies
+R51:  | Ineligible Geos | Delegated:  Primary & Second Home - NY. All Occupancies: HI - lava zones 1 & 2; All Occupancies: Baltimore City, MD
+R52:  | Non-Delegated:  Primary & Second Home - NY.  All Occupancies: HI - lava zones 1 & 2;  All Occupancies: Baltimore City, MD
+R53:  | Deephaven Mortgage® LLC. All rights reserved. This material is intended solely for the use of licensed mortgage bankers. Distribution to consumers is strictly prohibited. Program and rates are subject to change without notice. Not available in all states. Terms subject to qualification. Disclosures & Licenses: https://deephavenmortgage.com/disclosures-and-licenses/  NMLS Consumer Access:http://nmlsconsumeraccess.org/  NMLS #958425
+
+========== SHEET 3: DSCR ==========
+R1:  | DSCR | Correspondent |  |  |  | Effective Date:
+08/04/26
+R6:  | Email: correspondentlock@deephavenmortgage.com       Phone: (844) 346-2677 - Option 3
+R9:  | Eligibility Matrix | DSCR ≥ 1.00 |  |  | DSCR < 1.00 |  |  |  | Program Parameters
+R10:  | Loan Amount | FICO | Purchase & R/T |  | 24 |  | Purchase / Rate Term |  | 24 |  | Limits |  |  |  |  |  | 62
+R11:  | ≤ $1,500,000 | 720 | 0.8 |  | 0.8 |  | 0.75 |  | 0.7 |  | Minimum Loan Amount (DSCR ≥ 1.00x) |  |  |  |  |  | 75000
+R12:  | 700 |  | 0.8 |  | 0.75 |  | 0.75 |  | 0.65 |  | Minimum Loan Amount (DSCR < 1.00x) |  |  |  |  |  | 200000
+R13:  | 680 |  | 0.75 |  | 0.75 |  | 0.7 |  | 0.65 |  | 11 |  |  |  |  |  | 2500000
+R14:  | 640 |  | 0.7 |  | 0.7 |  | N/A |  | N/A |  | Maximum Cash Out | LTV ≤ 65% |  |  |  |  |  | 1000000
+R15:  | Foreign National |  | 0.7 |  | 0.6 |  | N/A |  | N/A |  | Maximum Cash Out | LTV > 65% |  |  |  |  |  | 500000
+R16:  | ≤ $2,000,000 | 700 | 0.8 |  | 0.75 |  | 0.7 |  | 0.65 |  | Foreign National Maximum Loan Amount |  |  |  |  |  | 1500000
+R17:  | 680 |  | 0.75 |  | 0.75 |  | 0.65 |  | 0.65 |  | 8
+R18:  | 660 |  | 0.65 |  | 0.65 |  | N/A |  | N/A |  | 5/6 ARM   5/6 ARM-IO   15Y/30Y Fixed   30Y Fixed-IO
+R19:  | ≤ $2,500,000 | 700 | 0.7 |  | 0.7 |  | 0.6 |  | 0.6 |  | Interest Only Features
+R20:  | 660 |  | 0.65 |  | 0.65 |  | N/A |  | N/A |  | Product |  |  |  |  |  | 21 |  | Amort | Maturity
+R21:  | Mortgage History | 0x30x12 |  |  | 30Y Fixed-IO |  |  |  |  |  |  |  |  |  |  |  | 10 Years |  | 20 Years | 30 Years
+R22:  | BK / FC / SS / DIL Seasoning | 36 Months |  |  | 5/6 ARM-IO |  |  |  |  |  |  |  |  |  |  |  | 10 Years |  | 20 Years | 30 Years
+R24:  | Other
+R25:  | Occupancy | Business Purpose Investment Properties only
+R26:  | Property Types | SFR, PUD, Townhome (Row Homes Ineligible), 2-4 Units, Condos & Non-Warrantable Condos (Max 80% LTV)
+R27:  | Rural Properties: Max 65% LTV / Purchase, R/T, and C/O (Long Term Rent only & DSCR > 1.0x), Rural max acreage limited to 10 acres with no agricultural and/or farm use
+R28:  | Short Term Rentals | Property Guard report required on all STR transactions | Min DSCR 1.15x | 5% LTV reduction vs matrix (75% Max) | Min FICO 720 | No First Time Investor / 2+ Unit / Rural / Unique Properties.
+R29:  | Refinace eligible with documented 12mo history of short term rental income.
+R30:  | Purchase -  AirDNA to be used for monthly rental income. Min 60% Occupancy Rate. Property income for qualifying: 80% of annual revenue divided by 12. Must be able to document ST rental
+R31:  | operator experience in last 12 months.
+R32:  | Reserves | Standard: 3 Months PITIA (Loan Amount ≤ $1mm) | 6 Months PITIA (Loan Amount > $1mm)
+R33:  | DSCR < 1.00x - 6 Months PITIA  | Foreign Nationals - 6 Months PITIA
+R34:  | Cash Out Amount | $1,000,000 Max Cash-Out (overlays apply); Cash-Out may be used towards reserves
+R35:  | Refinance Ownership Seasoning / Valuation | Ownership Seasoning | 0-6 Months |  |  | > 6 Months
+R36:  | Rate/Term |  | Lesser of Purchase Price + Improvements (or) Appraisal |  |  | Appraised Value
+R37:  | 24 |  | Lesser of Purchase Price + Improvements (or) Appraisal |  |  | Appraised Value
+R38:  | RTL / Renovation Cash Out |  | If purchased & renovated per appraisal w/ SSR of 2.5 and below; can use appraised value under (6) months ownership w/ max 75% LTV. See Guidelines for details.
+R39:  | Interest Only | Max LTV 80%; Min DSCR 1.00x
+R40:  | Subordinate Financing | Not Allowed
+R41:  | DSCR | DSCR = Gross Rents / PITIA (fully amortizing) or Gross Rents / ITIA (interest only loans)
+R42:  | DSCR < 1.00 | Minimum DSCR 0.75x
+R43:  | Vacant / Unleased properties ineligible for rate/term or cash-out refinances
+R44:  | No Rural Properties; Major Markets; No Rural locations
+R45:  | Loan Amounts < $125,000 | Max LTV is redcuced to 75%; Loan Amounts < $100k are limited to delegated delivery only
+R46:  | Lease / Gross Income | Lesser of Estimated Market Rent from Form 1007 or monthly rent from existing lease - higher lease rent allowed with (3) months receipt
+R47:  | Unleased Properties: 5% LTV reduction required on refinances, no LTV reduction for Purchase transactions
+R48:  | Unleased Properties (2+ unit): Max 1 vacant unit on refinances
+R49:  | Citizenship | US Citizens; Permanent Resident Aliens; Non-Permanent Resident Aliens (w/ US Credit).  Foreign Nationals: See guidelines for details.  Min DSCR Foreign National 1.00x
+R50:  | Assets | Sourced or seasoned for 30 days; Gift Funds allowed - See Guidelines for details.
+R51:  | Appraisal Review Product | FNMA CU score or FHLMC LCA score of 2.5; OR Approved AVM with valuation within 10% of appraised value and Confidence Factor ≥ 87% and FSD ≤ .13; OR Clear Capital CDA or like type product with
+R52:  | valuation within 10% of appraised value or field review
+R53:  | Full 2nd Appraisal required for the following transactions (i) Loan Amount > $2M, or loan amount with purpose C/O and loan amount >$1.5MM;  Form 216 can be utilized to obtain rental data if needed on
+R54:  | multi-family properties
+R55:  | First-Time Investor | Min DSCR 1.00, Min FICO 700, Long-Term Rental Only.
+R56:  | First-Time Homebuyers | Not Eligible; however if there are two or more borrowers and at least one if not a first-time homebuyer, the loan is eligible
+R57:  | Eligible Borrowers | Standard: Defined as borrowers with 12-month history of investment property ownership in the most recent 12 months
+R58:  | LLC Borrowing Entities: Domestic LLC required; US Citizen / Perm Resident / Non-Perm / Foreign National guarantors allowed - see guidelines for details
+R59:  | Credit | Standard: 3 tradelines reporting for 12+ months or 2 tradelines reporting for 24+ months all with activity in the last 12 months or one mortgage or installment tradeline for 36+ months with 12
+R60:  | months activity in the last 12 months.      Acceptable tradelines must show 0x60 in most recent 12 months from application date.
+R61:  | Qualifying FICO: The higher middle score when 3 agency scores are provided or the lower score when only 2 agency scores are provided, of all borrowers / guarantors.
+R62:  | Tradeline requirement is waived if the borrower's credit report reflects scores from all (3) bureaus & qualifying FICO score is 700+
+R63:  | Compliance | Compliance with all applicable federal and state regulations
+R64:  | Declining Markets | If property is located in a declining market as indicated by the appraisal, Max LTV is reduced by 5%
+R65:  | Prepayment Penalty | Investment Only; Standard = % of amount prepaid (partial or full prepayment): 5‐year penalty with 5%, 4%, 3%, 2%, 1% stepdown fee structure; OR 4-year penalty with 5%, 4%, 3%, 2%
+R66:  | stepdown fee structure; OR 3‐year penalty with 5%, 4%, 3% stepdown fee structure; OR 2‐year penalty with 3% stepdown fee structure (year 1 and year 2 = 3%); OR 1‐year penalty with 3% fee.
+R67:  | Please see Deephaven Operational Prepayment Penalty Matrices for State restrictions.
+R68:  | Seller Concessions | Up to 6% towards closing
+R69:  | Geographic Limitations | Philadelphia, PA:  Max LTV is reduced by 10% for all occupancies
+R70:  | Ineligible Geos | Delegated: HI - lava zones 1 & 2; Baltimore City, MD                    Non-Delegated: HI - lava zones 1 & 2; Baltimore City, MD
+R71:  | Deephaven Mortgage® LLC. All rights reserved. This material is intended solely for the use of licensed mortgage bankers. Distribution to consumers is strictly prohibited. Program and rates are subject to change without notice. Not available in all states. Terms subject to qualification. Disclosures & Licenses: https://deephavenmortgage.com/disclosures-and-licenses/  NMLS Consumer Access:http://nmlsconsumeraccess.org/  
+NMLS #958425
+
+========== SHEET 4: Super Jumbo ==========
+R1:  | Expanded Prime Super Jumbo | Correspondent |  |  |  | Effective Date:
+08/04/26
+R6:  | Email: correspondentlock@deephavenmortgage.com       Phone: (844) 346-2677 - Option 3
+R8:  | Program Max LTVs | Primary Residence |  |  |  |  | 3
+R10:  | Full Doc |  |  |  |  |  | Alternative Doc
+R11:  | Loan Amount | Reserves | DTI |  | FICO | Purchase | Refinance |  |  | Purchase |  |  | Refinance |  |  | Limits
+R12:  | ≤ $4,000,000 | 18 Months | 0.43 |  | 700 | 0.75 | 0.65 |  |  | 0.7 |  |  | 0.6 |  |  | 10 |  |  |  | 3500000
+R13:  | 0.38 |  |  |  | 660 (Purchase)
+680 (Refinance) | 0.75 | 0.65 |  |  | 0.7 |  |  | 0.6 |  |  | 11 |  |  |  | 5000000
+R14:  | ≤ $5,000,000 | 18 Months | 0.43 |  | 700 | 0.7 | N/A |  |  | 0.65 |  |  | N/A |  |  | 12 |  |  |  | 1000000
+R15:  | 24 Months |  | 0.35 |  | 680 | 0.65 | N/A |  |  | 0.65 |  |  | N/A |  |  | 14 |  |  |  | 0x30x24
+R16:  |  | BK Seasoning |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | 48 Months
+R17:  | Income | 15 |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | 48 Months
+R18:  | Full Documentation | 12 Month W-2s or Tax Returns |  |  | 8
+R19:  | Alternative Documentation | 12 Month Month Personal (or) Business Bank Statements |  |  | 30Y Fixed    5/6 ARM
+R20:  | 12 Month 1099 Income |  |  |  | Interest-Only is not permitted
+R22:  | Other
+R23:  | Occupancy | Primary Residence Only
+R24:  | Property Types | SFR, PUD, Townhomes (Row Homes Ineligible), Warrantable Condos, 2-4 Unit; Rural designated properties are ineligible
+R25:  | Cash Out | Cash-Out Proceeds may not be used for reserve requirements
+R26:  | Texas C/O not allowed
+R27:  | Declining Markets | If property is located in a declining market as indicated by the appraisal, Max LTV is reduced by 5%
+R28:  | Delayed Financing | Delayed financing transactions are allowed; treated as cash-out for eligibility & pricing purposes
+R29:  | Additional Reserves (Other REO) | Two months PITIA per additional financed property based on the PITIA of the subject property required up to max 36 months
+R30:  | First-Time Home Buyers | Ineligible
+R31:  | Subordinate Financing | No subordinate financing allowed
+R32:  | Citizenship | US Citizens & Permanent Resident Aliens only
+R33:  | Valuation Requirements | Two appraisals required on all loans; lower of both appraised values to be used for LTV calculation; All appraisals must comply with applicable USPAP, FIRREA, AIR, and HVCC compliance
+R34:  | regulations and standards; Properties zoned commercial, agricultural, or mixed use are ineligible
+R35:  | Assets | Sourced or seasoned for 30 days; Gift Funds are not allowed
+R36:  | Credit | Standard: 3 tradelines reporting for 12+ months or 2 reporting for 24+ months all with activity in the last 12 mo's or one mortgage/installment tradeline for 36+ months with 12 months activity
+R37:  | in the last 12 months.  Max 0x60x12 reporting on eligible tradelines. Qualifying FICO: The middle score of 3 or lower score when only 2 agency scores are provided, of primary wage earner
+R38:  | Escrows | Escrow waivers not permitted unless specified by state law
+R39:  | Compliance | Compliance with all applicable federal and state regulations;  No Section 32 or state high cost
+R40:  | Eligible Subject Property Location | Property must be in a Core-Based Statistical Area with more than 2mm people as of 2020 and cannot be in a Rural Area.  See below for eligible CBSA codes or link:
+R41:  | Combined Statistical Area | Combined Metropolitan Areas (USA): Combined, Metropolitan and Micropolitan Statistical Areas - Population Statistics, Charts and Map
+R42:  | 35620 New York–Newark-Jersey City; 31080 Los Angeles–Long Beach-Anaheim; 47900 Washington–Arlington-Alexandria; 16980 Chicago–Naperville-Elgin;
+R43:  | 19100 Dallas-Ft. Worth-Arlington; 14460 Boston–Cambridge-Newton; 26420 Houston–The Woodlands-Sugar Land; 37980 Philadelphia–Camden-Wilmington;
+R44:  | 33100 Miami-Ft. Lauderdale-Pompano Beach, FL; 19820 Detroit–Warren–Dearborn; 38060 Phoenix–Mesa-Chandler; 42660 Seattle–Tacoma-Bellevue; 33460 Minneapolis–St. Paul-Bloomington;
+R45:  | 17460 Cleveland-Elria; 19740 Denver-Aurora-Lakewood; 16740 Charlotte–Concord-Gastonia; 38900 Portland–Vancouver–Hillsboro; 41180 St. Louis; 41700 San Antonio–New Braunfels
+R46:  | 41860 San Francisco-Oakland-Berkeley; 38300 Pittsburgh; 40900 Sacramento–Roseville-Folsom; 26900 Indianapolis–Carmel–Anderson; 18140 Columbus; 28140 Kansas City;
+R47:  | 34980 Nashville-Davidson–Murfreesboro-Franklin; 17140 Cincinnati; 12420 Austin-Round Rock-Georgetown; 47900 Washington-Arlington-Alexandria;
+R48:  | 41740 San Diego-Chula Vista-Carlsbad; 45300 Tampa-St. Petersburg-Clearwater; 40140 Riverside-San Bernardino-Ontario;  41940 San Jose-Sunnyvale-Santa Clara;
+R49:  | 12060 Atlanta–Sandy Springs-Alpharetta; 36740 Orlando–Kissimmee-Sanford;  29820 Las Vegas–Henderson-Paradise; 12580 Baltimore-Columbia-Towson;
+R50:  | Seller Concessions | Up to 6% towards closing for all occupancies.
+R51:  | Geographic Limitations | Philadelphia, PA:  Max LTV is reduced by 10% for all occupancies
+R52:  | Ineligible Geos | NY, HI - lava zones 1 & 2;  Baltimore City, MD
+R53:  | Deephaven Mortgage® LLC. All rights reserved. This material is intended solely for the use of licensed mortgage bankers. Distribution to consumers is strictly prohibited. Program and rates are subject to change without notice. Not available in all states. Terms subject to qualification. Disclosures & Licenses: https://deephavenmortgage.com/disclosures-and-licenses/  NMLS Consumer Access:http://nmlsconsumeraccess.org/  NMLS #958425
+
+========== SHEET 5: ITIN ==========
+R1:  | ITIN | Correspondent |  |  |  | Effective Date:
+08/04/26
+R6:  | Email: correspondentlock@deephavenmortgage.com       Phone: (844) 346-2677 - Option 3
+R9:  | Program Max LTVs | Primary Residence |  |  | Second Homes & Investment |  |  |  |  |  | 3
+R11:  | Loan Amount | FICO | Purchase |  | Rate/Term |  | Cash-Out |  | Purchase & Rate/Term |  | Cash-Out |  | Limits
+R12:  | ≤ $1,500,000 | 720 | 0.8 |  | 0.8 |  | 0.65 |  | 0.7 |  | 0.65 |  | 10 |  |  | 100000
+R13:  | 700 |  | 0.8 |  | 0.8 |  | 0.6 |  | 0.7 |  | N/A |  | 11 |  |  | 1500000
+R14:  | 680 |  | 0.75 |  | 0.75 |  | N/A |  | N/A |  | N/A |  | 12 |  |  | 500000
+R15:  | Mortgage/Rental History |  |  |  |  |  |  |  |  |  |  |  |  |  |  | 0x30x12
+R16:  |  |  |  |  |  |  |  |  |  |  |  |  |  | FC / SS / DIL / BK Seasoning |  | 48 months
+R17:  | Income | 16 |  |  |  |  |  |  |  |  |  |  |  |  |  | 1500
+R18:  | Full Documentation | 1 Yr W-2 or Tax Return |  |  | Standard Max DTI |  |  |  |  |  |  |  |  |  |  | 0.5
+R19:  | Alternative Documentation
+(See Guidelines for details) | 12 Months Personal (or) Business Bank Statements |  |  | 8
+R20:  | 12 Months 1099 Income |  |  |  | 30Y Fixed     5/6 ARM
+R21:  | 12 Month Profit & Loss Statement - See Other for Details |  |  |  | Interest Only is not permitted
+R23:  | Other
+R24:  | Occupancy | Primary, Second Homes, Investment Properties
+R25:  | Reserves | Standard: 3 Months PITIA
+R26:  | Cash-Out / 2nd Home / Investor / LTV >80%: 6 Months PITIA
+R27:  | Minimum 3mo's reserves must come from borrowers own funds on any transaction
+R28:  | Eligible Property Types | SFR, PUD, Townhomes (Row Homes Ineligible), Condos, NW Condos, 2-4 Unit
+R29:  | 2-4 Units are ineligible on Second Home transactions
+R30:  | Ineligible Property Types | Rural Properties, Condotels, Co-ops, Manufactured Homes, Mobile Homes, Geodomes, Unique Properties
+R31:  | Profit & Loss Only | 2 Mo BS required | Max LTV 80% (Purchase) / 75% (Refinance)
+R32:  | FNMA CU score or FHLMC LCA scor of 2.5; OR Approved AVM with valuation within 10% of appraised value and Confidence Factor ≥ 87% and FSD ≤ .13; OR Clear Capital CDA or like type product with
+R33:  | Appraisal Review Product | valuation within 10% of appraised value or field review
+R34:  | Full 2nd Appraisal required for the following transactions (i) Loan Amount > $2M
+R35:  | Cash Out | Maximum Cash Out = $500,000; Cash Out may be used for reserve requirements
+R36:  | Residual Income | $1,500 plus an additional $150 per dependent
+R37:  | Subordinate Financing | Not permitted under the ITIN program
+R38:  | ITIN Documentation | See guidelines for details
+R39:  | Assets | Sourced or seasoned for 30 days; Gift Funds allowed - Minimum 5% Borrower Contribution - See Guidelines for details
+R40:  | Credit | Standard: 3 tradelines reporting for 12+ months or 2 tradelines reporting for 24+ months all with activity in the last 12 months or 1 mortgage or installment tradeline for 36+ months with 12 months activity
+R41:  | in the last 12 months. Limited tradelines are ineligible.
+R42:  | Qualifying FICO: The middle score if 3 agency scores are provided or lower score when only 2 agency scores are provided, of primary wage earner
+R43:  | Tradeline requirement is waived if primary wage earner credit report reflects scores from all (3) bureaus & qualifying FICO score is 700+
+R44:  | Compliance | Escrows required for HPML loans; Compliance with all applicable federal and state regulations; No Section 32 or state high cost
+R45:  | Declining Markets | If property is located in a declining market as indicated by the appraisal, Max LTV is reduced by 5%
+R46:  | Escrow Waivers | Not permitted under the ITIN program
+R47:  | Seller Concessions | Up to 6% towards closing for all occupancies.
+R48:  | Prepayment Penalty | Investment Only; Standard = % of amount prepaid (partial or full prepayment): 5‐year penalty with 5%, 4%, 3%, 2%, 1% stepdown fee structure; OR 4-year penalty with 5%, 4%, 3%, 2%
+R49:  | stepdown fee structure; OR 3‐year penalty with 5%, 4%, 3% stepdown fee structure; OR 2‐year penalty with 3% stepdown fee structure (year 1 and year 2 = 3%); OR 1‐year penalty with 3% fee.
+R50:  | Please see Deephaven Operational Prepayment Penalty Matrices for State restrictions.
+R51:  | Geographic Limitations | Philadelphia, PA:  Max LTV is reduced by 10% for all occupancies
+R52:  | Ineligible Geos | Delegated:  Primary & Second Home - NY. All Ocupancies: HI - lava zones 1 & 2; All Occpancies: Baltimore City, MD
+R53:  | Non-Delegated:  Primary & Second Home - NY.  All Occupancies: HI - lava zones 1 & 2;  All Occupancies: Baltimore City, MD
+R54:  | Deephaven Mortgage® LLC. All rights reserved. This material is intended solely for the use of licensed mortgage bankers. Distribution to consumers is strictly prohibited. Program and rates are subject to change without notice. Not available in all states. Terms subject to qualification. Disclosures & Licenses: https://deephavenmortgage.com/disclosures-and-licenses/  NMLS Consumer Access:http://nmlsconsumeraccess.org/  NMLS #958425
