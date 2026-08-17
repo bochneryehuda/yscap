@@ -30,6 +30,14 @@ export const ltApi = {
   },
   loan: (id) => ltGet(lt(`/pipeline/${encodeURIComponent(id)}`)),
 
+  // Reassign one role on one file to a PILOT person — or, with `staffId` null,
+  // clear the reassignment and go back to what Encompass says. Nothing is written
+  // to Encompass either way; this only decides whose pipeline the file is in here.
+  reassign: (loanId, role, { staffId = null, reason = '' } = {}) => ltPost(
+    lt(`/pipeline/${encodeURIComponent(loanId)}/contacts/${encodeURIComponent(role)}/override`),
+    { staffId, reason },
+  ),
+
   // THE BORROWER'S OWN long-term files. Behind BORROWER authentication (the
   // /api/lt/my seam), unlike everything else here — so it is the one call on this
   // client a client makes. No id is sent: the scope comes from the session.

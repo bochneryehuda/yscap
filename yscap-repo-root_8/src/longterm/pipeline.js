@@ -541,4 +541,10 @@ module.exports = {
   stageChips,
   ignoredScopeFilters,
   loadPipeline,
+  // Exposed for the tests only. `officerIsSql` is the predicate behind "filter the
+  // pipeline by officer", and a test that re-typed it would prove nothing about the
+  // fragment that actually runs — which matters here because it and the ACCESS scope
+  // (access.onFileSql) deliberately disagree about a reassigned file, and that
+  // disagreement is asserted rather than assumed.
+  _internals: { officerIsSql, UNASSIGNED_SQL },
 };

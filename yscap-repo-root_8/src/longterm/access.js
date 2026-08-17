@@ -117,11 +117,9 @@ function accessFor(staff, settings = {}) {
  * Returns `{where, params}` where `where` is either empty (sees everything) or a
  * predicate to AND onto the caller's WHERE.
  *
- * `own` resolves through lt_loan_contacts, and it deliberately honours BOTH sides
- * of the two-source assignment model: the Encompass-resolved `staff_id` AND a
- * PILOT-side `override_staff_id`. A file somebody was given locally is theirs even
- * though Encompass still names the previous officer — that is the entire point of
- * allowing an override.
+ * `own` resolves through lt_loan_contacts, honouring both sides of the two-source
+ * assignment model — the Encompass-resolved `staff_id` and the PILOT-side
+ * `override_staff_id` — the way `onFileSql` describes below.
  *
  * The fragment is a FUNCTION of its placeholder index, never a hard-coded `$1`.
  * (RTL learned this the hard way: a hard-coded placeholder becomes an unreferenced
@@ -134,12 +132,43 @@ function pipelineScopeSql(access, staffId, firstParamIndex = 1) {
 }
 
 /**
- * "Is this person ON this file?" — ANY contact role, both sides of the assignment.
+ * A REASSIGNMENT MOVES THE FILE WITHIN ITS ROLE SLOT, AND EVERY SLOT IS INDEPENDENT
+ * (owner-directed 2026-08-17): *"if you reassign the Loan Coordinator, then it should
+ * be moved … If there are a few options in Encompass for a few Loan Coordinators and
+ * you select one of them for one Coordinator and one of them for another Coordinator,
+ * then both of them should have it. If you reassign Processor, it should also move
+ * over. If you're just adding another Processor for another stage, then it should
+ * keep both."*
  *
- * Exported because "my files" has to mean ONE thing. `pipelineScopeSql` uses it to
- * decide what a scoped viewer may see at all, and the pipeline's "Mine" chip uses it
- * to count what an unscoped viewer is personally on. Written twice, the two would
- * drift, and the drift would show up as a processor whose own book is empty because
+ * Both halves fall out of ONE expression — `COALESCE(override_staff_id, staff_id)`
+ * per ROW, inside an EXISTS over every row:
+ *
+ *   · WITHIN a slot the override REPLACES Encompass's answer, so reassigning the
+ *     coordinator genuinely moves the file and the person Encompass names stops
+ *     seeing it through that slot. An override that merely ADDED somebody could
+ *     never take a file away from anybody — an officer who left the company would
+ *     keep every file they were ever named on.
+ *   · ACROSS slots nothing is taken away, because each row is judged on its own. A
+ *     second coordinator, or a processor added for another stage, is a DIFFERENT row
+ *     (`UNIQUE (loan_id, role)`), so both people hold the file through their own slot
+ *     and neither reassignment touches the other.
+ *
+ * This is also what removes a real drift. Every other reading of "whose file is
+ * this" — `pipeline.officerIsSql`, `UNASSIGNED_SQL`, the row's own `staffId`,
+ * `describeContact.effectiveStaffId` — was already this exact COALESCE; the access
+ * scope was the one outlier, so a reassigned file used to leave the previous
+ * officer's officer-filter while staying in their own pipeline. One question, one
+ * predicate.
+ *
+ * NOTHING MOVES ON A FILE THAT HAS NO OVERRIDE. With `override_staff_id` NULL the
+ * expression IS `staff_id`, so this is byte-identical to the rule it replaces on
+ * every loan nobody has reassigned — asserted, not assumed.
+ *
+ * "Is this person ON this file?" is exported because it has to mean ONE thing.
+ * `pipelineScopeSql` uses it to decide what a scoped viewer may see at all, the
+ * pipeline's "Mine" chip uses it to count what an unscoped viewer is personally on,
+ * and `mayOpenLoan` is its twin for a single file. Written three times, they would
+ * drift, and the drift shows up as a processor whose own book is empty because
  * somebody defined "mine" as "the loan officer is me".
  *
  * Takes the placeholder rather than an index, so the caller owns its own parameter
@@ -150,8 +179,17 @@ function onFileSql(ph) {
   return `EXISTS (
       SELECT 1 FROM lt_loan_contacts c
        WHERE c.loan_id = l.id
-         AND (c.staff_id = ${ph}::uuid OR c.override_staff_id = ${ph}::uuid)
+         AND COALESCE(c.override_staff_id, c.staff_id) = ${ph}::uuid
     )`;
+}
+
+/** The JS twin of `onFileSql`, for a caller holding rows rather than a query. It
+ *  MUST read the same way — a single file that opens for somebody the list would
+ *  never show them is the whole class this pair exists to prevent. */
+function effectiveStaffIdOf(c) {
+  const override = String((c && (c.override_staff_id || c.overrideStaffId)) || '');
+  const encompass = String((c && (c.staff_id || c.staffId)) || '');
+  return override || encompass;
 }
 
 /**
@@ -163,10 +201,10 @@ function mayOpenLoan(access, staffId, contacts = []) {
   if (access.seesAll) return true;
   const me = String(staffId || '');
   if (!me) return false;
-  return (contacts || []).some((c) => (
-    String(c.staff_id || c.staffId || '') === me
-    || String(c.override_staff_id || c.overrideStaffId || '') === me
-  ));
+  // The SAME rule `onFileSql` runs, expressed for rows in hand: the EFFECTIVE person
+  // per contact, so a file a reassignment moved away can no longer be opened by a
+  // direct link after it has left the list.
+  return (contacts || []).some((c) => effectiveStaffIdOf(c) === me);
 }
 
 /**
@@ -213,6 +251,30 @@ function mayManagePeople(staff, settings = {}) {
 }
 
 /**
+ * May this person reassign a file locally — set or clear a contact override?
+ *
+ * DELEGATES to `mayManagePeople` rather than restating its rule, because the two
+ * decisions are the same decision wearing two hats: confirming a link says "this
+ * login is that person" and moves every one of their files at once; an override
+ * says "this ONE file is that person's" and moves one. A buyer who narrows
+ * `access.adminRoles` means both, and two copies of the rule would eventually
+ * disagree about which.
+ *
+ * IT IS AN ADMIN GATE AND NOT A CONVENIENCE. An override is not a label: the
+ * pipeline scope matches `override_staff_id` (see `onFileSql`), so SETTING one
+ * GRANTS a person access to a file they could not otherwise open, and CLEARING one
+ * TAKES that access away. A scoped officer able to set their own would be able to
+ * read any file in the book by naming themselves on it.
+ *
+ * And, for the same reason `mayManagePeople` does it, this reads the person's REAL
+ * role and never the long-term role override — a settings typo must not be a route
+ * to granting yourself files.
+ */
+function mayReassignLoan(staff, settings = {}) {
+  return mayManagePeople(staff, settings);
+}
+
+/**
  * A plain-language reason, for a screen that has to explain an empty pipeline.
  * "You have no long-term files" and "nobody has linked your Encompass account yet"
  * look identical to a user and need completely different actions.
@@ -234,11 +296,13 @@ module.exports = {
   ADMIN_FLOOR_ROLE,
   adminRoles,
   mayManagePeople,
+  mayReassignLoan,
   longTermRoleFor,
   scopeForRole,
   accessFor,
   pipelineScopeSql,
   onFileSql,
+  effectiveStaffIdOf,
   mayOpenLoan,
   emptyPipelineReason,
 };
