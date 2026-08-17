@@ -73,6 +73,8 @@ const ratesheetAgreement = require('../ppe/ratesheet-agreement');
 const agreementScenarios = require('../ppe/agreement-scenarios');
 const lpAgreementLegs = require('../ppe/lp-agreement-legs');
 const agreementScenarioGenerator = require('../ppe/agreement-scenario-generator');
+const ratesheetCells = require('../ppe/ratesheet-cells');
+const ratesheetDiff = require('../ppe/ratesheet-diff');
 const suggestionMiner = require('../ppe/suggestion-miner');
 const pricingBreakdown = require('../ppe/pricing-breakdown');
 const lpNormalizeFull = require('../ppe/lp-normalize-full');
@@ -1605,6 +1607,94 @@ async function agreementRoute(req, res) {
 }
 
 /**
+ * WHAT CHANGED between two versions of this sheet? — the pre-publish read.
+ *
+ * A new version is loaded by pasting a vendor's grid over the previous one, and the question anybody
+ * asks before publishing it is which cells actually moved. `ratesheet-diff.js` answers exactly that —
+ * a keyed set-difference with a per-cell delta, plus §7.4's split of ordinary numeric refreshes from
+ * RULE changes — and it had nothing to hand it: nothing turned a stored sheet into the flat map it
+ * consumes. `ratesheet-cells.sheetToCells` is that missing half, and this is the door.
+ *
+ * IT DECIDES NOTHING AND WRITES NOTHING. The §7.4 classification is reported for what it tells a
+ * reader — "these are small numeric moves, these are rule changes" — and no cell is applied, published
+ * or auto-accepted here. Auto-apply belongs to the ingest path, which does not exist yet; a route that
+ * quietly applied a "safe" change to a live sheet would be a very different thing from a diff.
+ *
+ * THE DEFAULT COMPARISON IS THE PREVIOUS VERSION OF THE SAME PROGRAM, because that is the question
+ * being asked; any other version in the same scope can be named explicitly. A version from another
+ * tenant is a 404 like everywhere else on this router.
+ */
+async function rateSheetDiffRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+
+  let againstId = uuidOf(req.query.against);
+  if (req.query.against && !againstId) {
+    return res.status(400).json({ error: 'That is not a rate-sheet version id.', field: 'against' });
+  }
+  if (!againstId) {
+    // The previous version OF THIS PROGRAM — the sheet this one replaces.
+    const prev = await db.query(
+      `SELECT id FROM lt_ppe_rate_sheet_version
+        WHERE scope = $1 AND program_id = $2 AND version_no < $3
+        ORDER BY version_no DESC LIMIT 1`,
+      [found.scope, found.row.program_id, found.row.version_no],
+    );
+    againstId = prev.rows.length ? prev.rows[0].id : null;
+    if (!againstId) {
+      return res.status(200).json({
+        ok: true,
+        scope: found.scope,
+        versionId: found.versionId,
+        against: null,
+        // A first version is not an empty diff — everything on it is new, and saying "no changes"
+        // about a sheet nobody has seen before would be the most misleading answer available.
+        note: 'This is the first version of this rate sheet, so there is nothing to compare it against. Name another version with ?against= to compare across programs.',
+      });
+    }
+  }
+  if (againstId === found.versionId) {
+    return res.status(400).json({ error: 'A version cannot be compared against itself.', field: 'against' });
+  }
+  const againstRow = await store.rateSheetVersionInScope(db, found.scope, againstId);
+  if (!againstRow) return res.status(404).json({ error: 'No such rate-sheet version to compare against.', field: 'against' });
+
+  const [thisSheet, thatSheet] = await Promise.all([
+    store.loadRateSheet(db, found.versionId),
+    store.loadRateSheet(db, againstId),
+  ]);
+  const now = ratesheetCells.sheetToCells(thisSheet || {});
+  const before = ratesheetCells.sheetToCells(thatSheet || {});
+
+  const diff = ratesheetDiff.diffRulesets(before.cells, now.cells);
+  const classified = ratesheetDiff.classifyDiff(diff, {
+    maxDeltaMilli: intIn(req.query.maxDeltaMilli, 100000),
+    maxCellsChanged: intIn(req.query.maxCellsChanged, 100000),
+  });
+
+  return res.json({
+    ok: true,
+    scope: found.scope,
+    versionId: found.versionId,
+    version: { id: found.versionId, versionNo: found.row.version_no, status: found.row.status },
+    against: { id: againstId, versionNo: againstRow.version_no, status: againstRow.status },
+    counts: { now: now.counts, before: before.counts },
+    changed: diff.changed,
+    added: diff.added,
+    removed: diff.removed,
+    unchanged: diff.unchanged,
+    // §7.4's own split, reported for what it TELLS a reader. Nothing here applies anything.
+    ordinary: classified.autoApply,
+    needsReading: classified.review,
+    bulkEscalated: classified.bulkEscalated,
+    // Two rows addressing one cell is a loading mistake that would otherwise be invisible in every
+    // diff from here on, because the map can only hold one of them.
+    duplicates: { now: now.duplicates, before: before.duplicates },
+    note: 'This is a comparison, not an action: no cell is applied, published or accepted here. "Needs reading" is the §7.4 split — a rule change or a large move — not a refusal.',
+  });
+}
+
+/**
  * WHAT ON THIS SHEET CAN NOTHING EVER REACH? — the offline dead-cell guard.
  *
  * A rate sheet is loaded by a human from a vendor's PDF or spreadsheet, cell by cell, and a cell
@@ -1940,6 +2030,7 @@ router.put('/rate-sheets/:id/base-prices', requirePpeAdmin, wrap(setBasePricesRo
 router.put('/rate-sheets/:id/adjustments', requirePpeAdmin, wrap(setAdjustmentsRoute, 'lt_ppe_adjustments_error'));
 router.put('/rate-sheets/:id/price-limit', requirePpeAdmin, wrap(setPriceLimitRoute, 'lt_ppe_price_limit_error'));
 router.get('/rate-sheets/:id/coverage', requirePpeAdmin, wrap(rateSheetCoverageRoute, 'lt_ppe_ratesheet_coverage_error'));
+router.get('/rate-sheets/:id/diff', requirePpeAdmin, wrap(rateSheetDiffRoute, 'lt_ppe_ratesheet_diff_error'));
 router.get('/rate-sheets/:id/agreement', requirePpeAdmin, wrap(agreementRoute, 'lt_ppe_agreement_read_error'));
 router.post('/rate-sheets/:id/agreement/run', requirePpeAdmin, wrap(runAgreementRoute, 'lt_ppe_agreement_run_error'));
 router.post('/rate-sheets/:id/publish', requirePpeAdmin, wrap(publishRateSheetRoute, 'lt_ppe_publish_error'));
@@ -1951,7 +2042,7 @@ module.exports.handlers = {
   ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
   listSchedulesRoute, saveScheduleRoute, deleteScheduleRoute, canaryTickRoute,
   createInvestorRoute, createProgramRoute, createRateSheetRoute, getRateSheetRoute,
-  setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, rateSheetCoverageRoute, agreementRoute, runAgreementRoute,
+  setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, rateSheetCoverageRoute, rateSheetDiffRoute, agreementRoute, runAgreementRoute,
   publishRateSheetRoute,
 };
 module.exports._internals = {

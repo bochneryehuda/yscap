@@ -82,6 +82,17 @@ NULL on every finding either producer has ever written, so a later screen would 
 against whatever the sheet says today and would quietly answer about a different sheet). The
 explanation rides onto the recorded row, so it outlives the request that made it.
 
+## What changed between two versions of a sheet — now wired
+
+`ratesheet-diff.js` diffs two rulesets as a KEYED set-difference (a localized per-cell delta, plus
+§7.4's split of ordinary numeric refreshes from rule changes) and had nothing to hand it: nothing
+turned a STORED sheet into the flat `{ ruleKey → value }` map it consumes.
+`src/longterm/ppe/ratesheet-cells.js` is that missing half — the ONE definition of how a cell is
+addressed — and `GET /api/lt/ppe/rate-sheets/:id/diff` is the door, defaulting to the previous version
+of the same program. It DECIDES nothing: the §7.4 classification is reported for what it tells a
+reader, and no cell is applied, published or accepted (auto-apply belongs to the ingest path, which
+does not exist yet).
+
 ## The ledger
 
 | Module | Why it is not wired yet | What would wire it |
@@ -108,7 +119,6 @@ explanation rides onto the recorded row, so it outlives the request that made it
 | `src/longterm/ppe/rule-builder.js` | The universal rule / condition authoring layer (#48). | The rule-authoring editor (§2.11 TO-BUILD). |
 | `src/longterm/ppe/ppp-structures.js` | The reusable prepayment-penalty structure library (D31). | The rule-authoring editor, or a per-investor PPP screen. |
 | `src/longterm/ppe/ratesheet-ingest.js` | Rate-sheet ingestion normalizer. | A file-upload path for a sheet; the console pastes instead today. |
-| `src/longterm/ppe/ratesheet-diff.js` | Rate-sheet / ruleset change detection. | The daily drift run below, or a sheet-version comparison screen. |
 | `src/longterm/ppe/lp-drift.js` | Daily Lender-Price drift detection + classification (D19). | A scheduled run — deliberately not added, for the same reason the canary has no timer: a background loop calling a paid vendor is the owner's decision. |
 | `src/longterm/ppe/lp-daily-run.js` | The IO-injected wrapper tying the drift pieces together. | As above. |
 | `src/longterm/ppe/lp-daily-schedule.js` | The per-investor daily schedule for that run. | As above. |
