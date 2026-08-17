@@ -139,6 +139,21 @@ check(!('bytes' in doc.attachments[0]) && !('data' in doc.attachments[0]) && !('
   'and NOTHING that could hold the bytes: the paper stays in Encompass');
 check(mapper.readAttachment({ title: 'no id' }) === null, 'an attachment with no id is refused too');
 
+// ── "no files" and "the payload did not say" are different answers ──────────
+console.log('\n"this document has no files" is not the same answer as "the payload did not list any"');
+
+const STATED_EMPTY = mapper.readDocument({ id: 'd-90', title: 'W-2', attachments: [] });
+const NEVER_STATED = mapper.readDocument({ id: 'd-91', title: 'W-2' });
+
+check(doc.attachmentsStated === true && STATED_EMPTY.attachmentsStated === true,
+  'a payload that LISTED files — even an empty list — is marked as having answered the question');
+check(NEVER_STATED.attachmentsStated === false,
+  '…and one that never mentioned files is marked as having answered nothing: the retire sweep takes a file off a document when a read comes back without it, so reading silence as "it has none" would strip every file off every document at once');
+check(STATED_EMPTY.document.attachmentCount === 0 && NEVER_STATED.document.attachmentCount === null,
+  'an empty list counts ZERO and an absent one counts NOTHING — a confident 0 on a payload that never said is a claim we cannot make, and it is what a screen would print as "no files yet"');
+check(NEVER_STATED.attachments.length === 0,
+  '…and either way no attachment is invented');
+
 // ── Rule 3: the link runs document -> condition ─────────────────────────────
 console.log('\nthe link lives on the DOCUMENT, and is recorded even for a condition we do not hold');
 
@@ -328,8 +343,31 @@ check(/from '\.\/conditionGroups\.js'/.test(centerSrc)
 check(!/group\.open === 0|group\.open !== 0/.test(centerSrc),
   '…and does not re-derive "finished" beside it, which is how a section comes to sit open saying "all done"');
 
+// ── The files themselves reach the screen ──────────────────────────────────
+console.log('\nthe centre shows the FILES, not a count of them');
+
+check(/attachmentsForDocuments\(/.test(readSrc) && /FROM lt_document_attachments/.test(readSrc),
+  'the read side reads the attachment mirror at all — it was filled from the day the eFolder read shipped and NOTHING read it, so "3 files" was every word the screen could say about the paper');
+check(/row_number\(\)\s*OVER/.test(readSrc) && /count\(\*\)\s*OVER/.test(readSrc),
+  '…capped and counted in ONE query per page, so a loan with a hundred documents is not a hundred round trips, and the honest total survives the cap');
+check(/moreFiles/.test(readSrc) && /moreFiles/.test(centerSrc),
+  '…and a list that stopped short SAYS how many are left: a cut that does not announce itself reads as the whole truth');
+check(!/attachment_count/.test(readSrc),
+  'the count comes from the live rows and never from lt_documents.attachment_count — that column records what the payload LISTED, removed files included, so a slot whose only file was deleted in Encompass read "1 file" beside an empty list');
+check(/name:\s*safeText\(/.test(readSrc) && /addedBy:\s*safeText\(/.test(readSrc),
+  'a FILENAME is scrubbed for a client like any other free text — "Deephaven approval.pdf" is the reason the one definition exists, and a file list is exactly where an investor name reaches a borrower');
+check(!/encompass_uri/.test(readSrc),
+  '…and the pointer into Encompass is never sent: PILOT has no route that opens one, and a link that cannot be clicked is worse than none');
+check(/<FileList/.test(centerSrc) && (centerSrc.match(/<FileList/g) || []).length >= 2,
+  'and the screen renders the files under BOTH the condition\'s documents and the eFolder needs list — the two places a person asks "is the right paper in?"');
+
+check(/retireMissingAttachments\(/.test(syncSrc),
+  'a file that has left Encompass leaves the mirror too — conditions and documents both retired and attachments never did, which was invisible while the screen showed a number and a plain lie the moment it shows the names');
+check(/attachmentsStated/.test(syncSrc),
+  '…and only where the payload actually stated the list, so a shape that omits the key retires nothing rather than emptying every document at once');
+
 // A condition is never DELETED anywhere in the mirror.
-check(!/DELETE\s+FROM\s+lt_conditions|DELETE\s+FROM\s+lt_documents/i.test(syncSrc),
+check(!/DELETE\s+FROM\s+lt_conditions|DELETE\s+FROM\s+lt_documents|DELETE\s+FROM\s+lt_document_attachments/i.test(syncSrc),
   'and nothing is ever deleted: a row Encompass no longer lists is marked removed, because the record of what was once asked for has to survive');
 
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');

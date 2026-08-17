@@ -490,6 +490,36 @@ async function retireMissingDocuments(dbc, loanId, keptIds, syncedAt) {
   return rowCount;
 }
 
+/**
+ * Take off a document the files that are no longer on it.
+ *
+ * WITHOUT THIS THE MIRROR NEVER FORGETS A FILE. Conditions retire and documents
+ * retire; attachments did not, so paper deleted in Encompass stayed listed here
+ * for ever — harmless while the screen only showed a COUNT, and a plain lie the
+ * moment it shows the names, because somebody goes looking for a file that is
+ * not there any more.
+ *
+ * ONLY EVER CALLED WHERE THE PAYLOAD STATED THE LIST (`attachmentsStated`), which
+ * is what makes an EMPTY list safe to act on here — unlike the loan-level
+ * document sweep, which refuses an empty read outright. A document that came back
+ * saying it holds no files is Encompass answering the question; a document whose
+ * payload never mentioned files answered nothing, and this is not called at all.
+ *
+ * Soft-deleted like everything else in the eFolder: the record that a file was
+ * once here survives, and the read side is the one place it stops being shown.
+ */
+async function retireMissingAttachments(dbc, documentId, keptIds, syncedAt) {
+  const { rowCount } = await dbc.query(
+    `UPDATE lt_document_attachments
+        SET is_removed = true, encompass_synced_at = $3, updated_at = now()
+      WHERE document_id = $1::uuid
+        AND NOT (encompass_attachment_id = ANY($2::text[]))
+        AND is_removed = false`,
+    [documentId, keptIds, syncedAt],
+  );
+  return rowCount;
+}
+
 /** Read + mirror one loan's eFolder. Same failure posture as the conditions half. */
 async function syncDocumentsForLoan(loanId, loanGuid, opts = {}) {
   const client = opts.client || lazy.client;
@@ -509,12 +539,23 @@ async function syncDocumentsForLoan(loanId, loanGuid, opts = {}) {
     await dbc.query('BEGIN');
     const kept = [];
     let attachments = 0;
+    let attachmentsRetired = 0;
     let links = 0;
     for (const one of read.rows) {
       const docId = await upsertDocument(dbc, loanId, one.document, syncedAt);
       kept.push(one.document.encompassDocumentId);
       if (!docId) continue;
-      for (const a of one.attachments) { await upsertAttachment(dbc, docId, a, syncedAt); attachments += 1; }
+      const keptFiles = [];
+      for (const a of one.attachments) {
+        await upsertAttachment(dbc, docId, a, syncedAt);
+        keptFiles.push(a.encompassAttachmentId);
+        attachments += 1;
+      }
+      // Silence is not an answer: a payload that never listed this document's
+      // files retires none of them.
+      if (one.attachmentsStated) {
+        attachmentsRetired += await retireMissingAttachments(dbc, docId, keptFiles, syncedAt);
+      }
       for (const l of one.conditionLinks) { await upsertLink(dbc, docId, l, syncedAt); links += 1; }
     }
     const retired = await retireMissingDocuments(dbc, loanId, kept, syncedAt);
@@ -526,7 +567,7 @@ async function syncDocumentsForLoan(loanId, loanGuid, opts = {}) {
     await dbc.query('COMMIT');
     return {
       ok: true, stored: read.rows.length, seen: read.seen, unreadable: read.unreadable,
-      attachments, links, resolved, retired,
+      attachments, attachmentsRetired, links, resolved, retired,
     };
   } catch (e) {
     try { await dbc.query('ROLLBACK'); } catch { /* the connection is going back either way */ }
@@ -669,5 +710,5 @@ module.exports = {
   syncConditionsForLoan,
   syncDocumentsForLoan,
   syncOnce,
-  _internals: { upsertCondition, upsertComment, upsertDocument, upsertAttachment, upsertLink, resolveLinks, retireMissingConditions, retireMissingDocuments, dueLoans },
+  _internals: { upsertCondition, upsertComment, upsertDocument, upsertAttachment, upsertLink, resolveLinks, retireMissingConditions, retireMissingDocuments, retireMissingAttachments, dueLoans },
 };

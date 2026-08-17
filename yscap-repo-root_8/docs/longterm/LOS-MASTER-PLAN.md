@@ -434,6 +434,37 @@ because their user *is* the broker; ours cannot. `AUDIENCE-RULES.md` outranks an
 > Its payload shape is recorded as UNVERIFIED (`COMMENT_SHAPE`), and the mirror is
 > written to fail loudly rather than duplicate if we turn out to be wrong about it.
 >
+> **AND THE FILES THEMSELVES, not a count of them (2026-08-17).** `lt_document_attachments`
+> was filled from the day the eFolder read shipped and READ BY NOTHING: the centre said
+> "3 files" and never named one, so the owner's *"with all the documents in there linked"*
+> was a number. Each document now carries its files — name, pages, size, who added it and
+> when — under the condition it answers AND on the eFolder needs list, which are the two
+> places somebody asks whether the right paper is in. Three things about it are
+> load-bearing:
+>
+> - **A file that has left Encompass leaves the list.** Conditions retired and documents
+>   retired; attachments never did, so deleted paper stayed listed for ever — invisible
+>   while the screen showed a number and a plain lie the moment it shows the names.
+>   `retireMissingAttachments` is that sweep, and like everything in the eFolder it marks
+>   `is_removed` rather than deleting: the record that a document was once here has to
+>   survive.
+> - **Silence is not an answer.** The sweep runs ONLY where the payload actually stated the
+>   file list (`attachmentsStated`). An empty list is Encompass saying the slot is empty —
+>   an ordinary, meaningful state — while an ABSENT key says nothing at all, and reading
+>   the second as the first would strip every file off every document at once. Whether this
+>   endpoint can omit the key is UNVERIFIED, so the reader reports what it saw and the
+>   caller refuses to act on nothing.
+> - **The count is of what is THERE.** `lt_documents.attachment_count` records what the
+>   payload LISTED, removed files included, so a slot whose only file had been deleted read
+>   "1 file" beside an empty list. The screen counts the live rows instead. A filename and
+>   an uploader are free text a human typed, so both go through the one investor scrub —
+>   a file list is exactly where a name reaches a borrower.
+>
+> The pointer into Encompass (`encompass_uri`) is deliberately NOT sent to the screen:
+> PILOT has no route that opens one, and a link that cannot be clicked is worse than none.
+> Building that download is a decision about where borrower paper flows, and nobody has
+> asked for it.
+>
 > **What has NOT changed:**
 >
 > - **`conditions.enabled` still defaults to `false`**, and it is checked in the SYNC as well

@@ -203,7 +203,16 @@ function readDocument(raw) {
   const id = str(raw.id) || str(raw.documentId) || str(raw.guid);
   if (!id) return null;
 
-  const attachmentsRaw = Array.isArray(raw.attachments) ? raw.attachments : [];
+  // "THIS DOCUMENT HAS NO FILES" AND "THE PAYLOAD DID NOT LIST ITS FILES" ARE
+  // DIFFERENT ANSWERS, and collapsing them is how a mirror wipes itself. The
+  // retire sweep takes an attachment off a document when the read comes back
+  // without it — correct when Encompass STATED the list and it was empty (an
+  // empty needs-list slot is an ordinary, meaningful state), and catastrophic
+  // when the key was simply absent, which would retire every file on every
+  // document at once. Whether this endpoint ever omits the key is UNVERIFIED, so
+  // the reader reports what it saw and lets the caller refuse to act on silence.
+  const attachmentsStated = Array.isArray(raw.attachments);
+  const attachmentsRaw = attachmentsStated ? raw.attachments : [];
   const linksRaw = Array.isArray(raw.conditions) ? raw.conditions : [];
 
   const attachments = [];
@@ -245,8 +254,12 @@ function readDocument(raw) {
       daysTillExpire: int(raw.daysTillExpire),
 
       // What Encompass SHOWED us on this read, so a screen can say "3 files" without
-      // a second query. The attachment ROWS remain the source of truth.
-      attachmentCount: attachments.length,
+      // a second query. The attachment ROWS remain the source of truth — this
+      // counts what the payload LISTED, removed files included, which is why the
+      // read side counts the live rows instead of trusting it. NULL where the
+      // payload never stated a list: a confident 0 there would be a claim we
+      // cannot make.
+      attachmentCount: attachmentsStated ? attachments.length : null,
 
       isRemoved: bool(raw.isRemoved) === true,
       encompassCreatedBy: entityName(raw.createdBy),
@@ -254,6 +267,7 @@ function readDocument(raw) {
       raw,
     },
     attachments,
+    attachmentsStated,
     conditionLinks,
   };
 }

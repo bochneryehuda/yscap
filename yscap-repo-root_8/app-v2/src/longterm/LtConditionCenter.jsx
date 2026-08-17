@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ltApi } from './api.js';
 import { groupConditions, groupDone, groupSummary } from './conditionGroups.js';
-import { plain, day } from './format.js';
+import { plain, day, fileSize } from './format.js';
 
 /**
  * THE CONDITION CENTER, on one loan — READ ONLY.
@@ -141,12 +141,13 @@ function ConditionCard({ item }) {
           </div>
           <ul style={{ margin: 0, paddingLeft: 16, color: INK, fontSize: 13 }}>
             {item.documents.map((d) => (
-              <li key={d.id} style={{ overflowWrap: 'anywhere' }}>
+              <li key={d.id} style={{ overflowWrap: 'anywhere', marginBottom: 4 }}>
                 {plain(d.title)}
                 <span style={{ color: MUTED, fontSize: 12 }}>
                   {d.status ? ` · ${plain(d.status)}` : ''}
                   {d.attachments ? ` · ${d.attachments} file${d.attachments === 1 ? '' : 's'}` : ' · no files yet'}
                 </span>
+                <FileList files={d.files} more={d.moreFiles} />
               </li>
             ))}
           </ul>
@@ -157,6 +158,47 @@ function ConditionCard({ item }) {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The files sitting on one document — the paper itself, not a count of it.
+ *
+ * A COUNT WAS NOT THE ASK. The centre said "3 files" and never named them, so
+ * nobody could tell whether the right paper was in the slot without opening
+ * Encompass — which is the whole thing this screen exists to save. Each file says
+ * what it is (name), how much of it there is (size, pages) and who put it there
+ * and when, because "the appraisal is in" and "somebody dropped a one-page fax in
+ * the appraisal slot yesterday" look identical until you can see that.
+ *
+ * NOTHING IS CLICKABLE, AND THAT IS DELIBERATE. The mirror keeps a pointer into
+ * Encompass, never the paper, and PILOT has no route that opens one — so a link
+ * here would be a promise the system cannot keep. The name is what a person takes
+ * back to the eFolder to find it.
+ *
+ * THE CAP SAYS SO. A slot with more files than the list shows prints how many are
+ * left rather than quietly ending — a list that stops without saying it stopped
+ * reads as the whole truth.
+ */
+function FileList({ files, more }) {
+  if (!files || !files.length) return null;
+  return (
+    <ul style={{ margin: '3px 0 0', paddingLeft: 14, listStyle: 'none' }}>
+      {files.map((f) => (
+        <li key={f.id} style={{ fontSize: 12, color: MUTED, overflowWrap: 'anywhere', padding: '1px 0' }}>
+          <span style={{ color: INK }}>{plain(f.name)}</span>
+          {f.pages ? ` · ${f.pages} page${f.pages === 1 ? '' : 's'}` : ''}
+          {f.size == null ? '' : ` · ${fileSize(f.size)}`}
+          {f.addedBy ? ` · added by ${plain(f.addedBy)}` : ''}
+          {f.addedAt ? ` · ${day(f.addedAt)}` : ''}
+        </li>
+      ))}
+      {more > 0 ? (
+        <li style={{ fontSize: 12, color: MUTED, padding: '1px 0' }}>
+          and {more} more file{more === 1 ? '' : 's'} on this document
+        </li>
+      ) : null}
+    </ul>
   );
 }
 
@@ -180,6 +222,7 @@ function DocumentRow({ item }) {
           {item.forBorrower ? <span>{plain(item.forBorrower)}</span> : null}
           <span>{item.attachments ? `${item.attachments} file${item.attachments === 1 ? '' : 's'}` : 'no files yet'}</span>
         </div>
+        <FileList files={item.files} more={item.moreFiles} />
       </div>
     </div>
   );

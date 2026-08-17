@@ -224,6 +224,104 @@ async function main() {
     check(center.sync.conditionsSyncedAt instanceof Date,
       'and the screen can say when this was last read, so it is not asking to be believed on nothing');
 
+    // ── The FILES, not a count of them ──────────────────────────────────────
+    // The attachment mirror was filled from the day the eFolder read shipped and
+    // NOTHING read it: the centre could say "1 file" and never its name.
+    console.log('\nthe files on a document');
+
+    const filed = center.conditions.items.find((i) => i.encompassId === 'c-A').documents[0];
+    check(Array.isArray(filed.files) && filed.files.length === 1,
+      'the condition\'s document carries the file itself — "with all the documents in there linked" is a document list, not a number');
+    check(filed.files[0].name === 'Appraisal.pdf' && filed.files[0].pages === 41,
+      '…named, and with enough of it to tell a 41-page appraisal from a one-page fax somebody dropped in the appraisal slot');
+    check(typeof filed.files[0].size === 'number' && filed.files[0].size === 4210233,
+      '…and its size as a NUMBER, not the string a bigint column hands back, so a screen can format it');
+    check(filed.attachments === 1 && filed.moreFiles === 0,
+      'the count travels with the list and agrees with it');
+    const needs = center.documents.items.find((i) => i.encompassId === 'd-1');
+    check(!!needs && needs.files.length === 1 && needs.files[0].name === 'Appraisal.pdf',
+      'and the eFolder needs list carries them too — the other place somebody asks "is the right paper in?"');
+    const emptyDoc = center.documents.items.find((i) => i.encompassId === 'd-2');
+    check(!!emptyDoc && emptyDoc.files.length === 0 && emptyDoc.attachments === 0,
+      'a document with nothing on it says so rather than inventing a row');
+
+    // ── A file deleted in Encompass leaves the list ─────────────────────────
+    // Conditions retired and documents retired; attachments never did. Harmless
+    // while the screen showed a number, and a plain lie now it shows the names.
+    console.log('\na file that is no longer in Encompass');
+
+    const dropped = stubClient([COND_A, COND_B], [{ ...DOC_1, attachments: [] }, DOC_2]);
+    const dr = await sync.syncDocumentsForLoan(loanId, GUID, { client: dropped });
+    check(dr.ok && dr.attachmentsRetired === 1,
+      'a read that comes back without it retires it, and SAYS it did');
+    const keptRow = await db.query(
+      `SELECT a.is_removed FROM lt_document_attachments a JOIN lt_documents d ON d.id = a.document_id
+        WHERE d.loan_id = $1::uuid AND a.encompass_attachment_id = 'a-1'`, [loanId]);
+    check(keptRow.rows.length === 1 && keptRow.rows[0].is_removed === true,
+      '…by marking it removed, never by deleting it — the record that this paper was once here has to survive');
+    const afterDrop = await read.documentsForLoan(loanId, { audience: 'internal' });
+    check(afterDrop.items.find((i) => i.encompassId === 'd-1').files.length === 0,
+      'and the read is the one place it stops being shown');
+
+    // It comes back if Encompass lists it again.
+    const restored = stubClient([COND_A, COND_B], [DOC_1, DOC_2]);
+    await sync.syncDocumentsForLoan(loanId, GUID, { client: restored });
+    const afterRestore = await read.documentsForLoan(loanId, { audience: 'internal' });
+    check(afterRestore.items.find((i) => i.encompassId === 'd-1').files.length === 1,
+      'a file listed again is shown again — the retire is a state, not a tombstone');
+
+    // ── Silence retires nothing ─────────────────────────────────────────────
+    console.log('\na payload that never mentions files');
+
+    const silentDoc = { id: 'd-1', title: 'Appraisal', titleWithIndex: 'Appraisal', status: 'received',
+      milestone: { entityId: '9', entityName: 'Submittal' }, dateCreated: '2026-05-30T12:00:00Z',
+      conditions: DOC_1.conditions };
+    const silent = stubClient([COND_A, COND_B], [silentDoc, DOC_2]);
+    const sr = await sync.syncDocumentsForLoan(loanId, GUID, { client: silent });
+    check(sr.ok && sr.attachmentsRetired === 0,
+      'a document whose payload never listed its files retires none of them — whether this endpoint can omit the key is UNVERIFIED, and reading silence as "it has none" would strip every file off every document at once');
+    const afterSilence = await read.documentsForLoan(loanId, { audience: 'internal' });
+    check(afterSilence.items.find((i) => i.encompassId === 'd-1').files.length === 1,
+      '…so the file is still there');
+
+    // ── The count is of what is THERE, not of what was listed ───────────────
+    console.log('\na file Encompass lists as already removed');
+
+    const flagged = stubClient([COND_A, COND_B],
+      [{ ...DOC_1, attachments: [{ ...DOC_1.attachments[0], isRemoved: true }] }, DOC_2]);
+    await sync.syncDocumentsForLoan(loanId, GUID, { client: flagged });
+    const stored = await db.query(
+      `SELECT attachment_count FROM lt_documents WHERE loan_id = $1::uuid AND encompass_document_id = 'd-1'`,
+      [loanId]);
+    check(stored.rows[0].attachment_count === 1,
+      'the column still records that the payload LISTED one file');
+    const afterFlag = await read.documentsForLoan(loanId, { audience: 'internal' });
+    const flaggedDoc = afterFlag.items.find((i) => i.encompassId === 'd-1');
+    check(flaggedDoc.files.length === 0 && flaggedDoc.attachments === 0,
+      '…while the screen counts what a person can actually open: trusting that column showed "1 file" beside an empty list on a slot whose only paper had been deleted');
+
+    // Put it back for whatever runs after this.
+    await sync.syncDocumentsForLoan(loanId, GUID, { client: stubClient([COND_A, COND_B], [DOC_1, DOC_2]) });
+
+    // ── A filename is free text a human typed ───────────────────────────────
+    console.log('\nthe investor name never reaches a client, in a filename either');
+
+    const named = stubClient([COND_A, COND_B], [{
+      ...DOC_1,
+      attachments: [{ id: 'a-9', title: 'Deephaven approval.pdf', fileSize: 1200,
+        url: 'https://enc/att/a-9', createdBy: { entityName: 'Deephaven' } }],
+    }, DOC_2]);
+    await sync.syncDocumentsForLoan(loanId, GUID, { client: named });
+    const clientDocs = await read.documentsForLoan(loanId, { audience: 'borrower' });
+    const clientFiles = clientDocs.items.find((i) => i.encompassId === 'd-1').files;
+    check(clientFiles.length === 1 && !/deephaven/i.test(JSON.stringify(clientFiles)),
+      'a client is sent the file WITHOUT the investor\'s name in it — a filename and an uploader are free text, and a file list is exactly where one reaches a borrower');
+    const staffFiles = (await read.documentsForLoan(loanId, { audience: 'internal' }))
+      .items.find((i) => i.encompassId === 'd-1').files;
+    check(staffFiles.some((f) => /Deephaven/.test(String(f.name))),
+      '…and staff still see it as it is written, because they are who the name is for');
+    await sync.syncDocumentsForLoan(loanId, GUID, { client: stubClient([COND_A, COND_B], [DOC_1, DOC_2]) });
+
     // ── The conversation on a condition ─────────────────────────────────────
     console.log('\nthe thread on a condition');
 
