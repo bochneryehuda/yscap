@@ -89,9 +89,16 @@ ok(/to="\/internal\/lt\/ppe"/.test(layout), 'ROUTE-3 …and the long-term nav li
 {
   const inkAsText = [...src.matchAll(/color:\s*['"]?var\(--ink[^)]*\)/g)].map((m) => m[0]);
   ok(inkAsText.length === 0, `INK-1 no --ink* token is used as a text colour (${inkAsText.join(', ') || 'none'})`);
-  // and the screen states its own dark values rather than inheriting something unknown
-  ok(/const INK = '#141B22'/.test(src), 'INK-2 the screen pins an explicit dark ink');
-  ok(/#4B585C/.test(src), 'INK-3 …and an explicit dark muted for secondary text');
+  // The dark values are PINNED — the screen never inherits a colour it cannot name. They moved out
+  // of this file into ppeStyles.js when the rate-sheet console arrived, so that both PPE screens draw
+  // from one definition rather than two that drift; the RULE is unchanged, so the guard follows the
+  // definition rather than being deleted. Both files are checked for the --ink trap above and below.
+  const tokens = read('app-v2/src/longterm/ppeStyles.js');
+  ok(/export const INK = '#141B22'/.test(tokens), 'INK-2 the shared tokens pin an explicit dark ink');
+  ok(/#4B585C/.test(tokens), 'INK-3 …and an explicit dark muted for secondary text');
+  ok(/from '\.\/ppeStyles\.js'/.test(src), 'INK-3a …and this screen takes its colours from them, not from a second copy');
+  const tokenInkAsText = [...tokens.matchAll(/color:\s*['"]?var\(--ink[^)]*\)/g)].map((m) => m[0]);
+  ok(tokenInkAsText.length === 0, `INK-3b no --ink* token is used as a text colour in the shared tokens either (${tokenInkAsText.join(', ') || 'none'})`);
 }
 
 // ---------------------------------------------------------------------------

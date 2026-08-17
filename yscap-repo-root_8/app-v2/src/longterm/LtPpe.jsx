@@ -6,6 +6,10 @@ import { ltApi } from './api.js';
 // branch — the one that exists because a DATE column parses as UTC midnight and prints the day
 // before — never applies to it, so the shared helper is the right reading and not a second one.
 import { rate, day } from './format.js';
+// The tokens live in ppeStyles.js so this screen and the rate-sheet console cannot drift into two
+// slightly different cards. Same values, one definition.
+import { INK, MUTED, SLATE, GOLD, PAPER, card, h2, sub, eyebrow } from './ppeStyles.js';
+import RateSheetConsole from './RateSheetConsole.jsx';
 
 // ---------------------------------------------------------------------------
 // The Product & Pricing Engine, made visible.
@@ -38,23 +42,6 @@ import { rate, day } from './format.js';
 // Dark text on the white PILOT canvas throughout — never a `--ink*` token, which
 // is a LIGHT paper colour in this palette and renders white-on-white.
 // ---------------------------------------------------------------------------
-
-const INK = '#141B22';
-const MUTED = '#4B585C';
-const SLATE = '#3A4550';
-const GOLD = '#AE8746';
-const PAPER = '#F4F1EA';
-
-const card = {
-  border: '1px solid rgba(20,27,34,.12)', borderRadius: 12, padding: 16,
-  background: '#fff', marginBottom: 14,
-};
-const h2 = { margin: '0 0 4px', fontSize: 16, color: INK };
-const sub = { margin: '0 0 12px', fontSize: 13, color: MUTED };
-const eyebrow = {
-  fontSize: 11, letterSpacing: '.09em', textTransform: 'uppercase',
-  color: MUTED, fontWeight: 700,
-};
 
 function Pill({ tone, children }) {
   const tones = {
@@ -530,6 +517,9 @@ export default function LtPpe() {
         ))}
       </div>
 
+      {/* ---- onboard an investor and load its rate sheet ---- */}
+      <RateSheetConsole />
+
       {/* ---- what each sheet is compared AGAINST (db/574) ---- */}
       <div style={card}>
         <h2 style={h2}>What each rate sheet is compared against</h2>
@@ -823,8 +813,9 @@ export default function LtPpe() {
       )}
 
       <p style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>
-        Promotion and rate-sheet loading are deliberately not on this screen yet — a decision this page
-        cannot record durably would be worse than no button. See <code>src/longterm/ppe/README.md</code>.
+        Rate-sheet loading is on this screen now (the card at the top). PROMOTION to live is still
+        deliberately absent — that is a decision this page cannot yet record durably, and a button
+        whose decision goes nowhere is worse than no button. See <code>src/longterm/ppe/README.md</code>.
       </p>
     </LtLayout>
   );
