@@ -15,6 +15,8 @@ const express = require('express');
 const lp = require('../lenderprice/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
 const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
+const { lpScenarioToFacts } = require('../ppe/lp-agreement-legs');
+const { evaluateInformational } = require('../ppe/informational');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -268,6 +270,15 @@ function priceErrorBody(r) {
   return out;
 }
 
+// §2.6 — THE INFORMATIONAL PRODUCT LAYER (D26/D34): the non-blocking notes a chosen product carries —
+// reserves (months), cash-out-toward-reserves, the small-loan LTV cut, and the LOUD delegate-only
+// exception. PURE + independent of Lender Price (computed from the scenario facts), so it enriches the
+// response without touching the priced result. Never throws → null on any failure. The reserve DOLLAR
+// is left to the caller/UI (it needs the product's monthly PITIA); months + notes are always available.
+function informationalOf(sc) {
+  try { return evaluateInformational(lpScenarioToFacts(sc)); } catch (_e) { return null; }
+}
+
 // §36.11 — the REQUESTED scenario, echoed back exactly as the caller sent it (minus the request
 // envelope keys, which are not pricing inputs). Paired with `derivedScenario` and `effectiveScenario`
 // this is what lets a caller prove a short request was expanded into the intended full DSCR profile
@@ -309,12 +320,12 @@ async function price(req, res) {
   // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
   if (req.body && req.body.full) {
     const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    const out = { ok: true, ...full, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+    const out = { ok: true, ...full, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), informational: informationalOf(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
-  const out = { ok: true, ...trimPrograms(parsed), requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  const out = { ok: true, ...trimPrograms(parsed), requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), informational: informationalOf(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
   // §2.5 — audit-mode rung digest: the full per-program rate ladder for a point-for-point diff
   // against the Lender Price frontend. Off by default (audit:true), so the ordinary response is
   // unchanged.
@@ -461,4 +472,4 @@ function makeRouter() {
 }
 
 module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
-  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf, rungDigest, trimPrograms } };
+  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf, rungDigest, trimPrograms, informationalOf } };

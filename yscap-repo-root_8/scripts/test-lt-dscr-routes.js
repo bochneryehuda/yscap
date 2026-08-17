@@ -90,6 +90,17 @@ const dq = { ready: true, lenderCount: 3, itemCount: 8, reasonCount: 8, lenders:
   ok(trimmed.programs[0].minRate === 6.5 && !('rungs' in trimmed.programs[0]), 'the default trimmed summary is unchanged (no rung ladder)');
 }
 
+// 2e) §2.6 the informational product layer (D26/D34) attached to the price response.
+{
+  const { informationalOf } = dp._internals;
+  const big = informationalOf({ purpose: 'Purchase', value: 1.5e6, loan: 1.2e6, fico: 760, dscr: 1.25 });
+  ok(big && big.reserves && big.reserves.months === 6, 'informationalOf: a $1.2M loan carries 6 months reserves');
+  const small = informationalOf({ purpose: 'Purchase', value: 150000, loan: 90000, fico: 760, dscr: 1.25 });
+  ok(small.exceptions.length === 1 && small.exceptions[0].code === 'delegate_only_exception' && small.exceptions[0].requiresException,
+    'informationalOf: a $90k loan surfaces the loud delegate exception');
+  ok(informationalOf({ garbage: true }) !== undefined, 'informationalOf never throws on a junk scenario');
+}
+
 // 3) Exercise the secret gate directly by pulling its first layer's handle.
 //    layer[0] is the gate middleware added by router.use((req,res,next)=>{...}).
 const gate = diag.stack && diag.stack[0] && diag.stack[0].handle;
