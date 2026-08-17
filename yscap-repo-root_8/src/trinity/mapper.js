@@ -39,6 +39,14 @@ const COMPLETED_IDS = new Set([
 // state of its own (the work has still been inspected/ordered).
 const ATTENTION_IDS = new Set([
   STATUS.ON_HOLD, STATUS.WAITING_DOCS, STATUS.WAITING_DOCS_RELEASE, STATUS.WAITING_PAYMENT,
+  // "Change Date to Inspect" (67) is Trinity asking US for a new date. It deliberately
+  // carries NO state (it says nothing about progress — see readStatus below), but it is
+  // still somebody waiting on us, which is exactly what the attention flag is for: with
+  // it absent the desk showed an order sitting in "ordered" with nothing to explain why
+  // it was not moving. Confirmed against the LIVE production status list on 2026-08-16,
+  // where it is one of only two of the nineteen statuses we had no opinion about (the
+  // other, "Recurring" (113), is a scheduling concept and correctly stays silent).
+  STATUS.CHANGE_DATE,
 ]);
 
 const STATE_BY_STATUS = new Map([
