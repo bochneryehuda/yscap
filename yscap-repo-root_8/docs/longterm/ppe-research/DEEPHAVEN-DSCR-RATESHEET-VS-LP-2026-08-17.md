@@ -108,7 +108,46 @@ prepay LLPA is *"measured but not yet wired into Layer-1."* Against the real she
   sheet lists **no row for 1.00 – 1.14** at all, and LP's own containers are "1.00-1.24" / "< 1.00".
   Do not guess this band — it needs one live measurement at DSCR 1.10.
 
-## 4. ⚠ The one thing that must be settled LIVE before encoding — a SIGN conflict
+## 4. ⛔ RESOLVED LIVE — and it is SYSTEMIC: our sheet captured LP's MAGNITUDES and lost the SIGN
+
+The probe below was run live (2026-08-17, same loan, only the DSCR moved; FICO 760, CLTV 50%, NY,
+coupon 7.500). It settles the question and exposes a much larger defect than the one row.
+
+| DSCR | LP price @ 7.500 | LP itemized line | vs baseline |
+| --- | --- | --- | --- |
+| 1.30 | **105.925** | `SimpleRateAdjustment 0.25` | **+0.25 BETTER** |
+| 1.20 | 105.675 | *(no DSCR line)* | baseline |
+| 1.10 | 105.675 | *(no DSCR line)* | baseline |
+| 0.95 | **104.925** | `SimpleRateAdjustment 0.75` | **−0.75 WORSE** |
+
+**The rate sheet is right and we are wrong.** A strong DSCR (≥1.25) is a **CREDIT** of 0.25, exactly
+as the sheet states; we encode it as a 0.25 **charge**. Two further things fall out, and the third is
+the real one:
+
+1. **The 1.00–1.14 gap is answered**: DSCR 1.10 prices identically to 1.20, so the sheet's
+   "1.15 – 1.24" row and LP's "1.00-1.24" container agree — anything 1.00–1.24 is the 0 baseline.
+2. **The arithmetic closes exactly**, which is what proves the reading: at DSCR 1.20 LP reports
+   `adjustmentPoints = −0.5`, and the sheet gives FICO 760-779 @ 50 CLTV = **+0.875** (credit) with
+   NY = **−0.375** (charge): `−(0.875) + 0.375 = −0.5`. ✅
+3. **⛔ THE SYSTEMIC DEFECT — LP displays ABSOLUTE VALUES; the DIRECTION lives on the rate sheet.**
+   Our `LP_TABLES.FICO_CLTV_LP` row for 760-779 is `[0.875, 0.75, 0.625, 0.5, 0.125, 0.25, 1.125]`
+   — all positive. The **sheet's** row is `[0.875, 0.75, 0.625, 0.5, 0.125, −0.25, −1.125]`. The last
+   two cells are CHARGES on the sheet and we recorded them with the same sign as the credits, then
+   `cost(v) = −v` negated everything uniformly. So:
+   - a genuine **credit** cell (low CLTV) is encoded as a **charge** — wrong by twice its value;
+   - a genuine **charge** cell (high CLTV) comes out right, by accident.
+
+   This is why the harness could report that our sheet "reproduces Lender Price's itemized values"
+   while the resulting PRICE was still wrong: **the magnitudes matched and the signs did not.**
+
+**Consequence + the fix (not applied here).** Layer 1 must be rebuilt from the **Excel** — which
+carries the true signs — not from LP's displayed magnitudes, using
+`matrices/deephaven-dscr-ratesheet-corr-t0.json` as the source of truth, with the agreement harness
+re-run afterwards to confirm the FINAL PRICE (not the itemized magnitudes) matches LP. Nothing has
+been re-encoded in this pass: this is a pricing change across the whole grid and it gets its own
+careful commit with the price, not the magnitude, as the assertion.
+
+## 4b. The original flag (now superseded by the measurement above)
 
 The sheet is premium-positive throughout (FICO 780+ = +1 at 50 CLTV improves the price; FICO 640-659
 = −2.5 worsens it), and our sheet negates LP's cost-positive values (`cost(v) = -v`), so the two
