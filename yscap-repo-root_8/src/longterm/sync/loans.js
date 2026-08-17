@@ -35,6 +35,7 @@ const contacts = require('../people/contacts');
 const locks = require('../locks');
 const milestones = require('../milestones');
 const productTerm = require('../product-term');
+const borrowerMatch = require('../borrower-match');
 
 const lazy = {
   get db() { return require('../db'); },
@@ -72,10 +73,11 @@ async function upsertDiscovered(dbc, loan, settings) {
   const { rows } = await dbc.query(
     `INSERT INTO lt_loans
        (id, encompass_loan_guid, loan_number, loan_amount, milestone_name, stage_key,
-        loan_folder, encompass_last_modified, updated_at)
-     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7::timestamptz, now())
+        loan_folder, borrower_name, encompass_last_modified, updated_at)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $8, $7::timestamptz, now())
      ON CONFLICT (encompass_loan_guid) DO UPDATE SET
        loan_number = COALESCE(EXCLUDED.loan_number, lt_loans.loan_number),
+       borrower_name = COALESCE(EXCLUDED.borrower_name, lt_loans.borrower_name),
        loan_amount = COALESCE(lt_loans.loan_amount, EXCLUDED.loan_amount),
        milestone_name = COALESCE(EXCLUDED.milestone_name, lt_loans.milestone_name),
        stage_key = COALESCE(EXCLUDED.stage_key, lt_loans.stage_key),
@@ -85,8 +87,11 @@ async function upsertDiscovered(dbc, loan, settings) {
          COALESCE(lt_loans.encompass_last_modified, EXCLUDED.encompass_last_modified)),
        updated_at = now()
      RETURNING id, encompass_synced_at, encompass_last_modified`,
+    // Discovery has always READ `Loan.BorrowerName` and thrown it away. It is the
+    // only thing an admin can recognise a loan's borrower BY while deciding a
+    // link, and it costs nothing — it is already on the row we are writing.
     [loan.encompassLoanGuid, loan.loanNumber, loan.loanAmount, milestoneName, stageKey,
-      loan.loanFolder, loan.lastModified],
+      loan.loanFolder, loan.lastModified, loan.borrowerName || null],
   );
   return rows[0];
 }
@@ -150,6 +155,30 @@ async function readLoan(loanId, guid, settings) {
     (fv && (fv['1401'] != null ? fv['1401'] : fv[1401])) ?? (loan && loan.loanProgramName) ?? '',
   ).trim() || null;
 
+  // WHO IS THE BORROWER? `lt_loans.borrower_id` has existed since db/549 and
+  // nothing has ever written it, so a borrower signing in sees none of their
+  // long-term files (owner-directed 2026-08-16). The link is proposed by matching
+  // the borrower's EMAIL against their PILOT profile, and the address is right
+  // here on the loan we already hold — field 1240,
+  // `$.applications[0].borrower.emailAddressText`, filled on 92.4% of the DSCR
+  // cohort (dictionary/field-dictionary.json, 772 loans, 2026-08-14). Read off the
+  // JSON for the same reason the term and the program are: the LT client does not
+  // split a failed fieldReader batch, so one unpermitted id would blank the team
+  // and the lock for every loan. A value read BY NUMBER still wins where a caller
+  // already has one — the same field sits at a different path from loan to loan.
+  const app0 = (loan && Array.isArray(loan.applications) && loan.applications[0]) || null;
+  const b0 = (app0 && app0.borrower) || null;
+  const byNum = (id) => (fv && (fv[String(id)] != null ? fv[String(id)] : fv[id])) ?? undefined;
+  const text = (v) => String(v == null ? '' : v).trim() || null;
+  const borrowerFirst = text(byNum(4000) ?? (b0 && b0.firstName));
+  const borrowerLast = text(byNum(4002) ?? (b0 && b0.lastName));
+  // Stored normalised, because the matcher compares lowercased on both sides and
+  // an index on a column half of whose rows carry stray casing is a lookup miss
+  // dressed up as "no such borrower".
+  const borrowerEmail = borrowerMatch.normalizeEmail(
+    byNum(1240) ?? (b0 && b0.emailAddressText),
+  ) || null;
+
   // What we held BEFORE the write, because the write is what destroys the evidence.
   // Encompass's own milestone log is 403 on this tenant, so noticing that the
   // milestone is not what it was is the only history available — and it can only be
@@ -162,6 +191,9 @@ async function readLoan(loanId, guid, settings) {
             stage_key = COALESCE($3, stage_key),
             term_months = COALESCE($4, term_months),
             program_name = COALESCE($5, program_name),
+            borrower_first_name = COALESCE($6, borrower_first_name),
+            borrower_last_name = COALESCE($7, borrower_last_name),
+            borrower_email = COALESCE($8, borrower_email),
             encompass_synced_at = now(),
             encompass_sync_error = NULL,
             updated_at = now()
@@ -169,7 +201,12 @@ async function readLoan(loanId, guid, settings) {
     // COALESCE(new, old) — the milestone's own rule. A read that could not see the
     // term (an older payload, a partial read) must never BLANK one we already hold;
     // a real change still lands, because Encompass is the authority on both.
-    [loanId, milestoneName, stageKey, termMonths, programName],
+    // The borrower's identity rides the same COALESCE rule, and it matters more
+    // here than anywhere else on the row: blanking an email would silently drop
+    // every loan on that address out of its confirmed link, and the borrower would
+    // watch their own files disappear from their login with nothing having changed.
+    [loanId, milestoneName, stageKey, termMonths, programName,
+      borrowerFirst, borrowerLast, borrowerEmail],
   );
 
   // A first sighting is recorded as a BASELINE, never as an arrival — we cannot know
@@ -254,12 +291,21 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
     if (out.ok) read += 1; else failed += 1;
   }
 
+  // A borrower link a human confirmed YESTERDAY has to reach a loan that arrived
+  // TODAY. The decision is recorded against the email address, and a freshly
+  // mirrored loan carries that address with no `borrower_id` — so without this the
+  // borrower would have to be re-confirmed for every new loan, forever, and nobody
+  // would. Best-effort by construction: it never throws and it can never undo the
+  // mirror above, so a failure costs one pass, not the sync.
+  const links = await require('../borrower-links').applyConfirmedLinks();
+
   return {
     ok: true,
     discovered: found.loans.length,
     due: due.length,
     read,
     failed,
+    borrowersLinked: links.linked || 0,
     remaining: Math.max(0, due.length - readBudget),
     truncated: found.truncated,
   };
