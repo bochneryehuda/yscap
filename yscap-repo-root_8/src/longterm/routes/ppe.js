@@ -68,6 +68,7 @@ const scheduleStore = require('../ppe/schedule-store');
 const scenarioMatrix = require('../ppe/scenario-matrix');
 const ratesheet = require('../ppe/ratesheet');
 const ruleStore = require('../ppe/rule-store');
+const agreementStore = require('../ppe/agreement-store');
 const suggestionMiner = require('../ppe/suggestion-miner');
 const pricingBreakdown = require('../ppe/pricing-breakdown');
 const lpNormalizeFull = require('../ppe/lp-normalize-full');
@@ -1311,6 +1312,321 @@ async function setProgramLpScopeRoute(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// Onboarding + the rate-sheet console (§2.11 "no admin screen consumes the built
+// createInvestor/createProgram/rate-sheet writers yet")
+//
+// THE DEFECT THIS CLOSES is the one this workstream keeps finding: complete, tested machinery with
+// no caller. Every rate-sheet writer in `ppe/store.js` — createInvestor, createProgram,
+// createRateSheetVersion, replaceBasePrices, replaceAdjustments, setPriceLimit,
+// publishRateSheetVersion — had ZERO callers anywhere in `src/`. So an investor could not be
+// onboarded through the product at all, no sheet could be loaded, and the ≥200-scenario agreement
+// gate added at the publish guarded a door that did not exist.
+//
+// FOUR RULES RUN THROUGH ALL OF IT:
+//
+//   1. OWNERSHIP IS CHECKED BEFORE ANYTHING IS TOUCHED. A version id arrives off an HTTP request, and
+//      `loadRateSheet` is unscoped while the write helpers rewrite a whole grid — so every one of
+//      these routes resolves the version through `store.rateSheetVersionInScope` FIRST and answers a
+//      plain 404 otherwise. Another tenant's sheet must not be readable, let alone rewritable.
+//   2. ONLY A DRAFT IS EDITABLE. The store's own design is append-only and effective-dated ("a
+//      version's grid is set once"), so rewriting a PUBLISHED version in place would change what
+//      every live quote prices from, with no new version, no new effective date, and no fresh
+//      agreement run — silently. A published sheet is superseded by a NEW version, never edited.
+//   3. NOBODY TYPES AN AGREEMENT RESULT. There is deliberately no route that records a passing
+//      agreement run from a request body: a hand-typed "agreed on 240 scenarios" would satisfy the
+//      gate without a single scenario being compared, which is precisely the state the gate exists to
+//      make impossible. A run comes from the harness. The human path is the OVERRIDE, which is
+//      honest about being one and records who and why.
+//   4. A REFUSAL IS THE ANSWER, AND IT NAMES THE WAY FORWARD. The publish refusal carries the gate's
+//      own reason and message plus the override shape, because a gate whose remedy the reader cannot
+//      work out is the dead end this file has already recorded twice.
+// ---------------------------------------------------------------------------
+
+/** Bound on a single write, so one request cannot post an unbounded grid. */
+const MAX_SHEET_ROWS = 5000;
+
+/** A finite number, else null — never NaN, never a coerced string into a numeric column. */
+function numOrNull(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+/** A required finite number; returns { ok, value } so the caller can name the field it refused. */
+function reqNum(v) { const n = numOrNull(v); return n == null ? { ok: false } : { ok: true, value: n }; }
+
+/** A non-empty trimmed string within a length bound, else null. */
+function textOrNull(v, max = 200) {
+  const s = v == null ? '' : String(v).trim();
+  return s && s.length <= max ? s : null;
+}
+
+/**
+ * Resolve a :versionId param to a version row IN THIS SCOPE, or answer and return null.
+ * `opts.draftOnly` additionally refuses a version that is no longer a draft (rule 2 above).
+ */
+async function resolveVersion(req, res, opts = {}) {
+  const scope = readScope(req);
+  const versionId = uuidOf(req.params.id);
+  if (!versionId) { res.status(400).json({ error: 'That is not a rate-sheet version id.' }); return null; }
+  const row = await store.rateSheetVersionInScope(db, scope, versionId);
+  if (!row) { res.status(404).json({ error: 'No such rate-sheet version.' }); return null; }
+  if (opts.draftOnly && row.status !== 'draft') {
+    res.status(409).json({
+      error: `This rate sheet is ${row.status}, so its grid can no longer be edited.`,
+      status: row.status,
+      // The way forward, said out loud — otherwise this reads as the feature being broken.
+      remedy: 'Create a NEW version for this program and build the grid there. A published sheet is what live quotes price from, so it is superseded by a new version rather than rewritten underneath them.',
+    });
+    return null;
+  }
+  return { scope, versionId, row };
+}
+
+async function createInvestorRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const code = textOrNull(b.code, 60);
+  const name = textOrNull(b.name, 200);
+  if (!code) return res.status(400).json({ error: 'Give the investor a short code (for example DHVN).', field: 'code' });
+  if (!name) return res.status(400).json({ error: 'Give the investor its full name.', field: 'name' });
+
+  // `store.createInvestor` is deliberately IDEMPOTENT — it UPSERTs on (scope, code) so an ingestion
+  // pass can re-run safely, and that contract is not changed here. But a HUMAN typing a code that
+  // already exists is not re-running an ingestion: they believe they are creating a new investor, and
+  // the upsert would quietly RENAME the existing one instead. So the console door refuses the
+  // collision and leaves the idempotency intact for programmatic callers.
+  //
+  // Check-then-act, so two people submitting the same code at the same instant could both pass this
+  // check. The outcome is benign BECAUSE the store upserts — one row, the later name wins, nothing
+  // corrupted — which is exactly why this is a pre-check and not a unique-violation catch.
+  const clash = await db.query('SELECT id, name FROM lt_ppe_investor WHERE scope = $1 AND code = $2', [scope, code]);
+  if (clash.rows.length) {
+    return res.status(409).json({
+      error: `An investor with the code ${code} already exists (${clash.rows[0].name}).`,
+      field: 'code',
+      investorId: clash.rows[0].id,
+    });
+  }
+  const inv = await store.createInvestor(db, scope, { code, name, createdBy: (req.actor && req.actor.id) || null });
+  return res.status(201).json({ ok: true, scope, investor: { id: inv.id, code: inv.code, name: inv.name } });
+}
+
+async function createProgramRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const code = textOrNull(b.code, 60);
+  const name = textOrNull(b.name, 200);
+  const investorId = uuidOf(b.investorId);
+  if (!investorId) return res.status(400).json({ error: 'Say which investor this program belongs to.', field: 'investorId' });
+  if (!code) return res.status(400).json({ error: 'Give the program a short code (for example DSCR30).', field: 'code' });
+  if (!name) return res.status(400).json({ error: 'Give the program its full name.', field: 'name' });
+
+  // The investor is checked IN SCOPE — a program must never be hung off another tenant's investor.
+  const inv = await db.query('SELECT id FROM lt_ppe_investor WHERE id = $1 AND scope = $2', [investorId, scope]);
+  if (!inv.rows.length) return res.status(404).json({ error: 'No such investor.', field: 'investorId' });
+
+  // Same reasoning as createInvestorRoute: the store UPSERTs so ingestion can re-run, and the human
+  // door refuses the collision so nobody renames an existing program by accident. NOTE the key is
+  // (scope, investor_id, code) — the SAME code under a DIFFERENT investor is a different program and
+  // must still be allowed, so this check is scoped to the investor too.
+  const clash = await db.query(
+    'SELECT id, name FROM lt_ppe_program WHERE scope = $1 AND investor_id = $2 AND code = $3',
+    [scope, investorId, code]);
+  if (clash.rows.length) {
+    return res.status(409).json({
+      error: `This investor already has a program with the code ${code} (${clash.rows[0].name}).`,
+      field: 'code',
+      programId: clash.rows[0].id,
+    });
+  }
+  const program = await store.createProgram(db, scope, {
+    investorId, code, name,
+    channel: textOrNull(b.channel, 60) || undefined,
+    createdBy: (req.actor && req.actor.id) || null,
+  });
+  return res.status(201).json({
+    ok: true, scope,
+    program: { id: program.id, code: program.code, name: program.name, channel: program.channel, status: program.status },
+    // Said at creation rather than discovered later on an empty findings list.
+    note: 'This program has no Lender Price scope yet, so its shadow comparison abstains until one is set.',
+  });
+}
+
+async function createRateSheetRoute(req, res) {
+  const scope = readScope(req);
+  const programId = uuidOf(req.params.id);
+  if (!programId) return res.status(400).json({ error: 'That is not a program id.' });
+  const p = await db.query('SELECT * FROM lt_ppe_program WHERE id = $1 AND scope = $2', [programId, scope]);
+  const program = p.rows[0];
+  if (!program) return res.status(404).json({ error: 'No such program.' });
+
+  const b = req.body || {};
+  const channel = textOrNull(b.channel, 60) || program.channel || undefined;
+
+  // The version number is DERIVED, not asked for. Two people onboarding the same program would
+  // otherwise both type "1" and the second would collide on a unique key with nothing explaining it.
+  const seq = await db.query(
+    'SELECT COALESCE(MAX(version_no), 0)::int AS n FROM lt_ppe_rate_sheet_version WHERE scope = $1 AND program_id = $2',
+    [scope, programId]);
+  const versionNo = seq.rows[0].n + 1;
+
+  const version = await store.createRateSheetVersion(db, scope, {
+    programId, versionNo, channel,
+    sourceFormat: textOrNull(b.sourceFormat, 40),
+    createdBy: (req.actor && req.actor.id) || null,
+  });
+  return res.status(201).json({
+    ok: true, scope, programId,
+    version: { id: version.id, versionNo: version.version_no, channel: version.channel, status: version.status },
+    note: 'A draft. Load its grid, its LLPAs and its price limits, then publish it — publishing asks the Lender Price agreement gate first.',
+  });
+}
+
+async function getRateSheetRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+  const sheet = await store.loadRateSheet(db, found.versionId);
+  const gate = await agreementStore.gateStatus(found.scope, found.versionId, { db });
+  return res.json({
+    ok: true,
+    scope: found.scope,
+    version: {
+      id: found.row.id, versionNo: found.row.version_no, channel: found.row.channel,
+      status: found.row.status, programId: found.row.program_id,
+      effectiveFrom: found.row.effective_from || null, effectiveTo: found.row.effective_to || null,
+    },
+    basePrices: (sheet && sheet.basePrices) || [],
+    adjustments: (sheet && sheet.adjustments) || [],
+    priceLimit: (sheet && sheet.priceLimit) || null,
+    editable: found.row.status === 'draft',
+    // The gate's verdict travels WITH the sheet, so a console can say why Publish is refused before
+    // anyone presses it rather than after.
+    agreement: { proven: gate.proven, reason: gate.reason, message: gate.message },
+  });
+}
+
+async function setBasePricesRoute(req, res) {
+  const found = await resolveVersion(req, res, { draftOnly: true });
+  if (!found) return undefined;
+  const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : null;
+  if (!rows) return res.status(400).json({ error: 'Send a `rows` array of base prices.' });
+  if (rows.length > MAX_SHEET_ROWS) return res.status(400).json({ error: `That is more than ${MAX_SHEET_ROWS} rows in one write.` });
+
+  // EVERY row is checked BEFORE ANY is written — a half-written grid prices real loans. Same rule the
+  // completeness panels follow: nothing is filed until everything is acceptable.
+  const clean = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const r = rows[i] || {};
+    const rate = reqNum(r.noteRateMilliPct);
+    const lock = reqNum(r.lockDays);
+    const price = reqNum(r.priceMilli);
+    if (!rate.ok) return res.status(400).json({ error: `Row ${i + 1} has no note rate.`, row: i + 1, field: 'noteRateMilliPct' });
+    if (!lock.ok) return res.status(400).json({ error: `Row ${i + 1} has no lock period.`, row: i + 1, field: 'lockDays' });
+    if (!price.ok) return res.status(400).json({ error: `Row ${i + 1} has no price.`, row: i + 1, field: 'priceMilli' });
+    clean.push({
+      noteRateMilliPct: Math.round(rate.value), lockDays: Math.round(lock.value),
+      priceMilli: Math.round(price.value), product: textOrNull(r.product, 60) || '',
+    });
+  }
+  const written = await store.replaceBasePrices(db, found.scope, found.versionId, clean);
+  return res.json({ ok: true, scope: found.scope, versionId: found.versionId, rows: written });
+}
+
+async function setAdjustmentsRoute(req, res) {
+  const found = await resolveVersion(req, res, { draftOnly: true });
+  if (!found) return undefined;
+  const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : null;
+  if (!rows) return res.status(400).json({ error: 'Send a `rows` array of adjustments.' });
+  if (rows.length > MAX_SHEET_ROWS) return res.status(400).json({ error: `That is more than ${MAX_SHEET_ROWS} rows in one write.` });
+
+  const clean = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const a = rows[i] || {};
+    const dimension = textOrNull(a.dimension, 60);
+    const adj = reqNum(a.adjMilli);
+    if (!dimension) return res.status(400).json({ error: `Row ${i + 1} does not say which dimension it adjusts on.`, row: i + 1, field: 'dimension' });
+    // A blank adjustment is REFUSED rather than stored as 0: an LLPA that silently prices at zero is
+    // indistinguishable from one that was never loaded, and it is the sheet a quote prices from.
+    if (!adj.ok) return res.status(400).json({ error: `Row ${i + 1} has no adjustment amount.`, row: i + 1, field: 'adjMilli' });
+    clean.push({
+      dimension,
+      ficoMin: numOrNull(a.ficoMin), ficoMax: numOrNull(a.ficoMax),
+      ltvMin: numOrNull(a.ltvMin), ltvMax: numOrNull(a.ltvMax),
+      dscrMin: numOrNull(a.dscrMin), dscrMax: numOrNull(a.dscrMax),
+      predicate: (a.predicate && typeof a.predicate === 'object') ? a.predicate : null,
+      adjMilli: Math.round(adj.value),
+      adjustmentTarget: textOrNull(a.adjustmentTarget, 40) || 'price',
+      unit: textOrNull(a.unit, 40) || 'points',
+      cumulative: a.cumulative !== false,
+      priority: Math.round(numOrNull(a.priority) || 0),
+      reason: textOrNull(a.reason, 200),
+      code: textOrNull(a.code, 80),
+      meta: (a.meta && typeof a.meta === 'object') ? a.meta : {},
+    });
+  }
+  const written = await store.replaceAdjustments(db, found.scope, found.versionId, clean);
+  return res.json({ ok: true, scope: found.scope, versionId: found.versionId, rows: written });
+}
+
+async function setPriceLimitRoute(req, res) {
+  const found = await resolveVersion(req, res, { draftOnly: true });
+  if (!found) return undefined;
+  const b = req.body || {};
+  const row = await store.setPriceLimit(db, found.scope, found.versionId, {
+    minPriceMilli: numOrNull(b.minPriceMilli) == null ? null : Math.round(numOrNull(b.minPriceMilli)),
+    roundingIncrementMilli: numOrNull(b.roundingIncrementMilli) == null ? undefined : Math.round(numOrNull(b.roundingIncrementMilli)),
+    roundingMode: textOrNull(b.roundingMode, 40) || undefined,
+    capTiers: Array.isArray(b.capTiers) ? b.capTiers : [],
+    onExceed: textOrNull(b.onExceed, 40) || undefined,
+  });
+  return res.json({ ok: true, scope: found.scope, versionId: found.versionId, priceLimit: row });
+}
+
+async function agreementRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+  const gate = await agreementStore.gateStatus(found.scope, found.versionId, { db });
+  const history = await agreementStore.listForVersion(found.scope, found.versionId, { db });
+  return res.json({
+    ok: true, scope: found.scope, versionId: found.versionId,
+    proven: gate.proven, reason: gate.reason, message: gate.message,
+    minComparableScenarios: agreementStore.MIN_COMPARABLE_SCENARIOS,
+    history,
+    // Said plainly, because the obvious next question on a refusal is "so how do I record one?".
+    note: 'An agreement run is recorded by the Lender Price agreement harness, never typed in here — a hand-entered result would satisfy this gate without a single scenario being compared.',
+  });
+}
+
+async function publishRateSheetRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+  const b = req.body || {};
+  const out = await store.publishRateSheetVersion(db, found.scope, found.versionId, {
+    override: b.override === true,
+    overrideBy: (req.actor && (req.actor.email || req.actor.id)) || null,
+    overrideReason: textOrNull(b.overrideReason, 500),
+    nowMs: Date.now(),
+  });
+  if (out && out.refused) {
+    return res.status(409).json({
+      ok: false,
+      error: out.refused.message,
+      reason: out.refused.reason,
+      gate: out.refused.gate || null,
+      // Rule 4: the refusal names the two ways forward, so this can never read as a dead end.
+      remedy: {
+        measure: 'Run the Lender Price agreement harness against this sheet — that records a run and, if it agrees, the gate opens on its own.',
+        override: 'Or publish it anyway by sending { "override": true, "overrideReason": "<why>" }. That is recorded against this version with your name on it, and it never counts as proof the sheet agrees.',
+      },
+    });
+  }
+  return res.json({
+    ok: true, scope: found.scope, versionId: found.versionId,
+    version: { id: out.id, versionNo: out.version_no, status: out.status, effectiveFrom: out.effective_from || null },
+  });
+}
+
+// ---------------------------------------------------------------------------
 
 router.get('/health', wrap(health, 'lt_ppe_health_error'));
 router.get('/settings', wrap(getSettings, 'lt_ppe_settings_error'));
@@ -1337,14 +1653,29 @@ router.post('/suggestions/mine', requirePpeAdmin, wrap(mineSuggestionsRoute, 'lt
 router.get('/programs/:id/lp-scope', requirePpeAdmin, wrap(getProgramLpScopeRoute, 'lt_ppe_lp_scope_read_error'));
 router.post('/programs/:id/lp-scope', requirePpeAdmin, wrap(setProgramLpScopeRoute, 'lt_ppe_lp_scope_write_error'));
 
+// Onboarding + the rate-sheet console. ALL admin-gated: these writers decide what every quote on this
+// program prices from. There is deliberately NO route that records an agreement RUN — see rule 3 above.
+router.post('/investors', requirePpeAdmin, wrap(createInvestorRoute, 'lt_ppe_investor_create_error'));
+router.post('/programs', requirePpeAdmin, wrap(createProgramRoute, 'lt_ppe_program_create_error'));
+router.post('/programs/:id/rate-sheets', requirePpeAdmin, wrap(createRateSheetRoute, 'lt_ppe_ratesheet_create_error'));
+router.get('/rate-sheets/:id', requirePpeAdmin, wrap(getRateSheetRoute, 'lt_ppe_ratesheet_read_error'));
+router.put('/rate-sheets/:id/base-prices', requirePpeAdmin, wrap(setBasePricesRoute, 'lt_ppe_base_prices_error'));
+router.put('/rate-sheets/:id/adjustments', requirePpeAdmin, wrap(setAdjustmentsRoute, 'lt_ppe_adjustments_error'));
+router.put('/rate-sheets/:id/price-limit', requirePpeAdmin, wrap(setPriceLimitRoute, 'lt_ppe_price_limit_error'));
+router.get('/rate-sheets/:id/agreement', requirePpeAdmin, wrap(agreementRoute, 'lt_ppe_agreement_read_error'));
+router.post('/rate-sheets/:id/publish', requirePpeAdmin, wrap(publishRateSheetRoute, 'lt_ppe_publish_error'));
+
 module.exports = router;
 module.exports.handlers = {
   health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
   ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
   listSchedulesRoute, saveScheduleRoute, deleteScheduleRoute, canaryTickRoute,
+  createInvestorRoute, createProgramRoute, createRateSheetRoute, getRateSheetRoute,
+  setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, agreementRoute, publishRateSheetRoute,
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
   MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel, resolveBattery, runBattery, msgOf,
+  resolveVersion, numOrNull, textOrNull, MAX_SHEET_ROWS,
 };

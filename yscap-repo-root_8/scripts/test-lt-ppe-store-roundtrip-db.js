@@ -282,6 +282,35 @@ const twoCellMatrix = () => ({
     } catch (e) { kindRefused = String(e.code) === '23514'; }
     ok(kindRefused, 'D9 a kind outside (run, override) is refused by the CHECK — the ledger holds two kinds only');
 
+    // ---- E. the grid writers are SCOPED (defence in depth) ----------------
+    //
+    // `replaceBasePrices` / `replaceAdjustments` take a scope and used to DELETE by version_id ALONE,
+    // so a caller holding another tenant's version id would wipe that tenant's grid and re-stamp the
+    // rows as its own. The routes refuse such an id before the store is ever reached — which is why
+    // reverting this filter did NOT fail the console suite, and why the check belongs HERE: the store
+    // is the layer a future caller might reach without going through that door.
+    console.log('\nE. the grid writers are scoped (defence in depth)\n');
+
+    const eVer = await store.createRateSheetVersion(db, scope, { programId: program.id, versionNo: 2, channel: 'correspondent' });
+    await store.replaceBasePrices(db, scope, eVer.id, [{ noteRateMilliPct: 70000, lockDays: 30, priceMilli: 101500 }]);
+    await store.replaceAdjustments(db, scope, eVer.id, [{ code: 'x', dimension: 'dscr', dscrMin: 1000, dscrMax: 1250, adjMilli: 250 }]);
+
+    await store.replaceBasePrices(db, `${scope}_intruder`, eVer.id, [{ noteRateMilliPct: 1, lockDays: 1, priceMilli: 1 }]);
+    const bp = await db.query('SELECT COUNT(*)::int AS n, MIN(price_milli)::int AS p FROM lt_ppe_base_price WHERE version_id = $1 AND scope = $2', [eVer.id, scope]);
+    ok(bp.rows[0].n === 1 && bp.rows[0].p === 101500,
+      'E1 a write under ANOTHER scope does not delete this scope\'s base prices');
+
+    await store.replaceAdjustments(db, `${scope}_intruder`, eVer.id, []);
+    const adjRows = await db.query('SELECT COUNT(*)::int AS n FROM lt_ppe_adjustment WHERE version_id = $1 AND scope = $2', [eVer.id, scope]);
+    ok(adjRows.rows[0].n === 1, 'E2 …nor this scope\'s LLPAs');
+
+    ok(await store.rateSheetVersionInScope(db, scope, eVer.id) !== null, 'E3 rateSheetVersionInScope finds a version in its own scope');
+    ok(await store.rateSheetVersionInScope(db, `${scope}_intruder`, eVer.id) === null, 'E4 …and refuses it from another scope');
+
+    await db.query('DELETE FROM lt_ppe_base_price WHERE version_id = $1', [eVer.id]);
+    await db.query('DELETE FROM lt_ppe_adjustment WHERE version_id = $1', [eVer.id]);
+    await db.query('DELETE FROM lt_ppe_rate_sheet_version WHERE id = $1', [eVer.id]);
+
     await db.query('DELETE FROM lt_ppe_rate_sheet_version WHERE id = $1', [ver.id]);
     const orphans = await db.query('SELECT COUNT(*)::int AS n FROM lt_ppe_ratesheet_agreement WHERE rate_sheet_version_id = $1', [ver.id]);
     ok(orphans.rows[0].n === 0, 'D10 deleting the version CASCADES its agreement rows away — no orphan evidence');

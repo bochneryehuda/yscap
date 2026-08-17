@@ -261,7 +261,12 @@ async function createRateSheetVersion(db, scope, opts = {}) {
 // Replace a version's base-price grid (append-only versioning means a version's grid is set once; this
 // is a full-set write used at ingestion). Each row: { noteRateMilliPct, lockDays, product?, priceMilli }.
 async function replaceBasePrices(db, scope, versionId, rows = []) {
-  await db.query('DELETE FROM lt_ppe_base_price WHERE version_id = $1', [versionId]);
+  // SCOPED DELETE. Every row is INSERTed with the caller's scope, so deleting by version_id alone was
+  // asymmetric: a caller holding a version id from ANOTHER tenant would wipe that tenant's grid and
+  // re-stamp the rows as its own. Unreachable while nothing called this, and armed the moment a door
+  // opened — so the scope the function already takes is now actually used. Multi-tenancy is a
+  // governing principle here (§2.1), not a later feature.
+  await db.query('DELETE FROM lt_ppe_base_price WHERE version_id = $1 AND scope = $2', [versionId, scope]);
   for (const bp of rows) {
     await db.query(
       `INSERT INTO lt_ppe_base_price (scope, version_id, note_rate_milli_pct, lock_days, product, price_milli)
@@ -275,7 +280,7 @@ async function replaceBasePrices(db, scope, versionId, rows = []) {
 // ltvMax?, dscrMin?, dscrMax?, predicate?, adjMilli, adjustmentTarget?, unit?, signConvention?,
 // cumulative?, priority?, reason?, code?, meta? }. Bands are half-open [min,max).
 async function replaceAdjustments(db, scope, versionId, rows = []) {
-  await db.query('DELETE FROM lt_ppe_adjustment WHERE version_id = $1', [versionId]);
+  await db.query('DELETE FROM lt_ppe_adjustment WHERE version_id = $1 AND scope = $2', [versionId, scope]); // scoped — see replaceBasePrices
   for (const a of rows) {
     await db.query(
       `INSERT INTO lt_ppe_adjustment
@@ -309,7 +314,25 @@ async function setPriceLimit(db, scope, versionId, opts = {}) {
   return r.rows[0];
 }
 
+/**
+ * Does this rate-sheet version belong to this scope? Returns the version row, or null.
+ *
+ * THE ONE OWNERSHIP CHECK, and every door that takes a version id from a request must run it FIRST.
+ * `loadRateSheet` deliberately keeps its unscoped signature — the pricing path already knows which
+ * version it resolved and re-filtering there would be noise — but that makes a version id straight
+ * off an HTTP request a cross-tenant read waiting to happen, and the write helpers are worse: they
+ * would rewrite another tenant's grid. So the check lives here, once, rather than as a WHERE clause
+ * copied into each route, where the copy that gets forgotten is the hole.
+ */
+async function rateSheetVersionInScope(db, scope, versionId) {
+  if (!versionId) return null;
+  const r = await db.query('SELECT * FROM lt_ppe_rate_sheet_version WHERE id = $1 AND scope = $2', [versionId, scope]);
+  return r.rows[0] || null;
+}
+
 // Load a complete rate sheet for pricing: { version, basePrices[], adjustments[], priceLimit }.
+// UNSCOPED BY DESIGN — see rateSheetVersionInScope above; a caller holding an id from a request
+// checks ownership there first.
 async function loadRateSheet(db, versionId) {
   const v = await db.query('SELECT * FROM lt_ppe_rate_sheet_version WHERE id = $1', [versionId]);
   if (!v.rows.length) return null;
@@ -422,5 +445,5 @@ module.exports = {
   findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms, listAllPrograms,
   setProgramLpScope,
   createRateSheetVersion, replaceBasePrices, replaceAdjustments, setPriceLimit,
-  loadRateSheet, publishRateSheetVersion, publishRateSheetVersionUnchecked, currentRateSheetVersion,
+  loadRateSheet, rateSheetVersionInScope, publishRateSheetVersion, publishRateSheetVersionUnchecked, currentRateSheetVersion,
 };

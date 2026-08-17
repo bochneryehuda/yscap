@@ -88,18 +88,23 @@ console.log('/api/lt/ppe/* — the PPE HTTP surface');
 // 1) the router itself
 // ---------------------------------------------------------------------------
 ok(typeof route === 'function' && typeof route.use === 'function', 'the module IS an express router (server.js can mount it)');
-// 23 since the CANARY SCHEDULE became reachable — list/save/delete plus the tick that honours it.
-// Before them, `canary-schedule.js` and `schedule-store.js` were built, tested and callable by nothing,
-// so the agreement series only grew on the days somebody fired a canary by hand.
+// 32 since the ONBOARDING + RATE-SHEET CONSOLE became reachable — create an investor, create a
+// program, open a draft version, load its grid / LLPAs / price limits, read it back, read the
+// agreement gate, and publish. Before them EVERY rate-sheet writer in ppe/store.js had zero callers
+// anywhere in src/, so an investor could not be onboarded through the product at all and the
+// ≥200-scenario agreement gate guarded a door that did not exist. (23 was the canary schedule.)
 // This count is a deliberate guard: adding a handler without exporting/testing it should FAIL here, so
 // bump it in the same commit that adds one — never delete the assertion to make a build green.
-ok(Object.keys(H).length === 23, `all 23 handlers are exported for testing (${Object.keys(H).length})`);
+ok(Object.keys(H).length === 32, `all 32 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
 for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',
   'listRulesRoute', 'mineSuggestionsRoute', 'ruleCoverageRoute',
   'getProgramLpScopeRoute', 'setProgramLpScopeRoute', 'parityCellsRoute', 'listProgramsRoute',
-  'listSchedulesRoute', 'saveScheduleRoute', 'deleteScheduleRoute', 'canaryTickRoute']) {
+  'listSchedulesRoute', 'saveScheduleRoute', 'deleteScheduleRoute', 'canaryTickRoute',
+  'createInvestorRoute', 'createProgramRoute', 'createRateSheetRoute', 'getRateSheetRoute',
+  'setBasePricesRoute', 'setAdjustmentsRoute', 'setPriceLimitRoute', 'agreementRoute',
+  'publishRateSheetRoute']) {
   ok(typeof H[name] === 'function', `the ${name} handler is exported by name`);
 }
 
@@ -588,8 +593,21 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
     const src = require('fs').readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'routes', 'ppe.js'), 'utf8');
     ok(/router\.post\('\/findings\/:key\/decide',\s*requirePpeAdmin/.test(src), 'ROUTER: deciding a finding is admin-gated');
     ok(/router\.post\('\/canary',\s*requirePpeAdmin/.test(src), 'ROUTER: running a canary is admin-gated');
-    ok(!/router\.(post|put|patch|delete)\('\/(quote|health|settings|investors|findings|scoreboard)'[^)]*requirePpeAdmin/.test(src),
-      'ROUTER: reading is NOT admin-gated (an engineer must be able to see why a scenario disagreed)');
+    // READING STAYS OPEN — an engineer must be able to see why a scenario disagreed without being an
+    // administrator. This used to be written as "no gated post/put/delete on these PATHS", which read
+    // as a rule about the read surface but was really a rule about path names: the moment `POST
+    // /investors` existed (creating an investor, which SHOULD be gated) it failed, on a route that has
+    // nothing to do with reading. It now names the READ registrations and asserts each is ungated, so
+    // it bites on exactly what its label claims and cannot be tripped by an unrelated write.
+    const READ_OPEN = [
+      ["get", "/health"], ["get", "/settings"], ["get", "/investors"], ["get", "/findings"],
+      ["get", "/scoreboard"], ["get", "/suggestions"], ["get", "/rules"], ["get", "/parity-cells"],
+      ["get", "/programs"], ["get", "/canary/schedules"], ["post", "/quote"], ["post", "/breakdown"],
+    ];
+    for (const [method, p] of READ_OPEN) {
+      const re = new RegExp(`router\\.${method}\\('${p.replace(/\//g, '\\/')}',\\s*wrap\\(`);
+      ok(re.test(src), `ROUTER: ${method.toUpperCase()} ${p} is NOT admin-gated (reading stays open)`);
+    }
     ok(!/mode:\s*\(\)\s*=>\s*'live'/.test(src), 'MODEL: nothing in this route can put the engine in live mode (§1.2)');
     // The rule loop's two operator actions are admin-gated exactly like deciding a finding.
     ok(/router\.post\('\/suggestions\/:id\/accept',\s*requirePpeAdmin/.test(src), 'ROUTER: accepting a suggestion is admin-gated');
