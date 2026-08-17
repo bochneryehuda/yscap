@@ -98,8 +98,13 @@ function lpScenarioToFacts(s) {
     // skip the NJ rule) — the default is a concrete, owner-set LLC.
     borrower_type: sc.borrowerType || sc.borrower_type || 'LLC',
     subordinate_amount: num(sc.subordinateLoanAmount) != null ? num(sc.subordinateLoanAmount) : (num(sc.subordinate_amount) || 0),
-    // NOTE: there is deliberately NO `apr` fact. PPP for a business-purpose DSCR loan is NOT
-    // APR/high-cost driven (owner-directed 2026-08-17) — the PPP matrix carries no APR dimension.
+    // APR (Layer-3 PPP) — a handful of state PPP prohibitions key on a HIGH-cost APR (e.g. the IL/NJ
+    // natural-person `aprGt` rule in deephaven-ppp-matrix). APR is a DERIVED figure (note rate + fees),
+    // so this is a PURE PASS-THROUGH: emit it only when a scenario explicitly supplies one, and leave
+    // it null otherwise. The PPP matrix FAILS OPEN on a null apr (an `aprGt` rule requires isNum(apr)),
+    // so an ordinary scenario without an apr is unchanged — only a scenario that actually carries a
+    // high APR can now trip the natural-person high-cost prohibition end-to-end. No value is invented.
+    apr: num(sc.apr),
     // The ADVANCED overlay facts (D27–D29), registry-driven so the Advanced section, the fact
     // converter, and the overlay all read one list: occupancy (leased/vacant), rural_property,
     // short_term_rental, first_time_investor, first_time_homebuyer, foreign_national, declining_market,

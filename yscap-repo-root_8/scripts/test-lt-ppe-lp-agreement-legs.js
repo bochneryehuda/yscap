@@ -61,12 +61,19 @@ const njFacts = legs.lpScenarioToFacts({ value: 5e5, loan: 4e5, fico: 740, dscr:
 const njProg = prog.evaluateProgram(njFacts);
 ok(njProg.eligible === false && njProg.reasons.some((r) => r.layer === 'ppp_matrix' && /nj/i.test(r.code)),
   '  only an explicit individual (Advanced) NJ PPP request declines via the PPP layer');
-// PPP is NOT APR/high-cost driven for a business-purpose DSCR loan (owner-directed 2026-08-17): the
-// fact converter emits no `apr`, and IL (whose old rule was APR-gated) now allows a PPP for everyone.
-ok(legs.lpScenarioToFacts({ apr: 9.25 }).apr === undefined, '  no apr fact is emitted (PPP is not APR-driven)');
-const ilInd = prog.evaluateProgram(legs.lpScenarioToFacts({ value: 5e5, loan: 3e5, fico: 760, dscr: 1.3, purpose: 'Purchase', state: 'IL', units: 1, borrowerType: 'Individual', prepayMonths: 60 }));
-ok(ilInd.eligible === true && !ilInd.reasons.some((r) => r.layer === 'ppp_matrix'),
-  '  an IL individual-borrower PPP request is ELIGIBLE — IL PPP is not APR/high-cost gated');
+// APR (Layer-3 PPP) — a PURE PASS-THROUGH: emitted only when a scenario supplies one, else null.
+ok(legs.lpScenarioToFacts({ apr: 9.25 }).apr === 9.25 && legs.lpScenarioToFacts({ value: 5e5 }).apr === null,
+  '  apr is carried from an LP scenario, and is null when absent (PPP layer fails OPEN)');
+// End-to-end: the IL high-cost prohibition (natural_person, unitsMax 4, aprGt 8) can ONLY fire once apr
+// is wired through. apr=9 declines; apr=7 stays eligible; an absent apr fails OPEN (eligible).
+const ilBase = { value: 5e5, loan: 3e5, fico: 760, dscr: 1.3, purpose: 'Purchase', state: 'IL', units: 1, borrowerType: 'Individual', prepayMonths: 60 };
+const ilHi = prog.evaluateProgram(legs.lpScenarioToFacts({ ...ilBase, apr: 9 }));
+const ilLo = prog.evaluateProgram(legs.lpScenarioToFacts({ ...ilBase, apr: 7 }));
+const ilNone = prog.evaluateProgram(legs.lpScenarioToFacts({ ...ilBase }));
+ok(ilHi.eligible === false && ilHi.reasons.some((r) => r.layer === 'ppp_matrix' && /il/i.test(r.code)),
+  '  a HIGH-cost (apr>8) IL natural-person PPP request declines via the PPP layer (was impossible before apr was wired)');
+ok(ilLo.eligible === true && ilNone.eligible === true,
+  '  apr<=8 and an absent apr both stay ELIGIBLE (the aprGt rule requires a numeric apr — fails OPEN)');
 // buildOursLeg with factsFromLp:true prices a LENDER PRICE scenario through the conversion
 const oursLp = legs.buildOursLeg(PROGRAM, SETTINGS, { factsFromLp: true });
 const qLp = oursLp({ value: 500000, loan: 400000, fico: 740, dscr: 1.5, purpose: 'Cash out', state: 'TX', prepayTerm: '60 Months' });

@@ -16,9 +16,8 @@
  *
  * The facts are the engine's (lp-agreement-legs.lpScenarioToFacts) PLUS the PPP-only facts the pricer
  * does not yet carry: `borrower_type` (LLC/Individual/…), `prepay_months` (>0 = a PPP is requested),
- * `rural_property` (LA). A PPP fact that is absent fails OPEN — the PPP layer never invents a
- * prohibition on data it does not have. NOTE: PPP is NOT APR/high-cost driven for our business-purpose
- * DSCR loans (owner-directed 2026-08-17) — there is no `apr` PPP input.
+ * `apr` (IL natural-person rule), `rural_property` (LA). A PPP fact that is absent fails OPEN — the PPP
+ * layer never invents a prohibition on data it does not have.
  *
  * LT-only. Pure: no DB, no network, no clock. No RTL imports.
  */
@@ -42,6 +41,7 @@ function pppInputFromFacts(f) {
     units: sc.units,
     lien: 'first', // a DSCR loan is a first lien
     loanAmount: sc.loan_amount,
+    apr: sc.apr,
     ruralProperty: !!sc.rural_property,
     prepayRequested: Number(sc.prepay_months) > 0,
   };
