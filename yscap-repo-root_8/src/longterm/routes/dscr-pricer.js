@@ -18,6 +18,7 @@ const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, OCCUPANCY_INTERNAL, validateScenari
 const { lpScenarioToFacts } = require('../ppe/lp-agreement-legs');
 const { evaluateInformational } = require('../ppe/informational');
 const { advancedFactKeys, advancedSection } = require('../ppe/advanced-facts');
+const { describeFields } = require('../ppe/field-manifest-meta');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -126,6 +127,12 @@ function buildFieldManifest() {
   return {
     core: [...CORE_FIELDS],
     advanced: [...REGISTRY_FIELDS],
+    // Per-field metadata for the bare-key sections, DERIVED from the validators' own definitions
+    // (booleans, enums, the milli units) with a COMPUTED label — never a hand-maintained table, so it
+    // cannot go stale. Published alongside the key lists rather than replacing them, so every existing
+    // reader of `core`/`advanced` is untouched. Anything not genuinely known is simply absent.
+    coreMeta: describeFields(CORE_FIELDS),
+    advancedMeta: describeFields(REGISTRY_FIELDS),
     overlay,
     meta: [...META_FIELDS],
     counts: { core: CORE_FIELDS.length, advanced: REGISTRY_FIELDS.length, overlay: overlay.length, meta: META_FIELDS.size, supported: SUPPORTED_FIELDS.size },
