@@ -207,6 +207,49 @@ check(pairs[0].parties[0].firstName === 'Ann' && pairs[0].parties[0].nameSuffix 
 check(pairs[0].parties[0].ficoExperian === 756 && pairs[0].parties[0].ficoRepresentative === 756,
   'the credit scores arrive as STRINGS in this schema and land as numbers');
 
+console.log('\nwhat a borrower DECLARED, and what they were never asked');
+
+const DECL = mapper.readDeclarations({
+  intentToOccupyIndicator: false,
+  outstandingJudgementsIndicator: true,
+  bankruptcyIndicator: true,
+  bankruptcyIndicatorChapterSeven: true,
+  bankruptcyIndicatorChapterThirteen: true,
+  priorPropertyUsageType: 'Investment',
+});
+check(DECL.willOccupyAsPrimary === false && DECL.hasOutstandingJudgments === true,
+  'a NO is recorded as a no and a YES as a yes');
+check(DECL.familyRelationshipToSeller === null && DECL.isPartyToLawsuit === null,
+  'and a question nobody answered is UNANSWERED — `Boolean(undefined)` is false, which would have every borrower on this book swearing to things they were never asked');
+check(DECL.bankruptcyChapters === 'Chapter 7, Chapter 13',
+  'the chapters come from the chapter flags, in the borrower\'s own file\'s order');
+check(mapper.readDeclarations({ bankruptcyIndicator: true }).bankruptcyChapters === null,
+  '…and a bankruptcy with NO chapter flag names no chapter: the indicator says one happened, not which, and guessing "7" is putting words in somebody\'s mouth');
+check(DECL.hadOwnershipLast3Years === null,
+  'a prior property USAGE type is not an answer to whether they held an ownership interest — answering the second from the first puts a "yes" on the file the borrower never gave');
+check(mapper.readDeclarations({}) === null && mapper.readDeclarations(null) === null,
+  'and a borrower who answered NOTHING has made no declaration — an all-null row would put an "answered" tick on their §5 on every screen that asks');
+
+console.log('\nwhere a person works');
+
+const EMP = mapper.readEmployments({
+  employment: [
+    { id: 'e1', employerName: 'Acme', currentEmploymentIndicator: true, selfEmployedIndicator: true, businessOwnedPercent: 100 },
+    { id: 'e2', employerName: 'Old Co', currentEmploymentIndicator: false },
+    { id: 'e3', employerName: 'Unstated Co' },
+    { id: 'e4', positionDescription: 'no employer named' },
+  ],
+});
+check(EMP.length === 3, 'a row with no employer at all is not a job');
+check(EMP[0].employmentType === 'current' && EMP[0].isSelfEmployed === true && EMP[0].ownershipPct === 100,
+  'a current job is current, with its self-employment and its ownership share');
+check(EMP[1].employmentType === 'previous',
+  'and a job Encompass marks as NOT current is PREVIOUS — filing it as current would put a job the borrower has left on the front of their file');
+check(EMP[2].employmentType === 'current',
+  'an UNANSWERED indicator reads as current: the enum\'s default, and the reading that keeps a job on the screen rather than in a history nobody opens');
+check(!EMP.some((e) => e.employmentType === 'additional'),
+  'and `additional` is never assigned — this tenant marks a second current job the same way as the first, so choosing between them would be our guess rather than its answer');
+
 console.log('\nthe Social Security number never leaves');
 
 check(pairs[0].parties[0].ssnLast4 === '6789',

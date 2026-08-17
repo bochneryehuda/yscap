@@ -97,6 +97,14 @@ const FULL_LOAN = {
         addressStreetLine1: '5 Elm St', addressCity: 'NEWARK', addressState: 'NJ',
         durationTermYears: 3, durationTermMonths: 2, rent: 2200,
       }],
+      employment: [{ id: 'emp-1', employerName: 'Acme Holdings', positionDescription: 'Owner',
+        currentEmploymentIndicator: true, selfEmployedIndicator: true,
+        businessOwnedPercent: 100, basePayAmount: 9000, addressCity: 'NEWARK' }],
+      // §5 — answered, and NOT answered, both of which are real states.
+      intentToOccupyIndicator: false,
+      outstandingJudgementsIndicator: true,
+      bankruptcyIndicator: true,
+      bankruptcyIndicatorChapterSeven: true,
     },
     coborrower: { firstName: null, lastName: null },
     // §1e — the NET RENTAL INCOME a DSCR file is actually underwritten on.
@@ -277,6 +285,23 @@ async function main() {
       'and a row whose owner is not on this file is DROPPED, not parked on the primary — one person\'s schedule on another\'s file is what the loan is underwritten on');
     check(Number(reo[0].net_monthly_rental_income) === -4628.33,
       'a NEGATIVE rental income survives — it is a real answer about a property that loses money');
+
+    const emp = await childRows('lt_employments');
+    check(emp.length === 1 && emp[0].employer_name === 'Acme Holdings'
+      && emp[0].employment_type === 'current' && emp[0].is_self_employed === true
+      && Number(emp[0].ownership_pct) === 100,
+      'where a person works — the 2% of long-term files that HAVE a job, which is the same failure as an empty Property tab when it is missing');
+
+    const decl = (await db.query(
+      `SELECT d.* FROM lt_declarations d JOIN lt_parties p ON p.id = d.party_id
+         JOIN lt_borrower_pairs bp ON bp.id = p.pair_id WHERE bp.loan_id = $1::uuid`, [loanId])).rows;
+    check(decl.length === 1 && decl[0].will_occupy_as_primary === false
+      && decl[0].has_outstanding_judgments === true,
+      'the declarations, with a NO recorded as a no');
+    check(decl[0].had_ownership_last_3_years === null,
+      '…and a question nobody answered recorded as UNANSWERED — `Boolean(undefined)` is false, which would have this borrower swearing something they never said');
+    check(decl[0].bankruptcy_chapters === 'Chapter 7',
+      'the chapters come ONLY from the chapter flags — a bankruptcy indicator says nothing about which chapter, and guessing "7" is putting words in a borrower\'s mouth');
 
     const assets = await childRows('lt_assets');
     check(assets.length === 2

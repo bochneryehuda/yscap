@@ -307,7 +307,12 @@ function readBorrowerPairs(loan) {
       [app.coborrower, 'coborrower'],
     ].map(([raw, role]) => {
       const party = readParty(raw, role);
-      return party ? { ...party, residences: readResidences(raw) } : null;
+      return party ? {
+        ...party,
+        residences: readResidences(raw),
+        employments: readEmployments(raw),
+        declarations: readDeclarations(raw),
+      } : null;
     }).filter(Boolean);
 
     out.push({
@@ -573,10 +578,144 @@ function readLiabilities(app) {
   return out;
 }
 
+/**
+ * A yes/no that is allowed to be UNANSWERED.
+ *
+ * Every declaration column is a nullable boolean for a reason: "no" and "nobody
+ * asked" are different answers, and on §5 the difference is whether a borrower
+ * has DECLARED something. `Boolean(undefined)` is `false`, which would turn every
+ * question this tenant does not populate into a borrower swearing they have no
+ * judgments against them.
+ */
+function bool(v) {
+  if (v === true || v === false) return v;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (s === 'true' || s === 'y' || s === 'yes') return true;
+    if (s === 'false' || s === 'n' || s === 'no') return false;
+  }
+  return null;
+}
+
+/** Which bankruptcy chapters were declared, as the words the borrower's own file uses. */
+const BANKRUPTCY_CHAPTERS = [
+  ['bankruptcyIndicatorChapterSeven', 'Chapter 7'],
+  ['bankruptcyIndicatorChapterEleven', 'Chapter 11'],
+  ['bankruptcyIndicatorChapterTwelve', 'Chapter 12'],
+  ['bankruptcyIndicatorChapterThirteen', 'Chapter 13'],
+];
+
+/**
+ * The declarations (§5a/§5b).
+ *
+ * Encompass keeps forty of these on the borrower record and db/549 keeps the
+ * sixteen the screen asks. Each is read from the field the probe recorded, with
+ * the URLA-2020 spelling FIRST where the tenant carries both — the older field is
+ * answered on legacy files and would otherwise be the only one ever read.
+ *
+ * NOTHING IS INFERRED FROM A NEIGHBOUR. A borrower who declared a foreclosure has
+ * not thereby declared a deed in lieu, and a bankruptcy indicator says nothing
+ * about which chapter — the chapter list is built ONLY from the four chapter
+ * flags, and comes back null when none of them is set rather than guessing "7".
+ */
+function readDeclarations(borrower) {
+  if (!borrower || typeof borrower !== 'object') return null;
+  const b = borrower;
+
+  const chapters = BANKRUPTCY_CHAPTERS
+    .filter(([key]) => bool(b[key]) === true)
+    .map(([, label]) => label);
+
+  const row = {
+    willOccupyAsPrimary: bool(b.intentToOccupyIndicator),
+    // NOT inferred from `priorPropertyUsageType`. That field says what a prior
+    // property was USED as; the §5a question is whether they held an ownership
+    // interest in one at all, and answering the second from the first would put a
+    // "yes" on the file that the borrower never gave.
+    hadOwnershipLast3Years: bool(b.homeownerPastThreeYearsIndicator),
+    familyRelationshipToSeller: bool(b.specialBorrowerSellerRelationshipIndicator),
+    borrowingOtherMoney: bool(b.undisclosedBorrowedFundsIndicator),
+    applyingOtherMortgage: bool(b.undisclosedMortgageApplicationIndicator),
+    applyingNewCredit: bool(b.undisclosedCreditApplicationIndicator),
+    propertySubjectToLien: bool(b.propertyProposedCleanEnergyLienIndicator),
+    isCoSignerOrGuarantor: bool(b.coMakerEndorserOfNoteIndicator) ?? bool(b.undisclosedComakerOfNoteIndicator),
+    hasOutstandingJudgments: bool(b.outstandingJudgementsIndicator),
+    isDelinquentOnFederalDebt: bool(b.presentlyDelinquentIndicatorUrla) ?? bool(b.presentlyDelinquentIndicator),
+    isPartyToLawsuit: bool(b.partyToLawsuitIndicatorUrla) ?? bool(b.partyToLawsuitIndicator),
+    hadTitleConveyedInLieu: bool(b.priorPropertyDeedInLieuConveyedIndicator),
+    hadPreForeclosureSale: bool(b.priorPropertyShortSaleCompletedIndicator),
+    hadPropertyForeclosed: bool(b.priorPropertyForeclosureCompletedIndicator)
+      ?? bool(b.propertyForeclosedPastSevenYearsIndicator),
+    hasDeclaredBankruptcy: bool(b.bankruptcyIndicator),
+    bankruptcyChapters: chapters.length ? chapters.join(', ') : null,
+  };
+
+  // A borrower who answered NOTHING has not made a declaration, and filing an
+  // all-null row would put an "answered" tick on their §5 on every screen that
+  // asks whether they have one.
+  const answered = Object.values(row).filter((v) => v !== null).length;
+  return answered ? row : null;
+}
+
+const EMPLOYMENT_FIELDS = {
+  employerName: 'employerName',
+  position: 'positionDescription',
+  employerStreet: 'addressStreetLine1',
+  employerCity: 'addressCity',
+  employerState: 'addressState',
+  employerZip: 'addressPostalCode',
+  employerPhone: 'phoneNumber',
+};
+
+/**
+ * Where a person works (§1b–§1d).
+ *
+ * Largely NOT APPLICABLE on this book — the tenant's own "employment does not
+ * apply" flag is true on 98% of long-term files, because a DSCR loan qualifies on
+ * the property's cash flow rather than on personal income. It is mirrored anyway
+ * because the 2% is real, the screen has a section for it, and an empty section on
+ * the files that DO have a job is the same failure as an empty Property tab.
+ *
+ * CURRENT versus PREVIOUS comes from Encompass's own indicator, and an employment
+ * whose indicator is UNANSWERED is filed as `current` — the enum's default, and
+ * the reading that keeps a job on the screen rather than hiding it in a history
+ * nobody opens. `additional` is never assigned: the tenant marks a second current
+ * job with the same indicator as the first, so choosing between them here would
+ * be our guess rather than its answer.
+ */
+function readEmployments(borrower) {
+  if (!borrower || typeof borrower !== 'object') return [];
+  const list = Array.isArray(borrower.employment) ? borrower.employment : [];
+  const out = [];
+  for (const e of list) {
+    if (!e || typeof e !== 'object') continue;
+    const name = text(e.employerName);
+    if (!name) continue;
+    const row = {
+      encompassId: text(e.id),
+      employmentType: bool(e.currentEmploymentIndicator) === false ? 'previous' : 'current',
+      isSelfEmployed: bool(e.selfEmployedIndicator) === true,
+      ownershipPct: num(e.businessOwnedPercent),
+      startDate: text(e.employmentStartDate) || text(e.startDate),
+      endDate: text(e.endDate),
+      monthlyBaseIncome: num(e.basePayAmount),
+      monthlyOvertimeIncome: num(e.overtimeAmount),
+      monthlyBonusIncome: num(e.bonusAmount),
+      monthlyCommissionIncome: num(e.commissionsAmount),
+      monthlyOtherIncome: num(e.otherAmount),
+    };
+    for (const [key, path] of Object.entries(EMPLOYMENT_FIELDS)) row[key] = text(e[path]);
+    out.push(row);
+  }
+  return out;
+}
+
 module.exports = {
   readSubjectProperty,
   readBorrowerPairs,
   readParty,
+  readDeclarations,
+  readEmployments,
   readResidences,
   readOtherIncomes,
   readReoProperties,
@@ -584,5 +723,5 @@ module.exports = {
   readLiabilities,
   SUBJECT_FIELDS,
   PARTY_FIELDS,
-  _internals: { num, text, int, at, fieldOf, partyValue, ssnLast4, ownerRole, acctLast4, durationMonths },
+  _internals: { num, text, int, bool, at, fieldOf, partyValue, ssnLast4, ownerRole, acctLast4, durationMonths },
 };

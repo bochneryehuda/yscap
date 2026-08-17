@@ -227,6 +227,65 @@ async function syncBorrowerPairs(loanId, loan, opts = {}) {
         });
         if (wrote) children += 1; else unkeyed += 1;
       }
+
+      for (const e of (p.employments || [])) {
+        const wrote = await upsertChild(db, 'lt_employments', partyId, e.encompassId, {
+          employer_name: { v: e.employerName }, position: { v: e.position },
+          employment_type: { v: e.employmentType, cast: '::lt_employment_type' },
+          is_self_employed: { v: e.isSelfEmployed }, ownership_pct: { v: e.ownershipPct },
+          start_date: { v: e.startDate, cast: '::date' }, end_date: { v: e.endDate, cast: '::date' },
+          monthly_base_income: { v: e.monthlyBaseIncome },
+          monthly_overtime_income: { v: e.monthlyOvertimeIncome },
+          monthly_bonus_income: { v: e.monthlyBonusIncome },
+          monthly_commission_income: { v: e.monthlyCommissionIncome },
+          monthly_other_income: { v: e.monthlyOtherIncome },
+          employer_street: { v: e.employerStreet }, employer_city: { v: e.employerCity },
+          employer_state: { v: e.employerState }, employer_zip: { v: e.employerZip },
+          employer_phone: { v: e.employerPhone },
+        });
+        if (wrote) children += 1; else unkeyed += 1;
+      }
+
+      // The declarations are keyed on the PARTY itself (db/549's primary key), so
+      // they need no Encompass id and go through their own statement.
+      if (p.declarations) {
+        const d = p.declarations;
+        await db.query(
+          `INSERT INTO lt_declarations
+             (party_id, will_occupy_as_primary, had_ownership_last_3_years,
+              family_relationship_to_seller, borrowing_other_money, applying_other_mortgage,
+              applying_new_credit, property_subject_to_lien, is_co_signer_or_guarantor,
+              has_outstanding_judgments, is_delinquent_on_federal_debt, is_party_to_lawsuit,
+              had_title_conveyed_in_lieu, had_pre_foreclosure_sale, had_property_foreclosed,
+              has_declared_bankruptcy, bankruptcy_chapters, updated_at)
+           VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
+           ON CONFLICT (party_id) DO UPDATE SET
+             will_occupy_as_primary        = COALESCE(EXCLUDED.will_occupy_as_primary, lt_declarations.will_occupy_as_primary),
+             had_ownership_last_3_years    = COALESCE(EXCLUDED.had_ownership_last_3_years, lt_declarations.had_ownership_last_3_years),
+             family_relationship_to_seller = COALESCE(EXCLUDED.family_relationship_to_seller, lt_declarations.family_relationship_to_seller),
+             borrowing_other_money         = COALESCE(EXCLUDED.borrowing_other_money, lt_declarations.borrowing_other_money),
+             applying_other_mortgage       = COALESCE(EXCLUDED.applying_other_mortgage, lt_declarations.applying_other_mortgage),
+             applying_new_credit           = COALESCE(EXCLUDED.applying_new_credit, lt_declarations.applying_new_credit),
+             property_subject_to_lien      = COALESCE(EXCLUDED.property_subject_to_lien, lt_declarations.property_subject_to_lien),
+             is_co_signer_or_guarantor     = COALESCE(EXCLUDED.is_co_signer_or_guarantor, lt_declarations.is_co_signer_or_guarantor),
+             has_outstanding_judgments     = COALESCE(EXCLUDED.has_outstanding_judgments, lt_declarations.has_outstanding_judgments),
+             is_delinquent_on_federal_debt = COALESCE(EXCLUDED.is_delinquent_on_federal_debt, lt_declarations.is_delinquent_on_federal_debt),
+             is_party_to_lawsuit           = COALESCE(EXCLUDED.is_party_to_lawsuit, lt_declarations.is_party_to_lawsuit),
+             had_title_conveyed_in_lieu    = COALESCE(EXCLUDED.had_title_conveyed_in_lieu, lt_declarations.had_title_conveyed_in_lieu),
+             had_pre_foreclosure_sale      = COALESCE(EXCLUDED.had_pre_foreclosure_sale, lt_declarations.had_pre_foreclosure_sale),
+             had_property_foreclosed       = COALESCE(EXCLUDED.had_property_foreclosed, lt_declarations.had_property_foreclosed),
+             has_declared_bankruptcy       = COALESCE(EXCLUDED.has_declared_bankruptcy, lt_declarations.has_declared_bankruptcy),
+             bankruptcy_chapters           = COALESCE(EXCLUDED.bankruptcy_chapters, lt_declarations.bankruptcy_chapters),
+             updated_at                    = now()`,
+          [partyId, d.willOccupyAsPrimary, d.hadOwnershipLast3Years, d.familyRelationshipToSeller,
+            d.borrowingOtherMoney, d.applyingOtherMortgage, d.applyingNewCredit,
+            d.propertySubjectToLien, d.isCoSignerOrGuarantor, d.hasOutstandingJudgments,
+            d.isDelinquentOnFederalDebt, d.isPartyToLawsuit, d.hadTitleConveyedInLieu,
+            d.hadPreForeclosureSale, d.hadPropertyForeclosed, d.hasDeclaredBankruptcy,
+            d.bankruptcyChapters],
+        );
+        children += 1;
+      }
     }
 
     // The application-level lists say WHOSE they are with an `owner`, so they are
