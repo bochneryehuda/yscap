@@ -48,6 +48,29 @@ function adjustmentToRule(a) {
   };
 }
 
+// One stored INELIGIBILITY row (an N/A grid box, or an explicit decline predicate) → an eligibility
+// rule for rules.js. Same band→predicate construction as adjustmentToRule, but kind 'eligibility' with
+// a declineReason. A row with NO predicate (every band open) would decline EVERYTHING, which is never
+// what an N/A box means — it is dropped (returns null) rather than silently rejecting the whole sheet.
+function ineligibilityToRule(a) {
+  if (!a || typeof a !== 'object') throw new Error('ratesheet:bad_ineligibility');
+  const leaves = [];
+  const pf = bandPredicate('fico', a.fico_min, a.fico_max); if (pf) leaves.push(pf);
+  const pl = bandPredicate('ltv', a.ltv_min, a.ltv_max); if (pl) leaves.push(pl);
+  const pd = bandPredicate('dscr', a.dscr_min, a.dscr_max); if (pd) leaves.push(pd);
+  if (a.predicate) leaves.push(a.predicate);
+  if (leaves.length === 0) return null; // a fully-open ineligibility is a bug, not "decline all"
+  const when = leaves.length === 1 ? leaves[0] : { all: leaves };
+  return {
+    code: a.code || null,
+    kind: 'eligibility',
+    source: 'base',
+    when,
+    priority: a.priority || 0,
+    declineReason: a.declineReason || a.reason || `Not eligible (${a.dimension || 'grid'})`,
+  };
+}
+
 // A loaded sheet → the `program` object quoteProgram() expects.
 //   meta: { code, name, investorCode } — identity carried onto the quote.
 
@@ -81,7 +104,8 @@ function rateSheetToProgram(sheet, meta = {}) {
     product: bp.product || '',
     basePriceMilli: bp.price_milli,
   }));
-  const rules = (sheet.adjustments || []).map(adjustmentToRule);
+  const rules = (sheet.adjustments || []).map(adjustmentToRule)
+    .concat((sheet.ineligibilities || []).map(ineligibilityToRule).filter(Boolean));
   const pl = sheet.priceLimit;
   // ROUNDING MODE IS TWO VOCABULARIES, AND THE COLUMN SPEAKS THE OTHER ONE.
   // `lt_ppe_price_limit.rounding_mode` is declared `NOT NULL DEFAULT 'nearest_eighth'`
@@ -117,4 +141,4 @@ function rateSheetToProgram(sheet, meta = {}) {
   };
 }
 
-module.exports = { bandPredicate, adjustmentToRule, rateSheetToProgram, translateRoundingMode };
+module.exports = { bandPredicate, adjustmentToRule, ineligibilityToRule, rateSheetToProgram, translateRoundingMode };
