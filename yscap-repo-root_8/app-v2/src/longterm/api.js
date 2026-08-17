@@ -83,6 +83,16 @@ export const ltApi = {
   // Admin-only on the server. Called anyway from a non-admin's screen so the
   // REFUSAL is shown — a hidden button is indistinguishable from a broken one.
   ppeDecideFinding: (key, body) => ltPost(lt(`/ppe/findings/${encodeURIComponent(key)}/decide`), body),
+
+  // The DSCR FIELD MANIFEST (D28) — the machine-readable contract of what the pricer
+  // accepts, split into {core, advanced, overlay, meta, counts}. It is what the Basic
+  // vs Advanced scenario-entry screen draws itself from, so that screen carries no
+  // field list of its own and cannot drift from what the pricer really accepts.
+  //
+  // The path is the DSCR pricer's own router mount (`/dscr`, src/longterm/index.js),
+  // which is where the manifest handler is actually wired — NOT `/ppe/fields`, which
+  // does not exist. Read-only and pure on the server (no Lender Price call).
+  dscrFields: () => ltGet(lt('/dscr/fields')),
 };
 
 export default ltApi;

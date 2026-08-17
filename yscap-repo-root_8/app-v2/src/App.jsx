@@ -37,6 +37,7 @@ import LtSync from './longterm/LtSync.jsx';
 import LtSettings from './longterm/LtSettings.jsx';
 import LtPpe from './longterm/LtPpe.jsx';
 import LtPricingBreakdown from './longterm/LtPricingBreakdown.jsx';
+import LtScenarioEntry from './longterm/LtScenarioEntry.jsx';
 import LtLoan from './longterm/LtLoan.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
@@ -247,6 +248,7 @@ export default function App() {
           <Route path="/internal/lt/settings" element={<StaffPrivate><LtSettings /></StaffPrivate>} />
           <Route path="/internal/lt/ppe" element={<StaffPrivate><LtPpe /></StaffPrivate>} />
           <Route path="/internal/lt/ppe/breakdown" element={<StaffPrivate><LtPricingBreakdown /></StaffPrivate>} />
+          <Route path="/internal/lt/ppe/scenario" element={<StaffPrivate><LtScenarioEntry /></StaffPrivate>} />
           <Route path="/internal/lt/loan/:loanId" element={<StaffPrivate><LtLoan /></StaffPrivate>} />
           <Route path="/internal/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
           <Route path="/internal/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />
