@@ -194,8 +194,17 @@ owner wants to start.
   the crosswalk map. Until then the engine is built and safe; the map grows as real keys arrive.
 
 
-### P1 — Feed the FULL Lender Price capture into the comparator  ·  DETECTION  ·  TO-BUILD
-- **What.** Build an LP-side normalizer that consumes `client.parseFull(raw)` + `client.parseDisqualified(raw)`
+### P1 — Feed the FULL Lender Price capture into the comparator  ·  DETECTION  ·  **DONE** ✅
+- **Built.** `lp-normalize-full.js` (pure): `normalizeLpFull(parseFull)` → per-program rungs carrying
+  note rate, price, **base rate**, base points, LLPA stack total, the **itemized LLPAs verbatim**
+  (reason + adjType + value), and the **margin** (lender+investor holdback tiers, per-tier + total), all
+  in canonical integer milli units, plus a `bestLadder` for the simple price axis;
+  `normalizeLpDisqualified(parseDisqualified)` → the declined programs + reasons, filtered per
+  investor/program. Test `test-lt-ppe-lp-normalize-full.js` round-trips a REAL raw searchRaw-shaped tree
+  through the actual `client.parseFull`/`parseDisqualified` (not a hand-built shape) and asserts margin,
+  base rate, itemized LLPAs (with adjType), and decline reasons all survive; the broker tier is reported
+  but excluded from the correspondent margin total; a missing holdback is null (never 0). 37/37 suites.
+- **What (original).** Build an LP-side normalizer that consumes `client.parseFull(raw)` + `client.parseDisqualified(raw)`
   (not just `client.parse()`), so the comparator sees, per rung: base rate, note rate, price, the
   **itemized LLPAs verbatim** (`groupAdjustmentProperties[].adjustments[].key`), the **margin line**
   (`holdBackResult.{broker,lender,investor}[].value`), and the **declined programs + reasons**
