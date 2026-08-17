@@ -65,13 +65,26 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   // (deephaven-dscr-sheet.js). Override with --sheet <path> to a rateSheetToProgram input JSON.
   const sheetPath = arg('--sheet', process.env.LT_SHEET_UNDER_TEST);
   const builtin = !sheetPath;
+  // --with-prepay: measure the PREPAY axis too, using the module's OWN composed grid
+  // (deephaven-dscr-prepay-maxprice.buildPrepayMaxPriceGrid) rather than re-composing the tables here —
+  // one definition of "the full sheet". Off by default because the base sheet is the 30-day / 3-year
+  // baseline every earlier measurement was taken against, so turning it on changes what is being
+  // compared and must be a deliberate choice.
+  //
+  // The prepay LLPA is worth measuring: Lender Price itemizes a `5 Year Prepay Penalty` of 0.625 on
+  // every scenario in the canonical battery, and our table reads +0.625 for a 60-month standard term —
+  // so this is an axis that can now be CHECKED rather than ignored.
+  const withPrepay = flag('--with-prepay');
   let program;
   try {
+    const grid = builtin
+      ? (withPrepay ? require('../src/longterm/ppe/deephaven-dscr-prepay-maxprice').buildPrepayMaxPriceGrid() : buildDeephavenGrid())
+      : null;
     program = builtin
-      ? rateSheetToProgram(gridToRateSheet(buildDeephavenGrid()), { code: 'DHVN_DSCR30', name: 'Deephaven DSCR 30yr', investorCode: 'DHVN' })
+      ? rateSheetToProgram(gridToRateSheet(grid), { code: 'DHVN_DSCR30', name: 'Deephaven DSCR 30yr', investorCode: 'DHVN' })
       : rateSheetToProgram(readJson(sheetPath), { source: sheetPath });
   } catch (e) { die(3, `Could not build a program from ${builtin ? 'the built-in Deephaven sheet' : sheetPath}: ${e.message}`); }
-  console.log(`Sheet-under-test: ${builtin ? 'built-in Deephaven DSCR (v12.7.25 confirmed subset)' : sheetPath}`);
+  console.log(`Sheet-under-test: ${builtin ? `built-in Deephaven DSCR (v12.7.25 confirmed subset)${withPrepay ? ' + PREPAY/max-price block' : ''}` : sheetPath}`);
 
   // 3) scenarios
   const scPath = arg('--scenarios', process.env.LT_SCENARIOS);
@@ -122,7 +135,9 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
     // the live Deephaven sheet itemizes reason-ambiguous adjTypes; classify by reason, and do not count
     // the not-yet-modelled prepay axis as a disagreement (it is surfaced separately).
     lpDimensionOf: builtin ? deephavenLpDimension : undefined,
-    ignoreDimensions: builtin ? ['prepay'] : undefined,
+    // `prepay` is ignored ONLY while the sheet-under-test does not carry the prepay block — with
+    // --with-prepay it is a measured axis and ignoring it would hide the very thing that was turned on.
+    ignoreDimensions: (builtin && !withPrepay) ? ['prepay'] : undefined,
     // The rate-sheet AGREEMENT is eligibility + base price + itemized LLPAs. LP's displayed price and
     // adjustmentPoints carry an unreconciled origination/margin (NOT the LLPAs), and Deephaven has no
     // cap/floor — so those net-price axes are a compensation-layer question, reported but not gated.

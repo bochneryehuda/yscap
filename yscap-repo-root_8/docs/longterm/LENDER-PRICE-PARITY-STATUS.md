@@ -967,3 +967,43 @@ Mutations proven red: restoring the signed comparison (6 failures), removing the
 de-magnituding the LP side (3). Two existing assertions encoded the old signed deltas and were updated
 with the reason rather than deleted; the property they test (two cell errors that cancel in the stack
 total are still each named) is unchanged.
+
+
+---
+
+### §2.12 — THE PREPAY AXIS IS MEASURED NOW, AND THE GATE WAS MET FOR THE FIRST TIME (2026-08-17)
+
+The agreement runner priced the BASE sheet, which carries no prepay block, and passed
+`ignoreDimensions: ['prepay']` so the absence would not be reported as a disagreement. That pairing was
+correct while the block did not exist — but Lender Price itemizes a **`5 Year Prepay Penalty` of 0.625
+on every scenario in the canonical battery**, so a real, sizeable adjustment was going unchecked.
+
+Our table reads **+0.625** for a 60-month standard term — Lender Price's measured value exactly. So the
+axis was ready to be checked and simply was not being.
+
+**`--with-prepay`** switches the sheet-under-test to the prepay module's OWN composed grid
+(`buildPrepayMaxPriceGrid`, never a second composition here) **and** drops `prepay` from the ignore list
+— **one flag doing both**, so the sheet and the ignore list can never disagree. The hazard that pins is
+the pairing coming apart: price the axis and still refuse to look at it, and the LLPA could be wrong by
+any amount with the gate reading clean. It is opt-in because the base sheet is the 30-day / 3-year
+baseline every earlier measurement was taken against.
+
+**LIVE RESULT — 6 canonical scenarios, correctly scoped, prepay measured:**
+
+```
+agreed 6 / disagreed 0 / agreement 100.00% / GATE MET YES
+```
+
+**168 prepay itemized lines, 168 matched, 0 unmatched** — `ourMilli 625` vs `lpMilli 625`, our signed
+value −625 (a credit, correctly). **This is the first time the E3 gate has been met on any scenario
+set.** `final_price` still differs and is reported-but-not-gated (the unreconciled origination/margin —
+task #78); it is counted in the category totals and named here so the 100 % is not read as more than it
+is.
+
+Also pinned: the composed grid's max-price caps are **already in Lender Price's frame** — the top tier
+is 104.750, which is the sheet's 105.000 minus our 0.25 margin holdback, exactly the owner's "LP shows
+it after our holdback, across the board". So turning the block on does not clamp our prices 0.25 above
+LP's.
+
+Test `scripts/test-lt-ppe-agreement-prepay-axis.js` (17 assertions). Mutations proven red: leaving the
+ignore unconditional (1 failure), and the flag no longer choosing the grid (2).
