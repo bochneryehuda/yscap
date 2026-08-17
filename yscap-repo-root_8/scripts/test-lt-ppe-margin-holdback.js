@@ -112,5 +112,50 @@ ok(!s.validateValue('pricing.margin_milli', 12.5).ok, 'non-integer margin reject
   ok(r.marginMilli === 300, 'non-object rule rows skipped; the real one still applies');
 }
 
+// 11) ADDITIVE DELTA (D32 — the softer-PPP overlay): the extra holdback ADDS on top of the base and
+//     the two stay SEPARATE (owner: "two separate holdbacks — 0.25 and 0.375", NOT a merged 0.625).
+{
+  const softer = { code: 'dhvn_softer', when: { fact: 'ppp_structure_key', op: 'in', value: ['33321', '3321'] }, holdbackDeltaMilli: 375 };
+  const r = mh.resolveMarginHoldback({ marginMilli: 250, holdbackMilli: 250, rules: [softer], facts: { ppp_structure_key: '33321' } });
+  ok(r.holdbackBaseMilli === 250 && r.holdbackDeltaMilli === 375 && r.holdbackMilli === 625,
+    'delta ADDS: base 250 + extra 375 = 625 effective, base + delta kept separate');
+  ok(r.holdbackSource === 'default' && r.holdbackDeltaRules.length === 1 && r.holdbackDeltaRules[0].deltaMilli === 375,
+    'the base holdback is still the default; the extra is a tracked delta rule');
+  // a non-matching scenario adds nothing.
+  const r2 = mh.resolveMarginHoldback({ marginMilli: 250, holdbackMilli: 250, rules: [softer], facts: { ppp_structure_key: '54321' } });
+  ok(r2.holdbackMilli === 250 && r2.holdbackDeltaMilli === 0, 'a standard structure adds no extra holdback');
+}
+
+// 12) Deltas from MULTIPLE matching rows SUM; a set + a delta compose; a delta never goes below 0.
+{
+  const rules = [
+    { code: 'set', when: null, holdbackMilli: 100 },
+    { code: 'add_a', when: null, holdbackDeltaMilli: 375 },
+    { code: 'add_b', when: null, holdbackDeltaMilli: 50 },
+  ];
+  const r = mh.resolveMarginHoldback({ marginMilli: 250, holdbackMilli: 250, rules, facts: {} });
+  ok(r.holdbackBaseMilli === 100 && r.holdbackDeltaMilli === 425 && r.holdbackMilli === 525,
+    'a SET establishes the base (100); every matching delta SUMS on top (375+50) → 525');
+  const neg = mh.resolveMarginHoldback({ marginMilli: 250, holdbackMilli: 250, rules: [{ when: null, holdbackDeltaMilli: -400 }], facts: {} });
+  ok(neg.holdbackMilli === 0, 'a delta that would drive the holdback below zero is clamped to 0');
+  // a delta fires only when its predicate matches (fail-safe on a missing fact).
+  const safe = mh.resolveMarginHoldback({ marginMilli: 250, holdbackMilli: 250, rules: [{ when: { fact: 'nope', op: 'eq', value: 1 }, holdbackDeltaMilli: 999 }], facts: {} });
+  ok(safe.holdbackMilli === 250 && safe.holdbackDeltaMilli === 0, 'a delta whose fact is missing never fires (fail-safe)');
+}
+
+// 13) The GENERATED overlay rules (from the structure library) apply the +0.375 for the two custom
+//     softer structures and nothing for a standard one.
+{
+  const { pppMarginHoldbackRules } = require('../src/longterm/ppe/ppp-structures');
+  const rules = pppMarginHoldbackRules();
+  ok(rules.length === 2 && rules.every((x) => x.holdbackDeltaMilli === 375 && x.source === 'overlay'),
+    'pppMarginHoldbackRules generates one +375 overlay rule per custom softer structure');
+  const r = mh.resolveMarginHoldback({ marginMilli: 250, holdbackMilli: 250, rules, facts: { ppp_structure_key: '3321' } });
+  ok(r.holdbackMilli === 625 && r.holdbackBaseMilli === 250 && r.holdbackDeltaMilli === 375,
+    'a 3/3/2/1 scenario resolves to base 250 + extra 375 = 625 via the generated rules');
+  const r2 = mh.resolveMarginHoldback({ marginMilli: 250, holdbackMilli: 250, rules, facts: { ppp_structure_key: '54321' } });
+  ok(r2.holdbackMilli === 250, 'a 5/4/3/2/1 scenario gets no extra holdback from the generated rules');
+}
+
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);

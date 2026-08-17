@@ -187,6 +187,29 @@ function verifyLpTokens() {
   return bad;
 }
 
+/**
+ * The margin-holdback OVERLAY rules, GENERATED from the library (owner D32, corrected 2026-08-17: the
+ * extra holdback is a SEPARATE +0.375, added on top of the 0.25 base — two holdbacks, not one merged
+ * 0.625). One rule per structure that carries a marginHoldbackDeltaMilli: it ADDS that delta when the
+ * priced scenario's `ppp_structure_key` fact equals the structure's key. These plug straight into
+ * margin-holdback.resolveMarginHoldback({ rules }). Generated (never hand-kept) so a new custom
+ * structure gets its overlay rule automatically. The fact the caller must set is `ppp_structure_key`.
+ */
+function pppMarginHoldbackRules() {
+  return PPP_STRUCTURES
+    .filter((s) => (s.marginHoldbackDeltaMilli || 0) !== 0)
+    .map((s) => ({
+      code: `dhvn_ppp_softer_${s.key}`,
+      kind: 'margin',
+      source: 'overlay',
+      when: { fact: 'ppp_structure_key', op: 'eq', value: s.key },
+      // ADD, not SET — kept separate from the base holdback (the owner's "two separate holdbacks").
+      holdbackDeltaMilli: s.marginHoldbackDeltaMilli,
+      _structure: s.key,
+      _label: s.label,
+    }));
+}
+
 module.exports = {
   PPP_STRUCTURES,
   getStructure,
@@ -195,4 +218,5 @@ module.exports = {
   marginHoldbackDeltaOf,
   isOverlayOnly,
   verifyLpTokens,
+  pppMarginHoldbackRules,
 };
