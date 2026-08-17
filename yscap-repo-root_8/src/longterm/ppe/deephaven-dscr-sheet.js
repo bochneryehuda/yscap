@@ -137,7 +137,13 @@ function buildDeephavenGrid() {
       { code: 'dhvn_max_ltv_lt100', declineReason: 'DSCR < 1.00: Max LTV 75%', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'ltv', op: 'gt', value: 75000 }] } },
       { code: 'dhvn_max_ltv_lt100_weakfico', declineReason: 'DSCR < 1.00, FICO < 700: Max LTV 70%', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'fico', op: 'lt', value: 700 }, { fact: 'ltv', op: 'gt', value: 70000 }] } },
       { code: 'dhvn_min_dscr', declineReason: 'Minimum DSCR 0.75', predicate: { fact: 'dscr', op: 'lt', value: 750 } },
-      { code: 'dhvn_min_loan', declineReason: 'Minimum Loan Amount $75,000', predicate: { fact: 'loan_amount', op: 'lt', value: 75000 } },
+      // MIN LOAN is DSCR-GATED (owner/R10 2026-08-17): the flat $75k min ignored DSCR, so a $150k /
+      // DSCR-0.90 loan PRICED when the matrix says it must decline. Split to mirror Layer-2
+      // (deephaven-matrix MIN_LOAN_DSCR_GE1/LT1) EXACTLY — $75k for DSCR>=1.00, $200k for DSCR<1.00 —
+      // including the fail-safe when DSCR is absent (neither branch fires, same as the matrix's
+      // `dscr >= 1000` / `dscr < 1000` guards), so the two layers can never disagree on min-loan.
+      { code: 'dhvn_min_loan_ge1', declineReason: 'Minimum Loan Amount $75,000 (DSCR >= 1.00x)', predicate: { all: [{ fact: 'dscr', op: 'gte', value: 1000 }, { fact: 'loan_amount', op: 'lt', value: 75000 }] } },
+      { code: 'dhvn_min_loan_lt1', declineReason: 'Minimum Loan Amount $200,000 (DSCR < 1.00x)', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'loan_amount', op: 'lt', value: 200000 }] } },
       { code: 'dhvn_max_loan', declineReason: 'Maximum Loan Amount $2.5MM', predicate: { fact: 'loan_amount', op: 'gt', value: 2500000 } },
     ],
     priceLimit: {

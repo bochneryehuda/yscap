@@ -115,7 +115,7 @@ ok(r675 && r675.basePriceMilli === 102600, 'coupon 6.750 → base price 102.600 
 ok(r950 && r950.basePriceMilli === 109927, 'coupon 9.500 → base price 109.927');
 
 // ---- the eligibility envelope (§10 disqualify reasons) -----------------------------------------
-ok(sheet.ineligibilities.length === 12, 'ineligibilities = 4 N/A boxes + 8 explicit bound rules');
+ok(sheet.ineligibilities.length === 13, 'ineligibilities = 4 N/A boxes + 9 explicit bound rules (min-loan is now DSCR-split)');
 function declines(sc, re) { const s = stack(sc); return !s.eligible && s.declines.some((d) => re.test(d.reason)); }
 ok(declines({ fico: 600, loan: 350000, value: 500000, ltv: 70000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 350000 }, /Min FICO 640/), 'FICO 600 declines: Min FICO 640');
 ok(declines({ fico: 760, loan: 425000, value: 500000, ltv: 85000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 425000 }, /Max LTV/), 'LTV 85% declines: Max LTV 80%');
@@ -123,6 +123,35 @@ ok(declines({ fico: 760, loan: 350000, value: 500000, ltv: 70000, dscr: 600, sta
 ok(declines({ fico: 760, loan: 60000, value: 100000, ltv: 60000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 60000 }, /Minimum Loan/), 'loan $60k declines: Min loan $75,000');
 ok(declines({ fico: 760, loan: 3500000, value: 5000000, ltv: 70000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 3500000 }, /Maximum Loan/), 'loan $3.5M declines: Max loan $2.5MM');
 ok(declines({ fico: 690, loan: 400000, value: 500000, ltv: 80000, dscr: 900, state: 'NY', purpose: 'purchase', loan_amount: 400000 }, /LTV 70%|LTV 75%|Not eligible/), 'DSCR<1.00 + weak FICO + high LTV declines');
+
+// ---- MIN LOAN is DSCR-GATED (R10 divergence A): $75k for DSCR>=1.00, $200k for DSCR<1.00 ---------
+// The old flat $75k min priced a sub-$200k loan under 1.00 DSCR that the matrix declines.
+ok(declines({ fico: 760, loan: 150000, value: 250000, ltv: 60000, dscr: 900, state: 'NY', purpose: 'purchase', loan_amount: 150000 }, /Minimum Loan Amount \$200,000/),
+  'loan $150k @ DSCR 0.90 declines: Min loan $200,000 (DSCR<1.00) — was WRONGLY pricing before');
+ok(stack({ fico: 760, loan: 250000, value: 500000, ltv: 50000, dscr: 900, state: 'NY', purpose: 'purchase', loan_amount: 250000 }).eligible,
+  'loan $250k @ DSCR 0.90 still prices (above the $200k DSCR<1.00 min)');
+ok(stack({ fico: 760, loan: 90000, value: 150000, ltv: 60000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 90000 }).eligible,
+  'loan $90k @ DSCR 1.25 still prices ($75k min applies at DSCR>=1.00)');
+ok(declines({ fico: 760, loan: 60000, value: 120000, ltv: 50000, dscr: 900, state: 'NY', purpose: 'purchase', loan_amount: 60000 }, /Minimum Loan Amount \$200,000/),
+  'loan $60k @ DSCR 0.90 declines on the $200k floor, not the $75k one');
+
+// ---- L1↔L2 AGREEMENT on min-loan (the mirror must not drift) ------------------------------------
+// The sheet's min-loan decision must match the independent Layer-2 matrix for every (loan, dscr) cell,
+// so the two encodings of the same published rule can never disagree.
+{
+  const { evaluateEligibility } = require('../src/longterm/ppe/deephaven-matrix');
+  let drift = 0;
+  for (const dscr of [750, 900, 999, 1000, 1001, 1250, 1500]) {
+    for (const loan of [50000, 74999, 75000, 150000, 199999, 200000, 300000]) {
+      const facts = { fico: 760, ltv: 60000, dscr, loan_amount: loan, value: loan * 2, purpose: 'purchase', state: 'CA', units: 1 };
+      const l1MinLoan = stack(facts).eligible === false && (stack(facts).declines || []).some((d) => /Minimum Loan/.test(d.reason));
+      const l2 = evaluateEligibility(facts);
+      const l2MinLoan = (l2.reasons || []).some((r) => /min_loan/.test(r.code));
+      if (l1MinLoan !== l2MinLoan) drift += 1;
+    }
+  }
+  ok(drift === 0, 'L1 sheet and L2 matrix AGREE on the min-loan decline across every (loan, dscr) cell (no drift)');
+}
 // eligible controls STILL price (the bounds do not over-reach)
 ok(stack({ fico: 780, loan: 350000, value: 500000, ltv: 70000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 350000 }).eligible, 'a clean 780/70/1.25 still prices');
 ok(stack({ fico: 640, loan: 250000, value: 500000, ltv: 50000, dscr: 1250, state: 'NY', purpose: 'purchase', loan_amount: 250000 }).eligible, 'FICO 640 at the boundary still prices (min is 640, not >640)');
