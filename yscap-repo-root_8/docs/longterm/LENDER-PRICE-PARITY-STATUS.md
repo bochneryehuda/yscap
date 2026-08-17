@@ -600,6 +600,61 @@ spot-check. Headline: **our confirmed-subset sheet is CORRECT but INCOMPLETE.**
   zip-county table; a zip-only NJ individual PPP correctly declines. See §3 (`apr`
   row context) and `test-lt-ppe-lp-agreement-legs.js`.
 
+### §2.8 — ⛔ THE VENDOR RATE SHEET ARRIVED, AND IT EXPOSED A SYSTEMIC SIGN DEFECT (2026-08-17)
+
+The owner supplied the real **Deephaven Corr Flow Rate Sheet (T0), DSCR tab** (effective
+2026-08-14). It is now the SOURCE OF TRUTH for Layer 1. Verbatim extraction:
+`ppe-research/matrices/deephaven-dscr-ratesheet-corr-t0.json`; analysis:
+`ppe-research/DEEPHAVEN-DSCR-RATESHEET-VS-LP-2026-08-17.md`.
+
+**THE DEFECT, and it is the most important finding of the session.** Layer 1 had been built from
+Lender Price's DISPLAYED itemized values, which are **ABSOLUTE MAGNITUDES** — LP does not carry the
+direction. `cost(v) = -v` then negated everything uniformly, so **a genuine CREDIT cell was encoded
+as a CHARGE** (wrong by twice its value) while a genuine charge cell was right by accident. Proven
+live: at FICO 760 / CLTV 50 / NY / coupon 7.500, DSCR 1.30 prices **105.925** vs DSCR 1.20's
+**105.675** — a strong DSCR is a **+0.25 CREDIT**, where we had encoded a 0.25 charge.
+
+**Why the harness did not catch it — the lesson to carry forward.** The old suite passed **44/44 on
+the broken sheet**, because it compared *magnitudes*. **A test must assert the PRICE and its
+DIRECTION, never a bare magnitude.** FIXED: 21 values changed sign (20 FICO×CLTV credit cells + DSCR
+≥1.25); all four live probes now tie out exactly; the suite was rewritten and EXPANDED to 59
+assertions incl. live-LP price anchors and a section proving every table traces to the JSON.
+
+**Also now built from the sheet** (`deephaven-dscr-prepay-maxprice.js`, 134 assertions, 9 mutations):
+the **prepay LLPA table** (6 terms × standard / 5%-Fixed; the 3-Year standard baseline emits no line;
+the promo is exactly **+0.500** better at 5 years), **max-price caps per prepay term**, **max-price
+tiers by loan amount + the 98.000 floor** (combined by the sheet's own rule — *lowest wins, then
+floor*), and **lock-term 45/60**. Short-Term Rental and the `<250,000` tier were folded into Layer 1.
+
+**⭐ OWNER ANSWER — the 0.25 gap is the MARGIN HOLDBACK, across the board.** *"Lender Price max price
+is already after our 0.25 holdback … this is across the board."* So **LP's number = the sheet's number
+− our holdback**: the sheet carries the investor's PRE-holdback values, LP shows the POST-holdback
+view. It explains the 0.25 gap at all 28 coupons (proven to the milli-point) and applies to max price
+too (a 104 cap is 103.75 in LP). Implementation rule: store the sheet's values faithfully and apply
+the holdback as an explicit named step via the existing `margin-holdback.js` — **never a second 0.25
+literal**. ⚠️ **STILL OPEN (task #78): `quote.js` deliberately does NOT subtract the holdback from a
+price yet** (a money rule awaiting the owner's formula). **FRAME INVARIANT:** our composed price
+matches LP only because the base ladder is the LP-measured one — if it is ever moved onto the sheet's
+pre-holdback numbers, the holdback must be applied to the price **in the same change**, or every quote
+goes out 0.25 high.
+
+**⭐ OWNER ANSWER — the min-loan difference is an EXCEPTION BAND, not a conflict.** The sheet says
+$100,000, the matrix $75,000, and both are right: **< $75,000 ineligible; $75,000–$99,999 eligible and
+priced normally but STAMPED a manual super-admin exception; ≥ $100,000 ordinary.** That is the existing
+D34 mechanism — verified already working end to end, and now GUARDED
+(`test-lt-ppe-loan-amount-bands.js`, mutation-proven: closing the band turns it red 10 ways). A
+companion guard (`test-lt-ppe-ratesheet-matrix-reconcile.js`) fails the build on any sheet-vs-matrix
+disagreement that is not recorded in writing, and NAMES the three sheet requirements Layer 2 does not
+encode at all (mortgage history 0x30x12, bankruptcy 36 months, FC/SS/DIL 36 months) so a green
+eligibility result is never misread as "everything on the sheet was checked".
+
+**Not encoded, deliberately (recorded in `UNMEASURED`, never guessed):** the holdback is **not** applied
+to the 98.000 **floor** (the owner's rule is about a *max* price; shifting a minimum down by our own
+holdback would let us quote 97.75 against an investor floor of 98); **extension pricing** (the sheet
+does not state whether an extension adds to, replaces, or bills separately from the lock adjustment);
+the **Foreign National** row (no fact to key it on); and price **rounding** (LP's quotes are not
+eighth-multiples, so tests assert the composed raw price).
+
 ### §2.7 — D36 overlay ENFORCEMENT: the unambiguous Advanced cuts now decline (2026-08-17)
 
 The D29 classifier (§1) scores a reasoned override of Lender Price; `advanced-facts.js` carries the
