@@ -98,7 +98,14 @@ function buildAgreementScenarios(opts = {}) {
     const A = { fico: 760, loan: 350000, dscr: 1.25 };
     push('advanced', 'occupancy vacant', core({ ...A, occupancy: 'vacant' }));
     push('advanced', 'rural property', core({ ...A, rural_property: true }));
-    push('advanced', 'short-term rental', core({ ...A, short_term_rental: true }));
+    // BOTH LEGS MUST BE TOLD THE SAME LOAN. `short_term_rental` is OUR overlay fact; the thing Lender
+    // Price actually reads is `rentalTerm`, which `buildSearch` maps to the real transmitted token
+    // `Short_Term_Rental_Property` (search-model RENTAL_TERM_ALIASES) and which DEFAULTS TO LONG-TERM
+    // when omitted. Setting only the overlay fact therefore priced a SHORT-term rental on our side and a
+    // LONG-term rental on LP's — measured live 2026-08-17 as 28 `llpa_extra_ours` lines, our 0.5 charge
+    // against nothing, on the one STR scenario in the battery. That is two different loans being
+    // compared, not a sheet disagreement. Both are set here so the comparison is apples to apples.
+    push('advanced', 'short-term rental', core({ ...A, short_term_rental: true, rentalTerm: 'short' }));
     push('advanced', 'first-time investor', core({ ...A, first_time_investor: true }));
     push('advanced', 'first-time homebuyer', core({ ...A, first_time_homebuyer: true }));
     push('advanced', 'foreign national', core({ ...A, foreign_national: true }));

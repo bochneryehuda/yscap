@@ -1007,3 +1007,44 @@ LP's.
 
 Test `scripts/test-lt-ppe-agreement-prepay-axis.js` (17 assertions). Mutations proven red: leaving the
 ignore unconditional (1 failure), and the flag no longer choosing the grid (2).
+
+
+---
+
+### §2.13 — 85.76 % ON THE FIXED COMPARATOR, AND THE LAST "SURPRISE" WAS TWO DIFFERENT LOANS (2026-08-17)
+
+Re-run of the full 299-scenario battery with the magnitude fix and the escrow adjType in place:
+
+| metric | value |
+|---|---|
+| comparable | 295 (incomparable 4, errors 0) |
+| agreed | **253** |
+| agreement | **85.76 %** |
+| by dimension | `short_term_rental: 28` |
+| by category | `final_price` 7109, `llpa_total` 7056, `disqualification_extra` 41 |
+
+The `dscr` (4,284) and `fico_cltv_dscr` (4,060) noise is **gone** — those were the sign artefact. The
+escrow lines are gone — that was the adjType. What is left is real and small.
+
+**`disqualification_extra` rose from 21 to 41 — and that is THIS SESSION'S OWN L1↔L2 mirror working.**
+The newly-disagreeing scenarios are `fico=680 cltv=80`, `fico=660 cltv=75/80`, `fico=640 cltv=75/80` —
+precisely the cells where the Excel prints a price and the matrix caps the leverage. Layer 1 now declines
+them, as Layer 2 always did. **This is the measured evidence behind task #81**: if the matrix governs,
+these 20 extra disagreements are us being correctly stricter than a "leaked price"; if the rate sheet
+governs, they are 20 loans we would now refuse and Deephaven would do.
+
+**`short_term_rental: 28` was not a sheet disagreement at all — it was two different loans.** The
+battery's one STR scenario set our overlay fact `short_term_rental: true` and nothing else. What Lender
+Price actually reads is `rentalTerm`, which maps to the real transmitted token
+`Short_Term_Rental_Property` and **defaults to LONG-term when omitted**. So our engine priced a
+short-term rental and LP priced a long-term one; our 0.5 charge stood against nothing (28 rungs,
+`llpa_extra_ours`). Fixed by setting both on the scenario, with a guard asserting the pairing for **every
+scenario in the battery** — the general hazard is a fact with two names, one per leg.
+
+**⚠ OPEN, and it is about the LIVE pricer rather than the harness (task #82).** Our code holds two
+contradictory beliefs: `advanced-facts` declares `short_term_rental` `lpVisible: false` (an overlay-only
+fact LP does not price), while `search-model` has a real vendor token for exactly it AND the Excel
+carries a real STR price adjustment. If a borrower's short-term rental reaches the live pricer carrying
+only the overlay fact, **Lender Price is being asked to price a long-term rental.** One live probe with
+`rentalTerm: 'short'` versus omitted settles it — measuring the program COUNT as well as the
+adjustments, per the standing rule that an unasked-for token can narrow the lender set.

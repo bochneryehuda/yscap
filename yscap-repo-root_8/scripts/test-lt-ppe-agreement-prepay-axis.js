@@ -89,5 +89,41 @@ ok(caps.some((c) => c.capMilli === 104750),
 ok(full.priceLimit.minPrice === 98, 'and the 98.000 floor rides with it');
 ok(base.priceLimit.minPrice === null, '…while the base sheet states no floor, so the two are genuinely different sheets');
 
+
+// ---------------------------------------------------------------------------------------------
+// 5. BOTH LEGS MUST BE TOLD THE SAME LOAN — the scenario is ONE object driving two engines.
+//
+// MEASURED LIVE 2026-08-17: the battery's short-term-rental scenario set our overlay fact
+// `short_term_rental: true` and nothing else. The thing Lender Price actually reads is `rentalTerm`,
+// which buildSearch maps to the real transmitted token `Short_Term_Rental_Property` and which DEFAULTS
+// TO LONG-TERM when omitted. So our engine priced a short-term rental and LP priced a long-term one:
+// 28 `llpa_extra_ours` lines, our 0.5 charge against nothing. It surfaced as "a cell we DO encode
+// disagrees", and it was not a sheet disagreement at all — it was two different loans.
+//
+// The general hazard is a fact with TWO names, one per leg. This asserts the pairing for every scenario
+// in the battery, so the next fact that gains an LP-facing counterpart cannot be set on one side only.
+// ---------------------------------------------------------------------------------------------
+const { buildAgreementScenarios } = require('../src/longterm/ppe/agreement-scenarios');
+const { _internals: model } = require('../src/longterm/lenderprice/search-model');
+const scenarios = buildAgreementScenarios().scenarios;
+ok(scenarios.length >= 200, `the canonical battery is intact (${scenarios.length} scenarios)`);
+
+const strScenarios = scenarios.filter((s) => s.short_term_rental === true || s.shortTermRental === true);
+ok(strScenarios.length > 0, `the battery exercises short-term rental at all (${strScenarios.length})`);
+ok(strScenarios.every((s) => model.mapRentalTerm(s.rentalTerm) === 'Short_Term_Rental_Property'),
+  'every short-term-rental scenario ALSO tells Lender Price it is short-term — never our fact alone');
+
+// …and the inverse: a scenario that does NOT claim short-term rental must not accidentally tell LP that
+// it is, or LP would price an adjustment we never asked for.
+const nonStr = scenarios.filter((s) => !(s.short_term_rental === true || s.shortTermRental === true));
+ok(nonStr.every((s) => model.mapRentalTerm(s.rentalTerm) === 'Long_Term_Rental_Property'),
+  'and every other scenario tells Lender Price long-term — the default, stated rather than assumed');
+
+// The token itself must be the vendor's real one, not a value we invented.
+ok(model.mapRentalTerm('short') === 'Short_Term_Rental_Property' && model.mapRentalTerm('long') === 'Long_Term_Rental_Property',
+  'the rental-term tokens are the vendor\'s own (Short_/Long_Term_Rental_Property)');
+ok(model.mapRentalTerm(undefined) === 'Long_Term_Rental_Property',
+  'an OMITTED rental term defaults to long-term — which is exactly why stating only our overlay fact silently disagreed');
+
 console.log(`\n${fails.length ? `FAILURES: ${fails.length}` : 'OFFLINE: all passed'} (${pass} passed, ${fails.length} failed)`);
 process.exit(fails.length ? 1 : 0);
