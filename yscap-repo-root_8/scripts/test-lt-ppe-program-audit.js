@@ -12,7 +12,7 @@
  *
  * LT-only. No network, no DB, no RTL imports.
  */
-const { auditProgram } = require('../src/longterm/ppe/program-audit');
+const { auditProgram, auditProgramMatrix } = require('../src/longterm/ppe/program-audit');
 const { assertDescriptor } = require('../src/longterm/ppe/program-engine');
 const { buildMatrix } = require('../src/longterm/ppe/scenario-matrix');
 const deephaven = require('../src/longterm/ppe/program-deephaven-dscr');
@@ -90,6 +90,26 @@ console.log('LT PPE — program self-audit (#49)\n');
   ok(Object.keys(d.stillUnverifiableCounts).some((k) => /Philadelphia/.test(k)) && d.stillUnverifiableCounts[Object.keys(d.stillUnverifiableCounts).find((k) => /Philadelphia/.test(k))] === scenarios.length, 'audit: the Philadelphia geo overlay is unverifiable on every scenario (a fact no layer carries)');
   // occupancy=vacant armed the D27 flag on the vacant half
   ok(Object.keys(d.stillFlaggedCounts).some((k) => /Vacant\/Unleased/.test(k)), 'audit: the vacant-occupancy D27 rule shows up in the stillFlagged tally');
+}
+
+// ---- C) COVERAGE GUARD: a truncated (strided) battery can FALSELY report a live rule as dead ---------
+// This reproduces a real trap: a strided grid skipped every NJ+Individual+prepay cell, so the live NJ
+// PPP prohibition looked never-fired. auditProgramMatrix must refuse to call `neverFired` reliable then.
+{
+  const axes = { state: ['NY', 'NJ'], borrower_type: ['LLC', 'Individual'], prepay_months: [0, 60], fico: [720], ltv: [ltv(70)], dscr: [1250], loan_amount: [400000], purpose: ['purchase'], units: [1] };
+  const expected = ['dhvn_ppp_prohibited_nj'];
+
+  // FULL grid (8 cells) — coverage complete, the NJ PPP rule fires, and neverFired is TRUSTWORTHY.
+  const full = auditProgramMatrix(deephaven.PROGRAM.descriptor, axes, { expectedCodes: expected, maxScenarios: 1000 });
+  ok(full.coverage.truncated === false && full.coverage.sampled === full.coverage.fullSize && full.coverage.fullSize === 8, 'coverage: the full grid is audited untruncated (8 of 8 scenarios)');
+  ok(full.neverFiredReliable === true, 'coverage: a full-grid audit marks neverFired RELIABLE');
+  ok(full.declineCodeCounts.dhvn_ppp_prohibited_nj > 0 && full.neverFired.length === 0, 'coverage: over the full grid the NJ PPP prohibition DOES fire (it is not a dead rule)');
+
+  // TRUNCATED grid — coverage incomplete, so a neverFired verdict must be marked UNRELIABLE, whatever it
+  // happens to contain. (This is exactly what would have prevented the false "PPP never fires" alarm.)
+  const cut = auditProgramMatrix(deephaven.PROGRAM.descriptor, axes, { expectedCodes: expected, maxScenarios: 3 });
+  ok(cut.coverage.truncated === true && cut.coverage.sampled < cut.coverage.fullSize, 'coverage: a small ceiling truncates the grid (sampled < fullSize) and says so');
+  ok(cut.neverFiredReliable === false, 'coverage: a truncated audit marks neverFired UNRELIABLE — a strided battery can miss the cells that arm a rule, so a dead-rule verdict off it is never trusted');
 }
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);

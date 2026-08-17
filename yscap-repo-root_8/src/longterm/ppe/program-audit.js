@@ -21,6 +21,7 @@
  */
 
 const { runProgram } = require('./program-engine');
+const { buildMatrix } = require('./scenario-matrix');
 
 // Count a key into a plain-object tally.
 function bump(tally, key) { tally[key] = (tally[key] || 0) + 1; }
@@ -85,4 +86,28 @@ function auditProgram(descriptor, factsList, opts = {}) {
   return digest;
 }
 
-module.exports = { auditProgram };
+/**
+ * Convenience: build a scenario matrix from `axes` (via scenario-matrix.buildMatrix) and audit it — and
+ * carry the COVERAGE so a `neverFired` claim is not read as truth off a truncated grid.
+ *
+ * WHY THIS MATTERS (learned by flying it). buildMatrix DETERMINISTICALLY STRIDES the grid down to
+ * `maxScenarios` when the full product is larger. A strided grid can skip every cell that would have
+ * armed a rule — so a perfectly live rule reports as `neverFired`, a FALSE dead-rule alarm. So this
+ * function refuses to let a truncated run claim reliability: it returns `coverage` and, when
+ * `expectedCodes` is given, `neverFiredReliable` — TRUE only when the FULL grid was audited. A caller
+ * must not treat `neverFired` as real unless `neverFiredReliable === true`.
+ *   opts: { base, maxScenarios, label, expectedCodes, perScenarioOpts } (base/maxScenarios/label → buildMatrix).
+ */
+function auditProgramMatrix(descriptor, axes, opts = {}) {
+  const built = buildMatrix(axes, { base: opts.base, maxScenarios: opts.maxScenarios, label: opts.label });
+  const digest = auditProgram(descriptor, built.scenarios, { expectedCodes: opts.expectedCodes, perScenarioOpts: opts.perScenarioOpts });
+  digest.coverage = { fullSize: built.fullSize, sampled: built.scenarios.length, truncated: built.truncated, stride: built.stride };
+  if (Array.isArray(opts.expectedCodes)) {
+    // A neverFired verdict is only trustworthy over the COMPLETE grid — a strided sample can miss the
+    // very cells that arm a rule (a false dead-rule alarm). Say so, loudly, rather than let it read true.
+    digest.neverFiredReliable = !built.truncated;
+  }
+  return digest;
+}
+
+module.exports = { auditProgram, auditProgramMatrix };
