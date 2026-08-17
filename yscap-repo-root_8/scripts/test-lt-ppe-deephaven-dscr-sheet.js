@@ -80,6 +80,33 @@ for (const seg of LP_TABLES.DSCR_LT100_BY_CLTV) {
 for (const st of ['NY', 'NJ', 'MA', 'DC']) ok((stack({ ...anchor, dscr: 1250, state: st }).m.state || 0) === 375, `state ${st} → +0.375 (375)`);
 for (const st of ['CA', 'FL', 'TX']) ok((stack({ ...anchor, dscr: 1250, state: st }).m.state || 0) === 0, `state ${st} → no adder`);
 
+// ---- §7 add-on LLPAs (cash-out / condo / 2–4 units), CLTV-segmented ----------------------------
+// Each aligns index-for-index with the 7 CLTV bands (50/55/60/65/70/75/80). A 0/null band emits NO
+// line, so the add-on dimension must be absent (0) there. Anchor is FICO 760 DSCR 1.25 CA (no state).
+const ADDON_CLTV = [50, 55, 60, 65, 70, 75, 80];
+function addonAt(cltv, extra) {
+  const loan = Math.round(500000 * cltv / 100);
+  return stack({ fico: 760, loan, value: 500000, ltv: cltv * 1000, dscr: 1250, state: 'CA', purpose: 'purchase', loan_amount: loan, ...extra });
+}
+let addOk = 0; let addChk = 0; const addMiss = [];
+function addCheck(label, cltv, extra, dim, lpVal) {
+  addChk += 1;
+  const s = addonAt(cltv, extra);
+  const got = s.eligible ? (s.m[dim] || 0) : 'ineligible';
+  const want = lpVal == null ? 0 : Math.round(lpVal * 1000);
+  if (got === want) addOk += 1; else addMiss.push(`${label} cltv${cltv}: want ${want} got ${got}`);
+}
+ADDON_CLTV.forEach((cltv, i) => {
+  addCheck('cashout≥720', cltv, { purpose: 'cashout', fico: 760 }, 'cashout', LP_TABLES.CASHOUT_GE720_BY_CLTV[i]);
+  addCheck('cashout<720', cltv, { purpose: 'cashout', fico: 700 }, 'cashout', LP_TABLES.CASHOUT_LT720_BY_CLTV[i]);
+  addCheck('condo', cltv, { property_type: 'Condo' }, 'property_type', LP_TABLES.CONDO_BY_CLTV[i]);
+  addCheck('units2', cltv, { property_type: 'Unit2_4', units: 2 }, 'units', LP_TABLES.UNITS_BY_CLTV[i]);
+});
+ok(addOk === addChk, `all ${addChk} add-on (cash-out/condo/units) values reproduce Lender Price${addMiss.length ? ' — ' + addMiss.slice(0, 5).join(' | ') : ''}`);
+// a non-add-on scenario carries NONE of the add-on dimensions (the predicates never fire)
+const plain = addonAt(70, {});
+ok(!(plain.m.cashout) && !(plain.m.property_type) && !(plain.m.units), 'a plain purchase SFR fires no add-on LLPA');
+
 // ---- base price ladder (price = 100 − basePoints) ---------------------------------------------
 const l = stack({ fico: 780, loan: 350000, value: 500000, ltv: 70000, dscr: 1250, state: 'CA', purpose: 'purchase', loan_amount: 350000 }).ladder;
 const r675 = l.find((x) => x.rate === 6750);
@@ -102,7 +129,7 @@ ok(stack({ fico: 640, loan: 250000, value: 500000, ltv: 50000, dscr: 1250, state
 ok(stack({ fico: 760, loan: 350000, value: 500000, ltv: 70000, dscr: 950, state: 'CA', purpose: 'purchase', loan_amount: 350000 }).eligible, 'DSCR 0.95 at 70% LTV still prices (within the <1.00 caps)');
 
 // ---- what is deliberately NOT in the sheet is recorded (never guessed) --------------------------
-ok(Array.isArray(UNMEASURED) && UNMEASURED.length >= 3, 'UNMEASURED lists the axes deliberately not encoded yet (cash-out/condo/loan-amount/prepay/IO/units)');
+ok(Array.isArray(UNMEASURED) && UNMEASURED.length >= 3, 'UNMEASURED lists the axes deliberately not encoded yet (loan-amount/prepay/IO/escrow/cashout-<720@80)');
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

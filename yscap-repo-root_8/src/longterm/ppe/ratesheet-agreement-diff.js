@@ -83,6 +83,7 @@ function deephavenLpDimension(llpa) {
   if (t === 'statesrateadjustment') return 'state';
   if (t === 'loanamountrateadjustment') return 'loan_amount';
   if (/condo/i.test(t)) return 'property_type';
+  if (/unit/i.test(t)) return 'units'; // UnitRateAdjustment — "Other - 2-4 Units / CLTV <band>"
   return lpLlpaDimension(llpa); // fall back to the adjType-only crosswalk
 }
 

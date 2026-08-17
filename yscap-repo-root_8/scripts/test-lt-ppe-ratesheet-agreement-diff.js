@@ -91,6 +91,8 @@ ok(deephavenLpDimension({ adjType: 'FicoRateAdjustment', reason: 'Other - Cash O
 ok(deephavenLpDimension({ adjType: 'SimpleRateAdjustment', reason: 'DSCR Ratio - DSCR >= 1.25 / CLTV ...' }) === 'dscr', 'Deephaven: SimpleRateAdjustment "DSCR Ratio" → dscr (separate, not folded into the FICO cell)');
 ok(deephavenLpDimension({ adjType: 'SimpleRateAdjustment', reason: '5 Year Prepay Penalty' }) === 'prepay', 'Deephaven: SimpleRateAdjustment "5 Year Prepay" → prepay');
 ok(deephavenLpDimension({ adjType: 'StatesRateAdjustment', reason: 'Other - State of DC, MA, NJ, NY / CLTV ...' }) === 'state', 'Deephaven: StatesRateAdjustment → state');
+ok(deephavenLpDimension({ adjType: 'AllCondoRateAdjustment', reason: 'Other - Condo / CLTV >60.01 % <= 65.0 %' }) === 'property_type', 'Deephaven: AllCondoRateAdjustment → property_type');
+ok(deephavenLpDimension({ adjType: 'UnitRateAdjustment', reason: 'Other - 2-4 Units / CLTV >65.01 % <= 70.0 %' }) === 'units', 'Deephaven: UnitRateAdjustment → units');
 
 // our real grid keeps fico / dscr / state SEPARATE — reconcile with the reason-aware classifier
 const ourDh = [

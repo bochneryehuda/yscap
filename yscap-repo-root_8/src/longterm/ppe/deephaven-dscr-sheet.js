@@ -12,14 +12,17 @@
  * (`cost(v) = -v`). This is proven end-to-end in the test, which reproduces Lender Price's OWN itemized
  * values from the captured live battery.
  *
- * SCOPE — the FULLY-CONFIRMED core only:
+ * SCOPE — the FULLY-CONFIRMED core plus the CLTV-segmented add-ons, each value re-derived directly from
+ * the captured live battery (never guessed):
  *   • base-price ladder (coupon → basePoints), 28 coupons;
  *   • the DSCR-INDEPENDENT FICO×CLTV grid (`DSCR (All)`);
  *   • the SEPARATE additive DSCR-band table (≥1.25 flat; 1.00–1.24 baseline 0; <1.00 CLTV-segmented);
- *   • the flat DC/MA/NJ/NY state adder.
- * DELIBERATELY OMITTED (never guessed — see UNMEASURED): cash-out / condo / loan-amount (PARTIAL in the
- * live run) and prepay / interest-only / units (NOT measured). The harness will honestly report a
- * "missing on our side" for any scenario that needs one of these until a targeted re-measure fills them.
+ *   • the flat DC/MA/NJ/NY state adder;
+ *   • §7 cash-out refinance (split at FICO 720), condo, and 2–4 units — all CLTV-segmented.
+ * DELIBERATELY OMITTED (never guessed — see UNMEASURED): the loan-amount LLPA (a 2D amount×CLTV table,
+ * only sparsely sampled), prepay-term / interest-only / escrow-waiver (NOT measured), and the cash-out
+ * FICO<720 @ 80% cell (n/e in the battery). The harness honestly reports a "missing on our side" for any
+ * scenario that needs one of these until a targeted re-measure fills them.
  *
  * LT-only. No RTL imports, no network, no DB.
  */
@@ -72,6 +75,16 @@ const DSCR_LT100_BY_CLTV = [
 ];
 const cltvMilliPredicate = (cb) => ({ fact: 'ltv', op: 'between', value: [cb.min == null ? 0 : cb.min * 1000, (cb.max == null ? 100 : cb.max) * 1000] });
 
+// ---- §7 add-on LLPAs, CLTV-segmented (MEASURED live 2026-08-17 from the captured battery — every value
+// re-derived directly from the sweep report, never guessed). Values are LENDER PRICE cost-positive; each
+// aligns index-for-index with CLTV_BANDS (50/55/60/65/70/75/80). A 0 emits NO adjustment (LP emits no
+// line for a zero band); `null` = n/e (an eligibility cap, no priced entry). ----------------------------
+const CASHOUT_GE720_BY_CLTV = [0, 0.125, 0.250, 0.250, 0.500, 0.875, 2.625]; // "Cash Out Refinance, FICO >= 720"
+const CASHOUT_LT720_BY_CLTV = [0.250, 0.375, 0.375, 0.500, 0.750, 1.000, null]; // "…, FICO < 720"; 80% is n/e (LTV cap)
+const CONDO_BY_CLTV = [0, 0, 0, 0.125, 0.125, 0.250, 0.500]; // "Condo" (AllCondoRateAdjustment)
+const UNITS_BY_CLTV = [0.250, 0.250, 0.500, 0.500, 0.750, 1.000, 1.500]; // "2-4 Units" (UnitRateAdjustment)
+const cltvBandLabel = (cb) => (cb.min == null ? 'CLTV To 50.0%' : `CLTV ${cb.min - 0.5}–${cb.max - 0.5}%`);
+
 function buildDeephavenGrid() {
   const dscrTables = [];
   // ≥1.25 flat +0.25, all CLTV
@@ -84,6 +97,20 @@ function buildDeephavenGrid() {
       predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, cltvMilliPredicate(seg.cltv)] }, adj: cost(seg.lp),
     });
   }
+
+  // §7 add-on LLPAs — cash-out (split at FICO 720), condo, and 2–4 units, each CLTV-segmented. A 0 or
+  // null band emits NOTHING (LP itemizes no line there), so a non-add-on scenario is untouched.
+  const addonTables = [];
+  CLTV_BANDS.forEach((cb, i) => {
+    const co720 = CASHOUT_GE720_BY_CLTV[i];
+    if (co720) addonTables.push({ dimension: 'cashout', code: `dhvn_cashout_ge720_${i}`, reason: `Other - Cash Out Refinance, FICO >= 720 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'purpose', op: 'eq', value: 'cashout' }, { fact: 'fico', op: 'gte', value: 720 }, cltvMilliPredicate(cb)] }, adj: cost(co720) });
+    const coLt = CASHOUT_LT720_BY_CLTV[i];
+    if (coLt) addonTables.push({ dimension: 'cashout', code: `dhvn_cashout_lt720_${i}`, reason: `Other - Cash Out Refinance, FICO < 720 / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'purpose', op: 'eq', value: 'cashout' }, { fact: 'fico', op: 'lt', value: 720 }, cltvMilliPredicate(cb)] }, adj: cost(coLt) });
+    const condo = CONDO_BY_CLTV[i];
+    if (condo) addonTables.push({ dimension: 'property_type', code: `dhvn_condo_${i}`, reason: `Other - Condo / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'property_type', op: 'in', value: ['Condo', 'Condos'] }, cltvMilliPredicate(cb)] }, adj: cost(condo) });
+    const units = UNITS_BY_CLTV[i];
+    if (units) addonTables.push({ dimension: 'units', code: `dhvn_units_${i}`, reason: `Other - 2-4 Units / ${cltvBandLabel(cb)}`, predicate: { all: [{ fact: 'units', op: 'gte', value: 2 }, cltvMilliPredicate(cb)] }, adj: cost(units) });
+  });
 
   return {
     investor: 'DHVN', program: 'DSCR30', scale: 1000, lockDays: 30,
@@ -99,6 +126,7 @@ function buildDeephavenGrid() {
       // §6 state adder — DC/MA/NJ/NY flat +0.375
       { dimension: 'state', code: 'dhvn_state', reason: 'Other - State of DC, MA, NJ, NY', predicate: { fact: 'state', op: 'in', value: ['DC', 'MA', 'NJ', 'NY'] }, adj: cost(0.375) },
       ...dscrTables,
+      ...addonTables,
     ],
     // §2/§10 — the eligibility ENVELOPE, verbatim from Lender Price's disqualify reasons. Facts: fico
     // RAW, ltv MILLI-percent (80% → 80000), dscr MILLI (1.00 → 1000), loan_amount RAW dollars.
@@ -122,15 +150,17 @@ function buildDeephavenGrid() {
 
 // The Lender Price tables this sheet encodes, kept beside the grid so the test can reproduce LP's OWN
 // itemized values (the offline agreement oracle) without re-deriving them.
-const LP_TABLES = { BASE, FICO_BANDS, CLTV_BANDS, FICO_CLTV_LP, DSCR_LT100_BY_CLTV };
+const LP_TABLES = {
+  BASE, FICO_BANDS, CLTV_BANDS, FICO_CLTV_LP, DSCR_LT100_BY_CLTV,
+  CASHOUT_GE720_BY_CLTV, CASHOUT_LT720_BY_CLTV, CONDO_BY_CLTV, UNITS_BY_CLTV,
+};
 
 // What is deliberately NOT in this sheet yet (never guessed) — fill from a targeted re-measure battery.
 const UNMEASURED = [
-  'cash-out refinance LLPA (PARTIAL: FICO≥720 @70=0.5/@80=2.625; FICO<720 @70=0.75 only)',
-  'condo LLPA (PARTIAL: +0.125 at CLTV 65–70 only)',
-  'loan-amount LLPA (PARTIAL: <125k +2.25, <150k +1.5, >1.5M +0.25 — few CLTV points)',
+  'cash-out FICO<720 @ CLTV 80% (n/e in the battery — cash-out LTV cap; confirm before encoding)',
+  'loan-amount LLPA (PARTIAL: <125k +2.25, <150k +1.5, >1.5M +0.25 — few CLTV points; needs a 2D sweep)',
   'prepay-term differentiation (NOT measured — the live run always priced a 5-yr prepay)',
-  'interest-only, escrow-waiver, 2–4 units (NOT measured)',
+  'interest-only, escrow-waiver (NOT measured)',
 ];
 
 module.exports = { buildDeephavenGrid, LP_TABLES, UNMEASURED, _internals: { cost } };
