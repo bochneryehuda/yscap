@@ -62,6 +62,7 @@ async function main() {
   for (const [file, route, label] of [
     ['app-v2/src/longterm/LtBook.jsx', '/internal/lt/book', 'the census'],
     ['app-v2/src/longterm/LtBorrowers.jsx', '/internal/lt/borrowers', 'the borrower map'],
+    ['app-v2/src/longterm/LtStatuses.jsx', '/internal/lt/statuses', 'the status map'],
   ]) {
     ok(fs.existsSync(path.join(REPO, file)), `${label} has a screen (${file})`);
     ok(app.includes(`path="${route}"`), `…and a route at ${route}`);
@@ -104,6 +105,7 @@ async function main() {
   const tag = `ltscr-${Date.now().toString(36)}`;
   const loanIds = [];
   const borrowerIds = [];
+  let touchedStageSettings = false;
   const seedLoan = async (n, folder, stage, milestone, term, program) => {
     const { rows } = await db.query(
       `INSERT INTO lt_loans (id, encompass_loan_guid, loan_number, loan_folder,
@@ -252,7 +254,109 @@ async function main() {
       '…and naming the fix at the source, which is a thing a person can actually do');
     ok(!/one at a time/i.test(String(refusal.plain)),
       '…never the old advice, which pointed at a button that does not exist');
+    // ==========================================================================
+    // F. THE STATUS MAP — the three layers, and only the middle one is ours.
+    //
+    // The owner asked for the report of every file's milestone and status "so I can
+    // give you the exact mapping of what everything means. We need to rephrase this
+    // in our system with our own statuses, more user-friendly." This is the surface
+    // that rephrasing happens on, so what it must get right is: show all three
+    // layers, let ours be renamed, and NEVER lose a loan doing it.
+    // ==========================================================================
+    const stagesMod = require('../src/longterm/routes/stages');
+    const stagesHandle = layerFor(stagesMod, '/');
+    ok(stagesHandle, 'the status map exposes GET /');
+
+    // IT IS READ-ONLY. A change is a SETTINGS change and goes through the one
+    // writer; a second write door here would be a second way to change one thing.
+    const writeDoors = stagesMod.stack.filter((l) => l.route
+      && Object.keys(l.route.methods || {}).some((m) => m !== 'get'));
+    eq(writeDoors.length, 0, 'the status map has NO write door of its own — the settings door is the one writer');
+
+    // A milestone on live files that the published ladder does not carry. It is
+    // real and it needs an answer, so it must be LISTED — the one row somebody has
+    // to map would otherwise be the one row this screen hides.
+    const strayName = `${tag} Milestone Nobody Published`;
+    // `stage_key` is set to the unmapped bucket as well, because that is what the
+    // sync itself writes for a milestone the map does not carry (`stages.stageFor`
+    // → `UNMAPPED_STAGE`). Changing only the name would leave the row carrying
+    // whatever stage it was stored under and the assertion below would be about a
+    // state the sync never produces.
+    await db.query(
+      `UPDATE lt_loans SET milestone_name=$2, stage_key=$3 WHERE id=$1::uuid`,
+      [loanIds[3], strayName, require('../src/longterm/stages').UNMAPPED_STAGE.key],
+    );
+
+    const smap = await drive(stagesHandle, { actor, query: {} });
+    eq(smap.status, 200, 'the status map answers cleanly');
+    ok(smap.body.stages.length >= 9, 'it carries OUR stages');
+    const ctc = smap.body.stages.find((s) => s.key === 'clear_to_close');
+    ok(ctc && ctc.label === 'Clear to Close', '…by the name we call them, not the stored key');
+    ok(typeof ctc.files === 'number', '…each with how many files are sitting on it');
+
+    const ladder = new Map(smap.body.milestones.map((m) => [m.milestone, m]));
+    const clearRow = ladder.get('Clear To Close');
+    ok(clearRow, 'Encompass\'s own milestone is listed');
+    eq(clearRow.stageKey, 'clear_to_close', '…pointed at our stage');
+    eq(clearRow.borrowerWording, 'Final Approval',
+      '…beside what the BORROWER is told, which is Encompass\'s wording and read-only here');
+    ok(clearRow.files >= 1, '…and how many files are on it');
+
+    const stray = ladder.get(strayName);
+    ok(stray, 'a milestone on live files but NOT in the Encompass ladder is still LISTED');
+    eq(stray.inCatalog, false, '…flagged as not in the ladder, so it can be answered');
+    eq(stray.mapped, false, '…and honestly reported as unmapped rather than guessed at');
+    ok(smap.body.unmappedStage.files >= 1, '…and it shows up in the unmapped bucket, never invisible');
+
+    const asOfficer2 = await drive(stagesHandle, { actor: { id: null, role: 'loan_officer', kind: 'staff' }, query: {} });
+    eq(asOfficer2.body.canManage, false, 'a loan officer SEES the map and is told they may not change it');
+
+    // RENAMING IS A SETTINGS CHANGE, AND THE WHOLE SYSTEM READS THE NEW NAME.
+    // Proven by asking a DIFFERENT screen: the census must print the new word, or
+    // the two surfaces are reading two lists.
+    const settingsStore = require('../src/longterm/settings/store');
+    const stagesLib = require('../src/longterm/stages');
+    touchedStageSettings = true;
+    await settingsStore.save({
+      'stages.order': stagesLib.DEFAULT_STAGES.map((s) => (s.key === 'clear_to_close'
+        ? { ...s, label: 'Ready to Close' } : s)),
+    }, { actorId: null });
+
+    const renamed = await drive(stagesHandle, { actor, query: {} });
+    eq(renamed.body.stages.find((s) => s.key === 'clear_to_close').label, 'Ready to Close',
+      'a renamed stage comes back renamed');
+    const bookAfter = await drive(bookHandle, { actor, query: {} });
+    eq(new Map(bookAfter.body.stages.map((s) => [s.key, s.label])).get('clear_to_close'), 'Ready to Close',
+      'THE CENSUS READS THE SAME LIST — one definition, so two screens can never call one stage two things');
+    const csvAfter = await drive(csvHandle, { actor, query: {} });
+    ok(String(csvAfter.sent).includes('"Ready to Close"'),
+      '…and so does the spreadsheet');
+
+    // THE KEY NEVER MOVES. Renaming changes the words on our screens and nothing
+    // about the loans — every stored row still carries `clear_to_close`.
+    const { rows: [stored] } = await db.query(
+      `SELECT stage_key FROM lt_loans WHERE id=$1::uuid`, [loanIds[0]]);
+    eq(stored.stage_key, 'clear_to_close',
+      'the stored stage KEY is untouched by a rename — which is the whole safety property');
+
+    // A MAP NAMING A STAGE THAT DOES NOT EXIST MUST NOT LOSE THE LOAN.
+    const nonsense = stagesLib.stageForMilestone('Clear To Close', stagesLib.configFrom({
+      'stages.order': stagesLib.DEFAULT_STAGES,
+      'stages.map': { 'Clear To Close': 'a-stage-nobody-declared' },
+    }));
+    eq(nonsense.key, stagesLib.UNMAPPED_STAGE.key,
+      'a misconfigured map lands the loan in the unmapped bucket');
+    eq(nonsense.mapped, false, '…and says it is a fallback rather than pretending');
   } finally {
+    if (touchedStageSettings) {
+      // Put the shipped names back. Leaving a renamed stage behind would be this
+      // suite quietly reconfiguring the tenant.
+      const settingsStore = require('../src/longterm/settings/store');
+      const stagesLib = require('../src/longterm/stages');
+      await settingsStore.save({
+        'stages.order': stagesLib.DEFAULT_STAGES, 'stages.map': stagesLib.DEFAULT_MAP,
+      }, { actorId: null }).catch(() => {});
+    }
     if (loanIds.length) {
       await db.query('DELETE FROM lt_loans WHERE id = ANY($1::uuid[])', [loanIds]).catch(() => {});
     }

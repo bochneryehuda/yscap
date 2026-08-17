@@ -453,6 +453,7 @@ export default function StaffLayout({ children }) {
             <NavLink className="sb-link" to="/internal/lt/book" title="Every long-term file, with the folder, the status and the milestone it sits in."><NavIcon name="book" />The book</NavLink>
             <NavLink className="sb-link" to="/internal/lt/people"><NavIcon name="team" />People</NavLink>
             <NavLink className="sb-link" to="/internal/lt/borrowers" title="Which client each long-term file belongs to — what puts it on their own login."><NavIcon name="borrowers" />Borrowers</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/statuses" title="Encompass's milestones, our own stage names, and what the borrower is told — side by side."><NavIcon name="conditions" />Statuses</NavLink>
             <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
             <NavLink className="sb-link" to="/internal/lt/ppe"><NavIcon name="pricing" />Pricing engine</NavLink>
             <NavLink className="sb-link" to="/internal/lt/sync"><NavIcon name="health" />Sync</NavLink>

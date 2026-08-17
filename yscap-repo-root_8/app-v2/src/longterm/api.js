@@ -54,6 +54,12 @@ export const ltApi = {
   rejectBorrower: (email) => ltPost(lt('/borrowers/reject'), { email }),
   unlinkBorrower: (email) => ltPost(lt('/borrowers/unlink'), { email }),
 
+  // THE STATUS MAP — Encompass's milestones, our stages and the borrower's own
+  // wording, side by side. Reading is its own route; SAVING goes through the
+  // settings door below, because that is the one writer for a setting and a second
+  // one here would be a second way to change the same thing.
+  statusMap: () => ltGet(lt('/stages')),
+
   // The people map.
   people: () => ltGet(lt('/people')),
   syncRoster: () => ltPost(lt('/people/sync'), {}),

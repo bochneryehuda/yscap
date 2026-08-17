@@ -34,6 +34,7 @@ import LtPipeline from './longterm/LtPipeline.jsx';
 import LtPeople from './longterm/LtPeople.jsx';
 import LtBook from './longterm/LtBook.jsx';
 import LtBorrowers from './longterm/LtBorrowers.jsx';
+import LtStatuses from './longterm/LtStatuses.jsx';
 import BorrowerLongTermScreen from './longterm/BorrowerLongTerm.jsx';
 import LtConditions from './longterm/LtConditions.jsx';
 import LtSync from './longterm/LtSync.jsx';
@@ -252,6 +253,7 @@ export default function App() {
           <Route path="/internal/lt/book" element={<StaffPrivate><LtBook /></StaffPrivate>} />
           <Route path="/internal/lt/people" element={<StaffPrivate><LtPeople /></StaffPrivate>} />
           <Route path="/internal/lt/borrowers" element={<StaffPrivate><LtBorrowers /></StaffPrivate>} />
+          <Route path="/internal/lt/statuses" element={<StaffPrivate><LtStatuses /></StaffPrivate>} />
           <Route path="/internal/lt/conditions" element={<StaffPrivate><LtConditions /></StaffPrivate>} />
           <Route path="/internal/lt/sync" element={<StaffPrivate><LtSync /></StaffPrivate>} />
           <Route path="/internal/lt/settings" element={<StaffPrivate><LtSettings /></StaffPrivate>} />

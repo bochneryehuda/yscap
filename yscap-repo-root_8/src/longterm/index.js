@@ -31,6 +31,12 @@ router.use('/encompass', require('./routes/encompass-milestones'));
 // completion-rules,requests,reconciliation-map,status}.
 router.use('/encompass', require('./routes/encompass-knowledge'));
 
+// The status map: Encompass's milestones, OUR stages and the borrower's own
+// wording, in one read, so the three can be looked at together and ours renamed.
+// READ-ONLY — a change goes through the settings door, which is the one writer.
+// /api/lt/stages
+router.use('/stages', require('./routes/stages'));
+
 // The people map: which PILOT person each Encompass login is. Reading is open to
 // any staff member (an officer with an empty pipeline has to be able to see that
 // nobody has linked their account yet); changing it is admin-only.
