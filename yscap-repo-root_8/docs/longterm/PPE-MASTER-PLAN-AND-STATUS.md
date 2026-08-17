@@ -68,7 +68,10 @@ versioned/effective-dated/audited. *(MEGA §1.)*
 - **DONE:** investor + alias + program anchors (db/558); rate-sheet version + base-price grid + LLPA
   adjustment + price-limit tables (db/560); findings ledger (db/561); shadow-run series (db/565);
   cutover ledger (db/566); canary schedule (db/570); LP disqualify store (db/559).
-- **TO-BUILD:** a first-class **`lt_ppe_rule` / ruleset table** for *eligibility & bound* rules.
+- **DONE (2026-08-17, db/571):** the first-class **`lt_ppe_rule` / ruleset table** for *eligibility &
+  bound* rules, plus `lt_ppe_rule_suggestion` (the proposal queue). Read/written through
+  `ppe/rule-store.js`; §2.6 below is its consumer. The paragraph that follows described the gap it
+  closed and is kept for the reasoning:
   Today pricing rules come from `lt_ppe_adjustment` rows, but eligibility/bound rules have **no
   persistent home** — `ratesheet.js` itself notes "eligibility/bound rules live in a later rule table"
   that does not exist yet. **This is a prerequisite for the rule-suggestion loop (Part 3, P6).**
@@ -105,10 +108,14 @@ is a setting. Layer-2 per-investor margin hook is wired (opt-in, byte-identical 
   having: measured on the real Deephaven sheet, **129 of its 133 pricing rules** are read, and an
   interval-only version read **1**. Advisory: it returns findings and never refuses a rule. What it
   cannot prove it REFUSES and NAMES (`unanalyzable`, today the four `dhvn_condo_*` rules' `neq`
-  complement), and gaps are 1-D only with `gapsCheckedOn` / `gapsSkippedOn` stating where they were and
-  were not looked for — on the real sheet that is **nowhere**, so its empty gap list must not be read as
-  a clean one. Suite `scripts/test-lt-ppe-rule-coverage.js` (51 assertions, incl. a section pinned to
-  the real sheet so a slide back toward 1-of-133 fails loudly). Detail: parity status §2.19.
+  complement). GAPS are an exact GRID decomposition (parity status §2.20): every axis is cut at the
+  rules' own edges, so a region contains an elementary cell wholly or not at all and the answer is
+  exact — which is what lets it read a sheet whose rules are grid cells. Measured on the real sheet:
+  holes checked on 2 of 10 dimensions (the other 8 abstain, each with its REASON in `gapsSkippedWhy`)
+  and **4 found — 3 in cells the eligibility matrix declines, 1 the DSCR par band** — so a gap is
+  reported as a QUESTION, never a defect. Suite `scripts/test-lt-ppe-rule-coverage.js` (69 assertions,
+  incl. a section pinned to the real sheet and a live eligibility probe proving the three declined
+  cells). Detail: parity status §2.19 + §2.20.
 - **DONE:** the coverage check is WIRED to the stored rule set. `rule-store.coverageForProgram` hands
   it the set a program actually evaluates — `rulesForProgram`, house rules plus this investor's plus
   this program's, effective-dated — because two rules collide only if they can both fire on ONE loan;
@@ -121,7 +128,7 @@ is a setting. Layer-2 per-investor margin hook is wired (opt-in, byte-identical 
   mined suggestions are eligibility rules, so a clean-looking `overlaps: []` there would be a check
   that never ran. Suite `scripts/test-lt-ppe-rule-coverage-wiring.js` (27 assertions, stubbed db, 8
   mutations proven).
-- **TO-BUILD:** the persistent rule *table* is 2.2 above; nothing else remains here.
+- Nothing remains TO-BUILD here: the rule table itself landed in db/571 (2.2 above).
 
 ### 2.7 Locks & secondary market — **DONE (engine) / TO-BUILD (surface)**
 `lock.js` — full lifecycle, frozen price stack, worst-case relock, expiry block; pure, tested. No HTTP

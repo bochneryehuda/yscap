@@ -188,15 +188,75 @@ const cell = (code, ficoMin, ltvMax, dimension = 'fico_cltv_dscr') => ({
   const r = analyzeRuleSet([band('lo', 'fico', 640, 700), open]);
   ok(r.gaps.length === 0 && r.overlaps.length === 0, 'a band meeting an open-ended rule at its own edge is neither a gap nor an overlap');
 }
+// ── C2. GAPS IN A GRID, not only along a line ─────────────────────────────────────────────────────
+// The 1-D scan above is now the one-axis case of a grid decomposition: every axis is cut at the rules'
+// own edges, so a rule covers a whole elementary cell or none of it, and "is this cell charged?" is
+// exact. This is what lets the check answer anything at all on a real sheet, whose rules are cells.
 {
-  // GAPS STAY ONE-DIMENSIONAL ON PURPOSE. A hole in a set of 2-D grid cells is a different and much
-  // harder question, and a wrong answer would report a gap in a grid that is complete. So a dimension
-  // carrying a multi-fact rule reports NO gaps — and SAYS it did not look, because `gaps: []` would
-  // otherwise read as "none found" on exactly the sheets that matter.
-  const r = analyzeRuleSet([band('lo', 'fico', 640, 660, 'g'), band('hi', 'fico', 680, 700, 'g'), cell('c', 780, 50500, 'g')]);
-  ok(r.gaps.length === 0, 'a dimension carrying a multi-fact rule reports NO gaps rather than a guess');
-  ok(r.analyzed.gapsSkippedOn.includes('g') && !r.analyzed.gapsCheckedOn.includes('g'),
-    '…and NAMES the dimension it did not check, so an empty gap list is never mistaken for a clean one');
+  // A 2×2 grid with one corner missing. A line scan could not express this question.
+  const box = (code, fLo, fHi, lLo, lHi) => ({
+    code, kind: 'pricing', adjustment: { dimension: 'g', adjMilli: 250 },
+    when: { all: [{ fact: 'fico', op: 'between', value: [fLo, fHi] }, { fact: 'ltv', op: 'between', value: [lLo, lHi] }] },
+  });
+  const three = [box('a', 640, 700, 0, 60000), box('b', 700, 760, 0, 60000), box('c', 640, 700, 60000, 80000)];
+  const r = analyzeRuleSet(three);
+  ok(r.gaps.length === 1, 'a missing corner of a 2-D grid is found');
+  ok((r.gaps[0] || {}).band === 'fico [700, 760) × ltv [60000, 80000)', '…naming both axes of the hole');
+  ok((r.gaps[0] || {}).fact === null, '…with no single fact, because a 2-D hole does not have one');
+  ok(r.analyzed.gapsCheckedOn.includes('g'), '…and the dimension is reported as CHECKED');
+  // The complete grid must be silent, or the check cries wolf on every grid that is right.
+  const complete = analyzeRuleSet([...three, box('d', 700, 760, 60000, 80000)]);
+  ok(complete.gaps.length === 0, 'a COMPLETE grid reports no hole — the false-alarm direction');
+}
+{
+  // A whole-column rule is UNCONSTRAINED on the other axis, so it fills the column's cells. Without
+  // that, the checker would report holes beside every column rule on the sheet.
+  const cellR = (code, lLo, lHi) => ({
+    code, kind: 'pricing', adjustment: { dimension: 'g', adjMilli: 250 },
+    when: { all: [{ fact: 'fico', op: 'between', value: [640, 700] }, { fact: 'ltv', op: 'between', value: [lLo, lHi] }] },
+  });
+  const col = { code: 'col', kind: 'pricing', adjustment: { dimension: 'g', adjMilli: 125 }, when: { fact: 'fico', op: 'between', value: [700, 760] } };
+  const r = analyzeRuleSet([cellR('c1', 0, 60000), cellR('c2', 60000, 80000), col]);
+  ok(r.gaps.length === 0, 'a whole-column rule covers every cell in its column — no phantom hole beside it');
+}
+{
+  // The three abstentions, each with its reason stated rather than an empty list left to be read as clean.
+  const enumRule = {
+    code: 'e', kind: 'pricing', adjustment: { dimension: 'g', adjMilli: 250 },
+    when: { all: [{ fact: 'purpose', op: 'eq', value: 'cashout' }, { fact: 'ltv', op: 'between', value: [0, 60000] }] },
+  };
+  const withEnum = analyzeRuleSet([enumRule, band('x', 'ltv', 70000, 80000, 'g')]);
+  ok(withEnum.analyzed.gapsSkippedOn.includes('g') && /enum/.test(withEnum.analyzed.gapsSkippedWhy.g || ''),
+    'an ENUM constraint abstains — the full set of values that fact can take is never something we are told');
+  ok(withEnum.gaps.length === 0, '…and reports no holes rather than inventing one from the values it happened to see');
+
+  const notHalfOpen = analyzeRuleSet([
+    { code: 'gt', kind: 'pricing', adjustment: { dimension: 'g' }, when: { fact: 'fico', op: 'gt', value: 640 } },
+    band('b', 'fico', 700, 760, 'g'),
+  ]);
+  ok(notHalfOpen.analyzed.gapsSkippedOn.includes('g') && /half-open/.test(notHalfOpen.analyzed.gapsSkippedWhy.g || ''),
+    'a band that is not half-open abstains — cutting the axis there would report a hole of zero width');
+
+  const oneEdge = analyzeRuleSet([
+    { code: 'open', kind: 'pricing', adjustment: { dimension: 'g' }, when: { fact: 'fico', op: 'gte', value: 700 } },
+  ]);
+  ok(oneEdge.analyzed.gapsSkippedOn.includes('g') && /fewer than two edges/.test(oneEdge.analyzed.gapsSkippedWhy.g || ''),
+    'an axis with fewer than two finite edges abstains — there is no band to check between');
+}
+{
+  // The cap is a REFUSAL that states the count, never a shortened search reporting "no holes".
+  const many = [];
+  for (let i = 0; i < 160; i += 1) {
+    many.push({
+      code: `r${i}`, kind: 'pricing', adjustment: { dimension: 'big' },
+      when: { all: [{ fact: 'fico', op: 'between', value: [i, i + 1] }, { fact: 'ltv', op: 'between', value: [i * 2, i * 2 + 2] }] },
+    });
+  }
+  const r = analyzeRuleSet(many);
+  ok(r.analyzed.gapsSkippedOn.includes('big'), 'a grid past the cell cap abstains');
+  ok(/cap/.test(r.analyzed.gapsSkippedWhy.big || '') && /\d{4,}/.test(r.analyzed.gapsSkippedWhy.big || ''),
+    '…and states the cell count, so the limit is never a silent truncation');
+  ok(r.gaps.length === 0, '…reporting no holes rather than the holes in the fraction it managed to search');
 }
 
 // ── D. WHAT IT COULD NOT READ IS NAMED ────────────────────────────────────────────────────────────
@@ -267,12 +327,35 @@ const cell = (code, ficoMin, ltvMax, dimension = 'fico_cltv_dscr') => ({
     'the handful it refuses come back with their codes and reasons');
   ok(r.overlaps.length === 0,
     'no two pricing rules on one dimension both charge the same real scenario — measured, not assumed');
-  // Gaps are computable on NO dimension of this sheet (every one mixes multi-fact rules), and the
-  // report must SAY so rather than presenting an empty list as a clean one.
   ok(r.analyzed.gapsCheckedOn.length + r.analyzed.gapsSkippedOn.length === r.analyzed.dimensions.length,
     'every analyzed dimension is accounted for as gap-checked or gap-skipped');
-  ok(r.gaps.length === 0 && r.analyzed.gapsCheckedOn.length === 0,
-    'the sheet reports no gaps AND states that gaps were looked for on no dimension of it');
+  // MEASURED, and the whole reason the grid decomposition was worth building: the one-axis version
+  // could answer the hole question on NO dimension of this sheet. It now answers it on the two whose
+  // rules are purely numeric, including the 52-rule FICO × CLTV grid.
+  ok(r.analyzed.gapsCheckedOn.includes('fico_cltv_dscr') && r.analyzed.gapsCheckedOn.includes('dscr'),
+    'holes ARE checked on the real FICO × CLTV grid and on the DSCR dimension');
+  ok(r.analyzed.gapsSkippedOn.every((d) => (r.analyzed.gapsSkippedWhy[d] || '').length > 10),
+    'every dimension it stood down on carries the REASON, so an empty gap list is never read as a clean one');
+  ok(Object.keys(r.analyzed.gapsTruncated).length === 0, 'and no dimension reported more holes than it listed');
+
+  // The four holes it finds are all explainable, and pinning them is what stops a future change
+  // quietly turning this check into noise. THREE sit where the eligibility matrix declines the loan
+  // outright (proven below), and the fourth is the PAR band.
+  ok(r.gaps.length === 4, `the sheet's holes are found and counted (${r.gaps.length})`);
+  const par = r.gaps.find((g) => g.dimension === 'dscr');
+  ok(par && par.band === 'dscr [1000, 1250) × ltv [0, 75500)',
+    'the DSCR par band shows up as a hole: nothing charges between 1.00 and 1.25');
+  ok(/question to answer, not a defect/.test((par || {}).detail || ''),
+    '…worded as a QUESTION, because a par band and a missing band are indistinguishable from the rules alone');
+
+  // PROVEN, not assumed: the three FICO × CLTV holes are cells the eligibility layer refuses, so no
+  // pricing rule is wanted there. A control point that IS eligible sits beside them.
+  const { evaluateEligibility } = require('../src/longterm/ppe/deephaven-matrix');
+  const at = (fico, ltv) => evaluateEligibility({ fico, ltv, dscr: 1250, purpose: 'purchase', units: 1, property_type: 'SFR', loan_amount: 400000 });
+  ok(!at(650, 75000).eligible && !at(670, 78000).eligible && !at(690, 78000).eligible,
+    'the three FICO × CLTV holes are cells the ELIGIBILITY matrix declines — no loan can price there, so no rule is missing');
+  ok(at(780, 40000).eligible && at(760, 60000).eligible,
+    '…while ordinary cells beside them are eligible, so the probe is measuring something real');
 }
 
 console.log(`\n${fails.length ? `FAILURES: ${fails.length}` : 'OFFLINE: all passed'} (${pass} passed, ${fails.length} failed)`);

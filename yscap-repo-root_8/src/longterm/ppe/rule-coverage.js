@@ -191,6 +191,168 @@ function describe(iv) {
   return `${lo}, ${hi}`;
 }
 
+// A gap search enumerates the grid's elementary cells, so it is bounded. 20,000 covers a 140×140 grid,
+// far beyond any real rate sheet; past it the dimension abstains and SAYS the count, because a silently
+// shortened search reports "no holes" over a fraction of the grid.
+const MAX_GAP_CELLS = 20000;
+// The most holes worth listing before the list stops being read. The TOTAL is always reported.
+const MAX_GAP_REPORTS = 50;
+
+/**
+ * Is this interval written in the house's half-open convention? [min, max), with either end allowed to
+ * run to infinity.
+ *
+ * ⛔ WHY THE GAP SEARCH REFUSES ANYTHING ELSE. The decomposition below cuts the axis at the rules' own
+ * edges, which is exactly what makes "a rule either covers a whole cell or none of it" true — and that
+ * property is what makes the answer EXACT rather than approximate. A `gt` (exclusive minimum) or `lte`
+ * (inclusive maximum) breaks it at a single point: the cell starting at that edge would be reported as
+ * uncovered because of one value, a hole of zero width. Crying wolf over a rounding artifact is the
+ * fastest way to get a checker switched off, so a dimension carrying one abstains instead.
+ */
+function halfOpenStandard(iv) {
+  return (iv.min === NEG_INF || iv.minInc === true) && (iv.max === POS_INF || iv.maxInc === false);
+}
+
+/**
+ * Holes in ONE dimension's rules — scenarios inside the span the rules themselves cover that NO rule
+ * charges for. Returns { gaps, skipped, truncated }.
+ *
+ * ⛔ IT IS A GRID DECOMPOSITION, NOT A LINE SCAN, AND THAT IS WHY IT ANSWERS ANYTHING AT ALL. The first
+ * version scanned a single axis and therefore abstained on every dimension of the real Deephaven sheet
+ * — its rules are grid CELLS over (fico, ltv), so "these rules band an axis" was never true and the
+ * hole question went permanently unanswered. Cutting every axis at the rules' own edges turns the
+ * dimension into elementary cells; a region is aligned to those cuts, so it contains a cell entirely or
+ * not at all, and "is this cell charged?" is then exact. A rule that does not constrain a fact is
+ * UNCONSTRAINED on it and covers every cell along that axis, which is what lets a whole-column rule and
+ * a single cell be judged together.
+ *
+ * ⛔ THE BOX IS THE RULES' OWN, NEVER AN INVENTED DOMAIN. Only FINITE edges become cuts, so nothing is
+ * ever claimed below the lowest band or above the highest, and a rule running to infinity simply covers
+ * everything past the last cut. This is the same promise the one-dimensional version made.
+ *
+ * ⛔ IT ABSTAINS RATHER THAN GUESS, and every abstention carries its reason:
+ *   · an ENUM constraint — coverage along an enum axis needs the full set of values that fact can take,
+ *     and we are never told it. Assuming the values SEEN are all there are would report a hole wherever
+ *     a rate sheet simply prices one purpose, which is most of them.
+ *   · a non-half-open interval — see `halfOpenStandard`.
+ *   · an axis with fewer than two finite edges — there is nothing to cut, and dropping the axis would
+ *     silently treat a bounded rule as covering the whole line, hiding real holes.
+ *   · more cells than the cap.
+ */
+function gapsForDimension(dimension, items) {
+  const none = { gaps: [], skipped: null, truncated: null };
+  if (!items.length) return none;
+
+  for (const it of items) {
+    if (it.region.sets.size) {
+      return { gaps: [], skipped: `a rule constrains the enum fact "${[...it.region.sets.keys()][0]}", and the full set of values that fact can take is not something this analyzer is told — assuming the values it has seen are all of them would report a hole on every sheet that prices one of them`, truncated: null };
+    }
+    for (const iv of it.region.numeric.values()) {
+      if (!halfOpenStandard(iv)) {
+        return { gaps: [], skipped: `a rule uses a band that is not half-open [min, max) on "${iv.fact}", so cutting the axis at the rules' own edges would report a hole of zero width`, truncated: null };
+      }
+    }
+  }
+
+  const facts = [...new Set(items.flatMap((it) => [...it.region.numeric.keys()]))].sort();
+  if (!facts.length) return { gaps: [], skipped: 'no rule on this dimension constrains a numeric fact, so there is no axis to look along', truncated: null };
+
+  const cuts = new Map();
+  for (const f of facts) {
+    const pts = new Set();
+    for (const it of items) {
+      const iv = it.region.numeric.get(f);
+      if (!iv) continue;
+      if (Number.isFinite(iv.min)) pts.add(iv.min);
+      if (Number.isFinite(iv.max)) pts.add(iv.max);
+    }
+    const sorted = [...pts].sort((a, b) => a - b);
+    if (sorted.length < 2) {
+      return { gaps: [], skipped: `"${f}" has fewer than two edges among these rules, so there is no band to check between`, truncated: null };
+    }
+    cuts.set(f, sorted);
+  }
+
+  let cellCount = 1;
+  for (const f of facts) cellCount *= cuts.get(f).length - 1;
+  if (cellCount > MAX_GAP_CELLS) {
+    return { gaps: [], skipped: `this dimension decomposes into ${cellCount} cells, past the ${MAX_GAP_CELLS} cap — a shortened search would report "no holes" over part of the grid`, truncated: null };
+  }
+
+  // A region covers a cell when, on EVERY fact it constrains, its band contains the cell's whole band.
+  // Iterating the REGION's own facts is what makes an unconstrained fact cover the whole axis — that is
+  // the rule that lets a whole-column rule fill its column, and iterating the cell's facts instead
+  // would report a hole beside every column rule on the sheet.
+  //
+  // CONTAINMENT AND MERE OVERLAP ARE THE SAME TEST HERE, and that equivalence is the proof this answer
+  // is exact rather than approximate: every cut is one of the regions' own edges, so a region's band
+  // starts and ends ON cuts, and a cell is therefore wholly inside it or wholly outside. Written as
+  // containment because that is the question being asked.
+  const covers = (region, cell) => {
+    for (const [f, iv] of region.numeric) {
+      const c = cell.get(f);
+      if (!(iv.min <= c.lo && iv.max >= c.hi)) return false;
+    }
+    return true;
+  };
+
+  const uncovered = [];
+  const idx = facts.map(() => 0);
+  for (let n = 0; n < cellCount; n += 1) {
+    const cell = new Map();
+    for (let k = 0; k < facts.length; k += 1) {
+      const pts = cuts.get(facts[k]);
+      cell.set(facts[k], { lo: pts[idx[k]], hi: pts[idx[k] + 1] });
+    }
+    if (!items.some((it) => covers(it.region, cell))) uncovered.push({ idx: idx.slice(), cell });
+    // odometer over the cut indices
+    for (let k = facts.length - 1; k >= 0; k -= 1) {
+      idx[k] += 1;
+      if (idx[k] < cuts.get(facts[k]).length - 1) break;
+      idx[k] = 0;
+    }
+  }
+
+  // Merge runs of uncovered cells along the LAST axis — a row of adjacent holes is ONE hole to a human,
+  // and listing each elementary cell separately turns a single missing band into pages of findings.
+  const merged = [];
+  for (const u of uncovered) {
+    const prev = merged[merged.length - 1];
+    const sameRow = prev && facts.length > 1
+      && prev.idx.slice(0, -1).every((v, k) => v === u.idx[k])
+      && prev.lastIdx + 1 === u.idx[facts.length - 1];
+    if (sameRow) {
+      prev.lastIdx = u.idx[facts.length - 1];
+      prev.cell.get(facts[facts.length - 1]).hi = u.cell.get(facts[facts.length - 1]).hi;
+    } else {
+      merged.push({ idx: u.idx, lastIdx: u.idx[facts.length - 1], cell: u.cell });
+    }
+  }
+
+  const band = (cell) => facts
+    .map((f) => `${facts.length > 1 ? `${f} ` : ''}${describe({ fact: f, min: cell.get(f).lo, minInc: true, max: cell.get(f).hi, maxInc: false })}`)
+    .join(' × ');
+
+  const gaps = merged.slice(0, MAX_GAP_REPORTS).map((m) => ({
+    dimension,
+    fact: facts.length === 1 ? facts[0] : null,
+    band: band(m.cell),
+    // ⛔ A GAP IS A QUESTION, NOT A DEFECT, AND THE WORDING HAS TO SAY SO. Measured on the real
+    // Deephaven sheet: of the four holes found, THREE are cells the eligibility matrix declines (no
+    // loan can price there, so no pricing rule is wanted) and the fourth is the PAR band — DSCR
+    // 1.00–1.25 takes neither the ≥1.25 credit nor the <1.00 charge, because it is the baseline the
+    // sheet is priced around. "No adjustment" is a perfectly ordinary answer. Nothing in the rules can
+    // tell a par band from a missing one, so stating the fact and naming the two innocent explanations
+    // is the honest report; calling it a defect would cry wolf on every correctly-built sheet.
+    detail: `nothing charges on the ${dimension} dimension across ${band(m.cell)}, while rules on either side of it do. That is often deliberate — a par band carries no adjustment, and a region the eligibility rules decline needs no price — so this is a question to answer, not a defect.`,
+  }));
+  return {
+    gaps,
+    skipped: null,
+    truncated: merged.length > gaps.length ? { found: merged.length, reported: gaps.length } : null,
+  };
+}
+
 // The dimension a pricing rule charges on. `adjustment.dimension` is the modern key; `category` is what
 // several existing adjustment rows carry, and the pricing pipeline reads either — so both are honoured
 // here or the analyzer would group real rules into a phantom 'other' bucket and never see their overlap.
@@ -217,6 +379,8 @@ function analyzeRuleSet(rules, opts = {}) {
   const gaps = [];
   const unanalyzable = [];
   const gapsSkipped = new Set();
+  const gapsSkipReasons = new Map();
+  const gapsTruncated = new Map();
   const byDim = new Map();
   let pricingRules = 0;
 
@@ -267,39 +431,12 @@ function analyzeRuleSet(rules, opts = {}) {
       }
     }
 
-    // GAPS — ONE DIMENSION ONLY, and deliberately so. A hole in a set of 2-D grid cells is a genuinely
-    // different (and much harder) question than a hole in a line of bands, and a wrong answer there
-    // would report a gap in a grid that is actually complete. So gaps are computed only over the rules
-    // in this dimension that constrain EXACTLY ONE numeric fact and nothing else; a dimension whose
-    // rules are multi-fact reports no gaps rather than a guess, and `gapsSkippedOn` names which.
-    const oneD = items
-      .filter((it) => it.region.numeric.size === 1 && it.region.sets.size === 0)
-      .map((it) => ({ code: it.code, iv: it.region.numeric.values().next().value }));
-    const fact = oneD.length ? oneD[0].iv.fact : null;
-    // ⛔ ALL OR NOTHING, AND ON ONE FACT. Computing gaps over the 1-D SUBSET of a dimension that also
-    // carries grid cells reports a hole the cells may well cover — a false alarm produced by ignoring
-    // the rules that answer the question. Two 1-D rules on DIFFERENT facts are likewise incomparable:
-    // sorting a FICO band beside a CLTV band by number alone is arithmetic on unrelated axes. Either
-    // case abstains and is NAMED in `gapsSkippedOn`.
-    const gappable = oneD.length === items.length && oneD.every((it) => it.iv.fact === fact);
-    if (!gappable) { gapsSkipped.add(dimension); continue; }
-    const sorted = oneD.slice().sort((a, b) => (a.iv.min - b.iv.min) || (a.iv.max - b.iv.max));
-    let reachMax = null; let reachInc = false;
-    for (const it of sorted) {
-      const { min, minInc, max, maxInc } = it.iv;
-      if (reachMax == null) { reachMax = max; reachInc = maxInc; continue; }
-      if (reachMax === POS_INF) break; // already covered upward; nothing can be missing above
-      const startsAfter = min > reachMax || (min === reachMax && !minInc && !reachInc);
-      if (startsAfter && min !== NEG_INF && reachMax !== NEG_INF) {
-        gaps.push({
-          dimension,
-          fact,
-          band: describe({ fact, min: reachMax, minInc: !reachInc, max: min, maxInc: !minInc }),
-          detail: `nothing charges on ${fact} between ${reachMax} and ${min} on the ${dimension} dimension, while bands on either side do.`,
-        });
-      }
-      if (max > reachMax || (max === reachMax && maxInc && !reachInc)) { reachMax = max; reachInc = maxInc; }
-    }
+    // GAPS — an exact GRID decomposition, which makes the 1-D case a special case rather than the only
+    // one. See `gapsForDimension`. A dimension it cannot answer for abstains and is NAMED.
+    const g = gapsForDimension(dimension, items);
+    if (g.skipped) { gapsSkipped.add(dimension); gapsSkipReasons.set(dimension, g.skipped); continue; }
+    for (const hole of g.gaps) gaps.push(hole);
+    if (g.truncated) gapsTruncated.set(dimension, g.truncated);
   }
 
   return {
@@ -317,6 +454,11 @@ function analyzeRuleSet(rules, opts = {}) {
       // "not looked for", not "none found" — and a reader must not have to diff two lists to learn it.
       gapsCheckedOn: Array.from(byDim.values()).map((g) => g.dimension).filter((d) => !gapsSkipped.has(d)).sort(),
       gapsSkippedOn: Array.from(gapsSkipped).sort(),
+      // WHY each abstention happened — a bare list of dimension names tells a reader that the check
+      // stood down but not whether that was a design limit or a broken sheet.
+      gapsSkippedWhy: Object.fromEntries(Array.from(gapsSkipReasons.entries()).sort((a, b) => (a[0] < b[0] ? -1 : 1))),
+      // Where more holes were found than listed. Never silent: the TOTAL is always here.
+      gapsTruncated: Object.fromEntries(Array.from(gapsTruncated.entries()).sort((a, b) => (a[0] < b[0] ? -1 : 1))),
     },
     // Stated rather than left to be inferred: what this report does NOT cover. A reader who thinks a
     // clean report means "every rule checked" would be wrong whenever anything is unanalyzable.
@@ -326,5 +468,5 @@ function analyzeRuleSet(rules, opts = {}) {
 
 module.exports = {
   analyzeRuleSet,
-  _internals: { regionOf, regionsMeet, intersect, describe, describeRegion, dimensionOf },
+  _internals: { regionOf, regionsMeet, intersect, describe, describeRegion, dimensionOf, gapsForDimension, halfOpenStandard, MAX_GAP_CELLS },
 };

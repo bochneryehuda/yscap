@@ -1381,12 +1381,7 @@ Four things in it are deliberate and each is pinned by a mutation-proven asserti
   the four `dhvn_condo_*` rules, refused on `non_warrantable neq true`: the complement of a box is not a
   box, and guessing at it would invent overlaps that cannot happen — or, worse, miss a real one because
   the engine treats a MISSING fact as matching `neq`.
-- **GAPS ARE 1-D ONLY, AND THE REPORT SAYS WHERE IT DID NOT LOOK.** A hole in a set of 2-D grid cells is
-  a genuinely harder question, and a wrong answer would report a gap in a grid that is complete. So a
-  dimension is gap-checked only when EVERY one of its rules is a single band on the SAME fact; otherwise
-  it abstains. **On the real sheet that is every dimension**, so its `gaps: []` means "not looked for",
-  not "none found" — `gapsCheckedOn` and `gapsSkippedOn` state both halves rather than leaving a reader
-  to diff two lists (the no-silent-caps rule).
+- **GAPS ARE A GRID DECOMPOSITION — see §2.20, which is where that half of the check became real.**
 
 Suite `scripts/test-lt-ppe-rule-coverage.js` (51 assertions, offline + pure). Section F runs the whole
 thing over the REAL Deephaven sheet and fails if coverage slides back toward 1-of-133 — the guard the
@@ -1418,3 +1413,66 @@ Suite `scripts/test-lt-ppe-rule-coverage-wiring.js` (27 assertions, stubbed db, 
 mutations were proven to fail it; one (moving the coverage read before the COMMIT) initially came back
 green because the mutation had not actually moved the call, which is worth remembering — a mutation that
 does not change behaviour proves nothing about the test.
+
+### §2.20 — THE HOLE CHECK WAS ANSWERING NOTHING, AND FIXING IT FOUND FOUR (2026-08-17)
+
+§2.19 shipped the coverage check with one half honestly unfinished, and said so: gaps were searched
+along a single axis, so a dimension was only checked when EVERY rule on it was one band on one fact.
+**On the real Deephaven sheet that was true of no dimension at all** — its rules are grid CELLS — so the
+hole question went permanently unanswered while the report read `gaps: []`. That is the same failure
+shape as the 1-of-133 overlap defect, one question over: an empty list that looks like a clean bill of
+health.
+
+**The fix is an exact grid decomposition** (`gapsForDimension`). Cut every axis at the rules' OWN edges;
+the dimension becomes elementary cells; a region starts and ends on cuts, so it contains a cell wholly
+or not at all, and "does anything charge for this cell?" is then exact rather than approximate. A rule
+that does not constrain a fact is UNCONSTRAINED on it and covers every cell along that axis — which is
+what lets a whole-column rule and a single grid cell be judged together, and is the single property that
+stops a phantom hole appearing beside every column rule. The one-axis case falls out as the
+one-dimensional special case, so nothing about the earlier behaviour was lost.
+
+It abstains rather than guess, and every abstention now carries its REASON (`gapsSkippedWhy`): an ENUM
+constraint (coverage along an enum axis needs the full set of values that fact can take, and we are
+never told it — assuming the values seen are all of them would report a hole on every sheet that prices
+one purpose), a band that is not half-open (cutting there would report a hole of zero width), an axis
+with fewer than two finite edges, or a grid past the 20,000-cell cap — which REFUSES and states the
+count rather than searching part of the grid and reporting "no holes".
+
+**MEASURED ON THE REAL SHEET: holes are now checked on 2 of the 10 dimensions — including the 52-rule
+FICO × CLTV grid — and FOUR are found.** All four are explainable, and that is the important part:
+
+| hole | verdict |
+| --- | --- |
+| `fico [640,660) × ltv [70.5%, 80.5%)` | the ELIGIBILITY matrix DECLINES it (`dhvn_grid_ltv`) |
+| `fico [660,680) × ltv [75.5%, 80.5%)` | same — declined |
+| `fico [680,700) × ltv [75.5%, 80.5%)` | same — declined |
+| `dscr [1.00, 1.25) × ltv [0, 75.5%)` | the **PAR band** |
+
+**PROVEN, NOT ASSUMED:** `evaluateEligibility` was run at a point strictly inside each of the three
+FICO × CLTV holes and refused all three, with two ordinary cells beside them confirmed eligible so the
+probe is measuring something real. No loan can price in a cell the eligibility layer declines, so no
+pricing rule is missing there. Those three assertions are in the suite, so the claim re-checks itself.
+
+The fourth is the sheet's baseline: the DSCR dimension gives a **−0.250 credit at DSCR ≥ 1.25** and an
+escalating **charge below 1.00** (0.750 → 2.000 by LTV), and 1.00–1.25 takes neither. That is a par
+band, not a missing rule.
+
+**SO THE WORDING CHANGED WITH THE FINDING, and this is the load-bearing conclusion.** Nothing in the
+rules can tell a par band from a band somebody forgot, and three of four holes on a correct sheet are
+regions eligibility refuses. Reporting a hole as a defect would therefore cry wolf on every
+correctly-built sheet — the exact failure this module was written to avoid. A gap now states the fact
+and names both innocent explanations, and says in its own words that it is **a question to answer, not
+a defect**.
+
+The three declined cells are also direct evidence for the open owner question (task #81): the rate sheet
+and the eligibility matrix disagree about the FICO 660–679 / CLTV 75 region, and here the disagreement
+shows up from the other side — the sheet declining to price what the matrix declines to allow.
+
+Suite: 69 assertions (was 51), including the real-sheet section and the live eligibility probe. Ten
+mutations were proven to fail it. Two initially came back GREEN and are worth recording: one targeted a
+defensive branch that turned out to be unreachable (`cell.get(f)` can never be missing, since the cell
+carries every fact any rule names — the dead line is now gone), and the other rewrote containment as
+mere overlap, which is not a behaviour change at all but a THEOREM about the decomposition: because
+every cut is a region's own edge, a cell is wholly inside a region or wholly outside, so the two tests
+are identical. A mutation that changes no behaviour proves nothing about a test, and mistaking one for a
+coverage hole is how a suite gets padded with assertions that were never needed.
