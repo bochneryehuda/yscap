@@ -1159,8 +1159,10 @@ model LtPpeInvestor {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  aliases  LtPpeInvestorAlias[]
-  programs LtPpeProgram[]
+  aliases         LtPpeInvestorAlias[]
+  programs        LtPpeProgram[]
+  rules           LtPpeRule[]
+  ruleSuggestions LtPpeRuleSuggestion[]
 
   @@unique([scope, code], map: "lt_ppe_investor_scope_code_uk")
   @@map("lt_ppe_investor")
@@ -1208,6 +1210,7 @@ model LtPpeProgram {
 
   investor          LtPpeInvestor?          @relation(fields: [investorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   rateSheetVersions LtPpeRateSheetVersion[]
+  rules             LtPpeRule[]
 
   @@unique([scope, investorId, code], map: "lt_ppe_program_scope_investor_code_uk")
   @@index([investorId])
@@ -1436,4 +1439,83 @@ model LtPpeCanarySchedule {
   @@unique([scope, investor], map: "lt_ppe_canary_schedule_scope_uk")
   @@index([scope, enabled], map: "lt_ppe_canary_schedule_enabled_idx")
   @@map("lt_ppe_canary_schedule")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The per-investor rule store (db/571) — where an accepted overlay rule lives,
+// and the proposal queue it is accepted FROM.
+//
+// `lt_ppe_rule` is the persistent home `ratesheet.js` points at when it says
+// "eligibility/bound rules live in a later rule table". `lt_ppe_rule_suggestion`
+// is the PROPOSAL store: the review engine mines Lender Price's own declines and
+// suggests a rule; a human accepts one, which writes an `lt_ppe_rule` and links
+// back through `created_rule_id`. Nothing here prices or blocks anything by
+// itself — a suggestion is never auto-applied.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model LtPpeRule {
+  id              BigInt    @id @default(autoincrement())
+  scope           String    @default("company")
+  investorId      String?   @map("investor_id") @db.Uuid
+  programId       String?   @map("program_id") @db.Uuid
+  code            String
+  kind            String    @default("eligibility")
+  source          String    @default("overlay")
+  predicate       Json?     @db.JsonB
+  declineReason   String?   @map("decline_reason")
+  boundTarget     String?   @map("bound_target")
+  boundOp         String?   @map("bound_op")
+  boundValue      Decimal?  @map("bound_value")
+  adjustment      Json?     @db.JsonB
+  priority        Int       @default(0)
+  description     String?
+  active          Boolean   @default(true)
+  origin          String    @default("manual")
+  lpDeclineReason String?   @map("lp_decline_reason")
+  effectiveFrom   DateTime  @default(now()) @map("effective_from") @db.Timestamptz(6)
+  effectiveTo     DateTime? @map("effective_to") @db.Timestamptz(6)
+  createdBy       String?   @map("created_by")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  investor    LtPpeInvestor?          @relation(fields: [investorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  program     LtPpeProgram?           @relation(fields: [programId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  suggestions LtPpeRuleSuggestion[]
+
+  @@index([scope, investorId, programId], map: "lt_ppe_rule_lookup_idx")
+  @@map("lt_ppe_rule")
+}
+
+model LtPpeRuleSuggestion {
+  id            BigInt    @id @default(autoincrement())
+  scope         String    @default("company")
+  investorId    String?   @map("investor_id") @db.Uuid
+  investorLabel String    @map("investor_label")
+  dedupeKey     String    @map("dedupe_key")
+  code          String
+  kind          String    @default("eligibility")
+  source        String    @default("overlay")
+  predicate     Json?     @db.JsonB
+  declineReason String    @map("decline_reason")
+  adjType       String?   @map("adj_type")
+  fact          String?
+  confidence    String?
+  matchedBy     String?   @map("matched_by")
+  needsHuman    Boolean   @default(false) @map("needs_human")
+  programs      Json      @default("[]") @db.JsonB
+  occurrences   Int       @default(1)
+  status        String    @default("open")
+  createdRuleId BigInt?   @map("created_rule_id")
+  decidedBy     String?   @map("decided_by")
+  decidedAt     DateTime? @map("decided_at") @db.Timestamptz(6)
+  decisionNote  String?   @map("decision_note")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  investor    LtPpeInvestor? @relation(fields: [investorId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  createdRule LtPpeRule?     @relation(fields: [createdRuleId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@unique([scope, investorLabel, dedupeKey], map: "lt_ppe_rule_suggestion_uk")
+  @@index([scope, status], map: "lt_ppe_rule_suggestion_open_idx")
+  @@map("lt_ppe_rule_suggestion")
 }
