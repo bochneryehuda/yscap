@@ -57,6 +57,12 @@ const SMO_PPP = {
 // option beside a 36-month term.
 const DEFAULT_PREPAY_MONTHS = 60;
 
+// The AUS "All" set the frontend sends by default (§2.3). Copied VERBATIM from the captured base
+// (search-base.json brokerCriteria.ausList) — the canonical successful frontend request — so the
+// forced value can never drift from what the UI actually posts. Note LP (not LPA): the live capture
+// carries "LP". buildSearch forces this whenever the caller omits an explicit AUS choice.
+const AUS_ALL = ['DU', 'LP', 'GUS', 'MUW', 'None'];
+
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
 function normName(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
 // Resolve one special-mortgage-option name → {id,name} against a live registry (opts.smo:
@@ -655,11 +661,19 @@ function buildSearch(sc = {}, opts = {}) {
   const band = dscrBand(effDscr);
   // Loan TERM (years). The intentional DSCR profile default is 30-year FIXED (audit §1): when the
   // scenario omits the term we FORCE 30 rather than inherit whatever a live default model carried
-  // (the "some DSCR defaults are not enforced" finding). loanYear + termsCriteria must agree;
-  // termsInMonths=false means the number is years, NOT a day-lock.
+  // (the "some DSCR defaults are not enforced" finding). termsInMonths=false means the number is
+  // years, NOT a day-lock.
+  //
+  // §2.2 TERM PARITY (2026-08-17 developer report). criteria.loanYear is the AMORTIZATION and the
+  // DSCR profile always amortizes over 30 years; the SELECTED note term rides termsCriteria ONLY.
+  // Measured: for a 15-year selection the frontend sends {criteria.loanYear:30, termsCriteria:[15]}
+  // while PILOT had been sending criteria.loanYear:15 — so loanYear stays 30 (the profile default,
+  // forced so a live foundation can never carry a different amortization) and only termsCriteria
+  // carries the caller's term. A prior comment claimed "loanYear + termsCriteria must agree"; the
+  // live capture disproves it, and matching the frontend request is what this parity work requires.
   const termYears = num(sc.termYears != null ? sc.termYears : sc.term);
   const effTermYears = termYears != null ? termYears : 30;
-  c.loanYear = effTermYears; m.termsCriteria = [effTermYears]; m.termsInMonths = false;
+  c.loanYear = 30; m.termsCriteria = [effTermYears]; m.termsInMonths = false;
   // Rate-LOCK days. The intentional DSCR profile default is a 30-day lock; forced when omitted so a
   // live default carrying a different lock can never change the profile. This is a LOCK period
   // (days), NOT the loan term (years).
@@ -693,6 +707,22 @@ function buildSearch(sc = {}, opts = {}) {
   // Monthly income is a DSCR by-product (not a qualifier here); the frontend ROUNDS it to a whole
   // dollar. Round whatever the foundation carried; leave it absent if it was never set.
   if (num(c.monthlyIncome) != null) c.monthlyIncome = Math.round(num(c.monthlyIncome));
+  // §2.3 AUS "All" (2026-08-17 developer report). The frontend defaults AUS to the FULL published
+  // set — [DU, LP, GUS, MUW, None] — never a single engine or a trimmed list. A live foundation may
+  // carry a SHORTENED brokerCriteria.ausList (a prior session narrowed it), which silently prices
+  // fewer products, so FORCE the full set unless the caller EXPLICITLY chooses AUS engines
+  // (sc.aus, a non-empty array), which is honoured verbatim. This mirrors the captured base exactly.
+  {
+    const bc = m.brokerCriteria || (m.brokerCriteria = {});
+    const callerAus = Array.isArray(sc.aus) && sc.aus.length ? sc.aus.slice() : null;
+    bc.ausList = callerAus || AUS_ALL.slice();
+  }
+  // §2.4 CLOSING-COST DEFAULTS (2026-08-17 developer report). The frontend uses the company's
+  // default closing costs (useClosingCost + useCompanyDefaultClosingCost both true). A live
+  // foundation may carry these false (a prior session cleared them), which changes the fee/closing-
+  // cost display, so FORCE both true to match the captured frontend request. Display/structural —
+  // the live report confirmed they do NOT change the eligible pricing.
+  { const cc = m.closingCost || (m.closingCost = {}); cc.useClosingCost = true; cc.useCompanyDefaultClosingCost = true; }
   // §28.5 — an OMITTED flag inherits the cloned (live) default; only an EXPLICITLY supplied value
   // overwrites it. Previously `!!sc.io` wrote `false` even when io was absent, silently clobbering
   // the live default. A provided value is already a real boolean (strict validation), so 0/false is

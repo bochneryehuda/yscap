@@ -36,6 +36,35 @@ function trimPrograms(parsed, limit = 60) {
   };
 }
 
+// §2.5 AUDIT-MODE RUNG DIGEST (2026-08-17 developer report). The trimmed program summary reports
+// only the BEST rung per program (minRate / minPoints / maxPrice), so a developer comparing PILOT to
+// the Lender Price frontend cannot check the FULL rate ladder point-for-point without the heavy
+// `full:true` capture (itemized LLPAs, margin, fees, monthly payment). The digest is the middle
+// ground: every program's complete rung list as {rate, price, points} — the exact rows LP paints —
+// with nothing else, so a rate-sheet diff is a straight array comparison. Gated behind `audit:true`
+// so the default response is unchanged. `programsLimit`/`rungsLimit` bound the size (a caller can
+// page or raise them); anything dropped is COUNTED, never silently truncated.
+function rungDigest(parsed, opts = {}) {
+  const programsLimit = clampInt(opts.programsLimit, 1, 500, 200);
+  const rungsLimit = clampInt(opts.rungsLimit, 1, 500, 200);
+  const programs = parsed.programs.slice(0, programsLimit).map((p) => {
+    const rungs = (p.rungs || []).slice(0, rungsLimit).map((r) => ({ rate: r.rate, price: r.price, points: r.points }));
+    return {
+      lender: p.lender, investor: p.investor || null, lenderId: p.lenderId || null,
+      program: p.program, product: p.product || null,
+      rungCount: p.rungCount,
+      rungsReturned: rungs.length,
+      rungsTruncated: (p.rungs || []).length > rungs.length,
+      rungs,
+    };
+  });
+  return {
+    programsReturned: programs.length,
+    programsTruncated: parsed.programs.length > programs.length,
+    programs,
+  };
+}
+
 // The scenario fields the builder ACTUALLY honors. Anything else a caller sends must be REJECTED,
 // never silently ignored — otherwise the caller gets plausible pricing for a DIFFERENT scenario
 // (the "silent substitution" data-integrity bug). Grow this set (and the builder) together as
@@ -59,7 +88,10 @@ const SUPPORTED_FIELDS = new Set([
   ...REGISTRY_FIELDS,
 ]);
 // Request-envelope keys the ROUTE consumes (not pricing inputs) — always allowed.
-const META_FIELDS = new Set(['scenario', 'debug', 'full', 'raw', 'poll', 'disqualify', 'maxWaitMs', 'pollMs', 'companyId']);
+const META_FIELDS = new Set(['scenario', 'debug', 'full', 'raw', 'poll', 'disqualify', 'maxWaitMs', 'pollMs', 'companyId',
+  // §2.5 — audit-mode rung digest (never a pricing input): the per-program rate ladder for a
+  // point-for-point rate-sheet diff, plus its two size bounds.
+  'audit', 'programsLimit', 'rungsLimit']);
 function unsupportedFields(sc) {
   return Object.keys(sc || {}).filter((k) => !SUPPORTED_FIELDS.has(k) && !META_FIELDS.has(k));
 }
@@ -283,6 +315,10 @@ async function price(req, res) {
   }
   const parsed = lp.parse(r.raw);
   const out = { ok: true, ...trimPrograms(parsed), requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  // §2.5 — audit-mode rung digest: the full per-program rate ladder for a point-for-point diff
+  // against the Lender Price frontend. Off by default (audit:true), so the ordinary response is
+  // unchanged.
+  if (req.body && req.body.audit) out.rungDigest = rungDigest(parsed, { programsLimit: req.body.programsLimit, rungsLimit: req.body.rungsLimit });
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
@@ -425,4 +461,4 @@ function makeRouter() {
 }
 
 module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
-  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf } };
+  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf, rungDigest, trimPrograms } };

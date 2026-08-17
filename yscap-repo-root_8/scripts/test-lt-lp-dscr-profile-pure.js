@@ -73,7 +73,7 @@ ok(dynOf(forced, 'GLOBAL_BorrowerType') === 'LLC', 'FORCE-8 borrower type → LL
 const explicit = sm.buildSearch(
   { purpose: 'Purchase', value: 5e5, loan: 4e5, fico: 760, dscr: 1.25, termYears: 20, lockDays: 45, borrowerType: 'Trust' },
   { base: nonDscrBase() });
-ok(explicit.criteria.loanYear === 20 && explicit.termsCriteria[0] === 20, 'EXPLICIT-1 caller termYears 20 wins over the 30 default');
+ok(explicit.criteria.loanYear === 30 && explicit.termsCriteria[0] === 20, 'EXPLICIT-1 caller termYears 20 rides termsCriteria [20]; loanYear STAYS 30 (amortization — §2.2 parity)');
 ok(explicit.brokerCriteria.dayLocks === 45 && explicit.dayLocksCriteria[0] === 45, 'EXPLICIT-2 caller lockDays 45 wins over the 30 default');
 ok(dynOf(explicit, 'GLOBAL_BorrowerType') === 'Trust', 'EXPLICIT-3 caller borrowerType Trust wins over the LLC default');
 // but the ALWAYS-forced axes still stand even with an explicit scenario

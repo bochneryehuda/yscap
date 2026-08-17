@@ -58,6 +58,38 @@ const dq = { ready: true, lenderCount: 3, itemCount: 8, reasonCount: 8, lenders:
   ok(stEff.addlOccupancyType === 'Short_Term_Rental_Property', 'a rentalTerm:short request round-trips to Short_Term_Rental_Property in effectiveScenario');
 }
 
+// 2d) §2.5 AUDIT-MODE RUNG DIGEST — the full per-program rate ladder for a point-for-point diff
+//     against the Lender Price frontend, with counted (never silent) truncation.
+{
+  const { rungDigest, trimPrograms } = dp._internals;
+  const parsed = {
+    programCount: 2, lenderCount: 2, rungCount: 5, disqualifiedCount: 0,
+    programs: [
+      { lender: 'Deephaven', investor: 'Deephaven', lenderId: 'dh', program: 'DSCR 30Y', product: 'Fixed',
+        rungCount: 3, minRate: 6.5, minPoints: -1, maxPrice: 101,
+        rungs: [{ rate: 6.5, price: 101, points: -1 }, { rate: 6.75, price: 100.5, points: -0.5 }, { rate: 7.0, price: 100, points: 0 }] },
+      { lender: 'Deephaven', investor: 'Deephaven', lenderId: 'dh', program: 'DSCR 30Y IO', product: 'IO',
+        rungCount: 2, minRate: 6.9, minPoints: 0, maxPrice: 100.25,
+        rungs: [{ rate: 6.9, price: 100.25, points: 0 }, { rate: 7.1, price: 100, points: 0.25 }] },
+    ],
+  };
+  const d = rungDigest(parsed);
+  ok(d.programsReturned === 2 && d.programsTruncated === false, 'digest returns every program');
+  ok(d.programs[0].rungs.length === 3 && d.programs[0].rungs[0].rate === 6.5 && d.programs[0].rungs[0].price === 101,
+    'digest carries the FULL rung ladder (rate/price/points), not just the best rung');
+  ok(d.programs[0].rungsTruncated === false && d.programs[0].rungCount === 3, 'a fully-returned program is not flagged truncated');
+  // A rung cap TRUNCATES but COUNTS — never a silent drop.
+  const capped = rungDigest(parsed, { rungsLimit: 1 });
+  ok(capped.programs[0].rungs.length === 1 && capped.programs[0].rungsTruncated === true && capped.programs[0].rungCount === 3,
+    'a rung cap returns 1 but reports rungsTruncated + the true rungCount');
+  // A program cap truncates + counts too.
+  const cappedP = rungDigest(parsed, { programsLimit: 1 });
+  ok(cappedP.programsReturned === 1 && cappedP.programsTruncated === true, 'a program cap reports programsTruncated');
+  // The digest is ADDITIVE: the trimmed summary is unchanged (best-rung only, no rung ladder).
+  const trimmed = trimPrograms(parsed);
+  ok(trimmed.programs[0].minRate === 6.5 && !('rungs' in trimmed.programs[0]), 'the default trimmed summary is unchanged (no rung ladder)');
+}
+
 // 3) Exercise the secret gate directly by pulling its first layer's handle.
 //    layer[0] is the gate middleware added by router.use((req,res,next)=>{...}).
 const gate = diag.stack && diag.stack[0] && diag.stack[0].handle;
