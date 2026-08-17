@@ -86,11 +86,6 @@ const SUPPORTED_FIELDS = new Set([
   // entered as the POSITIVE number a human sees; the vendor's negative wire form is produced by one
   // named conversion in the builder. HELOC/HELOAN subtype selectors stay unsupported (uncaptured).
   'subordinateLoanAmount', 'compPercent',
-  // §Layer-3 PPP — an OPTIONAL, explicitly-supplied APR feeds the high-cost natural-person prepay
-  // prohibitions (deephaven-ppp-matrix `aprGt` rules). APR is derived (rate+fees), never invented: a
-  // scenario that omits it fails OPEN (the rule requires a numeric apr), so this only lets a caller
-  // that already knows the APR trip the high-cost rule. Accepted here so it is not 422'd as unsupported.
-  'apr',
   // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
   // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
   ...REGISTRY_FIELDS,

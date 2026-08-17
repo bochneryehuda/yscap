@@ -6,14 +6,16 @@
  * requires for every program (rate sheet + eligibility matrix + PPP matrix), keyed by the investor.
  *
  * WHY IT MATTERS AS A DISQUALIFIER (owner 2026-08-17): some states PROHIBIT a prepayment penalty for
- * certain (borrower type × units × lien × loan amount × APR) combinations. If a loan REQUESTS a PPP where
+ * certain (borrower type × units × lien × loan amount) combinations. NOTE: PPP is NOT APR/high-cost
+ * driven for our loans — a DSCR loan is business-purpose, so the consumer high-cost APR rules do NOT
+ * apply (owner-directed 2026-08-17). If a loan REQUESTS a PPP where
  * it is prohibited, that is a real disqualifier — the loan can only be offered No-PPP. The owner's
  * example: in New Jersey an INDIVIDUAL (natural-person) borrower on a 1–4 unit is PROHIBITED from a PPP,
  * while a business entity (LLC) is allowed one. A No-PPP loan is NEVER disqualified by this layer.
  *
  * INPUTS (from a scenario / engine facts):
  *   state 2-letter · borrowerType 'natural_person'|'business_entity' (LLC/Corp/… → business_entity) ·
- *   units number · lien 'first'|'junior' (DSCR is first-lien) · loanAmount raw dollars · apr percent ·
+ *   units number · lien 'first'|'junior' (DSCR is first-lien) · loanAmount raw dollars ·
  *   ruralProperty boolean (Louisiana). prepayRequested boolean (a PPP term > 0 months).
  *
  * pppResult(input) → { result:'standard'|'prohibited'|'restricted', terms?, note?, state, source }
@@ -31,12 +33,12 @@ const CITE = 'Deephaven Operational Prepayment Penalty Matrix, eff March 2026';
 // inclusive; loan-amount comparisons: Lt/Le/Gt/Ge. borrowerType absent = any.
 const STATE_RULES = {
   AK: [{ when: { unitsMax: 4 }, result: 'prohibited' }, { when: { unitsMin: 5, loanAmountGt: 25000 }, result: 'standard' }, { when: {}, result: 'standard' }],
-  IL: [
-    { when: { borrowerType: 'business_entity', unitsMax: 4 }, result: 'standard' },
-    { when: { borrowerType: 'natural_person', unitsMax: 4, aprGt: 8 }, result: 'prohibited' },
-    { when: { borrowerType: 'natural_person', unitsMax: 4 }, result: 'standard' },
-    { when: { unitsMin: 5 }, result: 'standard' },
-  ],
+  // IL — PPP is NOT APR/high-cost driven for our loans (owner-directed 2026-08-17: "we don't care
+  // about APR/high-cost-driven because it's business purposes, and PPP is not related to
+  // APR/high-cost-driven"). A DSCR loan is a BUSINESS-PURPOSE loan, exempt from the consumer
+  // high-cost APR rules the earlier `aprGt` line modeled — so that line (and the whole APR
+  // dimension) is removed. IL allows a PPP; verify the exact IL rule against Lender Price live.
+  IL: [{ when: {}, result: 'standard' }],
   LA: [{ when: { ruralProperty: true }, result: 'prohibited', note: 'rural property' }, { when: {}, result: 'standard' }],
   MD: [{ when: {}, result: 'restricted', terms: '3-year term MAX; 2mo advance interest on aggregate prepayments >1/3 of original principal in any 12mo' }],
   MI: [
@@ -99,7 +101,8 @@ function whenMatches(when, input) {
   if (w.unitsMax != null) { if (!isNum(input.units) || input.units > w.unitsMax) return false; }
   if (w.unitsMin != null) { if (!isNum(input.units) || input.units < w.unitsMin) return false; }
   if (w.lien && String(input.lien || 'first').toLowerCase() !== w.lien) return false;
-  if (w.aprGt != null) { if (!isNum(input.apr) || !(input.apr > w.aprGt)) return false; }
+  // NOTE: there is deliberately NO `aprGt` / high-cost dimension. PPP for a business-purpose DSCR loan
+  // is not APR-driven (owner-directed 2026-08-17). Do not re-introduce an APR predicate here.
   if (w.loanAmountLt != null) { if (!isNum(input.loanAmount) || !(input.loanAmount < w.loanAmountLt)) return false; }
   if (w.loanAmountLe != null) { if (!isNum(input.loanAmount) || !(input.loanAmount <= w.loanAmountLe)) return false; }
   if (w.loanAmountGt != null) { if (!isNum(input.loanAmount) || !(input.loanAmount > w.loanAmountGt)) return false; }

@@ -24,11 +24,8 @@
       { "when": {}, "result": "standard" }
     ]},
     "IL": { "rules": [
-      { "when": { "borrowerType": "business_entity", "unitsMax": 4 }, "result": "standard" },
-      { "when": { "borrowerType": "natural_person", "unitsMax": 4, "aprGt": 8 }, "result": "prohibited" },
-      { "when": { "borrowerType": "natural_person", "unitsMax": 4 }, "result": "standard" },
-      { "when": { "unitsMin": 5 }, "result": "standard" }
-    ]},
+      { "when": {}, "result": "standard" }
+    ], "note": "PPP is not APR/high-cost driven for a business-purpose DSCR loan (owner-directed 2026-08-17). The prior APR-gated natural-person prohibition was removed; verify the exact IL rule against Lender Price live." },
     "LA": { "rules": [
       { "when": { "ruralProperty": true }, "result": "prohibited" },
       { "when": {}, "result": "standard" }

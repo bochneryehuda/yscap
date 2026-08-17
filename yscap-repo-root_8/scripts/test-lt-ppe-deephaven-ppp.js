@@ -31,10 +31,12 @@ for (const st of ['NY', 'CA', 'TX', 'FL', 'GA', 'AZ']) ok(res({ state: st, borro
 // ---- Alaska: 1-4 prohibited, 5+ standard --------------------------------------------------------
 ok(prohibited({ state: 'AK', units: 3, loanAmount: 400000 }) && !prohibited({ state: 'AK', units: 5, loanAmount: 400000 }), 'AK: 1-4 units prohibited; 5+ allowed');
 
-// ---- Illinois: natural person APR>8% prohibited; else standard ---------------------------------
-ok(prohibited({ state: 'IL', borrowerType: 'Individual', units: 2, loanAmount: 400000, apr: 9 }), 'IL: natural person, APR 9% → prohibited');
-ok(!prohibited({ state: 'IL', borrowerType: 'Individual', units: 2, loanAmount: 400000, apr: 8 }), 'IL: natural person, APR 8% → allowed');
-ok(!prohibited({ state: 'IL', borrowerType: 'LLC', units: 2, loanAmount: 400000, apr: 12 }), 'IL: business entity, any APR → allowed');
+// ---- Illinois: PPP allowed (NOT APR/high-cost gated) ------------------------------------------
+// PPP for a business-purpose DSCR loan is not APR-driven (owner-directed 2026-08-17). An `apr` input,
+// even a high one, must NOT cause a prohibition — IL allows a PPP for both borrower types.
+ok(!prohibited({ state: 'IL', borrowerType: 'Individual', units: 2, loanAmount: 400000, apr: 9 }), 'IL: individual, high apr → still allowed (PPP not APR-driven)');
+ok(!prohibited({ state: 'IL', borrowerType: 'Individual', units: 2, loanAmount: 400000 }), 'IL: individual, no apr → allowed');
+ok(!prohibited({ state: 'IL', borrowerType: 'LLC', units: 2, loanAmount: 400000 }), 'IL: business entity → allowed');
 
 // ---- Louisiana: rural prohibited ---------------------------------------------------------------
 ok(prohibited({ state: 'LA', units: 1, loanAmount: 400000, ruralProperty: true }) && !prohibited({ state: 'LA', units: 1, loanAmount: 400000 }), 'LA: rural property prohibited; non-rural allowed');
