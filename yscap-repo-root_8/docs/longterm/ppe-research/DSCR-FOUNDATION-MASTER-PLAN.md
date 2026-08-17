@@ -17,6 +17,14 @@ the investor name**:
 3. **PPP state matrix** — which states/borrower-types may carry a prepayment penalty.
 
 **HARD RULES (owner-directed):**
+- **SELLABLE / CONFIG-DRIVEN (top governing rule).** Nothing may be hardcoded or customized to US.
+  Every customization is a PRE-FILLED setting that can be switched to any industry-standard option any
+  company would want; our choices are seed/default DATA only. Build it like a product other lenders
+  could buy. (Full: `02-config-driven-sellable.md`.)
+- **NEVER GUESS A VENDOR TOKEN / silent-substitution ban.** A wrong token silently mis-prices (worse than
+  a reject). Until a field is truly supported, REJECT it (422) — never silently ignore and price a
+  different scenario. Use the vendor's real field dictionary for exact spellings; test independently
+  before wiring; don't break what works. Validate locally first (a 422 makes zero upstream calls).
 - **DSCR ONLY.** Work only from the DSCR tab of the matrix/rate sheet. Delete everything else
   (owner-occupied programs) so wrong rules never contaminate DSCR. (2026-08-17)
 - **Don't trust Lender Price blindly on eligibility/ineligibility** — they can make mistakes. The second
@@ -56,6 +64,14 @@ the investor name**:
 | D15 | Connect PPP + rate sheet + eligibility into ONE foundation per investor/program. | Program ties eligibility+PPP; foundation design done |
 | D16 | Scalable foundation: onboard many investors × programs × rate sheets fast; run hundreds of scenarios each. | **Design done; build pending** |
 | D17 | Maintain THIS saved plan; add every engine result + directive; audit all messages for anything missing. | This file + message-audit engine |
+| D18 | **LO margin + compensation model:** 0.25 non-overridable company holdback margin; company default 2.00 origination; two ways to earn (par + front orig points OR zero orig + price-back/rebate at 102); each LO sets own front/back split; borrower-paid vs lender-paid comp search on LP; company AND per-LO MIN/MAX per loan ($3k min / $50k max examples); comp split only on origination charges, not the holdback; margin/holdback configurable per investor (pre-fill 0.25, changeable) with per-scenario overrides via rules. Full: `COMPENSATION-MARGIN-MODEL.md`, `PPE-MARGIN-HOLDBACK-PLAN.md`. | **PENDING** (§5) |
+| D19 | **Daily change-detection + review queue:** auto-pull LP base-rate updates daily and apply; daily scenario battery to detect changes in eligibility/ineligibility/LLPAs/prepay/state rules/pricing/base rates; base-rate changes auto-apply, RULE changes go to a human review queue; scheduled 10/11/12 AM Eastern per investor. Full: `04-daily-sync-change-detection.md`. | **PENDING** |
+| D20 | **Shadow → per-investor cutover:** our PPE runs alongside LP AND relies on LP in every scenario for now; a reliability tool emits findings on any disagreement; LP always wins for now → manual review to fix our PPE; after several weeks of no difference for an investor, roll THAT investor live without LP. | **PENDING** (partly: findings/scoreboard/cutover exist) |
+| D21 | **200-scenario agreement gate BEFORE building a rate sheet in:** must agree with LP on ≥200 scenarios — every LLPA, eligibility, ineligibility, max/min price, to the penny — before a rate sheet is trusted. | **PENDING** (harness built; gate to run) |
+| D22 | **White-label / hide the investor name:** client/front-end surfaces must NOT show the real investor name — each investor gets an INTERNAL program name (Diamond/Stone/Brilliant…). NOTE: this is compatible with D5 — the investor identity is stored internally (program name) but HIDDEN on borrower/TPO surfaces (the standing LT investor-block rule). | **PENDING** |
+| D23 | **Overlays with front-end checkboxes** (e.g. NY CEMA — which investors do it, toggled by a checkbox); overlays layer on top of base rules. | **PENDING** (fits the rule builder D11) |
+| D24 | **Excel-grid rule editor + Excel import:** each program editable as an Excel-like grid where every box is a rule; toggle grid view ↔ rules view; an import button that accepts only pre-configured investor Excel sheet types, to ingest new/updated rate sheets. | **PENDING** (fits D11) |
+| D25 | **LP-connector contracts** (developer-confirmed): `dscr` missing/null → default **1.5** (nullish, preserve explicit 0) — a live bug that collapsed 439→28 rows, now fixed; **cash-out amount FAIL-CLOSED** (store internally, do NOT transmit until the vendor assigns a real code — the frontend doesn't send it; business meaning: cash-out = "cash in hand", too large → ineligible); purpose alias contract (Purchase→Purchase, Cash out→CashoutRefinance, Refinance→Refinance); permanent OAuth login (client_id acme2 + Basic client auth, in-memory token, refresh before expiry, re-login once on 401, never copy the browser token). Details in the parity status doc. | **Mostly done; verify** |
 
 ---
 
@@ -100,12 +116,32 @@ borrower_type, apr, prepay_months→prepay_requested, subordinate_amount, rural/
    materialize) — stream/target the Deephaven leaf; per-layer disqualifier reconciler; audit-mode rung
    digest (deterministic hash of every rung → penny-level comparison); two-wave capture; one-command
    `certifyProgram`. 8-step build.
-6. **Rule mining + condition builder** (running). Mine every eligibility/ineligibility/LLPA rule from the
-   three layers to pre-fill; design the universal rule shape + builder ops (create/duplicate/edit/add
-   LLPA/add margin-holdback) like the mega systems.
-7. **Message audit** (running). Go through every owner message for instructions not yet in this plan.
+6. **Rule mining + condition builder** → `RULE-CATALOG-AND-BUILDER.md` (FULL detailed output saved).
+   Job 1: every eligibility/ineligibility/LLPA rule across all three layers with exact numbers +
+   encode-status. Job 2: the ONE unified rule shape (eligibility/bound/pricing/margin) + builder ops,
+   mapped onto the existing `rules.js`/`rule-store.js`. **Newly-surfaced gaps:** rural is a REAL 65% cut
+   and was NOT flagged; FTHB + vacant/unleased NOT flagged; subordinate rule encoded but its fact not
+   emitted; the FN grid row is absent; a `boundOp:'delta'` op is needed for −5%/−10% relative cuts;
+   the L1 flat envelope diverges from the L2 4-axis grid (a real reconcile target).
+7. **Message audit** → cross-checked all owner messages vs the plan. Added the missing directives
+   D18–D25 above (LO compensation, sellable/config-driven, daily change-detection, shadow→live cutover,
+   200-scenario gate, white-label, overlays/CEMA, Excel editor, LP-connector contracts). Nothing lost.
 
 ---
+
+## 3b. Have we laid the foundation? (owner's question) — YES, HALF-LAID
+
+The scalable foundation is **half-built already**, which is the fast path forward:
+- **Layer 1 (rate sheet), overlay rules, and margin/holdback are ALREADY data-driven** — versioned
+  `lt_ppe_*` tables + `store.js` + `rule-store.js` + `margin-holdback.js`, with a grid↔sheet compiler
+  and the one `rules.js` engine. `buildDeephavenGrid()` is already just a data producer.
+- **The unified rule shape** (eligibility/bound/pricing/margin) the rule-mining engine designed maps 1:1
+  onto that existing `rules.js` vocabulary and the `lt_ppe_rule` store — so the rule/condition builder is
+  an authoring surface over infrastructure that EXISTS, not a rewrite.
+- **What's left to make the next investor fast:** generalize Layers 2 & 3 into DATA + pure compilers
+  (task #47), build the rule/condition builder on the existing store (#48), the scenario auto-generator +
+  per-layer reconciler (#49). After that, **a new investor = encode its 3 matrices as data + run one
+  `certifyProgram` command** — no new engine code.
 
 ## 4. Build status
 
