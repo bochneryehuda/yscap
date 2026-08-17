@@ -122,6 +122,16 @@ const DEFINITIONS = {
     group: 'Validation', label: 'Rate parity tolerance',
     help: 'Max allowed note-rate difference vs Lender Price (thousandths of a percent; 0 = must match exactly).',
   },
+  'validation.margin_tolerance_milli': {
+    type: 'number', integer: true, min: 0, max: 100000, default: 0,
+    group: 'Validation', label: 'Margin parity tolerance',
+    help: 'Max allowed margin/holdback difference vs Lender Price (thousandths of a point; 0 = must match exactly).',
+  },
+  'validation.base_price_tolerance_milli': {
+    type: 'number', integer: true, min: 0, max: 100000, default: 1,
+    group: 'Validation', label: 'Base-price parity tolerance',
+    help: 'Max allowed base-price difference vs Lender Price before a rung counts as a base-price disagreement (thousandths of a point).',
+  },
 
   // ---- Per-investor cutover (§11) ------------------------------------------
   'cutover.clean_weeks_required': {

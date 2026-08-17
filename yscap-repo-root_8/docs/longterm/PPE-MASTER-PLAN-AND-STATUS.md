@@ -227,8 +227,18 @@ owner wants to start.
   and appears in the review queue; an agreeing scenario writes an agreement record and no finding.
 - **Depends on:** P1. **Owner gate:** none (LP still wins; nothing auto-applies).
 
-### P3 — The six difference detectors (the owner's list), each a finding kind + test  ·  DETECTION  ·  TO-BUILD
-For a scenario priced on both engines, detect and categorize each mismatch. (b)(c) exist; the rest are new.
+### P3 — The six difference detectors (the owner's list), each a finding kind + test  ·  DETECTION  ·  **DONE** ✅
+- **Built.** `parity-detectors.js` (pure): `detectDifferences({ ours, lp, lpDisqualified }, { settings, …tolerances })`
+  compares our quote (quoteProgram) against the rich LP shape (normalizeLpFull / normalizeLpDisqualified)
+  and returns categorized differences: **`base_price`**, **`final_price`**, **`coupon_missing_ours`** (high —
+  borrower loses an option) / **`coupon_missing_lp`** (low), **`margin`**, **`llpa_total`** (with LP's itemized
+  LLPAs attached), **`disqualification_missing`** (high — we'd price a loan LP declines; LP's reasons attached
+  so a rule can be suggested) / **`disqualification_extra`**. Tolerances from settings (added
+  `validation.margin_tolerance_milli` + `validation.base_price_tolerance_milli`); a within-tolerance gap is
+  not reported; an LP value present with ours absent is reported (never silently agreed); an eligibility
+  disagreement dominates (price axes moot). Test `test-lt-ppe-parity-detectors.js` covers all six categories,
+  agree, both-decline, tolerance suppression, and the margin-present/ours-absent case. 38/38 suites.
+- **What (original).** For a scenario priced on both engines, detect and categorize each mismatch. (b)(c) exist; the rest are new.
 - **P3a — base rate off.** New. Compare LP `priceBuild.baseRate` vs our `basePriceMilli`/rung rate.
 - **P3b — final/note rate off.** DONE in `parity.compareScenario` — verify + surface (tune
   `rateToleranceMilli`; currently 0, so a rate delta shows as a missing rung).
