@@ -246,9 +246,31 @@ surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
   surface published, so no sheet could be scoped and every shadow comparison abstained silently. The
   list leads with how many programs are UNSCOPED and says what that means; the form previews which
   Lender Price program names a pattern actually picks, with zero matches called out.
-- **TO-BUILD:** investor/program manager, rule-authoring editor, rate-sheet console, LLPA manager,
-  settings center, scenario playground, and the **manual-review + suggested-rules UI** (P8). No admin
-  screen consumes the built `createInvestor`/`createProgram`/rate-sheet writers yet. *(MEGA §12.)*
+- **DONE (2026-08-17) — the rate-sheet writers have a door.** EVERY writer in `ppe/store.js`
+  (`createInvestor`, `createProgram`, `createRateSheetVersion`, `replaceBasePrices`,
+  `replaceAdjustments`, `setPriceLimit`, `publishRateSheetVersion`) had **zero callers anywhere in
+  `src/`** — so an investor could not be onboarded through the product at all, no sheet could be
+  loaded, and the ≥200-scenario agreement gate guarded a door that did not exist. Nine admin-gated
+  routes now cover the whole journey: `POST /investors`, `POST /programs`,
+  `POST /programs/:id/rate-sheets`, `GET /rate-sheets/:id`, `PUT /rate-sheets/:id/{base-prices,
+  adjustments,price-limit}`, `GET /rate-sheets/:id/agreement`, `POST /rate-sheets/:id/publish`.
+  - **Ownership first.** `store.rateSheetVersionInScope` is the ONE check and every route runs it
+    before touching anything — the grid writers replace a WHOLE grid, so a missing check destroys
+    another tenant's live pricing rather than merely leaking it.
+  - **Only a DRAFT is editable.** A published sheet is what live quotes price from; it is superseded
+    by a new version, never rewritten underneath them, and the refusal says so.
+  - **Nobody types an agreement result.** There is deliberately NO route recording a passing run from
+    a request body — that would satisfy the gate with nothing compared. The human path is the
+    recorded override.
+  - **A LATENT DEFECT FIXED ON THE WAY:** `replaceBasePrices`/`replaceAdjustments` took a scope and
+    DELETEd by `version_id` alone. Unreachable while nothing called them; armed the moment a door
+    opened. Both are scoped now, guarded at the store layer (see the note in §2.9's suites below).
+  - Tests `test-lt-ppe-console-db.js` (the journey end to end over a real Postgres) + section E of
+    `test-lt-ppe-store-roundtrip-db.js`; ten mutations proven to bite.
+- **TO-BUILD:** investor/program manager SCREEN, rule-authoring editor, rate-sheet console SCREEN,
+  LLPA manager, settings center, scenario playground, and the **manual-review + suggested-rules UI**
+  (P8). The routes above exist; no `LtPpe.jsx` surface consumes them yet, so onboarding is an API
+  call today. *(MEGA §12.)*
 
 ### 2.12 The LP connector — **DONE**
 `lenderprice/client.js` (login/token/price/parse/parseFull/parseDisqualified, read-only viewer, fails

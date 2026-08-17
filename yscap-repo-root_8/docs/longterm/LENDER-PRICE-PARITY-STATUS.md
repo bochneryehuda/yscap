@@ -1894,3 +1894,57 @@ than only in isolation. Eight mutations of the production rule were each proven 
 removing the refusal, dropping the failed-override guard, disabling the scale test, making the
 unreadable ledger read as a pass, ignoring the override verdict, leaving the history unsorted, dropping
 the author requirement, and dropping the reason floor.
+
+**§2.28 — THE RATE-SHEET WRITERS HAD NO DOOR (2026-08-17).** The fifth find of the shape §2.25,
+§2.26, §2.27 and the canary schedule all record, and the largest: **every** rate-sheet writer in
+`ppe/store.js` — `createInvestor`, `createProgram`, `createRateSheetVersion`, `replaceBasePrices`,
+`replaceAdjustments`, `setPriceLimit`, `publishRateSheetVersion` — had **zero callers anywhere in
+`src/`**. Complete, unit-tested machinery, reachable only from its own tests. So an investor could
+not be onboarded through the product at all, no sheet could be loaded, and the agreement gate §2.27
+had just put on the publish was guarding a door that did not exist. Nine admin-gated routes now
+cover the whole journey, from creating the investor to publishing the sheet.
+
+**THE FOUR RULES, AND WHY EACH IS THERE.** *(1)* **Ownership is checked before anything is touched.**
+A version id arrives off an HTTP request, `loadRateSheet` is unscoped, and the grid writers replace a
+WHOLE grid — so a missing check here is not a leak, it is the destruction of another tenant's live
+pricing. `store.rateSheetVersionInScope` is the one check and every route runs it first. *(2)* **Only
+a DRAFT is editable.** Rewriting a published version in place would change what every live quote
+prices from with no new version, no new effective date and no fresh agreement run, silently; a
+published sheet is superseded by a new version instead, and the refusal says so rather than leaving
+the reader to guess. *(3)* **Nobody types an agreement result.** There is deliberately no route that
+records a passing run from a request body — a hand-typed "agreed on 240 scenarios" would satisfy
+§2.27's gate without a single scenario being compared, which is the exact state that gate exists to
+make impossible. The human path is the recorded override, which is honest about being one. *(4)* **A
+refusal names the way forward** — measure it, or override it and say why — because a gate whose
+remedy the reader cannot work out is the dead end this file has now recorded three times.
+
+**A LATENT DEFECT FOUND ON THE WAY, and it is the one worth remembering.** `replaceBasePrices` and
+`replaceAdjustments` each TAKE a `scope` and then `DELETE ... WHERE version_id = $1` — the scope
+unused. Every row is INSERTed with the caller's scope, so the write was asymmetric: a caller holding
+another tenant's version id would wipe that tenant's grid and re-stamp the rows as its own. It had
+been harmless for exactly one reason — nothing called it — and it would have been armed by the very
+commit that opened the door. **A parameter a function accepts and never uses is not a nicety; on a
+multi-tenant write it is a hole waiting for its first caller.**
+
+**THE DUPLICATE-CODE ANSWER IS THE STORE'S CONTRACT RESPECTED, NOT CHANGED.** `createInvestor` and
+`createProgram` UPSERT on conflict, deliberately and documented, so an ingestion pass can re-run.
+Through a human console that is the wrong answer: somebody typing a code that already exists believes
+they are creating a new investor while the upsert quietly RENAMES the existing one. The door refuses
+the collision and names what already holds the code; the idempotency stays intact for programmatic
+callers. The program check is keyed on `(scope, investor_id, code)`, not the code alone, so a second
+investor may still have its own "DSCR30" — a check written on the code alone would have refused it,
+and the test pins both directions.
+
+**AND A GUARD THAT WAS MISLABELLED.** `ROUTER: reading is NOT admin-gated` was implemented as "no
+gated post/put/delete on these path NAMES", which is a different statement, and it failed the moment
+`POST /investors` existed — a route that creates an investor and SHOULD be gated. It now names the
+READ registrations and asserts each one is ungated, so it bites on exactly what its label claims and
+cannot be tripped by an unrelated write; proven by gating `GET /scoreboard` and watching it fail.
+
+**Ten mutations** were proven to turn the suites red across both layers — the ownership check, the
+draft-only guard, all-rows-validated-before-any-written, a zero-valued LLPA stored silently, the
+duplicate rename, the publish refusal swallowed, both scoped DELETEs, and the scope filter on the
+ownership check itself. **One survived the first pass**: reverting the store's scoped DELETE left the
+console suite green, because the route refuses such an id before the store is ever reached. The two
+defences are layered, and a test of the outer one proves nothing about the inner — so that guard was
+moved to `test-lt-ppe-store-roundtrip-db.js`, the suite about the layer it actually protects.
