@@ -392,6 +392,49 @@ you can see exactly where we are and that we are on track.
 
 ---
 
+## Part 6 — Expanded scope (owner-directed 2026-08-17, evening) — numbered
+
+The owner extended the vision. These are captured as numbered items so the plan stays the control
+document; several are gated on the three research engines now running (open-source foundation; the
+fields/Excel-grid→rule design; the disqualify-always workflow + troubleshooter).
+
+- **E1 — Disqualify runs ALWAYS, right after the eligible results.** Every scenario: show the eligible
+  (qualified) answer, then IMMEDIATELY run the disqualify side (there are always many declined programs).
+  Mine every investor's every program's disqualifiers into the suggestion box. *(Builds on P2's mine
+  action + the async disqualify flow; the "automatic after eligible" wiring is the new part.)*
+- **E2 — Read the disqualify side per INVESTOR and per PROGRAM.** One investor has many programs; each
+  program can have different disqualifiers. The system must extract every investor name + every program
+  name + each program's disqualifiers, exactly. *(Research engine C is auditing whether our parser
+  already carries the program for every disqualification, or if there's a gap.)*
+- **E3 — Each investor is an Excel-like rate sheet, per program.** Investor → several programs → each
+  program its own editable grid that LOOKS like the rate-sheet Excel, where **every box = a rule** in the
+  back. Ineligible cells (LTV too high / FICO too low) are marked. Purchase / rate-term refi / cash-out
+  each carry their own limits. A "rules view" toggle shows the same thing as rules; you can duplicate a
+  rule and tweak one field. *(Research engine B is designing the grid↔rule round-trip on our existing
+  lt_ppe_adjustment / lt_ppe_rule tables.)*
+- **E4 — A full rule hierarchy: across-the-board / per-investor / per-program.** Every field can be a
+  filter (state, city, FICO, LTV, DSCR, purpose, …). A rule can apply to all investors + all programs,
+  or one investor, or one program. *(lt_ppe_rule already supports this scoping; the UI + field catalog
+  is the build.)*
+- **E5 — Excel IMPORT button, per pre-configured investor/program template.** Go to an investor already
+  set up in the back end that knows that investor's sheet layout and which program it is; import (or
+  update from) an Excel rate sheet. Only pre-configured sheet types. *(Builds on ratesheet-ingest.js.)*
+- **E6 — Daily base-rate refresh at 10 / 11 / 12 AM Eastern.** The base rate changes every day; each
+  investor publishes an updated base rate. Run a basic scenario per investor at those times to pull the
+  updated base rate into our system. *(A scheduled job; the rate-sheet version store already exists.)*
+- **E7 — Confidence maturity.** Over time the system learns which scenarios it's confident about vs where
+  it disagrees with Lender Price most (more bumps). *(scoreboard.js / run-store.js already measure
+  agreement over time; the build is slicing it by scenario type / investor / program.)*
+- **E8 — The major back-end TROUBLESHOOTER.** Per scenario: "Lender Price returned X; our engine returned
+  Y (what we showed the user); and here are the rules I'm suggesting to add so next time we agree with
+  Lender Price." *(Composes parity-review.js + the suggestion store; the build is the record + the
+  screen.)*
+
+**Sequencing:** E2 (parser audit) and E8 (troubleshooter record) are backend and can proceed as the
+research lands; E1 (auto-disqualify wiring) needs the live upstream (credentials rotated); E3/E4/E5 (the
+Excel-grid UI + import) wait on research engine B's design + a sample sheet; E6 is a scheduled job; E7
+extends the scoreboard. The three owner decisions in Part 4 still gate the money math + go-live.
+
 ## Appendix — key Lender Price field paths (the ground truth for Part 3)
 
 From `LENDERPRICE-RESPONSE-SCHEMA.md` + `lenderprice/client.js`:
