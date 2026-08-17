@@ -40,6 +40,11 @@ const ok = (c, m) => { if (c) { pass++; console.log('  ✓', m); } else { fail++
 // ---- 2. orchestrate.buildDefinition copies the file's team (DB) --------------
 const TAG = 'cc-' + Date.now().toString(36);
 async function main() {
+  // BOTH CI jobs run the one chain and `test` has no database at all, so this
+  // must skip rather than dial one. The probe goes BEFORE ensureSchema on
+  // purpose: ensureSchema does not throw when the database is unreachable, it
+  // retries for ~75s and then RESOLVES, so a guard after it catches nothing.
+  await require(__dirname + '/lib/db-gate').skipUnlessDb('esign-cc-viewers');
   await require(REPO + '/src/migrate-boot').ensureSchema();
   console.log('\n2. orchestrate.buildDefinition copies the loan officer + processor');
   const loId = crypto.randomUUID(), prId = crypto.randomUUID(), bId = crypto.randomUUID();
@@ -90,9 +95,9 @@ async function main() {
     await db.query(`UPDATE staff_users SET email=$2 WHERE id=$1`, [loId, `lo+${TAG}@ys.com`]);
 
     // ---- 3. term-sheet worst case: 3 signers (borrower 1 + co 2 + admin 3) ------
-    // CCs must start at recipientId 4 (no collision) and the staffer whose email
-    // equals the ADMIN counter-signer must be deduped out.
-    console.log('\n3. term-sheet package: CC ids start after 3 signers + admin-email dedup');
+    // CCs must start after EVERY signer id (no collision) and the staffer whose
+    // email equals the ADMIN counter-signer must be deduped out.
+    console.log('\n3. term-sheet package: the LO SIGNS it, CC ids start after every signer, admin-email dedup');
     // buildDefinition uses the SEEDED admin-recipient email (it only re-resolves the
     // borrower/co emails from the file), so a TAG-scoped admin email is faithful and
     // avoids colliding with the DB's real counter-signer staff row.
@@ -125,11 +130,28 @@ async function main() {
     const tdef = await orchestrate.buildDefinition(tsRow, { db, storage: fakeStorage });
     const tcc = tdef.carbonCopies || [];
     const tccEmails = tcc.map((c) => c.email);
-    ok(tccEmails.includes(`lo+${TAG}@ys.com`), 'the loan officer is copied on the term-sheet envelope');
+    // ON THE TERM SHEET THE LOAN OFFICER SIGNS — so they are deliberately NOT a CC
+    // on it, and that is not a hole in "copied on every envelope". #1127 made the
+    // LO a required SIGNER of this package (`loanOfficerRequired`, and in the tab
+    // builder "LO signs the term sheet only"). A DocuSign recipient may not be both
+    // a signer and a carbon copy of the same envelope, so buildDefinition's dedup
+    // drops them from the CCs — the same rule this suite asserts two lines down and
+    // in section 2. The officer still sees every envelope: a CC where they do not
+    // sign, a signer here, which is the stronger seat.
+    //
+    // This block used to assert the pre-#1127 arrangement (LO copied). That
+    // expectation and the change that contradicts it landed in the SAME commit
+    // (cc78975), and the suite was never registered in the chain, so it was never
+    // once seen to fail — it asserted the CC while also asserting, and passing,
+    // that a signer is never CC'd.
+    const tSignerEmails = (tdef.signers || []).map((s) => s.email);
+    const maxSignerId = Math.max(0, ...(tdef.signers || []).map((s) => Number(s.recipientId) || 0));
+    ok(tSignerEmails.includes(`lo+${TAG}@ys.com`), 'the loan officer SIGNS the term-sheet envelope');
+    ok(!tccEmails.includes(`lo+${TAG}@ys.com`), '…and is therefore not ALSO copied on it (never double-booked)');
     ok(!tccEmails.includes(adminEmail), 'a staffer whose email equals the admin counter-signer is NOT copied (dedup)');
     ok(!tccEmails.includes(`b+${TAG}@example.com`) && !tccEmails.includes(`co+${TAG}@example.com`), 'neither signer is copied');
-    ok(tcc.every((c) => Number(c.recipientId) >= 4), 'CC recipientIds start at 4 — after borrower(1)+co(2)+admin(3), no collision');
-    ok(tcc.length >= 1, 'at least the loan officer is copied');
+    ok(tcc.every((c) => Number(c.recipientId) > maxSignerId), 'CC recipientIds start after EVERY signer id — no collision');
+    ok(tccEmails.includes(`pr+${TAG}@ys.com`), 'the processor — who does not sign — is still copied');
 
     console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
   } finally {
