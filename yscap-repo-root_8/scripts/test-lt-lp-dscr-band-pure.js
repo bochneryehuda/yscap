@@ -80,25 +80,55 @@ ok(dscrBand(null) === null && dscrBand(undefined) === null,
 ok(dscrBand(NaN) === null && dscrBand(Infinity) === null,
   'NANSAFE a NaN/Infinity DSCR produces no band (null), never a mis-priced top band');
 
-// ---- the token is transmitted in the built payload ------------------------
+// ---- the token is NOT transmitted by default, and that was MEASURED --------
+// §37.9. Apples to apples against the live tenant: the captured frontend request for one scenario
+// returns 11 programs / 309 priced options / 8 lenders. Our body for the SAME scenario — read back
+// out of that capture, so the deal is identical — returned 10 / 281 / 8. Removing DSCRRATIO and
+// changing nothing else returned exactly 11 / 309 / 8. The key appears in NO captured working
+// request; it was derived from a threshold table in the vendor's JS bundle, which proves the tokens
+// exist and never proved the frontend SENDS them. Asserting a pricing band nobody asked for narrows
+// the lender set that matches — a silently worse quote, which is the expensive direction.
 const a = sm.buildSearch({ ...S, dscr: 1.25 });
-ok(dyn(a, 'DSCRRATIO') === '1.25', 'PAYLOAD-1 dscr 1.25 → dynamicPropertiesMap.DSCRRATIO "1.25"');
+ok(dyn(a, 'DSCRRATIO') === undefined,
+  'PAYLOAD-1 dscr 1.25 sends NO DSCRRATIO — measured: sending it costs a whole lender program');
+// The tokens themselves are real, so the behaviour stays reachable for a future capture that shows
+// the frontend genuinely sending one. The band table below is still fully covered either way.
+process.env.LP_SEND_DSCRRATIO = '1';
+const aOn = sm.buildSearch({ ...S, dscr: 1.25 });
+delete process.env.LP_SEND_DSCRRATIO;
+ok(dyn(aOn, 'DSCRRATIO') === '1.25',
+  'PAYLOAD-1b …and LP_SEND_DSCRRATIO=1 still sends the captured token, so the table stays testable');
 ok(a.criteria.dscr === 1.25, 'PAYLOAD-2 criteria.dscr carries the verbatim numeric value');
 
-// ---- the derived band SMO is added AFTER the DSCR pair, in captured order --
-// Captured order with a prepay is [PPP, "Debt Service Coverage Ratio", "DSCR", <band>].
+// ---- the FOURTH option is the CAPTURED one, not a derived band ------------
+// §37.10. BOTH real captured requests — different deals, different states, both HTTP 200 with real
+// pricing — send [PPP, "Debt Service Coverage Ratio", "DSCR", **"Prepay Buyout"**], every option
+// carrying a real id. We used to append an invented "DSCR >=1.25 - J" with NO id, read out of the
+// vendor's JS bundle: that table proves such names exist, it never showed the frontend sending one.
+// The fourth option is now carried through from the foundation (a real vendor document) instead.
 const withPpp = sm.buildSearch({ ...S, dscr: 1.25, prepayMonths: 60 });
 const names = withPpp.criteria.specialMortgageOptions.map((o) => o.name);
-ok(JSON.stringify(names) === JSON.stringify(['5 Yr PPP', 'Debt Service Coverage Ratio', 'DSCR', 'DSCR >=1.25 - J']),
-  'SMO-1 order is [PPP, DSCVR, DSCR, band] — band appended last');
+ok(JSON.stringify(names) === JSON.stringify(['5 Yr PPP', 'Debt Service Coverage Ratio', 'DSCR', 'Prepay Buyout']),
+  'SMO-1 the fourth option is the captured "Prepay Buyout", not a derived band');
+ok(withPpp.criteria.specialMortgageOptions.every((o) => o && typeof o.id === 'string' && o.id),
+  'SMO-1b every option carries a real id — an id-less element is unlike anything in any capture');
+process.env.LP_SEND_DSCR_BAND_SMO = '1';
+const bandOn = sm.buildSearch({ ...S, dscr: 1.25, prepayMonths: 60 });
+delete process.env.LP_SEND_DSCR_BAND_SMO;
+ok(bandOn.criteria.specialMortgageOptions.map((o) => o.name).includes('DSCR >=1.25 - J'),
+  'SMO-1c …and LP_SEND_DSCR_BAND_SMO=1 still emits the derived band, so the table stays testable');
 // An OMITTED prepay is not "no prepay": it takes the DSCR profile's five-year Standard default, so
 // the PPP option is still first and the band still sits after the DSCR pair. (This assertion used to
 // read [DSCVR, DSCR, band] — it was written when omission inherited the foundation's prepay, which
 // the 2026-08-16 audit reversed: omitting prepay is the ORDINARY quote, and inheriting left it at
 // 36 months with no PPP option on a book the owner quotes at five years.)
 const noPpp = sm.buildSearch({ ...S, dscr: 0.90 });
-ok(JSON.stringify(noPpp.criteria.specialMortgageOptions.map((o) => o.name)) === JSON.stringify(['5 Yr PPP', 'Debt Service Coverage Ratio', 'DSCR', 'DSCR <1.15']),
-  'SMO-2 omitted prepay: [5 Yr PPP (profile default), DSCVR, DSCR, band]');
+ok(JSON.stringify(noPpp.criteria.specialMortgageOptions.map((o) => o.name)) === JSON.stringify(['5 Yr PPP', 'Debt Service Coverage Ratio', 'DSCR', 'Prepay Buyout']),
+  'SMO-2 omitted prepay: [5 Yr PPP (profile default), DSCVR, DSCR, Prepay Buyout]');
+// A DIFFERENT DSCR band must not change the option list at all now — the band is not in it.
+const otherBand = sm.buildSearch({ ...S, dscr: 1.40 });
+ok(JSON.stringify(otherBand.criteria.specialMortgageOptions) === JSON.stringify(noPpp.criteria.specialMortgageOptions),
+  'SMO-2b the option list no longer varies with the DSCR band');
 
 // ---- bands with no band SMO add nothing beyond the DSCR pair ---------------
 // Asserted by NAME rather than by list length. A length check conflates "no band was added" with
@@ -123,17 +153,29 @@ ok(cleared.criteria.dscr == null,
   'FAILCLOSED-2 an omitted DSCR clears criteria.dscr to null (scenario-owned)');
 ok(cleared.criteria.specialMortgageOptions.every((o) => o.name !== 'DSCR <1.15' && o.name !== 'DSCR >=1.00' && o.name !== 'DSCR >=1.25 - J'),
   'FAILCLOSED-3 an omitted DSCR adds no band SMO');
-// An explicit DSCR overrides the stale foundation value.
+// An explicit DSCR still overrides a stale foundation token — the anti-leak property is unchanged,
+// and it now holds in the stronger direction: the key is absent rather than merely correct.
 const over = sm.buildSearch({ ...S, dscr: 0.80 }, { base });
-ok(dyn(over, 'DSCRRATIO') === 'DSCR<1', 'FAILCLOSED-4 an explicit DSCR overrides the stale foundation token');
+ok(dyn(over, 'DSCRRATIO') === undefined,
+  'FAILCLOSED-4 a stale foundation DSCRRATIO is cleared and NOT re-sent, whatever the DSCR');
+process.env.LP_SEND_DSCRRATIO = '1';
+const overOn = sm.buildSearch({ ...S, dscr: 0.80 }, { base });
+delete process.env.LP_SEND_DSCRRATIO;
+ok(dyn(overOn, 'DSCRRATIO') === 'DSCR<1',
+  'FAILCLOSED-4b …and with the token enabled, an explicit DSCR still overrides the stale one');
 
 // ---- reachable over HTTP + round-trips in effectiveScenario ----------------
 const route = require('../src/longterm/routes/dscr-pricer');
 const { effectiveOf, unsupportedFields } = route._internals;
 ok(unsupportedFields({ dscr: 1.25, purpose: 'Purchase' }).length === 0, 'ROUTE-1 dscr is a supported route field');
 const eff = effectiveOf(sm.buildSearch({ ...S, dscr: 1.10 }));
-ok(eff.dscr === 1.10 && eff.dscrRatio === 'DSCR>=1',
-  'ROUTE-2 effectiveScenario surfaces the entered dscr AND the derived DSCRRATIO band token');
+ok(eff.dscr === 1.10 && eff.dscrRatio === undefined,
+  'ROUTE-2 effectiveScenario surfaces the entered dscr, and reports NO band token because none is sent');
+process.env.LP_SEND_DSCRRATIO = '1';
+const effOn = effectiveOf(sm.buildSearch({ ...S, dscr: 1.10 }));
+delete process.env.LP_SEND_DSCRRATIO;
+ok(effOn.dscrRatio === 'DSCR>=1',
+  'ROUTE-2b …and when the token IS sent, effectiveScenario still shows exactly what went upstream');
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

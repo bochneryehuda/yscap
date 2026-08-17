@@ -40,7 +40,10 @@ function ok(cond, label) { if (cond) { pass++; console.log('  ok   ' + label); }
 // A distinctive cash-out value that is NOT a substring of any other number in the payload, so a
 // substring search for it in the serialized body is a true "is it transmitted?" test.
 const CASH = 43217;
-const S = { purpose: 'Cash out', value: 8.2e5, loan: 6.1e5, dscr: 1.3, state: 'NJ', countyFps: '34039' };
+// fico is REQUIRED (§37.11): Lender Price answers HTTP 500 with no explanation when the field is
+// null OR absent, measured live both ways. It is on the fixture so these suites test their own
+// subject rather than re-testing that refusal.
+const S = { purpose: 'Cash out', value: 8.2e5, loan: 6.1e5, dscr: 1.3, state: 'NJ', countyFps: '34039', fico: 760 };
 
 console.log('cash-out amount — transmitted as criteria.cashoutAmount');
 

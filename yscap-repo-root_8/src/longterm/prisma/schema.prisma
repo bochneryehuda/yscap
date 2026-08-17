@@ -1417,3 +1417,23 @@ model LtPpeCutoverLedger {
   @@index([scope, investor, seq], map: "lt_ppe_cutover_ledger_history_idx")
   @@map("lt_ppe_cutover_ledger")
 }
+
+model LtPpeCanarySchedule {
+  id                 String   @id @default(uuid()) @db.Uuid
+  scope              String   @default("company")
+  investor           String   @default("")
+  enabled            Boolean  @default(false)
+  intervalMs         BigInt   @map("interval_ms")
+  batteryKind        String   @map("battery_kind")
+  battery            Json     @db.JsonB
+  rateSheetVersionId String?  @map("rate_sheet_version_id") @db.Uuid
+  concurrency        Int?
+  note               String?
+  updatedBy          String   @map("updated_by")
+  updatedAt          BigInt   @map("updated_at")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([scope, investor], map: "lt_ppe_canary_schedule_scope_uk")
+  @@index([scope, enabled], map: "lt_ppe_canary_schedule_enabled_idx")
+  @@map("lt_ppe_canary_schedule")
+}

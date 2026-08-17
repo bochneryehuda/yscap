@@ -204,12 +204,26 @@ async function health(req, res) {
   res.json({ ...base, ...readiness });
 }
 
-// GET /login-check — actually attempt a login and report ok/failure (no pricing). Confirms the
-// origin-gated login works from the server.
+// GET /login-check — actually attempt a PASSWORD login and report ok/failure (no pricing). Confirms
+// the origin-gated login works from the server, with the credentials Render actually holds.
+//
+// IT MUST CALL `login()`, NOT `getSession()`. This read used to be `getSession({ force: true })`,
+// which was exactly right while a renewal could only ever BE a password login. Once the refresh
+// grant landed, `force` still skips the freshness check but the renewal ladder then picks the
+// REFRESH grant — so on a long-running instance holding a warm session this endpoint would renew
+// happily and answer `200 {ok:true}` while `LP_USERNAME`/`LP_PASSWORD` were wrong, expired or locked
+// at the vendor. That is precisely the state it exists to detect, and the README tells an operator to
+// curl it to verify credentials after setting them, so a green answer would have been believed.
+// Caught by the pre-merge audit of the renewal change and reproduced: with the password grant
+// answering 401 and the refresh grant answering 200, the old line returned ok with a fresh token.
+//
+// Nothing is CACHED from this check on purpose: `login()` does not touch the warm session, so a
+// diagnostic can never install a session as a side effect, and a failing check leaves whatever was
+// working still working.
 async function loginCheck(req, res) {
-  const s = await lp.getSession({ force: true });
+  const s = await lp.login();
   if (!s.ok) return res.status(502).json({ ok: false, error: s.error, http: s.http || null, message: s.message });
-  res.json({ ok: true, companyId: s.companyId, userId: s.userId, expiresAt: new Date(s.expiresAt).toISOString(), profile: s.profile });
+  res.json({ ok: true, grant: 'password', companyId: s.companyId, userId: s.userId, expiresAt: new Date(s.expiresAt).toISOString(), profile: s.profile });
 }
 
 // Shared error body for a failed pricing call — surfaces the stable-error diagnostics the audit
