@@ -182,25 +182,143 @@ function LockCard({ lock }) {
   );
 }
 
-function Contacts({ contacts }) {
+/**
+ * The reassign control for ONE role. Only mounted for somebody the server said may
+ * reassign — and the server asks again on the write, so nothing here is the gate.
+ *
+ * IT SHOWS BOTH SIDES AND NEVER PRETENDS TO CHANGE ENCOMPASS. The wording says in as
+ * many words that this only decides whose pipeline the file is in here, because the
+ * one thing a person could reasonably assume — that they have just corrected the
+ * system of record — is the one thing that is not true.
+ *
+ * A FAILURE IS SHOWN, NOT SWALLOWED. The server refuses with a sentence (no reason
+ * typed, an outside broker, a deactivated person), and that sentence is the whole
+ * value of the refusal: a control that just quietly does nothing teaches people the
+ * screen is broken.
+ */
+function ReassignControl({ contact, staff, onSave }) {
+  const [open, setOpen] = useState(false);
+  const [staffId, setStaffId] = useState(contact.overrideStaffId || '');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const save = (nextStaffId, nextReason) => {
+    setBusy(true); setErr(null);
+    Promise.resolve(onSave({ staffId: nextStaffId || null, reason: nextReason }))
+      .then(() => { setOpen(false); setReason(''); })
+      .catch((e) => setErr((e && e.message) || 'That did not work.'))
+      .finally(() => setBusy(false));
+  };
+
+  if (!open) {
+    return (
+      <button type="button" className="btn ghost" style={{ padding: '3px 9px', fontSize: 12 }}
+        onClick={() => { setOpen(true); setErr(null); setStaffId(contact.overrideStaffId || ''); }}>
+        {contact.overridden ? 'Change or undo' : 'Reassign here'}
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 8, padding: 10, borderRadius: 8, background: '#F4F1EA', textAlign: 'left' }}>
+      <label style={{ display: 'block', color: INK, fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+        Who should this file belong to here?
+      </label>
+      <select className="input" value={staffId} disabled={busy}
+        onChange={(e) => setStaffId(e.target.value)} style={{ width: '100%', marginBottom: 8 }}>
+        <option value="">— use whoever Encompass names —</option>
+        {(staff || []).map((s) => (
+          <option key={s.id} value={s.id}>{s.name}{s.role ? ` (${s.role})` : ''}</option>
+        ))}
+      </select>
+
+      {/* Asked for only when somebody is being NAMED. Undoing a reassignment needs no
+          explanation, and demanding one is how a wrong override survives. */}
+      {staffId ? (
+        <>
+          <label style={{ display: 'block', color: INK, fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+            Why? (shown on the file)
+          </label>
+          <input className="input" value={reason} disabled={busy}
+            placeholder="e.g. Sarah took this file over in March"
+            onChange={(e) => setReason(e.target.value)} style={{ width: '100%', marginBottom: 8 }} />
+        </>
+      ) : null}
+
+      {/* Both sentences are load-bearing. The first is the one somebody could
+          reasonably get wrong — reassigning a file is exactly the moment a person
+          assumes they have corrected the system of record. The second says the
+          quiet part: today the person Encompass names KEEPS their access, so this
+          adds somebody rather than swapping them, and an admin reassigning a file
+          to take it away from somebody would otherwise think they had. */}
+      <p style={{ margin: '0 0 8px', color: MUTED, fontSize: 12, lineHeight: 1.45 }}>
+        This only decides whose pipeline the file is in here. Nothing is sent to
+        Encompass, and what Encompass says stays on the file beside it.
+        {contact.staffName ? ` ${contact.staffName} keeps access to this file either way.` : ''}
+      </p>
+
+      {err ? <p style={{ margin: '0 0 8px', color: '#8A2D2D', fontSize: 12 }}>{err}</p> : null}
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button type="button" className="btn" disabled={busy}
+          onClick={() => save(staffId, reason)}>
+          {busy ? 'Saving…' : (staffId ? 'Reassign' : 'Use Encompass')}
+        </button>
+        <button type="button" className="btn ghost" disabled={busy}
+          onClick={() => { setOpen(false); setErr(null); }}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function Contacts({ contacts, canReassign = false, staff = [], onReassign }) {
   if (!contacts || !contacts.length) {
     return <p style={{ color: MUTED, margin: 0 }}>Encompass has nobody assigned to this file yet.</p>;
   }
   return (
     <div style={{ display: 'grid', gap: 8 }}>
       {contacts.map((c) => (
-        <div key={`${c.role}-${c.name || ''}`} style={{
+        // Keyed on the ROLE alone, which is unique per file by the table's own
+        // constraint. Keying on the name as well would be keying on a value that
+        // changes the moment somebody is reassigned.
+        <div key={c.role} style={{
           display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
           padding: '8px 0', borderTop: '1px solid rgba(20,27,34,.08)',
         }}>
-          <div>
+          <div style={{ minWidth: 0 }}>
             <div style={{ color: INK, fontWeight: 600 }}>{plain(c.label || c.role)}</div>
-            <div style={{ color: MUTED, fontSize: 12 }}>{plain(c.name)}</div>
+            {/* `encompassName`, which is what the server actually sends. This read
+                `c.name` — a key nothing ever set — so the person Encompass names has
+                been rendering as a dash on every file. */}
+            <div style={{ color: MUTED, fontSize: 12 }}>{plain(c.encompassName)}</div>
           </div>
-          <div style={{ textAlign: 'right', fontSize: 12, color: MUTED }}>
-            {c.staffName ? <div style={{ color: INK }}>{c.staffName}</div> : <div>Not linked to a PILOT person</div>}
-            {c.overridden && <div style={{ color: GOLD }}>reassigned here</div>}
+          <div style={{ textAlign: 'right', fontSize: 12, color: MUTED, minWidth: 0 }}>
+            {c.overridden ? (
+              <>
+                <div style={{ color: INK }}>{plain(c.overrideName)}</div>
+                <div style={{ color: GOLD }}>reassigned here</div>
+              </>
+            ) : c.staffName ? (
+              <div style={{ color: INK }}>{c.staffName}</div>
+            ) : (
+              <div>Not linked to a PILOT person</div>
+            )}
+            {canReassign ? (
+              <div style={{ marginTop: 6 }}>
+                <ReassignControl contact={c} staff={staff}
+                  onSave={(payload) => onReassign(c.role, payload)} />
+              </div>
+            ) : null}
           </div>
+          {/* The reason sits on its own line under both sides: it explains the pair,
+              not either half of it, and it is the sentence the next person reads when
+              the two names disagree. */}
+          {c.overridden && c.overrideReason ? (
+            <div style={{ flexBasis: '100%', color: MUTED, fontSize: 12 }}>
+              Why: {c.overrideReason}
+            </div>
+          ) : null}
         </div>
       ))}
     </div>
@@ -223,6 +341,15 @@ export default function LtLoan() {
 
   useEffect(() => { load(); }, [load]);
 
+  // A reassignment changes who may SEE this file, so the whole loan is re-read
+  // rather than the one row patched in place: an admin who hands their own last
+  // claim on a file to somebody else must not be left looking at a screen that says
+  // it is still theirs. The error is re-thrown so the control that raised it can
+  // show the server's own sentence.
+  const reassign = useCallback((role, payload) => (
+    ltApi.reassign(loanId, role, payload).then(() => { load(); })
+  ), [loanId, load]);
+
   if (err) {
     return (
       <LtLayout title="Long-term file">
@@ -235,6 +362,7 @@ export default function LtLoan() {
   if (!data) return <LtLayout title="Long-term file"><div className="card" style={{ color: INK }}>Loading…</div></LtLayout>;
 
   const { rail, stepper, sections = [], contacts = [], lock, file, milestoneClock } = data;
+  const { canReassign = false, assignableStaff = [] } = data;
   const { product: productKey, productLabel, milestoneHistory } = data;
   const current = sections.find((s) => s.key === active) || sections[0];
   // A section is drawn from the file ONLY when the server said it applies. A section
@@ -299,7 +427,8 @@ export default function LtLoan() {
                 Read from Encompass. A person shown as not linked simply has no confirmed
                 match on the People screen yet.
               </p>
-              <Contacts contacts={contacts} />
+              <Contacts contacts={contacts} canReassign={canReassign} staff={assignableStaff}
+                onReassign={reassign} />
             </div>
           ) : active === 'lock' ? (
             <LockCard lock={lock} />

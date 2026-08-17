@@ -861,9 +861,50 @@ appended — a lock can be rolled back exactly as a milestone can — and a re-r
 nothing appends nothing. The pipeline carries the status, the expiration and a SQL-computed
 countdown, computed there so the column can be SORTED on: whatever expires soonest, first.
 
-### Phase 8 — Editing, and the eFolder write **(blocked)**
+### Phase 8 — Editing, and the eFolder write — **STARTED; the eFolder half still blocked**
 Our own fields become editable. The eFolder upload ships **only** once its contract is
 verified and the pad entry is completed.
+
+**The first editable field is the one §2.3 designed and nothing could set: the local
+reassignment.** `override_staff_id` and its stamp were written by the phase-1 migration,
+honoured by the pipeline scope, the file screen and the officer filter — and had **no
+writer anywhere in the repository**. `contacts.setOverride` existed with zero callers, so
+the two-source assignment model was read-only on the side PILOT was supposed to own: a
+file Encompass had wrong stayed wrong. `contacts.reassign` is the guarded orchestration
+over it, `POST /api/lt/pipeline/:loanId/contacts/:role/override` the door, and the
+Contacts section carries the control.
+
+**It is an ADMIN gate, and that is a security boundary rather than a courtesy.**
+`access.onFileSql` matches `override_staff_id`, so SETTING one grants somebody access to a
+file and CLEARING one takes it away — a scoped officer able to set their own could read
+any file in the book by naming themselves on it. `mayReassignLoan` therefore DELEGATES to
+`mayManagePeople` (one rule, not a second copy that drifts when a buyer narrows
+`access.adminRoles`) and, like it, reads the person's REAL role and never the long-term
+role override: that override is a settings value, so a gate that read it would turn a
+settings typo into a route to granting yourself files. The pure suite asserts exactly that
+case, because it is the one that looks harmless.
+
+**A reassignment must say why; undoing one must not.** The stamp is "who, when and why"
+(§2.3), and the why is what the next person reads when the file does not match Encompass —
+so naming somebody requires a reason and a few spaces is not one. Clearing asks for
+nothing: demanding an explanation to undo a mistake is how a wrong override survives.
+Neither an outside broker (a TPO `staff_users` row — an override would put an outside firm
+in the long-term pipeline) nor a deactivated person may be named, and a role that is not on
+the file is refused IN WORDS rather than answered with a silent success.
+
+**And it surfaced the drift `access.js`'s own header warns about.** Everything that answers
+"whose file is this" reads the EFFECTIVE person — `pipeline.officerIsSql`, `UNASSIGNED_SQL`,
+the row's own `staffId`, `describeContact.effectiveStaffId`, all
+`COALESCE(override_staff_id, staff_id)`. Only the ACCESS scope reads
+`staff_id = me OR override_staff_id = me`. So a reassigned file leaves the previous
+officer's officer-filter while staying in their own pipeline and openable by them — the
+same file answering the same question two ways. That was never decided: until this phase
+nothing could set an override, so the case could not arise, and the OR was simply the safe
+way to make the new person's access work. **Who keeps access after a reassignment is a
+business rule and is item 14 below, not a decision taken here** — the behaviour is pinned
+by the DB suite exactly as it is, and the screen says so in words rather than letting an
+admin believe they have taken a file away from somebody. If the answer is "the file leaves
+them", one assertion flips and `onFileSql` becomes the COALESCE the other four already use.
 
 ---
 
@@ -1050,6 +1091,25 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 
     **What is still needed is the list of folder names and which of them mean the deal is over** —
     one answer from the owner, typed into one setting, no code change.
+
+14. **When a file is reassigned by hand, does the person Encompass names keep it?** Raised
+    by phase 8's local reassignment (see above), and it is one question with one answer.
+    Today they KEEP it: the access scope admits both the Encompass-resolved person and the
+    locally-assigned one, while every other reading of "whose file is this" already treats
+    the file as the new person's alone. So reassigning ADDS somebody rather than moving the
+    file, and an officer who leaves the team keeps every file they were ever named on.
+
+    Two defensible answers, and this is the owner's to pick. **"It moves"** makes a
+    reassignment mean what it says and is what the other four predicates already assume;
+    the cost is that a handover is abrupt — the previous officer loses the file the moment
+    the button is pressed. **"They keep it"** is what happens now and is gentler mid-
+    handover; the cost is that nothing can ever take a long-term file away from anybody,
+    which is a real gap when somebody leaves or should not be seeing a file.
+
+    Nothing is hidden while it is open: the behaviour is asserted in
+    `scripts/test-lt-contact-override-db.js` and stated on the reassign control itself, so
+    nobody presses the button believing it does the other thing. One answer, one predicate,
+    no migration.
 
 ---
 

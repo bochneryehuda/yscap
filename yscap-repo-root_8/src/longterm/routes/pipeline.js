@@ -20,6 +20,7 @@ const locks = require('../locks');
 const milestones = require('../milestones');
 const product = require('../product');
 const pipelineColumns = require('../pipeline-columns');
+const roster = require('../people/roster');
 const ltFile = require('../file');
 const stages = require('../stages');
 const settingsStore = require('../settings/store');
@@ -142,6 +143,19 @@ router.get('/:loanId', async (req, res) => {
     const file = await ltFile.loadFile(rows[0].id, rows[0]).catch(() => null);
 
     const labels = settings['contacts.roleLabels'] || {};
+
+    // May this viewer reassign a role on this file, and who could they pick? Both
+    // are BEST-EFFORT: a file still opens when the roster cannot be read, and the
+    // control simply stays off — a screen that fails to load a picker must not fail
+    // to show the loan. The gate is re-asked on the write itself, so an over-generous
+    // answer here could never become permission.
+    let canReassign = false;
+    let assignableStaff = [];
+    try {
+      canReassign = access.mayReassignLoan(req.actor, settings);
+      if (canReassign) assignableStaff = await roster.pickableStaff();
+    } catch (_) { canReassign = false; assignableStaff = []; }
+
     res.json({
       // The FILE HEADER's stamp (CLAUDE.md §7), carried on the loan itself so the
       // screen renders what the row says rather than what screen it is.
@@ -171,10 +185,66 @@ router.get('/:loanId', async (req, res) => {
         overrideName: t.override_staff_id ? names.get(String(t.override_staff_id)) : null,
         labels,
       })),
+      canReassign,
+      assignableStaff,
     });
   } catch (e) {
     console.error('[lt] loan header failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not load the loan.' });
+  }
+});
+
+// POST /api/lt/pipeline/:loanId/contacts/:role/override — reassign one role on one
+// file to a PILOT person, or clear the reassignment by naming nobody.
+//
+// ADMIN ONLY, and that is a security boundary rather than a courtesy. The pipeline
+// scope matches `override_staff_id`, so writing one GRANTS somebody access to a file
+// and clearing one TAKES it away; a scoped officer able to set their own could read
+// any file in the book by naming themselves on it.
+//
+// NOTHING IS WRITTEN TO ENCOMPASS. The override sits beside Encompass's own columns,
+// which are left exactly as they are so the file can keep showing both sides and say
+// plainly when they disagree.
+router.post('/:loanId/contacts/:role/override', async (req, res) => {
+  try {
+    const { settings } = await settingsStore.load();
+    if (!access.mayReassignLoan(req.actor, settings)) {
+      return res.status(403).json({
+        error: 'Only an administrator can reassign a long-term file.',
+      });
+    }
+
+    const body = req.body || {};
+    const row = await contacts.reassign(
+      req.params.loanId,
+      req.params.role,
+      // An explicitly empty person is a CLEAR, and must not be read as "missing".
+      body.staffId || null,
+      req.actor && req.actor.id,
+      body.reason,
+    );
+
+    // Answer with the contact as the screen will now draw it, so the row updates
+    // from what the server actually stored rather than from what was typed.
+    const ids = [row.staff_id, row.override_staff_id].filter(Boolean).map(String);
+    const names = new Map();
+    if (ids.length) {
+      const { rows: people } = await db.query(
+        'SELECT id, full_name FROM staff_users WHERE id = ANY($1::uuid[])', [ids],
+      );
+      for (const p of people) names.set(String(p.id), p.full_name);
+    }
+    res.json({
+      contact: contacts.describeContact(row, {
+        staffName: row.staff_id ? names.get(String(row.staff_id)) : null,
+        overrideName: row.override_staff_id ? names.get(String(row.override_staff_id)) : null,
+        labels: settings['contacts.roleLabels'] || {},
+      }),
+    });
+  } catch (e) {
+    if (e && e.status && e.plain) return res.status(e.status).json({ error: e.plain });
+    console.error('[lt] reassign failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not reassign this file.' });
   }
 });
 

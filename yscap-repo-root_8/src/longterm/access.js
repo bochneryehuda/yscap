@@ -213,6 +213,30 @@ function mayManagePeople(staff, settings = {}) {
 }
 
 /**
+ * May this person reassign a file locally — set or clear a contact override?
+ *
+ * DELEGATES to `mayManagePeople` rather than restating its rule, because the two
+ * decisions are the same decision wearing two hats: confirming a link says "this
+ * login is that person" and moves every one of their files at once; an override
+ * says "this ONE file is that person's" and moves one. A buyer who narrows
+ * `access.adminRoles` means both, and two copies of the rule would eventually
+ * disagree about which.
+ *
+ * IT IS AN ADMIN GATE AND NOT A CONVENIENCE. An override is not a label: the
+ * pipeline scope matches `override_staff_id` (see `onFileSql`), so SETTING one
+ * GRANTS a person access to a file they could not otherwise open, and CLEARING one
+ * TAKES that access away. A scoped officer able to set their own would be able to
+ * read any file in the book by naming themselves on it.
+ *
+ * And, for the same reason `mayManagePeople` does it, this reads the person's REAL
+ * role and never the long-term role override — a settings typo must not be a route
+ * to granting yourself files.
+ */
+function mayReassignLoan(staff, settings = {}) {
+  return mayManagePeople(staff, settings);
+}
+
+/**
  * A plain-language reason, for a screen that has to explain an empty pipeline.
  * "You have no long-term files" and "nobody has linked your Encompass account yet"
  * look identical to a user and need completely different actions.
@@ -234,6 +258,7 @@ module.exports = {
   ADMIN_FLOOR_ROLE,
   adminRoles,
   mayManagePeople,
+  mayReassignLoan,
   longTermRoleFor,
   scopeForRole,
   accessFor,

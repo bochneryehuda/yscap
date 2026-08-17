@@ -346,6 +346,130 @@ async function setOverride(loanId, role, staffId, actorId, reason, dbc = null) {
   return rows[0] || null;
 }
 
+/** Same shape links.js uses, so one `fail()` in the router turns either module's
+ *  refusal into its own status and its own sentence. */
+function refuse(status, message) {
+  const e = new Error(message);
+  e.status = status;
+  e.plain = message;
+  return e;
+}
+
+/**
+ * What is wrong with a reassignment REQUEST, before any database is asked. PURE.
+ *
+ * Split out from `reassign` because these are the refusals that do not depend on
+ * the state of the book, and a rule nobody can test without a Postgres is a rule
+ * that gets tested less often than it should be.
+ *
+ * CLEARING IS A DIFFERENT REQUEST FROM SETTING, and the asymmetry is deliberate:
+ *
+ *   · Setting one REQUIRES A REASON. The plan's own override rule (§2.3) is that an
+ *     override is "always visibly stamped as an override — who set it, when, and
+ *     why". The screen shows that sentence to the next person who opens the file and
+ *     wonders why Encompass names somebody else; an unexplained reassignment is the
+ *     silent divergence the rule exists to prevent, so the reason is part of the
+ *     record and not a nicety. A few spaces is not a reason.
+ *   · Clearing one needs neither a person nor a reason. It is how "actually,
+ *     Encompass was right" is said, and demanding an explanation for undoing a
+ *     mistake is how a wrong override survives.
+ */
+const MIN_REASON = 4;
+
+function reassignProblem({ role, staffId, reason } = {}) {
+  if (!String(role || '').trim()) return refuse(400, 'Which role on this file? None was named.');
+  // No person named = a clear, which is a legitimate request and asks for nothing else.
+  if (!String(staffId || '').trim()) return null;
+  if (String(reason || '').trim().length < MIN_REASON) {
+    return refuse(400, 'Say briefly why this file is being reassigned. It is shown on the file so the next person knows why it does not match Encompass.');
+  }
+  return null;
+}
+
+/**
+ * Reassign one role on one file to a PILOT person — or clear the reassignment.
+ *
+ * The guarded orchestration over `setOverride`, which is the raw writer and stays
+ * that way (the sync's own paths have no business running these checks).
+ *
+ * Every check answers a question a bad reassignment would leave unanswered, and the
+ * two that matter most are the two `links.confirmLink` already learned:
+ *
+ *   · THE PERSON MUST BE INTERNAL. A TPO broker is a `staff_users` row with
+ *     `is_external = true`, and an override is matched by the pipeline scope — so
+ *     naming one here would put an outside brokerage's account on a long-term file
+ *     and in its pipeline. This is the standing repo-wide rule that every internal
+ *     roster query excludes external accounts, and it is load-bearing here rather
+ *     than tidy.
+ *   · THE PERSON MUST BE ACTIVE. Handing a file to a deactivated account routes it
+ *     to nobody while looking, on screen, exactly like it was routed to somebody.
+ *
+ * ENCOMPASS IS NOT TOLD. Nothing here writes anything anywhere near Encompass — the
+ * override is a PILOT-side routing decision, never a correction to the system of
+ * record (§2.3 rule 5), and Encompass's own columns are left exactly as they are so
+ * the screen can keep showing both sides.
+ *
+ * THE OVERRIDE COLUMNS ARE THE RECORD. `override_by` / `override_at` /
+ * `override_reason` are written together with the person, so who did this, when and
+ * why survives on the row itself. Nothing is written to `audit_log`: that is an RTL
+ * table, and Long-Term does not touch one without a per-item entry in the
+ * authorisation ledger.
+ */
+async function reassign(loanId, role, staffId, actorId, reason, client = null) {
+  const problem = reassignProblem({ role, staffId, reason });
+  if (problem) throw problem;
+
+  const wanted = String(staffId || '').trim();
+  // The repo's usual optional trailing client: a caller already inside a transaction
+  // runs there (and owns the BEGIN/COMMIT), and only a caller with none takes a
+  // connection and owns the transaction itself. Without it a reassignment that has
+  // to happen together with something else would be forced onto its own connection,
+  // and could not see — or be rolled back with — the caller's own work.
+  const own = !client;
+  const dbc = client || await lazy.db.getClient();
+  try {
+    if (own) await dbc.query('BEGIN');
+
+    const { rows: loans } = await dbc.query('SELECT id FROM lt_loans WHERE id = $1::uuid', [String(loanId || '')]);
+    if (!loans.length) throw refuse(404, 'No such long-term loan.');
+
+    if (wanted) {
+      const { rows: people } = await dbc.query(
+        `SELECT id, is_active, COALESCE(is_external, false) AS is_external
+           FROM staff_users WHERE id = $1::uuid`,
+        [wanted],
+      );
+      if (!people.length) throw refuse(404, 'That PILOT person does not exist.');
+      if (people[0].is_external) {
+        throw refuse(400, 'That account is an outside broker, not a member of staff, so a long-term file cannot be assigned to them.');
+      }
+      if (people[0].is_active === false) {
+        throw refuse(400, 'That PILOT person is deactivated, so the file would be assigned to nobody. Reactivate them first, or pick somebody else.');
+      }
+    }
+
+    const row = await setOverride(loanId, role, wanted || null, actorId, reason, dbc);
+    if (!row) {
+      // The UPDATE matched nothing, which on an existing loan means the role is not
+      // on this file. Said in words rather than answered with a silent success —
+      // "saved" on a role that does not exist is the confident-empty this side keeps
+      // finding.
+      throw refuse(404, 'That role is not on this file, so there is nothing to reassign.');
+    }
+
+    if (own) await dbc.query('COMMIT');
+    return row;
+  } catch (e) {
+    // Only ever unwind OUR OWN transaction. A bare ROLLBACK on a caller's client
+    // would throw away work this function never knew about — the refusals above are
+    // ordinary answers, not a reason to discard somebody else's transaction.
+    if (own) await dbc.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    if (own) dbc.release();
+  }
+}
+
 module.exports = {
   PARTS,
   DEFAULT_ROLES,
@@ -360,5 +484,8 @@ module.exports = {
   syncLoanContacts,
   reattributeAll,
   setOverride,
-  _internals: { clean },
+  reassign,
+  reassignProblem,
+  MIN_REASON,
+  _internals: { clean, refuse },
 };
