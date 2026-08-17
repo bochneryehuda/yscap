@@ -164,6 +164,48 @@ it is settled by one live probe (price a loan at DSCR 1.30 vs 1.20 and read whic
 moves), which is queued for the moment the 299-scenario battery releases the LP connection. The same
 probe should read the 1.00 – 1.14 band above.
 
+## 4c. ⭐ OWNER-ANSWERED (2026-08-17) — the 0.25 gap IS the margin holdback, across the board
+
+Owner's words: *"The reason the max price doesn't match is because Lender Price max price is already
+after our 0.25 holdback. Think of it like this: if the investor is giving me a max price of 104 and
+I'm telling you, for Lender Price, give me a 0.25 max holdback, then Lender Price is only showing a
+max price of 103.75. Understand the depth of how the margin holdback works, and this is across the
+board."*
+
+So the relationship — and it closes the base-ladder question §4b left open:
+
+> **Lender Price's number = the RATE SHEET's number − our margin holdback (0.25)**
+
+- The **rate sheet carries the INVESTOR's raw, PRE-holdback numbers**; **Lender Price shows the
+  POST-holdback view**, because that holdback is configured with them.
+- This is exactly why the sheet's base ladder sits 0.25 above LP at **all 28 coupons** — that gap is
+  not an error and not unexplained.
+- **It applies to MAX PRICE too, and to everything else**: a sheet cap of 104 is 103.75 in LP; the
+  loan-amount tiers 105 / 104.5 / 103.5 are 104.75 / 104.25 / 103.25 in LP.
+
+**Implementation rule (do not "simplify" this into a constant):** store the sheet's values faithfully
+as the sheet states them (pre-holdback), and apply the holdback as an **explicit, named step** through
+the existing `margin-holdback.js` — never a second 0.25 literal in another module.
+
+## 4d. ⭐ OWNER-ANSWERED (2026-08-17) — the min-loan difference is an EXCEPTION BAND, not a conflict
+
+The rate sheet says $100,000; our Layer-2 matrix says $75,000. **Both are right.** Owner's words:
+*"anything below $100,000 is an internal exception, but you can do … $75,000 on this program. It is
+eligible, but under $100,000, it's a manual product and it needs an exception. You can price it
+regularly out of their rate sheet and out of the Lender Price pricer, but you just need to mark that
+it's a manual exceptional product."*
+
+| loan amount | outcome |
+| --- | --- |
+| **< $75,000** | INELIGIBLE — below the program floor |
+| **$75,000 – $99,999** | **ELIGIBLE and priced normally** off the rate sheet / LP — but **stamped a MANUAL EXCEPTION product** |
+| **≥ $100,000** | ordinary |
+
+This is the existing **D34 exception-product** mechanism (eligible, visibly requires an exception), not
+a new concept. Guarded by `scripts/test-lt-ppe-ratesheet-matrix-reconcile.js`, which asserts the band
+lines up with BOTH source documents — so a future rate sheet that moves either number goes red rather
+than letting the band quietly go stale.
+
 ## 5. Sources
 
 - Extraction: `matrices/deephaven-dscr-ratesheet-corr-t0.json` (verbatim; nothing derived or rounded).
