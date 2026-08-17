@@ -432,6 +432,18 @@ fields/Excel-grid→rule design; the disqualify-always workflow + troubleshooter
   each carry their own limits. A "rules view" toggle shows the same thing as rules; you can duplicate a
   rule and tweak one field. *(Research engine B is designing the grid↔rule round-trip on our existing
   lt_ppe_adjustment / lt_ppe_rule tables.)*
+  - **DONE (grid MODEL, 2026-08-17):** `ppe/deephaven-grid.js` `gridToRateSheet` — the pure converter
+    from a human Deephaven-shaped grid (coupon rows → base prices; a FICO × CLTV grid segmented by DSCR
+    band → LLPA cells; loan-amount / predicate LLPA tables) into the EXACT stored shape the built
+    pipeline already prices (`ratesheet.rateSheetToProgram` → `quote.quoteProgram`). Every box becomes a
+    rule: a number → a pricing adjustment, an **N/A box → an INELIGIBILITY** (decline, never a priced 0).
+    Three money-safe rules are pinned by test: explicit half-open bands (never inferred from a label);
+    the unit convention (FICO raw, CLTV/DSCR milli, loan-amount raw); and **the sign rule** (a sheet
+    premium improves price = negative points to the engine — proven end-to-end, 5 assertions go red if
+    reverted). Test `scripts/test-lt-ppe-deephaven-grid.js` (22 checks, prices a real scenario to
+    103.100 through the real engine). **Next for E3:** the inverse (`rateSheetToGrid`, for the editor to
+    render a stored sheet as a grid), the per-program scoping, and the front-end Excel editor itself
+    (needs the real .xlsx to pin exact cells — owner action item).
 - **E4 — A full rule hierarchy: across-the-board / per-investor / per-program.** Every field can be a
   filter (state, city, FICO, LTV, DSCR, purpose, …). A rule can apply to all investors + all programs,
   or one investor, or one program. *(lt_ppe_rule already supports this scoping; the UI + field catalog
