@@ -1525,6 +1525,50 @@ function ConditionOrderButton({ appId, it, role, onChanged }) {
   );
 }
 
+/* REQUEST ANOTHER DOCUMENT WITHIN A CONDITION (db/578, owner-directed 2026-08-18:
+   "you got one document and you wanna request another document within that
+   condition … there should be a button for the staff members to open up another
+   slot in a condition and type the name of that slot. That should populate as an
+   open item needing it"). Opens a NAMED slot on THIS condition: an external ask
+   shows on the borrower's portal as still needed (and they are notified); an
+   internal one is our own team's to-do. The uploaded document files INTO the
+   condition — same folder in the TPR export, same SharePoint mirror. Opening a
+   slot on a signed-off condition REOPENS it (the sign-off predates this ask). */
+function RequestSlotButton({ appId, it, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  if (it.item_kind !== 'document') return null;
+  const borrowerFacing = it.audience === 'borrower' || it.audience === 'both';
+  const ask = async () => {
+    const label = await askPrompt('Name the document you are requesting on this condition (e.g. "Updated operating agreement", "October bank statement"):',
+      { placeholder: 'Document name', confirmLabel: 'Request it' });
+    if (label == null || !String(label).trim()) return;
+    const name = String(label).trim();
+    let audience = 'internal';
+    if (borrowerFacing) {
+      // Two explicit steps, so Escape/backdrop is always an ABORT — never a
+      // silent "internal" nobody chose.
+      const ext = await askConfirm(`Should the BORROWER provide "${name}"?\n\nYes — it shows on their portal as still needed and they are notified.\nNo — it stays an internal ask for our own team.`,
+        { confirmLabel: 'Yes — from the borrower', cancelLabel: 'No — internal' });
+      if (ext) audience = 'external';
+      else if (!(await askConfirm(`Add "${name}" as an INTERNAL ask? The borrower will not see it.`, { confirmLabel: 'Add internal ask' }))) return;
+    }
+    setBusy(true);
+    try {
+      const r = await api.conditionSlotAdd(appId, it.id, { label: name, audience });
+      if (r && r.reopened) await showMessage('This condition was signed off — it has been reopened, since the new request was made after that sign-off.');
+      if (onChanged) await onChanged();
+    } catch (e) {
+      await showMessage((e && e.message) || 'Could not open the document slot.');
+    } finally { setBusy(false); }
+  };
+  return (
+    <button className="btn ghost small" disabled={busy} onClick={ask}
+      title="Open another named document slot on this condition — the uploaded document stays part of this condition (same folder in the TPR export)">
+      Request another document
+    </button>
+  );
+}
+
 function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false, onRequestWaiver, expanded = false, onToggleExpand }) {
   const [open, setOpen] = useState(false);
   // EVERY condition is a compact line until you open it (owner-directed
@@ -1662,11 +1706,27 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                   onDragLeave={onDropTo ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
                   onDrop={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, addTarget)); } : undefined}>
                   <span className="muted small" style={{ minWidth: 140 }}>{slot.label}</span>
+                  {/* An ad-hoc requested slot (db/578) says so on its face — who
+                      asked, and whether the borrower owes it or our own team. */}
+                  {slot.extra && (
+                    <span className="pill" style={{ borderColor: 'var(--gold, #AE8746)', color: 'var(--gold, #AE8746)' }}
+                      title={`Requested${slot.added_by_name ? ` by ${slot.added_by_name}` : ''} — ${slot.audience === 'external' ? 'needed from the borrower' : 'internal'}`}>
+                      requested{slot.audience === 'external' ? ' · borrower' : ' · internal'}
+                    </span>
+                  )}
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
                     {slotDocs.length === 0 ? (
                       <div className="row" style={{ gap: 8 }}>
                         <span className="small muted" style={{ flex: 1 }}>not uploaded</span>
                         {onUploadTo && <button className="btn ghost small" onClick={() => onUploadTo(addTarget)}>Upload</button>}
+                        {slot.extra && (
+                          <button className="btn ghost small" title="Remove this request (only an unfilled slot can be removed)"
+                            onClick={async () => {
+                              if (!(await askConfirm(`Remove the request for "${slot.label}"?`))) return;
+                              try { await api.conditionSlotRemove(appId, it.id, String(slot.key).replace(/^extra:/, '')); if (onChanged) await onChanged(); }
+                              catch (e) { await showMessage((e && e.message) || 'Could not remove the request.'); }
+                            }}>Remove</button>
+                        )}
                       </div>
                     ) : (
                       <>
@@ -1767,6 +1827,14 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
 
       {it.template_code === 'usps_address_verification' && (
         <UspsAddressVerification appId={appId} onChanged={onChanged} />
+      )}
+
+      {/* Ask for one more document WITHIN this condition (db/578) — never a
+          brand-new condition for a follow-up document. */}
+      {isDoc && it.template_code !== 'rtl_cond_credit' && (
+        <div className="row" style={{ gap: 8, paddingLeft: 20, alignItems: 'center', flexWrap: 'wrap' }}>
+          <RequestSlotButton appId={appId} it={it} onChanged={onChanged} />
+        </div>
       )}
 
       {/* ONE next step, everything else behind More — the shared bar, so this
@@ -3934,6 +4002,11 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               {orderKindForCondition(it) && (
                 <ConditionOrderButton appId={appId} it={it} role={role} onChanged={onChanged} />
               )}
+              {/* Ask for one more document WITHIN this condition (db/578) — the
+                  borrower sees it as still needed; never a brand-new condition. */}
+              {it.template_code !== 'rtl_cond_credit' && (
+                <RequestSlotButton appId={appId} it={it} onChanged={onChanged} />
+              )}
               {!it.tool_key && onUploadTo && (
                 <button className="btn ghost small"
                   title="Upload documents into this condition on the borrower's behalf (multiple PDFs at once supported) — they land in the shared list exactly as if the borrower uploaded them"
@@ -3955,6 +4028,40 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
             )}
             {it.borrower_hint && /still needed/i.test(it.borrower_hint) && (
               <div className="small" style={{ color: 'var(--gold-ink)', paddingLeft: 20 }}>Requested from borrower: {it.borrower_hint.replace(/^[\s\S]*?Still needed:\s*/i, '')}</div>
+            )}
+            {/* Ad-hoc requested document slots (db/578) — each open ask on this
+                condition, whether the borrower owes it or our own team, with
+                upload / remove right on the line. A filled one points at the
+                document list below. */}
+            {Array.isArray(it.slots) && it.slots.some((s) => s.extra) && (
+              <div style={{ width: '100%', paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {it.slots.filter((s) => s.extra).map((s) => {
+                  const filled = itemDocs.some((d) => docInSlot(d, s.label));
+                  return (
+                    <div className="row" key={s.key} style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span className="pill" style={{ borderColor: 'var(--gold, #AE8746)', color: 'var(--gold, #AE8746)' }}
+                        title={`Requested${s.added_by_name ? ` by ${s.added_by_name}` : ''}`}>
+                        requested{s.audience === 'external' ? ' · borrower' : ' · internal'}
+                      </span>
+                      <span className="small" style={{ fontWeight: 600 }}>{s.label}</span>
+                      {filled ? (
+                        <span className="small muted">uploaded — see the documents below</span>
+                      ) : (
+                        <>
+                          <span className="small muted">not uploaded{s.added_by_name ? ` · asked by ${s.added_by_name}` : ''}</span>
+                          {onUploadTo && <button className="btn ghost small" onClick={() => onUploadTo({ itemId: it.id, slot: s.label })}>Upload</button>}
+                          <button className="btn ghost small" title="Remove this request (only an unfilled slot can be removed)"
+                            onClick={async () => {
+                              if (!(await askConfirm(`Remove the request for "${s.label}"?`))) return;
+                              try { await api.conditionSlotRemove(appId, it.id, String(s.key).replace(/^extra:/, '')); if (onChanged) await onChanged(); }
+                              catch (e) { await showMessage((e && e.message) || 'Could not remove the request.'); }
+                            }}>Remove</button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             )}
             <CondNote item={it} onPatch={onPatch} />
             {itemDocs.length > 0 && (

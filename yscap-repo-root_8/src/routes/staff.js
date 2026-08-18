@@ -4361,6 +4361,11 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.borrower_hint,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             (SELECT slots FROM checklist_templates t WHERE t.id=ci.template_id) AS slots,
+            -- Ad-hoc document slots staff opened on THIS condition (db/578,
+            -- owner-directed 2026-08-18: "open up another slot in a condition
+            -- and type the name of that slot"). Merged into row.slots below so
+            -- the whole existing per-slot upload/drop/assign UI carries them.
+            ci.extra_slots,
             -- The condition's own rule tree, read ONLY to derive the note-buyer MARK
             -- below (never sent to the client). A condition that exists because of one
             -- capital partner must say so on its face — owner-directed 2026-08-02.
@@ -4414,6 +4419,23 @@ router.get('/applications/:id/checklist', async (req, res) => {
       delete row.rule_logic;
     }
   } catch (_) { for (const row of r.rows) { row.note_buyer_mark = null; delete row.rule_logic; } }
+  // EXTRA SLOTS ride the SAME slots array the template slots do (db/578) — one
+  // renderer, one upload/drop/assign path, one TPR folder. Each merged entry is
+  // tagged extra:true + its audience + who asked, so the UI can offer Remove and
+  // show the "requested" provenance; row.extra_slots stays on the row for the
+  // manage UI. A normalize hiccup degrades to the template slots alone.
+  try {
+    const extraSlotsLib = require('../lib/conditions/extra-slots');
+    for (const row of r.rows) {
+      const extras = extraSlotsLib.normalize(row.extra_slots);
+      if (extras.length) {
+        row.slots = [
+          ...(Array.isArray(row.slots) ? row.slots : []),
+          ...extras.map((s) => ({ key: `extra:${s.key}`, label: s.label, extra: true, audience: s.audience, added_by_name: s.added_by_name })),
+        ];
+      }
+    }
+  } catch (_) { /* template slots alone */ }
   // #191 activation 2 — condition AGING (advisory, additive): each row gains
   // daysOpen / agingBucket / overdue / overdueBy from the pure ager. The
   // response stays a bare array (no shape change for the UI); an ager hiccup
@@ -4485,6 +4507,71 @@ router.post('/applications/:id/conditions', async (req, res) => {
     [req.params.id, b.label, b.audience || 'staff', b.isRequired !== false, b.notes || null, req.actor.id]);
   await audit(req, 'add_condition', 'application', req.params.id, { label: b.label });
   res.status(201).json({ ok: true, itemId: r.rows[0].id });
+});
+
+// ---------------- Extra document slots ON a condition (db/578) ----------------
+// Owner-directed 2026-08-18: "you got one document and you wanna request another
+// document within that condition … there should be a button for the staff members
+// to open up another slot in a condition and type the name of that slot. That
+// should populate as an open item needing it" — external asks read as needed from
+// the borrower, internal ones as an internal to-do; the uploaded document files
+// INTO the condition (same TPR folder). One definition of everything:
+// src/lib/conditions/extra-slots.js.
+router.post('/applications/:id/checklist/:itemId/extra-slots', async (req, res) => {
+  const b = req.body || {};
+  const extraSlots = require('../lib/conditions/extra-slots');
+  const problem = extraSlots.slotProblem(b);
+  if (problem) return res.status(400).json({ error: problem });
+  // A borrower-facing slot name goes to the borrower verbatim — same stray-value
+  // guard as a hand-typed condition label (the 2026-07-22 root cause).
+  {
+    const stray = strayConditionReason(b.label);
+    if (stray && b.confirmStrayLabel !== true) {
+      return res.status(409).json({ error: strayConditionMessage(stray, b.label), code: 'stray_condition_label', reason: stray, needsConfirm: true });
+    }
+  }
+  const out = await extraSlots.addSlot(req.params.id, req.params.itemId, {
+    label: b.label, audience: b.audience, actorId: req.actor.id, actorName: req.actor.full_name || null,
+  });
+  if (!out.added) {
+    if (out.reason === 'duplicate') return res.status(409).json({ error: 'A slot with that document name is already open on this condition.' });
+    if (out.reason === 'too_many') return res.status(409).json({ error: `This condition already carries ${extraSlots.MAX_SLOTS} requested documents — a bigger ask belongs on its own condition.` });
+    return res.status(404).json({ error: 'condition not found on this file' });
+  }
+  await audit(req, 'condition_slot_requested', 'checklist_item', req.params.itemId, {
+    label: out.slot.label, audience: out.slot.audience, reopened: out.reopened,
+  });
+  // An EXTERNAL ask is something the borrower now owes — tell them, with the
+  // slot name scrubbed (a capital-partner name typed into a slot label must
+  // never reach the borrower). Internal asks stay silent to the borrower.
+  if (out.slot.audience === 'external') {
+    try {
+      const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+      if (app.rows[0]) {
+        const ctx = await notify.fileContext(req.params.id);
+        await notify.notifyBorrower(app.rows[0].borrower_id, {
+          type: 'doc_requested', title: 'Another document is needed on your file',
+          badge: { text: 'Action needed', tone: 'action' },
+          body: `Please upload "${scrubText(out.slot.label)}" on ${ctx ? ctx.label : 'your file'} — it was requested as part of an existing condition.`,
+          meta: (ctx && ctx.borrowerMeta) || undefined,
+          applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
+      }
+    } catch (_) { /* the ask stands either way — the portal shows it */ }
+  }
+  res.status(201).json({ ok: true, slot: out.slot, reopened: out.reopened });
+});
+
+// Remove an UNFILLED extra slot (a slot with a document in it is a record —
+// reject or delete the document first; the module refuses 'filled').
+router.delete('/applications/:id/checklist/:itemId/extra-slots/:key', async (req, res) => {
+  const extraSlots = require('../lib/conditions/extra-slots');
+  const out = await extraSlots.removeSlot(req.params.id, req.params.itemId, req.params.key);
+  if (!out.removed) {
+    if (out.reason === 'filled') return res.status(409).json({ error: 'A document is already in that slot — reject or delete the document first, then remove the request.' });
+    return res.status(404).json({ error: 'slot not found on this condition' });
+  }
+  await audit(req, 'condition_slot_removed', 'checklist_item', req.params.itemId, { label: out.slot.label, audience: out.slot.audience });
+  res.json({ ok: true });
 });
 
 // ---------------- Condition Center: per-file conditions ----------------
@@ -8189,6 +8276,12 @@ async function pendingDocumentsBlock(itemId) {
 async function signOffGate(itemId, actor) {
   const pendingBlock = await pendingDocumentsBlock(itemId);
   if (pendingBlock) return pendingBlock;
+  // EXTRA NAMED SLOTS (db/578, owner-directed 2026-08-18): a document somebody
+  // REQUESTED on this condition that is not yet in and accepted refuses the
+  // sign-off — for EVERY condition kind, which is why this arm runs before the
+  // per-condition branches. One definition: lib/conditions/extra-slots.js.
+  const extraSlotBlock = await require('../lib/conditions/extra-slots').gateProblem(itemId);
+  if (extraSlotBlock) return extraSlotBlock;
   const it = await db.query(
     `SELECT ci.application_id, ci.borrower_id, ci.field_key, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code

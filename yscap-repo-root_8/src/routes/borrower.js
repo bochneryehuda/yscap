@@ -1522,7 +1522,11 @@ router.get('/applications/:id/checklist', async (req, res) => {
             COALESCE(ci.issue_reason,
               (SELECT d.rejection_reason FROM documents d
                 WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
-                ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1)) AS rejection_reason
+                ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1)) AS rejection_reason,
+            -- Ad-hoc requested-document slots (db/578) — read ONLY to compute the
+            -- borrower's still-needed list below; the raw column (internal slots,
+            -- audiences, who asked) is DELETED before the response ships.
+            ci.extra_slots
        FROM checklist_items ci
       WHERE ci.application_id=$1 AND ci.audience IN ('borrower','both')
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
@@ -1587,6 +1591,27 @@ router.get('/applications/:id/checklist', async (req, res) => {
       it.tool_payload = rest;
     }
   }
+  // STILL-NEEDED requested documents (db/578, owner-directed 2026-08-18: "If it's
+  // on an external condition, it should populate as an open item needing from
+  // external"). Only EXTERNAL slots with no current document yet surface, as
+  // scrubbed labels — once the borrower uploads, the item reads as in review, not
+  // a nag. The raw extra_slots column (internal slots, audiences, requester names)
+  // is ALWAYS deleted from the response, even when the compute hiccups.
+  try {
+    const extraSlots = require('../lib/conditions/extra-slots');
+    const withSlots = rows.filter((it) => Array.isArray(it.extra_slots) && it.extra_slots.length);
+    if (withSlots.length) {
+      const docs = (await db.query(
+        `SELECT checklist_item_id, slot_label FROM documents
+          WHERE application_id=$1 AND is_current AND checklist_item_id = ANY($2::uuid[])`,
+        [req.params.id, withSlots.map((it) => it.id)])).rows;
+      for (const it of withSlots) {
+        const mine = docs.filter((d) => String(d.checklist_item_id) === String(it.id));
+        it.still_needed = extraSlots.stillNeededExternal(it.extra_slots, mine).map((s) => scrubText(s));
+      }
+    }
+  } catch (_) { /* the labels degrade to nothing — the condition row still shows */ }
+  for (const it of rows) delete it.extra_slots;
   res.json(rows);
 });
 

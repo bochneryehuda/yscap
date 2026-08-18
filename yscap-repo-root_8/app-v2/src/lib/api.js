@@ -857,6 +857,10 @@ export const api = {
   // the condition. Works for a document that reached the condition without an
   // order too (a staffer's manual upload, an agent emailing the file address).
   staffSetDocSlot: (appId, docId, slot) => req('POST', `/api/staff/applications/${appId}/documents/${docId}/slot`, { slot }),
+  // Extra requested-document slots ON a condition (db/578): open a named slot
+  // ("Request another document within this condition") / remove an unfilled one.
+  conditionSlotAdd:    (appId, itemId, body) => req('POST', `/api/staff/applications/${appId}/checklist/${itemId}/extra-slots`, body),
+  conditionSlotRemove: (appId, itemId, key) => req('DELETE', `/api/staff/applications/${appId}/checklist/${itemId}/extra-slots/${encodeURIComponent(key)}`),
   staffCancelOrder:   (appId, kind, reopen) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/cancel`, reopen ? { reopen: true } : {}),
   // AN ORDER IS A TRACKED THING (2026-08-03): who is chasing it, when the answer
   // is expected, what is known about it, and what has happened to it. `staffId`
