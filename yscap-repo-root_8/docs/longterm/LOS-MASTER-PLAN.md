@@ -503,6 +503,22 @@ ceiling (a caller may ask for a smaller pass and may not ask for an unbounded on
 that reads nothing looks exactly like a pass that had nothing to read) and the admin gates in front of
 sync, people-sync and settings. Four mutations turn it red, one of them being the defect itself.
 
+**Fifth thread: `sync/discover.js`, the first thing that touches a long-term loan** — and the one the
+loan-sync suite stubs out, correctly, because it is testing the sync. Two of its readers are the kind
+that go wrong quietly. **The freshness stamp**: `"8/14/2026 10:48:18 AM"` is not something
+`new Date()` parses the same way everywhere, and it is what the sync PAGES ON — a wrong one silently
+skips loans, which looks exactly like a quiet pipeline — so the boundaries every hand-written
+12-hour parser trips over (12 AM is midnight, 12 PM is noon) are now asked, along with the ISO
+fallback and nine shapes that must read as ABSENT rather than as a guess. **The amount**: absent,
+empty and unreadable all answer null and never 0, because a zero loan amount is a fact and "we could
+not read it" is not — and `Number('')` is 0, which is how the two get confused. Also pinned: the
+older v1 row shape is still read rather than silently skipped, a row with no id is dropped, and
+hitting the page cap is REPORTED, because a silent short read looks exactly like a pipeline that has
+shrunk — which is what the empty-read guard downstream exists to refuse. Four mutations turn it red,
+and one of them taught its own lesson: written against the CONSTANT's name rather than the
+parameter's it silently applied nothing and reported a clean pass, so a mutation is asserted to have
+landed before its result is believed.
+
 **A SETTING IS EITHER READ BY SOMETHING OR SAYS IT IS NOT (2026-08-18).** §7's promise to a buyer is
 that nothing about how WE do things is hard-coded. Forty-three of the 63 settings were declared ahead
 of the code that would read them, so the settings screen offered knobs that changed NOTHING and said
