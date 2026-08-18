@@ -89,6 +89,13 @@ const BARE = (() => {
   return row.price_milli / 1000;
 })();
 
+// The plain-deal values of the sheet's remaining LLPA dimensions — the same ones
+// `lp-agreement-legs.lpScenarioToFacts` emits when a scenario says nothing special.
+const NEUTRAL = {
+  property_type: 'SingleFamily', units: 1,
+  interest_only: false, escrow_waiver: false, non_warrantable: false, short_term_rental: false,
+};
+
 // A scenario on a $500k property at a given whole CLTV. The .5-shifted bands put each whole CLTV
 // squarely in the band Lender Price uses.
 function sc(over = {}) {
@@ -98,6 +105,12 @@ function sc(over = {}) {
   const base = {
     fico: 760, loan, value, ltv: Math.round((loan / value) * 100000), dscr: 1200,
     state: 'CA', purpose: 'purchase', loan_amount: loan,
+    // The sheet's OTHER LLPA tables read these facts too, and the engine now REFUSES
+    // to price a scenario whose price-bearing facts it cannot decide (quote.js
+    // `missing_price_bearing_fact`) rather than quietly pricing as if the adjustment
+    // did not exist. They are stated at the same NEUTRAL values `lp-agreement-legs`
+    // emits for a plain deal, so not one measured price below moves.
+    ...NEUTRAL,
   };
   const out = { ...base, ...over };
   delete out.cltv;

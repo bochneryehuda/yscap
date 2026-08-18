@@ -55,6 +55,11 @@ function quote(sc, prog) { return quoteProgram({ scenario: sc, program: prog || 
 function rungAt(sc, prog) {
   const r = quote(sc, prog);
   if (!r.eligible) return null;
+  // NOT PRICED is a third answer beside eligible/ineligible: the engine refuses to
+  // price a scenario it cannot price confidently (a missing price-bearing fact, or
+  // a lock the sheet publishes no rung for) and returns no ladder at all rather
+  // than an empty one — see quote.js. Either way there is no rung here.
+  if (r.priced === false) return null;
   return r.ladder.find((x) => x.rate === RATE) || null;
 }
 // The composed price at 7.500, in points, BEFORE the floor/cap clamp.
@@ -87,6 +92,16 @@ function sc(over = {}) {
     loan, value, ltv: Math.round((loan / value) * 100000), loan_amount: loan,
     prepay_months: 36,
     ...M.lockTermFacts(30),
+    // The sibling sheet's OTHER LLPA tables read these facts too, and the engine now
+    // REFUSES to price a scenario whose price-bearing facts it cannot decide
+    // (quote.js `missing_price_bearing_fact`) rather than quietly pricing as if the
+    // adjustment did not exist. Stated at the same NEUTRAL values
+    // `lp-agreement-legs` emits for a plain deal, so no measured price moves.
+    // (`prepay_pricing_model` is deliberately NOT here: this sheet DECLARES that an
+    // absent model prices on the standard column, and the engine reads that
+    // declaration off the rule set — rules.declaredAbsentFacts.)
+    property_type: 'SingleFamily', units: 1,
+    interest_only: false, escrow_waiver: false, non_warrantable: false, short_term_rental: false,
     ...over,
   };
   delete out.cltv;

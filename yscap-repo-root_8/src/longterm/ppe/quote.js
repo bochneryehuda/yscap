@@ -80,9 +80,140 @@ function selectRungs(baseGrid, scenario) {
   });
 }
 
+// ---- which scenario facts the PRICING BASIS itself reads --------------------
+//
+// The rules evaluator derives its own price-bearing facts from the rule set (a
+// pricing rule names the facts its predicate reads — rules.factsOf). But not
+// every price-bearing fact travels through a rule: the loan-size PRICE CAP is a
+// program `priceLimit`, and it reads `loan_amount` STRAIGHT off the scenario. A
+// missing `loan_amount` therefore left the ladder UNCAPPED with nothing recorded
+// anywhere — `unknownFacts` did not even mention it, because no predicate had
+// touched it.
+//
+// So the basis declares its own scenario dependencies HERE, once, and the basis
+// resolution below READS the fact through this table rather than naming it a
+// second time — one definition, not a parallel list. `active(priceLimit)` says
+// when the knob is actually in play (no cap tiers → the cap reads nothing, so a
+// missing loan_amount cannot make the price wrong).
+//
+// `scripts/test-lt-ppe-missing-fact.js` scans THIS file's source for every
+// `scenario.<fact>` read and fails when one is neither declared here nor a
+// rung-selection fact — so a knob added later cannot quietly become a silent
+// price-bearing hole.
+const RUNG_SELECTION_FACTS = ['lock_days', 'product']; // choose WHICH rungs, never their price
+const PRICING_BASIS_FACTS = [
+  {
+    knob: 'capMilli',
+    fact: 'loan_amount',
+    active: (pl) => Array.isArray(pl.capTiers) && pl.capTiers.length > 0,
+    why: 'the loan-size price cap tier is selected by loan amount — without it the ladder prices UNCAPPED',
+  },
+];
+
+// The declared basis dependencies that are ACTIVE for this program.
+function activeBasisFacts(priceLimit) {
+  const pl = priceLimit || {};
+  return PRICING_BASIS_FACTS.filter((d) => d.active(pl));
+}
+
+// The fact name a basis knob reads — the basis resolution below reads the scenario
+// THROUGH this, so the declaration the refusal is built on is the same one the
+// price is built on. An undeclared knob is a programming error, not a null cap.
+function basisFactName(knob) {
+  const d = PRICING_BASIS_FACTS.find((x) => x.knob === knob);
+  if (!d) throw new Error(`quote:undeclared_pricing_basis_knob:${knob}`);
+  return d.fact;
+}
+
+// An explicitly INCOMPLETE answer. It is deliberately NOT a decline (eligibility
+// semantics are untouched — a missing fact must never invent one) and deliberately
+// NOT a price: it carries `priced:false`, `incomplete:true`, and NO `ladder` and no
+// `pricingBasis` key at all, so a caller that reads `q.ladder` gets `undefined` and
+// fails loudly rather than reading an empty ladder as "no rungs, that's fine". The
+// old shape — `eligible:true` with an empty ladder and nothing said — is exactly
+// the confidently-wrong answer this replaces.
+function incompleteQuote(programRef, decision, reasons) {
+  const facts = [...new Set(reasons.flatMap((r) => r.facts || []))].sort();
+  return {
+    eligible: decision.eligible, // UNCHANGED: refusing to price is not a decline
+    priced: false,
+    incomplete: true,
+    reason: reasons[0].code,
+    reasons,
+    missingPriceFacts: facts,
+    summary: reasons.map((r) => r.detail).join(' '),
+    program: programRef,
+    declines: decision.declines,
+    bounds: decision.bounds,
+    trace: decision.trace,
+    unknownFacts: decision.unknownFacts,
+    indeterminate: decision.indeterminate,
+  };
+}
+
+// Every reason this scenario cannot be priced CONFIDENTLY. Empty for a
+// fully-specified scenario the sheet publishes a rung for.
+function unpriceableReasons(program, scenario, decision, rungs) {
+  const reasons = [];
+
+  // (a) a PRICING rule that did NOT fire and whose predicate cannot be decided
+  //     from these facts. Its adjustment might have applied — pricing without it
+  //     silently DROPS an LLPA and quotes TOO CHEAP. The facts come from the
+  //     rule's own predicate (rules.factsOf), never a hand-typed list.
+  //
+  //     A fact whose ABSENCE the rule set itself gives a meaning to is not
+  //     undecidable and is never counted here — see `rules.declaredAbsentFacts`.
+  const indet = (decision.indeterminate || []).filter((r) => r.kind === 'pricing');
+  if (indet.length) {
+    const facts = [...new Set(indet.flatMap((r) => r.facts))].sort();
+    reasons.push({
+      code: 'missing_price_bearing_fact',
+      facts,
+      rules: indet.map((r) => ({ code: r.code, facts: r.facts })),
+      detail: `the scenario does not carry ${facts.join(', ')}, so ${indet.length} pricing rule${indet.length === 1 ? '' : 's'} cannot be decided (${indet.map((r) => r.code).join(', ')}); pricing without them would drop or invent an adjustment.`,
+    });
+  }
+
+  // (b) a pricing-BASIS knob whose scenario fact is missing while the knob is
+  //     live for this program (today: the loan-size price cap).
+  const basisMissing = activeBasisFacts(program.priceLimit)
+    .filter((d) => scenario[d.fact] == null);
+  if (basisMissing.length) {
+    reasons.push({
+      code: 'missing_pricing_basis_fact',
+      facts: basisMissing.map((d) => d.fact).sort(),
+      knobs: basisMissing.map((d) => d.knob),
+      detail: `the scenario does not carry ${basisMissing.map((d) => d.fact).join(', ')}: ${basisMissing.map((d) => d.why).join('; ')}.`,
+    });
+  }
+
+  // (c) the sheet publishes no rung for what was asked. An empty ladder is not a
+  //     price — it must never come back as eligible with nothing said.
+  if (!rungs.length) {
+    const asked = [];
+    if (scenario.lock_days != null) asked.push(`lock_days=${scenario.lock_days}`);
+    if (scenario.product != null) asked.push(`product=${scenario.product}`);
+    const grid = Array.isArray(program.baseGrid) ? program.baseGrid : [];
+    const locks = [...new Set(grid.map((r) => r.lockDays).filter((x) => x != null))].sort((a, b) => a - b);
+    const products = [...new Set(grid.map((r) => r.product).filter((x) => x != null && x !== ''))].sort();
+    reasons.push({
+      code: 'no_matching_rungs',
+      facts: [],
+      requested: { lock_days: scenario.lock_days == null ? null : scenario.lock_days, product: scenario.product == null ? null : scenario.product },
+      available: { lockDays: locks, products },
+      detail: `the rate sheet publishes no rung for ${asked.length ? asked.join(' ') : 'this scenario'} (available lock days: ${locks.length ? locks.join(', ') : 'none'}${products.length ? `; products: ${products.join(', ')}` : ''}).`,
+    });
+  }
+
+  return reasons;
+}
+
 /**
  * Price a program for a scenario. Returns:
  *   ineligible → { eligible:false, program, declines[], bounds, trace, unknownFacts }
+ *   incomplete → { eligible:<unchanged>, priced:false, incomplete:true, reason,
+ *                  reasons[], missingPriceFacts[], summary, program, declines,
+ *                  bounds, trace, unknownFacts, indeterminate }   — NO ladder
  *   eligible   → { eligible:true, program, ladder[<reconstruction record>],
  *                  bounds, trace, unknownFacts, pricingBasis }
  * `severityOf(decline)` (optional) lets a soft finding not decline (settings
@@ -106,7 +237,7 @@ function quoteProgram(arg, opts) {
   //    know the rule exists.
   const limited = applyScenarioPriceLimit(program, scenario, arg.priceLimitOpts);
   const priceLimitProgram = limited.program;
-  const capRes = resolvePriceCap(priceLimitProgram.priceLimit, scenario.loan_amount);
+  const capRes = resolvePriceCap(priceLimitProgram.priceLimit, scenario[basisFactName('capMilli')]);
   const priceLimit = {
     ...capRes,
     rule: limited.rule,
@@ -148,6 +279,18 @@ function quoteProgram(arg, opts) {
     };
   }
 
+  // 1b) CAN this scenario be priced CONFIDENTLY at all? A missing PRICE-BEARING
+  //     fact must never produce a cheap price, and an empty ladder must never
+  //     come back as an eligible answer with nothing said. Both refuse here, with
+  //     the reason, BEFORE any number is computed.
+  const selected = selectRungs(program.baseGrid, scenario);
+  // Judged against the priceLimit that will ACTUALLY price this scenario: a sheet's own
+  // per-scenario max-price rule can publish cap tiers the stored program does not carry, and a
+  // refusal read off the stored copy would miss exactly those.
+  const unpriceable = unpriceableReasons(
+    { ...program, priceLimit: priceLimitProgram.priceLimit }, scenario, decision, selected);
+  if (unpriceable.length) return incompleteQuote(programRef, decision, unpriceable);
+
   // 2) resolve the pricing basis (settings, program overrides win)
   const pl = priceLimitProgram.priceLimit || {};
   // MARGIN precedence (Layer 2, additive): a per-investor/per-scenario resolved margin
@@ -170,9 +313,10 @@ function quoteProgram(arg, opts) {
   const roundingIncrementMilli = pl.roundingIncrementMilli == null ? rounding.incrementMilli : pl.roundingIncrementMilli;
   const floorMilli = pl.floorMilli == null ? (s['pricing.price_floor_milli'] == null ? null : s['pricing.price_floor_milli']) : pl.floorMilli;
   const floorSource = pl.floorMilli != null ? 'sheet' : (s['pricing.price_floor_milli'] != null ? 'settings' : 'none');
-  // ONE source for the ceiling — the resolution taken at the top of this function. Never
-  // re-derive it here: a second derivation is how the number we clamp with and the state we
-  // report drift apart.
+  // ONE source for the ceiling — the resolution taken at the top of this function, which itself
+  // reads its scenario fact THROUGH the declared basis table (so the refusal above and the number
+  // we clamp with can never name different facts). Never re-derive the ceiling here: a second
+  // derivation is how the number we clamp with and the state we report drift apart.
   const capMilli = capRes.capMilli;
   const cumulativeAdjustmentCapMilli = s['pricing.cumulative_adjustment_cap_milli'] == null ? null : s['pricing.cumulative_adjustment_cap_milli'];
 
@@ -201,7 +345,7 @@ function quoteProgram(arg, opts) {
     cumulativeAdjustmentCapMilli,
   };
 
-  const rungs = selectRungs(program.baseGrid, scenario).map((r) => ({
+  const rungs = selected.map((r) => ({
     rate: r.rate,
     basePriceMilli: r.basePriceMilli,
     context: { lockDays: r.lockDays, product: r.product || null },
@@ -248,4 +392,8 @@ module.exports = {
   priceLimitNotice: priceLimitLib.priceLimitNotice,
   selectRungs,
   quoteProgram,
+  RUNG_SELECTION_FACTS,
+  PRICING_BASIS_FACTS,
+  activeBasisFacts,
+  unpriceableReasons,
 };

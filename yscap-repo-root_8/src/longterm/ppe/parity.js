@@ -45,7 +45,13 @@ function isComparable(x) {
 }
 
 // Map a quote.js result into the normalized ladder [{ rate, priceMilli }] the comparator uses.
+// A quote that explicitly REFUSED to price (`priced === false` — a missing
+// price-bearing fact, or a lock the sheet does not publish) produced NO ANSWER, so
+// it returns null → `isComparable` is false → the scenario is recorded INCOMPARABLE
+// with its reason (§10.6) instead of being read as "eligible with zero rungs",
+// which would score against Lender Price as if we had priced it.
 function normalizeOurQuote(q) {
+  if (q && q.priced === false) return null;
   if (!q || !q.eligible || !Array.isArray(q.ladder)) return { eligible: !!(q && q.eligible), rungs: [] };
   return { eligible: true, rungs: q.ladder.map((r) => ({ rate: r.rate, priceMilli: r.finalPriceMilli })) };
 }

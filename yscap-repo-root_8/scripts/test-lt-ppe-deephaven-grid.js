@@ -81,10 +81,14 @@ ok(co && co.predicate.value === 'cashout' && co.adj_milli === 250, 'a predicate+
 // ---- prices exactly through the REAL pipeline -----------------------------
 // Scenario: 6.750 coupon deal, 30Y, FICO 780, CLTV 72% (ltv 72000), DSCR 1.30 (1300), $400k, 45-day.
 // Hits base 102.850 + the 780×(70–75]×DSCR≥1.25 cell (+0.500); loan $400k in no tier; − margin 0.250.
+// `purpose` is STATED because this sheet publishes a cash-out LLPA that reads it: without it the
+// engine cannot decide whether that −0.250 applies and REFUSES to price (quote.js
+// `missing_price_bearing_fact`) rather than quoting 0.250 too cheap. Stating `purchase` does not
+// move a single number here — the cash-out rule simply does not match — which is the point.
 const sheet = { version: { id: 'dh_corr_flow' }, basePrices: R.basePrices, adjustments: R.adjustments, priceLimit: R.priceLimit };
 const program = rateSheetToProgram(sheet, { code: 'DH_DSCR', investorCode: 'DHVN' });
 const SETTINGS = { 'pricing.correspondent_margin_milli': 250 };
-const SCENARIO = { fico: 780, ltv: 72000, dscr: 1300, loan_amount: 400000, lock_days: 45, product: 'DH_DSCR_30F' };
+const SCENARIO = { fico: 780, ltv: 72000, dscr: 1300, loan_amount: 400000, lock_days: 45, product: 'DH_DSCR_30F', purpose: 'purchase' };
 const q = quoteProgram({ scenario: SCENARIO, program, settings: SETTINGS });
 ok(q.eligible === true, 'the converted sheet prices (eligible)');
 const rung = (q.ladder || []).find((r) => r.basePriceMilli === 102850);

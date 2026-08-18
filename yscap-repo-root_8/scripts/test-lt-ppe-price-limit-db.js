@@ -193,9 +193,28 @@ console.log('LT PPE price limit — the sheet\'s own MAX-PRICE rule (pure)\n');
   const p = MAXPRICE.programWithPriceLimit(prog({}), { prepay_months: 36 });
   ok(Array.isArray(p.priceLimit.capTiers) && p.priceLimit.capTiers.length === 1 && p.priceLimit.capTiers[0].capMilli === 103750,
     '…and programWithPriceLimit PUBLISHES it rather than dropping it for want of a loan amount');
+  // A5/A6 landed after this suite was written and makes the no-loan-amount case STRICTER still: a
+  // program publishing cap tiers reads `loan_amount` as a pricing-BASIS fact, so a scenario without
+  // one is now REFUSED outright and the missing fact is NAMED, rather than priced against the
+  // strictest ceiling on the sheet. Refusing is safer than capping on an assumption, and it is a
+  // superset of what this section was defending: the one thing that must never happen — a quote
+  // going out FREE of the sheet's ceiling — is impossible either way.
   const q = quoteProgram({ scenario: { prepay_months: 36 }, program: p, settings: SETTINGS });
-  ok(q.eligible === true && q.ladder[0].finalPriceMilli === 103750,
-    '…so a scenario with no loan amount is still CAPPED at the sheet\'s ceiling, never priced free');
+  ok(q.priced === false && (q.missingPriceFacts || []).includes('loan_amount'),
+    '…so a scenario with no loan amount is not priced at all, and loan_amount is named as the reason');
+  ok(!q.ladder, '…and it carries NO ladder, so nothing downstream can read an uncapped price off it');
+
+  // …and the ceiling this section is about still BINDS the moment the loan amount is stated: the
+  // sheet's 103.750 is carried into the quote's own basis and clamps a rung that would exceed it.
+  const withAmount = quoteProgram({
+    scenario: { prepay_months: 36, loan_amount: 500000 },
+    program: MAXPRICE.programWithPriceLimit(prog({}), { prepay_months: 36 }),
+    settings: SETTINGS,
+  });
+  ok(withAmount.eligible === true && withAmount.pricingBasis.capMilli === 103750,
+    '…while a stated loan amount carries the sheet\'s 103.750 ceiling into the quote\'s own basis');
+  ok(withAmount.ladder.some((r) => r.clamped && r.finalPriceMilli === 103750),
+    '…and a rung that would price above it is clamped to it, never quoted free');
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +300,17 @@ if (!process.env.DATABASE_URL) {
   //   loan-amount tier (≤$1.5MM) → 105.000  → 104750 after the 0.250 holdback
   //   3-Year prepay ceiling      → 104.000  → 103750 after the same holdback
   // The sheet's own rule takes the LOWER: 103750.
-  const SCENARIO = { loan_amount: 1000000, prepay_months: 36, fico: 780, ltv: 60000, dscr: 1300 };
+  // FULLY SPECIFIED, deliberately. A5/A6 makes the engine REFUSE to price a scenario that leaves a
+  // price-bearing fact unstated, so a fixture short of one would come back unpriced and this whole
+  // section would be measuring the refusal instead of the ceiling. The eight facts below are the
+  // ones this sheet's own pricing rules read (state, purpose, units, interest_only, escrow_waiver,
+  // non_warrantable, short_term_rental, lock_term_days); every one is set to the neutral value, so
+  // no adjustment fires from them and the ceiling arithmetic this section asserts is unchanged.
+  const SCENARIO = {
+    loan_amount: 1000000, prepay_months: 36, fico: 780, ltv: 60000, dscr: 1300,
+    state: 'FL', purpose: 'purchase', units: 1, interest_only: false, escrow_waiver: false,
+    non_warrantable: false, short_term_rental: false, lock_term_days: 30,
+  };
   const TIER_ONLY_CAP = 104750;
   const SHEET_RULE_CAP = 103750;
 
