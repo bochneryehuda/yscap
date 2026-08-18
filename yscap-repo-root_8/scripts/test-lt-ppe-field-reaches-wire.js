@@ -257,9 +257,36 @@ console.log('\n-- E: the same sweep under the mirror profile --');
   const mb = buildSearch(BASE, { profile: 'mirror' });
   ok(mb.criteria.loanType === 'Fixed' && mb.criteria.propertyUse === 'Investment'
     && mb.criteria.lienPriorityType === 'FirstLien' && JSON.stringify(mb.criteria.mortgageTypes) === '["Conventional"]',
-    'the mirror body still carries the narrow identity from the captured base — unforcing it did not widen it');
+    'the mirror body still comes out narrow — unforcing the profile did not widen it');
   ok(mb.criteria.compensationType === 'BorrowerCompPlan',
-    '…including the one axis a caller CAN move, which simply keeps the base default until they do');
+    '…including the one axis a caller CAN move, which simply keeps its default until they do');
+
+  // ⛔ AND THE CAUSE, WHICH THIS SECTION ORIGINALLY GOT WRONG (§2.99). It said the narrow values come
+  // "from the captured base". Measured live, the company's own default search carries
+  // `propertyUse: "PrimaryResidence"` and `compensationType: "LenderCompPlan"` — the base is not the
+  // source, an UNCONDITIONAL hard-code in `buildSearch` is. The assertion above passed either way,
+  // which is exactly what makes a mislabelled assertion worse than a missing one: it reads as proof of
+  // a mechanism nobody tested. So the cause is now tested, by feeding a foundation that says the
+  // OPPOSITE and proving the request comes out narrow anyway.
+  const contraryFoundation = {
+    criteria: { propertyUse: 'PrimaryResidence', compensationType: 'LenderCompPlan', loanType: 'ARM' },
+  };
+  const forced = buildSearch(BASE, { profile: 'mirror', base: contraryFoundation });
+  ok(forced.criteria.propertyUse === 'Investment',
+    'a foundation SAYING PrimaryResidence still builds an Investment request — the hard-code is the source, not the base');
+  ok(forced.criteria.compensationType === 'BorrowerCompPlan',
+    '…and the same for compensationType, until a CALLER (never the foundation) overrides it');
+  ok(buildSearch({ ...BASE, compensationType: 'LenderPaid' }, { profile: 'mirror', base: contraryFoundation })
+    .criteria.compensationType !== 'BorrowerCompPlan',
+    '…which a caller under the mirror profile can, and the foundation still cannot');
+  // The measured reason it must stay pinned lives beside the code; asserted here so a future widening
+  // cannot be done without reading it. `propertyUse: 'PrimaryResidence'` prices ZERO programs live and
+  // `'SecondHome'` 500s the whole request, so releasing this to a live foundation would silently empty
+  // every mirror search — indistinguishable from "no lender will do this deal".
+  const smSrc = require('fs').readFileSync(require.resolve('../src/longterm/lenderprice/search-model.js'), 'utf8');
+  ok(/ACCEPTED, and matches nothing/.test(smSrc) && /HTTP 500, no reason given/.test(smSrc)
+    && /propertyUse 'PrimaryResidence'/.test(smSrc) && /propertyUse 'SecondHome'/.test(smSrc),
+    'and the live measurement that justifies pinning it is recorded beside the code it justifies');
 }
 
 // ---- C: the twins, both directions ---------------------------------------------------------------

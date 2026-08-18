@@ -6067,3 +6067,73 @@ validated fields — its own item, and the honest next step for the mirror.
 here). Four mutations were each proven to turn the suite red: restoring the bad probe value, making
 `incomeDocType` really forced, having the mirror profile silently re-force `compensationType`, and
 making an identity field route-accepted so section E's claim goes stale.
+
+### §2.99 — ⛔ THE PROFILE MECHANISM IS HALF-BYPASSED, AND MY OWN §2.98 ASSERTION NAMED A FALSE CAUSE (2026-08-18)
+
+**Where this started.** §2.98 recorded that the `mirror` profile widens exactly one of the five DSCR
+identity axes, and attributed the other four to the captured base body. That was the wrong cause, and
+it took a live measurement to see it.
+
+**What the company's LIVE default search actually carries** (probed 2026-08-18 via
+`fetchDefaultSearch`) — it is **not** a DSCR search at all:
+
+```
+propertyUse       "PrimaryResidence"      compensationType  "LenderCompPlan"
+mortgageTypes     null                    lienPriorityType  null
+docType           "FullDoc"
+```
+
+Yet the body built under `mirror` — the profile that "forces NOTHING" — still comes out
+`Fixed / Conventional / Investment / FirstLien / BorrowerCompPlan`. The base is therefore not the
+source. **`buildSearch` sets two of them unconditionally, in its own body, outside the profile
+mechanism entirely:**
+
+```js
+c.propertyUse = 'Investment';
+c.compensationType = 'BorrowerCompPlan';
+```
+
+Three consequences, all of which had been invisible:
+
+1. **`mirror` cannot release `propertyUse`, ever.** Emptying its profile entry does nothing, because
+   this line runs first and no scenario field exists to override it afterwards.
+2. **`compensationType` is released only by accident of ordering** — `applyRegistry` runs after this
+   line, so a *caller's* value wins; the `dscr` profile then re-forces it in `wireDiscipline` and
+   `mirror` does not. That three-stage order is the whole reason it is the single field whose verdict
+   differs between profiles.
+3. **The profile block's own comment was measurably false** — *"`mirror` forces NOTHING … the merged
+   foundation's own value stands"* is true of that table and false of the request.
+
+**And then the measurement changed the answer.** The obvious fix is to move the two lines into
+`PROFILE_FORCED` so `mirror` genuinely releases them. Probed live before doing it, same scenario:
+
+| `criteria.propertyUse` | result |
+|---|---|
+| `Investment` (what we send) | 19 programs / 499 rungs |
+| `PrimaryResidence` (what the foundation says) | **0 programs / 0 rungs** — accepted, matches nothing |
+| `SecondHome` | **HTTP 500**, no reason given — the whole request fails |
+
+The scenario still carries every investment fact (a DSCR ratio, an LLC borrower, a 60-month prepay,
+`AddlOccupancyType: Long_Term_Rental_Property`), so a primary-residence search is not *widened* — it is
+**contradictory**, and the vendor answers an empty ladder with no error at all. Releasing this to the
+live foundation would have made **every mirror search return nothing**, silently, indistinguishable
+from *"no lender will do this deal"*. And `SecondHome` is the unpublished-token hazard in its strongest
+form: not a lost lender program, a dead request.
+
+**So the fix is not the unlock.** These two lines are a REQUEST-VALIDITY repair, not profile identity,
+and they now say so where they live, with the measurement beside them. Widening `propertyUse` means
+giving the caller a validated field **and** clearing the investment facts that contradict it — its own
+item, and not something a profile flag can do alone.
+
+**The correction to my own work, which is the part worth remembering.** §2.98's section-E assertion read
+*"the mirror body still carries the narrow identity **from the captured base**"*. It passed. It would
+have passed if the base carried something else entirely, because it only ever checked the OUTCOME —
+so it read as proof of a mechanism nobody had tested, which is worse than no assertion at all. The
+cause is now tested directly: a foundation deliberately built to say `PrimaryResidence` /
+`LenderCompPlan` / `ARM` is fed in, and the request is proven to come out narrow **anyway**, while a
+CALLER's `compensationType` still gets through under `mirror`. Three mutations turn it red — releasing
+either field to the foundation, and deleting the live measurement from beside the code it justifies.
+
+**The class:** an assertion that checks an outcome while its label claims a cause is a mislabelled
+assertion, and mislabelled assertions are how a wrong mechanism survives a green suite. When a claim
+names a *source*, test the source — feed it the opposite and prove the source wins.

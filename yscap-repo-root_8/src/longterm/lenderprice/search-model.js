@@ -812,8 +812,36 @@ function buildSearch(sc = {}, opts = {}) {
     if (pct != null) { const bc = m.brokerCriteria || (m.brokerCriteria = {}); bc.compPlan = compPlanValue(pct); }
   }
   c.loanPurpose = purpose;
-  // DSCR product profile — INTENTIONAL (investment occupancy, DSCR income doc, borrower-comp) and
-  // asserted explicitly so a live base carrying a different saved default never changes the product.
+  // ⛔ THESE TWO RUN UNDER **EVERY** PROFILE, INCLUDING `mirror`, AND THAT IS NOT AN OVERSIGHT — but
+  // until §2.99 nothing said so, and the profile block below claimed the opposite ("`mirror` forces
+  // NOTHING … the merged foundation's own value stands"). It does not, for these two, and the reason
+  // is measured rather than assumed.
+  //
+  // WHAT THE LIVE FOUNDATION ACTUALLY CARRIES (probed 2026-08-18): the company's saved default search
+  // is NOT a DSCR search — `propertyUse: "PrimaryResidence"`, `compensationType: "LenderCompPlan"`,
+  // `mortgageTypes: null`, `lienPriorityType: null`, `docType: "FullDoc"`. So "let the foundation's
+  // value stand" is not a neutral widening here; it swaps the product out from under the request.
+  //
+  // WHAT HAPPENS IF IT DOES, ON THE SAME SCENARIO, LIVE:
+  //     propertyUse 'Investment'       -> 19 programs / 499 rungs   (what we send)
+  //     propertyUse 'PrimaryResidence' ->  0 programs /   0 rungs   ACCEPTED, and matches nothing
+  //     propertyUse 'SecondHome'       ->  HTTP 500, no reason given — the whole request fails
+  // The scenario still carries every investment fact (a DSCR ratio, an LLC borrower, a 60-month
+  // prepay, `AddlOccupancyType: Long_Term_Rental_Property`), so a primary-residence search is not
+  // WIDENED — it is CONTRADICTORY, and the vendor answers an empty ladder with no error at all. A
+  // mirror that silently returned nothing on every search would be the worst failure mode available:
+  // indistinguishable from "no lender will do this deal". And `SecondHome` is the unpublished-token
+  // hazard in its strongest form — not a lost lender program, a dead request.
+  //
+  // So these are a REQUEST-VALIDITY repair, not profile identity, and they belong with the other
+  // every-profile repairs in `wireDiscipline` rather than in `PROFILE_FORCED`. Widening `propertyUse`
+  // means giving the caller a validated field AND clearing the investment facts that contradict it —
+  // its own item, and not something a profile flag can do on its own.
+  //
+  // `compensationType` is the one of the two a caller CAN move: `applyRegistry` runs AFTER this line,
+  // so a caller's value overwrites it; the `dscr` profile then re-forces it in `wireDiscipline` and
+  // `mirror` does not. That three-stage order is why it is the single field whose transmitted/dropped
+  // verdict differs between the two profiles (§2.98 section E).
   c.propertyUse = 'Investment';
   c.compensationType = 'BorrowerCompPlan';
   // §2.1 FRONTEND-PARITY FORCES (2026-08-17 live report). The captured base (`search-base.json`)
@@ -1183,9 +1211,17 @@ const PROFILE_FORCED = {
 // anchor and every parity number in this file was taken against that body, and a widening that quietly
 // moved it would invalidate all of them at once.
 //
-// `mirror` forces NOTHING. The scenario decides, and where the scenario is silent the merged
-// foundation's own value stands — which is the right default for a mirror, because the foundation IS
-// the vendor's answer to "what does this company search by default".
+// `mirror` forces NOTHING **IN THIS TABLE**. The scenario decides, and where the scenario is silent the
+// merged foundation's own value stands — which is the right default for a mirror, because the
+// foundation IS the vendor's answer to "what does this company search by default".
+//
+// ⚠ THAT IS TRUE OF THIS TABLE AND FALSE OF THE REQUEST (§2.99). `propertyUse` and `compensationType`
+// are ALSO set unconditionally in `buildSearch` itself, before the caller overlay and before this
+// block, so emptying the `mirror` entry cannot release them. `compensationType` is released in
+// practice only because `applyRegistry` runs in between and a caller's value wins; `propertyUse` has
+// no field at all and is therefore pinned to `Investment` under every profile. The live measurement
+// that says it must stay pinned — 0 programs on PrimaryResidence, HTTP 500 on SecondHome — is
+// recorded beside those two lines, so it sits with the code it justifies.
 //
 // ⚠ AND HERE IS WHAT UNFORCING DID **NOT** DO, MEASURED §2.98 — because the paragraph above reads as
 // though the whole product space opened up, and it did not. Removing the force is necessary and not
@@ -1198,6 +1234,9 @@ const PROFILE_FORCED = {
 // today a DSCR investor search a caller may pay for differently, not "any kind of scenario in Lender
 // Price". Closing the gap means giving the other four axes real validated fields, which is its own
 // item; asserted so the claim cannot drift, in section E of `test-lt-ppe-field-reaches-wire.js`.
+// (§2.98 attributed the narrow values to the captured base. Measured live in §2.99, the base does NOT
+// carry them — an unconditional hard-code in `buildSearch` does. The OUTCOME that section asserts was
+// right; its stated cause was not, and both the assertion and its label now name the real one.)
 const PROFILES = {
   dscr: PROFILE_FORCED,
   mirror: {},
