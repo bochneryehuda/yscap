@@ -63,6 +63,30 @@ async function longTermVisible() {
  * It falls back to our stage's LABEL and never to `stage_key`: printing
  * `clear_to_close` at a borrower is showing them a database value. With neither, it
  * says NOTHING — a status invented for a client is worse than a blank one.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * AND IT IS A WHITELIST. Every key below is NAMED. Nothing is spread off the row,
+ * and that — not a filter — is what makes rule 10 structural here: a column added
+ * to `lt_loans` tomorrow, an investor field, a funding channel, a buy rate, cannot
+ * reach a client through this door because nobody asked for it. This is the "build
+ * a client payload FOR the client" half of the rule, and a whitelist is the strong
+ * form of it: a blacklist has to be right about every key that will ever exist.
+ *
+ * WHICH IS WHY `audience.stripInternalOnly` AND `maySeeField` ARE UNUSED IN
+ * PRODUCTION, and that is deliberate rather than an oversight. They are the
+ * blacklist form of the same defence, kept for a surface built from Encompass
+ * FIELD IDS if one is ever needed. Running one over this payload would add nothing
+ * and would say the wrong thing — that keys may be spread here so long as they are
+ * filtered afterwards, which is exactly the shape this avoids. Do not "harden"
+ * this by adding one; harden it by keeping the list named.
+ *
+ * `scrubInvestorNames` is a DIFFERENT defence and IS wired: the whitelist governs
+ * which FIELDS travel, and the scrub governs free text a human typed inside one of
+ * them (a program name is the realistic case).
+ *
+ * `test-lt-investor-block.js` runs this function over a row carrying every
+ * internal field there is and fails if a single one comes out the other side.
+ * ═══════════════════════════════════════════════════════════════════════════════
  */
 function shape(row, stageCfg) {
   const verdict = productTerm.classifyProduct({
@@ -141,3 +165,11 @@ router.get('/loans', async (req, res) => {
 });
 
 module.exports = router;
+
+/**
+ * `shape` is exported so the investor-block suite can RUN it over a row carrying
+ * every internal field there is and check what comes out, rather than reading this
+ * file and hoping. It is the client payload's whole defence — see the note on the
+ * function — and a defence nothing exercises is a defence nobody has seen work.
+ */
+module.exports._internals = { shape };
