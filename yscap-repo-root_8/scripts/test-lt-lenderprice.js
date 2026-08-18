@@ -191,6 +191,68 @@ async function offline() {
   ok(dq.lenders[0].investor === 'Acme Capital' && dq.lenders[0].items[0].reasons[0].rule === 'FICO 660 < min 680', 'parseDisqualified carries investor + rule text');
   ok(lp.hasDisqualifyData(dqRaw) === true && lp.hasDisqualifyData({ results: { disqualifiedData: { childs: [] } } }) === false, 'hasDisqualifyData detects populated vs empty tree');
 
+  // 13a) THE FALLBACK — a lender whose refusal is free text and nothing else.
+  //
+  // `disqualifyRulesOf` reads the itemized rules first (13 above covers both of
+  // those shapes). Only when it finds NONE does it sweep the leaf for any
+  // reason-shaped string it can find. That sweep is the safety net for a lender
+  // whose payload does not match the shape we expect — and until now nothing
+  // reached it, so on those lenders an officer would have been shown "declined"
+  // with no reason at all, which is the one thing this screen exists to avoid.
+  const freeText = { results: { disqualifiedData: { keyLabel: 'ROOT', childs: [
+    { type: 'CriteriaFromLineResultKey', keyLabel: 'DSCR 30yr', childs: [
+      { type: 'LenderKey', keyLabel: 'Loose Shape Capital', leafs: [
+        { companyName: 'Loose Shape Capital', programName: 'DSCR 30yr', rate: 9.1,
+          // No groupAdjustmentProperties, no conditionActions, no holdBackResult.
+          detail: { failReason: 'Property state not licensed' },
+          messages: ['Reserves below the 6 months required'] }] }] },
+  ] } } };
+  const ft = lp.parseDisqualified(freeText);
+  const ftReasons = ft.lenders[0].items[0].reasons.map((r) => r.rule);
+  ok(ftReasons.includes('Property state not licensed') && ftReasons.includes('Reserves below the 6 months required'),
+    'THE ONE THAT MATTERS: a lender whose refusal is free text and nothing else still produces reasons — without the fallback that lender reads as "declined" with nothing said, on the one screen whose whole job is to say why');
+
+  // The fallback is a FALLBACK. A leaf that DID yield itemized rules must not also
+  // be swept, or every reason would arrive twice and the count would overstate.
+  const both = { results: { disqualifiedData: { childs: [
+    { type: 'LenderKey', keyLabel: 'Acme', leafs: [
+      { companyName: 'Acme', programName: 'P', reason: 'a loose string nobody should reach',
+        groupAdjustmentProperties: [{ name: 'g', disqualifyAdjustments: [{ key: 'FICO below floor' }] }] }] },
+  ] } } };
+  const bothOut = lp.parseDisqualified(both);
+  const bothRules = bothOut.lenders[0].items[0].reasons.map((r) => r.rule);
+  ok(bothRules.length === 1 && bothRules[0] === 'FICO below floor',
+    'and the sweep is a FALLBACK, not an addition — a leaf with itemized rules is not also swept, so no reason arrives twice and the count never overstates what a lender actually said');
+
+  // A leaf carrying a nested tree must not have its NEIGHBOURS' refusals collected
+  // into it. `childs` / `leafs` / `key` are excluded from the sweep by name, and
+  // this is why: attributing another lender's "no" to this program is worse than
+  // showing none.
+  const nested = { results: { disqualifiedData: { childs: [
+    { type: 'LenderKey', keyLabel: 'Odd', leafs: [
+      { companyName: 'Odd', programName: 'P', message: 'ours',
+        childs: [{ message: 'somebody else\'s refusal' }],
+        leafs: [{ message: 'and another lender\'s' }] }] },
+  ] } } };
+  const nestedRules = lp.parseDisqualified(nested).lenders[0].items[0].reasons.map((r) => r.rule);
+  ok(nestedRules.includes('ours') && !nestedRules.some((r) => /somebody else|another lender/.test(r)),
+    'THE ONE THAT MATTERS: and the sweep does not descend into `childs` or `leafs`, so one lender\'s refusal can never be attributed to another\'s program');
+
+  // A reason longer than the cap is truncated rather than carried whole — these
+  // land on a screen, and one vendor string can be a whole guideline document.
+  const longOne = 'x'.repeat(900);
+  const capped = { results: { disqualifiedData: { childs: [
+    { type: 'LenderKey', keyLabel: 'Wordy', leafs: [{ companyName: 'Wordy', programName: 'P', reason: longOne }] },
+  ] } } };
+  const cappedRule = lp.parseDisqualified(capped).lenders[0].items[0].reasons[0].rule;
+  // 300, not 400. The cap that governs what a reader sees is the one in `add`;
+  // the 400 inside the sweep is a bound on what the intermediate Set may hold, and
+  // sits behind the tighter one, so no test can tell whether it is there. Asserted
+  // at 400 this stayed GREEN when the sweep's cap was removed — a looser assertion
+  // than the code guarantees is a test agreeing with itself.
+  ok(cappedRule.length === 300 && cappedRule.startsWith('xxx'),
+    'a very long reason is capped at 300 rather than carried whole — one vendor string can be an entire guideline document');
+
   // 13b) Rich capture: parse()/parseFull() read lender+investor identity and the full pricing build.
   const richLeaf = {
     companyName: 'AD Mortgage LLC', companyId: 'L1', programName: 'DSCR 30 Year Fixed - IO', productName: '30yr IO', rateGridId: 'G1',
