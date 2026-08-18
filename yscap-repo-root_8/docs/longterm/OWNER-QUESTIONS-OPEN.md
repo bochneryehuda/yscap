@@ -121,9 +121,15 @@ Full technical detail: `docs/longterm/PPE-OVERLAPPING-BANDS-QUESTION.md`.
 
 ### 3a. How many clean weeks before an investor goes live?
 
-You have said WHO may switch an investor from watching to live (a super admin). The remaining half is
-**how many clean weeks in a row we want first** — we assumed 8 and have never enforced it — and
-**whether we keep spot-checking an investor against Lender Price once it is live.**
+You have said WHO may switch an investor from watching to live (a super admin), and that half is now
+BUILT (§2.63): the button exists, only a super admin can press it, every move is written down for good,
+and taking an investor back off is always allowed.
+
+The remaining half is **how many clean weeks in a row we want first** and **whether we keep
+spot-checking an investor against Lender Price once it is live.** Nothing waits on either — the screen
+shows the number it is currently using and says plainly that nobody has confirmed it, and a live
+investor keeps being checked against Lender Price by default, which is the safe half of the second
+question. Say the word on either and it changes in one place.
 
 ### 3b. Should the built-in safety checks block a release, or just warn?
 

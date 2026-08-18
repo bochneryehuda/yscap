@@ -58,14 +58,34 @@ const routeSrc = read(ROUTE);
   // fails and names the reason.
   ok(/lt_ppe_cutover_ledger/.test(routeSrc) && /db\/566/.test(routeSrc),
     'A: the route names db/566 / lt_ppe_cutover_ledger — it no longer claims the ledger is unpersisted');
-  ok(/durable/i.test(routeSrc) && /promote/i.test(routeSrc),
-    'A: the route still explains WHY there is no promote control (the decision, not the record)');
 
-  // And the thing that IS still true: no promote/rollback route exists. If one is added, this fails —
-  // which is correct, because the header bullet claiming there is none must be rewritten with it.
-  const promoteRoutes = routeSrc.match(/^router\.(get|post|put|delete)\((['"])[^'"]*(promote|rollback|cutover)[^'"]*\2/gmi) || [];
-  eq(promoteRoutes.length, 0,
-    'A: there is still no promote/rollback/cutover route — if you added one, rewrite the header bullet that says there is none');
+  // AND THE THIRD REWRITE OF THE SAME BULLET. This check used to assert the OPPOSITE — that no
+  // promote/rollback route existed — which was true and was the point: the header said there was
+  // none, so adding one had to fail here and force the sentence to be rewritten with it. It did
+  // exactly that. The owner answered who may promote ("all in the super admin", 2026-08-18), the door
+  // shipped, and both halves are now asserted the other way round: the routes exist, and the header
+  // no longer claims they do not.
+  const cutoverRoutes = routeSrc.match(/^router\.(get|post|put|delete)\((['"])[^'"]*cutover[^'"]*\2/gmi) || [];
+  eq(cutoverRoutes.length, 2,
+    'A: the cutover READ and DECISION doors are both registered — the ledger is reachable at last');
+  ok(!/No promote-to-live control/.test(routeSrc) && !/STILL not exposed here/.test(routeSrc),
+    'A: …and the header no longer says there is no promote control — that sentence was rewritten with the door');
+
+  // The DECISION door carries the role floor, not the ordinary admin gate. A count of routes says
+  // nothing about which gate they were mounted behind, and the gate is the whole of the owner's answer.
+  const decisionReg = routeSrc.match(/router\.post\(\s*'\/cutover\/decision'\s*,\s*(\w+)/);
+  ok(!!decisionReg && /SuperAdmin|CutoverAuthority/.test(decisionReg[1]),
+    `A: the cutover decision is super-gated, never the ordinary admin gate (found ${decisionReg ? decisionReg[1] : 'nothing'})`);
+
+  // AND THE MODE IS READ RATHER THAN ASSERTED. `GET /investors` shipped the sentence "every investor
+  // is in shadow and Lender Price is authoritative" in its RESPONSE BODY — a claim a screen repeats
+  // to a human verbatim, and one the promote door can falsify in a single click.
+  ok(!/every investor is in shadow/.test(routeSrc),
+    'A: /investors no longer ASSERTS that every investor is shadowing — a promotion would make that a lie on a screen');
+  ok(/mode:\s*modes\.has\(/.test(routeSrc),
+    'A: …it reports each investor\'s ACTUAL recorded mode instead');
+  ok(!/mode:\s*\(\)\s*=>\s*'shadow'/.test(routeSrc),
+    'A: and the pricing path no longer hard-codes shadow either — a recorded promotion actually moves the answer');
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +249,14 @@ const routeSrc = read(ROUTE);
 {
   const UNGATED_WRITES = new Set(['/quote', '/breakdown']);
   // path → the gate it must carry, when that is not the ordinary admin gate.
-  const SUPER_GATED = new Map([['/rule-drafts/:id/publish', 'requirePpeSuperAdmin']]);
+  // TWO doors take a role-floor gate rather than the admin one — the two acts the owner reserved to
+  // the super admin in a single sentence (2026-08-18). They carry DIFFERENT gate functions on purpose:
+  // each refusal names its own act, because a person told "only a super admin can publish a pricing
+  // rule" while trying to take an investor live goes hunting a rule they never touched.
+  const SUPER_GATED = new Map([
+    ['/rule-drafts/:id/publish', 'requirePpeSuperAdmin'],
+    ['/cutover/decision', 'requirePpeCutoverAuthority'],
+  ]);
   const regs = routeSrc.match(/^router\.(post|put|delete)\([^\n]*$/gm) || [];
   ok(regs.length > 10, 'G: control — the router registers a real number of write routes');
   const leaks = [];

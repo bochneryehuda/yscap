@@ -186,10 +186,16 @@ ok(typeof route === 'function' && typeof route.use === 'function', 'the module I
 // 46 with the PUBLISH door — the one route on this router that changes what a borrower is quoted. It
 // was deliberately absent while the authority was an open question; the owner answered it on
 // 2026-08-18 ("all in the super admin") and the guard below is now about its GATE, not its absence.
-ok(Object.keys(H).length === 50, `all 50 handlers are exported for testing (${Object.keys(H).length})`);
+// 52 with the CUTOVER DOOR (§11 / P10) — the read and the decision. `cutover-ledger.js` and
+// `cutover-store.js` had been built, tested and reachable by nothing, waiting in LT-UNREACHED.md on
+// one open question: who may take an investor live. The owner answered it ("all in the super admin"),
+// so the write door is super-gated like the publish; the read is admin-gated like every other
+// governance surface here.
+ok(Object.keys(H).length === 52, `all 52 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
-for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',
+for (const name of ['cutoverStateRoute', 'cutoverDecisionRoute',
+  'listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',
   'listRulesRoute', 'mineSuggestionsRoute', 'ruleCoverageRoute',
   'getProgramLpScopeRoute', 'setProgramLpScopeRoute', 'parityCellsRoute', 'listProgramsRoute',
   'listSchedulesRoute', 'saveScheduleRoute', 'deleteScheduleRoute', 'canaryTickRoute',
@@ -234,10 +240,17 @@ for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSug
     `…behind requirePpeSuperAdmin, never the ordinary admin gate (found ${reg[1]})`);
 
   // …and that gate must genuinely read the role FLOOR rather than the widenable admin list, or the
-  // name above would be the only thing that changed.
-  const gate = raw.match(/async function requirePpeSuperAdmin[\s\S]*?\n}/);
+  // name above would be the only thing that changed. The check is written ONCE now and the refusal
+  // SENTENCE is its parameter (there is more than one act the owner reserved to a super admin, and a
+  // refusal naming the wrong one sends somebody hunting a rule they never touched), so what is read
+  // here is the factory — and that both super-gates are built from it rather than hand-rolled beside
+  // it, which is how a second copy would quietly stop asking about the floor.
+  const gate = raw.match(/function ppeSuperAdminFor\([\s\S]*?\n}/);
   ok(!!gate && /ADMIN_FLOOR_ROLE/.test(gate[0]) && !/mayManagePeople/.test(gate[0]),
     'the super-admin gate reads the role FLOOR, not the list a settings change can widen');
+  ok(/const requirePpeSuperAdmin = ppeSuperAdminFor\(/.test(raw)
+    && /const requirePpeCutoverAuthority = ppeSuperAdminFor\(/.test(raw),
+    '…and every super-gated door is built from that ONE check, never a second copy of it');
 
   // NOTHING ELSE may take that gate by accident: it exists for the one door that moves a price.
   // Counted on the REGISTRATIONS, not on every mention: the gate is also defined and exported, and a
@@ -311,13 +324,29 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
   ok(r.body.values && typeof r.body.values === 'object', 'settings: ships the resolved values beside the registry');
 
   // -------------------------------------------------------------------------
-  // 6) investors — honest that per-investor lifecycle is not modelled
+  // 6) investors — each one's REAL lifecycle, read rather than asserted
+  //
+  // This block used to assert the opposite: `perInvestor:false` and a flat `mode:'shadow'`, with the
+  // response body carrying the sentence "every investor is in shadow and Lender Price is
+  // authoritative". That was honest while no promote door existed, and became a lie on a screen the
+  // moment one did (§11 / P10) — a promotion is one click and the sentence would not have moved. The
+  // shape is now the honest one for a router that HAS a lifecycle: the mode is read per investor out
+  // of the ledger, and an empty ledger reads as DRAFT rather than as an invented state.
   // -------------------------------------------------------------------------
-  dbStub.next = () => ({ rows: [{ id: 'i1', code: 'ACME', name: 'Acme', active: true }] });
+  // The stub answers PER QUERY here, which it must: this route now runs two different reads (the
+  // investor list, then that investor's lifecycle history), and a stub returning the same rows to both
+  // would feed investor rows into the ledger mapper and prove nothing about either.
+  dbStub.next = (text) => (/lt_ppe_cutover_ledger/.test(text)
+    ? { rows: [] }
+    : { rows: [{ id: 'i1', code: 'ACME', name: 'Acme', active: true }] });
   r = await call(H.listInvestorsRoute);
   ok(r.code === 200 && r.body.investors.length === 1, 'investors: lists what is configured');
-  ok(r.body.lifecycle && r.body.lifecycle.perInvestor === false && r.body.lifecycle.mode === 'shadow',
-    'investors: says plainly that per-investor promotion is not persisted (no invented draft/live state)');
+  ok(r.body.lifecycle && r.body.lifecycle.perInvestor === true && r.body.lifecycle.mode === undefined,
+    'investors: no longer claims ONE mode for everybody — each investor carries its own');
+  ok(r.body.investors[0].mode === 'draft',
+    'investors: …read out of the ledger, and an investor nobody has decided about is DRAFT, not an invented "shadow"');
+  ok(!/every investor is in shadow/.test((r.body.lifecycle || {}).note || ''),
+    'investors: …and the response body no longer ships a sentence a single promotion would falsify');
 
   // -------------------------------------------------------------------------
   // 7) quote — LP answers; a missing program costs the SHADOW, not the quote

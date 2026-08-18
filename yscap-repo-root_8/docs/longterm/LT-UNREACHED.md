@@ -170,8 +170,6 @@ not a caller.
 | `src/longterm/ppe/lp-drift.js` | Daily Lender-Price drift detection + classification (D19). | A scheduled run — deliberately not added, for the same reason the canary has no timer: a background loop calling a paid vendor is the owner's decision. |
 | `src/longterm/ppe/lp-daily-run.js` | The IO-injected wrapper tying the drift pieces together. | As above. |
 | `src/longterm/ppe/lp-daily-schedule.js` | The per-investor daily schedule for that run. | As above. |
-| `src/longterm/ppe/cutover-ledger.js` | The append-only cutover decision history (§11). | The promote-to-live route (P10) — owner-gated on who may promote. |
-| `src/longterm/ppe/cutover-store.js` | Its durable bridge. | As above. |
 | `src/longterm/ppe/best-execution.js` | Best-execution ranking across investors (§8.3). | A multi-investor search surface; there is one investor today. |
 | `src/longterm/ppe/lock.js` | Rate-lock lifecycle + the frozen price stack (§8). | Locks are not in scope for the visibility-only build. |
 | `src/longterm/ppe/parity-review.js` | The scenario review composer (ties P1 + P3 + P-DQ). | The manual-review UI (P8). |

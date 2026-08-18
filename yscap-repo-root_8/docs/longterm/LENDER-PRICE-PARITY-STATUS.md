@@ -33,6 +33,7 @@ actually blocked?" should be answerable in one place.
 | ⏳ ANSWERED AND BUILT, PARTLY | **The loan officer margin and commission rules.** The two answers that were holding it are in and built (§2.59): the per-loan minimum is a movable default, and the entire margin holdback is the company's. What is still owed: the officer's SHARE of the origination (a real percentage nobody has stated — the record refuses to work out a net until it is set), and five smaller questions in COMPENSATION-MARGIN-MODEL.md. | Nothing prices from it either way — the stack reports who earns what and never moves a quote. | §2.59, D18 |
 | ✅ ANSWERED AND BUILT | **Is being a PPE administrator the right authority to PUBLISH a pricing rule, or does that need its own sign-off?** Owner, 2026-08-18: *"all in the super admin"*. | Nothing — the publish door is built, super-admin gated, and the rule board has the button. | §2.51, §2.57 |
 | — | **Who may switch OFF a rule that is already pricing loans, and does that retire it or effective-date it?** | Editing a live rule's name at all — today that publishes a second rule and is refused as a double charge. | §2.42, §2.51 |
+| ⏳ BUILT, HALF ANSWERED | **How many clean weeks before an investor goes live, and do we keep checking it against Lender Price once it is?** You answered WHO (a super admin) and that is built — the button exists, every move is written down for good, and taking an investor back off is always allowed. | Nothing waits on it: the screen states the number it is running today and says plainly that nobody has confirmed it, and a live investor keeps being checked by default. | §2.63, §3a |
 
 **Two more that need a CAPTURE rather than a decision** — nobody has to answer these, someone has to
 record one screen of the vendor's own frontend: **#80** (how Lender Price picks which DSCR band program a
@@ -3749,3 +3750,95 @@ growing the queue, the verdict unchanged by the observer, and the two outage cas
 retiring nothing. **Mutation-proven three ways** — removing the hook from `runOne` kills 3, unwiring
 `onScenario` at the route kills 4, and a throwing reporter kills the same 4 while leaving every
 measurement assertion green.
+
+---
+
+**§2.63 — THE CUTOVER DOOR: THE LEDGER IS REACHABLE, AND THE MODE IS ACTUALLY READ (§11 / P10, 2026-08-18).**
+
+**THE DEFECT, IN ONE LINE.** `cutover.js` (the pure lifecycle and the go-live gate), `cutover-ledger.js`
+(the append-only decision history) and `cutover-store.js` (its durable bridge, db/566) were built, unit
+tested, proven against a real Postgres — and reachable by **nothing**. Both of the latter two sat in
+`docs/longterm/LT-UNREACHED.md` with a single blocker beside them: *"the promote-to-live route (P10) —
+owner-gated on who may promote."* The owner answered that on 2026-08-18 — *"Who may publish a pricing
+rule; who may switch an investor from watching to live … all in the super admin"* — so the blocker was
+gone and only the door was missing.
+
+**AND THE SECOND HALF WAS WORSE THAN THE FIRST.** The quote path read
+`mode: () => 'shadow'` with a comment saying *"for now, in every scenario"*. That was true right up
+until a promote door existed: from that moment a super admin could record an investor LIVE and every
+quote would still have priced from Lender Price — the ledger and the engine confidently disagreeing,
+with nothing anywhere saying so. Building the door without wiring the mode would have shipped exactly
+that. Both halves are here.
+
+**WHAT WAS BUILT.**
+· `GET /api/lt/ppe/cutover?investor=` — the mode now, the whole history, a **tamper check** that
+  replays every recorded step from draft (a ledger somebody edited, or a partial restore, is DETECTED
+  and said out loud rather than rendered as a tidy history), and what a promotion would answer right
+  now. Admin-gated, like every other governance surface here.
+· `POST /api/lt/ppe/cutover/decision` — activate / promote / rollback / retire / reopen, **super-admin
+  only**, with the second of exactly two such doors on this router. Its refusal names ITS OWN act: the
+  super-admin check is now written once with the sentence as its parameter, because a person told
+  *"only a super admin can publish a pricing rule"* while trying to take an investor live goes looking
+  for a rule they never touched.
+· The **lifecycle card** on the pricing screen, under the go-live picture it is decided from, with the
+  reason typed inline (Long-Term may not import RTL's shared dialog helper — the separation gate
+  refuses it, correctly — and the reason for taking an investor live is worth typing while looking at
+  the gate that allowed it).
+
+**ELIGIBILITY IS COMPUTED, NEVER ACCEPTED — the assertion this whole thing turns on.**
+`cutover.transition` promotes only when handed `eligible === true`, so a body field of that name would
+be the entire ≥200-scenario, zero-open-findings, clean-streak apparatus bypassed by one JSON key. The
+verdict comes from `loadCutoverPicture` — the SAME derivation the /scoreboard screen renders, extracted
+so the screen and the door cannot drift into two answers — and the request's own opinion is ignored
+entirely. The test sends `eligible:true` **and** `gate:{eligible:true}` on an unmeasured investor and
+asserts the refusal anyway; **mutation-proven** by making the route honour that field, which kills 6
+assertions. Same rule for the author: `by` is the session actor, the test forges a different one in the
+body, and honouring it kills the assertion.
+
+**IT FAILS CLOSED IN BOTH DIRECTIONS.** An unreadable run series has no agreement rate, and
+`eligibleForLive` reads a null rate as *"no canary run has proven 100% agreement"* — so a database
+hiccup can never come back as eligible. And on the pricing side **only an explicit, readable LIVE**
+moves the answer to our engine: draft, retired, an investor nobody has decided about, and a ledger we
+could not read all keep Lender Price authoritative, with the read failure NAMED on the response rather
+than left indistinguishable from an investor who is simply still shadowing. Mutation-proven by
+defaulting the other way.
+
+**THE GATE IS NOT SOFTENED, AND THAT IS A DELIBERATE NON-DECISION.** Two halves of this remain
+unanswered (`OWNER-QUESTIONS-OPEN.md` §3a): how many clean weeks in a row we want, and whether a live
+investor keeps being spot-checked against Lender Price. So the door invents neither. It **states** the
+thresholds the gate is currently running — and says in words that the clean-day count is an assumption
+rather than settled policy, because a number nobody can see is a number nobody can question — refuses a
+promotion the gate refuses, and offers **no override**. A super admin who disagrees has a real path:
+resolve the findings, or say the number. On the second half, `priceWithShadow` in live mode runs our
+quote as the answer AND the Lender Price comparison alongside it, so a live investor is still measured;
+the safe half is the default and nothing pretends the question is closed.
+
+**ROLLBACK IS ALWAYS ALLOWED, and needs no gate** — the way out must never be harder than the way in.
+The ledger is append-only, so a correction is a NEW decision rather than a rewrite of the first one,
+and each entry carries the scoreboard it was decided on so a rollback is readable a year later.
+
+**PROVED** by `scripts/test-lt-ppe-cutover-route-db.js` (27 assertions, real Postgres, real routes):
+the four refusals that leave the ledger empty, the forged-eligibility and forged-author cases, a
+measured investor promoting, promote-twice refused by the lifecycle itself, rollback, the append-only
+history, the mode wiring and its fail-closed direction, and an investor nobody has decided about
+reading as DRAFT rather than as an error. Plus the router's own policy guard
+(`test-lt-ppe-http-db.js`), which now knows there are TWO owner-reserved acts and checks each door's
+own wording against a loan officer AND an administrator — **mutation-proven** by downgrading the
+cutover door to the ordinary admin gate, which kills 3.
+
+**THE CLAIM-DRIFT GUARD EARNED ITS KEEP, and this is the part worth repeating.**
+`scripts/test-lt-ppe-claim-drift.js` exists to fail when a sentence about the code stops being true. It
+went red on this change and named two statements that would otherwise have shipped as confident lies:
+the route header's *"No promote-to-live control … STILL not exposed here"*, and — worse —
+`GET /investors` shipping **in its response body** the sentence *"every investor is in shadow and Lender
+Price is authoritative"*, which a screen repeats to a human verbatim and which one click on the new
+button would falsify. That check had been written the other way round on purpose (*"if you added one,
+rewrite the header bullet that says there is none"*) and it did exactly what it was for. The second is
+now fixed structurally rather than by rewording: `/investors` **reads each investor's actual recorded
+mode** out of the ledger instead of asserting one, and names the read failure when it cannot.
+
+**ALSO RETIRED**, for the same reason: the two rows in `LT-UNREACHED.md` naming a blocker the owner had
+answered, and the line on the pricing screen reading *"PROMOTION to live is still deliberately absent —
+a button whose decision goes nowhere is worse than no button."* The screen's own description of what
+"live" means was corrected too: Lender Price is still called on every quote alongside our answer, which
+the old copy denied.

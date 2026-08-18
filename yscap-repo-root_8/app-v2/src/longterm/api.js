@@ -143,6 +143,20 @@ export const ltApi = {
     return ltGet(lt(`/ppe/findings${q ? `?${q}` : ''}`));
   },
   ppeScoreboard: (investor) => ltGet(lt(`/ppe/scoreboard?investor=${encodeURIComponent(investor)}`)),
+  // THE CUTOVER LIFECYCLE (§11 / P10) — draft → shadow → live → retired, and back.
+  //
+  // `ppeCutover` reads: the mode this investor is in now, the append-only history of how it got
+  // there, a TAMPER CHECK that replays every step from draft, and what a promotion would answer right
+  // now (the same gate the scoreboard card renders — one derivation, so the two can never disagree).
+  //
+  // `ppeCutoverDecide` moves it, and is SUPER-ADMIN-ONLY on the server (owner-directed 2026-08-18).
+  // It is called from a non-super-admin's screen anyway so the REFUSAL is shown — a hidden button is
+  // indistinguishable from a broken one, the same rule the finding-decide button follows. Note there
+  // is deliberately no `eligible` field to send: the go-live gate is computed on the server from the
+  // measurements, and a client that could assert its own eligibility would be the whole bar bypassed
+  // by one JSON key.
+  ppeCutover: (investor) => ltGet(lt(`/ppe/cutover?investor=${encodeURIComponent(investor)}`)),
+  ppeCutoverDecide: (body) => ltPost(lt('/ppe/cutover/decision'), body),
   // The "mother interface" (owner-directed 2026-08-17) — the LP-style transparency view:
   // base price, every itemized LLPA/adjustment with its running effect, the final price,
   // and both engines' eligibility/disqualifications, for ONE scenario. The server assembles

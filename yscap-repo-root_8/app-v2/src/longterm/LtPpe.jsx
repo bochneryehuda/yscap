@@ -81,6 +81,16 @@ const points = (milli) => (typeof milli === 'number' && Number.isFinite(milli)
 // Colour only; the word is the server's.
 const TREND_TONE = { improving: 'good', worsening: 'bad', flat: 'flat', unknown: 'flat' };
 
+// Lifecycle buttons. Explicit DARK text on a white surface — never an `--ink*` token, which is a
+// LIGHT paper colour in this palette and renders white on white. `btnOff` is the same control with
+// its unavailability shown rather than the control hidden: a person must be able to see that "Take
+// live" exists and that the bar is not met, which a missing button cannot say.
+const btnQuiet = {
+  border: `1px solid ${GOLD}66`, background: '#fff', color: INK,
+  borderRadius: 8, padding: '6px 12px', fontSize: 13, fontWeight: 550, cursor: 'pointer',
+};
+const btnOff = { ...btnQuiet, color: MUTED, borderColor: 'rgba(20,27,34,.14)', cursor: 'not-allowed' };
+
 function Figure({ label, value, hint }) {
   return (
     <div style={{ minWidth: 128 }}>
@@ -96,6 +106,7 @@ export default function LtPpe() {
   const [investors, setInvestors] = useState(null);
   const [queue, setQueue] = useState(null);
   const [board, setBoard] = useState(null);
+  const [life, setLife] = useState(null);
   const [investor, setInvestor] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -112,8 +123,12 @@ export default function LtPpe() {
       .catch((e) => setNote(e.message || 'Could not read the findings.'));
     if (investor) {
       ltApi.ppeScoreboard(investor).then(setBoard).catch(() => setBoard(null));
+      // The lifecycle is admin-gated on the server, so a plain viewer gets a 403 here and simply sees
+      // no lifecycle card — which is right: they cannot act on it either.
+      ltApi.ppeCutover(investor).then(setLife).catch(() => setLife(null));
     } else {
       setBoard(null);
+      setLife(null);
     }
   }, [investor]);
   useEffect(loadQueue, [loadQueue]);
@@ -144,6 +159,46 @@ export default function LtPpe() {
       // names WHICH rule was broken. A generic "that didn't work" would not, and
       // the person could not tell "you may not do this" from "say more".
       setRowError((prev) => ({ ...prev, [item.key]: e.message || 'That decision was refused.' }));
+    } finally { setBusy(false); }
+  };
+
+  // ---- the cutover lifecycle (§11 / P10) -------------------------------------------------------
+  //
+  // A promotion changes which engine answers a real borrower, so this is the most consequential
+  // control on the screen and it is written to behave like one. THREE rules it keeps:
+  //
+  //   · The REASON is typed inline, beside the action, not in a dialog. Long-Term may not import
+  //     RTL's shared dialog helper (the product-separation gate refuses it, correctly), and the
+  //     reason for taking an investor live is worth typing while looking at the gate that allowed it.
+  //     Same pattern as settling a finding above.
+  //   · It never hides a control a person may not use. Deciding is super-admin-only on the SERVER;
+  //     a plain admin sees the buttons and is told, in the server's own words, why they were refused.
+  //   · PROMOTE is only offered when the gate says yes, and the gate's verdict comes from the server.
+  //     There is no override here because there is none there — the go-live bar is a measurement, and
+  //     a button that could wave it through would make every number above it decorative.
+  const [lifeAction, setLifeAction] = useState(null);
+  const [lifeReason, setLifeReason] = useState('');
+  const [lifeError, setLifeError] = useState('');
+
+  const openLifeAction = (action) => {
+    setLifeAction(lifeAction === action ? null : action);
+    setLifeReason('');
+    setLifeError('');
+  };
+
+  const decideLifecycle = async (action) => {
+    setBusy(true);
+    setLifeError('');
+    try {
+      await ltApi.ppeCutoverDecide({ investor, action, reason: lifeReason });
+      setLifeAction(null);
+      setLifeReason('');
+      loadQueue();
+    } catch (e) {
+      // The server refuses a non-super-admin, a short reason, an illegal move and an unmet gate, and
+      // its wording names WHICH of those it was. A generic failure would leave a person unable to
+      // tell "you may not" from "not yet" from "say more".
+      setLifeError(e.message || 'That decision was refused.');
     } finally { setBusy(false); }
   };
 
@@ -821,8 +876,9 @@ export default function LtPpe() {
         <div style={card}>
           <h2 style={h2}>Could this investor go live?</h2>
           <p style={sub}>
-            "Live" means our engine answers for this investor and Lender Price is no longer called. Nobody
-            is promoted automatically — this is the picture a person would decide on.
+            "Live" means our engine gives the answer for this investor instead of Lender Price. Lender
+            Price is still called on every quote alongside it, so a live investor keeps being measured.
+            Nobody is promoted automatically — this is the picture a person decides on.
           </p>
           {board && board.scoreboard ? (
             <>
@@ -848,6 +904,89 @@ export default function LtPpe() {
           ) : (
             <p style={{ ...sub, marginBottom: 0 }}>Nothing recorded for this investor yet.</p>
           )}
+
+          {/* ---- the lifecycle itself: where this investor is, and how it moves ---- */}
+          {life && (
+            <div style={{ borderTop: `1px solid ${GOLD}33`, marginTop: 16, paddingTop: 14 }}>
+              <div style={eyebrow}>Lifecycle</div>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', margin: '6px 0 10px' }}>
+                <Pill tone={life.mode === 'live' ? 'good' : 'plain'}>{String(life.mode || 'draft')}</Pill>
+                <span style={{ fontSize: 13, color: SLATE }}>
+                  {life.mode === 'live'
+                    ? 'Our engine answers for this investor. Lender Price still runs alongside on every quote.'
+                    : 'Lender Price answers for this investor. Ours prices beside it and every disagreement becomes a finding.'}
+                </span>
+              </div>
+
+              {/* A TAMPERED OR PARTLY-RESTORED LEDGER IS SAID OUT LOUD, never rendered as a tidy
+                  history. The server replays every recorded step from draft; this shows what it found. */}
+              {life.integrity && life.integrity.ok === false && (
+                <p style={{ fontSize: 13, color: '#8a2a2a', margin: '0 0 10px' }}>
+                  This lifecycle history does not replay cleanly{life.integrity.brokenAt != null ? ` (first problem at step ${life.integrity.brokenAt})` : ''}
+                  {life.integrity.error ? `: ${String(life.integrity.error)}` : '.'} Nothing here should be trusted until that is explained.
+                </p>
+              )}
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                {(life.mode === 'draft') && (
+                  <button type="button" style={btnQuiet} disabled={busy} onClick={() => openLifeAction('activate')}>Start shadowing</button>
+                )}
+                {(life.mode === 'shadow') && (
+                  <button
+                    type="button"
+                    style={life.gate && life.gate.eligible ? btnQuiet : btnOff}
+                    disabled={busy || !(life.gate && life.gate.eligible)}
+                    title={life.gate && life.gate.eligible ? undefined : 'The go-live bar is a measurement, not an opinion — the reasons are listed above.'}
+                    onClick={() => openLifeAction('promote')}
+                  >Take live</button>
+                )}
+                {(life.mode === 'live') && (
+                  <button type="button" style={btnQuiet} disabled={busy} onClick={() => openLifeAction('rollback')}>Roll back to shadowing</button>
+                )}
+                {(life.mode !== 'retired') && (
+                  <button type="button" style={btnQuiet} disabled={busy} onClick={() => openLifeAction('retire')}>Retire</button>
+                )}
+                {(life.mode === 'retired') && (
+                  <button type="button" style={btnQuiet} disabled={busy} onClick={() => openLifeAction('reopen')}>Reopen</button>
+                )}
+              </div>
+
+              {lifeAction && (
+                <div style={{ background: PAPER, border: `1px solid ${GOLD}33`, borderRadius: 8, padding: 12, marginBottom: 8 }}>
+                  <label style={{ display: 'block', fontSize: 13, color: INK, marginBottom: 6 }}>
+                    Why are you doing this? This ledger is append-only, so this note is the permanent record.
+                  </label>
+                  <textarea
+                    value={lifeReason}
+                    onChange={(e) => setLifeReason(e.target.value)}
+                    rows={2}
+                    style={{ width: '100%', fontSize: 14, color: INK, padding: 8, borderRadius: 6, border: `1px solid ${GOLD}55` }}
+                  />
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button type="button" style={btnQuiet} disabled={busy} onClick={() => decideLifecycle(lifeAction)}>
+                      Record “{lifeAction}”
+                    </button>
+                    <button type="button" style={btnQuiet} disabled={busy} onClick={() => openLifeAction(lifeAction)}>Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {lifeError && <p style={{ fontSize: 13, color: '#8a2a2a', margin: '0 0 8px' }}>{lifeError}</p>}
+
+              {Array.isArray(life.summary && life.summary.history) && life.summary.history.length > 0 ? (
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: SLATE }}>
+                  {life.summary.history.slice().reverse().map((h) => (
+                    <li key={h.seq} style={{ marginBottom: 2 }}>
+                      <strong style={{ color: INK }}>{h.action}</strong> — {h.from} → {h.to}, {day(h.atMs)}
+                      {h.reason ? ` · ${h.reason}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p style={{ ...sub, marginBottom: 0 }}>No lifecycle decision has ever been recorded for this investor.</p>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -858,9 +997,9 @@ export default function LtPpe() {
       </p>
 
       <p style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>
-        Rate-sheet loading is on this screen now (the card at the top). PROMOTION to live is still
-        deliberately absent — that is a decision this page cannot yet record durably, and a button
-        whose decision goes nowhere is worse than no button. See <code>src/longterm/ppe/README.md</code>.
+        Rate-sheet loading is on this screen now (the card at the top), and so is promotion — every
+        move is written to an append-only ledger that survives a restart, which is what it was waiting
+        for. See <code>src/longterm/ppe/README.md</code>.
       </p>
     </LtLayout>
   );

@@ -22,22 +22,19 @@
 // and this route exists to not undo it.
 //
 // WHAT IS DELIBERATELY NOT HERE, and why
-//   · **No promote-to-live control.** Promotion is a human decision gated on the
-//     scoreboard (§11), and it is STILL not exposed here — there is no promote,
-//     no rollback and no per-investor mode on this router.
-//     WHAT CHANGED, AND THE REASON THIS BULLET NOW GIVES A DIFFERENT ONE: this
-//     bullet used to say the gate and the ledger were pure modules with no table
-//     behind them and no home for the history they replay. That stopped being
-//     true when db/566 (`lt_ppe_cutover_ledger`) and `ppe/cutover-store.js`
-//     landed. The ledger HAS a durable, append-only home; `appendDecision` writes
-//     a decision and `verifyHistory` replays the whole sequence. So the old
-//     reason — a promote button whose decision could not be durably recorded
-//     being worse than no button — no longer applies and must not be repeated as
-//     if it did. What is missing is the DECISION, not the record: who may
-//     promote, and whether a "live" investor keeps an LP spot-check canary, are
-//     owner calls (the REQUIREMENTS-LEDGER carries them as BLK5 / P10). Until
-//     those are answered the route exposes no lifecycle at all, and
-//     `GET /investors` says so rather than implying every investor is in `draft`.
+// WHAT THE PROMOTE-TO-LIVE CONTROL WAITED FOR, AND WHY IT IS HERE NOW (§11 / P10)
+//   This bullet has been rewritten twice and both rewrites are worth keeping, because each records a
+//   reason that STOPPED being true. It first said the gate and the ledger were pure modules with no
+//   table behind them — false once db/566 (`lt_ppe_cutover_ledger`) and `ppe/cutover-store.js`
+//   landed, which gave the history a durable, append-only home. It then said what was missing was the
+//   DECISION rather than the record: who may promote, and whether a live investor keeps a Lender
+//   Price spot-check. The owner answered the first on 2026-08-18 — *"Who may publish a pricing rule;
+//   who may switch an investor from watching to live … all in the super admin"* — so
+//   `GET /cutover` and `POST /cutover/decision` exist, the second behind the role floor.
+//   THE SECOND HALF IS STILL OPEN and is answered the SAFE way rather than guessed: a live investor
+//   keeps being priced against Lender Price alongside our answer, and the clean-day bar the gate runs
+//   is REPORTED as an assumption rather than presented as settled policy. See
+//   `docs/longterm/OWNER-QUESTIONS-OPEN.md` §3a.
 //   · **No route that records an agreement run FROM A REQUEST BODY.** That
 //     qualifier is the whole rule (see rule 3 in the rate-sheet console section
 //     below) and it must never be shortened to "no route records an agreement
@@ -96,6 +93,7 @@ const finding = require('../ppe/finding');
 const findingStore = require('../ppe/finding-store');
 const reviewQueue = require('../ppe/review-queue');
 const cutover = require('../ppe/cutover');
+const cutoverStore = require('../ppe/cutover-store');
 const runStore = require('../ppe/run-store');
 const canarySchedule = require('../ppe/canary-schedule');
 const scheduleStore = require('../ppe/schedule-store');
@@ -168,20 +166,33 @@ const NOT_DECIDABLE = [...finding.OPEN_STATUSES];
 // the property that makes it an answer to the owner's sentence rather than a restatement of the gate
 // next door. Everything else about the two is identical, including failing CLOSED (503) when the
 // permission itself cannot be read: an unreadable permission is not permission.
-async function requirePpeSuperAdmin(req, res, next) {
-  try {
-    const role = req.actor && req.actor.role ? String(req.actor.role) : '';
-    if (role !== access.ADMIN_FLOOR_ROLE) {
-      return res.status(403).json({
-        error: 'Only a super admin can publish a pricing rule — publishing changes what a real borrower is quoted.',
-      });
+// THE SUPER-ADMIN GATE IS ONE RULE WITH THE ACT NAMED IN IT. There is now more than one act the
+// owner reserved to a super admin (2026-08-18: *"Who may publish a pricing rule; who may switch an
+// investor from watching to live … all in the super admin"*), and a refusal that names the WRONG act
+// is worse than a bare one: somebody told "only a super admin can publish a pricing rule" while
+// trying to take an investor live goes looking for a rule they never touched. So the check is written
+// once and the SENTENCE is the parameter. `requirePpeSuperAdmin` keeps its exact previous wording, so
+// the publish door's refusal is byte-identical to what it has always answered.
+function ppeSuperAdminFor(sentence) {
+  return async function gate(req, res, next) {
+    try {
+      const role = req.actor && req.actor.role ? String(req.actor.role) : '';
+      if (role !== access.ADMIN_FLOOR_ROLE) return res.status(403).json({ error: sentence });
+      return next();
+    } catch (e) {
+      console.error('[lt-ppe] super-admin gate failed:', (e && e.message) || e);
+      return res.status(503).json({ error: 'Could not check your permissions just now. Try again in a moment.' });
     }
-    return next();
-  } catch (e) {
-    console.error('[lt-ppe] super-admin gate failed:', (e && e.message) || e);
-    return res.status(503).json({ error: 'Could not check your permissions just now. Try again in a moment.' });
-  }
+  };
 }
+
+const requirePpeSuperAdmin = ppeSuperAdminFor(
+  'Only a super admin can publish a pricing rule — publishing changes what a real borrower is quoted.',
+);
+
+const requirePpeCutoverAuthority = ppeSuperAdminFor(
+  'Only a super admin can move an investor through its lifecycle — going live makes our engine, not Lender Price, the answer a borrower is quoted.',
+);
 
 async function requirePpeAdmin(req, res, next) {
   try {
@@ -786,22 +797,41 @@ async function settingsAuditRoute(req, res) {
 async function listInvestorsRoute(req, res) {
   const scope = readScope(req);
   const investors = await store.listInvestors(db, scope);
+
+  // THE MODE IS READ, NOT ASSERTED — and this block is the third wording it has carried, each of the
+  // first two having stopped being true. It once said the cutover ledger had no table (false since
+  // db/566), then that there was no per-investor lifecycle and every investor was in shadow (false
+  // the moment `POST /cutover/decision` shipped, because a super admin can now take one live). A
+  // response body is the worst place for a stale claim: a screen repeats it to a human verbatim. So
+  // this reads each investor's ACTUAL mode out of the ledger rather than stating one.
+  //
+  // Best-effort, and the failure is NAMED rather than defaulted: an unreadable ledger reports the mode
+  // as null with `lifecycleError` set, never as 'shadow' — "we could not check" and "it is shadowing"
+  // are different facts, and only one of them is anybody's fault.
+  let lifecycleError = null;
+  const modes = new Map();
+  try {
+    await Promise.all(investors.map(async (i) => {
+      modes.set(i.code, await cutoverStore.currentMode(scope, { db, investor: i.code }));
+    }));
+  } catch (e) { lifecycleError = msgOf(e); }
+
   return res.json({
     ok: true,
     scope,
-    investors: investors.map((i) => ({ id: i.id, code: i.code, name: i.name, active: i.active !== false, createdAt: i.created_at || null })),
-    // Honest about what is NOT modelled HERE, and precise about why — the earlier
-    // wording ("the cutover ledger has no table") stopped being true when db/566 +
-    // `ppe/cutover-store.js` landed, and it was shipped in this response body, so a
-    // screen was repeating it to a human. The truth: `lt_ppe_investor` has no mode
-    // column and this router reads no lifecycle, so there is no per-investor mode to
-    // report; the ledger itself IS durable. Every investor is in shadow because §1.2
-    // says everything is.
+    investors: investors.map((i) => ({
+      id: i.id,
+      code: i.code,
+      name: i.name,
+      active: i.active !== false,
+      createdAt: i.created_at || null,
+      mode: modes.has(i.code) ? modes.get(i.code) : null,
+    })),
     lifecycle: {
-      mode: 'shadow',
-      perInvestor: false,
-      note: 'This engine reports no per-investor lifecycle: every investor is in shadow and Lender Price is authoritative. The cutover decision ledger is durable (lt_ppe_cutover_ledger, db/566) — what is missing is a promote/rollback control, which waits on who may promote and whether a live investor keeps a Lender Price spot-check.',
+      perInvestor: true,
+      note: 'Each investor carries its own lifecycle, recorded in an append-only ledger (lt_ppe_cutover_ledger, db/566) and moved at /cutover — a super admin\'s decision. An investor is priced by Lender Price unless its mode is "live"; a live one is still priced against Lender Price alongside our answer.',
       modes: Object.values(cutover.MODES),
+      ...(lifecycleError ? { lifecycleError } : {}),
     },
   });
 }
@@ -940,10 +970,35 @@ async function quoteRoute(req, res) {
     });
   }
 
+  // WHICH ENGINE ANSWERS — read from the cutover ledger, not hard-coded (§11 / P10). This line said
+  // `() => 'shadow'` and a comment reading "for now, in every scenario", which was true right up until
+  // the promote door existed: from that moment a super admin could record an investor LIVE and every
+  // quote would still have priced from Lender Price, with the ledger and the engine confidently
+  // disagreeing and nothing anywhere saying so.
+  //
+  // IT FAILS CLOSED, and the asymmetry is the point: ONLY an explicit, readable LIVE moves the answer
+  // to our engine. Draft, retired, an investor nobody has ever decided about, and — critically — a
+  // ledger we could not READ all keep Lender Price authoritative. A database hiccup must never be able
+  // to promote anybody, and a `catch` that defaulted the other way would do exactly that.
+  //
+  // A LIVE INVESTOR IS STILL MEASURED. `priceWithShadow` in live mode runs our quote as the answer AND
+  // the Lender Price comparison alongside it. Whether that spot-check should continue forever is one
+  // of the two halves the owner has not answered (OWNER-QUESTIONS-OPEN §3a), so the safe half is the
+  // default and nothing here pretends the question is settled.
+  let cutoverMode = cutover.MODES.SHADOW;
+  let cutoverModeError = null;
+  if (investor) {
+    try {
+      if (await cutoverStore.currentMode(scope, { db, investor }) === cutover.MODES.LIVE) {
+        cutoverMode = cutover.MODES.LIVE;
+      }
+    } catch (e) { cutoverModeError = msgOf(e); }
+  }
+
   const result = await facade.priceWithShadow(
     { scenario, investor, program },
     {
-      mode: () => 'shadow', // §1.2 — for now, in every scenario
+      mode: () => cutoverMode,
       priceLp: (sc) => lp.price(sc),
       ourQuote: (sc) => quote.quoteProgram({ scenario: sc, program, settings, marginHoldback: marginFor(sc) }),
       // THE CAPTURE, READ PROPERLY — §2.8. `lp.price()` returns the RAW envelope
@@ -1019,6 +1074,10 @@ async function quoteRoute(req, res) {
     priceLimit: capRes,
     ...(priceLimitNote ? { priceLimitNote } : {}),
     margin: marginInfo,
+    // NO SILENT FALL-BACK. When the lifecycle ledger could not be read this quote priced from Lender
+    // Price — the safe answer — but a caller has no way to tell that from an investor who is simply
+    // still shadowing. The two are different facts, so the read failure is named.
+    ...(cutoverModeError ? { cutoverModeError, cutoverModeNote: 'The lifecycle ledger could not be read, so this quote was priced the safe way — Lender Price answers. That is a read failure, not a decision.' } : {}),
   });
 }
 
@@ -1670,15 +1729,32 @@ async function parityCellsRoute(req, res) {
 // GET /scoreboard — the go-live picture for one investor
 // ---------------------------------------------------------------------------
 
-async function scoreboardRoute(req, res) {
-  const scope = readScope(req);
-  const investor = req.query.investor ? String(req.query.investor) : null;
-  if (!investor) return res.status(400).json({ error: 'Which investor? Pass ?investor=<code>.' });
+/**
+ * ONE PICTURE, READ ONCE — an investor's scoreboard and its go-live verdict, for BOTH the screen that
+ * SHOWS it and the door that ACTS on it.
+ *
+ * WHY IT IS SHARED RATHER THAN COMPUTED TWICE: `/scoreboard` renders "may this investor go live?" and
+ * `POST /cutover/decision` answers the same question for real, at the moment somebody presses the
+ * button. Two copies of that derivation is two answers, and the one that drifts is the one that lets
+ * an unproven investor price real loans while the screen still reads "not eligible". So the chain is
+ * walked once here — findings → `runStore.assembleScoreboard` → `scoreboard.assemble` →
+ * `cutover.eligibleForLive` — and both callers read what comes back.
+ *
+ * IT FAILS CLOSED BY CONSTRUCTION, not by a branch anybody has to remember. When the run series
+ * cannot be read there is no agreement rate, and `eligibleForLive` reads a null rate as "no canary run
+ * has proven 100% agreement" — so a database hiccup can never come back as ELIGIBLE. The two states
+ * are still reported separately (`seriesError` vs `measured`), because "we could not check" and
+ * "nobody has checked" send a reader to two different places.
+ *
+ * Returns { scoreboard, gate, assembled, seriesError, measured, nowMs }.
+ */
+async function loadCutoverPicture(scope, opts = {}) {
+  const investor = opts.investor;
+  const program = opts.program || '';
+  const nowMs = typeof opts.nowMs === 'number' ? opts.nowMs : Date.now();
 
-  const program = req.query.program ? String(req.query.program) : '';
   const rows = await findingStore.listFindings(scope, { investor }, db);
   const records = rows.map(findingStore.rowToRecord);
-  const nowMs = Date.now();
 
   // The canary's run history IS persisted now, so the agreement rate and the
   // clean-day streak are read from it rather than left unmeasured. `assembleScoreboard`
@@ -1694,6 +1770,36 @@ async function scoreboardRoute(req, res) {
   } catch (e) {
     seriesError = String((e && e.message) || e).slice(0, 200);
   }
+
+  if (assembled) {
+    return {
+      scoreboard: assembled.scoreboard,
+      gate: assembled.eligible,
+      assembled,
+      seriesError: null,
+      measured: assembled.scoreboard.canaryAgreementRate != null,
+      nowMs,
+    };
+  }
+  const board = cutover.buildScoreboard({ findings: records, nowMs });
+  return {
+    scoreboard: board,
+    gate: cutover.eligibleForLive(board),
+    assembled: null,
+    seriesError,
+    measured: false,
+    nowMs,
+  };
+}
+
+async function scoreboardRoute(req, res) {
+  const scope = readScope(req);
+  const investor = req.query.investor ? String(req.query.investor) : null;
+  if (!investor) return res.status(400).json({ error: 'Which investor? Pass ?investor=<code>.' });
+
+  const program = req.query.program ? String(req.query.program) : '';
+  const picture = await loadCutoverPicture(scope, { investor, program });
+  const { assembled, seriesError } = picture;
 
   if (assembled) {
     // `scoreboard.assemble` returns { scoreboard, eligible, series, trend,
@@ -1729,14 +1835,182 @@ async function scoreboardRoute(req, res) {
   // the agreement rate is unread rather than unmeasured — a missing rate reads as
   // "not proven", which is the safe verdict either way, but the two are different
   // facts and only one of them is anybody's fault.
-  const board = cutover.buildScoreboard({ findings: records, nowMs });
   return res.json({
     ok: true, scope, investor, program: program || null,
-    scoreboard: board,
-    gate: cutover.eligibleForLive(board),
+    scoreboard: picture.scoreboard,
+    gate: picture.gate,
     measured: false,
     seriesError,
     note: 'The canary run history could not be read, so the agreement rate is unknown and the gate cannot pass. That is a read failure, not a measurement.',
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The CUTOVER DOOR (§11 / P10) — draft → shadow → live → retired, and back
+// ---------------------------------------------------------------------------
+//
+// THE DEFECT THIS CLOSES. `cutover.js` (the pure lifecycle + the go-live gate), `cutover-ledger.js`
+// (the append-only history) and `cutover-store.js` (its durable bridge, db/566) were built, unit
+// tested, proven against a real Postgres — and reachable by NOTHING. Both of the latter two sat in
+// `docs/longterm/LT-UNREACHED.md` with one blocker written beside them: *"the promote-to-live route
+// (P10) — owner-gated on who may promote."* The owner answered that on 2026-08-18 — *"Who may publish
+// a pricing rule; who may switch an investor from watching to live … all in the super admin"* — so the
+// blocker is gone and this is the door.
+//
+// WHAT A PROMOTION MEANS, AND WHY THE AUTHORITY IS THE TOP ONE. Going live makes OUR engine the answer
+// a borrower is quoted for that investor, instead of Lender Price's. That is the single most
+// consequential switch in this whole engine, which is why it carries the same gate as publishing a
+// rule and why `rollback` (live → shadow) is deliberately ALWAYS allowed: the way out must never be
+// harder than the way in.
+//
+// ELIGIBILITY IS COMPUTED HERE AND NEVER READ FROM THE REQUEST. `cutover.transition` refuses a promote
+// unless it is handed `eligible === true`, so a body field called `eligible` would be a way for the
+// caller to grant themselves the gate — the whole ≥200-scenario, zero-open-findings, clean-streak
+// apparatus bypassed by one JSON key. The verdict comes from `loadCutoverPicture`, the SAME derivation
+// the /scoreboard screen renders, and the request's own opinion is ignored entirely. Same rule as `by`,
+// which is the session actor and never a body field.
+//
+// THE GATE IS NOT SOFTENED, and that is a deliberate non-decision. Two halves of this are still
+// unanswered by the owner (`docs/longterm/OWNER-QUESTIONS-OPEN.md` §3a): how many clean weeks in a row
+// we want, and whether a live investor keeps being spot-checked against Lender Price. So this door
+// invents neither. It reports the thresholds the gate is CURRENTLY running (`cutover.eligibleForLive`
+// defaults) rather than pretending they are settled policy, refuses a promote the gate refuses, and
+// offers no override — an override would be exactly the guessed business rule that must be asked for.
+// A super admin who disagrees with the gate has a real path: resolve the findings, or say the number.
+
+// A blank investor is a COMPANY-WIDE lifecycle in the store (`normLabel` maps null → ''), which is a
+// legitimate row and a terrible default: a caller who forgot the field would be moving the whole
+// company, not the investor they had in mind. So an omitted or blank investor is refused at the door
+// and the company-wide lifecycle is simply not reachable over HTTP yet.
+function readCutoverInvestor(v) {
+  const s = typeof v === 'string' ? v.trim() : '';
+  return s || null;
+}
+
+// The gate's own defaults, read back out of the pure module rather than retyped — a second copy of a
+// threshold is a second policy, and this one decides whether an investor may price real loans.
+const CUTOVER_THRESHOLDS = (() => {
+  // `eligibleForLive` takes its defaults from its own signature, so the honest way to publish them is
+  // to ASK it: an empty scoreboard fails every gate and names each threshold in its reasons.
+  const probe = cutover.eligibleForLive({ openFindings: 0, canaryAgreementRate: null, consecutiveCleanDays: 0 });
+  return {
+    reasonsWhenNothingIsProven: probe.reasons,
+    note: 'How many consecutive clean days an investor needs before it may go live has never been confirmed by the owner — the number the gate runs today is an assumption, and it is stated here so it can be questioned rather than discovered.',
+  };
+})();
+
+async function cutoverStateRoute(req, res) {
+  const scope = readScope(req);
+  const investor = readCutoverInvestor(req.query.investor);
+  if (!investor) return res.status(400).json({ error: 'Which investor? Pass ?investor=<code>.' });
+  const program = req.query.program ? String(req.query.program) : '';
+
+  const summary = await cutoverStore.loadSummary(scope, { db, investor, nowMs: Date.now() });
+  // THE TRAIL IS RE-DERIVED, NEVER TRUSTED. `verifyHistory` replays every recorded step from DRAFT and
+  // reports the first one the rules would not have allowed — so a ledger somebody edited, or a partial
+  // restore, is DETECTED and said out loud rather than rendered as a tidy history.
+  const integrity = await cutoverStore.verifyHistory(scope, { db, investor });
+
+  const picture = await loadCutoverPicture(scope, { investor, program });
+  return res.json({
+    ok: true,
+    scope,
+    investor,
+    program: program || null,
+    mode: summary.mode,
+    summary,
+    integrity,
+    // What a promote would answer RIGHT NOW, from the same derivation the scoreboard screen shows.
+    scoreboard: picture.scoreboard,
+    gate: picture.gate,
+    measured: picture.measured,
+    seriesError: picture.seriesError,
+    // The thresholds the gate is running today, stated rather than left implicit — two of them are
+    // assumptions nobody has confirmed (OWNER-QUESTIONS-OPEN §3a), and a number a reader cannot see is
+    // a number nobody can question.
+    thresholds: CUTOVER_THRESHOLDS,
+    actions: Object.keys(cutover._internals.TRANSITIONS).concat(['retire']),
+  });
+}
+
+
+async function cutoverDecisionRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const investor = readCutoverInvestor(b.investor);
+  if (!investor) return res.status(400).json({ error: 'Which investor? Send `investor` — an omitted one would move the whole company.' });
+
+  const action = typeof b.action === 'string' ? b.action.trim() : '';
+  if (!action) return res.status(400).json({ error: 'Which move? Send `action` — one of activate, promote, rollback, retire, reopen.' });
+
+  const reason = typeof b.reason === 'string' ? b.reason.trim() : '';
+  if (reason.length < 8) {
+    // The ledger is APPEND-ONLY and a correction is a NEW decision, so this note is the only lasting
+    // record of why an investor was taken live — or taken back off. "ok" is not that record.
+    return res.status(400).json({ error: 'Add a short reason (at least 8 characters) — this ledger is append-only, so this note is the permanent record of why.' });
+  }
+
+  // The actor, from the session. NEVER the body: a governance trail whose author the caller supplies
+  // records whoever they say they are.
+  const decidedBy = (req.actor && req.actor.id) || null;
+  if (!decidedBy) return res.status(401).json({ error: 'This decision must be recorded against a signed-in person.' });
+
+  // THE GATE, COMPUTED — for a promote it is the whole authorization, and a request cannot influence
+  // it. Every other action ignores `eligible` (`cutover.transition` only reads it for `promote`), but
+  // the picture is loaded regardless so the ledger records what the scoreboard looked like at the
+  // moment of the decision — which is what makes a rollback readable a year later.
+  const picture = await loadCutoverPicture(scope, { investor, program: b.program ? String(b.program) : '' });
+
+  if (action === 'promote' && !picture.gate.eligible) {
+    return res.status(409).json({
+      error: 'This investor is not ready to go live yet.',
+      reason: 'gate_not_met',
+      blockers: picture.gate.reasons,
+      scoreboard: picture.scoreboard,
+      measured: picture.measured,
+      seriesError: picture.seriesError,
+      remedy: 'Resolve everything listed above and try again. There is deliberately no override — the go-live bar is a measurement, not an opinion.',
+    });
+  }
+
+  const result = await cutoverStore.appendDecision(
+    scope,
+    {
+      action,
+      by: decidedBy,
+      atMs: Date.now(),
+      reason,
+      eligible: picture.gate.eligible === true,
+      scoreboard: picture.scoreboard,
+    },
+    { db, investor },
+  );
+
+  if (!result.ok) {
+    // A CONFLICT IS NOT A BAD REQUEST. Someone else recorded a decision between our read and our
+    // write, so the caller's move may now be legal or illegal against a history they have not seen —
+    // 409 and "re-read", never a 400 that reads as "you asked for something invalid".
+    return res.status(result.conflict ? 409 : 422).json({
+      ok: false,
+      error: result.error,
+      reason: result.conflict ? 'conflict' : 'not_allowed',
+      mode: result.mode,
+      investor,
+    });
+  }
+
+  return res.json({
+    ok: true,
+    scope,
+    investor,
+    mode: result.mode,
+    entry: result.entry,
+    gate: picture.gate,
+    // Said plainly on the way out, because this is the sentence that matters: what a promotion
+    // actually changed about how this investor is priced.
+    effect: result.mode === cutover.MODES.LIVE
+      ? 'Our engine is now the answer for this investor. Lender Price still runs alongside on every quote, and rolling back is one decision away.'
+      : 'Lender Price remains the answer for this investor.',
   });
 }
 
@@ -1876,10 +2150,11 @@ async function listRulesRoute(req, res) {
 //
 // ⛔ THE PUBLISH DOOR EXISTS NOW, AND WHAT FOLLOWS IS THE RECORD OF WHY IT DID NOT.
 // The owner answered the authority question on 2026-08-18 — "all in the super admin" — so
-// `POST /rule-drafts/:id/publish` is registered below behind `requirePpeSuperAdmin`, the ONE route on
-// this router that does not take the ordinary admin gate. The paragraph below is kept because it is
-// the reason the door was worth waiting for, and because it is the standard the NEXT price-changing
-// door should be held to.
+// `POST /rule-drafts/:id/publish` is registered below behind `requirePpeSuperAdmin`. It is one of two
+// routes on this router that do not take the ordinary admin gate — the other is the cutover DECISION
+// (§11 / P10), which was held back by the very same open question and released by the very same
+// sentence. The paragraph below is kept because it is the reason this door was worth waiting for, and
+// because it is the standard the NEXT price-changing door should be held to.
 //
 // ⛔ IT WAS DELIBERATELY NOT HERE, AND ITS ABSENCE WAS THE POINT.
 // `rule-authoring-store.publishDraft` writes into `lt_ppe_rule`, which is the set
@@ -3358,6 +3633,10 @@ router.get('/settings/audit', wrap(settingsAuditRoute, 'lt_ppe_settings_audit_er
 router.get('/investors', wrap(listInvestorsRoute, 'lt_ppe_investors_error'));
 router.get('/findings', wrap(listFindingsRoute, 'lt_ppe_findings_error'));
 router.get('/scoreboard', wrap(scoreboardRoute, 'lt_ppe_scoreboard_error'));
+// The cutover lifecycle (§11 / P10). READING it is an admin act like every other governance surface
+// here; MOVING it is the super admin's, because a promotion changes which engine answers a borrower.
+router.get('/cutover', requirePpeAdmin, wrap(cutoverStateRoute, 'lt_ppe_cutover_state_error'));
+router.post('/cutover/decision', requirePpeCutoverAuthority, wrap(cutoverDecisionRoute, 'lt_ppe_cutover_decision_error'));
 router.get('/suggestions', wrap(listSuggestionsRoute, 'lt_ppe_suggestions_error'));
 router.get('/rules', wrap(listRulesRoute, 'lt_ppe_rules_error'));
 router.get('/parity-cells', wrap(parityCellsRoute, 'lt_ppe_parity_cells_error'));
@@ -3386,8 +3665,10 @@ router.get('/programs/:id/lp-scope', requirePpeAdmin, wrap(getProgramLpScopeRout
 
 // The rule-authoring service's READ, DRAFT and PUBLISH doors. The publish door was deliberately absent
 // while the authority was an open owner question (§2.51); the owner answered it on 2026-08-18 — "all in
-// the super admin" — so it exists now and is the ONE route here gated on `requirePpeSuperAdmin`, which
-// reads the role floor rather than the widenable admin list. Order matters: `/rule-drafts/:id/render` is declared before `/rule-drafts/:id` would
+// the super admin" — so it exists now, gated on `requirePpeSuperAdmin`, which reads the role floor
+// rather than the widenable admin list. It is one of TWO super-gated doors on this router: the other
+// is the cutover DECISION (§11 / P10), because taking an investor live changes which engine answers a
+// borrower, and the owner reserved that to the super admin in the same sentence. Order matters: `/rule-drafts/:id/render` is declared before `/rule-drafts/:id` would
 // swallow it — Express matches in declaration order and both are three-and-four segment paths, so
 // they are written longest-first to keep that obvious rather than accidental.
 router.get('/rule-drafts', requirePpeAdmin, wrap(listRuleDraftsRoute, 'lt_ppe_rule_drafts_error'));
@@ -3430,6 +3711,7 @@ module.exports.runCanaryTick = runCanaryTick;
 module.exports.handlers = {
   health, getSettings, saveSettingsRoute, clearSettingsRoute, settingsAuditRoute,
   listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
+  cutoverStateRoute, cutoverDecisionRoute,
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
   ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
   listRuleDraftsRoute, getRuleDraftRoute, renderRuleDraftRoute, createRuleDraftRoute, discardRuleDraftRoute,
@@ -3443,7 +3725,7 @@ module.exports.handlers = {
   compPlanRoute,
 };
 module.exports._internals = {
-  requirePpeAdmin, requirePpeSuperAdmin, intIn, readScope, loadProgram, resolveSettingsSafe, actorLabel,
+  requirePpeAdmin, requirePpeSuperAdmin, requirePpeCutoverAuthority, intIn, readScope, loadProgram, resolveSettingsSafe, actorLabel,
   resolveRateSheetVersion, rateSheetPick,
   MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel, resolveBattery, runBattery, msgOf,
   resolveVersion, numOrNull, textOrNull, MAX_SHEET_ROWS, MAX_AGREEMENT_SCENARIOS, MAX_COVERAGE_SCENARIOS,
