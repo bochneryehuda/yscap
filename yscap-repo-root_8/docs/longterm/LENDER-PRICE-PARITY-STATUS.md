@@ -5744,3 +5744,62 @@ errored scenarios (1), `runOne` no longer recording readiness (2), the CLI warni
 warning printed after the verdict (1).
 
 162/162 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.94 — ⛔ A GROUP NAMED `pppstruct` THAT SWEPT ONLY THE TERM — AND THE JOIN IT HID (2026-08-18)
+
+**The battery's group name promised a structure sweep and its data delivered a term sweep.** All eight
+scenarios varied `prepayMonths`; **not one carried a `prepayStructure`**. So the structure axis read as
+covered and was never exercised — which is exactly why the §2.85 defect, *every* structure transmitted
+as a 60-month term, survived to be found by hand rather than by the battery built to find it.
+
+**⛔ AND TWO OF THE EIGHT COST MONEY AND MEASURED NOTHING.** They carried `ppp_structure_key`, under a
+comment claiming they *"carry ppp_structure_key so the margin-holdback overlay can add its +0.375"*.
+Measured, the chain is dead at **three** points: it is not a vendor field (the LP leg never sees it),
+`lpScenarioToFacts` drops it (our leg never sees it either), and **no program carries a rule keyed on
+it** — `pppMarginHoldbackRules()` builds two such rules and nothing calls them into a program. Both
+scenarios were therefore **byte-identical to `ppp 5yr` and `ppp 4yr`**: two paid vendor calls per run,
+every run, measuring a duplicate. That dead chain is recorded rather than wired — wiring it would switch
+on a margin holdback that has never applied, which is a pricing change and the owner's call.
+
+They are replaced by the axis that **is** live: seven `prepayStructure` values whose plan type
+determines a term, each sent **without** a `prepayMonths` so the derived term is what is under test,
+plus `6 Months Interest` **with** an explicit term as the control for a plan type that names none.
+Measured on the wire: `321→36`, `21→24`, `4321→48`, `54321→60`, `5432→48`, `543→36`, `Fixed2→12`.
+
+**⛔ AND THE MOMENT REAL STRUCTURE SCENARIOS EXISTED, THEY EXPOSED A JOIN I HAD JUST CREATED.** §2.85
+taught the **vendor request** to derive the term from the structure and left `lpScenarioToFacts` unable
+to. Measured immediately: the LP leg priced all seven and **our leg priced zero of them** — because
+`prepay_months` was unknown and the prepay LLPA table correctly refuses to price on a missing
+price-bearing fact. Two individually-correct halves, and the defect in the join between them: **this
+file's dominant class, committed by me, one section after describing it.**
+
+Our leg now derives the term from the **same table** the request builder reads — never a copy, because
+two definitions of *"how long is a 3,2,1"* is precisely how the halves came apart. Both legs are
+asserted **together**, so neither can move alone. An explicit term still wins on both, and neither
+invents one for a plan type that ships at several.
+
+**Three further measurements that fell out, each pinned rather than noted and forgotten:**
+
+1. **32 of 305 scenarios build a byte-identical request** — a pre-existing overlap between the FICO×CLTV
+   and DSCR×CLTV sweeps at FICO 760. The two groups ask different *questions* of the same request, so
+   the vendor's answer is identical and the second call learns nothing. The number is pinned so it
+   cannot creep; deduplicating is its own item, because the pairs are attributed to two groups and
+   collapsing them changes what each claims to cover.
+2. **`ppp 5yr` is the default in disguise.** It builds the same body as `state CA`, because 60 months
+   *is* the profile default — so a scenario labelled "5yr prepay" transmits exactly what a scenario that
+   never mentions prepay transmits. Named, so a reader seeing "6 prepay TERMS swept" knows one of them
+   measures the default.
+3. **The bounds-axis suite caught the join before I did.** Its assertion that both grids price the same
+   rung population went red at 7336 vs 7140 — the composed grid priced *zero* rungs on every structure
+   scenario. A test written for a different purpose, doing its job.
+
+Battery: 299 → **305** scenarios (well inside the 500 cap). `test-lt-ppe-agreement-scenarios.js`
+gains 11 assertions asserting the **data**, not the name; `test-lt-ppe-prepay-term-derived.js` gains the
+two-leg symmetry section. **Mutation-proven eight ways** across the two: the structure sweep removed (5
+assertions bite), every structure given the same plan type (4), every structure given an explicit term
+(2), the control losing its term (1), an inert duplicate re-added (2), our leg no longer deriving (7),
+our leg inventing a term (1), and our leg overriding an explicit term (1).
+
+162/162 suites, 33 database-backed. All seven gates green.

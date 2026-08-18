@@ -34,6 +34,7 @@ const { advancedFactsFromScenario } = require('./advanced-facts');
 // derived from the ZIP here. A caller-supplied state is an assertion and always wins.
 const { lookupZip } = require('../lenderprice/zip-county');
 const { normalizePurpose } = require('./purpose');
+const registry = require('../lenderprice/field-registry');
 
 // The three credentials client.credentials() reads. Named here only to report WHICH are missing (the
 // client exposes a boolean, not the gap). Keep in step with lenderprice/client.js credentials().
@@ -50,6 +51,16 @@ function num(x) { const n = Number(x); return Number.isFinite(n) ? n : null; }
 // made to refuse rather than default. Now an unknown purpose is `null` — which the engine reads as an
 // unknown price-bearing fact and declines to price, instead of quoting a loan it misread.
 function normPurpose(p) { return normalizePurpose(p); }
+// A prepay STRUCTURE → the number of months it runs, for the structures whose plan type determines
+// one. Reads the connector's own table so this leg and the request builder cannot disagree; returns
+// null for `6MosInt` / `Fixed3` and friends, which ship at several terms and name none.
+function structureMonths(v) {
+  if (v == null || v === '') return null;
+  const plan = registry.mapPrepayStructure(v);
+  if (plan == null || plan === registry.PREPAY_STRUCTURE_NULL) return null;
+  const m = registry.PREPAY_PLAN_TERM_MONTHS[plan];
+  return m == null ? null : m;
+}
 // "60 Months" / "No Prepay" → a number of months (0 = no prepay). Unreadable → null.
 function prepayMonths(v) {
   const s = String(v == null ? '' : v).toLowerCase();
@@ -103,7 +114,18 @@ function lpScenarioToFacts(s) {
     units: units != null && units > 0 ? units : 1,
     // LP scenario field names: prepayMonths (number), io, escrowWaive (a legacy prepayTerm string is
     // still accepted as a fallback so a hand-built scenario is not silently mis-read).
-    prepay_months: num(sc.prepayMonths) != null ? num(sc.prepayMonths) : prepayMonths(sc.prepayTerm),
+    // ⛔ A STRUCTURE CARRIES ITS OWN TERM ON BOTH LEGS, OR NEITHER (§2.94). §2.85 taught the VENDOR
+    // request to derive the term from an unambiguous step-down structure — `3,2,1` is a three-year
+    // penalty — and left this leg unable to. Measured the moment the battery gained real structure
+    // scenarios: the LP leg priced them and OUR leg refused every one, because `prepay_months` was
+    // unknown and the prepay LLPA table correctly will not price on a missing price-bearing fact. Two
+    // individually-correct halves, and the defect in the join between them.
+    //
+    // Read from the SAME table the request builder uses (`PREPAY_PLAN_TERM_MONTHS`), never a copy —
+    // two definitions of "how long is a 3,2,1" is how the halves came apart in the first place. An
+    // explicit term still wins, and a plan type that ships at several terms still derives nothing.
+    prepay_months: num(sc.prepayMonths) != null ? num(sc.prepayMonths)
+      : (prepayMonths(sc.prepayTerm) != null ? prepayMonths(sc.prepayTerm) : structureMonths(sc.prepayStructure)),
     cashout_amount: num(sc.cashoutAmount) || 0,
     interest_only: !!(sc.io || sc.interestOnly),
     escrow_waiver: !!(sc.escrowWaive || sc.escrowWaiver),
@@ -431,5 +453,5 @@ function readiness(client, env) {
 
 module.exports = {
   buildOursLeg, buildLpLeg, buildCanaryLpLeg, readiness, lpScenarioToFacts, UNRESOLVED_PPP_POLICIES,
-  _internals: { LP_CRED_ENV, normPurpose, prepayMonths, declineForPpp, flagUnresolvedPpp, declineForUnresolvedPpp },
+  _internals: { LP_CRED_ENV, normPurpose, prepayMonths, structureMonths, declineForPpp, flagUnresolvedPpp, declineForUnresolvedPpp },
 };

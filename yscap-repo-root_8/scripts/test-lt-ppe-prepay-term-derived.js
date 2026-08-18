@@ -139,5 +139,42 @@ ok(validateScenario({ ...BASE, prepayStructure: '3,2,1', prepayMonths: 36 }).ok 
 ok(validateScenario({ ...BASE, prepayStructure: '3,2,1' }).ok !== false, 'a structure alone is fine');
 ok(validateScenario({ ...BASE, prepayMonths: 60 }).ok !== false, 'a term alone is fine');
 
+// ---- E: BOTH LEGS derive the same term, or neither (§2.94) ---------------------------------------
+console.log('\n-- E: the vendor request and our own engine must agree --');
+// ⛔ THIS BROKE THE MOMENT THE BATTERY GAINED REAL STRUCTURE SCENARIOS. The section above fixed the
+// VENDOR request; `lp-agreement-legs.lpScenarioToFacts` still dropped `prepayStructure`, so
+// `prepay_months` was unknown and our engine correctly refused to price on a missing price-bearing
+// fact. Measured: the LP leg priced all seven structure scenarios and our leg priced ZERO of them.
+// Two individually-correct halves, and the defect in the join — so both legs are asserted together.
+const legs = require('../src/longterm/ppe/lp-agreement-legs');
+const wireTerm = (sc) => {
+  const d = buildSearch(sc).dynamicPropertiesMap || {};
+  const v = d.PrepayTerm && d.PrepayTerm.value;
+  return v === 'None' ? 0 : (typeof v === 'string' ? Number(v.replace(/[^0-9]/g, '')) : null);
+};
+for (const [structure, term] of CASES.map(([st, t]) => [st, Number(t.replace(/[^0-9]/g, ''))])) {
+  const sc = { ...BASE, prepayStructure: structure };
+  const sent = wireTerm(sc);
+  const ours = legs.lpScenarioToFacts(sc).prepay_months;
+  ok(sent === term && ours === term,
+    `${structure}: the vendor request says ${sent} months and OUR facts say ${ours} — both ${term}`);
+}
+// Neither leg may invent a term for a plan type that names none.
+{
+  const sc = { ...BASE, prepayStructure: '6 Months Interest' };
+  ok(legs.lpScenarioToFacts(sc).prepay_months == null,
+    'an un-derivable structure yields NO prepay_months on our leg — it does not invent one');
+  ok(wireTerm(sc) === 60, '…while the vendor request falls back to the profile default, as documented');
+}
+ok(legs.lpScenarioToFacts({ ...BASE, prepayStructure: '3,2,1', prepayMonths: 24 }).prepay_months === 24,
+  'an explicit term wins on our leg too');
+// One table, not two: the fact derivation must read the connector's own map rather than a copy.
+{
+  const fs2 = require('fs');
+  const src = fs2.readFileSync(require('path').join(__dirname, '../src/longterm/ppe/lp-agreement-legs.js'), 'utf8');
+  ok(/PREPAY_PLAN_TERM_MONTHS/.test(src), 'our leg reads the SAME table the request builder uses');
+  ok(!/'321':\s*36|321: 36/.test(src), '…and does not carry its own copy of it');
+}
+
 console.log(`\n${failures ? `${failures} FAILED` : 'all passed'}`);
 process.exit(failures ? 1 : 0);

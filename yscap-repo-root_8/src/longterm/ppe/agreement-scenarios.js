@@ -122,16 +122,47 @@ function buildAgreementScenarios(opts = {}) {
       push('borrower', `${st} Individual No-PPP`, { ...B, prepayMonths: 0, borrowerType: 'Individual', ...ADDR[st] });
     }
   }
-  // L) PPP STRUCTURE library (D30–D33) — each distinct prepay TERM at an anchor (the structure library's
-  // LP mapping resolves the term); plus the two custom softer overlays (carry ppp_structure_key so the
-  // margin-holdback overlay can add its +0.375). Exercises the prepay dimension across terms.
+  // L) PPP TERM sweep — each distinct prepay TERM at an anchor. This is the `prepayMonths` axis: how
+  // LONG the penalty runs, which rides `dynamicPropertiesMap.PrepayTerm` and the SMO name.
+  //
+  // ⛔ THIS GROUP WAS NAMED `pppstruct` AND SWEPT ONLY THE TERM (§2.94). Every one of its eight
+  // scenarios varied `prepayMonths`; not one carried a `prepayStructure`. The group's NAME promised a
+  // structure sweep and its DATA delivered a term sweep, so the structure axis was reported as covered
+  // and never exercised — which is exactly why the defect in §2.85 (every structure transmitted as a
+  // 60-month term) survived to be found by hand. The term sweep is real and stays; the structure sweep
+  // it was standing in for is added below.
   {
     const P = { purpose: 'Purchase', value: 500000, loan: 350000, fico: 760, dscr: 1.25, ...ADDR.CA };
     for (const [m, tag] of [[60, '5yr'], [48, '4yr'], [36, '3yr'], [24, '2yr'], [12, '1yr'], [0, 'none']]) {
       push('pppstruct', `ppp ${tag}`, { ...P, prepayMonths: m });
     }
-    push('pppstruct', 'custom 3/3/3/2/1 (5yr)', { ...P, prepayMonths: 60, ppp_structure_key: '33321' });
-    push('pppstruct', 'custom 3/3/2/1 (4yr)', { ...P, prepayMonths: 48, ppp_structure_key: '3321' });
+    // ⛔ THE TWO SCENARIOS THAT USED TO SIT HERE COST MONEY AND MEASURED NOTHING. They were
+    // `{prepayMonths: 60, ppp_structure_key: '33321'}` and `{prepayMonths: 48, ppp_structure_key:
+    // '3321'}`, with a comment claiming they "carry ppp_structure_key so the margin-holdback overlay
+    // can add its +0.375". Measured: `ppp_structure_key` is not a vendor field (so the LP leg never
+    // sees it) AND `lpScenarioToFacts` drops it (so OUR leg never sees it either) AND no program
+    // carries a rule keyed on it — `pppMarginHoldbackRules()` builds two such rules and nothing calls
+    // it into a program. So both scenarios were byte-identical to `ppp 5yr` and `ppp 4yr`: two paid
+    // vendor calls per run, measuring a duplicate, under a comment asserting otherwise. That dead
+    // chain is recorded in the parity doc rather than wired here — wiring it would switch on a margin
+    // holdback that has never applied, which is a pricing change and the owner's call.
+    //
+    // They are replaced by the axis that IS live: `prepayStructure`, the SHAPE of the step-down, which
+    // rides `dynamicPropertiesMap.PrePayment_Plan_Type` and — since §2.85 — carries its own term.
+    // These are the seven plan types whose structure determines a term, so each one proves the derived
+    // term reaches Lender Price, plus one that does NOT determine a term as the control.
+    for (const [structure, tag] of [
+      ['3,2,1', '3yr step-down'], ['2,1', '2yr step-down'], ['4,3,2,1', '4yr step-down'],
+      ['5,4,3,2,1', '5yr step-down'], ['5,4,3,2', '5,4,3,2 (4yr)'], ['5,4,3', '5,4,3 (3yr)'],
+      ['Fixed 2%', 'Fixed 2% (1yr)'],
+    ]) {
+      // Deliberately NO `prepayMonths`: the structure alone must carry its own term (§2.85), and
+      // supplying one would test the caller rather than the builder.
+      push('pppstruct', `structure ${tag}`, { ...P, prepayStructure: structure });
+    }
+    // The control: a plan type that ships at several terms, so it CANNOT derive one and the caller
+    // must say. It must not be silently given a term — that would be the same class of invention.
+    push('pppstruct', 'structure 6-Mo-Interest + 48mo', { ...P, prepayStructure: '6 Months Interest', prepayMonths: 48 });
   }
   // M) ELIGIBILITY GRID tiers (T2/T3) — the per-tier FICO floors + tier-aware caps, at each tier's floor
   // rows × purpose × DSCR band. Covers the grid cells the flat envelope used to miss (R10 divergence B).
