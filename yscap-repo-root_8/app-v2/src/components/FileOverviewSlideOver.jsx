@@ -1,15 +1,18 @@
 import React, { useEffect, useState } from 'react';
 
-/* THE FILE-OVERVIEW SLIDE-OVER (owner-directed 2026-08-18): a left-side panel
+/* THE FILE-OVERVIEW SLIDE-OVER (owner-directed 2026-08-18): a RIGHT-side panel
    on every file screen — staff, borrower and broker — with the whole deal at a
    glance: who, the property and transaction, the loan structure, and the
    liquidity picture. ONE component for all three surfaces; only the fetcher
    differs (each surface passes its own API call, so the audience boundary
    lives on the server, never here).
 
-   A slim vertical tab sits on the left edge; clicking it slides the panel out
-   over a backdrop. Esc or the backdrop closes it. The payload is fetched when
-   first opened (and kept for the visit), so a closed tab costs nothing. */
+   A vertical tab sits on the RIGHT edge (owner-directed 2026-08-18: it started
+   on the left and the owner asked for the right side, "a little nicer, and
+   everybody should realize what it is" — hence the ink/gold tab with a glyph
+   and the full label); clicking it slides the panel out from the right over a
+   backdrop. Esc or the backdrop closes it. The payload is fetched when first
+   opened (and kept for the visit), so a closed tab costs nothing. */
 export default function FileOverviewSlideOver({ fetcher, title = 'File overview' }) {
   const [open, setOpen] = useState(false);
   const [card, setCard] = useState(null);
@@ -40,6 +43,8 @@ export default function FileOverviewSlideOver({ fetcher, title = 'File overview'
     <>
       <button type="button" className="fov-tab" onClick={() => setOpen(true)}
         title="Open the file overview — the whole deal at a glance" aria-expanded={open}>
+        {/* aria-hidden: decorative glyph — the label is the text beside it. */}
+        <span className="fov-tab-ico" aria-hidden="true">◈</span>
         <span className="fov-tab-text">{title}</span>
       </button>
       {open && <div className="fov-back" onClick={() => setOpen(false)} />}
