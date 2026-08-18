@@ -120,10 +120,18 @@ async function main() {
     const NO_LOAN = '00000000-0000-4000-8000-000000000000';
 
     /**
-     * Every long-term door, listed BY HAND rather than derived from the routers —
-     * the point is to notice a door nobody listed, and a list derived from what the
+     * AT LEAST ONE DOOR ON EVERY MOUNTED LONG-TERM ROUTER — not every endpoint,
+     * and the difference is the design rather than a shortcut.
+     *
+     * `requireStaff` is applied ONCE, at the `/api/lt` mount in src/server.js. So
+     * what has to be proven is that each router really sits behind that mount;
+     * knocking on a second endpoint of a router already shown to be walled proves
+     * nothing new. Every one of the fourteen routers `src/longterm/index.js`
+     * mounts is represented below, plus the two client doors and health.
+     *
+     * Listed BY HAND rather than derived from the router table, because the point
+     * is to notice a router nobody listed — a list generated from what the
      * application mounts would agree with whatever is there, including nothing.
-     * The count below is asserted so this list cannot quietly shrink either.
      */
     const DOORS = [
       '/api/lt/health',
