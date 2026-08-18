@@ -1625,11 +1625,23 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
   `liabilities[]` arrays are **empty**. A 1003 screen built against the modern arrays would
   render blank on every real file. The whole application is readable in one GET via 18 accepted
   sub-entity names.
-- **The token has no stated lifetime, and the client already survives it.** It lasts 30 minutes
-  and `expires_in` is **not returned** by this tenant — so a client caching on `expires_in - 60`
-  would be caching on `undefined`. Checked: `src/longterm/encompass/client.js:138` reads
-  `(j.expires_in || 1800) - 60`, and 1800s is exactly the measured lifetime. Correct by
-  accident or by design, it holds — **do not remove that fallback.**
+- **The token has no stated lifetime, and the client already survives it — GUARDED 2026-08-18.**
+  It lasts 30 minutes and `expires_in` is **not returned** by this tenant, so a client caching on
+  `expires_in - 60` would be caching on `undefined`. `src/longterm/encompass/client.js` reads
+  `(j.expires_in || 1800) - 60`, and 1800s is exactly the measured lifetime. This entry used to end
+  with *"do not remove that fallback"* — an instruction to a person, which is the weakest kind of
+  guard there is, and the only test that touched token caching supplied `expires_in: 3600`, a value
+  this tenant never sends: it exercised the branch that cannot happen and skipped the one that always
+  does. **Removing the fallback throws nothing**: `undefined - 60` is NaN, the stored expiry is NaN,
+  the cache test is false for ever, and every single Encompass read mints a fresh token first — no
+  error and no wrong figure, just silently twice the calls and an extra serialised round trip against
+  the 500,000-a-day budget and the 30-concurrent ceiling shared with every other integration on this
+  tenant. `scripts/test-lt-encompass-token-cache.js` now asks the question BEHAVIOURALLY, through the
+  real client with the token response this tenant actually returns: five reads must ask for one
+  token. It also pins the 60-second margin (a token with 75 seconds left is re-minted, because those
+  60 seconds are what stop a request outliving the token it was sent with, while two minutes is
+  reused), that a stated SHORT lifetime is honoured rather than overridden by the fallback, and that
+  an unreadable one caches nothing. Four mutations turn it red.
 - **The API budget is 500,000 calls a day with a ceiling of 30 concurrent** — shared across
   every integration touching this tenant, not just ours.
 - **The appraisal XML is unrecoverable for historical files.** The download URLs are minted at
