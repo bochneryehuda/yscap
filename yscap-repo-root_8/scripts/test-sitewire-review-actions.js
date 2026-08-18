@@ -103,7 +103,11 @@ ok('borrower_assign_failed allows retry', routeAllows('sitewire_borrower_assign_
   const expectedBirth = ['sitewire_missing_loan_number', 'sitewire_no_budget', 'sitewire_no_sow', 'sitewire_units_note',
     'sitewire_budget_mismatch', 'sitewire_capital_partner_unmatched', 'sitewire_address_incomplete',
     'sitewire_type_unmapped', 'sitewire_dupe_check_failed', 'sitewire_loan_already_in_sitewire',
-    'sitewire_property_rejected', 'sitewire_bind_missing_property'];
+    'sitewire_property_rejected', 'sitewire_bind_missing_property',
+    // Ground-up → physical only (owner-directed 2026-08-18): a partner rule that
+    // forbids physical inspection on a ground-up file is a SETUP problem, recorded
+    // on the file's own draw section like every other birth blocker.
+    'sitewire_groundup_requires_physical'];
   eq('birth set size', BIRTH.size, expectedBirth.length);
   for (const r of expectedBirth) ok(`birth set has ${r}`, BIRTH.has(r));
   // Post-push WORKFLOW reasons must NOT be birth-gated — they only occur once a property exists, and must
