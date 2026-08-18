@@ -56,6 +56,7 @@ import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
+import RateTermCashCard from '../components/RateTermCashCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import AppraisalOrderSection from '../components/AppraisalOrderSection.jsx';
@@ -5615,6 +5616,12 @@ export default function StaffApplication() {
           header's "N to clear before CTC" badge still land exactly here. */}
       <div className="deal-block">
         <DealSnapshot app={app} gating={gating} />
+        {/* THE RATE-AND-TERM $2,000 RED WARNING (owner-directed 2026-08-18) — on the
+            OUTSIDE structure screen, never inside the term sheet generator. Renders
+            nothing unless the file is a rate-&-term whose structure hands the borrower
+            more than $2,000; carries the "Validate closing costs" editor + the
+            super-admin exception request. */}
+        <RateTermCashCard appId={id} onChanged={load} />
         <WhatsLeftPanel gating={gating} items={items} conds={conds} />
       </div>
       <PropertyPhoto address={propAddress !== '—' ? propAddress : ''} />
@@ -6102,6 +6109,9 @@ export default function StaffApplication() {
 
       <Section hidden={!show('sec-esign')} id="sec-esign" summary={summaries['sec-esign']} title="E-signatures" defaultOpen={false}
         info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
+      {/* The same rate-&-term cash card at the SEND gate (owner: the validate-closing-costs
+          button lives at both places) — the gate's blocker names this exact remedy. */}
+      <RateTermCashCard appId={id} onChanged={load} />
       <EsignFileSection appId={id} role={role} onChanged={load} onFinalizeTermSheet={finalizeTermSheetBridge} />
       </Section>
       {showClosing && (

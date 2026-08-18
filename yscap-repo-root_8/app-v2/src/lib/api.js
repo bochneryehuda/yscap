@@ -1132,6 +1132,11 @@ export const api = {
   closingWorkspace:  (appId) => req('GET', `/api/staff/applications/${appId}/closing`),
   // Property is free and clear — waives/reopens both payoff conditions (db/575).
   payoffFreeAndClear: (appId, on) => req('POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, { on, confirm: true }),
+  // The rate-&-term $2,000 cash limit + the itemized closing costs (db/577).
+  rateTermGate:        (appId) => req('GET', `/api/staff/applications/${appId}/rate-term-gate`),
+  closingCostAdd:      (appId, item) => req('POST', `/api/staff/applications/${appId}/closing-costs`, item),
+  closingCostDelete:   (appId, costId) => req('DELETE', `/api/staff/applications/${appId}/closing-costs/${costId}`),
+  rateTermException:   (appId, body) => req('POST', `/api/staff/applications/${appId}/rate-term-gate/request-exception`, body),
   // The verified-assets ledger + max cash to close (db/574).
   assetLedger:       (appId) => req('GET', `/api/staff/applications/${appId}/asset-ledger`),
   assetLedgerSave:   (appId, entry) => req('POST', `/api/staff/applications/${appId}/asset-ledger/entries`, entry),

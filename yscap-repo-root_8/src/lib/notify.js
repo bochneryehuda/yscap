@@ -73,6 +73,7 @@ const KICKER_OF = {
   // Credit report signed off on a report obtained ELSEWHERE (owner-directed
   // 2026-08-03): the request for an admin to review.
   credit_import_exception: 'Credit exception',
+  rate_term_cash_exception: 'Pricing exception',
   exception_comment: 'Exception comment', exception_request_reply: 'Your exception',
   loan_exception_decided: 'Exception decided',
   exception_aging: 'Exceptions waiting', exception_expired: 'Exception expired',
@@ -671,6 +672,7 @@ const CATEGORY_OF = {
   // action-bearing, so it emails like the other exception requests. Deliberately
   // NOT in STAFF_INAPP_TYPES: a condition is waiting on this decision.
   credit_import_exception: 'conditions',
+  rate_term_cash_exception: 'pricing',
   // Condition waiver (owner-directed 2026-08-04) — a review request + the decision
   // back to the team; action-bearing (a condition is waiting on it), so they email.
   condition_waiver_request: 'conditions', condition_waiver_decided: 'conditions',

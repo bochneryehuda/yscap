@@ -88,6 +88,12 @@ const TYPE_META = {
     defaultPolicy: () => 'A condition clears only when what it asks for is provided — its document uploaded and accepted, or its requirement met.',
     requestedChange: () => <>A <b>super-admin cleared a condition without meeting it</b> (no document attached / the requirement unmet). This is the record of that override — it was decided in the moment, so there was nothing to approve here. The note below names the exact condition and what was missing.</>,
   },
+  rate_term_cash: {
+    chip: 'Rate-&-term cash',
+    jumpHash: '#sec-esign', jumpLabel: 'Jump to e-sign',
+    defaultPolicy: () => 'A rate-&-term refinance may hand the borrower at most $2,000 — the initial loan cannot exceed the payoff plus all closing costs by more.',
+    requestedChange: () => <>Send the term sheet on a <b>rate-&-term whose structure hands the borrower more than $2,000</b>. The usual fixes are switching the transaction to a <b>cash-out</b> or <b>validating the closing costs</b> (real fees reduce the cash) — approving instead lets it go out as a rate-&-term anyway. <b>Super-admin decision.</b></>,
+  },
   tape_encompass_override: {
     chip: 'Tape before Encompass',
     jumpHash: '#sec-encompass', jumpLabel: 'Jump to Encompass sync',

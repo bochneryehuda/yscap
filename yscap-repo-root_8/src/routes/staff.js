@@ -13825,6 +13825,107 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
   }
 });
 
+// ===========================================================================
+// THE RATE-AND-TERM $2,000 CASH LIMIT + "Validate closing costs" (db/577,
+// owner-directed 2026-08-18). One check (lib/rate-term-gate.js) feeds the
+// structure-screen red warning, the term-sheet send gate, and this editor:
+// staff itemize the REAL closing-statement fees (title fees, mortgage tax,
+// transfer tax, attorney fees, custom) — borrower-paid fees reduce the
+// computed cash-to-borrower, so a deal the system mis-costed can come back
+// under $2,000 and legitimately stay a rate-&-term. The super-admin
+// 'rate_term_cash' exception is the recorded way past the gate otherwise.
+// ===========================================================================
+router.get('/applications/:id/rate-term-gate', async (req, res) => {
+  try {
+    const rtg = require('../lib/rate-term-gate');
+    const [check, items] = await Promise.all([rtg.check(req.params.id), rtg.listItems(req.params.id)]);
+    res.json({ check, items, costKinds: rtg.COST_KINDS });
+  } catch (e) {
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] rate-term-gate error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/applications/:id/closing-costs', async (req, res) => {
+  const b = req.body || {};
+  try {
+    const rtg = require('../lib/rate-term-gate');
+    const problem = rtg.itemProblem(b);
+    if (problem) return res.status(400).json({ error: problem });
+    const app = (await db.query(`SELECT id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const ins = (await db.query(
+      `INSERT INTO closing_cost_items (application_id, kind, label, amount, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [req.params.id, String(b.kind || 'custom'), String(b.label).trim(),
+       Math.round(Number(b.amount) * 100) / 100, b.note ? String(b.note).slice(0, 500) : null, req.actor.id])).rows[0];
+    await audit(req, 'closing_cost_added', 'application', req.params.id,
+      { itemId: ins.id, kind: b.kind, label: String(b.label).trim(), amount: Number(b.amount) });
+    const [check, items] = await Promise.all([rtg.check(req.params.id), rtg.listItems(req.params.id)]);
+    res.json({ ok: true, id: ins.id, check, items });
+  } catch (e) {
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] closing-cost add error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.delete('/applications/:id/closing-costs/:costId', async (req, res) => {
+  try {
+    if (!/^[0-9a-f-]{36}$/i.test(String(req.params.costId))) return res.status(400).json({ error: 'invalid id' });
+    const rtg = require('../lib/rate-term-gate');
+    const del = await db.query(
+      `DELETE FROM closing_cost_items WHERE id=$1 AND application_id=$2 RETURNING kind, label, amount`,
+      [req.params.costId, req.params.id]);
+    if (!del.rows[0]) return res.status(404).json({ error: 'not found' });
+    await audit(req, 'closing_cost_removed', 'application', req.params.id,
+      { itemId: req.params.costId, label: del.rows[0].label, amount: Number(del.rows[0].amount) });
+    const [check, items] = await Promise.all([rtg.check(req.params.id), rtg.listItems(req.params.id)]);
+    res.json({ ok: true, check, items });
+  } catch (e) {
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] closing-cost delete error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Request the super-admin exception — the recorded way past the gate ("I don't
+// want to block without a way out"). Any staffer on the file may request; a
+// SUPER-ADMIN decides on the Exceptions screen (decideRole in the registry).
+router.post('/applications/:id/rate-term-gate/request-exception', async (req, res) => {
+  const b = req.body || {};
+  try {
+    const LE = require('../lib/loan-exceptions');
+    const rtg = require('../lib/rate-term-gate');
+    const reason = String(b.reason || '').trim();
+    if (!LE.isReasonCodeFor('rate_term_cash', reason)) return res.status(400).json({ error: 'Pick a reason for the exception.' });
+    const note = b.note ? String(b.note).slice(0, 2000) : null;
+    if (!note) return res.status(400).json({ error: 'Add a short note explaining why this rate-&-term should go out over the $2,000 limit — it goes to a super-admin for approval.' });
+    const check = await rtg.check(req.params.id);
+    if (!check.over) return res.status(409).json({ error: 'This file is not over the rate-&-term cash limit — nothing needs an exception.' });
+    if (check.exception) return res.status(409).json({ error: 'An approved exception is already on this file.' });
+    const row = await LE.requestRateTermCash(db, {
+      appId: req.params.id, reasonCode: reason, reasonNote: note, requestedBy: req.actor.id,
+      gateSnapshot: { cashToBorrower: check.cashToBorrower, limit: check.limit, closingCosts: check.closingCosts, payoff: check.payoff, initialAdvance: check.initialAdvance },
+      compensatingFactors: LE.sanitizeCompensatingFactors(b.compensatingFactors),
+    });
+    await audit(req, 'rate_term_cash_exception_requested', 'application', req.params.id,
+      { reason, exceptionId: row ? row.id : null, cashToBorrower: check.cashToBorrower });
+    try {
+      const ctx = await notify.fileContext(req.params.id);
+      await notify.notifyAdmins({
+        type: 'rate_term_cash_exception', title: 'Rate-&-term over the $2,000 cash limit — exception needs approval',
+        body: `${ctx ? ctx.label + ': ' : ''}the structure hands the borrower more than $2,000 on a rate-&-term refinance (reason: ${reason.replace(/_/g, ' ')}). Approving lets the term sheet go out anyway; otherwise the deal switches to a cash-out or the closing costs are validated. Decide it on the Exceptions screen (super-admin).`,
+        applicationId: req.params.id, link: `/internal/exceptions?app=${req.params.id}`,
+        meta: ctx ? ctx.meta : undefined,
+      });
+    } catch (_) { /* best-effort */ }
+    res.json({ ok: true, exception: row ? { id: row.id, status: row.status, seq: row.exception_seq } : null });
+  } catch (e) {
+    if (e && e.code === '23505') return res.status(409).json({ error: 'An exception request is already awaiting review on this file.' });
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] rate-term exception error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
 // All note buyers available to pick in the completeness panel — every value from
 // the ClickUp note-buyer dropdown, PLUS the confirmed registry set and anything
 // already on a file (owner-directed 2026-07-20). Staff-only (this whole router is
