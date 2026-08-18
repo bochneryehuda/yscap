@@ -2517,3 +2517,64 @@ after a full round trip through Postgres, for all four result kinds, including t
 survives it (fires at 640 and 659, not at 660). Fourteen mutations proven red with a green control either
 side. Nothing mounts either module yet, so both are on the `LT-UNREACHED` ledger; **WHO may press publish
 is an owner decision, not an agent's** — see the open questions below.
+
+**§2.43 — THE PROGRAM SELF-AUDIT HAD NO CALLER, AND RUNNING IT ASKS A QUESTION IT REFUSES TO ANSWER FOR
+YOU (2026-08-18).** `program-audit.js` could profile a program across a scenario battery, had a thorough
+test, and **nothing ran it against the programs we ship** — the same recurring shape as §2.36–§2.42, and
+the reason it sat on the `LT-UNREACHED` ledger. `node scripts/lt-ppe-program-audit.js` is the runner:
+every program in the catalog (the hand-written descriptors AND the ones compiled from the versioned layer
+documents, never a hand-built program), **139,256 deterministic loan scenarios each**, printed as a report
+a non-developer can act on.
+
+**A RULE THAT NEVER FIRED GETS A QUESTION, NOT A VERDICT — AND THE COMMAND WILL NOT PICK ONE FOR YOU.** A
+decline rule that fires on zero of 139,256 loans is either encoded wrong and can never apply — the
+investor's requirement silently not enforced — or a rule this battery never asked about. Those are
+completely different problems, so for every never-fired rule the command re-reads that rule's OWN
+published trigger and checks, condition by condition, whether any loan came near it: a condition nothing
+satisfied is reported as **"the battery never tried it"**, *naming the untried condition*, so widening the
+battery is a five-second job; every condition met somewhere with the rule still never firing is **"the
+battery tried it and it never fired"** — a real question for a person, because that is what a mis-encoded
+threshold looks like; and a rule whose trigger is not published as data, or any verdict off a cut-short
+battery, is **"cannot tell"**, stated as cannot tell and never rounded down to "fine".
+
+**IT CANNOT REPORT ALL CLEAR HAVING MEASURED NOTHING.** An empty catalog, an empty battery, a program
+handed no scenarios, a catalog in which no program publishes a rule list, and a truncated battery are each
+a hard failure (exit 1) rather than a clean run — not defensive decoration, because every one of them
+produces ZERO findings, which is byte-identical to a healthy run unless the runner itself refuses. **THE
+BATTERY IS FIVE FULL GRIDS, NOT ONE STRIDED ONE**: `buildMatrix` deterministically strides a grid past its
+ceiling, and a strided grid can skip the very cell that arms a live rule — a false dead-rule alarm. Each
+leg is built far under its own ceiling and the run asserts every one came back untruncated.
+
+**THE OVERLAY LAYER WAS A BLIND SPOT AND IS NOT ANY MORE.** Its cuts are already a declarative table, but
+the table was not reachable from a descriptor, so that layer's declines could be counted and never checked
+for completeness — if one were dead, nothing would know. Both descriptor builders now carry `overlayCuts`:
+the SAME table their `overlayCoverage` is already derived from, by reference, never a second copy. Audited
+rules went from 25 to 37 on the compiled program.
+
+**MEASURED on the real catalog, re-run on the merged tree: all 49 published rules fired at least once
+across 139,256 loans. No dead rules, and no rule left untried.** The program takes 16.6% of that space and
+turns away 83.4% (eligibility 61,999 · prepayment 1,460 · overlays 71,680). Three geo/delivery overlays
+are **unverifiable on every single loan** (Philadelphia LTV cut, HI lava zones / Baltimore City, the
+<$100k delegated-delivery note — no layer carries a sub-state city or a delivery-channel fact) and six
+more are known-but-flagged rather than applied; both counts are printed, because an overlay nobody can
+check is a fact about the engine, not an absence.
+
+**AND THE TWO ENCODINGS OF DEEPHAVEN AGREE ON EVERY ONE OF THE 139,256 LOANS** — same verdicts, same rules,
+same counts. The hand-written code form and the compiled data form are the same rule book by two routes,
+and a transcription drift between them would otherwise surface only when somebody priced a loan.
+
+**THE SEPARATION GATE FORCED THE TWO-FILE SHAPE, and that is worth knowing before the next command is
+written.** As a single file the command failed `check-product-separation.js` with 6 violations — outside
+`src/longterm/**`, only `src/server.js` and `scripts/test-lt-*.js` may `require()` Long-Term. So the body
+lives in `src/longterm/ppe/program-audit-command.js` and the launcher starts it with `spawnSync`, importing
+nothing; a test guards that the launcher never gains such a `require()` **and never hides one behind a
+computed path** — the point is that there is no crossing, not that the gate cannot see one. (`scripts/lt-export-field-research.js`
+passes today only because `require(path.join(...))` defeats the static scan. That was not copied.)
+
+Eight mutations proven red with a green control either side, two of them mutations of production RULES:
+one making an eligibility rule self-contradictory (surfaced as "dhvn_max_loan — the battery tried it and
+it never fired") and one moving a data threshold (surfaced as the two encodings disagreeing, naming the
+exact rule and counts). The `program-audit.js` ledger row is deliberately **left standing**:
+`check-lt-reachability.js` walks `require()` from what the server mounts and boots, so a `scripts/` command
+does not make it reachable, and striking the row would make the ledger overstate what is wired. A dead-rule
+question is **advisory by default** (`--strict` makes it exit 1) — making it blocking is the owner's call.
