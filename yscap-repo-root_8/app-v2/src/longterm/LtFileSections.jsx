@@ -297,13 +297,46 @@ function Terms({ data }) {
   );
 }
 
+/**
+ * The DSCR, and which side of THIS COMPANY'S own thresholds it fell on.
+ *
+ * A bare 1.28 means one thing to somebody who works these loans every day and
+ * nothing at all to anybody else. The verdict comes from the server, computed
+ * against the company's configured minimum and comfortable lines, and the
+ * threshold travels with it — so this says what was compared rather than
+ * pronouncing on the loan, and a buyer who works to a different figure changes a
+ * setting rather than this file.
+ *
+ * NO VERDICT ON A RATIO WE DO NOT HOLD: the server sends none, and a mark on a
+ * loan nobody has measured would be worse than no mark.
+ */
+function DscrFigure({ value, verdict }) {
+  const shown = ratio(value);
+  if (!verdict) return <span>{shown}</span>;
+  const tone = verdict.level === 'below' ? '#8A2D2D'
+    : verdict.level === 'thin' ? '#8A6A22' : '#2C5E3F';
+  const word = verdict.level === 'below' ? 'below the minimum'
+    : verdict.level === 'thin' ? 'thin' : 'comfortable';
+  const why = verdict.level === 'below'
+    ? `Under the ${verdict.minimum} minimum this company set — on these figures the property does not cover its own debt service.`
+    : verdict.level === 'thin'
+      ? `Over the ${verdict.minimum} minimum but under the ${verdict.comfort} this company calls comfortable.`
+      : `At or over the ${verdict.comfort} this company calls comfortable.`;
+  return (
+    <span style={{ color: tone, fontWeight: 700 }} title={why}>
+      {shown}
+      <span style={{ color: MUTED, fontWeight: 400, fontSize: 12 }}> · {word}</span>
+    </span>
+  );
+}
+
 function Income({ data }) {
   const ns = data.notSourced || {};
   const e = data.housingExpense || {};
   return (
     <>
       <Facts columns={3} rows={[
-        ['DSCR', ratio(data.dscr)],
+        ['DSCR', <DscrFigure key="dscr" value={data.dscr} verdict={data.dscrVerdict} />],
         ['Gross monthly rent', money2(data.grossMonthlyRent)],
         ['Actual monthly rent', money2(data.actualMonthlyRent), ns.actual_monthly_rent],
       ]} />

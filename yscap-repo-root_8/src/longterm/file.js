@@ -25,14 +25,20 @@
  * different loans and one of them is a decline; the same is true of a rent, a
  * balance and a value. Nothing here coalesces a number into 0.
  *
- * THE INVESTOR IS ABSENT BY CONSTRUCTION. `lt_loan_investors` is not read by this
- * module and there is no branch that could add it — the same shape the summary rail
- * uses. `audience.js` remains the one definition for anything that formats free text.
+ * THE INVESTOR IS READ HERE, AND THIS MODULE IS STAFF-ONLY. `lt_loan_investors`
+ * names who bought the loan, and rule 10 says that never reaches a borrower or a
+ * TPO — so what makes it safe is that nothing a client can reach loads this module:
+ * `loadFile` builds the STAFF file screen, where everything returned is internal.
+ * The borrower's own screen (`routes/my-loans.js`) is built FOR the borrower rather
+ * than filtered from this payload, which is the first of the two defences that rule
+ * names. `audience.js` remains the one definition for anything that formats free
+ * text, and `test-lt-investor-block.js` fails the build if either half slips.
  *
  * SEPARATION: reads only `lt_*` tables.
  */
 
 const unsourced = require('./application/unsourced');
+const dscrVerdict = require('./dscr-verdict');
 
 const lazy = {
   get db() { return require('./db'); },
@@ -162,7 +168,7 @@ function sumOrNull(values) {
  * Never throws for an ordinary failure — a section that cannot be read comes back
  * `null` with the reason, and the rest of the file still opens.
  */
-async function loadFile(loanId, loan = null) {
+async function loadFile(loanId, loan = null, opts = {}) {
   const db = lazy.db;
   const id = String(loanId);
 
@@ -366,6 +372,12 @@ async function loadFile(loanId, loan = null) {
       // The DSCR as Encompass computed it, beside the two figures it is built from,
       // so an underwriter can see what the ratio rests on rather than a bare number.
       dscr: num(l.dscr_ratio),
+      // …and which side of THIS COMPANY'S OWN thresholds it fell on. The rule is
+      // one pure function and the thresholds travel with the answer, so a screen
+      // can say what it compared against instead of pronouncing on the loan — and
+      // a buyer who works to a different figure changes a setting, not code. Null
+      // on a loan with no ratio: a mark nobody measured is worse than no mark.
+      dscrVerdict: dscrVerdict.dscrVerdict(num(l.dscr_ratio), opts.settings),
       grossMonthlyRent: prop ? num(prop.gross_monthly_rent) : null,
       actualMonthlyRent: prop ? num(prop.actual_monthly_rent) : null,
       housingExpenseTotal: num(l.housing_expense_total),

@@ -116,8 +116,16 @@ console.log('\nwhat this module may read');
 const tables = [...code.matchAll(/\b(?:FROM|JOIN)\s+([a-zA-Z_][\w.]*)/gi)].map((m) => m[1].toLowerCase());
 check(tables.length > 0 && tables.every((t) => /^lt_/.test(t)),
   `every table it reads is an lt_ one (${[...new Set(tables)].join(', ')})`);
-check(!/lt_loan_investors/.test(code),
-  'THE INVESTOR IS ABSENT BY CONSTRUCTION: the investor table is not read here and there is no branch that could add it');
+// This module DOES now read `lt_loan_investors` — who bought the loan — and that is
+// safe for exactly one reason: nothing a client can reach ever loads it. `loadFile`
+// is built for the staff file screen, where everything it returns is internal, so the
+// property worth guarding is no longer "the investor table is absent" but "no client
+// route pulls this module in". `test-lt-investor-block.js` holds the rest of rule 10.
+for (const rel of ['src/longterm/routes/my-loans.js', 'src/longterm/routes/me.js']) {
+  const routeSrc = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  check(!/require\((['"])[^'"]*\/file\1\)/.test(routeSrc),
+    `THE INVESTOR NEVER REACHES A CLIENT: ${rel} does not load this module — a borrower's screen is BUILT for the borrower, and this one carries the investor block`);
+}
 const writes = [...code.matchAll(/\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([a-zA-Z_][\w.]*)/gi)];
 check(writes.length === 0, 'and it writes nothing at all — this is the READ-ONLY file');
 

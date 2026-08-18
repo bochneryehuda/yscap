@@ -1044,6 +1044,15 @@ administrator out of the screen that undoes it, leaving a hand-written database 
 back. `super_admin` is now a floor, added to the list whatever the setting says — a gate whose own
 remedy nobody at the company can perform is a dead end.
 
+**Forty-three of the sixty-three declarations changed nothing, and now say so.** A setting nothing
+reads is worse than a missing one, because it is believed: somebody renames an eFolder status, saves,
+sees no error and assumes the system knows. Each unwired declaration carries a `notWired` reason, the
+screen prints it and refuses the box, and a build guard fails if a declaration is neither read nor
+excused — so the honest count can never drift back into a comment. **The number is meant to fall.**
+The eFolder "received" statuses were wired in the same pass (a real defect — the reader kept its own
+four-word list), and the two DSCR thresholds were wired next, taking it to **41 of 63**. Every entry
+retired from that list is a promise the registry stops making on credit.
+
 ### Phase 7 — Locks and pricing (read) — **BUILT**
 `lt_locks`, `lt_lock_events`, the lock section and the pipeline column. **Ends with:** the
 lock posture of every loan, visible and current, ready for the lock desk build.

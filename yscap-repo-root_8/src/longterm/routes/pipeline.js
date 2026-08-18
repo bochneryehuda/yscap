@@ -161,7 +161,9 @@ router.get('/:loanId', async (req, res) => {
     // The sections themselves — the 1003 as this loan actually reads. Best-effort
     // like the lock: a file whose sections cannot be assembled still opens, with its
     // header, its stepper and its rail intact.
-    const file = await ltFile.loadFile(rows[0].id, rows[0]).catch(() => null);
+    // The settings ride along so the file can say which side of THIS COMPANY'S
+    // own DSCR thresholds a loan fell on, rather than showing a bare ratio.
+    const file = await ltFile.loadFile(rows[0].id, rows[0], { settings }).catch(() => null);
 
     const labels = settings['contacts.roleLabels'] || {};
 
