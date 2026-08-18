@@ -604,6 +604,11 @@
                  correct — there is no file yet. -->
             <input id="payoffLender" type="hidden" value="">
             <input id="payoffLoanNo" type="hidden" value="">
+            <!-- The payoff letter's good-through date + the FREE-AND-CLEAR flag
+                 (db/575) — same read-only file-fed shape as the two above.
+                 freeAndClear carries "1" when the property has no lien. -->
+            <input id="payoffGoodThrough" type="hidden" value="">
+            <input id="freeAndClear" type="hidden" value="">
             <!-- CASH-OUT PROCEEDS (owner-directed 2026-07-31: "if it's a cash out
                  how much the cash out process is going to be according to the
                  structure, just the field for it"). It DEFAULTS to what the
@@ -1012,7 +1017,7 @@
 <script src="silver-program.js?v=silver9-bandeps-tiermk1-tsprog1"></script>
 <script src="title-cost.js?v=admin8-tsprog1"></script>
 <script src="address-autocomplete.js?v=admin9-tsprog1"></script>
-<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1"></script>
+<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1"></script>
 <script src="../float-actions.js?v=admin10-applyfix-tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

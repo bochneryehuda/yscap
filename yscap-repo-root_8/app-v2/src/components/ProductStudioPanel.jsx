@@ -853,6 +853,9 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     const filePayoff = () => ({
       payoffAmount: app.payoff_amount, payoffLender: app.payoff_lender,
       payoffLoanNumber: app.payoff_loan_number, estimatedCashOut: app.estimated_cash_out,
+      // db/575 — the good-through date + the free-and-clear flag ride along so
+      // the printed sheet states them (display only, never priced on).
+      payoffGoodThrough: app.payoff_good_through, propertyFreeAndClear: app.property_free_and_clear === true,
     });
     /* FICO IS FILE-OWNED, NOT A FROZEN SCENARIO CHOICE (owner-directed 2026-08-05:
        "everywhere should be updated according to the imported credit score … the

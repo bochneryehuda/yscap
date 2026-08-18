@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { MoneyInput } from './FormattedInputs.jsx';
+import { askConfirm } from '../lib/dialog.js';
 
 /* THE PAYOFF SECTION on a refinance file (owner-directed 2026-07-31: "we should
    set up a full section for the system to understand how the payoff works and
@@ -40,6 +41,7 @@ const SAVE_KEY = {
   payoffAmount: 'payoffAmount',
   payoffLender: 'payoffLender',
   payoffLoanNumber: 'payoffLoanNumber',
+  payoffGoodThrough: 'payoffGoodThrough',
   estimatedCashOut: 'estimatedCashOut',
 };
 
@@ -58,7 +60,7 @@ export default function PayoffCard({ appId, app, onSaved }) {
   const [state, setState] = useState(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ payoffAmount: '', payoffLender: '', payoffLoanNumber: '', estimatedCashOut: '' });
+  const [form, setForm] = useState({ payoffAmount: '', payoffLender: '', payoffLoanNumber: '', payoffGoodThrough: '', estimatedCashOut: '' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [saved, setSaved] = useState(false);
@@ -101,9 +103,25 @@ export default function PayoffCard({ appId, app, onSaved }) {
       payoffAmount: e.payoffAmount == null ? '' : String(e.payoffAmount),
       payoffLender: e.payoffLender || '',
       payoffLoanNumber: e.payoffLoanNumber || '',
+      payoffGoodThrough: e.payoffGoodThrough || '',
       estimatedCashOut: e.estimatedCashOut == null ? '' : String(e.estimatedCashOut),
     });
     setEditing(true); setErr(''); setSaved(false);
+  }
+
+  async function setFreeAndClear(on) {
+    const sure = await askConfirm(on
+      ? 'Yes — this property is owned FREE AND CLEAR: there is NO existing loan to pay off. Both payoff conditions will be waived and the payoff of record becomes $0. Confirm?'
+      : 'Turn OFF free and clear? The payoff conditions reopen and the payoff details will be needed again.');
+    if (!sure) return;
+    setBusy(true); setErr(''); setSaved(false);
+    try {
+      await api.payoffFreeAndClear(appId, on);
+      await load();
+      if (onSaved) await onSaved();
+    } catch (ex) {
+      setErr((ex && ex.message) || 'Could not update the free-and-clear flag.');
+    } finally { setBusy(false); }
   }
 
   async function save() {
@@ -123,7 +141,8 @@ export default function PayoffCard({ appId, app, onSaved }) {
         payoffLoanNumber: e.payoffLoanNumber || '',
         estimatedCashOut: e.estimatedCashOut == null ? '' : String(e.estimatedCashOut) };
       const now = { ...form, payoffLender: form.payoffLender.trim(), payoffLoanNumber: form.payoffLoanNumber.trim() };
-      for (const k of ['payoffAmount', 'payoffLender', 'payoffLoanNumber']) {
+      was.payoffGoodThrough = e.payoffGoodThrough || '';
+      for (const k of ['payoffAmount', 'payoffLender', 'payoffLoanNumber', 'payoffGoodThrough']) {
         if (now[k] !== was[k]) body[SAVE_KEY[k]] = now[k] === '' ? null : now[k];
       }
       // The cash-out figure only exists on a cash-out refinance. Never send it on
@@ -162,12 +181,28 @@ export default function PayoffCard({ appId, app, onSaved }) {
       {err && <div role="alert" className="notice err" style={{ marginTop: 12, marginBottom: 0 }}>{err}</div>}
       {saved && !editing && <div className="notice ok" style={{ marginTop: 12, marginBottom: 0 }}>Payoff details saved.</div>}
 
-      {!editing && (
+      {/* PROPERTY OWNED FREE AND CLEAR (db/575) — the whole payoff step goes
+          away: the payoff of record is $0 and both payoff conditions are
+          waived. Reversible; every flip is confirmed and audited. */}
+      {state.freeAndClear && !editing && (
+        <div className="notice ok" style={{ marginTop: 12, marginBottom: 0 }}>
+          <b>Property is free and clear.</b> There is no existing loan to pay off — the payoff of
+          record is $0 and both payoff conditions are waived.
+          <div style={{ marginTop: 8 }}>
+            <button type="button" className="btn ghost small" disabled={busy} onClick={() => setFreeAndClear(false)}>
+              Turn off — there IS a loan to pay off
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!editing && !state.freeAndClear && (
         <>
           <div style={{ marginTop: 12 }}>
             <Row label="Payoff amount" value={e.payoffAmount != null ? usd(e.payoffAmount) : ''} missing={missingKeys.has('payoffAmount')} />
             <Row label="Lender being paid off" value={e.payoffLender} missing={missingKeys.has('payoffLender')} />
             <Row label="Their loan number" value={e.payoffLoanNumber} missing={missingKeys.has('payoffLoanNumber')} />
+            <Row label="Payoff good through" value={e.payoffGoodThrough || ''} />
             {state.isCashOut && (
               <Row label="Cash out to the borrower">
                 {d.cashOut != null
@@ -218,6 +253,9 @@ export default function PayoffCard({ appId, app, onSaved }) {
             <button type="button" className="btn" onClick={startEdit}>
               {state.missing.length ? 'Enter the payoff details' : 'Edit the payoff details'}
             </button>
+            <button type="button" className="btn ghost" disabled={busy} onClick={() => setFreeAndClear(true)}>
+              Property is free and clear…
+            </button>
             <button type="button" className="btn ghost small" onClick={() => setHowOpen((v) => !v)} aria-expanded={howOpen}>
               {howOpen ? 'Hide how this works' : 'How does a payoff work?'}
             </button>
@@ -254,11 +292,17 @@ export default function PayoffCard({ appId, app, onSaved }) {
               <small style={{ color: MUTED }}>Who holds the loan today — the payoff request goes to them.</small>
             </label>
             <label className="field">
-              <span>Their loan number</span>
+              <span>Their loan number <em style={{ color: MUTED, fontWeight: 400 }}>(optional)</em></span>
               <input className="input" value={form.payoffLoanNumber} maxLength={200}
                 onChange={(ev) => setForm((f) => ({ ...f, payoffLoanNumber: ev.target.value }))}
                 placeholder="the number on their statement" />
               <small style={{ color: MUTED }}>A payoff wired without it sits unapplied.</small>
+            </label>
+            <label className="field">
+              <span>Payoff good through <em style={{ color: MUTED, fontWeight: 400 }}>(optional)</em></span>
+              <input className="input" type="date" value={form.payoffGoodThrough}
+                onChange={(ev) => setForm((f) => ({ ...f, payoffGoodThrough: ev.target.value }))} />
+              <small style={{ color: MUTED }}>The date the payoff quote is valid through, off the payoff letter.</small>
             </label>
           </div>
           <div className="row" style={{ marginTop: 12, gap: 8, flexWrap: 'wrap' }}>

@@ -233,9 +233,15 @@ console.log('\n--- the loan file has a Payoff section that owns the subject ---'
   assert(/isRefiFile \? \[\{ id: 'sec-payoff'/.test(screen),
     'and it only exists on a refinance — a purchase has nothing to pay off');
   assert(/<PayoffCard appId=\{id\}/.test(screen), 'the section renders the payoff card');
-  // ONE mount. Two editors for one record on one page is worse than one — the
-  // same rule the borrower-profile editor is held to.
-  assert((screen.match(/<PayoffCard\b/g) || []).length === 1, 'exactly ONE payoff editor on the page');
+  // ONE DEFINITION, exactly TWO mounts (owner-directed 2026-08-18: "bring in
+  // that section as a fillable section within the verify payoff condition"):
+  // the sec-payoff section AND the cond_payoff_internal inline slot. Both are
+  // the SAME PayoffCard — same server state, change-only saves, reload after
+  // save — so the drift the old one-mount rule guarded against (a second
+  // IMPLEMENTATION) cannot occur; a third mount is still a bug.
+  assert((screen.match(/<PayoffCard\b/g) || []).length === 2, 'exactly the two sanctioned payoff-editor mounts');
+  assert(/case 'cond_payoff_internal':\s*box = <PayoffCard/.test(screen),
+    'the second mount is the verify-payoff condition inline slot');
 
   const card = read('components/PayoffCard.jsx');
   assert(/applications\/\$\{appId\}\/payoff/.test(card), 'the card asks the SERVER what the payoff picture is');

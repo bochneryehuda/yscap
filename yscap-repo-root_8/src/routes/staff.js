@@ -13649,7 +13649,8 @@ router.get('/applications/:id/note-buyer', async (req, res) => {
 router.get('/applications/:id/payoff', async (req, res) => {
   try {
     const a = await db.query(
-      `SELECT id, loan_type, payoff_amount, payoff_lender, payoff_loan_number, estimated_cash_out
+      `SELECT id, loan_type, payoff_amount, payoff_lender, payoff_loan_number, payoff_good_through,
+              property_free_and_clear, free_and_clear_at, estimated_cash_out
          FROM applications WHERE id=$1`, [req.params.id]);
     if (!a.rows.length) return res.status(404).json({ error: 'not found' });
     // The CURRENT registration's normalized quote, when the file has one. A file
@@ -13668,6 +13669,96 @@ router.get('/applications/:id/payoff', async (req, res) => {
        rethrow would hang the request instead of answering it. */
     if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
     console.warn('[staff] payoff section error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ===========================================================================
+// PROPERTY IS FREE AND CLEAR (db/575, owner-directed 2026-08-18). A refinance
+// with no existing lien: staff confirm it behind a popup ("Yes, property is
+// free and clear"), and BOTH payoff conditions come off the file — the engine
+// retracts the untouched ones (their rules now carry property_free_and_clear
+// is_false) and this route WAIVES any a human already worked, with an [auto]
+// note saying why. The payoff of record becomes $0 (the figures everywhere —
+// pricing refi math, the term sheet, the attorney email — read a zero payoff,
+// never a blank that looks unanswered). Fully reversible: turning it off
+// un-waives exactly the rows this route waived (matched on its own [auto]
+// note), re-runs the engine so the conditions re-attach, and clears the $0
+// so the ordinary "payoff amount missing" nag returns.
+// Frozen files refuse with the standard freeze message — flipping the payoff
+// to $0 changes the refi cash-to-close math a sent term sheet printed.
+// ===========================================================================
+router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
+  const appId = req.params.id;
+  const b = req.body || {};
+  try {
+    const on = b.on === true;
+    if (b.on !== true && b.on !== false) return res.status(400).json({ error: 'on must be true or false' });
+    if (on && b.confirm !== true) return res.status(400).json({ error: 'confirm is required — the person must confirm the property is free and clear' });
+    const a = (await db.query(
+      `SELECT id, loan_type, status, property_free_and_clear, payoff_amount, payoff_lender, payoff_loan_number
+         FROM applications WHERE id=$1`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    const payoffLib = require('../lib/payoff');
+    if (payoffLib.refiKind(a.loan_type) === payoffLib.KIND.PURCHASE)
+      return res.status(422).json({ error: 'This is a purchase — there is no payoff to mark free and clear.' });
+    const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });
+    if (locked) return res.status(409).json({ error: locked });
+    if (!!a.property_free_and_clear === on) return res.json({ ok: true, unchanged: true });
+
+    const AUTO_NOTE = '[auto] Waived — the property was confirmed FREE AND CLEAR (no existing loan to pay off). Turning the free-and-clear flag off reopens this condition.';
+    if (on) {
+      await db.query(
+        `UPDATE applications
+            SET property_free_and_clear=true, free_and_clear_by=$2, free_and_clear_at=now(),
+                payoff_amount=0, payoff_lender=NULL, payoff_loan_number=NULL, payoff_good_through=NULL,
+                updated_at=now()
+          WHERE id=$1`, [appId, req.actor.id]);
+      // The engine retracts what nobody touched; a worked condition is WAIVED
+      // (the human's work stays on the record, the waive is the answer).
+      try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'free_and_clear' }); } catch (_) {}
+      await db.query(
+        `UPDATE checklist_items ci
+            SET status='satisfied', is_required=false, signed_off_by=$2, signed_off_at=now(),
+                waived_by=$2, waived_at=now(),
+                notes = CASE WHEN ci.notes IS NULL OR ci.notes='' OR ci.notes LIKE '[auto]%' THEN $3 ELSE ci.notes || E'\n' || $3 END,
+                updated_at=now()
+           FROM checklist_templates t
+          WHERE t.id=ci.template_id AND ci.application_id=$1
+            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND ci.status <> 'satisfied'`,
+        [appId, req.actor.id, AUTO_NOTE]);
+      await audit(req, 'payoff_free_and_clear_set', 'application', appId, {
+        priorPayoff: a.payoff_amount, priorLender: a.payoff_lender, priorLoanNumber: a.payoff_loan_number,
+      });
+    } else {
+      await db.query(
+        `UPDATE applications
+            SET property_free_and_clear=false, free_and_clear_by=NULL, free_and_clear_at=NULL,
+                payoff_amount=NULL, updated_at=now()
+          WHERE id=$1`, [appId]);
+      // Un-waive ONLY the rows this feature waived (matched on its own note) —
+      // a waive a human recorded for their own reason is never disturbed.
+      await db.query(
+        `UPDATE checklist_items ci
+            SET status='outstanding', is_required=true, signed_off_by=NULL, signed_off_at=NULL,
+                waived_by=NULL, waived_at=NULL, notes=NULL, updated_at=now()
+           FROM checklist_templates t
+          WHERE t.id=ci.template_id AND ci.application_id=$1
+            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND ci.notes LIKE '%confirmed FREE AND CLEAR%'`,
+        [appId]);
+      try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'free_and_clear_cleared' }); } catch (_) {}
+      await audit(req, 'payoff_free_and_clear_cleared', 'application', appId, {});
+    }
+    const fresh = (await db.query(
+      `SELECT id, loan_type, payoff_amount, payoff_lender, payoff_loan_number, payoff_good_through,
+              property_free_and_clear, free_and_clear_at, estimated_cash_out
+         FROM applications WHERE id=$1`, [appId])).rows[0];
+    res.json({ ok: true, payoff: payoffLib.payoffState(fresh, null) });
+  } catch (e) {
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] free-and-clear error:', db.describeError(e));
     res.status(500).json({ error: 'server error' });
   }
 });

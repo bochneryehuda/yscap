@@ -40,6 +40,8 @@ export function payoffApplies(loanType) { return refiKind(loanType) !== 'purchas
 export function payoffMissingKeys(app) {
   const a = app || {};
   if (!payoffApplies(a.loan_type)) return [];
+  // Property owned FREE AND CLEAR (db/575) — no loan to pay off, nothing missing.
+  if (a.property_free_and_clear === true) return [];
   const amount = Number(a.payoff_amount);
   const hasPayoff = a.payoff_amount != null && a.payoff_amount !== '' && isFinite(amount) && amount > 0;
   const blank = (v) => String(v == null ? '' : v).trim() === '';

@@ -162,6 +162,10 @@ export function buildStudioState(x) {
     payoff: rawNum(x.payoffAmount) || '',
     payoffLender: String(x.payoffLender || ''),
     payoffLoanNo: String(x.payoffLoanNumber || ''),
+    // The payoff good-through date + the free-and-clear flag (db/575) — same
+    // read-only file-fed shape; the sheet prints them, never prices on them.
+    payoffGoodThrough: (x.payoffGoodThrough && /^\d{4}-\d{2}-\d{2}/.test(String(x.payoffGoodThrough))) ? String(x.payoffGoodThrough).slice(0, 10) : '',
+    freeAndClear: x.propertyFreeAndClear === true ? '1' : '',
     /* The TYPED cash-out override, carried both ways too (audit-found
        2026-07-31). Without it, an officer's typed figure printed on the PDF,
        never reached the loan file, and silently reverted to the structural

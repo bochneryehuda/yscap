@@ -375,6 +375,12 @@ function CondInlineEntry({ it, appId, onChanged, indent }) {
     case 'cond_note_buyer_missing':  box = <CondNoteBuyerEntry appId={appId} onSaved={onChanged} />; break;
     case 'cond_loan_number_missing': box = <CondLoanNumberEntry appId={appId} onSaved={onChanged} />; break;
     case 'appraisal_as_is_verify':   box = <CondAsIsEntry appId={appId} onSaved={onChanged} />; break;
+    /* The verify-payoff condition carries the WHOLE payoff section as its
+       fillable form (owner-directed 2026-08-18: "bring in the details to fill
+       in the payoff details in the condition") — the SAME PayoffCard the
+       sec-payoff section mounts, so the two can never disagree. The condition's
+       own wording is untouched; this renders UNDER it. */
+    case 'cond_payoff_internal':     box = <PayoffCard appId={appId} app={{}} onSaved={onChanged} />; break;
     default: return null;   // never an empty wrapper — Item is a gapped flex column
   }
   return indent ? <div style={{ width: '100%', paddingLeft: 20 }}>{box}</div> : box;

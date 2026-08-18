@@ -1126,6 +1126,8 @@ export const api = {
   advanceClosing:    (appId, stage) => req('POST', `/api/staff/applications/${appId}/closing-workflow`, { stage }),
   // The closing workspace (the closer's desk).
   closingWorkspace:  (appId) => req('GET', `/api/staff/applications/${appId}/closing`),
+  // Property is free and clear — waives/reopens both payoff conditions (db/575).
+  payoffFreeAndClear: (appId, on) => req('POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, { on, confirm: true }),
   // The verified-assets ledger + max cash to close (db/574).
   assetLedger:       (appId) => req('GET', `/api/staff/applications/${appId}/asset-ledger`),
   assetLedgerSave:   (appId, entry) => req('POST', `/api/staff/applications/${appId}/asset-ledger/entries`, entry),

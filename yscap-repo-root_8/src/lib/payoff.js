@@ -162,6 +162,12 @@ const REQUIREMENTS = [
   { key: 'payoffLoanNumber', column: 'payoff_loan_number', label: 'Their loan number',
     why: 'The existing lender’s own loan or account number. A payoff wired without it sits unapplied.',
     kinds: [KIND.RATE_TERM, KIND.CASH_OUT, KIND.UNKNOWN], required: true, needsPayoff: true },
+  /* The payoff letter's GOOD-THROUGH date (db/575) — deliberately NOT required:
+     interest accrues daily and the working figure is often on file before the
+     letter that states its expiry. It is asked for, never nagged for. */
+  { key: 'payoffGoodThrough', column: 'payoff_good_through', label: 'Payoff good through',
+    why: 'The date the payoff quote is valid through, off the payoff letter. After it, the figure must be re-quoted.',
+    kinds: [KIND.RATE_TERM, KIND.CASH_OUT, KIND.UNKNOWN], required: false, needsPayoff: true },
   { key: 'estimatedCashOut', column: 'estimated_cash_out', label: 'Cash out to the borrower',
     why: 'What the borrower walks away with after the payoff and the closing costs. Fills in from the structure — type a number only to override it.',
     kinds: [KIND.CASH_OUT], required: false },
@@ -220,9 +226,14 @@ function payoffState(app, quote) {
     payoffAmount: num(a.payoff_amount),
     payoffLender: text(a.payoff_lender),
     payoffLoanNumber: text(a.payoff_loan_number),
+    payoffGoodThrough: text(a.payoff_good_through),
     estimatedCashOut: num(a.estimated_cash_out),
   };
   const hasPayoff = entered.payoffAmount != null && entered.payoffAmount > 0;
+  /* PROPERTY OWNED FREE AND CLEAR (db/575) — there is NO loan to pay off, so
+     nothing here is missing and the payoff of record is $0. The flag is a
+     staff-confirmed fact; both payoff conditions retract/waive on it. */
+  const freeAndClear = a.property_free_and_clear === true;
 
   const q = quote || {};
   const sizing = q.sizing || {};
@@ -248,7 +259,7 @@ function payoffState(app, quote) {
   };
 
   const missing = [];
-  if (applies) {
+  if (applies && !freeAndClear) {
     for (const r of REQUIREMENTS) {
       if (!r.required) continue;
       if (!r.kinds.includes(kind)) continue;
@@ -281,6 +292,7 @@ function payoffState(app, quote) {
     kindLabel: KIND_LABEL[kind] || KIND_LABEL[KIND.UNKNOWN],
     isCashOut: kind === KIND.CASH_OUT,
     hasPayoff,
+    freeAndClear,
     entered,
     fields: REQUIREMENTS.filter((r) => r.kinds.includes(kind))
       .map((r) => ({ key: r.key, column: r.column, label: r.label, why: r.why, required: !!r.required })),

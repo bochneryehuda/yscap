@@ -47,7 +47,11 @@ const STR = {
 };
 
 /** Date-only columns. */
-const DATE = { acquisitionDate: 'acquisition_date' };
+const DATE = {
+  acquisitionDate: 'acquisition_date',
+  // The payoff letter's good-through date (db/575) — beside the payoff trio.
+  payoffGoodThrough: 'payoff_good_through',
+};
 
 /** Boolean columns the door writes explicitly. */
 const BOOL = { isAssignment: 'is_assignment' };
