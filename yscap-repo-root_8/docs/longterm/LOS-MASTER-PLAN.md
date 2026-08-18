@@ -415,6 +415,26 @@ the REAL parser on a real-shaped payload rather than on the helper in isolation,
 that a credit reaches the screen as a credit; four mutations turn it red, and all 100+ LenderPrice
 and pricing-engine suites pass unchanged, so nothing was traded for it.
 
+**A THING THAT IS NOT A FIGURE NEVER BECOMES ONE (2026-08-18).** Reading a number out of an
+Encompass payload or a Postgres row had been written FOUR times on this side — `application/
+mapper.js`, `file.js`, `locks.js`, `workspace.js` — with four different degrees of care. Only the
+mapper's tested the TYPE, and only the mapper's wrote down why: `Number(null)`, `Number('')`,
+`Number(false)` and `Number([])` are ALL a finite, perfectly innocent 0. The other three did not, and
+it was not theoretical: handed a lock section whose `lockedRate` arrived as the boolean `true`,
+`locks.js` reported a NOTE RATE OF 1%; an empty array in `lockedPrice` reported a PRICE OF 0; `[45]`
+became a 45-day lock term. Confident, plausible, entirely wrong figures on the desk somebody locks a
+loan from, with nothing erroring — that is simply what these conversions do when handed the wrong
+kind of thing, which is why the type test has to come BEFORE the conversion. `src/longterm/num.js` is
+now the one definition for the three that can share it. **The mapper deliberately keeps its own
+copy**: it is held to "requires nothing at all, so it cannot reach a network or a database even by
+accident", which is a stronger and far more checkable property than any argument about what a
+required module happens to contain — and a guard is not loosened to fit a refactor. The cost of that
+decision is a second copy, so it is paid the way this repo pays it everywhere else (the browser twins
+of `dealBasis` and `entity-type`): a test compares the two over the whole battery and fails the
+moment they answer differently. Proven through the REAL lock reader, not the helper in isolation,
+because the claim is that the desk cannot be told a loan is locked at 1%; four mutations turn it red,
+including the twin drifting.
+
 **A SETTING IS EITHER READ BY SOMETHING OR SAYS IT IS NOT (2026-08-18).** §7's promise to a buyer is
 that nothing about how WE do things is hard-coded. Forty-three of the 63 settings were declared ahead
 of the code that would read them, so the settings screen offered knobs that changed NOTHING and said

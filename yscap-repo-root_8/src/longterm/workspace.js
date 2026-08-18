@@ -32,6 +32,7 @@
  */
 
 const stages = require('./stages');
+const { num } = require('./num');
 
 /**
  * The URLA-sectioned file, in the order a person reads it. `applies` decides
@@ -173,7 +174,6 @@ function milestoneStepper(loan, catalog = [], opts = {}) {
  */
 function summaryRail(loan, opts = {}) {
   const l = loan || {};
-  const num = (v) => (v == null || v === '' ? null : Number(v));
   const stage = stages.stageForMilestone(l.milestone_name, opts.stageConfig || {});
 
   // THE PROPERTY FIGURES COME FROM THE PROPERTY, NOT FROM THE LOAN ROW.

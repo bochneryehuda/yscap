@@ -39,23 +39,14 @@
 
 const unsourced = require('./application/unsourced');
 const dscrVerdict = require('./dscr-verdict');
+const { num, text } = require('./num');
 
 const lazy = {
   get db() { return require('./db'); },
 };
 
 /** A number, or null. Never 0 for "we do not know". */
-const num = (v) => {
-  if (v === null || v === undefined || v === '') return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-};
 
-const text = (v) => {
-  if (v === null || v === undefined) return null;
-  const s = String(v).trim();
-  return s === '' ? null : s;
-};
 
 /** A date column as the calendar day it is, never an instant in somebody's zone. */
 const day = (v) => (v ? String(v).slice(0, 10) : null);
