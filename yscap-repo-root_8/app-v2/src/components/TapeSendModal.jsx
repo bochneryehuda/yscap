@@ -64,8 +64,8 @@ export default function TapeSendModal({ name, preview, busy, onCancel, onSend })
             </div>
           )}
           <div style={{ marginTop: 6, color: '#4B585C' }}>
-            Cc: {((preview && preview.cc) || []).join(', ') || 'the file team'} · replies go to the file’s inbox
-            {preview && preview.replyTo ? ` (${preview.replyTo})` : ''}
+            Cc: {((preview && preview.cc) || []).join(', ') || 'the file team'}
+            {preview && preview.replyTo ? ` · replies go to the file’s inbox (${preview.replyTo})` : ''}
           </div>
         </div>
 

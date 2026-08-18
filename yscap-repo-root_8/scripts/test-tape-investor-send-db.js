@@ -64,10 +64,20 @@ function call(server, method, path, token, body) {
     ok('B2 the loan structure figures ride', by['Loan amount'] === '$360,000' && by['Construction holdback'] === '$80,000'
       && by['Interest reserve (financed)'] === '$32,000' && by['Interest rate'] === '10.5%');
     ok('B3 the three ratios are labelled with their formulas',
-      by['Initial LTV (initial advance ÷ as-is value)'] === '80%' && by['ARV LTV (total loan ÷ after-repair value)'] === '80%'
+      by['Initial LTV (initial advance ÷ acquisition value)'] === '80%' && by['ARV LTV (total loan ÷ after-repair value)'] === '80%'
       && /Effective LTV/.test(rows.map((r) => r.label).join('|')));
     ok('B4 effective LTV = total loan ÷ as-is', by['Effective LTV (total loan ÷ as-is value)'] === `${Math.round((360000 / 310000) * 10000) / 100}%`);
     ok('B5 NO origination fee, ever', !rows.some((r) => /originat/i.test(r.label) || /originat/i.test(String(r.value))));
+    // A GROUND-UP's loan routinely exceeds the lot's as-is value — the ratio must
+    // print as a real 400%, never "4%" (audit 98b8fac #1: the percent-form knee
+    // silently divided every ratio past 150% by 100 in an email to an investor).
+    {
+      const gu = IS.dealFigures({ loan_type: 'Ground Up Construction', purchase_price: 100000, as_is_value: 100000 },
+        { noteRate: 11, sizing: { totalLoan: 400000, initialAdvance: 80000, rehabHoldback: 300000, financedReserve: 20000 } });
+      const gv = Object.fromEntries(gu.map((r) => [r.label, r.value]));
+      ok('B8 a leverage ratio past 150% prints as itself, never divided by 100',
+        gv['Effective LTV (total loan ÷ as-is value)'] === '400%');
+    }
   }
   {
     const rows = IS.dealFigures({ loan_type: 'Refinance - Cash-Out', as_is_value: 400000 }, QUOTE);

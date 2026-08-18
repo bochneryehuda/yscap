@@ -45,11 +45,17 @@ const usd = (n) => {
   return Number.isFinite(x) ? `$${Math.round(x).toLocaleString('en-US')}` : null;
 };
 const pct = (frac) => {
+  // Every ratio here is a FRACTION (0.7 = 70%): the registered quote's
+  // acqLtvPct/arvPct are engine fractions (pricing.normalize), and the effective
+  // LTV is computed in this module. NO percent-form tolerance knee — the audit
+  // (98b8fac #1) reproduced a $400k loan on a $100k lot printing "4%" instead of
+  // 400% because a 1.5 knee read every ratio past 150% as already-in-percent.
+  // A ground-up's loan routinely exceeds the lot's as-is value, so ratios far
+  // past 1.5 are ordinary, and understating leverage to a capital partner is the
+  // worst direction to be wrong in.
   const x = Number(frac);
   if (!Number.isFinite(x) || x <= 0) return null;
-  // Quote ratios are stored as fractions (0.7 = 70%); tolerate a stray percent-form value.
-  const p = x <= 1.5 ? x * 100 : x;
-  return `${(Math.round(p * 100) / 100).toString()}%`;
+  return `${(Math.round(x * 100 * 100) / 100).toString()}%`;
 };
 
 /** "New file for review - {loan number} - {property address}" — the owner's exact shape.
@@ -70,7 +76,9 @@ function subjectFor(app) {
  */
 function dealFigures(app, quote) {
   const s = (quote && quote.sizing) || {};
-  const isRefi = /refi/i.test(String(app.loan_type || ''));
+  // ONE definition of "sizes on the as-is value" — never a re-inlined /refi/ test
+  // (the deal-basis house rule; behaviorally identical, structurally shared).
+  const isRefi = require('../deal-basis').sizesOnAsIsValue(app.loan_type);
   const rows = [];
   const add = (label, value) => { if (value != null) rows.push({ label, value }); };
 
@@ -89,7 +97,10 @@ function dealFigures(app, quote) {
     oop = (Number.isFinite(budget) && Number.isFinite(financed) && budget - financed > 0.5) ? budget - financed : 0;
   }
   add('Out-of-pocket rehab (borrower-funded)', oop > 0 ? usd(oop) : (rows.some((r) => /holdback/i.test(r.label)) ? '$0' : null));
-  add('Initial LTV (initial advance ÷ as-is value)', pct(s.acqLtvPct));
+  // The engine's acquisition denominator is min(price, as-is) on a purchase, so
+  // the label says "acquisition value" — not "as-is value", which is wrong
+  // whenever the price is the lower figure (audit 98b8fac note 7).
+  add('Initial LTV (initial advance ÷ acquisition value)', pct(s.acqLtvPct));
   add('ARV LTV (total loan ÷ after-repair value)', pct(s.arvPct));
   // "Effective LTV" — the WHOLE loan against today's value, the blended figure an
   // investor sizes exposure on. Computed only when both halves are known.

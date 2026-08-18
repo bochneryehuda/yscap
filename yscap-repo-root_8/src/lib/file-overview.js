@@ -28,10 +28,12 @@ const money = (n) => {
   return Number.isFinite(x) && x !== 0 ? `$${Math.round(x).toLocaleString('en-US')}` : (x === 0 ? '$0' : null);
 };
 const pctOf = (frac) => {
+  // Ratios here are engine FRACTIONS (pricing.normalize) — no percent-form
+  // tolerance knee: a ratio past 150% is an ordinary ground-up figure and must
+  // print as itself, never silently divided by 100 (the audit 98b8fac class).
   const x = Number(frac);
   if (!Number.isFinite(x) || x <= 0) return null;
-  const p = x <= 1.5 ? x * 100 : x;
-  return `${Math.round(p * 100) / 100}%`;
+  return `${Math.round(x * 100 * 100) / 100}%`;
 };
 
 function addrOf(pa) {

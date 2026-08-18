@@ -5182,7 +5182,7 @@ function tapeExportRefusal(res, e, logTag) {
   if (e && (e.code === 'loan_not_found' || e.code === 'tape_not_found')) return res.status(404).json({ error: e.message });
   if (e && e.status && e.message) return res.status(e.status).json({ error: e.message });
   console.error(`[${logTag}]`, e && e.message);
-  return res.status(500).json({ error: 'export failed' });
+  return res.status(500).json({ error: logTag === 'tape send' ? 'The send failed — nothing went out.' : 'export failed' });
 }
 
 // Export ONE loan's tape for :tapeKey. Streams the provider's .xlsx. Scoped +
