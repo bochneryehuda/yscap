@@ -189,7 +189,10 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
    (manage_closings) or an admin can change it; everyone else reads it. */
 function FundingChannelCard({ appId, ws, isCloser, busy, run }) {
   const fc = ws.fundingChannel;
-  const tfWarehouse = ws.tableFundingWarehouse || 'Table Funding';
+  // The line NAME always comes from the server payload — the client never
+  // spells it (guarded by test-table-funding-control-pure B2: a second copy of
+  // the constant silently stops matching the day the line is renamed).
+  const tfWarehouse = ws.tableFundingWarehouse || '';
   const [wh, setWh] = useState('');
   if (!fc) return null;
   const delegateLines = (ws.warehouses || []).filter((w) => w !== tfWarehouse);
@@ -202,6 +205,7 @@ function FundingChannelCard({ appId, ws, isCloser, busy, run }) {
     : fc.encompassChannel === 'direct' ? `direct / delegate (“${fc.encompassRaw}”)`
     : `“${fc.encompassRaw}” — a value PILOT doesn’t recognise`;
   const toTable = async () => {
+    if (!tfWarehouse) return;   // the server names the line; never write a guess
     const warn = fc.mayTableFund === false
       ? '\n\nNOTE: this note buyer’s loans are normally NEVER table funded — double-check before switching.' : '';
     const ok = await askConfirm(
@@ -241,7 +245,7 @@ function FundingChannelCard({ appId, ws, isCloser, busy, run }) {
         )}
         {isCloser ? (
           <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
-            {!isTF && (
+            {!isTF && !!tfWarehouse && (
               <button type="button" className="btn ghost small" disabled={busy === 'fchan'}
                 title={`Sets the warehouse to “${tfWarehouse}” — sold at the closing table`}
                 onClick={toTable}>Switch to table funding</button>
