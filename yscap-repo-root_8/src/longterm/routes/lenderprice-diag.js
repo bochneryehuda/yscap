@@ -12,6 +12,31 @@
  *   - Constant-time token compare (x-lp-diag-token header). No token → 401.
  *   - Read-only pricing only (the shared DSCR handlers). No write/book/lock path exists.
  *   - LT-only; imports no RTL code.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * AN OPEN QUESTION FOR THE OWNER — WHOSE AUDIENCE IS THIS DOOR? (recorded
+ * 2026-08-17, when the investor guard was wired onto the client route.)
+ *
+ * `audience.js` fails closed: anything that is not exactly our own staff is a
+ * CLIENT, and a client may never be told an investor's name. This door has NO
+ * signed-in actor at all — it authenticates a shared SECRET, not a person — and
+ * the pricing it returns names the INVESTOR behind every program (`investor` on
+ * each row of the trimmed program list and of the audit rung digest), because
+ * that is the point of a rate-sheet diff against the Lender Price frontend.
+ *
+ * It is treated as INTERNAL and left exactly as it was, deliberately and NOT on a
+ * guess about the guard: LP_DIAG_TOKEN is an ops secret of ours, the door 404s
+ * unless somebody sets it, no borrower or broker session can reach it, and there
+ * is no way for a client to obtain the header. Stripping the investor out here
+ * would break the one job this door exists for while protecting nobody who can
+ * actually knock on it.
+ *
+ * The question that was NOT decided here, because it is the owner's: should a
+ * shared-secret ops door count as internal staff for the hard rule, or should the
+ * diagnostics live behind a staff login like the identical `/api/lt/dscr/*`
+ * mount? If the answer is the latter, this file is the one thing to delete — the
+ * handlers it wraps are already staff-gated on the other mount.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 const express = require('express');
 const crypto = require('crypto');
