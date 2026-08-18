@@ -1446,7 +1446,25 @@ function disqualifyRulesOf(leaf) {
   if (Array.isArray(groups)) for (const g of groups) {
     for (const key of ['disqualifyAdjustments', 'hideDisqualifyAdjustments', 'qualifyAdjustments']) {
       const arr = g && g[key];
-      if (Array.isArray(arr)) for (const a of arr) add(a && (a.key || a.name), { group: g.name || null, adjType: (a && a.adjType) || null, value: num(a && (a.llpa != null ? a.llpa : a.adj)) });
+      // ⛔ AN ELEMENT HERE IS A PLAIN STRING, and reading it as an object is why the entire decline
+      // feed was unusable. MEASURED on a captured 173 MB Deephaven disqualify payload (2026-08-18):
+      // `groupAdjustmentProperties[].disqualifyAdjustments` is an array of STRINGS —
+      //   "DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%"
+      //   "DSCR >=1.25%  only eligible on this program"
+      // — so `a.key || a.name` was `undefined` on every one of them, `add(undefined)` stored nothing,
+      // and ALL 56 Deephaven DSCR leaves reported "no structured rules". That dropped every leaf into
+      // the defensive sweep below, which harvests any string it meets: the real refusals arrived with
+      // no group and no adjType, buried under ~500x product-classification noise (see the parity doc
+      // §2.101/§2.102). An OBJECT element is still read exactly as before — both shapes are handled,
+      // because a vendor that ships one today can ship the other tomorrow.
+      if (Array.isArray(arr)) for (const a of arr) {
+        const isStr = typeof a === 'string';
+        add(isStr ? a : (a && (a.key || a.name)), {
+          group: g.name || null,
+          adjType: (!isStr && a && a.adjType) || null,
+          value: isStr ? null : num(a && (a.llpa != null ? a.llpa : a.adj)),
+        });
+      }
     }
   }
   if (Array.isArray(leaf.conditionActions)) for (const ca of leaf.conditionActions) add(ca && (ca.message || ca.description || ca.key || ca.name), { group: 'condition' });

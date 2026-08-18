@@ -6350,3 +6350,82 @@ eligibility half of the gate stays unreachable until it is done, and §2.93 alre
 cannot see refusals unable to report GATE MET, so nothing can pass on the strength of this gap.
 
 167/167 suites, 33 database-backed. All seven gates green. No production behaviour changed.
+
+---
+
+### §2.103 — ⛔ A DISQUALIFY RULE IS A STRING AND WE READ IT AS AN OBJECT — THE DECLINE FEED IS READABLE NOW (2026-08-18)
+
+§2.102 ended by saying the next attempt must start with a **measurement**: capture one raw disqualify
+payload and record the exact PATH each string sits at, so the separation between a refusal and a
+description is read off the vendor's structure rather than guessed from the text. That was done, and
+the census answered it in one line.
+
+**THE CAPTURE.** One live Deephaven scenario, disqualify feed polled to completion: **173 MB, 20
+lenders, 9,540 items, 136,084 reasons.** Censused per leaf, scoped to Deephaven's DSCR family:
+
+```
+leaves = 56      with structured rules = 0      swept = 56
+
+SWEPT paths (only reached when a leaf states nothing structured):
+  168  .rateGrid.mortgageLimits[]          Conforming · Jumbo · HighBalance
+  168  .rateGrid.loanPurposes[]            Refinance · CashoutRefinance · Purchase
+   84  .groupAdjustmentProperties[].disqualifyAdjustments[]
+          "DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%"
+          "DSCR >=1.25%  only eligible on this program"
+   56  .borrowerPaidDetails[].description  Origination : 3.400 (Points) x $375,000.00
+   56  .rateGrid.qmTypes[]                 NONQM
+   56  .rateGrid.affordableHousingTypes[]  None
+   56  .rateGrid.mortgageTypes[]           Conventional
+```
+
+**⛔ THE REAL REFUSALS WERE AT THE PATH THE PARSER ALREADY LOOKS AT** —
+`groupAdjustmentProperties[].disqualifyAdjustments` — **and it could not see them, because those
+elements are plain STRINGS and `disqualifyRulesOf` read each one as an object (`a.key || a.name`).**
+On a string that is `undefined`, so nothing was stored, all 56 leaves reported "no structured rules",
+and every leaf fell through to the defensive sweep — which is why the refusals arrived with no group,
+no adjType, and buried under the descriptive blocks above. Verified from the vendor's own bytes:
+`disqualifyAdjustments` is `["DSCR >=1.00, … Maximum LTV/CLTV 70%"]`, `typeof elements: string`.
+
+**THE FIX IS THAT ONE EXPRESSION.** A string element is the rule; an OBJECT element is read exactly as
+before, because a vendor that ships one shape today can ship the other tomorrow. A string carries no
+adjType and no value, so it reports **null** for both rather than an invented one. Re-parsed against
+the SAME captured 173 MB payload: **56 leaves → 84 reasons, exactly TWO distinct texts, both genuine
+refusals, zero noise** (it was 0 structured rules and ~560 noise rows per scenario).
+
+**AND THE LIVE RUN MOVED FOR THE FIRST TIME.** Same 8 scenarios, same scope, feed on, across today's
+three items:
+
+```
+                                    comparable   LP rows unreadable   our no_dimension
+§2.100 baseline                        0 of 8          4,482                 12
+after §2.101 (our own dimensions)      0 of 8          4,482                  3
+after THIS fix                         6 of 8              0                  3
+```
+
+**The eligibility half of the gate is measurable at last.** The 6 comparable scenarios all DISAGREE —
+but on a named, visible axis (`coupon_missing_ours`, 168 rungs: Lender Price returns coupons our sheet
+does not price), not as an unreadable blank. That is a finding to work, which is the point. The
+remaining 2 are still `decline_reasons_unreadable` and are recorded as such.
+
+**⛔ A SEPARATE AND LARGER DEFECT FELL OUT OF WRITING THIS TEST, AND IT IS NOT FIXED HERE.**
+`client.num` is `parseFloat(String(v).replace(/[^0-9.]/g, ''))` — **it strips the minus sign.**
+Measured on a captured live search: the vendor sends **3,627** adjustment values of which **1,988 are
+negative** (real JS numbers, e.g. `-0.25`), and after `parseFull` the parsed set contains **884
+positive and ZERO negative**. So the itemized-LLPA comparison behind §2.15's "every itemized LLPA on
+all 299 scenarios agrees" is a **MAGNITUDE-ONLY** agreement — it cannot see a sign disagreement in
+either direction, and it agrees partly because our sheet was built in the same magnitude frame. That
+is redundancy that agrees, the exact trap §2.8 recorded. It is NOT fixed in this commit: `num` feeds
+twelve call sites including scenario inputs where a minus is meaningless, so it needs its own bounded
+pass. On the DISQUALIFY side it is inert — `normalizeLpDisqualified` carries only `rule` and `adjType`
+— which is what makes landing this item ahead of it safe. Recorded as the next item, and assertion B3
+of the new suite is written to go RED the day it is fixed, so the record cannot go stale.
+
+`scripts/test-lt-ppe-disqualify-string-rules.js` (17 assertions) drives the parser against
+`scripts/fixtures/lp-disqualify-leaf.json` — **a real leaf lifted verbatim from the capture**, refusal,
+group name and descriptive blocks included, because §2.102's fixture was written from memory and the
+reverting mutation stayed green against it. **Mutation-proven four ways**: object-only reading restored
+(7 assertions bite, reproducing the live 11-row output byte for byte), the group dropped (1), a string
+element given an invented adjType (1), and the fallback sweep deleted (2) — with an unmutated control
+green either side.
+
+168/168 suites, 33 database-backed. All seven gates green.
