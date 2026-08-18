@@ -50,6 +50,7 @@ async function main() {
   const C = require('../src/lib/crypto');
   const auth = require('../src/auth');
   const db = require('../src/db');
+  const ltDb = require('../src/longterm/db');
 
   let checks = 0;
   const ok = (c, w) => { assert.ok(c, w); checks++; };
@@ -227,6 +228,7 @@ async function main() {
     await db.query('DELETE FROM tpo_firms WHERE name LIKE $1', [`${stamp}%`]).catch(() => {});
     if (server) server.close();
     await db.pool.end().catch(() => {});
+    await ltDb.pool.end().catch(() => {});
   }
 
   console.log(`\n✓ lt client sessions refused (db): ${checks} assertions passed`);

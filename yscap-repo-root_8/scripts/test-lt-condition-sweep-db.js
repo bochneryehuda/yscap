@@ -198,6 +198,11 @@ async function main() {
     // connection, it never resolves and the process hangs with the assertion
     // already thrown and NOTHING printed. A hang says less than a failure and
     // costs a CI job its whole timeout, so the close is raced against a deadline.
+    // The RTL pool as well. This suite never mentions it, but something in the
+    // require chain opens `src/db`, and an open pool holds a Postgres socket until
+    // its 30-second idle timeout — so the suite printed its result and then sat
+    // there for half a minute. Measured: 30,116ms before this line, 237ms after.
+    await require('../src/db').pool.end().catch(() => {});
     await Promise.race([
       ltDb.pool.end().catch(() => {}),
       new Promise((r) => setTimeout(r, 3000).unref()),

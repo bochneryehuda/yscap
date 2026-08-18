@@ -243,6 +243,12 @@ async function main() {
       await db.query('DELETE FROM staff_users WHERE id = ANY($1::uuid[])', [staffIds]).catch(() => {});
     }
     await db.pool.end().catch(() => {});
+    // AND THE RTL POOL. These suites require the app, which opens `src/db`'s pool
+    // transitively; `db` here is the LONG-TERM one. Leaving the other open kept a
+    // Postgres socket alive until its 30-second idle timeout, so the suite printed
+    // its result and then sat there doing nothing. Across nine suites that was 270
+    // of the 286 seconds the long-term database suites took.
+    await require('../src/db').pool.end().catch(() => {});
   }
 
   console.log(`\n✓ lt product-term (db): ${checks} assertions passed`);
