@@ -5115,3 +5115,77 @@ inventing a key the caller never had (1).
    test** — the ninth instance of that class in this file.
 
 154/154 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.85 — ⛔ A THREE-YEAR PREPAY PENALTY WENT OUT AS A FIVE-YEAR ONE (2026-08-18)
+
+**The owner's second named example**, in their own words:
+
+> *"If you put in a three-year prepayment penalty, you want the pricing for a 3 [year] penalty, just to
+> make sure that the mirror is working correctly … that the system understands your scenario exactly
+> and it doesn't get any of your fields wrong."*
+
+**Measured before the fix.** The structure and the term are two different fields on the wire —
+`PrePayment_Plan_Type` carries the shape, `PrepayTerm` the months — and the term came from
+`prepayMonths` alone, which defaults to 60. So **every** structure went out at five years:
+
+| structure asked for | `PrepayTerm` sent | SMO sent |
+|---|---|---|
+| `3,2,1` | **60 Months** | 5 Yr PPP |
+| `2,1` | **60 Months** | 5 Yr PPP |
+| `5,4,3,2,1` | 60 Months | 5 Yr PPP |
+
+The first row asks Lender Price for *"a three-year step-down, over five years"* — not a product anybody
+sells. The repo's own live measurement puts the 5-year prepay line at **+0.625** and No-Prepay at
+**−2.000**, so a term error is worth roughly **0.5 to 2.6 points**.
+
+**The fix: a step-down structure names its own length.** `3,2,1` is a three-year penalty and cannot be
+anything else, so when a structure is supplied without a term the term is now derived from it.
+Measured after: `3,2,1 → 36 Months / 3 Yr PPP`, `2,1 → 24 Months / 2 Yr PPP`,
+`4,3,2,1 → 48 Months / 4 Yr PPP`.
+
+**⛔ ONLY SOME PLAN TYPES CAN BE DERIVED, and that is asserted rather than assumed.** `6MosInt` ships at
+24, 36, 48 **and** 60 months; `Fixed3` at 12, 24 and open-ended. For those the plan type genuinely does
+not determine a term, the five-year default still applies, and the caller must say. **Inventing a term
+for `6MosInt` would be the same silent mispricing in a new place** — so the table holds only the seven
+unambiguous plan types, and the suite re-measures that ambiguity from the data rather than trusting a
+hand-kept list.
+
+**A contradiction is REFUSED, not resolved.** `prepayStructure:'3,2,1'` with `prepayMonths:60` is two
+different answers to "how long is the penalty", and *both* readings are defensible — which is exactly
+why picking one silently is wrong. It now 422s `prepay_term_conflicts_with_structure`, naming both
+numbers and what to do about it, in the same discipline as `cashout_not_allowed` and
+`unknown_loan_purpose`. Where the plan type names no term, a term beside it is information, not a
+conflict, and is accepted.
+
+**ONE SOURCE OF TRUTH, MECHANICALLY RE-DERIVED.** The per-structure terms live in
+`ppe/ppp-structures.js`, which `search-model` **cannot** require — that module requires
+`lenderprice/field-registry`, so the import would be a cycle. The unambiguous subset therefore sits in
+`field-registry.js`, and the suite **recomputes it from `ppp-structures` on every run** and fails if the
+two drift. A copy that is mechanically re-derived is a cache; a copy nobody checks is a second answer.
+
+**⛔ WHY NOTHING CAUGHT THIS — and a second finding inside the first.** On the canonical 299-scenario
+battery this fix changes **0 request bodies**, because **not one battery scenario carries a
+`prepayStructure` at all**. The battery has a group *named* `pppstruct` — and all eight of its scenarios
+vary only `prepayMonths`, the term. **The group name promises a structure sweep; the data delivers a
+term sweep.** So the axis was reported as covered and was never exercised. That is the same shape as
+§2.84 one section above: *a battery that exercises only the vocabulary its own author had in mind
+measures the author, not the code* — here it did not even exercise that, and the group's own name is
+what hid it. Adding real structure scenarios changes what the paid agreement run measures, so it is
+recorded as its own item rather than slipped in beside a fix.
+
+`scripts/test-lt-ppe-prepay-term-derived.js` (48 assertions) pins the derivation, the seven derivable
+plan types with their SMO names, the un-derivable ones keeping the default, explicit-term precedence,
+and the refusal. **Mutation-proven six ways**: the derivation dropped (13 assertions bite), the
+contradiction silently resolved (5), an ambiguous plan type given an invented term (4), one derived term
+wrong (10), the structure overriding an explicit term (1), and `Fixed5`'s open-ended `null` treated as a
+derivable term (1).
+
+Two of those six needed a second pass. The explicit-term-precedence mutation did not bite at first,
+because validation refuses the only pair that would reveal the ordering — so precedence is now asserted
+directly against `buildSearch`, with the reason written where it is done: **the refusal is validation's
+policy, the precedence is the builder's mechanism, and testing only the first leaves the second free to
+flip.**
+
+155/155 suites, 33 database-backed. All seven gates green.

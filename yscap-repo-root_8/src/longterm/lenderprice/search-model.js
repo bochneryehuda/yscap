@@ -18,7 +18,7 @@ const zipCounty = require('./zip-county');
 // §33.2/§33.3 — confirmed-token resolvers for the two menu fields the builder used to hard-code
 // (IncomeDocType was always "DSCR", PrePayment_Plan_Type always "Standard"). Bound locally so the
 // builder reads the same way as the other mapX helpers in this file.
-const { mapIncomeDocType, mapPrepayStructure, PREPAY_STRUCTURE_NULL } = registry;
+const { mapIncomeDocType, mapPrepayStructure, PREPAY_STRUCTURE_NULL, PREPAY_PLAN_TERM_MONTHS } = registry;
 
 // Symbol channel for registry validation warnings (invalid enum values). Symbol-keyed properties
 // are skipped by JSON.stringify, so attaching this to the built payload never pollutes the body
@@ -691,9 +691,27 @@ function buildSearch(sc = {}, opts = {}) {
   if (attach !== undefined) pm.attachmentType = attach;
   if (sc.nonWarrantable !== undefined) pm.nonWarrantableProject = !!sc.nonWarrantable;
   const months = num(sc.prepayMonths);
-  // Omitted → the profile's five-year default; 0 stays an explicit "no prepay". Both the SMO list
-  // and the dynamic pair below read THIS value, never `months`, so they cannot disagree.
-  const effMonths = months != null ? months : DEFAULT_PREPAY_MONTHS;
+  // ⛔ A STEP-DOWN STRUCTURE IS ITS OWN LENGTH (§2.85). "3,2,1" is a step-down over THREE years, and
+  // before this the term came from `prepayMonths` alone — so a caller who chose 3,2,1 and no term got
+  // `PrePayment_Plan_Type: "321"` beside the profile's `PrepayTerm: "60 Months"`. That request says
+  // "a three-year step-down, over five years", which is not a product anybody sells. Measured: EVERY
+  // structure went out as "60 Months / 5 Yr PPP".
+  //
+  // Only the plan types that genuinely determine a term are derived (`PREPAY_PLAN_TERM_MONTHS`);
+  // `6MosInt` ships at 24/36/48/60 and `Fixed3` at 12/24/open, so for those the caller must still
+  // say, and the five-year profile default still applies. Inventing a term for those would be the
+  // same silent mispricing in a new place.
+  //
+  // AN EXPLICIT TERM ALWAYS WINS over the derivation — but a term that CONTRADICTS an unambiguous
+  // structure is refused outright in validateInputs rather than silently resolved either way.
+  const planForTerm = mapPrepayStructure(sc.prepayStructure);
+  const structureMonths = (planForTerm != null && planForTerm !== PREPAY_STRUCTURE_NULL)
+    ? PREPAY_PLAN_TERM_MONTHS[planForTerm] : undefined;
+  // Omitted → the structure's own term when it names one, else the profile's five-year default; 0
+  // stays an explicit "no prepay". Both the SMO list and the dynamic pair below read THIS value,
+  // never `months`, so they cannot disagree.
+  const effMonths = months != null ? months
+    : (structureMonths != null ? structureMonths : DEFAULT_PREPAY_MONTHS);
 
   // ⛔ THE BODY'S COMPANY IS THE SESSION'S COMPANY, NOT THE ONE FROZEN IN THE CAPTURE.
   //
@@ -1340,6 +1358,22 @@ function validateInputs(sc = {}) {
   if (sc.incomeDocType != null && sc.incomeDocType !== '' && mapIncomeDocType(sc.incomeDocType) == null) {
     return bad('invalid_income_doc_type', 'incomeDocType',
       `Unknown income documentation type ${JSON.stringify(String(sc.incomeDocType))}. Supported: ${Object.keys(registry.INCOME_DOC_TYPES).join(', ')}.`);
+  }
+  // ⛔ A TERM THAT CONTRADICTS ITS STRUCTURE IS REFUSED, NOT RESOLVED (§2.85). `prepayStructure:'3,2,1'`
+  // with `prepayMonths:60` is two different answers to "how long is the penalty", and BOTH readings
+  // are defensible — which is exactly why picking one silently is the wrong move. Same discipline as
+  // `cashout_not_allowed` and `unknown_loan_purpose` below: refuse and name both halves, rather than
+  // price a loan the caller did not describe. Only checked where the plan type actually determines a
+  // term; `6MosInt` and `Fixed3` carry several, so a term beside them is information, not a conflict.
+  {
+    const plan = mapPrepayStructure(sc.prepayStructure);
+    const want = (plan != null && plan !== PREPAY_STRUCTURE_NULL) ? PREPAY_PLAN_TERM_MONTHS[plan] : undefined;
+    const given = sc.prepayMonths == null || sc.prepayMonths === '' ? null : Number(sc.prepayMonths);
+    if (want != null && given != null && Number.isFinite(given) && given !== want) {
+      return bad('prepay_term_conflicts_with_structure', 'prepayMonths',
+        `Prepayment structure ${JSON.stringify(String(sc.prepayStructure))} is a ${want}-month penalty, but prepayMonths says ${given}. `
+        + 'These are two different loans. Send the structure alone (the term is taken from it), or send a term that matches it.');
+    }
   }
   if (sc.prepayStructure != null && sc.prepayStructure !== '' && mapPrepayStructure(sc.prepayStructure) == null) {
     return bad('invalid_prepay_structure', 'prepayStructure',

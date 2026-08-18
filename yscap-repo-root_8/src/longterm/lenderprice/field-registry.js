@@ -138,6 +138,36 @@ function mapIncomeDocType(v) {
 // inputs. The DECLARED_NULL sentinel distinguishes "this structure is a real choice whose token is
 // null" from "unrecognized" so a caller can select No Prepay explicitly.
 const PREPAY_STRUCTURE_NULL = Symbol('prepay.noPrepay');
+// ⛔ WHICH PREPAY PLAN TYPES NAME THEIR OWN TERM (§2.85).
+//
+// A prepayment structure and a prepayment TERM are two different fields on the wire — `PrepayTerm`
+// carries the months, `PrePayment_Plan_Type` carries the shape. But a step-down structure IS its own
+// length: "3,2,1" is a step-down over three years and cannot be anything else. Before this, a caller
+// who chose a 3,2,1 structure and no term got `PrePayment_Plan_Type: "321"` alongside the profile's
+// five-year default `PrepayTerm: "60 Months"` — a request that says "a three-year step-down, over
+// five years", which is not a product anybody sells. Measured on every structure: all of them went
+// out as "60 Months / 5 Yr PPP".
+//
+// ⛔ AND ONLY SOME OF THEM CAN BE DERIVED. `6MosInt` ships at 24, 36, 48 AND 60 months, and `Fixed3`
+// at 12, 24 and open-ended — so for those the plan type genuinely does NOT determine the term and a
+// caller must still say. Listing only the unambiguous ones is the honest table; inventing a term for
+// `6MosInt` would be the same class of silent mispricing this fixes.
+//
+// THIS IS A DERIVED SUBSET, NOT A SECOND SOURCE OF TRUTH. The per-structure terms live in
+// `ppe/ppp-structures.js`, which cannot be required from here (it requires THIS file — the import
+// would be a cycle). So the subset is written out, and `test-lt-ppe-prepay-term-derived.js`
+// RECOMPUTES it from `ppp-structures` on every run and fails if the two ever drift apart. A copy that
+// is mechanically re-derived is a cache; a copy that nobody checks is a second answer.
+const PREPAY_PLAN_TERM_MONTHS = {
+  54321: 60,
+  4321: 48,
+  5432: 48,
+  321: 36,
+  543: 36,
+  21: 24,
+  Fixed2: 12,
+};
+
 const PREPAY_STRUCTURES = {
   Standard: 'Standard',
   'No Prepay': PREPAY_STRUCTURE_NULL,
@@ -374,6 +404,6 @@ const REGISTRY_FIELDS = [
 
 module.exports = { applyRegistry, resolvePropertyType, PROPERTY_TYPES, REGISTRY_FIELDS,
   mapIncomeDocType, INCOME_DOC_TYPES,
-  mapPrepayStructure, PREPAY_STRUCTURES, PREPAY_STRUCTURE_NULL,
+  mapPrepayStructure, PREPAY_STRUCTURES, PREPAY_STRUCTURE_NULL, PREPAY_PLAN_TERM_MONTHS,
   BORROWER_TYPES,
   _tokens: { CITIZENSHIP, TRADELINES, BK_CHAPTER, BK_STATUS, BK_SEASONING, FORECLOSURE, SHORTSALE, DEEDINLIEU, CHARGEOFF, FORBEARANCE, LATE_COUNT, COMP_TYPE } };
