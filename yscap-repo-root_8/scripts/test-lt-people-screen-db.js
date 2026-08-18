@@ -44,6 +44,12 @@ async function main() {
   let checks = 0;
   const ok = (c, w) => { assert.ok(c, w); checks++; };
   const eq = (a, b, w) => { assert.strictEqual(a, b, w); checks++; };
+  // A deep comparison that carries its OWN sentence. Without it the first draft of
+  // this suite put `assert.deepStrictEqual(...)` on one line and `ok(true, '…')` on
+  // the next — so the check that could fail had no words, and the words were
+  // attached to a check that could not. A label on a tautology is worse than no
+  // label: it reads, and counts, as proof of something nothing verified.
+  const same = (a, b, w) => { assert.deepStrictEqual(a, b, w); checks++; };
 
   const stamp = `ltps-${Date.now().toString(36)}`;
   const logins = [];
@@ -115,12 +121,10 @@ async function main() {
     // ── A. THE ROLES — THE EVIDENCE THE DECISION IS MADE ON ───────────────
     const confirmed = by.get(confirmedLogin);
     ok(confirmed, 'the confirmed login is on the screen');
-    assert.deepStrictEqual(confirmed.roles, ['Loan Officer', 'Closer']);
-    checks++;
-    ok(true,
+    same(confirmed.roles, ['Loan Officer', 'Closer'],
       'THE ONE THAT MATTERS: what Encompass says this person DOES reaches the screen — "is this the loan officer or the closer?" is answered by the roles, and without them a reviewer is matching on a name alone');
-    assert.deepStrictEqual(by.get(strangerLogin).roles, ['Underwriter']);
-    checks++;
+    same(by.get(strangerLogin).roles, ['Underwriter'],
+      '…on an undecided row too, which is the row where a reviewer needs it most');
 
     // ── B. WHO DECIDED, AND WHAT HAPPENS WHEN THEY LEAVE ──────────────────
     eq(confirmed.confirmedBy, decider, 'the person who confirmed the link is recorded');

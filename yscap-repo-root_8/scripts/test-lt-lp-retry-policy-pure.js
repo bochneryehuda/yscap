@@ -190,7 +190,11 @@ async function main() {
     globalThis.fetch = realFetch;
     eq(r.ok, true, 'the retry succeeds');
     const retried = calls.filter((c) => c.url.includes('/pricing/searchRaw') && c.body);
-    ok(retried.length >= 1, 'the retry really was sent');
+    // Exactly one: `calls` was cleared by reset(), and this block records a
+    // searchRaw body only on the SECOND attempt. "At least one" would have passed
+    // a wrapper that retried in a loop, which is the other half of the rule this
+    // section is about.
+    eq(retried.length, 1, 'the retry was sent exactly once');
     eq(JSON.parse(retried[retried.length - 1].body).criteria.fromBase, 'second',
       'THE ONE THAT MATTERS: the retry is built from the FRESH live config, not from the stale one — re-posting the body that just failed and calling it a recovery is the failure this whole wrapper exists to avoid');
   }
