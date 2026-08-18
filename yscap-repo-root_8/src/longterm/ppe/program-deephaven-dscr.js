@@ -66,6 +66,13 @@ const DESCRIPTOR = assertDescriptor({
   // cut table. The program engine uses it to reconcile the matrix's `unverifiable` catalog: an overlay
   // whose fact is covered here is no longer "nobody can check it". Derived from the table, never hand-kept.
   overlayCoverage: [...new Set(DEEPHAVEN_OVERLAY_CUTS.map((g) => g.when))],
+  // The overlay CUT TABLE itself, carried on the descriptor so a self-audit can ENUMERATE the decline
+  // codes this layer is capable of emitting. Without it the overlay layer is a closed function: its
+  // declines can be counted but never checked for completeness, so a dead overlay rule (an encoded cut
+  // that can never fire) would be invisible — the exact defect class the program self-audit exists for.
+  // It is the SAME table the coverage above is derived from, passed by reference, never a second copy.
+  // Read-only: nothing in the pricing pipeline reads it.
+  overlayCuts: DEEPHAVEN_OVERLAY_CUTS,
 });
 
 /**

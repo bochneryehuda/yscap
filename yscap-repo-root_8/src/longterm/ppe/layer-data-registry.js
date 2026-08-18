@@ -150,6 +150,11 @@ function descriptorForRegistration(reg) {
     evaluateOverlay: reg.slots.evaluateOverlay,  // still code
     evaluateInformational: reg.slots.evaluateInformational, // still code
     overlayCoverage: reg.slots.overlayCoverage || [],
+    // The overlay layer's own CUT TABLE, when the registration supplies one. It is carried purely so a
+    // self-audit can ENUMERATE the decline codes this still-code layer can emit — without it that layer
+    // is a closed function whose declines can be counted but never checked for completeness, so a cut
+    // that can never fire would be invisible. Nothing in the pricing pipeline reads it.
+    overlayCuts: reg.slots.overlayCuts || [],
     // the versions this program prices on — a descriptor can always answer "which data am I?"
     dataVersions: reg.dataVersions,
     compiledLayers: { eligibility: elig, ppp },
@@ -219,6 +224,7 @@ registerProgram({
     evaluateOverlay: (facts, o) => evaluateOverlayDeclines(facts, o),
     evaluateInformational,
     overlayCoverage: [...new Set(DEEPHAVEN_OVERLAY_CUTS.map((g) => g.when))],
+    overlayCuts: DEEPHAVEN_OVERLAY_CUTS,   // enumerable for the self-audit; see descriptorForRegistration
   },
 });
 

@@ -17,6 +17,10 @@
  * written). Keeping the audit decoupled from scenario GENERATION is deliberate: one digest shape works
  * for every source.
  *
+ * HOW TO ACTUALLY RUN IT: `node scripts/lt-ppe-program-audit.js` takes every program in the catalog
+ * (both registries), pushes a deterministic full-grid battery through it and prints the digest as a
+ * report a non-developer can act on — including the three-way answer for a rule that never fired.
+ *
  * PURE: no DB, no network, no clock, no randomness. LT-only; no RTL import.
  */
 
