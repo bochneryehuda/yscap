@@ -2293,3 +2293,47 @@ coarse axes, dropping the dimension rows, flattening every status to `llpa_misma
 per-scenario row cap, and ignoring which bounds checks were gated. Plus a CONTROL that an agreeing
 scenario contributes no record, and the invariant that **every** recorded disagreement names at least
 one cause — none is ever recorded blank.
+
+**§2.38 — TWO LANDMINES ON THE SCENARIO PATH, FOUND BY MEASUREMENT (2026-08-18).** Both were invisible,
+both were found by running things rather than reading them, and one of them very nearly got the wrong
+fix.
+
+**A NUL BYTE WAS THE "IMPOSSIBLE" SENTINEL.** `agreement-scenario-generator`'s `distinctFrom` and `notIn`
+mint a value nothing real can collide with — for falsifying an `eq` leaf or satisfying a `nin` — and
+built it out of `\0`. A sentinel is assigned into a scenario's FACTS, the facts become its `_label`, and
+a label travels as far as `agreement-store.recordRun`, which stores the run summary as **jsonb**.
+Postgres refuses a NUL in jsonb: measured, `22P05 unsupported Unicode escape sequence`, with the
+identical summary minus the NUL storing fine. **STATED HONESTLY: this is LATENT, not live.** That
+generator is NOT the producer of the canonical 299-scenario battery — that is `agreement-scenarios.js`,
+a different function of the same name — and its only caller today, the coverage check, stores nothing.
+No run has lost a verdict to it. It is a landmine on the path every future generated scenario takes, and
+the repo's existing NUL defence cannot reach it: `lib/nul-strip` scrubs INBOUND request bodies, and this
+value is minted by our own code long past that boundary. A second consequence was quieter and possibly
+worse: two raw NULs made the file read as **binary** to `git`, `grep` and `file`, so no text-based guard
+could ever see inside it and its diffs were unreviewable. The sentinels are now printable, which is
+equally impossible to collide with and additionally readable in a label a human is reading.
+
+**A STATED LOCK NEVER REACHED THE ENGINE — AND THE OBVIOUS FIX WAS WORSE THAN THE BUG.** The Lender
+Price scenario names the lock `lockDays`; `lpScenarioToFacts` read nothing of the sort, so a scenario
+asking the vendor for a 45-day lock was priced here as the 30-day default and the two legs answered
+about two different loans — the §2.14 class again, a fact transmitted to the vendor that our own engine
+never sees. The seductive fix is to route `lockDays` into `lock_days`. **That produces a worse silent
+failure, and it was measured before it shipped: 0 rungs.** `lock_days` is the RUNG-SELECTION key —
+`quote.selectRungs` filters the base ladder by it and the sheet publishes ONE ladder, at 30 days — while
+`lock_term_days` is what the 45/60-day adjustment prices on. `deephaven-dscr-prepay-maxprice`'s own
+header states that split deliberately and its `lockTermFacts` emits the pair. Pinning the rung key to
+the requested period matches no rung and returns `eligible: true` with an EMPTY ladder: a priced loan
+with no price. So the ladder key stays at its default and the requested period rides on `lock_term_days`.
+
+**THE PAYOFF IS A PRICE THAT MOVES, NOT A FACT THAT EXISTS.** `dhvn_lock_45` and `dhvn_lock_60` were
+measured as never firing once across the whole 299-scenario battery, for exactly this reason — nothing
+emitted the fact they key on. Priced now against the real composed Deephaven sheet: 30 days carries no
+lock line, 45 days fires `dhvn_lock_45` at **0.150**, 60 days fires `dhvn_lock_60` at **0.300**, and the
+ladder holds all 28 rungs at every lock. Today's battery states no lock on any of its 299 scenarios, so
+**no measured parity number moves** — this is the lock-edge scenarios the battery still needs being able
+to mean something when they are added.
+
+Seven mutations proven to turn the suite red, including the two that matter most: reverting
+`lock_term_days` puts both LLPAs back to never firing, and applying the WRONG fix drops the ladder to
+0 rungs at 45 and 60 days while every other assertion stays green. The Postgres refusal is proven with
+a CONTROL either side — a summary from the real battery stores, the same shape carrying a NUL does not.

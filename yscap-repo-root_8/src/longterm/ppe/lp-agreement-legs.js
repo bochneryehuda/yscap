@@ -104,7 +104,25 @@ function lpScenarioToFacts(s) {
     // `Other - Non-Warrantable` add-on LLPA (measured live 2026-08-17), which REPLACES the plain Condo
     // line on a non-warrantable condo (the condo add-on is gated `non_warrantable != true`).
     non_warrantable: !!(sc.nonWarrantable || sc.non_warrantable || sc.nonWarrantableProject),
-    lock_days: num(sc.lock_days) || 30,
+    // A STATED LOCK NOW REACHES THE ENGINE — as the PRICING key, never as the rung key.
+    //
+    // The LP scenario names the lock `lockDays`, and nothing here read it: a scenario asking Lender
+    // Price for a 45-day lock was priced HERE as the 30-day default, so the two legs answered about two
+    // different loans. Same class as the short-term-rental miss (§2.14) — a fact transmitted to the
+    // vendor that our own engine never sees.
+    //
+    // THE OBVIOUS FIX IS WRONG, AND `deephaven-dscr-prepay-maxprice` says so in its own header: the two
+    // facts are deliberately distinct. `lock_days` is the RUNG-SELECTION key — `quote.selectRungs`
+    // filters the base ladder by it, and the sheet publishes ONE ladder, at 30 days — while
+    // `lock_term_days` is what the 45/60-day adjustment prices on. Setting `lock_days: 45` therefore
+    // matches no rung at all and yields `eligible: true` with an EMPTY ladder: a priced loan with no
+    // price, which is a worse silent failure than the one being fixed. So the ladder key stays at its
+    // default and the requested period rides on its own fact, exactly as that sheet's own `lockTermFacts`
+    // emits the pair. This also makes `dhvn_lock_45` / `dhvn_lock_60` reachable — measured as never
+    // firing precisely because nothing ever emitted the fact they key on.
+    lock_days: num(sc.lock_days) != null ? num(sc.lock_days) : 30,
+    lock_term_days: num(sc.lockDays) != null ? num(sc.lockDays)
+      : (num(sc.lock_term_days) != null ? num(sc.lock_term_days) : 30),
     // Layer-2/Layer-3 facts the pricer carries but this converter used to DROP, so a live LP scenario
     // could never trip the subordinate-not-allowed rule (deephaven-matrix reads f.subordinate_amount)
     // nor the borrower-type-dependent PPP rules (deephaven-ppp-matrix reads borrower_type — e.g. NJ
