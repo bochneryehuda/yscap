@@ -297,10 +297,34 @@ services:
         fromDatabase: { name: yscap, property: connectionString }
       # The Lender Price login. Authorized by the owner in writing on 2026-08-18 for live comparison at
       # all times; it lives here as a dashboard value and never in the code.
+      #
+      # ⛔ ALL THREE, AND THE THIRD IS NOT OPTIONAL. `lenderprice/client.credentials()` is
+      # `!!(username && password && clientSecret)` — with LP_CLIENT_SECRET absent, `configured()` is
+      # false and every scenario in the battery comes back `lp_creds_missing`. This service declared
+      # only the first two, so the moment the schedule could actually reach the tick (§2.64) it would
+      # still have priced nothing. The web service has carried all three all along, which is why
+      # pricing works there and is exactly the comparison nothing was making.
+      # `scripts/test-lt-ppe-canary-driver.js` now derives the required list from the code and reads
+      # THIS FILE, so a credential added to the client can never be forgotten here again.
       - key: LP_USERNAME
         sync: false
       - key: LP_PASSWORD
         sync: false
+      - key: LP_CLIENT_SECRET
+        sync: false
+      # ⛔ FAIL CLOSED ON A STALE FOUNDATION — and this matters MORE here than on the web service.
+      # The connector clones the company's live defaultSearch + SMO registry for every pricing job and
+      # falls back to a months-old captured snapshot if either call fails. That fallback is accepted
+      # upstream and prices a materially different loan without erroring anywhere (the 2026-08-16 audit
+      # measured 475 frontend rows against 752 from the fallback on one matched scenario).
+      #
+      # This job's WHOLE PURPOSE is noticing when Lender Price changes. Priced against a stale
+      # foundation it would not merely be wrong — it would manufacture disagreements, record them as
+      # real findings, and drag down the agreement rate and the clean-day streak that the go-live gate
+      # reads. A run that refuses is a gap somebody can see; a run that quietly compares against last
+      # quarter's configuration is a measurement nobody can trust. Deployment policy, not a secret.
+      - key: LP_REQUIRE_LIVE_FOUNDATION
+        value: "1"
 
   - type: cron
     name: ys-capital-backup

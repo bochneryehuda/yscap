@@ -167,6 +167,52 @@ console.log('\n— A3. the deployment vs the gate —');
     `THE ONE THAT MATTERS: with exactly the environment render.yaml gives it, the scheduled job is not turned away (${out.outcome})`);
   ok(!Object.keys(declared).includes('LT_PPE_CANARY_DRIVER_ENABLED'),
     '…and it is not turned away because somebody quietly set the in-process switch on it — the service does not carry that switch at all');
+
+  // ⛔ AND IT MUST BE ABLE TO PRICE ONCE IT GETS THERE. Reaching the tick is only half of a working
+  // schedule; the other half is the vendor login. `client.credentials()` is
+  // `!!(username && password && clientSecret)`, so a service missing ANY of the three has
+  // `configured() === false` and every scenario in the battery comes back `lp_creds_missing` — a
+  // schedule that runs, measures nothing, and records that it measured nothing.
+  //
+  // THE LIST IS DERIVED, NEVER RETYPED. `lp-agreement-legs` already owns the one definition of what
+  // the live legs need (`LP_CRED_ENV`, which its own `readiness()` reports against), and the two
+  // assertions below tie that list to what `client.js` ACTUALLY reads and then to what this service
+  // declares. A credential added to the client therefore fails here rather than being discovered on a
+  // quiet morning — which is precisely what did happen: this service carried the login and the
+  // password and not the client secret, while the web service had all three all along and nothing
+  // compared them.
+  const REQUIRED_CREDS = require('../src/longterm/ppe/lp-agreement-legs')._internals.LP_CRED_ENV;
+  const clientSrc = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'src', 'longterm', 'lenderprice', 'client.js'), 'utf8');
+  const credFn = (clientSrc.match(/function credentials\(\)[\s\S]*?\n}/) || [''])[0];
+  for (const key of REQUIRED_CREDS) {
+    ok(new RegExp(`process\\.env\\.${key}\\b`).test(credFn),
+      `the client really does require ${key} — the list is not a second copy that could drift`);
+  }
+  ok(/ok:\s*!!\(username && password && clientSecret\)/.test(credFn),
+    '…and all three are required TOGETHER, so a missing one is not a degraded login but no login at all');
+
+  // ⛔ AND THE OTHER DIRECTION, which is the one that actually protects anything. Walking the list and
+  // checking each entry is real passes just as happily on a list somebody SHORTENED — and a credential
+  // dropped from the list is a credential nobody notices is missing from the service. So the list is
+  // rebuilt from the function itself: every environment value `credentials()` reads must be in it.
+  const readByClient = [...new Set([...credFn.matchAll(/process\.env\.(LP_[A-Z0-9_]+)/g)].map((m) => m[1]))];
+  const notInList = readByClient.filter((k) => !REQUIRED_CREDS.includes(k));
+  ok(readByClient.length > 0 && notInList.length === 0,
+    `every credential the client reads is in the one required list${notInList.length ? ` — missing ${notInList.join(', ')}` : ` (${readByClient.length})`}`);
+
+  const missingCreds = REQUIRED_CREDS.filter((k) => !Object.keys(declared).includes(k));
+  ok(missingCreds.length === 0,
+    `THE SECOND HALF: the scheduled job declares every credential the client requires${missingCreds.length ? ` — missing ${missingCreds.join(', ')}` : ''}`);
+
+  // ⛔ AND IT MUST NOT PRICE FROM A STALE FOUNDATION. The connector falls back to a months-old
+  // captured configuration when the live one cannot be fetched, and that fallback is accepted upstream
+  // while pricing a materially different loan. On THIS job — whose entire purpose is noticing when
+  // Lender Price changed — it would manufacture disagreements and record them as real findings,
+  // dragging down the agreement rate and the clean-day streak the go-live gate reads. The web service
+  // sets the fail-closed policy; a pricing job that does not is the more dangerous of the two.
+  ok(/-\s*key:\s*LP_REQUIRE_LIVE_FOUNDATION\s*\n\s*value:\s*"1"/.test(block),
+    'the scheduled job refuses to price from a stale foundation — a measurement against last quarter\'s configuration is worse than none');
 }
 
 // The DEFAULT wiring is real: the driver's fallback tick is the SAME function the HTTP door calls.

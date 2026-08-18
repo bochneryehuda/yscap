@@ -3912,3 +3912,34 @@ kills 1. `test-lt-ppe-claim-drift.js` gained section I so the corrected wording 
 **WHAT THIS DOES NOT CHANGE.** The in-process timer is still off and still arms nothing; merging the
 driver still changes nothing about the running system. The six hours, the clock, the lease and the
 battery are untouched. What changed is that the schedule the owner asked for can now reach them.
+
+**AND THE SAME COMPARISON, RUN ONE STEP FURTHER, FOUND THE NEXT TWO — because reaching the tick is only
+half of a working schedule.**
+
+· **THE CREDENTIAL.** `client.credentials()` is `!!(username && password && clientSecret)`, and the
+  scheduled job declared `LP_USERNAME` and `LP_PASSWORD` and **not `LP_CLIENT_SECRET`**. So the very
+  next thing that would have happened after the fix above is a schedule that fires, reaches the tick,
+  and comes back `lp_creds_missing` on every scenario — running, measuring nothing, and honestly
+  recording that it measured nothing. The web service has carried all three since the day it shipped,
+  which is why pricing demonstrably works there; nothing compared the two services.
+
+· **THE STALE FOUNDATION, and this one is worse.** `LP_REQUIRE_LIVE_FOUNDATION: "1"` sat on the web
+  service and not on the cron. The connector clones the company's live `defaultSearch` + SMO registry
+  for every pricing job and **falls back to a months-old captured snapshot** when either call fails —
+  a fallback that is accepted upstream and prices a materially different loan without erroring
+  anywhere (the 2026-08-16 audit measured 475 frontend rows against 752 from the fallback on one
+  matched scenario). On the job whose entire purpose is noticing when Lender Price changed, that would
+  not merely be wrong: it would **manufacture disagreements**, record them as real findings, and drag
+  down the agreement rate and the clean-day streak that the go-live gate reads. A run that refuses is a
+  gap somebody can see; a run that quietly compares against last quarter's configuration is a
+  measurement nobody can trust. Both are now on the service.
+
+**THE GUARD IS DERIVED IN BOTH DIRECTIONS, and the second direction is the one that protects anything.**
+`lp-agreement-legs.LP_CRED_ENV` is already the one list of what a live leg needs, so the test reads it
+rather than retyping it — then ties it to reality twice: every entry must genuinely be read by
+`client.credentials()`, **and every `LP_*` that function reads must be in the list**. Walking the list
+one way passes just as happily on a list somebody shortened, and a credential dropped from the list is
+a credential nobody notices is missing from the service — measured, not assumed: shrinking the list was
+mutated and the one-way check stayed green. **Mutation-proven three ways** — removing the client secret
+from the service kills 1, removing the fail-closed policy kills 1, and shrinking the required list kills
+1 only once both directions are asserted.
