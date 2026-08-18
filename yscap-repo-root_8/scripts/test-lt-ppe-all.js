@@ -53,11 +53,17 @@ const requireDb = process.env.LT_REQUIRE_DB === '1';
 let failed = 0;
 const dbSuites = [];
 const skipped = [];
+const dbRuns = [];   // one classification per database-backed suite (§2.81)
 for (const f of suites) {
   const r = spawnSync(process.execPath, [path.join(dir, f)], { encoding: 'utf8' });
   const okRun = r.status === 0;
   if (!okRun) failed += 1;
-  if (needsDb(f)) dbSuites.push(f);
+  if (needsDb(f)) {
+    dbSuites.push(f);
+    // CLASSIFIED HERE, from the outcome we already hold. The summary below used to ask only "did any
+    // suite ANNOUNCE a skip", which a suite that FAILED to connect can never do (§2.81).
+    dbRuns.push(scan.classifyDbRun(f, r));
+  }
   const tail = (r.stdout || '').trim().split('\n').pop() || '';
   if (okRun && skipLine(r.stdout)) skipped.push(f);
   console.log(`${okRun ? '  ok  ' : ' FAIL '} ${f}${okRun && tail ? `  — ${tail}` : ''}`);
@@ -67,6 +73,8 @@ for (const f of suites) {
 const passed = suites.length - failed;
 console.log(`\n${passed}/${suites.length} LT PPE suites passed`);
 
+const coverage = scan.dbCoverage(dbRuns);
+
 if (dbSuites.length) {
   if (!hasDb) {
     // Never a footnote. Without a database the most important proofs in this engine did not run, and
@@ -75,17 +83,28 @@ if (dbSuites.length) {
     console.log('    They exited green having proven nothing about the database: ownership, atomicity,');
     console.log('    the driver\'s string types and the publish gate are all UNVERIFIED by this run.');
     console.log('    Re-run with DATABASE_URL set — and set LT_REQUIRE_DB=1 to make this a failure.');
-  } else if (skipped.length) {
-    // The worse case: a database WAS configured and a suite skipped anyway — it could not use the one
-    // it was given, which no summary should round off to "passed".
-    console.log(`\n  ! ${skipped.length} suite(s) SKIPPED even though DATABASE_URL is set — they could not use it:`);
-    for (const f of skipped) console.log(`      ${f}`);
+  } else if (!coverage.allProved) {
+    // ⛔ THE REASSURANCE IS EARNED, NOT ASSUMED (§2.81). This branch used to fire only when a suite
+    // ANNOUNCED a skip — so a suite that FAILED to connect was invisible, and on 2026-08-18 the runner
+    // printed "✓ all 31 database-backed suites ran against a real Postgres" under twenty-five
+    // ECONNREFUSED lines. Now every database-backed suite must have actually PASSED, and whatever did
+    // not is named with the reason it did not count.
+    console.log(`\n  ! ${coverage.unproven.length} of ${coverage.total} database-backed suite(s) proved NOTHING against a database:`);
+    for (const r of coverage.unproven) console.log(`      ${r.file} — ${r.status}: ${r.why}`);
+    if (coverage.unreachable) {
+      console.log(`    ${coverage.unreachable} of those could not reach a database at all — DATABASE_URL is set, so check that the server is up.`);
+    }
+    console.log(`    ${coverage.proved} of ${coverage.total} did prove something. Ownership, atomicity, the driver's`);
+    console.log('    string types and the publish gate are UNVERIFIED for the rest of this run.');
   } else {
-    console.log(`\n  ✓ all ${dbSuites.length} database-backed suites ran against a real Postgres.`);
+    console.log(`\n  ✓ all ${coverage.proved} database-backed suites ran against a real Postgres.`);
   }
 }
 
-const unproven = hasDb ? skipped.length : dbSuites.length;
+// WHAT "UNPROVEN" MEANS, and it is the second half of the same defect. This used to be `skipped.length`
+// with a database configured — so `LT_REQUIRE_DB=1`, the flag whose whole job is to GUARANTEE database
+// coverage in CI, was satisfied by a run in which every database suite failed to connect.
+const unproven = hasDb ? coverage.unproven.length : dbSuites.length;
 if (requireDb && unproven) {
   console.log(`\n  ✗ LT_REQUIRE_DB=1 and ${unproven} suite(s) did not prove anything against a database.`);
   process.exit(1);

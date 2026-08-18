@@ -4839,3 +4839,71 @@ so the aggregate PPE runner still reports **150/150** — this one runs from the
 which is why `check-lt-suite-coverage` had to be satisfied by naming it there. Across the whole
 Long-Term tree that gate now reads **226 of 229 suites executed by something**, with the remaining three
 recorded in `LT-SUITES-UNRUN.md` with their reasons.
+
+**§2.81 — THE RUNNER SAID "ALL 31 DATABASE-BACKED SUITES RAN AGAINST A REAL POSTGRES" IN A RUN WHERE
+THE DATABASE WAS DOWN (2026-08-18).**
+
+**REPRODUCED, not theorised — it happened to this session's own run.** The scratch Postgres crashed
+mid-battery. Nineteen suites failed, twenty-five `ECONNREFUSED` lines scrolled past, and the summary
+read:
+
+```
+136/150 LT PPE suites passed
+
+  ✓ all 31 database-backed suites ran against a real Postgres.
+```
+
+Both sentences are literally true about what they measure, and together they are a lie about what a
+reader is asking. **This is the TENTH instance of this one runner's own class** — the file was already
+hardened once for "a failure that looks like a clean pass".
+
+**THE MECHANISM.** The reassurance was guarded on `skipped.length`, and `skipped` only ever collected
+suites that **passed** while announcing a skip (`okRun && skipLine(...)`). A suite that FAILED to
+connect could never be in that list, so it was invisible to the one sentence whose entire job is to
+tell a human that the database coverage is real.
+
+**THE SHARPER HALF.** `LT_REQUIRE_DB=1` — the flag CI sets to GUARANTEE database coverage — computed
+its `unproven` count from that same list. With the database down, `unproven` was **0** and the flag was
+satisfied. The run failed that day for other reasons; a suite that swallowed its connection error and
+exited 0 would have made it pass outright, which is the class the flag exists to prevent.
+
+**THE FIX IS A CLASSIFICATION, IN THE SHARED MODULE.** `lt-suite-scan.classifyDbRun` gives every
+database-backed suite one of four outcomes — `proved` / `skipped` / `unreachable` / `failed` — and
+`dbCoverage` rolls them up. It lives beside `needsDb` and `skipLine` for the reason that module already
+states: the runner and the coverage gate must not disagree about what a database suite did.
+
+**⛔ ONLY A FAILING SUITE IS EVER CALLED `unreachable`, and the asymmetry is the whole safety
+property.** Several suites here deliberately ASSERT on connection-failure wording while proving that
+something fails closed, so reclassifying a PASSING suite on the strength of a string in its output is
+exactly the match-a-word trap `skipLine` already documents. Requiring the non-zero exit FIRST means the
+signature can only ever explain a failure that already happened — it can never manufacture one. Pinned
+directly: a suite that passes while printing `ECONNREFUSED` is `proved`, and the run still earns its ✓.
+
+**A SUITE THAT FAILED FOR ITS OWN REASONS IS ALSO UNPROVEN, deliberately.** From the runner we cannot
+tell whether it reached the database at all, and the honest answer to *"is the database coverage real"*
+is no while any of it is red — so it is reported as `failed: it may still have reached the database`,
+which states the uncertainty rather than inventing an outage nobody measured.
+
+**NOTHING IS ROUNDED UP AND NOTHING IS ROUNDED DOWN.** The failing summary now names every suite that
+proved nothing and why, says how many DID prove something, and adds the actionable line when the cause
+is reachability (*"DATABASE_URL is set, so check that the server is up"*). A clean run is byte-identical
+— the ✓ still appears, now counting the suites that PROVED rather than the ones that existed — because
+a reassurance that stops appearing when it is true teaches everyone to ignore the block, which is the
+same defect one step on. The no-`DATABASE_URL` branch is untouched.
+
+`scripts/test-lt-ppe-runner-db-claim.js` (26 assertions) runs the REAL runner against a staged
+directory of stand-in suites, so what is asserted is what a person would actually read rather than a
+re-implementation of the summary. **Mutation-proven six ways**: the old `skipped`-only guard returning
+(6 assertions fall), the require-db flag going back to counting announced skips, a passing suite being
+reclassified by a string, an own-failure counting as proof, `stderr` no longer being read (a thrown
+connection error rarely reaches stdout), and an empty set claiming "all proved".
+
+**ONE MORE THING THE FIX CAUGHT ON ITSELF.** `needsDb` reads a suite's SOURCE for the environment
+variable, so the first cut of this suite — which spells that token to BUILD its stand-in fixtures —
+counted itself as database-backed and was classified `proved`, taking the runner's count from 31 to 32.
+A suite that touches no database claiming to have proven something against a real Postgres is precisely
+the defect this file closes, committed by the file that closes it. The fixture template now assembles
+the token instead of spelling it, with the reason written where it is done; the generated fixtures still
+carry the real token, so the scanner sees exactly what it is meant to.
+
+151/151 suites, 31 of them database-backed.

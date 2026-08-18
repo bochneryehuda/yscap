@@ -71,6 +71,95 @@ const SKIP_RE = /skipped/i;
 const skipLine = (out) => String(out || '').split('\n')
   .some((l) => SKIP_RE.test(l) && /DATABASE_URL/.test(l));
 
+/**
+ * DID THIS DATABASE-BACKED SUITE ACTUALLY PROVE ANYTHING AGAINST A DATABASE?
+ *
+ * ⛔ REPRODUCED 2026-08-18, and it is the tenth instance of this file's own class. The scratch Postgres
+ * crashed mid-run. Nineteen suites failed, twenty-five ECONNREFUSED lines went by, and the runner
+ * printed:
+ *
+ *     136/150 LT PPE suites passed
+ *     ✓ all 31 database-backed suites ran against a real Postgres.
+ *
+ * The reassurance fired because it was guarded on `skipped.length`, and `skipped` only ever collected
+ * suites that PASSED while announcing a skip — a suite that FAILED to connect was invisible to it. So
+ * the one sentence whose entire job is to tell a human "your database coverage is real" said exactly
+ * that in a run where a third of it had not happened. Worse, `LT_REQUIRE_DB=1` computed its
+ * `unproven` count from the same `skipped` list, so the flag that exists to GUARANTEE database
+ * coverage was satisfied by a run in which every database suite failed to connect.
+ *
+ * FOUR OUTCOMES, and the distinctions are the point:
+ *   proved       — exit 0, no announced skip. The only one that counts.
+ *   skipped      — exit 0, but it said it could not use the database it was given.
+ *   unreachable  — it FAILED and its output carries a database-unreachable signature.
+ *   failed       — it failed for its own reasons; it may still have reached the database.
+ *
+ * ⛔ ONLY A FAILING SUITE IS EVER CALLED `unreachable`. A passing suite is never reclassified on the
+ * strength of a string in its output — several suites here deliberately ASSERT on connection-failure
+ * wording while proving that something fails closed, and reading their success as an outage is the
+ * match-a-word trap the skip rule above already documents. Requiring the non-zero exit first means the
+ * signature can only ever explain a failure that already happened, never manufacture one.
+ */
+const DB_UNREACHABLE_RE = new RegExp([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'could not connect',
+  'connection refused',
+  'connection terminated',
+  'the database system is (?:starting up|shutting down|in recovery)',
+  'password authentication failed',
+  'role "[^"]*" does not exist',
+  'database "[^"]*" does not exist',
+  'no pg_hba\\.conf entry',
+  'too many clients already',
+  'server closed the connection unexpectedly',
+].join('|'), 'i');
+
+/**
+ * Classify one database-backed suite's run.
+ *   { file, status, exitCode, why } — status ∈ proved | skipped | unreachable | failed
+ * PURE: it is handed the outcome, it never runs anything.
+ */
+function classifyDbRun(file, { status, stdout, stderr } = {}) {
+  const okRun = status === 0;
+  const out = `${stdout || ''}\n${stderr || ''}`;
+  if (okRun) {
+    return skipLine(out)
+      ? { file, status: 'skipped', exitCode: 0, why: 'it announced that it could not use the database it was given' }
+      : { file, status: 'proved', exitCode: 0, why: null };
+  }
+  if (DB_UNREACHABLE_RE.test(out)) {
+    return { file, status: 'unreachable', exitCode: status, why: 'it failed and its output names a database it could not reach' };
+  }
+  return { file, status: 'failed', exitCode: status, why: 'it failed for its own reasons — it may still have reached the database' };
+}
+
+/**
+ * Roll a set of classifications into the one question a summary may answer:
+ * did EVERY database-backed suite prove something against a database?
+ *
+ * `unproven` is everything that is not `proved`. A suite that failed for its own reasons counts as
+ * unproven deliberately: we cannot tell from here whether it got as far as the database, and the honest
+ * answer to "is the database coverage real" is no while any of it is red.
+ */
+function dbCoverage(classifications = []) {
+  const rows = Array.isArray(classifications) ? classifications.filter(Boolean) : [];
+  const by = (s) => rows.filter((r) => r.status === s);
+  const proved = by('proved');
+  const unproven = rows.filter((r) => r.status !== 'proved');
+  return {
+    total: rows.length,
+    proved: proved.length,
+    skipped: by('skipped').length,
+    unreachable: by('unreachable').length,
+    failed: by('failed').length,
+    unproven,
+    allProved: rows.length > 0 && unproven.length === 0,
+  };
+}
+
 module.exports = {
   SUITE_RE,
   PPE_SUITE_RE,
@@ -78,6 +167,9 @@ module.exports = {
   discover,
   ppeSuites,
   needsDb,
+  DB_UNREACHABLE_RE,
+  classifyDbRun,
+  dbCoverage,
   skipLine,
   _internals: { READS_DB_ENV, OPENS_PG, SKIP_RE },
 };

@@ -206,16 +206,32 @@ try {
       'D4 and it confirms every database-backed suite ran');
     ok(skippedList(r.out).length === 0,
       'C1 a suite whose assertion label merely contains "skipped" is NOT reported as skipped');
-    ok(!/SKIPPED even though/.test(r.out), 'C2 nothing is reported as skipped when nothing skipped');
+    // ⛔ THE WORDING MOVED IN §2.81, and the assertion moved WITH it rather than being dropped. The old
+    // block only ever fired on an announced SKIP, so a suite that FAILED to connect was invisible to it
+    // and the ✓ below printed anyway; the summary now reports everything that proved nothing, whatever
+    // the reason. What C2 pins is unchanged in meaning: a clean run raises no such warning at all.
+    ok(!/proved NOTHING against a database/.test(r.out),
+      'C2 nothing is reported as unproven when every database-backed suite proved something');
   }
   {
     const r = run({ LT_REQUIRE_DB: '1', DATABASE_URL: FAKE_DB, FX_FORCE_SKIP: '1' });
     ok(r.status === 1, 'E1 a suite that skips DESPITE a database fails the run');
-    ok(r.out.includes('1 suite(s) SKIPPED even though DATABASE_URL is set'),
+    ok(/1 of \d+ database-backed suite\(s\) proved NOTHING against a database/.test(r.out),
       'E2 and that is called out as the worse case, with a count');
     const named = skippedList(r.out);
-    ok(named.includes('test-lt-ppe-fx-needs.js'), 'E3 the skipping suite is named individually');
+    ok(named.some((l) => l.startsWith('test-lt-ppe-fx-needs.js')),
+      'E3 the skipping suite is named individually');
     ok(named.length === 1, 'E4 and only that one — the wordy label is still not a skip');
+    // STRENGTHENED with the wording change (§2.81): a reader must be able to tell WHY a suite proved
+    // nothing, because "it told us it could not use the database" and "it could not reach one at all"
+    // send you to two different places. And the reassurance must be absent — that it was NOT is the
+    // whole defect §2.81 records.
+    ok(named.some((l) => / — skipped: /.test(l)),
+      'E5 …with the REASON beside it, so an announced skip is distinguishable from an unreachable database');
+    ok(!/✓ all \d+ database-backed suites ran against a real Postgres/.test(r.out),
+      'E6 …and the run does NOT claim every database-backed suite ran');
+    ok(/\d+ of \d+ did prove something/.test(r.out),
+      'E7 …while still saying how much DID prove something, so the honest partial is never rounded away');
   }
 
   // ---- F: an actual failure still fails ---------------------------------------------------------
