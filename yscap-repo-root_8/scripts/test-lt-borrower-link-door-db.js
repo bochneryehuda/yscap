@@ -110,10 +110,18 @@ async function main() {
     );
     madeLoans.push(String(loans[0].id));
 
-    // The client-facing switch is OFF by default and off is a state, not a
-    // failure — so it is turned ON here deliberately. Without this the borrower's
-    // door would answer `{enabled:false, loans:[]}` and section C below would go
-    // green while proving nothing.
+    // PIN THE CLIENT-FACING SWITCH ON, explicitly.
+    //
+    // This comment used to say the switch is OFF by default and that without this
+    // line section C would prove nothing. That was WRONG:
+    // `borrower.longTermVisible` has defaulted to TRUE since the owner said "turn
+    // switch on" (2026-08-17), so the write is a no-op today and section C would
+    // have run either way. I had copied the claim out of my-loans.js, where it
+    // was equally stale — which is how a wrong sentence spreads.
+    //
+    // The line stays, now for its real reason: it makes this suite independent of
+    // that default. If the switch is ever turned off, section C keeps testing what
+    // it was written to test instead of quietly asserting an empty list.
     await ltDb.query(
       `INSERT INTO lt_settings (scope, key, value, updated_at)
        VALUES ('company', 'borrower.longTermVisible', 'true'::jsonb, now())

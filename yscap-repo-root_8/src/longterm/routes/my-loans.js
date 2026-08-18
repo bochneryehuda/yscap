@@ -8,11 +8,23 @@
 // It is still Long-Term's own code, under /api/lt/*, in src/longterm/** — the
 // charter's namespace rules hold; only the authentication differs.
 //
-// BUILT READY, SWITCHED OFF (owner-directed 2026-08-16, "build it ready"). With
-// `borrower.longTermVisible` off — the default, and the state it ships in — this
-// answers `{enabled:false, loans:[]}` and the portal renders no switch at all. It
-// deliberately answers 200 rather than 404: the front end has to be able to tell
-// "this is off" from "this is broken", and the owner turning it on must be one
+// BUILT READY (owner-directed 2026-08-16, "build it ready") AND NOW SWITCHED ON
+// (owner-directed 2026-08-17, "turn switch on"). `borrower.longTermVisible`
+// DEFAULTS TO TRUE, so on an untouched deployment a borrower does see their
+// confirmed long-term files.
+//
+// This comment said the opposite until 2026-08-18 — three times, in the words it
+// shipped with on the 16th. The behaviour followed the owner's instruction
+// correctly; only the prose was left behind. That is not a harmless staleness on
+// a CLIENT-FACING door: anybody reasoning about what a borrower can see would
+// have read this file, concluded the surface was dark, and been wrong. The
+// registry's own `evidence` line is the record, and
+// `test-lt-borrower-switch-db.js` asserts the declared default so it cannot move
+// again without somebody saying so.
+//
+// Turned OFF it answers `{enabled:false, loans:[]}` and the portal renders no
+// switch at all — 200 rather than 404, deliberately: the front end has to tell
+// "this is off" from "this is broken", and moving it either way must be one
 // setting rather than a deploy.
 //
 // A BORROWER SEES ONLY WHAT A HUMAN CONFIRMED IS THEIRS. The list is keyed on
@@ -42,8 +54,11 @@ async function longTermVisible() {
     const { settings } = await settingsStore.load();
     return settings['borrower.longTermVisible'] === true;
   } catch (e) {
-    // A settings read that fails is not permission to show a client an unfinished
-    // product. Off is the safe answer and the one it ships in.
+    // A settings read that fails is not permission to show a client anything. Off
+    // is the safe answer — note it is NO LONGER the shipped default (that is now
+    // on), so this is a genuine fail-closed rather than a coincidence of the two
+    // agreeing. `=== true` above is the other half: a settings object that came
+    // back empty, or a value that is the string "true", reads as OFF.
     console.error('[lt] borrower long-term visibility check failed:', (e && e.message) || e);
     return false;
   }

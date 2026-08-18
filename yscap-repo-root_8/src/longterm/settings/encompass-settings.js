@@ -513,12 +513,18 @@ const SETTINGS = [
     evidence: 'Long-Term is a side build and is not live, so the default must stay RTL — '
       + 'nobody should be moved to the new side by a deploy.' },
 
-  // THE BORROWER'S OWN SWITCH — BUILT READY, AND SWITCHED OFF.
+  // THE BORROWER'S OWN SWITCH — BUILT READY, AND NOW ON.
   //
   // The owner (2026-08-16): *"The borrower should also have, in their login, the
   // option to switch from long-term to short-term."* Asked whether to turn it on,
-  // they answered *"build it ready"* — so it is wired end to end and this one
-  // setting is the whole of what stands between it and the client's screen.
+  // they answered *"build it ready"* — so it was wired end to end and left off.
+  // On 2026-08-17 they said *"turn switch on"*, and the default below is `true`.
+  //
+  // This comment still said "AND SWITCHED OFF" until 2026-08-18, directly above a
+  // declaration that reads `default: true`. The `evidence` field beneath it had
+  // been updated and the heading had not, which is the more dangerous half: a
+  // reader who trusts headings and skims fields gets the opposite of the truth
+  // about what a client can see.
   //
   // DEFAULT TRUE — THE OWNER SAID GO (2026-08-17: *"turn switch on"*), which is the
   // "until they say otherwise" this setting was built waiting for. It shipped
