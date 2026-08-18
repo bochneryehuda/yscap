@@ -207,6 +207,38 @@ doorWired('src/lib/intake-auto-register.js', 'program_discontinued', 'the public
     assert(/classList\.remove\(["']pcard-right["']\)/.test(js),
       'D16e a hidden card sheds the right-column class (a restored card re-ranks cleanly)');
   }
+
+  // D17 — THE MARKETING SITE follows the same switches (owner-directed
+  // 2026-08-18: "on the marketing site, the Gold program should also be
+  // discontinued from now"). The homepage hero's program showcase reads the
+  // SAME public /api/pricing-defaults feed and removes a discontinued
+  // program's tab — generically, for ANY program the Admin Center turns off —
+  // failing OPEN to everything-shown (a fetch hiccup must never blank the
+  // hero; the register doors are the real gate).
+  {
+    const home = read('web/v2/index.html');
+    assert(/fetch\(['"]\/api\/pricing-defaults['"]/.test(home),
+      'D17 the homepage hero asks /api/pricing-defaults for the program switches');
+    assert(/row\.active === false/.test(home) && /b\.hidden = off/.test(home),
+      'D17b a discontinued program\'s tab is REMOVED (hidden), keyed on active === false, per program');
+    assert(/\.ts-tabs button\[hidden\]\{display:none;\}/.test(home),
+      'D17c the [hidden] tab is pinned display:none so a future button style cannot disarm it');
+    assert(/catch\(function\(\)\{\s*\/\*[^*]*\*\/\s*\}\)/.test(home) || /catch\(function\(\)\{/.test(home),
+      'D17d the fetch fails OPEN — an unreachable feed leaves the static showcase intact');
+    assert(/if \(activeGone && firstShown\) paint\(firstShown\)/.test(home),
+      'D17e when the default program is the discontinued one, the first offered program takes over the card');
+  }
+
+  // D18 — the db/584 one-shot seed exists and carries the whole-history guard
+  // (the deep proof lives in test-program-availability-seed-db.js; this is the
+  // cheap tripwire that runs with no database).
+  {
+    const seed = read('db/584_discontinue_gold_program.sql');
+    assert(/"gold":\{"active":false\}/.test(seed.replace(/\s/g, '')),
+      'D18 db/584 seeds Gold to discontinued');
+    assert(/NOT EXISTS/.test(seed) && /program_availability IS NOT NULL/.test(seed),
+      'D18b the seed is one-shot by HISTORY — it can never fight an admin\'s later re-enable');
+  }
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');
