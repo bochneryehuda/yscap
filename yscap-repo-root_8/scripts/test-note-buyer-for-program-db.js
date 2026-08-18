@@ -54,7 +54,16 @@ const SCENARIO = {
   await new Promise((r) => server.once('listening', r));
   const sfx = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
   let staffId = null, borrowerId = null;
+  let priorProgAvail = null;
   try {
+    // THIS SUITE'S BASELINE: every program OFFERED. Since db/584 a FRESH database
+    // boots with Gold already discontinued (the owner's shipped state), so a
+    // suite that REGISTERS Gold must state its own precondition — establish the
+    // all-offered map, then put back whatever was there (the db/584 seed's
+    // history guard keeps it from ever re-firing over this).
+    priorProgAvail = (await db.query(`SELECT program_availability FROM company_pricing_settings WHERE is_current LIMIT 1`)).rows[0] || null;
+    await db.query(`UPDATE company_pricing_settings SET program_availability=NULL WHERE is_current`);
+    require('../src/lib/pricing-settings').bust();
     staffId = (await db.query(
       `INSERT INTO staff_users (email,full_name,role,is_active,mfa_enabled,password_hash,token_version)
        VALUES ($1,'Owner','super_admin',true,false,'x',0) RETURNING id`,
@@ -239,6 +248,8 @@ const SCENARIO = {
     console.error('FAIL unexpected error:', (e && e.stack) || e);
     failures++;
   } finally {
+    if (priorProgAvail) await db.query(`UPDATE company_pricing_settings SET program_availability=$1 WHERE is_current`, [priorProgAvail.program_availability]).catch(() => {});
+    require('../src/lib/pricing-settings').bust();
     if (borrowerId) {
       await db.query(`DELETE FROM applications WHERE borrower_id=$1`, [borrowerId]).catch(() => {});
       await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]).catch(() => {});

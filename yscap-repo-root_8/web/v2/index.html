@@ -96,6 +96,7 @@
 .m-hero .ts-tabs{display:flex;border-bottom:1px solid var(--mk-linesoft);}
 .m-hero .ts-tabs button{flex:1;background:transparent;border:0;border-bottom:2px solid transparent;font-family:var(--mk-sans);font-weight:600;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--mk-inksoft);padding:13px 0;cursor:pointer;}
 .m-hero .ts-tabs button.on{color:var(--mk-ink);border-bottom-color:var(--mk-gold);}
+.m-hero .ts-tabs button[hidden]{display:none;} /* a discontinued program's tab is gone, not greyed */
 .m-hero .ts-body{padding:18px 22px 6px;}
 .m-hero .ts-prop{font-size:13px;color:var(--mk-inksoft);letter-spacing:.01em;margin-bottom:14px;}
 .m-hero .ts-prop b{color:var(--mk-ink);font-weight:600;}
@@ -1061,6 +1062,31 @@ section[id], main[id]{ scroll-margin-top:96px; }
     paint(b.getAttribute('data-prog'));
   });
   paint('gold');   // best-case Gold is the default landing view
+  /* Program ON/OFF switches (owner-directed 2026-08-18): a program the Pricing
+     Admin Center has DISCONTINUED disappears from this showcase too — its tab
+     is removed and the first still-offered program takes over the card, for ANY
+     program the settings turn off. Progressive enhancement exactly like the
+     roster hydration below: if the fetch fails or the shape is unreadable,
+     everything stays shown (the register doors are the real gate — a hiccup
+     here must never blank the homepage hero). */
+  if (window.fetch) fetch('/api/pricing-defaults', { credentials: 'omit' })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      var pa = d && d.programAvailability;
+      if (!pa || typeof pa !== 'object') return;
+      var btns = tabs.querySelectorAll('button[data-prog]');
+      var firstShown = null, activeGone = false;
+      Array.prototype.forEach.call(btns, function(b){
+        var k = b.getAttribute('data-prog');
+        var row = pa[k];
+        var off = !!(row && typeof row === 'object' && row.active === false);
+        b.hidden = off;
+        if (off && b.classList.contains('on')) activeGone = true;
+        if (!off && !firstShown) firstShown = k;
+      });
+      if (activeGone && firstShown) paint(firstShown);
+    })
+    .catch(function(){ /* keep the static showcase */ });
 })();
 
 /* Hydrate the "Meet our team" section from the LIVE staff roster (/api/roster),
