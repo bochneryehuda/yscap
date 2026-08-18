@@ -19,6 +19,8 @@
  * Pure + offline. LT-only; no RTL imports.
  */
 
+const { resolveCitizenship } = require('./citizenship');
+
 // STRICT numeric parse (audit — advanced numbers were too permissive): the old
 // `replace(/[^0-9.\-]/g,'')` turned "12abc3" into 123 and priced it. Now a value that is not a plain
 // number (after stripping only currency formatting) returns null → the caller records a warning → the
@@ -324,7 +326,18 @@ function applyRegistry(m, sc) {
   if (sc.lateInLast12Months === true) setDyn(m, 'Lateinlast12months', 'true');
 
   // --- citizenship / tradelines ---
-  if (sc.citizenship != null) { if (CITIZENSHIP.has(sc.citizenship)) setDyn(m, 'Citizenship', sc.citizenship); else bad('citizenship', sc.citizenship, CITIZENSHIP); }
+  // §2.97 — THE FOREIGN-NATIONAL BRIDGE, and the most expensive drop the §2.96 fidelity sweep left
+  // behind. `foreign_national: true` used to move NOTHING on the wire while the base body carried
+  // `Citizenship: 'US Citizen'`, so the mirror affirmatively described a foreign national as a US
+  // citizen: measured live 2026-08-18, that is 13 programs quoted that the borrower cannot have, the
+  // six foreign-national products hidden, and a 4.125-point error on Deephaven — our own sheet's
+  // investor, which itemizes `DSCR (All) - Foreign National` at 4.000 by name. `citizenship.js`
+  // carries the measurement and owns the token set; BOTH directions of the fact read it, because a
+  // one-sided bridge is how §2.94 left our own leg pricing zero of seven prepay-structure scenarios.
+  // A conflicting pair (flag true + a non-FN citizenship) is refused UPSTREAM in search-model's
+  // validateInputs, not resolved here — so by the time this runs, `token` is the one answer.
+  const cz = resolveCitizenship(sc);
+  if (cz.token != null) { if (CITIZENSHIP.has(cz.token)) setDyn(m, 'Citizenship', cz.token); else bad('citizenship', cz.token, CITIZENSHIP); }
   if (sc.tradelines != null && sc.tradelines !== '') { if (TRADELINES.has(sc.tradelines)) setDyn(m, 'Tradelines', sc.tradelines); else bad('tradelines', sc.tradelines, TRADELINES); }
   // §31.8 item 7 — OPEN QUESTION FOR THE VENDOR, DELIBERATELY NOT RESOLVED HERE. The audit
   // contradicts ITSELF about how "no mortgage history" travels, and the two halves are different

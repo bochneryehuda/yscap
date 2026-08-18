@@ -14,6 +14,7 @@
  */
 const BASE = require('./search-base.json');
 const registry = require('./field-registry');
+const { resolveCitizenship } = require('./citizenship');
 const zipCounty = require('./zip-county');
 // §33.2/§33.3 — confirmed-token resolvers for the two menu fields the builder used to hard-code
 // (IncomeDocType was always "DSCR", PrePayment_Plan_Type always "Standard"). Bound locally so the
@@ -1412,6 +1413,23 @@ function validateInputs(sc = {}) {
       return bad('prepay_term_conflicts_with_structure', 'prepayMonths',
         `Prepayment structure ${JSON.stringify(String(sc.prepayStructure))} is a ${want}-month penalty, but prepayMonths says ${given}. `
         + 'These are two different loans. Send the structure alone (the term is taken from it), or send a term that matches it.');
+    }
+  }
+  // ⛔ A BORROWER WHO IS BOTH A FOREIGN NATIONAL AND NOT ONE IS REFUSED, NOT RESOLVED (§2.97). Same
+  // discipline as the prepay conflict directly above: `foreign_national: true` alongside
+  // `citizenship: 'Perm Resident'` names two different borrowers, priced 4.125 points apart on
+  // Deephaven alone, and either reading is defensible — so picking one silently is the wrong move.
+  // ONLY an explicit `true` conflicts. `foreign_national: false` is the Advanced section's DEFAULT
+  // value, so a UI posting every checkbox sends it on every request; treating that as a contradiction
+  // of a deliberately-chosen citizenship would 422 ordinary traffic. The three ForeignNational* tokens
+  // AGREE with the flag and are not conflicts — `citizenship.js` owns that set and the measurement.
+  {
+    const cz = resolveCitizenship(sc);
+    if (cz.conflict) {
+      return bad('citizenship_conflicts_with_foreign_national', 'citizenship',
+        `foreign_national is true but citizenship says ${JSON.stringify(String(cz.conflict.citizenship))}. `
+        + 'These are two different borrowers, priced differently. Send the citizenship alone (a foreign-national '
+        + 'token already implies the flag), or drop the citizenship and let the flag speak.');
     }
   }
   if (sc.prepayStructure != null && sc.prepayStructure !== '' && mapPrepayStructure(sc.prepayStructure) == null) {

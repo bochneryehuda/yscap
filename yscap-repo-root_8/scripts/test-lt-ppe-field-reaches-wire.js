@@ -88,17 +88,15 @@ const NOT_TRANSMITTED = {
     + "route's effectiveScenario echo and any future measured rule all read it — WITHOUT putting a "
     + 'guessed token on the wire. The repo has measured what an unpublished token costs (a fake reserves '
     + 'token lost a whole lender program), so nothing is invented here.',
-  foreign_national:
-    'OPEN GAP, not a decision. The vendor DOES have the field — `citizenship: "Foreign National"` is a '
-    + 'validated token that reaches `dyn.Citizenship` today — so a scenario setting `foreign_national: '
-    + 'true` is affirmatively transmitted as a US CITIZEN (the base default). §2.92 measured that BOTH '
-    + "Deephaven documents cap a foreign national at 70% and AGREE, so the fact matters. Bridging it is a "
-    + 'one-line change that alters what the vendor prices, so it is measured first, not guessed — the '
-    + 'same discipline `short_term_rental` was held to before its bridge was added.',
   declining_market:
-    'OPEN GAP. `GLOBAL_DECLININGMARKET` is a real dynamic property present in all seven captured '
-    + 'frontend requests, and no scenario field writes it. Same treatment as foreign_national: a live '
-    + 'probe before a bridge.',
+    'MEASURED AND INERT — no longer an open gap, and no longer a bridge worth building (§2.97). '
+    + '`GLOBAL_DECLININGMARKET` IS on the wire: the base body carries it on every request with '
+    + '`value: null`. Probed live 2026-08-18 by patching the built body directly with five candidate '
+    + "tokens — 'true', boolean true, 'Yes', 'Y', 'Declining' — against the same scenario. EVERY one "
+    + 'was inert: 19 programs, 499 rungs, 499 ladder points, zero moved, max delta 0. None was rejected '
+    + 'either, so this is not the hazard where an unpublished token silently costs a lender program — '
+    + 'the vendor holds the field and prices nothing on it. There is nothing for a scenario field to '
+    + 'change, so `advanced-facts` records `lpPrices: false` (a measurement) and no bridge is added.',
   renovation:
     'OPEN GAP. No captured vendor field is known for it, so unlike the two above there is not even a '
     + 'token to bridge to. It is an overlay fact our own engine may cut on; the vendor is not told.',
@@ -145,8 +143,16 @@ for (const key of Object.keys(NOT_TRANSMITTED)) {
 ok(dropped.length === Object.keys(NOT_TRANSMITTED).length,
   `the two lists balance exactly (${dropped.length} dropped, ${Object.keys(NOT_TRANSMITTED).length} recorded)`);
 // Deliberate and open must be distinguishable, or the list is just a longer silence.
-ok(/DELIBERATE/.test(NOT_TRANSMITTED.occupancy) && /OPEN GAP/.test(NOT_TRANSMITTED.foreign_national),
+ok(/DELIBERATE/.test(NOT_TRANSMITTED.occupancy) && /OPEN GAP/.test(NOT_TRANSMITTED.renovation),
   'the record says which omissions are DECISIONS and which are GAPS — the distinction nothing could make before');
+// §2.97 — `foreign_national` LEFT this list, and that departure is asserted rather than merely implied:
+// it was the most expensive drop the §2.96 sweep found (13 programs quoted that the borrower cannot
+// have, and 4.125 points on Deephaven), so a regression that re-silenced it must fail here loudly and
+// not merely as an off-by-one in the balance count above.
+ok(!Object.prototype.hasOwnProperty.call(NOT_TRANSMITTED, 'foreign_national'),
+  'foreign_national is NOT recorded as not-transmitted — it was bridged in §2.97');
+ok(dropped.includes('foreign_national') === false,
+  'foreign_national reaches the wire (measured: it swaps 13 of 19 programs and moves Deephaven 4.125 points)');
 
 // ---- C: the twins, both directions ---------------------------------------------------------------
 console.log('\n-- C: one fact, two spellings, one answer --');

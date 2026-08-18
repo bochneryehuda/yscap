@@ -113,19 +113,22 @@ ok(two.count === byGroup.ineligible + byGroup.flags, 'include with two groups re
   // answer is identical and the second call learns nothing. Recorded, not silently accepted: the
   // number is pinned so it cannot creep, and deduplicating them is its own item (they are attributed
   // to two groups in the report, so collapsing them changes what each group claims to cover).
-  // ⛔ 32 -> 29 WHEN §2.96 BRIDGED THREE DROPPED FIELDS. `rural_property`, `first_time_investor` and
-  // `first_time_homebuyer` were accepted and never transmitted, so the three advanced scenarios that
-  // set them sent a request byte-identical to the plain baseline — they were duplicates BECAUSE the
-  // fields were dropped. Bridging them turned three wasted calls into three real measurements, and
-  // this pinned number going red is how that was noticed rather than assumed.
-  ok(dups.length === 29,
+  // ⛔ 32 -> 29 WHEN §2.96 BRIDGED THREE DROPPED FIELDS, THEN 29 -> 28 WHEN §2.97 BRIDGED A FOURTH.
+  // `rural_property`, `first_time_investor`, `first_time_homebuyer` and then `foreign_national` were
+  // accepted and never transmitted, so the advanced scenarios that set them sent a request
+  // byte-identical to the plain baseline — they were duplicates BECAUSE the fields were dropped, and
+  // we paid for a call that could not measure the thing it named. Bridging turns each wasted call into
+  // a real measurement, and this pinned number going red is how each was noticed rather than assumed.
+  ok(dups.length === 28,
     `${dups.length} scenario pairs build a byte-identical request — pinned so the count cannot creep`);
-  // Four advanced scenarios are STILL duplicates, and each is one whose field is recorded as
-  // not-transmitted. They stop being duplicates when, and only when, those fields are bridged or
-  // ruled out — so this list and that record move together.
-  const stillDup = dups.filter((d) => /occupancy vacant|foreign national|declining market|renovation/.test(d));
-  ok(stillDup.length === 4,
-    `the four remaining advanced duplicates are exactly the not-transmitted fields: ${stillDup.join(' | ')}`);
+  // Three advanced scenarios are STILL duplicates, and each is one whose field is recorded as
+  // not-transmitted in `test-lt-ppe-field-reaches-wire.js` — a DECISION (`occupancy`), a MEASURED
+  // INERT vendor field (`declining_market`) and an OPEN GAP with no vendor field to bridge to
+  // (`renovation`). So this list and that record move together, and unlike the four before them none
+  // of these is expected to fall off by being bridged.
+  const stillDup = dups.filter((d) => /occupancy vacant|declining market|renovation/.test(d));
+  ok(stillDup.length === 3,
+    `the three remaining advanced duplicates are exactly the not-transmitted fields: ${stillDup.join(' | ')}`);
   // ⛔ ONE OF THE 32 IS A PREPAY SCENARIO, AND IT IS NOT ONE OF THE TWO REMOVED. `ppp 5yr` builds the
   // same body as `state CA`, because 60 months IS the profile default — so a scenario labelled "5yr
   // prepay" transmits exactly what a scenario that never mentions prepay transmits. It measures the

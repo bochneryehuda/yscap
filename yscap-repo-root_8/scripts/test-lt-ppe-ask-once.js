@@ -44,19 +44,24 @@ console.log('-- A: what the battery actually asks --');
   const all = buildAgreementScenarios().scenarios;
   const keys = new Set(all.map(bodyKey));
   ok(all.length === 305, `the battery is ${all.length} scenarios`);
-  // ⛔ THIS NUMBER MOVED 32 -> 29 WHEN §2.96 BRIDGED THREE DROPPED FIELDS, and that is the number
-  // working. `rural_property`, `first_time_investor` and `first_time_homebuyer` were accepted and never
-  // transmitted, so the three advanced scenarios that set them sent a request byte-identical to the
-  // plain baseline — they were duplicates BECAUSE the fields were dropped. Bridging the fields turned
-  // three wasted calls into three real measurements. The remaining four advanced duplicates
-  // (`occupancy vacant`, `foreign national`, `declining market`, `renovation cash-out`) are the fields
-  // still recorded as not-transmitted in `test-lt-ppe-field-reaches-wire.js`: they will stop being
-  // duplicates when, and only when, those are bridged or ruled out.
-  ok(keys.size === 276, `…asking ${keys.size} distinct requests`);
-  ok(all.length - keys.size === 29, `…so ${all.length - keys.size} paid calls per run are duplicates`);
+  // ⛔ THIS NUMBER MOVES WHENEVER A DROPPED FIELD IS BRIDGED, and that movement is the point — it is
+  // the two lists staying in step rather than one quietly going stale. 32 -> 29 when §2.96 bridged
+  // `rural_property`, `first_time_investor` and `first_time_homebuyer`; 29 -> 28 when §2.97 bridged
+  // `foreign_national`. Each of those advanced scenarios was a duplicate BECAUSE its field was
+  // dropped: it sent a request byte-identical to the plain baseline, so we paid for a call that could
+  // not measure the thing it named. Bridging turns a wasted call into a real measurement.
+  //
+  // The remaining three advanced duplicates are exactly the fields still recorded as not-transmitted
+  // in `test-lt-ppe-field-reaches-wire.js` — `occupancy vacant` (a DECISION: the fact is retained on an
+  // internal channel rather than guessed onto the wire), `declining market` (MEASURED INERT: five
+  // candidate tokens probed live, none moved a single rung) and `renovation cash-out` (an OPEN GAP with
+  // no vendor field to bridge to). None of them will stop being a duplicate by being bridged, so the
+  // count is now expected to hold until a new field is added.
+  ok(keys.size === 277, `…asking ${keys.size} distinct requests`);
+  ok(all.length - keys.size === 28, `…so ${all.length - keys.size} paid calls per run are duplicates`);
   // The pinned count and the not-transmitted record must move together, or one will quietly go stale.
-  const advDup = all.filter((s2) => /^(occupancy vacant|foreign national|declining market|renovation cash-out)$/.test(s2._label || ''));
-  ok(advDup.length === 4, 'the four advanced scenarios whose fields are still not transmitted are present');
+  const advDup = all.filter((s2) => /^(occupancy vacant|declining market|renovation cash-out)$/.test(s2._label || ''));
+  ok(advDup.length === 3, 'the three advanced scenarios whose fields are still not transmitted are present');
   ok(advDup.every((s2) => keys.has(bodyKey(s2))), '…and each still sends a request identical to another scenario\'s');
   // The key must be the REQUEST. A scenario-object key would miss the ones that differ in their fields
   // and agree on the wire — `ppp 5yr` states a 60-month prepay and `state CA` states none, and 60 IS

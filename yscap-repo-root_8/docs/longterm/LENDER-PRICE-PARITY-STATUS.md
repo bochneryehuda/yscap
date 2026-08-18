@@ -5917,3 +5917,90 @@ losing its probe value (1).
 mid-session again and 33 suites reported `ECONNREFUSED`. Restarted; 164/164 after.
 
 164/164 suites, 33 database-backed. All seven gates green.
+
+### §2.97 — ⛔ A FOREIGN NATIONAL WAS PRICED AS A US CITIZEN (2026-08-18)
+
+**The defect.** `foreign_national` is an accepted field of the DSCR pricer — the manifest publishes it,
+the Advanced section offers it, our own matrix cuts on it — and setting it built a **byte-identical
+request** to a scenario that never mentioned it. The base body carries `Citizenship: 'US Citizen'`, so
+the mirror was not merely *silent* about a foreign national: it **affirmatively described one as a US
+citizen** on every request. §2.96 recorded this as an open gap and held it to the discipline
+`short_term_rental` was held to — measure the vendor first, then bridge.
+
+**The measurement, live 2026-08-18.** The same scenario twice (NY purchase, 500k/350k, FICO 760,
+DSCR 1.25, 60-mo PPP), `citizenship: 'US Citizen'` vs `citizenship: 'Foreign National'`:
+
+| | US Citizen | Foreign National |
+|---|---|---|
+| programs | 19 | 12 |
+| rungs | 499 | 267 |
+| cheapest coupons | 5.750, 5.875 | *do not exist* |
+
+**13 programs LOST** — six Bluepoint DSCR tiers, Pennymac Non-QM, Acra Platinum Select, AD Mortgage
+DSCR, ARC Edge, ARC Access, AHL Invest Star, Champions Accelerator. Every one of them was on a quote we
+would have handed a foreign national.
+
+**6 programs GAINED**, and they are the products actually built for this borrower: AD Mortgage
+`Foreign National 30 Year Fixed`, ARC `30yr Fixed - Foreign National DSCR`, and four Champions
+`Ambassador` programs. We were hiding them.
+
+**And it is priced, by name.** On the six programs present in BOTH answers, **78 of 182 rungs** are
+priced differently. The worst is our own sheet's investor — Deephaven `DSCR 1.00-1.24 - 30 Yr Fixed`
+@ 6.125%:
+
+```
+US Citizen        price 100.475   DSCR (All) - 760 - 779 / CLTV >65.01 % <= 70.0 %      = 0.125
+Foreign National  price  96.350   DSCR (All) - Foreign National / CLTV >65.01 % <= 70.0 % = 4.000
+```
+
+A **4.125-point** quote error, in the borrower's favour and against us, on every foreign-national
+scenario. Lender Price itemizes the adjustment by name — this is not inference.
+
+**The fix — `src/longterm/lenderprice/citizenship.js`, and it is deliberately BOTH directions.** A
+one-sided bridge is how §2.94 left our own leg pricing zero of seven prepay-structure scenarios, so the
+token set and the measurement live in one module that both legs read:
+
+- **FORWARD** — `foreign_national: true` reaches the wire as the vendor's `Foreign National` token
+  (`field-registry.applyRegistry`).
+- **REVERSE** — `citizenship: 'Foreign National'` makes our engine's `foreign_national` fact true
+  (`advanced-facts.advancedFactsFromScenario`), or our matrix quietly skips its Foreign National row
+  (max loan $1.5M, LTV caps 70/60, DSCR ≥ 1.00) on exactly the scenarios that named the borrower most
+  plainly.
+- **CONFLICT** — `foreign_national: true` alongside a non-FN citizenship is a **422**
+  (`citizenship_conflicts_with_foreign_national`), naming both halves. Same discipline as
+  `prepay_term_conflicts_with_structure`: two different borrowers, priced 4.125 points apart, and
+  either reading is defensible — so picking one silently is the wrong move.
+
+**Three judgement calls, each written where the code is:**
+
+1. **`'ITIN'` is NOT a foreign national.** The vendor lists it separately from its two
+   `ForeignNational…ITIN)` values; reading it as one would apply a 4-point LLPA to a borrower the
+   vendor does not put in that bucket — the same silent-mispricing class in the opposite direction.
+2. **An explicit `false` is inert.** It is the Advanced section's default, so a UI posting every
+   checkbox sends it on every request; treating it as a contradiction would 422 ordinary traffic.
+3. **`overlayOnly` stays true.** Lender Price swapping the *program set* is no evidence it enforces
+   OUR matrix's specific cuts, which remain unmeasured — the same reading `short_term_rental` records.
+
+**`declining_market` was probed in the same pass and is CLOSED, not bridged.** `GLOBAL_DECLININGMARKET`
+is already on the wire on every request with `value: null`. Patching the built body with five candidate
+tokens — `'true'`, boolean `true`, `'Yes'`, `'Y'`, `'Declining'` — moved **nothing**: 19 programs, 499
+rungs, 499 ladder points, zero moved, max delta 0, and none was rejected (so this is not the hazard
+where an unpublished token silently costs a lender program). It is now recorded as `lpPrices: false` —
+a **measurement**, not the old "we never asked" `null` — and there is nothing for a scenario field to
+change until the vendor starts pricing it.
+
+**The durable half.** `scripts/test-lt-ppe-foreign-national.js` (55 assertions): the token set and its
+two deliberate exclusions, the forward bridge on the real builder, the reverse bridge on both our fact
+converter and the agreement harness's, the conflict refused by name with both halves quoted, and the
+measured flags asserted as values in the code rather than prose. Six mutations were each proven to turn
+it red — removing either bridge, counting ITIN, resolving the conflict silently, reverting the flags to
+`null`, and making an explicit `false` assert US Citizen.
+
+**The ripple, and it is the mechanism working.** The pinned duplicate count moved **29 → 28**: the
+battery's `foreign national` scenario was a duplicate *because* the field was dropped, so it sent a
+request byte-identical to the plain baseline and we paid for a call that could not measure the thing it
+named. `test-lt-ppe-ask-once.js` and `test-lt-ppe-agreement-scenarios.js` both went red and were
+updated with that reason. The three advanced duplicates that remain are exactly the three fields still
+recorded as not-transmitted — a decision (`occupancy`), a measured-inert vendor field
+(`declining_market`) and an open gap with nothing to bridge to (`renovation`) — so unlike the four
+before them, none is expected to fall off by being bridged.

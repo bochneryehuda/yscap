@@ -46,13 +46,24 @@ console.log('LT PPE — overlay flag split: two questions, two flags (task #82)\
 // ── A. the two flags, and the honesty rule on the measured one ────────────────────────────────────
 for (const f of AF.ADVANCED_FACTS) {
   ok(f.overlayOnly === true || f.overlayOnly === false, `${f.key}: overlayOnly is a real boolean`);
-  ok(f.lpPrices === true || f.lpPrices === null,
-    `${f.key}: lpPrices is true (measured) or null (not measured) — never a bare false`);
+  // §2.97 — THE BAN ON A BARE `false` BECAME A RECEIPT REQUIREMENT, which is strictly stronger. The
+  // original rule forbade the value outright because, at the time, every `false` in this registry could
+  // only have meant "nobody asked" — the thing #82 existed to stamp out. Then `declining_market` was
+  // probed live (five candidate tokens, not one rung moved) and produced an honest "they do not price
+  // it", which the ban made unrepresentable. So the value is allowed and the DATE is mandatory: an
+  // unmeasured false still cannot exist, and now neither can an unmeasured TRUE.
+  ok(f.lpPrices === true || f.lpPrices === false || f.lpPrices === null,
+    `${f.key}: lpPrices is a real three-state measurement`);
+  ok(f.lpPrices === null ? f.lpPricesMeasured === undefined : /^\d{4}-\d{2}-\d{2}$/.test(String(f.lpPricesMeasured || '')),
+    `${f.key}: a non-null lpPrices carries the date the probe ran, and a null one carries no date`);
 }
-ok(AF.ADVANCED_FACTS.filter((f) => f.lpPrices === true).length === 1,
-  'exactly ONE fact is recorded as measured-priced today — the live short-term-rental probe');
-ok(AF.lpPricedKeys().join(',') === 'short_term_rental', 'and it is short-term rental');
-ok(AF.ADVANCED_FACTS.filter((f) => f.lpPrices === null).length === AF.ADVANCED_FACTS.length - 1,
+// Each of these is a LIVE PROBE somebody paid for, so the set is pinned: a fact appearing here without
+// a recorded measurement is the exact regression this file was built to catch.
+ok(AF.lpPricedKeys().join(',') === 'short_term_rental,foreign_national',
+  'the measured-PRICED facts are short-term rental (2026-08-17) and foreign national (2026-08-18)');
+ok(AF.ADVANCED_FACTS.filter((f) => f.lpPrices === false).map((f) => f.key).join(',') === 'declining_market',
+  'and the one measured-and-INERT fact is declining market — probed 2026-08-18, five tokens, zero rungs moved');
+ok(AF.ADVANCED_FACTS.filter((f) => f.lpPrices === null).length === AF.ADVANCED_FACTS.length - 3,
   'every OTHER fact is honestly unmeasured — the old blanket flag asserted a "no" nobody ever probed');
 
 // The two flags are INDEPENDENT: the one measured fact holds both at once, which under one boolean was

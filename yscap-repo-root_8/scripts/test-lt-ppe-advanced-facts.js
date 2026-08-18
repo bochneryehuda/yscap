@@ -21,9 +21,14 @@ for (const f of AF.ADVANCED_FACTS) {
   const okShape = f.key && f.label && f.type && f.category && f.effect && f.matrixMatch
     && (f.type !== 'enum' || (Array.isArray(f.enumValues) && f.enumValues.length))
     && typeof f.overlayOnly === 'boolean'
-    // `lpPrices` is a MEASUREMENT, so its only honest values are true (a probe itemized a charge) and
-    // null (nobody has asked). A bare `false` would re-assert what the old single flag wrongly claimed.
-    && (f.lpPrices === true || f.lpPrices === null);
+    // `lpPrices` is a MEASUREMENT, so a value other than null must carry its RECEIPT — the ISO date the
+    // probe ran (§2.97). true = a probe itemized a charge; false = a probe asked and the vendor moved
+    // NOTHING; null = nobody has asked, and then there is no date to record. An UNMEASURED false — what
+    // the old single flag wrongly asserted on every fact — is structurally unrepresentable.
+    && (f.lpPrices === true || f.lpPrices === false || f.lpPrices === null)
+    && (f.lpPrices === null
+      ? f.lpPricesMeasured === undefined
+      : /^\d{4}-\d{2}-\d{2}$/.test(String(f.lpPricesMeasured || '')));
   if (!okShape) ok(false, `fact ${f && f.key} is well-formed`);
 }
 ok(true, 'every advanced fact is well-formed');

@@ -25,6 +25,16 @@
  *       nothing — "we never asked" and "they do not price it" are different facts, and the old blanket
  *       `lpVisible:false` asserted the second while only ever meaning the first.
  *
+ * ⚠ A `false` MUST CARRY ITS RECEIPT — `lpPricesMeasured` (§2.97). The paragraph above forbade a bare
+ * `false` for a good reason and, until §2.97, no probe had ever come back empty, so the guards simply
+ * banned the value outright. Then `declining_market` was probed live with five candidate tokens and
+ * moved nothing at all — a genuine, honest "they do not price it", which is exactly the third state the
+ * split was built to make expressible and which the ban made unrepresentable. Rather than relax the ban
+ * to prose ("a false is fine when a comment explains it"), the distinction is now MACHINE-READABLE: a
+ * fact whose `lpPrices` is not null carries `lpPricesMeasured`, the ISO date the probe ran. So the
+ * invariant the guards enforce is the stronger one — `lpPrices !== null` ⟺ a date is recorded — and an
+ * UNMEASURED `false`, the thing §2.82 actually existed to prevent, is still structurally impossible.
+ *
  * The split was forced by a measurement: `short_term_rental` was flagged `lpVisible:false` while Lender
  * Price was measured itemizing 0.500 for it. Under one flag there was no way to record that without
  * dropping short-term rental out of the overlay set (which would restructure D29 on the strength of a
@@ -46,6 +56,8 @@
 // question (see the header): `true` where a live probe itemized a charge, `null` where nobody has asked.
 // Seven of the eight are `null` — the old blanket `lpVisible:false` read as "Lender Price does not price
 // this", and that was never probed for any of them; the one fact that WAS probed came back the other way.
+const { isForeignNationalScenario } = require('../lenderprice/citizenship');
+
 const ADVANCED_FACTS = [
   {
     key: 'occupancy', label: 'Occupancy', type: 'enum', enumValues: ['leased', 'vacant'], default: 'leased',
@@ -77,7 +89,7 @@ const ADVANCED_FACTS = [
     // that says nothing about eligibility. Under the old single flag those two answers fought over one
     // boolean; now each is simply recorded.
     key: 'short_term_rental', label: 'Short-term rental', type: 'boolean', default: false,
-    category: 'property', overlayOnly: true, lpPrices: true,
+    category: 'property', overlayOnly: true, lpPrices: true, lpPricesMeasured: '2026-08-17',
     effect: 'Short-Term Rental: Min DSCR 1.15, Min FICO 720, -5% LTV (75% max), no FTI/2+unit/rural',
     matrixMatch: 'Short-Term Rental',
   },
@@ -94,14 +106,36 @@ const ADVANCED_FACTS = [
     matrixMatch: 'First-Time Homebuyer',
   },
   {
+    // ⚠ THE SECOND MEASURED FACT, and the most expensive one the field sweep found (§2.97).
+    //
+    // Live probe 2026-08-18, same scenario twice (NY purchase, 500k/350k, FICO 760, DSCR 1.25, 60-mo
+    // PPP), `citizenship: 'US Citizen'` vs `citizenship: 'Foreign National'`:
+    //   • PRICED — Lender Price ITEMIZES the fact BY NAME. Deephaven `DSCR 1.00-1.24 - 30 Yr Fixed`
+    //     @ 6.125% carries `DSCR (All) - Foreign National / CLTV >65.01 % <= 70.0 %` = 4.000, in
+    //     place of the 0.125 FICO row a US citizen gets; the rung prices 100.475 -> 96.350. Across the
+    //     six programs present in BOTH answers, 78 of 182 rungs move. So `lpPrices: true`, MEASURED.
+    //   • AND ELIGIBILITY-DECISIVE, which the price flag cannot express: 19 programs / 499 rungs
+    //     becomes 12 / 267. Thirteen programs vanish and six FOREIGN-NATIONAL products appear.
+    //
+    // `overlayOnly` STAYS TRUE, for the same reason it does on short_term_rental above: Lender Price
+    // swapping the PROGRAM SET is no evidence that it enforces OUR matrix's specific cuts (max loan
+    // $1.5M, LTV caps 70/60, DSCR >= 1.00), which remain unmeasured. Two flags, two questions.
     key: 'foreign_national', label: 'Foreign national', type: 'boolean', default: false,
-    category: 'borrower', overlayOnly: true, lpPrices: null,
+    category: 'borrower', overlayOnly: true, lpPrices: true, lpPricesMeasured: '2026-08-18',
     effect: 'Foreign National: max loan $1.5M, LTV caps 70/60, DSCR >= 1.00 only',
     matrixMatch: 'Foreign National',
   },
   {
+    // MEASURED AND INERT (§2.97). `GLOBAL_DECLININGMARKET` is a real dynamic property present in all
+    // seven captured frontend requests, and the base body carries it with `value: null`. Probed live
+    // 2026-08-18 on the same scenario with five candidate tokens — `'true'`, boolean `true`, `'Yes'`,
+    // `'Y'`, `'Declining'` — by patching the built body directly. EVERY ONE was inert: 19 programs,
+    // 499 rungs, 499 ladder points, ZERO moved, max delta 0. None was REJECTED either (no program was
+    // lost), so this is not the "an unpublished token silently costs a lender program" hazard — the
+    // vendor simply does not price or cut on it. So `lpPrices: false` is a MEASUREMENT, not the old
+    // "we never asked" null, and there is nothing to bridge a scenario field to until that changes.
     key: 'declining_market', label: 'Declining market', type: 'boolean', default: false,
-    category: 'appraisal', overlayOnly: true, lpPrices: null,
+    category: 'appraisal', overlayOnly: true, lpPrices: false, lpPricesMeasured: '2026-08-18',
     effect: 'Declining market: Max LTV -5%',
     matrixMatch: 'Declining market',
   },
@@ -173,6 +207,13 @@ function advancedFactsFromScenario(sc) {
     else if (f.type === 'enum') out[f.key] = (v != null && f.enumValues.includes(v)) ? v : f.default;
     else out[f.key] = v === undefined || v === null ? f.default : v;
   }
+  // §2.97 — THE REVERSE HALF OF THE FOREIGN-NATIONAL BRIDGE, and it is not optional. The vendor's own
+  // dropdown is `citizenship`, which is a validated token reaching `dyn.Citizenship`; a caller who
+  // uses it has named the borrower plainly. Without this line our OWN matrix reads `foreign_national:
+  // false` on exactly those scenarios and quietly skips its Foreign National row (max loan $1.5M, LTV
+  // caps 70/60) — the mirror image of the defect the forward bridge fixes, and the same two-leg
+  // asymmetry §2.94 left behind. `citizenship.js` owns which tokens count and the measurement.
+  if (out.foreign_national !== true && isForeignNationalScenario(s)) out.foreign_national = true;
   return out;
 }
 
