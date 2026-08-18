@@ -897,15 +897,66 @@ const RB = (function(){
     finally{ if(btn){ btn.textContent=o; btn.disabled=false; } }
   }
 
-  async function importXlsx(input){ const file=input.files&&input.files[0]; input.value=""; if(!file) return;
-    try{ await ensureXLSX(); const X=window.XLSX; const buf=await file.arrayBuffer(); const wb=X.read(buf,{type:"array"});
+  /* IMPORT — the Excel this tool exported (the hidden _ys snapshot).
+     Refactored 2026-08-18 (owner-directed): importFile(file) takes a File
+     directly so DRAG-AND-DROP can feed it too; importXlsx(input) is the thin
+     <input> wrapper. Three defenses added after the owner's wrong-sheet report
+     (a $50k sheet for a DIFFERENT property imported onto a $41k file — the
+     import silently replaced the file's address and budget and populated no
+     line items):
+       1. VALIDATE BEFORE MUTATING — the snapshot is decoded and shape-checked
+          BEFORE S is touched, so a bad import can never leave a half-applied
+          state (new address + new budget, half-rendered screen, nothing saved).
+       2. THE LOAN FILE'S IDENTITY WINS — in a loan-file context (the URL seeds
+          address/target from the application), an imported snapshot whose
+          address or budget DISAGREES keeps the FILE's values and says so
+          loudly. The sheet's line items still import.
+       3. NOTHING DROPS SILENTLY — an item key the current taxonomy does not
+          know (a sheet from an older tool version) is counted and reported
+          instead of vanishing without a word.
+     The success flash names the address, the budget and the line-item count so
+     a wrong-file import is obvious immediately. */
+  async function importFile(file){ if(!file) return;
+    try{
+      if(!/\.xlsx$/i.test(String(file.name||""))){ flash("That isn't an Excel (.xlsx) file — import the Excel this tool exported."); return; }
+      await ensureXLSX(); const X=window.XLSX; const buf=await file.arrayBuffer(); const wb=X.read(buf,{type:"array"});
       const sh=wb.Sheets["_ys"]; let stt=null;
       if(sh){ const cellStr=addr=>{ const c=sh[addr]; return c&&c.v!=null?String(c.v):""; };
         let n=parseInt(cellStr("B1"),10)||1, payload="";
         for(let i=0;i<n;i++) payload+=cellStr("A"+(2+i));
         if(payload) stt=dec2(payload);
       }
-      if(!stt){ flash("Couldn't read that file — please import an Excel exported by this tool."); return; }
+      if(!stt || typeof stt!=="object"){ flash("Couldn't read that file — please import an Excel exported by this tool."); return; }
+
+      // (1) shape-check + (3) count what the taxonomy can't place, BEFORE any mutation.
+      const items=(stt.items&&typeof stt.items==="object")?stt.items:{};
+      const dropped=[];
+      Object.keys(items).forEach(function(k){
+        if(isCustom(k)) return;                        // custom rows carry their own identity
+        const parts=String(k).split(":"), cid=parts[0], idx=parseInt(parts[1],10);
+        if(!CAT[cid] || !(idx>=0) || idx>=CAT[cid].items.length) dropped.push(k);
+      });
+      dropped.forEach(function(k){ delete items[k]; });
+      stt.items=items;
+
+      // (2) the loan file's own identity wins over the sheet's.
+      const q=new URLSearchParams(location.search||"");
+      const fileAddr=(q.get("address")||"").trim();
+      const fileTarget=parseFloat(String(q.get("target")||"").replace(/[^0-9.]/g,""))||0;
+      const kept=[];
+      if(fileAddr){
+        const impAddr=String(stt.address||"").trim();
+        if(impAddr && impAddr.toLowerCase()!==fileAddr.toLowerCase())
+          kept.push("the property address ("+fileAddr+" — the sheet said "+impAddr+")");
+        stt.address=fileAddr;
+      }
+      if(fileTarget>0){
+        const impTarget=Math.round(num(stt.target)||0);
+        if(impTarget>0 && Math.round(fileTarget)!==impTarget)
+          kept.push("the construction budget ($"+Math.round(fileTarget).toLocaleString()+" — the sheet said $"+impTarget.toLocaleString()+")");
+        stt.target=String(Math.round(fileTarget));
+      }
+
       S=Object.assign(blank(),stt); S.vd=Object.assign(blank().vd,stt.vd||{}); S.cont=Object.assign(blank().cont,stt.cont||{}); S.gcFee=Object.assign(blank().gcFee,stt.gcFee||{}); S.custom=stt.custom||[];
       ensureGoldContingency();   // a Gold file's imported SOW still carries the 5% contingency
       step=STEPS.length-1; render({scroll:true});
@@ -919,9 +970,14 @@ const RB = (function(){
       // stick": staff see the stale total and sign-off is blocked (#122). Fire the
       // portal import hook so the wrapper runs a full submit right after import.
       if(window.RB_PORTAL_ONIMPORT){ try{ window.RB_PORTAL_ONIMPORT(); }catch(e){} }
-      flash("Imported — "+(isMulti()?(unitCount()+" units"):"single-family")+", "+(S.txn==="refi"?"refinance":"purchase")+". Pick up where you left off.");
+      let nItems=0; try{ Object.keys(S.items||{}).forEach(function(k){ if(S.items[k]&&S.items[k].on) nItems++; }); }catch(e){}
+      let msg="Imported — "+(S.address||"no address")+", budget $"+(Math.round(num(S.target))||0).toLocaleString()+", "+nItems+" line item"+(nItems===1?"":"s")+" selected.";
+      if(kept.length) msg+=" ⚠ This loan file's own values were KEPT for "+kept.join(" and ")+" — check the sheet belongs to this property.";
+      if(dropped.length) msg+=" "+dropped.length+" line item(s) could not be matched to the current work list and were not imported.";
+      flash(msg);
     }catch(e){ flash("Import failed — please use a file exported by this tool."); if(window.console)console.error(e); }
   }
+  async function importXlsx(input){ const file=input.files&&input.files[0]; input.value=""; return importFile(file); }
 
   /* ===================== BRANDED PDF (jsPDF — per-unit columns) ===================== */
   async function ensurePDF(){ if(window.jspdf&&window.jspdf.jsPDF){ if(!window.jspdf.jsPDF.API.autoTable){ try{ await loadScript("vendor/jspdf.plugin.autotable.min.js"); }catch(e){ try{ await loadScript("https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"); }catch(e2){} } } return; }
@@ -1242,10 +1298,44 @@ const RB = (function(){
     render();
   }
 
+  /* ---------- drag-and-drop import (owner-directed 2026-08-18) ----------
+     "Everywhere in our system drag-and-drop works — that button should too."
+     The WHOLE page is the drop target (a 40px button is a needle), highlighted
+     while a drag is over it; a dropped .xlsx runs the SAME importFile flow the
+     button does. dragover MUST preventDefault or the browser navigates to the
+     file. dragleave only clears the halo when the pointer actually left the
+     window (relatedTarget null) — child-to-child transitions fire it too.
+     A light version of track-record-portal.js readDroppedFiles: files[] first,
+     then items[].getAsFile() for an Outlook-dragged virtual attachment. */
+  function droppedFile(e){
+    const dt=e.dataTransfer; if(!dt) return null;
+    if(dt.files && dt.files.length) return dt.files[0];
+    if(dt.items && dt.items.length){
+      for(let i=0;i<dt.items.length;i++){
+        const it=dt.items[i];
+        if(it && it.kind==="file"){ const f=it.getAsFile&&it.getAsFile(); if(f) return f; }
+      }
+    }
+    return null;
+  }
+  function wireDrop(){
+    ["dragenter","dragover"].forEach(ev=>document.addEventListener(ev,function(e){
+      e.preventDefault(); e.stopPropagation(); document.body.classList.add("rb-dropping");
+    }));
+    document.addEventListener("dragleave",function(e){
+      e.preventDefault(); e.stopPropagation();
+      if(!e.relatedTarget) document.body.classList.remove("rb-dropping");
+    });
+    document.addEventListener("drop",function(e){
+      e.preventDefault(); e.stopPropagation(); document.body.classList.remove("rb-dropping");
+      const f=droppedFile(e); if(f) importFile(f);
+    });
+  }
+
   /* ---------- init ---------- */
-  function init(){ restore(); prefillFromQuery(); render(); document.addEventListener("click",()=>{ document.querySelectorAll(".rb-tip.show").forEach(t=>t.classList.remove("show")); }); }
+  function init(){ restore(); prefillFromQuery(); render(); wireDrop(); document.addEventListener("click",()=>{ document.querySelectorAll(".rb-tip.show").forEach(t=>t.classList.remove("show")); }); }
   document.addEventListener("DOMContentLoaded", init);
-  return { share, exportXlsx, importXlsx, exportPdf, emailLO,
+  return { share, exportXlsx, importXlsx, importFile, exportPdf, emailLO,
            getState:()=>snap(), setState, grandTotal:()=>grand(),
            subtotal:()=>subtotal(), contingency:()=>contingency(), commit };
 })();
