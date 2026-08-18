@@ -91,7 +91,13 @@ router.get('/', async (req, res) => {
     // NOT the same as "below".
     if (cols.columns.some((c) => c.key === 'dscr')) {
       for (const row of out.loans || []) {
-        const r = row.dscr_ratio == null ? null : Number(row.dscr_ratio);
+        // The SAME conversion the file screen's `num` makes, empty string included:
+        // `dscr_ratio` is a numeric column, so the driver hands back a STRING, and
+        // `Number('')` is a perfectly finite 0 — which would put a red "below" on a
+        // loan whose ratio is blank. The two surfaces must read one column one way
+        // or they will disagree about a loan in front of the same person.
+        const raw = row.dscr_ratio;
+        const r = (raw === null || raw === undefined || raw === '') ? null : Number(raw);
         row.dscrVerdict = dscrVerdict.dscrVerdict(Number.isFinite(r) ? r : null, settings);
       }
     }

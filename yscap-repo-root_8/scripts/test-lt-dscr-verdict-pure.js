@@ -106,8 +106,9 @@ console.log('\nand the pipeline reads the SAME rule, so one loan is never two an
 const cols = fs.readFileSync(path.join(__dirname, '..', 'src/longterm/pipeline-columns.js'), 'utf8');
 check(/dscr: \{ label: 'DSCR', field: 'dscr_ratio'[^}]*kind: 'dscr'/.test(cols),
   'the pipeline\'s DSCR column is its own kind rather than a bare ratio, which is what lets the cell say more than a number');
-check(/dscrVerdict\.dscrVerdict\(Number\.isFinite\(r\) \? r : null, settings\)/.test(routeSrc),
-  'THE ONE THAT MATTERS: the pipeline computes the verdict with the SAME module the file screen uses — a copy in the browser is how two screens come to call one loan below and thin');
+check(/raw === ''\) \? null : Number\(raw\)/.test(routeSrc.replace(/\s+/g, ' '))
+  && /dscrVerdict\.dscrVerdict\(Number\.isFinite\(r\) \? r : null, settings\)/.test(routeSrc),
+  'THE ONE THAT MATTERS: the pipeline computes the verdict with the SAME module the file screen uses, off the same conversion — a copy in the browser is how two screens come to call one loan below and thin, and `Number("")` being a finite 0 is how one of them puts a red mark on a blank ratio');
 check(/cols\.columns\.some\(\(c\) => c\.key === 'dscr'\)/.test(routeSrc),
   '…and only when the column is actually drawn, because a field nothing renders is the shape this side keeps finding');
 
