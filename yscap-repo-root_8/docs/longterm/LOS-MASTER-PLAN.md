@@ -369,6 +369,30 @@ sent that no map recognises — the only place this class can be caught, because
 produces no error and no empty result. Values Encompass merely ALLOWS but nobody has sent are printed
 rather than mapped: mapping one is a guess, and dropping one silently is how this started.
 
+**A REASON MAY NOT CONTRADICT THE CENSUS IT CITES (2026-08-18).** The twenty-one knowingly-empty
+columns each carry a `why` a person reads instead of a dash, and those reasons are ARGUMENTS FROM
+THE CENSUS — "field 541 is filled on 40.2% of long-term loans", "its six values were withheld",
+"nothing in 3,783 fields carries a zone designation". Measuring beats asserting, which is what makes
+them worth reading; it is also exactly what lets them go wrong SILENTLY. Regenerate the census on a
+fresh pull and every number quoted in prose is a fact nothing checks. Both flood reasons were simply
+FALSE: field 541's six values were never withheld — it is a declared enum of 89 allowed values
+labelled "Property Info Flood Zone", and all six of its observed values are on its own list — and the
+sibling reason said flatly that nothing in the census carries a zone designation while that same
+field carries X, AE, X500, A and C. Two sentences on one screen, one contradicting the other's own
+cited field, telling a reader to stop looking for something we hold. `scripts/test-lt-unsourced-
+census-pure.js` now fails the build on a citation the census does not carry, a fill the census
+disagrees with, or a silence claimed about a field the census answers. A reason may still RETRACT an
+earlier claim — a correction has to QUOTE the wrong sentence, so a guard reading the live text would
+fail on the very fix that closed the hole and then be "fixed" by deleting the explanation (the
+precedent is `test-app-dialog-pure.mjs` stripping comments before its must-not-appear checks). So the
+retraction lives in its own `corrected` field and the test is its reader: it must say when, what was
+claimed and why that was wrong, and the retracted sentence must be GONE from what a reader is shown.
+**Six mutations were each proven to turn it red, and one of them was against the test itself** — its
+citation pattern was case-sensitive, a corrected reason opened with "Field 541", and that 40.2%
+quietly stopped being checked while every assertion still read green. A guard that silently measures
+nothing is the same failure it exists to catch, so it now COUNTS: every percentage quoted in any
+reason must bind to a cited field, and one that binds to none fails the build.
+
 **A SETTING IS EITHER READ BY SOMETHING OR SAYS IT IS NOT (2026-08-18).** §7's promise to a buyer is
 that nothing about how WE do things is hard-coded. Forty-three of the 63 settings were declared ahead
 of the code that would read them, so the settings screen offered knobs that changed NOTHING and said
@@ -1467,17 +1491,58 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     another role"), so nobody presses it thinking it only adds somebody. One predicate, no
     migration.
 
-15. **Where is the borrowing ENTITY recorded on a DSCR file, and can we read a flood determination?**
-    Two of the thirteen knowingly-empty columns are the owner's to unblock (§3, `unsourced.js`).
-    (a) **The entity.** A DSCR loan very often closes in an LLC and this tenant keeps no structured
-    record of it: `CX.LLCNAME` / `CX.LLCSTATE` / `CX.LLCCORP` are filled on 4 long-term files (0.8%),
-    field 1867 is free text on 38%, and field 33 "Manner Held" is a dropdown staff type the vesting
-    entity's name into about half the time. Which of those IS the entity is a business rule, and
-    guessing would put a company name on a loan file nobody put there. (b) **The flood
-    determination.** Nothing in the census answers *"is the subject in a special flood hazard area"*
-    in a form we can trust — field 541 is filled on 40% and its six values were withheld from the
-    census by its own PII policy, so reading it as a yes/no would be guessing a vocabulary. One read
-    of that field on a live loan in each state settles it. Neither is a build; each is one answer.
+15. **RE-MEASURED 2026-08-18 — half of this question was asked on a belief the census
+    disproves, and the flood half is now ONE sentence from the owner rather than a reading
+    trip.** Two of the knowingly-empty columns are the owner's to unblock (§3, `unsourced.js`),
+    and both reasons were re-checked against the census rather than re-read.
+
+    (a) **The entity — still open, and the numbers are firmer.** `CX.LLCNAME` / `CX.LLCSTATE` /
+    `CX.LLCCORP` are filled on 4 long-term files (0.8%) — confirmed. Field 1867 is free text on
+    38.0% and URLA.X138 is a vesting TYPE on 43.9% — both confirmed. What was WRONG is field 33
+    "Manner Held": this said staff type the vesting entity's name into it *"about half the
+    time"*, and neither number in that sentence is a measurement. Measured: it is filled on
+    **2.9% of long-term loans (14 files)**, and of the 19 values it was observed carrying across
+    the whole census **15 are an entity name** — and **not one of the 19 is on the field's own
+    allowed list**, so the dropdown's declared vocabulary is used by nobody. That makes field 33
+    a worse candidate than it read as, not a better one: it carries an entity name most of the
+    time it is filled, and it is filled almost never. Which field IS the entity remains a
+    business rule and is still one answer from the owner.
+
+    (b) **The flood determination — the reason for this question was FALSE, and it is worth
+    reading why, because the shape recurs.** It said field 541's six values *"were withheld from
+    the census by its own PII policy — so reading it as a yes/no would be guessing a vocabulary
+    rather than reading one"*, and asked for one read of a live loan in each state. The census
+    holds all six, and always did. Field 541 (`closingDocument.specialFloodHazardAreaIndictor`,
+    labelled **"Property Info Flood Zone"**) is a **declared enum of 89 allowed values**, filled
+    on **40.2% of long-term loans (197 of 490)**, and **every one of its six observed values is
+    on its own allowed list**: X (210), AE (12), X500 (5), A (2), C (1) and the bare word Yes
+    (1), over 231 filled values. `TQL.X110` answers on the same 197 loans (Regular 229,
+    Non-participating 1), and field 2977 carries a flood certificate number on those same loans.
+    So the vocabulary was never guessed at and no live read is needed — the census already did
+    it. A second sentence in `unsourced.js` said flatly that *"nothing in 3,783 measured fields
+    carries a zone designation (A, AE, X…)"* while field 541, in that same census, carries
+    exactly those — two reasons on one screen, one of them contradicting the other's own cited
+    field, and nothing anywhere unhappy.
+
+    **What is genuinely left is small and it is the owner's**: may PILOT read that zone letter as
+    the determination — the A and V zones being the special flood hazard area — and what does the
+    single bare "Yes" mean? Both columns stay knowingly empty until that is answered, because a
+    wrong answer here is worse than none ("No" beside a flood question is a claim somebody prices
+    a loan on) and 3 in 5 long-term loans carry nothing in the field at all. One sentence, then
+    one entry in the mapper.
+
+    **And the guard that came out of it.** These reasons are ARGUMENTS FROM THE CENSUS, which is
+    what makes them good and also what lets them go stale silently — regenerate the census on a
+    fresh pull and every percentage quoted in prose is a number nothing checks.
+    `scripts/test-lt-unsourced-census-pure.js` now fails the build if any reason cites a field
+    the census does not carry, quotes a fill the census disagrees with, or claims the census is
+    silent about a field the census answers. A reason may still RETRACT an earlier claim — that
+    is what the `corrected` field is for, and the test is its reader: a correction must say when,
+    what was claimed and why it was wrong, and the retracted sentence must be GONE from what a
+    reader is shown. Six mutations were each proven to turn it red, including one on the test
+    itself: its citation pattern was case-sensitive, a reason opened with "Field 541", and its
+    40.2% quietly stopped being checked while every assertion still read green — so the test now
+    counts, and a percentage no citation owns fails the build.
 
 16. **Should `lt_loans.loan_officer_id` be dropped?** It is left from the phase-1 shape,
     before the loan TEAM was mirrored. **Nothing has ever written it**, and since 2026-08-18

@@ -44,15 +44,25 @@ const UNSOURCED = {
   // ── The subject property ──────────────────────────────────────────────────
   'lt_properties.in_flood_zone': {
     kind: NOT_IN_ENCOMPASS,
-    show: 'Encompass has not given us a flood determination we can read.',
-    why: 'The census holds no field that answers "is the subject in a special flood hazard area" in a form we can trust. The closest is field 541 (closingDocument.specialFloodHazardAreaIndictor), filled on 40.2% of long-term loans and only from Loan Setup onward, and its six recorded values were withheld from the census by its own PII policy — so reading it as a yes/no would be guessing a vocabulary rather than reading one. A wrong answer here is worse than none: "No" beside a flood question is a claim somebody prices a loan on.',
-    unblock: 'One read of field 541 (and TQL.X110) on a live loan in each state, recorded in ENCOMPASS-FIELD-INTELLIGENCE.md. Then this is one entry in the mapper.',
+    show: 'Encompass holds a flood zone letter rather than a yes-or-no — nobody has said yet how PILOT should read it.',
+    corrected: {
+      on: '2026-08-18',
+      was: 'Its six recorded values were withheld from the census by its own PII policy — so reading it as a yes/no would be guessing a vocabulary rather than reading one.',
+      why: 'Wrong, and wrong in the direction that stops somebody looking: the census carries all six, and they are on the field\'s own allowed list.',
+    },
+    why: 'Field 541 (closingDocument.specialFloodHazardAreaIndictor, labelled "Property Info Flood Zone") is a DECLARED enum of 89 allowed values, filled on 40.2% of long-term loans, and every one of the six values it was observed carrying is on that allowed list: X (210), AE (12), X500 (5), A (2), C (1) and the bare word Yes (1), over 231 filled values in the 772-loan census. TQL.X110 answers on the same 197 long-term loans (Regular 229, Non-participating 1), and field 2977 carries a flood certificate number on those same loans. So the vocabulary is READ, not guessed at. What holds this column is not a measurement: turning a zone letter into a yes/no is a rule about what this company will price a loan on, one filled value is an indicator word rather than a zone, and 3 in 5 long-term loans carry nothing at all. A wrong answer here is worse than none — "No" beside a flood question is a claim somebody prices a loan on.',
+    unblock: 'The owner says whether PILOT may read field 541\'s zone letter as the determination — the A and V zones being the special flood hazard area — and what the single bare "Yes" means. One answer, then one entry in the mapper. No further reading of Encompass is needed: the census already did it.',
   },
   'lt_properties.flood_zone': {
     kind: NOT_IN_ENCOMPASS,
-    show: 'The zone letter is on the flood certificate, which Encompass does not give us as a field.',
-    why: 'Nothing in 3,783 measured fields carries a zone designation (A, AE, X…). Field 2977 is the flood certificate IDENTIFIER — the certificate\'s number, not its answer — and the certificate itself is a document in the eFolder.',
-    unblock: 'Either a tenant field somebody fills, or reading the determination off the eFolder document, which is a document-parsing build and not a mirror one.',
+    show: 'Encompass does hold a zone letter on many of these loans — PILOT is not reading it yet.',
+    corrected: {
+      on: '2026-08-18',
+      was: 'Nothing in 3,783 measured fields carries a zone designation (A, AE, X…).',
+      why: 'Field 541, in that same census, carries exactly those — on 40.2% of long-term loans, every value on its own allowed list.',
+    },
+    why: 'Field 541 carries the zone designations (X, AE, X500, A, C) on 40.2% of long-term loans, every one of them on the field\'s own 89-value allowed list. Field 2977 is only the flood certificate IDENTIFIER — the certificate\'s number, not its answer — and the certificate itself is a document in the eFolder. What holds this column is that field 541 is DECLARED an indicator (specialFloodHazardAreaIndictor) and one of its filled values is the bare word Yes, so a straight copy would print Yes in a column a reader reads as a zone.',
+    unblock: 'The same one answer as lt_properties.in_flood_zone — the owner says PILOT may read field 541 as the zone, and what to do with a value that is an indicator word rather than a zone. Then this is one entry in the mapper.',
   },
   'lt_properties.actual_monthly_rent': {
     kind: OWNER_DECISION,
@@ -109,7 +119,7 @@ function ENTITY(what) {
   return {
     kind: OWNER_DECISION,
     show: 'PILOT does not hold a record of the borrowing entity yet.',
-    why: `This tenant keeps no structured entity record, so ${what} has no single place to be read from. What the census found: CX.LLCNAME / CX.LLCSTATE / CX.LLCCORP exist but are filled on 0.8% of long-term loans (4 files); field 1867 (finalVestingDescription) is free text on 38.0%; URLA.X138 is a vesting TYPE on 43.9%; and field 33 "Manner Held" is a dropdown that staff type the vesting entity's name into about half the time (ENCOMPASS-INVESTORS-AND-DROPDOWNS.md). Deciding which of those IS the entity is a business rule, and guessing one would put a company name on a loan file that nobody put there.`,
+    why: `This tenant keeps no structured entity record, so ${what} has no single place to be read from. What the census found: CX.LLCNAME / CX.LLCSTATE / CX.LLCCORP exist but are filled on 0.8% of long-term loans (4 files); field 1867 (finalVestingDescription) is free text on 38.0%; URLA.X138 is a vesting TYPE on 43.9%; and field 33 "Manner Held" is a dropdown filled on 2.9% of long-term loans (14 files), of whose 19 recorded values 15 are an entity name and NONE is on the field's own allowed list (re-measured 2026-08-18; an earlier reading here said "about half the time", which was neither of those numbers). Deciding which of those IS the entity is a business rule, and guessing one would put a company name on a loan file that nobody put there.`,
     unblock: 'The owner says where the entity is recorded on a DSCR file. One answer, then one entry in the mapper.',
   };
 }
