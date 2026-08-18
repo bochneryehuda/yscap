@@ -116,6 +116,12 @@ function evaluateRules(rules, facts, opts) {
   const trace = [];
   const declines = [];
   const adjustments = [];
+  // The PRICING rules that fired, in lock-step with `adjustments` (same pass, same order). The
+  // evaluator stays the FAITHFUL RECORD of what fired — it never collapses anything — but "which rule
+  // produced this adjustment" is the one thing the adjustment objects cannot say (two rules can carry
+  // the same code, which is exactly the duplicated-row defect), and the pricing façade needs the rule
+  // itself to ask rule-coverage whether two of them cover one loan. Additive: nothing existing moves.
+  const matchedPricingRules = [];
   const rawBounds = []; // every matched bound, before tightening
 
   // stable ordered pass
@@ -143,6 +149,7 @@ function evaluateRules(rules, facts, opts) {
           if (!r.adjustment) throw new Error(`rules:pricing_rule_missing_adjustment:${r.code}`);
           const a = { ...r.adjustment, code: r.adjustment.code || r.code || null, source: entry.source };
           adjustments.push(a);
+          matchedPricingRules.push(r);
           entry.contribution = { adjustment: a };
         } else {
           throw new Error(`rules:unknown_kind:${r.kind}`);
@@ -193,6 +200,7 @@ function evaluateRules(rules, facts, opts) {
     declines,
     bounds,
     adjustments,
+    matchedPricingRules,
     trace,
     unknownFacts: [...unknownAll],
   };

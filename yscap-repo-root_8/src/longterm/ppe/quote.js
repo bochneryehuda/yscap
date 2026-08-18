@@ -32,6 +32,7 @@
 
 const { evaluateRules } = require('./rules');
 const pricing = require('./pricing');
+const { resolveDoubleCharges } = require('./adjustment-overlap');
 
 // Map a settings `pricing.rounding_mode` enum + increment into the pricing
 // pipeline's { mode, incrementMilli }. Single definition so the settings enum
@@ -100,6 +101,7 @@ function quoteProgram(arg, opts) {
       bounds: decision.bounds,
       trace: decision.trace,
       unknownFacts: decision.unknownFacts,
+      problems: [], // nothing was priced, so nothing could be double-charged
     };
   }
 
@@ -130,7 +132,17 @@ function quoteProgram(arg, opts) {
   // the scenario-level LLPA stack applies to EVERY rung (the coupon axis is the
   // rung; the FICO×LTV/DSCR grid cells etc. are already resolved into these
   // accumulated adjustments by the rules evaluator).
-  const adjustments = decision.adjustments;
+  //
+  // DOUBLE-CHARGE GUARD (adjustment-overlap.js). Pricing rules ACCUMULATE, so two rules covering one
+  // loan on one dimension — two overlapping DSCR blocks, or the same row pasted twice — charge the
+  // borrower twice, silently. This is the ONE place a fired rule becomes money, so it is the one place
+  // that decides: the collision is detected by `rule-coverage.analyzeRuleSet` (never a second
+  // definition), the LEAST COSTLY of the colliding adjustments is applied once, the rest are
+  // suppressed, and every collision comes back on `problems[]` in plain words naming both rules. It is
+  // never silent, and it never refuses to quote — see that module's header for why, and for the open
+  // question it records for the sheet's owner.
+  const collision = resolveDoubleCharges(decision.matchedPricingRules, decision.adjustments);
+  const adjustments = collision.adjustments;
 
   const common = {
     adjustments,
@@ -157,6 +169,10 @@ function quoteProgram(arg, opts) {
     bounds: decision.bounds,
     trace: decision.trace,
     unknownFacts: decision.unknownFacts,
+    // Never silent: empty on a clean sheet, and on a colliding one it names the two rules, the band
+    // they collide across, and which one was applied.
+    problems: collision.problems,
+    suppressedAdjustments: collision.suppressed,
     pricingBasis: {
       marginMilli,
       marginSource,

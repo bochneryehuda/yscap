@@ -32,6 +32,7 @@
  */
 
 const { bandPredicate } = require('./ratesheet');
+const { sheetOverlapProblems } = require('./adjustment-overlap');
 
 function isNum(x) { return typeof x === 'number' && Number.isFinite(x); }
 function milli(x, scale) { return Math.round(x * scale); }
@@ -244,6 +245,17 @@ function gridToRateSheet(grid = {}, opts = {}) {
       cap_tiers: Array.isArray(pl.capTiers) ? pl.capTiers : [],
     };
   }
+
+  // ---- (5) DOUBLE-CHARGE CHECK ------------------------------------------------------------------
+  // Every adjustment row above ACCUMULATES onto the price, so two rows covering one loan on one
+  // dimension — two overlapping DSCR blocks, or the same row pasted twice — charge the borrower twice.
+  // A grid that compiles cleanly and then double-charges is exactly the "fail closed, and never
+  // silently" case this file's own header promises, and until now `problems[]` came back EMPTY for it.
+  // The rows are NOT rewritten: an investor's sheet is theirs, so the compiler REPORTS and a human
+  // decides. Detection is delegated whole to `rule-coverage.analyzeRuleSet` through
+  // `adjustment-overlap` — the same one definition the pricer uses, so the compile-time report and the
+  // price-time report can never say different things about the same two rules.
+  for (const p of sheetOverlapProblems(adjustments, { where: 'adjustments' })) problems.push(p);
 
   return { basePrices, adjustments, ineligibilities, priceLimit, problems };
 }
