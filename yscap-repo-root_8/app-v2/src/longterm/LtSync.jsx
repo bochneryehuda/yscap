@@ -122,6 +122,28 @@ export default function LtSync() {
         </div>
       )}
 
+      {/* The milestone catalog. Every file screen draws its progress bar from this,
+          and it marks progress POSITIONALLY — a loan at a step the catalog does not
+          carry shows NO progress at all — so "has anybody ever confirmed this
+          against Encompass?" is worth answering before somebody wonders why a new
+          step is missing from every file that sits at it. */}
+      {state && state.milestoneCatalog && state.milestoneCatalog.total != null && (
+        <div className="card" style={{ marginTop: 12, color: '#141B22' }}>
+          <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
+            {stat('Milestones in use', state.milestoneCatalog.live_steps)}
+            {stat('Confirmed with Encompass', state.milestoneCatalog.live)}
+            {stat('Last confirmed', when(state.milestoneCatalog.last_synced_at))}
+          </div>
+          {!state.milestoneCatalog.live && (
+            <p style={{ margin: '10px 0 0', color: '#4B585C', fontSize: 13, lineHeight: 1.55 }}>
+              Nobody has confirmed these steps against Encompass yet — they are the
+              list PILOT shipped with. A sync pass reads the real one, and does it
+              again at most once a day.
+            </p>
+          )}
+        </div>
+      )}
+
       {state && state.canRun && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
           <button className="btn" onClick={run} disabled={busy}>

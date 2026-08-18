@@ -72,6 +72,20 @@ router.get('/', async (req, res) => {
               (SELECT count(*) FROM lt_documents  WHERE is_removed = false)::int AS documents`,
     );
 
+    // HOW FRESH THE MILESTONE CATALOG IS, for the same reason as the conditions:
+    // the stepper on every file screen is drawn from it, and a catalog nobody has
+    // ever confirmed against Encompass is a different fact from one confirmed this
+    // morning. `live` says how many rows a real read has touched — with none, the
+    // whole catalog is still db/547's 2026-08-14 photograph, which is worth
+    // knowing before somebody wonders why a new step is missing.
+    const { rows: cat } = await db.query(
+      `SELECT count(*)::int AS total,
+              count(*) FILTER (WHERE COALESCE(is_archived, false) = false)::int AS live_steps,
+              count(*) FILTER (WHERE catalog_source = 'live')::int AS live,
+              max(catalog_synced_at) AS last_synced_at
+         FROM lt_encompass_milestones`,
+    ).catch(() => ({ rows: [{}] }));
+
     let canRun = false;
     let conditionsEnabled = false;
     try {
@@ -84,6 +98,7 @@ router.get('/', async (req, res) => {
       failing,
       canRun,
       conditions: { enabled: conditionsEnabled, ...cond[0], ...mirrored[0] },
+      milestoneCatalog: cat[0] || {},
     });
   } catch (e) {
     console.error('[lt] sync state failed:', (e && e.message) || e);

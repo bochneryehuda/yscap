@@ -163,6 +163,15 @@ async function main() {
     check(/milestoneCatalogSync\.refreshOnce/.test(route),
       '…and so does the button, so somebody who has just changed a milestone in Encompass can pull it in without waiting');
 
+    console.log('\nthe screen can tell a confirmed catalog from a shipped one');
+
+    const route2 = require('fs').readFileSync(path.join(__dirname, '..', 'src/longterm/routes/sync.js'), 'utf8');
+    check(/catalog_source = 'live'/.test(route2) && /milestoneCatalog: cat\[0\]/.test(route2),
+      'the sync screen is told how many steps a real read has confirmed and when — a catalog nobody has ever checked is still the list PILOT shipped with, which is worth knowing before somebody wonders why a new step is missing');
+    const syncUi = require('fs').readFileSync(path.join(__dirname, '..', 'app-v2/src/longterm/LtSync.jsx'), 'utf8');
+    check(/milestoneCatalog\.live_steps/.test(syncUi) && /list PILOT shipped with/.test(syncUi),
+      '…and it SAYS so in words when nothing has been confirmed, rather than showing a confident zero');
+
     console.log('\na first page is not the whole catalog');
 
     // A tenant with more milestones than one page would hand us a first page, and
