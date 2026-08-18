@@ -615,6 +615,28 @@ is the copy somebody adds later, not the field already reviewed. And both `vols[
 workhorse would silently halve somebody's debts the day the other starts filling, which makes a file
 look better than it is.
 
+**A PATH BEHIND A DEFAULT-OFF SWITCH HAS NEVER BEEN RUN BY ANYBODY — SWEPT 2026-08-18.** This is
+how the Condition Center's two dead doors survived from the day they shipped: with
+`conditions.enabled` unset the route returns before the broken line, so every test and every human
+had only ever walked the switched-off path, and the failure was waiting for the day somebody turned
+the feature on. The class is worth naming because the symptom is *nothing* — the feature looks
+built, the tests are green, and the fault is scheduled for whenever it will be least welcome.
+
+Every long-term switch was then swept for the same shape. The full result, so nobody repeats it:
+
+| Switch | State | Verdict |
+|---|---|---|
+| `conditions.enabled` | off | **Two of three doors 500'd on every request.** Fixed; all three now driven with it ON. |
+| `borrower.longTermVisible` | **on** since 2026-08-17 | Behaviour correct and both paths tested — but FOUR comments still said it ships off, including one directly above `default: true`. Corrected. |
+| `efolder.writesEnabled` | off | Safe: read by NOTHING in production, so turning it on does nothing. There is no write path to enable, which is the intended state. |
+| `pipeline.inactiveFolders` | empty | Correct: `loadPipeline` reads it once and threads it into both builders, and the configured path is tested. |
+| `LP_DIAG_TOKEN` | unset | Correct: 404s when unset, constant-time compare, all four cases tested on the gate itself. |
+| `LT_SYNC_ENABLED` | off | Correct: on/off word parsing, both passes, one-half-fails, and overlap protection all tested. |
+
+The rule that falls out: **a switch is not finished until something has run the side it does not ship
+in.** Four of the six were already fine, which is the point of writing the sweep down rather than the
+findings alone — the next person can see the class was checked exhaustively rather than sampled.
+
 **Three measured findings that must survive into the code**, because each one produces a
 confidently wrong number if forgotten:
 
