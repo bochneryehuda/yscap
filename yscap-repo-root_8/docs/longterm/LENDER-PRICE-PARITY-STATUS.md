@@ -5623,3 +5623,69 @@ already refuses an unscoped run on exactly this reasoning: *"a gate that answers
 asked the wrong question is worse than a gate that refuses."* Recorded as its own item.
 
 160/160 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.92 — ⛔ TWO DOCUMENTS DESCRIBE THE SAME FRONTIER, AND NOTHING COMPARED THEM (2026-08-18)
+
+Deephaven states the maximum leverage **twice**, and both statements are in this repo:
+
+- the **rate sheet** prices a FICO × CLTV cell or writes `"N/A"` — and the last priced column in a row
+  *is* a max-CLTV statement, because an N/A is an ineligibility, never a priced zero;
+- the **product matrix** states a cap per tier × FICO × purpose × DSCR band.
+
+`test-lt-ppe-ratesheet-matrix-reconcile.js` exists precisely to stop these two drifting apart — and it
+reconciles the program **parameters** and the N/A cell **count**. **It never compared the matrix's caps
+against the sheet's own priced/N-A frontier.** So a cell where the two documents disagree was resolved
+silently, by whichever engine happened to read whichever document.
+
+**⛔ AND THEY DO DISAGREE — on the exact cell the live run landed on.** Derived here from the two source
+files rather than asserted:
+
+```
+rate sheet, row "660 - 679", CLTV 70.5–75.5%  ->  -3.750    PRICED, i.e. eligible to 75%
+product matrix, tier <=$1.5M, the 640 row      ->  cap 70%   (the matrix has NO 660 row, so its
+                                                              640 row governs 640–699)
+Lender Price, measured live at that cell       ->   3.750    PRICED
+```
+
+**Seven of the eight FICO rows agree. Exactly one does not** — and it is the one behind the battery
+scenarios `fico=660 cltv=75 dscr=1.25` and `… dscr=1`, which our engine declined and Lender Price
+priced. Our engine silently took the **stricter** of its own two sources.
+
+**This suite picks no winner.** Which document governs is a business rule, and the standing rule is
+never to guess one. What it does is make every such cell either **RECONCILED** or **RECORDED IN
+WRITING** — so the set cannot grow in silence while somebody decides. The recording is deliberately not
+a mute switch, in the same shape and the same words as the sibling suite's `RECORDED_DIVERGENCES`:
+
+- an **unrecorded** divergence fails;
+- a record whose numbers no longer match the documents fails (**a stale record is not a record**);
+- a record for a cell that has since been **reconciled** fails, so a record cannot outlive its
+  divergence;
+- and the count must balance: every divergence recorded, every record live.
+
+**⛔ OWNER QUESTION, and it is general rather than local:**
+
+> **When the rate sheet and the product matrix conflict, which governs?**
+> Answer it once and it becomes a precedence rule for every future cell, rather than a one-cell patch.
+> Until then the engine keeps declining — the safe direction, and the one that costs us business rather
+> than costing us money. That is written into the record itself, so nobody has to go and find out which
+> way it currently resolves.
+
+**What this comparison deliberately does NOT cover, stated rather than implied.** One axis only:
+purchase/rate-term, DSCR ≥ 1.00, smallest tier — because that is the axis the sheet's grid is stated on.
+The matrix's three further columns and two larger tiers have **no sheet counterpart to reconcile
+against**, and inventing one would be exactly the guess this file refuses. Asserted, so the suite is
+never mistaken for full coverage of the grid.
+
+**And a second finding fell out of it.** The **Foreign National** row is present in *both* documents and
+they **agree** on it (70%) — so the long-standing FN gap is not a documentation gap at all. **It is that
+neither engine encodes it.** The suite says so where a reader will find it.
+
+`scripts/test-lt-ppe-ltvgrid-vs-sheet.js` (30 assertions), **mutation-proven six ways**: the record
+deleted (2 assertions bite), the record carrying wrong numbers (1), the source matrix corrected so the
+documents agree and the record goes stale (2), `"N/A"` read as a priced cell (7), a record added for a
+cell that agrees (2), and the matrix row lookup taking the loosest row instead of the governing one (4).
+The source matrix was restored byte-for-byte after the third of those — checked, not assumed.
+
+161/161 suites, 33 database-backed. All seven gates green.
