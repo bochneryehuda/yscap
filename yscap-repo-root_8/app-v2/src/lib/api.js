@@ -1202,6 +1202,8 @@ export const api = {
   staffAbPiece:        (appId) => req('GET', `/api/staff/applications/${appId}/ab-piece`),
   staffAbPieceSave:    (appId, b) => req('POST', `/api/staff/applications/${appId}/ab-piece`, b),
   staffReminderTasks:  (q) => req('GET', `/api/staff/reminder-tasks${q ? `?${new URLSearchParams(q)}` : ''}`),
+  staffReminderTaskCounts: () => req('GET', `/api/staff/reminder-tasks?count=1`),
+  staffReminderTasksBulk: (b) => req('POST', `/api/staff/reminder-tasks/bulk`, b),
   // The queue's own Done/Dismiss door — reaches a task ASSIGNED to you even on a
   // file outside your scope (the per-file PATCH below sits behind the file-scope
   // middleware and 403s there).

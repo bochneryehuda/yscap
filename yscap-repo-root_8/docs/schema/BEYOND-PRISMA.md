@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**783 objects**, and a database rebuilt from the Prisma
+**789 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 576 numbered migrations in `db/` (highest `db/579`) remain the only thing that builds this database.
+rebuild a database from them.** The 578 numbered migrations in `db/` (highest `db/581`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,10 +20,10 @@ the live database.
 | | |
 |---|---|
 | Tables | 342 |
-| Columns | 5589 |
-| Triggers | 34 |
-| Functions | 137 |
-| CHECK constraints | 274 |
+| Columns | 5592 |
+| Triggers | 35 |
+| Functions | 138 |
+| CHECK constraints | 278 |
 | Generated columns | 12 |
 | Partial indexes | 326 |
 | Primary keys | 342 |
@@ -33,7 +33,7 @@ the live database.
 | Enum types | 12 |
 | Views | 0 |
 
-## Triggers (34)
+## Triggers (35)
 
 - **trg_ai_suggestions_updated** on `ai_suggestions`
 - **trg_borrower_auth_one_login_per_email** on `borrower_auth`
@@ -44,6 +44,7 @@ the live database.
 - **trg_ensure_assignment_condition** on `applications`
 - **trg_ensure_plans_condition** on `applications`
 - **trg_loan_exc_touch_updated** on `loan_exceptions`
+- **trg_reminders_touch_updated** on `reminders`
 - **trg_reopen_appraisal_review_on_fatal** on `appraisal_findings`
 - **trg_reopen_assets_on_coborrower_change** on `applications`
 - **trg_reopen_contract_on_economics_change** on `applications`
@@ -85,7 +86,7 @@ the live database.
 - **track_records.counts_from** — `COALESCE( CASE WHEN (lower(COALESCE(deal_type, ''::text)) ~~ '%flip%'::text) THEN sale_date ELSE COALESCE(rent_date, refi_date) END, CASE WHEN ((lower(COALESCE(deal_type, ''::text)) ~~ '%ground%'::text) OR (lower(COALESCE(deal_type, ''::text)) ~~ '%construction%'::text)) THEN COALESCE(sale_date, rent_date, refi_date) ELSE NULL::date END)`
 - **track_records.hold_days** — `(COALESCE( CASE WHEN (lower(COALESCE(deal_type, ''::text)) ~~ '%flip%'::text) THEN sale_date ELSE COALESCE(rent_date, refi_date) END, CASE WHEN ((lower(COALESCE(deal_type, ''::text)) ~~ '%ground%'::text) OR (lower(COALESCE(deal_type, ''::text)) ~~ '%construction%'::text)) THEN COALESCE(sale_date, rent_date, refi_date) ELSE NULL::date END) - purchase_date)`
 
-## Functions (137)
+## Functions (138)
 
 - **appraisal_review_guard()** → trigger
 - **armor(bytea)** → text
@@ -181,6 +182,7 @@ the live database.
 - **regexp_split_to_array(citext, citext, text)** → text[]
 - **regexp_split_to_table(citext, citext)** → SETOF text
 - **regexp_split_to_table(citext, citext, text)** → SETOF text
+- **reminders_touch_updated_at()** → trigger
 - **reopen_appraisal_review_on_fatal()** → trigger
 - **reopen_assets_on_coborrower_change()** → trigger
 - **reopen_conditions_on_budget_change()** → trigger
@@ -554,7 +556,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (274)
+## CHECK constraints (278)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -783,6 +785,10 @@ the live database.
 - **property_not_duplicates_check** on `property_not_duplicates`
 - **purchasing_conditions_status_check** on `purchasing_conditions`
 - **purchasing_workflow_status_check** on `purchasing_workflow`
+- **reminders_kind_chk** on `reminders`
+- **reminders_priority_chk** on `reminders`
+- **reminders_recur_chk** on `reminders`
+- **reminders_status_chk** on `reminders`
 - **request_audit_log_actor_kind_check** on `request_audit_log`
 - **rv_orders_property_upload_type_check** on `rv_orders`
 - **section_1071_coverage_classification_check** on `section_1071_coverage`

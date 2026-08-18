@@ -27,6 +27,49 @@ const docAcceptance = require('./document-acceptance');
 
 const KINDS = new Set(['reminder', 'task']);
 
+/* TASKS & REMINDERS 2.0 (owner-directed 2026-08-18: "much more options for the
+   task and reminders section … build this up like crazy"). Priority and
+   recurrence — validated here, guarded again by db/581's CHECKs so a bad
+   writer can never store a value no screen understands. */
+const PRIORITIES = new Set(['high', 'normal', 'low']);
+const RECURS = new Set(['daily', 'weekdays', 'weekly', 'biweekly', 'monthly']);
+
+/** The next occurrence of a recurring row, advanced UNTIL IT IS IN THE FUTURE —
+    a row overdue by three weeks on a weekly repeat gets ONE next date, not a
+    stale firing per missed week. Pure; returns a Date. */
+function nextDue(from, recur, now = new Date()) {
+  let d = new Date(from);
+  if (isNaN(d.getTime())) d = new Date(now);
+  const step = () => {
+    if (recur === 'daily') d.setDate(d.getDate() + 1);
+    else if (recur === 'weekdays') { do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6); }
+    else if (recur === 'weekly') d.setDate(d.getDate() + 7);
+    else if (recur === 'biweekly') d.setDate(d.getDate() + 14);
+    else d.setMonth(d.getMonth() + 1);   // monthly — JS clamps month-end by rolling, acceptable
+  };
+  step();
+  let guard = 0;
+  while (d.getTime() <= now.getTime() && guard++ < 400) step();
+  return d;
+}
+
+/** Hand-off notice: the person a TASK is assigned to hears about it (the old
+    build assigned silently — audit gap). Best-effort, never blocks the save;
+    skipped when you assign a task to yourself. */
+async function notifyAssigned(row, assigneeId, actor) {
+  try {
+    if (!assigneeId || (actor && actor.id === assigneeId)) return;
+    await notify.notifyStaff(assigneeId, {
+      type: 'task_assigned',
+      title: `A task was assigned to you: ${row.title}`,
+      body: `${row.body ? row.body + ' ' : ''}Due ${niceWhen(row.due_at || row.dueAt)}.`,
+      applicationId: row.application_id || row.applicationId || null,
+      link: row.application_id ? `/internal/app/${row.application_id}` : '/internal/tasks',
+      ctaLabel: row.application_id ? 'Open the loan file' : 'Open your tasks',
+    });
+  } catch (_) { /* a failed notice never fails the save */ }
+}
+
 // A TASK'S ASSIGNEE IS VALIDATED, NEVER GUESSED AND NEVER SWALLOWED (audit
 // 2026-08-18 on the task-management build, findings 2–4). One rule for both
 // doors (create + update): the id must LOOK like an id (garbage used to reach
@@ -255,13 +298,28 @@ async function create(appId, input, actor, client = db) {
     if (kind !== 'task') { const e = new Error('only a task can be assigned to someone'); e.status = 400; throw e; }
     assignee = await resolveAssignee(input.assigneeStaffId, client);
   }
+  // Priority + recurrence (2.0): junk REFUSES in plain words — never silently
+  // stored as something else (the refuse-don't-drop discipline).
+  let priority = 'normal';
+  if (input.priority != null) {
+    if (!PRIORITIES.has(String(input.priority))) { const e = new Error('pick a priority: high, normal, or low'); e.status = 400; throw e; }
+    priority = String(input.priority);
+  }
+  let recur = null;
+  if (input.recur != null && input.recur !== '') {
+    if (!RECURS.has(String(input.recur))) { const e = new Error('pick a repeat: daily, weekdays, weekly, biweekly, or monthly'); e.status = 400; throw e; }
+    recur = String(input.recur);
+  }
 
   const r = await client.query(
-    `INSERT INTO reminders (application_id, kind, title, body, due_at, remind_at, recipients, assignee_staff_id, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9) RETURNING id`,
+    `INSERT INTO reminders (application_id, kind, title, body, due_at, remind_at, recipients, assignee_staff_id, created_by, priority, recur)
+     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11) RETURNING id`,
     [appId, kind, title, String(input.body || '').trim() || null, due.toISOString(),
      remindAt && !isNaN(remindAt.getTime()) ? remindAt.toISOString() : null,
-     JSON.stringify(recipients), assignee, actor && actor.id || null]);
+     JSON.stringify(recipients), assignee, actor && actor.id || null, priority, recur]);
+  // The hand-off notice: a task created straight onto someone's plate tells
+  // them so (assigning silently was the old build's gap).
+  if (assignee) await notifyAssigned({ title, body: String(input.body || '').trim(), due_at: due.toISOString(), application_id: appId }, assignee, actor);
   return r.rows[0].id;
 }
 
@@ -283,11 +341,23 @@ async function update(id, patch, actor, client = db) {
   // not an owner, so an assignee patched onto one is refused rather than
   // silently stored (audit 2026-08-18 minor). A bad pick REFUSES with a plain
   // 400 (resolveAssignee) instead of the old silent no-op / uuid-cast 500.
+  let newAssignee = null;
   if ('assigneeStaffId' in patch) {
     if (patch.assigneeStaffId) {
       if (row.kind !== 'task') { const e = new Error('only a task can be assigned to someone'); e.status = 400; throw e; }
-      add('assignee_staff_id', await resolveAssignee(patch.assigneeStaffId, client));
+      newAssignee = await resolveAssignee(patch.assigneeStaffId, client);
+      add('assignee_staff_id', newAssignee);
     } else add('assignee_staff_id', null);
+  }
+  // Priority + recurrence (2.0) — same refuse-don't-drop rule as create().
+  if ('priority' in patch && patch.priority != null) {
+    if (!PRIORITIES.has(String(patch.priority))) { const e = new Error('pick a priority: high, normal, or low'); e.status = 400; throw e; }
+    add('priority', String(patch.priority));
+  }
+  if ('recur' in patch) {
+    if (patch.recur == null || patch.recur === '') add('recur', null);
+    else if (!RECURS.has(String(patch.recur))) { const e = new Error('pick a repeat: daily, weekdays, weekly, biweekly, or monthly'); e.status = 400; throw e; }
+    else add('recur', String(patch.recur));
   }
   if (patch.status === 'done') { add('status', 'done'); add('completed_at', new Date().toISOString()); add('completed_by', actor && actor.id || null); }
   else if (patch.status === 'dismissed') { add('status', 'dismissed'); add('completed_at', new Date().toISOString()); add('completed_by', actor && actor.id || null); }
@@ -297,7 +367,28 @@ async function update(id, patch, actor, client = db) {
   if (!sets.length) return row;
   sets.push('updated_at=now()'); vals.push(id);
   const r = await client.query(`UPDATE reminders SET ${sets.join(',')} WHERE id=$${i} RETURNING *`, vals);
-  return r.rows[0];
+  const updated = r.rows[0];
+  // The hand-off notice fires only on a REAL change of owner, to someone else.
+  if (newAssignee && newAssignee !== row.assignee_staff_id) await notifyAssigned(updated, newAssignee, actor);
+  // A RECURRING TASK marked done spawns its next occurrence — the done row
+  // stays as history, the fresh row carries the same shape with the due date
+  // advanced past today (and the pre-due nudge advanced by the same distance).
+  if (patch.status === 'done' && row.kind === 'task' && row.recur && RECURS.has(row.recur)) {
+    try {
+      const nd = nextDue(row.due_at, row.recur);
+      const nudgeGap = row.remind_at ? (new Date(row.due_at).getTime() - new Date(row.remind_at).getTime()) : null;
+      const nr = nudgeGap != null && nudgeGap > 0 ? new Date(nd.getTime() - nudgeGap) : null;
+      const spawned = await client.query(
+        `INSERT INTO reminders (application_id, kind, title, body, due_at, remind_at, recipients, assignee_staff_id, created_by, priority, recur)
+         VALUES ($1,'task',$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10) RETURNING id`,
+        [row.application_id, row.title, row.body, nd.toISOString(), nr ? nr.toISOString() : null,
+         JSON.stringify(Array.isArray(row.recipients) ? row.recipients : []),
+         row.assignee_staff_id, row.created_by, row.priority || 'normal', row.recur]);
+      updated.spawned_next_id = spawned.rows[0].id;
+      updated.spawned_next_due = nd.toISOString();
+    } catch (_) { /* a failed spawn never reverses the done — the row is still closable by hand */ }
+  }
+  return updated;
 }
 
 async function remove(id, client = db) {
@@ -407,6 +498,20 @@ async function dispatchDue(client = db) {
     if (!claim.rows[0]) continue;   // another pass already claimed + delivered it
     await _deliver(row, {});
     fired++;
+    // A RECURRING REMINDER rolls itself forward after firing: due advances past
+    // today (ONE next date however overdue it was — nextDue loops), the row
+    // returns to 'scheduled' with the fire/nudge stamps cleared. Guarded on
+    // status='sent' so only the pass that just fired it can roll it — a
+    // concurrent hand-edit wins. A recurring TASK does not roll here: it stays
+    // actionable until somebody marks it done (which spawns the next one).
+    if (row.kind !== 'task' && row.recur && RECURS.has(row.recur)) {
+      try {
+        const nd = nextDue(row.due_at, row.recur);
+        await client.query(
+          `UPDATE reminders SET due_at=$2, status='scheduled', fired_at=NULL, reminded_at=NULL, updated_at=now()
+            WHERE id=$1 AND status='sent'`, [row.id, nd.toISOString()]);
+      } catch (_) { /* a failed roll leaves an ordinary fired one-shot — recoverable by hand */ }
+    }
   }
   return fired;
 }
@@ -424,4 +529,5 @@ module.exports = {
   resolveRecipients, contactsForApplication, outstandingItems,
   listForApplication, create, update, remove,
   dispatchDue, startDispatcher,
+  nextDue, PRIORITIES, RECURS,
 };

@@ -302,6 +302,8 @@ export default function StaffLayout({ children }) {
   const [excCount, setExcCount] = useState(0);
   // How many files are in MY personal Workflow right now (everyone has one).
   const [wfCount, setWfCount] = useState(0);
+  // My open scheduled tasks/reminders — OVERDUE drives the red badge, open the grey one (2.0).
+  const [taskCounts, setTaskCounts] = useState(null);
   // Open finding-escalations routed to me (my role / assigned / raised) — the workload badge.
   const [fescCount, setFescCount] = useState(0);
   // My Notification Center draft queue — how many parked notifications are waiting for me to Send.
@@ -315,6 +317,7 @@ export default function StaffLayout({ children }) {
     let alive = true;
     const poll = () => {
       api.workflowCount().then(r => { if (alive) setWfCount((r && r.total) || 0); }).catch(() => {});
+      api.staffReminderTaskCounts().then(r => { if (alive) setTaskCounts((r && r.counts) || null); }).catch(() => {});
       api.myExceptionsCount().then(r => { if (alive) setMyExcCount((r && r.openCount) || 0); }).catch(() => {});
       api.staffTrackRecordReviewsCount().then(r => { if (alive) setTrReviewCount((r && r.pending) || 0); }).catch(() => {});
       api.closingCount().then(r => { if (alive) setClosingCount((r && r.count) || 0); }).catch(() => {});
@@ -462,7 +465,14 @@ export default function StaffLayout({ children }) {
         ) : (<>
         <div className="sb-sec">Main</div>
         <NavLink className="sb-link" to="/internal" end><NavIcon name="pipeline" />Pipeline</NavLink>
-        <NavLink className="sb-link" to="/internal/tasks"><NavIcon name="tasks" />My tasks</NavLink>
+        <NavLink className="sb-link" to="/internal/tasks" title={taskCounts && taskCounts.overdue > 0 ? `${taskCounts.overdue} overdue` : undefined}>
+          <NavIcon name="tasks" />My tasks
+          {/* The badge counts MY open scheduled tasks; red styling when any are overdue. */}
+          {taskCounts && taskCounts.open > 0 && (
+            <span className="sb-badge" style={taskCounts.overdue > 0 ? { background: '#A83A2F', color: '#fff' } : undefined}>
+              {taskCounts.open > 99 ? '99+' : taskCounts.open}
+            </span>
+          )}</NavLink>
         <NavLink className="sb-link" to="/internal/workflow" title="My Workflow — every file submitted to you, in the order it arrived. Pick it up, do your part, then send it back.">
           <NavIcon name="workflow" />Workflow
           {wfCount > 0 && <span className="sb-badge">{wfCount > 99 ? '99+' : wfCount}</span>}</NavLink>
