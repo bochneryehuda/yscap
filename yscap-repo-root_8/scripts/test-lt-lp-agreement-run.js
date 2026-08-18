@@ -39,6 +39,7 @@ const { gridToRateSheet } = require('../src/longterm/ppe/deephaven-grid');
 const { buildDeephavenGrid } = require('../src/longterm/ppe/deephaven-dscr-sheet');
 const { deephavenLpDimension } = require('../src/longterm/ppe/ratesheet-agreement-diff');
 const { buildAgreementScenarios } = require('../src/longterm/ppe/agreement-scenarios');
+const { buildSearch } = require('../src/longterm/lenderprice/search-model');
 const settings = require('../src/longterm/ppe/settings');
 
 function arg(name, dflt) {
@@ -48,6 +49,9 @@ function arg(name, dflt) {
 function flag(name) { return process.argv.includes(name); }
 function die(code, msg) { console.error(msg); process.exit(code); }
 function readJson(path) { return JSON.parse(fs.readFileSync(path, 'utf8')); }
+// The battery's own bookkeeping keys are not part of the request; leaving them in would make two
+// scenarios that send the same body look different purely because they are labelled differently.
+function stripInternal(sc) { const o = { ...sc }; delete o._label; delete o._group; delete o._ineligible; return o; }
 
 // The canonical ≥200-scenario battery (agreement-scenarios.js) — every LLPA angle, in Lender Price
 // scenario shape. A caller may still override with --scenarios (e.g. to replay a captured set).
@@ -129,6 +133,21 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   let done = 0;
   const onResult = () => { done += 1; if (done % 25 === 0 || done === scenarios.length) process.stdout.write(`  …${done}/${scenarios.length}\n`); };
   const { results, summary } = await runRatesheetAgreement(scenarios, { ours, lp }, {
+    // ⛔ ASK LENDER PRICE EACH DISTINCT QUESTION ONCE (§2.95). Measured on the canonical battery: 32 of
+    // 305 scenarios build a BYTE-IDENTICAL request — the FICO×CLTV and DSCR×CLTV sweeps overlap at
+    // FICO 760, and `ppp 5yr` matches `state CA` because 60 months is the profile default. Both
+    // scenarios are still compared and still counted; only the paid call is shared.
+    //
+    // The key is the request `buildSearch` would actually send, minus its timestamp — not the scenario
+    // object, because two DIFFERENT scenarios can build the same request and that is most of the 32.
+    // Built against the static base: the foundation is the same for every scenario in a run, so two
+    // scenarios equal under it are equal under the live one too.
+    dedupeKey: (sc) => {
+      try {
+        const body = buildSearch(stripInternal(sc));
+        return JSON.stringify(body).replace(/"date":"[^"]*"/, '');
+      } catch (_) { return null; } // unbuildable → never merged with anything
+    },
     filter,
     settings: s,
     priceToleranceMilli: s['validation.price_tolerance_milli'],
@@ -202,6 +221,11 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
       if (!b.capStated) console.log('                ⚠ no ceiling was stated on any rung — this run TESTED no max price (the max-price block is the --with-prepay grid)');
       else if (!b.clamped) console.log('                ⚠ a ceiling was stated but never reached — this run did not exercise it');
     }
+  }
+  // The saving, stated. A run that quietly made fewer calls than it has scenarios would read as a
+  // battery that shrank; this says plainly that the coverage is whole and the CALLS were shared.
+  if (summary.deduped) {
+    console.log(`  paid calls    ${summary.distinctRequests} distinct requests for ${summary.total} scenarios (${summary.deduped} shared — identical request, same answer)`);
   }
   if (summary.disagreeing.length) console.log(`  disagreeing   ${summary.disagreeing.slice(0, 10).join(' | ')}${summary.disagreeing.length > 10 ? ' …' : ''}`);
   // ⛔ THE DECLINE FEED, STATED BEFORE THE VERDICT (§2.93). The disqualify tree is the ONLY place

@@ -559,6 +559,48 @@ async function runOne(scenario, ours, lp, opts) {
  *               second question off a battery already paid for (see runOne). Observational only.
  * Returns { results:[<runOne verdict>], summary }.
  */
+
+/**
+ * ⛔ TWO SCENARIOS THAT ASK LENDER PRICE THE SAME QUESTION MUST NOT BE ASKED TWICE (§2.95).
+ *
+ * MEASURED on the canonical battery: **32 of 305 scenarios build a byte-identical request.** The
+ * FICO×CLTV sweep and the DSCR×CLTV sweep overlap at FICO 760, and `ppp 5yr` is byte-identical to
+ * `state CA` because 60 months IS the profile default. The two groups ask different QUESTIONS of the
+ * same request — so the vendor's answer is identical and the second call learns nothing. At the owner's
+ * six scheduled runs a day that is ~190 paid vendor calls daily, spent on answers we already hold.
+ *
+ * ⛔ THE SCENARIOS ARE NOT DROPPED, AND THAT IS THE POINT. Each is attributed to its own group in the
+ * report, and collapsing them would change what each group claims to cover — the coverage a reader
+ * trusts. So both scenarios are still compared, still scored, still counted; only the paid CALL is
+ * shared. What is saved is money, not measurement.
+ *
+ * THE KEY IS THE CALLER'S, NOT OURS. This module is deliberately engine-agnostic — `lp` is an injected
+ * leg and this file does not know how it builds a request. So the caller supplies `dedupeKey(scenario)`
+ * (the runner derives it from the request `buildSearch` would actually send). **Omitted means no
+ * deduplication and byte-identical behaviour to before**, which is what makes this safe to ship.
+ *
+ * THE PROMISE IS CACHED, NOT THE VALUE, so N concurrent workers hitting the same key share ONE upstream
+ * call rather than racing to start N. A rejected promise is cached too, deliberately: an identical
+ * request that failed will fail identically, and re-asking it 32 times is exactly the waste this
+ * closes. `runOne` turns that rejection into the same `errorVerdict` it always would.
+ */
+function memoizeLeg(lp, keyOf) {
+  const cache = new Map();
+  let served = 0;
+  const leg = (sc) => {
+    let k = null;
+    try { k = keyOf(sc); } catch (_) { k = null; }
+    // An unkeyable scenario is always asked. Guessing a key would silently merge two DIFFERENT
+    // questions, which is a wrong answer rather than a slow one.
+    if (k == null || k === '') return lp(sc);
+    if (cache.has(k)) { served += 1; return cache.get(k); }
+    const p = Promise.resolve().then(() => lp(sc));
+    cache.set(k, p);
+    return p;
+  };
+  return { leg, stats: () => ({ deduped: served, distinctRequests: cache.size }) };
+}
+
 async function runRatesheetAgreement(scenarios, engines = {}, opts = {}) {
   const list = Array.isArray(scenarios) ? scenarios : [];
   const ours = engines.ours;
@@ -568,6 +610,9 @@ async function runRatesheetAgreement(scenarios, engines = {}, opts = {}) {
   }
   const conc = Math.max(1, Math.min(opts.concurrency || 1, 16));
   const results = new Array(list.length);
+  // Opt-in, and off by default: with no `dedupeKey` the leg is used exactly as passed.
+  const memo = typeof opts.dedupeKey === 'function' ? memoizeLeg(lp, opts.dedupeKey) : null;
+  const lpLeg = memo ? memo.leg : lp;
 
   let next = 0;
   async function worker() {
@@ -575,7 +620,7 @@ async function runRatesheetAgreement(scenarios, engines = {}, opts = {}) {
       const i = next;
       next += 1;
       if (i >= list.length) return;
-      const r = await runOne(list[i], ours, lp, opts);
+      const r = await runOne(list[i], ours, lpLeg, opts);
       results[i] = r;
       if (typeof opts.onResult === 'function') {
         try { opts.onResult(r, i); } catch (_) { /* a reporter must never break the run */ }
@@ -586,7 +631,11 @@ async function runRatesheetAgreement(scenarios, engines = {}, opts = {}) {
   for (let w = 0; w < conc; w += 1) workers.push(worker());
   await Promise.all(workers);
 
-  return { results, summary: summarize(results) };
+  // NEVER SILENT. A saving nobody is told about reads as a battery that shrank, so the counts ride on
+  // the summary: how many calls were shared, and how many distinct requests the battery really asks.
+  const summary = summarize(results);
+  if (memo) Object.assign(summary, memo.stats());
+  return { results, summary };
 }
 
 /**
@@ -804,6 +853,7 @@ function summarize(results) {
 
 module.exports = {
   runRatesheetAgreement,
+  memoizeLeg,
   runOne,
   summarize,
   ERROR_KIND,

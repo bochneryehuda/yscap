@@ -5803,3 +5803,55 @@ assertions bite), every structure given the same plan type (4), every structure 
 our leg inventing a term (1), and our leg overriding an explicit term (1).
 
 162/162 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.95 — ⛔ 192 PAID VENDOR CALLS A DAY SPENT ON ANSWERS WE ALREADY HELD (2026-08-18)
+
+Measured while building §2.94: **32 of the battery's 305 scenarios build a byte-identical request.**
+The FICO×CLTV sweep and the DSCR×CLTV sweep overlap at FICO 760, and `ppp 5yr` matches `state CA`
+because 60 months **is** the profile default. The two groups ask different *questions* of the same
+request — so Lender Price's answer is identical and the second call learns nothing.
+
+**At the owner's six scheduled runs a day, that is 192 paid vendor calls daily, every day, for answers
+already in hand.** 305 scenarios ask **273** distinct questions.
+
+**⛔ THE SCENARIOS ARE NOT DROPPED, AND THAT IS THE WHOLE DESIGN.** Each is attributed to its own group
+in the report, and collapsing them would change what each group claims to cover — the coverage a reader
+trusts. Both are still compared, still scored, still counted. **Only the paid call is shared: money is
+saved, measurement is not.** The suite asserts exactly that, on every axis: the result count, the
+ordering, the labels, and the battery total.
+
+**The key is the caller's, and it is off by default.** `runRatesheetAgreement` is deliberately
+engine-agnostic — `lp` is an injected leg and the orchestrator does not know how it builds a request —
+so the caller supplies `dedupeKey(scenario)`. **With no key the leg is used exactly as passed and
+behaviour is byte-identical to before**, which is what makes this safe to ship on a paid path (the same
+safety property §2.88 was built around, and asserted the same way).
+
+**And the key is the REQUEST, not the scenario.** Two *different* scenario objects can build the same
+body, and that is most of the 32: `ppp 5yr` states a 60-month prepay, `state CA` states none, and 60 is
+the default. A scenario-object key would miss them. Asserted, because it is the reason for the design.
+
+**Four details that make sharing sound rather than merely cheap, each asserted:**
+
+- **The PROMISE is cached, not the value** — eight concurrent workers on one question make **one**
+  upstream call, rather than racing to start eight. Measured with an in-flight counter, not assumed.
+- **A rejected call is cached too, deliberately.** An identical request that failed will fail
+  identically, and re-asking it 32 times is exactly the waste this closes — while every scenario still
+  reports its **own** error verdict, counted as three errors and not one.
+- **An unkeyable scenario is always asked.** `null`, `''`, or a key function that *throws* merges
+  nothing and does not break the run. Guessing a key would silently merge two different questions,
+  which is a wrong answer rather than a slow one.
+- **The saving is stated, never silent.** The summary carries `deduped` and `distinctRequests`, and the
+  report prints *"273 distinct requests for 305 scenarios (32 shared)"* — because a run that quietly
+  made fewer calls than it has scenarios reads as a battery that shrank, which is the exact confusion
+  §2.90 and §2.91 were about.
+
+`scripts/test-lt-ppe-ask-once.js` (32 assertions) measures the real battery, then drives the
+orchestrator directly for the off-by-default, coverage-preserved, unkeyable, concurrent and failing
+cases. **Mutation-proven seven ways**: dedupe always on (2 assertions bite), a null key merging
+everything (3), the value cached instead of the promise (3), the saving unreported (1), a throwing key
+crashing the run (1), the runner keying on the scenario instead of the request (2), and the runner not
+passing a key at all (1).
+
+163/163 suites, 33 database-backed. All seven gates green.
