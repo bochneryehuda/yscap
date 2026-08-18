@@ -81,6 +81,30 @@ those on the application?**
 We have Deephaven fully encoded. For every other investor we have nothing — which penalty types, which
 terms, and how each one changes the price.
 
+### 2f. If two price bands on a rate sheet overlap, does the loan take both charges or one?
+
+A rate sheet is a list of price adjustments, and they add up. So if a sheet is written with
+`DSCR 1.00–1.25` and `DSCR 1.20–1.50` — an easy thing to type, or to end up with when two people edit
+the sheet months apart — a loan sitting at 1.22 gets charged **twice**. Same if a row is pasted in
+twice by accident.
+
+We measured it on a test sheet: **2.000 points charged where the sheet's own cheaper reading is 0.750
+— about $1,500 on a $120,000 loan** — and nothing on the screen said a word.
+
+**None of your live sheets has this.** The real Deephaven sheet was checked across all 133 of its
+price rules and has no overlaps at all, so no borrower has been affected and no number you have quoted
+has moved.
+
+We have made it charge **once** — the cheaper of the two — and say so plainly, naming both rules. That
+is us refusing to overcharge, not us answering your question. What we need from you:
+
+1. **When two bands overlap, should the loan take both charges, or one?**
+2. **If one — which one?** The tighter band, the one written first, or whatever the investor's own
+   pricing system does?
+3. **Should a sheet with an overlap be publishable at all,** or should we stop it at the door?
+
+Full technical detail: `docs/longterm/PPE-OVERLAPPING-BANDS-QUESTION.md`.
+
 ### 2e. When a state IS in the matrix but we cannot evaluate its rule, what should happen?
 
 **Partly answered on 2026-08-18 — see "Answered" at the bottom.** A state that is NOT in the matrix is

@@ -2859,3 +2859,51 @@ action, and each names the work it releases.
 **TWO PLAN ITEMS WERE ALREADY CLOSED AND STILL LISTED AS OPEN** (the stale `db/567` comments — `grep
 -rn "db/567" src/longterm/` returns nothing — and P8/P9 in `REQUIREMENTS-LEDGER.md`, both built and
 screened). That ledger is stale and must not be used as the work list; this measurement is.
+
+---
+
+**§2.48 — TWO OVERLAPPING BANDS CHARGED THE BORROWER TWICE, AND `problems[]` CAME BACK EMPTY
+(2026-08-18).** A PILOT rate sheet is a set of PRICING rules, and pricing rules ACCUMULATE by design
+(`rules.js` §6.1: *"pricing (LLPA) → these never decline, they ACCUMULATE"*). So two rules covering one
+loan charge the borrower for both — and two perfectly ordinary authoring mistakes produce exactly that:
+a sheet segmented `DSCR 1.00–1.25` and `DSCR 1.20–1.50` (a typed edge, a pasted column, two people
+editing months apart), and the same adjustment row imported twice.
+
+**MEASURED, BEFORE ANYTHING WAS CHANGED, THROUGH THE REAL PATH** (`gridToRateSheet →
+rateSheetToProgram → quoteProgram`) on a loan at DSCR 1.22: **2.000 points of adjustment where the
+sheet's own least-costly single reading is 0.750 — a 1.250-point overcharge, $1,500 on a $120,000
+loan — with `problems[]` EMPTY.** Nothing anywhere said it happened.
+
+**DETECTION IS `rule-coverage.analyzeRuleSet`, CALLED, NEVER RE-IMPLEMENTED.** The one definition of
+"these two pricing rules overlap" already existed (§2.19/§2.20); `adjustment-overlap.js` asks it at
+BOTH ends — at COMPILE time, where every collision lands in the sheet's `problems[]` naming both rules
+and the exact band they collide across, and at PRICE time, where the colliding adjustments collapse to
+ONE and the quote says which was applied and which was suppressed. `evaluateRules` is unchanged and
+still reports EVERY rule that fired: the trace stays the faithful audit of the sheet **as written**.
+
+**IT PRICES ONCE AND REPORTS RATHER THAN REFUSING, and the reasoning is the point.** Refusing would
+turn a pricing defect into an outage on a sheet that may be legitimately layered (a whole-column rule
+plus the cell inside it is how sheets here layer), and it would hide a MONEY question behind an
+INELIGIBILITY — which reads as "this borrower does not qualify", a different and wrong statement,
+about something the person in front of it cannot fix. A collision the checker CANNOT read (an
+`any`/`not`/`none` tree, a `neq`/`nin` complement — the real sheet has four such condo rules) is
+REPORTED and NOT collapsed: suppressing an unproven collision would be inventing a discount.
+
+**⛔ WHETHER TWO OVERLAPPING BANDS ARE MEANT TO STACK IS A PRICING RULE NOBODY GUESSED.** The safe
+direction was taken — never charge twice, applying the LEAST costly of the colliding adjustments
+through `pricing.normalizeAdjustment` (never a second copy of the sign rule), ties broken by sheet
+order so the answer is deterministic. That is not an answer; it is a refusal to overcharge while the
+question is open, and it guarantees the borrower was charged **no more than the sheet's own smallest
+single reading**. The question is recorded in EVERY problem the code emits, in
+`docs/longterm/PPE-OVERLAPPING-BANDS-QUESTION.md`, and in plain language on
+`docs/longterm/OWNER-QUESTIONS-OPEN.md`.
+
+**NOBODY IS AFFECTED TODAY, AND THAT WAS MEASURED TOO.** The real Deephaven DSCR sheet compiles with
+ZERO collisions across all 133 of its pricing rules, so the guard has never moved a live number and
+does not cry wolf. Over the canonical 299-scenario battery with real settings: 0 noisy, 0 suppressed,
+299 compared, **0 ladders drifted — byte-for-byte identical** to the unguarded composition.
+
+**`scripts/test-lt-ppe-double-charge.js`** — 36 assertions. **Nine mutations were each proven to fail
+it**, including the one that matters most: a mutant that dropped an adjustment unconditionally (so it
+touched CLEAN sheets too) failed 17 assertions **including the byte-for-byte control** — which is what
+proves that control can fail at all.
