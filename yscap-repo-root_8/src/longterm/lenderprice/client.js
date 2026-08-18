@@ -859,7 +859,11 @@ function validatedScenario(scenario) {
   return { ok: true, scenario: v.scenario || scenario, countyEnrichment: v.countyEnrichment || null };
 }
 
-async function price(scenario) {
+// `opts.profile` selects the PRODUCT PROFILE the request is built under (§2.88): `'dscr'` — the
+// default, and byte-identical to every search this connector has ever sent — or `'mirror'`, which
+// forces none of the five profile-identity fields and lets the scenario decide. An unknown name falls
+// back to `'dscr'`, so a typo narrows rather than widens what we search.
+async function price(scenario, opts = {}) {
   const v = validatedScenario(scenario);
   if (!v.ok) return v;
   scenario = v.scenario;
@@ -868,7 +872,7 @@ async function price(scenario) {
   // back to the captured static base / built-in ids when the endpoints are unavailable, so a
   // hand-built minimal payload (which Lender Price rejects with 500) is never sent. The recovery
   // wrapper re-logs in + refetches the live config + retries ONCE on a 500 (a stale-session 500).
-  const build = (f) => buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo });
+  const build = (f) => buildSearch({ ...scenario, companyId: f.companyId }, { base: f.liveBase, smo: f.smo, profile: opts.profile });
   const r = await searchRawWithRecovery(build);
   if (!r.ok) return r;
   const f = r.foundation;

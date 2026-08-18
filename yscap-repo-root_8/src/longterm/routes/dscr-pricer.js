@@ -112,7 +112,11 @@ const SUPPORTED_FIELDS = new Set([...CORE_FIELDS, ...REGISTRY_FIELDS, ...advance
 const META_FIELDS = new Set(['scenario', 'debug', 'full', 'raw', 'poll', 'disqualify', 'maxWaitMs', 'pollMs', 'companyId',
   // §2.5 — audit-mode rung digest (never a pricing input): the per-program rate ladder for a
   // point-for-point rate-sheet diff, plus its two size bounds.
-  'audit', 'programsLimit', 'rungsLimit']);
+  'audit', 'programsLimit', 'rungsLimit',
+  // §2.88 — the PRODUCT PROFILE the request is built under. An envelope key, not a pricing input:
+  // it selects which body shape is sent, not a fact about the loan. Omitted (or unknown) = 'dscr',
+  // byte-identical to every search this route has ever made.
+  'profile']);
 function unsupportedFields(sc) {
   return Object.keys(sc || {}).filter((k) => !SUPPORTED_FIELDS.has(k) && !META_FIELDS.has(k));
 }
@@ -377,7 +381,7 @@ async function price(req, res) {
   // triple exists for was defeated (post-merge audit of #1220).
   const requestedScenario = requestedOf(sc);
   sc = chk.scenario; // price the ZIP-ENRICHED scenario, never the original
-  const r = await lp.price(sc);
+  const r = await lp.price(sc, { profile: req.body && req.body.profile });
   if (!r.ok) return res.status((r.http && r.http >= 500) ? 502 : 400).json(priceErrorBody(r));
   if (rejectInvalidValues(r.request, res)) return; // a supported field carried an unrecognized value
   const effective = effectiveOf(r.request); // requested-vs-effective transparency

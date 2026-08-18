@@ -5340,3 +5340,68 @@ true yet: today the mirror searches investment fixed-rate DSCR and nothing else.
 than implied by silence, and it is the next item on this thread.
 
 157/157 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.88 — ⛔ THE PRODUCT PROFILE WAS A CONSTANT, SO WE COULD SEARCH EXACTLY ONE PRODUCT (2026-08-18)
+
+**The owner asked to "search any kind of scenarios in Lender Price."** Measured: we could search one.
+`wireDiscipline` forced five fields onto **every** request this connector has ever built —
+`loanType: Fixed`, `mortgageTypes: [Conventional]`, `propertyUse: Investment`,
+`lienPriorityType: FirstLien`, `compensationType: BorrowerCompPlan`. No owner-occupied loan, no ARM, no
+FHA/VA, no second lien, no lender-paid comp could be asked for at all.
+
+**⛔ AND ONE OF THE FIVE WAS A LIVE DEFECT, not merely a limit.** `applyRegistry` validates a caller's
+`compensationType` against the confirmed live menu and writes it onto the body — and this force then
+overwrote it. **A caller asking for LenderPaid was priced BorrowerPaid**, with no error, and the
+response's `effectiveScenario` truthfully reported the value it was *given* rather than the one that was
+*asked for*, so the transparency surface could not reveal it either. Borrower-paid versus lender-paid is
+a first-order price difference.
+
+**The profile is now a parameter**, threaded route → client → builder:
+- **`dscr`** — the default, and **byte-identical to everything ever sent**.
+- **`mirror`** — forces nothing; the scenario decides, and where it is silent the merged foundation's
+  own value stands, which is the right default for a mirror because **the foundation IS the vendor's
+  answer to "what does this company search by default"**.
+
+**⛔ THE SAFETY PROPERTY IS THE WHOLE POINT AND IS ASSERTED FIRST.** Every live measurement, every
+captured anchor and every parity number in this file was taken against the `dscr` body — a widening that
+quietly moved it would invalidate all of them at once, silently, everywhere. So identity is asserted
+across the **whole canonical battery** (299 scenarios), not on one hand-picked scenario, and with a
+control proving the comparison can fail at all.
+
+**An unknown profile name NARROWS.** A typo falls back to `dscr` — the same fail-closed direction every
+other unrecognized value in this connector takes. A typo that widened what we search would be a request
+nobody meant to send, priced.
+
+**The two wire repairs run under both profiles, deliberately.** An empty `mortgageTypes` was the
+**measured** cause of a live 500, and a body saying Fixed in one place and ARM in another is a request
+no reader can honour. Neither is profile identity — both are the difference between a readable request
+and a broken one — so a mirror search gets them too.
+
+`profile` is accepted as a **request-envelope key**, not a pricing input: it selects which body is sent,
+it is not a fact about the loan. A *misspelled* profile key is still 422'd rather than dropped.
+
+**⛔ THE PROPERTY THAT MAKES THIS SAFE IS ALSO WHAT MADE IT HARD TO TEST — and it caught me.** A
+scenario stating none of the five is byte-identical under both profiles (asserted, across the whole
+battery). My fallback test used exactly such a scenario, so a mutation making an unknown profile fall
+back to **`mirror`** — the dangerous direction, the one this fail-closed rule exists to prevent —
+**passed every assertion.** The fallback and the default are now proven on a *discriminating* scenario,
+one that states `compensationType`, where the two profiles genuinely build different bodies. The
+mutations went from 0 and 1 assertions biting to 6 and 11.
+
+That is the general lesson, worth more than the fix: **a safety property proved on an input where the
+safe and unsafe answers coincide is not proved at all.**
+
+`scripts/test-lt-ppe-profile-parameter.js` (44 assertions), **mutation-proven seven ways**: an unknown
+profile widening (6 bite), the default becoming mirror (11), mirror still forcing the five (4), the
+mortgageTypes repair skipped (1), the client accepting the option and dropping it (1), the route not
+passing it through (1), and `profile` becoming a pricing input (2).
+
+**STILL LOCKED, and stated rather than implied.** The DSCR **special mortgage options** are still
+injected on every search (`SMO_DSCR`, resolved against the company's live registry). That is the product
+selector — it is what makes a search a *DSCR* search — so unlocking it is a larger question than the
+five profile fields and is not slipped in beside them. Until it is answered, `mirror` widens the loan's
+*shape* (occupancy, lien, amortization, comp) but not its *product line*.
+
+158/158 suites, 33 database-backed. All seven gates green.

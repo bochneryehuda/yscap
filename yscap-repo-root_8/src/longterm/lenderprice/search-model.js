@@ -1105,7 +1105,7 @@ function buildSearch(sc = {}, opts = {}) {
   const reg = registry.applyRegistry(m, sc);
   if (reg && reg.warnings && reg.warnings.length) m[REGISTRY_WARNINGS] = reg.warnings;
 
-  return wireDiscipline(m);
+  return wireDiscipline(m, opts.profile);
 }
 
 // §37.8 — WHAT LEAVES THIS FUNCTION IS DISCIPLINED, AT ONE PLACE, AFTER EVERYTHING ELSE HAS RUN.
@@ -1162,11 +1162,45 @@ const PROFILE_FORCED = {
   compensationType: 'BorrowerCompPlan',
   lienPriorityType: 'FirstLien',
 };
-function wireDiscipline(m) {
+// ⛔ THE PROFILE IS A PARAMETER NOW, NOT A CONSTANT (§2.88).
+//
+// `PROFILE_FORCED` above is a DSCR investor search: fixed-rate, conventional, investment-use,
+// first-lien, borrower-paid. Every search this module has ever built carried all five, unconditionally
+// — so the connector could search exactly ONE product, and the owner's "search any kind of scenarios in
+// Lender Price" was structurally impossible. It also meant `compensationType` was validated by
+// `applyRegistry`, written onto the body, and then silently overwritten here: a caller asking for
+// LenderPaid got BorrowerCompPlan, with the response's own `effectiveScenario` truthfully reporting
+// the value it was given rather than the one that was asked for.
+//
+// ⛔ `dscr` IS AND MUST REMAIN BYTE-IDENTICAL TO WHAT WE HAVE ALWAYS SENT. It is the default, and the
+// suite asserts identity across the whole canonical battery — every live measurement, every captured
+// anchor and every parity number in this file was taken against that body, and a widening that quietly
+// moved it would invalidate all of them at once.
+//
+// `mirror` forces NOTHING. The scenario decides, and where the scenario is silent the merged
+// foundation's own value stands — which is the right default for a mirror, because the foundation IS
+// the vendor's answer to "what does this company search by default".
+const PROFILES = {
+  dscr: PROFILE_FORCED,
+  mirror: {},
+};
+const DEFAULT_PROFILE = 'dscr';
+function profileForces(name) {
+  const key = name == null || name === '' ? DEFAULT_PROFILE : String(name);
+  // An unknown profile name falls back to the NARROW one. A typo must not silently widen what we
+  // search — the same fail-closed direction every other unknown value in this file takes.
+  return Object.prototype.hasOwnProperty.call(PROFILES, key) ? PROFILES[key] : PROFILES[DEFAULT_PROFILE];
+}
+
+function wireDiscipline(m, profile) {
   const c = m.criteria || (m.criteria = {});
 
   // (1) profile identity — forced last, so nothing downstream can have moved it.
-  for (const [k, v] of Object.entries(PROFILE_FORCED)) c[k] = Array.isArray(v) ? v.slice() : v;
+  for (const [k, v] of Object.entries(profileForces(profile))) c[k] = Array.isArray(v) ? v.slice() : v;
+  // ⛔ THESE TWO REPAIRS RUN UNDER EVERY PROFILE, and that is deliberate. They are not profile
+  // identity — they are the difference between a request the vendor can read and one that 500s or
+  // contradicts itself. A `mirror` search is still a request, so it gets them too.
+  //
   // An empty array is not a null and survived the merge; on the one leaf whose null is a proven 500
   // it is the obvious sibling, so it is repaired rather than sent.
   if (!Array.isArray(c.mortgageTypes) || c.mortgageTypes.length === 0) c.mortgageTypes = ['Conventional'];
@@ -1636,4 +1670,4 @@ function validateScenario(sc = {}) {
 }
 
 module.exports = { BASE, buildSearch, clearScenarioOwnedFields, mergeKnownRequestDefaults, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, OCCUPANCY_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue, mapOccupancy, OCCUPANCY_STATES, occupancyKey } };
+  _internals: { PROFILES, DEFAULT_PROFILE, profileForces, PROFILE_FORCED, SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue, mapOccupancy, OCCUPANCY_STATES, occupancyKey } };
