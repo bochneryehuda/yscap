@@ -199,9 +199,12 @@ console.log('\nG. wireDiscipline — the DSCR profile constants are FORCED, not 
   ok(a.city === '42', 'a numeric city is coerced to the string the capture uses');
 
   // And the scenario-ownership property this must not undo.
+  // §2.1/TASK-31 — the blank form of these is the frontend's own empty string, not absence (all seven
+  // captures send ""). The leak property this assertion exists for is UNCHANGED: what matters is that
+  // the stale value is GONE, and an empty string overwrites it exactly as deletion did.
   const stale = buildSearch(SCEN, { base: { property: { address: { street: '12 Somewhere Else', zipExt: '9999' } } } });
-  ok(stale.property.address.street === undefined && stale.property.address.zipExt === undefined,
-    'a prior session\'s street/ZIP+4 still cannot ride along');
+  ok(stale.property.address.street === '' && stale.property.address.zipExt === '',
+    'a prior session\'s street/ZIP+4 still cannot ride along — it is replaced by the frontend\'s own blank ""');
 }
 
 // ---- H. a credit score is REQUIRED, and refused LOCALLY ---------------------------------------

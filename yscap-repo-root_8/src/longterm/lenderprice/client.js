@@ -767,9 +767,27 @@ function requestIdOf(raw) {
   const rid = (typeof a === 'string' && a) || (typeof b === 'string' && b) || null;
   return rid || null;
 }
-// Build the poll body from the stored kickoff body applying the EXACT frontend normalization the
-// captured HAR uses: cachedDisqualified=true, the upstream requestId, and four nullable defaults the
-// frontend fills in (compensation bounds + rate range) so the poll body matches byte-for-byte.
+// Build the poll body from the stored kickoff body: cachedDisqualified=true, the upstream requestId,
+// and four nullable defaults the frontend fills in (compensation bounds + rate range).
+//
+// §2.1/TASK-31 CORRECTION — THIS DOES **NOT** MATCH THE CAPTURED POLL BYTE-FOR-BYTE, and the comment
+// that said so was measurably wrong. Measured against the captured poll bodies (anchors req-02…06,
+// five identical polls of the req-01 kickoff), our poll still differs in 15 leaves. The frontend's
+// OWN poll differs from its OWN kickoff in 14 leaves: it DROPS nine keys it had sent as `null`
+// (brokerCriteria.divisionSourceType, rangeComplan.from/to, closingCost…titleInsurance,
+// criteria.mortgageLimitForLatestYear.mortgageLimit, four dynamicPropertiesMap `.value`s,
+// groupConfig.leafLimit, miDataWrapper.miPriceDetail.paymentType) and ADDS
+// `disqualifiedResultsByProduct: false`. So "the poll differs from the kickoff only in
+// cachedDisqualified" describes OUR behaviour, never theirs.
+//
+// IT IS DELIBERATELY LEFT THAT WAY. The vendor plainly does not cache-key on the whole body — if it
+// did, the frontend's own 14-leaf-different poll could not read back the computation its kickoff
+// started, and it demonstrably does. Correlation is by `requestId`, which is why this function echoes
+// it and why `pollDisqualifiedByKey` refuses outright without one. Reshaping the poll to match would
+// therefore be a change to a working async handshake justified by inference rather than measurement,
+// and getting it wrong costs the ineligible-reasons read on every deal. It needs a live re-measure
+// (kickoff, then poll in the frontend's shape, confirm the tree still comes back) before it moves.
+// Pinned as-is by scripts/test-lt-lp-blank-parity.js so it cannot drift unnoticed.
 function applyPollDelta(kickBody, requestId) {
   const body = { ...kickBody, cachedDisqualified: true };
   if (requestId) body.requestId = requestId;

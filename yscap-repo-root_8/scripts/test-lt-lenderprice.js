@@ -550,12 +550,18 @@ async function offline() {
   delete process.env.LP_CASHOUT_AMOUNT_FIELD;
 
   // 31) AUDIT §3 — appraised value is NOT manufactured from the estimated value.
+  // §2.1/TASK-31 — "BLANK" is now the frontend's own blank form: the KEY IS ABSENT. The captured
+  // kickoff req-01 (a refinance with the Appraised Value box empty) carries no `criteria.appraisedValue`
+  // at all, while req-07 — the box filled — carries the number. We used to send `null`, a third form
+  // the vendor's screen never produces. The property these assertions exist for is unchanged and is
+  // asserted more strictly: not merely "not the purchase price", but "no value of any kind".
+  const blankAppr = (b) => !Object.prototype.hasOwnProperty.call(b.criteria, 'appraisedValue');
   const buyAppr = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000 });
-  ok(buyAppr.criteria.appraisedValue === null, 'purchase: appraised value is BLANK unless separately entered — never mirrored from the price');
+  ok(blankAppr(buyAppr), 'purchase: appraised value is BLANK (key absent) unless separately entered — never mirrored from the price');
   const coBlank = lp.buildSearch({ purpose: 'CashOut', value: 6e5, loan: 42e4 });
-  ok(coBlank.criteria.appraisedValue === null, '§3 cash-out with no appraisal: appraised is BLANK, not the $600k estimated value');
+  ok(blankAppr(coBlank), '§3 cash-out with no appraisal: appraised is BLANK (key absent), not the $600k estimated value');
   const refiBlank = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5 });
-  ok(refiBlank.criteria.appraisedValue === null, '§3 refinance with no appraisal: appraised is blank');
+  ok(blankAppr(refiBlank), '§3 refinance with no appraisal: appraised is blank (key absent)');
   const coAsIs = lp.buildSearch({ purpose: 'CashOut', value: 6e5, loan: 42e4, asIsValue: 58e4 });
   ok(coAsIs.criteria.appraisedValue === 58e4, '§3 an explicit as-is value fills appraised on a cash-out');
 
@@ -596,7 +602,7 @@ async function offline() {
   // 35) GOLDEN FIXTURE A — the audit's canonical DSCR purchase (permanent request-structure fixture).
   const goldA = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000, fico: 760, dscr: 1.25,
     propertyType: 'SingleFamily', prepayMonths: 60, borrowerType: 'LLC', zip: '07036', state: 'NJ', countyFps: '34039' });
-  ok(goldA.criteria.loanPurpose === 'Purchase' && goldA.criteria.purchasePrice === 5e5 && goldA.criteria.appraisedValue === null, 'GOLDEN A: purchase 500k, appraised BLANK (not mirrored)');
+  ok(goldA.criteria.loanPurpose === 'Purchase' && goldA.criteria.purchasePrice === 5e5 && blankAppr(goldA), 'GOLDEN A: purchase 500k, appraised BLANK — key absent, the frontend\'s own blank form (not mirrored)');
   ok(goldA.criteria.loanAmount === 375000 && Math.abs(goldA.criteria.ltv - 0.75) < 1e-9, 'GOLDEN A: loan 375k, LTV 0.75');
   ok(goldA.criteria.fico === 760 && goldA.criteria.dscr === 1.25, 'GOLDEN A: FICO 760 / DSCR 1.25');
   ok(goldA.criteria.loanYear === 30 && goldA.brokerCriteria.dayLocks === 30, 'GOLDEN A: 30yr / 30-day lock');
@@ -609,7 +615,7 @@ async function offline() {
     propertyType: 'CondoNonWarr', attachment: 'Detached', prepayMonths: 60, borrowerType: 'LLC', termYears: 15, lockDays: 15,
     cashoutAmount: 50000, zip: '33101', state: 'FL', countyFps: '12086' });
   ok(goldB.criteria.loanPurpose === 'CashoutRefinance', 'GOLDEN B: cash-out → CashoutRefinance');
-  ok(goldB.criteria.purchasePrice === 6e5 && goldB.criteria.appraisedValue === null, 'GOLDEN B: estimated 600k, appraised BLANK (not manufactured)');
+  ok(goldB.criteria.purchasePrice === 6e5 && blankAppr(goldB), 'GOLDEN B: estimated 600k, appraised BLANK — key absent, the frontend\'s own blank form (not manufactured)');
   ok(goldB.criteria.loanAmount === 42e4 && Math.abs(goldB.criteria.ltv - 0.70) < 1e-9, 'GOLDEN B: loan 420k, LTV 0.70');
   ok(goldB.criteria.interestOnly === true, 'GOLDEN B: interest-only');
   ok(goldB.property.propertyType === 'Condos' && goldB.property.attachmentType === 'Detached' && goldB.criteria.nonWarrantableProject === true, 'GOLDEN B: non-warrantable condo, detached');

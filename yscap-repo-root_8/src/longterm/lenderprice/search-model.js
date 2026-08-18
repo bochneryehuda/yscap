@@ -400,17 +400,53 @@ function mapReserves(v) {
 //     the foundation's; a null can never over-lend.
 // Adding a field is one registry line, so the clearing stays intentional and testable — never
 // re-derived per call site.
+//
+// §2.1/TASK-31 — THE NEUTRAL IS THE FRONTEND'S OWN BLANK FORM, AND IT IS READ OFF THE CAPTURES.
+//
+// A blank field has THREE possible wire forms and they are not interchangeable to a strict service:
+// the key ABSENT, the key present carrying `null`, and the key present carrying an empty literal
+// (`""`). Choosing one ourselves is exactly the class this whole builder exists to prevent — nothing
+// errors, the vendor simply prices a slightly different request than the one the human's screen would
+// have sent, and every parity number measured against it is measuring the wrong thing.
+//
+// So the rule is: **a field the caller did not state is returned to the blank form the FRONTEND uses
+// for that field**, and that form is not a developer's judgement — it is read out of the captured
+// frontend bodies in `docs/longterm/ppe-research/anchors/` and PINNED by
+// `scripts/test-lt-lp-blank-parity.js`, which rebuilds each capture's own scenario and fails the
+// moment a leaf's blank form diverges. That is what keeps this table from drifting away from the
+// ground truth it is supposed to mirror.
+//
+// It also means THIS TABLE IS THE ONLY PLACE A BLANK FORM IS DECIDED. `buildSearch` must not write a
+// field's blank value inline — `criteria.appraisedValue` used to (`= apprSupplied != null ? … : null`,
+// against a frontend that omits the key entirely), which is why it now lives here with the rest.
+//
+// The leak-safety property that motivated the original list is UNCHANGED by stating a blank form
+// rather than deleting: `''` overwrites a stale foundation value exactly as removal does. Writing the
+// frontend's blank is therefore strictly better than inventing absence — same protection, real parity.
 const DELETE = Symbol('scenario-owned-delete');
 const SCENARIO_OWNED = [
   // Core deal economics — buildSearch RE-APPLIES each from the caller below, so clearing changes
   // behavior ONLY on OMISSION: the field then fails closed to neutral instead of inheriting the
-  // foundation's value. (appraisedValue + loanYear are ALWAYS forced by buildSearch, so they cannot
-  // leak and are deliberately NOT listed here.)
+  // foundation's value. (loanYear is ALWAYS forced by buildSearch, so it cannot leak and is
+  // deliberately NOT listed here.)
   { path: 'criteria.purchasePrice', neutral: null, why: 'per-deal purchase/estimated price' },
   { path: 'criteria.loanAmount',    neutral: null, why: 'per-deal loan amount' },
   { path: 'criteria.ltv',           neutral: null, why: 'per-deal LTV (buildSearch falls back to criteria.ltv when value/loan/ltv are all absent)' },
   { path: 'criteria.fico',          neutral: null, why: 'per-borrower credit score' },
   { path: 'criteria.dscr',          neutral: null, why: 'per-deal DSCR ratio' },
+  // §2.1/TASK-31 — APPRAISED (AS-IS) VALUE. The frontend OMITS THE KEY when the box is blank: the
+  // captured kickoff req-01 (a refinance whose Appraised Value was never filled in) carries no
+  // `criteria.appraisedValue` at all, while req-07 — the same screen with the box filled — carries the
+  // number. We used to write `null` unconditionally, which states "this field is present and empty"
+  // where the frontend states nothing at all. Appraised value is an LTV / eligibility BASIS, so this is
+  // the one blank on this list whose wire form could plausibly move a price rather than only a byte
+  // count; it is therefore the frontend's form, not ours.
+  //
+  // This entry SUPERSEDES the inline `c.appraisedValue = … : null` that used to live in buildSearch —
+  // the blank form is decided here, once, and buildSearch re-applies only a SUPPLIED value after this
+  // clear (the standing scenario-owned footgun). Neutral ABSENT also keeps the 2026-08-16 no-mirroring
+  // rule intact: a purchase price is still never copied into an appraised value on any purpose.
+  { path: 'criteria.appraisedValue', neutral: DELETE, why: 'per-deal appraised/as-is value — the frontend omits the key when the box is blank (req-01)' },
   // Per-deal amounts buildSearch NEVER writes back — the audit's leak class. Neutral is the captured
   // base default (0), so a stale non-zero from a prior session is reset and no value the engine has
   // not already accepted is ever introduced. A real value would only reach these through a wired
@@ -493,9 +529,18 @@ const SCENARIO_OWNED = [
   // whole job is to prove what went upstream could not see them.
   // `country` ("US") and `province` ("") are NOT per-deal and are deliberately absent
   // from this list: they are structural defaults every request carries.
-  { path: 'property.address.street',      neutral: DELETE, why: 'per-deal street' },
-  { path: 'property.address.streetCont',  neutral: DELETE, why: 'per-deal street line 2' },
-  { path: 'property.address.zipExt',      neutral: DELETE, why: 'per-deal ZIP+4 — a stale one contradicts the ZIP beside it' },
+  //
+  // §2.1/TASK-31 — THE BLANK FORM OF THESE THREE IS THE EMPTY STRING, NOT ABSENCE. All SEVEN captured
+  // frontend bodies — both kickoffs and all five polls, two different deals, two states — send
+  // `street: ""`, `streetCont: ""` and `zipExt: ""`. Nothing in this integration has more unanimous
+  // ground truth. We were deleting the keys, which is a blank form the vendor's own screen never
+  // produces. The earlier reasoning ("our body omitted all three and returned 200, so they are
+  // provably not required, and that is worth more than cosmetic parity") set up a false choice: `""`
+  // overwrites a stale foundation street exactly as deletion does, so the leak the audit found stays
+  // closed AND the request matches the frontend. There is nothing to trade off.
+  { path: 'property.address.street',      neutral: '', why: 'per-deal street — frontend blank form is "" (all 7 captures)' },
+  { path: 'property.address.streetCont',  neutral: '', why: 'per-deal street line 2 — frontend blank form is "" (all 7 captures)' },
+  { path: 'property.address.zipExt',      neutral: '', why: 'per-deal ZIP+4 — frontend blank form is "" (all 7 captures); a stale one contradicts the ZIP beside it' },
 ];
 // Clear every registered scenario-owned field to its neutral state, IN PLACE. Operates on the
 // already-cloned model (buildSearch clones first), so it never mutates the shared BASE or a caller's
@@ -664,8 +709,13 @@ function buildSearch(sc = {}, opts = {}) {
   // states an appraised value NOBODY SUPPLIED — and appraised value is an LTV/eligibility basis, so
   // asserting one we were never given is the same class of silent mispricing as inheriting a stale
   // address: it does not fail, it prices a different deal. Blank on every purpose unless supplied.
+  //
+  // §2.1/TASK-31 — the BLANK form moved to `SCENARIO_OWNED` (neutral ABSENT, matching the captured
+  // frontend, which omits the key when the box is empty). This is now a re-apply of a SUPPLIED value
+  // only, exactly like the other scenario-owned economics; writing a blank here would put a wire form
+  // back in a second place and is what produced the `null` the frontend never sends.
   const apprSupplied = num(sc.appraisedValue != null ? sc.appraisedValue : sc.asIsValue);
-  c.appraisedValue = apprSupplied != null ? apprSupplied : null;
+  if (apprSupplied != null) c.appraisedValue = apprSupplied;
   if (loan != null) c.loanAmount = loan;
   if (ltv != null) c.ltv = ltv;
   // §31.5 — SUBORDINATE FINANCING. Confirmed live: selecting Closed End Second and entering 50,000
@@ -1058,10 +1108,13 @@ function buildSearch(sc = {}, opts = {}) {
 //     string "36047" (which also silently destroys a leading-zero FIPS such as "01001"); and an
 //     object reached `countyName` with no check at all.
 //
-//     `street` / `streetCont` / `zipExt` are deliberately left ABSENT rather than filled with the
-//     capture's empty strings: our own 6,799-byte body omitted all three and returned HTTP 200, so
-//     they are provably not required — and the scenario-ownership suite exists to prove a prior
-//     session's street can never ride along, which is worth more than cosmetic parity.
+//     `street` / `streetCont` / `zipExt` now carry the capture's own empty strings (§2.1/TASK-31).
+//     This paragraph used to argue the opposite — that leaving them ABSENT was worth more than
+//     "cosmetic parity" because our body omitted all three and still returned HTTP 200. That was a
+//     false choice: an empty string overwrites a stale foundation street exactly as deletion does, so
+//     the prior-session leak the scenario-ownership suite guards stays closed either way, and only one
+//     of the two blank forms is the one the vendor's own screen sends. Their blank form is stated in
+//     `SCENARIO_OWNED` (the one place a blank form is decided) and pinned against all seven captures.
 //
 // Nothing here invents a value. Every default is the canonical request's own, every coercion is to
 // the type the capture uses, and a field the scenario legitimately set is left alone.
