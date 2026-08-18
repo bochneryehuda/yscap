@@ -1040,24 +1040,40 @@ function SitewirePropertyControls({ appId, onChanged }) {
   );
 }
 
-/* Reset / re-push (owner-directed testing control): unlink the property and start the draw process over.
-   Sitewire has no delete, so the backend deactivates the property there and clears our mirror; the money
-   ledger is kept. Strong confirm — it's destructive to the draw tracking. Lives in a red "danger" card. */
+/* Reset the draw setup — RESET ONLY (owner-directed 2026-08-18: "this button should
+   only reset. Bring us back to the screen where we're starting the draw process from
+   A … like a brand-new draw" — nothing is re-pushed until the coordinator starts it
+   again). Sitewire has no delete, so the backend deactivates the property there and
+   clears our mirror; the money ledger is kept. WHY THE LOAN-NUMBER PROMPT: the route
+   has required a typed `confirm_loan_number` since audit B-3 (2026-07-21, wrong-file
+   protection) — this button used to post an empty body, so every click 400'd and the
+   refusal sat in small grey text naming a field the screen never offered ("the button
+   doesn't work", owner-reported 2026-08-18). The prompt IS the safety: typing the
+   number from knowledge proves you're on the right file. Refusals now surface in the
+   real dialog, never only the small print. Super-admin only (the server enforces it). */
 function ResetDrawControl({ appId, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   async function reset() {
-    if (!(await askConfirm('Reset this file’s draw setup and start over?\n\nThis deactivates the property in Sitewire (Sitewire has no delete — the old copy stays in their list, just inactive) and unlinks it here, clearing the mirrored draws, findings and photos so you can push a fresh copy. Your money ledger — releases, retainage and waivers — is kept.'))) return;
+    if (!(await askConfirm('Reset this file’s draw setup?\n\nThis deactivates the property in Sitewire (Sitewire has no delete — the old copy stays in their list, just inactive) and unlinks it here, clearing the mirrored draws, findings and photos. You’ll be back at “Start the draw process” like a brand-new draw file — nothing is pushed again until you start it yourself. Your money ledger — releases, retainage and waivers — is kept.', { confirmLabel: 'Reset the draw setup' }))) return;
+    const typed = await askPrompt('Type this file’s loan number to confirm the reset. This is the wrong-file protection: the reset only runs when the number you type matches the file you’re on.', { placeholder: 'Loan number' });
+    if (typed == null) return; // cancelled — nothing changed
+    const confirm = String(typed).trim();
+    if (!confirm) { await showMessage('The reset needs the loan number typed in — nothing was changed.'); return; }
     setBusy(true); setMsg('');
     try {
-      const r = await api.post(`/api/sitewire/files/${appId}/reset-draw`, {});
+      const r = await api.post(`/api/sitewire/files/${appId}/reset-draw`, { confirm_loan_number: confirm });
       const sw = !r.was_managed ? '' : r.sitewire === 'synced' ? ' The old property was deactivated in Sitewire.'
-        : r.sitewire === 'failed' ? ' (Couldn’t deactivate it in Sitewire — deactivate or delete it there if you need to.)'
+        : r.sitewire === 'failed' ? ' (Couldn’t deactivate it in Sitewire — if you already deleted it there, you’re all set.)'
         : r.sitewire === 'dryrun' ? ' (Dry-run — nothing was sent to Sitewire.)'
         : ' (Sitewire writing is off — deactivate it there if you need to.)';
-      setMsg('Draw setup reset — start the draw process again above.' + sw);
+      setMsg('Draw setup reset — you’re back at the start. Use “Start the draw process” above to set everything up and push it fresh.' + sw);
       onChanged();
-    } catch (e) { setMsg(e?.data?.error || e.message || 'That didn’t work.'); }
+    } catch (e) {
+      const why = e?.data?.error || e.message || 'That didn’t work.';
+      setMsg(why);
+      await showMessage(why, { title: 'Reset refused' });
+    }
     finally { setBusy(false); }
   }
   return (
@@ -1065,9 +1081,9 @@ function ResetDrawControl({ appId, onChanged }) {
       <div className="row between" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <div style={{ minWidth: 220, flex: '1 1 320px' }}>
           <b>Reset draw setup</b>
-          <div className="dd-sub" style={{ marginTop: 2 }}>Unlink this property and start the push over. Deactivates it in Sitewire, clears the mirrored draws/findings/photos, and brings back the “Start the draw process” options with all the push settings. Your money ledger is kept.</div>
+          <div className="dd-sub" style={{ marginTop: 2 }}>Unlinks this property and takes the file back to “Start the draw process” — a clean slate, with all the push settings, like a brand-new draw. Deactivates the old property in Sitewire and clears the mirrored draws/findings/photos. Nothing is re-pushed until you start the process again. Your money ledger is kept. Super admins only; you’ll type the loan number to confirm.</div>
         </div>
-        <button className="btn btn-sm" style={{ background: 'var(--bad,#b04a3f)', color: '#fff', flex: '0 0 auto' }} disabled={busy} onClick={reset}>{busy ? 'Resetting…' : 'Reset & re-push'}</button>
+        <button className="btn btn-sm" style={{ background: 'var(--bad,#b04a3f)', color: '#fff', flex: '0 0 auto' }} disabled={busy} onClick={reset}>{busy ? 'Resetting…' : 'Reset draw setup'}</button>
       </div>
       {msg && <div className="dd-sub" style={{ marginTop: 8 }}>{msg}</div>}
     </div>
