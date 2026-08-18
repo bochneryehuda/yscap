@@ -2938,24 +2938,28 @@ router.post('/applications/:id/program-exception', requireRole('super_admin'), a
       return res.status(400).json({ error: 'Add a short reason for the exception (why this in-process deal stays on the program).' });
     }
     // Atomic jsonb merge/remove — two admins toggling at once can never clobber
-    // each other's entry (no read-modify-write of the whole map).
+    // each other's entry (no read-modify-write of the whole map). RETURNING makes
+    // a nonexistent file a clean 404 BEFORE anything is audited (audit 2026-08-18
+    // #7 — never write an audit row for a write that matched nothing).
+    let upd;
     if (enabled) {
       const entry = {
         by: req.actor.id, byName: req.actor.full_name || req.actor.email || 'Super admin',
         at: new Date().toISOString(), reason,
       };
-      await db.query(
+      upd = await db.query(
         `UPDATE applications
             SET program_exceptions = COALESCE(program_exceptions,'{}'::jsonb) || jsonb_build_object($2::text, $3::jsonb)
-          WHERE id=$1`,
+          WHERE id=$1 RETURNING id`,
         [req.params.id, program, jsonbText(entry)]);
     } else {
-      await db.query(
+      upd = await db.query(
         `UPDATE applications
             SET program_exceptions = NULLIF(COALESCE(program_exceptions,'{}'::jsonb) - $2::text, '{}'::jsonb)
-          WHERE id=$1`,
+          WHERE id=$1 RETURNING id`,
         [req.params.id, program]);
     }
+    if (!upd.rows.length) return res.status(404).json({ error: 'not found' });
     await audit(req, 'program_exception', 'application', req.params.id, { program, enabled, reason: reason || null });
     // Verify-after-write (the repo's #1 bug-class guard): re-read the row and
     // answer with the EFFECTIVE availability the write actually produced.

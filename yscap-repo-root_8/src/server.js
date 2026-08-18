@@ -387,8 +387,23 @@ app.use('/api/roster', require('./routes/roster'));   // public team roster (sit
 app.get('/api/pricing-defaults', async (req, res) => {
   try {
     const d = await require('./lib/pricing-settings').load();
+    // Program ON/OFF switches (owner-directed 2026-08-18): the PUBLIC copy of the
+    // map carries the discontinued NOTE only after the borrower-safe scrub — it is
+    // admin-typed free text, and a note naming a capital partner must never reach
+    // an anonymous caller (the same scrub the borrower/TPO pricing payloads
+    // apply). COPIED, never mutated: `d` is the settings module's live cache.
+    let out = d;
+    if (d && d.programAvailability) {
+      const scrub = require('./lib/borrower-safe').scrubText;
+      const pa = {};
+      for (const k of Object.keys(d.programAvailability)) {
+        const row = d.programAvailability[k] || {};
+        pa[k] = { ...row, ...(row.note ? { note: scrub(String(row.note)) } : {}) };
+      }
+      out = { ...d, programAvailability: pa };
+    }
     res.set('X-Robots-Tag', 'noindex');
-    res.set('Cache-Control', 'private, max-age=60').json(d);
+    res.set('Cache-Control', 'private, max-age=60').json(out);
   } catch (e) { res.set('Cache-Control', 'no-store').json({}); }
 });
 // Pricing-admin unlock (see src/routes/pricing-admin.js). Deliberately mounted

@@ -96,8 +96,13 @@ assert(pa.cleanProgramExceptions('{"gold":{"by":"u","reason":"r"}}').gold.reason
   && Object.keys(pa.cleanProgramExceptions({ dscr: { by: 'u' } })).length === 0
   && Object.keys(pa.cleanProgramExceptions(null)).length === 0,
   'B6 exception cleaning: JSON strings parse, unknown programs and junk read as "no exception"');
-assert(pa.fileException({ program_exceptions: { gold: 'junk' } }, 'gold') === null,
-  'B7 a malformed exception blob is NOT an exception — it must be provably a recorded decision');
+assert(pa.fileException({ program_exceptions: { gold: 'junk' } }, 'gold') === null
+  && pa.fileException({ program_exceptions: { gold: {} } }, 'gold') === null
+  && pa.fileException({ program_exceptions: { gold: [] } }, 'gold') === null
+  && pa.fileException({ program_exceptions: { gold: { reason: 'no who or when' } } }, 'gold') === null,
+  'B7 a malformed exception blob (junk / {} / [] / no by-or-at) is NOT an exception — it must be provably a recorded decision');
+assert(pa.fileException({ program_exceptions: { gold: { at: '2026-08-18T00:00:00Z' } } }, 'gold') !== null,
+  'B8 …while an entry carrying the recorded when (or who) still counts');
 
 // ── C. pricing-settings carries it, NULL by default ──────────────────────────
 {
@@ -139,8 +144,10 @@ doorWired('src/lib/intake-auto-register.js', 'program_discontinued', 'the public
     'D5 a hidden program cannot be selected (keyboard/programmatic path refused too)');
   assert(/progOffered\("gold"\)\s*\?\s*\{\s*title:\s*"Gold Standard Program"/.test(ts),
     'D6 the Excel export drops a discontinued program\'s section — the export never resurfaces the hidden box');
-  assert(/progDiscInfo/.test(ts) && /Turned back on for this file only by a super-admin exception/.test(ts),
+  assert(/progDiscInfo/.test(ts) && /Turned back on for this file only by an approved exception/.test(ts),
     'D7 the exception file shows the pre-filled discontinued banner on the returned card');
+  assert(!/super-admin exception/.test(ts),
+    'D7b the banner names no internal role — it renders on borrower/broker studios too');
   const html = read('web/v2/tools/term-sheet.html');
   assert(html.includes('id="tsProgAvail"') && html.includes('data-noshare'),
     'D8 the per-file map rides a data-noshare hidden input — never a shared link');
@@ -163,6 +170,21 @@ doorWired('src/lib/intake-auto-register.js', 'program_discontinued', 'the public
   const rt = read('src/routes/admin-pricing.js');
   assert(rt.includes('cleanProgramAvailability') && rt.includes('program_availability'),
     'D13 the settings PUT cleans through the ONE module and stores the column');
+  // The Admin Center's pre-fill and the studio's fallback are browser MIRRORS of
+  // defaultDiscontinuedNote (they cannot require the server module) — this drift
+  // guard fails the moment either stops matching it word for word.
+  const noteTail = 'program has been discontinued and is not being offered on new deals right now.';
+  assert(pa.defaultDiscontinuedNote('gold').endsWith(noteTail), 'D14 the server default note is the canonical wording');
+  assert(scr.includes(noteTail), 'D14b the Admin Center pre-fill mirrors it word for word');
+  assert(read('web/v2/tools/termsheet.js').includes(noteTail), 'D14c the studio banner fallback mirrors it word for word');
+}
+// The PUBLIC feed scrubs the admin-typed note before it leaves (audit #1) —
+// borrower-safe on the most exposed surface, without mutating the settings cache.
+{
+  const sv = read('src/server.js');
+  const i = sv.indexOf("'/api/pricing-defaults'");
+  assert(i > -1 && /scrubText/.test(sv.slice(i, i + 1400)),
+    'D15 /api/pricing-defaults scrubs the discontinued note for anonymous callers');
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');

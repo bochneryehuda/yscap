@@ -94,7 +94,12 @@ function cleanProgramExceptions(v) {
   const out = {};
   for (const prog of PROGRAM_KEYS) {
     const src = obj[prog];
-    if (!src || typeof src !== 'object') continue;
+    if (!src || typeof src !== 'object' || Array.isArray(src)) continue;
+    // An exception must be PROVABLY a recorded decision — it carries who or when
+    // (the endpoint always stamps both). An empty {} / a shape with neither is
+    // NOT an exception: counting it would let a malformed blob quietly re-offer
+    // a discontinued program on a file.
+    if (!src.by && !src.at) continue;
     out[prog] = {
       by: src.by ? String(src.by) : null,
       byName: String(src.byName == null ? '' : src.byName).trim().slice(0, 120) || null,

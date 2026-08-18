@@ -901,9 +901,12 @@
       if (dEl) {
         var di = gone ? null : progDiscInfo(pk);
         if (di) {
+          // The suffix names no internal role \u2014 this banner renders on the
+          // borrower's and the broker's studio too (audit 2026-08-18 #5). The
+          // fallback note mirrors program-availability.defaultDiscontinuedNote.
           dEl.hidden = false;
-          dEl.textContent = "\u26a0 " + (di.note || ("The " + (pk === "gold" ? "Gold Standard" : pk === "silver" ? "Silver" : "Standard") + " program has been discontinued."))
-            + " Turned back on for this file only by a super-admin exception.";
+          dEl.textContent = "\u26a0 " + (di.note || ("The " + (pk === "gold" ? "Gold Standard" : pk === "silver" ? "Silver" : "Standard") + " program has been discontinued and is not being offered on new deals right now."))
+            + " Turned back on for this file only by an approved exception.";
         } else { dEl.hidden = true; dEl.textContent = ""; }
       }
     }
