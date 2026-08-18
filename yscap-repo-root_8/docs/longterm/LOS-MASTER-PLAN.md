@@ -435,6 +435,29 @@ moment they answer differently. Proven through the REAL lock reader, not the hel
 because the claim is that the desk cannot be told a loan is locked at 1%; four mutations turn it red,
 including the twin drifting.
 
+**WHICH LONG-TERM CODE HAS A TEST EVER RUN? MEASURED, NOT ASSUMED (2026-08-18).** Every guard in
+this section answers "is this thing wired"; none of them answered "does any test ever EXECUTE it".
+So all 121 suites were run under V8 coverage and the never-executed spans collected — 132 of them
+over 150 bytes. **The first reporter was wrong and said there were none**, which is the finding
+inside the finding: V8 nests its ranges, so a function nobody calls still sits inside the script's
+own range with a count above zero, and subtracting the outer from the inner erases precisely what is
+being looked for. It reported a clean sweep and could not see a function planted in front of it to be
+found. The rule is that the INNERMOST range wins, and a reporter is not believed until a control it
+was meant to catch turns it red — the same standard the mutation proofs are held to.
+**What it found first was `people/links.js`: never loaded by any suite, let alone run.** Its own
+header calls a confirmed staff link the most consequential row in the long-term build — it decides
+which Encompass login IS which PILOT person, and therefore whose pipeline every long-term file lands
+in and who can open it — and it is live behind `routes/people.js` and `pipeline.js`. Among its
+untested refusals was a pure security boundary: an external TPO broker is a `staff_users` row, and
+linking one would hand an outside firm a long-term pipeline. The module reads well, and that is the
+point — every refusal in it was written from reasoning, which is what a test is for.
+`scripts/test-lt-staff-link-db.js` now exercises confirm, reject and unlink against a real Postgres,
+every named refusal in the words a screen shows, the confirmed-only rule that stops a machine
+suggestion attributing somebody's book, and the partial unique index that is what actually makes
+one-person-one-login true when two admins press the button at the same instant. Five mutations turn
+it red. The remaining spans are the next thread to pull: the loan sync's own `syncOnce`, the roster
+sync, and several route handlers.
+
 **A SETTING IS EITHER READ BY SOMETHING OR SAYS IT IS NOT (2026-08-18).** §7's promise to a buyer is
 that nothing about how WE do things is hard-coded. Forty-three of the 63 settings were declared ahead
 of the code that would read them, so the settings screen offered knobs that changed NOTHING and said
