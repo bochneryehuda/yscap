@@ -107,7 +107,7 @@ router.use('/ppe', require('./routes/ppe'));
 // nothing about the running system. HOW the tick should be driven in production (a Render CRON
 // service, the existing sync worker, or this in-process scheduler) changes what happens when two
 // instances run and costs a live vendor call either way, so it is an open owner question recorded in
-// docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.46 — not a decision taken here.
+// docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.49, answered 2026-08-18 (§2.53) — not a decision taken here.
 require('./ppe/canary-driver').start();
 
 module.exports = { router };

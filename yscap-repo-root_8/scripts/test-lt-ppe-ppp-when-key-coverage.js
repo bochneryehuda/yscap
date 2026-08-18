@@ -43,6 +43,12 @@ function whenMatchesOLD(when, input) {
   if (w.unitsMin != null) { if (!isNum(input.units) || input.units < w.unitsMin) return false; }
   if (w.lien && String(input.lien || 'first').toLowerCase() !== w.lien) return false;
   if (w.aprGt != null) { if (!isNum(input.apr) || !(input.apr > w.aprGt)) return false; }
+  // `aprLe` was added to the vocabulary on 2026-08-18 (defect A8.2 — the Illinois "APR 8% or less" rule
+  // used to carry NO apr test at all and therefore CLAIMED an APR it did not have). It is written here
+  // in the ORIGINAL file's own style so this copy stays what it is for: proof that the WHEN_HANDLERS
+  // REFACTOR is byte-identical. Leaving it out would make this test measure the new RULE instead, and
+  // it would report a "difference" that is the fix, not a regression.
+  if (w.aprLe != null) { if (!isNum(input.apr) || !(input.apr <= w.aprLe)) return false; }
   if (w.loanAmountLt != null) { if (!isNum(input.loanAmount) || !(input.loanAmount < w.loanAmountLt)) return false; }
   if (w.loanAmountLe != null) { if (!isNum(input.loanAmount) || !(input.loanAmount <= w.loanAmountLe)) return false; }
   if (w.loanAmountGt != null) { if (!isNum(input.loanAmount) || !(input.loanAmount > w.loanAmountGt)) return false; }

@@ -2348,7 +2348,17 @@ async function runAgreementRoute(req, res) {
         // OPT-IN BY CONSTRUCTION: `programFor` answers null for an investor with no registered program,
         // and the leg with no descriptor is byte-for-byte what it was — so this can only ever ADD the
         // layer where one exists, never change an investor nobody has encoded.
-        ours: lpAgreementLegs.buildOursLeg(program, settings, { factsFromLp: true, pppDescriptor: pppDesc }),
+        //
+        // AND THE POLICY FOR AN UNANSWERABLE STATE IS DECLARED, because the leg refuses to guess one
+        // (defect A8.1, 2026-08-18). `'flag'` is right for THIS caller specifically: the agreement run
+        // MEASURES our engine against Lender Price, and declining a scenario here would change what is
+        // being measured — the scenario would report as ineligible on our side and the divergence
+        // report would blame the sheet for a question about state law. Flagged, the scenario is still
+        // priced, still compared, and the "we could not tell" rides on the quote where a report can
+        // see it. WHAT THE QUOTING PATH SHOULD DO — refuse, or quote and flag for a human — is the OPEN
+        // OWNER QUESTION (docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.54) and is NOT settled by this
+        // line; a measurement harness choosing to keep measuring is not an answer to it.
+        ours: lpAgreementLegs.buildOursLeg(program, settings, { factsFromLp: true, pppDescriptor: pppDesc, onUnresolvedPpp: 'flag' }),
         lp: lpAgreementLegs.buildLpLeg(lpClient, { withDisqualify: true }),
       },
       {

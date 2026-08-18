@@ -36,8 +36,9 @@ console.log('LT PPE — program self-audit (#49)\n');
       maxLtvMilli: 70000, cell: null, unverifiable: [],
     }),
     pppInputFromFacts: (f) => ({ prepay: f.prepay_months > 0 }),
-    pppResult: () => ({ result: 'standard', terms: null, matched: true }),
+    pppResult: () => ({ result: 'standard', basis: 'rule', terms: null, matched: true, resolved: true }),
     pppDisqualifier: (i) => (i.prepay ? { code: 'p_ppp', dimension: 'prepay_state', declineReason: 'no', citation: 'S' } : null),
+    pppUnresolved: () => null,
     // when armed (renovation true), emit TWO overlay declines in one scenario
     evaluateOverlay: (f) => (f.renovation === true
       ? { declines: [{ code: 'o_1', fact: 'renovation', reason: 'a', citation: 'c', overlay: true }, { code: 'o_2', fact: 'renovation', reason: 'b', citation: 'c', overlay: true }], enforced: [{ overlay: 'renovation', cuts: ['a', 'b'] }], stillFlagged: [] }

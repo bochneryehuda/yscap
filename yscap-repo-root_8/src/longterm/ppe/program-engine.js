@@ -40,6 +40,14 @@ function runProgram(desc, facts, opts = {}) {
   const ppp = desc.pppResult(pppInput);
   const pppDq = desc.pppDisqualifier(pppInput);
   if (pppDq) reasons.push({ layer: 'ppp_matrix', ...pppDq });
+  // THE THIRD PPP ANSWER, WHICH THIS PIPELINE MAY NOT SWALLOW (defect A8.1, 2026-08-18). A state whose
+  // prepayment table could not answer is neither eligible-with-a-penalty nor declined; it is a question
+  // for a human. It is deliberately NOT pushed into `reasons` — that would decline the loan, which is
+  // one of the two answers to the OPEN OWNER QUESTION (LENDER-PRICE-PARITY-STATUS.md §2.54) and not
+  // this module's to give. It rides its own array so `eligible` can never be read alone as "quote it":
+  // the pair to read is `eligible && decidable`.
+  const pppUnres = desc.pppUnresolved(pppInput);
+  const unresolved = pppUnres ? [{ layer: 'ppp_matrix', ...pppUnres }] : [];
 
   // Layer-2 ADVANCED-OVERLAY enforcement (D36): each decline is a stamped OVERLAY (the E3 gate scores it
   // as an intentional override of LP, never a parity defect). The relative declining-market cut reads the
@@ -64,10 +72,25 @@ function runProgram(desc, facts, opts = {}) {
     program: desc.programName,
     investor: desc.investor,
     eligible: reasons.length === 0,
+    // `decidable` is FALSE when some layer answered "we could not tell". `eligible: true` +
+    // `decidable: false` is NOT a permission — it is an unanswered question about state law.
+    decidable: unresolved.length === 0,
     reasons,
+    unresolved,
     maxLtvMilli: elig.maxLtvMilli,
     cell: elig.cell,
-    ppp: { result: ppp.result, terms: ppp.terms || null, matched: ppp.matched },
+    ppp: {
+      result: ppp.result,
+      terms: ppp.terms || null,
+      matched: ppp.matched,
+      // `resolved:false` means the state's table was consulted and did not answer. An older PPP layer
+      // that predates the third answer reports `resolved` as undefined; `!== false` reads that as
+      // resolved, which is the pre-existing behaviour and never invents a new "unknown".
+      resolved: ppp.resolved !== false,
+      borrowerType: ppp.borrowerType === undefined ? null : ppp.borrowerType,
+      borrowerTypeSource: ppp.borrowerTypeSource || null,
+      unresolved: pppUnres || null,
+    },
     unverifiable: elig.unverifiable,
     // The reconciled view of `unverifiable`: `handledByOverlay` = overlays the D36 overlay layer now
     // carries the fact for (no longer "nobody can check"); `stillUnverifiable` = the ones whose facts no
@@ -102,7 +125,10 @@ function reconcileUnverifiable(unverifiable, overlayCoverage) {
 
 // Validate that a descriptor carries every slot the pipeline calls (a missing slot is a build-time error,
 // not a silent null-deref at pricing time). Returns the descriptor unchanged, or THROWS naming the gap.
-const REQUIRED_SLOTS = ['investor', 'programName', 'evaluateEligibility', 'pppInputFromFacts', 'pppResult', 'pppDisqualifier', 'evaluateOverlay', 'evaluateInformational'];
+// `pppUnresolved` IS REQUIRED, and that requirement is the forcing function for defect A8.1: a program
+// that cannot answer "we could not tell" is refused AT WIRING TIME rather than quietly pricing every
+// unanswerable state as allowed. A descriptor missing it throws here, at boot, not at pricing time.
+const REQUIRED_SLOTS = ['investor', 'programName', 'evaluateEligibility', 'pppInputFromFacts', 'pppResult', 'pppDisqualifier', 'pppUnresolved', 'evaluateOverlay', 'evaluateInformational'];
 function assertDescriptor(desc) {
   if (!desc || typeof desc !== 'object') throw new Error('program-engine:descriptor_not_an_object');
   for (const slot of REQUIRED_SLOTS) {

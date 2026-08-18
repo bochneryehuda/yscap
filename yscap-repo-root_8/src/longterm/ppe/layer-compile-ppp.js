@@ -46,6 +46,9 @@ const { evaluateRules } = require('./rules');
 const ruleBuilder = require('./rule-builder');
 const layerFacts = require('./layer-facts');
 const { LayerCompileError, _internals: eligInternals } = require('./layer-compile-eligibility');
+// The ONE definition of the third answer — shared with the hand-written oracle, so "we could not tell"
+// is worded and detailed identically by both. See ppp-unresolved.js.
+const pppUnresolvedLib = require('./ppp-unresolved');
 
 const { injectNumericGuards, conj, NUM_SUFFIX } = eligInternals;
 
@@ -63,8 +66,23 @@ function problemsFor(data) {
   if (data == null || typeof data !== 'object' || Array.isArray(data)) return ['data must be an object'];
   if (data.schema !== SCHEMA) e.push(`schema: must be ${JSON.stringify(SCHEMA)} (got ${JSON.stringify(data.schema)})`);
   if (data.schemaVersion !== SCHEMA_VERSION) e.push(`schemaVersion: this compiler understands ${SCHEMA_VERSION} (got ${JSON.stringify(data.schemaVersion)})`);
-  for (const k of ['investor', 'program', 'dataVersion', 'citation', 'defaultResult', 'unmatchedNote', 'stateFact', 'borrowerClassFact']) {
+  for (const k of ['investor', 'program', 'dataVersion', 'citation', 'defaultResult', 'unevaluableResult', 'stateFact', 'borrowerClassFact']) {
     if (!isNonEmptyString(data[k])) e.push(`${k}: must be a non-empty string`);
+  }
+  // `unevaluableResult` MUST NOT be one of the three permission/prohibition answers. The whole of defect
+  // A8.1 was a document whose unmatched answer was 'standard' — a permission printed where a rule could
+  // not be evaluated — so the compiler REFUSES to compile one rather than trust the author to notice.
+  // The only value it accepts is the shared `unknown`, so the two implementations cannot diverge.
+  if (isNonEmptyString(data.unevaluableResult) && data.unevaluableResult !== pppUnresolvedLib.PPP_UNKNOWN) {
+    e.push(`unevaluableResult: must be ${JSON.stringify(pppUnresolvedLib.PPP_UNKNOWN)} (got ${JSON.stringify(data.unevaluableResult)}) — a state whose rules could not be evaluated is neither allowed nor prohibited`);
+  }
+  // The `defaultResult` is the answer for a state that is NOT IN THE MATRIX, which the owner authorized
+  // on 2026-08-18 as allowed with no limits. It is deliberately a SEPARATE field from the unevaluable
+  // one: mechanically both are "no rule matched", in meaning they are opposites.
+  const un = data.unresolved;
+  if (un == null || typeof un !== 'object') e.push('unresolved: required (the "we could not tell" identity)');
+  else for (const k of ['code', 'dimension', 'citation']) {
+    if (!isNonEmptyString(un[k])) e.push(`unresolved.${k}: required`);
   }
   const declared = data.derivedFacts || {};
   for (const k of ['stateFact', 'borrowerClassFact']) {
@@ -132,7 +150,13 @@ function problemsFor(data) {
     else for (const [k, spec] of Object.entries(ifm)) {
       if (spec == null || typeof spec !== 'object') { e.push(`inputFromFacts.${k}: must be an object`); continue; }
       const hasConst = Object.prototype.hasOwnProperty.call(spec, 'const');
-      if (!hasConst && !isNonEmptyString(spec.fact)) e.push(`inputFromFacts.${k}: needs a 'fact' or a 'const'`);
+      const hasOrder = Array.isArray(spec.factsInOrder) && spec.factsInOrder.length > 0;
+      if (spec.kind === 'assumed_flag') {
+        if (!isNonEmptyString(spec.fact)) e.push(`inputFromFacts.${k}.fact: assumed_flag needs the explicit "was this assumed?" fact`);
+        if (!Array.isArray(spec.noneOf) || spec.noneOf.length === 0) e.push(`inputFromFacts.${k}.noneOf: assumed_flag needs the facts whose ABSENCE also means assumed`);
+        continue;
+      }
+      if (!hasConst && !hasOrder && !isNonEmptyString(spec.fact)) e.push(`inputFromFacts.${k}: needs a 'fact', a 'factsInOrder', or a 'const'`);
       if (spec.coerce !== undefined && spec.coerce !== 'boolean' && spec.coerce !== 'numberGtZero') e.push(`inputFromFacts.${k}.coerce: must be 'boolean' or 'numberGtZero'`);
     }
   }
@@ -181,6 +205,18 @@ function compilePpp(data) {
   }
 
   const statesWithRules = Object.keys(data.states).sort();
+  // Every `when` key each state's rules read — DERIVED from the document, so an unresolved answer can
+  // name the facts that state's table wanted. Mirrors `deephaven-ppp-matrix.STATE_WHEN_KEYS`.
+  const stateWhenKeys = Object.create(null);
+  for (const st of statesWithRules) {
+    stateWhenKeys[st] = [...new Set(data.states[st].flatMap((r) => Object.keys(r.when || {})))];
+  }
+  // Same fail-closed check the hand-written module makes at load: a when-key the shared unresolved
+  // vocabulary cannot name would make "we could not tell" under-report which fact is missing.
+  {
+    const unnamed = [...new Set(Object.values(stateWhenKeys).flat())].filter((k) => !pppUnresolvedLib.WHEN_INPUT_FIELD[k]);
+    if (unnamed.length) throw new LayerCompileError(`compilePpp: when-key(s) with no input field in ppp-unresolved.WHEN_INPUT_FIELD: ${unnamed.join(', ')}`, unnamed);
+  }
   const dq = data.disqualifier;
   let matchIndex = 0;
 
@@ -254,17 +290,21 @@ function compilePpp(data) {
     dataVersion: data.dataVersion,
     citation: data.citation,
     defaultResult: data.defaultResult,
-    unmatchedNote: data.unmatchedNote,
+    unevaluableResult: data.unevaluableResult,
+    unresolvedSpec: clone(data.unresolved),
     stateFact,
+    borrowerClassFact: btFact,
     rules,
     catalog,
     derivedFacts: derived,
     statesWithRules,
+    stateWhenKeys,
     inputFromFactsSpec: clone(data.inputFromFacts || null),
   };
   const bound = buildPppEvaluators(compiled);
   compiled.pppResult = bound.pppResult;
   compiled.pppDisqualifier = bound.pppDisqualifier;
+  compiled.pppUnresolved = bound.pppUnresolved;
   compiled.inputFromFacts = bound.inputFromFacts;
   return compiled;
 }
@@ -284,7 +324,10 @@ function renderVars(tpl, vars) {
  * proves nothing.
  */
 function buildPppEvaluators(compiled) {
-  const { rules, catalog, derivedFacts, citation, defaultResult, unmatchedNote, stateFact, inputFromFactsSpec } = compiled;
+  const {
+    rules, catalog, derivedFacts, citation, defaultResult, unevaluableResult, unresolvedSpec,
+    stateFact, borrowerClassFact, stateWhenKeys, inputFromFactsSpec,
+  } = compiled;
 
   const run = (input) => {
     const raw = input || {};
@@ -292,21 +335,73 @@ function buildPppEvaluators(compiled) {
     return { bag, out: evaluateRules(rules, bag) };
   };
 
+  // The three shapes below are the SAME KEY SET on purpose, mirroring the hand-written module: `basis`
+  // is what tells them apart, so nothing downstream has to probe for a key to work out which answer it
+  // got. See deephaven-ppp-matrix.js's header for what each basis means and why the first and the third
+  // must never be collapsed.
+  const baseOf = (bag, state) => ({
+    state,
+    source: citation,
+    borrowerType: bag[borrowerClassFact] === undefined ? null : bag[borrowerClassFact],
+    borrowerTypeSource: bag.borrowerTypeAssumed === true ? 'assumed' : (bag.borrowerType == null ? 'absent' : 'stated'),
+  });
+
   function pppResult(input) {
     const { bag, out } = run(input);
     const state = bag[stateFact];
-    // Key ORDER below deliberately mirrors the hand-written module's three return statements — the
-    // three shapes genuinely differ (a state with no table carries no `terms`/`note` keys at all) and
-    // an equivalence check that ignored that would be checking less than it claims.
+    const base = baseOf(bag, state);
+    // (1) not in the matrix — the owner's authorization: allowed, no limits.
     if (!out.bounds['ppp_state_known:max']) {
-      return { result: defaultResult, state, matched: true, source: citation };
+      return { result: defaultResult, basis: 'state_not_in_matrix', terms: null, note: pppUnresolvedLib.UNLISTED_STATE_NOTE, needs: [], matched: true, resolved: true, ...base };
     }
     const m = out.bounds['ppp_match:max'];
+    // (3) in the matrix, nothing evaluable — we could not tell. Fails closed.
     if (!m) {
-      return { result: defaultResult, state, matched: false, source: citation, note: unmatchedNote };
+      return {
+        result: unevaluableResult,
+        basis: 'unevaluable',
+        terms: null,
+        note: pppUnresolvedLib.UNRESOLVED_NOTE,
+        needs: pppUnresolvedLib.missingFacts(stateWhenKeys[state], normalizedForNeeds(bag)),
+        matched: false,
+        resolved: false,
+        ...base,
+      };
     }
+    // (2) a rule matched.
     const meta = catalog[m.ruleRef];
-    return { result: meta.result, terms: meta.terms || null, note: meta.note || null, state, matched: true, source: citation };
+    return { result: meta.result, basis: 'rule', terms: meta.terms || null, note: meta.note || null, needs: [], matched: true, resolved: true, ...base };
+  }
+
+  // The shape `ppp-unresolved.missingFacts` reads: the PPP input AFTER normalization. The derived-fact
+  // stage has already done that work, so this only re-labels it — never a second normalization.
+  function normalizedForNeeds(bag) {
+    return {
+      borrowerType: bag[borrowerClassFact] === undefined ? null : bag[borrowerClassFact],
+      units: bag.units,
+      lien: bag.lien_lc,
+      loanAmount: bag.loanAmount,
+      apr: bag.apr,
+      ruralProperty: bag.ruralProperty,
+    };
+  }
+
+  function pppUnresolved(input) {
+    const raw = input || {};
+    if (!raw.prepayRequested) return null;
+    const res = pppResult(input);
+    if (res.resolved) return null;
+    const vars = { state: res.state, stateLower: String(res.state || '').toLowerCase(), citation };
+    return {
+      code: renderVars(unresolvedSpec.code, vars),
+      dimension: unresolvedSpec.dimension,
+      state: res.state,
+      needs: res.needs,
+      borrowerType: res.borrowerType,
+      borrowerTypeSource: res.borrowerTypeSource,
+      reason: pppUnresolvedLib.unresolvedReason(res.state),
+      citation: renderVars(unresolvedSpec.citation, vars),
+    };
   }
 
   function pppDisqualifier(input) {
@@ -326,7 +421,17 @@ function buildPppEvaluators(compiled) {
     const out = {};
     for (const [k, spec] of Object.entries(inputFromFactsSpec)) {
       if (Object.prototype.hasOwnProperty.call(spec, 'const')) { out[k] = spec.const; continue; }
-      const v = f[spec.fact];
+      // `assumed_flag` — was this input a GUESS? True when the facts say so explicitly, and ALSO true
+      // when not one of the facts that could have STATED it is present, because substituting a default
+      // for nothing is an assumption whether or not anyone remembered to flag it (defect A8.5).
+      if (spec.kind === 'assumed_flag') {
+        out[k] = f[spec.fact] === true || !spec.noneOf.some((name) => f[name]);
+        continue;
+      }
+      // `factsInOrder` — the first fact that carries a value wins. Lets the STATED value be read from
+      // its own fact while the EFFECTIVE one stays available for every other reader.
+      const v = Array.isArray(spec.factsInOrder)
+        ? spec.factsInOrder.map((name) => f[name]).find((x) => x) : f[spec.fact];
       if (spec.coerce === 'boolean') out[k] = !!v;
       else if (spec.coerce === 'numberGtZero') out[k] = Number(v) > 0;
       else if (spec.fallbackOnFalsy !== undefined) out[k] = v || spec.fallbackOnFalsy;
@@ -336,7 +441,7 @@ function buildPppEvaluators(compiled) {
   }
 
   pppResult.engine = (input) => run(input).out;
-  return { pppResult, pppDisqualifier, inputFromFacts };
+  return { pppResult, pppDisqualifier, pppUnresolved, inputFromFacts };
 }
 
 module.exports = {

@@ -24,7 +24,9 @@
  * candidate shapes — a Render CRON service, the existing sync worker, or a scheduler inside the web
  * process (this one) — behave DIFFERENTLY when two instances are running. So this builds the
  * in-process option behind an off switch and the choice is recorded as an open owner question in
- * docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.46. Nothing here presumes the answer.
+ * docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.49, ANSWERED by the owner on 2026-08-18: a
+ * SCHEDULED run at 7am, 9am, 10am, 11am, 12pm and 4pm Eastern (§2.53). This in-process driver stays
+ * OFF; the durable lease below is what stops two servers paying twice, whichever driver fires it.
  * ═══════════════════════════════════════════════════════════════════════════════════════════════
  *
  * CROSS-INSTANCE SAFETY IS NOT OPTIONAL EVEN WHILE IT IS OFF, because the day somebody turns it on is
@@ -417,7 +419,7 @@ async function describe(scope = 'company', opts = {}) {
     // Said in words, because "enabled: false" on a screen invites the reading "it is broken".
     note: enabled
       ? 'The in-process driver is ON. It asks on a timer; a battery is priced only when a saved, enabled schedule is genuinely due.'
-      : 'The in-process driver is OFF, which is how it ships. Nothing fires the daily canary schedules automatically — the tick is only run when somebody calls POST /api/lt/ppe/canary/tick by hand. How it SHOULD be driven in production is an open owner question (docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.46).',
+      : 'The in-process driver is OFF, which is how it ships. Nothing fires the daily canary schedules automatically — the tick is only run when somebody calls POST /api/lt/ppe/canary/tick by hand. How it SHOULD be driven in production was answered by the owner on 2026-08-18 — a scheduled run at 7am, 9am, 10am, 11am, 12pm and 4pm Eastern (docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.53) — and this in-process driver is not it.',
     intervalMs: enabled ? intervalMsOf(env) : null,
     leaseMs: leaseMsOf(env),
     lockKey: key,

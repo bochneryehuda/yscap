@@ -258,7 +258,12 @@ async function main() {
     // ---------------------------------------------------------------------------------------
     const d = await driver.describe(scope, { db, env: {} });
     ok(d.enabled === false, 'describe: reports the switch as off');
-    ok(/OFF/.test(d.note) && /owner question/.test(d.note), 'describe: says plainly that nothing drives the schedules, and that the choice is the owner\'s');
+    // The owner ANSWERED the driver question on 2026-08-18 — a scheduled run at 7am/9am/10am/11am/
+    // 12pm/4pm Eastern (§2.53) — so the note no longer calls it open. What it must still say, and
+    // what this pins, is the thing an operator can act on: this in-process driver is OFF, so nothing
+    // here fires a saved schedule, and the answer names something other than this driver.
+    ok(/OFF/.test(d.note) && /Eastern/.test(d.note) && /answered/i.test(d.note),
+      'describe: says plainly that nothing here drives the schedules, and names the schedule the owner chose');
     ok(d.readable === true && d.state && d.state.lastOutcome === 'ran', 'describe: reports what the last tick did');
     ok(!!d.state && !!d.state.lastReason && !!d.state.lastAttemptAt, 'describe: reports when it last ran and why it reported what it did');
     ok(!!d.state && !!d.state.lastDeniedAt && !!d.state.lastDeniedReason, 'describe: reports the instance that was turned away, and why');

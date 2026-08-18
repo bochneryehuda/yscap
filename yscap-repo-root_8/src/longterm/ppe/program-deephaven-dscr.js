@@ -23,7 +23,7 @@
  */
 const { buildDeephavenGrid } = require('./deephaven-dscr-sheet');
 const { evaluateEligibility } = require('./deephaven-matrix');
-const { pppDisqualifier, pppResult } = require('./deephaven-ppp-matrix');
+const { pppDisqualifier, pppResult, pppUnresolved } = require('./deephaven-ppp-matrix');
 const { evaluateInformational } = require('./informational');
 const { evaluateOverlayDeclines, DEEPHAVEN_OVERLAY_CUTS } = require('./deephaven-overlay-rules');
 const { runProgram, assertDescriptor } = require('./program-engine');
@@ -37,9 +37,14 @@ const PROGRAM_NAME = 'Deephaven DSCR'; // the investor name IS in the program na
 // triggers the natural-person prohibition. A direct-facts caller that omits it still gets this default.
 function pppInputFromFacts(f) {
   const sc = f || {};
+  // A GUESS TRAVELS AS A GUESS (defect A8.5). `borrower_type_assumed` is set by the fact converter when
+  // nothing was stated; a direct-facts caller that supplies only `borrower_type` is treated as having
+  // STATED it, and a caller that supplies neither is assuming by definition.
+  const stated = sc.borrower_type_stated || sc.borrower_type || null;
   return {
     state: sc.state,
-    borrowerType: sc.borrower_type || 'LLC',
+    borrowerType: stated || 'LLC',
+    borrowerTypeAssumed: sc.borrower_type_assumed === true || !stated,
     units: sc.units,
     lien: 'first', // a DSCR loan is a first lien
     loanAmount: sc.loan_amount,
@@ -60,6 +65,7 @@ const DESCRIPTOR = assertDescriptor({
   pppInputFromFacts,                                                     // engine facts → the PPP input shape
   pppResult,                                                            // dot 3 — the PPP result
   pppDisqualifier,                                                      // dot 3 — the PPP disqualifier
+  pppUnresolved,                                                        // dot 3 — "we could not tell"
   evaluateOverlay: (facts, o) => evaluateOverlayDeclines(facts, o),      // D36 Advanced-overlay declines
   evaluateInformational,                                               // reserves / notes / delegate exception
   // the overlay facts THIS program's overlay layer handles (enforces or flags) — the `when` keys of its
@@ -94,7 +100,7 @@ const PROGRAM = {
   layers: {
     rateSheet: buildDeephavenGrid,          // dot 1 (pricing)
     eligibility: evaluateEligibility,        // dot 2
-    ppp: { result: pppResult, disqualifier: pppDisqualifier }, // dot 3
+    ppp: { result: pppResult, disqualifier: pppDisqualifier, unresolved: pppUnresolved }, // dot 3
   },
   descriptor: DESCRIPTOR,
   evaluate: evaluateProgram,

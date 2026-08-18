@@ -72,11 +72,21 @@ ok(res({ state: 'MI', units: 1, lien: 'first', loanAmount: 400000 }) === 'restri
 // ---- borrower-type normalization ---------------------------------------------------------------
 ok(normBorrowerType('LLC') === 'business_entity' && normBorrowerType('Corporation') === 'business_entity' && normBorrowerType('Trust') === 'business_entity', 'normBorrowerType: LLC/Corp/Trust → business_entity');
 ok(normBorrowerType('Individual') === 'natural_person' && normBorrowerType('Natural Person') === 'natural_person', 'normBorrowerType: Individual/Natural Person → natural_person');
-ok(normBorrowerType('') === null && normBorrowerType(undefined) === null, 'normBorrowerType: blank/unknown → null (wildcard)');
+ok(normBorrowerType('') === null && normBorrowerType(undefined) === null, 'normBorrowerType: blank/absent → null (nothing was stated)');
+ok(normBorrowerType('Non-Profit') === 'unclassified' && normBorrowerType('Vincent Vance') === 'unclassified',
+  'normBorrowerType: a value we do not recognise → "unclassified", never a wildcard and never a class (A8.3/A8.4)');
 
-// ---- fail-open: a restriction state whose rule needs a missing fact treats as allowed, matched:false --
+// ---- A LISTED STATE WE CANNOT EVALUATE IS "WE COULD NOT TELL", NOT "ALLOWED" (defect A8.1) ------
+// This assertion is the exact inverse of the one it replaced. The module used to answer
+// `standard` + matched:false here and the test called it "fail-open ... never invents a prohibition" —
+// but answering ALLOWED is itself an invention, about a state-law PROHIBITION, made at the moment the
+// engine admitted it had not found a rule. NJ's rules key on the borrower type; with none supplied
+// nothing is evaluable, so the honest answer is `unknown` and the caller must handle it.
 const missing = pppResult({ state: 'NJ', units: 1, loanAmount: 400000 }); // borrowerType absent
-ok(missing.result === 'standard' && missing.matched === false, 'NJ with borrowerType absent → fail-open to standard, matched:false (never invents a prohibition)');
+ok(missing.result === 'unknown' && missing.resolved === false && missing.basis === 'unevaluable' && missing.matched === false,
+  'NJ with borrowerType absent → result "unknown", resolved:false, basis "unevaluable" (never a permission we cannot support)');
+ok(Array.isArray(missing.needs) && missing.needs.includes('borrowerType'),
+  'an unevaluable answer NAMES the fact its state\'s rules needed (needs:["borrowerType"])');
 
 // ---- cross-check the engine rules against the decoded PPP JSON ---------------------------------
 const jsonPath = path.join(__dirname, '..', 'docs', 'longterm', 'ppe-research', 'matrices', 'deephaven-ppp-matrix.json');

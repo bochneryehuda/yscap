@@ -3199,3 +3199,84 @@ each one closes:
   actually names, then locate where the rate sheet prices that same thing — and put every scenario in
   front of a person. That converts §2's largest open question into a BUILD item (the per-scenario
   disqualifier review queue) and it is recorded as one rather than left on the owner's page.
+
+---
+
+**§2.54 — THE PREPAYMENT ENGINE SAID "ALLOWED" AT THE MOMENT IT ADMITTED IT DID NOT KNOW (2026-08-18).**
+Five separate defects in the state prepayment-penalty layer, all found together, all reproduced before
+anything was changed. In plain terms: a prepayment penalty is a fee a borrower pays for paying the loan
+off early, and some states make that fee ILLEGAL for certain borrowers. Getting that wrong is not a
+rounding error — it is quoting a loan we cannot actually sell.
+
+**WHAT THE FIVE MEANT FOR REAL QUOTES — plainly.**
+
+1. **We told people "yes" when the honest answer was "we don't know."** When the engine looked up a
+   state's rules and found none that fit the loan in front of it, it answered ALLOWED — and even wrote
+   a note on the answer saying it had found nothing. So the one moment the system knew least was the
+   moment it sounded most certain. That is the expensive direction: we quote a penalty a state may
+   forbid, and nobody sees a question mark anywhere.
+2. **Illinois quoted a rule about a number we never had.** Illinois treats a prepayment penalty
+   differently depending on the loan's APR. The engine answered "allowed — APR 8% or less" on loans
+   carrying no APR at all. **Not one of the 299 scenarios in our standard test set carries an APR**, and
+   the pricing path never calculates one, so that sentence was printed about a figure that did not
+   exist, on every Illinois loan to an individual.
+3. **Ordinary people were being read as companies.** The check for "is this borrower a company?" looked
+   for the letters `inc` anywhere in the name, with the spaces stripped out first. So **Vincent Vance,
+   Vince, Prince Holdings and Quincy Adams all came back as corporations.** In New Jersey that flips the
+   answer from PROHIBITED to allowed, because New Jersey allows a company a prepayment penalty and
+   forbids an individual one.
+4. **A borrower type we do not have a rule for slipped through as "fine."** "Non-Profit" is one of the
+   six borrower types Lender Price itself offers. Ours did not recognise it, treated it as a blank, and
+   a blank matched nothing — which then landed on the "allowed" answer from item 1.
+5. **A guess was travelling as a fact.** When a scenario says nothing about the borrower type we
+   substitute the product default (an LLC — the owner's own rule from 2026-08-17, and a sensible one).
+   But the guess and a real, stated LLC came out of the system looking **identical**, so nobody reading
+   the answer could tell whether the borrower type behind it was something a person had told us or
+   something we had filled in ourselves. **On our standard test set, 289 of the 299 answers were resting
+   on that guess** — a number that was invisible until now.
+
+**WHAT IS TRUE NOW.** A lookup has exactly three outcomes and the answer always says which one it was.
+The state is not in the matrix; a rule in the matrix decided it; or the state is in the matrix and we
+could not work out its rule from the facts we have. The last one is no longer allowed to be called
+"allowed", and no part of the system may quietly turn it back into one — a program that cannot give that
+third answer is refused when the system starts up, and the one place that prices scenarios against
+Lender Price has to state, in writing, what it does about it.
+
+**ANSWERED BY THE OWNER, 2026-08-18 — a state that is NOT IN THE MATRIX is allowed, with no limits.**
+Their words: *"the prepayment penalty that we couldn't tell. If there's any state that was not mentioned
+in the prepayment penalty matrix, like New York or Connecticut, that should automatically be allowed.
+Unlimited restrictions. Any kind of prepayment penalty."* So an unlisted state is a real authorization
+— no restriction on the kind of penalty and no restriction on how long it runs — not a fallback and not
+a shrug. It is recorded on the answer as its own basis so nobody can later mistake it for a rule we
+checked, or for a gap. **This authorization did not move a single verdict**: the engine already answered
+"allowed" for those states, and 294 of our 299 standard scenarios are in one. What changed is that the
+answer now SAYS the allowance is the owner's, which is exactly the thing that would otherwise be
+misread as a rule some day.
+
+**⛔ STILL OPEN, AND NARROWER THAN IT WAS — THE OWNER QUESTION.** This is about the third case ONLY: a
+state that IS in the prepayment matrix, where we could not work out its rule because the loan is missing
+a detail those rules need (Illinois with no APR is the live example).
+
+> **When we cannot tell whether a state allows a prepayment penalty on a loan, do we refuse to quote it,
+> or do we quote it and flag it for a person to check?**
+
+Nothing in the code answers that, and nothing should until the owner does. Today the engine simply says
+"we could not tell" and hands that to whoever asked. The one live caller — the tool that compares our
+prices against Lender Price's — keeps pricing and marks the loan, because its job is to MEASURE, not to
+decide; that choice is written down where it is made and is not an answer to the question above.
+
+**WHAT WAS MEASURED.** New suite `scripts/test-lt-ppe-ppp-unknown.js`, 72 checks. Over the whole
+canonical 299-scenario battery: **0 verdicts moved, 0 of them in the unsafe direction, 0 attributable to
+the owner's authorization and 0 to the bug fixes** — because that battery never carries an APR, never
+carries an Illinois property and never carries a borrower type outside LLC / Individual, which is a gap
+in the battery and is now stated rather than implied. Re-running the SAME 299 scenarios across every
+borrower type and every restriction state gives 5,980 loans, of which **1,495 move — every single one
+from "allowed" to "we could not tell", and not one in the unsafe direction.** Fifteen deliberate
+sabotages of the shipped code were each proven to turn a NAMED check red, with an untouched control
+green on either side, and the data-compiled twin of this layer was held byte-identical to the
+hand-written one across 330,906 scenarios.
+
+**RESIDUAL, NAMED.** The APR still never reaches the pricing path — it is derived from the rate and the
+fees and we deliberately do not invent one — so every Illinois loan to an individual now answers "we
+could not tell" instead of answering wrongly. That is the honest state, not a finished one, and it is
+what makes the open question above worth answering.

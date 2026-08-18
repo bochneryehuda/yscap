@@ -48,7 +48,10 @@ const SHEET = rateSheetToProgram(gridToRateSheet(buildDeephavenGrid()), { code: 
 const VALUES = settingsMod.resolveAll().values;
 const DESC = reg.programFor('Deephaven');
 
-const legWith = legs.buildOursLeg(SHEET, VALUES, { factsFromLp: true, pppDescriptor: DESC });
+// `onUnresolvedPpp` is REQUIRED alongside a descriptor (defect A8.1): a state whose prepayment table
+// could not be evaluated may not be silently priced as allowed, so the caller declares what it does.
+// 'flag' is this harness's policy — it MEASURES, it does not decide (see routes/ppe.js).
+const legWith = legs.buildOursLeg(SHEET, VALUES, { factsFromLp: true, pppDescriptor: DESC, onUnresolvedPpp: 'flag' });
 const legWithout = legs.buildOursLeg(SHEET, VALUES, { factsFromLp: true });
 
 // ---- 1) the battery's OWN flagged scenario ------------------------------------------------------
@@ -122,6 +125,20 @@ const legWithout = legs.buildOursLeg(SHEET, VALUES, { factsFromLp: true });
   try { legs.buildOursLeg(SHEET, VALUES, { pppDescriptor: { nope: true } }); } catch (e) { threw = e.message; }
   ok(/pppInputFromFacts/.test(threw || ''),
     'O2 a descriptor that cannot answer is refused at WIRING time, not ignored once per scenario');
+
+  // The same discipline for the THIRD answer. A PPP layer with no `pppUnresolved`, and a caller with no
+  // declared policy, are both refused at wiring time rather than defaulting to "price it as allowed".
+  let threwNoUnres = null;
+  try {
+    legs.buildOursLeg(SHEET, VALUES, { pppDescriptor: { pppInputFromFacts: () => ({}), pppDisqualifier: () => null }, onUnresolvedPpp: 'flag' });
+  } catch (e) { threwNoUnres = e.message; }
+  ok(/pppUnresolved/.test(threwNoUnres || ''),
+    'O2b a PPP layer that cannot say "we could not tell" is refused at WIRING time');
+
+  let threwNoPolicy = null;
+  try { legs.buildOursLeg(SHEET, VALUES, { factsFromLp: true, pppDescriptor: DESC }); } catch (e) { threwNoPolicy = e.message; }
+  ok(/onUnresolvedPpp/.test(threwNoPolicy || ''),
+    'O2c a caller that supplies a descriptor and NO unresolved-state policy is refused — there is no silent default');
 
   // A sheet-declined quote must not gain a second reason — that would double-count it by dimension.
   const njWeak = { ...sc, fico: 600 };

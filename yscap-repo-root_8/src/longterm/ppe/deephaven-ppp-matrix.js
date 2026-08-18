@@ -16,13 +16,44 @@
  *   units number · lien 'first'|'junior' (DSCR is first-lien) · loanAmount raw dollars · apr percent ·
  *   ruralProperty boolean (Louisiana). prepayRequested boolean (a PPP term > 0 months).
  *
- * pppResult(input) → { result:'standard'|'prohibited'|'restricted', terms?, note?, state, source }
+ * pppResult(input) → { result:'standard'|'prohibited'|'restricted'|'unknown', basis, resolved, terms,
+ *   note, needs[], state, borrowerType, borrowerTypeSource, matched, source }
  * pppDisqualifier(input) → null | { code, dimension:'prepay_state', declineReason, citation } — non-null
- *   ONLY when a PPP is requested AND the state/combo prohibits it.
+ *   ONLY when a PPP is requested AND the state/combo PROVABLY prohibits it.
+ * pppUnresolved(input) → null | { code, dimension:'prepay_state', state, needs[], reason, citation } —
+ *   non-null ONLY when a PPP is requested AND the state's table could not answer.
  *
- * A missing input FAILS OPEN to 'standard' (we never invent a prohibition on data we do not have) EXCEPT
- * where the matrix's own default for the state is a restriction. LT-only. Pure: no DB/network/clock.
+ * A LOOKUP HAS EXACTLY THREE OUTCOMES, AND THE ANSWER ALWAYS SAYS WHICH ONE IT WAS (`basis`). Two of
+ * them used to be the SAME word — 'standard' — which is how a confident permission came to be printed
+ * at the exact moment the engine admitted it had not found a rule (defect A8.1, 2026-08-18):
+ *
+ *   basis:'state_not_in_matrix' → ALLOWED, WITH NO LIMITS. Owner-authorized 2026-08-18, in their own
+ *     words: "If there's any state that was not mentioned in the prepayment penalty matrix, like New
+ *     York or Connecticut, that should automatically be allowed. Unlimited restrictions. Any kind of
+ *     prepayment penalty." So an unlisted state is a real authorization, not a fallback — the matrix
+ *     document lists the states that RESTRICT, and silence there means no restriction on penalty type
+ *     and none on term. `terms` is null because there are none to state, not because we do not know.
+ *
+ *   basis:'rule' → a rule in that state's table matched and its answer governs (standard / prohibited /
+ *     restricted, with the state's capped terms where the matrix caps them). Unchanged.
+ *
+ *   basis:'unevaluable' → the state IS in the matrix, we consulted its table, and NO rule could be
+ *     evaluated because the scenario does not carry a fact those rules read (Illinois with no APR is
+ *     the live example). That is `result:'unknown'` / `resolved:false` — NEITHER a permission NOR a
+ *     prohibition — and it FAILS CLOSED: no caller may coerce it to allowed. Every caller is forced to
+ *     handle it: `program-engine` requires a `pppUnresolved` slot (a wiring-time throw) and the
+ *     agreement leg requires the caller to declare a policy. WHAT to do about it — refuse to quote, or
+ *     quote and flag it for a human — is the OPEN OWNER QUESTION recorded in
+ *     docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.54, and nothing here answers it.
+ *
+ * NEVER COLLAPSE THE FIRST AND THE THIRD. They are both "no rule matched" mechanically and they are
+ * opposites in meaning: one is an owner's authorization, the other is a gap in what we know about a
+ * state's law. LT-only. Pure: no DB/network/clock.
  */
+
+const {
+  PPP_UNKNOWN, UNRESOLVED_NOTE, UNLISTED_STATE_NOTE, WHEN_INPUT_FIELD, missingFacts, unresolvedReason,
+} = require('./ppp-unresolved');
 
 const CITE = 'Deephaven Operational Prepayment Penalty Matrix, eff March 2026';
 
@@ -36,10 +67,20 @@ const STATE_RULES = {
   // with APR 8% or less → standard; 5+ → standard. This is the Illinois high-cost / High-Risk Home
   // Loan Act threshold. DO NOT REMOVE the aprGt rule: the owner confirmed 2026-08-17 it is real ("IL
   // state had such a rule, of below 8% APR and less") after it was briefly removed in error.
+  //
+  // THE THIRD RULE CARRIES `aprLe: 8` AND THAT IS THE WHOLE FIX FOR DEFECT A8.2 (2026-08-18). It used
+  // to be `{ borrowerType:'natural_person', unitsMax:4 }` with NO apr test, so an Illinois natural
+  // person on a scenario carrying NO APR AT ALL fell into it and the engine answered
+  // `standard` + "IL: natural person, APR 8% or less" — an APR-based CLAIM made where there is no APR.
+  // Measured: not one of the 299 canonical battery scenarios carries an apr, and `lpScenarioToFacts`
+  // is a pure pass-through by design (APR is derived from rate + fees and is never invented). With the
+  // guard, an IL 1-4 natural person with no APR matches NOTHING and the answer is `unknown` — we could
+  // not tell — which is the honest answer and the one the owner question is about. DO NOT "restore"
+  // the unguarded rule to make the state resolve again; the APR is what must arrive, not the claim.
   IL: [
     { when: { borrowerType: 'business_entity', unitsMax: 4 }, result: 'standard' },
     { when: { borrowerType: 'natural_person', unitsMax: 4, aprGt: 8 }, result: 'prohibited', note: 'IL high-cost: natural person, APR > 8%' },
-    { when: { borrowerType: 'natural_person', unitsMax: 4 }, result: 'standard', note: 'IL: natural person, APR 8% or less' },
+    { when: { borrowerType: 'natural_person', unitsMax: 4, aprLe: 8 }, result: 'standard', note: 'IL: natural person, APR 8% or less' },
     { when: { unitsMin: 5 }, result: 'standard' },
   ],
   LA: [{ when: { ruralProperty: true }, result: 'prohibited', note: 'rural property' }, { when: {}, result: 'standard' }],
@@ -86,14 +127,41 @@ const STATE_RULES = {
 
 function isNum(x) { return typeof x === 'number' && Number.isFinite(x); }
 
-// LP / scenario borrower-type string → the matrix's two classes. LLC/Corp/Partnership/Trust/entity →
-// business_entity; individual/natural person → natural_person; anything else → null (wildcard).
+// The needle lists, UNCHANGED from the substring version — not one word was added or removed. Only HOW
+// they are matched changed (defects A8.3 + A8.4, 2026-08-18): they are now WHOLE WORDS.
+//
+// WHY. The old test was `/…|inc/.test(name.replace(/[^a-z]/g,''))` — no word boundary, and the strip
+// deleted the spaces that could have provided one. Measured on the unfixed module: "Vincent Vance",
+// "Vince", "Prince Holdings" and "Quincy Adams" ALL read as `business_entity`, so an ordinary
+// natural-person borrower whose name contains the letters i-n-c was classified as a corporation — and
+// in New Jersey that turns a PROHIBITED prepayment penalty into an allowed one. Adding a needle would
+// be inventing a rule; matching the ones we have as words is a matching fix with one right answer.
+const NATURAL_PERSON_WORDS = Object.freeze(['individual', 'naturalperson', 'person', 'consumer']);
+const BUSINESS_ENTITY_WORDS = Object.freeze(['llc', 'corp', 'corporation', 'partnership', 'trust', 'entity', 'business', 'company', 'inc']);
+
+/**
+ * LP / scenario borrower-type string → the matrix's two classes.
+ *   'LLC' / 'Smith Family Trust' / 'Acme Inc'  → 'business_entity'
+ *   'Individual' / 'Natural Person'            → 'natural_person'
+ *   a value we do not recognise ('Non-Profit') → 'unclassified'
+ *   nothing stated at all                      → null
+ *
+ * 'unclassified' IS THE FIX FOR DEFECT A8.4. The old function returned null for anything it did not
+ * recognise and the module's own comment called that null a "wildcard" — and it behaved like one: an
+ * LP-menu borrower type we genuinely do not have a rule for ('Non-Profit' is one of Lender Price's six)
+ * matched no borrower-keyed rule, fell out of the table, and the unmatched lookup then answered
+ * ALLOWED. A borrower type we cannot classify is not a wildcard and is not a permission — it is a fact
+ * we do not have, so it now says so and the lookup lands on `unknown`. Classifying 'Non-Profit' into
+ * one of the two classes would be inventing a legal reading of the matrix; we do not have one.
+ */
 function normBorrowerType(v) {
-  const k = String(v == null ? '' : v).toLowerCase().replace(/[^a-z]/g, '');
-  if (!k) return null;
-  if (/individual|naturalperson|person|consumer/.test(k)) return 'natural_person';
-  if (/llc|corp|corporation|partnership|trust|entity|business|company|inc/.test(k)) return 'business_entity';
-  return null;
+  const s = String(v == null ? '' : v).toLowerCase().replace(/[^a-z]+/g, ' ').trim();
+  if (!s) return null;
+  const padded = ` ${s} `;
+  const hasWord = (n) => padded.includes(` ${n} `);
+  if (NATURAL_PERSON_WORDS.some(hasWord)) return 'natural_person';
+  if (BUSINESS_ENTITY_WORDS.some(hasWord)) return 'business_entity';
+  return 'unclassified';
 }
 
 // The `when`-clause VOCABULARY: one handler per supported key, each returning TRUE when the clause is
@@ -107,6 +175,10 @@ const WHEN_HANDLERS = {
   unitsMin:      (w, i) => w.unitsMin == null || (isNum(i.units) && i.units >= w.unitsMin),
   lien:          (w, i) => !w.lien || String(i.lien || 'first').toLowerCase() === w.lien,
   aprGt:         (w, i) => w.aprGt == null || (isNum(i.apr) && i.apr > w.aprGt),
+  // The MIRROR of aprGt, and it is what makes the IL "APR 8% or less" rule state a fact instead of a
+  // claim: like every other handler it requires the fact to be READABLE (`isNum`), so a scenario with
+  // no APR cannot satisfy it and the state resolves to `unknown` rather than to a permission.
+  aprLe:         (w, i) => w.aprLe == null || (isNum(i.apr) && i.apr <= w.aprLe),
   loanAmountLt:  (w, i) => w.loanAmountLt == null || (isNum(i.loanAmount) && i.loanAmount < w.loanAmountLt),
   loanAmountLe:  (w, i) => w.loanAmountLe == null || (isNum(i.loanAmount) && i.loanAmount <= w.loanAmountLe),
   loanAmountGt:  (w, i) => w.loanAmountGt == null || (isNum(i.loanAmount) && i.loanAmount > w.loanAmountGt),
@@ -156,37 +228,82 @@ if (_badWhenKeys.length) {
   throw new Error(`deephaven-ppp-matrix: STATE_RULES use unsupported when-key(s): ${_badWhenKeys.join(', ')} — teach WHEN_HANDLERS or fix the typo`);
 }
 
+// Every `when` key a state's rule list uses — the facts that state's table READS. Derived from
+// STATE_RULES, never hand-kept, so a rule added tomorrow names its own facts in an unresolved answer.
+const STATE_WHEN_KEYS = Object.freeze(Object.fromEntries(
+  Object.entries(STATE_RULES).map(([st, list]) => [st, Object.freeze([...new Set(list.flatMap((r) => Object.keys(r.when || {})))])]),
+));
+
+// A when-key this module can evaluate but `ppp-unresolved.WHEN_INPUT_FIELD` cannot name would make an
+// unresolved answer under-report which fact is missing. Same class as the unsupported-when-key check
+// above, same treatment: a developer error caught at boot, not a quiet gap in a sentence a human reads.
+{
+  const unnamed = [...SUPPORTED_WHEN_KEYS].filter((k) => !WHEN_INPUT_FIELD[k]);
+  if (unnamed.length) {
+    throw new Error(`deephaven-ppp-matrix: when-key(s) with no input field in ppp-unresolved.WHEN_INPUT_FIELD: ${unnamed.join(', ')}`);
+  }
+}
+
 /**
- * The PPP status for a scenario. state defaults to lien 'first' (DSCR). A state with no restriction rules
- * is 'standard'. If a restriction state's rules do not match (a missing fact), we FAIL OPEN to 'standard'
- * rather than invent a prohibition — with `matched:false` so the caller knows it was not positively
- * resolved.
+ * The PPP status for a scenario. `lien` defaults to 'first' (a DSCR loan is a first lien).
+ *
+ * Returns the SAME KEY SET in all three cases — deliberately, so nothing downstream has to test for the
+ * presence of a key to work out which answer it got. `basis` is what says which answer it got (see the
+ * module header), and it is the only field that may be used to tell an owner-authorized allowance for
+ * an UNLISTED state from a rule we actually evaluated.
+ *
+ * The answer also SAYS WHAT IT USED for the borrower type: `borrowerType` is the class it resolved (or
+ * 'unclassified' / null), and `borrowerTypeSource` is 'stated' when the scenario said so, 'assumed'
+ * when the caller substituted the product default, 'absent' when there was nothing at all (defect A8.5).
  */
 function pppResult(input) {
   const inp = input || {};
   const state = String(inp.state || '').toUpperCase();
   const bt = inp.borrowerType && (inp.borrowerType === 'natural_person' || inp.borrowerType === 'business_entity')
     ? inp.borrowerType : normBorrowerType(inp.borrowerType);
+  // A GUESS IS NEVER STORED AS A FACT. The caller that substituted a default says so with
+  // `borrowerTypeAssumed`; the answer repeats it, so a downstream reader can always tell an assumption
+  // from an assertion instead of both arriving as the bare string 'LLC'.
+  const borrowerTypeSource = inp.borrowerTypeAssumed === true ? 'assumed' : (inp.borrowerType == null ? 'absent' : 'stated');
+  const base = { state, source: CITE, borrowerType: bt, borrowerTypeSource };
   const norm = { ...inp, state, borrowerType: bt, lien: String(inp.lien || 'first').toLowerCase() };
   const rules = STATE_RULES[state];
-  if (!rules) return { result: 'standard', state, matched: true, source: CITE };
-  for (const r of rules) {
-    if (whenMatches(r.when, norm)) return { result: r.result, terms: r.terms || null, note: r.note || null, state, matched: true, source: CITE };
+  // (1) THE STATE IS NOT IN THE MATRIX — an owner-authorized allowance with NO limits, not a fallback.
+  if (!rules) {
+    return { result: 'standard', basis: 'state_not_in_matrix', terms: null, note: UNLISTED_STATE_NOTE, needs: [], matched: true, resolved: true, ...base };
   }
-  return { result: 'standard', state, matched: false, source: CITE, note: 'no restriction rule matched (missing fact) — treated as allowed' };
+  // (2) A RULE IN THAT STATE'S TABLE MATCHED — its answer governs.
+  for (const r of rules) {
+    if (whenMatches(r.when, norm)) {
+      return { result: r.result, basis: 'rule', terms: r.terms || null, note: r.note || null, needs: [], matched: true, resolved: true, ...base };
+    }
+  }
+  // (3) THE STATE IS IN THE MATRIX AND NOTHING COULD BE EVALUATED — we could not tell. Fails closed.
+  return {
+    result: PPP_UNKNOWN,
+    basis: 'unevaluable',
+    terms: null,
+    note: UNRESOLVED_NOTE,
+    needs: missingFacts(STATE_WHEN_KEYS[state], norm),
+    matched: false,
+    resolved: false,
+    ...base,
+  };
 }
 
 /**
- * The disqualifier, if any. Returns non-null ONLY when a PPP is requested AND the state/combo prohibits
- * it. A No-PPP loan (prepayRequested false) is never disqualified here.
+ * The disqualifier, if any. Returns non-null ONLY when a PPP is requested AND the state/combo PROVABLY
+ * prohibits it. A No-PPP loan (prepayRequested false) is never disqualified here, and an UNRESOLVED
+ * lookup is never a disqualifier either — that would answer the owner question in the other direction.
+ * Ask `pppUnresolved` for that case; the two are mutually exclusive by construction.
  */
 function pppDisqualifier(input) {
   const inp = input || {};
   if (!inp.prepayRequested) return null;
   const res = pppResult(inp);
   if (res.result !== 'prohibited') return null;
-  const btLabel = inp.borrowerType === 'natural_person' || normBorrowerType(inp.borrowerType) === 'natural_person'
-    ? 'individual borrower' : (inp.borrowerType === 'business_entity' || normBorrowerType(inp.borrowerType) === 'business_entity' ? 'business entity' : 'this borrower type');
+  const btLabel = res.borrowerType === 'natural_person'
+    ? 'individual borrower' : (res.borrowerType === 'business_entity' ? 'business entity' : 'this borrower type');
   return {
     code: `dhvn_ppp_prohibited_${res.state.toLowerCase()}`,
     dimension: 'prepay_state',
@@ -195,7 +312,37 @@ function pppDisqualifier(input) {
   };
 }
 
+/**
+ * THE THIRD CHANNEL. Non-null ONLY when a PPP is REQUESTED and the state's table could not answer.
+ *
+ * It is gated on `prepayRequested` for the same reason the disqualifier is: a No-PPP loan raises no
+ * question about a state's prepayment law, so flagging one would be noise on every loan in the book.
+ *
+ * IT IS NOT A DECLINE. It carries no `declineReason` on purpose — a caller that wants to treat it as
+ * one must say so in its own words, because whether an unresolved state refuses the quote or flags it
+ * for a human is the OPEN OWNER QUESTION (LENDER-PRICE-PARITY-STATUS.md §2.54), not this module's call.
+ */
+function pppUnresolved(input) {
+  const inp = input || {};
+  if (!inp.prepayRequested) return null;
+  const res = pppResult(inp);
+  if (res.resolved) return null;
+  return {
+    code: `dhvn_ppp_unresolved_${res.state.toLowerCase()}`,
+    dimension: 'prepay_state',
+    state: res.state,
+    needs: res.needs,
+    borrowerType: res.borrowerType,
+    borrowerTypeSource: res.borrowerTypeSource,
+    reason: unresolvedReason(res.state),
+    citation: `${CITE} — ${res.state} PPP rule`,
+  };
+}
+
 module.exports = {
-  pppResult, pppDisqualifier, normBorrowerType, STATE_RULES,
-  _internals: { whenMatches, WHEN_HANDLERS, SUPPORTED_WHEN_KEYS, unsupportedWhenKeys },
+  pppResult, pppDisqualifier, pppUnresolved, normBorrowerType, STATE_RULES, STATE_WHEN_KEYS, PPP_UNKNOWN,
+  _internals: {
+    whenMatches, WHEN_HANDLERS, SUPPORTED_WHEN_KEYS, unsupportedWhenKeys,
+    NATURAL_PERSON_WORDS, BUSINESS_ENTITY_WORDS,
+  },
 };

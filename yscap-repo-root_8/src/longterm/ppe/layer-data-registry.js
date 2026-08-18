@@ -147,6 +147,7 @@ function descriptorForRegistration(reg) {
     pppInputFromFacts: ppp.inputFromFacts,       // engine facts → the PPP input shape, FROM DATA
     pppResult: ppp.pppResult,                    // dot 3 — COMPILED FROM DATA
     pppDisqualifier: ppp.pppDisqualifier,        // dot 3 — COMPILED FROM DATA
+    pppUnresolved: ppp.pppUnresolved,            // dot 3 — "we could not tell", COMPILED FROM DATA
     evaluateOverlay: reg.slots.evaluateOverlay,  // still code
     evaluateInformational: reg.slots.evaluateInformational, // still code
     overlayCoverage: reg.slots.overlayCoverage || [],

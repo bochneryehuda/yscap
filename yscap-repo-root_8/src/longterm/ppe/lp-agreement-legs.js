@@ -142,7 +142,15 @@ function lpScenarioToFacts(s) {
     // is allowed one); only an Advanced switch to an individual/natural-person triggers the NJ/IL
     // natural-person prohibition. It is NEVER left null (which would fail-open on a wildcard and also
     // skip the NJ rule) — the default is a concrete, owner-set LLC.
+    // THE ASSUMPTION AND THE ASSERTION ARE KEPT APART IN THE DATA (defect A8.5, 2026-08-18). Before,
+    // the default collapsed into `borrower_type` and an ASSUMED LLC was byte-identical to an LLC the
+    // scenario actually stated — so a guess travelled downstream as a fact and the PPP answer for a
+    // New Jersey loan (where the borrower type decides whether a prepayment penalty is legal at all)
+    // could not say which one it had used. `borrower_type` keeps its old EFFECTIVE meaning so nothing
+    // reading it changes; the two new facts say where that value came from.
     borrower_type: sc.borrowerType || sc.borrower_type || 'LLC',
+    borrower_type_stated: sc.borrowerType || sc.borrower_type || null,
+    borrower_type_assumed: !(sc.borrowerType || sc.borrower_type),
     subordinate_amount: subAmt,
     // APR (Layer-3 PPP) — ONE state PPP rule keys on a HIGH-cost APR: ILLINOIS (the
     // natural-person `aprGt` rule in deephaven-ppp-matrix). APR is a DERIVED figure (note rate + fees),
@@ -197,6 +205,38 @@ function declineForPpp(quote, dq) {
 }
 
 /**
+ * The "we could not tell" marker, in the same shape a decline carries so a report can render it beside
+ * one — but with `unresolved: true` and NO `reason` masquerading as a decline reason. Never mutates the
+ * quote (see `declineForPpp`). The quote stays PRICED; what says so is `pppUnresolved`, which a reader
+ * must look at. `eligible` alone is no longer the whole answer on the PPP dimension.
+ */
+function flagUnresolvedPpp(quote, unres) {
+  return { ...quote, pppUnresolved: { ...unres, source: 'ppp_matrix' } };
+}
+
+/** The same fact treated as a decline, for a caller whose policy is to refuse an unanswerable state. */
+function declineForUnresolvedPpp(quote, unres) {
+  const prior = Array.isArray(quote && quote.declines) ? quote.declines : [];
+  return {
+    ...quote,
+    eligible: false,
+    ladder: [],
+    pppUnresolved: { ...unres, source: 'ppp_matrix' },
+    declines: [...prior, {
+      code: unres.code,
+      reason: unres.reason,
+      dimension: unres.dimension,
+      citation: unres.citation,
+      source: 'ppp_matrix',
+      unresolved: true,
+    }],
+  };
+}
+
+/** The policies a caller may declare for an unanswerable state. There is deliberately no default. */
+const UNRESOLVED_PPP_POLICIES = Object.freeze(['flag', 'decline']);
+
+/**
  * OUR leg for the agreement harness.
  *
  * `opts.pppDescriptor` — an investor PROGRAM DESCRIPTOR (`program-registry.programFor(...)`) whose
@@ -226,6 +266,19 @@ function buildOursLeg(program, settings, opts) {
   if (desc && (typeof desc.pppInputFromFacts !== 'function' || typeof desc.pppDisqualifier !== 'function')) {
     throw new Error('buildOursLeg: pppDescriptor must expose pppInputFromFacts() and pppDisqualifier()');
   }
+  // A PPP LAYER THAT CANNOT SAY "WE COULD NOT TELL" IS REFUSED HERE (defect A8.1). Same reasoning as
+  // the descriptor check above it: a layer that is silently missing the third answer would price every
+  // unanswerable state as allowed, once per scenario, saying so nowhere.
+  if (desc && typeof desc.pppUnresolved !== 'function') {
+    throw new Error('buildOursLeg: pppDescriptor must expose pppUnresolved() — an unanswerable state may not read as allowed');
+  }
+  // AND THE CALLER MUST DECLARE WHAT TO DO ABOUT IT. There is no default on purpose: 'flag' (price it,
+  // mark it for a human) and 'decline' (refuse the quote) are the two sides of an OPEN OWNER QUESTION
+  // (LENDER-PRICE-PARITY-STATUS.md §2.54), so this module refuses to pick one on the owner's behalf.
+  const unresolvedPolicy = o.onUnresolvedPpp;
+  if (desc && !UNRESOLVED_PPP_POLICIES.includes(unresolvedPolicy)) {
+    throw new Error(`buildOursLeg: opts.onUnresolvedPpp must be one of ${UNRESOLVED_PPP_POLICIES.join(' | ')} when a pppDescriptor is supplied — an unresolved state prepayment rule may not be silently treated as allowed`);
+  }
   const ours = function ours(scenario) {
     const facts = o.factsFromLp ? lpScenarioToFacts(scenario) : scenario;
     const arg = { scenario: facts, program, settings: settings || {} };
@@ -235,8 +288,12 @@ function buildOursLeg(program, settings, opts) {
     // A quote the sheet ALREADY declined stays as it is: it is ineligible either way, and appending a
     // second reason would double-count the scenario in the by-dimension tallies.
     if (!quote || quote.eligible !== true) return quote;
-    const dq = desc.pppDisqualifier(desc.pppInputFromFacts(facts));
-    return dq ? declineForPpp(quote, dq) : quote;
+    const pppInput = desc.pppInputFromFacts(facts);
+    const dq = desc.pppDisqualifier(pppInput);
+    if (dq) return declineForPpp(quote, dq);
+    const unres = desc.pppUnresolved(pppInput);
+    if (!unres) return quote;
+    return unresolvedPolicy === 'decline' ? declineForUnresolvedPpp(quote, unres) : flagUnresolvedPpp(quote, unres);
   };
   // THE LEG CARRIES THE SHEET IT PRICES FROM, and that is the whole point of stamping it here.
   //
@@ -360,4 +417,7 @@ function readiness(client, env) {
   return { configured, missing, message };
 }
 
-module.exports = { buildOursLeg, buildLpLeg, buildCanaryLpLeg, readiness, lpScenarioToFacts, _internals: { LP_CRED_ENV, normPurpose, prepayMonths } };
+module.exports = {
+  buildOursLeg, buildLpLeg, buildCanaryLpLeg, readiness, lpScenarioToFacts, UNRESOLVED_PPP_POLICIES,
+  _internals: { LP_CRED_ENV, normPurpose, prepayMonths, declineForPpp, flagUnresolvedPpp, declineForUnresolvedPpp },
+};

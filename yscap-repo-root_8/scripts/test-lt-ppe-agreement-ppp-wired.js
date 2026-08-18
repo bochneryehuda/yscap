@@ -58,7 +58,7 @@ const VALUES = settingsMod.resolveAll().values;
 
   // EXACTLY the two constructions — the one the route used to build, and the one it builds now.
   const asItWas = legs.buildOursLeg(SHEET, VALUES, { factsFromLp: true });
-  const asItIs = legs.buildOursLeg(SHEET, VALUES, { factsFromLp: true, pppDescriptor: DESC });
+  const asItIs = legs.buildOursLeg(SHEET, VALUES, { factsFromLp: true, pppDescriptor: DESC, onUnresolvedPpp: 'flag' });
 
   const battery = buildAgreementScenarios();
   const all = (battery && battery.scenarios) || [];

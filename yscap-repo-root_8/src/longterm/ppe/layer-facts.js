@@ -66,7 +66,24 @@ function normString(raw, spec) {
   const strip = spec.strip || 'none';
   if (strip === 'nonalnum') s = s.replace(/[^a-z0-9]/g, '');
   else if (strip === 'nonalpha') s = s.replace(/[^a-z]/g, '');
+  // 'nonalphaspace' KEEPS THE WORD SEPARATION that 'nonalpha' destroys. It exists because a needle test
+  // can only have a WORD BOUNDARY if the boundaries survive the normalization: "Vincent Vance" stripped
+  // to "vincentvance" contains "inc", and the borrower-type classifier read that as a corporation
+  // (defect A8.3). Every run of non-letters collapses to ONE space, so 'Acme Inc.' and 'ACME  INC'
+  // normalize alike and `match:'word'` can then compare whole words.
+  else if (strip === 'nonalphaspace') s = s.replace(/[^a-z]+/g, ' ').trim();
   return s;
+}
+
+/**
+ * Does a needle match? `match:'substring'` (the default, and what every pre-existing document relies on)
+ * is `s.includes(n)`. `match:'word'` is a WHOLE-WORD test — the padded-space trick, which handles a
+ * multi-word needle for free and needs no regex, so the closed, auditable predicate vocabulary stays
+ * closed. Use it only with a space-preserving strip; with 'nonalpha' the whole string is one word.
+ */
+function needleHit(s, needle, mode) {
+  if (mode === 'word') return ` ${s} `.includes(` ${needle} `);
+  return s.includes(needle);
 }
 
 const DERIVATION_KINDS = Object.freeze({
@@ -83,12 +100,17 @@ const DERIVATION_KINDS = Object.freeze({
 
   substring_any: (spec, facts) => {
     const s = normString(facts[spec.from], spec);
-    return spec.needles.some((n) => s.includes(n));
+    return spec.needles.some((n) => needleHit(s, n, spec.match));
   },
 
   classify: (spec, facts) => {
     const s = normString(facts[spec.from], spec);
-    for (const c of spec.cases) if (c.needles.some((n) => s.includes(n))) return c.value;
+    // `onEmpty:'absent'` distinguishes "nothing was stated" from "stated, but no case matched". Both
+    // used to collapse into the same answer, and that is what let an unrecognised borrower type behave
+    // as an absent one — which the PPP layer then read as a wildcard (defect A8.4). With a non-null
+    // `default` (the "we do not recognise this" class) the empty input needs its own exit.
+    if (spec.onEmpty === 'absent' && s === '') return ABSENT;
+    for (const c of spec.cases) if (c.needles.some((n) => needleHit(s, n, spec.match))) return c.value;
     return spec.default === undefined || spec.default === null ? ABSENT : spec.default;
   },
 });
@@ -98,8 +120,10 @@ const DERIVATION_KIND_NAMES = Object.freeze(Object.keys(DERIVATION_KINDS));
 // ---- validation (fail-closed, at compile time) ------------------------------------------------
 
 const CASES = new Set(['none', 'lower', 'upper']);
-const STRIPS = new Set(['none', 'nonalnum', 'nonalpha']);
+const STRIPS = new Set(['none', 'nonalnum', 'nonalpha', 'nonalphaspace']);
 const FALLBACK_ONS = new Set(['falsy', 'nullish']);
+const MATCH_MODES = new Set(['substring', 'word']);
+const ON_EMPTY = new Set(['default', 'absent']);
 
 /**
  * Every problem with a derived-fact definition map. Empty = valid. PURE, never throws.
@@ -129,6 +153,14 @@ function derivationProblems(defs) {
     }
     if (spec.kind === 'number_gt' && !(typeof spec.than === 'number' && Number.isFinite(spec.than))) {
       errs.push(`${at}.than: number_gt needs a finite number`);
+    }
+    if (spec.match !== undefined && !MATCH_MODES.has(spec.match)) errs.push(`${at}.match: must be ${[...MATCH_MODES].join(' | ')}`);
+    if (spec.onEmpty !== undefined && !ON_EMPTY.has(spec.onEmpty)) errs.push(`${at}.onEmpty: must be ${[...ON_EMPTY].join(' | ')}`);
+    // A whole-word test over a string whose separators were deleted can never see a boundary — every
+    // needle would have to be the ENTIRE value. Refuse the pair rather than ship a rule that silently
+    // stops matching.
+    if (spec.match === 'word' && spec.strip !== undefined && spec.strip !== 'none' && spec.strip !== 'nonalphaspace') {
+      errs.push(`${at}.match: 'word' needs a space-preserving strip (use 'nonalphaspace'), not '${spec.strip}'`);
     }
     if (spec.kind === 'substring_any') {
       if (!Array.isArray(spec.needles) || spec.needles.length === 0 || spec.needles.some((n) => typeof n !== 'string' || !n)) {
@@ -196,5 +228,5 @@ module.exports = {
   derivationProblems,
   unsupportedDerivationKinds,
   deriveFacts,
-  _internals: { normString },
+  _internals: { normString, needleHit },
 };

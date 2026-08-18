@@ -88,8 +88,9 @@ console.log('LT PPE — generic program engine + investor registry (PPE #47)\n')
       maxLtvMilli: 70000, cell: { tier: 't1' }, unverifiable: ['acme note'],
     }),
     pppInputFromFacts: (f) => ({ prepayRequested: f.prepay_months > 0 }),
-    pppResult: () => ({ result: 'standard', terms: null, matched: true }),
+    pppResult: () => ({ result: 'standard', basis: 'rule', terms: null, matched: true, resolved: true }),
     pppDisqualifier: (i) => (i.prepayRequested ? { code: 'acme_ppp', dimension: 'prepay_state', declineReason: 'no PPP', citation: 'Acme' } : null),
+    pppUnresolved: () => null,
     evaluateOverlay: () => ({ declines: [], enforced: [], stillFlagged: [] }),
     evaluateInformational: () => ({ reserves: { months: 6 }, informational: ['info'], exceptions: [] }),
   });
@@ -115,12 +116,17 @@ console.log('LT PPE — generic program engine + investor registry (PPE #47)\n')
 
 // ---- assertDescriptor rejects an incomplete descriptor ---------------------------------------------
 {
-  const full = { investor: 'A', programName: 'A', evaluateEligibility: () => {}, pppInputFromFacts: () => {}, pppResult: () => {}, pppDisqualifier: () => {}, evaluateOverlay: () => {}, evaluateInformational: () => {} };
-  let threwMissing = false; let threwBadInvestor = false; let okFull = false;
+  const full = { investor: 'A', programName: 'A', evaluateEligibility: () => {}, pppInputFromFacts: () => {}, pppResult: () => {}, pppDisqualifier: () => {}, pppUnresolved: () => {}, evaluateOverlay: () => {}, evaluateInformational: () => {} };
+  let threwMissing = false; let threwBadInvestor = false; let okFull = false; let threwNoUnresolved = false;
   try { assertDescriptor({ ...full, evaluateOverlay: undefined }); } catch (e) { threwMissing = /evaluateOverlay/.test(e.message); }
+  // THE FORCING FUNCTION FOR DEFECT A8.1: a program that cannot say "we could not tell" about a state's
+  // prepayment law is refused at WIRING TIME. Without this, such a program prices every unanswerable
+  // state as allowed, once per scenario, saying so nowhere.
+  try { assertDescriptor({ ...full, pppUnresolved: undefined }); } catch (e) { threwNoUnresolved = /pppUnresolved/.test(e.message); }
   try { assertDescriptor({ ...full, investor: '' }); } catch (e) { threwBadInvestor = /investor/.test(e.message); }
   try { okFull = assertDescriptor(full) === full; } catch (e) { okFull = false; }
   ok(threwMissing, 'assertDescriptor: THROWS naming a missing function slot');
+  ok(threwNoUnresolved, 'assertDescriptor: THROWS on a descriptor with no pppUnresolved slot (an unanswerable state may not read as allowed)');
   ok(threwBadInvestor, 'assertDescriptor: THROWS on an empty investor name');
   ok(okFull, 'assertDescriptor: returns a complete descriptor unchanged');
 }
