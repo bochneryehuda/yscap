@@ -118,5 +118,50 @@ check(/function DscrCell/.test(pipeUi) && /case 'dscr': return <DscrCell row=\{r
 check(/if \(!v\) return <span>\{shown\}<\/span>/.test(pipeUi),
   '…and a loan nobody has measured gets a plain dash there too, never a red mark');
 
+console.log('\nand it says WHOSE number it is');
+
+// A red mark attributed to a rule nobody wrote is the same mistake as reading
+// "does this differ from ours" as "did they choose": the value and its AUTHORSHIP
+// are two questions, and only one of them was being answered.
+{
+  const ours = V.dscrVerdict(0.9, {});
+  check(ours.level === 'below' && ours.minimum === 1,
+    'with nothing configured a thin loan is still judged, on the shipped figures');
+  check(ours.minimumIsCompany === false,
+    'THE ONE THAT MATTERS: …and the verdict says the minimum is OURS, not theirs — both screens word it "this company set", which is a plain falsehood about a company that never set one, and it is the sentence under a red mark on somebody\'s loan');
+  check(ours.comfortIsCompany === false, '…and the comfortable line likewise');
+
+  const theirs = V.dscrVerdict(1.05, { 'dscr.minimumRatio': 1.1, 'dscr.comfortRatio': 1.35 });
+  check(theirs.minimum === 1.1 && theirs.minimumIsCompany === true,
+    'a company that DID set a minimum is credited with it');
+  check(theirs.comfort === 1.35 && theirs.comfortIsCompany === true, '…and with their comfortable line');
+
+  // A value the settings screen would accept but the rule refuses falls back to
+  // ours, so it is ours — being present is not the same as being usable.
+  for (const junk of [true, [1.15], 'soon', '', null, 0, -1]) {
+    const v = V.dscrVerdict(1.05, { 'dscr.minimumRatio': junk });
+    check(v.minimumIsCompany === false,
+      `a minimum of ${JSON.stringify(junk)} is refused, so the threshold is OURS and is not credited to them`);
+  }
+
+  // A comfortable line raised to meet the minimum is no longer their number,
+  // whatever they configured.
+  const raised = V.dscrVerdict(1.5, { 'dscr.minimumRatio': 1.3, 'dscr.comfortRatio': 1.1 });
+  check(raised.comfort === 1.3 && raised.comfortIsCompany === false,
+    'THE ONE THAT MATTERS: a comfortable line configured BELOW the minimum is raised to meet it — and the raised figure is no longer the number they set, so it is not reported as theirs');
+  check(raised.minimumIsCompany === true, '…while the minimum still is');
+}
+
+{
+  const fs2 = require('fs');
+  for (const f of ['app-v2/src/longterm/LtPipeline.jsx', 'app-v2/src/longterm/LtFileSections.jsx']) {
+    const src = fs2.readFileSync(path.join(__dirname, '..', f), 'utf8');
+    check(/minimumIsCompany/.test(src) && /comfortIsCompany/.test(src),
+      `${f.split('/').pop()} reads whose number it is rather than asserting "this company set"`);
+    check(!/minimum this company set/.test(src),
+      `…and no longer carries the flat claim, which was false on every unconfigured company`);
+  }
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');
 process.exit(failures ? 1 : 0);

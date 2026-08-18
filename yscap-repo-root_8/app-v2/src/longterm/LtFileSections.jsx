@@ -344,11 +344,17 @@ function DscrFigure({ value, verdict }) {
     : verdict.level === 'thin' ? '#8A6A22' : '#2C5E3F';
   const word = verdict.level === 'below' ? 'below the minimum'
     : verdict.level === 'thin' ? 'thin' : 'comfortable';
+  // WHOSE NUMBER. "this company set" is a claim about authorship, and it is false
+  // whenever the company has not configured that threshold — we fall back to the
+  // shipped one, which is right, but saying they chose it is not. The verdict now
+  // says which, so a red mark is never attributed to a rule nobody wrote.
+  const whose = (isCompany) => (isCompany ? ' this company set' : ' PILOT ships by default');
+  const comfortWhose = (isCompany) => (isCompany ? 'this company calls comfortable' : 'PILOT treats as comfortable by default');
   const why = verdict.level === 'below'
-    ? `Under the ${verdict.minimum} minimum this company set — on these figures the property does not cover its own debt service.`
+    ? `Under the ${verdict.minimum} minimum${whose(verdict.minimumIsCompany)} — on these figures the property does not cover its own debt service.`
     : verdict.level === 'thin'
-      ? `Over the ${verdict.minimum} minimum but under the ${verdict.comfort} this company calls comfortable.`
-      : `At or over the ${verdict.comfort} this company calls comfortable.`;
+      ? `Over the ${verdict.minimum} minimum${whose(verdict.minimumIsCompany)} but under the ${verdict.comfort} ${comfortWhose(verdict.comfortIsCompany)}.`
+      : `At or over the ${verdict.comfort} ${comfortWhose(verdict.comfortIsCompany)}.`;
   return (
     <span style={{ color: tone, fontWeight: 700 }} title={why}>
       {shown}

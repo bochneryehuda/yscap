@@ -165,11 +165,17 @@ function DscrCell({ row }) {
   if (!v) return <span>{shown}</span>;
   const tone = v.level === 'below' ? '#8A2D2D' : v.level === 'thin' ? '#8A6A22' : '#2C5E3F';
   const word = v.level === 'below' ? 'below' : v.level === 'thin' ? 'thin' : 'ok';
+  // WHOSE NUMBER. "this company set" is a claim about authorship, and it is false
+  // whenever the company has not configured that threshold — we fall back to the
+  // shipped one, which is right, but saying they chose it is not. The verdict now
+  // says which, so a red mark is never attributed to a rule nobody wrote.
+  const whose = (isCompany) => (isCompany ? ' this company set' : ' PILOT ships by default');
+  const comfortWhose = (isCompany) => (isCompany ? 'this company calls comfortable' : 'PILOT treats as comfortable by default');
   const why = v.level === 'below'
-    ? `Under the ${v.minimum} minimum this company set — on these figures the property does not cover its own debt service.`
+    ? `Under the ${v.minimum} minimum${whose(v.minimumIsCompany)} — on these figures the property does not cover its own debt service.`
     : v.level === 'thin'
-      ? `Over the ${v.minimum} minimum but under the ${v.comfort} this company calls comfortable.`
-      : `At or over the ${v.comfort} this company calls comfortable.`;
+      ? `Over the ${v.minimum} minimum${whose(v.minimumIsCompany)} but under the ${v.comfort} ${comfortWhose(v.comfortIsCompany)}.`
+      : `At or over the ${v.comfort} ${comfortWhose(v.comfortIsCompany)}.`;
   return (
     <span style={{ color: tone, fontWeight: 700 }} title={why}>
       {shown}

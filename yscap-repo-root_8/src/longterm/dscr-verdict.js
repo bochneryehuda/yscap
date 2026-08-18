@@ -47,9 +47,11 @@ const DEFAULT_COMFORT = 1.2;
  * nothing of the kind.
  */
 function threshold(raw, fallback) {
-  if (typeof raw !== 'number' && typeof raw !== 'string') return fallback;
+  if (typeof raw !== 'number' && typeof raw !== 'string') return { value: fallback, configured: false };
   const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  return Number.isFinite(n) && n > 0
+    ? { value: n, configured: true }
+    : { value: fallback, configured: false };
 }
 
 /**
@@ -65,18 +67,36 @@ function dscrVerdict(ratio, settings) {
   if (typeof ratio !== 'number' || !Number.isFinite(ratio)) return null;
 
   const s = settings || {};
-  const minimum = threshold(s['dscr.minimumRatio'], DEFAULT_MINIMUM);
+  const min = threshold(s['dscr.minimumRatio'], DEFAULT_MINIMUM);
+  const com = threshold(s['dscr.comfortRatio'], DEFAULT_COMFORT);
+  const minimum = min.value;
   // A comfortable line BELOW the minimum is a misconfiguration, not an opinion:
   // it would make "thin" impossible and "comfortable" start under the floor. The
   // minimum wins, so the worst a bad pair can do is collapse two verdicts into
   // one rather than call a failing loan comfortable.
-  const comfort = Math.max(minimum, threshold(s['dscr.comfortRatio'], DEFAULT_COMFORT));
+  const comfort = Math.max(minimum, com.value);
 
   let level = 'comfortable';
   if (ratio < minimum) level = 'below';
   else if (ratio < comfort) level = 'thin';
 
-  return { level, minimum, comfort };
+  return {
+    level,
+    minimum,
+    comfort,
+    // WHOSE NUMBER IS THIS. Both screens worded the verdict "under the 1 minimum
+    // THIS COMPANY SET" — true when they set one, and a plain falsehood when they
+    // did not, or when the settings read was degraded and the shipped default was
+    // all we had. A red mark on a loan, attributed to a rule the company never
+    // wrote, is the same mistake as the personal settings screen reading "does
+    // this differ from ours" as "did they choose": the value and its AUTHORSHIP
+    // are two questions, and only one of them was being answered.
+    //
+    // A comfortable line raised to meet the minimum is no longer the company's
+    // number either, whatever they configured — so it is reported as ours.
+    minimumIsCompany: min.configured,
+    comfortIsCompany: com.configured && com.value >= minimum,
+  };
 }
 
 module.exports = { dscrVerdict, DEFAULT_MINIMUM, DEFAULT_COMFORT, _internals: { threshold } };
