@@ -4907,3 +4907,60 @@ the token instead of spelling it, with the reason written where it is done; the 
 carry the real token, so the scanner sees exactly what it is meant to.
 
 151/151 suites, 31 of them database-backed.
+
+**§2.82 — OWNER-ANSWERED: ABOVE $2.5 MILLION THE CAP IS THE SAME AS AT $2.5 MILLION. IT WAS OPEN, AND
+THE CLIFF RAN THE WRONG WAY (2026-08-18).**
+
+The owner, in their own words: *"your stupid question about the above 2.5 doesn't have a max cap you can
+double check on lender price how he's understanding it because the truth of matter is that anything
+above 2.5 million files the same cap as 2.5 million."*
+
+**MEASURED before the answer, on the real module:**
+
+```
+loanAmountMaxPrice(2,500,000) = 103.5      maxPriceFor({2,500,000, 5-yr prepay}) = 103.5  (tier binds)
+loanAmountMaxPrice(2,500,001) = null       maxPriceFor({2,500,001, 5-yr prepay}) = 105.0  (nothing binds)
+```
+
+One dollar more loan bought **1.5 points** more premium — **$45,000 on a $3,000,000 loan** — and the
+cliff ran the WRONG WAY: the larger, riskier loan got the LOOSER ceiling.
+
+**THE CODE'S OWN REASONING WAS INTERNALLY CONSISTENT AND STILL WRONG, which is the lesson.** The note
+said no ceiling should be invented above $2.5MM because *the sibling sheet's eligibility envelope
+declines the loan on its own $2.5MM maximum* — and that is true (`deephaven-matrix` refuses with
+`dhvn_max_loan`). But an ELIGIBILITY bound is not a PRICE ceiling: they are different sheets, they are
+overridden by different people, and this module is compiled into rules a future program can share. A
+price table with an open top is a defect on its own terms.
+
+**AND WE ALREADY DISAGREED WITH OURSELVES ABOUT IT.** `price-limit.resolvePriceCap` — the path that
+actually enforces a ceiling on a compiled quote — has always fallen closed onto the TIGHTEST cap on the
+sheet above the last tier, answering 103.5 (103.25 net of the holdback) where the direct reader answered
+`null`. **Two definitions of one ceiling, disagreeing, on money.** The owner's rule is what the compiled
+path was already doing, so this is not a new rule — it is the direct reader being brought into line with
+the enforcer, and the reason the defect was survivable in production this long.
+
+**THE TRANSCRIPTION IS UNTOUCHED.** `SHEET_MAX_PRICE_TIERS` still holds exactly the three tiers the
+vendor publishes. What changed is how the TOP of that table is read, stated separately and attributed
+to the owner — data stays verbatim, interpretation is named.
+
+**AN UNREADABLE AMOUNT IS STILL `null`.** "Above the top tier" and "we could not read the amount" are
+different facts; inventing a ceiling for the second would be a rule nobody stated.
+
+**STILL OPEN, and not pretended otherwise:** the owner asked us to double-check how Lender Price itself
+reads the top of that table. There is no vendor login in this environment, so that cross-check has NOT
+been done. The owner's answer is what is implemented, and the outstanding check is recorded in the
+module's own UNMEASURED list.
+
+`scripts/test-lt-ppe-tier-top-closed.js` (33 assertions) pins the owner's rule with their own numbers,
+the flat boundary, the money consequence against a 5-year prepay — and, the durable half, **that the
+direct reader and the compiled enforcer now agree at every amount across a 51-point sweep and every tier
+boundary**, which is the property that was actually broken. **Mutation-proven three ways**: the open top
+returning, the WRONG tier carrying upward (the loosest instead of the tightest), and an unreadable
+amount inventing a ceiling.
+
+**The claims guard flipped with it.** `test-lt-ppe-sheet-claims.js` carried an entry named
+`above_2_5m_uncapped` whose prose and code agreed perfectly — a biconditional guard can only ever prove
+the two halves match, never that the pair is wrong. The owner's answer is what settles it; the entry is
+now `above_2_5m_takes_the_2_5m_cap`. Worth recording as the limit of that whole guard family.
+
+152/152 suites, 31 database-backed.

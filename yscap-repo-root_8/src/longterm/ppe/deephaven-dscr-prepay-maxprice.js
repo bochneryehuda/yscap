@@ -301,11 +301,44 @@ function prepayMaxPrice(termMonths) {
  * first tier, which is correct — the sheet's tiers have no lower bound; the sibling sheet's own
  * minimum-loan rules are what decline a loan that is too small, not this ceiling.)
  */
+/**
+ * The max price this sheet allows for ONE loan amount.
+ *
+ * ⛔ ABOVE THE TOP TIER THE TOP TIER'S CAP CARRIES UPWARD — OWNER-ANSWERED 2026-08-18, in their own
+ * words: *"anything above 2.5 million files the same cap as 2.5 million."*
+ *
+ * WHAT IT USED TO DO, AND WHY THAT WAS A DEFECT. It returned `null` above $2,500,000 — read everywhere
+ * as "uncapped by this axis" — and the module's own note said no ceiling should be invented for a loan
+ * that cannot exist, because the sibling sheet's eligibility envelope declines above $2.5MM. Measured:
+ *
+ *     $2,500,000 + 5-year prepay  →  cap 103.5   (the loan-amount tier binds)
+ *     $2,500,001 + 5-year prepay  →  cap 105.0   (nothing binds; the prepay cap is all that is left)
+ *
+ * One dollar more loan bought 1.5 points more premium — on a $3,000,000 loan, $45,000 — and the CLIFF
+ * ran the wrong way: the larger loan got the LOOSER ceiling. An eligibility rule elsewhere is not a
+ * reason for a price rule here to have an open top; the two are different sheets, they are overridden
+ * by different people, and this module is also compiled into rules a future program can share.
+ *
+ * IT ALSO SETTLES A DISAGREEMENT WE ALREADY HAD WITH OURSELVES. `price-limit.resolvePriceCap` — the
+ * path that actually enforces the ceiling on a compiled quote — has always fallen closed onto the
+ * TIGHTEST cap on the sheet above the last tier, answering 103.5 where this function answered null. Two
+ * definitions of one ceiling, disagreeing. The owner's rule is what the compiled path was already
+ * doing, so this is not a new rule; it is the direct reader being brought into line with the enforcer.
+ *
+ * THE TRANSCRIPTION IS UNTOUCHED. `SHEET_MAX_PRICE_TIERS` still holds exactly the three tiers the
+ * vendor publishes; what is stated here is how to READ the top of that table, attributed to the owner.
+ *
+ * STILL TO CONFIRM WITH THE VENDOR: the owner asked us to double-check how Lender Price itself reads
+ * the top tier. There is no vendor login in this environment, so that check has not been done — the
+ * owner's answer is what is implemented, and the cross-check is recorded in UNMEASURED.
+ */
 function loanAmountMaxPrice(loanAmount) {
   if (!isNum(loanAmount)) return null;
   const sorted = SHEET_MAX_PRICE_TIERS.slice().sort((a, b) => a.loanAmountMax - b.loanAmountMax);
   for (const t of sorted) if (loanAmount <= t.loanAmountMax) return t.maxPrice;
-  return null;
+  // Above every published tier: the top tier's cap carries upward (owner, 2026-08-18). An empty table
+  // still answers null — there is no ceiling to carry — rather than inventing one.
+  return sorted.length ? sorted[sorted.length - 1].maxPrice : null;
 }
 
 /**
@@ -520,7 +553,7 @@ const UNMEASURED = [
   'WHICH KNOB IS THE 0.25: margin-holdback.js carries TWO numbers — `margin` and `holdback` — both pre-filled 250 milli. The owner said "our 0.25 holdback", so this module reads the HOLDBACK knob. Identical today, so no price depends on the choice; they diverge the first time an investor is given different values, and then this needs confirming rather than inferring.',
   'THE HOLDBACK AND THE BASE LADDER\'S FRAME — CORRECTED 2026-08-18 (parity doc §2.69/§2.76). This entry used to say the engine did not apply the holdback and that wiring it into pricing.priceRung was still to come. IT HAS COME: priceRung SUBTRACTS the holdback (measured — 105.000 with a 0.25 holdback prices 104.750), and the note survived here after the sibling sheet\'s copy was corrected, which is a stale money note that would send the next reader to make a change already made, on a price. What IS still open is the owner\'s: this grid inherits the sibling\'s base ladder, which sits on the LP-measured (post-holdback) numbers and DECLARES that frame (priceFrame lp_post_holdback), so quote.js refuses to price it with a holdback configured rather than taking the 0.25 off twice. Moving the ladder onto the investor\'s own pre-holdback numbers is the other way out and is the owner\'s call.',
   'CLAMP ORDER: the sheet reads cap-then-floor; the engine\'s pricing.clamp is floor-then-cap. Indistinguishable on this sheet because the LOWEST published cap (101.5) is above the floor (98.000) — asserted, not assumed — so the engine was NOT changed on the strength of a case that cannot arise here.',
-  'ABOVE $2,500,000 the sheet publishes no max-price tier; loanAmountMaxPrice returns null (uncapped by this axis) and the sibling sheet\'s eligibility envelope declines the loan on its own $2.5MM maximum. No ceiling is invented for a loan that cannot exist.',
+  'ABOVE $2,500,000 — ANSWERED 2026-08-18, not an assumption any more. The owner: "anything above 2.5 million files the same cap as 2.5 million." So the top tier carries upward and loanAmountMaxPrice returns 103.5 for any amount above $2,500,000. This entry used to say the opposite — that the function returns null (uncapped) because the sibling sheet declines above $2.5MM anyway — and that combination priced a $2,500,001 loan with a 5-year prepay at a 105 ceiling where $2,500,000 was held to 103.5: one dollar more loan, 1.5 points more premium, the cliff running the wrong way. WHAT IS STILL OPEN is the vendor cross-check the owner asked for — how Lender Price itself reads the top of that table — which needs a live login this environment does not have.',
   'ONE CAP PER TERM, BOTH MODELS: the sheet publishes a single Max Price column (R) beside the two LLPA columns, so the 5% Fixed promo is capped at its TERM\'s cap exactly as the standard column is. If the promo carries its own ceiling it is not on this sheet.',
   'THE PRICING-MODEL FACT: an absent `prepay_pricing_model` is priced on the STANDARD column, which is the sheet\'s own default shape (P = "LLPA Other"; Q = an opt-in promotion). Which layer SETS that fact on a live quote (the scenario converter / the LP request builder) is not wired here — prepayFactsFor() derives it from the ppp-structures library so it can never be hand-typed.',
   'A PREPAY TERM THE SHEET DOES NOT PUBLISH (anything other than 0/12/24/36/48/60 months) resolves to null for BOTH the LLPA and the cap — never a 0 adjustment and never an interpolated cap. Whether such a term is offerable is not on this sheet.',

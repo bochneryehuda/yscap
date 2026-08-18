@@ -211,7 +211,16 @@ const PREPAY_BASELINE = priceAt(sc()); // 3-year standard: the sheet's own zero 
     [2000001, 103.5], [2500000, 103.5],
   ];
   for (const [amt, want] of T) ok(M.loanAmountMaxPrice(amt) === want, `loan $${amt.toLocaleString()} → max price ${want}`);
-  ok(M.loanAmountMaxPrice(2500001) === null, 'above $2,500,000 there is NO published tier — null, never an invented ceiling');
+  // ⛔ RE-POINTED 2026-08-18. This line used to assert `null` above $2,500,000 — "no published tier,
+  // never an invented ceiling" — and it was a faithful test of what the code did. The OWNER has since
+  // stated the rule: "anything above 2.5 million files the same cap as 2.5 million." So the top tier
+  // carries upward, and the assertion is STRENGTHENED rather than merely moved: the cliff that used to
+  // sit on the boundary is pinned flat, one dollar either side and far beyond.
+  ok(M.loanAmountMaxPrice(2500001) === 103.5, 'one dollar above $2,500,000 takes the SAME cap, 103.5 (owner, 2026-08-18)');
+  ok(M.loanAmountMaxPrice(3000000) === 103.5 && M.loanAmountMaxPrice(50000000) === 103.5,
+    '…and so does any larger loan — the top tier has no open end');
+  ok(M.loanAmountMaxPrice(2500000) === M.loanAmountMaxPrice(2500001),
+    'THE CLIFF IS GONE: the boundary is flat, which is the defect this reversed — the larger loan used to get the LOOSER ceiling');
   ok(M.loanAmountMaxPrice(null) === null && M.loanAmountMaxPrice('x') === null, 'a missing/garbage loan amount resolves to null');
 }
 {
@@ -244,7 +253,14 @@ const PREPAY_BASELINE = priceAt(sc()); // 3-year standard: the sheet's own zero 
   // "WHEN APPLICABLE" — one side missing means the other one governs; neither means uncapped.
   ok(M.maxPriceFor({ loanAmount: 1400000, prepayTermMonths: null }).maxPrice === 105, 'no prepay term → the loan-amount tier governs');
   ok(M.maxPriceFor({ loanAmount: null, prepayTermMonths: 12 }).maxPrice === 102, 'no loan amount → the prepay cap governs');
-  ok(M.maxPriceFor({ loanAmount: 3000000, prepayTermMonths: null }).maxPrice === null, 'neither applicable → no cap at all, never a fabricated ceiling');
+  // A LOAN AMOUNT IS ALWAYS APPLICABLE NOW — every amount resolves to a tier, so the only way to reach
+  // "neither applicable" is for BOTH facts to be missing.
+  ok(M.maxPriceFor({ loanAmount: 3000000, prepayTermMonths: null }).maxPrice === 103.5,
+    'a $3,000,000 loan with no prepay term is capped by the top tier carrying upward, not left uncapped');
+  ok(M.maxPriceFor({ loanAmount: null, prepayTermMonths: null }).maxPrice === null,
+    'neither fact readable → no cap at all, never a fabricated ceiling');
+  ok(M.maxPriceFor({ loanAmount: 3000000, prepayTermMonths: 60 }).maxPrice === 103.5,
+    'and above $2,500,000 the loan-amount tier now BINDS against a 105 prepay cap — the 1.5 points this reversal recovers');
   ok(M.SHEET_TABLES.MIN_PRICE === 98.0, 'the min price is 98.000');
 }
 

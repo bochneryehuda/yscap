@@ -60,10 +60,17 @@ const CLAIMS = [
     },
   },
   {
-    id: 'above_2_5m_uncapped',
-    claim: /loanAmountMaxPrice returns null \(uncapped by this axis\)/,
-    says: 'a loan above $2,500,000 has no max-price tier on this sheet, so the cap is null',
-    holds: () => maxPrice.loanAmountMaxPrice(3000000) === null,
+    // ⛔ REVERSED 2026-08-18 BY THE OWNER, and the claim reversed with it. This entry used to pin the
+    // opposite — that above $2,500,000 `loanAmountMaxPrice` returns null (uncapped by this axis) — and
+    // the guard held, because the code really did that. A guard can only ever prove the prose and the
+    // code agree; it cannot know the pair is wrong. The owner's words settle it: "anything above 2.5
+    // million files the same cap as 2.5 million."
+    id: 'above_2_5m_takes_the_2_5m_cap',
+    claim: /the top tier carries upward and loanAmountMaxPrice returns 103\.5 for any amount above \$2,500,000/,
+    says: "a loan above $2,500,000 takes the same cap as one at $2,500,000 — the owner's own rule",
+    holds: () => maxPrice.loanAmountMaxPrice(3000000) === 103.5
+      && maxPrice.loanAmountMaxPrice(2500000) === 103.5
+      && maxPrice.loanAmountMaxPrice(10000000) === 103.5,
   },
   {
     id: 'clamp_floor_then_cap',
