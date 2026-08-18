@@ -50,7 +50,13 @@ const COLUMNS = {
   program: { label: 'Program', field: 'program_name', sort: null },
   loan_amount: { label: 'Amount', field: 'loan_amount', sort: 'loan_amount', align: 'right', kind: 'money' },
   note_rate: { label: 'Rate', field: 'note_rate_pct', sort: null, align: 'right', kind: 'pct' },
-  dscr: { label: 'DSCR', field: 'dscr_ratio', sort: null, align: 'right', kind: 'ratio' },
+  // `dscr`, not `ratio`: the figure is drawn beside which side of THIS COMPANY'S
+  // own minimum and comfortable lines it fell on. A bare 1.28 down a column means
+  // one thing to somebody who works these loans every day and nothing to anybody
+  // else, and the thresholds have been a setting since the registry was written.
+  // The verdict is computed on the SERVER by the one rule the file screen uses, so
+  // the two surfaces can never call the same loan different things.
+  dscr: { label: 'DSCR', field: 'dscr_ratio', sort: null, align: 'right', kind: 'dscr' },
   ltv: { label: 'LTV', field: 'ltv_pct', sort: null, align: 'right', kind: 'pct' },
   stage: { label: 'Stage', field: 'stage_key', sort: 'stage' },
   milestone: { label: 'Milestone', field: 'milestone_name', sort: 'milestone' },

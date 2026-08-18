@@ -101,5 +101,21 @@ check(/function DscrFigure/.test(ui) && /verdict\.minimum/.test(ui),
 check(/if \(!verdict\) return <span>\{shown\}<\/span>/.test(ui),
   '…and draws a plain figure when there is no verdict, rather than inventing one');
 
+console.log('\nand the pipeline reads the SAME rule, so one loan is never two answers');
+
+const cols = fs.readFileSync(path.join(__dirname, '..', 'src/longterm/pipeline-columns.js'), 'utf8');
+check(/dscr: \{ label: 'DSCR', field: 'dscr_ratio'[^}]*kind: 'dscr'/.test(cols),
+  'the pipeline\'s DSCR column is its own kind rather than a bare ratio, which is what lets the cell say more than a number');
+check(/dscrVerdict\.dscrVerdict\(Number\.isFinite\(r\) \? r : null, settings\)/.test(routeSrc),
+  'THE ONE THAT MATTERS: the pipeline computes the verdict with the SAME module the file screen uses — a copy in the browser is how two screens come to call one loan below and thin');
+check(/cols\.columns\.some\(\(c\) => c\.key === 'dscr'\)/.test(routeSrc),
+  '…and only when the column is actually drawn, because a field nothing renders is the shape this side keeps finding');
+
+const pipeUi = fs.readFileSync(path.join(__dirname, '..', 'app-v2/src/longterm/LtPipeline.jsx'), 'utf8');
+check(/function DscrCell/.test(pipeUi) && /case 'dscr': return <DscrCell row=\{row\} \/>/.test(pipeUi),
+  'the pipeline draws it');
+check(/if \(!v\) return <span>\{shown\}<\/span>/.test(pipeUi),
+  '…and a loan nobody has measured gets a plain dash there too, never a red mark');
+
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');
 process.exit(failures ? 1 : 0);

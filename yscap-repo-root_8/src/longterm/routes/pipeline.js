@@ -25,6 +25,7 @@ const ltFile = require('../file');
 const stages = require('../stages');
 const settingsStore = require('../settings/store');
 const conditionRead = require('../conditions/read');
+const dscrVerdict = require('../dscr-verdict');
 const db = require('../db');
 
 // GET /api/lt/pipeline — the viewer's long-term book.
@@ -75,6 +76,23 @@ router.get('/', async (req, res) => {
         // A column that cannot be counted leaves its cells saying so; it never
         // costs the pipeline the loans themselves.
         console.error('[lt] pipeline condition counts failed:', (e && e.message) || e);
+      }
+    }
+
+    // WHICH SIDE OF THIS COMPANY'S OWN DSCR LINES EACH LOAN FELL ON, on the same
+    // terms as the count above: attached ONLY when the column is drawn, because a
+    // field nothing renders is the exact shape this side keeps finding and fixing.
+    //
+    // Computed HERE rather than in the browser: `dscr-verdict.js` is the one rule,
+    // the file screen already reads it, and a copy in the screen is how two
+    // surfaces come to call the same loan different things. It is pure arithmetic
+    // on settings this route has already loaded — no query, no failure mode — so a
+    // loan with no ratio simply gets no verdict, which is the honest answer and
+    // NOT the same as "below".
+    if (cols.columns.some((c) => c.key === 'dscr')) {
+      for (const row of out.loans || []) {
+        const r = row.dscr_ratio == null ? null : Number(row.dscr_ratio);
+        row.dscrVerdict = dscrVerdict.dscrVerdict(Number.isFinite(r) ? r : null, settings);
       }
     }
 

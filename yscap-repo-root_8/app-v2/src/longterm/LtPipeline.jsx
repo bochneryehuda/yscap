@@ -147,6 +147,38 @@ function OutstandingCell({ counts }) {
 }
 
 /**
+ * The DSCR, and which side of THIS COMPANY'S own lines it fell on.
+ *
+ * A bare 1.28 down a column tells somebody who works these loans every day exactly
+ * what they need and tells everybody else nothing — and the minimum and comfortable
+ * thresholds have been settings since the registry was written. The verdict comes
+ * from the SERVER, computed by the one rule the file screen reads, so the pipeline
+ * and the file can never call the same loan different things.
+ *
+ * NO VERDICT ON A RATIO NOBODY MEASURED: a loan with no DSCR gets a dash, never a
+ * red mark. The word is kept to one short token because this is a table cell — the
+ * full sentence, naming the threshold it fell under, is the hover.
+ */
+function DscrCell({ row }) {
+  const v = row.dscrVerdict;
+  const shown = ratio(row.dscr_ratio);
+  if (!v) return <span>{shown}</span>;
+  const tone = v.level === 'below' ? '#8A2D2D' : v.level === 'thin' ? '#8A6A22' : '#2C5E3F';
+  const word = v.level === 'below' ? 'below' : v.level === 'thin' ? 'thin' : 'ok';
+  const why = v.level === 'below'
+    ? `Under the ${v.minimum} minimum this company set — on these figures the property does not cover its own debt service.`
+    : v.level === 'thin'
+      ? `Over the ${v.minimum} minimum but under the ${v.comfort} this company calls comfortable.`
+      : `At or over the ${v.comfort} this company calls comfortable.`;
+  return (
+    <span style={{ color: tone, fontWeight: 700 }} title={why}>
+      {shown}
+      <span style={{ color: '#4B585C', fontWeight: 400, fontSize: 11 }}> {word}</span>
+    </span>
+  );
+}
+
+/**
  * One cell, drawn from what the COLUMN says it is.
  *
  * The screen no longer knows which columns exist — the server sends them, in order,
@@ -170,6 +202,7 @@ function Cell({ col, row, stageLabel }) {
     case 'money': return <span>{money(raw)}</span>;
     case 'pct': return <span>{pct(raw)}</span>;
     case 'ratio': return <span>{ratio(raw)}</span>;
+    case 'dscr': return <DscrCell row={row} />;
     case 'milestone_days': return <MilestoneAge row={row} />;
     case 'lock': return <LockCell row={row} />;
     case 'day': return <span>{day(raw)}</span>;
