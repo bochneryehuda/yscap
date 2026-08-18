@@ -93,6 +93,7 @@ export function RuleBoardView({
   openDraft = null, openDraftError = '', onOpenDraft = () => {},
   rendered = null, renderedError = '', onRenderDraft = () => {},
   onDiscardDraft = () => {}, discardError = '',
+  onPublishDraft = () => {}, publishArmedId = null, publishError = '', published = null,
   busy = false,
 }) {
   const ruleRows = Array.isArray(rules) ? rules : [];
@@ -380,12 +381,47 @@ export function RuleBoardView({
                   <button className="btn ghost" disabled={busy || d.status !== 'draft'} onClick={() => onDiscardDraft(d)}>
                     Discard
                   </button>
+                  {/* THE ONE CONTROL ON THIS SCREEN THAT MOVES A PRICE, so it arms first and says
+                      what it will do before it will do it. It is never hidden by role — this screen
+                      cannot know the role, and the server's refusal names who may. */}
+                  <button
+                    className="btn"
+                    disabled={busy || d.status !== 'draft'}
+                    onClick={() => onPublishDraft(d)}
+                  >
+                    {String(publishArmedId) === String(d.id) ? 'Press again to publish it' : 'Publish it'}
+                  </button>
                 </div>
+                {String(publishArmedId) === String(d.id) ? (
+                  <div style={{ fontSize: 12, color: DANGER, marginTop: 6 }}>
+                    Publishing puts this rule IN FORCE. It changes what the next borrower quoted on this
+                    program is offered. Only a super admin can do it.
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
         ) : null}
         {discardError ? <Err>{discardError}</Err> : null}
+        {publishError ? <Err>{publishError}</Err> : null}
+        {published ? (
+          <div style={{ marginTop: 12, background: PAPER, borderRadius: 8, padding: 12 }}>
+            <div style={eyebrow}>In force</div>
+            <div style={{ fontSize: 13, color: INK, fontWeight: 600 }}>
+              {(published.draft && published.draft.code) || 'That rule'} is now pricing loans.
+            </div>
+            <div style={{ fontSize: 12, color: SLATE, marginTop: 2 }}>
+              {published.liveNote || 'It prices the next loan quoted against this program.'}
+              {published.draft && published.draft.publishedBy
+                ? ` Published by ${published.draft.publishedBy}.` : ''}
+            </div>
+            {Array.isArray(published.warnings) && published.warnings.length > 0 ? (
+              <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: CAUTION }}>
+                {published.warnings.map((w, i) => <li key={`pw${i}`}>{w.message}</li>)}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
         {openDraftError ? <Err>{openDraftError}</Err> : null}
         {openDraft ? (
           <div style={{ marginTop: 12, background: PAPER, borderRadius: 8, padding: 12 }}>
@@ -580,6 +616,35 @@ export default function RuleBoard() {
     } catch (e) { setRenderedError(e.message || 'That draft could not be checked.'); }
   };
 
+  // PUBLISHING ARMS FIRST. A misfired click here changes what a real borrower is quoted, so the first
+  // press only states what the second one does. Arming is per DRAFT (never a single boolean), or
+  // arming one row would arm the button on every other row too.
+  const [publishArmedId, setPublishArmedId] = useState(null);
+  const [publishError, setPublishError] = useState('');
+  const [published, setPublished] = useState(null);
+
+  const publishDraft = async (d) => {
+    if (String(publishArmedId) !== String(d.id)) {
+      setPublishArmedId(d.id); setPublishError(''); setPublished(null);
+      return;
+    }
+    setBusy(true); setPublishError('');
+    try {
+      const out = await ltApi.ppePublishRuleDraft(d.id);
+      setPublished(out || null);
+      setPublishArmedId(null);
+      setOpenDraft(null);
+      setRendered(null);
+      // RE-READ BOTH from the server. The write's own answer is not evidence of what the tables hold,
+      // and the rule LIST is the one that shows it actually joined the set that prices.
+      loadDrafts();
+      loadRules();
+    } catch (e) {
+      setPublishArmedId(null);
+      setPublishError(e.message || 'That rule could not be published.');
+    } finally { setBusy(false); }
+  };
+
   const discardDraft = async (d) => {
     setBusy(true); setDiscardError('');
     try {
@@ -638,6 +703,10 @@ export default function RuleBoard() {
       onRenderDraft={renderDraft}
       onDiscardDraft={discardDraft}
       discardError={discardError}
+      onPublishDraft={publishDraft}
+      publishArmedId={publishArmedId}
+      publishError={publishError}
+      published={published}
       busy={busy}
     />
   );

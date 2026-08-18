@@ -148,6 +148,38 @@ const NOT_DECIDABLE = [...finding.OPEN_STATUSES];
  * posture: a gate that cannot be CHECKED is not a gate that has been PASSED, so
  * an unreadable settings row answers 503 rather than falling open.
  */
+// ⛔ THE STRICTER GATE, AND IT IS A DIFFERENT QUESTION FROM THE ONE ABOVE.
+//
+// OWNER-DIRECTED 2026-08-18, answering §2.51 and the "who takes an investor live" half beside it:
+// *"Who may publish a pricing rule; who may switch an investor from watching to live and after how
+// many clean weeks; and whether the built-in safety checks should block a release or only warn. All
+// in the super admin."*
+//
+// `requirePpeAdmin` asks `access.mayManagePeople`, whose default set is super_admin AND admin — and
+// which a buyer can WIDEN in settings. That is right for the console's ordinary write surface: saving
+// a draft, settling a finding, loading a rate sheet. It is NOT right for publishing a rule, because
+// that changes what a real borrower is quoted, and the owner named one role for it.
+//
+// So this reads `access.ADMIN_FLOOR_ROLE` — the one role that is a FLOOR and is added back whatever
+// the setting says — rather than the configurable list. A settings change cannot widen it, which is
+// the property that makes it an answer to the owner's sentence rather than a restatement of the gate
+// next door. Everything else about the two is identical, including failing CLOSED (503) when the
+// permission itself cannot be read: an unreadable permission is not permission.
+async function requirePpeSuperAdmin(req, res, next) {
+  try {
+    const role = req.actor && req.actor.role ? String(req.actor.role) : '';
+    if (role !== access.ADMIN_FLOOR_ROLE) {
+      return res.status(403).json({
+        error: 'Only a super admin can publish a pricing rule — publishing changes what a real borrower is quoted.',
+      });
+    }
+    return next();
+  } catch (e) {
+    console.error('[lt-ppe] super-admin gate failed:', (e && e.message) || e);
+    return res.status(503).json({ error: 'Could not check your permissions just now. Try again in a moment.' });
+  }
+}
+
 async function requirePpeAdmin(req, res, next) {
   try {
     const { settings } = await settingsStore.load();
@@ -1826,21 +1858,31 @@ async function listRulesRoute(req, res) {
 // authoring service and from the layer compilers, so the authoring half of them was reachable by
 // nothing. A caller that is not itself called is not a caller.
 //
-// ⛔ THE PUBLISH DOOR IS DELIBERATELY NOT HERE, AND ITS ABSENCE IS THE POINT.
+// ⛔ THE PUBLISH DOOR EXISTS NOW, AND WHAT FOLLOWS IS THE RECORD OF WHY IT DID NOT.
+// The owner answered the authority question on 2026-08-18 — "all in the super admin" — so
+// `POST /rule-drafts/:id/publish` is registered below behind `requirePpeSuperAdmin`, the ONE route on
+// this router that does not take the ordinary admin gate. The paragraph below is kept because it is
+// the reason the door was worth waiting for, and because it is the standard the NEXT price-changing
+// door should be held to.
+//
+// ⛔ IT WAS DELIBERATELY NOT HERE, AND ITS ABSENCE WAS THE POINT.
 // `rule-authoring-store.publishDraft` writes into `lt_ppe_rule`, which is the set
-// `rule-store.rulesForProgram` hands to the engine — so publishing CHANGES A PRICED NUMBER. Who is
-// allowed to do that is an owner decision that has not been made: the question is recorded as §2.51
-// in docs/longterm/LENDER-PRICE-PARITY-STATUS.md and is NOT answered here. Gating it behind
-// `requirePpeAdmin` because that is the gate on the neighbouring routes would BE the answer, chosen
-// by convenience, and would put a rule in front of real loans on that basis. So `publishDraft` stays
-// unreachable over HTTP until somebody with the authority to decide says which authority it takes.
+// `rule-store.rulesForProgram` hands to the engine — so publishing CHANGES A PRICED NUMBER. Who was
+// allowed to do that was an owner decision nobody had made: the question was recorded as §2.51 in
+// docs/longterm/LENDER-PRICE-PARITY-STATUS.md and was NOT answered here. Gating it behind
+// `requirePpeAdmin` because that was the gate on the neighbouring routes would have BEEN the answer,
+// chosen by convenience, and would have put a rule in front of real loans on that basis. So
+// `publishDraft` stayed unreachable over HTTP until the owner said which authority it takes — which
+// they did on 2026-08-18 ("all in the super admin"), and §2.57 records what was then built.
 //
-// EVERYTHING BELOW IS STRUCTURALLY INCAPABLE OF MOVING A PRICE. Drafts live in `lt_ppe_rule_draft`
-// (db/577) and nothing in the pricing path reads that table — not "careful not to", incapable. Each
-// response says so in its own payload (`live: false`) rather than leaving the screen to remember it.
+// EVERY OTHER DRAFT ROUTE BELOW IS STRUCTURALLY INCAPABLE OF MOVING A PRICE. Drafts live in
+// `lt_ppe_rule_draft` (db/577) and nothing in the pricing path reads that table — not "careful not
+// to", incapable. Each response says so in its own payload (`live: false`) rather than leaving the
+// screen to remember it; the publish route is the one that answers `live: true`, and it says that in
+// words as well as in a flag.
 //
-// ADMIN-GATED, like the rest of this console's write surface. That is a gate on WRITING A DRAFT, not
-// on publishing one, and the two must not be confused: see §2.51.
+// ADMIN-GATED, apart from that one route. That is a gate on WRITING A DRAFT, not on publishing one,
+// and the two must not be confused: see §2.51 and §2.57.
 
 /** The statuses db/577's CHECK allows, plus the 'all' the store understands. */
 const DRAFT_STATUSES = ['draft', 'published', 'discarded'];
@@ -1913,7 +1955,8 @@ async function getRuleDraftRoute(req, res) {
 //
 // The findings are never stored (see `renderDraft`): a stored warning is a statement about a rule set
 // that has since moved. `publishable` here means "nothing in the current set refuses it" and NOT
-// "there is a button" — there is no publish route, which the payload says rather than implies.
+// "you may press it" — the door exists now (§2.51, owner-answered 2026-08-18) but it is super-admin
+// only, and the payload SAYS both rather than leaving a screen to infer either.
 async function renderRuleDraftRoute(req, res) {
   const scope = readScope(req);
   const id = draftIdOf(req.params.id);
@@ -1925,9 +1968,11 @@ async function renderRuleDraftRoute(req, res) {
     live: false,
     liveNote: DRAFT_NOT_LIVE,
     // Said in the payload because `publishable: true` is the one field on this response somebody
-    // could read as "so press publish".
-    publishRoute: null,
-    publishNote: 'Whether this draft would be refused by the rules already in force is what `publishable` answers. It is not an offer: publishing a pricing rule has no door on this server, because who may do it has not been decided (§2.51).',
+    // could read as "so press publish". It answers whether the RULES would refuse it, which is a
+    // different question from whether THIS PERSON may publish it — so the authority is stated too.
+    publishRoute: 'POST /api/lt/ppe/rule-drafts/:id/publish',
+    publishAuthority: 'super_admin',
+    publishNote: 'Whether this draft would be refused by the rules already in force is what `publishable` answers. Publishing it is a separate, recorded act that only a super admin can do, because it changes what a real borrower is quoted.',
   });
 }
 
@@ -1985,6 +2030,63 @@ async function createRuleDraftRoute(req, res) {
 
 // DELETE /rule-drafts/:id — discard a draft. Nothing is deleted; the row is marked discarded and
 // kept, because "somebody drafted this and decided against it" is worth as much as the draft was.
+/**
+ * POST /rule-drafts/:id/publish — PUT A RULE IN FORCE.
+ *
+ * ⛔ THIS IS THE ONE DOOR ON THIS ROUTER THAT CHANGES WHAT A BORROWER IS QUOTED. `publishDraft` writes
+ * into `lt_ppe_rule`, the set `rule-store.rulesForProgram` hands the engine, so a rule published here
+ * prices the next loan. It was deliberately NOT built while the authority was an open question
+ * (§2.51); the owner answered it on 2026-08-18 — *"all in the super admin"* — and this is that answer,
+ * gated on `requirePpeSuperAdmin` rather than on the admin gate the neighbouring draft routes use.
+ *
+ * WHO PUBLISHED IT IS RECORDED FROM THE SESSION, NEVER FROM THE BODY. `publishDraft` refuses without a
+ * publisher and db/577's CHECK refuses the row as well, so a request cannot name somebody else — the
+ * name comes from `actorLabel(req)`, which is the signed-in person. A publisher a caller could type
+ * would make the audit trail a field rather than a fact.
+ *
+ * THE CHECKS RE-RUN INSIDE THE TRANSACTION, against the rule set as it is NOW rather than as it was
+ * when the draft was written — a draft can sit for a week while somebody else publishes onto the same
+ * cell. That is `publishDraft`'s own doing and is why this handler is thin: the rule about what may go
+ * live belongs with the write, not with the door.
+ */
+async function publishRuleDraftRoute(req, res) {
+  const scope = readScope(req);
+  const id = draftIdOf(req.params.id);
+  if (!id) return res.status(400).json({ error: 'That is not a draft id.' });
+
+  // WHO IS PUBLISHING COMES FROM THE SESSION, AND IS AWAITED. `actorLabel` reads the staff row, so it
+  // is a PROMISE — handing the promise straight to the store would fail its `typeof === 'string'` test
+  // and refuse EVERY publish as "nobody named", which is a refusal that looks exactly like a rule the
+  // publisher broke. Refusing here instead names the real reason: we could not tell who is signed in.
+  const publishedBy = await actorLabel(req.actor && req.actor.id);
+  if (!publishedBy) {
+    return res.status(409).json({
+      ok: false,
+      error: 'We could not tell who is publishing this. Sign in again and try once more.',
+      refusals: [{ code: 'publisher_unknown', message: 'The signed-in person could not be read, and a published rule has to record who decided it.' }],
+      warnings: [],
+    });
+  }
+
+  const out = await ruleDraftStore.publishDraft(db, scope, id, { publishedBy });
+  if (!out.ok) {
+    return res.status(409).json({
+      ok: false,
+      error: (out.refusals && out.refusals[0] && out.refusals[0].message) || 'That draft could not be published.',
+      refusals: out.refusals || [],
+      warnings: out.warnings || [],
+    });
+  }
+  // `live: true` is the mirror of the `live: false` every other draft response carries: a screen must
+  // never have to infer from the absence of a flag that a rule is now pricing loans.
+  return res.json({
+    ok: true, scope, draft: out.draft || null, ruleId: out.ruleId || null,
+    live: true,
+    liveNote: 'This rule is IN FORCE. It prices the next loan quoted against this program.',
+    warnings: out.warnings || [],
+  });
+}
+
 async function discardRuleDraftRoute(req, res) {
   const scope = readScope(req);
   const id = draftIdOf(req.params.id);
@@ -2954,13 +3056,15 @@ router.post('/suggestions/mine', requirePpeAdmin, wrap(mineSuggestionsRoute, 'lt
 router.get('/programs/:id/current-rate-sheet', wrap(currentRateSheetRoute, 'lt_ppe_current_rate_sheet_error'));
 router.get('/programs/:id/lp-scope', requirePpeAdmin, wrap(getProgramLpScopeRoute, 'lt_ppe_lp_scope_read_error'));
 
-// The rule-authoring service's READ + DRAFT doors. There is NO publish door here, on purpose —
-// `publishDraft` changes a priced number and the authority for that is an open owner question
-// (§2.51). Order matters: `/rule-drafts/:id/render` is declared before `/rule-drafts/:id` would
+// The rule-authoring service's READ, DRAFT and PUBLISH doors. The publish door was deliberately absent
+// while the authority was an open owner question (§2.51); the owner answered it on 2026-08-18 — "all in
+// the super admin" — so it exists now and is the ONE route here gated on `requirePpeSuperAdmin`, which
+// reads the role floor rather than the widenable admin list. Order matters: `/rule-drafts/:id/render` is declared before `/rule-drafts/:id` would
 // swallow it — Express matches in declaration order and both are three-and-four segment paths, so
 // they are written longest-first to keep that obvious rather than accidental.
 router.get('/rule-drafts', requirePpeAdmin, wrap(listRuleDraftsRoute, 'lt_ppe_rule_drafts_error'));
 router.post('/rule-drafts', requirePpeAdmin, wrap(createRuleDraftRoute, 'lt_ppe_rule_draft_save_error'));
+router.post('/rule-drafts/:id/publish', requirePpeSuperAdmin, wrap(publishRuleDraftRoute, 'lt_ppe_rule_draft_publish_error'));
 router.get('/rule-drafts/:id/render', requirePpeAdmin, wrap(renderRuleDraftRoute, 'lt_ppe_rule_draft_render_error'));
 router.get('/rule-drafts/:id', requirePpeAdmin, wrap(getRuleDraftRoute, 'lt_ppe_rule_draft_read_error'));
 router.delete('/rule-drafts/:id', requirePpeAdmin, wrap(discardRuleDraftRoute, 'lt_ppe_rule_draft_discard_error'));
@@ -2997,6 +3101,7 @@ module.exports.handlers = {
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
   ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
   listRuleDraftsRoute, getRuleDraftRoute, renderRuleDraftRoute, createRuleDraftRoute, discardRuleDraftRoute,
+  publishRuleDraftRoute,
   currentRateSheetRoute,
   listSchedulesRoute, saveScheduleRoute, deleteScheduleRoute, canaryTickRoute, canaryDriverRoute,
   createInvestorRoute, createProgramRoute, createRateSheetRoute, getRateSheetRoute,
@@ -3004,7 +3109,7 @@ module.exports.handlers = {
   publishRateSheetRoute,
 };
 module.exports._internals = {
-  requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe, actorLabel,
+  requirePpeAdmin, requirePpeSuperAdmin, intIn, readScope, loadProgram, resolveSettingsSafe, actorLabel,
   resolveRateSheetVersion, rateSheetPick,
   MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel, resolveBattery, runBattery, msgOf,
   resolveVersion, numOrNull, textOrNull, MAX_SHEET_ROWS, MAX_AGREEMENT_SCENARIOS, MAX_COVERAGE_SCENARIOS,

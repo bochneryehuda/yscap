@@ -76,7 +76,15 @@ const routeMod = require('../src/longterm/routes/ppe');
 // the handler is genuinely entered) and matches nothing (so no fixture is touched).
 const NOWHERE_UUID = '00000000-0000-4000-8000-0000000000ff';
 
-/** Every route the ROUTER itself publishes, with whether the admin gate is in ITS chain. */
+/**
+ * Every route the ROUTER itself publishes, with WHICH gate is in its chain.
+ *
+ * THERE ARE THREE CLASSES NOW, NOT TWO, and conflating any two of them is how this suite would go
+ * quiet on the door that matters most. `gated` = the ordinary admin gate. `superGated` = the publish
+ * door, which is SUPER-ADMIN only (§2.57) — an admin is refused there, so counting it as admin-gated
+ * would assert the opposite of the owner's answer, and counting it as UNGATED would report the one
+ * price-moving route on this router as an open write. Ungated is everything else.
+ */
 function publishedRoutes() {
   const out = [];
   for (const layer of routeMod.stack || []) {
@@ -84,11 +92,12 @@ function publishedRoutes() {
     const handles = layer.route.stack || [];
     // Identity, not a name and not a source regex: this is the very function the router will call.
     const gated = handles.some((h) => h.handle === routeMod._internals.requirePpeAdmin);
+    const superGated = handles.some((h) => h.handle === routeMod._internals.requirePpeSuperAdmin);
     for (const h of handles) {
       if (!h.method) continue;
       const method = h.method.toUpperCase();
       if (out.some((r) => r.method === method && r.path === layer.route.path)) continue;
-      out.push({ method, path: layer.route.path, gated });
+      out.push({ method, path: layer.route.path, gated, superGated });
     }
   }
   return out;
@@ -199,7 +208,7 @@ const fill = (p) => p.replace(/:[A-Za-z]+/g, (m) => (m === ':investor' ? 'lt-ppe
       ok(passed === gated.length,
         `B3 …and lets an administrator THROUGH to the handler on every one of them${stuck.length ? ` — stuck: ${stuck.join(', ')}` : ''}`);
 
-      const open = routes.filter((r) => !r.gated);
+      const open = routes.filter((r) => !r.gated && !r.superGated);
       const wronglyRefused = [];
       for (const r of open) {
         const res = await call(r.method, `/api/lt/ppe${fill(r.path)}`, loTok, r.method === 'GET' || r.method === 'DELETE' ? undefined : {});
@@ -212,11 +221,35 @@ const fill = (p) => p.replace(/:[A-Za-z]+/g, (m) => (m === ':investor' ? 'lt-ppe
       // added without the gate fails HERE, on the day it is added, rather than the day somebody
       // notices. The two exceptions are the ones the route's own header argues for at length.
       const ungatedWrites = routes
-        .filter((r) => r.method !== 'GET' && !r.gated)
+        .filter((r) => r.method !== 'GET' && !r.gated && !r.superGated)
         .map((r) => `${r.method} ${r.path}`)
         .filter((k) => !OPEN_WRITES.has(k));
       ok(ungatedWrites.length === 0,
-        `B5 every write route is admin-gated except the two the header names${ungatedWrites.length ? ` — ungated: ${ungatedWrites.join(', ')}` : ''}`);
+        `B5 every write route is gated except the two the header names${ungatedWrites.length ? ` — ungated: ${ungatedWrites.join(', ')}` : ''}`);
+
+      // ⛔ THE PUBLISH DOOR, WHICH IS THE ONE ROUTE ON THIS ROUTER THAT MOVES A PRICE (§2.57).
+      // The owner answered its authority on 2026-08-18 — "all in the super admin" — so it is asked
+      // the question the admin gate can never answer: does it turn an ADMINISTRATOR away? An
+      // administrator passes every other gate on this surface, which is exactly why publishing had
+      // to have a gate of its own rather than the nearest one.
+      const superRoutes = routes.filter((r) => r.superGated);
+      ok(superRoutes.length === 1 && superRoutes[0].method === 'POST'
+        && superRoutes[0].path === '/rule-drafts/:id/publish',
+      `B6 exactly ONE route carries the super-admin gate, and it is the publish door${
+        superRoutes.length !== 1 ? ` — found ${superRoutes.map((r) => `${r.method} ${r.path}`).join(', ') || 'none'}` : ''}`);
+
+      const SUPER_WORDS = /Only a super admin can publish a pricing rule/;
+      for (const tok of [['a loan officer', loTok], ['an ADMINISTRATOR', adminTok]]) {
+        const res = await call('POST', '/api/lt/ppe/rule-drafts/1/publish', tok[1], {});
+        ok(res.status === 403 && SUPER_WORDS.test((res.json && res.json.error) || ''),
+          `B7 the publish door refuses ${tok[0]}, with the gate's own words (got ${res.status})`);
+      }
+
+      // The gate must not be the ADMIN gate wearing another name: an admin is refused above, so this
+      // asserts the pair are genuinely two different functions and neither route inherited the other.
+      ok(routeMod._internals.requirePpeSuperAdmin !== routeMod._internals.requirePpeAdmin
+        && !superRoutes.some((r) => r.gated),
+      'B8 …and it is a DIFFERENT function from the admin gate, not stacked on top of it');
     }
 
     // ── 3) the error shape ──────────────────────────────────────────────────

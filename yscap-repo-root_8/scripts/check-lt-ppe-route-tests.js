@@ -61,10 +61,18 @@ const PROBE = path.join(HERE, 'lt-ppe-door-probe.js');
 // the doors — from the router itself, cross-checked against its own source
 // ---------------------------------------------------------------------------
 
-/** `router.<method>('<path>', [requirePpeAdmin,] wrap(<handler>, '<code>'))` — for the handler NAMES. */
+/**
+ * `router.<method>('<path>', [<gate>,] wrap(<handler>, '<code>'))` — for the handler NAMES.
+ *
+ * THE GATE IS MATCHED AS A NAME, NOT AS A LITERAL. It began as `requirePpeAdmin` alone and a second
+ * gate now exists (`requirePpeSuperAdmin`, the publish door), so a hard-coded name made this checker
+ * blind to exactly the newest and most dangerous door — it reported the route as "a shape I cannot
+ * read" rather than checking whether a test drives it. A checker that cannot see the door it most
+ * needs to guard is worse than none.
+ */
 function registrationsFromSource() {
   const src = fs.readFileSync(ROUTE_FILE, 'utf8');
-  const re = /router\.(get|post|put|patch|delete)\(\s*'([^']+)'\s*,\s*(requirePpeAdmin\s*,\s*)?wrap\(\s*([A-Za-z0-9_$]+)/g;
+  const re = /router\.(get|post|put|patch|delete)\(\s*'([^']+)'\s*,\s*([A-Za-z0-9_$]+\s*,\s*)?wrap\(\s*([A-Za-z0-9_$]+)/g;
   const out = new Map();
   let m;
   while ((m = re.exec(src))) {
@@ -173,7 +181,7 @@ function main() {
   if (unnamed.length) {
     console.log(`\n  ✗ ${unnamed.length} route(s) the router publishes are not registered in the shape this reads:`);
     for (const k of unnamed) console.log(`      ${k}`);
-    console.log('    Register them as `router.<method>(\'<path>\', [requirePpeAdmin,] wrap(<handler>, \'<code>\'))`,');
+    console.log('    Register them as `router.<method>(\'<path>\', [<gate>,] wrap(<handler>, \'<code>\'))`,');
     console.log('    or teach this checker the new shape. A door it cannot name is a door it cannot guard.');
     process.exit(1);
   }

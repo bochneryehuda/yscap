@@ -304,8 +304,18 @@ ok(/Publishing a pricing rule has no door on this server/.test(full),
     'R48 the board never uses a --ink* token as a text colour (they are LIGHT paper colours — white on white)');
   ok(!/\bwindow\.(alert|confirm|prompt)\s*\(/.test(stripped) && !/(^|[^.\w])(alert|confirm|prompt)\s*\(/.test(stripped),
     'R49 …and raises no browser dialog — refusals are shown inline beside the control that was refused');
-  ok(!/ppePublishRuleDraft|publishDraft/.test(stripped),
-    'R50 …and the screen has no publish call of any kind');
+  // ⛔ THE PUBLISH CONTROL — the one thing on this screen that changes what a borrower is quoted.
+  // This assertion used to say the screen had NO publish call at all, which was right while the
+  // authority was an open owner question and is wrong now that it is answered (§2.57). It asserts the
+  // ANSWER instead of the old absence, and it asserts the three properties that make the control safe.
+  ok(/ppePublishRuleDraft/.test(stripped),
+    'R50 the screen reaches the publish door — a rule can be put in force by a person, not only by a script');
+  ok(/publishArmedId/.test(stripped) && /Press again to publish it/.test(stripped),
+    'R50b …and it ARMS FIRST: the first press only states what the second one does');
+  ok(/String\(publishArmedId\) !== String\(d\.id\)/.test(stripped),
+    'R50c …armed per DRAFT, never a single boolean — arming one row must not arm the button on every other row');
+  ok(!/role\s*===\s*['"`]super_admin|isSuperAdmin/.test(stripped),
+    'R50d …and the button is never hidden by role: this screen cannot know the role, and the server\'s 403 names who may');
 }
 
 // ---------------------------------------------------------------------------

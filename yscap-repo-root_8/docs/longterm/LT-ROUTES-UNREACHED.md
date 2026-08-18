@@ -112,8 +112,15 @@ The rule surfaces came off in one pass: `GET /ppe/rules`, `GET /ppe/rules/covera
 now reached by the rule board (`app-v2/src/longterm/RuleBoard.jsx`), which also opens the READ and
 DRAFT doors of the rule-authoring service — a service that until then had no HTTP door at all.
 
-**The publish door was deliberately NOT built and is not recorded here, because it does not exist.**
-`rule-authoring-store.publishDraft` writes a rule that changes a priced number, and who may do that is
-an open owner question (§2.51 in `LENDER-PRICE-PARITY-STATUS.md`). Building the route behind the
-nearest available gate would have answered that question by convenience. This ledger records routes
-with no caller; a function with no route belongs in the status document, where the question is.
+**The publish door exists now, and it is not recorded here because a screen reaches it.**
+`rule-authoring-store.publishDraft` writes a rule that changes a priced number, so the route waited for
+an owner decision rather than being gated by whatever was nearest — building it behind the ordinary
+admin gate would have answered the question by convenience. The owner answered it on 2026-08-18
+(*"all in the super admin"*), so `POST /ppe/rule-drafts/:id/publish` is registered behind
+`requirePpeSuperAdmin` — the ONE route on that router that does not take the ordinary admin gate — and
+the rule board's own **Publish it** button (two-step, `ltApi.ppePublishRuleDraft`) is its caller. §2.51
+in `LENDER-PRICE-PARITY-STATUS.md` carries the whole record.
+
+**The button is deliberately NOT hidden from a non-super-admin.** The screen cannot know the role, and
+a control that silently vanishes teaches nobody why; the server's 403 names who may publish, which is
+the only version of that answer a person can act on.

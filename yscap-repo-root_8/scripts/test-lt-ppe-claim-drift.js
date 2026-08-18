@@ -215,23 +215,40 @@ const routeSrc = read(ROUTE);
 }
 
 // ---------------------------------------------------------------------------
-// G. THE ADMIN GATE IS ON EVERY WRITE EXCEPT THE TWO PRICING DOORS — stated as a RULE, never a count.
+// G. EVERY WRITE CARRIES A GATE EXCEPT THE TWO PRICING DOORS — stated as a RULE, never a count.
 //
 // The header said the gate was on "the two deliberate operator actions … and those are the two gated
 // routes". True when there were two; there are now twenty-three. A count in prose is a hand-kept list.
+//
+// ⛔ THERE ARE TWO GATES NOW, AND THE STRICTER ONE MUST NOT READ AS "UNGATED". The publish door takes
+// `requirePpeSuperAdmin` INSTEAD OF the admin gate (§2.57 — an admin is refused there), so a test that
+// only ever looked for `requirePpeAdmin` reported the single most dangerous route on this router as an
+// open write. It is named EXPLICITLY rather than admitted by a loose "any gate will do" pattern: a
+// write that arrives carrying some other middleware still has to be argued for here.
 // ---------------------------------------------------------------------------
 {
   const UNGATED_WRITES = new Set(['/quote', '/breakdown']);
+  // path → the gate it must carry, when that is not the ordinary admin gate.
+  const SUPER_GATED = new Map([['/rule-drafts/:id/publish', 'requirePpeSuperAdmin']]);
   const regs = routeSrc.match(/^router\.(post|put|delete)\([^\n]*$/gm) || [];
   ok(regs.length > 10, 'G: control — the router registers a real number of write routes');
   const leaks = [];
   for (const line of regs) {
     const p = (line.match(/^router\.(?:post|put|delete)\((['"])([^'"]+)\1/) || [])[2];
     if (UNGATED_WRITES.has(p)) continue;
-    if (!/requirePpeAdmin/.test(line)) leaks.push(p);
+    const want = SUPER_GATED.get(p) || 'requirePpeAdmin';
+    if (!new RegExp(`\\b${want}\\b`).test(line)) leaks.push(`${p} (wants ${want})`);
   }
   eq(leaks.length, 0,
-    `G: every write except ${[...UNGATED_WRITES].join(' / ')} carries requirePpeAdmin (ungated: ${leaks.join(', ') || 'none'})`);
+    `G: every write except ${[...UNGATED_WRITES].join(' / ')} carries its gate (wrong or missing: ${leaks.join(', ') || 'none'})`);
+
+  // And the publish door must NOT also carry the admin gate: stacking them would make an ordinary
+  // admin's refusal come from the wrong sentence, and would hide a later removal of the super gate.
+  for (const [p, gate] of SUPER_GATED) {
+    const line = regs.find((l) => l.includes(`'${p}'`)) || '';
+    ok(line && new RegExp(`\\b${gate}\\b`).test(line) && !/requirePpeAdmin/.test(line),
+      `G: ${p} carries ${gate} and NOT the admin gate — publishing is not an administrator's act`);
+  }
 
   const flat = routeSrc.replace(/^\s*(\/\/|\*)\s?/gm, '').replace(/\s+/g, ' ');
   ok(!/those are the two gated routes/i.test(flat),

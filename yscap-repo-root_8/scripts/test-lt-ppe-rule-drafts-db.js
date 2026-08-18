@@ -20,10 +20,16 @@
  * proves the request was accepted and nothing about what is stored — this workstream has already been
  * bitten by exactly that (a program's Lender Price scope re-read from its own write).
  *
- * ⛔ AND IT ASSERTS THE ABSENCE. There is NO publish route, on purpose: publishing a draft changes what
- * a real loan is priced at, and who may do that is an open owner question (§2.51). That is asserted two
- * ways — no path on the router mentions publishing a draft, and after a full draft round trip
- * `lt_ppe_rule` still holds nothing under the draft's code.
+ * ⛔ AND IT PROVES THE PUBLISH DOOR IS SUPER-ADMIN ONLY. Publishing a draft changes what a real loan is
+ * priced at. Who may do that was an open owner question (§2.51) until 2026-08-18 — *"all in the super
+ * admin"* — so the door exists now and section E proves the ANSWER rather than the old absence: an
+ * ADMIN is refused and `lt_ppe_rule` still holds nothing, a SUPER ADMIN succeeds and the rule is
+ * genuinely in the table, the publisher recorded is the super admin's own name taken from the session,
+ * and a second publish of the same draft is refused rather than quietly doing it twice.
+ *
+ * THREE STAFF, NOT TWO, AND THAT IS THE POINT. A gate that only ever sees one authorised role proves
+ * nothing about who it turns away, so every publish assertion is made twice — once as the role that
+ * may not, once as the role that may.
  *
  * ⛔ `POST /ppe/suggestions/mine` IS NEVER ACTUALLY RUN HERE. With a search key it polls Lender Price,
  * which is a live vendor call that costs money. Its GATE and its refusal-without-a-key are proven; its
@@ -91,7 +97,10 @@ async function section(name, fn) {
   const stamp = `RD${process.pid}${Date.now() % 100000}`;
   const INV_CODE = `ZZ${stamp}`.slice(0, 20);
   const CODE = `llpa_${stamp}`.toLowerCase().slice(0, 60);
-  const emails = [`${stamp}.admin@example.test`, `${stamp}.lo@example.test`];
+  // A SECOND code for the publish section. Section D discards the first draft, and a discarded draft
+  // can never be published — so proving the door needs a draft of its own, on its own cell.
+  const CODE2 = `llpb_${stamp}`.toLowerCase().slice(0, 60);
+  const emails = [`${stamp}.admin@example.test`, `${stamp}.lo@example.test`, `${stamp}.super@example.test`];
 
   let investorId = null;
   let programId = null;
@@ -113,12 +122,15 @@ async function section(name, fn) {
 
     const { rows: made } = await db.query(
       `INSERT INTO staff_users (email, full_name, role, is_active)
-            VALUES ($1, 'Rule Admin', 'admin', true), ($2, 'Rule Officer', 'loan_officer', true)
+            VALUES ($1, 'Rule Admin', 'admin', true), ($2, 'Rule Officer', 'loan_officer', true),
+                   ($3, 'Rule Super', 'super_admin', true)
          RETURNING id, email, role`, emails);
     const admin = made.find((r) => r.role === 'admin');
     const officer = made.find((r) => r.role === 'loan_officer');
+    const superAdmin = made.find((r) => r.role === 'super_admin');
     const adminTok = await auth.mintStaffSession(admin.id);
     const loTok = await auth.mintStaffSession(officer.id);
+    const superTok = await auth.mintStaffSession(superAdmin.id);
 
     const inv = await store.createInvestor(ltDb, SCOPE, { code: INV_CODE, name: `Rule board ${stamp}` });
     investorId = inv.id;
@@ -285,9 +297,10 @@ async function section(name, fn) {
         'C20 …and names the cell it covers, half-open as the engine reads it');
       ok(rendered.json.render.live === false && /draft/i.test(rendered.json.render.liveNote || ''),
         'C21 …and the render itself carries "this is a draft"');
-      ok(rendered.json.publishable === true && rendered.json.publishRoute === null
-        && /no door/i.test(rendered.json.publishNote || ''),
-      'C22 THE ONE THAT MATTERS: "publishable" is answered AND the payload says there is no publish door');
+      ok(rendered.json.publishable === true
+        && rendered.json.publishRoute === 'POST /api/lt/ppe/rule-drafts/:id/publish'
+        && rendered.json.publishAuthority === 'super_admin' && /super admin/i.test(rendered.json.publishNote || ''),
+      'C22 THE ONE THAT MATTERS: "publishable" is answered AND the payload names the door and who may use it');
       const rendLo = await call('GET', `/api/lt/ppe/rule-drafts/${draftId}/render`, loTok);
       ok(rendLo.status === 403, 'C23 …refused to a loan officer');
 
@@ -299,7 +312,7 @@ async function section(name, fn) {
     // =====================================================================
     // D. discarding — and the fact that nothing here published anything
     // =====================================================================
-    await section('D. discarding a draft, and the publish door that is not there', async () => {
+    await section('D. discarding a draft', async () => {
       const delLo = await call('DELETE', `/api/lt/ppe/rule-drafts/${draftId}`, loTok);
       ok(delLo.status === 403, 'D1 DELETE /ppe/rule-drafts/:id is refused to a loan officer');
 
@@ -328,22 +341,89 @@ async function section(name, fn) {
       ok(badId.status === 400,
         'D9 an unreadable investor id is REFUSED, never coerced to null — null means "the house drafts", a different question');
 
-      // THE ABSENCE, asserted two ways.
+      // A DISCARDED DRAFT PUBLISHED NOTHING. Section E proves what publishing DOES; this proves that
+      // walking a draft all the way to the bin never touched the live table on the way.
       const live = await ltDb.query('SELECT id FROM lt_ppe_rule WHERE scope = $1 AND code = $2', [SCOPE, CODE]);
       ok(live.rows.length === 0,
-        'D10 THE ONE THAT MATTERS: after a whole draft round trip, lt_ppe_rule holds NOTHING under that code — no route published it');
+        'D10 THE ONE THAT MATTERS: after a whole draft round trip ending in a discard, lt_ppe_rule holds NOTHING under that code');
 
-      const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'routes', 'ppe.js'), 'utf8');
-      const registered = [...src.matchAll(/^router\.(get|post|put|delete|patch)\('([^']+)'/gm)].map((m) => `${m[1].toUpperCase()} ${m[2]}`);
-      const publishers = registered.filter((r) => /rule-draft/.test(r) && /publish/.test(r));
-      ok(publishers.length === 0,
-        `D11 …and no route on this router publishes a draft at all${publishers.length ? ` (found ${publishers.join(', ')})` : ''}`);
-      // Comment-STRIPPED, because the code that deliberately does not build the publish door has to
-      // NAME it to explain itself — a guard that read comments would fail on its own explanation and
-      // would then be "fixed" by deleting the reason.
-      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-      ok(!/publishDraft/.test(code),
-        'D12 …because the route file never calls publishDraft — the authority for that is an open owner question (§2.51)');
+      const gonePub = await call('POST', `/api/lt/ppe/rule-drafts/${draftId}/publish`, superTok, {});
+      ok(gonePub.status === 409 && /discarded/i.test(JSON.stringify(gonePub.json)),
+        'D11 …and a discarded draft cannot be published even by a super admin — the refusal SAYS it was discarded');
+      const stillNothing = await ltDb.query('SELECT id FROM lt_ppe_rule WHERE scope = $1 AND code = $2', [SCOPE, CODE]);
+      ok(stillNothing.rows.length === 0, 'D12 …and that refusal wrote nothing');
+    });
+
+    // =====================================================================
+    // E. THE PUBLISH DOOR — the owner's answer, over real HTTP
+    // =====================================================================
+    //
+    // ⛔ EVERY ASSERTION HERE IS MADE TWICE, once as the role that may not publish and once as the role
+    // that may. A gate tested only by the person it lets through is not tested.
+    await section('E. publishing a rule is a super admin\'s act, and only a super admin\'s', async () => {
+      const intent2 = {
+        op: 'add_llpa',
+        code: CODE2,
+        adjMilli: 375,
+        dimension: 'fico',
+        reason: 'FICO 660–679',
+        when: { fact: 'fico', op: 'between', value: [660, 680] },
+      };
+      const saved = await call('POST', '/api/lt/ppe/rule-drafts', adminTok, { intent: intent2, investorId, programId });
+      ok(saved.status === 201 && saved.json.draft && saved.json.draft.id, 'E1 an administrator can still AUTHOR the draft');
+      const pubId = saved.json.draft && saved.json.draft.id;
+
+      const byLo = await call('POST', `/api/lt/ppe/rule-drafts/${pubId}/publish`, loTok, {});
+      ok(byLo.status === 403, 'E2 a loan officer cannot publish it');
+
+      const byAdmin = await call('POST', `/api/lt/ppe/rule-drafts/${pubId}/publish`, adminTok, {});
+      ok(byAdmin.status === 403 && /super admin/i.test(byAdmin.json.error || ''),
+        'E3 THE ONE THAT MATTERS: an ADMINISTRATOR cannot publish it either, and is told why');
+      const afterAdmin = await ltDb.query('SELECT id FROM lt_ppe_rule WHERE scope = $1 AND code = $2', [SCOPE, CODE2]);
+      ok(afterAdmin.rows.length === 0,
+        'E4 …and the refusal wrote NOTHING — the live rule table still holds nothing under that code');
+
+      const byNobody = await call('POST', `/api/lt/ppe/rule-drafts/${pubId}/publish`, null, {});
+      ok(byNobody.status === 401 || byNobody.status === 403, 'E5 …and a caller with no session is refused as well');
+
+      const bySuper = await call('POST', `/api/lt/ppe/rule-drafts/${pubId}/publish`, superTok, {});
+      ok(bySuper.status === 200 && bySuper.json.ok === true, 'E6 a SUPER ADMIN publishes it');
+      ok(bySuper.json.live === true && /in force/i.test(bySuper.json.liveNote || ''),
+        'E7 …and the answer SAYS the rule is in force rather than leaving the screen to infer it from a missing flag');
+      ok(Number.isFinite(Number(bySuper.json.ruleId)),
+        'E8 …and it names the live rule it created, so a screen can link straight to it');
+
+      // THE RE-READ, straight from the table the ENGINE reads. Everything above came out of the
+      // write's own answer; this is the only thing that proves the rule is actually pricing.
+      const liveRow = await ltDb.query(
+        'SELECT id, code, kind, active, adjustment, created_by FROM lt_ppe_rule WHERE scope = $1 AND code = $2', [SCOPE, CODE2]);
+      ok(liveRow.rows.length === 1, 'E9 THE RE-READ: lt_ppe_rule now genuinely holds exactly one row under that code');
+      ok(liveRow.rows[0] && liveRow.rows[0].active === true && liveRow.rows[0].kind === 'pricing',
+        'E10 …live and of the kind that prices');
+      ok(liveRow.rows[0] && String(liveRow.rows[0].id) === String(bySuper.json.ruleId),
+        'E11 …and it is the very rule the answer named');
+      ok(liveRow.rows[0] && liveRow.rows[0].created_by === 'Rule Super',
+        'E12 …recorded against the SUPER ADMIN who was signed in, taken from the session and never from the body');
+
+      const draftAfter = await call('GET', `/api/lt/ppe/rule-drafts/${pubId}`, adminTok);
+      ok(draftAfter.status === 200 && draftAfter.json.draft && draftAfter.json.draft.status === 'published',
+        'E13 the draft itself reads as published');
+      ok(draftAfter.json.draft && draftAfter.json.draft.publishedBy === 'Rule Super'
+        && String(draftAfter.json.draft.publishedRuleId) === String(bySuper.json.ruleId),
+      'E14 …naming who published it and which live rule it became');
+
+      const twice = await call('POST', `/api/lt/ppe/rule-drafts/${pubId}/publish`, superTok, {});
+      ok(twice.status === 409 && /already published/i.test(JSON.stringify(twice.json)),
+        'E15 publishing the same draft again is REFUSED rather than quietly doing it twice');
+      const stillOne = await ltDb.query('SELECT id FROM lt_ppe_rule WHERE scope = $1 AND code = $2', [SCOPE, CODE2]);
+      ok(stillOne.rows.length === 1, 'E16 …and there is still exactly one live rule, not two');
+
+      // A published rule joins the set the pricing path reads. Asked through the ROUTE, not the store,
+      // because the whole point of the door is that what a person can reach and what prices a loan are
+      // the same set.
+      const rules = await call('GET', '/api/lt/ppe/rules', adminTok);
+      ok(rules.status === 200 && (rules.json.rules || []).some((r) => r.code === CODE2),
+        'E17 THE ONE THAT MATTERS MOST: the published rule is in the live rule set the engine prices from');
     });
 
   } catch (e) {

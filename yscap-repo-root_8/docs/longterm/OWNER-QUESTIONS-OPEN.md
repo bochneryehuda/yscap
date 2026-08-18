@@ -186,6 +186,11 @@ Owner's words:
 **What this settles:** publishing a pricing rule, and switching an investor from watching to live, are
 super-admin actions. Not a pricing admin, not an ordinary admin.
 
+**Built the same day.** The publish button now exists on the rule board and only a super admin can use
+it — an ordinary administrator pressing it is turned back with a plain reason, and nothing is written.
+It asks twice before it publishes, because publishing changes what the next borrower is quoted, and it
+records who pressed it.
+
 **What it does not settle, and stays open above:** how many clean weeks an investor needs first (3a),
 and whether the three safety checks should block or only warn (3b). Those are about the RULE, not
 about who presses the button.

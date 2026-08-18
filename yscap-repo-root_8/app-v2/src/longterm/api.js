@@ -283,10 +283,12 @@ export const ltApi = {
   // These are the READ and DRAFT doors. A draft lives in its own table that nothing in the pricing
   // path reads, so none of these can move a priced number.
   //
-  // There is deliberately NO `ppePublishRuleDraft`, and its absence is not an oversight: publishing a
-  // rule DOES change what a loan is priced at, and who is allowed to do that is an open owner
-  // question (§2.51 in docs/longterm/LENDER-PRICE-PARITY-STATUS.md). A method here would need a route,
-  // and building the route behind the nearest available gate would answer the question by accident.
+  // `ppePublishRuleDraft` IS THE ONE THAT MOVES A PRICE, and it is the only method on this client that
+  // does. It waited for an owner decision rather than being gated by whatever was nearest: who may
+  // publish was an open question (§2.51) until 2026-08-18 — *"all in the super admin"* — and the
+  // server enforces exactly that. The screen deliberately does NOT hide the button from a non-super
+  // admin: it cannot know the role, and a control that vanishes teaches nobody why. The server's
+  // refusal names the reason, which is the answer a person can act on.
   ppeRuleDrafts(params = {}) {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
@@ -298,6 +300,7 @@ export const ltApi = {
   ppeRuleDraft: (id) => ltGet(lt(`/ppe/rule-drafts/${encodeURIComponent(id)}`)),
   ppeRenderRuleDraft: (id) => ltGet(lt(`/ppe/rule-drafts/${encodeURIComponent(id)}/render`)),
   ppeSaveRuleDraft: (body) => ltPost(lt('/ppe/rule-drafts'), body),
+  ppePublishRuleDraft: (id) => ltPost(lt(`/ppe/rule-drafts/${encodeURIComponent(id)}/publish`), {}),
   ppeDiscardRuleDraft(id, params = {}) {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {

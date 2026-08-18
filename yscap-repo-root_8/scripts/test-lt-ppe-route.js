@@ -176,7 +176,10 @@ ok(typeof route === 'function' && typeof route.use === 'function', 'the module I
 // margin could only be changed by editing the database by hand.
 // 45 adds currentRateSheetRoute — "which published version prices this program right now", the read
 // behind the pricing screen's chooser and the first caller in src/ of the in-effect predicate.
-ok(Object.keys(H).length === 45, `all 45 handlers are exported for testing (${Object.keys(H).length})`);
+// 46 with the PUBLISH door — the one route on this router that changes what a borrower is quoted. It
+// was deliberately absent while the authority was an open question; the owner answered it on
+// 2026-08-18 ("all in the super admin") and the guard below is now about its GATE, not its absence.
+ok(Object.keys(H).length === 46, `all 46 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
 for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',
@@ -188,26 +191,53 @@ for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSug
   'setBasePricesRoute', 'setAdjustmentsRoute', 'setPriceLimitRoute', 'agreementRoute',
   'rateSheetCoverageRoute', 'rateSheetDiffRoute', 'runAgreementRoute', 'publishRateSheetRoute',
   'listRuleDraftsRoute', 'createRuleDraftRoute', 'getRuleDraftRoute', 'renderRuleDraftRoute',
-  'discardRuleDraftRoute',
+  'discardRuleDraftRoute', 'publishRuleDraftRoute',
   'saveSettingsRoute', 'clearSettingsRoute', 'settingsAuditRoute',
   'currentRateSheetRoute']) {
   ok(typeof H[name] === 'function', `the ${name} handler is exported by name`);
 }
 
-// ⛔ AND THE ABSENCE, asserted rather than assumed. A draft becomes a rule that prices real loans
-// through `rule-authoring-store.publishDraft`, and WHO may do that is an owner question nobody has
-// answered (§2.51 in docs/longterm/LENDER-PRICE-PARITY-STATUS.md). Wiring it to `requirePpeAdmin`
-// because that is the gate next door would answer the question by convenience, so this guard goes red
-// the moment a publish handler appears — the count above cannot catch it on its own, because adding
-// one while removing another leaves the count intact.
+// ⛔ AND ITS GATE, asserted rather than assumed. A draft becomes a rule that prices real loans through
+// `rule-authoring-store.publishDraft`. This guard used to assert the door did NOT EXIST, because who
+// may publish was an open owner question and wiring it to `requirePpeAdmin` — the gate on every
+// neighbouring route — would have answered that question by convenience. The owner answered it on
+// 2026-08-18: *"all in the super admin."* So the guard asserts the ANSWER, which is strictly stronger
+// than asserting the absence was: the door exists, exactly one of them does, and it is the ONLY route
+// on this router that does not take the ordinary admin gate.
+//
+// WHY THAT DISTINCTION IS LOAD-BEARING RATHER THAN PEDANTIC: `requirePpeAdmin` asks
+// `access.mayManagePeople`, whose role list a buyer can WIDEN in settings. `requirePpeSuperAdmin`
+// reads `access.ADMIN_FLOOR_ROLE`, which is a floor and is added back whatever the setting says. If
+// publish were quietly moved onto the admin gate, a settings change would become a way to grant the
+// authority to change a borrower's price — and the handler count above could never see it.
 {
   const publishers = Object.keys(H).filter((k) => /RuleDraft/.test(k) && /publish/i.test(k));
-  ok(publishers.length === 0,
-    `no handler publishes a rule draft — that authority is an open owner question${publishers.length ? ` (found ${publishers.join(', ')})` : ''}`);
-  const src = require('fs').readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'routes', 'ppe.js'), 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-  ok(!/publishDraft/.test(src),
-    '…and the route file never calls publishDraft at all (comment-stripped, so the reason it is absent may still be written down)');
+  ok(publishers.length === 1 && publishers[0] === 'publishRuleDraftRoute',
+    `exactly ONE handler publishes a rule draft (${publishers.join(', ') || 'none'})`);
+
+  const raw = require('fs').readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'routes', 'ppe.js'), 'utf8');
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  ok(/publishDraft/.test(src), '…and the route file does call publishDraft — the door is real, not a stub');
+
+  // The REGISTRATION, read out of the source: the count and the name say nothing about which gate the
+  // route was mounted behind, and the gate is the whole of the owner's answer.
+  const reg = src.match(/router\.post\(\s*'\/rule-drafts\/:id\/publish'\s*,\s*(\w+)/);
+  ok(!!reg, 'the publish route is registered at POST /rule-drafts/:id/publish');
+  if (reg) ok(reg[1] === 'requirePpeSuperAdmin',
+    `…behind requirePpeSuperAdmin, never the ordinary admin gate (found ${reg[1]})`);
+
+  // …and that gate must genuinely read the role FLOOR rather than the widenable admin list, or the
+  // name above would be the only thing that changed.
+  const gate = raw.match(/async function requirePpeSuperAdmin[\s\S]*?\n}/);
+  ok(!!gate && /ADMIN_FLOOR_ROLE/.test(gate[0]) && !/mayManagePeople/.test(gate[0]),
+    'the super-admin gate reads the role FLOOR, not the list a settings change can widen');
+
+  // NOTHING ELSE may take that gate by accident: it exists for the one door that moves a price.
+  // Counted on the REGISTRATIONS, not on every mention: the gate is also defined and exported, and a
+  // mention count would move for reasons that have nothing to do with which routes take it.
+  const superGated = [...src.matchAll(/router\.\w+\([^)]*requirePpeSuperAdmin/g)];
+  ok(superGated.length === 1,
+    `exactly ONE route takes the super-admin gate — it exists for the one door that moves a price (${superGated.length})`);
 }
 
 // It must actually be MOUNTED, or the whole surface is unreachable — the exact

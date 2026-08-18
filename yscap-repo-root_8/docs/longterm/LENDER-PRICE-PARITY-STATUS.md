@@ -30,7 +30,7 @@ actually blocked?" should be answerable in one place.
 | #69 | **Five "advanced" rules we deliberately left flagged rather than guessed** (vacant, foreign national, rural, first-time homebuyer, renovation). | Turning those five into real declines instead of warnings. | §0 (the flagged list) |
 | #57 | **Prepayment penalty: which types and terms does each investor allow, and how is each priced?** | The per-investor prepay library beyond Deephaven. | D30 |
 | #51 | **The loan officer margin and commission rules** (front/back split, per-loan minimum and maximum, who pays). | The whole compensation layer. | D18 |
-| — | **Is being a PPE administrator the right authority to PUBLISH a pricing rule, or does that need its own sign-off?** Publishing changes what a real loan is priced at. | The publish button. Drafting, reading and checking a rule already work; nothing can put one in force. | §2.51 |
+| ✅ ANSWERED AND BUILT | **Is being a PPE administrator the right authority to PUBLISH a pricing rule, or does that need its own sign-off?** Owner, 2026-08-18: *"all in the super admin"*. | Nothing — the publish door is built, super-admin gated, and the rule board has the button. | §2.51, §2.57 |
 | — | **Who may switch OFF a rule that is already pricing loans, and does that retire it or effective-date it?** | Editing a live rule's name at all — today that publishes a second rule and is refused as a double charge. | §2.42, §2.51 |
 
 **Two more that need a CAPTURE rather than a decision** — nobody has to answer these, someone has to
@@ -3426,3 +3426,75 @@ altogether (2).
 has saved, and still cannot reach Lender Price from an environment with no login in its settings. The
 job existing is the half that was missing — a saved cadence that nothing fires was §2.49's whole
 finding — not a claim that comparisons are now happening.
+
+---
+
+**§2.57 — THE PUBLISH DOOR, WHICH §2.51 DELIBERATELY LEFT UNBUILT (2026-08-18).**
+
+§2.51 built every rule surface a person needs EXCEPT the one that puts a rule in force, and said why in
+the code itself: `rule-authoring-store.publishDraft` writes into `lt_ppe_rule`, which is the set
+`rule-store.rulesForProgram` hands to the engine, so publishing **changes what a real borrower is
+quoted**. Gating it behind `requirePpeAdmin` because that is the gate on the neighbouring routes would
+have ANSWERED the authority question by convenience. So the function stayed unreachable over HTTP and
+the question went to the owner.
+
+**The owner answered it on 2026-08-18, in their own words: *"Who may publish a pricing rule; who may
+switch an investor from watching to live and after how many clean weeks; and whether the built-in
+safety checks should block a release or only warn. All in the super admin."*** This is that answer.
+
+**WHAT WAS BUILT**
+
+- **`requirePpeSuperAdmin`** in `src/longterm/routes/ppe.js` — the ONE route on that router that does
+  not take the ordinary admin gate. It reads **`access.ADMIN_FLOOR_ROLE`**, never `mayManagePeople`:
+  that list is WIDENABLE from settings, so gating on it would mean a settings change could quietly hand
+  the publish button to an ordinary admin. The floor role cannot be widened by configuration. It fails
+  CLOSED — an unreadable permission answers 503, because an unreadable permission is not permission.
+- **`POST /rule-drafts/:id/publish`**, declared BEFORE `/rule-drafts/:id/render` so the more specific
+  path is matched first. Thin on purpose: the rule about what may go live belongs with the write, and
+  `publishDraft` re-runs the whole authoring check INSIDE the transaction against the rule set as it
+  stands NOW — a draft can sit for a week while somebody else publishes onto the same cell.
+- **WHO PUBLISHED IT COMES FROM THE SESSION.** `actorLabel(req.actor.id)` reads the staff row; the
+  request body cannot name somebody else. A publisher a caller could type would make the audit trail a
+  field rather than a fact, and db/577's own CHECK refuses a published row with nobody named.
+- **The answer says `live: true`** and states in words that the rule is in force — the mirror of the
+  `live: false` every other draft response carries. A screen must never have to infer from a missing
+  flag that a rule started pricing loans.
+- **The rule board has the button** (`ltApi.ppePublishRuleDraft` → **Publish it**), and it ARMS FIRST:
+  the first press only states what the second one does, per draft. It is **never hidden by role** — the
+  screen cannot know the role, and a control that silently vanishes teaches nobody why; the server's
+  403 names who may publish, which is the answer a person can act on.
+
+**TWO STATEMENTS IN LIVE CODE WERE MEASURABLY FALSE THE MOMENT THE DOOR OPENED, AND BOTH WERE FIXED IN
+THE SAME PASS** (the §2.50 defect class). `GET /rule-drafts/:id/render` was answering
+`publishRoute: null` with a note reading *"publishing a pricing rule has no door on this server"*; it
+now names the route AND the authority (`publishAuthority: 'super_admin'`), because `publishable: true`
+answers whether the RULES would refuse the draft, which is a different question from whether THIS
+PERSON may publish it. `LT-ROUTES-UNREACHED.md`'s closing paragraph said the same thing and was
+rewritten.
+
+**HOW IT IS PROVED.** `scripts/test-lt-ppe-rule-drafts-db.js` section E, over real HTTP against a real
+Postgres, with a THIRD staff row (`super_admin`) seeded beside the admin and the loan officer — because
+a gate tested only by the person it lets through is not tested. A loan officer is refused; **an
+ADMINISTRATOR is refused and told why, and `lt_ppe_rule` still holds nothing**; a caller with no session
+is refused; a super admin succeeds; the live table is then RE-READ and genuinely holds exactly one
+active pricing rule under that code, carrying the super admin's own name from the session; the draft
+reads as published and names the rule it became; a second publish is refused rather than quietly doing
+it twice; and the published rule is asked for THROUGH `GET /ppe/rules` — the set the engine prices from
+— because the whole point of the door is that what a person can reach and what prices a loan are the
+same set. `scripts/test-lt-ppe-route.js` was rewritten from an ABSENCE guard into a GATE guard: exactly
+one publisher route, matched to `requirePpeSuperAdmin`, reading the floor role and not the widenable
+list.
+
+**MUTATION-PROVEN, three ways.** Widening the gate to admin killed 8 assertions; taking the publisher
+from the request body killed E12/E14; swallowing the store's refusal killed D11/E15. Full suite
+afterwards: LT PPE 129/129 with 26 DB-backed suites against a real Postgres, and all six gates plus
+`check-lt-ppe-route-tests` green — the last of which had to be taught the new shape, because it matched
+the gate name as a LITERAL (`requirePpeAdmin`) and was therefore blind to exactly the newest and most
+dangerous door on the router.
+
+**WHAT THIS DOES NOT ANSWER, and it is named rather than assumed.** The owner's sentence also covered
+switching an investor from watching to live and whether the three advisory checks should block — but
+**how many clean weeks** an investor needs first (question 3a) and **whether those checks bite** (3b)
+are about the RULE, not about who presses the button, and both are still open on
+`docs/longterm/OWNER-QUESTIONS-OPEN.md`. Nothing here retires a live rule either: that is §2.42's open
+question and publishing a renamed rule is still refused as a double charge.
