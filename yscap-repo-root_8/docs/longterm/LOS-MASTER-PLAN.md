@@ -579,6 +579,42 @@ the difference between two underwriting answers. A link that resolves to nothing
 than guessing — the commonest reason is honest: a debt secured on the SUBJECT, whose REO row this
 mirror deliberately does not keep.
 
+**A FILE YOU MAY NOT SEE ANSWERS EXACTLY AS A FILE THAT DOES NOT EXIST (2026-08-18).** Not a polite
+403 — the same 404, the same words, byte for byte. A different answer for a real file turns the
+loan-id space into an oracle: anybody with a scoped session could walk it to learn what is in a book
+they may not see, without ever opening a file. The rule therefore is not "return 404" but "the two
+answers are indistinguishable", and that is what the test asserts, because a suite that checks the
+status code alone would pass a 404 whose *body* named the loan. The same reasoning is why the
+reassignment door is admin-only rather than merely tidy: the pipeline scope matches
+`override_staff_id`, so writing one HANDS SOMEBODY A FILE. That is now proven as the sequence it
+actually is — a scoped officer is refused the write and the file stays invisible to them afterwards,
+and then the same write by an admin is shown to genuinely move the file, in the LIST as well as
+through a direct link. The two halves of the rule live in different languages (`onFileSql` in SQL for
+the list, `mayOpenLoan` in JS for one file), so both are asked; asserting only the direct link proved
+the half that is not the scope, and a mutation of the scope stayed green until the list was added.
+
+**THREE FRONT DOORS, ONE SESSION KIND EACH (2026-08-18).** What keeps a client off the long-term side
+is one expression at the mount seam — `requireStaff`, i.e. `kind === 'staff'` — and it lives in RTL
+code. A TPO is a REAL `staff_users` row: external, at a firm, but the same table, separated only by
+the session kind. "A broker is a staff row after all" is a refactor somebody could make in good faith,
+and it would open every long-term door to an outside brokerage and take the investor name with it.
+`audience.js` is the BACKSTOP for free text a human typed; it is not the door. Twenty-two long-term
+doors are now knocked on by a live borrower session and a live broker session, paired with the door
+each of those sessions IS meant to open, so the suite proves a wall rather than a build in which
+nothing answers. Note the failure mode this caught in its own first draft: a borrower token minted
+with no login row is REVOKED, so every refusal went green for the wrong reason — a wall knocked on
+with a dead key has not been tested.
+
+**ONLY AN EXPLICIT TRUE IS A PAYOFF (2026-08-18).** A liability marked as being paid off comes OUT of
+the borrower's monthly obligations, so a truthy-looking value read as a yes moves the very ratio the
+loan is decided on. `1`, `"true"`, `"Y"` and an object are each NOT a payoff; a real `true` still is.
+The same reader keeps four digits of the account number and drops the rest, and the test searches the
+WHOLE mapped row for the original rather than the field meant to hold it — the failure worth catching
+is the copy somebody adds later, not the field already reviewed. And both `vols[]` and the modern
+`liabilities[]` are read: `vols[]` is where this tenant's tradelines live, and reading only the
+workhorse would silently halve somebody's debts the day the other starts filling, which makes a file
+look better than it is.
+
 **Three measured findings that must survive into the code**, because each one produces a
 confidently wrong number if forgotten:
 
