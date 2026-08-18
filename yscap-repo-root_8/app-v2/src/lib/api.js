@@ -1139,6 +1139,10 @@ export const api = {
   workflowCount:     () => req('GET', '/api/staff/workflow/count'),
   workflowPickup:    (itemId) => req('POST', `/api/staff/workflow/${itemId}/pickup`),
   workflowReturn:    (itemId, outcomeLabel, note) => req('POST', `/api/staff/workflow/${itemId}/return`, { outcomeLabel, note }),
+  // Remove a hand-off from the workflow queue (restorable — owner-directed
+  // 2026-08-18: remove/restore lives on the WORKFLOWS, not the pipeline).
+  workflowRemoveItem:  (itemId, reason) => req('POST', `/api/staff/workflow/${itemId}/remove`, { reason: reason || null }),
+  workflowRestoreItem: (itemId) => req('POST', `/api/staff/workflow/${itemId}/restore`, {}),
   closingWorkflow:   (appId) => req('GET', `/api/staff/applications/${appId}/closing-workflow`),
   advanceClosing:    (appId, stage) => req('POST', `/api/staff/applications/${appId}/closing-workflow`, { stage }),
   // The closing workspace (the closer's desk).

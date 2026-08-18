@@ -743,10 +743,10 @@ function buildPipelineFilter(req, q) {
   const params = [...s.params];
   const add = (val) => { params.push(val); return `$${params.length}`; };
   const where = ['a.deleted_at IS NULL'];
-  // Remove-from-this-view (owner-directed 2026-08-11): a file removed from the row
-  // coordinator's pipeline view is hidden here but NOT deleted — it stays on every
-  // other surface. `?removed=1` lists the removed ones (so they can be restored).
-  where.push(q.removed === '1' ? 'a.pipeline_removed_at IS NOT NULL' : 'a.pipeline_removed_at IS NULL');
+  // The pipeline REMOVE view is RETIRED (owner-directed 2026-08-18: remove/restore
+  // belongs on the WORKFLOWS; the pipeline's only off-ramp is Archive / Restore
+  // From Archive). db/582 cleared the old pipeline_removed_at markers, so every
+  // non-archived file lists here again; `?removed=1` is ignored.
   if (s.where) where.push(s.where.replace(/\$SCOPE/g, '$1').replace(/^AND\s+/, ''));
 
     // status GROUP — same predicates the dashboard uses. An EXACT status filter
@@ -15044,6 +15044,50 @@ router.post('/workflow/:itemId/return', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// REMOVE an item from the workflow / RESTORE it (owner-directed 2026-08-18:
+// "The Remove button was intent to go on the workflows to remove and restore to
+// the workflows" — Processing, Underwriting, Exception and the rest of the
+// hand-off queues). Takes the hand-off OFF the queue without deleting anything
+// (status 'removed', db/582), restorable from the screen's Removed view. Same
+// acceptance as pickup/return: mine, my role's inbox, an active same-role
+// assignee of the file, or an admin. Audited on the file.
+async function workflowItemRemoval(req, res, removing) {
+  const reason = removing ? (String((req.body && req.body.reason) || '').trim().slice(0, 500) || null) : null;
+  try {
+    const it = (await db.query(
+      `SELECT application_id, to_staff_id, to_role, submission_type, status FROM workflow_items WHERE id=$1`,
+      [req.params.itemId])).rows[0];
+    if (!it) return res.status(404).json({ error: 'not found' });
+    const roleInboxMine = it.to_staff_id == null && it.to_role && it.to_role === req.actor.role;
+    const fileRoleMine = !roleInboxMine && it.to_role
+      ? !!(await db.query(
+          `SELECT 1 FROM application_assignees aa
+            WHERE aa.application_id=$1 AND aa.role=$2 AND aa.staff_id=$3 AND aa.removed_at IS NULL LIMIT 1`,
+          [it.application_id, it.to_role, req.actor.id])).rows[0]
+      : false;
+    if (String(it.to_staff_id || '') !== String(req.actor.id) && !roleInboxMine && !fileRoleMine && !isAdmin(req)) return res.status(403).json({ error: 'this item is not in your workflow' });
+    if (removing && !['open', 'in_progress'].includes(it.status)) return res.status(409).json({ error: 'this item is no longer live — nothing to remove' });
+    if (!removing && it.status !== 'removed') return res.status(409).json({ error: 'this item was not removed — nothing to restore' });
+    const client = await db.getClient();
+    let item;
+    try {
+      await client.query('BEGIN');
+      item = removing
+        ? await workflow.removeItem(client, req.params.itemId, req.actor.id, reason)
+        : await workflow.restoreItem(client, req.params.itemId, req.actor.id);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    // restoreItem refuses when the same (file, hand-off kind) already has
+    // another live item — say so plainly instead of a silent no-op.
+    if (!item) return res.status(409).json({ error: removing ? 'this item is no longer live — nothing to remove' : 'this file is already back in that workflow — nothing to restore' });
+    await audit(req, removing ? 'workflow_item_remove' : 'workflow_item_restore', 'application', it.application_id,
+      { itemId: req.params.itemId, submissionType: it.submission_type, reason });
+    res.json({ ok: true, item, removed: removing });
+  } catch (e) { console.warn('[workflow-item-remove] error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+}
+router.post('/workflow/:itemId/remove', (req, res) => workflowItemRemoval(req, res, true));
+router.post('/workflow/:itemId/restore', (req, res) => workflowItemRemoval(req, res, false));
+
 // Advance the closing sub-workflow. Body: { stage }. fully_closed → funded (the
 // owner's "fully closed links funded"), done via the shared status door.
 router.post('/applications/:id/closing-workflow', async (req, res) => {
@@ -15695,27 +15739,26 @@ router.get('/purchasing/count', purchasingGate, async (req, res) => {
 
 // ===========================================================================
 // REMOVE A FILE FROM A WORKFLOW VIEW — never deletes it (owner-directed
-// 2026-08-11). Works for the row coordinator's PIPELINE, the CLOSING desk and
-// the PURCHASING desk. File-scoped by the /applications/:id middleware, so
-// ANYBODY who can see the file may remove it from a view (not gated on
-// manage_closings / manage_purchasing — the desk lists are already file-scoped).
-// It only sets a per-view marker; the file, its documents, its conditions, its
-// status and every other surface are untouched. Reversible via …/restore. The
-// double warning is enforced on the client. Audited.
+// 2026-08-11; NARROWED 2026-08-18: the PIPELINE is no longer a removable view —
+// "the Remove button was intent to go on the workflows … for files in the
+// pipeline, the only button that should work is the Archive button"). Works for
+// the CLOSING desk and the PURCHASING desk (reconciliation is a stage of the
+// closing desk, so the closing marker covers it). File-scoped by the
+// /applications/:id middleware, so ANYBODY who can see the file may remove it
+// from a view (not gated on manage_closings / manage_purchasing — the desk
+// lists are already file-scoped). It only sets a per-view marker; the file, its
+// documents, its conditions, its status and every other surface are untouched.
+// Reversible via …/restore. The double warning is enforced on the client.
+// Audited. The personal workflow queues (Processing / Underwriting / Exception…)
+// have their own per-ITEM remove — see /workflow/:itemId/remove below.
 // ===========================================================================
-const WORKFLOW_VIEWS = new Set(['pipeline', 'closing', 'purchasing']);
+const WORKFLOW_VIEWS = new Set(['closing', 'purchasing']);
 async function setWorkflowRemoval(req, res, removing) {
   const wf = String(req.params.workflow || '');
   if (!WORKFLOW_VIEWS.has(wf)) return res.status(400).json({ error: 'unknown workflow view' });
   const reason = removing ? (String((req.body && req.body.reason) || '').trim().slice(0, 500) || null) : null;
   try {
-    if (wf === 'pipeline') {
-      await db.query(
-        removing
-          ? `UPDATE applications SET pipeline_removed_at=now(), pipeline_removed_by=$2, pipeline_removed_reason=$3 WHERE id=$1`
-          : `UPDATE applications SET pipeline_removed_at=NULL, pipeline_removed_by=NULL, pipeline_removed_reason=NULL WHERE id=$1`,
-        removing ? [req.params.id, req.actor.id, reason] : [req.params.id]);
-    } else {
+    {
       const table = wf === 'closing' ? 'closing_workflow' : 'purchasing_workflow';
       // Only touches an EXISTING membership row; a file not on that desk has none,
       // so removing is a harmless no-op (never creates a row).
