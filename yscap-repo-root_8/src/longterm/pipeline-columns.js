@@ -50,7 +50,13 @@ const COLUMNS = {
   program: { label: 'Program', field: 'program_name', sort: null },
   loan_amount: { label: 'Amount', field: 'loan_amount', sort: 'loan_amount', align: 'right', kind: 'money' },
   note_rate: { label: 'Rate', field: 'note_rate_pct', sort: null, align: 'right', kind: 'pct' },
-  dscr: { label: 'DSCR', field: 'dscr_ratio', sort: null, align: 'right', kind: 'ratio' },
+  // `dscr`, not `ratio`: the figure is drawn beside which side of THIS COMPANY'S
+  // own minimum and comfortable lines it fell on. A bare 1.28 down a column means
+  // one thing to somebody who works these loans every day and nothing to anybody
+  // else, and the thresholds have been a setting since the registry was written.
+  // The verdict is computed on the SERVER by the one rule the file screen uses, so
+  // the two surfaces can never call the same loan different things.
+  dscr: { label: 'DSCR', field: 'dscr_ratio', sort: null, align: 'right', kind: 'dscr' },
   ltv: { label: 'LTV', field: 'ltv_pct', sort: null, align: 'right', kind: 'pct' },
   stage: { label: 'Stage', field: 'stage_key', sort: 'stage' },
   milestone: { label: 'Milestone', field: 'milestone_name', sort: 'milestone' },
@@ -69,11 +75,26 @@ const COLUMNS = {
     why: 'Encompass has not given us a closing date on the long-term loan yet, so this column has nothing to fill it.',
   },
 
+  // WHAT IS OUTSTANDING ON THIS FILE — drawable only while the Condition Center is
+  // SWITCHED ON. The mirror is empty until it is, so the column would print a zero
+  // on every row, and a zero here reads as "this file is clear" — a claim, not a
+  // blank. So its availability is a QUESTION asked of the settings at resolve time
+  // rather than a constant, and the reason names the switch.
   conditions: {
     label: 'Conditions',
+    field: 'outstanding',
     sort: null,
-    available: false,
-    why: 'The Condition Center is coming soon, so there is nothing to count yet.',
+    align: 'right',
+    kind: 'outstanding',
+    needs: 'conditions',
+    // The ONLY column whose field the pipeline query does not select: the counts
+    // are attached to the rows by the ROUTE, because what "outstanding" means is a
+    // rule that lives in the Condition Center and a SQL predicate here would be a
+    // second copy of it. Declared rather than left implicit, so the guard that
+    // catches a field naming a column the SELECT never returns — a dash on every
+    // row for ever, with nothing failing anywhere — still has something to check.
+    source: 'route',
+    why: 'The Condition Center is switched off, so nothing has been read and there is nothing to count.',
   },
 };
 
@@ -81,7 +102,7 @@ const COLUMNS = {
 const DEFAULT_ORDER = [
   'loan_number', 'borrower', 'property', 'program', 'loan_amount', 'note_rate',
   'dscr', 'ltv', 'stage', 'milestone', 'days_in_stage', 'loan_officer',
-  'processor', 'lock_status', 'expected_closing',
+  'processor', 'conditions', 'lock_status', 'expected_closing',
 ];
 
 /**
@@ -97,7 +118,7 @@ const DEFAULT_ORDER = [
  * A configuration that leaves NOTHING drawable falls back to the default rather than
  * rendering a table with no columns — an empty grid is not a thing anybody chose.
  */
-function resolveColumns(configured) {
+function resolveColumns(configured, opts = {}) {
   const asked = Array.isArray(configured) && configured.length
     ? configured.map((k) => String(k || '').trim()).filter(Boolean)
     : DEFAULT_ORDER;
@@ -106,10 +127,19 @@ function resolveColumns(configured) {
   const unavailable = [];
   const unknown = [];
 
+  // A column whose data exists only when a feature is on. `true` is required, not
+  // merely "not false": with the flag unread — a settings load that failed, an
+  // older caller that passes nothing — the answer is OFF, which draws one column
+  // fewer rather than a column of confident zeros.
+  const have = (need) => (need === 'conditions' ? opts.conditionsEnabled === true : true);
+
   for (const key of asked) {
     const def = COLUMNS[key];
     if (!def) { unknown.push(key); continue; }
-    if (def.available === false) { unavailable.push({ key, label: def.label, why: def.why }); continue; }
+    if (def.available === false || !have(def.needs)) {
+      unavailable.push({ key, label: def.label, why: def.why });
+      continue;
+    }
     if (columns.some((c) => c.key === key)) continue;   // a list naming one column twice draws it once
     columns.push({
       key,
@@ -123,7 +153,7 @@ function resolveColumns(configured) {
   }
 
   if (!columns.length) {
-    return { ...resolveColumns(DEFAULT_ORDER), unavailable, unknown, fellBack: true };
+    return { ...resolveColumns(DEFAULT_ORDER, opts), unavailable, unknown, fellBack: true };
   }
   return { columns, unavailable, unknown, fellBack: false };
 }

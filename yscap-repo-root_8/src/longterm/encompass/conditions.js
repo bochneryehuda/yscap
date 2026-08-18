@@ -72,12 +72,35 @@ const CONDITION_SHAPE = {
   assignedTo: 'the user it is assigned to',
   recipient: 'who it is addressed to',
   daysToReceive: 'SLA in days',
-  commentsCount: 'number of comments (fetch via the comments endpoint)',
+  commentsCount: 'number of comments (fetch via the comments endpoint — see COMMENT_SHAPE)',
   isRemoved: 'soft-delete flag — filter these out',
   createdBy: 'entityId + entityName',
   createdDate: 'ISO timestamp',
   lastModifiedBy: 'entityId', lastModifiedDate: 'ISO timestamp',
   internalId: "the template's short code, e.g. 'UW'",
+};
+
+// ── The comment on a condition — SHAPE UNVERIFIED ────────────────────────────
+//
+// THE ENDPOINT IS VERIFIED (it is in `verifiedWorking` above); ITS FIELDS ARE NOT.
+// The probe of 2026-08-14 established that the comments resource answers, and did
+// not record a comment body, so everything below is what the ICE documentation
+// describes rather than something this tenant has been seen to send.
+//
+// The mirror is written to survive being wrong about it: `mapper.readComment`
+// accepts every spelling listed here and refuses to invent the rest, and
+// `conditions/sync.js` stores only a comment carrying an ID — the others are
+// COUNTED and reported, so if this tenant sends no ids that number climbs loudly
+// on the first pass instead of silently duplicating a sentence for ever.
+//
+// TO SETTLE IT: read one thread on a loan whose `commentsCount` is above zero,
+// write the real field names in here, and the counting stops being a guard.
+const COMMENT_SHAPE = {
+  verified: false,
+  id: 'comment id — the identity the mirror keys on (documented; not seen)',
+  comments: 'the text; also seen documented as `comment` / `body` / `text`',
+  createdBy: 'entityId + entityName — also documented as `author` / `userName`',
+  dateCreated: 'ISO timestamp — also documented as `createdDate` / `commentDate`',
 };
 
 // What the live population looks like (12 loans, 348 conditions, 2026-08-14).
@@ -180,4 +203,4 @@ const WRITE_PATH = {
   ],
 };
 
-module.exports = { ENDPOINTS, CONDITION_SHAPE, OBSERVED, EFOLDER, WRITE_PATH };
+module.exports = { ENDPOINTS, CONDITION_SHAPE, COMMENT_SHAPE, OBSERVED, EFOLDER, WRITE_PATH };

@@ -29,6 +29,7 @@
  */
 
 const access = require('./access');
+const contacts = require('./people/contacts');
 const product = require('./product');
 const stages = require('./stages');
 const book = require('./pipeline-book');
@@ -109,15 +110,15 @@ const NO_STAGE = '(none)';
 const officerIsSql = (ph) => `EXISTS (
       SELECT 1 FROM lt_loan_contacts c2
        WHERE c2.loan_id = l.id
-         AND c2.role = 'loan_officer'
-         AND COALESCE(c2.override_staff_id, c2.staff_id) = ${ph}::uuid
+         AND c2.role = '${contacts.OFFICER_ROLE}'
+         AND ${access.effectiveStaffSql('c2')} = ${ph}::uuid
     )`;
 
 /** "Nobody is on it yet" — the closer's and funder's reason for seeing the whole book. */
 const UNASSIGNED_SQL = `NOT EXISTS (
       SELECT 1 FROM lt_loan_contacts c3
        WHERE c3.loan_id = l.id
-         AND COALESCE(c3.override_staff_id, c3.staff_id) IS NOT NULL
+         AND ${access.effectiveStaffSql('c3')} IS NOT NULL
     )`;
 
 /**
@@ -266,7 +267,7 @@ function buildPipelineQuery(viewerAccess, staffId, filters = {}, opts = {}) {
            (SELECT json_agg(json_build_object(
                      'role', c.role,
                      'name', c.encompass_name,
-                     'staffId', COALESCE(c.override_staff_id, c.staff_id),
+                     'staffId', ${access.effectiveStaffSql('c')},
                      'overridden', c.override_staff_id IS NOT NULL))
               FROM lt_loan_contacts c WHERE c.loan_id = l.id) AS contacts
       ${FROM}
