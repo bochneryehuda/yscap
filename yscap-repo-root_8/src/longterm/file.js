@@ -353,6 +353,13 @@ async function loadFile(loanId, loan = null, opts = {}) {
       // (db/549) is exactly `('fixed','adjustable')`, so the column can NEVER hold
       // 'arm' — gating on that word returns null on every adjustable loan in the
       // book, silently and forever, which is why this reads the enum verbatim.
+      //
+      // AND NOTHING WRITES ANY OF THE EIGHT. That is recorded rather than left to
+      // be discovered — `unsourced` carries the measurement (the two fields that
+      // look like ARM terms are the note rate under another name), and the screen
+      // says it ONCE for the block instead of drawing eight dashes, each of which
+      // would read as a term this loan does not have. `notHeld` is what makes that
+      // sayable, and it gives way field by field the day a writer lands.
       arm: String(l.amortization_type || '').toLowerCase() === 'adjustable' ? {
         indexName: text(l.arm_index_name),
         marginPct: num(l.arm_margin_pct),
@@ -362,6 +369,11 @@ async function loadFile(loanId, loan = null, opts = {}) {
         periodicCapPct: num(l.arm_periodic_cap_pct),
         lifetimeCapPct: num(l.arm_lifetime_cap_pct),
         floorPct: num(l.arm_floor_pct),
+        notSourced: unsourced.notSourcedFor('lt_loans'),
+        notHeld: !(l.arm_index_name != null || l.arm_margin_pct != null
+          || l.arm_first_adjustment_months != null || l.arm_adjustment_frequency_months != null
+          || l.arm_initial_cap_pct != null || l.arm_periodic_cap_pct != null
+          || l.arm_lifetime_cap_pct != null || l.arm_floor_pct != null),
       } : null,
     },
 

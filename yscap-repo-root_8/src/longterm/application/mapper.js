@@ -819,7 +819,39 @@ const TERM_FIELDS = {
   employmentDoesNotApply: { id: 'URLA.X199', paths: ['applications.0.borrower.currentEmploymentDoesNotApply'] },
 };
 
-const AMORTIZATION = { fixed: 'fixed', adjustable: 'adjustable', arm: 'adjustable' };
+/**
+ * THE KEY IS WHAT ENCOMPASS SENDS, WHICH IS `AdjustableRate` — NOT "adjustable"
+ * and NOT "arm".
+ *
+ * `enumOf` lowercases and strips non-letters, so field 608's real value keys as
+ * `adjustablerate`. This map carried `adjustable` and `arm` instead: two spellings
+ * the tenant has never sent on any of the 772 loans in the census, so the ONE
+ * adjustable-rate loan in the whole book mapped to null — and null does NOT leave
+ * the column empty. `amortization_type` is `NOT NULL DEFAULT 'fixed'` (db/549) and
+ * `application/sync.js` writes it through a COALESCE onto what is already there,
+ * so that loan mirrored as **FIXED**. Not blank, not "we could not read it":
+ * fixed. The terms row stated the wrong answer to the second most consequential
+ * question on a DSCR file — can this borrower's payment move — and the ARM section
+ * was correctly absent, because the row really did say fixed.
+ *
+ * Nothing failed anywhere, and nothing could: a map is a hand-written guess at
+ * somebody else's vocabulary, and the COALESCE that keeps a silent payload from
+ * breaking the write is the same COALESCE that turns an unrecognised value into
+ * the default. The census is the source: field 608 is filled on 100% of long-term
+ * loans and its observed values are `Fixed` (765) and `AdjustableRate` (1).
+ * `scripts/test-lt-enum-maps-pure.js` now fails the build on a value the tenant
+ * sends that no map here recognises — which is the only place this class can be
+ * caught, since by construction it produces no error and no empty result.
+ *
+ * The other two allowed values are DELIBERATELY absent. A graduated-payment
+ * mortgage and Encompass's "Other" are neither fixed nor adjustable, and the
+ * column is exactly `('fixed','adjustable')` — mapping either one would be a
+ * statement about how the payment behaves that we have no basis for. Neither has
+ * been seen on any of the 772 loans, and the day one is the guard FAILS THE BUILD
+ * rather than letting it settle onto the default, which is the whole reason the
+ * guard reads observed values rather than being a list somebody keeps up.
+ */
+const AMORTIZATION = { fixed: 'fixed', adjustablerate: 'adjustable' };
 const LIEN_POSITION = { firstlien: 'first', first: 'first', secondlien: 'second', second: 'second' };
 const LOAN_PURPOSE = {
   purchase: 'purchase',
@@ -830,6 +862,31 @@ const LOAN_PURPOSE = {
 };
 
 const enumOf = (map, v) => map[String(v === null || v === undefined ? '' : v).toLowerCase().replace(/[^a-z]/g, '')] || null;
+
+/**
+ * EVERY VALUE MAP, BESIDE THE FIELD IT READS — one declaration, so the guard and
+ * the mapper cannot describe different maps.
+ *
+ * The field ids come from `TERM_FIELDS` rather than being retyped: a map checked
+ * against the wrong field's values is a guard that agrees with whatever is there.
+ * `scripts/test-lt-enum-maps-pure.js` walks this list, looks each field up in the
+ * 3,783-field census of 772 live loans, and fails the build on a value the tenant
+ * has actually sent that the map does not recognise — which is the whole class the
+ * amortization bug belonged to, and the only kind of check that could have caught
+ * it: nothing throws, nothing logs, the column simply goes NULL.
+ *
+ * The residency maps are NOT here, and that is a limit rather than an oversight:
+ * `residencyType` and `residencyBasisType` live inside
+ * `applications[].borrower.residences[]`, and the census enumerates FIELD IDS —
+ * there is no entry for a value inside an array element, so there is nothing to
+ * check them against. Listing them would make the guard report a coverage it does
+ * not have.
+ */
+const ENUM_MAPS = {
+  amortizationType: { fieldId: TERM_FIELDS.amortizationType.id, map: AMORTIZATION },
+  loanPurpose: { fieldId: TERM_FIELDS.loanPurpose.id, map: LOAN_PURPOSE },
+  lienPosition: { fieldId: TERM_FIELDS.lienPosition.id, map: LIEN_POSITION },
+};
 
 /**
  * The loan's terms, its housing expense and its DSCR.
@@ -874,9 +931,11 @@ function readLoanTerms(loan, values) {
   const notApply = bool(f('employmentDoesNotApply'));
 
   const row = {
-    amortizationType: enumOf(AMORTIZATION, f('amortizationType')),
-    loanPurpose: enumOf(LOAN_PURPOSE, f('loanPurpose')),
-    lienPosition: enumOf(LIEN_POSITION, f('lienPosition')),
+    // Read through the ONE declaration above, so a map the guard checks can never
+    // be a different map from the one the mirror actually applies.
+    amortizationType: enumOf(ENUM_MAPS.amortizationType.map, f('amortizationType')),
+    loanPurpose: enumOf(ENUM_MAPS.loanPurpose.map, f('loanPurpose')),
+    lienPosition: enumOf(ENUM_MAPS.lienPosition.map, f('lienPosition')),
     interestOnlyMonths: int(f('interestOnlyMonths')),
     noteRatePct: num(f('noteRatePct')),
 
@@ -915,6 +974,7 @@ module.exports = {
   readSubjectProperty,
   readLoanTerms,
   TERM_FIELDS,
+  ENUM_MAPS,
   readBorrowerPairs,
   readParty,
   readDeclarations,

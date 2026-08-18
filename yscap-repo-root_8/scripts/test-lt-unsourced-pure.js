@@ -131,6 +131,26 @@ check(stale.length === 0,
 check(filledAnyway.length === 0,
   `…and none of them is actually being written${filledAnyway.length ? ` — these are: ${filledAnyway.join(', ')}` : ''}`);
 
+// ── The ARM terms, which the file screen draws the moment a loan is adjustable ──
+//
+// `lt_loans` is outside the every-column rule above for the reason given at the top
+// of this file, but these eight are held to it anyway: the screen renders a row per
+// ARM term as soon as `lt_amortization_type` is 'adjustable', so an unwritten and
+// unlisted one is eight dashes under "Adjustable-rate terms" — a reader's answer to
+// "what are the caps on this loan", given by nobody. Their writer is the loan sync,
+// not the 1003 mapper, so it is read here rather than folded into `writerSrc` (a
+// column name that appears in both would otherwise read as filled in the wrong one).
+console.log('\nthe adjustable-rate terms are filled or explained');
+
+const loanWriterSrc = read('src/longterm/sync/loans.js');
+const armCols = (tables.lt_loans || []).filter((c) => /^arm_/.test(c));
+check(armCols.length >= 8,
+  `the schema really carries the ARM columns (${armCols.length}) — a parser that found none would make the next check pass by finding nothing`);
+
+const armGap = armCols.filter((c) => !new RegExp(`\\b${c}\\b`).test(loanWriterSrc) && !unsourced.unsourced('lt_loans', c));
+check(armGap.length === 0,
+  `no ARM term is silently empty${armGap.length ? ` — unwritten and unexplained: ${armGap.join(', ')}` : ''}`);
+
 console.log('\nevery reason is a reason, not a shrug');
 
 for (const [key, entry] of Object.entries(unsourced.UNSOURCED)) {
@@ -162,6 +182,18 @@ check(/const blank = value == null \|\| value === '' \|\| value === '—';/.test
 for (const field of ['in_flood_zone', 'flood_zone', 'actual_monthly_rent']) {
   check(new RegExp(`ns\\.${field}\\b`).test(ui),
     `…and "${field.replace(/_/g, ' ')}" is one of the fields that carries its reason to the screen`);
+}
+
+// The ARM block is the case where the reason has to be said ONCE rather than
+// per row: eight identical sentences is as unreadable as eight dashes, and the
+// dashes are worse than unreadable because each one is an answer.
+check(/notSourcedFor\('lt_loans'\)/.test(fileSrc) && /notHeld:/.test(fileSrc),
+  'the ARM block carries both the reason and whether we hold ANY of the eight terms, so the screen can say it once');
+check(/function ArmTerms/.test(ui) && /arm\.notHeld/.test(ui),
+  '…and the screen says it once when we hold none — eight dashes under "Adjustable-rate terms" would each read as a term this loan does not have');
+for (const field of ['arm_index_name', 'arm_margin_pct', 'arm_lifetime_cap_pct']) {
+  check(new RegExp(`ns\\.${field}\\b`).test(ui),
+    `…and "${field.replace(/_/g, ' ')}" still carries its own reason on its own row, so the block gives way term by term the day a writer lands`);
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');

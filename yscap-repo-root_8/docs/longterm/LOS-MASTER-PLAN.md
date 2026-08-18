@@ -284,9 +284,32 @@ of what the mirror deliberately does not fill, each entry saying what a SCREEN s
 MEASURED in the 3,783-field census, what would unblock it, and which of three kinds it is —
 *Encompass does not have it*, *the owner has not decided*, and *it is ours to judge* are different
 sentences and the difference is what the next person needs. `scripts/test-lt-unsourced-pure.js` fails
-the build on a column that is neither filled nor listed, and on an entry that has gone stale. Thirteen
-columns are listed today; the file screen says the reason in the reader's own words where a dash used
-to sit. The flood determination and the entity record are the two the owner can unblock — §11.
+the build on a column that is neither filled nor listed, and on an entry that has gone stale.
+Twenty-one columns are listed today; the file screen says the reason in the reader's own words where a
+dash used to sit. The flood determination and the entity record are the two the owner can unblock —
+§11. **The eight ARM terms joined the list** once the amortization map was fixed below and adjustable
+loans could reach the screen at all: nothing writes any of them, and the two census fields that LOOK
+like ARM terms (2625 maxLifeInterestCapPercent, 3557 firstAdjustmentMinimum) carry EXACTLY the note
+rate's own distribution, because on a fixed loan Encompass echoes the rate into them — so writing 2625
+into a lifetime cap would print a ceiling equal to the start rate. There the reason is said ONCE for
+the block rather than on eight rows, because eight identical sentences is as unreadable as the eight
+dashes it replaces, and it gives way term by term the day a writer lands.
+
+**EVERY VALUE MAP IS KEYED ON WHAT ENCOMPASS ACTUALLY SENDS (2026-08-18).** The mirror translates
+Encompass's words into our enums through hand-written maps, and a map is a GUESS at somebody else's
+vocabulary — being wrong about one is completely silent. `AMORTIZATION` carried `fixed`, `adjustable`
+and `arm`; field 608's measured values are `Fixed` (765 loans) and `AdjustableRate` (1), so two of its
+three keys were spellings nobody has ever sent and the one adjustable-rate loan in the book fell
+through to null. **And null did not leave the column empty** — `amortization_type` is `NOT NULL
+DEFAULT 'fixed'` and the sync COALESCEs onto what is there, so that loan mirrored as FIXED: a
+confident wrong answer to "can this borrower's payment move", with the ARM section correctly absent
+because the row really did say fixed. The same COALESCE that stops a silent payload breaking the write
+is what turns an unrecognised value into a claim. So the census is now the judge:
+`scripts/test-lt-enum-maps-pure.js` reads every map out of the mapper's ONE exported declaration,
+looks its field up in the 3,783-field census, and fails the build on a value the tenant has actually
+sent that no map recognises — the only place this class can be caught, because by construction it
+produces no error and no empty result. Values Encompass merely ALLOWS but nobody has sent are printed
+rather than mapped: mapping one is a guess, and dropping one silently is how this started.
 
 **A SETTING IS EITHER READ BY SOMETHING OR SAYS IT IS NOT (2026-08-18).** §7's promise to a buyer is
 that nothing about how WE do things is hard-coded. Forty-three of the 63 settings were declared ahead

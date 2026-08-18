@@ -260,6 +260,46 @@ function Property({ data }) {
   );
 }
 
+/**
+ * The adjustable-rate terms, or ONE sentence saying we do not hold them.
+ *
+ * Eight rows of dashes under "Adjustable-rate terms" is not an empty table — it is
+ * eight answers nobody gave: no cap, no floor, no margin. And repeating the same
+ * explanation in all eight rows is just as bad in the other direction, so when we
+ * hold NONE of them the block says it once, in the reader's language, with the
+ * reason the server sent.
+ *
+ * It gives way field by field: the moment any term is written the table draws, and
+ * whichever terms are still missing carry the reason on their own row through
+ * `Facts`, exactly as the property section does.
+ */
+function ArmTerms({ arm }) {
+  const ns = arm.notSourced || {};
+  if (arm.notHeld) {
+    return (
+      <Group title="Adjustable-rate terms">
+        <p style={{ margin: 0, color: MUTED, fontSize: 13, fontStyle: 'italic', overflowWrap: 'anywhere' }}>
+          {ns.arm_index_name || 'PILOT does not hold this loan\'s adjustable-rate terms.'}
+        </p>
+      </Group>
+    );
+  }
+  return (
+    <Group title="Adjustable-rate terms">
+      <Facts rows={[
+        ['Index', plain(arm.indexName), ns.arm_index_name],
+        ['Margin', arm.marginPct != null ? pct(arm.marginPct) : '—', ns.arm_margin_pct],
+        ['First adjustment', arm.firstAdjustmentMonths != null ? `${arm.firstAdjustmentMonths} months` : '—', ns.arm_first_adjustment_months],
+        ['Adjusts every', arm.adjustmentFrequencyMonths != null ? `${arm.adjustmentFrequencyMonths} months` : '—', ns.arm_adjustment_frequency_months],
+        ['Initial cap', arm.initialCapPct != null ? pct(arm.initialCapPct) : '—', ns.arm_initial_cap_pct],
+        ['Periodic cap', arm.periodicCapPct != null ? pct(arm.periodicCapPct) : '—', ns.arm_periodic_cap_pct],
+        ['Lifetime cap', arm.lifetimeCapPct != null ? pct(arm.lifetimeCapPct) : '—', ns.arm_lifetime_cap_pct],
+        ['Floor', arm.floorPct != null ? pct(arm.floorPct) : '—', ns.arm_floor_pct],
+      ]} />
+    </Group>
+  );
+}
+
 function Terms({ data }) {
   return (
     <>
@@ -279,20 +319,7 @@ function Terms({ data }) {
       {/* The ARM block appears only on an adjustable loan. A fixed loan showing a row
           of empty ARM fields reads as data we failed to fetch rather than terms that
           do not exist — so the server returns it as null and nothing renders. */}
-      {data.arm ? (
-        <Group title="Adjustable-rate terms">
-          <Facts rows={[
-            ['Index', plain(data.arm.indexName)],
-            ['Margin', data.arm.marginPct != null ? pct(data.arm.marginPct) : '—'],
-            ['First adjustment', data.arm.firstAdjustmentMonths != null ? `${data.arm.firstAdjustmentMonths} months` : '—'],
-            ['Adjusts every', data.arm.adjustmentFrequencyMonths != null ? `${data.arm.adjustmentFrequencyMonths} months` : '—'],
-            ['Initial cap', data.arm.initialCapPct != null ? pct(data.arm.initialCapPct) : '—'],
-            ['Periodic cap', data.arm.periodicCapPct != null ? pct(data.arm.periodicCapPct) : '—'],
-            ['Lifetime cap', data.arm.lifetimeCapPct != null ? pct(data.arm.lifetimeCapPct) : '—'],
-            ['Floor', data.arm.floorPct != null ? pct(data.arm.floorPct) : '—'],
-          ]} />
-        </Group>
-      ) : null}
+      {data.arm ? <ArmTerms arm={data.arm} /> : null}
     </>
   );
 }

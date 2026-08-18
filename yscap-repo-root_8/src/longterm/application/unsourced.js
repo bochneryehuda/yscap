@@ -87,6 +87,21 @@ const UNSOURCED = {
   },
   'lt_reo_properties.is_verified': VERIFIED('a rental on the schedule'),
   'lt_assets.is_verified': VERIFIED('an account'),
+
+  // ── The adjustable-rate terms ─────────────────────────────────────────────
+  // `lt_loans` is deliberately outside this file's every-column rule (it is filled
+  // by three syncs and carries PILOT's own bookkeeping beside Encompass's facts) —
+  // but these eight are listed anyway, because the file screen DRAWS them the
+  // moment a loan is adjustable, and eight dashes under "Adjustable-rate terms"
+  // is precisely the reads-as-an-answer failure this file exists to stop.
+  'lt_loans.arm_index_name': ARM('which index the rate follows'),
+  'lt_loans.arm_margin_pct': ARM('the margin added to the index'),
+  'lt_loans.arm_first_adjustment_months': ARM('when the rate first moves'),
+  'lt_loans.arm_adjustment_frequency_months': ARM('how often it moves after that'),
+  'lt_loans.arm_initial_cap_pct': ARM('how far it may move the first time'),
+  'lt_loans.arm_periodic_cap_pct': ARM('how far it may move each time after'),
+  'lt_loans.arm_lifetime_cap_pct': ARM('how high it may ever go'),
+  'lt_loans.arm_floor_pct': ARM('how low it may ever go'),
 };
 
 /** The four entity columns say the same thing; the sentence is written once. */
@@ -96,6 +111,20 @@ function ENTITY(what) {
     show: 'PILOT does not hold a record of the borrowing entity yet.',
     why: `This tenant keeps no structured entity record, so ${what} has no single place to be read from. What the census found: CX.LLCNAME / CX.LLCSTATE / CX.LLCCORP exist but are filled on 0.8% of long-term loans (4 files); field 1867 (finalVestingDescription) is free text on 38.0%; URLA.X138 is a vesting TYPE on 43.9%; and field 33 "Manner Held" is a dropdown that staff type the vesting entity's name into about half the time (ENCOMPASS-INVESTORS-AND-DROPDOWNS.md). Deciding which of those IS the entity is a business rule, and guessing one would put a company name on a loan file that nobody put there.`,
     unblock: 'The owner says where the entity is recorded on a DSCR file. One answer, then one entry in the mapper.',
+  };
+}
+
+/**
+ * The eight ARM terms say the same thing, and the measurement behind it is the
+ * most instructive one in this file: the two fields that LOOK like ARM terms are
+ * the note rate wearing a different name.
+ */
+function ARM(what) {
+  return {
+    kind: NOT_IN_ENCOMPASS,
+    show: 'PILOT does not hold this loan\'s adjustable-rate terms — Encompass gives us no figure for them we can trust.',
+    why: `Nothing in the 3,783-field census carries ${what} in a readable form. The two that look like they do are the NOTE RATE under another name: field 2625 (maxLifeInterestCapPercent) and field 3557 (firstAdjustmentMinimum) are each filled on 86.9% of long-term loans and each carry EXACTLY field 3's own distribution — min 6, p25 6.875, median 7.25, p75 8, max 10.75 over the same 490 loans — because on a fixed loan Encompass echoes the rate into them. Writing 2625 into a lifetime cap would print a ceiling equal to the start rate, which is a confident wrong answer about how high a borrower's payment can go. The two genuinely ARM-shaped fields are not terms at all: ARM.IdxLkbckPrd is the index LOOKBACK period (one distinct value across the book) and field 4912 is the index's decimal PRECISION. And the book is one loan — field 608's observed values are Fixed on 765 and AdjustableRate on 1.`,
+    unblock: 'One read of a real adjustable loan\'s loanProductData in Encompass, recorded in ENCOMPASS-FIELD-INTELLIGENCE.md. Then each of these is one entry in the mapper.',
   };
 }
 
