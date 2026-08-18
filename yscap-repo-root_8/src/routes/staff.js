@@ -1109,6 +1109,43 @@ router.get('/my-tasks', async (req, res) => {
   res.json(r.rows);
 });
 
+// THE SCHEDULED TASKS & REMINDERS QUEUE (owner-directed 2026-08-18 — the
+// per-file task-management build's cross-file half). Every reminders row
+// (kind 'task' or 'reminder') the signed-in staffer should see:
+//   scope=mine (default)  — assigned to me, or created by me with no assignee
+//   scope=all             — everything on files I can reach
+//   status=open (default) — scheduled/sent; status=closed — done/dismissed/cancelled
+// Visibility: a task ASSIGNED to me or CREATED by me is always mine to see,
+// whatever file it sits on; beyond that the ordinary file scope applies
+// (VISIBLE_OFFICERS_SQL for a scoped officer, everything for seesAll).
+router.get('/reminder-tasks', async (req, res) => {
+  const scope = req.query.scope === 'all' ? 'all' : 'mine';
+  const status = req.query.status === 'closed' ? 'closed' : (req.query.status === 'all' ? 'all' : 'open');
+  const statusSql = status === 'open' ? `r.status IN ('scheduled','sent')`
+    : status === 'closed' ? `r.status IN ('done','dismissed','cancelled')` : 'TRUE';
+  const mineSql = `(r.assignee_staff_id = $1 OR (r.created_by = $1 AND r.assignee_staff_id IS NULL))`;
+  const fileSql = seesAll(req) ? 'TRUE' : `(${VISIBLE_OFFICERS_SQL('a', '$1')})`;
+  const scopeSql = scope === 'mine' ? mineSql : `(${mineSql} OR ${fileSql})`;
+  try {
+    const r = await db.query(
+      `SELECT r.id, r.application_id, r.kind, r.title, r.body, r.due_at, r.remind_at, r.status,
+              r.assignee_staff_id, au.full_name AS assignee_name,
+              r.created_by, cu.full_name AS created_by_name, r.created_at,
+              a.ys_loan_number, a.property_address, a.status AS app_status,
+              NULLIF(b.full_name,'') AS borrower_name,
+              (r.status='scheduled' AND r.due_at < now()) AS overdue
+         FROM reminders r
+         JOIN applications a ON a.id = r.application_id
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN staff_users au ON au.id = r.assignee_staff_id
+         LEFT JOIN staff_users cu ON cu.id = r.created_by
+        WHERE a.deleted_at IS NULL AND ${statusSql} AND ${scopeSql}
+        ORDER BY (r.status='scheduled' AND r.due_at < now()) DESC, r.due_at ASC
+        LIMIT 400`, [req.actor.id]);
+    res.json({ tasks: r.rows, scope, status });
+  } catch (e) { console.error('[reminder-tasks]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
 router.get('/lead-capture', async (req, res) => {
   // Assigning unassigned files is an admin/underwriter function (a loan officer
   // or processor can't even open an unassigned file — the path-scope guard

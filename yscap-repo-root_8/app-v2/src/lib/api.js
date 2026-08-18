@@ -1197,6 +1197,8 @@ export const api = {
   // Reminders + task management (#93). staffReminders returns { reminders,
   // contacts, outstanding } so the composer is populated in one round-trip.
   staffReminders:      (appId) => req('GET', `/api/staff/applications/${appId}/reminders`),
+  // The cross-file scheduled-tasks queue (task management, 2026-08-18).
+  staffReminderTasks:  (q) => req('GET', `/api/staff/reminder-tasks${q ? `?${new URLSearchParams(q)}` : ''}`),
   staffCreateReminder: (appId, b) => req('POST', `/api/staff/applications/${appId}/reminders`, b),
   staffUpdateReminder: (appId, rid, b) => req('PATCH', `/api/staff/applications/${appId}/reminders/${rid}`, b),
   staffDeleteReminder: (appId, rid) => req('DELETE', `/api/staff/applications/${appId}/reminders/${rid}`),

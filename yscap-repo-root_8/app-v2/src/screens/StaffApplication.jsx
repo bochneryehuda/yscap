@@ -71,6 +71,7 @@ import StaffChangeRequests from '../components/StaffChangeRequests.jsx';
 import FileContacts from '../components/FileContacts.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import ReminderModal from '../components/ReminderModal.jsx';
+import FileTasksPanel from '../components/FileTasksPanel.jsx';
 import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import LoudHint from '../components/LoudHint.jsx';
@@ -5497,6 +5498,9 @@ export default function StaffApplication() {
     // AND the capital-provider data tape, which keeps its own permission gate
     // inside the section — see the note on the section itself.
     { id: 'sec-tapes', label: 'Send to investor', group: 'Send to investor' },
+    // Task management (owner-directed 2026-08-18): the file's scheduled tasks +
+    // reminders as a standing section, beside the communication they fire through.
+    { id: 'sec-tasks', label: 'Tasks & reminders', group: 'Communication' },
     { id: 'sec-messages', label: 'Communication & history', group: 'Communication' },
     // Construction draws is the LAST phase (post-funding), so it's the LAST section.
     // Shown for anyone who manages draws — funded or not — so the Draw Center is
@@ -6271,6 +6275,12 @@ export default function StaffApplication() {
       {/* Conversations, Email Center and Activity are one "Communication & history"
           section with tabs — they're all the file's talk + trail, so they share a
           home instead of three separate sections. */}
+      {/* Task management (owner-directed 2026-08-18): the file's task board. */}
+      <Section hidden={!show('sec-tasks')} id="sec-tasks" title="Tasks & reminders" defaultOpen={false}
+        info="Scheduled tasks and reminders on this file — who owns each one, when it's due, and who gets told. A task also shows on its owner's My-tasks queue; reminders fire automatically at their due moment.">
+        <FileTasksPanel appId={id} team={team} />
+      </Section>
+
       <Section hidden={!show('sec-messages')} id="sec-messages" title="Communication & history" defaultOpen={false}
         info="Everything said and logged on this file — chats, the email history, and the full AUDIT LOG: every action, who did it, what changed, every notification and email that went out, every push to ClickUp or the LOS, and (on request) every single API call. This is where you look when you need to know what happened.">
       <div className="comm-tabs" role="tablist" aria-label="Communication">

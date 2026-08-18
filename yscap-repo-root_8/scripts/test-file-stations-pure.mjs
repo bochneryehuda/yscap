@@ -36,14 +36,14 @@ const ALL_SECTIONS = [
   'sec-documents', 'sec-esign',
   'sec-order-title', 'sec-order-insurance', 'sec-order-appraisal', 'sec-order-closing',
   'sec-closing', 'sec-tapes',
-  'sec-draws', 'sec-messages',
+  'sec-draws', 'sec-tasks', 'sec-messages',
 ];
-ok(ALL_SECTIONS.length === 19, 'the inventory names 19 sections');
+ok(ALL_SECTIONS.length === 20, 'the inventory names 20 sections');
 const flat = STATIONS.flatMap((s) => s.sections);
 ok(flat.length === new Set(flat).size, 'no section is claimed by two rooms');
 for (const sec of ALL_SECTIONS) ok(!!STATION_OF[sec], `${sec} has a room`);
 ok(flat.length === ALL_SECTIONS.length && ALL_SECTIONS.every((s) => flat.includes(s)),
-  'the rooms cover exactly the 19 sections — nothing homeless, nothing invented');
+  'the rooms cover exactly the 20 sections — nothing homeless, nothing invented');
 ok(!flat.includes('sec-encompass'),
   'no room CLAIMS sec-encompass — a retired address is not a section');
 /* EIGHT rooms now. The original promise was seven; the owner then asked for

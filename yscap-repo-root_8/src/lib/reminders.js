@@ -257,6 +257,14 @@ async function update(id, patch, actor, client = db) {
   if ('body' in patch) add('body', String(patch.body || '').trim() || null);
   if (patch.dueAt) { const d = new Date(patch.dueAt); if (!isNaN(d.getTime())) { add('due_at', d.toISOString()); add('fired_at', null); if (row.status === 'sent') add('status', 'scheduled'); } }
   if ('remindAt' in patch) { const d = patch.remindAt ? new Date(patch.remindAt) : null; add('remind_at', d && !isNaN(d.getTime()) ? d.toISOString() : null); add('reminded_at', null); }
+  // Reassigning a TASK (task-management section, owner-directed 2026-08-18):
+  // a real active staffer takes it over; an explicit null hands it to nobody.
+  if ('assigneeStaffId' in patch) {
+    if (patch.assigneeStaffId) {
+      const sr = await client.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true AND is_external=false`, [patch.assigneeStaffId]);
+      if (sr.rows[0]) add('assignee_staff_id', sr.rows[0].id);
+    } else add('assignee_staff_id', null);
+  }
   if (patch.status === 'done') { add('status', 'done'); add('completed_at', new Date().toISOString()); add('completed_by', actor && actor.id || null); }
   else if (patch.status === 'dismissed') { add('status', 'dismissed'); add('completed_at', new Date().toISOString()); add('completed_by', actor && actor.id || null); }
   else if (patch.status === 'cancelled') { add('status', 'cancelled'); }
