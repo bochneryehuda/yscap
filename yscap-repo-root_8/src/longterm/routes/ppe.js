@@ -89,6 +89,7 @@ const lpScopeLib = require('../ppe/lp-scope');
 const parityMatrix = require('../ppe/parity-matrix');
 const parityCellStore = require('../ppe/parity-cell-store');
 const quote = require('../ppe/quote');
+const priceLimitLib = require('../ppe/price-limit');
 const canary = require('../ppe/canary');
 const finding = require('../ppe/finding');
 const findingStore = require('../ppe/finding-store');
@@ -258,6 +259,31 @@ async function loadProgram(scope, versionId) {
       return { program: null, reason: `rules_unreadable: ${String((e && e.message) || e).slice(0, 120)}` };
     }
     if (storedRules.length) program.rules = (program.rules || []).concat(storedRules);
+
+    // THE SHEET'S OWN MAX-PRICE RULE, attached HERE because this is the one door that turns a
+    // stored sheet into a priced program — and because the ceiling on some sheets depends on a
+    // SCENARIO fact, which no stored tier list can hold.
+    //
+    // MEASURED, on a real database: the Deephaven DSCR sheet states "max price is the LOWER of the
+    // loan-amount tier and the prepay-term ceiling", and only the loan-amount half ever reached a
+    // priced quote — `deephaven-dscr-prepay-maxprice.programWithPriceLimit`, the function that
+    // combines the two, had NO production caller at all. On a $1,000,000 loan with a 3-year prepay
+    // that put four coupons out at 104750 against a sheet whose own rule caps them at 103750: a FULL
+    // POINT, with nothing in the answer saying a ceiling had been skipped.
+    //
+    // `price-limit.scenarioRuleFor` is the registry; the function it returns is that sheet's OWN, so
+    // there is no second definition of any ceiling here. A sheet with no such rule attaches nothing
+    // and is priced on its stored tiers — correct, and REPORTED (`priceLimitRule`) rather than left
+    // to read as "the whole rule was applied".
+    const investorName = (sheet.investor && (sheet.investor.name || sheet.investor.code)) || null;
+    const scenarioRule = priceLimitLib.scenarioRuleFor(investorName);
+    if (scenarioRule) {
+      program.scenarioPriceLimit = scenarioRule.resolve;
+      program.priceLimitSheet = scenarioRule.sheet;
+    } else {
+      program.priceLimitRuleReason = investorName ? 'no_scenario_rule_registered' : 'investor_unknown';
+    }
+
     // WHICH Lender Price programs a comparison against this sheet is about (db/574). It rides on the
     // owning PROGRAM row, not the sheet version, because it is a statement about the investor's
     // product family and survives every reprice of the sheet. NULL is the norm until a human states
@@ -268,7 +294,12 @@ async function loadProgram(scope, versionId) {
       lpScope: lpScopeLib.scopeFromRow(sheet.program),
       // The investor's NAME, which is the only key into `program-registry`. Carried here so the
       // agreement run can ask that investor's own prepayment layer; every other caller ignores it.
-      investorName: (sheet.investor && (sheet.investor.name || sheet.investor.code)) || null,
+      investorName,
+      // WHICH max-price rule governs a quote off this sheet — reported so a caller never has to
+      // assume. `sheet_tiers_only` is a real and often correct answer; it is not silence.
+      priceLimitRule: scenarioRule
+        ? { rule: priceLimitLib.RULE.SCENARIO, sheet: scenarioRule.sheet }
+        : { rule: priceLimitLib.RULE.SHEET_TIERS_ONLY, sheet: null, reason: program.priceLimitRuleReason },
       // HOW MANY accepted rules are in force, so a caller can say so rather than leave a reader to
       // assume. Zero is a real answer and a different one from "we could not read them", which is a
       // refusal above.
@@ -570,7 +601,20 @@ async function quoteRoute(req, res) {
     },
   );
 
-  return res.json({ ok: true, scope, ...result });
+  // THE SHEET'S CEILING IS PART OF THE ANSWER, NOT A DETAIL BURIED IN THE SHADOW BLOCK.
+  // Our engine states, per scenario, whether the rate sheet's own max-price rule governed this
+  // quote — and, when it could not, what it fell closed onto and why. That must never be
+  // something the caller has to go and ask for: a ceiling that was skipped and a ceiling that
+  // was honoured look identical in the number alone. `priceLimitNotice` is the ONE wording, and
+  // it is null exactly when the sheet's own rule governed and there is nothing to say.
+  const capRes = (result && result.shadow && result.shadow.priceLimit) || null;
+  const priceLimitNote = quote.priceLimitNotice(capRes);
+
+  return res.json({
+    ok: true, scope, ...result,
+    priceLimit: capRes,
+    ...(priceLimitNote ? { priceLimitNote } : {}),
+  });
 }
 
 // ---------------------------------------------------------------------------

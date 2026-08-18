@@ -353,9 +353,16 @@ async function compareSafely(ourAnswerMaybe, scenario, deps, program, cmpOpts, c
   }
   if (records.length && typeof deps.recordFinding === 'function') detach(() => deps.recordFinding(records));
 
+  // CARRY THE SHEET'S MAX-PRICE STATE OUT. In shadow mode the business `answer` is Lender Price's, so
+  // OUR quote object never reaches the caller — which means a ceiling we skipped, or fell closed onto,
+  // or refused to price under, would be invisible to everyone. `quote.quoteProgram` states it ONCE on
+  // its result; this passes that one statement through rather than deriving a second one.
+  const priceLimit = (ourQuote && typeof ourQuote === 'object' && ourQuote.priceLimit) || null;
+
   return {
     agreed: cmp.agree && (deep.ran ? deep.verdict === 'agree' : true),
     findings: cmp.findings,
+    priceLimit,
     deep: { ...deep, recorded: persist.length, notRecorded: held, supersededLadderKinds: Array.from(supersede) },
   };
 }

@@ -18,7 +18,7 @@ striking it here in the same commit.
 against the definition instead of retyping it, an operator command, a capability written ahead of its
 caller. A row is an invitation to say which — that is what the reason field is for.
 
-## Referenced nowhere at all (115)
+## Referenced nowhere at all (121)
 
 Not by production code and not by a test. Nothing asks for these, so nothing would notice if one were
 wrong.
@@ -72,6 +72,11 @@ wrong.
 - `ppe/canary-driver.js :: TIMING_HOLDS` — the timing-hold set; internal to classifyTick
 - `ppe/canary-schedule.js :: MINUTE_MS`
 - `ppe/cutover.js :: OPEN_FINDING_STATUSES`
+- `ppe/deephaven-dscr-prepay-maxprice.js :: lockTermLlpaTables` — the raw lock-term tables; the compiler reads them inside this module
+- `ppe/deephaven-dscr-prepay-maxprice.js :: maxPriceLpMilli` — the measured Lender Price ceiling this block was built from — kept as the source figure, read inside this module
+- `ppe/deephaven-dscr-prepay-maxprice.js :: NOT_FIXED5` — the "any structure except 5% fixed" predicate fragment; used inside this module
+- `ppe/deephaven-dscr-prepay-maxprice.js :: prepayLlpaTables` — the raw prepayment tables the compiler reads inside this module
+- `ppe/deephaven-dscr-prepay-maxprice.js :: prepayReason` — the plain-language reason attached to a prepayment cap; used inside this module
 - `ppe/disqualifier-reconciler.js :: defaultLayerOf`
 - `ppe/disqualifier-reconciler.js :: normalizeAuthority`
 - `ppe/disqualifier-reconciler.js :: ourVerdictFromQuote`
@@ -93,6 +98,7 @@ wrong.
 - `ppe/parity-matrix.js :: addToCell`
 - `ppe/parity-matrix.js :: emptyCell`
 - `ppe/parity-matrix.js :: finishCell`
+- `ppe/price-limit.js :: listScenarioRules` — lists the scenario-level cap rules a sheet publishes; exported so the suite can assert the set without pricing anything
 - `ppe/pricing-breakdown.js :: normRungFromLpRung`
 - `ppe/pricing-breakdown.js :: pickRung`
 - `ppe/pricing.js :: DEFAULT_ROUNDING_INCREMENT_MILLI`
@@ -139,7 +145,7 @@ wrong.
 - `sync/loans.js :: readLoan`
 - `views.js :: defaultView`
 
-## Named by a test and by no production code (166)
+## Named by a test and by no production code (177)
 
 This is the §2.45 / §2.46 shape exactly — built, tested, and asked by nothing — and it is also the
 shape of a perfectly good exported table that a suite asserts against. The list is watched, not
@@ -240,6 +246,16 @@ banned.
 - `ppe/canary-schedule.js :: MAX_BATTERY_SCENARIOS`
 - `ppe/canary-schedule.js :: MAX_INTERVAL_MS`
 - `ppe/cutover.js :: consecutiveCleanDays`
+- `ppe/deephaven-dscr-prepay-maxprice.js :: extensionAdjustment` — the lock-extension LLPA lookup; the sheet is consumed through `deephavenPriceLimitRules`, and the suite asserts this table cell by cell
+- `ppe/deephaven-dscr-prepay-maxprice.js :: extensionProblem` — the extension refusal wording; same — asserted directly rather than through a whole quote
+- `ppe/deephaven-dscr-prepay-maxprice.js :: loanAmountCapTiers` — the loan-size cap tiers; `price-limit.js` reads them through the compiled rules, and the suite asserts the tiers themselves
+- `ppe/deephaven-dscr-prepay-maxprice.js :: loanAmountMaxPrice` — the tier lookup behind those caps; asserted band by band
+- `ppe/deephaven-dscr-prepay-maxprice.js :: lockTermAdjustment` — the lock-term LLPA lookup; consumed through the compiled rules, asserted here
+- `ppe/deephaven-dscr-prepay-maxprice.js :: lockTermFacts` — the fact keys the lock-term rules read; exported so the suite can prove every one is published
+- `ppe/deephaven-dscr-prepay-maxprice.js :: prepayFactsFor` — the prepayment fact set for a scenario; exported so the suite can assert the vocabulary directly
+- `ppe/deephaven-dscr-prepay-maxprice.js :: prepayLlpa` — the prepayment LLPA lookup; consumed through the compiled rules, asserted here
+- `ppe/deephaven-dscr-prepay-maxprice.js :: prepayMaxPrice` — the prepayment price ceiling lookup; asserted structure by structure
+- `ppe/deephaven-dscr-prepay-maxprice.js :: resolveHoldbackMilli` — resolves the holdback this block prices against; called by the four builders in this file
 - `ppe/deephaven-overlay-rules.js :: _cuts`
 - `ppe/deephaven-overlay-rules.js :: FN_MAX_LOAN`
 - `ppe/deephaven-overlay-rules.js :: FN_MIN_DSCR`
@@ -266,6 +282,7 @@ banned.
 - `ppe/parity-matrix.js :: MAX_CELLS_PER_DIMENSION`
 - `ppe/parity-matrix.js :: reconcilesAll`
 - `ppe/ppp-structures.js :: PPP_STRUCTURES` — the prepayment-structure library itself; the rule board reads it through `rule-authoring.catalog`, and the suite asserts against this definition rather than retyping it
+- `ppe/price-limit.js :: CAP_STATUS` — the cap-status vocabulary; the quote carries a value from it, and the suite asserts against this definition rather than retyping the strings
 - `ppe/pricing-breakdown.js :: humanLabel`
 - `ppe/pricing.js :: interpolatePrice`
 - `ppe/pricing.js :: pointsToPrice`

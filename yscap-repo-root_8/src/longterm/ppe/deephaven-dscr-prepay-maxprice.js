@@ -462,7 +462,17 @@ function programWithPriceLimit(program, scenario, opts) {
       // A null cap means the sheet publishes no ceiling for this scenario (a loan above every tier with
       // no published prepay term). An EMPTY tier list is the engine's own "uncapped", so nothing is
       // invented.
-      capTiers: lim.capMilli == null || amount == null ? [] : [{ uptoLoanAmount: amount, capMilli: lim.capMilli }],
+      //
+      // A RESOLVED CAP WITH NO LOAN AMOUNT IS STILL A CAP. `maxPriceFor` combines TWO axes and the
+      // sheet's own rule is "the lower of the two, WHEN APPLICABLE" — so a scenario that names a
+      // prepay term but no loan amount still has a published ceiling (the prepay one; the loan-amount
+      // axis simply did not apply). Emitting `[]` there dropped that ceiling on the floor and the
+      // scenario priced UNCAPPED, which is the same class of silent over-quote as never running this
+      // function at all. The tier is therefore published with a threshold that covers any loan, which
+      // is exactly what "the loan-amount axis did not participate" means — never a guessed amount.
+      capTiers: lim.capMilli == null
+        ? []
+        : [{ uptoLoanAmount: amount == null ? Number.MAX_SAFE_INTEGER : amount, capMilli: lim.capMilli }],
     },
   };
 }

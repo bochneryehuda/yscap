@@ -15,6 +15,15 @@
  * settings supply the tenant default. So the same façade prices any tenant's any
  * program with zero code change.
  *
+ * THE SHEET'S OWN MAX-PRICE RULE IS ANSWERED, NEVER ASSUMED. `price-limit.js` is
+ * the ONE door: it runs the sheet's per-scenario ceiling rule (where that sheet
+ * has one — the Deephaven DSCR sheet combines a loan-amount tier with a
+ * prepay-term ceiling and takes the lower) and it resolves the stored tier list
+ * into the number the pricer clamps with, always saying WHICH state it is in.
+ * Every result — eligible or not — carries a `priceLimit` block. A ceiling that
+ * cannot be read, and a registered rule that cannot be evaluated, DECLINE the
+ * quote rather than pricing past a limit we cannot see.
+ *
  * THE SHAPE (all pure data):
  *   scenario  — a flat bag of facts: { fico, ltv, cltv, dscr, loan_amount, state,
  *               occupancy, property_type, units, purpose, prepay, lock_days,
@@ -52,17 +61,13 @@ function resolveRounding(settings) {
   }
 }
 
-// Pick the price cap for a loan amount from a program's ascending tier list.
-// A tier {uptoLoanAmount, capMilli} caps loans AT OR BELOW uptoLoanAmount; the
-// first tier the amount fits under wins. No tiers / no amount → no cap (null).
-function capForLoanAmount(capTiers, loanAmount) {
-  if (!Array.isArray(capTiers) || !capTiers.length || loanAmount == null) return null;
-  const sorted = capTiers.slice().sort((a, b) => Number(a.uptoLoanAmount) - Number(b.uptoLoanAmount));
-  for (const t of sorted) {
-    if (loanAmount <= Number(t.uptoLoanAmount)) return t.capMilli;
-  }
-  return null; // above every tier → uncapped (or the program should decline it via a bound)
-}
+// THE PRICE LIMIT IS RESOLVED IN ONE PLACE — `price-limit.js`. `capForLoanAmount` is
+// re-exported here (it is the RAW tier lookup and several callers already import it
+// from this module) but the façade itself never calls it: it goes through
+// `resolvePriceCap`, which is the only thing that can tell "no ceiling on this sheet"
+// apart from "we could not read this sheet's ceiling".
+const priceLimitLib = require('./price-limit');
+const { capForLoanAmount, resolvePriceCap, applyScenarioPriceLimit } = priceLimitLib;
 
 // Which base-grid rungs apply to this scenario: filter by lock_days and product
 // when the scenario names them; otherwise price the whole ladder.
@@ -91,6 +96,43 @@ function quoteProgram(arg, opts) {
   const s = settings || {};
   const programRef = { code: program.code || null, name: program.name || null, investorCode: program.investorCode || null };
 
+  // 0) THE SHEET'S OWN MAX-PRICE RULE, resolved FIRST so every branch below reports it.
+  //    A sheet whose ceiling depends on a SCENARIO fact (the Deephaven DSCR sheet takes the
+  //    LOWER of a loan-amount tier and a prepay-term ceiling) cannot state that ceiling in a
+  //    stored tier list, so its own rule is run here — through `price-limit.js`, which is the
+  //    single door and holds no copy of any ceiling. This is the ONE chokepoint: every
+  //    production caller of `quoteProgram` (the /quote route, the canary, the scheduled
+  //    canary, the agreement run, the breakdown) is covered by it and none of them needs to
+  //    know the rule exists.
+  const limited = applyScenarioPriceLimit(program, scenario, arg.priceLimitOpts);
+  const priceLimitProgram = limited.program;
+  const capRes = resolvePriceCap(priceLimitProgram.priceLimit, scenario.loan_amount);
+  const priceLimit = {
+    ...capRes,
+    rule: limited.rule,
+    ruleSheet: limited.sheet,
+    ruleReason: limited.reason,
+    ruleDetail: limited.detail,
+  };
+
+  // FAIL CLOSED, LOUDLY, in the two states where a ceiling exists and cannot be seen: the
+  // sheet's own rule could not be evaluated, or its tiers could not be read. Falling back to
+  // whatever tiers happen to be stored is exactly the over-quote this exists to stop — those
+  // tiers are the HIGHER ceiling. This is NOT routed through `opts.severityOf`: an unreadable
+  // ceiling can never be a soft finding.
+  if (!limited.usable || !capRes.readable) {
+    const detail = !limited.usable ? limited.detail : capRes.detail;
+    return {
+      eligible: false,
+      program: programRef,
+      declines: [{ code: 'price_limit_unreadable', reason: detail, source: 'price_limit', bound: false }],
+      bounds: {},
+      trace: [],
+      unknownFacts: [],
+      priceLimit,
+    };
+  }
+
   // 1) eligibility + bounds + accumulated LLPAs
   const decision = evaluateRules(program.rules || [], scenario, opts);
   if (!decision.eligible) {
@@ -102,11 +144,12 @@ function quoteProgram(arg, opts) {
       trace: decision.trace,
       unknownFacts: decision.unknownFacts,
       problems: [], // nothing was priced, so nothing could be double-charged
+      priceLimit,
     };
   }
 
   // 2) resolve the pricing basis (settings, program overrides win)
-  const pl = program.priceLimit || {};
+  const pl = priceLimitProgram.priceLimit || {};
   // MARGIN precedence (Layer 2, additive): a per-investor/per-scenario resolved margin
   // (the shape store.resolveMarginHoldbackForInvestor / margin-holdback.resolveMarginHoldback
   // returns) wins when the caller passes it; otherwise the legacy settings margin. When no
@@ -126,7 +169,11 @@ function quoteProgram(arg, opts) {
   const roundingMode = pl.roundingMode || rounding.mode;
   const roundingIncrementMilli = pl.roundingIncrementMilli == null ? rounding.incrementMilli : pl.roundingIncrementMilli;
   const floorMilli = pl.floorMilli == null ? (s['pricing.price_floor_milli'] == null ? null : s['pricing.price_floor_milli']) : pl.floorMilli;
-  const capMilli = capForLoanAmount(pl.capTiers, scenario.loan_amount);
+  const floorSource = pl.floorMilli != null ? 'sheet' : (s['pricing.price_floor_milli'] != null ? 'settings' : 'none');
+  // ONE source for the ceiling — the resolution taken at the top of this function. Never
+  // re-derive it here: a second derivation is how the number we clamp with and the state we
+  // report drift apart.
+  const capMilli = capRes.capMilli;
   const cumulativeAdjustmentCapMilli = s['pricing.cumulative_adjustment_cap_milli'] == null ? null : s['pricing.cumulative_adjustment_cap_milli'];
 
   // the scenario-level LLPA stack applies to EVERY rung (the coupon axis is the
@@ -173,6 +220,7 @@ function quoteProgram(arg, opts) {
     // they collide across, and which one was applied.
     problems: collision.problems,
     suppressedAdjustments: collision.suppressed,
+    priceLimit,
     pricingBasis: {
       marginMilli,
       marginSource,
@@ -180,7 +228,12 @@ function quoteProgram(arg, opts) {
       roundingMode,
       roundingIncrementMilli,
       floorMilli,
+      floorSource,
       capMilli,
+      capStatus: priceLimit.status,
+      capApplied: priceLimit.capApplied,
+      capAssumption: priceLimit.assumption,
+      capRule: priceLimit.rule,
       cumulativeAdjustmentCapMilli,
       rungCount: ladder.length,
     },
@@ -190,6 +243,9 @@ function quoteProgram(arg, opts) {
 module.exports = {
   resolveRounding,
   capForLoanAmount,
+  resolvePriceCap,
+  applyScenarioPriceLimit,
+  priceLimitNotice: priceLimitLib.priceLimitNotice,
   selectRungs,
   quoteProgram,
 };
