@@ -13509,6 +13509,15 @@ router.post('/applications/:id/nudge', async (req, res) => {
 // fires the notification at the due moment via the normal notify fan-out.
 const reminders = require('../lib/reminders');
 
+// THE DRAFTING DESK (owner-directed 2026-08-18): AI drafts a human-sounding
+// email FROM this file, for COPY-PASTE — no send exists anywhere on this path.
+// File-scoped by the /applications/:id middleware; output always borrower-safe.
+router.post('/applications/:id/drafting', async (req, res) => {
+  const out = await require('../lib/ai/drafting').draft(req.params.id, req.body || {}, { staffId: req.actor.id });
+  if (out.ok) await audit(req, 'drafting_generated', 'application', req.params.id, { preset: (req.body || {}).preset });
+  res.json(out);
+});
+
 // Everything the composer needs in one call: existing reminders on the file,
 // the selectable contacts, and the borrower-facing outstanding items (for the
 // "prefill outstanding conditions" helper). Access is already gated by the

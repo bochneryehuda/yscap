@@ -72,6 +72,7 @@ import FileContacts from '../components/FileContacts.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import ReminderModal from '../components/ReminderModal.jsx';
 import FileTasksPanel from '../components/FileTasksPanel.jsx';
+import DraftingPanel from '../components/DraftingPanel.jsx';
 import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import LoudHint from '../components/LoudHint.jsx';
@@ -5501,6 +5502,9 @@ export default function StaffApplication() {
     // Task management (owner-directed 2026-08-18): the file's scheduled tasks +
     // reminders as a standing section, beside the communication they fire through.
     { id: 'sec-tasks', label: 'Tasks & reminders', group: 'Communication' },
+    // The Drafting desk (owner-directed 2026-08-18): AI drafts emails from the
+    // file, copy-paste only — no send exists on this path.
+    { id: 'sec-drafting', label: 'Drafting', group: 'Communication' },
     { id: 'sec-messages', label: 'Communication & history', group: 'Communication' },
     // Construction draws is the LAST phase (post-funding), so it's the LAST section.
     // Shown for anyone who manages draws — funded or not — so the Draw Center is
@@ -6279,6 +6283,12 @@ export default function StaffApplication() {
       <Section hidden={!show('sec-tasks')} id="sec-tasks" title="Tasks & reminders" defaultOpen={false}
         info="Scheduled tasks and reminders on this file — who owns each one, when it's due, and who gets told. A task also shows on its owner's My-tasks queue; reminders fire automatically at their due moment.">
         <FileTasksPanel appId={id} team={team} />
+      </Section>
+
+      {/* The Drafting desk (owner-directed 2026-08-18): copy-paste email drafts. */}
+      <Section hidden={!show('sec-drafting')} id="sec-drafting" title="Drafting" defaultOpen={false}
+        info="Pilot AI drafts a human-sounding email from this file — the borrower's outstanding conditions, a deal overview, or anything you describe — for you to edit and COPY into your own email program. Nothing is ever sent from here.">
+        <DraftingPanel appId={id} />
       </Section>
 
       <Section hidden={!show('sec-messages')} id="sec-messages" title="Communication & history" defaultOpen={false}
