@@ -1,0 +1,306 @@
+{
+ "criteria": {
+  "id": "6a847dc4c081d80001f6a6ef",
+  "purchasePrice": 500000,
+  "loanAmount": 325000,
+  "rehabBudget": 0,
+  "totalLoanAmount": 400000,
+  "computeApr": true,
+  "totalLoanAmountByMortgageType": {
+   "Conventional": 325000
+  },
+  "totalLoanAmountByFHALoanType": {},
+  "subordinateLoanAmount": 0,
+  "pmiType": "BPMI",
+  "monthlyIncome": 16667,
+  "monthlyDebt": 5333,
+  "ami": 127400,
+  "incomeAmiRatio": 1.56989010989011,
+  "lmiData": {
+   "id": null,
+   "lmiSubsidyId": null,
+   "lmiTract": 0,
+   "borLimit": 0,
+   "chaseAA": false,
+   "msa": null,
+   "lmiType": null,
+   "commTract": null
+  },
+  "dutyToServe": false,
+  "clientDti": 0.31997360052798945,
+  "lineAmount": 0,
+  "drawAmount": 0,
+  "constructionDrawAmount": 0,
+  "renovationCost": 0,
+  "cashoutAmount": 50000,
+  "appraisedValue": 0,
+  "isFirstLienSame": "",
+  "monthlyReserve": 0,
+  "employeeLoan": "",
+  "dscr": 1.15,
+  "caseAssignementDate": "2026-08-18T15:44:04.491Z",
+  "docType": "FullDoc",
+  "closedEnd": false,
+  "balloon": false,
+  "rural": false,
+  "firstTimeHomeBuyer": false,
+  "selfEmployed": false,
+  "nonWarrantableProject": false,
+  "renovationLoan": false,
+  "communitySecond": false,
+  "numberOfCoBorrower": 1,
+  "numberOfBorrower": 1,
+  "loanYear": 30,
+  "loanPurpose": "CashoutRefinance",
+  "fhaEndorsementDate": "2026-08-18T15:44:04.491Z",
+  "loanType": "Fixed",
+  "paymentInterestType": "FullPITI",
+  "helocCriteria": {
+   "applyLineAmount": false
+  },
+  "mortgageTypes": [
+   "Conventional"
+  ],
+  "mortgageLimitMapByYear": {
+   "2026": {
+    "mortgageLimitFHA": "Conforming",
+    "mortgageLimit": "Conforming",
+    "fhaMortgageLimit": 1249125
+   }
+  },
+  "highBalanceCountyMappedByYear": {
+   "2026": true
+  },
+  "mortgageLimitForLatestYear": {
+   "mortgageLimitFHA": "Conforming",
+   "mortgageLimit": "Conforming",
+   "fhaMortgageLimit": 1249125,
+   "year": 2026,
+   "conventionnalLoanLimitAmount": 832750,
+   "matchingCountyLoanLimit": 1209750,
+   "countyLoanLimit1Unit": 1209750,
+   "countyLoanLimit2Unit": 1548975,
+   "countyLoanLimit3Unit": 1872225,
+   "countyLoanLimit4Unit": 2326875
+  },
+  "mortgageLimit": "Conforming",
+  "fhaMortgageLimit": 1249125,
+  "propertyUse": "Investment",
+  "ownProperties": 1,
+  "veteranType": "Active_Or_Veteran",
+  "vaUsageType": "First_Use",
+  "ufmipFinanced": "YES",
+  "fundingFeeFinanced": "YES",
+  "guranteeFeeFinanced": "YES",
+  "propertyValuationType": "Full_Appraisal",
+  "calculatedfeeAmount": 0,
+  "calculatedFeeByMortgageType": {},
+  "calculatedFeeByFHALoanType": {},
+  "affinityCode": "",
+  "affinityCodes": [],
+  "specialMortgageOptions": [
+   {
+    "id": "57f2f4cae4b071ea7b978407",
+    "name": "Debt Service Coverage Ratio",
+    "description": null,
+    "enabled": true,
+    "dynamicProperties": {},
+    "category": null
+   },
+   {
+    "id": "592868b74cedfd00015bdd63",
+    "name": "3 Yr PPP",
+    "description": null,
+    "enabled": true,
+    "dynamicProperties": {},
+    "category": null
+   },
+   {
+    "id": "5f37104ace8ad000014c7abe",
+    "name": "DSCR",
+    "description": null,
+    "enabled": true,
+    "dynamicProperties": {},
+    "category": null
+   }
+  ],
+  "inclusive": false,
+  "varaiableLoanTypes": [],
+  "fico": 720,
+  "fhaLoanTypes": [
+   "STANDARD"
+  ],
+  "vaLoanTypes": [
+   "ALL"
+  ],
+  "cemaIndicator": false,
+  "downPaymentAmount": 0,
+  "lienPriorityType": "FirstLien",
+  "compensationType": "BorrowerCompPlan",
+  "studentLoanIndicator": false,
+  "appraisalConditionAsIs": true,
+  "totalLoanAmountByVaType": {},
+  "normalHelocBehavior": true,
+  "interestOnly": false,
+  "payoffStatusIndicatorFirstLien": false,
+  "payoffStatusIndicatorSecondLien": false,
+  "existingFirstLien": true,
+  "subordinate": false,
+  "assumption": false,
+  "assumptionRate": 0,
+  "rent": 0,
+  "otherExpenses": 0,
+  "rentalPropertyCashFlowAmount": 0,
+  "occupancyRate": 0,
+  "firstLienPaymentAmount": 0,
+  "subordinateSubType": "NONE",
+  "useCustomerTotalLoanAmount": false,
+  "helocLtvComputationLogic": "LP",
+  "rtlproduct": false,
+  "reversemortgage": false,
+  "dti": 0.31997360052798945,
+  "ltv": 0.65,
+  "cltv": 0.65,
+  "highBalanceCounty": true,
+  "lenderFeeWaiver": false,
+  "escrowWaiver": false,
+  "hcltvDrawAmount": 0,
+  "hcltvLineAmount": 0.65,
+  "valueOfCollateral": 500000,
+  "ext": false
+ },
+ "dynamicPropertiesMap": {
+  "GLOBAL_GIFTFUNDPERCENT": {
+   "fieldId": "GLOBAL_GIFTFUNDPERCENT",
+   "value": "0",
+   "oValue": null,
+   "init": false
+  },
+  "GLOBAL_BorrowerType": {
+   "fieldId": "GLOBAL_BorrowerType",
+   "value": "LLC",
+   "oValue": null,
+   "init": false
+  },
+  "Citizenship": {
+   "fieldId": "Citizenship",
+   "value": "US Citizen",
+   "oValue": null,
+   "init": false
+  },
+  "IncomeDocType": {
+   "fieldId": "IncomeDocType",
+   "value": "DSCR",
+   "oValue": null,
+   "init": false
+  },
+  "MORT30LATESLAST12M": {
+   "fieldId": "MORT30LATESLAST12M",
+   "value": "0",
+   "oValue": 0,
+   "init": false
+  },
+  "MORT60LATESLAST12M": {
+   "fieldId": "MORT60LATESLAST12M",
+   "value": "0",
+   "oValue": 0,
+   "init": false
+  },
+  "MORT90LATESLAST12M": {
+   "fieldId": "MORT90LATESLAST12M",
+   "value": "0",
+   "oValue": null,
+   "init": false
+  },
+  "MORT120LATESLAST12M": {
+   "fieldId": "MORT120LATESLAST12M",
+   "value": "0",
+   "oValue": null,
+   "init": false
+  },
+  "GLOBAL_DECLININGMARKET": {
+   "fieldId": "GLOBAL_DECLININGMARKET",
+   "value": null,
+   "oValue": null,
+   "init": false
+  },
+  "GLOBAL_RESERVES": {
+   "fieldId": "GLOBAL_RESERVES",
+   "value": "Reserves_24",
+   "oValue": null,
+   "init": false
+  },
+  "GLOBAL_NativeAmerican": {
+   "fieldId": "GLOBAL_NativeAmerican",
+   "value": null,
+   "oValue": null,
+   "init": false
+  },
+  "GLOBAL_Section184": {
+   "fieldId": "GLOBAL_Section184",
+   "value": null,
+   "oValue": null,
+   "init": false
+  },
+  "AddlOccupancyType": {
+   "fieldId": "AddlOccupancyType",
+   "value": "Long_Term_Rental_Property",
+   "oValue": null,
+   "init": false
+  },
+  "GLOBAL_Cross_Collateralization_Product": {
+   "fieldId": "GLOBAL_Cross_Collateralization_Product",
+   "value": null,
+   "oValue": null,
+   "init": false
+  },
+  "Global_DSCR_Asset_Depletion": {
+   "fieldId": "Global_DSCR_Asset_Depletion",
+   "value": null,
+   "oValue": null,
+   "init": false
+  },
+  "PrepayTerm": {
+   "fieldId": "PrepayTerm",
+   "value": "36 Months",
+   "oValue": null,
+   "init": false
+  },
+  "PrePayment_Plan_Type": {
+   "fieldId": "PrePayment_Plan_Type",
+   "value": "Standard",
+   "oValue": null,
+   "init": false
+  }
+ },
+ "property": {
+  "allowModifiedDate": true,
+  "propertyType": "SingleFamily",
+  "attachmentType": "Detached",
+  "numberOfUnit": 1,
+  "bedrooms": 0,
+  "bathrooms": 0,
+  "finishedSqFt": 0,
+  "lotSizeSqFt": 0,
+  "lotSizeAcre": 0,
+  "yearBuilt": 0,
+  "mls": "",
+  "totalRooms": 0,
+  "propertyDescription": "",
+  "price": 0,
+  "priceDate": "",
+  "hoa": 0,
+  "taxAssessment": 0,
+  "taxAssessmentYear": "",
+  "propertyTaxPercent": 0,
+  "propertyTaxYear": "",
+  "lastSoldPrice": 0,
+  "lastSoldDate": "",
+  "jsonImages": [],
+  "links": [],
+  "forSale": false,
+  "features": [],
+  "constructions": [],
+  "facts": []
+ }
+}

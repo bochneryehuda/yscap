@@ -5189,3 +5189,81 @@ policy, the precedence is the builder's mechanism, and testing only the first le
 flip.**
 
 155/155 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.86 — ⛔ THE VENDOR TELLS US WHAT IT UNDERSTOOD, AND WE THREW IT AWAY (2026-08-18)
+
+**The owner's stated main key**, in their own words:
+
+> *"…make sure that the mirror is working correctly, that the scenario that they're entering is
+> actually the system is reading it for the correct scenario, that the system understands your scenario
+> exactly and it doesn't get any of your fields wrong. This is the main key right now."*
+
+**That answer has been arriving in every response we pay for, unread.** Measured live 2026-08-18 on a
+cash-out scenario: `results.baseSearch` is the vendor's own statement of the search it **ran**, and
+**all 41 `criteria` keys we send come back, plus all 17 `dynamicPropertiesMap` entries** — the loan
+purpose, the cash-out amount, FICO, DSCR, LTV, the amount triangle, the borrower type, the prepay term.
+`client.parse` kept `search.date` and nothing else. `collectOptions` extracted the per-leaf echo into
+`option.terms` and `parse` dropped all but two of its fields. Grepped before building: **zero readers
+anywhere compared a single echoed value against what was sent.**
+
+**This does not fix one defect — it makes the whole class self-reporting.** A field we drop,
+mistransform, or silently default now shows up as *"we sent X, they ran Y"*, on every search, for free.
+
+`lenderprice/echo-check.js` compares the body we **built** against the search the vendor says it
+**ran** — deliberately the built body, not the caller's scenario, because the scenario is in our units
+and the echo is in the vendor's, and comparing those would call a unit conversion a defect.
+
+**⛔ THE HARD PART WAS NOT FINDING MISMATCHES — IT WAS NOT INVENTING THEM.** Four `criteria` keys are
+the vendor's own arithmetic rather than an echo: `totalLoanAmountByMortgageType` comes back
+`{Conventional: 325000}` where we send a zeroed FHA/VA/USDA shape, and `mortgageLimitForLatestYear` is
+re-derived from the county. Comparing those would report four mismatches on **every** search forever.
+**A check that always cries wolf is worse than no check** — it teaches its reader to ignore it, which is
+how a real mismatch gets missed. So they are a **named** exclusion list with a stated reason each, and
+the suite asserts every reason is actually written. Two more false-alarm sources are closed the same
+way: the vendor normalizes types (we send `ownProperties: "1"`, it echoes `1` — the same answer), and it
+**resolves SMO ids against its own registry**, so that list is compared by **name**, not by id.
+
+**And the opposite failure is pinned harder still: an empty check is never an agreement.** `understood`
+is true only when something was actually compared *and* nothing mismatched, and a field the vendor did
+not echo lands in its own `notEchoed` bucket — because "nobody looked" reading as "everything agreed" is
+the one bug that would make this module decorative.
+
+**⛔ IT FOUND SOMETHING ON ITS FIRST RUN.** Against the real captured echo: **45 fields checked, 44
+agreed, one genuine mismatch** — we send four special mortgage options and the vendor ran **three**. It
+did not take **`Prepay Buyout`**. The `3 Yr PPP` option *was* run, so this is one option declined, not
+the list ignored. The suite pins that mismatch rather than tidying it away: **a test that asserted
+`understood === true` here would have buried the first thing the check caught.**
+
+> **⛔ OPEN QUESTION (vendor, not owner):** is Lender Price declining `Prepay Buyout` because it does not
+> apply to this scenario, or because it does not recognise the id we send? Same class as the measured
+> unpublished-token findings — an unknown token returns HTTP 200 and prices differently. Needs one
+> targeted live probe; **not guessed at here.**
+
+**The echo also confirmed §2.85 live**, incidentally and usefully: the captured response carries
+`PrepayTerm: "36 Months"` for a 36-month request that would have gone out as `"60 Months"` before that
+fix landed. The mechanism verifies the previous section's repair without being asked to.
+
+**The fixture is a real live echo** — `test/fixtures/lenderprice/base-search-echo.json`, the `baseSearch`
+block from an actual priced search, **with the property address removed**: a fixture is a file anybody
+can read, and a captured address belongs to a real property. A hand-written echo would only prove the
+comparator agrees with my own idea of the vendor's shape, which is precisely the trap this closes.
+
+`scripts/test-lt-ppe-echo-understood.js` (57 assertions) covers the real echo field by field, nine
+substituted values including the owner's two named cases, the four false-alarm classes, the
+absent/empty/not-an-object responses, and the per-option purpose check.
+
+**Mutation-proven seven ways**: an empty check reporting understood (1 bites), vendor-computed fields
+compared (9), scalar normalization dropped (3), an un-echoed field silently counted as agreed (2), the
+dynamic properties not checked (2), the SMO list compared by id (2), and a wrong-purpose option not
+reported (2).
+
+Two mutations needed re-aiming, recorded rather than quietly replaced. Dropping the `number` branch of
+`canon` was a **no-op** — the function's final `String(v)` already covers it — the same
+mutation-that-changes-nothing as §2.83, so it was re-aimed at the whole scalar path. And the dynamic
+properties bit only once, because every prepay-term assertion read the **fixture** directly: that proves
+what the vendor said, **not that the comparator looked**. Assertions that go through the comparator's own
+accounting were added, and it now bites twice.
+
+156/156 suites, 33 database-backed. All seven gates green.
