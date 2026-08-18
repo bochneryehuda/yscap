@@ -399,7 +399,11 @@ const REQ = (over = {}) => Object.assign(
     // through a stub, and a stub cannot see WHICH leg builder was used.
     const routeSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'routes', 'ppe.js'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    ok(/buildOursLeg\(program, settings, \{ factsFromLp: true \}\)/.test(routeSrc),
+    // Matched on the two things this assertion is ABOUT — the shared builder, and the conversion from
+    // Lender Price scenarios — rather than on the exact argument literal. Pinning the literal made this
+    // fail the day the run started passing the investor's prepayment descriptor as well, which is a
+    // correct change to a different question (see test-lt-ppe-agreement-ppp-wired.js, which owns it).
+    ok(/buildOursLeg\(program, settings, \{[^}]*factsFromLp: true/.test(routeSrc),
       'G3 the run route builds OUR leg through the shared builder, converting from Lender Price scenarios');
     ok(/buildLpLeg\(lpClient/.test(routeSrc) && !/lp:\s*\(sc\)\s*=>\s*lpClient\.price/.test(routeSrc),
       'G4 …and THEIR leg through the shared builder, never handing client.price straight to the harness');

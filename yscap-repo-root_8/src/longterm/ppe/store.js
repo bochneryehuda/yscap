@@ -405,7 +405,19 @@ async function loadRateSheet(db, versionId) {
     const p = await db.query('SELECT * FROM lt_ppe_program WHERE id = $1', [v.rows[0].program_id]);
     program = p.rows[0] || null;
   } catch (_) { program = null; }
-  return { version: v.rows[0], program, basePrices: bp.rows, adjustments: adj.rows, priceLimit: pl.rows[0] || null };
+  // The INVESTOR rides along for the same reason the program does: the agreement harness has to ask
+  // that investor's own prepayment-penalty layer about every scenario, and the only key into
+  // `program-registry` is the investor's NAME. Without it the harness prices a sheet that carries no
+  // borrower-type rule at all and reports agreement on a loan the investor will not buy. Best-effort
+  // and additive — a sheet whose investor cannot be read still prices exactly as before.
+  let investor = null;
+  try {
+    if (program && program.investor_id) {
+      const iq = await db.query('SELECT * FROM lt_ppe_investor WHERE id = $1', [program.investor_id]);
+      investor = iq.rows[0] || null;
+    }
+  } catch (_) { investor = null; }
+  return { version: v.rows[0], program, investor, basePrices: bp.rows, adjustments: adj.rows, priceLimit: pl.rows[0] || null };
 }
 
 // Publish a version: mark it published + effective from now, and CLOSE the prior published version's

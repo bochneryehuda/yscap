@@ -2728,3 +2728,43 @@ db/571 rule store, main's more faithful `@db.Decimal`, this branch's relation fi
 index, and main's whole new `LtBorrowerLink` model; and the built portal bundle was **REBUILT from the
 merged `app-v2/src`** rather than either side's copy being chosen — verified by finding a distinctive
 string from each side in the new bundle.
+
+**§2.45 — THE PREPAYMENT LAYER WAS BUILT INTO THE GATE AND THE GATE NEVER ASKED FOR IT (2026-08-18).**
+§2.40 gave `buildOursLeg` an optional `pppDescriptor` so the agreement gate could see a state
+prepayment-penalty prohibition, proved it with 19 assertions, and shipped. `grep pppDescriptor` over
+`src/` then found the module **and nothing else**: the production run route built its leg without one,
+so the layer was dark in the ONE place it is consumed. The capability landed; the caller did not.
+
+**MEASURED ON THE REAL BATTERY, both wirings side by side: 2 of the canonical 299 scenarios come back
+with the wrong eligibility, and one of them is the battery's OWN scenario flagged `_ineligible` for "NJ
+Individual PPP prohibited" — PRICED.** That is the dangerous direction (we quote a loan the investor
+will not buy) on the gate that decides whether a rate sheet may publish.
+
+**THE FIX IS A CHAIN, and the middle link is why it had been missing.** The only key into
+`program-registry` is the investor's NAME, and the sheet loader did not carry it: `loadRateSheet`
+returned the version, the program and the grid, so the run had no way to name the investor whose rules
+it should ask. It now carries the investor row (best-effort and additive — a sheet whose investor cannot
+be read prices exactly as before), `loadProgram` hands it up as `investorName`, and the run resolves the
+descriptor through the shared registry.
+
+**IT IS OPT-IN BY CONSTRUCTION, not by a flag.** `programFor` answers null for an investor with no
+registered program and the leg with no descriptor is byte-for-byte what it was, so this can only ever
+ADD the layer where one is encoded — it can never change an investor nobody has written down.
+
+**AND A RUN THAT DID NOT ASK NOW SAYS SO.** Every answer, including the failed-to-record one, carries
+`pppLayer`: asked and for which investor, or not asked with the reason — `no_registered_program` and
+`investor_unknown` kept apart, because they send a reader to different places. A green gate that quietly
+skipped a whole layer of the investor's rules is precisely the silent-green failure this workstream
+keeps finding, and a verdict alone cannot reveal it.
+
+Four mutations proven red with green controls, including the over-eager fix: a descriptor that declines
+EVERYTHING moves 256 of 299 scenarios and the control catches it. Two existing suites were corrected
+rather than worked around — one pinned the leg-builder's exact argument literal (its stated subject is
+the shared builder and the fact conversion, so it now matches those two things), and a fixture built a
+rate sheet with no base grid, which `loadProgram` rightly refuses.
+
+**EIGHT MODULES LEFT THE UNREACHED LEDGER IN THE SAME CHANGE, AND NOT ONE OF THEM IS NEW.** The investor
+registry, the Deephaven rate-sheet, eligibility, prepayment and overlay layers, the program engine and
+the overlay cut engine were all built, tested, and required by nothing the server boots. **One caller was
+the whole difference.** `test-lt-reachability-gate.js` refused the now-stale rows and forced that into
+the same commit — which is the ledger working exactly as it was meant to.

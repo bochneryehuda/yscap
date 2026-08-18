@@ -158,20 +158,12 @@ was, which is the safe half of the answer.
 | `src/longterm/ppe/program-audit.js` | The offline our-side half of the same harness (dead-rule / coverage profiler). | NOT the agreement run — that is now wired and does not call this. It profiles OUR sheet alone, with no vendor leg, so its home is the free pre-flight beside `GET …/coverage`, not the paid battery. |
 | `src/longterm/ppe/program-audit-command.js` | **Deliberately unwired, and it IS run.** It is the body of the offline operator command `scripts/lt-ppe-program-audit.js`, which starts it as its own process — so nothing the server boots requires it, by design. It lives here rather than in `scripts/` because Long-Term back-end code may live nowhere else, and the launcher imports nothing so no RTL file gains a Long-Term dependency. | Nothing should. If the audit is ever wanted *inside* the product (a scheduled run, an admin screen), that surface would require it — and this row comes off then. |
 | `src/longterm/ppe/disqualify-reconcile.js` | The earlier per-layer disqualifier reconciler. | Superseded in practice by `disqualifier-reconciler.js`, which the agreement run now calls. Keep or retire deliberately — nothing should call two of these. |
-| `src/longterm/ppe/deephaven-dscr-sheet.js` | Layer 1 — the Deephaven DSCR sheet encoded from the live tables. | The program registry becoming the pricing path (P10 / cutover). |
 | `src/longterm/ppe/deephaven-dscr-prepay-maxprice.js` | The same sheet's prepay / max-price / lock block. | As above. |
-| `src/longterm/ppe/deephaven-matrix.js` | Layer 2 — the independent eligibility engine. | As above. |
-| `src/longterm/ppe/deephaven-ppp-matrix.js` | Layer 3 — the prepayment-penalty state engine. | As above. |
-| `src/longterm/ppe/deephaven-overlay-rules.js` | The Advanced-overlay enforcement data (D36). | As above. |
 | `src/longterm/ppe/deephaven-grid.js` | The rate-sheet GRID model (E3/E5). | The rate-sheet console's grid editor, or the ingest path. |
-| `src/longterm/ppe/program-deephaven-dscr.js` | The investor-named program tying the three layers together. | As above. |
-| `src/longterm/ppe/program-engine.js` | The generic engine that program is an instance of. | As above. |
-| `src/longterm/ppe/program-registry.js` | The investor program registry. | As above. |
 | `src/longterm/ppe/layer-data-registry.js` | The versioned investor-layer data registry + compiled catalog. | As above. |
 | `src/longterm/ppe/layer-compile-eligibility.js` | Pure compiler: eligibility data → canonical rules. | As above. |
 | `src/longterm/ppe/layer-compile-ppp.js` | Pure compiler: prepayment data → canonical rules. | As above. |
 | `src/longterm/ppe/layer-facts.js` | The closed derived-fact vocabulary the two compilers share. | As above. |
-| `src/longterm/ppe/overlay-cut-engine.js` | The generic overlay-cut interpreter (D36, the scalable middle). | As above. |
 | `src/longterm/ppe/rule-builder.js` | The universal rule / condition authoring layer (#48). `rule-authoring.js` calls it now, but that service is itself unwired, so this is still reached by nothing. | A route mounting `rule-authoring` — the same one thing that wires the two rows below. |
 | `src/longterm/ppe/ppp-structures.js` | The reusable prepayment-penalty structure library (D31). Same as above: `rule-authoring.js` offers its structures as the value set for the `ppp_structure_key` dimension, and warns when one already carries a holdback — but nothing reaches that service. | As above. |
 | `src/longterm/ppe/rule-authoring.js` | The rule-authoring SERVICE — an authoring intent in, a validated canonical rule plus a screen-ready render out, or a refusal in plain language. Pure. | `POST /api/lt/ppe/rules/drafts` (+ the list/read doors). `src/longterm/routes/ppe.js` belongs to another workstream at the moment and was deliberately not edited. |
@@ -195,3 +187,15 @@ unfinished, or untested — most of these are pure, thoroughly tested, and were 
 wiring on purpose. It also does not mean the module is unused: a great many are exercised by the test
 suites, and several require each other, which is why "required by another Long-Term module" is not
 treated as reachability. Only a path from what the server actually mounts and boots counts.
+
+## The three-dot program is WIRED now (2026-08-18)
+
+Eight rows came off this ledger in one change, and none of them was a new module: the investor
+PROGRAM registry — and with it the Deephaven rate-sheet, eligibility, prepayment-penalty and overlay
+layers it composes — reached the production graph the moment the **agreement run** started asking the
+investor's own prepayment rules (`routes/ppe.js` → `program-registry.programFor`). Until then all of
+it was built, tested, and required by nothing the server boots.
+
+That is worth stating plainly rather than quietly deleting rows: the layers were never wrong, they
+were unasked, and one caller was the whole difference. `test-lt-reachability-gate.js` is what refused
+the stale rows and forced this note into the same commit.

@@ -72,6 +72,7 @@ const agreementStore = require('../ppe/agreement-store');
 const ratesheetAgreement = require('../ppe/ratesheet-agreement');
 const agreementScenarios = require('../ppe/agreement-scenarios');
 const lpAgreementLegs = require('../ppe/lp-agreement-legs');
+const programRegistry = require('../ppe/program-registry');
 const agreementScenarioGenerator = require('../ppe/agreement-scenario-generator');
 const ratesheetCells = require('../ppe/ratesheet-cells');
 const ratesheetDiff = require('../ppe/ratesheet-diff');
@@ -190,7 +191,14 @@ async function loadProgram(scope, versionId) {
     // product family and survives every reprice of the sheet. NULL is the norm until a human states
     // it, and null means "not scoped" — the comparison then abstains and says so, never compares our
     // one ladder against a merge of Lender Price's seventeen.
-    return { program, lpScope: lpScopeLib.scopeFromRow(sheet.program), reason: null };
+    return {
+      program,
+      lpScope: lpScopeLib.scopeFromRow(sheet.program),
+      // The investor's NAME, which is the only key into `program-registry`. Carried here so the
+      // agreement run can ask that investor's own prepayment layer; every other caller ignores it.
+      investorName: (sheet.investor && (sheet.investor.name || sheet.investor.code)) || null,
+      reason: null,
+    };
   } catch (e) {
     return { program: null, reason: `program_load_failed: ${String((e && e.message) || e).slice(0, 120)}` };
   }
@@ -1836,7 +1844,7 @@ async function runAgreementRoute(req, res) {
   const found = await resolveVersion(req, res);
   if (!found) return undefined;
 
-  const { program, lpScope, reason: noProgram } = await loadProgram(found.scope, found.versionId);
+  const { program, lpScope, investorName, reason: noProgram } = await loadProgram(found.scope, found.versionId);
   if (!program) {
     return res.status(422).json({
       error: 'This rate sheet cannot be priced yet, so there is nothing to measure against Lender Price.',
@@ -1875,6 +1883,22 @@ async function runAgreementRoute(req, res) {
   // scenarios, summarized them as a clean nothing, and recorded a verdict against a sheet it had never
   // compared. That is the exact shape this route exists to prevent, so an empty battery is a refusal
   // rather than a run: there is no honest verdict to record when there is nothing to measure.
+  // Which investor's prepayment layer applies, resolved ONCE and reported either way. A run that
+  // silently did not ask is the failure this whole workstream keeps finding, so the response says
+  // whether the layer was asked and, when it was not, why — a green gate must never be able to hide
+  // "we did not look".
+  const pppDesc = investorName ? programRegistry.programFor(investorName) : null;
+  const pppLayer = pppDesc
+    ? { asked: true, investor: investorName }
+    : {
+      asked: false,
+      investor: investorName || null,
+      reason: investorName ? 'no_registered_program' : 'investor_unknown',
+      note: investorName
+        ? `No investor program is registered for “${investorName}”, so its prepayment-penalty rules were not part of this measurement.`
+        : 'This sheet\'s investor could not be read, so no prepayment-penalty rules were part of this measurement.',
+    };
+
   const built = agreementScenarios.buildAgreementScenarios();
   const all = Array.isArray(built && built.scenarios) ? built.scenarios : [];
   if (!all.length) {
@@ -1901,7 +1925,17 @@ async function runAgreementRoute(req, res) {
       // `buildOursLeg({ factsFromLp: true })` and `buildLpLeg` are the ONE definition of each side —
       // the same pair the live agreement script uses, so the route and the script cannot drift.
       {
-        ours: lpAgreementLegs.buildOursLeg(program, settings, { factsFromLp: true }),
+        // THE PREPAYMENT LAYER IS ASKED, and leaving it out is what made this gate structurally blind.
+        // The harness prices a SHEET; a state's prepayment-penalty law lives in the INVESTOR's own
+        // Layer 3 (`deephaven-ppp-matrix`), and the sheet carries no borrower-type rule at all — so
+        // without the descriptor the battery's own scenario flagged INELIGIBLE for "NJ Individual PPP
+        // prohibited" comes back PRICED and the run reports agreement on a loan the investor will not
+        // buy. The capability landed with the leg; this is the caller it never had.
+        //
+        // OPT-IN BY CONSTRUCTION: `programFor` answers null for an investor with no registered program,
+        // and the leg with no descriptor is byte-for-byte what it was — so this can only ever ADD the
+        // layer where one exists, never change an investor nobody has encoded.
+        ours: lpAgreementLegs.buildOursLeg(program, settings, { factsFromLp: true, pppDescriptor: pppDesc }),
         lp: lpAgreementLegs.buildLpLeg(lpClient, { withDisqualify: true }),
       },
       {
@@ -1934,6 +1968,10 @@ async function runAgreementRoute(req, res) {
     versionId: found.versionId,
     scenarios: battery.length,
     truncated: capped ? all.length - battery.length : 0,
+    // WHETHER THE PREPAYMENT LAYER WAS ASKED, on every answer including the failed ones. A gate that
+    // reports agreement while a whole layer of the investor's own rules went unasked is exactly the
+    // silent-green failure this engine keeps producing, and a caller cannot tell from a verdict alone.
+    pppLayer,
     summary: run.summary,
   };
 
