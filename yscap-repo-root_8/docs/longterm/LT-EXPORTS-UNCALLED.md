@@ -18,7 +18,7 @@ striking it here in the same commit.
 against the definition instead of retyping it, an operator command, a capability written ahead of its
 caller. A row is an invitation to say which — that is what the reason field is for.
 
-## Referenced nowhere at all (90)
+## Referenced nowhere at all (95)
 
 Not by production code and not by a test. Nothing asks for these, so nothing would notice if one were
 wrong.
@@ -30,10 +30,10 @@ wrong.
 - `audience.js :: AMBIGUOUS_ALONE`
 - `audience.js :: CLIENT_AUDIENCES`
 - `audience.js :: INTERNAL_ONLY`
-- `audience.js :: INTERNAL_ONLY_KEYS`
-- `audience.js :: internalOnlyColumns`
 - `audience.js :: internalOnlyFieldIds`
 - `borrower-match.js :: SHADOW_EMAIL_DOMAINS`
+- `client-view.js :: isInternalColumn` — internal to the column guard; exported for symmetry with the allowlist and used only there
+- `client-view.js :: NOT_NUMBERED` — the sentinel for a field with no Encompass number; internal
 - `encompass/formulas.js :: CREDIT_SCORE_LOGIC`
 - `encompass/formulas.js :: OTHER_FORMULAS`
 - `encompass/index.js :: familyOf`
@@ -65,6 +65,11 @@ wrong.
 - `ppe/agreement-scenario-generator.js :: satisfyLeaf`
 - `ppe/agreement-store.js :: KIND_OVERRIDE`
 - `ppe/agreement-store.js :: KIND_RUN`
+- `ppe/canary-driver.js :: DEFAULT_LEASE_MS` — the default beside it; internal
+- `ppe/canary-driver.js :: ON_VALUES` — the only strings that mean ON; internal to driverEnabled
+- `ppe/canary-driver.js :: recordDenied` — writes the turned-away instance onto the state row; internal
+- `ppe/canary-driver.js :: recordOutcome` — writes the tick result onto the state row; internal
+- `ppe/canary-driver.js :: TIMING_HOLDS` — the timing-hold set; internal to classifyTick
 - `ppe/canary-schedule.js :: MINUTE_MS`
 - `ppe/cutover.js :: OPEN_FINDING_STATUSES`
 - `ppe/disqualifier-reconciler.js :: defaultLayerOf`
@@ -114,7 +119,7 @@ wrong.
 - `sync/loans.js :: readLoan`
 - `views.js :: defaultView`
 
-## Named by a test and by no production code (161)
+## Named by a test and by no production code (164)
 
 This is the §2.45 / §2.46 shape exactly — built, tested, and asked by nothing — and it is also the
 shape of a perfectly good exported table that a suite asserts against. The list is watched, not
@@ -125,12 +130,12 @@ banned.
 - `access.js :: longTermRoleFor`
 - `access.js :: LT_ROLES`
 - `access.js :: SCOPE_ALL`
-- `audience.js :: isClient`
-- `audience.js :: maySeeField`
+- `audience.js :: INTERNAL_ONLY_KEYS`
 - `audience.js :: mentionsInvestor`
 - `audience.js :: REDACTION`
-- `audience.js :: stripInternalOnly`
 - `borrower-match.js :: groupLoansByEmail`
+- `client-view.js :: CLIENT_LOAN_FIELDS` — the allowlist its own sweep asserts against, so the test can never drift from the definition
+- `client-view.js :: withheldFields` — the same — what was held back, read by the sweep
 - `encompass/client.js :: tokenProbe`
 - `encompass/dropdowns.js :: isKnownValue`
 - `encompass/formulas.js :: DSCR_RATIO`
@@ -205,10 +210,15 @@ banned.
 - `ppe/advanced-facts.js :: lpPricedKeys`
 - `ppe/agreement-scenario-generator.js :: distinctFrom`
 - `ppe/agreement-store.js :: gateDecision`
-- `ppe/canary-schedule.js :: DEFAULT_INTERVAL_MS`
+- `ppe/canary-driver.js :: classifyTick` — the timing-hold vs cannot-ever-run split, asserted directly by the driver suite
+- `ppe/canary-driver.js :: driverEnabled` — the off-switch reader; the suite drives its whole truth table
+- `ppe/canary-driver.js :: intervalMsOf` — the interval floor reader; same
+- `ppe/canary-driver.js :: leaseMsOf` — the lease-length reader; same
+- `ppe/canary-driver.js :: lockKeyFor` — the lease key; the suite races two contenders through it
+- `ppe/canary-driver.js :: MIN_LEASE_MS` — the floor the suite asserts against rather than retyping
+- `ppe/canary-driver.js :: tickOnce` — the one pass; start() calls it internally and the suite drives it directly
 - `ppe/canary-schedule.js :: MAX_BATTERY_SCENARIOS`
 - `ppe/canary-schedule.js :: MAX_INTERVAL_MS`
-- `ppe/canary-schedule.js :: MIN_INTERVAL_MS`
 - `ppe/cutover.js :: consecutiveCleanDays`
 - `ppe/deephaven-overlay-rules.js :: _cuts`
 - `ppe/deephaven-overlay-rules.js :: FN_MAX_LOAN`
@@ -262,11 +272,9 @@ banned.
 - `ppe/store.js :: resolveMarginHoldbackForInvestor`
 - `ppe/store.js :: resolveSetting`
 - `ppe/store.js :: setSetting`
-- `product-term.js :: isLongTerm`
 - `product-term.js :: productSql`
 - `product-term.js :: programSaysShortTerm`
 - `product-term.js :: splitByProduct`
-- `routes/me.js :: PRODUCTS`
 - `settings/encompass-settings.js :: classifyProgram`
 - `stages.js :: DEFAULT_MAP`
 - `stages.js :: DEFAULT_STAGES`
