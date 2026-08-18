@@ -43,6 +43,9 @@ let n = 0; let failures = 0;
 const ok = (c, m) => { console.log(`${c ? '  ok  ' : ' FAIL '} ${m}`); n += 1; if (!c) failures += 1; };
 
 const RUNNER = path.join(__dirname, 'test-lt-ppe-all.js');
+// The runner requires this, so the fixture directory needs it too — copied verbatim alongside, or the
+// copied runner cannot resolve it and every case below fails as a module error rather than an assertion.
+const SCAN = path.join(__dirname, 'lt-suite-scan.js');
 
 // Written as a joined placeholder ON PURPOSE. This file is itself a suite the runner scans, and
 // spelling the read out in full here would make the runner count this pure test — which touches no
@@ -146,6 +149,7 @@ try {
   for (const [name, src] of Object.entries(FIXTURES)) fs.writeFileSync(path.join(dir, name), src);
   // Verbatim. The file under test is the file that ships.
   fs.copyFileSync(RUNNER, path.join(dir, 'test-lt-ppe-all.js'));
+  fs.copyFileSync(SCAN, path.join(dir, 'lt-suite-scan.js'));
 
   /** Run the copied runner in the fixture directory under a controlled environment. */
   function run(env) {

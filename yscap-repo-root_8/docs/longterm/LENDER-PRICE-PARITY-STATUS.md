@@ -2337,3 +2337,44 @@ Seven mutations proven to turn the suite red, including the two that matter most
 `lock_term_days` puts both LLPAs back to never firing, and applying the WRONG fix drops the ladder to
 0 rungs at 45 and 60 days while every other assertion stays green. The Postgres refusal is proven with
 a CONTROL either side — a summary from the real battery stores, the same shape carrying a NUL does not.
+
+**§2.39 — ELEVEN TEST SUITES THAT NOTHING RAN (2026-08-18).** §2.36 stopped the aggregate runner
+reporting a green run over suites that had proven nothing. This is the same defect one level out, and it
+was already live: **166 `scripts/test-lt-*.js` suites exist, and eleven of them were executed by nothing
+at all.** `npm test` names 59 by hand and invokes `test-lt-ppe-all.js`, which globs the 100
+`test-lt-ppe-*` ones; set-difference the two and eleven fall through the gap — roughly **167 assertions
+that pass, prove something real, and guard nothing.** One of them covers
+`agreement-scenario-generator.js`, which had been wired into a live route the day before. A test nobody
+runs is indistinguishable from a test that does not exist, except that it looks like coverage on the
+shelf.
+
+**THE ROOT IS THAT MEMBERSHIP WAS STATED TWICE.** Two hand-kept lists, no third thing comparing them.
+`scripts/check-lt-suite-coverage.js` is that third thing: every LT suite must be executed by `npm test`
+— named in the chain, or covered by an aggregate runner **the chain actually invokes** — or recorded in
+`docs/longterm/LT-SUITES-UNRUN.md` with a reason. It fails BOTH WAYS, exactly like the reachability
+gate: an undocumented orphan fails, and so does a ledger row for a suite that is run now.
+
+**IT READS THE GLOB FROM THE RUNNER'S OWN MODULE.** A checker carrying its own copy of "which files are
+suites" would be the third statement of the rule whose two copies caused this. `scripts/lt-suite-scan.js`
+is now the ONE definition of the suite family, of which suites need a database, and of what an announced
+skip looks like; the runner and the gate both read it.
+
+**THE SHARPEST ASSERTION IS ABOUT THE AGGREGATE RUNNER ITSELF.** A runner whose glob covers a hundred
+suites contributes NOTHING if the chain never invokes it — and assuming otherwise would be precisely the
+silent-green failure being fixed. The gate only credits a runner the chain names, and the guard proves
+it: with the aggregate removed from the chain, the suites it globs are reported as unrun, by name, with
+the reason. (Checked while building this: the chain does invoke it. The runner's own header claimed it
+was deliberately kept OUT of package.json — stale, and now corrected.)
+
+**WHAT WAS DONE WITH THE ELEVEN.** Eight were real, passing, offline suites and are now in the chain.
+THREE are deliberate live tools and are in the ledger with their reasons — the ≥200-scenario agreement
+runner (takes arguments, makes hundreds of paid vendor calls), the disqualify cross-check (needs a
+database AND live credentials, and blocks rather than skipping politely), and the login pad, **which
+says in its own header that it is deliberately not in `npm test`.** That last one was on the "wire these
+in" list until its source was read: its offline counterparts already cover the login shape with no
+credentials. A suite that declares itself a live tool is not an orphan to be swept up.
+
+Twelve assertions in `scripts/test-lt-suite-coverage-gate.js`, which spawns the REAL checker over
+fixture repositories: the undocumented orphan, the ledger escape hatch, the stale row, the idle
+aggregate runner, a missing ledger failing rather than passing with nothing to compare, and a CONTROL
+that the real repository passes today.
