@@ -1655,7 +1655,31 @@ async function runCanaryTick(scope, opts = {}) {
 /** POST /canary/tick — the tick above, over HTTP. The rule lives in `runCanaryTick`, never here. */
 async function canaryTickRoute(req, res) {
   const b = req.body || {};
-  return res.json(await runCanaryTick(readScope(req), { nowMs: Date.now(), maxPerTick: b.maxPerTick }));
+  // THROUGH THE LEASE, NOT AROUND IT. This door used to call `runCanaryTick` directly, so the durable
+  // lease that exists precisely to stop two callers paying the vendor for one battery
+  // (`lt_ppe_canary_driver_state`, db/578) protected the scheduled job and not the hand-fired run —
+  // two administrators pressing at the same moment both priced the whole battery, twice, live.
+  //
+  // `source: 'manual'` is what says this is a deliberate act rather than the in-process timer, so it
+  // runs whatever `LT_PPE_CANARY_DRIVER_ENABLED` says — which is exactly what this door has always
+  // done, and is why routing it through here changes nothing about who may fire it.
+  const canaryDriver = require('../ppe/canary-driver');
+  const out = await canaryDriver.tickOnce(readScope(req), {
+    db,
+    nowMs: Date.now(),
+    maxPerTick: b.maxPerTick,
+    source: canaryDriver.SOURCE_MANUAL,
+  });
+  // The tick's own report stays the body when it ran, so nothing reading this door has to learn a new
+  // shape; a run that was turned away says so instead of returning an empty report that reads as
+  // "nothing was due".
+  if (out && out.attempted && out.result) return res.json({ ...out.result, drivenBy: out.drivenBy || null });
+  return res.status(out && out.outcome === 'lease_held' ? 409 : 200).json({
+    ok: false,
+    ran: false,
+    outcome: (out && out.outcome) || 'error',
+    reason: (out && out.reason) || 'The tick did not run.',
+  });
 }
 
 /**

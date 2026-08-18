@@ -33,6 +33,7 @@ actually blocked?" should be answerable in one place.
 | ⏳ ANSWERED AND BUILT, PARTLY | **The loan officer margin and commission rules.** The two answers that were holding it are in and built (§2.59): the per-loan minimum is a movable default, and the entire margin holdback is the company's. What is still owed: the officer's SHARE of the origination (a real percentage nobody has stated — the record refuses to work out a net until it is set), and five smaller questions in COMPENSATION-MARGIN-MODEL.md. | Nothing prices from it either way — the stack reports who earns what and never moves a quote. | §2.59, D18 |
 | ✅ ANSWERED AND BUILT | **Is being a PPE administrator the right authority to PUBLISH a pricing rule, or does that need its own sign-off?** Owner, 2026-08-18: *"all in the super admin"*. | Nothing — the publish door is built, super-admin gated, and the rule board has the button. | §2.51, §2.57 |
 | — | **Who may switch OFF a rule that is already pricing loans, and does that retire it or effective-date it?** | Editing a live rule's name at all — today that publishes a second rule and is refused as a double charge. | §2.42, §2.51 |
+| ⚠️ FIXED — NOTHING NEEDED FROM YOU | **The daily Lender Price check had never actually run.** You asked for it at 7am, 9, 10, 11, 12pm and 4pm Eastern and it was set up — but it was quietly switched off by a leftover setting, so every one of those hours it woke up, did nothing, and reported success. It runs now, and the screen shows what last ran it and when. | Nothing was waiting on it — but nothing had been measured either, so the "is our pricing still right?" board was empty rather than clean. | §2.64 |
 | ⏳ BUILT, HALF ANSWERED | **How many clean weeks before an investor goes live, and do we keep checking it against Lender Price once it is?** You answered WHO (a super admin) and that is built — the button exists, every move is written down for good, and taking an investor back off is always allowed. | Nothing waits on it: the screen states the number it is running today and says plainly that nobody has confirmed it, and a live investor keeps being checked by default. | §2.63, §3a |
 
 **Two more that need a CAPTURE rather than a decision** — nobody has to answer these, someone has to
@@ -3842,3 +3843,72 @@ answered, and the line on the pricing screen reading *"PROMOTION to live is stil
 a button whose decision goes nowhere is worse than no button."* The screen's own description of what
 "live" means was corrected too: Lender Price is still called on every quote alongside our answer, which
 the old copy denied.
+
+---
+
+**§2.64 — THE OWNER'S DAILY LENDER PRICE CHECK HAD NEVER RUN (2026-08-18).**
+
+**THE FINDING, MEASURED BEFORE ANYTHING WAS CHANGED.** The owner named six Eastern hours (§2.53), the
+scheduled job was built for them (§2.49 → `render.yaml`'s `ys-capital-lt-canary`, hourly, with
+`canary-clock` picking the hours against the real New York clock), and it shipped. Driving that cron's
+own call, in the environment `render.yaml` actually gives it, at **07:00 Eastern — one of the owner's
+own six hours**:
+
+```
+outcome: "disabled"
+reason:  "The in-process canary driver is switched off (LT_PPE_CANARY_DRIVER_ENABLED is not set)."
+```
+
+Nothing priced. Nothing was written. The process exited 0 and logged `ran:false`, which is exactly what
+an hour that is simply not due logs. **The daily check had never run once and never would**, while
+every surface built on it — the run series, the parity cells, the clean-day streak, the go-live gate —
+read as a quiet, healthy system with nothing to report.
+
+**THE ROOT CAUSE IS ONE FLAG ANSWERING TWO QUESTIONS.** `LT_PPE_CANARY_DRIVER_ENABLED` was built for a
+single narrow one — *may a timer arm itself inside the web process?* — while the owner was still
+choosing how the daily check should be driven. But it was asked at `tickOnce`, which quietly turned it
+into a second and much larger question: *may a tick run at all?* Those are not the same question. The
+cron reuses `tickOnce` for its **lease** (correctly — two servers must never both pay for one battery)
+and inherited a switch that was never about it. The cron service sets `NODE_ENV`, `DATABASE_URL`,
+`LP_USERNAME` and `LP_PASSWORD`; it has no reason to set an in-process timer's switch, and it does not.
+
+**THE FIX: THE SOURCE DECIDES.** A tick names who asked — `timer`, `cron` or `manual`. The timer is what
+the switch was always about and is still refused while it is off, so the original guarantee holds
+exactly and by construction (`start()` still arms nothing). A **deliberate** caller — the scheduled job
+the owner asked for, or a person pressing the door — is its own authorization and runs. The allow-list
+is the deliberate sources rather than the refused one, so a path added later cannot acquire permission
+by naming itself something this module has never heard of; an unknown source is treated as the timer,
+and is RECORDED as the timer rather than echoed back into a field an operator reads.
+
+**AND THE PAGE THAT EXISTS TO ANSWER THIS COULD NOT.** `GET /ppe/canary/driver` shipped the sentence
+*"Nothing fires the daily canary schedules automatically — the tick is only run when somebody calls
+POST …/canary/tick by hand"* — to a screen. It was true when written, false once the scheduled job
+landed, and accidentally true again because of the bug above, which is precisely why a **sentence** must
+never be what answers this. The cron had always passed `source` and `slotKey` and the driver threw both
+away, so the state row could say what happened and never who asked. It records them now
+(`last_detail.drivenBy` / `.slotKey`, no migration — that column is already documented as the tick's own
+report), the report surfaces both, and a never-attempted row on a deployed system is stated as the
+**alarm** it is rather than as a neutral fact.
+
+**A SECOND, SMALLER DEFECT, FOUND ON THE WAY.** `POST /ppe/canary/tick` called the tick DIRECTLY, so the
+durable lease built to stop two callers paying for one battery guarded the scheduled job and not the
+hand-fired run: two administrators pressing at the same moment each priced the whole battery, live.
+The door goes through the lease now (`source: 'manual'`, so who may fire it is unchanged) and answers
+409 when somebody else already holds it.
+
+**PROVED, and the guard that would have caught it is the one worth copying.** No unit test could see
+this: both halves were individually correct — a gate read a switch, a cron service declared its
+environment — and nothing compared them. So `test-lt-ppe-canary-driver.js` now **reads the real
+`render.yaml`**, parses the env that service actually declares, and drives the tick with exactly that
+and nothing more. It is a biconditional: re-gate the tick on a switch the service does not set and it
+fails naming it; add the switch to the service instead and that is a real answer too and it passes.
+What must never happen again is the two disagreeing in silence. Alongside it: the source truth table,
+the end-to-end scheduled run against a real Postgres (with the switch off) recording `drivenBy:'cron'`
+and the owner's slot, the unknown-source normalization, and `TICK-14/15` proving the door is behind the
+lock. **Mutation-proven four ways** — restoring the original gate kills 9, letting an unknown source
+through kills 1, dropping the `drivenBy` record kills 3, and putting the tick door back around the lease
+kills 1. `test-lt-ppe-claim-drift.js` gained section I so the corrected wording cannot be reverted.
+
+**WHAT THIS DOES NOT CHANGE.** The in-process timer is still off and still arms nothing; merging the
+driver still changes nothing about the running system. The six hours, the clock, the lease and the
+battery are untouched. What changed is that the schedule the owner asked for can now reach them.

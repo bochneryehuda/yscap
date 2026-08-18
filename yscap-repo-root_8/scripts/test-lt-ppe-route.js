@@ -910,10 +910,20 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
       'SCHED-8 …and an anonymous request cannot arm a vendor loop');
 
     // THE TICK. With no program resolvable, every schedule HOLDS with the reason — it never runs.
-    dbStub.next = (sql) => {
+    //
+    // THE LEASE IS PART OF THIS DOOR NOW, and the stub has to answer for it. This door used to call
+    // the tick directly, so two administrators pressing at the same moment both priced the whole
+    // battery, live, twice — while the durable lease built to prevent exactly that protected only the
+    // scheduled job. Granting the lease here is what lets the assertions below still be about the
+    // TICK; the lease being genuinely exclusive is proven against a real Postgres in
+    // `test-lt-ppe-canary-driver.js`, which is where a lock can actually be raced.
+    const withLease = (inner) => (sql, params) => (
+      /lt_ppe_canary_driver_state/.test(sql) ? { rows: [{ holder: (params && params[1]) || 'x' }] } : inner(sql, params)
+    );
+    dbStub.next = withLease((sql) => {
       if (/FROM lt_ppe_canary_schedule/.test(sql)) return { rows: [schedRow({})] };
       return { rows: [] }; // no rate-sheet version -> loadProgram finds none
-    };
+    });
     // The upstream stub is SHARED with the canary tests above, so the count is snapshotted rather
     // than compared to zero — an assertion that reads a running total proves nothing about this call.
     const lpBefore = lpStub.calls.length;
@@ -924,7 +934,7 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
     ok(lpStub.calls.length === lpBefore, 'TICK-3 …and the live upstream was never called');
 
     // A PAUSED schedule holds with the module's own reason, and still never prices anything.
-    dbStub.next = (sql) => (/FROM lt_ppe_canary_schedule/.test(sql) ? { rows: [schedRow({ enabled: false })] } : { rows: [] });
+    dbStub.next = withLease((sql) => (/FROM lt_ppe_canary_schedule/.test(sql) ? { rows: [schedRow({ enabled: false })] } : { rows: [] }));
     r = await call(H.canaryTickRoute, { body: {} });
     ok(r.body.ran.length === 0 && r.body.held.some((h) => h.reason === 'no_program' || h.reason === 'disabled'),
       'TICK-4 a paused schedule never runs');
@@ -938,11 +948,14 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
       version: { id: 'v1', label: 'Sheet A' },
       basePrices: [{ note_rate_milli_pct: 7125, lock_days: 30, product: 'DSCR30', price_milli: 102850 }],
     };
-    const withProgram = (extra) => (text) => {
+    const withProgram = (extra) => (text, params) => {
+      // The tick door takes the lease first (see the TICK block above); granting it keeps every
+      // assertion below about the TICK rather than about the lock.
+      if (/lt_ppe_canary_driver_state/.test(text)) return { rows: [{ holder: (params && params[1]) || 'x' }] };
       if (/FROM lt_ppe_canary_schedule/.test(text)) return { rows: [schedRow({ rate_sheet_version_id: 'v1' })] };
       if (/lt_ppe_rate_sheet_version/.test(text)) return { rows: [sheet.version] };
       if (/lt_ppe_base_price/.test(text)) return { rows: sheet.basePrices };
-      return extra(text);
+      return extra(text, params);
     };
 
     // (a) AN UNREADABLE RUN SERIES MUST NEVER READ AS "NEVER RUN". The last-run stamp is what the
@@ -974,12 +987,28 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
     ok(r.body.held[0].dueAt != null, 'TICK-12 …carrying WHEN it next comes due, so a quiet tick is explainable');
     ok(lpStub.calls.length === lpBeforeDue, 'TICK-13 …and again nothing was priced');
 
-    // No schedules at all is an honest empty answer, not an error.
-    dbStub.next = () => ({ rows: [] });
+    // No schedules at all is an honest empty answer, not an error. (The lease is still granted — the
+    // door takes it before it looks at anything, so refusing it here would test the lock, not this.)
+    dbStub.next = withLease(() => ({ rows: [] }));
     r = await call(H.canaryTickRoute, { body: {} });
     ok(r.code === 200 && r.body.schedules === 0 && r.body.ran.length === 0 && r.body.held.length === 0,
       'TICK-5 an empty schedule table ticks to nothing');
     ok(r.body.maxPerTick === 1, 'TICK-6 …and the default cap is ONE battery per tick, because each is a live vendor run');
+
+    // ---- THE LOCK IS ON THIS DOOR, and that is new -----------------------------------------------
+    // This door used to call the tick directly, so the durable lease that exists precisely to stop two
+    // callers paying for one battery guarded the scheduled job and NOT the hand-fired run: two
+    // administrators pressing at the same moment each priced the whole battery, live. The lock being
+    // genuinely exclusive is raced against a real Postgres in `test-lt-ppe-canary-driver.js`; what is
+    // proven here is that this door is behind it at all.
+    const lpBeforeLock = lpStub.calls.length;
+    dbStub.next = (sql) => (/lt_ppe_canary_driver_state/.test(sql)
+      ? { rows: [] }                                   // somebody else holds it
+      : { rows: [schedRow({ rate_sheet_version_id: 'v1' })] });
+    r = await call(H.canaryTickRoute, { body: {} });
+    ok(r.code === 409 && r.body.outcome === 'lease_held',
+      `TICK-14 a tick somebody else is already running is turned away, not run twice (${r.code} ${r.body.outcome})`);
+    ok(lpStub.calls.length === lpBeforeLock, 'TICK-15 …and the vendor was not called a second time');
     dbStub.next = null;
   }
 

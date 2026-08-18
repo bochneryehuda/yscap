@@ -115,6 +115,15 @@ function leaseMsOf(env = process.env) { return envMs(env, 'LT_PPE_CANARY_DRIVER_
 // nothing ever passes another, so the default is the whole story.
 const HOLDER = `${os.hostname()}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 
+// WHO ASKED FOR THIS TICK. `timer` is the in-process loop `LT_PPE_CANARY_DRIVER_ENABLED` governs;
+// `cron` is the scheduled job the owner chose (§2.53); `manual` is a person pressing the door. The
+// distinction is load-bearing rather than descriptive — see the gate in `tickOnce`, where treating all
+// three alike is what stopped the owner's own schedule from ever running.
+const SOURCE_TIMER = 'timer';
+const SOURCE_CRON = 'cron';
+const SOURCE_MANUAL = 'manual';
+const SOURCES = [SOURCE_TIMER, SOURCE_CRON, SOURCE_MANUAL];
+
 /** The lease key. It carries the SCOPE, so one tenant's tick can never hold another tenant's claim. */
 function lockKeyFor(scope) { return `lt-ppe-canary-tick:${scope || 'company'}`; }
 
@@ -312,9 +321,39 @@ async function tickOnce(scope = 'company', opts = {}) {
   const key = lockKeyFor(scope);
   const stamp = (o) => { _lastLocal = { ...o, atMs: Date.now(), holder, scope }; return o; };
 
-  if (!driverEnabled(env)) {
-    // The switch is off, so this touches NOTHING — not the vendor, not the database. Writing a row
-    // here would be this change altering the running system, which is the one thing it must not do.
+  // ⛔ WHAT THE SWITCH GATES, AND WHY THIS IS NOT WHAT IT USED TO SAY.
+  //
+  // `LT_PPE_CANARY_DRIVER_ENABLED` was built for ONE question — may a timer arm itself inside the web
+  // process? — while the owner was still choosing how the daily check should be driven (§2.49). It was
+  // asked HERE, at the tick, which quietly turned it into a second and much bigger question: may a tick
+  // run AT ALL? Those are not the same question, and conflating them cost the owner's own schedule.
+  //
+  // MEASURED, not theorised: the owner chose a scheduled job (§2.53 — 7am, 9, 10, 11, 12pm and 4pm
+  // Eastern), `render.yaml`'s `ys-capital-lt-canary` runs `scripts/lt-ppe-canary-cron.js` hourly, and
+  // that service sets NODE_ENV, DATABASE_URL, LP_USERNAME and LP_PASSWORD — **not this switch**. So at
+  // 7am Eastern, one of the owner's own hours, the cron's call returned `disabled`, priced nothing,
+  // wrote nothing and exited 0. The schedule had never run and never would, and the log said `ran:
+  // false` like any hour that simply was not due.
+  //
+  // SO THE SOURCE DECIDES, NOT THE SWITCH. A tick fired by the in-process TIMER is what the switch was
+  // always about and is still refused while it is off — the original guarantee ("merging the driver
+  // changed nothing about the running system") holds exactly, because `start()` below still arms no
+  // timer. A tick fired by a DELIBERATE caller — the scheduled job the owner asked for, or a person
+  // pressing the door — is its own authorization and runs.
+  //
+  // AN UNKNOWN SOURCE IS TREATED AS THE TIMER, deliberately: a caller that does not say who it is gets
+  // the cautious answer, so a future path cannot inherit permission by forgetting to identify itself.
+  // The allow-list is the DELIBERATE sources, not the refused one. Refusing `timer` alone would let
+  // any unrecognised value through, so a path added later could acquire permission simply by naming
+  // itself something this module has never heard of — permission by typo, in the direction that
+  // spends money.
+  const asked = typeof opts.source === 'string' && opts.source ? opts.source : SOURCE_TIMER;
+  const source = SOURCES.includes(asked) ? asked : SOURCE_TIMER;
+  const deliberate = source === SOURCE_CRON || source === SOURCE_MANUAL;
+  if (!deliberate && !driverEnabled(env)) {
+    // The switch is off and this is the timer it governs, so this touches NOTHING — not the vendor,
+    // not the database. Writing a row here would be the in-process driver altering the running system,
+    // which is the one thing it must not do.
     return stamp({ attempted: false, outcome: 'disabled', reason: 'The in-process canary driver is switched off (LT_PPE_CANARY_DRIVER_ENABLED is not set).', result: null });
   }
 
@@ -349,8 +388,18 @@ async function tickOnce(scope = 'company', opts = {}) {
     const tick = opts.tick || ((s, o) => require('../routes/ppe').runCanaryTick(s, o));
     const result = await tick(scope, { nowMs: opts.nowMs || Date.now(), maxPerTick: opts.maxPerTick });
     const verdict = classifyTick(result);
-    await recordOutcome(db, key, { ...verdict, detail: result, startedAtMs, holder });
-    return stamp({ attempted: true, outcome: verdict.outcome, reason: verdict.reason, result });
+    // WHAT DROVE IT RIDES ALONG. The cron has always passed `source` and `slotKey` and this module
+    // threw both away, so the state row — the one thing `GET /canary/driver` reads — could say what
+    // happened and never who asked. "Is the owner's schedule actually running?" is exactly the question
+    // that page exists to answer, and it could not. `last_detail` is jsonb and is documented as "the
+    // tick's own report", so this needs no migration.
+    await recordOutcome(db, key, {
+      ...verdict,
+      detail: { ...(result && typeof result === 'object' ? result : { result }), drivenBy: source, slotKey: opts.slotKey || null },
+      startedAtMs,
+      holder,
+    });
+    return stamp({ attempted: true, outcome: verdict.outcome, reason: verdict.reason, result, drivenBy: source });
   } catch (e) {
     // The tick threw — an unreadable schedule set, a store that would not answer, a vendor client that
     // blew up before any schedule was selected. It is RECORDED, never swallowed, because a driver that
@@ -384,7 +433,10 @@ function start(opts = {}) {
   const scope = opts.scope || 'company';
   const every = opts.intervalMs != null ? opts.intervalMs : intervalMsOf(env);
   _timer = setInterval(() => {
-    tickOnce(scope, opts).catch(() => {}); // tickOnce never throws; this is belt-and-braces.
+    // NAMES ITSELF. `tickOnce` now decides by SOURCE, and an unnamed caller is treated as the timer —
+    // so this is already correct by default. It is stated anyway, because the one thing that must
+    // never happen is the timer acquiring permission by omission.
+    tickOnce(scope, { ...opts, source: SOURCE_TIMER }).catch(() => {}); // tickOnce never throws; belt-and-braces.
   }, every);
   if (_timer.unref) _timer.unref();
   console.log(`[lt-ppe] canary driver ON — asking every ${Math.round(every / 1000)}s, scope "${scope}", holder ${HOLDER}. A run only happens when a saved, enabled schedule is genuinely due.`);
@@ -415,11 +467,26 @@ async function describe(scope = 'company', opts = {}) {
   const out = {
     ok: true,
     scope,
+    // `enabled` has ALWAYS meant one narrow thing — is the in-process TIMER armed — and the field is
+    // renamed in the report rather than left to be read as "is anything running". It is not: the
+    // owner chose a scheduled job, and that job runs whether this is on or off.
     enabled,
-    // Said in words, because "enabled: false" on a screen invites the reading "it is broken".
+    timerEnabled: enabled,
+    // WHAT ACTUALLY DRIVES THIS, said plainly. The old wording here read "Nothing fires the daily
+    // canary schedules automatically — the tick is only run when somebody calls POST …/canary/tick by
+    // hand", and it was SHIPPED TO A SCREEN. It was true when written and false by the time the owner's
+    // scheduled job landed; an operator asking "is the daily check running?" was told no about a system
+    // calling a paid vendor six times a day. It is now answered from the STATE ROW below — what last
+    // fired and what drove it — instead of from a sentence that cannot know.
+    driver: {
+      scheduledJob: 'render.yaml → ys-capital-lt-canary, hourly, running scripts/lt-ppe-canary-cron.js; canary-clock decides the six Eastern hours the owner named (7am, 9, 10, 11, 12pm, 4pm).',
+      inProcessTimer: enabled
+        ? 'ON. It asks on a timer; a battery is priced only when a saved, enabled schedule is genuinely due.'
+        : 'OFF, which is how it ships — and it is NOT what drives the daily check. The scheduled job above is.',
+    },
     note: enabled
-      ? 'The in-process driver is ON. It asks on a timer; a battery is priced only when a saved, enabled schedule is genuinely due.'
-      : 'The in-process driver is OFF, which is how it ships. Nothing fires the daily canary schedules automatically — the tick is only run when somebody calls POST /api/lt/ppe/canary/tick by hand. How it SHOULD be driven in production was answered by the owner on 2026-08-18 — a scheduled run at 7am, 9am, 10am, 11am, 12pm and 4pm Eastern (docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.53) — and this in-process driver is not it.',
+      ? 'Two things can fire the tick: the scheduled job, and this in-process timer, which is ON. The lease means only one of them ever pays for a battery.'
+      : 'The daily check is driven by the scheduled job above. The in-process timer is off, which is how it ships and changes nothing about the schedule. Whether the job has actually been firing is answered by "last attempt" below, not by this line.',
     intervalMs: enabled ? intervalMsOf(env) : null,
     leaseMs: leaseMsOf(env),
     lockKey: key,
@@ -449,9 +516,21 @@ async function describe(scope = 'company', opts = {}) {
       lastDeniedAt: row.last_denied_at,
       lastDeniedBy: row.last_denied_by,
       lastDeniedReason: row.last_denied_reason,
+      // WHAT DROVE THE LAST ONE, lifted out of the tick's own report. This is the field that turns
+      // "is the owner's schedule actually running?" from a sentence somebody wrote into something the
+      // data answers — `cron` means the scheduled job fired it, `manual` a person, `timer` the
+      // in-process loop. Null on a row written before this was recorded.
+      lastDrivenBy: (row.last_detail && typeof row.last_detail === 'object' && row.last_detail.drivenBy) || null,
+      lastSlotKey: (row.last_detail && typeof row.last_detail === 'object' && row.last_detail.slotKey) || null,
     } : null;
-    // "Never" is a real answer and must not read like a broken query.
-    if (!row) out.neverAttempted = 'No instance has ever attempted this tick.';
+    // "Never" is a real answer and must not read like a broken query — and on a running system it is
+    // now an ALARM rather than a neutral fact: the scheduled job wakes hourly, so a tick nobody has
+    // ever attempted means it is not reaching this at all.
+    if (!row) {
+      out.neverAttempted = enabled
+        ? 'No instance has ever attempted this tick.'
+        : 'No instance has ever attempted this tick. The scheduled job wakes every hour, so on a deployed system this means it is not reaching the tick — check the ys-capital-lt-canary service.';
+    }
   } catch (e) {
     out.readable = false;
     out.stateError = msgOf(e);
@@ -463,6 +542,7 @@ module.exports = {
   driverEnabled, intervalMsOf, leaseMsOf, lockKeyFor, classifyTick,
   tickOnce, start, stop, describe,
   HOLDER,
+  SOURCE_TIMER, SOURCE_CRON, SOURCE_MANUAL, SOURCES,
   _internals: {
     acquireLease, renewLease, releaseLease, recordOutcome, recordDenied,
     envMs, ON_VALUES, TIMING_HOLDS,

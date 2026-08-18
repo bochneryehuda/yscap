@@ -93,6 +93,82 @@ ok(driver.lockKeyFor() === driver.lockKeyFor('company'), 'no scope reads as the 
   ok(driver.stop() === false, 'and there is no timer to stop');
 }
 
+/**
+ * A2 + A3 run inside an async function because they DRIVE the tick, and a top-level `await` in a
+ * CommonJS file makes Node refuse to load it at all. They need no database — every call is answered by
+ * a stub that throws if the database is touched, which is also what proves the gate did not
+ * short-circuit before reaching it.
+ */
+async function sourceGateSections() {
+// ===========================================================================================
+// A2 — WHO ASKED. The switch gates the TIMER, not every tick.
+//
+// THE DEFECT THIS SECTION EXISTS FOR, measured before it was fixed: `tickOnce` asked the switch, so
+// the scheduled job the owner chose — which sets NODE_ENV, DATABASE_URL, LP_USERNAME and LP_PASSWORD
+// and NOT this switch — got `outcome:'disabled'` at 7am Eastern, one of the owner's own six hours.
+// It priced nothing, wrote nothing and exited 0, logging `ran:false` exactly like an hour that was
+// simply not due. The daily Lender Price check had never run and never would.
+//
+// One flag was answering two different questions: "may a timer arm itself inside the web process?"
+// (what it was built for) and "may a tick run at all?" (what it had quietly become). The SOURCE
+// answers the second now, and these are the cases that must never drift.
+// ===========================================================================================
+  console.log('\n— A2. who asked —');
+  {
+  const noDb = { query: async () => { throw new Error('the database was touched'); } };
+  const off = {};
+  const ask = async (source) => (await driver.tickOnce('company', { env: off, source, db: noDb, tick: async () => ({}) })).outcome;
+
+  // The original guarantee, unchanged: with the switch off the in-process timer touches NOTHING.
+  ok(await ask(driver.SOURCE_TIMER) === 'disabled', 'the TIMER is still refused while the switch is off — merging the driver still changes nothing');
+  // …and a caller that does not say who it is gets the cautious answer, so a future path cannot
+  // inherit permission by forgetting to identify itself.
+  ok(await ask(undefined) === 'disabled', 'a caller that does not name itself is treated as the timer');
+  ok(await ask('something-new') === 'disabled', 'and so is a source nobody has taught this about');
+
+  // THE FIX: a deliberate caller is its own authorization. It gets as far as the lease — which is the
+  // proof it was not short-circuited, since this stub makes any database touch throw.
+  ok(await ask(driver.SOURCE_CRON) !== 'disabled', 'the scheduled job RUNS with the switch off — it is not what the switch was ever about');
+  ok(await ask(driver.SOURCE_MANUAL) !== 'disabled', 'and so does a person pressing the door');
+}
+
+// ===========================================================================================
+// A3 — THE DEPLOYMENT AND THE GATE, COMPARED. The guard that would have caught it.
+//
+// No unit test could see this defect, because both halves were individually correct: the gate read a
+// switch, and the cron service declared its environment. What was wrong was the RELATIONSHIP between a
+// YAML file and a JavaScript condition, and nothing compared them. So this reads the real
+// `render.yaml`, takes the env the canary service ACTUALLY declares, and drives the tick with exactly
+// that — no more, no less.
+// ===========================================================================================
+console.log('\n— A3. the deployment vs the gate —');
+{
+  const yaml = require('fs').readFileSync(require('path').join(__dirname, '..', 'render.yaml'), 'utf8');
+  const block = (yaml.split(/\n\s*-\s+type:\s*cron/).find((b) => /name:\s*ys-capital-lt-canary/.test(b)) || '');
+  ok(!!block, 'render.yaml declares the ys-capital-lt-canary cron service');
+  ok(/startCommand:\s*node scripts\/lt-ppe-canary-cron\.js/.test(block), '…and it runs the canary cron launcher');
+  ok(/schedule:\s*"0 \* \* \* \*"/.test(block), '…hourly, so canary-clock can pick the Eastern hours the owner named');
+
+  // The env that service really gets — parsed, never assumed.
+  const declared = {};
+  for (const m of block.matchAll(/-\s*key:\s*([A-Z0-9_]+)/g)) declared[m[1]] = 'set-by-render';
+  ok(Object.keys(declared).length > 0, `…and declares ${Object.keys(declared).length} environment values`);
+
+  // ⛔ THE BICONDITIONAL. If somebody re-gates the tick on a switch this service does not set, this
+  // fails and names it. If somebody adds the switch to the service instead, that is a real answer too
+  // and this still passes — what must never happen again is the two disagreeing in silence.
+  const out = await driver.tickOnce('company', {
+    env: declared,
+    source: driver.SOURCE_CRON,
+    db: { query: async () => { throw new Error('the database was touched'); } },
+    tick: async () => ({}),
+  });
+  ok(out.outcome !== 'disabled',
+    `THE ONE THAT MATTERS: with exactly the environment render.yaml gives it, the scheduled job is not turned away (${out.outcome})`);
+  ok(!Object.keys(declared).includes('LT_PPE_CANARY_DRIVER_ENABLED'),
+    '…and it is not turned away because somebody quietly set the in-process switch on it — the service does not carry that switch at all');
+}
+
 // The DEFAULT wiring is real: the driver's fallback tick is the SAME function the HTTP door calls.
 // Checked for existence only — invoking it is what would reach the vendor.
 {
@@ -100,11 +176,14 @@ ok(driver.lockKeyFor() === driver.lockKeyFor('company'), 'no scope reads as the 
   try { exported = require('../src/longterm/routes/ppe').runCanaryTick; } catch (e) { exported = `threw: ${e.message}`; }
   ok(typeof exported === 'function', 'routes/ppe exports runCanaryTick — one tick, two callers (never invoked here)');
 }
+}
 
 // ===========================================================================================
 // B..G — DB
 // ===========================================================================================
 async function main() {
+  await sourceGateSections();
+
   if (!process.env.DATABASE_URL) {
     console.log('\n(DB sections skipped — set DATABASE_URL to run them.)');
     console.log(failures ? `\n${failures} FAILED` : '\nall passed (pure)');
@@ -210,6 +289,47 @@ async function main() {
     ok(offCalls === 0, `switched off: the tick was called ${offCalls} time(s) — must be 0, so no vendor and no cost`);
     ok((await state(offKey)) === null, 'switched off: NOT ONE ROW was written — merging this changes nothing about the running system');
 
+    // …AND THE SAME SWITCH, THE SAME SCOPE, THE SCHEDULED JOB: it runs. This is the defect end to end
+    // against a real database — the owner's daily check was returning `disabled` here and pricing
+    // nothing, forever, while the cron exited 0 every hour.
+    const cronScope = `${scope}_cron`;
+    const cronKey = driver.lockKeyFor(cronScope);
+    await db.query('DELETE FROM lt_ppe_canary_driver_state WHERE lock_key = $1', [cronKey]);
+    let cronCalls = 0;
+    const cronTick = async () => { cronCalls++; return { ok: true, schedules: 1, ran: [{ ok: true, investor: 'DHVN' }], held: [] }; };
+    const cronRun = await driver.tickOnce(cronScope, {
+      db, env: {}, tick: cronTick, holder: A, source: driver.SOURCE_CRON, slotKey: '2026-08-18T07',
+    });
+    ok(cronRun.attempted === true && cronRun.outcome === 'ran',
+      `THE ONE THAT MATTERS: with the switch off, the SCHEDULED job runs (${cronRun.outcome})`);
+    ok(cronCalls === 1, `…and the battery was priced exactly once (${cronCalls})`);
+
+    // AND THE STATE ROW SAYS WHO DROVE IT. The cron has always passed `source` and `slotKey`; the
+    // driver threw both away, so `GET /canary/driver` — the page whose whole job is answering "is the
+    // daily check running?" — could say what happened and never who asked.
+    const cronRow = await state(cronKey);
+    ok(cronRow && cronRow.last_outcome === 'ran', 'the scheduled run is recorded');
+    ok(cronRow && cronRow.last_detail && cronRow.last_detail.drivenBy === 'cron',
+      'the state row NAMES the scheduled job as what drove it');
+    ok(cronRow && cronRow.last_detail && cronRow.last_detail.slotKey === '2026-08-18T07',
+      '…and which of the owner\'s six Eastern hours it was');
+    const cronDesc = await driver.describe(cronScope, { db, env: {} });
+    ok(cronDesc.state && cronDesc.state.lastDrivenBy === 'cron' && cronDesc.state.lastSlotKey === '2026-08-18T07',
+      '…and the driver report shows both, so "is the schedule running?" is answered by data, not by a sentence');
+
+    // WHAT IS RECORDED IS A KNOWN SOURCE, never the caller's own words. `drivenBy` is read by an
+    // operator deciding whether the schedule is healthy, so a caller that could write anything into it
+    // could write "cron" onto a run the schedule never made.
+    const oddScope = `${scope}_odd`;
+    const oddKey = driver.lockKeyFor(oddScope);
+    await db.query('DELETE FROM lt_ppe_canary_driver_state WHERE lock_key = $1', [oddKey]);
+    await driver.tickOnce(oddScope, {
+      db, env: { LT_PPE_CANARY_DRIVER_ENABLED: '1' }, tick: cronTick, holder: A, source: 'cron-ish',
+    });
+    const oddRow = await state(oddKey);
+    ok(oddRow && oddRow.last_detail && oddRow.last_detail.drivenBy === 'timer',
+      `a source this module has never heard of is recorded as the timer, never echoed back (${oddRow && oddRow.last_detail && oddRow.last_detail.drivenBy})`);
+
     // ---------------------------------------------------------------------------------------
     console.log('\n— E. fails closed, and says why —');
     // ---------------------------------------------------------------------------------------
@@ -257,13 +377,18 @@ async function main() {
     console.log('\n— F. observable —');
     // ---------------------------------------------------------------------------------------
     const d = await driver.describe(scope, { db, env: {} });
-    ok(d.enabled === false, 'describe: reports the switch as off');
-    // The owner ANSWERED the driver question on 2026-08-18 — a scheduled run at 7am/9am/10am/11am/
-    // 12pm/4pm Eastern (§2.53) — so the note no longer calls it open. What it must still say, and
-    // what this pins, is the thing an operator can act on: this in-process driver is OFF, so nothing
-    // here fires a saved schedule, and the answer names something other than this driver.
-    ok(/OFF/.test(d.note) && /Eastern/.test(d.note) && /answered/i.test(d.note),
-      'describe: says plainly that nothing here drives the schedules, and names the schedule the owner chose');
+    ok(d.enabled === false && d.timerEnabled === false, 'describe: reports the in-process TIMER as off');
+    // WHAT THIS ASSERTION USED TO SAY, AND WHY IT MOVED. It pinned the note to "nothing here fires a
+    // saved schedule" — a sentence that was true when written and became FALSE the moment the owner's
+    // scheduled job shipped, while still being sent to a screen. An operator asking "is the daily
+    // check running?" was told no about a system calling a paid vendor six times a day. So the report
+    // must now NAME the real driver, and must not claim nothing is running.
+    ok(/ys-capital-lt-canary/.test(d.driver.scheduledJob) && /Eastern/.test(d.driver.scheduledJob),
+      'describe: NAMES the scheduled job that actually drives the daily check, and the hours it runs');
+    ok(/OFF/.test(d.driver.inProcessTimer) && /NOT what drives/.test(d.driver.inProcessTimer),
+      'describe: …and says the in-process timer being off is not the same as nothing running');
+    ok(!/Nothing fires the daily canary schedules automatically/.test(d.note),
+      'describe: the sentence that told an operator nothing was running is gone');
     ok(d.readable === true && d.state && d.state.lastOutcome === 'ran', 'describe: reports what the last tick did');
     ok(!!d.state && !!d.state.lastReason && !!d.state.lastAttemptAt, 'describe: reports when it last ran and why it reported what it did');
     ok(!!d.state && !!d.state.lastDeniedAt && !!d.state.lastDeniedReason, 'describe: reports the instance that was turned away, and why');

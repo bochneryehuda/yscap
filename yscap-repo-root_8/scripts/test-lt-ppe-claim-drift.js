@@ -293,4 +293,36 @@ const routeSrc = read(ROUTE);
     'H: …so the header no longer lists "No rate-sheet write path" as deliberately absent');
 }
 
+// ---------------------------------------------------------------------------
+// I. THE DAILY CHECK IS DRIVEN, AND THE DRIVER PAGE SAYS SO.
+//
+// `canary-driver.describe()` shipped the sentence "Nothing fires the daily canary schedules
+// automatically — the tick is only run when somebody calls POST …/canary/tick by hand" — TO A SCREEN.
+// It was true the day it was written and false the day the owner's scheduled job landed, so an
+// operator asking "is the daily check running?" was told no about a system calling a paid vendor six
+// times a day. Worse, it was ACCIDENTALLY true for a while, because the tick was still gated on a
+// switch the cron service does not set (§2.64) — which is exactly why a sentence must never be the
+// thing that answers this. It is answered from the state row now, and this pins both halves.
+// ---------------------------------------------------------------------------
+{
+  const driverSrc = read('src/longterm/ppe/canary-driver.js');
+  const yaml = read('render.yaml');
+
+  ok(/name:\s*ys-capital-lt-canary/.test(yaml) && /node scripts\/lt-ppe-canary-cron\.js/.test(yaml),
+    'I: render.yaml declares the scheduled job that drives the daily check');
+  ok(!/Nothing fires the daily canary schedules automatically/.test(driverSrc),
+    'I: the driver report no longer tells an operator that nothing is running');
+  ok(/ys-capital-lt-canary/.test(driverSrc),
+    'I: …it names the scheduled job that actually drives it');
+
+  // THE GATE ITSELF. `tickOnce` must not be the place the in-process switch is asked, or the scheduled
+  // job is turned away again — the whole of §2.64 in one line.
+  const tick = driverSrc.match(/async function tickOnce[\s\S]*?\n}/);
+  ok(!!tick, 'I: tickOnce is present');
+  ok(tick && /deliberate/.test(tick[0]) && !/^\s*if \(!driverEnabled\(env\)\) \{/m.test(tick[0]),
+    'I: …and it gates on WHO ASKED, not on the in-process switch alone — the scheduled job is not the timer');
+  ok(/function start\(/.test(driverSrc) && /if \(!driverEnabled\(env\)\)/.test(driverSrc.slice(driverSrc.indexOf('function start('))),
+    'I: …while the in-process TIMER is still gated by that switch, which is what it was always for');
+}
+
 console.log(`ok - lt ppe claim-drift guard (${n} assertions)`);

@@ -17,8 +17,8 @@ that overstates what is unreachable is one nobody reads.
 
 **A row is not an endorsement.** Several of these are genuinely finished work waiting on a screen, and
 one of them — `POST /ppe/canary/tick` — was a scheduler nothing ticks, which is a real defect recorded
-here rather than smoothed over. A driver for it now exists and ships SWITCHED OFF, so the sentence is
-still true of the running system until somebody turns it on; see the note under the table.
+here rather than smoothed over. **It is driven now**, by the scheduled job the owner chose, and the row
+stays only because a cron is not a screen; see the note under the table.
 
 | route | why it has no screen |
 | --- | --- |
@@ -48,7 +48,7 @@ still true of the running system until somebody turns it on; see the note under 
 | `POST /api/lt/dscr/disqualifications` | Polls that computation by search key. Same. |
 | `GET /api/lt/dscr/disqualifications/:searchKey` | The same poll as a GET. Same. |
 | `POST /api/lt/dscr/selftest` | The pricer's end-to-end self-test. An operator command. |
-| `POST /api/lt/ppe/canary/tick` | **A driver now exists and is OFF by default.** See below. |
+| `POST /api/lt/ppe/canary/tick` | **Driven by the scheduled job**, not by a screen — `render.yaml`'s `ys-capital-lt-canary`. A person can also fire it by hand, and both go through the same lease. See below. |
 | `GET /api/lt/ppe/canary/driver` | Is anything actually driving that tick, when did it last try, what did it do, and why did it not. Read by hand while the driver is off; it is what a schedule screen would show once somebody turns one on. |
 
 The four canary rows that stood here — `POST /ppe/canary` and the three `/ppe/canary/schedules`
@@ -62,9 +62,10 @@ that shows it.
 ## The one row that was a defect, not a gap — and what has changed
 
 `POST /api/lt/ppe/canary/tick` is the tick that fires the daily change-detection schedules (D19, task
-#52). Searched: no cron, no worker, no `setInterval`, no Render job, no other route. **A schedule could be
-stored and would never fire**, so "the daily battery detects a Lender Price change" was true of the code
-and false of the running system. That is this workstream's recurring shape — built, tested, and asked by
+#52). When this row was written: no cron, no worker, no `setInterval`, no Render job, no other route.
+**A schedule could be stored and would never fire**, so "the daily battery detects a Lender Price
+change" was true of the code and false of the running system. (It took a second form after that — a
+cron that ran and was turned away at the gate — see the paragraph below.) That is this workstream's recurring shape — built, tested, and asked by
 nothing — and it was written here rather than left for someone to discover from a quiet screen.
 
 **What now exists (§2.49 of LENDER-PRICE-PARITY-STATUS.md):** an in-process driver,
@@ -78,16 +79,19 @@ not touch an RTL table), so two instances can never both fire one schedule and p
 It fails closed and records why: a lease it cannot take, a tick that throws, a schedule that cannot run
 at all — each is written to that row and readable at `GET /ppe/canary/driver`.
 
-**What is still open, and it is the owner's call, not an engineer's:** WHICH driver production should
-use — a Render CRON service (the shape the off-site backup uses), the existing sync worker, or this
-in-process scheduler. Each behaves differently when two servers are running and each costs a live
-vendor call, so the in-process one is built behind the off switch and the choice is recorded as an
-owner question in `docs/longterm/LENDER-PRICE-PARITY-STATUS.md` §2.49. **Until somebody answers it and
-turns the switch on, the sentence at the top of this section is still true of the running system.**
+**THE OWNER ANSWERED, AND THEN THE ANSWER DID NOT RUN — read this before trusting anything above.**
+The open question was WHICH driver production should use, and the owner chose a scheduled job
+(§2.53): `render.yaml`'s `ys-capital-lt-canary` wakes hourly and `canary-clock` picks the six Eastern
+hours. That shipped. What did NOT ship with it is the one line that mattered: `tickOnce` was still
+asking `LT_PPE_CANARY_DRIVER_ENABLED`, a switch built for the in-process TIMER, and the cron service
+does not set it. So every hour the scheduled job woke, got `outcome:'disabled'`, priced nothing, wrote
+nothing and exited 0 — logging `ran:false` exactly like an hour that was simply not due. **The owner's
+daily Lender Price check had never run.** It is fixed (§2.64): the SOURCE decides now, so the timer is
+still gated by that switch and a deliberate caller — the scheduled job, or a person — is its own
+authorization. What drove each tick is recorded on the state row and shown at `GET /ppe/canary/driver`,
+so "is the schedule actually running?" is answered by data instead of by a sentence.
 
-**The schedule SCREENS are owed no longer:** they are built (`CanaryConsole.jsx`) and they say on the
-page that a saved cadence is honoured by nothing until the driver is switched on — which is the only
-honest way to ship a schedule editor over a tick that may never fire.
+**The schedule SCREENS are owed no longer:** they are built (`CanaryConsole.jsx`).
 
 ## Not a route, but the same dead end one step nearer the user
 
