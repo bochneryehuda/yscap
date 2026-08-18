@@ -289,14 +289,17 @@ const REGISTRY = Object.freeze([
   // A-piece/B-piece split PILOT records on applications.ab_piece_enabled / a_piece_amount
   // (db/579, src/lib/ab-piece.js).
   // REFERENCE on purpose, never compared by summarize(): a split exists only on MANUAL
-  // files, so a compared row would read "no data to compare" on nearly every file, and the
-  // funding_channel lesson applies — an unverified row (verified:false — the tenant values
-  // have not been read live yet) must never be able to hold a term sheet. The real
-  // matching (owner-directed 2026-08-18: "it should be added to this section in the
-  // Encompass syncing. Encompass and PILOT need to match") is ADVISORY and COMPUTED —
-  // reconcile.compareAbPiece emits match/mismatch rows into the compared section, and the
+  // files, so comparing THESE raw rows would read "no data to compare" on nearly every
+  // file and hold term sheets everywhere (the funding_channel lesson — these tenant
+  // values are verified:false, never read live yet). The real matching (owner-directed
+  // 2026-08-18: "it should be added to this section in the Encompass syncing. Encompass
+  // and PILOT need to match") is COMPUTED — reconcile.compareAbPiece emits match/mismatch
+  // rows into the compared section ONLY where a split is recorded on some side, and the
   // A/B-piece card shows the same verdict (both call lib/ab-piece.js shapeEncompass, ONE
   // definition, reading these ids out of applications.encompass_extra._fieldValues).
+  // NOTE those computed rows follow the section's match-all gate: a mismatch on a
+  // split file HOLDS the term-sheet send and tape export until the two systems agree
+  // or a super admin excepts the field — exactly "Encompass and PILOT need to match".
   // READ-ONLY like every row here — PILOT never writes these fields; a PILOT→Encompass
   // sync of the split needs its own pad entry in docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md
   // with the owner's written authorization, and does not exist today.

@@ -199,9 +199,16 @@ function call(server, method, path, token, body) {
        WHERE id=$1`, [appId]);
     const f2 = await reconcile.computeFindings(appId, db);
     const aRow = abRowsOf(f2).find((x) => x.key === 'ab_piece_a_amount');
-    ok('E2 a differing A-piece is a MISMATCH row that stays advisory and names the fix-by-hand rule',
+    ok('E2 a differing A-piece is a MISMATCH row (advisory counter) that names the fix-by-hand rule',
       !!aRow && aRow.status === 'mismatch' && aRow.gate === 'advisory'
       && /reads Encompass/.test(aRow.detail || '') && /cannot|by hand/i.test(aRow.detail || ''));
+    // The BLOCKING is the intent, not an accident (owner-directed 2026-08-18:
+    // "Encompass and PILOT need to match"): summarize()'s match-all gate counts
+    // this mismatch, so the section is NOT clear and the term-sheet/tape gates
+    // hold until the two systems agree or a super admin excepts the field.
+    ok('E2b the mismatch HOLDS the section gate — summary.clear is false and the key is in the not-passing set',
+      !!f2.summary && f2.summary.clear === false
+      && Array.isArray(f2.summary.notPassingKeys) && f2.summary.notPassingKeys.includes('ab_piece_a_amount'));
     // No split ANYWHERE → total silence: the compared section gains no rows at all,
     // so 99% of files (no A/B structure) are untouched by this feature.
     await call(server, 'POST', `/api/staff/applications/${appId}/ab-piece`, tok, { enabled: false, aPieceAmount: null });

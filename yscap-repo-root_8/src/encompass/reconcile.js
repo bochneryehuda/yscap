@@ -1017,9 +1017,23 @@ function compareFundingChannel(ourBuyer, theirBuyer, theirChannel, ourTableFunde
  * whether the two systems match. A fact is emitted ONLY when it is
  * genuinely comparable (something recorded on at least one side) — a file
  * with no split anywhere emits NOTHING, so the 99% of files with no A/B
- * structure gain no rows and nothing unverified can ever hold a term sheet
- * (every row is ADVISORY: verified:false tenant fields, and a mismatch is a
- * fix-by-hand in whichever system is wrong — never a PILOT write).
+ * structure gain no rows.
+ *
+ * WHAT A MISMATCH DOES — the truth, corrected 2026-08-18 (the first cut of
+ * this comment claimed ADVISORY rows can never hold a term sheet; that is
+ * FALSE): summarize()'s match-all gate counts EVERY non-match non-excepted
+ * compared row against `clear`, whatever its gate — the gate value only
+ * picks the openAdvisory vs openBlocking counter. So a mismatch on one of
+ * these rows HOLDS the DocuSign term-sheet send (issuanceGate) and the tape
+ * export (tapeGate) until the two systems agree. That is the owner-directed
+ * behaviour, twice over: "Encompass and PILOT need to match" (2026-08-18)
+ * and the section's standing match-all rule (test-encompass-reconcile-pure
+ * pins "an advisory disagreement now blocks the term sheet"). The ways
+ * through are the section's own: fix whichever system is wrong by hand
+ * (never a PILOT write — Encompass is read-only), an admin override with a
+ * recorded reason on the send, or a super-admin field exception (which
+ * works on these computed keys). The protection for ordinary files is the
+ * SILENCE rule above, not the gate label.
  *
  * PURE decision — takes the already-loaded row/loan/quote; never throws.
  */
@@ -1141,8 +1155,9 @@ async function computeFindings(appId, dbc, opts) {
   // there is no channel to judge, and an absent value is never a violation.
   const ruleFields = loan ? compareFundingChannel(row.lender, theirs.capital_provider, theirs.funding_channel, row.table_funded) : [];
   // The A/B-piece split's three owner-supplied fields (2026-08-18) — computed,
-  // ADVISORY, read-only; silent unless a split is recorded somewhere. See
-  // compareAbPiece above.
+  // Read-only; silent unless a split is recorded somewhere. A mismatch
+  // follows the section's match-all gate (holds the term sheet + tape until
+  // reconciled or excepted) — see compareAbPiece above.
   const abPieceFields = loan ? compareAbPiece(row, loan, quote ? quote.quote : null) : [];
   const fields = econFields.concat(idFields, ruleFields, abPieceFields);
   // Super-admin FIELD EXCEPTIONS (owner-directed 2026-08-02): a not-matching / "no
