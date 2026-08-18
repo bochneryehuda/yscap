@@ -33,8 +33,10 @@
 -- BACKFILL: this IS the backfill — one UPDATE of the current settings row.
 -- Nothing on applications moves (no file's terms, registration or conditions
 -- are touched; the db/071/072 reopen triggers watch applications, not
--- company_pricing_settings). A brand-new empty database has no settings row
--- and is deliberately left alone (the admin configures pricing there anyway).
+-- company_pricing_settings). On a BRAND-NEW database the seed fires too:
+-- db/099 seeds the initial current settings row earlier in the same boot, so
+-- even a fresh install starts with Gold discontinued — which is the owner's
+-- "discontinued from now", and one Admin Center switch away from re-enabled.
 --
 -- PRODUCT SEPARATION. company_pricing_settings is RTL's pricing table; nothing
 -- lt_* is referenced.
