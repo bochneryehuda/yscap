@@ -111,6 +111,64 @@ function errorVerdict(tag, side, e) {
 // gating nothing, which is the failure mode this whole change exists to remove.
 const BOUNDS_CHECKS = ['samePrice', 'clampFaithful'];
 
+// How much per-scenario EVIDENCE the summary carries. The summary is the ONLY thing that survives a
+// run — `agreement-store.recordRun` stores it whole as jsonb and stores nothing else, so anything left
+// out here is answerable only by running the whole battery against the paid vendor again. It used to
+// carry `disagreeing` (bare scenario LABELS, silently sliced at 50), which means a stored record could
+// say "41 disagreed" beside a list that named where NONE of them went wrong.
+//
+// BOUNDED, AND THE BOUND IS STATED. A run whose every scenario disagrees would otherwise put ~300
+// records with every itemized row into one jsonb value; the caps keep it small and
+// `disagreementsOmitted` / `dimensionsOmitted` say exactly what was left out, because a truncated list
+// with nothing to say about the truncation reads as the whole story (repo rule: no silent caps).
+const DISAGREEMENT_SAMPLE = 50;
+const DIMENSION_ROWS_PER_SCENARIO = 12;
+
+/**
+ * One disagreeing verdict → the compact record of WHERE it disagreed. Pure; never throws on a
+ * half-shaped verdict (a reporter must never cost a run its result).
+ *
+ * `categories` is the GATING coarse axes only — the axes a caller deliberately ignored are reported in
+ * `byCategory` and are, by construction, not why this scenario failed. Naming an ignored axis as the
+ * cause is how a reader is sent to fix a compensation-layer difference the gate was told not to count.
+ */
+function disagreementRecord(r) {
+  const rows = [];
+  let dimensionsOmitted = 0;
+  for (const rec of ((r && r.rungReconciles) || [])) {
+    for (const it of ((rec && rec.itemized) || [])) {
+      // deltaMilli === 0 is `status:'match'` by reconcileLlpas' own definition, so this is exactly the
+      // set of non-matching rows — the same filter the byDimension tally uses, so the sample and the
+      // aggregate can never describe different rows.
+      if (!it || it.deltaMilli === 0) continue;
+      if (rows.length >= DIMENSION_ROWS_PER_SCENARIO) { dimensionsOmitted += 1; continue; }
+      rows.push({
+        rate: rec.rate != null ? rec.rate : null,
+        dimension: it.dimension,
+        status: it.status || 'llpa_mismatch',
+        deltaMilli: isNum(it.deltaMilli) ? it.deltaMilli : null,
+      });
+    }
+  }
+  const gate = Array.isArray(r && r.boundsGate) ? r.boundsGate : BOUNDS_CHECKS;
+  const boundsFailed = [];
+  for (const b of ((r && r.bounds) || [])) {
+    for (const name of gate) {
+      if (b && b.checks && b.checks[name] === false && !boundsFailed.includes(name)) boundsFailed.push(name);
+    }
+  }
+  return {
+    scenario: r && r.scenario,
+    ourEligible: !!(r && r.ourEligible),
+    lpEligible: !!(r && r.lpEligible),
+    worstDeltaMilli: isNum(r && r.worstDeltaMilli) ? r.worstDeltaMilli : null,
+    categories: Array.isArray(r && r.gatingCategories) ? r.gatingCategories.slice() : [],
+    dimensions: rows,
+    dimensionsOmitted,
+    boundsFailed,
+  };
+}
+
 function resolveBoundsGate(o) {
   if (o.skipBounds) return [];
   const raw = o.boundsGate;
@@ -227,6 +285,10 @@ async function runOne(scenario, ours, lp, opts) {
     // Which bounds checks GATED this verdict. Carried on the result (not only in the caller's opts) so
     // summarize() can report the ungated ones as ungated rather than as passing.
     boundsGate,
+    // Which coarse axes actually COUNTED against this verdict — the same reasoning one line up. The
+    // ignored ones stay in `coarse` and in the byCategory tally; without this, summarize() cannot tell
+    // a cause from an axis the caller deliberately excluded, and `coarseIgnore` lives only in opts.
+    gatingCategories: gatingCoarse.map((d) => d.category),
     worstDeltaMilli,
   };
 }
@@ -284,6 +346,8 @@ function summarize(results) {
   const byDimensionStatus = {};  // dimension -> { llpa_mismatch, llpa_missing_ours, llpa_extra_ours }
   const byStatus = {};           // status -> total across every dimension
   const disagreeing = [];
+  const disagreements = [];
+  let disagreementsOmitted = 0;
   // THE CAP/FLOOR AXIS, ROLLED UP — the owner's HARD RULE names max price and min price among the things
   // that must agree, and until now the probe's answer was computed per rung and then dropped on the
   // floor here. Counting it is what turns "we skipped that" into something a reader can see.
@@ -311,7 +375,13 @@ function summarize(results) {
     if (r.agree) {
       agreed += 1;
       if (priced) agreedPriced += 1; else agreedDeclined += 1;
-    } else { disagreed += 1; disagreeing.push(r.scenario); }
+    } else {
+      disagreed += 1;
+      if (disagreements.length < DISAGREEMENT_SAMPLE) {
+        disagreeing.push(r.scenario);
+        disagreements.push(disagreementRecord(r));
+      } else disagreementsOmitted += 1;
+    }
     // The largest per-dimension LLPA delta anywhere — computed per scenario and, until now, dropped.
     // "We disagree on 41 scenarios" reads very differently at 1 milli than at 5,000.
     if (isNum(r.worstDeltaMilli) && Math.abs(r.worstDeltaMilli) > Math.abs(worstDeltaMilli)) worstDeltaMilli = r.worstDeltaMilli;
@@ -387,7 +457,13 @@ function summarize(results) {
     pendingEncodeFamilies,
     surprises,
     worstDeltaMilli,
-    disagreeing: disagreeing.slice(0, 50),
+    // The bare labels, unchanged in shape and meaning, because stored summaries already carry this key
+    // and a reader of an old row must not have to guess which shape it holds. `disagreements` is the
+    // same sample WITH the evidence; both share one cap, and `disagreementsOmitted` states what neither
+    // of them names.
+    disagreeing,
+    disagreements,
+    disagreementsOmitted,
     gateMet: errors === 0 && disagreed === 0 && comparable > 0,
   };
 }
@@ -398,5 +474,7 @@ module.exports = {
   summarize,
   ERROR_KIND,
   KNOWN_UNENCODED_FAMILIES,
-  _internals: { ourAdjustmentsOf, bestRungsOf, matchByRate },
+  DISAGREEMENT_SAMPLE,
+  DIMENSION_ROWS_PER_SCENARIO,
+  _internals: { ourAdjustmentsOf, bestRungsOf, matchByRate, disagreementRecord },
 };

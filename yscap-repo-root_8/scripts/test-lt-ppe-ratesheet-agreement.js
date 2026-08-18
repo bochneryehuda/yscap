@@ -196,6 +196,84 @@ async function main() {
   ok(empty.summary.gateMet === false && empty.summary.comparable === 0 && empty.summary.incomparable === 1,
     '  a batch with no comparable scenario never meets the gate');
 
+  // ---- 7) THE STORED EVIDENCE — which scenarios disagreed, and WHERE ----------------------------
+  // `agreement-store.recordRun` stores the summary WHOLE and stores nothing else, so a run's summary is
+  // the only thing that outlives it. It used to carry `disagreeing` — bare scenario LABELS, silently
+  // sliced at 50 — so a stored record could say "41 disagreed" beside a list naming where NONE of them
+  // went wrong, and the only way to ask again was to re-run 200+ scenarios against a PAID vendor.
+  {
+    const one = agreement.summarize([off]);
+    const rec = one.disagreements[0];
+    const dims = rec.dimensions.map((d) => d.dimension).sort();
+    ok(one.disagreeing.length === 1 && one.disagreeing[0] === off.scenario,
+      'EVIDENCE: the bare-label list keeps its old shape (stored summaries already carry it)');
+    ok(JSON.stringify(dims) === JSON.stringify(['loan_amount', 'purpose']),
+      '  and the record NAMES both offending dimensions rather than only the scenario');
+    // The two rows carry DIFFERENT statuses and that is the whole value of recording them: `purpose` is
+    // a cell we encode and got wrong (a real sheet bug), `loan_amount` is a family we do not carry yet
+    // (task #62). A record that flattened both to "mismatch" would send a reader to fix a cell that
+    // does not exist. Both sit on the same coupon, which is what makes them one offsetting pair.
+    const statusOf = (d) => (rec.dimensions.find((x) => x.dimension === d) || {}).status;
+    ok(statusOf('purpose') === 'llpa_mismatch' && statusOf('loan_amount') === 'llpa_missing_ours'
+      && rec.dimensions.every((d) => d.rate === 71250 && d.deltaMilli !== 0),
+      '  with the coupon, the signed delta, and each row\'s OWN status (a wrong cell vs an unencoded family)');
+    ok(rec.worstDeltaMilli === off.worstDeltaMilli && rec.ourEligible === true && rec.lpEligible === true,
+      '  plus the magnitude and who said the loan was eligible');
+
+    // A disagreement with NO itemized cause: every LLPA reconciles and only the net price / cap probe
+    // differ. The record must still say why, or the reader is told a scenario failed for no reason.
+    const priceOnly = agreement.summarize([strict]).disagreements[0];
+    ok(priceOnly.dimensions.length === 0 && priceOnly.categories.includes('final_price')
+      && priceOnly.boundsFailed.includes('samePrice'),
+      '  a net-price-only disagreement names the coarse axis and the failed bounds check');
+
+    // AN IGNORED AXIS IS NEVER NAMED AS THE CAUSE. Same LP leg, with the margin-laden coarse axes gated
+    // out but the cap/floor probe still gating: it disagrees on bounds ALONE, and `final_price` — which
+    // still DIFFERS and is still tallied in byCategory — must not appear as a reason.
+    const ignored = await agreement.runOne(CASHOUT, ours, lpMargin, { ...OPTS, coarseIgnore: ['final_price', 'llpa_total', 'margin'] });
+    const ignoredSum = agreement.summarize([ignored]);
+    ok(ignored.agree === false && ignoredSum.disagreements[0].categories.length === 0
+      && ignoredSum.disagreements[0].boundsFailed.includes('samePrice')
+      && ignoredSum.byCategory.final_price === 3,
+      '  an axis the caller told the gate to ignore is tallied (once per rung) but never named as the cause');
+
+    // CONTROL: the same leg the run is told to accept in full records nothing at all.
+    ok(agreement.summarize([lenient]).disagreements.length === 0,
+      '  CONTROL: an agreeing scenario contributes no evidence record');
+
+    // EVERY recorded disagreement names at least one cause. `agree` is false only via a gating coarse
+    // axis or the fine gate, so a record with nothing in it would mean the evidence lost the reason.
+    const mixed = agreement.summarize([off, strict, danger, ignored, lenient, incomp]);
+    ok(mixed.disagreements.length === 4
+      && mixed.disagreements.every((d) => d.categories.length || d.dimensions.length || d.boundsFailed.length),
+      '  every recorded disagreement names a cause — none is recorded blank');
+  }
+
+  // ---- 7b) THE CAP IS STATED, NOT SILENT -------------------------------------------------------
+  {
+    const many = agreement.summarize(new Array(agreement.DISAGREEMENT_SAMPLE + 10).fill(off));
+    ok(many.disagreed === agreement.DISAGREEMENT_SAMPLE + 10
+      && many.disagreements.length === agreement.DISAGREEMENT_SAMPLE
+      && many.disagreeing.length === agreement.DISAGREEMENT_SAMPLE
+      && many.disagreementsOmitted === 10,
+      `CAP: ${agreement.DISAGREEMENT_SAMPLE + 10} disagreements → ${agreement.DISAGREEMENT_SAMPLE} recorded and the other 10 SAID to be omitted`);
+
+    // The per-scenario row cap says so too. Hand-built because a synthetic 15-dimension reconcile is
+    // the point; summarize()'s contract is over the verdict shape, whoever produced it.
+    const wide = {
+      scenario: 'wide', agree: false, ourEligible: true, lpEligible: true, worstDeltaMilli: 900,
+      coarse: { differences: [] }, gatingCategories: [], bounds: [], boundsGate: ['samePrice'],
+      rungReconciles: [{
+        rate: 70000,
+        itemized: Array.from({ length: 15 }, (_, i) => ({ dimension: `d${i}`, status: 'llpa_mismatch', deltaMilli: 10 + i })),
+      }],
+    };
+    const w = agreement.summarize([wide]).disagreements[0];
+    ok(w.dimensions.length === agreement.DIMENSION_ROWS_PER_SCENARIO
+      && w.dimensionsOmitted === 15 - agreement.DIMENSION_ROWS_PER_SCENARIO,
+      `  and a scenario with 15 offending dimensions records ${agreement.DIMENSION_ROWS_PER_SCENARIO} and names the ${15 - agreement.DIMENSION_ROWS_PER_SCENARIO} it dropped`);
+  }
+
   console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
   process.exit(fail === 0 ? 0 : 1);
 }

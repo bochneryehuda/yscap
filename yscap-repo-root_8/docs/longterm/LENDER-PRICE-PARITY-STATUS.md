@@ -2259,3 +2259,37 @@ pg arm, keying on the filename, the word-only skip match, dropping the require-D
 the no-database case. The guard is itself a suite the runner scans, so its fixture text is built from
 joined tokens — spelled out, the runner would count this pure test as one that needs a database, which
 is the very over-count it exists to prevent.
+
+**§2.37 — A PAID 200-SCENARIO RUN THAT COULD NOT SAY *WHICH* SCENARIO WENT WRONG (2026-08-18).**
+`agreement-store.recordRun` stores the run's SUMMARY whole, as jsonb, and stores nothing else — so the
+summary is the only thing that outlives the run, and the only alternative to reading it is running the
+whole battery against the paid vendor again. It carried `disagreeing`: a list of bare scenario LABELS,
+`slice(0, 50)`. So a stored record could say **"41 disagreed"** beside a list that named where NONE of
+them went wrong, and on a run with more than 50 it named fewer than it had and said nothing about the
+rest. The repo's own rule — no silent caps — with the cap sitting on the one artifact a ≥200-scenario
+gate exists to produce.
+
+**THE RECORD NOW NAMES THE CAUSE.** `disagreements[]` carries, per scenario: the worst delta, who said
+the loan was eligible, the GATING coarse axes, the failed cap/floor checks, and the itemized
+per-dimension rows — each with its coupon, its signed delta and **its own status**. That last part is
+the difference between "fix a cell" and "encode a family": on one offsetting pair, `purpose` is
+`llpa_mismatch` (a cell we encode and got wrong) while `loan_amount` is `llpa_missing_ours` (a family
+the sheet does not carry yet, task #62). A record that flattened both to "mismatch" would send a
+reader to fix a cell that does not exist.
+
+**AN AXIS THE GATE WAS TOLD TO IGNORE IS NEVER NAMED AS THE CAUSE.** `coarseIgnore` lives in the
+caller's opts, so `summarize()` could not tell a reason from an axis deliberately excluded — and on the
+live Deephaven sheet the excluded ones are the margin-laden price axes (task #78), which differ on
+almost every rung. The verdict now carries `gatingCategories`, for exactly the reason it already
+carried `boundsGate`: so the summary reports the ungated as ungated rather than as a cause. The ignored
+axis is still fully tallied in `byCategory` — it is reported, just not blamed.
+
+**BOTH CAPS STATE THEMSELVES.** `disagreementsOmitted` and a per-scenario `dimensionsOmitted` say
+exactly what was left out, and `disagreeing` keeps its old shape and meaning because stored summaries
+already carry that key and a reader of an old row must not have to guess which shape it holds.
+
+Six mutations proven to turn the suite red: never incrementing the omitted counter, falling back to all
+coarse axes, dropping the dimension rows, flattening every status to `llpa_mismatch`, silencing the
+per-scenario row cap, and ignoring which bounds checks were gated. Plus a CONTROL that an agreeing
+scenario contributes no record, and the invariant that **every** recorded disagreement names at least
+one cause — none is ever recorded blank.
