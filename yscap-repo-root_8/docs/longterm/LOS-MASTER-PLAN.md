@@ -1643,7 +1643,23 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
   reused), that a stated SHORT lifetime is honoured rather than overridden by the fallback, and that
   an unreadable one caches nothing. Four mutations turn it red.
 - **The API budget is 500,000 calls a day with a ceiling of 30 concurrent** — shared across
-  every integration touching this tenant, not just ours.
+  every integration touching this tenant, not just ours. **Both halves were measured on
+  2026-08-18 and both were weaker than they read.** (a) *The calls.* The token cache is consulted
+  at the TOP of `getToken`, so a burst of callers that all arrive before the first token returns
+  each mint their own: five concurrent reads issued FIVE token requests plus the five reads — ten
+  calls where six would do. `getToken` is now single-flight (the in-flight promise cleared on both
+  settle paths, so a failed request is never handed to the next caller for ever) and the same burst
+  asks once. (b) *The concurrency.* The pacer chained only the WAIT — each caller queued behind the
+  previous caller's gap and then fetched — which spaces request STARTS without serialising the
+  requests. With a 350ms gap and a fast tenant nothing overlaps, so it read as serial and was
+  DESCRIBED as serial; but the timeouts in that module are 12 to 30 SECONDS, and any request slower
+  than the gap runs alongside the next. Measured with the gap shortened: peak 5 in flight from a
+  5-read burst. The chain now holds until the request itself settles, so peak is 1. Neither changes
+  anything today — every long-term caller is already a sequential sweep, which is why neither was
+  visible — but the first parallel sweep somebody writes would not have noticed either: the calls
+  succeed, the sync works, and the only symptom is budget spent twice over and a ceiling approached
+  that RTL is also standing under. `scripts/test-lt-encompass-token-cache.js` pins both, and three
+  mutations turn it red.
 - **The appraisal XML is unrecoverable for historical files.** The download URLs are minted at
   delivery with a ~15-minute life; all 298 historical ones are expired. The durable fix is to
   have the vendor deliver the XML to us directly.

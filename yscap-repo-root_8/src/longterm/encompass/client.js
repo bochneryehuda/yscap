@@ -73,11 +73,33 @@ const withTimeout = (ms) => { const ac = new AbortController(); const t = setTim
 // ever drives heavy live Encompass traffic against the SAME tenant as RTL, revisit
 // this (a shared limiter would need an owner-authorized crossing).
 const MIN_GAP_MS = parseInt(process.env.LT_ENCOMPASS_MIN_GAP_MS || '350', 10);
+
+/**
+ * ONE REQUEST AT A TIME, with a gap between them.
+ *
+ * This used to chain only the WAIT — each caller queued behind the previous
+ * caller's gap and then fetched — which spaces request STARTS but does not
+ * serialise the requests themselves. With a 350ms gap and a fast tenant nothing
+ * overlaps, so it read as serial and was described as serial; but the timeouts
+ * in this module are 12 to 30 SECONDS, and any request slower than the gap runs
+ * alongside the next one. A burst against a slow tenant is exactly when that
+ * matters, and exactly when the ceiling does: 30 CONCURRENT, shared with every
+ * other integration on this instance, so Long-Term overlapping is not merely
+ * Long-Term's problem — it is what starves RTL.
+ *
+ * So the chain now holds until the request itself SETTLES. It costs nothing
+ * today (every Long-Term caller is already a sequential sweep) and it makes the
+ * guarantee true rather than incidental. `run` is handed the work instead of the
+ * caller awaiting a gap and then fetching on its own, because a promise the
+ * caller resolves separately is a chain anybody can step out of by accident.
+ */
 let _pace = Promise.resolve();
-function paced() {
-  const wait = _pace.then(() => new Promise((r) => setTimeout(r, MIN_GAP_MS)));
-  _pace = wait.catch(() => {});
-  return wait;
+function paced(run) {
+  const turn = _pace.then(() => new Promise((r) => setTimeout(r, MIN_GAP_MS))).then(run);
+  // The QUEUE must survive a failed request: swallow here only so the next caller
+  // still gets its turn — the rejection itself is handed to the caller untouched.
+  _pace = turn.then(() => undefined, () => undefined);
+  return turn;
 }
 
 // HARD READ-ONLY GATE. Every fetch built in this module funnels through here,
@@ -94,8 +116,7 @@ async function _fetchGuarded(url, init) {
   if (allowedPost && method !== 'POST') {
     throw new Error(`LT Encompass read-shaped endpoint requires POST (got ${method}).`);
   }
-  await paced();
-  return fetch(url, init);
+  return paced(() => fetch(url, init));
 }
 
 // A GET path against /encompass/* must not reach into the OAuth namespace.
@@ -110,8 +131,34 @@ function assertReadOnlyPath(path) {
 }
 
 let tokenCache = { token: null, exp: 0 };
+
+/**
+ * SINGLE-FLIGHT. The cache is only consulted at the TOP of this function, so a
+ * burst of callers that all arrive before the first token comes back each see an
+ * empty cache and each mint their own: measured at five concurrent reads issuing
+ * FIVE token requests plus the five reads — ten calls where two would do. The
+ * pacer below then serialises them, so it costs no concurrency; what it costs is
+ * the tenant's call budget, which is 500,000 a day shared with every other
+ * integration touching this instance (§12 of the master plan).
+ *
+ * Nothing in Long-Term issues Encompass reads in parallel TODAY — every caller is
+ * a sequential sweep, measured — so this is a hole rather than a leak. It is
+ * closed now because the first parallel sweep somebody writes would not notice it:
+ * the calls succeed, the sync works, and the only symptom is twice the budget
+ * spent, arriving as a rate limit on a busy morning.
+ *
+ * The in-flight promise is CLEARED on both settle paths — a failed token request
+ * must never be handed to the next caller for ever.
+ */
+let tokenInFlight = null;
 async function getToken() {
   if (tokenCache.token && tokenCache.exp > Date.now() + 30000) return tokenCache.token;
+  if (tokenInFlight) return tokenInFlight;
+  tokenInFlight = mintToken().finally(() => { tokenInFlight = null; });
+  return tokenInFlight;
+}
+
+async function mintToken() {
   ensure();
   // Developer Connect: resource-owner password grant when a user login is provided
   // (the common tenant setup), otherwise client-credentials. The username rides as

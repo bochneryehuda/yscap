@@ -77,6 +77,70 @@ async function tokenCallsOver(reads, tokenBody) {
   }
 }
 
+/**
+ * Fire N reads AT ONCE and report what reached the wire.
+ *
+ * `tokenCallsOver` above drives its reads sequentially, which is what Long-Term
+ * actually does today — so it can never see either of the properties below. A
+ * burst is the shape that catches them, and the shape the first parallel sweep
+ * somebody writes will have.
+ */
+async function burstOf(n, opts = {}) {
+  const realFetch = global.fetch;
+  let tokenCalls = 0; let reads = 0; let inflight = 0; let peakConcurrent = 0;
+  global.fetch = async (url) => {
+    inflight += 1; peakConcurrent = Math.max(peakConcurrent, inflight);
+    await new Promise((r) => setTimeout(r, 5));   // a request takes time, or nothing can overlap
+    inflight -= 1;
+    if (String(url).endsWith('/oauth2/v1/token')) {
+      tokenCalls += 1;
+      if (opts.failFirstToken && tokenCalls === 1) return new Response('nope', { status: 500 });
+      return new Response(JSON.stringify({ access_token: 't' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    reads += 1;
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    delete require.cache[require.resolve('../src/longterm/config')];
+    delete require.cache[require.resolve(CLIENT_PATH)];
+    const c = require(CLIENT_PATH);
+    await Promise.all(Array.from({ length: n }, (_, i) => c.apiGet(`/encompass/v3/loans/g${i}`).catch(() => null)));
+    return { tokenCalls, reads, peakConcurrent };
+  } finally {
+    global.fetch = realFetch;
+    delete require.cache[require.resolve(CLIENT_PATH)];
+  }
+}
+
+/**
+ * One read that fails to get a token, then another. The first must not leave its
+ * rejected attempt sitting in the single-flight slot for the next caller.
+ */
+async function sequentialAfterFailure() {
+  const realFetch = global.fetch;
+  let tokenCalls = 0;
+  global.fetch = async (url) => {
+    if (String(url).endsWith('/oauth2/v1/token')) {
+      tokenCalls += 1;
+      if (tokenCalls === 1) return new Response('nope', { status: 500 });
+      return new Response(JSON.stringify({ access_token: 't' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    delete require.cache[require.resolve('../src/longterm/config')];
+    delete require.cache[require.resolve(CLIENT_PATH)];
+    const c = require(CLIENT_PATH);
+    await c.apiGet('/encompass/v3/loans/a').catch(() => null);
+    let secondSucceeded = false;
+    await c.apiGet('/encompass/v3/loans/b').then(() => { secondSucceeded = true; }).catch(() => {});
+    return { tokenCalls, secondSucceeded };
+  } finally {
+    global.fetch = realFetch;
+    delete require.cache[require.resolve(CLIENT_PATH)];
+  }
+}
+
 async function main() {
   console.log('the token is cached even though this tenant states no lifetime');
 
@@ -114,6 +178,30 @@ async function main() {
   const junk = await tokenCallsOver(2, { access_token: 't', expires_in: 'soon' });
   check(junk === 2,
     `and an unreadable lifetime caches NOTHING — two reads asked twice (${junk}), because "soon" − 60 is NaN and a token must never be held on a figure nobody sent`);
+
+  // ── A BURST MINTS ONE TOKEN, AND NEVER RUNS SIDE BY SIDE ─────────────────
+  //
+  // Two properties the master plan's §12 budget risk rests on, neither of which
+  // anything checked. The cache is read at the TOP of getToken, so before the
+  // single-flight guard a burst of callers each saw an empty cache and each
+  // minted their own: MEASURED at five concurrent reads issuing five tokens plus
+  // five reads — ten calls where six would do, against 500,000 a day shared with
+  // every integration on this tenant.
+  console.log('\na burst of readers mints ONE token and never runs side by side');
+
+  const burst = await burstOf(5);
+  check(burst.tokenCalls === 1,
+    `THE ONE THAT MATTERS: five concurrent reads asked for ${burst.tokenCalls} token(s) — one, or a parallel sweep quietly doubles the tenant's call budget`);
+  check(burst.reads === 5, `…and still performed all five reads (${burst.reads})`);
+  check(burst.peakConcurrent === 1,
+    `and no two Encompass requests were ever in flight together (peak ${burst.peakConcurrent}) — this tenant's ceiling is 30 CONCURRENT and it is shared with RTL, so Long-Term holding at one is what keeps a sweep from starving the other product`);
+
+  // A token request that FAILS must not be handed to the next caller for ever.
+  // Concurrent callers correctly SHARE one failed attempt — that is what
+  // single-flight means — so the property is about the read that comes AFTER it.
+  const afterFailure = await sequentialAfterFailure();
+  check(afterFailure.tokenCalls === 2 && afterFailure.secondSucceeded,
+    `a failed token is never left in flight as the answer — the next read asks again and succeeds (${afterFailure.tokenCalls} attempts)`);
 
   console.log('\nand the fallback is still the measured 30 minutes');
   const fs = require('fs');
