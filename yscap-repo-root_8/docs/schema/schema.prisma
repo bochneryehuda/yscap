@@ -16,10 +16,10 @@
 // *** runs without a single error and silently leaves out every one of those
 // *** 783 objects — including the guard that keeps a budget
 // *** condition from being signed off unless the totals match to the cent.
-// *** The 576 numbered migrations in db/ (highest db/579) are the only
+// *** The 577 numbered migrations in db/ (highest db/580) are the only
 // *** thing that builds this database.
 //
-// Snapshot: 342 tables, 5589 columns.
+// Snapshot: 342 tables, 5590 columns.
 // ===========================================================================
 datasource db {
   provider = "postgresql"
