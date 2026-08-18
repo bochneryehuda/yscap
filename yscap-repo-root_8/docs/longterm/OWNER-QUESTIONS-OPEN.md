@@ -81,6 +81,18 @@ those on the application?**
 We have Deephaven fully encoded. For every other investor we have nothing — which penalty types, which
 terms, and how each one changes the price.
 
+### 2e. When a state IS in the matrix but we cannot evaluate its rule, what should happen?
+
+**Partly answered on 2026-08-18 — see "Answered" at the bottom.** A state that is NOT in the matrix is
+now settled: it is allowed, with no limits.
+
+**What is still open is the narrower case:** the state IS in the matrix, but we cannot work out its
+answer because a piece of information is missing — Illinois is the live example, where the rule turns
+on the loan's APR and we do not always have one.
+
+**Do we refuse to quote that loan, or quote it and put it in front of a person?** Right now it says
+"we could not tell" and holds, which is the safe direction but may not be the one you want.
+
 ### 2f. If two price bands on a rate sheet overlap, does the loan take both charges or one?
 
 A rate sheet is a list of price adjustments, and they add up. So if a sheet is written with
@@ -104,18 +116,6 @@ is us refusing to overcharge, not us answering your question. What we need from 
 3. **Should a sheet with an overlap be publishable at all,** or should we stop it at the door?
 
 Full technical detail: `docs/longterm/PPE-OVERLAPPING-BANDS-QUESTION.md`.
-
-### 2e. When a state IS in the matrix but we cannot evaluate its rule, what should happen?
-
-**Partly answered on 2026-08-18 — see "Answered" at the bottom.** A state that is NOT in the matrix is
-now settled: it is allowed, with no limits.
-
-**What is still open is the narrower case:** the state IS in the matrix, but we cannot work out its
-answer because a piece of information is missing — Illinois is the live example, where the rule turns
-on the loan's APR and we do not always have one.
-
-**Do we refuse to quote that loan, or quote it and put it in front of a person?** Right now it says
-"we could not tell" and holds, which is the safe direction but may not be the one you want.
 
 ---
 
