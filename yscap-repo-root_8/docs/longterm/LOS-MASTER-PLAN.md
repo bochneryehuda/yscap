@@ -1776,6 +1776,28 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 ---
 
 
+19. **Should `enrichZip` stay?** (raised 2026-08-18 — one line either way)
+    `lenderprice/client.js enrichZip` is exported and called by NOTHING — not a route, not the
+    PPE, not a test. It was "blueprint step 3", written when the plan expected the vendor to
+    resolve a ZIP for us; the design moved past that, and the location enrichment that actually
+    runs is local (`search-model.validateScenario`, which fills state and county FIPS from a ZIP
+    with no vendor call at all).
+
+    What it still does that nothing else does is fetch a **conforming mortgage limit** by ZIP.
+    Nothing in the long-term tree reads one, the plan does not ask for one, and a conforming
+    limit is an agency-lending concept — these are DSCR investor loans. So the likely answer is
+    that it is a leftover and should go.
+
+    It is NOT removed here, and that is the difference from the `defaultView` and `isStored`
+    exports deleted on this branch: those duplicated an answer something else already gave, so
+    removing them lost nothing. This one fetches information nothing else provides, and whether
+    that information matters to the product is a call to make rather than infer. If it stays it
+    wants a caller and a test; if it goes it is a one-line deletion. Either is fine — what is
+    not fine is leaving a vendor call exported with no caller, because the next person to find
+    it will assume it is needed and wire it up, at one upstream request per scenario for a
+    number no screen shows.
+
+
 ## 12. The honest risks
 
 - **The eFolder write may not be confirmable from the outside.** If the request shapes cannot
