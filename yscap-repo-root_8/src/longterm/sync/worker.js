@@ -30,6 +30,7 @@
 
 const loans = require('./loans');
 const conditions = require('../conditions/sync');
+const milestoneCatalog = require('./milestone-catalog');
 
 /** Minutes between passes. The tenant's own pacing makes a tighter loop pointless. */
 const POLL_MIN = (() => {
@@ -64,7 +65,7 @@ async function tickOnce() {
   if (running) return { ok: false, reason: 'a pass is already running' };
   running = true;
   const started_at = Date.now();
-  const out = { loans: null, conditions: null };
+  const out = { loans: null, conditions: null, milestoneCatalog: null };
   try {
     try {
       out.loans = await loans.syncOnce({});
@@ -75,6 +76,15 @@ async function tickOnce() {
       out.conditions = await conditions.syncOnce({});
     } catch (e) {
       out.conditions = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    // The tenant's own milestone catalog. It skips itself unless a day has passed,
+    // so this costs nothing on all but one pass — and when it does run it is what
+    // stops a step a buyer added from blanking the progress bar on every file
+    // sitting at it. Independent of the other two, like they are of each other.
+    try {
+      out.milestoneCatalog = await milestoneCatalog.refreshOnce({});
+    } catch (e) {
+      out.milestoneCatalog = { ok: false, reason: (e && e.message) || String(e) };
     }
   } finally {
     running = false;

@@ -304,6 +304,17 @@ async function getMilestoneSettings({ includeArchived = false, view = 'Detail' }
   const qs = new URLSearchParams({ includeArchived: String(includeArchived), view, start: '0', limit: '100' });
   return apiGet(`/encompass/v3/settings/milestones?${qs.toString()}`);
 }
+/**
+ * ONE milestone's full settings.
+ *
+ * The LIST answer carries only `{id, name, tpoStatus, consumerStatus,
+ * milestoneColor, isArchived}` — the ROLE, the assignment rule and the expected
+ * days live only here (verified live, 2026-08-14; see ENCOMPASS-LIVE-API-PROBE §8.3).
+ * So a full catalog read is one list call plus one of these per milestone.
+ */
+async function getMilestoneSetting(id) {
+  return apiGet(`/encompass/v3/settings/milestones/${encodeURIComponent(String(id))}`);
+}
 async function getStandardFieldSchema(ids) {
   const list = (Array.isArray(ids) ? ids : [ids]).map((x) => String(x)).filter(Boolean);
   const qs = new URLSearchParams({ ids: list.join(','), start: '0', limit: '100' });
@@ -326,7 +337,7 @@ module.exports = {
   // diagnostic-only, read-only: see scripts/test-lt-encompass-access-probe.js
   tokenProbe,
   apiGet, pipelineSearch, fieldReader,
-  getMilestoneSettings, getStandardFieldSchema, getCustomFieldSettings,
+  getMilestoneSettings, getMilestoneSetting, getStandardFieldSchema, getCustomFieldSettings,
   getLoan, getLoanMilestones, getLoanMilestoneLogs,
   // exported for the read-only self-test
   _internals: { _fetchGuarded, _isFieldReaderPath, assertReadOnlyPath, POST_ALLOWLIST, TOKEN_PATH, PIPELINE_SEARCH_PATH },

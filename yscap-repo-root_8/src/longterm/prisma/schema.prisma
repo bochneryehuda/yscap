@@ -86,6 +86,15 @@ model LtEncompassMilestone {
   isArchived Boolean @default(false) @map("is_archived")
 
   /// LT-owned bookkeeping.
+  /// WHEN Encompass last confirmed this row, and WHERE it came from — 'live' for a
+  /// row read from the tenant's own catalog, 'seed' for one still standing on
+  /// db/547's 2026-08-14 export. NULL means nobody has ever refreshed it, which is
+  /// a different fact from "refreshed and unchanged" and the one a screen must be
+  /// able to tell apart: a catalog nobody has confirmed is a stepper waiting to go
+  /// blank the day a buyer adds a step.
+  catalogSyncedAt DateTime? @map("catalog_synced_at") @db.Timestamptz(6)
+  catalogSource String? @map("catalog_source")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 

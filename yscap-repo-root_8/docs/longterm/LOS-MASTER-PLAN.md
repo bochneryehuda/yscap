@@ -309,6 +309,22 @@ file screen and the pipeline's own count now read the same configured words; an 
 to the four measured across 20,569 live documents, and an unfamiliar word still counts as OUTSTANDING,
 because a word nobody recognised is not evidence that a document arrived.
 
+**THE MILESTONE CATALOG IS READ FROM THE TENANT, NOT FROZEN (2026-08-18).** `lt_encompass_milestones`
+was a PHOTOGRAPH: db/547 seeded it from a 2026-08-14 export and re-asserts those nineteen rows on
+every boot, and nothing ever read the tenant's live catalog although the read-only client carried the
+verified call. That matters more than a stale reference list usually would, because §4.2's stepper
+marks progress POSITIONALLY — a loan at a milestone the catalog does not carry leaves the current
+position at -1 and marks NOTHING reached, so the whole bar goes blank rather than slightly wrong. The
+day a buyer adds a step, every file at that step loses its stepper and nothing says why. The sync pass
+now refreshes it, and five things are deliberate: the ARCHIVED ones are asked for, so *archived in
+Encompass* and *gone from Encompass* stay two different facts; a milestone that disappears is
+ARCHIVED, never deleted, because loans passed through it; an EMPTY answer changes nothing, because an
+outage is not evidence that a buyer retired every step they have; a read that filled its page archives
+nothing, because a milestone missing from a FIRST page is not a milestone that is gone; and a detail
+read that failed leaves the role, the days and the assignment rule alone rather than writing nulls
+over a catalog that was right. It skips itself unless a day has passed — nineteen milestones is twenty
+reads against a budget shared with every other integration, and the catalog changes about never.
+
 **WHO BOUGHT THE LOAN IS FILLED AND SHOWN — STAFF ONLY (2026-08-18).** db/549 built the identity
 chain the owner said must *"survive like crazy"* — the shorthand name typed early, the accurate name
 added later, the investor's OWN loan number (the only key shared with their system), their email

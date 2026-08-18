@@ -16,6 +16,7 @@ const router = express.Router();
 
 const loanSync = require('../sync/loans');
 const conditionSync = require('../conditions/sync');
+const milestoneCatalogSync = require('../sync/milestone-catalog');
 const access = require('../access');
 const settingsStore = require('../settings/store');
 const db = require('../db');
@@ -121,7 +122,18 @@ router.post('/', requireSyncAdmin, async (req, res) => {
       conditions = { ok: false, reason: (e && e.message) || String(e) };
     }
 
-    res.json({ ...out, conditions });
+    // The tenant's own milestone catalog rides along too, and skips itself unless
+    // a day has passed — so pressing the button costs its twenty reads at most
+    // once a day. It is what stops a step a buyer added from blanking the
+    // progress bar on every file sitting at it. Best-effort, like the conditions.
+    let milestoneCatalog = null;
+    try {
+      milestoneCatalog = await milestoneCatalogSync.refreshOnce({});
+    } catch (e) {
+      milestoneCatalog = { ok: false, reason: (e && e.message) || String(e) };
+    }
+
+    res.json({ ...out, conditions, milestoneCatalog });
   } catch (e) {
     console.error('[lt] sync failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not run the sync.' });
