@@ -12,7 +12,11 @@
    Everything runs inside ONE transaction that is ROLLED BACK, so the shared
    dev database is byte-identical afterwards. */
 
-process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://ysdev:ysdev@127.0.0.1:5432/ysdev';
+/* Requires DATABASE_URL; skips cleanly otherwise — CI's no-database `test` job
+   runs the chain without one (the `test-db` job is where this runs for real),
+   and defaulting to localhost there dies on ECONNREFUSED instead of skipping
+   (that exact failure shipped once; see the sibling suite's guard). */
+if (!process.env.DATABASE_URL) { console.log('SKIP test-program-availability-seed-db (no DATABASE_URL)'); process.exit(0); }
 process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || '0'.repeat(64);
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecrettestsecrettestsecret12';
 
