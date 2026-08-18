@@ -81,11 +81,17 @@ those on the application?**
 We have Deephaven fully encoded. For every other investor we have nothing — which penalty types, which
 terms, and how each one changes the price.
 
-### 2e. When we cannot tell whether a state allows a prepayment penalty, what should happen?
+### 2e. When a state IS in the matrix but we cannot evaluate its rule, what should happen?
 
-Some state rules we cannot read with confidence. **Do we refuse to quote that loan, or quote it and put
-it in front of a person?** Right now we are making it say "we could not tell" rather than "allowed",
-which is the safe direction but not necessarily the one you want.
+**Partly answered on 2026-08-18 — see "Answered" at the bottom.** A state that is NOT in the matrix is
+now settled: it is allowed, with no limits.
+
+**What is still open is the narrower case:** the state IS in the matrix, but we cannot work out its
+answer because a piece of information is missing — Illinois is the live example, where the rule turns
+on the loan's APR and we do not always have one.
+
+**Do we refuse to quote that loan, or quote it and put it in front of a person?** Right now it says
+"we could not tell" and holds, which is the safe direction but may not be the one you want.
 
 ---
 
@@ -151,5 +157,30 @@ Designed, not built. Two questions inside it we cannot answer:
 
 ## Answered, for the record
 
-Nothing on this page has been answered yet. As you answer, the item moves here with the date and your
-own words, so nobody has to remember what was decided or go looking for it in a chat.
+As you answer, the item moves here with the date and your own words, so nobody has to remember what
+was decided or go looking for it in a chat.
+
+### 2026-08-18 — a state that is not in the prepayment matrix is ALLOWED, with no limits
+
+Owner's words:
+
+> "the prepayment penalty that we couldn't tell. If there's any state that was not mentioned in the
+> prepayment penalty matrix, like New York or Connecticut, that should automatically be allowed.
+> Unlimited restrictions. Any kind of prepayment penalty."
+
+**What this settles:** if a state does not appear in the prepayment-penalty matrix at all, the penalty
+is allowed — any type, any term, no limits.
+
+**What it does not settle, and we are deliberately not stretching it:** a state that IS in the matrix
+but whose rule we cannot work out for want of a missing figure (the Illinois APR case). That stays as
+open question 2e above, and stays on the safe side until you answer it.
+
+**One honest correction that came out of this.** We had reported it as a defect that the matrix says
+"allowed" when it has not matched a state. For a state that is simply not on the list, your answer
+means that behaviour was **right all along** — so what we are fixing there is narrower than we first
+said. The three outcomes are now kept apart in the code and on the answer, so nobody can ever confuse
+"allowed because the state has no rule" with "allowed because we checked a rule and it permits it":
+
+  1. state not in the matrix → allowed, unlimited (your direction, above)
+  2. state in the matrix, rule checked → whatever the rule says
+  3. state in the matrix, rule not checkable → we could not tell, and we hold
