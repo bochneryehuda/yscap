@@ -530,6 +530,13 @@ app.use('/api/research', require('./routes/research'));
 // files inside the compiler (src/lib/dashboards/compile.js), so a shared dashboard shares
 // the question and never the answer.
 app.use('/api/dashboards', require('./routes/dashboards'));
+// Elementix CRM desk: the OTHER Elementix plane. Underwriting proves a borrower's track
+// record from recorded deeds (src/lib/elementix/lookups.js); this is an officer looking
+// somebody up to telephone them, and the contact detail it buys may never be read back by
+// a lending decision. Two doors, two closed tool lists — the FCRA separation is structural
+// rather than a convention. Staff-only and INTERNAL-only (a TPO broker is a staff_users row
+// too, and must never spend our credits); the router applies all of that itself.
+app.use('/api/elementix', require('./routes/elementix-crm'));
 // Document-underwriting desk: read + understand each uploaded document (Azure Document
 // Intelligence + Azure OpenAI), raise per-document and cross-document findings, and let an
 // underwriter post conditions / request documents / clear them. Same auth + per-file scoping.
