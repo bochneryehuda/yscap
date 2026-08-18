@@ -47,16 +47,56 @@ const SCOPE = (argv.find((a) => a.startsWith('--scope=')) || '--scope=company').
 
 function say(o) { console.log(JSON.stringify({ at: new Date().toISOString(), ...o })); }
 
+/**
+ * WHAT THE SCHEDULER SHOULD BE TOLD — pure, exported, and the whole point of this file having a test.
+ *
+ * The old rule was one line — `return 0` — with the reasoning: *"a tick turned away by the lease, or
+ * with nothing to do, is a SUCCESS; only a tick that threw is a failure, and `tickOnce` never throws."*
+ * The first half is right. The second is the trap: `tickOnce` does not throw, it REPORTS — it returns
+ * `outcome:'error'` for a tick that failed and `outcome:'refused'` for a schedule that can never run
+ * as configured. Both were reported to the scheduler as success, so a daily check that had been broken
+ * for weeks showed a green job every hour. That is this workstream's signature failure wearing the
+ * hosting provider's colours.
+ *
+ * The split is by whether a HUMAN NEEDS TO DO SOMETHING, not by whether a battery was priced:
+ *   ran          — it priced. Success.
+ *   nothing_due  — no saved schedule was due this hour. Success; that is the schedule working.
+ *   lease_held   — another instance is doing it right now. Success; standing down is correct.
+ *   refused      — a schedule CANNOT run as configured (no program, no battery, an unreadable series).
+ *                  It will fail identically every hour until somebody fixes it, and a green job is
+ *                  exactly how "stored and never fires" hid for weeks. FAILURE.
+ *   error        — the tick failed. FAILURE.
+ *   lease_unreadable — the database could not be read. FAILURE; a check that cannot reach its own
+ *                  ledger has not run, whatever else is true.
+ *   disabled     — unreachable for a cron-sourced tick since §2.64, and if it is ever seen again it
+ *                  means the gate has been re-broken. FAILURE, loudly.
+ *
+ * `ran` is reported separately from `ok` because they answer different questions: "did it price?" and
+ * "is anything wrong?". A quiet hour is `ran:false, ok:true`; a broken one is `ran:false, ok:false`.
+ * Collapsing them is what produced the log line this replaces.
+ */
+const SUCCESS_OUTCOMES = ['ran', 'nothing_due', 'lease_held'];
+
+function exitFor(out) {
+  const outcome = (out && out.outcome) || null;
+  const ok = SUCCESS_OUTCOMES.includes(outcome);
+  return { outcome, ok, ran: outcome === 'ran', code: ok ? 0 : 1 };
+}
+
 async function main() {
   const nowMs = Date.now();
   const due = clock.isDue(nowMs);
 
+  // ONE VOCABULARY IN THE LOG. Every line this command prints carries both `ran` (did it price?) and
+  // `ok` (is anything wrong?), so an hour that was simply not scheduled and an hour that failed can
+  // never look alike to whoever is reading. They looked identical before, and that is how a schedule
+  // that had never once run read as normal for weeks.
   if (!due.due && !FORCE) {
-    say({ ran: false, reason: due.reason, detail: due.detail, schedule: clock.describeSchedule() });
+    say({ ran: false, ok: true, reason: due.reason, detail: due.detail, schedule: clock.describeSchedule() });
     return 0;
   }
   if (DRY) {
-    say({ ran: false, reason: 'dry_run', wouldRun: true, slot: due.slotKey || null, schedule: clock.describeSchedule() });
+    say({ ran: false, ok: true, reason: 'dry_run', wouldRun: true, slot: due.slotKey || null, schedule: clock.describeSchedule() });
     return 0;
   }
 
@@ -65,17 +105,33 @@ async function main() {
   const driver = require('./canary-driver');
   const out = await driver.tickOnce(SCOPE, { nowMs, source: 'cron', slotKey: due.slotKey || null });
 
+  const verdict = exitFor(out);
   say({
-    ran: !!(out && out.ran), slot: due.slotKey || null, easternHour: due.easternHour == null ? null : due.easternHour,
-    outcome: (out && out.outcome) || null, reason: (out && out.reason) || null,
-    schedule: clock.describeSchedule(), next: (() => { const n = clock.nextRun(nowMs); return n ? new Date(n).toISOString() : null; })(),
+    // `ran` USED TO READ `out.ran`, WHICH `tickOnce` HAS NEVER RETURNED. Its shape is
+    // `{ attempted, outcome, reason, result, drivenBy }` — there is no `ran` key — so this line
+    // printed `ran:false` on EVERY run, including one that had just priced a full battery. The one
+    // sentence an operator reads about a successful run said it did nothing, which is a large part of
+    // why a schedule that genuinely never ran (§2.64) looked completely normal in the log.
+    ran: verdict.ran,
+    ok: verdict.ok,
+    slot: due.slotKey || null,
+    easternHour: due.easternHour == null ? null : due.easternHour,
+    outcome: (out && out.outcome) || null,
+    reason: (out && out.reason) || null,
+    schedule: clock.describeSchedule(),
+    next: (() => { const n = clock.nextRun(nowMs); return n ? new Date(n).toISOString() : null; })(),
   });
-  // A tick that was turned away by the lease, or that had nothing to do, is a SUCCESS: the schedule
-  // did its job. Only a tick that threw is a failure, and `tickOnce` never throws — it reports.
-  return 0;
+  return verdict.code;
 }
 
-main().then((c) => process.exit(c)).catch((e) => {
-  say({ ran: false, reason: 'threw', detail: String((e && e.message) || e).slice(0, 200) });
-  process.exit(1);
-});
+module.exports = { exitFor, SUCCESS_OUTCOMES };
+
+// RUN ONLY WHEN RUN. The launcher spawns this file as its own process, so `require.main === module`
+// there; a test that wants the pure decision above can now require it without setting a battery going.
+if (require.main === module) {
+  main().then((c) => process.exit(c)).catch((e) => {
+    // The one path `tickOnce` cannot report on, because it did not get that far.
+    say({ ran: false, ok: false, reason: 'threw', detail: String((e && e.message) || e).slice(0, 200) });
+    process.exit(1);
+  });
+}

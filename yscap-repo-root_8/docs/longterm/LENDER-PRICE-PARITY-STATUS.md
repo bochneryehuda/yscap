@@ -3943,3 +3943,53 @@ a credential nobody notices is missing from the service — measured, not assume
 mutated and the one-way check stayed green. **Mutation-proven three ways** — removing the client secret
 from the service kills 1, removing the fail-closed policy kills 1, and shrinking the required list kills
 1 only once both directions are asserted.
+
+---
+
+**§2.65 — THE SCHEDULED CHECK REPORTED SUCCESS WHEN IT FAILED, AND SAID IT DID NOTHING WHEN IT WORKED
+(2026-08-18).**
+
+Two defects in the same twenty lines, both found by continuing §2.64's method — read what the process
+actually returns rather than what it is described as returning.
+
+**IT LOGGED `ran:false` ON EVERY RUN THAT WORKED.** `tickOnce` returns
+`{ attempted, outcome, reason, result, drivenBy }`. The command printed `ran: !!(out && out.ran)`.
+**There is no `ran` key and there never has been**, so the one sentence an operator reads about a run
+that had just priced a full battery said it had priced nothing. Measured by driving a successful tick
+and printing the field: `ran: false`, `outcome: 'ran'`. This is a large part of why §2.64's schedule —
+which genuinely never ran — looked entirely normal in the log for as long as it did: a working run and
+a dead one printed the same word.
+
+**AND IT EXITED 0 FOR EVERY OUTCOME, INCLUDING FAILURE.** The reasoning written beside it was *"a tick
+turned away by the lease, or with nothing to do, is a SUCCESS; only a tick that threw is a failure, and
+`tickOnce` never throws."* The first half is right and the second is the trap: `tickOnce` does not
+throw, **it reports** — `outcome:'error'` for a tick that failed, `outcome:'refused'` for a schedule
+that can never run as configured. Both were handed to the scheduler as success, so a daily check broken
+for weeks would show a **green job every hour**. That is this workstream's signature failure wearing the
+hosting provider's colours.
+
+**THE SPLIT IS BY WHETHER A HUMAN NEEDS TO DO SOMETHING**, not by whether a battery was priced — a pure,
+exported `exitFor()` so the rule is testable and has one home. `ran` / `nothing_due` / `lease_held`
+succeed (it priced; nothing was due; another instance is doing it — standing down is the lease working).
+`error`, `refused`, `lease_unreadable` and `disabled` fail: each will recur identically every hour until
+somebody acts, and a green job is exactly how "stored and never fires" hid. **An outcome the rule has
+never heard of fails too** — a new state must never default to healthy. Every line the command prints
+now carries **both** `ran` (did it price?) and `ok` (is anything wrong?), because collapsing those two
+questions into one word is what produced the line this replaces.
+
+**THE REAL FINDING IS WHERE THESE LIVED.** Nothing executed this file. Three suites mention it and all
+three only read its source — and *every* defect found in the daily check has lived in the **join**
+between two individually-correct halves: a gate and a deployment file (§2.64), a command and the shape
+its dependency returns (here). So `scripts/test-lt-ppe-canary-cron-command.js` **spawns the command**,
+exactly as the launcher does, with the driver stubbed through `NODE_OPTIONS` so nothing reaches Postgres
+or the vendor, and asserts the **exit code the scheduler is handed** and the **line an operator reads**
+for a priced run, a quiet hour, a failure, a schedule that cannot run, and a dry run. Its section C then
+checks the field names against the **real driver** rather than the stub — a stub agrees with whatever it
+is written to agree with, and a phantom field is precisely what a stub cannot catch.
+
+**Mutation-proven three ways**: restoring the always-zero exit kills 4, restoring the phantom `ran` field
+kills 3 (including the phantom-field check, which names `ran`), and calling a refused schedule healthy
+kills 3.
+
+**WHAT THIS DOES NOT CHANGE.** The clock, the six hours, the lease, the tick and the battery are
+untouched. What changed is that the scheduler is now told the truth about them.
