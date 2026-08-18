@@ -312,6 +312,116 @@ async function loadProgram(scope, versionId) {
   }
 }
 
+/**
+ * WHICH RATE-SHEET VERSION IS THIS REQUEST ABOUT? — the published sheet, or the exact one named.
+ *
+ * THE DEFECT THIS CLOSES, MEASURED. `store.currentRateSheetVersion` — the "which published version
+ * is in effect" predicate — had NO caller anywhere in `src/`. `loadProgram` takes a version ID and
+ * nothing else, and the only human path to one was a free-text UUID box on the pricing screen. So a
+ * person priced a loan by pasting a UUID, and PUBLISHING A SHEET MADE NOTHING PRICE FROM IT: the
+ * publish gate, the agreement run, the supersede of the previous version — all of it decided a status
+ * that no pricing path ever read.
+ *
+ * THIS ADDS A WAY, IT REMOVES NONE. An explicit `rateSheetVersionId` still wins and is still the way
+ * a SPECIFIC version is compared (a diff, a re-price of an old quote, the agreement harness). What is
+ * new is that a caller may instead name a PROGRAM and get the version in effect for it.
+ *
+ * WHERE NOTHING IS PUBLISHED, THAT IS A NAMED STATE — never a fall-back to the newest draft, the last
+ * superseded sheet, or anything else. Pricing a loan off a sheet nobody published is the failure this
+ * must not create, so the honest answer is `no_published_rate_sheet` and the caller says so.
+ *
+ * WHERE THE ANSWER IS AMBIGUOUS, IT REFUSES RATHER THAN INVENTING A TIE-BREAK. Two published sheets
+ * in effect for one program — two channels each holding one, or two rows written by another path —
+ * is a question about the business ("which channel does an unqualified quote mean?", "does the later
+ * effective date win?") that nobody has answered. Picking one here would be inventing a rule; naming
+ * the state and listing the candidates hands the question to a person. Recorded as an open question
+ * in docs/longterm/PPE-OPEN-QUESTIONS.md.
+ *
+ * Returns { versionId, reason, message, resolvedFrom, programId, channel, candidates } and never throws.
+ */
+async function resolveRateSheetVersion(scope, b = {}) {
+  const explicit = b.rateSheetVersionId ? String(b.rateSheetVersionId).trim() : '';
+  if (explicit) {
+    return { versionId: explicit, reason: null, message: null, resolvedFrom: 'explicit_version', programId: null, channel: null, candidates: [] };
+  }
+
+  const programId = uuidOf(b.programId);
+  if (!programId) {
+    // Unchanged from before this existed: no version and no program named is not an error, it is a
+    // caller that did not ask for a program at all.
+    if (b.programId) {
+      return {
+        versionId: null, reason: 'bad_program_id', resolvedFrom: 'program',
+        message: 'That is not a program id.', programId: null, channel: null, candidates: [],
+      };
+    }
+    return { versionId: null, reason: 'no_program_requested', message: null, resolvedFrom: 'none', programId: null, channel: null, candidates: [] };
+  }
+
+  const channel = textOrNull(b.channel, 40);
+  let inEffect;
+  try {
+    inEffect = await store.publishedRateSheetVersions(db, scope, programId, channel);
+  } catch (e) {
+    // FAILS CLOSED. A version set we could not read is not evidence that a version is in effect.
+    return {
+      versionId: null, reason: 'published_lookup_failed', resolvedFrom: 'program',
+      message: `The published rate sheets for this program could not be read: ${String((e && e.message) || e).slice(0, 120)}`,
+      programId, channel, candidates: [],
+    };
+  }
+
+  if (!inEffect.length) {
+    return {
+      versionId: null, reason: 'no_published_rate_sheet', resolvedFrom: 'program',
+      message: 'Nothing is published for this program, so there is no rate sheet to price from. Publish one, or name an exact version.',
+      programId, channel, candidates: [],
+    };
+  }
+  if (inEffect.length > 1) {
+    return {
+      versionId: null, reason: 'ambiguous_published_rate_sheet', resolvedFrom: 'program',
+      message: `${inEffect.length} rate sheets are published and in effect for this program${channel ? ` on the ${channel} channel` : ''}, so which one prices is not decided. Name the exact version you mean.`,
+      programId, channel,
+      candidates: inEffect.map((v) => ({ id: v.id, versionNo: v.version_no, channel: v.channel, effectiveFrom: v.effective_from || null })),
+    };
+  }
+
+  // EXACTLY ONE. The version is taken from the PREDICATE rather than from the row just counted, so
+  // "which published version is in effect" has one definition and this cannot drift from it.
+  const cur = await store.currentRateSheetVersion(db, scope, programId, inEffect[0].channel);
+  if (!cur) {
+    return {
+      versionId: null, reason: 'no_published_rate_sheet', resolvedFrom: 'program',
+      message: 'Nothing is published for this program, so there is no rate sheet to price from. Publish one, or name an exact version.',
+      programId, channel: inEffect[0].channel, candidates: [],
+    };
+  }
+  return {
+    versionId: cur.id, reason: null, message: null, resolvedFrom: 'published',
+    programId, channel: cur.channel,
+    candidates: [{ id: cur.id, versionNo: cur.version_no, channel: cur.channel, effectiveFrom: cur.effective_from || null }],
+  };
+}
+
+/**
+ * The resolver's answer, as the caller sees it. Says WHICH version priced and HOW it was chosen —
+ * a quote that does not state which sheet it came from cannot be audited, and "the published one"
+ * is a fact about the moment the quote ran, not a stable label.
+ */
+function rateSheetPick(picked) {
+  if (!picked) return null;
+  return {
+    versionId: picked.versionId || null,
+    resolvedFrom: picked.resolvedFrom,
+    programId: picked.programId || null,
+    channel: picked.channel || null,
+    reason: picked.reason || null,
+    message: picked.message || null,
+    candidates: picked.candidates || [],
+  };
+}
+
 // `settings.resolveAll` (and therefore `store.resolveSettings`) returns
 // **{ values, sources }** — the resolved map PLUS where each value came from —
 // and the keys inside it are NAMESPACED (`pricing.correspondent_margin_milli`,
@@ -704,7 +814,11 @@ async function quoteRoute(req, res) {
   const investor = b.investor ? String(b.investor) : null;
 
   const { values: settings } = await resolveSettingsSafe(scope);
-  const { program, lpScope, reason: noProgram } = await loadProgram(scope, b.rateSheetVersionId);
+  // THE PUBLISHED SHEET, OR THE ONE NAMED. A caller may send `rateSheetVersionId` (unchanged, still
+  // how a specific version is compared) or `programId`, in which case the version IN EFFECT for that
+  // program is what prices. Nothing published is a NAMED state, never a quiet fall-back.
+  const picked = await resolveRateSheetVersion(scope, b);
+  const { program, lpScope, reason: noProgram } = await loadProgram(scope, picked.versionId);
   const lp = require('../lenderprice/client');
   const nowMs = Date.now();
 
@@ -718,7 +832,13 @@ async function quoteRoute(req, res) {
     const answer = await lp.price(scenario);
     return res.json({
       ok: true, scope, mode: 'shadow', authoritative: 'lp', answer,
-      shadow: null, shadowSkipped: noProgram,
+      // The RESOLVER's reason wins when it is the one that stopped us: "nothing is published for this
+      // program" is a completely different fact from "the version you named could not be loaded", and
+      // reporting the second for the first sends a reader hunting a version that was never asked for.
+      shadow: null,
+      shadowSkipped: picked.reason || noProgram,
+      shadowSkippedMessage: picked.message || null,
+      rateSheet: rateSheetPick(picked),
     });
   }
 
@@ -787,8 +907,10 @@ async function quoteRoute(req, res) {
   const capRes = (result && result.shadow && result.shadow.priceLimit) || null;
   const priceLimitNote = quote.priceLimitNotice(capRes);
 
+  // …and WHICH rate sheet version answered, so a caller can never be left guessing whether it read
+  // the published sheet or a draft somebody named by hand.
   return res.json({
-    ok: true, scope, ...result,
+    ok: true, scope, rateSheet: rateSheetPick(picked), ...result,
     priceLimit: capRes,
     ...(priceLimitNote ? { priceLimitNote } : {}),
   });
@@ -832,10 +954,18 @@ async function breakdownRoute(req, res) {
   const source = b.source === 'lp' || b.source === 'ours' ? b.source : null;
 
   const { values: settings } = await resolveSettingsSafe(scope);
-  const { program, reason: noProgram } = await loadProgram(scope, b.rateSheetVersionId);
+  // Same resolution as /quote: the published sheet for a named program, or the exact version named.
+  const picked = await resolveRateSheetVersion(scope, b);
+  const { program, reason: noProgram } = await loadProgram(scope, picked.versionId);
   if (!program) {
-    // Nothing to break down without a priced sheet. Say why, don't return an empty view.
-    return res.status(422).json({ error: 'A breakdown needs a rate-sheet version to price against.', reason: noProgram });
+    // Nothing to break down without a priced sheet. Say why, don't return an empty view — and say
+    // the RESOLVER's why when it is the resolver that stopped us, because "nothing is published for
+    // this program" and "that version could not be loaded" send a person to two different places.
+    return res.status(422).json({
+      error: picked.message || 'A breakdown needs a rate-sheet version to price against.',
+      reason: picked.reason || noProgram,
+      rateSheet: rateSheetPick(picked),
+    });
   }
 
   let quoteResult;
@@ -874,7 +1004,10 @@ async function breakdownRoute(req, res) {
     quote: quoteResult, lpFull, lpDisqualified, rate, source,
   });
 
-  return res.json({ ok: true, scope, investor, disqualifyPending, breakdown });
+  // WHICH sheet this was priced from, and HOW it was chosen. A breakdown that does not say which
+  // version it broke down is unauditable — and now that a caller may name a program rather than a
+  // version, "the published one" has to be stated rather than assumed by whoever reads it.
+  return res.json({ ok: true, scope, investor, disqualifyPending, rateSheet: rateSheetPick(picked), breakdown });
 }
 
 // ---------------------------------------------------------------------------
@@ -1867,6 +2000,63 @@ async function listProgramsRoute(req, res) {
   });
 }
 
+/**
+ * GET /programs/:id/current-rate-sheet — WHICH published version prices this program right now?
+ *
+ * The read behind the chooser on the pricing screen, and the first caller in `src/` of the "which
+ * published version is in effect" predicate. It answers the same three states the pricing resolver
+ * does, with the same words, so the screen can never describe a program one way while a quote against
+ * it behaves another: a version in effect, NOTHING PUBLISHED (named, never a fall-back), or MORE THAN
+ * ONE in effect (named, never a silent pick).
+ *
+ * READ-OPEN, like GET /programs and for the same reason: the thing most worth seeing here is the
+ * ABSENCE of a published sheet, and hiding that from a non-admin leaves them believing a program they
+ * cannot price is merely broken.
+ */
+async function currentRateSheetRoute(req, res) {
+  const scope = readScope(req);
+  const programId = uuidOf(req.params.id);
+  if (!programId) return res.status(400).json({ error: 'That is not a program id.' });
+
+  const prg = await db.query(
+    `SELECT p.*, i.code AS investor_code, i.name AS investor_name
+       FROM lt_ppe_program p
+       LEFT JOIN lt_ppe_investor i ON i.id = p.investor_id AND i.scope = p.scope
+      WHERE p.scope = $1 AND p.id = $2`, [scope, programId]);
+  if (!prg.rows.length) return res.status(404).json({ error: 'No such program.' });
+  const row = prg.rows[0];
+
+  const channel = textOrNull(req.query.channel, 40);
+  const picked = await resolveRateSheetVersion(scope, { programId, channel });
+
+  let version = null;
+  if (picked.versionId) {
+    const v = await store.rateSheetVersionInScope(db, scope, picked.versionId);
+    if (v) {
+      version = {
+        id: v.id, versionNo: v.version_no, channel: v.channel, status: v.status,
+        effectiveFrom: v.effective_from || null, effectiveTo: v.effective_to || null,
+      };
+    }
+  }
+
+  return res.json({
+    ok: true, scope, programId,
+    program: {
+      id: row.id, code: row.code || null, name: row.name || null,
+      investorCode: row.investor_code || null, investorName: row.investor_name || null,
+    },
+    published: version,
+    reason: picked.reason,
+    // Said in words on every branch, including the good one, so a screen never has to compose a
+    // sentence about a state the server understands better than it does.
+    message: picked.message || (version
+      ? `Version ${version.versionNo} is published and in effect for this program on the ${version.channel} channel.`
+      : 'Nothing is published for this program.'),
+    candidates: picked.candidates,
+  });
+}
+
 async function getProgramLpScopeRoute(req, res) {
   const scope = readScope(req);
   const programId = uuidOf(req.params.id);
@@ -2094,6 +2284,8 @@ async function getRateSheetRoute(req, res) {
   if (!found) return undefined;
   const sheet = await store.loadRateSheet(db, found.versionId);
   const gate = await agreementStore.gateStatus(found.scope, found.versionId, { db });
+  let priceLimitHistory = [];
+  try { priceLimitHistory = await store.listPriceLimitChanges(db, found.scope, found.versionId, 20); } catch (_) { priceLimitHistory = []; }
   return res.json({
     ok: true,
     scope: found.scope,
@@ -2105,6 +2297,10 @@ async function getRateSheetRoute(req, res) {
     basePrices: (sheet && sheet.basePrices) || [],
     adjustments: (sheet && sheet.adjustments) || [],
     priceLimit: (sheet && sheet.priceLimit) || null,
+    // WHO LAST MOVED THE MONEY RULES, AND WHY — travelling with the sheet so the console can show
+    // what is in force NOW, and what it replaced, BEFORE anybody changes it. Best-effort: an
+    // unreadable history must never make the sheet itself unreadable.
+    priceLimitHistory: priceLimitHistory,
     editable: found.row.status === 'draft',
     // The gate's verdict travels WITH the sheet, so a console can say why Publish is refused before
     // anyone presses it rather than after.
@@ -2175,18 +2371,53 @@ async function setAdjustmentsRoute(req, res) {
   return res.json({ ok: true, scope: found.scope, versionId: found.versionId, rows: written });
 }
 
+/**
+ * PUT /rate-sheets/:id/price-limit — the sheet's MONEY RULES.
+ *
+ * A REASON IS REQUIRED AT THIS DOOR, and that is what makes this different from the store helper it
+ * calls. These five values bound every quote the sheet ever answers: the minimum price a loan may be
+ * sold at, the increment every price is snapped to, the loan-size ceilings, and what happens when a
+ * price exceeds one. Moving a floor is the same class of act as publishing a sheet unmeasured, and it
+ * is recorded the same way — in the author's own words, with their name on it. The store writes the
+ * audit row in the same transaction as the change, so a change that could not be recorded does not
+ * happen; the reason is what makes that record worth reading a year later.
+ *
+ * DRAFT-ONLY, unchanged (`resolveVersion({draftOnly:true})`): a published sheet is what live quotes
+ * price from and is superseded by a new version, never rewritten underneath them.
+ */
 async function setPriceLimitRoute(req, res) {
   const found = await resolveVersion(req, res, { draftOnly: true });
   if (!found) return undefined;
   const b = req.body || {};
+
+  const reason = textOrNull(b.reason, 500);
+  if (!reason || reason.length < 8) {
+    return res.status(400).json({
+      error: 'Say why these price limits are being set. A price limit bounds every quote this sheet answers, so the change is recorded with your name on it.',
+      field: 'reason',
+    });
+  }
+
   const row = await store.setPriceLimit(db, found.scope, found.versionId, {
     minPriceMilli: numOrNull(b.minPriceMilli) == null ? null : Math.round(numOrNull(b.minPriceMilli)),
     roundingIncrementMilli: numOrNull(b.roundingIncrementMilli) == null ? undefined : Math.round(numOrNull(b.roundingIncrementMilli)),
     roundingMode: textOrNull(b.roundingMode, 40) || undefined,
     capTiers: Array.isArray(b.capTiers) ? b.capTiers : [],
     onExceed: textOrNull(b.onExceed, 40) || undefined,
+    changedBy: (req.actor && (req.actor.email || req.actor.id)) || null,
+    reason,
+    nowMs: Date.now(),
   });
-  return res.json({ ok: true, scope: found.scope, versionId: found.versionId, priceLimit: row });
+
+  // The history rides back with the write so the screen shows what is in force now — and what it
+  // replaced — without a second round trip that could read a different moment.
+  let history = [];
+  try { history = await store.listPriceLimitChanges(db, found.scope, found.versionId, 20); } catch (_) { history = []; }
+
+  return res.json({
+    ok: true, scope: found.scope, versionId: found.versionId,
+    priceLimit: row, priceLimitHistory: history,
+  });
 }
 
 async function agreementRoute(req, res) {
@@ -2660,6 +2891,9 @@ router.get('/rules/coverage', requirePpeAdmin, wrap(ruleCoverageRoute, 'lt_ppe_r
 router.post('/suggestions/:id/accept', requirePpeAdmin, wrap(acceptSuggestionRoute, 'lt_ppe_accept_error'));
 router.post('/suggestions/:id/dismiss', requirePpeAdmin, wrap(dismissSuggestionRoute, 'lt_ppe_dismiss_error'));
 router.post('/suggestions/mine', requirePpeAdmin, wrap(mineSuggestionsRoute, 'lt_ppe_mine_error'));
+// WHICH published version prices this program right now. READ-OPEN like GET /programs — the state
+// most worth seeing is "nothing is published", and hiding it does not make it less true.
+router.get('/programs/:id/current-rate-sheet', wrap(currentRateSheetRoute, 'lt_ppe_current_rate_sheet_error'));
 router.get('/programs/:id/lp-scope', requirePpeAdmin, wrap(getProgramLpScopeRoute, 'lt_ppe_lp_scope_read_error'));
 
 // The rule-authoring service's READ + DRAFT doors. There is NO publish door here, on purpose —
@@ -2705,6 +2939,7 @@ module.exports.handlers = {
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
   ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
   listRuleDraftsRoute, getRuleDraftRoute, renderRuleDraftRoute, createRuleDraftRoute, discardRuleDraftRoute,
+  currentRateSheetRoute,
   listSchedulesRoute, saveScheduleRoute, deleteScheduleRoute, canaryTickRoute, canaryDriverRoute,
   createInvestorRoute, createProgramRoute, createRateSheetRoute, getRateSheetRoute,
   setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, rateSheetCoverageRoute, rateSheetDiffRoute, agreementRoute, runAgreementRoute,
@@ -2712,6 +2947,7 @@ module.exports.handlers = {
 };
 module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe, actorLabel,
+  resolveRateSheetVersion, rateSheetPick,
   MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel, resolveBattery, runBattery, msgOf,
   resolveVersion, numOrNull, textOrNull, MAX_SHEET_ROWS, MAX_AGREEMENT_SCENARIOS, MAX_COVERAGE_SCENARIOS,
   DRAFT_STATUSES, DRAFT_NOT_LIVE, draftIdOf, optionalUuid,

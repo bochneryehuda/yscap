@@ -209,6 +209,17 @@ export const ltApi = {
   ppePrograms: () => ltGet(lt('/ppe/programs')),
   ppeSetProgramLpScope: (id, body) => ltPost(lt(`/ppe/programs/${encodeURIComponent(id)}/lp-scope`), body),
 
+  // WHICH PUBLISHED VERSION PRICES THIS PROGRAM RIGHT NOW — the read the pricing screen's chooser
+  // is built on, and the reason publishing a sheet finally means something operationally.
+  //
+  // Until this existed, "published" was a status the publish gate decided and NOTHING read: the only
+  // human path into a price was a free-text UUID box, so a person priced a loan by pasting a version
+  // id and the sheet everybody had agreed to publish had no special standing at all. It answers three
+  // states in the server's own words — a version in effect, NOTHING published for this program, or
+  // MORE THAN ONE in effect — and the screen renders whichever it gets rather than composing a
+  // sentence of its own about a state the server understands better.
+  ppeCurrentRateSheet: (programId) => ltGet(lt(`/ppe/programs/${encodeURIComponent(programId)}/current-rate-sheet`)),
+
   // The per-investor rule loop (P5/P7). Lender Price's own declines are mined into
   // PROPOSALS; a human accepts one and it becomes a real rule our engine enforces.
   // Nothing here is auto-applied — accept and dismiss are the only two ways a

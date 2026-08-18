@@ -30,6 +30,7 @@ import { ltApi } from './api.js';
 import { parseBasePrices, parseAdjustments, points } from './ratesheetPaste.js';
 import { INK, MUTED, SLATE, DANGER, CAUTION, card, h2, sub, eyebrow, input, mono, label } from './ppeStyles.js';
 import AgreementRecord from './AgreementRecord.jsx';
+import PriceLimitCard from './PriceLimitCard.jsx';
 
 const row = { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 10 };
 const field = { flex: '1 1 180px', minWidth: 0 };
@@ -341,6 +342,16 @@ export default function RateSheetConsole() {
               <Problems problems={adj.problems} />
             </>
           )}
+
+          {/* ---- the sheet's MONEY RULES, and the control that had no button ---- */}
+          <PriceLimitCard
+            version={sheet.version}
+            priceLimit={sheet.priceLimit}
+            history={sheet.priceLimitHistory}
+            editable={sheet.editable}
+            status={sheet.version.status}
+            onSaved={() => reloadSheet(sheet.version.id)}
+          />
 
           {/* ---- the two checks: the free one first, then the paid one ---- */}
           <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: 'rgba(20,27,34,.03)', border: '1px solid rgba(20,27,34,.10)' }}>

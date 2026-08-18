@@ -155,7 +155,18 @@ const REQ = (over = {}) => Object.assign({ params: {}, body: {}, query: {}, acto
     }));
     ok(res.statusCode === 200 && res.body.rows === 1, 'B7 a complete LLPA is written');
 
+    // A PRICE LIMIT IS A MONEY RULE. The human door refuses one that does not say why — the same
+    // rule the publish override follows, and for the same reason: the record IS the authorization.
     res = await call(H.setPriceLimitRoute, REQ({ params: { id: v1 }, body: { minPriceMilli: 98000, roundingMode: 'none', roundingIncrementMilli: 0 } }));
+    ok(res.statusCode === 400 && res.body.field === 'reason',
+      'B7a a price-limit change with no reason is REFUSED — a money rule may not move unexplained');
+    let plRow = await db.query('SELECT COUNT(*)::int AS n FROM lt_ppe_price_limit WHERE version_id = $1', [v1]);
+    ok(plRow.rows[0].n === 0, 'B7b …and the refused change wrote NOTHING');
+
+    res = await call(H.setPriceLimitRoute, REQ({
+      params: { id: v1 },
+      body: { minPriceMilli: 98000, roundingMode: 'none', roundingIncrementMilli: 0, reason: 'investor floor stated on the term sheet' },
+    }));
     ok(res.statusCode === 200 && res.body.priceLimit, 'B8 the price limits are set');
 
     res = await call(H.getRateSheetRoute, REQ({ params: { id: v1 } }));

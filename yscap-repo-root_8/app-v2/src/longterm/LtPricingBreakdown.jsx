@@ -138,31 +138,189 @@ const DIM_LABEL = (d) => (d ? String(d).replace(/[_-]+/g, ' ') : '');
 // than inventing a conversion rule (LTV in milli-percent, DSCR in milli, etc.).
 const NUMERIC_KEYS = ['fico', 'ltv', 'cltv', 'dscr', 'loan_amount', 'units', 'lock_days', 'term'];
 
+// ---------------------------------------------------------------------------
+// WHICH SHEET PRICES THIS — the chooser that replaced the free-text UUID box
+// ---------------------------------------------------------------------------
+//
+// WHAT WAS HERE BEFORE. One `<input placeholder="version id">`. A person priced a loan by pasting a
+// UUID they had got from somewhere else, and the sheet the publish gate had just approved carried no
+// special standing at all — "published" decided a status column that no pricing path ever read.
+//
+// WHAT REPLACED IT, AND WHAT IT KEPT. A program chooser: pick the program and the version IN EFFECT
+// for it is what prices. The exact-version box is KEPT, under "advanced", because naming a specific
+// version is a real need — comparing two versions, re-pricing an old quote, reproducing a finding —
+// and this had to ADD a way rather than take one away. A named version WINS over the program, which
+// is why the panel says so out loud rather than leaving a reader to discover it from behaviour.
+//
+// IT NEVER INVENTS THE ANSWER. Everything under the chooser is the SERVER's own wording for the
+// state it found — a version in effect, nothing published for this program, or more than one in
+// effect. A screen composing its own sentence about "probably the latest one" is exactly how a loan
+// gets priced off a sheet nobody published.
+//
+// PRESENTATIONAL, and exported for that reason: `renderToString` never runs an effect, so the only
+// way to prove the three states REACH A PERSON is to hand this half a state directly.
+export function RateSheetChooserView({
+  programs, programsError, programId, versionId, effective, effectiveError, busy,
+  onProgram, onVersion,
+}) {
+  const list = (programs && Array.isArray(programs.programs)) ? programs.programs : [];
+  const overridden = !!(versionId && versionId.trim());
+
+  return (
+    <div style={{
+      padding: '12px 14px', borderRadius: 12, background: PAPER,
+      border: '1px solid rgba(20,27,34,.12)', marginBottom: 14,
+    }}>
+      <div style={{ ...eyebrow, marginBottom: 6 }}>Which rate sheet prices this</div>
+
+      {programsError && (
+        <p style={{ margin: '0 0 8px', fontSize: 13, color: RED }}>{programsError}</p>
+      )}
+      {/* A read that SUCCEEDED and found nothing is a different fact from one that FAILED, and it
+          sends a person somewhere different — to the console to onboard a program, not to us. */}
+      {!programsError && programs && list.length === 0 && (
+        <p style={{ margin: '0 0 8px', fontSize: 13, color: GOLD_INK }}>
+          No programs exist yet. Onboard an investor and a program on the rate-sheet console first.
+        </p>
+      )}
+
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <Field label="Program" hint="its published sheet is what prices">
+          <select
+            className="input"
+            style={{ minWidth: 280, color: INK, background: '#fff' }}
+            value={programId || ''}
+            disabled={busy}
+            onChange={(e) => onProgram(e.target.value)}
+          >
+            <option value="">Choose a program…</option>
+            {list.map((p) => (
+              <option key={p.id} value={p.id}>
+                {(p.investorName || p.investorCode || '—')} · {(p.name || p.code || p.id)}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+
+      {/* THE STATE, IN THE SERVER'S OWN WORDS. */}
+      <div style={{ marginTop: 8, fontSize: 13, color: SLATE, lineHeight: 1.5 }}>
+        {effectiveError && <span style={{ color: RED }}>{effectiveError}</span>}
+        {!effectiveError && !programId && (
+          <span style={{ color: MUTED }}>Choose a program to see which of its sheets is published and in effect.</span>
+        )}
+        {!effectiveError && programId && !effective && (
+          <span style={{ color: MUTED }}>Reading which version is in effect…</span>
+        )}
+        {!effectiveError && effective && effective.published && (
+          <span>
+            <Pill tone="good">In effect</Pill>{' '}
+            Version {effective.published.versionNo} · {effective.published.channel} · published{' '}
+            {effective.published.effectiveFrom ? String(effective.published.effectiveFrom).slice(0, 10) : 'at an unrecorded time'}
+          </span>
+        )}
+        {/* NOTHING PUBLISHED IS A NAMED STATE. It is never quietly replaced by the newest draft, the
+            last superseded sheet, or anything else a screen could reach for. */}
+        {!effectiveError && effective && !effective.published && (
+          <span style={{ color: effective.reason === 'ambiguous_published_rate_sheet' ? RED : GOLD_INK }}>
+            <Pill tone={effective.reason === 'ambiguous_published_rate_sheet' ? 'bad' : 'warn'}>
+              {effective.reason === 'ambiguous_published_rate_sheet' ? 'Not decided' : 'Nothing published'}
+            </Pill>{' '}
+            {effective.message}
+          </span>
+        )}
+        {!effectiveError && effective && Array.isArray(effective.candidates) && effective.candidates.length > 1 && (
+          <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: SLATE }}>
+            {effective.candidates.map((c) => (
+              <li key={c.id} style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12 }}>
+                v{c.versionNo} · {c.channel} · {c.id}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* THE ADVANCED WAY IN, KEPT ON PURPOSE. */}
+      <details style={{ marginTop: 10 }}>
+        <summary style={{ fontSize: 13, color: SLATE, cursor: 'pointer' }}>
+          Name an exact version instead (advanced)
+        </summary>
+        <div style={{ marginTop: 8 }}>
+          <p style={{ margin: '0 0 6px', fontSize: 12, color: MUTED, lineHeight: 1.5 }}>
+            Use this to price against one specific version — comparing two sheets, re-pricing an old
+            quote, reproducing a finding. A version named here WINS over the program above, including
+            a version that is a draft or has been superseded.
+          </p>
+          <input
+            className="input"
+            style={{ width: 340, fontFamily: 'ui-monospace, Menlo, monospace', color: INK, background: '#fff' }}
+            value={versionId || ''}
+            disabled={busy}
+            placeholder="rate-sheet version id"
+            onChange={(e) => onVersion(e.target.value)}
+          />
+          {overridden && (
+            <div style={{ marginTop: 6, fontSize: 12, color: GOLD_INK }}>
+              This exact version is what will price — the program above is ignored while it is filled in.
+            </div>
+          )}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 export default function LtPricingBreakdown() {
   const [investors, setInvestors] = useState(null);
   const [form, setForm] = useState({
-    rateSheetVersionId: '', investor: '', source: '', rate: '',
+    rateSheetVersionId: '', programId: '', investor: '', source: '', rate: '',
     fico: '', ltv: '', dscr: '', loan_amount: '', purpose: '', occupancy: '', property_type: '',
   });
+  const [programs, setPrograms] = useState(null);
+  const [programsError, setProgramsError] = useState('');
+  const [effective, setEffective] = useState(null);
+  const [effectiveError, setEffectiveError] = useState('');
   const [result, setResult] = useState(null);
+  const [pricedFrom, setPricedFrom] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     ltApi.ppeInvestors().then(setInvestors).catch(() => setInvestors(null));
+    ltApi.ppePrograms()
+      .then((r) => { setPrograms(r); setProgramsError(''); })
+      // A read that FAILED is SAID. Falling back to an empty list renders as "no programs yet",
+      // which is the one thing it must never be mistaken for.
+      .catch((e) => { setPrograms(null); setProgramsError(e.message || 'The programs could not be read.'); });
   }, []);
+
+  // WHICH VERSION IS IN EFFECT for the chosen program. Re-read on every change of program, and
+  // cleared first so a stale answer can never sit under a newly chosen program.
+  useEffect(() => {
+    if (!form.programId) { setEffective(null); setEffectiveError(''); return undefined; }
+    let live = true;
+    setEffective(null); setEffectiveError('');
+    ltApi.ppeCurrentRateSheet(form.programId)
+      .then((r) => { if (live) { setEffective(r); setEffectiveError(''); } })
+      .catch((e) => { if (live) { setEffective(null); setEffectiveError(e.message || 'Which version is in effect could not be read.'); } });
+    return () => { live = false; };
+  }, [form.programId]);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
   const buildBody = useCallback((overrideRate) => {
     const scenario = {};
     for (const [k, v] of Object.entries(form)) {
-      if (['rateSheetVersionId', 'investor', 'source', 'rate'].includes(k)) continue;
+      if (['rateSheetVersionId', 'programId', 'investor', 'source', 'rate'].includes(k)) continue;
       if (v === '' || v == null) continue;
       scenario[k] = NUMERIC_KEYS.includes(k) ? Number(v) : v;
     }
     const body = { scenario };
-    if (form.rateSheetVersionId) body.rateSheetVersionId = form.rateSheetVersionId.trim();
+    // AN EXACT VERSION WINS. The server applies the same precedence, so the screen and the server can
+    // never disagree about which sheet a quote came from; sending both would leave the answer to
+    // whichever one a reader happened to look at.
+    if (form.rateSheetVersionId && form.rateSheetVersionId.trim()) body.rateSheetVersionId = form.rateSheetVersionId.trim();
+    else if (form.programId) body.programId = form.programId;
     if (form.investor) body.investor = form.investor;
     if (form.source) body.source = form.source;
     const r = overrideRate != null ? overrideRate : form.rate;
@@ -175,11 +333,16 @@ export default function LtPricingBreakdown() {
     try {
       const out = await ltApi.ppeBreakdown(buildBody(overrideRate));
       setResult(out.breakdown || null);
+      // WHICH SHEET THIS PRICE CAME FROM, as the SERVER resolved it — not as the form was filled in
+      // a moment ago. A breakdown that does not say which version it broke down cannot be audited,
+      // and "the published one" is a fact about the instant the quote ran.
+      setPricedFrom(out.rateSheet || null);
     } catch (e) {
       // The server names WHICH input it refused (a missing scenario, no rate sheet,
       // an unpriceable deal) — show that, not a generic failure.
       setError(e.message || 'That scenario could not be priced.');
       setResult(null);
+      setPricedFrom(null);
     } finally { setBusy(false); }
   }, [buildBody]);
 
@@ -193,16 +356,26 @@ export default function LtPricingBreakdown() {
       <div style={card}>
         <h2 style={h2}>See a price the way Lender Price shows it</h2>
         <p style={sub}>
-          Enter one deal and a rate-sheet version, and this lays the price out in full — the base price,
-          every LLPA and adjustment with its running effect, the margin, and the final price. Lender Price
-          stays the source of truth; our engine reconstructs the same stack beside it so nothing is hidden.
+          Pick the program and enter one deal, and this lays the price out in full — the base price,
+          every LLPA and adjustment with its running effect, the margin, and the final price. The sheet
+          that is PUBLISHED for that program is what prices; a specific version can still be named under
+          the advanced box. Lender Price stays the source of truth; our engine reconstructs the same
+          stack beside it so nothing is hidden.
         </p>
 
         <form onSubmit={onSubmit}>
+          <RateSheetChooserView
+            programs={programs}
+            programsError={programsError}
+            programId={form.programId}
+            versionId={form.rateSheetVersionId}
+            effective={effective}
+            effectiveError={effectiveError}
+            busy={busy}
+            onProgram={(v) => setForm((f) => ({ ...f, programId: v }))}
+            onVersion={(v) => setForm((f) => ({ ...f, rateSheetVersionId: v }))}
+          />
           <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 12 }}>
-            <Field label="Rate-sheet version" hint="the priced sheet to break down">
-              <input className="input" style={{ width: 220 }} value={form.rateSheetVersionId} onChange={set('rateSheetVersionId')} placeholder="version id" />
-            </Field>
             {investors && investors.investors && investors.investors.length > 0 && (
               <Field label="Investor" hint="optional filter">
                 <select className="input" style={{ minWidth: 160 }} value={form.investor} onChange={set('investor')}>
@@ -277,6 +450,20 @@ export default function LtPricingBreakdown() {
               {b.eligible === false && <Pill tone="bad">Ineligible</Pill>}
               {b.program && b.program.name && <span style={{ fontSize: 13, color: MUTED }}>{b.program.name}</span>}
             </div>
+
+            {/* PRICED FROM — the version the SERVER resolved, and how. Without it a reader cannot
+                tell a price taken off the published sheet from one taken off a version somebody
+                typed in, which is the whole distinction this screen exists to make visible. */}
+            {pricedFrom && pricedFrom.versionId && (
+              <div style={{ marginBottom: 12, fontSize: 12.5, color: SLATE }}>
+                Priced from{' '}
+                {pricedFrom.resolvedFrom === 'published'
+                  ? 'the sheet PUBLISHED for this program'
+                  : 'the exact version named below'}
+                {' · '}
+                <span style={{ fontFamily: 'ui-monospace, Menlo, monospace', color: MUTED }}>{pricedFrom.versionId}</span>
+              </div>
+            )}
 
             {b.final_price != null ? (
               <PriceHeadline b={b} />

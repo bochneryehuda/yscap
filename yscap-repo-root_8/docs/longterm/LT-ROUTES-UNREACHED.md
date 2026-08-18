@@ -91,10 +91,19 @@ honest way to ship a schedule editor over a tick that may never fire.
 
 ## Not a route, but the same dead end one step nearer the user
 
-The checker also reports `ltApi` entries no screen calls. Today there is exactly one:
-`ppeSetPriceLimit` (the sheet's price-limit editor). It has a route and a client method and no
-button — the client is ahead of the console by that one control. (`ppeRateSheetAgreement` was listed
-here too and no longer is: the agreement record has a screen.)
+The checker also reports `ltApi` entries no screen calls. **Today: none.** The last two were
+`ppeRateSheetAgreement` (the stored agreement read — given the `AgreementRecord` panel) and
+`ppeSetPriceLimit` (the sheet's price-limit editor — given the `PriceLimitCard` on the rate-sheet
+console). Both had a route and a client method and no button; the client had been ahead of the console
+by exactly one control each.
+
+**A NOTE ON WHAT THAT LINE CAN AND CANNOT SEE, learned by mutating this code.** The scan reads
+`ltApi.<name>(` out of the screen files — it does not read the render tree. So a control that is
+IMPORTED, WRITTEN, and then disabled (`{false && <PriceLimitCard …>}`) keeps this checker green while
+being unreachable to every person. That was reproduced deliberately: the gate stayed green and only a
+render-level guard caught it. Treat a green line here as "a screen names the call", not as "a person
+can press it"; the screen's own suite is what proves the second
+(`scripts/test-lt-ppe-price-limit-render.mjs`, section F).
 
 ## What came off this list, and what did NOT
 

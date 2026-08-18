@@ -174,7 +174,9 @@ ok(typeof route === 'function' && typeof route.use === 'function', 'the module I
 // called store.setSetting/clearSetting and the router published the settings READ with no write
 // route at all, so every parity tolerance, the rounding, the price floor and the per-investor
 // margin could only be changed by editing the database by hand.
-ok(Object.keys(H).length === 44, `all 44 handlers are exported for testing (${Object.keys(H).length})`);
+// 45 adds currentRateSheetRoute — "which published version prices this program right now", the read
+// behind the pricing screen's chooser and the first caller in src/ of the in-effect predicate.
+ok(Object.keys(H).length === 45, `all 45 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
 for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',
@@ -187,7 +189,8 @@ for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSug
   'rateSheetCoverageRoute', 'rateSheetDiffRoute', 'runAgreementRoute', 'publishRateSheetRoute',
   'listRuleDraftsRoute', 'createRuleDraftRoute', 'getRuleDraftRoute', 'renderRuleDraftRoute',
   'discardRuleDraftRoute',
-  'saveSettingsRoute', 'clearSettingsRoute', 'settingsAuditRoute']) {
+  'saveSettingsRoute', 'clearSettingsRoute', 'settingsAuditRoute',
+  'currentRateSheetRoute']) {
   ok(typeof H[name] === 'function', `the ${name} handler is exported by name`);
 }
 

@@ -72,7 +72,7 @@ async function clearSetting(db, scope, key) {
   return { ok: true };
 }
 
-// ---- the audit trail (db/578) -----------------------------------------------
+// ---- the audit trail (db/580) -----------------------------------------------
 //
 // setSetting/clearSetting above are the low-level PRIMITIVES: they write the value and
 // nothing else, and a seed script or a test may legitimately use them with no person
@@ -98,7 +98,7 @@ async function readStoredSetting(db, scope, key) {
 }
 
 // Append ONE audit row. INSERT only — this table is append-only and the store performs no
-// UPDATE or DELETE against it, ever (db/578). Throws on failure ON PURPOSE: the caller
+// UPDATE or DELETE against it, ever (db/580). Throws on failure ON PURPOSE: the caller
 // records the change and the trail in one transaction, and a change that cannot be
 // recorded must not be committed. That is the opposite posture from every other read in
 // this module, and it is deliberate — "a number that moves a price never changes without
@@ -465,23 +465,120 @@ async function replaceAdjustments(db, scope, versionId, rows = [], opts = {}) {
   });
 }
 
-// Set (upsert) a version's price limits. { minPriceMilli?, roundingIncrementMilli?, roundingMode?,
-// capTiers?, onExceed? }.
+// The five values a price limit IS. Named once so the audit's before/after snapshots, the
+// changed-field diff and the readers all mean the same thing by "the price limit".
+const PRICE_LIMIT_FIELDS = ['minPriceMilli', 'roundingIncrementMilli', 'roundingMode', 'capTiers', 'onExceed'];
+
+/** The stored row as the five values, in the vocabulary the route and the screen speak. */
+function priceLimitShape(row) {
+  if (!row) return null;
+  return {
+    minPriceMilli: row.min_price_milli == null ? null : Number(row.min_price_milli),
+    roundingIncrementMilli: row.rounding_increment_milli == null ? null : Number(row.rounding_increment_milli),
+    roundingMode: row.rounding_mode || null,
+    capTiers: Array.isArray(row.cap_tiers) ? row.cap_tiers : [],
+    onExceed: row.on_exceed || null,
+  };
+}
+
+/** WHICH of the five moved. Named rather than left to a reader diffing two JSON blobs. */
+function priceLimitChangedFields(before, after) {
+  const out = [];
+  for (const k of PRICE_LIMIT_FIELDS) {
+    const a = before ? before[k] : undefined;
+    const b = after ? after[k] : undefined;
+    const same = (k === 'capTiers')
+      ? JSON.stringify(a || []) === JSON.stringify(b || [])
+      : (a === b || (a == null && b == null));
+    if (!same) out.push(k);
+  }
+  return out;
+}
+
+/**
+ * Set (upsert) a version's price limits — AND RECORD THE CHANGE, IN ONE TRANSACTION.
+ *
+ * { minPriceMilli?, roundingIncrementMilli?, roundingMode?, capTiers?, onExceed?, changedBy?, reason?, nowMs? }
+ *
+ * WHY THE AUDIT IS INSIDE THE TRANSACTION RATHER THAN BESIDE IT. These five values are the MONEY
+ * RULES of the sheet — the floor a loan may be sold at, the increment every price is snapped to, the
+ * loan-size ceilings. The write was an `ON CONFLICT DO UPDATE` that overwrote the previous floor in
+ * place, so a floor that moved from 98.000 to 95.000 was indistinguishable afterwards from a sheet
+ * that had always said 95.000. An audit written AFTER the update, best-effort, would be skippable
+ * exactly when it is most wanted (the write that errors, the process that dies); so the before-image,
+ * the write and the audit row are one transaction and A CHANGE THAT COULD NOT BE RECORDED DOES NOT
+ * HAPPEN — the same rule the publish gate applies to an override.
+ *
+ * `reason` is nullable here on purpose: the ingest path loads limits straight off a vendor sheet and
+ * its honest answer is "nobody typed a reason". The HUMAN door (the route) requires one.
+ */
 async function setPriceLimit(db, scope, versionId, opts = {}) {
   const { minPriceMilli = null, roundingIncrementMilli = 125, roundingMode = 'nearest_eighth',
-    capTiers = [], onExceed = 'cap_and_keep_eligible' } = opts;
+    capTiers = [], onExceed = 'cap_and_keep_eligible', changedBy = null, reason = null } = opts;
+  const nowMs = opts.nowMs || Date.now();
+
+  const client = await (typeof db.getClient === 'function' ? db.getClient() : db.connect());
+  try {
+    await client.query('BEGIN');
+    const prev = await client.query(
+      'SELECT * FROM lt_ppe_price_limit WHERE scope = $1 AND version_id = $2', [scope, versionId]);
+    const before = priceLimitShape(prev.rows[0] || null);
+
+    const r = await client.query(
+      `INSERT INTO lt_ppe_price_limit
+         (scope, version_id, min_price_milli, rounding_increment_milli, rounding_mode, cap_tiers, on_exceed)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+       ON CONFLICT (scope, version_id)
+         DO UPDATE SET min_price_milli = EXCLUDED.min_price_milli,
+                       rounding_increment_milli = EXCLUDED.rounding_increment_milli,
+                       rounding_mode = EXCLUDED.rounding_mode, cap_tiers = EXCLUDED.cap_tiers,
+                       on_exceed = EXCLUDED.on_exceed, updated_at = now()
+       RETURNING *`,
+      [scope, versionId, minPriceMilli, roundingIncrementMilli, roundingMode, JSON.stringify(capTiers), onExceed]);
+    const row = r.rows[0];
+    const after = priceLimitShape(row);
+
+    await client.query(
+      `INSERT INTO lt_ppe_price_limit_audit
+         (scope, version_id, before_limit, after_limit, changed_fields, reason, changed_by, changed_at)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::text[], $6, $7, $8)`,
+      [scope, versionId, before ? JSON.stringify(before) : null, JSON.stringify(after),
+        priceLimitChangedFields(before, after), reason, changedBy, nowMs]);
+
+    await client.query('COMMIT');
+    return row;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* the original error is the one that matters */ }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * The recorded history of one version's price limits, latest first.
+ *
+ * Read by the console so a person sees WHAT IS IN FORCE NOW, and who last moved it and why, BEFORE
+ * they change it. Append-only: this returns facts, never a current state — `loadRateSheet`'s
+ * `priceLimit` is the current state.
+ */
+async function listPriceLimitChanges(db, scope, versionId, limit = 20) {
+  const n = Number.isInteger(limit) && limit > 0 && limit <= 200 ? limit : 20;
   const r = await db.query(
-    `INSERT INTO lt_ppe_price_limit
-       (scope, version_id, min_price_milli, rounding_increment_milli, rounding_mode, cap_tiers, on_exceed)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
-     ON CONFLICT (scope, version_id)
-       DO UPDATE SET min_price_milli = EXCLUDED.min_price_milli,
-                     rounding_increment_milli = EXCLUDED.rounding_increment_milli,
-                     rounding_mode = EXCLUDED.rounding_mode, cap_tiers = EXCLUDED.cap_tiers,
-                     on_exceed = EXCLUDED.on_exceed, updated_at = now()
-     RETURNING *`,
-    [scope, versionId, minPriceMilli, roundingIncrementMilli, roundingMode, JSON.stringify(capTiers), onExceed]);
-  return r.rows[0];
+    `SELECT id, before_limit, after_limit, changed_fields, reason, changed_by, changed_at
+       FROM lt_ppe_price_limit_audit
+      WHERE scope = $1 AND version_id = $2
+      ORDER BY changed_at DESC, created_at DESC
+      LIMIT ${n}`, [scope, versionId]);
+  return r.rows.map((row) => ({
+    id: row.id,
+    before: row.before_limit || null,
+    after: row.after_limit || null,
+    changedFields: Array.isArray(row.changed_fields) ? row.changed_fields : [],
+    reason: row.reason || null,
+    changedBy: row.changed_by || null,
+    changedAt: row.changed_at == null ? null : Number(row.changed_at),
+  }));
 }
 
 /**
@@ -620,6 +717,33 @@ async function currentRateSheetVersion(db, scope, programId, channel = 'correspo
   return r.rows[0] || null;
 }
 
+/**
+ * EVERY published version in effect for a program right now — the COUNT behind the predicate above.
+ *
+ * `currentRateSheetVersion` answers "which one prices?" with `LIMIT 1`, which is the right shape for
+ * a caller that already knows there is exactly one. It cannot tell "none" from "two", and those are
+ * completely different facts: none means nothing is published for this program, two means WHICH ONE
+ * PRICES IS NOT DECIDED. `publishRateSheetVersionUnchecked` supersedes the other published rows for
+ * the same (scope, program, channel), so one is the norm — but a row written by another path, or two
+ * channels each holding their own published sheet, both produce a set this must be able to describe
+ * rather than silently take the first of. The caller decides what to do with a count that is not 1;
+ * this only reports it.
+ *
+ * `channel` is OPTIONAL here, and that is deliberate: a caller who did not name a channel is asking
+ * about the program, so it must see a sheet published under a channel it did not think to ask for.
+ */
+async function publishedRateSheetVersions(db, scope, programId, channel = null) {
+  const params = [scope, programId];
+  let where = '';
+  if (channel) { params.push(channel); where = ' AND channel = $3'; }
+  const r = await db.query(
+    `SELECT * FROM lt_ppe_rate_sheet_version
+      WHERE scope = $1 AND program_id = $2${where} AND status = 'published'
+        AND effective_from <= now() AND (effective_to IS NULL OR effective_to > now())
+      ORDER BY effective_from DESC, created_at DESC`, params);
+  return r.rows;
+}
+
 module.exports = {
   normAlias,
   loadSettingOverrides, resolveSettings, resolveSetting, setSetting, clearSetting,
@@ -628,5 +752,7 @@ module.exports = {
   findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms, listAllPrograms,
   setProgramLpScope,
   createRateSheetVersion, replaceBasePrices, replaceAdjustments, setPriceLimit,
-  loadRateSheet, rateSheetVersionInScope, publishRateSheetVersion, publishRateSheetVersionUnchecked, currentRateSheetVersion,
+  priceLimitShape, priceLimitChangedFields, listPriceLimitChanges,
+  loadRateSheet, rateSheetVersionInScope, publishRateSheetVersion, publishRateSheetVersionUnchecked,
+  currentRateSheetVersion, publishedRateSheetVersions,
 };
