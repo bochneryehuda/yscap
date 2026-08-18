@@ -910,6 +910,21 @@
         } else { dEl.hidden = true; dEl.textContent = ""; }
       }
     }
+    // Re-rank the SURVIVING cards left/right for the help-bubble direction:
+    // :nth-child parity counts hidden cards too, so once a discontinued
+    // program's box disappears and the next program slides into its slot, a
+    // parity selector would aim the right-column bubbles at the wrong cards.
+    var pcWrap = el("progCompare");
+    if (pcWrap) {
+      var visIdx = 0;
+      for (var ci = 0; ci < pcWrap.children.length; ci++) {
+        var cd = pcWrap.children[ci];
+        if (!cd.classList || !cd.classList.contains("pcard")) continue;
+        if (cd.classList.contains("pcard-gone")) { cd.classList.remove("pcard-right"); continue; }
+        cd.classList.toggle("pcard-right", visIdx % 2 === 1);
+        visIdx++;
+      }
+    }
     // ---- Standard card ----
     var stdExit = ready && (d.exitShortfall > 0);
     var stdCity = ready && !!d.cityReview;

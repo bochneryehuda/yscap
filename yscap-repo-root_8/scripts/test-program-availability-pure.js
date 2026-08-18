@@ -185,6 +185,28 @@ doorWired('src/lib/intake-auto-register.js', 'program_discontinued', 'the public
   const i = sv.indexOf("'/api/pricing-defaults'");
   assert(i > -1 && /scrubText/.test(sv.slice(i, i + 1400)),
     'D15 /api/pricing-defaults scrubs the discontinued note for anonymous callers');
+
+  // D16 — the SLOT-FILLING rule (owner-directed 2026-08-18 clarification): a
+  // hidden card leaves NO hole — the next program slides into its grid slot —
+  // and the help-bubble direction follows the VISIBLE columns, never DOM
+  // parity. Two halves guard it: the card is removed by display:none (grid
+  // auto-placement reflows), and renderPrograms re-ranks the survivors with
+  // .pcard-right (an :nth-child(even) selector counts hidden cards and would
+  // aim the right-column bubbles at the wrong cards the moment one disappears).
+  {
+    const html = read('web/v2/tools/term-sheet.html');
+    const js = read('web/v2/tools/termsheet.js');
+    assert(/\.pcard\.pcard-gone\s*\{\s*display\s*:\s*none/.test(html),
+      'D16 a discontinued card is display:none — removed from the grid flow so the next program fills its slot');
+    assert(!/\.prog-compare\s+\.pcard:nth-child\(even\)/.test(html),
+      'D16b no :nth-child(even) bubble selector survives (it counts hidden cards)');
+    assert(/\.pcard\.pcard-right\s+\.pcard-statlbl/.test(html),
+      'D16c the right-column bubble rules key on .pcard-right');
+    assert(/pcard-right/.test(js) && /visIdx\s*%\s*2\s*===\s*1|vis\s*%\s*2\s*===\s*1/.test(js),
+      'D16d renderPrograms re-ranks the VISIBLE cards left/right on every pass');
+    assert(/classList\.remove\(["']pcard-right["']\)/.test(js),
+      'D16e a hidden card sheds the right-column class (a restored card re-ranks cleanly)');
+  }
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');

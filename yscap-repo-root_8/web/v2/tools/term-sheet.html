@@ -301,9 +301,14 @@
      so their help-bubbles must open LEFTWARD — a center-anchored 230px bubble
      otherwise pokes past the viewport at mid-size widths. Only while the cards
      are 2-wide (≥561px); when they stack 1-up the default centered bubble fits. */
+  /* .pcard-right is set by renderPrograms on every VISIBLE right-column card —
+     :nth-child counts hidden (pcard-gone) cards too, so once a discontinued
+     program's box disappears and the next program slides into its slot (owner-
+     directed 2026-08-18), a parity selector would aim the bubbles at the wrong
+     column. */
   @media (min-width:561px){
-    .prog-compare .pcard:nth-child(even) .pcard-statlbl .tip .tip-bub{ left:auto; right:-6px; transform:none; }
-    .prog-compare .pcard:nth-child(even) .pcard-statlbl .tip .tip-bub::after{ left:auto; right:12px; transform:none; }
+    .prog-compare .pcard.pcard-right .pcard-statlbl .tip .tip-bub{ left:auto; right:-6px; transform:none; }
+    .prog-compare .pcard.pcard-right .pcard-statlbl .tip .tip-bub::after{ left:auto; right:12px; transform:none; }
   }
   label .tip, .ts-sub .tip, .pcard-statlbl .tip, .snap-line-lbl .tip{ }
   /* loan-amount logic explainer */
@@ -1123,7 +1128,7 @@
 <script src="silver-program.js?v=silver9-bandeps-tiermk1-tsprog1"></script>
 <script src="title-cost.js?v=admin8-tsprog1"></script>
 <script src="address-autocomplete.js?v=admin9-tsprog1"></script>
-<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail1"></script>
+<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2"></script>
 <script src="../float-actions.js?v=admin10-applyfix-tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr
