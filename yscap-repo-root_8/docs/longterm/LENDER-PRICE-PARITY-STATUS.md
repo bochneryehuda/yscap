@@ -5553,3 +5553,73 @@ both halves: the rule is named in the prose (so the next reader finds its twin) 
 code.
 
 159/159 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.91 — ⛔ WITHOUT THE DECLINE FEED, "WE DECLINED AND THEY PRICED" IS NOT A FINDING (2026-08-18)
+
+**This defect produced a confidently wrong answer, and it was reported to the owner as fact.** That is
+the reason it is written up at this length.
+
+The live battery of §2.89 was run with `--no-disqualify` — fast, and entirely correct for measuring
+**price** parity. It returned **41 `disqualification_extra` findings**, "our engine declined a loan
+Lender Price priced", and those were passed on as *business we are turning away*. **They were not.**
+
+**⛔ THE MECHANISM.** The disqualify tree is the **only** place Lender Price states a refusal. With the
+feed off, `lpDeclined` is permanently false, so `lpEligible` collapses to **"a ladder came back"** — a
+materially weaker claim than "Lender Price approved this loan". The harness then scored that gap against
+our sheet.
+
+**And the vendor behaviour that makes it wrong was already measured, in this repo, the day before.**
+Lender Price splits one Deephaven sheet across several DSCR-band programs. The live capture of
+2026-08-17, taken **with** the feed on, records that on **four of six ineligible probes the DSCR-matching
+container declined while a mismatched container leaked a price** — in its own words:
+
+> *"Do not treat 'an eligible Deephaven price came back' as 'the loan is eligible for its DSCR band'."*
+
+The four probes that leaked then (`FICO 600`, `DSCR 0.6`, `tiny loan 60k`, `640/80/0.9`) are four of the
+41 that "disagreed" now. **The warning existed, in writing, and the harness had no way to honour it.**
+
+**The fix.** When our side declines and Lender Price merely showed a ladder, with no decline feed to
+confirm what it actually decided, the verdict is **`incomparable` / `lp_decline_unobserved`** — not a
+disagreement. Readiness is read from the leg, so *"never asked"* and *"asked and not ready"* are treated
+identically, because for this purpose they are the same fact: **LP's verdict was not observed.**
+
+**Why incomparable rather than a softer disagreement.** We did not see what Lender Price decided, so the
+scenario is not evidence in **either** direction. Scoring it as a disagreement blames our sheet for a
+vendor artefact; scoring it as agreement would be worse. And because §2.90 now makes incomparable
+scenarios block a sheet from being proven, the consequence lands correctly too: **a run that never looked
+at Lender Price's refusals cannot prove agreement about refusals.** The two sections compose, and the
+suite asserts that composition rather than trusting it.
+
+**The arm is deliberately narrow, and section C proves each boundary:** a both-priced scenario is
+untouched (the feed is irrelevant, and the verdict is identical with it on or off); an empty LP answer
+keeps its own pre-existing `lp_no_signal` name; and the opposite direction — *LP declined and we priced*
+— **cannot arise at all** with the feed off, because `lpDeclined` is false by construction. That last one
+is proven rather than argued: a decline row present under `ready:false` is not read as a decline, because
+an unpolled tree states nothing.
+
+**What today's run becomes under the fix**: 254 agreed, **0** disagreed, 45 incomparable — and therefore
+*unprovable*, which is the honest verdict for a run made without the decline feed. The 41 do not vanish;
+they are named as unmeasured rather than counted as defects.
+
+`scripts/test-lt-ppe-decline-unobserved.js` (24 assertions) drives the real `runOne` and `summarize`.
+**Mutation-proven five ways**: the arm removed (7 assertions bite), readiness assumed true (8), the arm
+firing too widely and swallowing priced scenarios (5), it stealing `lp_no_signal`'s name (1), and the
+scenario marked incomparable while still scored as agreeing (6).
+
+**Two of my own assertions were wrong and are corrected in place, not quietly deleted.** The first draft
+hand-shaped the LP fixture as a flat `{rate, price}`; the normalizer reads a `priceBuild` block, folded
+every fixture to zero rungs, and **made every scenario `lp_no_signal` — so the assertions passed for the
+wrong reason.** The shape is now taken from the normalizer rather than guessed, with that written where
+the fixture is built. The second asserted `disagreed === 0` over a battery whose two priced scenarios
+genuinely disagree on the fine LLPA axis; it now asserts what is actually under test — that **no declined
+scenario became a finding** — plus a bucket-reconciliation over the whole battery.
+
+**⛔ STILL OPEN, and it is the same shape as the trap above.** `--no-disqualify` remains available and is
+still the right tool for price parity. It no longer produces false eligibility findings — but the runner
+does not yet *refuse* to report an eligibility verdict from such a run, and its own mis-invocation guard
+already refuses an unscoped run on exactly this reasoning: *"a gate that answers confidently when it was
+asked the wrong question is worse than a gate that refuses."* Recorded as its own item.
+
+160/160 suites, 33 database-backed. All seven gates green.

@@ -379,6 +379,12 @@ async function runOne(scenario, ours, lp, opts) {
   const lpRungs = bestRungsOf(lpNorm);
   const lpDeclined = !!(lpDisq.declined && lpDisq.declined.length);
   const lpHasSignal = lpRungs.length > 0 || lpDeclined;
+  // ⛔ DID WE ACTUALLY SEE LENDER PRICE'S DECLINES? (§2.91) The disqualify tree is computed
+  // asynchronously and is the ONLY place LP states a refusal. `buildLpLeg` yields `{ready:false}` both
+  // when the poll timed out AND when `--no-disqualify` never asked — and for this purpose those are
+  // the same fact: LP's verdict was not observed. Without it, `lpEligible` collapses to "a ladder came
+  // back", which is a materially weaker claim than "Lender Price approved this loan".
+  const lpDisqReady = !!(legs.disqualified && legs.disqualified.ready);
 
   // The COARSE, categorized axes (this is what parity-detectors already compared: eligibility, coupon
   // set, base/final price, margin, LLPA stack total).
@@ -445,6 +451,27 @@ async function runOne(scenario, ours, lp, opts) {
   // OUTCOME; whether the two declined for the SAME REASON is decided a few lines below.
   let incomparable = !lpHasSignal;
   let incomparableReason = incomparable ? 'lp_no_signal' : null;
+  // ⛔ WITHOUT THE DECLINE FEED, "WE DECLINED AND THEY PRICED" IS NOT A FINDING (§2.91).
+  //
+  // MEASURED, and it produced a confidently wrong answer. Lender Price splits one Deephaven sheet
+  // across several DSCR-band programs, and the repo's own live capture of 2026-08-17 recorded that on
+  // four of six ineligible probes **the DSCR-matching container declined while a mismatched container
+  // leaked a price** — its own words: *"Do not treat 'an eligible Deephaven price came back' as 'the
+  // loan is eligible for its DSCR band'."* The 2026-08-18 run was made with the decline feed OFF, and
+  // those same four probes came back as `disqualification_extra` — reported as loans we wrongly refuse.
+  // They were the vendor's leak, and the run could not tell.
+  //
+  // So when OUR side declines and LP merely showed a ladder, with no decline feed to confirm what LP
+  // actually decided, the honest verdict is INCOMPARABLE — not a disagreement. It is not evidence our
+  // sheet is wrong, and (per §2.90) it now stops such a run from proving a sheet, which is correct:
+  // a run that never looked at LP's refusals cannot prove agreement about refusals.
+  //
+  // The other direction needs no arm: with the feed off, `lpDeclined` is always false, so
+  // "LP declined and we priced" cannot arise at all.
+  if (!incomparable && !lpDisqReady && !ourEligible && lpNorm.eligible) {
+    incomparable = true;
+    incomparableReason = 'lp_decline_unobserved';
+  }
   // `coarseIgnore` drops margin-laden coarse axes from the GATE (still fully reported): on the live
   // Deephaven sheet `final_price` and `llpa_total` compare LP's displayed price / adjustmentPoints,
   // which carry the origination/margin, NOT the LLPA stack — so they are a compensation-layer question.
