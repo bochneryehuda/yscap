@@ -4774,3 +4774,68 @@ the battery total, a broken tally ceasing to block, `null` collapsing back into 
 falling out of the partition, and the screen quietly ceasing to render one of the two subtractions.
 
 150/150 suites.
+
+**§2.80 — THE UNWIRED LEDGER SAID THE INVESTOR-NAME GUARD WAS HALF-MISSING; IT HAS BEEN FULLY WIRED
+SINCE THE BORROWER SURFACE SHIPPED (2026-08-18).**
+
+**MEASURED.** `docs/longterm/LT-UNREACHED.md` asserted, in its most important section — the one about
+the HARD RULE that a capital provider's name never reaches a borrower or a TPO:
+
+> "the second defence is only half present … `maySeeField` / `stripInternalOnly` are still uncalled
+> anywhere — so the NEXT client surface must not assume they are in the path"
+
+Both are called by `src/longterm/client-view.js`, which `routes/my-loans.js` requires and the server
+mounts at `/api/lt/my`. So **both** defences the rule names are in the path today — and the STRONGER
+one, the one the rule names first, is exactly what that route does: `client-view` builds the client's
+payload from an ALLOWLIST rather than filtering a staff one, asks `maySeeField` about each field's
+Encompass id and `internalOnlyColumns` about its column before assembling it, runs `stripInternalOnly`
+over the finished object as the belt, and refuses the SELECT itself at load time via
+`assertNoInternalColumns`. The paragraph read backwards too: it announced the "second" defence and then
+described the first.
+
+**THE CLASS: a hand-written reason inside a GENERATED list is a hand-kept list, one level down, wearing
+the generated file's credibility.** Four ledgers here are generated precisely because a hand-kept list
+goes stale silently — and every one of them then invites an authored REASON beside a row, carries
+authored prose above the lists, and **preserves both without ever checking them**. That sentence was
+false when it was written, and nothing anywhere could tell.
+
+**`scripts/test-lt-ledger-claims.js` (37 assertions) is the durable half**, on §2.76's shape: a CLAIMS
+table of eight entries, each **biconditional** — the prose must be PRESENT (a reword that quietly drops
+a claim fails section A) and the code fact must HOLD (section B), because a "must not appear" test
+catches only one direction. Section C is the rewording net: a retracted claim must not return.
+
+**⛔ A RETRACTED CLAIM IS QUOTED IN ITALICS, AND THE GUARD READS ASSERTED PROSE ONLY.** The correction
+necessarily QUOTES the sentence it withdrew — the record of why is the point — so a net that read
+quotations would fail on the very fix it protects and would then be "fixed" by deleting the
+explanation, which is worse than the original defect. `asserted()` strips `*"…"*` before every
+must-not-appear check, and section D proves the stripper removes a quotation **and nothing else**, that
+the withdrawn sentence really is still quoted, and that it survives only as a quotation.
+
+**THREE MORE THINGS THE MEASUREMENT TURNED UP, all repaired in the same pass:**
+
+- **Two gate suites were RED on this branch and had been before this session started** —
+  `test-lt-reachability-gate` (R13) and `test-lt-export-reachability-gate` (G14/G15), both in the
+  `npm test` chain. Confirmed pre-existing by running them in a read-only worktree at `64f7d1bd`. Their
+  advisory CHECKERS exit 0, so only the blocking half was saying so.
+- **`ppe/divergence.js :: diagnose` went dark in §2.78, and that IS the fix** — `attachDiagnosis` moved
+  into that module and calls it as a bare local, so both live callers reach it through `attachDiagnosis`
+  and nothing outside the file names it. That is one of the ten rows the export ledger wanted recorded;
+  it is recorded, with that reason, rather than left for somebody to rediscover.
+- **Two module rows were struck because they are wired now, and one of them by the route its own row
+  predicted.** `ppe/program-audit.js`'s row said its home was *"the free pre-flight beside
+  `GET …/coverage`, not the paid battery"* — and §2.75 built that pre-flight, which requires
+  `auditProgram`. The prediction came true. `ppe/canary-clock.js` is reached by `canary-driver.js`.
+  Both new claims are in the CLAIMS table, so a lazily-removed `require()` turns the suite red instead
+  of quietly making the prose false again.
+
+**Mutation-proven six ways**: the first defence unwired at `client-view`, the claim reworded away, the
+retracted sentence returning as an assertion, the quotation stripper eating the whole file, the cron
+launcher disappearing, and the pre-flight ceasing to read the program audit. The suite is named in the
+`npm test` chain — `check-lt-suite-coverage` caught that it was not, on the first run, which is what
+that gate is for.
+
+**The counts, stated as measured rather than rounded up.** The new suite is NOT a `test-lt-ppe-*` file,
+so the aggregate PPE runner still reports **150/150** — this one runs from the `npm test` chain instead,
+which is why `check-lt-suite-coverage` had to be satisfied by naming it there. Across the whole
+Long-Term tree that gate now reads **226 of 229 suites executed by something**, with the remaining three
+recorded in `LT-SUITES-UNRUN.md` with their reasons.

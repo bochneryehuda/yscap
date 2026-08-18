@@ -28,10 +28,26 @@ schema-drift checks: making it blocking is the owner's call, not an agent's.
 at `/api/lt/my` — and it runs every free-text field it returns through `audience.scrubInvestorNames`
 before it leaves. That is exactly what this section asked for, so its row is off the ledger and the
 guard's assertion is INVERTED rather than deleted: if the wiring is ever lost, `test-lt-reachability-gate.js`
-turns red instead of the claim quietly becoming untrue again. **The second defence is only half
-present**: the route builds a payload FOR the borrower rather than filtering a staff one (the stronger
-of the two defences, and the one the hard rule names first), but `maySeeField` / `stripInternalOnly`
-are still uncalled anywhere — so the NEXT client surface must not assume they are in the path.
+turns red instead of the claim quietly becoming untrue again.
+
+**CORRECTED 2026-08-18 (§2.80): BOTH DEFENCES ARE WIRED, and this paragraph used to say otherwise.** It
+read *"the second defence is only half present … `maySeeField` / `stripInternalOnly` are still uncalled
+anywhere — so the NEXT client surface must not assume they are in the path"*. Measured: both are called
+by `src/longterm/client-view.js`, which `my-loans.js` requires, so they are in the boot graph and in the
+path of the one client surface that exists. That route does NOT filter a staff payload — `client-view`
+builds the client's payload from an ALLOWLIST, asking `maySeeField` about each field's Encompass id and
+`internalOnlyColumns` about its column before assembling it, running `stripInternalOnly` over the
+finished object as the belt, and refusing the SELECT itself at load time via `assertNoInternalColumns`.
+That is the STRONGER defence, the one the hard rule names first, and it is present. The sentence was
+already false when it was written and nothing could tell: a generated ledger preserves its authored
+prose and never checks it, which makes a hand-written reason inside a generated list a hand-kept list.
+`scripts/test-lt-ledger-claims.js` now reads these claims and fails when one stops being true.
+
+**What genuinely remains open here is smaller and is recorded where it lives**: `client-view.js` says
+the loan NUMBER is deliberately not scrubbed — it is an identifier the LOS assigns, and scrubbing it
+would rewrite a real one the moment it happened to contain a short investor code as a standalone token
+— and whether a long-term loan number can ever carry text somebody typed is the owner's question, not
+an agent's.
 
 The original finding is kept below, because the reasoning is why the wiring was owed at all.
 
@@ -64,6 +80,21 @@ rather than spending a battery on error verdicts that would say nothing about ag
 The three rows that covered it — `ratesheet-agreement.js`, `agreement-scenarios.js` and
 `ratesheet-agreement-diff.js` — are struck off. The check caught them itself the moment the route
 landed, which is exactly what it is for.
+
+## Two more struck off — 2026-08-18 (§2.80)
+
+**`ppe/program-audit.js` is wired, and by exactly the route its own row predicted.** The row said its
+home was *"the free pre-flight beside `GET …/coverage`, not the paid battery"* — and §2.75 built that
+pre-flight: `ppe/agreement-preflight.js` requires `auditProgram` to report a sheet's dead rules before
+anybody spends a Lender Price battery, and the PPE router requires the pre-flight. So the prediction
+came true and the row came off, which is the ledger working as designed rather than a row being tidied
+away.
+
+**`ppe/canary-clock.js` is wired too**, through `ppe/canary-driver.js`, which lazily requires it to
+report which of the owner's six Eastern hours a tick fell in. Its row said the clock is *"deliberately
+NOT reached from the request path: nothing a person clicks should depend on what hour it is"* — that is
+still true of the DECISION; what the driver reads it for is the description it hands back, so the
+principle stands and only the reachability claim moved.
 
 ## The sheet's own dead cells — now wired
 
@@ -156,10 +187,8 @@ not a caller.
 
 | Module | Why it is not wired yet | What would wire it |
 | --- | --- | --- |
-| `src/longterm/ppe/program-audit.js` | The offline our-side half of the same harness (dead-rule / coverage profiler). | NOT the agreement run — that is now wired and does not call this. It profiles OUR sheet alone, with no vendor leg, so its home is the free pre-flight beside `GET …/coverage`, not the paid battery. |
 | `src/longterm/ppe/program-audit-command.js` | **Deliberately unwired, and it IS run.** It is the body of the offline operator command `scripts/lt-ppe-program-audit.js`, which starts it as its own process — so nothing the server boots requires it, by design. It lives here rather than in `scripts/` because Long-Term back-end code may live nowhere else, and the launcher imports nothing so no RTL file gains a Long-Term dependency. | Nothing should. If the audit is ever wanted *inside* the product (a scheduled run, an admin screen), that surface would require it — and this row comes off then. |
 | `src/longterm/ppe/canary-cron-command.js` | **Deliberately unwired, and it IS run — on a schedule.** It is the body of the scheduled daily Lender Price check the owner asked for on 2026-08-18 (7am, 9am, 10am, 11am, 12pm and 4pm Eastern), started as its own process by the Render cron service `ys-capital-lt-canary` through the launcher `scripts/lt-ppe-canary-cron.js`. Nothing the SERVER boots requires it, by design — that is what a scheduled job is. It lives here rather than in `scripts/` because Long-Term back-end code may live nowhere else, and the launcher imports nothing, so no RTL file gains a Long-Term dependency (the `program-audit-command.js` pattern, same reason). | Nothing in `src/` should. If the daily check is ever wanted INSIDE the product — an admin pressing "run it now" from a screen — that surface would require it, and this row comes off then. **Its own suite DOES run it** (`test-lt-ppe-canary-cron-command.js`, spawning it exactly as the launcher does), because "nothing boots it" was being read as "nothing tests it" — and the two defects §2.65 found both lived in this file, unexecuted. |
-| `src/longterm/ppe/canary-clock.js` | The six Eastern hours the owner named, and the only thing that decides whether a given instant is one of them. Reached from the scheduled command above, which the server does not boot. | The same thing that wires that command. It is deliberately NOT reached from the request path: nothing a person clicks should depend on what hour it is. |
 | `src/longterm/ppe/disqualify-reconcile.js` | The SCENARIO-level reconciler, and the only thing that judges whether a disagreement is worth raising with Lender Price. | **NOT a duplicate of `disqualifier-reconciler.js`, and this row used to say it was.** Measured: `reconcileScenario(our, lp)` classifies one scenario end to end — `both_eligible` / the disagreement outcomes — crosswalks Lender Price's own decline strings to dimensions, and sets **`ticketWorthy`**, which is the owner's own instruction (*"if anything is not matching Lender Price, tell me and we open a ticket"*). `disqualifier-reconciler.reconcileDisqualifiers(ours, authority)` answers a DIFFERENT question at a different granularity — a per-LAYER itemisation of two verdicts it is handed — and it is the one the agreement run calls. Neither covers the other. **Retiring this file would delete the only implementation of the ticket judgement**, so the earlier "keep or retire" framing was wrong and is withdrawn. It is unwired because the live-Lender-Price classification path it belongs to cannot run until the vendor login is present in this environment's settings. |
 | `src/longterm/ppe/deephaven-grid.js` | The rate-sheet GRID model (E3/E5). | The rate-sheet console's grid editor, or the ingest path. |
 | `src/longterm/ppe/layer-data-registry.js` | The versioned investor-layer data registry + compiled catalog. | As above. |

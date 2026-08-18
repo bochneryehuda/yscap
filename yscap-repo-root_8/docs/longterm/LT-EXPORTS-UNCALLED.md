@@ -18,7 +18,7 @@ striking it here in the same commit.
 against the definition instead of retyping it, an operator command, a capability written ahead of its
 caller. A row is an invitation to say which — that is what the reason field is for.
 
-## Referenced nowhere at all (142)
+## Referenced nowhere at all (145)
 
 Not by production code and not by a test. Nothing asks for these, so nothing would notice if one were
 wrong.
@@ -71,6 +71,9 @@ wrong.
 - `ppe/canary-driver.js :: TIMING_HOLDS` — the timing-hold set; internal to classifyTick
 - `ppe/canary-schedule.js :: MINUTE_MS`
 - `ppe/comp-plan.js :: SPLIT_BASES`
+- `ppe/cutover-ledger.js :: daysInCurrentMode`
+- `ppe/cutover-store.js :: rowToEntry`
+- `ppe/cutover.js :: _isRegressed` — the §2.74 "a fix that came undone" predicate, exported under the test seam so its truth table is asserted directly; the scoreboard uses it through `buildScoreboard`
 - `ppe/cutover.js :: OPEN_FINDING_STATUSES`
 - `ppe/deephaven-dscr-prepay-maxprice.js :: lockTermLlpaTables` — the raw lock-term tables; the compiler reads them inside this module
 - `ppe/deephaven-dscr-prepay-maxprice.js :: maxPriceLpMilli` — the measured Lender Price ceiling this block was built from — kept as the source figure, read inside this module
@@ -166,7 +169,7 @@ wrong.
 - `sync/loans.js :: readLoan`
 - `views.js :: defaultView`
 
-## Named by a test and by no production code (187)
+## Named by a test and by no production code (193)
 
 This is the §2.45 / §2.46 shape exactly — built, tested, and asked by nothing — and it is also the
 shape of a perfectly good exported table that a suite asserts against. The list is watched, not
@@ -257,15 +260,20 @@ banned.
 - `ppe/advanced-facts.js :: lpPricedKeys`
 - `ppe/agreement-scenario-generator.js :: distinctFrom`
 - `ppe/agreement-store.js :: gateDecision`
+- `ppe/canary-clock.js :: EASTERN_HOURS` — the owner's six scheduled hours; read inside this module's own tick decision, exported so the suite asserts the hours rather than retyping them
 - `ppe/canary-driver.js :: classifyTick` — the timing-hold vs cannot-ever-run split, asserted directly by the driver suite
 - `ppe/canary-driver.js :: driverEnabled` — the off-switch reader; the suite drives its whole truth table
+- `ppe/canary-driver.js :: healthOf`
 - `ppe/canary-driver.js :: intervalMsOf` — the interval floor reader; same
 - `ppe/canary-driver.js :: leaseMsOf` — the lease-length reader; same
 - `ppe/canary-driver.js :: lockKeyFor` — the lease key; the suite races two contenders through it
 - `ppe/canary-driver.js :: MIN_LEASE_MS` — the floor the suite asserts against rather than retyping
+- `ppe/canary-driver.js :: SOURCE_CRON` — the source labels the driver stamps a run with; compared inside this module, exported so a suite names them rather than spelling the strings
+- `ppe/canary-driver.js :: SOURCE_TIMER` — same pair, and the default when a caller names no source
 - `ppe/canary-schedule.js :: MAX_BATTERY_SCENARIOS`
 - `ppe/canary-schedule.js :: MAX_INTERVAL_MS`
-- `ppe/cutover.js :: consecutiveCleanDays`
+- `ppe/cutover-ledger.js :: lastTransitionTo`
+- `ppe/cutover-store.js :: listHistory`
 - `ppe/deephaven-dscr-prepay-maxprice.js :: extensionAdjustment` — the lock-extension LLPA lookup; the sheet is consumed through `deephavenPriceLimitRules`, and the suite asserts this table cell by cell
 - `ppe/deephaven-dscr-prepay-maxprice.js :: extensionProblem` — the extension refusal wording; same — asserted directly rather than through a whole quote
 - `ppe/deephaven-dscr-prepay-maxprice.js :: loanAmountCapTiers` — the loan-size cap tiers; `price-limit.js` reads them through the compiled rules, and the suite asserts the tiers themselves
@@ -292,6 +300,7 @@ banned.
 - `ppe/deephaven-ppp-matrix.js :: WHEN_HANDLERS`
 - `ppe/deephaven-ppp-matrix.js :: whenMatches` — evaluates one state rule condition; used inside the matcher, exported so each key can be asserted on its own
 - `ppe/disqualifier-review.js :: lpDeclines`
+- `ppe/divergence.js :: diagnose` — the diagnosis itself. It went dark in §2.78 and that IS the fix: `attachDiagnosis` moved into this module and calls it as a bare local, so the one place it is used is the same file, and both live callers (the canary runner and the facade) reach it through `attachDiagnosis`. Its suite asserts it directly rather than through a whole comparison.
 - `ppe/divergence.js :: explainPriceDivergence`
 - `ppe/finding.js :: mergeOne`
 - `ppe/finding.js :: RATE_KINDS`
