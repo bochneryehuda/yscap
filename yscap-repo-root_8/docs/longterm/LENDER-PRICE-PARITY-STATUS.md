@@ -6004,3 +6004,66 @@ updated with that reason. The three advanced duplicates that remain are exactly 
 recorded as not-transmitted — a decision (`occupancy`), a measured-inert vendor field
 (`declining_market`) and an open gap with nothing to bridge to (`renovation`) — so unlike the four
 before them, none is expected to fall off by being bridged.
+
+### §2.98 — ⛔ THE FIELD-FIDELITY GUARD INVENTED A DEFECT, AND MEASURED ONE OF TWO PROFILES (2026-08-18)
+
+**The defect, and it was mine.** §2.96's own header warns that a lazy probe value fabricates a drop and
+lists five it caught in its first draft — *"a guard that cries wolf teaches its reader to ignore it —
+so the values are taken from the registry's own token sets, not guessed."* A sixth survived that
+sentence:
+
+```
+incomeDocType: 'Full Doc'      ← not a menu label. The real one is 'Full Doc - 24M'.
+```
+
+`mapIncomeDocType('Full Doc')` returns null, the builder falls back to its `'DSCR'` default, the
+request does not move, and the field was recorded as **DROPPED** — with a confident explanation
+blaming a `PROFILE_FORCED` entry **that does not exist** (`incomeDocType` is not in that table, and
+never was). Measured: **all 24 non-DSCR menu labels reach the wire**. The field was never dropped, the
+record was a fabricated defect, and it named a cause that could not be true.
+
+**The structural fix, in the one form that needs no second list to keep in step.** A recogniser table
+would itself go stale against a menu the vendor extends, so the invariant is stated on the vendor's own
+vocabulary instead:
+
+> **A field is only DROPPED if NO value in its own token set moves the request.**
+
+A genuinely untransmitted field is untransmitted for every value it accepts. A bad probe value is
+betrayed the moment any sibling token moves the body. Section D of
+`scripts/test-lt-ppe-field-reaches-wire.js` sweeps every recorded-dropped field across the registry's
+own set, refuses to pass on an empty sweep (the vacuous shape §2.96 caught in its own assertions), and
+**replays the exact value that fooled the suite** — asserting it still fools the one-value test while
+failing the sweep, so the section cannot rot into a loop that no longer catches it.
+
+**The second gap: every measurement had been taken under ONE profile.** §2.88 added
+`opts.profile: 'mirror'`, so "which fields reach the wire" is a question with two answers and only one
+had ever been asked. Swept under both:
+
+| | dropped under `dscr` | dropped under `mirror` |
+|---|---|---|
+| `compensationType` | ✔ | — reaches the wire |
+| `occupancy`, `apr`, `ltv`, `declining_market`, `renovation` | ✔ | ✔ |
+
+Exactly one field differs. Its record now says so instead of stating a half-measurement as the whole
+answer. *(The first draft of that section stripped `date` out of its comparison where section A does
+not — so `date` read as transmitted there and dropped here, and the difference was attributed to the
+profile. It was attributable to my own comparison. The two sweeps must differ in the profile and in
+nothing else; any normalization applied to one and not the other manufactures the finding.)*
+
+**The third, and it is a claim correction in live code.** §2.88's comment reads as though unforcing the
+DSCR identity opened the product space. It did not. **Four of the five identity axes have no scenario
+field at all** — `loanType`, `propertyUse`, `lienPriority`/`lienPriorityType` and `mortgageType(s)` are
+in no spelling in `SUPPORTED_FIELDS`, so the route refuses them as unsupported and no caller can
+express them; the captured base body then supplies the narrow values regardless of profile. A mirror
+search still comes back Fixed / Conventional / Investment / FirstLien. `compensationType` is the one
+axis that actually widened, because it is the only one of the five with a field behind it.
+
+So a mirror search is today **a DSCR investor search a caller may pay for differently**, not "any kind
+of scenario in Lender Price". That is now written where the profiles are defined and asserted in
+section E, so it cannot drift back into an impression. Closing it means giving the other four axes real
+validated fields — its own item, and the honest next step for the mirror.
+
+**Counts.** `NOT_TRANSMITTED` 8 → **6** recorded (`foreign_national` left in §2.97, `incomeDocType`
+here). Four mutations were each proven to turn the suite red: restoring the bad probe value, making
+`incomeDocType` really forced, having the mirror profile silently re-force `compensationType`, and
+making an identity field route-accepted so section E's claim goes stale.

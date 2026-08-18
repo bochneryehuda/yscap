@@ -54,7 +54,7 @@ const PROBE = {
   countyFps: '48113', city: 'Dallas', countyName: 'Dallas', borrowerType: 'Individual',
   prepayMonths: 24, io: true, escrowWaive: true, fthb: true, date: '2026-01-02',
   rentalTerm: 'short', reservesMonths: 12, term: 40, termYears: 40, lockDays: 45,
-  cashoutAmount: 50000, incomeDocType: 'Full Doc', prepayStructure: '3,2,1',
+  cashoutAmount: 50000, incomeDocType: 'Full Doc - 24M', prepayStructure: '3,2,1',
   subordinateLoanAmount: 25000, compPercent: 2.5, apr: 9, selfEmployed: true,
   financedProperties: 5, numberOfBorrowers: 2, monthlyIncome: 20000, monthlyDebt: 6000, dti: 0.4,
   compensationType: 'LenderPaid', waiveLenderFee: true, rural: true, mixedUse: true,
@@ -76,12 +76,6 @@ const NOT_TRANSMITTED = {
     'DELIBERATE — §35.2 the AMOUNT TRIANGLE. `value`, `loan` and `ltv` are three views of two facts, so '
     + 'with a value and a loan present the LTV is DERIVED and transmitted from them; an explicit one '
     + 'moves nothing because it is already implied. It is not lost, it is redundant.',
-  incomeDocType:
-    'ACCEPTED, APPLIED, THEN OVERWRITTEN — same shape as compensationType below. `applyRegistry` writes '
-    + "`dyn.IncomeDocType` from the caller and the DSCR profile then forces 'DSCR' as part of its "
-    + 'identity, so a caller asking for Full Doc is silently given DSCR. Not a lost field — a field the '
-    + 'profile owns. Unlocking it belongs with the work that lets the mirror search products other than '
-    + 'investment fixed-rate DSCR.',
   occupancy:
     'DELIBERATE, and documented at length in search-model beside the code that does it (D27). Vacant vs '
     + 'leased is retained as a first-class ELIGIBILITY fact on an internal channel — the overlay, the '
@@ -104,11 +98,14 @@ const NOT_TRANSMITTED = {
     'BY DESIGN — a pure pass-through to our own Layer-3 prepayment matrix, which keys Illinois on it. '
     + 'It is an input to OUR rules, never a thing to ask Lender Price about.',
   compensationType:
-    'ACCEPTED, APPLIED, THEN OVERWRITTEN — and that is the defect, not the omission. `applyRegistry` '
-    + 'writes `criteria.compensationType` from the caller and `wireDiscipline` then forces '
-    + "'BorrowerCompPlan' as part of the DSCR profile identity, so a caller asking for LenderPaid is "
-    + 'silently given BorrowerPaid. Recorded here so it is visible; unlocking it belongs with the '
-    + 'profile work that lets the mirror search products other than investment fixed-rate DSCR.',
+    'OVERWRITTEN BY THE DEFAULT PROFILE ONLY — and §2.98 is what made that qualification sayable. '
+    + '`applyRegistry` writes `criteria.compensationType` from the caller and `PROFILE_FORCED` then '
+    + "pins 'BorrowerCompPlan' as part of the DSCR profile identity, so under the DEFAULT profile a "
+    + 'caller asking for LenderPaid is silently given BorrowerPaid. Under the MIRROR profile (§2.88) it '
+    + 'reaches the wire unchanged — measured, and asserted in section D below. This entry describes the '
+    + 'default profile because that is the profile every scenario in section A is built under; it is '
+    + 'the ONE field whose verdict differs between the two, and the only one of the five identity axes '
+    + 'the mirror can actually move (see section D).',
 };
 
 // ---- A: the measurement ---------------------------------------------------------------------------
@@ -153,6 +150,117 @@ ok(!Object.prototype.hasOwnProperty.call(NOT_TRANSMITTED, 'foreign_national'),
   'foreign_national is NOT recorded as not-transmitted — it was bridged in §2.97');
 ok(dropped.includes('foreign_national') === false,
   'foreign_national reaches the wire (measured: it swaps 13 of 19 programs and moves Deephaven 4.125 points)');
+
+// ---- D: a probe value the builder does not recognise cannot invent a defect ------------------------
+// ⛔ THIS SECTION EXISTS BECAUSE THIS SUITE INVENTED ONE (§2.98). The header above warns that a lazy
+// probe value fabricates a drop, and lists five it caught in the first draft. A sixth survived:
+// `incomeDocType: 'Full Doc'` is not a menu label — the real one is `Full Doc - 24M` — so
+// `mapIncomeDocType` returned null, the builder fell back to its `'DSCR'` default, the request did not
+// move, and the field was recorded as DROPPED with a confident explanation blaming a `PROFILE_FORCED`
+// entry that does not exist. Every one of the 24 other menu labels reaches the wire.
+//
+// The prose warning was not enough, so the invariant is now PROVEN rather than urged, and in the one
+// form that needs no table of recognisers to keep in step with the registry:
+//
+//   A FIELD IS ONLY DROPPED IF **NO** VALUE IN ITS OWN TOKEN SET MOVES THE REQUEST.
+//
+// A genuinely untransmitted field is untransmitted for every value it accepts. A bad probe value is
+// betrayed the moment any sibling token moves the body — which is exactly what `Full Doc - 24M` does.
+// The token sets come from the registry itself, so a menu the vendor extends is swept without anybody
+// remembering to update this file.
+console.log('\n-- D: a field is only DROPPED if NO value in its token set moves the request --');
+{
+  const reg = require('../src/longterm/lenderprice/field-registry');
+  const I = require('../src/longterm/lenderprice/search-model')._internals;
+  const listOf = (x) => (x instanceof Set ? [...x] : Array.isArray(x) ? x : Object.keys(x || {}));
+  // Every ENUM-shaped supported field, mapped to the registry's own vocabulary for it. A field absent
+  // here is a free-form value (a number, a date, a boolean) with no set to sweep.
+  const TOKEN_SETS = {
+    incomeDocType: listOf(reg.INCOME_DOC_TYPES), prepayStructure: listOf(reg.PREPAY_STRUCTURES),
+    borrowerType: listOf(reg.BORROWER_TYPES), propertyType: listOf(reg.PROPERTY_TYPES),
+    citizenship: listOf(reg._tokens.CITIZENSHIP), tradelines: listOf(reg._tokens.TRADELINES),
+    foreclosure: listOf(reg._tokens.FORECLOSURE), shortSale: listOf(reg._tokens.SHORTSALE),
+    deedInLieu: listOf(reg._tokens.DEEDINLIEU), chargeOff: listOf(reg._tokens.CHARGEOFF),
+    forbearance: listOf(reg._tokens.FORBEARANCE), compensationType: listOf(reg._tokens.COMP_TYPE),
+    attachment: listOf(I.ATTACHMENT_TYPES), attachmentType: listOf(I.ATTACHMENT_TYPES),
+    reservesMonths: listOf(I.RESERVES_TOKENS), occupancy: listOf(I.OCCUPANCY_STATES),
+    rentalTerm: listOf(I.RENTAL_TERM_ALIASES), purpose: listOf(I.PURPOSE_ALIASES),
+    lockDays: listOf(I.ALLOWED_LOCKS), term: listOf(I.ALLOWED_TERMS), termYears: listOf(I.ALLOWED_TERMS),
+  };
+  ok(Object.values(TOKEN_SETS).every((v) => Array.isArray(v) && v.length > 0),
+    'every token set is really populated — an empty one would sweep nothing and pass vacuously');
+
+  // (1) The sweep itself: for each field RECORDED as dropped, no token in its set may move the body.
+  let sweptFields = 0;
+  for (const key of dropped) {
+    const set = TOKEN_SETS[key];
+    if (!set) continue;
+    sweptFields += 1;
+    const movers = set.filter((v) => {
+      try { return JSON.stringify(buildSearch({ ...BASE, [key]: v })) !== baseBody; } catch (_) { return true; }
+    });
+    ok(movers.length === 0,
+      `"${key}" is recorded as dropped and NO value in its ${set.length}-token set moves the request`
+      + `${movers.length ? ` — but ${movers.length} do, starting with ${JSON.stringify(movers[0])}: the probe value is wrong, not the code` : ''}`);
+  }
+  // (2) And the sweep must actually be sweeping something. A `dropped` list that happened to contain no
+  //     enum field would make (1) a loop over nothing — passing while proving nothing, the vacuous
+  //     shape §2.96 caught in its own assertions.
+  ok(sweptFields >= 1, `${sweptFields} recorded-dropped field(s) have a token set and were swept token by token`);
+
+  // (3) The guard is proven to BITE here, rather than only by a mutation somebody ran once: the exact
+  //     value that fooled this suite is replayed and must still fool the naive one-value test while
+  //     failing the sweep. Without this, section (1) could rot into a loop that no longer catches it.
+  const naiveDropped = JSON.stringify(buildSearch({ ...BASE, incomeDocType: 'Full Doc' })) === baseBody;
+  ok(naiveDropped, 'the value that fooled this suite still produces NO change — the one-value test alone cannot see it');
+  const realMovers = TOKEN_SETS.incomeDocType.filter((v) => JSON.stringify(buildSearch({ ...BASE, incomeDocType: v })) !== baseBody);
+  ok(realMovers.length === 24,
+    `…while ${realMovers.length} of the ${TOKEN_SETS.incomeDocType.length} real menu labels DO move it — which is how the sweep names the probe as the bug`);
+  ok(!Object.prototype.hasOwnProperty.call(NOT_TRANSMITTED, 'incomeDocType'),
+    'so incomeDocType is no longer recorded as not-transmitted — the entry was a fabricated defect');
+}
+
+// ---- E: the mirror profile is measured too, and its real reach is recorded -------------------------
+// ⛔ EVERY MEASUREMENT ABOVE IS TAKEN UNDER THE **DEFAULT** PROFILE, and until §2.98 nothing said so.
+// §2.88 added `opts.profile: 'mirror'`, which forces none of the five DSCR identity fields — so "which
+// fields reach the wire" is a question with TWO answers, and only one had ever been asked.
+console.log('\n-- E: the same sweep under the mirror profile --');
+{
+  // ⛔ THE TWO SWEEPS MUST DIFFER IN THE PROFILE AND IN NOTHING ELSE. The first draft of this section
+  // stripped `date` out of the comparison as a supposed moving timestamp; section A does not, so the
+  // `date` field read as transmitted there and dropped here, and the difference was attributed to the
+  // profile. It was attributable to my own comparison. Any normalization applied to one sweep and not
+  // the other manufactures exactly the finding this section exists to measure.
+  const mirrorBase = JSON.stringify(buildSearch(BASE, { profile: 'mirror' }));
+  const mirrorDropped = [];
+  for (const key of [...pricer.SUPPORTED_FIELDS]) {
+    if (!(key in PROBE)) continue;
+    let changed = false;
+    try { changed = JSON.stringify(buildSearch({ ...BASE, [key]: PROBE[key] }, { profile: 'mirror' })) !== mirrorBase; } catch (_) { changed = true; }
+    if (!changed) mirrorDropped.push(key);
+  }
+  const onlyDefault = dropped.filter((k) => !mirrorDropped.includes(k));
+  ok(onlyDefault.join(',') === 'compensationType',
+    `exactly ONE field is dropped under the default profile and transmitted under the mirror: ${onlyDefault.join(', ') || '(none)'}`);
+  ok(mirrorDropped.filter((k) => !dropped.includes(k)).length === 0,
+    'and the mirror drops nothing the default profile transmits — widening a profile can only ever add');
+
+  // ⛔ AND THE HONEST HALF: the mirror is NOT yet "search any scenario in Lender Price". It removes the
+  // FORCING of the five identity fields, but four of the five have NO SCENARIO FIELD AT ALL — the route
+  // refuses every spelling as unsupported — and the captured base body still carries the narrow values.
+  // So the unlock widened exactly one axis. That is worth asserting rather than leaving as an
+  // impression, because §2.88's own comment reads as though the whole product space had opened up.
+  const identityFields = ['loanType', 'propertyUse', 'lienPriority', 'lienPriorityType', 'mortgageType', 'mortgageTypes'];
+  const acceptedIdentity = identityFields.filter((k) => pricer.SUPPORTED_FIELDS.has(k));
+  ok(acceptedIdentity.length === 0,
+    `no scenario field can set loan type / property use / lien priority / mortgage type — the route refuses all ${identityFields.length} spellings as unsupported`);
+  const mb = buildSearch(BASE, { profile: 'mirror' });
+  ok(mb.criteria.loanType === 'Fixed' && mb.criteria.propertyUse === 'Investment'
+    && mb.criteria.lienPriorityType === 'FirstLien' && JSON.stringify(mb.criteria.mortgageTypes) === '["Conventional"]',
+    'the mirror body still carries the narrow identity from the captured base — unforcing it did not widen it');
+  ok(mb.criteria.compensationType === 'BorrowerCompPlan',
+    '…including the one axis a caller CAN move, which simply keeps the base default until they do');
+}
 
 // ---- C: the twins, both directions ---------------------------------------------------------------
 console.log('\n-- C: one fact, two spellings, one answer --');

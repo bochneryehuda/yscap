@@ -1186,6 +1186,18 @@ const PROFILE_FORCED = {
 // `mirror` forces NOTHING. The scenario decides, and where the scenario is silent the merged
 // foundation's own value stands — which is the right default for a mirror, because the foundation IS
 // the vendor's answer to "what does this company search by default".
+//
+// ⚠ AND HERE IS WHAT UNFORCING DID **NOT** DO, MEASURED §2.98 — because the paragraph above reads as
+// though the whole product space opened up, and it did not. Removing the force is necessary and not
+// sufficient: FOUR of the five identity axes have NO SCENARIO FIELD AT ALL. `loanType`, `propertyUse`,
+// `lienPriority`/`lienPriorityType` and `mortgageType(s)` are not in the pricer's SUPPORTED_FIELDS in
+// any spelling, so the route refuses them as unsupported and no caller can express them; the captured
+// base body then supplies the narrow values regardless of profile, and a mirror search still comes back
+// Fixed / Conventional / Investment / FirstLien. `compensationType` is the ONE axis that actually
+// widened — it is the only one of the five with a scenario field behind it. So a mirror search is
+// today a DSCR investor search a caller may pay for differently, not "any kind of scenario in Lender
+// Price". Closing the gap means giving the other four axes real validated fields, which is its own
+// item; asserted so the claim cannot drift, in section E of `test-lt-ppe-field-reaches-wire.js`.
 const PROFILES = {
   dscr: PROFILE_FORCED,
   mirror: {},
