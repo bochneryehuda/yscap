@@ -78,6 +78,7 @@ const KICKER_OF = {
   loan_exception_decided: 'Exception decided',
   exception_aging: 'Exceptions waiting', exception_expired: 'Exception expired',
   message: 'New message', mention: 'You were mentioned', reminder: 'Reminder',
+  task_assigned: 'Task assigned to you',
   llc_verified: 'Your entity', llc_unverified: 'Your entity',
   track_record_unverified: 'Track record',
   draw: 'Construction draw', draw_request: 'Construction draw', draw_findings: 'Draw inspection',
@@ -619,6 +620,10 @@ const CATEGORY_OF = {
   condition_added: 'conditions',
   product_registered: 'pricing', term_sheet: 'pricing', pricing_update: 'pricing',
   reminder: 'reminders',
+  // A task handed to someone is ACTION-NEEDED (it emails — deliberately not in
+  // STAFF_INAPP_TYPES), and it is 'reminders' so a part-of-the-file assignee
+  // role's category scope treats it like the reminder it belongs to.
+  task_assigned: 'reminders',
   draw: 'draws', draw_request: 'draws', draw_setup: 'draws',
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
   draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws', draw_dispute_resolved: 'draws',

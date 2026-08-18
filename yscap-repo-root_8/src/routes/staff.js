@@ -1143,8 +1143,22 @@ router.get('/reminder-tasks', async (req, res) => {
   const mutedSql = status === 'open' ? `AND a.status NOT IN ${INACTIVE_FILE_STATUSES}` : '';
   const LIMIT = 400;
   try {
+    // A cheap COUNTS mode for the nav badge (2.0): open / overdue / due-today
+    // for the actor's own queue, one aggregate query, no rows shipped.
+    if (req.query.count === '1') {
+      const c = await db.query(
+        `SELECT count(*)::int AS open,
+                count(*) FILTER (WHERE r.due_at < now())::int AS overdue,
+                count(*) FILTER (WHERE r.due_at >= now() AND r.due_at < now() + interval '24 hours')::int AS due_soon
+           FROM reminders r
+           JOIN applications a ON a.id = r.application_id
+          WHERE a.deleted_at IS NULL AND r.status IN ('scheduled','sent') AND ${mineSql}
+            AND a.status NOT IN ${INACTIVE_FILE_STATUSES}`, [req.actor.id]);
+      return res.json({ counts: c.rows[0] });
+    }
     const r = await db.query(
       `SELECT r.id, r.application_id, r.kind, r.title, r.body, r.due_at, r.remind_at, r.status,
+              r.priority, r.recur,
               r.assignee_staff_id, au.full_name AS assignee_name,
               r.created_by, cu.full_name AS created_by_name, r.created_at,
               a.ys_loan_number, a.property_address, a.status AS app_status,
@@ -1161,7 +1175,9 @@ router.get('/reminder-tasks', async (req, res) => {
          LEFT JOIN staff_users au ON au.id = r.assignee_staff_id
          LEFT JOIN staff_users cu ON cu.id = r.created_by
         WHERE a.deleted_at IS NULL AND ${statusSql} AND ${scopeSql} ${mutedSql}
-        ORDER BY (r.status='scheduled' AND r.due_at < now()) DESC, r.due_at ASC
+        ORDER BY (r.status='scheduled' AND r.due_at < now()) DESC,
+                 CASE r.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
+                 r.due_at ASC
         LIMIT ${LIMIT + 1}`, [req.actor.id]);
     // No silent caps: fetch one over the page and SAY when the list was cut.
     const truncated = r.rows.length > LIMIT;
@@ -1200,6 +1216,43 @@ router.patch('/reminder-tasks/:rid', async (req, res) => {
   } catch (e) {
     if (e.status) return res.status(e.status).json({ error: e.message });
     console.error('[reminder-tasks patch]', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// BULK done / dismiss from the queue (Tasks & Reminders 2.0, owner-directed
+// 2026-08-18 — "much more options"): each id goes through EXACTLY the same
+// per-row authorization the single queue-door PATCH applies (assignee OR
+// creator OR file-visible, 404-shaped refusal), so the bulk door can never
+// reach a row the single door could not. A refused/failed id is reported, not
+// silently dropped, and never blocks the rest.
+router.post('/reminder-tasks/bulk', async (req, res) => {
+  try {
+    const action = String((req.body || {}).action || '');
+    if (action !== 'done' && action !== 'dismissed') return res.status(400).json({ error: 'pick an action: done or dismissed' });
+    const ids = Array.isArray((req.body || {}).ids) ? (req.body || {}).ids : [];
+    const good = ids.filter((x) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(x || '')));
+    if (!good.length || good.length > 100) return res.status(400).json({ error: 'pick between 1 and 100 items' });
+    const fileSql = seesAll(req) ? 'TRUE' : `(${VISIBLE_OFFICERS_SQL('a', '$1')})`;
+    const done = [], refused = [];
+    for (const rid of good) {
+      try {
+        const own = await db.query(
+          `SELECT r.id, r.application_id,
+                  (r.assignee_staff_id = $1 OR r.created_by = $1 OR ${fileSql}) AS may
+             FROM reminders r
+             JOIN applications a ON a.id = r.application_id
+            WHERE r.id = $2 AND a.deleted_at IS NULL`, [req.actor.id, rid]);
+        if (!own.rows[0] || !own.rows[0].may) { refused.push(rid); continue; }
+        await require('../lib/reminders').update(rid, { status: action }, req.actor);
+        await audit(req, 'update_reminder', 'application', own.rows[0].application_id,
+          { reminderId: rid, status: action, viaQueue: true, bulk: true });
+        done.push(rid);
+      } catch (_) { refused.push(rid); }
+    }
+    res.json({ ok: true, done, refused });
+  } catch (e) {
+    console.error('[reminder-tasks bulk]', e && e.message);
     res.status(500).json({ error: 'server error' });
   }
 });

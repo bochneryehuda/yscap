@@ -65,6 +65,8 @@ export default function ReminderModal({ appId, team = [], onClose, onChanged }) 
   const [dueAt, setDueAt] = useState(quickWhen('tomorrow9'));
   const [remindAt, setRemindAt] = useState('');
   const [assignee, setAssignee] = useState('');
+  const [priority, setPriority] = useState('normal');   // 2.0: high | normal | low
+  const [recur, setRecur] = useState('');               // 2.0: '' = one-off
   const [selected, setSelected] = useState(() => new Set(['self']));
   const [extraEmails, setExtraEmails] = useState([]);   // [{email,name}]
   const [emailDraft, setEmailDraft] = useState('');
@@ -92,9 +94,12 @@ export default function ReminderModal({ appId, team = [], onClose, onChanged }) 
   // The recipient presets the owner asked for by name.
   const preset = (tokens) => setSelected(new Set(tokens.filter(hasToken)));
 
-  const staffOptions = useMemo(
-    () => (team || []).filter(m => ['loan_officer', 'processor', 'underwriter', 'admin', 'super_admin'].includes(m.role)),
-    [team]);
+  // 2.0: the WHOLE internal team is assignable — the old 5-role filter silently
+  // hid closers, draw coordinators and loan coordinators from the composer
+  // while the file panel's picker offered them (two pickers, two option sets —
+  // the audit's drift finding). The team endpoint is internal-only, and the
+  // server's resolveAssignee refuses anyone inactive/external regardless.
+  const staffOptions = useMemo(() => (team || []).filter(m => m && m.id), [team]);
 
   function prefillOutstanding() {
     if (!data.outstanding.length) { flash('Nothing outstanding to prefill.'); return; }
@@ -134,6 +139,7 @@ export default function ReminderModal({ appId, team = [], onClose, onChanged }) 
         remindAt: kind === 'task' ? (remindAt || null) : null,
         recipients,
         assigneeStaffId: kind === 'task' ? (assignee || null) : null,
+        priority, recur: recur || null,
       });
       flash(kind === 'task' ? 'Task created ✓' : 'Reminder scheduled ✓');
       setTitle(''); setBody(''); setRemindAt('');
@@ -213,6 +219,30 @@ export default function ReminderModal({ appId, team = [], onClose, onChanged }) 
               <button type="button" className="btn ghost small" onClick={() => setDueAt(quickWhen('tomorrow9'))}>Tomorrow 9am</button>
               <button type="button" className="btn ghost small" onClick={() => setDueAt(quickWhen('in3'))}>In 3 days</button>
               <button type="button" className="btn ghost small" onClick={() => setDueAt(quickWhen('nextweek'))}>Next week</button>
+            </div>
+
+            {/* 2.0: priority + repeat. A finished repeating TASK spawns its next
+                occurrence; a repeating REMINDER re-arms itself after firing. */}
+            <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
+              <label className="fld" style={{ flex: '1 1 160px' }}>
+                <span className="k">Priority</span>
+                <select className="input" value={priority} onChange={e => setPriority(e.target.value)}>
+                  <option value="high">High</option>
+                  <option value="normal">Normal</option>
+                  <option value="low">Low</option>
+                </select>
+              </label>
+              <label className="fld" style={{ flex: '1 1 160px' }}>
+                <span className="k">Repeats <span className="muted">(optional)</span></span>
+                <select className="input" value={recur} onChange={e => setRecur(e.target.value)}>
+                  <option value="">Doesn’t repeat</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekdays">Weekdays</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="biweekly">Every 2 weeks</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </label>
             </div>
 
             {kind === 'task' && (

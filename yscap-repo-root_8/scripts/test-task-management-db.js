@@ -182,6 +182,75 @@ function call(server, method, path, token, body) {
     const backOpen = await call(server, 'GET', `/api/staff/reminder-tasks?scope=mine&status=open`, tok2);
     ok('E3 coming off hold puts it straight back in the open queue',
       backOpen.status === 200 && backOpen.body.tasks.some((t) => t.id === taskId && t.paused === false));
+
+    // ---- F. TASKS & REMINDERS 2.0 (owner-directed 2026-08-18 evening) ----------------------
+    // F1: priority + recur store and travel to the queue; junk REFUSES.
+    const priTaskId = await reminders.create(appId, {
+      kind: 'task', title: 'High priority weekly check', dueAt: new Date(Date.now() + 3600 * 1000).toISOString(),
+      recipients: [{ kind: 'self' }], priority: 'high', recur: 'weekly',
+    }, actor1);
+    const q1 = await call(server, 'GET', `/api/staff/reminder-tasks?scope=all`, tok1);
+    ok('F1 priority + repeat store and ride the queue payload',
+      q1.status === 200 && q1.body.tasks.some((t) => t.id === priTaskId && t.priority === 'high' && t.recur === 'weekly'));
+    let junkPri = null;
+    try { await reminders.create(appId, { kind: 'task', title: 'x', dueAt: new Date().toISOString(), recipients: [{ kind: 'self' }], priority: 'urgent' }, actor1); }
+    catch (e) { junkPri = e; }
+    ok('F2 a junk priority REFUSES in plain words', !!junkPri && junkPri.status === 400 && /priority/.test(junkPri.message));
+    let junkRec = null;
+    try { await reminders.create(appId, { kind: 'task', title: 'x', dueAt: new Date().toISOString(), recipients: [{ kind: 'self' }], recur: 'hourly' }, actor1); }
+    catch (e) { junkRec = e; }
+    ok('F3 a junk repeat REFUSES in plain words', !!junkRec && junkRec.status === 400 && /repeat/.test(junkRec.message));
+    ok('F3b the db/581 CHECK backs the JS rule structurally',
+      await db.query(`INSERT INTO reminders (application_id,kind,title,due_at,priority) VALUES ($1,'task','x',now(),'urgent')`, [appId])
+        .then(() => false).catch((e) => /reminders_priority_chk/.test(e.message || '')));
+
+    // F4: assigning a task NOTIFIES the new owner (the old build assigned silently).
+    await reminders.update(priTaskId, { assigneeStaffId: lo2 }, actor1);
+    const assignedNotice = (await db.query(
+      `SELECT 1 FROM notifications WHERE recipient_kind='staff' AND staff_id=$1 AND type='task_assigned'
+        AND title LIKE '%High priority weekly check%'`, [lo2])).rows;
+    ok('F4 the person a task is handed to is TOLD about it', assignedNotice.length >= 1);
+    ok('F4b assigning to YOURSELF stays silent',
+      await reminders.update(priTaskId, { assigneeStaffId: lo1 }, actor1).then(async () =>
+        (await db.query(`SELECT 1 FROM notifications WHERE recipient_kind='staff' AND staff_id=$1 AND type='task_assigned'`, [lo1])).rows.length === 0));
+
+    // F5: a RECURRING TASK marked done spawns its next occurrence in the future.
+    const doneRow = await reminders.update(priTaskId, { status: 'done' }, actor1);
+    ok('F5 finishing a repeating task spawns the next occurrence',
+      !!doneRow.spawned_next_id && new Date(doneRow.spawned_next_due) > new Date());
+    const spawned = (await db.query(`SELECT * FROM reminders WHERE id=$1`, [doneRow.spawned_next_id])).rows[0];
+    ok('F5b the spawned task keeps the shape (title, priority, repeat, owner) and is scheduled',
+      !!spawned && spawned.title === 'High priority weekly check' && spawned.priority === 'high'
+      && spawned.recur === 'weekly' && spawned.status === 'scheduled' && spawned.assignee_staff_id === lo1);
+
+    // F6: a RECURRING REMINDER rolls itself forward after firing — one future
+    // date however overdue it was, back to scheduled, stamps cleared.
+    const recRemId = await reminders.create(appId, {
+      kind: 'reminder', title: 'Weekly status ping', dueAt: new Date(Date.now() - 20 * 24 * 3600 * 1000).toISOString(),
+      recipients: [{ kind: 'self' }], recur: 'weekly',
+    }, actor1);
+    await reminders.dispatchDue();
+    const rolled = (await db.query(`SELECT * FROM reminders WHERE id=$1`, [recRemId])).rows[0];
+    ok('F6 a fired repeating reminder re-arms itself with ONE future due date',
+      !!rolled && rolled.status === 'scheduled' && rolled.fired_at === null && new Date(rolled.due_at) > new Date());
+
+    // F7: the nav-badge counts mode.
+    const counts = await call(server, 'GET', `/api/staff/reminder-tasks?count=1`, tok1);
+    ok('F7 the counts mode answers open/overdue/due_soon for MY queue',
+      counts.status === 200 && counts.body.counts && typeof counts.body.counts.open === 'number'
+      && typeof counts.body.counts.overdue === 'number' && typeof counts.body.counts.due_soon === 'number');
+
+    // F8: BULK done/dismiss — same per-row authorization as the single door; a
+    // foreign row is refused (reported), never silently dropped or 500ing.
+    const b1 = await reminders.create(appId, { kind: 'task', title: 'Bulk one', dueAt: new Date().toISOString(), recipients: [{ kind: 'self' }] }, actor1);
+    const b2 = await reminders.create(appId, { kind: 'task', title: 'Bulk two', dueAt: new Date().toISOString(), recipients: [{ kind: 'self' }] }, actor1);
+    const bulkOut = await call(server, 'POST', `/api/staff/reminder-tasks/bulk`, tok1, { ids: [b1, b2, spawned.id], action: 'done' });
+    ok('F8 bulk done closes every reachable row and reports it',
+      bulkOut.status === 200 && bulkOut.body.done.length === 3);
+    const strangerBulk = await call(server, 'POST', `/api/staff/reminder-tasks/bulk`, tokS, { ids: [b1], action: 'dismissed' });
+    ok('F8b a stranger\'s bulk touches nothing and says so',
+      strangerBulk.status === 200 && strangerBulk.body.done.length === 0 && strangerBulk.body.refused.length === 1);
+    ok('F8c a junk bulk action refuses', (await call(server, 'POST', `/api/staff/reminder-tasks/bulk`, tok1, { ids: [b1], action: 'delete' })).status === 400);
   } finally {
     try {
       if (appId) await db.query(`DELETE FROM applications WHERE id=$1`, [appId]);
