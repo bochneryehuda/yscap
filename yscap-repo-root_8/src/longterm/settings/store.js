@@ -72,10 +72,18 @@ async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
   const key = String(scope || DEFAULT_SCOPE);
   const hit = cache.get(key);
   if (!fresh && hit && Date.now() - hit.at < TTL_MS) {
-    return { settings: hit.settings, degraded: hit.degraded, source: 'cache' };
+    return { settings: hit.settings, degraded: hit.degraded, stored: hit.stored, source: 'cache' };
   }
 
   const base = defaults();
+  // WHICH KEYS CAME FROM A ROW, as distinct from which values differ from ours.
+  // Merging rows over the defaults loses that, and it is not the same question:
+  // a value somebody DELIBERATELY set to the figure we happen to pre-fill is
+  // stored, and is a decision. `isOverridden` answers "is this different from
+  // ours" — right for a settings screen, and the wrong question to ask about a
+  // choice. See `routes/me.js`, where asking the wrong one silently moved people
+  // off the side they had chosen.
+  const stored = new Set();
   let degraded = false;
 
   try {
@@ -88,15 +96,30 @@ async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
       // that is retired in code must not keep applying from a stale row.
       if (!isKnown(r.key)) continue;
       base[r.key] = r.value;
+      stored.add(r.key);
     }
   } catch (_e) {
     // Fail to OUR behaviour, loudly enough to be visible and quietly enough not
-    // to break the request.
+    // to break the request. `stored` stays EMPTY on a failed read — claiming a
+    // person chose something because the database was briefly unreachable is the
+    // one answer worse than falling back to the default.
     degraded = true;
   }
 
-  cache.set(key, { at: Date.now(), settings: base, degraded });
-  return { settings: base, degraded, source: 'db' };
+  cache.set(key, { at: Date.now(), settings: base, degraded, stored });
+  return { settings: base, degraded, stored, source: 'db' };
+}
+
+/**
+ * Does this scope hold a row of its own for this setting?
+ *
+ * Deliberately NOT `isOverridden`: that asks whether the effective value differs
+ * from our pre-filled default, which is what a settings screen wants and is a
+ * different question from "did somebody choose this".
+ */
+async function isStored(settingKey, scope = DEFAULT_SCOPE) {
+  const { stored } = await load(scope);
+  return !!(stored && stored.has(String(settingKey)));
 }
 
 /** One effective value. */
@@ -218,6 +241,7 @@ module.exports = {
   defaults,
   load,
   get,
+  isStored,
   validate,
   save,
   bust,

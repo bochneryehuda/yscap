@@ -483,7 +483,25 @@ refuses an empty roster before the writer is reached, so `if (seen.length)` is u
 pass. Both inner guards are now handed the thing they exist to refuse, directly through `_internals`,
 and the header says plainly which half each assertion proves. Four mutations turn it red — including
 the machine writing `confirmed` instead of `suggested`, and an empty roster deactivating the company.
-The remaining spans are the next thread: several route handlers.
+
+**Fourth thread: the doors that DO something — and a live defect in the switch the owner asked for.**
+The smoke suite opens every GET door; the doors that take an ACTION had never been opened, so their
+refusals had never been asked for either. Writing that suite found a real one. `PUT /api/lt/me/product`
+passes `keepDefault: true` precisely so that **a person choosing the side that HAPPENS to be the
+company default is still recorded as having chosen** — otherwise the row is deleted as redundant and
+the day an admin moves that default, they move with it. The row was kept. **The reader threw it
+away**: it asked `describe(...).isOverridden`, which answers a different question — is this value
+different from OURS — so a stored choice whose value matched the default read as "no choice", the
+company value won, and moving the company default moved everybody who had deliberately picked the old
+one. Proven end to end before anything was changed: person picks RTL, admin moves the default,
+person is on long-term. The store now records WHICH KEYS CAME FROM A ROW (`isStored`, empty on a
+degraded read, because claiming somebody chose something because the database blinked is worse than
+falling back), and the route asks that instead. `scripts/test-lt-action-doors-db.js` pins it over real
+HTTP — including that a person who never chose still follows the company — plus the sync door's
+ceiling (a caller may ask for a smaller pass and may not ask for an unbounded one: 100,000 clamps to
+200, and a budget that is not a number falls back to the default rather than to zero, because a pass
+that reads nothing looks exactly like a pass that had nothing to read) and the admin gates in front of
+sync, people-sync and settings. Four mutations turn it red, one of them being the defect itself.
 
 **A SETTING IS EITHER READ BY SOMETHING OR SAYS IT IS NOT (2026-08-18).** §7's promise to a buyer is
 that nothing about how WE do things is hard-coded. Forty-three of the 63 settings were declared ahead
