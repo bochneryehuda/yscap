@@ -85,11 +85,15 @@ router.use('/settings', require('./routes/settings'));
 //   /api/lt/dscr/{health,login-check,price,selftest}
 router.use('/dscr', require('./routes/dscr-pricer').makeRouter());
 
-// The Product & Pricing Engine. Lender Price stays AUTHORITATIVE — our engine
-// runs beside it in shadow and every disagreement becomes a finding. Reads are
-// open to any staff member; deciding a finding and running a canary are
-// admin-gated inside the router. /api/lt/ppe/{health,settings,investors,
-// findings,scoreboard,quote,canary}
+// The Product & Pricing Engine, mounted at /api/lt/ppe. Lender Price stays
+// AUTHORITATIVE — our engine runs beside it in shadow and every disagreement
+// becomes a finding. Reads are open to any staff member; every write except the
+// two pricing doors (`POST /quote`, `POST /breakdown`) is admin-gated inside the
+// router, which is where that rule is stated and enforced.
+// NO PATH LIST HERE, deliberately: this comment used to enumerate seven paths
+// ({health,settings,investors,findings,scoreboard,quote,canary}) and the router now
+// registers thirty-five, so the list was a hand-kept index that had silently gone
+// two-thirds stale. `routes/ppe.js` is the one place the surface is described.
 router.use('/ppe', require('./routes/ppe'));
 
 // The PPE canary driver — the thing that ASKS the tick that fires the daily change-detection

@@ -2950,3 +2950,117 @@ deals are in the check** — together, those are the monthly bill.
 button, and the scoreboard still reads a quiet week as a poor one. That is the state today, and it is
 written down in `docs/longterm/LT-ROUTES-UNREACHED.md` rather than left to be discovered from a screen
 that has gone quiet.
+
+---
+
+**§2.50 — EIGHT SENTENCES IN LIVE CODE THAT WERE NO LONGER TRUE (2026-08-18).** A sweep of the LT
+Product & Pricing Engine for statements that describe the code — a comment about a caller, a guard, a
+count, a table — measuring each one against what the code now does. **Eight were false. One of them was
+being shown to a person.** Nothing about how the engine prices changed; what changed is that the
+sentences now say what is there.
+
+**WHY THIS IS WORTH ITS OWN SECTION.** Every one of these was true the day it was written. That is the
+whole failure: a comment is the only artefact here that nothing verifies, so it ages silently while the
+code moves under it, and the next person reads it *instead of* the code and builds on it. Two of the
+eight sat within four lines of the very code that contradicted them.
+
+**THE EIGHT, EACH WITH WHAT IS ACTUALLY TRUE.**
+
+1. **"the cutover ledger has no table … the history they replay is not persisted anywhere"**
+   (`routes/ppe.js`, the header bullet AND the `GET /investors` response body). FALSE since db/566:
+   `lt_ppe_cutover_ledger` exists — confirmed present in a real database built from these migrations,
+   not just in the `.sql` file — and `ppe/cutover-store.js` is the append-only bridge onto it. **This
+   one was shipped to a screen**, so the engine was telling a human that a decision it can record
+   durably cannot be recorded. What is STILL true, and now says so for the right reason: there is no
+   promote/rollback control. It waits on an owner decision (who may promote; whether a live investor
+   keeps a Lender Price spot-check), not on a missing record.
+2. **"There is deliberately NO route that records an agreement RUN"** (`routes/ppe.js`, four lines
+   above the router registrations). FALSE: `POST /rate-sheets/:id/agreement/run` prices the battery
+   itself and stores the verdict through `agreementStore.recordRun`. The rule it was shortening IS
+   true and is the point — no route records a run **from a request body**, because a hand-typed
+   "agreed on 240 scenarios" would open the publish gate with nothing compared. Dropping the qualifier
+   turned a precise safety rule into a false statement about the surface.
+3. **"best-execution.js is the production picker for the quote path"** (`ratesheet-agreement.js`).
+   FALSE: nothing under `src/` requires that module. Its only consumer anywhere is its own test suite,
+   and no route, quote path or screen picks a best execution.
+4. **best-execution's own input shape credited the wrong producers** — "the normalized ladder
+   (`parity.normalizeOurQuote` / `lp-normalize` produce it)". Measured by running them: both return
+   `{ eligible, rungs }` and carry **no investor and no program**. Only
+   `lp-normalize-full.normalizeLpFull(...).programs[]` produces the documented shape. A caller
+   following the old sentence would have ranked results that all tie on an undefined investor.
+5. **The derived-fact refusal was credited to the wrong function** (`layer-facts.js`): the refusal of
+   an unknown derivation kind was attributed to `unsupportedDerivationKinds`. The refusal is REAL —
+   both layer compilers throw, proven by compiling a document carrying one — but it comes from
+   `derivationProblems`, the only thing they call. `unsupportedDerivationKinds` has no caller under
+   `src/` at all, so anyone hardening this would have found a helper nothing calls and concluded the
+   guard was decoration, or removed the live check in favour of it. **The guard bites; only the credit
+   was wrong** — recorded that way rather than as a hole, because reporting it as a missing guard
+   would be its own confident wrong answer.
+6. **"the ADMIN gate is on the two deliberate operator actions … those are the two gated routes"**
+   (`routes/ppe.js`). There are **twenty-three** admin-gated registrations. The count is not restated;
+   the RULE is: every write except the two pricing doors is gated, and a test now fails if that stops
+   being so.
+7. **"No rate-sheet write path"**, listed under "what is deliberately not here" (`routes/ppe.js`).
+   The router carries the whole rate-sheet console — create, three grid writers, read-back, coverage,
+   diff, the agreement run and publish.
+8. **Two stale counts and a stale index.** "tested (27 suites)" (`routes/ppe.js`) and "(27 suites
+   already do that)" (`test-lt-ppe-route.js`) — the family is now well over a hundred and is globbed,
+   so no count is quoted at all. `src/longterm/index.js` enumerated seven `/api/lt/ppe/*` paths beside
+   the mount; the router registers thirty-five, so the hand-kept list is gone and `routes/ppe.js` is
+   the one description of the surface.
+
+**FOUR MORE, IN THE PLANNING DOCS, ALL THE SAME CLASS.** `ppe/README.md` claimed the canary schedule
+"nothing persists one yet (no table, no `PUT /canary/schedule`)" — db/570, `schedule-store.js` and
+three `/canary/schedules` routes all exist; that the canary WORKER was wholly missing — the tick exists
+(`POST /canary/tick`), what is missing is the timer that pulls it and the advisory lock; and that the
+admin screen "carries … the human-gated promote/rollback controls" — it does not, and never did.
+`PPE-MASTER-PLAN-AND-STATUS.md` and `REQUIREMENTS-LEDGER.md` both carried a housekeeping item saying
+`schedule-store.js` / `canary-schedule.js` "still cite db/567" — measured: the first cites db/570, the
+second cites no migration at all, and `db/567` appears nowhere under `src/longterm/**`. A to-do list
+that keeps naming work already done is how a reader learns to stop reading it.
+
+**ONE OF THE FOUR I WAS SENT TO CHECK TURNED OUT TRUE, AND IT MATTERS THAT IT IS REPORTED AS TRUE.**
+`rule-store.js` says an accepted overlay rule "feeds the engine (`rulesForProgram`)" and `routes/ppe.js`
+says the same. On the tree first read — an ancestor commit — that was false; nothing called it. It was
+made true by §2.46 a day earlier. A correction written on the stale tree would have replaced a true
+sentence with a false one and filed a defect that had already been fixed. The lesson is the one this
+whole section is about, pointed the other way: **verify against the tree in front of you, and report
+what you measured.**
+
+**NO COMMENT WAS FOUND CLAIMING A GUARD THAT DOES NOT BITE.** That was the thing worth looking hardest
+for, because it is the only member of this class that is a live safety defect rather than a wording
+one. Every guard named in a sweep-affected comment was executed or traced to its caller: the derived-
+fact refusal throws, the admin gate is on every write but the two pricing doors, the agreement run
+records what it measured, and the publish gate still refuses an unmeasured sheet. The one genuinely
+uncalled module (`best-execution.js`) is a picker, not a guard — nothing is unprotected because it is
+unwired — and it is recorded as an **open finding** rather than wired up: giving the quote path a
+best-execution picker is a behaviour change with an owner decision behind it, and this pass was about
+making the sentences true, not about changing what the engine does.
+
+**WHAT STOPS IT COMING BACK.** `scripts/test-lt-ppe-claim-drift.js` — pure, no database, picked up by
+the aggregate runner's glob — turns each corrected statement into a check that is a BICONDITIONAL: it
+goes red when the code drifts away from the sentence **and** when the sentence is reverted away from
+the code. Where a claim is about wiring it measures the wiring from source (is `best-execution.js`
+required by anything? is every write route gated?); where a claim is about behaviour it EXECUTES it
+(compile a layer document carrying an unknown derivation kind and confirm the refusal; run the three
+normalizers and confirm which of them carries an investor). It also bans a parenthesised suite count
+outright, so the "(27 suites)" shape cannot return. **Fifteen mutations were each proven to fail it,
+for the right reason, with a green control on both sides**: removing the ledger's `verifyHistory`
+export (twice — the second time in a form that still LOADS, so the assertion bites rather than a
+require-time crash, which "fails" while proving nothing), erasing the db/566 reference, adding a
+promote route, renaming the agreement-run route, stopping it recording, dropping the "from a request
+body" qualifier, wiring `best-execution` into `quote.js`, re-asserting the production-picker sentence,
+giving `normalizeOurQuote` an investor, removing the compiler's `derivationProblems` call, moving the
+credit back to `unsupportedDerivationKinds`, re-introducing a suite count, ungating one rate-sheet
+write, and re-adding the "No rate-sheet write path" bullet.
+
+**OPEN FINDING (carried, not closed): `src/longterm/ppe/best-execution.js` has no production caller.**
+It is complete, unit-tested (29 assertions) and reachable from nothing — no route, no quote path, no
+screen. Ranking investors for best execution is MEGA §8.3 and a real product decision, so this is
+recorded rather than wired: nothing is unsafe today, and the module's own header and the drift guard
+both now state plainly that it is unwired, so nobody can read it as live. Wiring it means answering
+what the desk should be shown and where — and the guard will fail the moment somebody does, pointing
+at the two sentences that must change with it.
+Corroborated independently: `LT-UNREACHED.md` has listed this module as unreached all along — so the
+repo's own inventory and the comment in `ratesheet-agreement.js` were saying opposite things about the
+same file, which is exactly how a false comment survives a review.

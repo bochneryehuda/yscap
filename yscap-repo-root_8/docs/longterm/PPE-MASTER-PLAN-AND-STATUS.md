@@ -76,8 +76,12 @@ versioned/effective-dated/audited. *(MEGA §1.)*
   Today pricing rules come from `lt_ppe_adjustment` rows, but eligibility/bound rules have **no
   persistent home** — `ratesheet.js` itself notes "eligibility/bound rules live in a later rule table"
   that does not exist yet. **This is a prerequisite for the rule-suggestion loop (Part 3, P6).**
-- **HOUSEKEEPING:** `schedule-store.js` / `canary-schedule.js` doc-comments still cite db/567; the table
-  is really db/570 (renumbered to dodge a collision). Fix the stale comments.
+- ~~**HOUSEKEEPING:** `schedule-store.js` / `canary-schedule.js` doc-comments still cite db/567.~~
+  **CLOSED 2026-08-17 — the item was itself stale, and measured false.** `schedule-store.js` cites
+  **db/570** (its header line 3) and `canary-schedule.js` cites no migration number at all; `db/567`
+  does not appear anywhere under `src/longterm/**`. (It is a real migration — RTL's AMC order detail —
+  which is what makes a grep for it look alive.) Nothing to fix. Recorded rather than deleted because
+  a housekeeping list that keeps naming work already done is how a reader learns to stop trusting it.
 
 ### 2.3 Settings / configuration layer — **DONE (core)**
 Typed definitions, tenant→org→product-default resolution, validated writes, per-investor scope
@@ -675,7 +679,8 @@ the parity engine is built and pure-tested (39/39 suites).**
 Detection-only and safe to build next (LP still wins; nothing auto-applies): **P1 → P2 → P3 (a–f) → P9**.
 Rule-writing loop, gated on Part 4.1/4.4 + a human in the loop: **P6 → P5-store → P7 → P8** (P4's
 disqualify crosswalk is already built by P-DQ; widen it from a live capture once credentials are
-rotated). Supporting: **P10** (after P9). Housekeeping alongside: fix the stale db/567 comments (2.2).
+rotated). Supporting: **P10** (after P9). *(The db/567 housekeeping item that used to be named here was
+closed 2026-08-17 — see §2.2: it was measured and found already done.)*
 
 Progress is tracked against these numbers. Each step is one commit (or a tight set) with `[skip ci]`,
 its tests green, on branch `claude/lender-price-frontend-agent-7g7tm9`, and reported by its P-number so

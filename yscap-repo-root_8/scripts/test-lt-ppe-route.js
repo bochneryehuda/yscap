@@ -4,8 +4,10 @@
  * /api/lt/ppe/* — the PPE HTTP surface (pure: no network, no database).
  *
  * The engine underneath this route was built, green and UNREACHABLE. What this
- * suite guards is not the engine (27 suites already do that) but the ROUTE's own
- * promises, each of which is a way the shadow model could be broken from above:
+ * suite guards is not the engine (the rest of the `test-lt-ppe-*` family does that
+ * — a count is deliberately not quoted here; this line used to say "27 suites" and
+ * was stale within the month) but the ROUTE's own promises, each of which is a way
+ * the shadow model could be broken from above:
  *
  *   • Lender Price stays the answer. Our engine may only ADD a `shadow` block.
  *   • With no program configured we do NOT pretend to shadow — because

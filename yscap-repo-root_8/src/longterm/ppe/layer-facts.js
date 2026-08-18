@@ -13,9 +13,20 @@
  * The answer every serious pricing engine uses is a DERIVED-FACT stage: a small, declared, closed set of
  * normalizations that runs BEFORE the rules and adds named facts the leaves can then compare with the
  * ordinary operators. That is this file. It is closed on purpose:
- *   • `DERIVATION_KINDS` is the whole vocabulary. An unknown kind is REFUSED at compile time
- *     (`unsupportedDerivationKinds`), never silently skipped — a skipped normalization would make a
- *     guarded rule stop firing, which is a silent under-decline.
+ *   • `DERIVATION_KINDS` is the whole vocabulary. An unknown kind is REFUSED at compile time, never
+ *     silently skipped — a skipped normalization would make a guarded rule stop firing, which is a
+ *     silent under-decline. **The refusal is `derivationProblems`**, and that is not a detail: it is
+ *     the only thing the compilers call (`layer-compile-eligibility.problemsFor` and
+ *     `layer-compile-ppp.problemsFor` each `e.push(...layerFacts.derivationProblems(data.derivedFacts))`,
+ *     and an unknown kind is one of the errors it returns, so `compileEligibility` / `compilePpp`
+ *     throw `LayerCompileError` rather than compiling). This bullet used to credit
+ *     `unsupportedDerivationKinds` instead. That function is real and correct, but NOTHING in `src/`
+ *     calls it — its only caller anywhere is `scripts/test-lt-ppe-layer-compilers.js` — so anyone
+ *     grepping the credited name would have found a helper with no production caller and concluded
+ *     the guard was decoration, or "consolidated" the live check in `derivationProblems` away in
+ *     favour of it. Kept as the standalone question ("which kinds are unsupported?") a caller can ask
+ *     without building an error list; `scripts/test-lt-ppe-claim-drift.js` proves the refusal is the
+ *     one credited here by actually compiling a document carrying an unknown kind.
  *   • Nothing here can read a second fact, branch on a rule, or produce a number out of thin air. Each
  *     derivation is a pure function of ONE named input fact plus its own literal parameters.
  *

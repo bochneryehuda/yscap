@@ -4,9 +4,14 @@
 // LT PRODUCT & PRICING ENGINE — the HTTP surface.  /api/lt/ppe/*
 // =============================================================================
 //
-// Everything under `src/longterm/ppe/` was built, tested (27 suites) and
-// UNREACHABLE: there was no route. This is that route. Design + rationale:
+// Everything under `src/longterm/ppe/` was built, tested and UNREACHABLE: there
+// was no route. This is that route. Design + rationale:
 // `docs/longterm/PPE-MEGA-PLAN.md`; the module map is `src/longterm/ppe/README.md`.
+// (This line used to quote a suite COUNT — "27 suites". It was true the day it was
+// written and stale within the month; the family is globbed by
+// `scripts/test-lt-ppe-all.js`, so the count lives in the runner's own output and
+// is never restated here. `scripts/test-lt-ppe-claim-drift.js` fails the build if a
+// hard-coded suite count comes back.)
 //
 // THE ONE MODEL THIS SURFACE MUST NOT BREAK (§1.2, §9): **Lender Price is the
 // source of truth — for now, in every scenario.** Our engine runs BESIDE it in
@@ -18,20 +23,46 @@
 //
 // WHAT IS DELIBERATELY NOT HERE, and why
 //   · **No promote-to-live control.** Promotion is a human decision gated on the
-//     scoreboard (§11). The gate and the append-only ledger are pure modules
-//     (`cutover.js`, `cutover-ledger.js`) with NO table behind them yet — the
-//     history they replay is not persisted anywhere. A promote button whose
-//     decision cannot be durably recorded is worse than no button, so the
-//     lifecycle stays out until it has a home. `GET /investors` says so rather
-//     than implying every investor is in `draft`.
-//   · **No rate-sheet write path.** Ingestion has an auto-apply-vs-review
-//     classifier (§7.4); giving it an HTTP door before that review queue has a
-//     screen would let a bad sheet reprice a book with nobody looking.
+//     scoreboard (§11), and it is STILL not exposed here — there is no promote,
+//     no rollback and no per-investor mode on this router.
+//     WHAT CHANGED, AND THE REASON THIS BULLET NOW GIVES A DIFFERENT ONE: this
+//     bullet used to say the gate and the ledger were pure modules with no table
+//     behind them and no home for the history they replay. That stopped being
+//     true when db/566 (`lt_ppe_cutover_ledger`) and `ppe/cutover-store.js`
+//     landed. The ledger HAS a durable, append-only home; `appendDecision` writes
+//     a decision and `verifyHistory` replays the whole sequence. So the old
+//     reason — a promote button whose decision could not be durably recorded
+//     being worse than no button — no longer applies and must not be repeated as
+//     if it did. What is missing is the DECISION, not the record: who may
+//     promote, and whether a "live" investor keeps an LP spot-check canary, are
+//     owner calls (the REQUIREMENTS-LEDGER carries them as BLK5 / P10). Until
+//     those are answered the route exposes no lifecycle at all, and
+//     `GET /investors` says so rather than implying every investor is in `draft`.
+//   · **No route that records an agreement run FROM A REQUEST BODY.** That
+//     qualifier is the whole rule (see rule 3 in the rate-sheet console section
+//     below) and it must never be shortened to "no route records an agreement
+//     run": `POST /rate-sheets/:id/agreement/run` exists and DOES record one —
+//     the verdict of a battery it priced itself against Lender Price. The banned
+//     thing is a hand-typed result, which would open the publish gate without a
+//     single scenario being compared.
 //
 // AUTH: staff authentication is applied at the mount seam in `src/server.js`,
 // like every other LT router. Reads are open to any staff member — an engineer has
-// to be able to see why a scenario disagreed. The ADMIN gate is on the two
-// deliberate operator actions: settling a finding, and running a canary battery.
+// to be able to see why a scenario disagreed. **Every write on this router is
+// ADMIN-gated except the two pricing doors** (`POST /quote` and `POST /breakdown`,
+// explained immediately below): settling a finding, running a canary battery,
+// arming/removing a canary schedule, ticking the scheduler, mining and deciding
+// rule suggestions, setting a program's Lender Price scope, creating an
+// investor/program/rate sheet, every rate-sheet grid write, running the agreement
+// harness, and publishing. A handful of admin-only READS sit behind the same gate
+// (the sheet read-back, its coverage and diff, the rule-coverage report, a
+// program's LP scope) because they expose what a program prices from.
+// THIS PARAGRAPH USED TO NAME A COUNT — it said the admin gate was on the two
+// deliberate operator actions and that those were the only gated routes. That was
+// true when there were two, and a count in prose is a hand-kept list, so no number
+// is restated here. The RULE is stated instead, and
+// `scripts/test-lt-ppe-claim-drift.js` fails the build if any route other than the
+// two named pricing doors is registered without the gate.
 //
 // `POST /quote` is deliberately NOT admin-gated, and it is worth being precise
 // about why, because it DOES have side effects: it calls the live Lender Price
@@ -40,8 +71,9 @@
 // false. It is left open because pricing a scenario is the ordinary thing a staff
 // member does with a pricing engine, and its write is an OBSERVATION — the ledger
 // records that the two engines disagreed, which is true whoever asked. What an
-// ordinary user must not do is SETTLE that observation or launch a 500-scenario
-// battery at the upstream, and those are the two gated routes.
+// ordinary user must not do is SETTLE that observation, launch a 500-scenario
+// battery at the upstream, or change what a program prices from — and every one of
+// those is behind the admin gate.
 
 const express = require('express');
 const router = express.Router();
@@ -338,13 +370,17 @@ async function listInvestorsRoute(req, res) {
     ok: true,
     scope,
     investors: investors.map((i) => ({ id: i.id, code: i.code, name: i.name, active: i.active !== false, createdAt: i.created_at || null })),
-    // Honest about what is NOT modelled yet: `lt_ppe_investor` has no mode column
-    // and the cutover ledger has no table, so there is no per-investor lifecycle
-    // to report. Every investor is in shadow because §1.2 says everything is.
+    // Honest about what is NOT modelled HERE, and precise about why — the earlier
+    // wording ("the cutover ledger has no table") stopped being true when db/566 +
+    // `ppe/cutover-store.js` landed, and it was shipped in this response body, so a
+    // screen was repeating it to a human. The truth: `lt_ppe_investor` has no mode
+    // column and this router reads no lifecycle, so there is no per-investor mode to
+    // report; the ledger itself IS durable. Every investor is in shadow because §1.2
+    // says everything is.
     lifecycle: {
       mode: 'shadow',
       perInvestor: false,
-      note: 'Per-investor promotion is not persisted yet — the cutover ledger has no table. Every investor is in shadow; Lender Price is authoritative.',
+      note: 'This engine reports no per-investor lifecycle: every investor is in shadow and Lender Price is authoritative. The cutover decision ledger is durable (lt_ppe_cutover_ledger, db/566) — what is missing is a promote/rollback control, which waits on who may promote and whether a live investor keeps a Lender Price spot-check.',
       modes: Object.values(cutover.MODES),
     },
   });
@@ -2128,7 +2164,11 @@ router.get('/programs/:id/lp-scope', requirePpeAdmin, wrap(getProgramLpScopeRout
 router.post('/programs/:id/lp-scope', requirePpeAdmin, wrap(setProgramLpScopeRoute, 'lt_ppe_lp_scope_write_error'));
 
 // Onboarding + the rate-sheet console. ALL admin-gated: these writers decide what every quote on this
-// program prices from. There is deliberately NO route that records an agreement RUN — see rule 3 above.
+// program prices from. Rule 3 above, stated with the qualifier that makes it true: there is deliberately
+// no route that records an agreement run FROM A REQUEST BODY. `POST /rate-sheets/:id/agreement/run`
+// DOES record one — the verdict of a battery it priced itself against Lender Price, which is the only
+// honest way through the publish gate. This line used to state the rule WITHOUT that qualifier, four
+// lines above the very registration that contradicts it.
 router.post('/investors', requirePpeAdmin, wrap(createInvestorRoute, 'lt_ppe_investor_create_error'));
 router.post('/programs', requirePpeAdmin, wrap(createProgramRoute, 'lt_ppe_program_create_error'));
 router.post('/programs/:id/rate-sheets', requirePpeAdmin, wrap(createRateSheetRoute, 'lt_ppe_ratesheet_create_error'));

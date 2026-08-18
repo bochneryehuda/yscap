@@ -167,24 +167,35 @@ DB; `-db` suites add a round-trip when `DATABASE_URL` is set). All suites are cu
 
 ## Pending (deliberately not built yet)
 
-- **The canary WORKER.** The cadence DECISION now exists (`canary-schedule.js`, below) and is fully
-  tested; what is still missing is the thin IO wrapper around it — the tick that reads each scope's
-  saved schedule, takes a per-scope Postgres advisory lock (so N Render instances fire one battery,
-  not N), re-checks due-ness under the lock, calls the same `runCanary` → persist path the admin
-  button uses, and is OFF unless switched on. Deliberately not half-wired: a scheduler that fires
-  live vendor batteries is a "stage anything that touches production" change, and the piece worth
-  getting right first was the rule, not the plumbing.
-- **Storing a saved battery.** `canary-schedule` describes what a schedule must contain; nothing
-  persists one yet (no table, no `PUT /canary/schedule`). Note the ordering constraint that follows
-  from the module's one hard rule: the worker cannot ship before the store, because a schedule with
-  no saved battery never runs — and it must never invent one.
+- **The canary worker's TIMER.** Corrected 2026-08-17 — this entry used to say the whole IO wrapper
+  was missing, and most of it now exists. What is BUILT: `POST /canary/tick` reads every saved
+  schedule for the scope, resolves each one's program, reads its last run from the RUN SERIES (never a
+  private stamp), asks `canary-schedule.selectDue`, and runs the same `runCanary` →
+  `finding-store.persistRun` + `run-store.persistRun` path the admin button uses — holding, with the
+  reason attached, on any schedule whose program or series it could not read. What is STILL missing is
+  the two things that make it a worker rather than a button: **a timer that pulls the tick**, and **a
+  per-scope Postgres advisory lock** so N Render instances fire one battery and not N. Until both
+  land, a canary fires only when a human presses it. Deliberately not half-wired: a loop that fires
+  live vendor batteries is a "stage anything that touches production" change.
+- **Storing a saved battery — DONE, and this entry was stale.** It used to read "nothing persists one
+  yet (no table, no `PUT /canary/schedule`)". Both halves are now false: `db/570_lt_ppe_canary_schedule.sql`
+  is the table and `ppe/schedule-store.js` the bridge (it writes only what `canary-schedule.validateSchedule`
+  accepts, so a schedule the runner would refuse can never reach the table), and the route carries
+  `GET /canary/schedules`, `POST /canary/schedules` and `DELETE /canary/schedules/:investor`. The
+  ordering constraint the entry recorded held and was honoured: the store shipped before the tick,
+  because a schedule with no saved battery never runs — and it must never invent one.
 
 _(Done 2026-08-16 — **the `/api/lt/ppe/*` route and the admin UI both shipped**; this section used to
 list them as pending and was simply stale. The route mounts `facade.js` against the real LP client +
 `quote.js` + the store and carries `POST /canary` (the "run canary now" button) → `canary.runCanary`
 → `finding-store.persistRun` + `run-store.persistRun` → `GET /scoreboard`. The admin screen carries
-the scoreboard/trend surface, the findings ledger with `divergence` diagnoses, and the human-gated
-promote/rollback controls.)_
+the scoreboard/trend surface and the findings ledger with `divergence` diagnoses.
+**Corrected 2026-08-17:** this sentence also claimed the screen carries "the human-gated
+promote/rollback controls". It does not, and never did — `app-v2/src/longterm/LtPpe.jsx` has no
+promote and no rollback control, and says so itself at the foot of the go-live card. The router has no
+promote route either. What promotion waits on is an owner decision (who may promote; whether a live
+investor keeps a Lender Price spot-check), not a missing record: the decision ledger has been durable
+since db/566 + `cutover-store.js`.)_
 _(Done 2026-08-16 — **the suites now run in CI.** `node scripts/test-lt-ppe-all.js` is wired into
 `package.json`'s `test` chain as ONE entry, right after `test-lt-dscr-routes.js`. One entry, not 27,
 because the aggregator auto-discovers every `test-lt-ppe-*.js` — so a suite added later is picked up

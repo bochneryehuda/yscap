@@ -90,8 +90,12 @@ function ourAdjustmentsOf(rung) {
 // LP normalized (possibly several matched programs) → ONE flat best-execution rung list: for each
 // coupon, the rung with the HIGHEST price (what the borrower would actually get). Keeps the FULL rung
 // (llpas, margin, basePoints) so the fine comparators have everything — bestLadder is not enough (it
-// carries only rate+price). best-execution.js is the production picker for the quote path; the
-// agreement harness needs only per-coupon best for the comparison.
+// carries only rate+price). The agreement harness needs only per-coupon best for the comparison.
+// (This comment used to call `best-execution.js` the live picker for the quote path. It is nothing of
+// the sort: nothing under `src/` requires that module — its only consumer anywhere is its own test
+// suite — and the quote path never asks it anything. Corrected rather than deleted because the
+// CONTRAST it was drawing is still the point: this fold is per-coupon-best for a COMPARISON, which is
+// a different job from ranking investors against each other for an execution.)
 // ONE definition, in lp-normalize-full beside the normalizer whose output it folds — the live shadow
 // façade folds LP's programs through the very same function, so the audit harness and production can
 // never come to disagree about which rung wins at a coupon.

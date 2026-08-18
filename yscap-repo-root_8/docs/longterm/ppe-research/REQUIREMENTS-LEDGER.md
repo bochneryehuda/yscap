@@ -72,7 +72,7 @@ Compiled 2026-08-17 from the owner's directives + the LT control docs + the LT c
 
 | # | Requirement (plain) | Status | Where | Gap / next step |
 |---|---|---|---|---|
-| E1 | Daily base-rate refresh at 10 / 11 / 12 AM Eastern, per investor (pull the updated base rate) | PARTIAL | Plan **E6**; `ppe/canary-schedule.js` + `ppe/schedule-store.js` (db/570 — the cadence/schedule store); rate-sheet version store `ppe/ratesheet.js` + db/560 | Schedule store exists. The scheduled JOB that runs a basic scenario per investor at those NY times and pulls the updated base rate is TODO. (Housekeeping: stale doc-comments cite db/567; the table is db/570.) |
+| E1 | Daily base-rate refresh at 10 / 11 / 12 AM Eastern, per investor (pull the updated base rate) | PARTIAL | Plan **E6**; `ppe/canary-schedule.js` + `ppe/schedule-store.js` (db/570 — the cadence/schedule store); rate-sheet version store `ppe/ratesheet.js` + db/560 | Schedule store exists, and so does the tick that runs the due schedules (`POST /canary/tick`). What is TODO is the scheduled JOB that PULLS that tick at those NY times, per investor, plus the advisory lock that keeps N instances to one battery. (The db/567 housekeeping note that used to sit here was measured and closed 2026-08-17 — no LT file cites db/567.) |
 | E2 | Confidence MATURITY (know which scenarios we're more/less confident on) | PARTIAL | Plan **E7**; `ppe/scoreboard.js` + `ppe/run-store.js` (db/565 — agreement over time) | Scoreboard measures agreement over time. The build is SLICING it by scenario type / investor / program. TODO. |
 | E3 | Major backend TROUBLESHOOTER: "this is what LP gave, this is what I planned/showed, these are the rules I'm suggesting" | PARTIAL | Plan **E8**; `ppe/parity-review.js` (`reviewScenario`: one record = categorized diffs + suggested per-investor rules, proven end-to-end) + the suggestion store | Composer built (parity-review + suggestion store). The RECORD (persisted troubleshooter row) + the SCREEN is the build. TODO. |
 
@@ -179,5 +179,5 @@ Notes recorded (no code change needed): PILOT authenticates independently (usern
 
 ## HOUSEKEEPING (non-owner, engineering)
 
-- Stale doc-comments in `ppe/schedule-store.js` / `ppe/canary-schedule.js` cite db/567; the real table is db/570 (renumbered to dodge a collision). Fix the comments (Part 2.2).
+- ~~Stale doc-comments in `ppe/schedule-store.js` / `ppe/canary-schedule.js` cite db/567.~~ **CLOSED 2026-08-17, and the item was itself false when measured:** `schedule-store.js` cites db/570 and `canary-schedule.js` names no migration; `db/567` appears nowhere under `src/longterm/**`. Nothing to fix.
 - Part 2.11: no admin screen yet consumes the built `createInvestor` / `createProgram` / rate-sheet writers.
