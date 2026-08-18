@@ -127,6 +127,58 @@ function call(server, method, path, token, body) {
       bApp.status === 200 && !/a_?piece|ab_?piece/i.test(JSON.stringify(bApp.body)));
     const aud = await db.query(`SELECT 1 FROM audit_log WHERE action='ab_piece_set' AND entity_id=$1 LIMIT 1`, [appId]);
     ok('C4 every save writes its audit row', !!aud.rows[0]);
+
+    // ---- D. the ENCOMPASS side (owner-supplied 2026-08-18: CX.BPIECESTRUCTURE /
+    //      CX.APIECE / CX.BPIECE) — READ-ONLY + advisory, never a gate ------------------------
+    const AB = require('../src/lib/ab-piece');
+    const I = AB._internals;
+    ok('D1 the checkbox rule: an "x" is checked, blank is not, garbage is UNREADABLE (never guessed)',
+      I.parseEncChecked('x') === true && I.parseEncChecked(' X ') === true && I.parseEncChecked('Y') === true
+      && I.parseEncChecked('') === false && I.parseEncChecked('No') === false
+      && I.parseEncChecked('maybe') === null);
+    ok('D2 money parses Encompass formats and refuses garbage',
+      I.parseEncMoney('250000') === 250000 && I.parseEncMoney('$250,000.00') === 250000
+      && I.parseEncMoney('') === null && I.parseEncMoney('lots') === null);
+    ok('D3 a stored copy carrying NONE of the three fields reads as "not read", never "no split"',
+      I.shapeEncompass({ 364: 'YSCAP-AB-1' }, { enabled: true, aPiece: 1, bPiece: 2 }) === null
+      && I.shapeEncompass(null, null) === null);
+    ok('D4 one side holding a number the other lacks is a DISAGREEMENT, not a skip',
+      (() => { const s = I.shapeEncompass({ 'CX.APIECE': '' }, { enabled: true, aPiece: 250000, bPiece: null });
+        return s && s.agrees.aPiece === false && s.relevant === true; })());
+
+    // At this point the file's recorded split is enabled, A=300,000, total=450,000 → B=150,000.
+    await db.query(
+      `UPDATE applications SET encompass_extra = jsonb_build_object('_fieldValues',
+         jsonb_build_object('CX.BPIECESTRUCTURE','X','CX.APIECE','300000','CX.BPIECE','150,000.00'))
+       WHERE id=$1`, [appId]);
+    const gE = await call(server, 'GET', `/api/staff/applications/${appId}/ab-piece`, tok);
+    ok('D5 the staff GET carries the Encompass block and it AGREES with the recorded split',
+      gE.status === 200 && gE.body.encompass && gE.body.encompass.structureChecked === true
+      && gE.body.encompass.aPiece === 300000 && gE.body.encompass.bPiece === 150000
+      && gE.body.encompass.overall === true && gE.body.encompass.relevant === true);
+    await db.query(
+      `UPDATE applications SET encompass_extra = jsonb_set(encompass_extra,'{_fieldValues,CX.APIECE}','"275000"')
+       WHERE id=$1`, [appId]);
+    const gE2 = await call(server, 'GET', `/api/staff/applications/${appId}/ab-piece`, tok);
+    ok('D6 a differing Encompass amount reads as a MISMATCH (advisory — the GET still answers 200)',
+      gE2.status === 200 && gE2.body.encompass && gE2.body.encompass.agrees.aPiece === false
+      && gE2.body.encompass.overall === false);
+    const sE = await call(server, 'POST', `/api/staff/applications/${appId}/ab-piece`, tok, { enabled: true, aPieceAmount: 300000 });
+    ok('D7 the SAVE response carries the same advisory block (compared against the just-saved values)',
+      sE.status === 200 && sE.body.encompass && sE.body.encompass.overall === false);
+    await db.query(`UPDATE applications SET encompass_extra = NULL WHERE id=$1`, [appId]);
+    const gE3 = await call(server, 'GET', `/api/staff/applications/${appId}/ab-piece`, tok);
+    ok('D8 a file with no Encompass copy simply carries no block — the card renders as before',
+      gE3.status === 200 && gE3.body.encompass == null && gE3.body.aPiece === 300000);
+    // The borrower doors stay clean of the Encompass block too (C2/C3/C3b already
+    // pin the split fields; the /bPiece/i regex also matches BPIECESTRUCTURE).
+    await db.query(
+      `UPDATE applications SET encompass_extra = jsonb_build_object('_fieldValues',
+         jsonb_build_object('CX.BPIECESTRUCTURE','X')) WHERE id=$1`, [appId]);
+    const bTok2 = C.signJwt({ sub: borId, kind: 'borrower', tv: 0 });
+    const bApp2 = await call(server, 'GET', `/api/borrower/applications/${appId}`, bTok2);
+    ok('D9 the borrower payload never carries the Encompass split fields',
+      bApp2.status === 200 && !/bpiecestructure|cx\.apiece|cx\.bpiece|_fieldValues/i.test(JSON.stringify(bApp2.body)));
   } finally {
     try {
       if (appId) await db.query(`DELETE FROM applications WHERE id=$1`, [appId]);

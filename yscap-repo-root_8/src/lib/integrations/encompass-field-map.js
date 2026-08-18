@@ -281,6 +281,25 @@ const REGISTRY = Object.freeze([
   // (CX.TABLEFUNDER moved UP into the program section — it is compared now, not reference-only.)
   pull({ key: 'ref_cross_collateralized', encompassFieldId: 'CX.CROSSCOLLATERALIZEDFLAG', type: 'text', category: 'program', compare: 'reference', gate: GATE.REFERENCE, our: 'none', note: 'Cross-collateralized flag — reference only' }),
   pull({ key: 'ref_multi_property', encompassFieldId: 'CX.MULTIPROPERTYFLAG', type: 'text', category: 'program', compare: 'reference', gate: GATE.REFERENCE, our: 'none', note: 'Multi-property flag — reference only' }),
+
+  // ── A/B-piece split — the THREE owner-supplied field ids (2026-08-18: "CX.BPIECESTRUCTURE
+  // if this field has an x, it means that the field is checked. That means that this kind of
+  // BP structure exists. CX.APIECE this is the dollar amount for the A peice and CX.BPIECE
+  // this is for the B peice"). These are the Encompass side of the manual-program
+  // A-piece/B-piece split PILOT records on applications.ab_piece_enabled / a_piece_amount
+  // (db/579, src/lib/ab-piece.js).
+  // REFERENCE on purpose, never compared by summarize(): a split exists only on MANUAL
+  // files, so a compared row would read "no data to compare" on nearly every file, and the
+  // funding_channel lesson applies — an unverified row (verified:false — the tenant values
+  // have not been read live yet) must never be able to hold a term sheet. The real
+  // side-by-side is ADVISORY and lives on the A/B-piece card itself: lib/ab-piece.js
+  // `encompassAbPiece` reads these ids out of applications.encompass_extra._fieldValues.
+  // READ-ONLY like every row here — PILOT never writes these fields; a PILOT→Encompass
+  // sync of the split needs its own pad entry in docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md
+  // with the owner's written authorization, and does not exist today.
+  pull({ key: 'ref_ab_piece_structure', encompassFieldId: 'CX.BPIECESTRUCTURE', type: 'text', category: 'program', compare: 'reference', gate: GATE.REFERENCE, verified: false, our: 'column:ab_piece_enabled (compared on the A/B-piece card, not here)', note: 'A/B-piece structure flag — an "x" means the loan is sold as an A-piece/B-piece structure. Reference only' }),
+  pull({ key: 'ref_a_piece_amount', encompassFieldId: 'CX.APIECE', type: 'money', category: 'cost', compare: 'reference', gate: GATE.REFERENCE, verified: false, our: 'column:a_piece_amount (compared on the A/B-piece card, not here)', note: 'A-piece dollar amount — reference only' }),
+  pull({ key: 'ref_b_piece_amount', encompassFieldId: 'CX.BPIECE', type: 'money', category: 'cost', compare: 'reference', gate: GATE.REFERENCE, verified: false, our: 'derived: current registration total loan − A-piece (compared on the A/B-piece card, not here)', note: 'B-piece dollar amount — reference only' }),
 ]);
 
 const BY_KEY = REGISTRY.reduce((m, e) => { m[e.key] = e; return m; }, {});

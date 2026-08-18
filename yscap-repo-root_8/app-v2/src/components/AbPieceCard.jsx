@@ -75,6 +75,24 @@ export default function AbPieceCard({ appId }) {
           </div>
         </div>
       )}
+      {/* The Encompass copy's own three split fields, read-only + advisory
+          (server-computed; null when the file's Encompass copy doesn't carry
+          them). PILOT never writes Encompass — a mismatch means somebody
+          updates whichever side is wrong, by hand. */}
+      {data.encompass && data.encompass.relevant && (
+        <div className="small" role={data.encompass.overall === false ? 'alert' : undefined}
+          style={{ marginTop: 6, color: data.encompass.overall === false ? 'var(--danger)' : '#4B585C' }}>
+          Encompass shows: {data.encompass.structureChecked === true ? 'split ticked'
+            : data.encompass.structureChecked === false ? 'no split ticked'
+            : 'split box unreadable'}
+          {data.encompass.aPiece != null ? <> · A-piece {usd(data.encompass.aPiece)}</> : null}
+          {data.encompass.bPiece != null ? <> · B-piece {usd(data.encompass.bPiece)}</> : null}
+          {' — '}
+          {data.encompass.overall === true ? 'matches what is recorded here.'
+            : data.encompass.overall === false ? 'does NOT match what is recorded here. PILOT only reads Encompass, so correct whichever side is wrong.'
+            : 'nothing to compare yet.'}
+        </div>
+      )}
       {data.aPieceOverTotal && (
         <div className="small" role="alert" style={{ color: 'var(--danger)', marginTop: 6 }}>
           The recorded A-piece is now MORE than the loan itself (the loan was re-registered smaller) — correct the A-piece.

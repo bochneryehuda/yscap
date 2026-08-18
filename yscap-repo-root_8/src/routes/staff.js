@@ -13579,6 +13579,10 @@ router.get('/applications/:id/ab-piece', async (req, res) => {
   try {
     const out = await require('../lib/ab-piece').loadAbPiece(req.params.id);
     if (!out) return res.status(404).json({ error: 'not found' });
+    // The Encompass copy's own A/B-piece fields, advisory + best-effort (null
+    // on any failure — the card must render either way). Read-only: this reads
+    // the STORED loan copy, never Encompass live (lib/ab-piece.js header rule).
+    out.encompass = await require('../lib/ab-piece').encompassAbPiece(req.params.id, undefined, out);
     res.json(out);
   } catch (e) { console.error('[ab-piece]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -13587,7 +13591,11 @@ router.post('/applications/:id/ab-piece', async (req, res) => {
     const out = await require('../lib/ab-piece').saveAbPiece(req.params.id, req.body || {});
     await audit(req, 'ab_piece_set', 'application', req.params.id,
       { enabled: out.enabled, aPiece: out.aPiece, bPiece: out.bPiece });
-    res.json({ ok: true, ...out });
+    // Same advisory Encompass block as the GET, so the card's comparison
+    // doesn't vanish the moment a save replaces its data (best-effort, null on
+    // failure; compares against the values JUST saved).
+    const encompass = await require('../lib/ab-piece').encompassAbPiece(req.params.id, undefined, out);
+    res.json({ ok: true, ...out, encompass });
   } catch (e) {
     if (e.status) return res.status(e.status).json({ error: e.message });
     console.error('[ab-piece]', e && e.message);
