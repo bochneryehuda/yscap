@@ -186,6 +186,9 @@ router.get('/:loanId', async (req, res) => {
       file,
       sections: workspace.sectionMenu(rows[0], {
         conditionsEnabled: settings['conditions.enabled'] === true,
+        // The SAME income block the rail renders, so the menu can never grey a
+        // section whose figures are sitting on the screen beside it.
+        income: file && file.income,
       }),
       stepper: workspace.milestoneStepper(rows[0], catalog, { reachedAt }),
       // How long it has been at this milestone — and, when the first sighting is all

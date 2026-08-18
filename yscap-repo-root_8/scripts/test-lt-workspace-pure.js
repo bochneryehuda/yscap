@@ -53,7 +53,16 @@ check(by('borrowers').available && by('property').available && by('terms').avail
 check(by('income').available === true,
   'income applies to a DSCR file that has its rent and DSCR');
 check(ws.sectionMenu({ product_kind: 'dscr' }, {}).find((s) => s.key === 'income').available === false,
-  '…and is greyed on a DSCR file whose rent has not been read yet');
+  '…and is greyed on a DSCR file with none of the three figures on it');
+check(ws.sectionMenu({ product_kind: 'dscr' }, { income: { grossMonthlyRent: 3200 } })
+  .find((s) => s.key === 'income').available === true,
+  'THE ONE THAT MATTERS: a DSCR file whose RENT is mirrored but whose DSCR has not been computed keeps its income section — the rent lives on the property, and greying the section that would show it states a reason that is not true');
+check(ws.sectionMenu({ product_kind: 'dscr' }, { income: { housingExpenseTotal: 2025.31 } })
+  .find((s) => s.key === 'income').available === true,
+  '…and so does one that holds only the housing expense — one of the three figures is worth opening the section for');
+check(ws.hasIncomeFigures(null) === false && ws.hasIncomeFigures({}) === false
+  && ws.hasIncomeFigures({ dscr: 0 }) === true && ws.hasIncomeFigures({ grossMonthlyRent: 0 }) === true,
+  'and a ZERO is a figure — "$0 of rent" is an answer, while a missing one is not');
 
 // The employment section becomes available the moment the DATA says so — it is a
 // function of the loan, not a hard-coded list.
@@ -61,14 +70,69 @@ check(ws.sectionMenu({ ...DSCR, employment_applies: true }, {}).find((s) => s.ke
   'employment turns on for the ~2% of the book where it applies — no code change');
 
 // The Condition Center is set aside, and greyed for the same reason as employment.
-check(by('conditions').available === false && /coming soon/i.test(by('conditions').why),
-  'the Condition Center is greyed and says "coming soon" — somebody told about it must not think it vanished');
+check(by('conditions').available === false && /switched off/i.test(by('conditions').why),
+  'the Condition Center is greyed and names the SWITCH — it is built, so the answer is "turn it on" rather than "wait for it"');
+check(!/coming soon/i.test(by('conditions').why),
+  '…and no longer says "coming soon" about something that shipped');
 check(ws.sectionMenu(DSCR, { conditionsEnabled: true }).find((s) => s.key === 'conditions').available === true,
   '…and turns on from the SETTING, not from a code change');
 
 check(by('lock').available === true
    && ws.sectionMenu({ ...DSCR, lock_status: null }, {}).find((s) => s.key === 'lock').available === false,
   'the lock section follows whether the loan actually has a lock');
+
+// ── NO SECTION RULE MAY READ A COLUMN THAT DOES NOT EXIST ───────────────────
+//
+// The class this catches is silent by construction: `l.gross_rent` on a row that
+// has no such column reads as `undefined`, the rule quietly answers "no", the
+// section is greyed with a reason that is not true, and nothing anywhere fails. It
+// shipped exactly that way. So every `l.<name>` any rule touches is checked
+// against the hand-written schema — the same file the drift check compares to the
+// real database — plus whatever the ROUTE aliases onto the row it passes in.
+console.log('\nevery section rule reads a column the loan actually has');
+
+const path = require('path');
+const fs = require('fs');
+const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
+
+const prisma = read('src/longterm/prisma/schema.prisma');
+const ltLoans = (prisma.match(/^model LtLoan \{([\s\S]*?)^\}/m) || [])[1] || '';
+const columns = new Set();
+for (const line of ltLoans.split('\n')) {
+  const t = line.trim();
+  if (!t || t.startsWith('//') || t.startsWith('@@')) continue;
+  const f = t.match(/^(\w+)\s+\w+/);
+  if (!f) continue;
+  const mapped = (t.match(/@map\("([^"]+)"\)/) || [])[1];
+  columns.add(mapped || f[1].replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase());
+}
+check(columns.has('dscr_ratio') && columns.has('product_kind') && columns.size > 20,
+  'the schema parser found the loan table — a parser that found nothing would make the check below pass on anything');
+
+// What the workspace route SELECTs onto the row beyond `l.*`, read from the route
+// itself rather than retyped: a rule may legitimately read one of those.
+const routeSrc = read('src/longterm/routes/pipeline.js');
+const selectList = (routeSrc.match(/SELECT l\.\*,([\s\S]*?)FROM lt_loans/) || [])[1] || '';
+for (const m of selectList.matchAll(/AS\s+(\w+)/gi)) columns.add(m[1].toLowerCase());
+for (const m of selectList.matchAll(/\b\w+\.(\w+)/g)) columns.add(m[1].toLowerCase());
+check(columns.has('borrower_name') && columns.has('lock_status'),
+  '…and the columns the route aliases onto the row are read off the route, never retyped here');
+
+// COMMENTS ARE STRIPPED FIRST. The comment that explains this very bug NAMES the
+// phantom column, so a guard that read comments would fail on its own fix — and
+// the fix somebody would reach for is deleting the explanation.
+const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const wsSrc = read('src/longterm/workspace.js');
+const rulesOnly = strip(wsSrc.slice(wsSrc.indexOf('const SECTIONS'), wsSrc.indexOf('function hasIncomeFigures')));
+const phantom = [...new Set([...rulesOnly.matchAll(/\bl\.(\w+)/g)].map((m) => m[1]))]
+  .filter((c) => !columns.has(c.toLowerCase()));
+// The rule can only be right if the caller actually hands it the figures.
+const menuCall = strip(routeSrc).slice(strip(routeSrc).indexOf('workspace.sectionMenu('));
+check(/income: file && file\.income,/.test(menuCall.slice(0, 400)),
+  'and the ROUTE hands the section menu the same income block it hands the rail — the rule reads figures the loan row does not carry, so a caller that stops passing them silently greys the section again');
+
+check(phantom.length === 0,
+  `THE ONE THAT MATTERS: no section rule reads a column the loan does not have${phantom.length ? ` — phantom: ${phantom.join(', ')}` : ''}`);
 
 // ── The stepper ─────────────────────────────────────────────────────────────
 console.log('\nthe milestone stepper — never invent progress');

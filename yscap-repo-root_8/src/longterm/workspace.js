@@ -45,9 +45,16 @@ const SECTIONS = [
   { key: 'terms', label: 'Loan terms' },
   {
     key: 'income',
+    // The rent lives on the PROPERTY and the DSCR on the loan, so this section is
+    // the one whose availability cannot be read off the loan row alone. It is
+    // decided from the SAME `income` block the rail renders (passed in by the
+    // caller), so the menu and the figures can never disagree about whether this
+    // loan has any. An earlier cut tested `l.gross_rent` — a column that does not
+    // exist on lt_loans — which reads as undefined, greys the section on a DSCR
+    // file whose rent we DO hold, and states a reason that is not true.
     label: 'Income & DSCR',
-    applies: (l) => l.product_kind !== 'dscr' || l.dscr_ratio != null || l.gross_rent != null,
-    why: 'The rent and DSCR have not been read from Encompass yet.',
+    applies: (l, o) => l.product_kind !== 'dscr' || l.dscr_ratio != null || hasIncomeFigures(o.income),
+    why: 'No rent, housing expense or DSCR has been read from Encompass for this loan yet.',
   },
   {
     key: 'employment',
@@ -62,10 +69,11 @@ const SECTIONS = [
   {
     key: 'conditions',
     label: 'Conditions',
-    // Set aside by the owner on 2026-08-14. Greyed rather than hidden, for the same
-    // reason as employment: somebody told about it must not think it vanished.
+    // Greyed rather than hidden, for the same reason as employment: somebody told
+    // about it must not think it vanished. The reason names the SWITCH rather than
+    // a date — the centre is built, so the answer is "turn it on", not "wait".
     applies: (l, opts) => opts.conditionsEnabled === true,
-    why: 'The Condition Center is coming soon.',
+    why: 'The Condition Center is switched off for this company. It is built — turning it on is a settings change, not a new release.',
   },
   {
     key: 'lock',
@@ -74,6 +82,19 @@ const SECTIONS = [
     why: 'This loan has no lock recorded in Encompass yet.',
   },
 ];
+
+/**
+ * Does this loan hold ANY of the three figures the income section shows?
+ *
+ * Deliberately generous — a section is worth opening for one of them. `actual`
+ * rent is knowingly never filled (application/unsourced.js) and is read anyway, so
+ * this needs no edit on the day it gains a source.
+ */
+function hasIncomeFigures(income) {
+  const i = income || {};
+  return i.dscr != null || i.grossMonthlyRent != null
+    || i.actualMonthlyRent != null || i.housingExpenseTotal != null;
+}
 
 /** The left menu: every section, each either live or greyed WITH a reason. */
 function sectionMenu(loan, opts = {}) {
@@ -185,6 +206,7 @@ function summaryRail(loan, opts = {}) {
 }
 
 module.exports = {
+  hasIncomeFigures,
   SECTIONS,
   sectionMenu,
   milestoneStepper,
