@@ -52,6 +52,10 @@ function adjustmentToRule(a) {
 // rule for rules.js. Same band→predicate construction as adjustmentToRule, but kind 'eligibility' with
 // a declineReason. A row with NO predicate (every band open) would decline EVERYTHING, which is never
 // what an N/A box means — it is dropped (returns null) rather than silently rejecting the whole sheet.
+// Placeholder "dimensions" the sheet layer emits for a rule with no single constraining fact. They
+// name a GROUP, not a fact, and become null (unknown) on the way to a rule. See ineligibilityToRule.
+const NON_DIMENSIONS = new Set(['eligibility', 'fico_cltv_dscr', 'other', 'grid']);
+
 function ineligibilityToRule(a) {
   if (!a || typeof a !== 'object') throw new Error('ratesheet:bad_ineligibility');
   const leaves = [];
@@ -67,6 +71,19 @@ function ineligibilityToRule(a) {
     source: 'base',
     when,
     priority: a.priority || 0,
+    // The dimension the rule CONSTRAINS, carried through from the sheet's own data. Read by
+    // agreement-dimensions.dimensionOfRule, which otherwise falls back to the predicate's sole leaf
+    // fact and answers null for every COMPOUND rule — and every real eligibility rule here is
+    // compound (a DSCR band x FICO band x purpose gate around one cap), so without this the
+    // disqualifier reconciler could not read a dimension for ANY of our declines and the eligibility
+    // half of the agreement gate was unreachable. Absent stays null: unknown, never guessed — and a
+    // PLACEHOLDER is absent. The sheet converter (deephaven-grid) defaults a dimension-less
+    // ineligibility to the literal `'eligibility'`, and the fico x CLTV grid's own N/A cells carry
+    // `'fico_cltv_dscr'`. Neither names a FACT: no Lender Price reason can crosswalk to one, so
+    // carrying them through would hand the reconciler a dimension that matches nothing and score a
+    // real both-decline as a DISAGREEMENT — strictly worse than an unknown, which is surfaced and
+    // counted. A closed list, so a new placeholder cannot leak in unnoticed.
+    dimension: NON_DIMENSIONS.has(a.dimension) ? null : (a.dimension || null),
     declineReason: a.declineReason || a.reason || `Not eligible (${a.dimension || 'grid'})`,
   };
 }

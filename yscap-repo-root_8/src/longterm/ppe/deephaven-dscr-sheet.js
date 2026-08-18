@@ -218,6 +218,7 @@ function ltvGridEligibility() {
     if (t.tierMinFico > 640) {
       out.push({
         code: `dhvn_min_fico_${t.tier.toLowerCase()}`,
+        dimension: 'fico',
         declineReason: `Loan > $${(t.loanMinExclusive / 1000000).toFixed(1)}MM: Min FICO ${t.tierMinFico}`,
         predicate: { all: [...tierPredicate(t), { fact: 'fico', op: 'lt', value: t.tierMinFico }] },
       });
@@ -229,9 +230,17 @@ function ltvGridEligibility() {
           const where = [...tierPredicate(t), ...ficoPredicate(r), ...purposePredicate(pc), ...dscrBandPredicate(band)];
           const who = `${t.tier} FICO ${r.fico[0]}${r.fico[1] == null ? '+' : `–${r.fico[1] - 1}`}, ${pc === 'cashout' ? 'cash-out' : 'purchase/rate-term'}, DSCR ${band === 'ge1' ? '>= 1.00' : '< 1.00'}`;
           if (cap == null) {
+            // NO `dimension`, DELIBERATELY. This cell is refused whatever the LTV, so its predicate
+            // names no constraint fact to read one from — and the harness's own discipline is that a
+            // rule with no single dimension is surfaced as UNKNOWN, never given a guessed one. Calling
+            // it `ltv` ("a max-LTV of nothing") is arguable and is exactly the guess this refuses.
+            // MEASURED, not assumed: leaving it off does NOT reach the rule as null — deephaven-grid's
+            // sheet converter defaults a dimension-less ineligibility to the literal `'eligibility'`.
+            // ratesheet.ineligibilityToRule is where that placeholder becomes an honest null, and the
+            // reason it must is written there.
             out.push({ code: `dhvn_na_${t.tier.toLowerCase()}_${r.fico[0]}_${pc}_${band}`, declineReason: `Not eligible: ${who}`, predicate: { all: where } });
           } else {
-            out.push({ code: `dhvn_ltv_${t.tier.toLowerCase()}_${r.fico[0]}_${pc}_${band}`, declineReason: `Max LTV/CLTV ${cap}%: ${who}`, predicate: { all: [...where, { fact: 'ltv', op: 'gt', value: cap * 1000 }] } });
+            out.push({ code: `dhvn_ltv_${t.tier.toLowerCase()}_${r.fico[0]}_${pc}_${band}`, dimension: 'ltv', declineReason: `Max LTV/CLTV ${cap}%: ${who}`, predicate: { all: [...where, { fact: 'ltv', op: 'gt', value: cap * 1000 }] } });
           }
         }
       }
@@ -255,28 +264,28 @@ function ltvGridEligibility() {
 const OVERLAY_ELIGIBILITY = [
   // Small-loan LTV reduction. Note this is a SEPARATE cut from the grid cap and is the more restrictive
   // of the two wherever it fires — a $100k loan at 79% is inside its grid cell and still refused here.
-  { code: 'dhvn_small_loan_ltv', declineReason: 'Loan < $125,000: Max LTV 75%',
+  { code: 'dhvn_small_loan_ltv', dimension: 'ltv', declineReason: 'Loan < $125,000: Max LTV 75%',
     predicate: { all: [{ fact: 'loan_amount', op: 'lt', value: 125000 }, { fact: 'ltv', op: 'gt', value: 75000 }] } },
   // Interest-only overlay — its own leverage cap AND its own DSCR floor, both stricter than the program's.
-  { code: 'dhvn_io_max_ltv', declineReason: 'Interest-Only: Max LTV 80%',
+  { code: 'dhvn_io_max_ltv', dimension: 'ltv', declineReason: 'Interest-Only: Max LTV 80%',
     predicate: { all: [{ fact: 'interest_only', op: 'eq', value: true }, { fact: 'ltv', op: 'gt', value: 80000 }] } },
-  { code: 'dhvn_io_min_dscr', declineReason: 'Interest-Only: Min DSCR 1.00x',
+  { code: 'dhvn_io_min_dscr', dimension: 'dscr', declineReason: 'Interest-Only: Min DSCR 1.00x',
     predicate: { all: [{ fact: 'interest_only', op: 'eq', value: true }, { fact: 'dscr', op: 'lt', value: 1000 }] } },
   // Cash-out proceeds caps — the limit steps DOWN as leverage rises, so both halves are needed; encoding
   // only the higher one would let a $900k cash-out through at 80% LTV.
-  { code: 'dhvn_cashout_le65', declineReason: 'Max Cash-Out $1,000,000 (LTV <= 65%)',
+  { code: 'dhvn_cashout_le65', dimension: 'cashout', declineReason: 'Max Cash-Out $1,000,000 (LTV <= 65%)',
     predicate: { all: [{ fact: 'purpose', op: 'eq', value: 'cashout' }, { fact: 'ltv', op: 'lte', value: 65000 }, { fact: 'cashout_amount', op: 'gt', value: 1000000 }] } },
-  { code: 'dhvn_cashout_gt65', declineReason: 'Max Cash-Out $500,000 (LTV > 65%)',
+  { code: 'dhvn_cashout_gt65', dimension: 'cashout', declineReason: 'Max Cash-Out $500,000 (LTV > 65%)',
     predicate: { all: [{ fact: 'purpose', op: 'eq', value: 'cashout' }, { fact: 'ltv', op: 'gt', value: 65000 }, { fact: 'cashout_amount', op: 'gt', value: 500000 }] } },
   // Subordinate financing is not allowed at all on this program (matrix R40).
-  { code: 'dhvn_subordinate', declineReason: 'Subordinate Financing not allowed',
+  { code: 'dhvn_subordinate', dimension: 'subordinate_amount', declineReason: 'Subordinate Financing not allowed',
     predicate: { fact: 'subordinate_amount', op: 'gt', value: 0 } },
   // 5+ units — the program is 1–4 units plus condominiums.
-  { code: 'dhvn_units_5plus', declineReason: '5+ units ineligible (program is 1–4 units + condos)',
+  { code: 'dhvn_units_5plus', dimension: 'units', declineReason: '5+ units ineligible (program is 1–4 units + condos)',
     predicate: { fact: 'units', op: 'gte', value: 5 } },
   // Row Homes. Matched on the LP property-type vocabulary, the same spellings Layer 2 normalizes to; an
   // unrecognized label no-ops in BOTH layers — neither may disqualify on a name it does not know.
-  { code: 'dhvn_row_home', declineReason: 'Row Homes ineligible',
+  { code: 'dhvn_row_home', dimension: 'property_type', declineReason: 'Row Homes ineligible',
     predicate: { fact: 'property_type', op: 'in', value: ['RowHome', 'Row Home', 'RowHouse', 'Row House', 'rowhome', 'rowhouse'] } },
 ];
 const cltvBandLabel = (cb) => (cb.min == null ? 'CLTV To 50.0%' : `CLTV ${cb.min - 0.5}–${cb.max - 0.5}%`);
@@ -369,26 +378,26 @@ function buildDeephavenGrid() {
     // §2/§10 — the eligibility ENVELOPE, verbatim from Lender Price's disqualify reasons. Facts: fico
     // RAW, ltv MILLI-percent (80% → 80000), dscr MILLI (1.00 → 1000), loan_amount RAW dollars.
     eligibility: [
-      { code: 'dhvn_min_fico', declineReason: 'Min FICO 640', predicate: { fact: 'fico', op: 'lt', value: 640 } },
+      { code: 'dhvn_min_fico', dimension: 'fico', declineReason: 'Min FICO 640', predicate: { fact: 'fico', op: 'lt', value: 640 } },
       // DO NOT DELETE THIS ON THE STRENGTH OF THE §2b GRID. It OVERLAPS the grid's N/A cells — every N/A
       // cell is a DSCR < 1.00 cell, and four of the six span FICO ranges entirely below 680 — so the two
       // encodings agree and no end-to-end sweep can tell them apart there (measured: mutating a T1 or T2
       // N/A cell to a real cap leaves the drift test green; only T3's cell, which reaches FICO 680–699,
       // is observable). Redundancy that agrees is fine; deleting one because the suite stays green is how
       // the rule is lost. The N/A mechanism is proven directly, per cell, in the drift test's §6b.
-      { code: 'dhvn_min_fico_lt100', declineReason: 'DSCR < 1.00: Min FICO 680', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'fico', op: 'lt', value: 680 }] } },
-      { code: 'dhvn_max_ltv', declineReason: 'Max LTV/CLTV 80%', predicate: { fact: 'ltv', op: 'gt', value: 80000 } },
-      { code: 'dhvn_max_ltv_lt100', declineReason: 'DSCR < 1.00: Max LTV 75%', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'ltv', op: 'gt', value: 75000 }] } },
-      { code: 'dhvn_max_ltv_lt100_weakfico', declineReason: 'DSCR < 1.00, FICO < 700: Max LTV 70%', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'fico', op: 'lt', value: 700 }, { fact: 'ltv', op: 'gt', value: 70000 }] } },
-      { code: 'dhvn_min_dscr', declineReason: 'Minimum DSCR 0.75', predicate: { fact: 'dscr', op: 'lt', value: 750 } },
+      { code: 'dhvn_min_fico_lt100', dimension: 'fico', declineReason: 'DSCR < 1.00: Min FICO 680', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'fico', op: 'lt', value: 680 }] } },
+      { code: 'dhvn_max_ltv', dimension: 'ltv', declineReason: 'Max LTV/CLTV 80%', predicate: { fact: 'ltv', op: 'gt', value: 80000 } },
+      { code: 'dhvn_max_ltv_lt100', dimension: 'ltv', declineReason: 'DSCR < 1.00: Max LTV 75%', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'ltv', op: 'gt', value: 75000 }] } },
+      { code: 'dhvn_max_ltv_lt100_weakfico', dimension: 'ltv', declineReason: 'DSCR < 1.00, FICO < 700: Max LTV 70%', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'fico', op: 'lt', value: 700 }, { fact: 'ltv', op: 'gt', value: 70000 }] } },
+      { code: 'dhvn_min_dscr', dimension: 'dscr', declineReason: 'Minimum DSCR 0.75', predicate: { fact: 'dscr', op: 'lt', value: 750 } },
       // MIN LOAN is DSCR-GATED (owner/R10 2026-08-17): the flat $75k min ignored DSCR, so a $150k /
       // DSCR-0.90 loan PRICED when the matrix says it must decline. Split to mirror Layer-2
       // (deephaven-matrix MIN_LOAN_DSCR_GE1/LT1) EXACTLY — $75k for DSCR>=1.00, $200k for DSCR<1.00 —
       // including the fail-safe when DSCR is absent (neither branch fires, same as the matrix's
       // `dscr >= 1000` / `dscr < 1000` guards), so the two layers can never disagree on min-loan.
-      { code: 'dhvn_min_loan_ge1', declineReason: 'Minimum Loan Amount $75,000 (DSCR >= 1.00x)', predicate: { all: [{ fact: 'dscr', op: 'gte', value: 1000 }, { fact: 'loan_amount', op: 'lt', value: 75000 }] } },
-      { code: 'dhvn_min_loan_lt1', declineReason: 'Minimum Loan Amount $200,000 (DSCR < 1.00x)', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'loan_amount', op: 'lt', value: 200000 }] } },
-      { code: 'dhvn_max_loan', declineReason: 'Maximum Loan Amount $2.5MM', predicate: { fact: 'loan_amount', op: 'gt', value: 2500000 } },
+      { code: 'dhvn_min_loan_ge1', dimension: 'loan_amount', declineReason: 'Minimum Loan Amount $75,000 (DSCR >= 1.00x)', predicate: { all: [{ fact: 'dscr', op: 'gte', value: 1000 }, { fact: 'loan_amount', op: 'lt', value: 75000 }] } },
+      { code: 'dhvn_min_loan_lt1', dimension: 'loan_amount', declineReason: 'Minimum Loan Amount $200,000 (DSCR < 1.00x)', predicate: { all: [{ fact: 'dscr', op: 'lt', value: 1000 }, { fact: 'loan_amount', op: 'lt', value: 200000 }] } },
+      { code: 'dhvn_max_loan', dimension: 'loan_amount', declineReason: 'Maximum Loan Amount $2.5MM', predicate: { fact: 'loan_amount', op: 'gt', value: 2500000 } },
       // §2b — the 4-axis Max-LTV grid + per-tier FICO floors (R10 divergence B). Every rule here can
       // only DECLINE, so this can only tighten; the flat rules above stay as the no-loan-amount backstop.
       ...ltvGridEligibility(),

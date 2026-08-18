@@ -46,6 +46,19 @@ function soleLeafFact(pred) {
   return null;
 }
 
+// A canonical dimension is not always spelled the same as the FACT a predicate tests on: the cash-out
+// dimension is expressed by the fact `cashout_amount`. This is the ONE place that mapping lives, so a
+// guard asking "is this rule's stated dimension actually one the rule tests?" and a reader asking
+// "which fact carries this dimension?" can never answer differently. Additive only — a dimension with
+// no entry is expressed by its own name, which is the ordinary case.
+const FACT_ALIASES = Object.freeze({ cashout: ['cashout_amount'] });
+
+// Every fact name that can express `dimension` (itself first). Never null; unknown input -> [].
+function factsForDimension(dimension) {
+  if (!dimension) return [];
+  return [String(dimension), ...(FACT_ALIASES[dimension] || [])];
+}
+
 // dimension of one of OUR rules, read from the rule's OWN structure (never guessed from text).
 function dimensionOfRule(rule) {
   if (!rule || typeof rule !== 'object') return null;
@@ -77,6 +90,8 @@ function dimensionOfLpReason(reason) {
 
 module.exports = {
   CANONICAL,
+  FACT_ALIASES,
+  factsForDimension,
   soleLeafFact,
   dimensionOfRule,
   dimensionOfOurAdjustment,

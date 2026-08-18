@@ -6213,3 +6213,72 @@ mutations each turn the suite red.
 
 **Still open:** the capture layer itself. The two numbers it needed are now measured — 56 KB brotli per
 response, and a normalized answer that is finally stable enough for a content hash to mean something.
+
+---
+
+### §2.101 — ⛔ EVERY ELIGIBILITY DECLINE WAS DIMENSION-LESS, SO THE DECLINE FEED COULD NOT BE READ AT ALL (2026-08-18)
+
+§2.91 stopped a price-only run manufacturing false eligibility findings, and §2.93 stopped such a run
+reporting **GATE MET**. Both told the reader to *"re-run without `--no-disqualify`"*. **That re-run was
+measured today and it produces NOTHING: 0 of 8 scenarios comparable, `decline_reasons_unreadable` on
+every one.** The remedy the last two sections point at could not be carried out.
+
+**⛔ THE MECHANISM, and it is one line that was never written.** The per-layer reconciler matches our
+declines against Lender Price's **by DIMENSION**, reading ours through `agreement-dimensions.
+dimensionOfRule`, whose last resort is `soleLeafFact(rule.when)` — null the moment a predicate is
+COMPOUND. **Every real Deephaven eligibility rule is compound** (a DSCR band × FICO band × purpose ×
+tier gate wrapped around one cap), and `ratesheet.ineligibilityToRule` never carried the sheet's own
+`dimension` onto the compiled rule. Measured on the compiled program: **0 of 59 eligibility rules could
+name a dimension.** So every decline of ours arrived as `unknown / why:'no_dimension'`, no layer could
+reconcile, and the verdict fell through to `indeterminate` → `decline_reasons_unreadable`.
+
+**AND THE RUN THAT EXPOSED IT ANSWERED THE OWNER'S BIGGEST QUESTION ALONG THE WAY.** With the feed ON,
+**all 8 probes — including all four out-of-bounds controls the price-only run reported as "Lender Price
+priced them anyway" — are declined by Lender Price too.** On `fico=660 cltv=75 dscr=1.25` LP's own words
+are `"DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%"` — **our rule,
+verbatim.** §2.91's correction is now measured rather than argued: on this sample the honest count of
+"business we turn away for nothing" is **zero**, and on the §2.92 cell the **product matrix is right and
+the rate sheet's priced cell is not offered**. That is a measurement, not a decision — the owner's
+precedence question stands, and one sample of eight is not the battery.
+
+**THE FIX IS THE DATA, NEVER A TEXT HEURISTIC.** Each eligibility rule now states the fact it
+CONSTRAINS where it is authored (`deephaven-dscr-sheet.js` — the hand table, the generated LTV grid,
+the overlays), the compiler carries it, and `agreement-dimensions.FACT_ALIASES` is the ONE place that
+records that the `cashout` dimension is expressed by the fact `cashout_amount`, so a guard and a reader
+can never disagree about it. **49 of 59 rules now name a dimension; the other 10 stay honestly
+unknown** — a cell refused at EVERY leverage names no constraining fact, and calling it `ltv` ("a
+max-LTV of nothing") is exactly the guess this refuses.
+
+**A PLACEHOLDER IS NOT A DIMENSION, and carrying it would have been WORSE than the bug.** The first cut
+simply carried `a.dimension` through — and surfaced `'eligibility'` (deephaven-grid's default for a
+dimension-less ineligibility) and `'fico_cltv_dscr'` (the price grid's N/A cells) onto real rules.
+Neither names a FACT, so no Lender Price reason can ever crosswalk to one: the reconciler would have
+scored a genuine both-decline as a **DISAGREEMENT** instead of surfacing an unknown. `NON_DIMENSIONS` in
+`ratesheet.js` turns them back into null, as a closed list so a new placeholder cannot leak in unseen.
+
+**⛔ IT IS NECESSARY AND IT IS NOT SUFFICIENT — SAID PLAINLY, WITH THE NUMBERS.** The same 8 live
+scenarios, before and after, same scope, same feed:
+
+```
+                       our no_dimension   LP rows unreadable   layer-2 agreements   onlyOurs
+before                       12                 4482                    2               0
+after                         3                 4482                    3               6
+```
+
+Comparable is **still 0 of 8**. Our side is now readable (the 3 left are the recorded N/A cells); the
+dominant blocker has moved to the **authority** side, where Lender Price's disqualify tree returns
+~560 rows per scenario and the crosswalk refuses nearly all of them — because most are not refusals at
+all but product attributes (`"NONQM"`, `"Conventional"`, `"Conforming"`, `"Jumbo"`, `"None"`,
+`"Origination : 3.400 (Points) x $375,000.00"`). Recorded as the next item rather than implied to be
+fixed. **The `onlyOurs` count rising from 0 to 6 is not a regression**: those declines were previously
+invisible as `unknown`, and a disagreement that is now visible is the point of the reconciler.
+
+`scripts/test-lt-ppe-decline-dimension.js` (17 assertions): coverage, HONESTY (a stated dimension must
+be a fact the rule's own predicate tests — a wrong stamp is worse than none), the placeholders never
+reaching a rule *and* the sheet layer really emitting them, an END-TO-END pass proving a 9-scenario
+battery's declines all reach the reconciler with a dimension, and the reconciliation it unblocks.
+**Mutation-proven five ways**: the compiler's carry removed (5 assertions bite), the placeholder strip
+removed (5), one rule stamped with a fact it never tests (1), the N/A cells given a guessed dimension
+(3), and the cash-out fact alias removed (2) — with an unmutated control green either side.
+
+167/167 suites, 33 database-backed. All seven gates green.
