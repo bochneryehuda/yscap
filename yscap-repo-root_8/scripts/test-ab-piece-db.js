@@ -179,6 +179,40 @@ function call(server, method, path, token, body) {
     const bApp2 = await call(server, 'GET', `/api/borrower/applications/${appId}`, bTok2);
     ok('D9 the borrower payload never carries the Encompass split fields',
       bApp2.status === 200 && !/bpiecestructure|cx\.apiece|cx\.bpiece|_fieldValues/i.test(JSON.stringify(bApp2.body)));
+
+    // ---- E. the ENCOMPASS SYNC section carries the matching (owner-directed 2026-08-18:
+    //      "it should be added to this section in the Encompass syncing. Encompass and
+    //      PILOT need to match. PILOT can read Encompass, but it cannot write.") ----------
+    const reconcile = require('../src/encompass/reconcile');
+    const abRowsOf = (f) => (f.fields || []).filter((x) => /^ab_piece_/.test(x.key));
+    // Recorded split right now: enabled, A=300,000, total=450,000 → derived B=150,000.
+    await db.query(
+      `UPDATE applications SET encompass_extra = jsonb_build_object('_fieldValues',
+         jsonb_build_object('CX.BPIECESTRUCTURE','X','CX.APIECE','300000','CX.BPIECE','150000'),
+         'loanNumber','YSCAP-AB-1') WHERE id=$1`, [appId]);
+    const f1 = await reconcile.computeFindings(appId, db);
+    const r1 = abRowsOf(f1);
+    ok('E1 an agreeing split renders THREE MATCH rows in the compared section, all ADVISORY',
+      r1.length === 3 && r1.every((x) => x.status === 'match' && x.gate === 'advisory' && x.writable === false));
+    await db.query(
+      `UPDATE applications SET encompass_extra = jsonb_set(encompass_extra,'{_fieldValues,CX.APIECE}','"275000"')
+       WHERE id=$1`, [appId]);
+    const f2 = await reconcile.computeFindings(appId, db);
+    const aRow = abRowsOf(f2).find((x) => x.key === 'ab_piece_a_amount');
+    ok('E2 a differing A-piece is a MISMATCH row that stays advisory and names the fix-by-hand rule',
+      !!aRow && aRow.status === 'mismatch' && aRow.gate === 'advisory'
+      && /reads Encompass/.test(aRow.detail || '') && /cannot|by hand/i.test(aRow.detail || ''));
+    // No split ANYWHERE → total silence: the compared section gains no rows at all,
+    // so 99% of files (no A/B structure) are untouched by this feature.
+    await call(server, 'POST', `/api/staff/applications/${appId}/ab-piece`, tok, { enabled: false, aPieceAmount: null });
+    await db.query(
+      `UPDATE applications SET encompass_extra = jsonb_build_object('_fieldValues',
+         jsonb_build_object('CX.BPIECESTRUCTURE','','CX.APIECE','','CX.BPIECE','')) WHERE id=$1`, [appId]);
+    const f3 = await reconcile.computeFindings(appId, db);
+    ok('E3 no split on either side → NO rows (silence, never noise on ordinary files)',
+      abRowsOf(f3).length === 0);
+    // Put the split back so nothing later is surprised.
+    await call(server, 'POST', `/api/staff/applications/${appId}/ab-piece`, tok, { enabled: true, aPieceAmount: 300000 });
   } finally {
     try {
       if (appId) await db.query(`DELETE FROM applications WHERE id=$1`, [appId]);

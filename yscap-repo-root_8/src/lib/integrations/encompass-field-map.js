@@ -292,8 +292,11 @@ const REGISTRY = Object.freeze([
   // files, so a compared row would read "no data to compare" on nearly every file, and the
   // funding_channel lesson applies — an unverified row (verified:false — the tenant values
   // have not been read live yet) must never be able to hold a term sheet. The real
-  // side-by-side is ADVISORY and lives on the A/B-piece card itself: lib/ab-piece.js
-  // `encompassAbPiece` reads these ids out of applications.encompass_extra._fieldValues.
+  // matching (owner-directed 2026-08-18: "it should be added to this section in the
+  // Encompass syncing. Encompass and PILOT need to match") is ADVISORY and COMPUTED —
+  // reconcile.compareAbPiece emits match/mismatch rows into the compared section, and the
+  // A/B-piece card shows the same verdict (both call lib/ab-piece.js shapeEncompass, ONE
+  // definition, reading these ids out of applications.encompass_extra._fieldValues).
   // READ-ONLY like every row here — PILOT never writes these fields; a PILOT→Encompass
   // sync of the split needs its own pad entry in docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md
   // with the owner's written authorization, and does not exist today.

@@ -999,6 +999,74 @@ function compareFundingChannel(ourBuyer, theirBuyer, theirChannel, ourTableFunde
   return out;
 }
 
+/**
+ * A/B-PIECE SPLIT ↔ ENCOMPASS (owner-directed 2026-08-18: "No, you can't
+ * write. Just follow the Encompass workflow that we currently have already,
+ * and it should be added to this section in the Encompass syncing. Encompass
+ * and PILOT need to match. PILOT can read Encompass, but it cannot write.").
+ *
+ * Three COMPUTED rows in the compared section — the compareFundingChannel
+ * shape, because the generic registry compare cannot express this field
+ * family: a blank checkbox MEANS "not ticked" (never "no data"), and the
+ * B-piece on our side is DERIVED (total loan − A), never a stored column.
+ * The registry keeps the three ids as REFERENCE rows purely so the
+ * fieldReader pulls them; THESE rows are the matching.
+ *
+ * ONE definition with the A/B-piece card: both call ab-piece.js
+ * shapeEncompass, so the card and this panel can never disagree about
+ * whether the two systems match. A fact is emitted ONLY when it is
+ * genuinely comparable (something recorded on at least one side) — a file
+ * with no split anywhere emits NOTHING, so the 99% of files with no A/B
+ * structure gain no rows and nothing unverified can ever hold a term sheet
+ * (every row is ADVISORY: verified:false tenant fields, and a mismatch is a
+ * fix-by-hand in whichever system is wrong — never a PILOT write).
+ *
+ * PURE decision — takes the already-loaded row/loan/quote; never throws.
+ */
+function compareAbPiece(row, loan, quote) {
+  try {
+    const AB = require('../lib/ab-piece');
+    const fv = loan && loan._fieldValues;
+    if (!fv || typeof fv !== 'object') return [];
+    const q = quote || {};
+    const ours = AB.shape({
+      ab_piece_enabled: row.ab_piece_enabled,
+      a_piece_amount: row.a_piece_amount,
+      loan_amount: row.loan_amount,
+      reg_total: q.sizing ? q.sizing.totalLoan : null,
+      registered_program: null,
+    });
+    const enc = AB._internals.shapeEncompass(fv, ours);
+    if (!enc || !enc.relevant) return [];
+    const money = (v) => (v == null ? null : `$${Math.round(Number(v)).toLocaleString('en-US')}`);
+    const rows = [];
+    const push = (key, encompassFieldId, label, category, oursDisp, theirsDisp, agree, detail) => {
+      if (agree === null) return; // nothing comparable on this fact — silence, never a guess
+      rows.push({
+        key, encompassFieldId, label, category,
+        compare: 'rule', gate: map.GATE.ADVISORY,
+        ours: oursDisp, theirs: theirsDisp,
+        oursNorm: oursDisp, theirsNorm: theirsDisp,
+        status: agree ? 'match' : 'mismatch',
+        detail: agree ? null : detail,
+        writable: false, open: !agree, resolution: null,
+      });
+    };
+    push('ab_piece_structure', 'CX.BPIECESTRUCTURE', 'A/B-piece structure (split ticked?)', 'program',
+      ours && ours.enabled ? 'Split recorded (A/B structure)' : 'No split recorded',
+      enc.structureChecked === true ? `Ticked (${enc.structureRaw})` : enc.structureChecked === false ? 'Not ticked' : String(enc.structureRaw),
+      enc.agrees.structure,
+      'PILOT and Encompass disagree about whether this loan is sold as an A-piece/B-piece structure. PILOT only reads Encompass — correct whichever system is wrong by hand.');
+    push('ab_piece_a_amount', 'CX.APIECE', 'A-piece amount', 'cost',
+      money(ours && ours.aPiece), money(enc.aPiece), enc.agrees.aPiece,
+      'The A-piece dollar amount differs between PILOT and Encompass (a blank side means that system has no amount recorded). PILOT only reads Encompass — correct whichever system is wrong by hand.');
+    push('ab_piece_b_amount', 'CX.BPIECE', 'B-piece amount (PILOT derives: total loan − A)', 'cost',
+      money(ours && ours.bPiece), money(enc.bPiece), enc.agrees.bPiece,
+      'The B-piece differs. PILOT derives its B-piece as the current registration\'s total loan minus the A-piece, so this can also mean the loan re-registered since Encompass was filled in. PILOT only reads Encompass — correct whichever system is wrong by hand.');
+    return rows;
+  } catch (_) { return []; } // advisory only — never let this throw into the panel
+}
+
 async function computeFindings(appId, dbc, opts) {
   const c = dbc || require('../db');
   const row = (await c.query(
@@ -1009,6 +1077,7 @@ async function computeFindings(appId, dbc, opts) {
             a.program, a.loan_type, a.rehab_type, a.accrual_type, a.property_type,
             a.units, a.property_address, a.co_borrower_id, a.sqft_pre, a.sqft_post, a.lender,
             a.requested_exp_flips, a.requested_exp_holds, a.requested_exp_ground,
+            a.ab_piece_enabled, a.a_piece_amount,
             l.llc_name AS llc_name,
             b.first_name AS b_first_name, b.last_name AS b_last_name,
             b.middle_name AS b_middle_name, b.name_suffix AS b_name_suffix,
@@ -1071,7 +1140,11 @@ async function computeFindings(appId, dbc, opts) {
   // The note buyer's own funding-channel rule. Only when a loan is pulled — with no Encompass copy
   // there is no channel to judge, and an absent value is never a violation.
   const ruleFields = loan ? compareFundingChannel(row.lender, theirs.capital_provider, theirs.funding_channel, row.table_funded) : [];
-  const fields = econFields.concat(idFields, ruleFields);
+  // The A/B-piece split's three owner-supplied fields (2026-08-18) — computed,
+  // ADVISORY, read-only; silent unless a split is recorded somewhere. See
+  // compareAbPiece above.
+  const abPieceFields = loan ? compareAbPiece(row, loan, quote ? quote.quote : null) : [];
+  const fields = econFields.concat(idFields, ruleFields, abPieceFields);
   // Super-admin FIELD EXCEPTIONS (owner-directed 2026-08-02): a not-matching / "no
   // data to compare" field can be escalated to a super admin, who GRANTS an exception
   // (resolution 'excepted') so it no longer blocks the term sheet — or a staffer has
