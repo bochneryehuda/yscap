@@ -1292,6 +1292,23 @@ screen, so an untouched deployment reads nothing and still shows "Coming soon". 
 UPLOAD is a WRITE and stays blocked on the pad. **Ends with:** a loan can answer "what is
 this file waiting on?" from Encompass's own record, and nothing can write back.
 
+**A CORRECTION, 2026-08-18.** Two of the Condition Center's three doors — the CENTRE itself and the
+eFolder needs list — returned `{"error":"server error"}` for every loan, on every request, from the
+day they shipped. `openable()` loaded the settings into its own scope and handed back the loan
+alone; both handlers then passed a bare `settings` to their reader, a free variable that did not
+exist there, and each threw a ReferenceError into its own catch.
+
+Nothing noticed because the Condition Center ships OFF. With `conditions.enabled` unset, `openable`
+answers `{enabled:false}` and returns before the broken line is reached — so every test and every
+human had only ever seen the switched-off path. The two dead doors would have failed on the day the
+owner turned the feature on, and not one moment before.
+
+A test DID guard the broken line: `test-lt-settings-wired-pure.js` asserts the call appears in the
+file, by regular expression against the source. It proved the characters were present and stayed
+GREEN against the broken code, because it never ran it. `openable` now returns `{loan, settings}` so
+a handler cannot ask for the settings without having them, and `test-lt-conditions-doors-db.js`
+drives all three doors with the feature switched ON — the only thing that could have caught this.
+
 ### Phase 6 — Settings — **BUILT**
 `lt_settings`, both screens, and the pass that moves every value this plan named as a
 setting out of code and into it. **Ends with:** the sellable rule stops being a comment and

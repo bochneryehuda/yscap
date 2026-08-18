@@ -33,10 +33,22 @@ const read = require('../conditions/read');
 const router = express.Router();
 
 /**
- * Resolve the loan and the viewer's right to open it.
+ * Resolve the loan, the viewer's right to open it, AND THE SETTINGS IT WAS
+ * DECIDED ON.
  *
  * Returns null after answering, so every handler reads as
- * `const loan = await openable(req,res); if (!loan) return;`
+ * `const opened = await openable(req,res); if (!opened) return;`
+ *
+ * THE SETTINGS COME BACK WITH THE LOAN, and that is the whole point of the shape.
+ * This used to return the loan alone, and two of the three handlers below went on
+ * to pass a bare `settings` to their reader — a free variable that existed only
+ * inside THIS function. Every request for the centre and for the eFolder needs
+ * list threw a ReferenceError into its own catch and answered 500. It was never
+ * seen because the Condition Center ships switched OFF, so the two dead doors were
+ * only reachable by the one tenant setting nobody had turned on yet.
+ *
+ * Handing them back means a handler cannot ask for the settings without having
+ * them, which is a different kind of safety from remembering to load them twice.
  */
 async function openable(req, res) {
   const { settings } = await settingsStore.load();
@@ -63,14 +75,15 @@ async function openable(req, res) {
     res.status(404).json({ error: 'No such long-term loan.' });
     return null;
   }
-  return rows[0];
+  return { loan: rows[0], settings };
 }
 
 /** The whole centre for one loan: conditions, the eFolder needs list, freshness. */
 router.get('/:loanId', async (req, res) => {
   try {
-    const loan = await openable(req, res);
-    if (!loan) return;
+    const opened = await openable(req, res);
+    if (!opened) return;
+    const { loan, settings } = opened;
     const center = await read.centerForLoan(loan.id, { audience: 'internal', settings });
     res.json({ enabled: true, loanId: loan.id, loanNumber: loan.loan_number, ...center });
   } catch (e) {
@@ -82,8 +95,9 @@ router.get('/:loanId', async (req, res) => {
 /** The conditions alone — the same data, for a screen that only wants that half. */
 router.get('/:loanId/conditions', async (req, res) => {
   try {
-    const loan = await openable(req, res);
-    if (!loan) return;
+    const opened = await openable(req, res);
+    if (!opened) return;
+    const { loan } = opened;
     const out = await read.conditionsForLoan(loan.id, { audience: 'internal' });
     res.json({ enabled: true, items: out.items, open: out.open, total: out.total });
   } catch (e) {
@@ -95,8 +109,9 @@ router.get('/:loanId/conditions', async (req, res) => {
 /** The eFolder needs list alone. */
 router.get('/:loanId/documents', async (req, res) => {
   try {
-    const loan = await openable(req, res);
-    if (!loan) return;
+    const opened = await openable(req, res);
+    if (!opened) return;
+    const { loan, settings } = opened;
     const out = await read.documentsForLoan(loan.id, { audience: 'internal', settings });
     res.json({ enabled: true, items: out.items, outstanding: out.outstanding, total: out.total });
   } catch (e) {

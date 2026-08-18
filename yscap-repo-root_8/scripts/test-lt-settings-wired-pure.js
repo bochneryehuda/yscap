@@ -122,6 +122,14 @@ check(/doneStatusesFrom/.test(readSrc) && /DONE_STATUSES/.test(readSrc),
 
 const condRoute = fs.readFileSync(path.join(ROOT, 'src/longterm/routes/conditions.js'), 'utf8');
 const pipeRoute = fs.readFileSync(path.join(ROOT, 'src/longterm/routes/pipeline.js'), 'utf8');
+// NOTE ON WHAT THIS PROVES, AND WHAT IT DOES NOT. The two checks below match the
+// SOURCE TEXT of a call. That is enough to catch somebody quietly dropping the
+// settings argument, and it is the reason they are here — but it is not evidence
+// the line runs. It could not have been: `settings` was a free variable in that
+// handler for the whole life of the file, so the call this regex was happily
+// matching threw a ReferenceError on every request and answered 500. The doors
+// themselves are now driven by test-lt-conditions-doors-db.js, with the feature
+// switched ON, which is the only thing that could have noticed.
 check(/centerForLoan\(loan\.id, \{ audience: 'internal', settings \}\)/.test(condRoute)
   && /documentsForLoan\(loan\.id, \{ audience: 'internal', settings \}\)/.test(condRoute),
   'and the file screen hands the reader the settings it already loaded');
