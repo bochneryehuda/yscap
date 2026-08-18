@@ -1738,47 +1738,42 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     column on a live database is a decision to take deliberately rather than on an inference that
     it is empty. One answer from the owner, one small migration, no code change.
 
+17. **Should removing a member of staff erase who they decided?** (raised 2026-08-18, not urgent)
+    `lt_staff_links.confirmed_by` and `lt_loan_contacts.override_by` — the two "who decided this" columns
+    on this side — are both `ON DELETE SET NULL`. Today this is harmless and untestable: the application
+    never hard-deletes a member of staff, it deactivates them, and a deactivated person is still resolved
+    by name, so the record survives exactly as intended. The question is only about a row deleted
+    straight from the database, which would silently take the decision's author with it while leaving the
+    decision itself standing.
+
+    I am not proposing a change, because whether an audit record should outlive the person is a
+    retention decision rather than a technical one, and this side does not guess those. If the answer is
+    "it should survive", the fix is `ON DELETE SET NULL` → keeping the id with the FK dropped, or a
+    separate immutable record; both are migrations on a shared table and want the owner's word first.
+
+    What IS fixed: the comment in `people/roster.js` claimed an id we could not name would travel AS THE
+    ID rather than as a blank. That state cannot occur — the foreign key removes the id before the code
+    sees it — and the claim sent me looking for a case that does not exist. It now says what actually
+    happens.
+
+18. **Is anything already in the logs?** (raised 2026-08-18 — needs a look, not a decision)
+    Until this morning, a FAILED Encompass token mint threw the identity server's own response body
+    into its error message, and that message reaches an HTTP response (`/encompass/status` → `reason`)
+    and every log that catches it. The request being refused carries the client secret and, on the
+    password grant, the user password. That is now scrubbed.
+
+    **What I know:** the exposure existed on the live path. **What I do not know:** whether anything was
+    ever actually written, because that depends on what ICE's token endpoint echoes back on a failure —
+    which I have not observed, and cannot from here. Most OAuth servers return `{"error":
+    "invalid_client"}` and nothing more.
+
+    So this is not a "rotate now". It is: **if long-term Encompass token mints have failed in
+    production, the logs around those failures are worth reading before deciding.** If a secret is in
+    there, it is compromised and wants rotating; if the answers are the bare OAuth shape, nothing
+    happened and the scrubber is simply the guard that should always have been there. I cannot answer
+    that one from inside the repository.
+
 ---
-
-
-**q17. Should removing a member of staff erase who they decided?** (raised 2026-08-18, not urgent)
-
-`lt_staff_links.confirmed_by` and `lt_loan_contacts.override_by` — the two "who decided this" columns
-on this side — are both `ON DELETE SET NULL`. Today this is harmless and untestable: the application
-never hard-deletes a member of staff, it deactivates them, and a deactivated person is still resolved
-by name, so the record survives exactly as intended. The question is only about a row deleted
-straight from the database, which would silently take the decision's author with it while leaving the
-decision itself standing.
-
-I am not proposing a change, because whether an audit record should outlive the person is a
-retention decision rather than a technical one, and this side does not guess those. If the answer is
-"it should survive", the fix is `ON DELETE SET NULL` → keeping the id with the FK dropped, or a
-separate immutable record; both are migrations on a shared table and want the owner's word first.
-
-What IS fixed: the comment in `people/roster.js` claimed an id we could not name would travel AS THE
-ID rather than as a blank. That state cannot occur — the foreign key removes the id before the code
-sees it — and the claim sent me looking for a case that does not exist. It now says what actually
-happens.
-
-
-
-**q18. Is anything already in the logs?** (raised 2026-08-18 — needs a look, not a decision)
-
-Until this morning, a FAILED Encompass token mint threw the identity server's own response body
-into its error message, and that message reaches an HTTP response (`/encompass/status` → `reason`)
-and every log that catches it. The request being refused carries the client secret and, on the
-password grant, the user password. That is now scrubbed.
-
-**What I know:** the exposure existed on the live path. **What I do not know:** whether anything was
-ever actually written, because that depends on what ICE's token endpoint echoes back on a failure —
-which I have not observed, and cannot from here. Most OAuth servers return `{"error":
-"invalid_client"}` and nothing more.
-
-So this is not a "rotate now". It is: **if long-term Encompass token mints have failed in
-production, the logs around those failures are worth reading before deciding.** If a secret is in
-there, it is compromised and wants rotating; if the answers are the bare OAuth shape, nothing
-happened and the scrubber is simply the guard that should always have been there. I cannot answer
-that one from inside the repository.
 
 
 ## 12. The honest risks
