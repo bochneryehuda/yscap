@@ -610,6 +610,10 @@ export const api = {
   amcPayment:       (orderId) => req('GET', `/api/amc/orders/${orderId}/payment`),
   amcPay:           (orderId, body) => req('POST', `/api/amc/orders/${orderId}/pay`, body || {}),
   amcCancelOrder:   (orderId, reason) => req('POST', `/api/amc/orders/${orderId}/cancel`, { reason }),
+  // Delete a draft/failed/dryrun attempt that never reached the vendor (2026-08-18).
+  amcDeleteOrder:   (orderId) => req('DELETE', `/api/amc/orders/${orderId}`),
+  classDeleteOrder: (appId, orderRowId) => req('DELETE', `/api/class/files/${appId}/orders/${orderRowId}`),
+  rvDeleteOrder:    (orderId) => req('DELETE', `/api/richer-value/orders/${orderId}`),
   amcComments:      (orderId) => req('GET', `/api/amc/orders/${orderId}/comments`),
   amcPostComment:   (orderId, body) => req('POST', `/api/amc/orders/${orderId}/comments`, { body }),
   amcReadComment:   (orderId, commentId) => req('POST', `/api/amc/orders/${orderId}/comments/${commentId}/read`),
