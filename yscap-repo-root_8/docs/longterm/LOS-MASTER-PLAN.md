@@ -295,6 +295,21 @@ into a lifetime cap would print a ceiling equal to the start rate. There the rea
 the block rather than on eight rows, because eight identical sentences is as unreadable as the eight
 dashes it replaces, and it gives way term by term the day a writer lands.
 
+**EVERY LONG-TERM DOOR IS OPENED, OR EXEMPT IN WRITING (2026-08-18).** The smoke suite opened 29 of
+the 44 GET doors the routers declare, and its list is hand-written for a good reason — the point is to
+notice a door NOBODY listed, and deriving the list from the same source the app mounts would make it
+agree with whatever is there, including nothing. But **a hand-written list cannot report what is not
+on it**, so fifteen doors went from shipped to never-once-opened with nothing to say so: the Condition
+Center's own two reads among them, plus the census CSV and the per-person settings. That is the class
+the phantom-column bugs live in — a wrong column name inside a swallowing catch answers a confident
+empty forever, and only opening the door finds it. So the routers are now ALSO read: the list still
+decides what gets CALLED, and a declared GET door that is neither called nor exempt with a written
+reason fails the build. Thirteen were opened (all answer, none 500s); the two LenderPrice doors are
+exempt because a smoke test that dials an outside company is not a smoke test. Matching is a real
+route match off the DECLARED door's own parameters, never a guess at which segments look like ids —
+that guess swallows `export.csv`, and a coverage check that lies in either direction is worse than
+none.
+
 **WHO GRANTED ACCESS, AND WHEN, IS ON A SCREEN (2026-08-18).** Two long-term actions hand somebody
 access to files — REASSIGNING one (`access.onFileSql` matches `override_staff_id`, so naming somebody
 puts the file in their pipeline and lets them open it) and CONFIRMING a person's Encompass link (which

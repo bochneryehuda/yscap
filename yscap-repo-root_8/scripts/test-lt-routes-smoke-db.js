@@ -29,6 +29,50 @@ const check = (cond, msg) => {
   else { failures += 1; console.error(`  FAIL ${msg}`); }
 };
 
+/**
+ * Every GET door the long-term routers declare, as `/api/lt/<mount><path>`.
+ *
+ * Read off the SOURCE rather than off the mounted app: `router.stack` would report
+ * whatever is mounted, including nothing, and a derivation that agrees with the
+ * app cannot notice a door the app forgot to mount.
+ */
+function deriveGetDoors() {
+  const fs = require('fs');
+  const idx = fs.readFileSync(path.join(__dirname, '..', 'src/longterm/index.js'), 'utf8');
+  const mounts = [...idx.matchAll(/router\.use\(\s*'([^']*)'\s*,\s*require\('\.\/routes\/([a-z-]+)'\)/g)];
+  const out = new Set();
+  for (const [, base, file] of mounts) {
+    const src = fs.readFileSync(path.join(__dirname, '..', `src/longterm/routes/${file}.js`), 'utf8');
+    for (const m of src.matchAll(/router\.get\(\s*'([^']*)'/g)) {
+      out.add(shapeOf(`/api/lt${base}${m[1]}`));
+    }
+  }
+  return [...out].sort();
+}
+
+/** One door's path: no query string, no trailing slash. */
+function shapeOf(p) {
+  let s = String(p).split('?')[0].replace(/\/+/g, '/');
+  if (s.length > '/api/lt'.length && s.endsWith('/')) s = s.slice(0, -1);
+  return s;
+}
+
+/**
+ * Does a called URL open this declared door? A real route match, NOT a string
+ * compare and NOT a guess at which segments are ids: the DECLARED door says which
+ * segments are parameters (`:loanId`), so a `:` segment matches any one segment
+ * and every other segment must match exactly. Collapsing "anything that looks like
+ * an id" instead would quietly swallow `export.csv`, and a plain string compare
+ * would report the two condition doors as uncovered while the test was opening
+ * them — a coverage check that lies in either direction is worse than none.
+ */
+function opens(declared, called) {
+  const a = declared.split('/');
+  const b = called.split('/');
+  if (a.length !== b.length) return false;
+  return a.every((seg, i) => (seg.startsWith(':') ? b[i].length > 0 : seg === b[i]));
+}
+
 async function main() {
   await require(path.join(__dirname, 'lib', 'db-gate')).skipUnlessDb('lt-routes-smoke');
 
@@ -108,10 +152,57 @@ async function main() {
       '/api/lt/ppe/investors',
       '/api/lt/ppe/findings',
       '/api/lt/ppe/scoreboard',
+      '/api/lt/ppe/suggestions',
+      '/api/lt/ppe/rules',
       '/api/lt/dscr/health',
+      // Added once the coverage check below started reporting what the list omits:
+      // every one of these had never been opened over HTTP by anything.
+      '/api/lt/settings/mine',
+      '/api/lt/book/export.csv',
+      `/api/lt/conditions/${NO_LOAN}/conditions`,
+      `/api/lt/conditions/${NO_LOAN}/documents`,
+      '/api/lt/encompass/intelligence',
+      '/api/lt/encompass/intelligence/loan.baseLoanAmount',
+      '/api/lt/encompass/conditions',
+      '/api/lt/encompass/investors',
+      '/api/lt/encompass/settings',
+      '/api/lt/encompass/fields/608',
+      '/api/lt/encompass/milestones/1',
     ];
 
-    console.log(`every long-term door opens (${DOORS.length})`);
+    // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────
+    //
+    // The list above is hand-written on purpose (see its own note). But a
+    // hand-written list cannot report what is NOT on it, and that is exactly how
+    // fifteen doors — the Condition Center's own two reads among them — went from
+    // shipped to never-once-opened without anybody noticing. So the routers are
+    // ALSO read, and a declared GET door that is neither listed nor exempt fails
+    // the build. The list still decides what gets CALLED; the derivation only
+    // decides what has to be accounted for, which is the half a person cannot do
+    // reliably.
+    //
+    // This is the class the phantom-column bugs live in: a wrong column name
+    // inside a swallowing catch answers a confident empty forever, and only
+    // actually opening the door finds it.
+    const EXEMPT = {
+      '/api/lt/dscr/login-check': 'dials LenderPrice to check a vendor login — a smoke test that reaches an outside company is not a smoke test, and a failure there would report OUR side as broken',
+      '/api/lt/dscr/disqualifications/:searchKey': 'polls a LenderPrice search that only exists after a POST /price kickoff, so there is nothing to poll and the call would go to the vendor',
+    };
+
+    const declared = deriveGetDoors();
+    check(declared.length > 30,
+      `the routers really were read (${declared.length} GET doors declared) — a parser that found none would make the next check pass by finding nothing`);
+
+    const called = DOORS.map(shapeOf);
+    const unaccounted = declared.filter((d) => !EXEMPT[d] && !called.some((c) => opens(d, c)));
+    check(unaccounted.length === 0,
+      `THE ONE THAT MATTERS: every long-term GET door is opened here or exempt in writing${unaccounted.length ? ` — these are neither: ${unaccounted.join(', ')}` : ''}`);
+
+    const staleExempt = Object.keys(EXEMPT).filter((d) => !declared.includes(d));
+    check(staleExempt.length === 0,
+      `…and no exemption names a door that no longer exists${staleExempt.length ? ` — these do not: ${staleExempt.join(', ')}` : ''}`);
+
+    console.log(`\nevery long-term door opens (${DOORS.length})`);
 
     const broken = [];
     for (const door of DOORS) {

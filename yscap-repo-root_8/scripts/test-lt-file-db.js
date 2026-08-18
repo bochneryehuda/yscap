@@ -163,7 +163,7 @@ async function makeLoan(extra = {}) {
                                     has_declared_bankruptcy, bankruptcy_chapters)
             VALUES ($1::uuid, false, true, true, 'Chapter7')`, [personId],
     );
-    // The investor IS on this loan — section E proves the file still cannot see it.
+    // The investor IS on this loan — section E reads it back off a real row.
     await ltDb.query(
       `INSERT INTO lt_loan_investors (loan_id, shorthand_name, accurate_name)
             VALUES ($1::uuid, 'Deephaven', 'Deephaven Mortgage LLC')
@@ -255,11 +255,30 @@ async function makeLoan(extra = {}) {
     check(fixedFile.terms.arm === null,
       'and a fixed loan returns no ARM block at all, even with a stale index name on the row — an empty ARM row reads as data we failed to fetch');
 
-    // ── E. The investor is absent by construction ───────────────────────────
-    console.log('\nthe investor is absent by construction');
+    // ── E. The investor: read here, and NOWHERE ELSE in the payload ─────────
+    //
+    // This section used to assert the file could not see the investor at all,
+    // which was true when it was written and stopped being true the day the
+    // staff-only investor block landed — so it failed the build on a guard rather
+    // than on a defect, exactly as its twin in the pure suite did.
+    //
+    // What is worth proving over a REAL row is not that the name is absent but
+    // WHERE it is: `loadFile` builds the STAFF file screen, everything it returns
+    // is internal, and the name must sit in the investor block and in no other
+    // section — because sections get lifted. A borrower-facing surface that reused
+    // the property block, the income block or a party would then carry a capital
+    // partner's name to a client, which is the one thing rule 10 forbids outright.
+    console.log('\nthe investor is read here, and lives in one place');
 
-    check(!json.includes('Deephaven'),
-      'THE ONE THAT MATTERS: the loan HAS an investor recorded, and no part of the file carries its name');
+    check(f.investor && f.investor.recorded === true
+      && f.investor.shorthandName === 'Deephaven'
+      && f.investor.accurateName === 'Deephaven Mortgage LLC',
+      'the investor recorded on this loan is read back off the real row — who bought a loan is a fact the staff file screen is FOR');
+
+    const withoutInvestor = { ...f };
+    delete withoutInvestor.investor;
+    check(!JSON.stringify(withoutInvestor).includes('Deephaven'),
+      'THE ONE THAT MATTERS: the name appears in the investor block and NOWHERE else in the file — sections get lifted onto other surfaces, and a capital partner\'s name riding inside the property or the income block is how it reaches a client');
 
     // ── F. Missing is null, never zero ──────────────────────────────────────
     console.log('\na missing figure is null, never zero');
