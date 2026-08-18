@@ -1326,6 +1326,25 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
    real borrower PII. This matters before anything writes.
 8. **The ten files** carrying a 12- or 24-month interest-only period on the plain 30-year
    program — real short-I/O deals, or values left behind from a file that started as a bridge?
+
+   **RE-MEASURED 2026-08-18 and the ten HOLDS**, which is worth saying because the question
+   beside it did not. Field 1177 `loan.regulationZ.interestOnlyMonths`, 297 loans carrying a
+   value: **12 months → 200, 24 months → 63, 120 months → 33, 1 month → 1**. The fill rates
+   separate the two books cleanly — 100% of the 251 short-term loans carry an I/O period
+   (a bridge is interest-only, so that is the product working), against 8.8% of the 490
+   long-term ones, about 43 files. Of those, **33 sit at 120 months — ten years of interest
+   only on a thirty-year loan, which is the ordinary DSCR shape and not a question at all.**
+   43 − 33 leaves about ten at 12 or 24 months: the plan's number, arrived at independently.
+
+   **And one file says its interest-only period is ONE MONTH.** That is not a product; it is
+   almost certainly a keystroke, and it is worth looking at in the same pass as the ten.
+
+   **PILOT can answer this itself the moment the book is synced** — `interest_only_months` is
+   mirrored on `lt_loans` and the term months beside it, so "which long-term files have a
+   short I/O period" is one query against our own tables rather than anything asked of
+   Encompass. What nobody here can answer is whether those ten are deliberate: that is the
+   owner's, and it is the difference between a product we should be able to price and a
+   value left behind when a bridge file was re-cut as a rental loan.
 9. ~~**The loan doc type stores `DSCR` on 486 files**~~ — **RE-MEASURED 2026-08-18, and it is
    nine, not 486.** The number was right and attached to the wrong value: `NoDocumentation`
    is on 484 files, and that is the VALID code the base rule wants. Counted straight off the
