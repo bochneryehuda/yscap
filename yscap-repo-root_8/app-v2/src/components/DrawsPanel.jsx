@@ -3570,6 +3570,36 @@ function AttachmentPreview({ appId, drawId, att, onClose }) {
   );
 }
 
+/* ── THE INVESTOR'S ACTUAL EMAIL REPLIES (owner-directed 2026-08-18) ─────────────────────────
+   The delivery email replies to the file's unique address, so the investor's answer lands in
+   the file's Email Center under this delivery's own thread — shown here so the desk reads what
+   they SAID next to where it was sent, not only the hand-picked answer dropdown. Previews only;
+   the Email Center tab holds the full bodies. */
+function InvestorReplies({ delivery }) {
+  const replies = (delivery && delivery.replies) || [];
+  if (!replies.length) return null;
+  return (
+    <div className="act-card-sub" style={{ marginTop: 10 }}>
+      <b style={{ color: '#141B22' }}>Investor replies ({replies.length})</b>
+      {replies.map((m) => (
+        <div key={m.id} style={{ marginTop: 6, paddingLeft: 8, borderLeft: '2px solid #D9D2C4' }}>
+          <span className="small" style={{ color: '#3A4550', fontWeight: 700 }}>
+            {m.from_name || m.from_email || 'Reply'}
+          </span>
+          <span className="small" style={{ color: '#4B585C' }}>
+            {' — '}{new Date(m.occurred_at).toLocaleString('en-US')}
+            {Number(m.attachment_n) > 0 ? ` · ${m.attachment_n} attachment${Number(m.attachment_n) === 1 ? '' : 's'}` : ''}
+          </span>
+          {m.preview ? <div className="small" style={{ color: '#141B22' }}>{m.preview}</div> : null}
+        </div>
+      ))}
+      <div className="small" style={{ color: '#4B585C', marginTop: 6 }}>
+        Full messages are on the file&rsquo;s Email Center tab; replies also reach everyone assigned to the file.
+      </div>
+    </div>
+  );
+}
+
 /* ── WHAT THE INVESTOR SAID BACK ──────────────────────────────────────────────────────────────
    "With the investor" used to be a dead end that only a reminder ever escaped. */
 function InvestorAnswer({ appId, drawId, delivery, answers, reload }) {
@@ -3600,6 +3630,7 @@ function InvestorAnswer({ appId, drawId, delivery, answers, reload }) {
         {delivery.expected_funding_date ? ` · funding ${delivery.expected_funding_date}` : ''}
         {delivery.answer_note ? <span style={{ display: 'block' }}>“{delivery.answer_note}”</span> : null}
         {label ? <span style={{ display: 'block', color: '#4B585C' }}>{label.next}</span> : null}
+        <InvestorReplies delivery={delivery} />
       </div>
     );
   }
@@ -3628,6 +3659,7 @@ function InvestorAnswer({ appId, drawId, delivery, answers, reload }) {
           aria-label="What the investor said, in their words"
           style={{ width: '100%', boxSizing: 'border-box', marginTop: 8, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--hairline,#E4E0D6)', fontSize: 14, color: '#141B22' }} />
       )}
+      <InvestorReplies delivery={delivery} />
       {err ? <div className="act-card-sub" style={{ color: 'var(--danger,#B4453C)' }}>{err}</div> : null}
     </div>
   );

@@ -52,7 +52,8 @@ router.post('/test-email', async (req, res) => {
     note: 'You can safely ignore this message.',
   });
   try {
-    const r = await provider.sendMail({ to, subject: built.subject, text: built.text, html: built.html });
+    const r = await provider.sendMail({ to, subject: built.subject, text: built.text, html: built.html,
+      replyTo: cfg.replyToDefault || undefined });
     return res.json({ ok: !!(r && r.ok), provider: cfg.emailProvider, from: cfg.notifyFrom, to, id: r && r.id });
   } catch (e) {
     return res.status(502).json({ ok: false, provider: cfg.emailProvider, from: cfg.notifyFrom, to, error: e.message });

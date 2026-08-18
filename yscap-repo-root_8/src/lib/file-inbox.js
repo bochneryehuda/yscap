@@ -567,7 +567,10 @@ async function forwardToAssignees({ applicationId, fromEmail, subject, text, htm
       cc: ccEmails.length ? ccEmails : undefined,
       subject: built.subject, text: built.text, html: built.html,
       attachments: atts,
-      replyTo: fileReplyTo(applicationId),
+      // The monitored fallback means the forward is never reply-less even when
+      // no inbound domain is configured (owner-directed 2026-08-18 — a reply
+      // must always land somewhere a human reads).
+      replyTo: fileReplyTo(applicationId) || cfg.replyToDefault || undefined,
     });
     // A provider soft-failure ({ok:false}) is a failure — never record a forward
     // that did not actually go out.

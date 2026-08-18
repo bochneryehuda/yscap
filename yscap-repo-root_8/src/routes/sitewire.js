@@ -2766,12 +2766,31 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
         `SELECT DISTINCT ON (sitewire_draw_id)
                 id, sitewire_draw_id, funding_mode, note_buyer_label, sent_at, status,
                 answer, answered_at, answer_note, expected_funding_date,
-                investor_total_cents, to_borrower_cents, to_us_cents,
+                investor_total_cents, to_borrower_cents, to_us_cents, thread_key,
                 GREATEST(0, EXTRACT(EPOCH FROM (now() - sent_at))/86400)::int AS days_waiting
            FROM draw_investor_deliveries
           WHERE application_id=$1
           ORDER BY sitewire_draw_id, sent_at DESC`, [appId])).rows;
-    } catch (_) { /* an older database has no answer columns — the desk simply shows less */ }
+      // THE INVESTOR'S ACTUAL REPLIES (owner-directed 2026-08-18): the delivery
+      // email replies to the file's unique address, so the answer lands in
+      // email_messages under the delivery's stored thread_key — surfaced here so
+      // the desk reads what the investor SAID, not only the hand-picked answer
+      // dropdown. Inbound only (the outbound send is the delivery row itself);
+      // previews only — the Email Center holds the full bodies.
+      const tkeys = investorDeliveries.map((d) => d.thread_key).filter(Boolean);
+      if (tkeys.length) {
+        const rep = (await db.query(
+          `SELECT thread_key, id, from_email, from_name, subject, preview, occurred_at,
+                  CASE WHEN jsonb_typeof(attachments)='array' THEN jsonb_array_length(attachments) ELSE 0 END AS attachment_n
+             FROM email_messages
+            WHERE application_id=$1 AND thread_key = ANY($2) AND direction='inbound'
+            ORDER BY occurred_at ASC
+            LIMIT 60`, [appId, tkeys])).rows;
+        const byKey = {};
+        for (const m of rep) { (byKey[m.thread_key] = byKey[m.thread_key] || []).push(m); }
+        for (const d of investorDeliveries) d.replies = byKey[d.thread_key] || [];
+      }
+    } catch (_) { /* an older database has no answer/thread columns — the desk simply shows less */ }
     res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, oop, waivers, release,
       investor_fee: investorFeeRule,
       investor_deliveries: investorDeliveries,

@@ -351,7 +351,9 @@ async function emailExternalParticipants(conv, message, senderName, alreadyEmail
       replyMarker: canReply ? CHAT_REPLY_MARKER : '',
     }, 'staff');
     email.sendMail({ to: [ep.email], subject: msg.subject, text: msg.text, html: msg.html,
-      replyTo: replyToFor(ep.reply_key),
+      // Monitored fallback so the guest's copy is never reply-less when no
+      // inbound domain is configured (owner-directed 2026-08-18).
+      replyTo: replyToFor(ep.reply_key) || cfg.replyToDefault || undefined,
       _ctx: { applicationId: conv.application_id, type: 'message', audience: 'staff' } }).catch(() => {});
     db.query(`UPDATE conversation_external_participants SET last_emailed_seq=GREATEST(last_emailed_seq,$2) WHERE id=$1`,
       [ep.id, message.seq]).catch(() => {});
@@ -817,7 +819,7 @@ async function sendChatEmailToMember({ conv, member, message, ctx, senderName, a
   // file+ inbox reply-to only when no inbound domain is configured (#68).
   const chatReplyTo = await memberReplyToFor(conv.id, member.member_kind, member.member_id);
   await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments,
-    replyTo: chatReplyTo || fileReplyTo(conv.application_id),
+    replyTo: chatReplyTo || fileReplyTo(conv.application_id) || cfg.replyToDefault || undefined,
     _ctx: { applicationId: conv.application_id, type: 'message', audience: member.member_kind === 'borrower' ? 'borrower' : 'staff' } });
   // Record this message's seq in the member's EMAILED SET so the deferred backstop
   // (queued alongside every immediate send) sees it already handled and stays silent,
@@ -1217,7 +1219,7 @@ async function fireChatEmail(j) {
       // (retry) rather than the old swallow-and-mark-done, which silently dropped a
       // digest on any transient provider/DB error.
       await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments,
-        replyTo: chatReplyTo || fileReplyTo(conv.application_id),
+        replyTo: chatReplyTo || fileReplyTo(conv.application_id) || cfg.replyToDefault || undefined,
         _ctx: { applicationId: conv.application_id, type: 'message', audience: j.recipient_kind === 'borrower' ? 'borrower' : 'staff' } });
       // Sent: add every seq this digest covered to the EMAILED set so it's never
       // repeated (by a later digest triggered by a newer message, or the immediate

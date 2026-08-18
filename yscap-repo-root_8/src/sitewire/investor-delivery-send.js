@@ -744,12 +744,29 @@ async function sendInvestorDelivery(appId, drawId, {
 
   let status = 'sent';
   let errText = null;
+  // THE UNIQUE REPLY-TO (owner-directed 2026-08-18: "when sending out an email
+  // to an investor, it should have a unique reply-to … open up the inbox in the
+  // investor delivery to see the investor's response. It should also be
+  // delivered to the team"). Reply-To is the file's own file+<id>@ address, so
+  // the investor's reply fans out to everyone assigned to the file AND is
+  // captured into the file's Email Center — the desk falls back only when no
+  // inbound reply domain is configured (then replies still reach the humans at
+  // draws@). The team is already visibly on the email itself (pre.cc).
+  //
+  // `threadKey` pins this send to the SAME conversation key an inbound
+  // "Re: <subject>" reply derives (email-log normalizes both through
+  // normalizeSubject), and is stored on the delivery row below so the desk's
+  // delivery card can show the investor's actual replies.
+  const FA = require('../lib/file-address');
+  const emailLog = require('../lib/email-log');
+  const uniqueReplyTo = FA.fileReplyTo(appId) || DESK;
+  const threadKey = emailLog.threadKeyFor(appId, wording.subject);
   try {
     await email.sendMail({
       to: pre.to,
       cc: pre.cc,
       from: deskFrom(),
-      replyTo: DESK,
+      replyTo: uniqueReplyTo,
       subject: wording.subject,
       text,
       html,
@@ -759,7 +776,7 @@ async function sendInvestorDelivery(appId, drawId, {
       // that investor actually get, and why not the others?" is answerable from the audit log and
       // from a log search — not only from this one table that one card reads.
       _ctx: {
-        applicationId: appId, type: 'draw_investor_delivery', audience: 'staff',
+        applicationId: appId, type: 'draw_investor_delivery', audience: 'staff', threadKey,
         ...attachPlan.auditFrom(plan, {
           links_n: links.length,
           // WHO knowingly sent it short, and when. This is the record behind "if the person still
@@ -780,8 +797,8 @@ async function sendInvestorDelivery(appId, drawId, {
        (application_id, sitewire_draw_id, funding_mode, note_buyer_label, note_buyer_key,
         requested_cents, approved_cents, fee_cents, retainage_held_cents,
         to_borrower_cents, to_us_cents, investor_total_cents,
-        to_emails, cc_emails, attachments, skipped, status, error, note, sent_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id, sent_at`,
+        to_emails, cc_emails, attachments, skipped, status, error, note, sent_by, thread_key)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id, sent_at`,
     [appId, drawId, useMode, pre.note_buyer, pre.note_buyer_key,
       money.requested_cents, money.approved_cents, money.fee_cents, money.retainage_held_cents,
       money.to_borrower_cents, money.to_us_cents, money.investor_total_cents,
@@ -795,7 +812,7 @@ async function sendInvestorDelivery(appId, drawId, {
         ...items.map((i) => ({ filename: i.filename, what: i.what, bytes: i.bytes || (i.buf ? i.buf.length : null), rendition: i.rendition || null, compression: i.compression || null })),
         ...links.map((l) => ({ filename: l.filename, what: l.what, bytes: l.bytes, link: l.url, expires_at: l.expiresAt })),
       ]),
-      F.jsonbText(skipped), status, errText, noteText, staffId])).rows[0];
+      F.jsonbText(skipped), status, errText, noteText, staffId, threadKey])).rows[0];
 
   if (status === 'error') { const e = new Error(errText || 'the delivery email could not be sent'); e.status = 502; throw e; }
 

@@ -9491,7 +9491,11 @@ router.post('/applications/:id/assign', async (req, res) => {
             ],
             applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your file',
             from: require('../lib/email').fromWithName(oname),
-            replyTo: oa.email || null,
+            // Owner-directed 2026-08-18: the per-file reply-to wins — the body
+            // above promises "reply and it goes straight to your loan team",
+            // which is only true of the file+ address (it fans out to the whole
+            // team). The officer's inbox is the fallback with no reply domain.
+            replyTo: require('../lib/file-address').fileReplyTo(req.params.id) || oa.email || null,
           });
         } catch (_) { /* intro email is best-effort */ }
       }
