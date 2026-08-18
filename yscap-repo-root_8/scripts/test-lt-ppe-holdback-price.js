@@ -23,6 +23,8 @@
  *   §6  the honest edge: a holdback CAN push a price down into the sheet's floor, and when it does the
  *       rung says `clamped` rather than quietly reporting a price the floor did not allow
  *   §7  every quote REPORTS the holdback it applied
+ *   §8  a sheet whose base prices ALREADY carry the holdback is REFUSED, not quoted 0.250 light —
+ *       the two halves that are each right and wrong together (2.69)
  *
  * No database. Runs offline.
  */
@@ -188,7 +190,19 @@ console.log("\n§6 WHEN THE HOLDBACK MEETS THE SHEET'S FLOOR, THE RUNG SAYS SO")
 // ---------------------------------------------------------------------------
 console.log('\n§7 THE QUOTE SAYS WHAT IT TOOK OFF');
 {
-  const program = rateSheetToProgram(gridToRateSheet(buildDeephavenGrid()),
+  // ⛔ THIS SECTION IS DELIBERATELY NOT RUN ON THE DEEPHAVEN SHEET AS PUBLISHED, and the reason is the
+  // whole of §8 below: that sheet's base ladder is on the LP-MEASURED side of the owner's subtraction,
+  // so the holdback is ALREADY INSIDE its prices and taking it off again is a double count. Until
+  // 2026-08-18 this section quoted exactly that combination and asserted it PRICED — encoding the
+  // double count as the expected answer. It passed because each half was right on its own.
+  //
+  // The requirement it exists for — "every quote reports the holdback it applied" — is real and is
+  // still tested here, on an ordinary sheet: one that states no frame, which is every sheet but
+  // Deephaven's. Dropping `priceFrame` is what makes this grid stand for such a sheet, and it is done
+  // out loud rather than by reaching for a program that happens not to declare one.
+  const grid = buildDeephavenGrid();
+  delete grid.priceFrame;                     // an ordinary sheet: prices GROSS of our holdback
+  const program = rateSheetToProgram(gridToRateSheet(grid),
     { code: 'DHVN_DSCR30', name: 'Deephaven DSCR 30yr', investorCode: 'DHVN' });
   const settings = { 'pricing.correspondent_margin_milli': 250, 'pricing.rounding_mode': 'none', 'pricing.price_floor_milli': null };
   const facts = lpScenarioToFacts(buildAgreementScenarios().scenarios.find((s) => true));
@@ -202,6 +216,50 @@ console.log('\n§7 THE QUOTE SAYS WHAT IT TOOK OFF');
   } else {
     ok(false, 'the first battery scenario should price (fixture problem, not a code problem)');
   }
+}
+
+// ---------------------------------------------------------------------------
+// §8  THE HOLDBACK IS NEVER TAKEN OFF TWICE
+// ---------------------------------------------------------------------------
+console.log('\n§8 A SHEET WHOSE PRICES ALREADY CARRY THE HOLDBACK IS REFUSED, NOT QUOTED');
+{
+  const program = rateSheetToProgram(gridToRateSheet(buildDeephavenGrid()),
+    { code: 'DHVN_DSCR30', name: 'Deephaven DSCR 30yr', investorCode: 'DHVN' });
+  const settings = { 'pricing.correspondent_margin_milli': 250, 'pricing.rounding_mode': 'none', 'pricing.price_floor_milli': null };
+  const facts = lpScenarioToFacts(buildAgreementScenarios().scenarios.find((s) => true));
+
+  eq(program.priceFrame, 'lp_post_holdback',
+    'the published Deephaven sheet declares that its prices are already net of the holdback');
+
+  // WITHOUT a holdback it prices exactly as it always has — which is the state production is in, and
+  // why this defect is latent rather than live.
+  const bare = quoteProgram({ scenario: facts, program, settings });
+  ok(bare.eligible && bare.ladder && bare.ladder.length,
+    'with no holdback configured it prices normally — the frame alone changes nothing');
+
+  // WITH one, it refuses rather than quoting a number 0.250 below what Lender Price shows.
+  const q = quoteProgram({ scenario: facts, program, settings, marginHoldback: { marginMilli: 250, holdbackMilli: 250 } });
+  eq(q.priced, false, 'with a holdback it does NOT price');
+  eq(q.reason, 'holdback_double_counted', '…and says exactly why');
+  eq(q.eligible, bare.eligible,
+    '…while eligibility is UNCHANGED — refusing to price is not a decline, and a pricing frame must never turn into one');
+  ok(/already net of the margin holdback/.test(q.summary || ''),
+    '…naming which half is which, so whoever hits it knows what to move');
+
+  // AND THE NUMBER IT REFUSED TO QUOTE IS THE ONE THE DEFECT WOULD HAVE PRODUCED. Proven rather than
+  // described: price the same cell through the same engine with the frame stripped, and it is exactly
+  // 0.250 light against the sheet's own LP-measured base.
+  const stripped = buildDeephavenGrid();
+  delete stripped.priceFrame;
+  const asIfUnguarded = quoteProgram({
+    scenario: facts,
+    program: rateSheetToProgram(gridToRateSheet(stripped), { code: 'X', name: 'X', investorCode: 'DHVN' }),
+    settings,
+    marginHoldback: { marginMilli: 250, holdbackMilli: 250 },
+  });
+  ok(asIfUnguarded.ladder && bare.ladder
+    && bare.ladder[0].finalPriceMilli - asIfUnguarded.ladder[0].finalPriceMilli === 250,
+    '…and unguarded it would have quoted exactly 0.250 below the LP-measured price');
 }
 
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`} (${pass} passed, ${failures} failed)`);

@@ -302,9 +302,6 @@ function quoteProgram(arg, opts) {
     ? mh.marginMilli : null;
   const margin = mhMargin != null ? mhMargin : s['pricing.correspondent_margin_milli'];
   const marginMilli = margin == null ? 0 : margin;
-  // HOLDBACK is CARRIED for the reconstruction record only — it is NOT applied to price.
-  // How holdback combines into the final borrower rate is a MONEY rule that needs the owner's
-  // exact formula (never guessed) — see docs/longterm/PPE-MARGIN-HOLDBACK-PLAN.md §5 Layer 3.
   // HOLDBACK — APPLIED to the price since 2026-08-18, on the owner's written direction ("instead of
   // offering the investor's raw pricing, like a 102, we're only gonna offer him a 101.75"). It is a
   // reduction in the price we OFFER, never a fee the borrower pays and never a reason a loan becomes
@@ -313,6 +310,40 @@ function quoteProgram(arg, opts) {
   // exactly as it always did.
   const holdbackMilli = mh && typeof mh.holdbackMilli === 'number' && Number.isInteger(mh.holdbackMilli) && mh.holdbackMilli >= 0
     ? mh.holdbackMilli : null;
+  // ⛔ THE HOLDBACK MUST NOT BE TAKEN OFF TWICE — and the only thing that can tell is the frame the
+  // base ladder is in, which is why `priceFrame` now travels with the prices instead of living in a
+  // paragraph.
+  //
+  // The owner's rule is "LP = the investor's sheet MINUS our 0.25 holdback", and the Deephaven base
+  // ladder is deliberately on the LP-MEASURED side of that subtraction (it is the frame the composed
+  // price is compared in). So on that sheet the holdback is ALREADY INSIDE the base. Subtracting it
+  // again — which `priceRung` has done since 2026-08-18, correctly, on the owner's written direction —
+  // puts every quote 0.25 BELOW what Lender Price shows. Reproduced at coupon 7.500: 105.175 becomes
+  // 104.925. Each half is right on its own; together they are wrong, which is why neither half's own
+  // tests could catch it.
+  //
+  // IT REFUSES RATHER THAN QUOTING. A price that is knowably 0.25 out is worse than no price: the
+  // number would be acted on, and a quote that silently disagrees with the vendor by a quarter point
+  // is exactly the class this engine exists to prevent. Refusing to price is NOT a decline — the
+  // scenario stays as eligible as it was (see `incompleteQuote`) — and it names the two halves so
+  // whoever hits it knows which one to move.
+  //
+  // The way out is the owner's to choose and is NOT guessed here: either the ladder moves onto the
+  // sheet's own pre-holdback numbers (and the subtraction then produces the right answer), or this
+  // program's holdback stays unset because its base already carries it. Recorded as an open question
+  // in §2.69.
+  //
+  // INERT TODAY. No holdback is configured for this program, so `holdbackMilli` is null and this
+  // cannot fire — which is also why the defect is latent rather than live.
+  if (holdbackMilli != null && holdbackMilli > 0 && program && program.priceFrame === 'lp_post_holdback') {
+    return incompleteQuote(programRef, decision, [{
+      code: 'holdback_double_counted',
+      detail: `this sheet's base prices are already net of the margin holdback (priceFrame lp_post_holdback), and a holdback of ${holdbackMilli / 1000} would be subtracted from them a second time — the quote would be ${holdbackMilli / 1000} below what Lender Price shows. Either move the base ladder onto the investor's own pre-holdback numbers, or leave this program's holdback unset because its base already carries it.`,
+      holdbackMilli,
+      priceFrame: program.priceFrame,
+    }]);
+  }
+
   const marginSource = mhMargin != null ? (mh.marginSource || 'resolved') : 'settings';
   const rounding = resolveRounding(s);
   const roundingMode = pl.roundingMode || rounding.mode;

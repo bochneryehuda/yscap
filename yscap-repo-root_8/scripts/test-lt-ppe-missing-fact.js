@@ -497,7 +497,31 @@ function loadStripped() {
   const hits = src.match(GUARD) || [];
   eq(hits.length, 1, 'the refusal is exactly ONE guard in quote.js (the strip cannot miss a second copy)');
   const stripped = src.replace(GUARD, '\n  // [stripped by the byte-for-byte control]');
-  ok(!/return incompleteQuote\(/.test(stripped), 'and no other return into the incomplete answer survives the strip');
+
+  // EVERY OTHER WAY INTO THE INCOMPLETE ANSWER MUST BE KNOWN BY NAME.
+  //
+  // This assertion used to read "no other return survives the strip", and it was right until
+  // 2026-08-18, when §2.69 added a SECOND, different refusal: a sheet whose base prices already carry
+  // the margin holdback refuses rather than quoting 0.250 below Lender Price. The property this
+  // control actually needs is not "there is exactly one refusal" — it is that NOTHING UNACCOUNTED FOR
+  // can make a scenario incomplete while the numbers are being compared, because a second refusal
+  // firing on one side would look like a moved price. So the known refusals are enumerated, and a
+  // third one appearing turns this red until somebody says what it is.
+  const survivors = [...stripped.matchAll(/return incompleteQuote\(programRef, decision, \[\{\s*\n?\s*code: '([a-z_]+)'/g)]
+    .map((m) => m[1]);
+  const KNOWN = ['holdback_double_counted'];
+  const unaccounted = survivors.filter((c) => !KNOWN.includes(c));
+  eq(unaccounted.length, 0,
+    `every other return into the incomplete answer is accounted for (unaccounted: ${unaccounted.join(', ') || 'none'})`);
+  eq(survivors.length, KNOWN.length,
+    `…and there are exactly ${KNOWN.length} of them (${KNOWN.join(', ')})`);
+
+  // AND THE ONE THAT SURVIVES CANNOT FIRE HERE. It needs a configured holdback, and this suite never
+  // passes one — so it cannot confound the byte-for-byte comparison below. Asserted rather than
+  // assumed: an accounted-for refusal that COULD fire would break the control just as badly as an
+  // unknown one.
+  ok(!/marginHoldback/.test(fs.readFileSync(__filename, 'utf8').split('function loadStripped')[0]),
+    '…and this suite configures no holdback, so that refusal cannot fire during the control');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lt-ppe-prefix-'));
   const file = path.join(dir, 'quote.js');
   // point the stripped copy's own requires back at the real module directory

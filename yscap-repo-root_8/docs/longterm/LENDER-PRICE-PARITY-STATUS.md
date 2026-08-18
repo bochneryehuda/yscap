@@ -737,11 +737,14 @@ is already after our 0.25 holdback … this is across the board."* So **LP's num
 view. It explains the 0.25 gap at all 28 coupons (proven to the milli-point) and applies to max price
 too (a 104 cap is 103.75 in LP). Implementation rule: store the sheet's values faithfully and apply
 the holdback as an explicit named step via the existing `margin-holdback.js` — **never a second 0.25
-literal**. ⚠️ **STILL OPEN (task #78): `quote.js` deliberately does NOT subtract the holdback from a
-price yet** (a money rule awaiting the owner's formula). **FRAME INVARIANT:** our composed price
-matches LP only because the base ladder is the LP-measured one — if it is ever moved onto the sheet's
-pre-holdback numbers, the holdback must be applied to the price **in the same change**, or every quote
-goes out 0.25 high.
+literal**. ⚠️ **SUPERSEDED — READ §2.69.** This paragraph said `quote.js` "deliberately does NOT
+subtract the holdback from a price yet"; it HAS since 2026-08-18, on the owner's written direction. The
+**FRAME INVARIANT** stated next — that our composed price matches LP only because the base ladder is the
+LP-measured one, so moving the ladder onto the sheet's pre-holdback numbers must happen **in the same
+change** that applies the holdback — is still exactly right, and it was **broken in the other
+direction**: the price half landed and the ladder half did not, so a configured holdback takes 0.25 off
+prices that already have it taken off. §2.69 measured it, made the frame travel with the prices, and
+made the engine REFUSE rather than quote 0.25 light.
 
 **⭐ OWNER ANSWER — the min-loan difference is an EXCEPTION BAND, not a conflict.** The sheet says
 $100,000, the matrix $75,000, and both are right: **< $75,000 ineligible; $75,000–$99,999 eligible and
@@ -4154,3 +4157,53 @@ belongs to the driver's own suite) — recorded as a mis-designed mutation rathe
 
 **WHAT THIS DOES NOT CHANGE.** No pricing, no schedule, no tick, no lease. One read-only endpoint became
 reachable and its answer became a card.
+
+**§2.69 — MONEY: THE HOLDBACK IS ALREADY INSIDE THE BASE, AND THE PRICE TAKES IT OFF AGAIN (2026-08-18).**
+
+**This one was predicted in writing and shipped anyway**, which is the most useful thing about it. §2.6
+recorded the FRAME INVARIANT in plain words — *"our composed price matches LP only because the base
+ladder is the LP-measured one — if it is ever moved onto the sheet's pre-holdback numbers, the holdback
+must be applied to the price in the same change, or every quote goes out 0.25 high."* **The price half
+landed on 2026-08-18 and the ladder half did not.** A sentence is not a guard.
+
+**MEASURED, not argued.** The owner's rule is *LP = the investor's sheet MINUS our 0.25 holdback*. The
+Deephaven base ladder is deliberately on the **LP-measured** side of that subtraction, so the holdback is
+**already inside those numbers**; `pricing.priceRung` then subtracts it again. Reproduced at coupon
+7.500: the sheet's base is **105.175**, and with the owner's 0.25 configured the engine produces
+**104.925** — **0.25 below what Lender Price shows**, on every scenario, in the borrower's disfavour and
+against the owner's own worked example.
+
+**IT IS LATENT, AND THAT IS THE ONLY REASON IT IS NOT LIVE.** No holdback is configured for this program
+today, so `holdbackMilli` is null and nothing double-counts — which is exactly why the existing suite's
+299-scenario inertness proof stayed green and why neither half's own tests could see it. **Each half is
+correct on its own.** They are wrong together, which is this workstream's signature defect (§2.64,
+§2.65, §2.67) in its most expensive form: money.
+
+**THE FRAME NOW TRAVELS WITH THE PRICES.** The fact that made the two halves incompatible lived in a
+paragraph in two files while the numbers moved alone, so nothing could check it. `buildDeephavenGrid()`
+now declares **`priceFrame: 'lp_post_holdback'`**, and it is carried through `gridToRateSheet` →
+`rateSheetToProgram` → the pricer. A sheet that declares nothing is unaffected, which is every other
+sheet — so this is inert except where it is true.
+
+**AND THE ENGINE REFUSES RATHER THAN QUOTING.** A price knowably 0.25 out is worse than no price: the
+number would be acted on. `quote.js` returns the established incomplete-quote shape with
+`holdback_double_counted`, naming both halves so whoever hits it knows which to move. **Refusing to
+price is NOT a decline** — eligibility is asserted unchanged, because a pricing-frame conflict must
+never turn into a refused loan.
+
+**⛔ THE WAY OUT IS THE OWNER'S CALL AND IS DELIBERATELY NOT GUESSED.** Two answers both satisfy the
+owner's sentence and they are not interchangeable: (a) move the base ladder onto the investor's **own
+pre-holdback numbers**, after which the subtraction produces the right answer and the ladder no longer
+matches LP's frame directly; or (b) leave this program's holdback **unset**, because its base already
+carries it — the state production is in today. (a) is what §2.6 anticipated; (b) is what is actually
+running. **This needs the owner to choose**, and until then the engine refuses instead of quoting.
+
+**Mutation-proven five ways**: removing the guard, the grid ceasing to declare its frame, the compiler
+dropping it, the program dropping it, and the refusal turning into a decline — each red, control green.
+
+**TWO STALE CLAIMS CORRECTED** in the same pass, both of which said the holdback is not applied: §2.6's
+paragraph (now superseded, pointing here) and the grid's own `UNMEASURED` note. And the existing
+suite's §7 was **encoding the defect as expected behaviour** — it quoted the Deephaven sheet with a
+holdback and asserted it PRICED. It now runs on an ordinary sheet (its real subject is that a quote
+reports what it took off) and the new §8 pins the refusal, including a proof that unguarded it would
+have quoted exactly 0.250 light.

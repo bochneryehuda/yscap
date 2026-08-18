@@ -257,7 +257,11 @@ function gridToRateSheet(grid = {}, opts = {}) {
   // price-time report can never say different things about the same two rules.
   for (const p of sheetOverlapProblems(adjustments, { where: 'adjustments' })) problems.push(p);
 
-  return { basePrices, adjustments, ineligibilities, priceLimit, problems };
+  // THE FRAME TRAVELS WITH THE PRICES. A base ladder already net of our holdback and one gross of it
+  // are different numbers wearing the same name, and the difference is only visible if it rides along.
+  // Absent on a sheet that never declared one, which is every sheet but Deephaven's — so this is inert
+  // unless a grid states it.
+  return { basePrices, adjustments, ineligibilities, priceLimit, problems, priceFrame: grid.priceFrame };
 }
 
 function unmilli(x, scale) { return x / scale; }

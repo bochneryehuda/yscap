@@ -337,6 +337,21 @@ function buildDeephavenGrid() {
   return {
     investor: 'DHVN', program: 'DSCR30', scale: 1000, lockDays: 30,
     terms: [{ key: '30F', product: '30 Yr Fixed' }],
+    // WHICH FRAME THESE PRICES ARE IN, DECLARED — not left to a paragraph.
+    //
+    // The owner's rule is "LP = the investor's sheet MINUS our 0.25 holdback", and this ladder is
+    // deliberately on the LP-MEASURED side of that subtraction, because LP's frame is the one the
+    // composed price is compared in. So the holdback is ALREADY INSIDE these numbers.
+    //
+    // Since 2026-08-18 `pricing.priceRung` also SUBTRACTS the holdback from the price, on the owner's
+    // written direction. Each half is right; together they take it off twice, and a configured 0.25
+    // puts every quote 0.25 BELOW what Lender Price shows (reproduced: 105.175 -> 104.925). It is
+    // latent only because no holdback is configured for this program today.
+    //
+    // The prices could not carry that fact, so nothing could check it — the frame lived in prose in
+    // two files while the numbers travelled alone. It travels with them now, and `quote.js` REFUSES to
+    // price rather than quote a number that is knowably 0.25 wrong.
+    priceFrame: 'lp_post_holdback',
     base: BASE.map(([coupon, basePoints]) => ({ coupon, prices: { '30F': 100 - basePoints } })),
     ficoCltvByDscr: [{
       dscr: { min: null, max: null }, // DSCR-INDEPENDENT ("DSCR (All)")
@@ -420,7 +435,7 @@ const UNMEASURED = [
   'the sheet\'s Foreign National row — a borrower TYPE, not a FICO band; there is no fact to key it on, so it is not encoded (would need a foreign_national dimension)',
   'non-warrantable on a non-condo (SFR) — the NW line was measured only on a condo',
   'Short-Term Rental: the VALUES are the sheet\'s, but Lender Price\'s own adjType/reason for this family is UNCONFIRMED (never measured live), so the agreement harness may surface it as a one-sided difference until a live probe pins the LP shape',
-  'BASE LADDER — ANSWERED (owner 2026-08-17), and it is the same answer for every price on this sheet: "Lender Price max price is already after our 0.25 holdback … this is across the board." The sheet carries the INVESTOR\'s pre-holdback numbers and Lender Price shows the POST-holdback view, so LP = sheet − our margin holdback. Our BASE stays on the LP-measured values (it is the frame the composed price is compared in) and the 0.25 gap at all 28 coupons is now EXPLAINED, not unexplained — proven to the milli-point in test-lt-ppe-deephaven-dscr-prepay-maxprice.js §6. WHAT IS STILL OPEN is the WIRING: quote.js deliberately does not subtract the holdback from a price yet (its own comment: a money rule needing the owner\'s exact formula), so moving this ladder onto the sheet\'s own numbers must happen in the SAME change that applies the holdback to the price, or every quote goes out 0.25 high',
+  'BASE LADDER — ANSWERED (owner 2026-08-17), and it is the same answer for every price on this sheet: "Lender Price max price is already after our 0.25 holdback … this is across the board." The sheet carries the INVESTOR\'s pre-holdback numbers and Lender Price shows the POST-holdback view, so LP = sheet − our margin holdback. Our BASE stays on the LP-measured values (it is the frame the composed price is compared in) and the 0.25 gap at all 28 coupons is now EXPLAINED, not unexplained — proven to the milli-point in test-lt-ppe-deephaven-dscr-prepay-maxprice.js §6. WIRING — CORRECTED 2026-08-18 (see parity doc 2.69): quote.js DOES subtract the holdback now, and this ladder did NOT move, so the two together took it off twice. The grid therefore DECLARES its frame (priceFrame lp_post_holdback, above) and quote.js refuses to price this sheet with a holdback rather than quoting 0.25 below Lender Price. Moving this ladder onto the sheet\'s own pre-holdback numbers is still the other way out, and is the owner\'s call',
   'PRICE ROUNDING: the program falls back to the pricer default of nearest-1/8, but LP\'s own quotes are NOT eighth-rounded (105.175 and 105.675 are not multiples of 0.125), so the rounded price cannot tie out to LP. The rate sheet says nothing about rounding, so nothing is invented here — the sheet\'s composed price (rawPriceMilli) is what agrees with LP to the penny, and the agreement harness must compare on that until the real rounding rule is confirmed',
 ];
 

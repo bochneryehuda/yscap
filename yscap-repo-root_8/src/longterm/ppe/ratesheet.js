@@ -138,6 +138,9 @@ function rateSheetToProgram(sheet, meta = {}) {
     rules,
     baseGrid,
     priceLimit,
+    // Carried so the pricer can tell whether the holdback is already inside baseGrid. Undefined on
+    // every sheet that does not declare one, and the pricer treats that as "not stated".
+    priceFrame: sheet.priceFrame,
   };
 }
 
