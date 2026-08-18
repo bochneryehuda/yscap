@@ -168,6 +168,11 @@ async function main() {
       '/api/lt/encompass/settings',
       '/api/lt/encompass/fields/608',
       '/api/lt/encompass/milestones/1',
+      // Safe to open with a nonsense key, and CHECKED rather than assumed:
+      // `pollDisqualifiedByKey` answers `unknown` from its own store — an in-memory
+      // map, then one read of `lt_lp_disqualify_search` — and returns BEFORE any
+      // call to LenderPrice. The route turns that into a 409, which is a pass here.
+      '/api/lt/dscr/disqualifications/no-such-search-key',
     ];
 
     // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────
@@ -186,7 +191,6 @@ async function main() {
     // actually opening the door finds it.
     const EXEMPT = {
       '/api/lt/dscr/login-check': 'dials LenderPrice to check a vendor login — a smoke test that reaches an outside company is not a smoke test, and a failure there would report OUR side as broken',
-      '/api/lt/dscr/disqualifications/:searchKey': 'polls a LenderPrice search that only exists after a POST /price kickoff, so there is nothing to poll and the call would go to the vendor',
     };
 
     const declared = deriveGetDoors();
