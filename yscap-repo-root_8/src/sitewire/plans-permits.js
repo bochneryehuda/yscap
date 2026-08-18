@@ -84,12 +84,16 @@ async function status(appId, client = db) {
   try {
     const applies = await appliesTo(appId, client);
     if (!applies) return { applies: false, itemId: null, satisfied: true };
-    const row = (await client.query(
+    // ALL rows, oldest first (audit 2026-08-18): a pre-lock race could have left a
+    // duplicate, and reading LIMIT-1-unordered could pin the gate on the copy the
+    // coordinator did NOT sign — a stuck refusal contradicting the screen. ANY
+    // satisfied row settles the fact (they are duplicates of one requirement).
+    const rows = (await client.query(
       `SELECT id, status, signed_off_at, waived_at FROM checklist_items
-        WHERE application_id=$1 AND field_key=$2 LIMIT 1`, [appId, MARKER(appId)])).rows[0];
-    if (!row) return { applies: true, itemId: null, satisfied: true };   // never raised → nothing to enforce (go-forward)
-    const satisfied = row.status === 'satisfied' || !!row.signed_off_at || !!row.waived_at;
-    return { applies: true, itemId: String(row.id), satisfied };
+        WHERE application_id=$1 AND field_key=$2 ORDER BY created_at ASC`, [appId, MARKER(appId)])).rows;
+    if (!rows.length) return { applies: true, itemId: null, satisfied: true };   // never raised → nothing to enforce (go-forward)
+    const satisfied = rows.some((r) => r.status === 'satisfied' || !!r.signed_off_at || !!r.waived_at);
+    return { applies: true, itemId: String(rows[0].id), satisfied };
   } catch (_) {
     return { applies: false, itemId: null, satisfied: true };
   }
@@ -105,9 +109,31 @@ async function status(appId, client = db) {
 async function ensureDrawPlansCondition(appId, { actorId = null, client = db } = {}) {
   if (!(await appliesTo(appId, client))) return { itemId: null, created: false, reason: 'not_ground_up' };
   if (await pastFirstDraw(appId, client)) return { itemId: null, created: false, reason: 'past_first_draw' };
+  // Serialize concurrent ensures on a per-file advisory lock (audit 2026-08-18:
+  // the Start-draw fire-and-forget, the reconcile tick and the composer gate can
+  // all land at once, and SELECT-then-INSERT with no unique index double-inserted
+  // under 6-way concurrency — the cond-eval class, same fix, its OWN key). Fails
+  // OPEN like the engine's lock: a missed lock risks one duplicate a human can
+  // delete (and status() now tolerates), refusing the ensure would be worse.
+  let lockConn = null;
+  const lockKey = `plans-ensure:${appId}`;
+  try {
+    lockConn = await db.getClient();
+    await lockConn.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
+  } catch (_) { if (lockConn) { try { lockConn.release(); } catch (_e) {} } lockConn = null; }
+  try {
+    return await ensureDrawPlansConditionLocked(appId, { actorId, client });
+  } finally {
+    if (lockConn) {
+      try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (_) {}
+      try { lockConn.release(); } catch (_) {}
+    }
+  }
+}
 
+async function ensureDrawPlansConditionLocked(appId, { actorId = null, client = db } = {}) {
   const existing = (await client.query(
-    `SELECT id FROM checklist_items WHERE application_id=$1 AND field_key=$2 LIMIT 1`,
+    `SELECT id FROM checklist_items WHERE application_id=$1 AND field_key=$2 ORDER BY created_at ASC LIMIT 1`,
     [appId, MARKER(appId)])).rows[0];
   let itemId = existing ? String(existing.id) : null;
   let created = false;
