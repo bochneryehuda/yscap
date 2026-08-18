@@ -3805,8 +3805,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                         // Assets & liquidity: show the registered requirement summary
                         // on the internal login too (#85), not just a bare "document".
                         const liq = it.tool_payload && it.tool_payload.liquidity;
+                        // Max cash to close (db/574) — stamped by the assets ledger under its
+                        // OWN key (liquidity.* is replaced wholesale on every re-register).
+                        const al = it.tool_payload && it.tool_payload.assetLedger;
+                        const maxBit = al && al.maxCashToClose != null ? ` · max cash to close ${money2(al.maxCashToClose)}` : '';
                         return liq && liq.required != null
-                          ? `Required liquidity ${money2(liq.required)}${liq.cashToClose ? ` · cash to close ${money2(liq.cashToClose)}` : ''}${liq.reserveRequirement ? ` · reserves ${money2(liq.reserveRequirement)}` : ''}`
+                          ? `Required liquidity ${money2(liq.required)}${liq.cashToClose ? ` · cash to close ${money2(liq.cashToClose)}` : ''}${liq.reserveRequirement ? ` · reserves ${money2(liq.reserveRequirement)}` : ''}${maxBit}`
                           : 'Assets & bank statements — the required liquidity is set the moment a product is registered';
                       })()
                     : it.template_code === 'rtl_p5_assign' ? (() => {

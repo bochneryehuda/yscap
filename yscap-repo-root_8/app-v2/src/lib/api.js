@@ -1126,6 +1126,10 @@ export const api = {
   advanceClosing:    (appId, stage) => req('POST', `/api/staff/applications/${appId}/closing-workflow`, { stage }),
   // The closing workspace (the closer's desk).
   closingWorkspace:  (appId) => req('GET', `/api/staff/applications/${appId}/closing`),
+  // The verified-assets ledger + max cash to close (db/574).
+  assetLedger:       (appId) => req('GET', `/api/staff/applications/${appId}/asset-ledger`),
+  assetLedgerSave:   (appId, entry) => req('POST', `/api/staff/applications/${appId}/asset-ledger/entries`, entry),
+  assetLedgerDelete: (appId, entryId) => req('DELETE', `/api/staff/applications/${appId}/asset-ledger/entries/${entryId}`),
   // Read-only Encompass re-pull, then hand back the fresh workspace — so a funded
   // date the closer just entered in Encompass shows up on the reconciliation.
   closingReconcileRefresh: (appId) => req('POST', `/api/staff/applications/${appId}/closing/reconcile-refresh`),

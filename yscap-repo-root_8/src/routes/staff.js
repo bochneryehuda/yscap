@@ -14499,6 +14499,79 @@ router.get('/applications/:id/closing', async (req, res) => {
   } catch (e) { console.warn('[closing] workspace error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
+// ===========================================================================
+// THE VERIFIED-ASSETS LEDGER + MAX CASH TO CLOSE (db/574, owner-directed
+// 2026-08-18). The bank-statement reader answers "what do the documents
+// prove?"; this ledger is the staff-editable layer on top — correct an
+// account's amount, include/exclude it, or add an account the reader never
+// saw. Max cash to close = verified assets − reserve requirement − closing
+// buffer, the algebraic inverse of the closing money gate so the two can
+// never disagree. File-scoped by the /applications/:id middleware; reads are
+// open to anyone on the file, writes are audited. Every write re-stamps the
+// assets condition (an [auto]-guarded note + tool_payload.assetLedger).
+// ===========================================================================
+router.get('/applications/:id/asset-ledger', async (req, res) => {
+  try {
+    const ledger = require('../lib/underwriting/asset-ledger');
+    res.json(await ledger.computeAssetLedger(req.params.id));
+  } catch (e) { console.warn('[asset-ledger] read error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/asset-ledger/entries', async (req, res) => {
+  const appId = req.params.id;
+  const b = req.body || {};
+  try {
+    const ledger = require('../lib/underwriting/asset-ledger');
+    const problem = ledger.entryProblem(b);
+    if (problem) return res.status(400).json({ error: problem });
+    const amount = b.amount != null && String(b.amount).trim() !== '' ? Number(b.amount) : null;
+    const include = typeof b.include === 'boolean' ? b.include : null;
+    const trim = (v, n) => { const s = String(v == null ? '' : v).trim(); return s ? s.slice(0, n) : null; };
+    if (b.kind === 'override') {
+      // One override per (file, account): the upsert replaces a prior correction.
+      await db.query(
+        `INSERT INTO asset_ledger_entries
+           (application_id, kind, account_key, institution, account_number, holder, amount, include, note, created_by)
+         VALUES ($1,'override',$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (application_id, account_key) WHERE kind='override'
+         DO UPDATE SET amount=EXCLUDED.amount, include=EXCLUDED.include, note=EXCLUDED.note,
+                       institution=EXCLUDED.institution, account_number=EXCLUDED.account_number,
+                       holder=EXCLUDED.holder, updated_at=now()`,
+        [appId, trim(b.accountKey, 400), trim(b.institution, 160), trim(b.accountNumber, 60),
+         trim(b.holder, 160), amount, include, trim(b.note, 600), req.actor.id]);
+    } else {
+      await db.query(
+        `INSERT INTO asset_ledger_entries
+           (application_id, kind, institution, account_number, holder, amount, include, note, created_by)
+         VALUES ($1,'manual',$2,$3,$4,$5,$6,$7,$8)`,
+        [appId, trim(b.institution, 160), trim(b.accountNumber, 60), trim(b.holder, 160),
+         amount, include !== null ? include : true, trim(b.note, 600), req.actor.id]);
+    }
+    await audit(req, 'asset_ledger_entry', 'application', appId, {
+      kind: b.kind, accountKey: b.accountKey || null, amount, include,
+      holder: trim(b.holder, 160), institution: trim(b.institution, 160),
+    });
+    const led = await ledger.stampCondition(appId) || await ledger.computeAssetLedger(appId);
+    res.json({ ok: true, ledger: led });
+  } catch (e) { console.warn('[asset-ledger] write error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.delete('/applications/:id/asset-ledger/entries/:entryId', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    if (!/^[0-9a-f-]{36}$/i.test(String(req.params.entryId || ''))) return res.status(400).json({ error: 'bad entry id' });
+    const ledger = require('../lib/underwriting/asset-ledger');
+    const r = await db.query(
+      `DELETE FROM asset_ledger_entries WHERE application_id=$1 AND id=$2
+       RETURNING kind, account_key, holder, institution, amount`,
+      [appId, req.params.entryId]);
+    if (!r.rows.length) return res.status(404).json({ error: 'not found' });
+    await audit(req, 'asset_ledger_entry_removed', 'application', appId, r.rows[0]);
+    const led = await ledger.stampCondition(appId) || await ledger.computeAssetLedger(appId);
+    res.json({ ok: true, ledger: led });
+  } catch (e) { console.warn('[asset-ledger] delete error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
 // Refresh the funded-date reconciliation from Encompass (owner-reported 2026-08-11:
 // "if you just filled it in, it should pull to see if it was filled"). The closing
 // reconciliation reads the Encompass funded date out of the STORED snapshot
