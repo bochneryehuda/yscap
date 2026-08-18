@@ -165,104 +165,127 @@ export function BorrowerProfileForm({ b, onSaved, onCancel }) {
   return (
     <div>
       {err && <div role="alert" className="notice err">{err}</div>}
-      <div className="ts-inputs">
-        {/* The legal name is correctable here (owner-directed 2026-07-26): a file
-            opened under a nickname created the profile under that nickname, and
-            there was nowhere to fix it. Saving pushes it to ClickUp too.
+      {/* THE MODERN SECTIONED LAYOUT (owner-directed 2026-08-18: "the text on top of
+          the field is too big, the box is coming out of place … restructure the
+          design … extremely modern"). Every field the form ever had is still here —
+          nothing was removed, only grouped: who they are · contact · where they
+          live · personal financials · W-2 employment. The .bpf-grid reserves the
+          caption box, so a long caption ("Rent / mortgage per month") wraps INSIDE
+          its reserved space and every input in the row stays level. */}
 
-            THE ONE BIG NAME FIELD stays (owner-directed 2026-07-27): typing the
-            whole name in the big box splits it into the parts below as you type,
-            and typing a part rebuilds the big box. Either way the same four
-            fields are saved, so nothing that reads a name changes. */}
-        <label style={{ gridColumn: '1 / -1' }}><span>Full name</span>
-          <input className="input" value={f.fullName}
-            onChange={e => setF({ ...f, fullName: e.target.value, ...splitName(e.target.value) })}
-            title="Their whole legal name. This is what every screen, email, term sheet and ClickUp card shows." /></label>
-        <label><span>First name</span><input className="input" value={f.firstName}
-          onChange={e => setF(s => rejoin({ ...s, firstName: e.target.value }))}
-          title="Their real legal first name. Saving updates the profile and every linked ClickUp card." /></label>
-        <label><span>Middle name <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></span>
-          <input className="input" value={f.middleName}
-            onChange={e => setF(s => rejoin({ ...s, middleName: e.target.value }))}
-            title="Leave empty if they do not have one." /></label>
-        <label><span>Last name</span><input className="input" value={f.lastName}
-          onChange={e => setF(s => rejoin({ ...s, lastName: e.target.value }))} /></label>
-        <label><span>Suffix <span style={{ color: '#4B585C', fontWeight: 400 }}>(optional)</span></span>
-          <input className="input" placeholder="Jr., III" value={f.nameSuffix}
-            onChange={e => setF(s => rejoin({ ...s, nameSuffix: e.target.value }))} /></label>
-        <label><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
-        <label><span>Cell phone</span><PhoneInput value={f.cellPhone} onChange={v => setF({ ...f, cellPhone: v })} /></label>
-        <label><span>Contact type</span>
-          <select className="input" value={f.contactType} onChange={e => setF({ ...f, contactType: e.target.value })}>
-            <option value="">Select…</option>{withCurrent(CONTACT_TYPE, f.contactType).map(c => <option key={c} value={c}>{c}</option>)}
-          </select></label>
-        <label><span>Marital status</span>
-          <select className="input" value={f.maritalStatus} onChange={e => setF({ ...f, maritalStatus: e.target.value })}>
-            <option value="">Select…</option>{withCurrent(MARITAL, f.maritalStatus).map(c => <option key={c} value={c}>{c}</option>)}
-          </select></label>
-        <label><span>Citizenship</span>
-          <select className="input" value={f.citizenship} onChange={e => setF({ ...f, citizenship: e.target.value })}>
-            <option value="">Select…</option>{withCurrent(CITIZENSHIP, f.citizenship).map(c => <option key={c} value={c}>{c}</option>)}
-          </select></label>
-        <label><span>Date of birth</span><input className="input" type="date" value={f.dob}
-          onChange={e => setF({ ...f, dob: e.target.value })}
-          title="Saving applies to the borrower profile and every linked ClickUp task (audited)" /></label>
-        <label><span>FICO</span><input className="input" inputMode="numeric" maxLength={3}
-          placeholder="300–850" value={f.fico}
-          onChange={e => setF({ ...f, fico: cleanFICO(e.target.value) })}
-          title="Normally comes from the credit pull — enter it when you have the score before the pull, or to correct a wrong one." /></label>
-        <label><span>Primary officer</span>
-          <select className="input" value={f.primaryOfficerId} onChange={e => setF({ ...f, primaryOfficerId: e.target.value })}>
-            <option value="">—</option>
-            {team.map(t => <option key={t.id} value={t.id}>{t.full_name}</option>)}
-          </select></label>
+      <div className="bpf-sec">
+        <div className="bpf-sec-h"><b>Who they are</b><span>legal name and identity — every screen, email and term sheet reads this</span></div>
+        <div className="bpf-grid">
+          {/* THE ONE BIG NAME FIELD stays (owner-directed 2026-07-27): typing the
+              whole name splits it into the parts as you type, and typing a part
+              rebuilds the big box. Same four fields saved either way. */}
+          <label className="bpf-span4"><span>Full legal name</span>
+            <input className="input" value={f.fullName}
+              onChange={e => setF({ ...f, fullName: e.target.value, ...splitName(e.target.value) })}
+              title="Their whole legal name. This is what every screen, email, term sheet and ClickUp card shows." /></label>
+          <label><span>First name</span><input className="input" value={f.firstName}
+            onChange={e => setF(s => rejoin({ ...s, firstName: e.target.value }))}
+            title="Their real legal first name. Saving updates the profile and every linked ClickUp card." /></label>
+          <label><span>Middle name<span className="bpf-opt">(optional)</span></span>
+            <input className="input" value={f.middleName}
+              onChange={e => setF(s => rejoin({ ...s, middleName: e.target.value }))}
+              title="Leave empty if they do not have one." /></label>
+          <label><span>Last name</span><input className="input" value={f.lastName}
+            onChange={e => setF(s => rejoin({ ...s, lastName: e.target.value }))} /></label>
+          <label><span>Suffix<span className="bpf-opt">(optional)</span></span>
+            <input className="input" placeholder="Jr., III" value={f.nameSuffix}
+              onChange={e => setF(s => rejoin({ ...s, nameSuffix: e.target.value }))} /></label>
+          <label><span>Date of birth</span><input className="input" type="date" value={f.dob}
+            onChange={e => setF({ ...f, dob: e.target.value })}
+            title="Saving applies to the borrower profile and every linked ClickUp task (audited)" /></label>
+          <label><span>Citizenship</span>
+            <select className="input" value={f.citizenship} onChange={e => setF({ ...f, citizenship: e.target.value })}>
+              <option value="">Select…</option>{withCurrent(CITIZENSHIP, f.citizenship).map(c => <option key={c} value={c}>{c}</option>)}
+            </select></label>
+          <label><span>Marital status</span>
+            <select className="input" value={f.maritalStatus} onChange={e => setF({ ...f, maritalStatus: e.target.value })}>
+              <option value="">Select…</option>{withCurrent(MARITAL, f.maritalStatus).map(c => <option key={c} value={c}>{c}</option>)}
+            </select></label>
+          <label><span>Dependents</span>
+            <input className="input" inputMode="numeric" value={f.dependentsCount}
+              onChange={e => setF({ ...f, dependentsCount: e.target.value })} /></label>
+        </div>
       </div>
-      <div style={{ fontWeight: 600, margin: '12px 0 6px', color: '#141B22' }}>Current address</div>
-      <div className="ts-inputs">
-        <label style={{ gridColumn: '1 / -1' }}><span>Street</span>
-          <AddressAutocomplete value={f.ca.line1 || ''} onChange={v => setCa('line1', v)}
-            onPick={addr => setF(s => ({ ...s, ca: { ...s.ca, line1: addr.line1 || '', city: addr.city || '', state: (addr.state || '').toUpperCase(), zip: addr.zip || '' } }))} /></label>
-        <label><span>City</span><input className="input" value={f.ca.city || ''} onChange={e => setCa('city', e.target.value)} /></label>
-        <label><span>State</span><input className="input" value={f.ca.state || ''} onChange={e => setCa('state', e.target.value)} /></label>
-        <label><span>ZIP</span><ZipInput value={f.ca.zip || ''} onChange={v => setCa('zip', v)} /></label>
+
+      <div className="bpf-sec">
+        <div className="bpf-sec-h"><b>Contact &amp; team</b><span>how to reach them, and who owns the relationship</span></div>
+        <div className="bpf-grid">
+          <label className="bpf-span2"><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
+          <label><span>Cell phone</span><PhoneInput value={f.cellPhone} onChange={v => setF({ ...f, cellPhone: v })} /></label>
+          <label><span>Contact type</span>
+            <select className="input" value={f.contactType} onChange={e => setF({ ...f, contactType: e.target.value })}>
+              <option value="">Select…</option>{withCurrent(CONTACT_TYPE, f.contactType).map(c => <option key={c} value={c}>{c}</option>)}
+            </select></label>
+          <label className="bpf-span2"><span>Primary officer</span>
+            <select className="input" value={f.primaryOfficerId} onChange={e => setF({ ...f, primaryOfficerId: e.target.value })}>
+              <option value="">—</option>
+              {team.map(t => <option key={t.id} value={t.id}>{t.full_name}</option>)}
+            </select></label>
+        </div>
       </div>
-      <div style={{ fontWeight: 600, margin: '12px 0 6px', color: '#141B22' }}>Mailing address (if different)</div>
-      <div className="ts-inputs">
-        <label style={{ gridColumn: '1 / -1' }}><span>Street</span>
-          <AddressAutocomplete value={f.ma.line1 || ''} onChange={v => setMa('line1', v)}
-            onPick={addr => setF(s => ({ ...s, ma: { ...s.ma, line1: addr.line1 || '', city: addr.city || '', state: (addr.state || '').toUpperCase(), zip: addr.zip || '' } }))} /></label>
-        <label><span>City</span><input className="input" value={f.ma.city || ''} onChange={e => setMa('city', e.target.value)} /></label>
-        <label><span>State</span><input className="input" value={f.ma.state || ''} onChange={e => setMa('state', e.target.value)} /></label>
-        <label><span>ZIP</span><ZipInput value={f.ma.zip || ''} onChange={v => setMa('zip', v)} /></label>
+
+      <div className="bpf-sec">
+        <div className="bpf-sec-h"><b>Where they live</b><span>home address, and the mailing address when it differs</span></div>
+        <div className="bpf-grid">
+          <label className="bpf-span4"><span>Street</span>
+            <AddressAutocomplete value={f.ca.line1 || ''} onChange={v => setCa('line1', v)}
+              onPick={addr => setF(s => ({ ...s, ca: { ...s.ca, line1: addr.line1 || '', city: addr.city || '', state: (addr.state || '').toUpperCase(), zip: addr.zip || '' } }))} /></label>
+          <label className="bpf-span2"><span>City</span><input className="input" value={f.ca.city || ''} onChange={e => setCa('city', e.target.value)} /></label>
+          <label><span>State</span><input className="input" value={f.ca.state || ''} onChange={e => setCa('state', e.target.value)} /></label>
+          <label><span>ZIP</span><ZipInput value={f.ca.zip || ''} onChange={v => setCa('zip', v)} /></label>
+          <label className="bpf-span4"><span>Mailing street<span className="bpf-opt">(only if different)</span></span>
+            <AddressAutocomplete value={f.ma.line1 || ''} onChange={v => setMa('line1', v)}
+              onPick={addr => setF(s => ({ ...s, ma: { ...s.ma, line1: addr.line1 || '', city: addr.city || '', state: (addr.state || '').toUpperCase(), zip: addr.zip || '' } }))} /></label>
+          <label className="bpf-span2"><span>Mailing city</span><input className="input" value={f.ma.city || ''} onChange={e => setMa('city', e.target.value)} /></label>
+          <label><span>Mailing state</span><input className="input" value={f.ma.state || ''} onChange={e => setMa('state', e.target.value)} /></label>
+          <label><span>Mailing ZIP</span><ZipInput value={f.ma.zip || ''} onChange={v => setMa('zip', v)} /></label>
+        </div>
       </div>
-      {/* Housing: do they own or rent, and what does it cost them each month.
-          Collected on the loan file and on the borrower's own application — the
-          profile is where it belongs, and it rides along to every new file. */}
-      <div style={{ fontWeight: 600, margin: '12px 0 6px', color: '#141B22' }}>Housing &amp; employment</div>
-      <div className="ts-inputs">
-        <label><span>Owns or rents</span>
-          <select className="input" value={f.housingStatus} onChange={e => setF({ ...f, housingStatus: e.target.value })}>
-            <option value="">Select…</option>{withCurrent(HOUSING, f.housingStatus).map(c => <option key={c} value={c}>{c}</option>)}
-          </select></label>
-        <label><span>Rent / mortgage per month</span>
-          <input className="input" inputMode="decimal" placeholder="e.g. 2,800" value={f.housingPayment}
-            onChange={e => setF({ ...f, housingPayment: e.target.value })} /></label>
-        <label><span>Years at this address</span>
-          <input className="input" inputMode="decimal" value={f.yearsAtResidence}
-            onChange={e => setF({ ...f, yearsAtResidence: e.target.value })} /></label>
-        <label><span>…plus months</span>
-          <input className="input" inputMode="numeric" value={f.monthsAtResidence}
-            onChange={e => setF({ ...f, monthsAtResidence: e.target.value })} /></label>
-        <label><span>Employment</span>
-          <select className="input" value={f.employmentType} onChange={e => setF({ ...f, employmentType: e.target.value })}
-            title="A two-way ClickUp field — a spelling it cannot translate is dropped from the push in silence, so this is a fixed list.">
-            <option value="">Select…</option>{withCurrent(EMPLOYMENT, f.employmentType).map(c => <option key={c} value={c}>{c}</option>)}
-          </select></label>
-        <label><span>Employer</span>
-          <input className="input" value={f.employer} onChange={e => setF({ ...f, employer: e.target.value })} /></label>
-        <label><span>Dependents</span>
-          <input className="input" inputMode="numeric" value={f.dependentsCount}
-            onChange={e => setF({ ...f, dependentsCount: e.target.value })} /></label>
+
+      {/* Personal financials — the housing cost that was "coming out of place" now
+          sits in its own row with a reserved caption, level with its neighbours. */}
+      <div className="bpf-sec">
+        <div className="bpf-sec-h"><b>Personal financials</b><span>housing cost, time at the address, and credit</span></div>
+        <div className="bpf-grid">
+          <label><span>Owns or rents</span>
+            <select className="input" value={f.housingStatus} onChange={e => setF({ ...f, housingStatus: e.target.value })}>
+              <option value="">Select…</option>{withCurrent(HOUSING, f.housingStatus).map(c => <option key={c} value={c}>{c}</option>)}
+            </select></label>
+          <label><span>Rent / mortgage per month</span>
+            <input className="input" inputMode="decimal" placeholder="e.g. 2,800" value={f.housingPayment}
+              onChange={e => setF({ ...f, housingPayment: e.target.value })} /></label>
+          <label><span>Years at this address</span>
+            <input className="input" inputMode="decimal" value={f.yearsAtResidence}
+              onChange={e => setF({ ...f, yearsAtResidence: e.target.value })} /></label>
+          <label><span>…plus months</span>
+            <input className="input" inputMode="numeric" value={f.monthsAtResidence}
+              onChange={e => setF({ ...f, monthsAtResidence: e.target.value })} /></label>
+          <label><span>FICO</span><input className="input" inputMode="numeric" maxLength={3}
+            placeholder="300–850" value={f.fico}
+            onChange={e => setF({ ...f, fico: cleanFICO(e.target.value) })}
+            title="Normally comes from the credit pull — enter it when you have the score before the pull, or to correct a wrong one." /></label>
+        </div>
+      </div>
+
+      {/* W-2 EMPLOYMENT gets its own section (owner-directed 2026-08-18: "the W-2
+          employment information, which is just going in a row one after the other —
+          if this is an employment section, that should be nicer laid out"). */}
+      <div className="bpf-sec">
+        <div className="bpf-sec-h"><b>W-2 employment</b><span>what they do and who they work for</span></div>
+        <div className="bpf-grid">
+          <label><span>Employment</span>
+            <select className="input" value={f.employmentType} onChange={e => setF({ ...f, employmentType: e.target.value })}
+              title="A two-way ClickUp field — a spelling it cannot translate is dropped from the push in silence, so this is a fixed list.">
+              <option value="">Select…</option>{withCurrent(EMPLOYMENT, f.employmentType).map(c => <option key={c} value={c}>{c}</option>)}
+            </select></label>
+          <label className="bpf-span2"><span>Employer</span>
+            <input className="input" value={f.employer} onChange={e => setF({ ...f, employer: e.target.value })} /></label>
+        </div>
       </div>
       <p className="small" style={{ color: '#4B585C', marginTop: 8 }}>
         This is the person's own record, not this deal's. Housing, employment and address save to the
@@ -500,21 +523,26 @@ export default function BorrowerProfilePanel({ borrowerId, heading = 'Borrower p
         <div style={{ marginTop: 10 }}><BorrowerProfileForm b={b} onSaved={afterSave} onCancel={() => setEditing(false)} /></div>
       ) : (
         <div style={{ marginTop: 10 }}>
+          {/* The read view mirrors the editor's grouping (owner-directed 2026-08-18
+              redesign) — same facts, in the same order a person scans them. */}
+          <div className="small" style={{ fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: '#141B22', margin: '2px 0 2px' }}>Identity &amp; contact</div>
           <Row k="Legal name" v={fullName(b)} />
-          <Row k="Email" v={b.email && !/@clickup\.local$/i.test(b.email) ? b.email : null} />
-          <Row k="Cell phone" v={b.cell_phone} />
           <Row k="Date of birth" v={fmtDay(b.date_of_birth)} />
           <BorrowerSsnRow b={b} onChanged={afterSave} />
-          <Row k="FICO" v={b.fico} />
+          <Row k="Email" v={b.email && !/@clickup\.local$/i.test(b.email) ? b.email : null} />
+          <Row k="Cell phone" v={b.cell_phone} />
           <Row k="Citizenship" v={b.citizenship} />
           <Row k="Marital status" v={b.marital_status} />
+          <Row k="Dependents" v={b.dependents_count} />
+          <div className="small" style={{ fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: '#141B22', margin: '10px 0 2px' }}>Where they live</div>
           <Row k="Home address" v={addrLine(b.current_address)} />
           <Row k="Mailing address" v={b.mailing_address ? addrLine(b.mailing_address) : 'same as home'} />
+          <div className="small" style={{ fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: '#141B22', margin: '10px 0 2px' }}>Financials &amp; work</div>
+          <Row k="FICO" v={b.fico} />
           <Row k="Housing" v={b.housing_status
             ? `${String(b.housing_status).replace(/_/g, ' ')}${b.housing_payment ? ` · ${money(b.housing_payment)}/mo` : ''}`
             : null} />
-          <Row k="Employment" v={[b.employment_type, b.employer].filter(Boolean).join(' · ')} />
-          <Row k="Dependents" v={b.dependents_count} />
+          <Row k="W-2 employment" v={[b.employment_type, b.employer].filter(Boolean).join(' · ')} />
           <PortalAccessRow b={b} onChanged={load} />
         </div>
       ))}

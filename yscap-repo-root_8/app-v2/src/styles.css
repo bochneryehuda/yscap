@@ -789,6 +789,29 @@ a.checkitem:hover{transform:translateY(-1px)}
 .edit-choice label.is-off{cursor:not-allowed;opacity:.55}
 .edit-choice input{flex:none;margin:0}
 .edit-grid .input{padding:8px 10px;width:100%}
+/* ---- The borrower / co-borrower PROFILE editor (owner-directed 2026-08-18:
+   "the text on top of the field is too big, the box is coming out of place …
+   restructure the design and the layout of that borrower profile and
+   co-borrower profile nicely and very modern"). Its own namespace (never bare
+   .off/.on — the global utilities collide), built on the edit-grid's two
+   hard-won disciplines: a RESERVED caption box (a wrapping caption like
+   "Rent / mortgage per month" must never push its input out of line with its
+   neighbours — the reported defect) and the caption rule matching ONLY the
+   first direct span (an inner "(optional)" must stay quiet copy). */
+.bpf-sec{background:#FFFFFF;border:1px solid #E7E0D4;border-radius:10px;padding:12px 14px;margin-top:10px}
+.bpf-sec-h{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;padding-bottom:8px;border-bottom:1px solid #F0EBE1}
+.bpf-sec-h b{font-size:12px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#141B22}
+.bpf-sec-h span{font-size:12px;color:#4B585C;font-weight:400}
+.bpf-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px 12px;align-items:start}
+.bpf-grid label{display:flex;flex-direction:column;gap:4px;min-width:0}
+.bpf-grid label>span:first-child{color:#4B585C;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;
+  min-height:2.4em;display:flex;align-items:flex-end}
+.bpf-grid label>span:first-child .bpf-opt{font-weight:400;text-transform:none;letter-spacing:0;color:#7A8489;margin-left:4px}
+.bpf-grid .input{padding:8px 10px;width:100%;min-width:0}
+.bpf-span2{grid-column:span 2}
+.bpf-span4{grid-column:1 / -1}
+@media (max-width:900px){.bpf-grid{grid-template-columns:repeat(2,1fr)}.bpf-span2,.bpf-span4{grid-column:1 / -1}}
+@media (max-width:520px){.bpf-grid{grid-template-columns:1fr}}
 .edit-grid .col-2{grid-column:span 2}
 .edit-grid .col-4{grid-column:1 / -1}
 @media (max-width:900px){.edit-grid{grid-template-columns:repeat(2,1fr)}.edit-grid .col-2{grid-column:span 1}.edit-grid .col-4{grid-column:1 / -1}}
