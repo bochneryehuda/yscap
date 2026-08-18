@@ -17,6 +17,8 @@
  * LT-only. No RTL imports.
  */
 
+const overlay = require('./overlay');
+
 const OPEN = new Set(['open', 'triaged']);
 const SETTLED = new Set(['fixed', 'verified', 'wontfix']);
 // Kinds carrying a COUPON in their identity (eligibility/engine_error do not, because they are facts
@@ -47,7 +49,8 @@ function findingKey(f = {}) {
  * Build persistable finding records from ONE scenario's parity comparison.
  *   cmp: { agree, findings } from parity.compareScenario / shadow.runOne.
  *   ctx: { scenario (label or object), investor, program, ourPayload?, theirPayload?, nowMs }
- * Returns [] when the scenario agreed. Each record is born `open`, recurrence 1.
+ * Returns [] when the scenario agreed. Each record is born `open`, recurrence 1 — EXCEPT a reasoned
+ * overlay override, which is born settled (`wontfix`); see the note at the record itself.
  */
 function recordsFromComparison(cmp = {}, ctx = {}) {
   const findings = Array.isArray(cmp.findings) ? cmp.findings : [];
@@ -55,6 +58,21 @@ function recordsFromComparison(cmp = {}, ctx = {}) {
   const scenarioLabel = typeof ctx.scenario === 'string' ? ctx.scenario : (ctx.scenarioLabel || '');
   return findings.map((f) => {
     const key = findingKey({ investor: ctx.investor, program: ctx.program, scenario: scenarioLabel, kind: f.kind, rate: f.rate, side: f.side });
+    // A REASONED OVERRIDE IS BORN SETTLED, because there is nothing for anybody to do about it.
+    //
+    // Everything else here is a disagreement somebody has to work: born `open`, and
+    // `cutover.eligibleForLive` refuses to promote an investor while ONE is open. An overlay decline is
+    // the opposite — our engine declining a scenario Lender Price prices, on a fact LP cannot see, WITH
+    // a stated reason (owner D29). It is the behaviour working. Born `open` it could never be closed
+    // honestly (there is no fix), it re-appeared on every run, and it held the go-live gate shut for
+    // good — the same dead end §2.72 records on the agreement rate.
+    //
+    // `wontfix` is exactly the existing meaning: settled, no work planned. `mergeOne` carries a wontfix
+    // row forward untouched and — unlike `fixed`/`verified` — never flags it `regressed` when it
+    // reappears, which is right: an override recurring is expected, not a fix coming undone. It stays a
+    // real ledger row so the review queue still SHOWS every scenario we override and why (the reasons
+    // ride in `diff.overlayReasons`); it simply stops counting as outstanding work.
+    const isOverride = overlay.isOverlayFinding(f);
     return {
       key,
       investor: ctx.investor || null,
@@ -65,7 +83,7 @@ function recordsFromComparison(cmp = {}, ctx = {}) {
       diff: f, // the structured disagreement (axis, deltas) — see parity findings
       ourPayload: ctx.ourPayload == null ? null : ctx.ourPayload,
       theirPayload: ctx.theirPayload == null ? null : ctx.theirPayload,
-      status: 'open',
+      status: isOverride ? 'wontfix' : 'open',
       firstSeenMs: now,
       lastSeenMs: now,
       recurrence: 1,

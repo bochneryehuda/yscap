@@ -28,7 +28,7 @@ const overlay = require('./overlay');
 // prices, but ONLY on an overlay-only fact LP cannot see (vacant, rural, STR…) and ONLY with a stated
 // reason. That is an INTENTIONAL, reasoned override of LP — not a parity defect — so it is scored
 // separately (never counted as agreement, never counted as a mismatch). See src/longterm/ppe/overlay.js.
-const SEVERITY = { ELIGIBILITY: 'eligibility_mismatch', OVERLAY: 'eligibility_overlay', PRICE: 'price_mismatch', RATE: 'rate_mismatch', MISSING_OURS: 'rung_missing_ours', MISSING_THEIRS: 'rung_missing_theirs', INCOMPARABLE: 'incomparable' };
+const SEVERITY = { ELIGIBILITY: 'eligibility_mismatch', OVERLAY: overlay.FINDING_KIND, PRICE: 'price_mismatch', RATE: 'rate_mismatch', MISSING_OURS: 'rung_missing_ours', MISSING_THEIRS: 'rung_missing_theirs', INCOMPARABLE: 'incomparable' };
 
 // A side is COMPARABLE only when the engine actually produced a result: a ladder array, or an object
 // that STATES eligibility or carries a ladder. Anything else — null, undefined, a primitive, an empty
@@ -156,11 +156,26 @@ function normalizeOurQuoteMaybe(x) {
 }
 
 // Roll a batch of per-scenario results into a scoreboard (§10.5): totals + per-kind finding counts.
+// Is this per-scenario result a reasoned OVERLAY override rather than a comparison?
+//
+// It asks the FINDINGS as well as the flag. `compareScenario` returns `overlay:true`, and `shadow.runOne`
+// carries it onward — but a result that has been through a JSON store, or through a caller that rebuilt
+// it field by field, can arrive with the boolean gone and the finding intact. The finding is the durable
+// statement; the flag is a convenience. An overlay verdict RETURNS IMMEDIATELY with exactly one finding,
+// so a lone overlay finding is the whole result and cannot be masking a real disagreement beside it.
+function isOverlayResult(r) {
+  if (!r) return false;
+  if (r.overlay === true) return true;
+  const f = Array.isArray(r.findings) ? r.findings : [];
+  return f.length === 1 && overlay.isOverlayFinding(f[0]);
+}
+
 function summarize(results) {
-  const out = { scenarios: 0, agreed: 0, disagreed: 0, incomparable: 0, comparable: 0, findings: 0, byKind: {} };
+  const out = { scenarios: 0, agreed: 0, disagreed: 0, overlay: 0, incomparable: 0, comparable: 0, findings: 0, byKind: {} };
   for (const r of results || []) {
     out.scenarios += 1;
     if (r.incomparable) out.incomparable += 1;
+    else if (isOverlayResult(r)) out.overlay += 1;
     else if (r.agree) out.agreed += 1;
     else out.disagreed += 1;
     for (const f of r.findings || []) { out.findings += 1; out.byKind[f.kind] = (out.byKind[f.kind] || 0) + 1; }
@@ -168,8 +183,21 @@ function summarize(results) {
   out.comparable = out.agreed + out.disagreed;
   // §10.6: the agreement rate is over what could actually be COMPARED — an incomparable scenario is
   // never counted as agreement AND never dilutes the rate as a disagreement.
+  //
+  // ⛔ AND NEITHER DOES A REASONED OVERRIDE, WHICH IS A THIRD BUCKET AND NOT A ROUNDING DETAIL. The
+  // header above this file has said since D29 that an overlay divergence is "scored separately (never
+  // counted as agreement, never counted as a mismatch)" — and until 2026-08-18 nothing enforced it: an
+  // override landed in `disagreed` and dragged the rate (measured: nine agreeing scenarios plus ONE
+  // override reported 0.9). `cutover.eligibleForLive` demands 100% with `requireCanaryPerfect`, so a
+  // single override — which is our engine working exactly as the owner specified, and which nobody can
+  // "fix" because there is nothing wrong — made the go-live gate permanently unreachable for that
+  // investor. A gate whose only remedy is to break the correct behaviour is a dead end, not a gate.
+  //
+  // So the denominator is scenarios where BOTH engines were answering the same question. `overlay` is
+  // reported beside it, never hidden: a battery that is all override measures nothing about the sheet,
+  // and `agreementRate` is then null — the honest answer, not a perfect score over nothing.
   out.agreementRate = out.comparable ? out.agreed / out.comparable : null;
   return out;
 }
 
-module.exports = { SEVERITY, normalizeOurQuote, normalizeLadder, compareScenario, summarize, _internals: { isComparable } };
+module.exports = { SEVERITY, normalizeOurQuote, normalizeLadder, compareScenario, summarize, isOverlayResult, _internals: { isComparable } };

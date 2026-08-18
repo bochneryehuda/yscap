@@ -26,6 +26,7 @@ const shadow = require('./shadow');
 const finding = require('./finding');
 const shadowReport = require('./shadow-report');
 const parityMatrix = require('./parity-matrix');
+const overlayLib = require('./overlay');
 
 /**
  * DID THIS RUN COMPARE ANYTHING AT ALL? — the one definition, because a run that compared NOTHING must
@@ -53,10 +54,17 @@ function verdictOf(summary) {
   const scenarios = n('scenarios');
   const errors = n('errors');
   const incomparable = n('incomparable');
+  // Reasoned overrides are the THIRD outcome (§2.72): our engine declining a scenario Lender Price
+  // prices, on a fact LP cannot see, with a stated reason. `parity.summarize` keeps them out of
+  // `comparable` — so they are already excluded from `compared` here, and they are NAMED in the reason
+  // below rather than left to read as "no scenario was priced", which is what an all-override battery
+  // would otherwise report about a run in which every scenario priced perfectly well.
+  const overlay = n('overlay');
   const compared = Math.max(0, n('comparable') - errors);
-  if (compared > 0) return { proven: true, compared, scenarios, incomparable, errors, reason: null };
+  if (compared > 0) return { proven: true, compared, scenarios, incomparable, overlay, errors, reason: null };
   const parts = [];
   if (incomparable > 0) parts.push(`${incomparable} could not be compared (an engine produced no result)`);
+  if (overlay > 0) parts.push(`${overlay} were reasoned overlay overrides (deliberately not scored against Lender Price)`);
   if (errors > 0) parts.push(`${errors} failed with an engine error`);
   if (!parts.length) parts.push('no scenario was priced');
   return {
@@ -64,6 +72,7 @@ function verdictOf(summary) {
     compared: 0,
     scenarios,
     incomparable,
+    overlay,
     errors,
     reason: `This canary compared NOTHING: of ${scenarios} scenario(s), ${parts.join(' and ')}. `
       + 'An agreement rate cannot be measured over zero comparisons, so this run proves neither agreement nor disagreement.',
@@ -114,7 +123,21 @@ async function runCanary(scenarios, engines = {}, opts = {}) {
     for (const rec of recs) records.push(rec);
   }
   // Unique, stable finding identities for the scoreboard's new-vs-recurring accounting.
-  const findingKeys = Array.from(new Set(records.map((rec) => rec.key))).sort();
+  //
+  // ⛔ A REASONED OVERRIDE IS NOT ONE OF THEM, and this is the third place §2.72 had to be enforced.
+  // `dailySeries` counts a key never seen on an earlier day as a NEW finding that day, and
+  // `cutover.consecutiveCleanDays` breaks the streak on any day with one — so the first run that
+  // produced an override reset the 14-day clean streak an investor needs to go live, for behaviour
+  // working exactly as specified. The override is still RECORDED (`records` carries it, settled, so the
+  // review queue shows it); it is simply not counted as work that appeared.
+  const findingKeys = Array.from(new Set(
+    records.filter((rec) => !overlayLib.isOverlayFinding(rec)).map((rec) => rec.key),
+  )).sort();
+  // Named separately rather than dropped — a run that overrode forty scenarios and a run that overrode
+  // none must not read the same (this repo's no-silent-caps rule).
+  const overrideKeys = Array.from(new Set(
+    records.filter((rec) => overlayLib.isOverlayFinding(rec)).map((rec) => rec.key),
+  )).sort();
 
   const report = shadowReport.buildReport(run, { investor, program });
 
@@ -146,6 +169,7 @@ async function runCanary(scenarios, engines = {}, opts = {}) {
     agreementRate: run.summary ? run.summary.agreementRate : null,
     records,
     findingKeys,
+    overrideKeys,
     // exactly the shape scoreboard.dailySeries / assemble consumes
     runRecord: { dayMs, agreementRate: run.summary ? run.summary.agreementRate : null, findingKeys, summary: run.summary },
     report,

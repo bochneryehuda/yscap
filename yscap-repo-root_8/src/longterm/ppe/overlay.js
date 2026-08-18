@@ -73,6 +73,17 @@ function overlayReasonsOf(declines) {
   return list.filter(isValidOverlayDecline).map((d) => ({ fact: d.fact, reason: d.reason, code: d.code || null }));
 }
 
+// THE FINDING KIND a reasoned override is recorded under, and the ONE test for it. It lives HERE,
+// beside the classifier that decides an override, rather than in the comparator, the ledger and the
+// scoreboard separately — three copies of a string is how one of them stops agreeing that an override
+// is an override, and every consumer of this kind has to make the SAME decision about it: an override
+// is not agreement, not a mismatch, and not work anybody can do.
+//
+// `isOverlayFinding` reads the FINDING rather than a carried flag on the result, because a per-scenario
+// result travels through a JSON store and a summarizer that have both dropped a boolean before.
+const FINDING_KIND = 'eligibility_overlay';
+function isOverlayFinding(f) { return !!f && f.kind === FINDING_KIND; }
+
 const CLASS = {
   AGREE: 'agree',            // verdicts match — no divergence
   OVERLAY: 'overlay',        // we decline on an overlay-only fact, WITH a reason — expected, not a defect
@@ -160,6 +171,8 @@ function classifyEligibilityDivergence({ oursEligible, theirsEligible, ourDeclin
 
 module.exports = {
   OVERLAY_FACTS,
+  FINDING_KIND,
+  isOverlayFinding,
   CLASS,
   DEFECT,
   isOverlayFact,

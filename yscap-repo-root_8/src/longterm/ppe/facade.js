@@ -56,7 +56,7 @@ const DEEP_ONLY = new Set(['base_price', 'margin', 'llpa_total', 'disqualificati
 // answered on eligibility, the deep verdict on that axis is dropped rather than recorded beside a
 // contradicting one.
 const DEEP_ELIGIBILITY = new Set(['disqualification_missing', 'disqualification_extra', 'disqualification_split']);
-const SHALLOW_ELIGIBILITY = new Set(['eligibility_mismatch', 'eligibility_overlay', 'incomparable']);
+const SHALLOW_ELIGIBILITY = new Set([parity.SEVERITY.ELIGIBILITY, parity.SEVERITY.OVERLAY, parity.SEVERITY.INCOMPARABLE]);
 
 function msg(e) { return String((e && e.message) || e).slice(0, 200); }
 
@@ -265,7 +265,7 @@ function deepCompare({ ourQuote, ourErr, detail, detailErr, wantDetail, scope, c
  */
 function deepRecordable(deep, shallow) {
   if (!deep.ran) return { persist: [], held: [], supersede: new Set() };
-  const ladderOwnsEligibility = (shallow.findings || []).some((f) => f.kind === 'eligibility_overlay' || f.kind === 'incomparable');
+  const ladderOwnsEligibility = (shallow.findings || []).some((f) => f.kind === parity.SEVERITY.OVERLAY || f.kind === parity.SEVERITY.INCOMPARABLE);
   const persist = []; const held = []; const supersede = new Set();
   for (const d of (deep.differences || [])) {
     if (!DEEP_ONLY.has(d.category)) { held.push({ category: d.category, rate: d.rate, why: 'the ladder comparison already records this disagreement under its own name' }); continue; }

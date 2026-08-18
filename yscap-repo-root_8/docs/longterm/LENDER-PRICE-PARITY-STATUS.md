@@ -4305,3 +4305,64 @@ actually found — a regex that matched nothing would have passed every check ab
 killed.
 
 142/142 suites.
+
+**§2.72 — A REASONED OVERRIDE HELD THE GO-LIVE GATE SHUT, THREE WAYS, WITH NO REMEDY (2026-08-18).
+THE DEAD-END CLASS.**
+
+**THE SENTENCE, AGAIN.** `parity.js` has said since D29 that an overlay divergence — our engine
+declining a scenario Lender Price prices, on a fact LP cannot see, WITH a stated reason — is *"scored
+separately (never counted as agreement, never counted as a mismatch)"*. §2.69's lesson is that a
+sentence is not a guard, and this one was enforced by nothing at all. §2.71 fixed how the declines
+REACH the comparator; this is what the comparator's own answer then did.
+
+**MEASURED, three independent ways, each on its own gate in `cutover.eligibleForLive`:**
+
+1. `summarize()` filed an override under `disagreed`. Nine agreeing scenarios plus **one** override
+   reported an agreement rate of **0.9** — and `requireCanaryPerfect` demands 100%.
+2. `finding.recordsFromComparison` gave it status **`open`** — and the gate refuses to promote while
+   ONE finding is open.
+3. its key counted as a **NEW finding** the day it first appeared — and the gate wants **14 consecutive
+   days** with none, so every newly-covered override reset the clock.
+
+**AND NONE OF THE THREE HAD A REMEDY, WHICH IS THE ACTUAL FINDING.** You cannot *fix* a decline you
+deliberately hold: there is nothing wrong, and the only way to satisfy any of those three gates was to
+break the behaviour the owner asked for. **A gate whose only remedy is to break the correct behaviour is
+a dead end, not a gate** — the same class this repo has closed before (a refusal that told staff to
+re-register a product, on a path that could not produce the state the refusal demanded). The practical
+effect: the moment overlay enforcement covers a real scenario for an investor, that investor can never
+go live, and the screen gives no clue why.
+
+**ONE DEFINITION, THREE APPLICATIONS.** The finding kind and its predicate now live in `overlay.js`,
+beside the classifier that decides an override — the comparator, the ledger and the scoreboard all had
+to make the SAME judgement about it, and three copies of a string is how one of them stops agreeing.
+A **fourth** speller turned up while the guard was being written (`facade.js`, twice) and was repointed.
+
+- **the scoreboard** gets an `overlay` bucket, out of `agreed`, out of `disagreed`, and out of
+  `comparable` — so the rate is measured over scenarios where both engines were answering the same
+  question. It is REPORTED, never dropped: an all-override battery measures `agreementRate: null`, the
+  honest answer, rather than a perfect score over nothing.
+- **the ledger** births an override `wontfix` — settled, no work planned. It is still a real row, so
+  the review queue still shows every scenario we override and why; `mergeOne` carries a `wontfix` row
+  forward and, unlike `fixed`/`verified`, never flags it `regressed`, which is right — an override
+  recurring is expected, not a fix coming undone.
+- **the canary** keeps overrides out of `findingKeys` (what the clean-day streak counts) and names them
+  in `overrideKeys`, surfaced on the run routes as `overrides`. `verdictOf` names them in its reason
+  too, so an all-override battery no longer reports *"no scenario was priced"* about a run in which
+  every scenario priced perfectly well.
+
+**THE CLASSIFICATION READS THE FINDING, NOT ONLY THE FLAG.** `compareScenario` returns `overlay:true`
+and `shadow.runOne` carries it, but a result that has been through a JSON store or rebuilt field by
+field can arrive with the boolean gone and the finding intact — the §2.71 lesson about depending on one
+carried value. An overlay verdict returns immediately with exactly ONE finding, so a lone overlay
+finding is the whole result; **an override sitting beside a real disagreement is deliberately NOT
+excused**, or one stated reason would bury every price defect on that scenario.
+
+`scripts/test-lt-ppe-overlay-not-a-defect.js` (47 assertions) pins all of it, including the gate itself
+end to end — an investor whose overrides are working is promotable, and a real disagreement still
+refuses on all three counts — and the clean-day streak through the REAL canary against stub engines.
+**Mutation-proven seven ways**: the overlay bucket removed, the flag-only classification, the
+any-finding-excuses-it classification, the ledger born open again, the override back in `findingKeys`,
+the verdict going quiet about them, and a fourth file spelling the kind itself. Each red, control green
+on either side.
+
+143/143 suites.

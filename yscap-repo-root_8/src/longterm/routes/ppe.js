@@ -1382,6 +1382,9 @@ async function runBattery(scope, scenarios, opts = {}) {
       report: run.report,
       lpScope: lpScopeLib.describeScope(lpScope),
       findings: run.findingKeys.length,
+      // Reasoned overrides, named rather than folded into the finding count (§2.72) — they are not
+      // defects, and a run that overrode forty scenarios must not read like one that overrode none.
+      overrides: run.overrideKeys ? run.overrideKeys.length : 0,
       // The findings ledger DID take the diagnosis; the run series and the parity cells deliberately
       // did not — a measurement of nothing is not a measurement.
       persisted: !persistError,
@@ -1440,6 +1443,7 @@ async function runBattery(scope, scenarios, opts = {}) {
     matrix: run.matrix,
     worstCells: run.matrix ? parityMatrix.worstCells(run.matrix, 10) : null,
     findings: run.findingKeys.length,
+    overrides: run.overrideKeys ? run.overrideKeys.length : 0,
     persisted: !persistError,
     persistError,
     persistedSummary: persisted ? persisted.summary : null,
