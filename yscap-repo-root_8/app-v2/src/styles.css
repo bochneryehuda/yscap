@@ -2401,6 +2401,16 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .cv-composer .msg-tool.rec{background:var(--danger-soft);border-color:var(--danger);color:var(--danger)}
 .cv-composer .input{border-radius:12px;background:var(--surface-soft);border-color:var(--border)}
 .cv-composer .btn.primary{border-radius:12px}
+@media(max-width:720px){
+  /* Phone composer: the tool buttons (attach / mic / priority / Pilot AI)
+     crowd a 390px row down to ~86px of typing space, because the generic
+     `.row>.input{flex:1;min-width:0}` lets the box COMPRESS instead of wrap.
+     A real flex-basis makes the message box claim a full line once the tools
+     have taken theirs — the row already wraps — with Send riding beside it
+     (220 + Send still fits a 390px line, so they never split). Scoped to the
+     composer only; desktop is untouched. */
+  .cv-composer .row>.input{flex:1 1 220px}
+}
 
 /* Clean line-icons for chat controls — replaces the emoji-glyph buttons so the
    chat reads as a professional tool. Reaction emoji stay (they're content). */
