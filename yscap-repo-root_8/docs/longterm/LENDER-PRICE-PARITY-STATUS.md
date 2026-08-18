@@ -3661,3 +3661,35 @@ not an improvement on a value proven to price.
 carry an id (so this is a substitution, not a fill), the live one reaches the body, nothing else about the
 request moves, and seven unusable values each leave the captured one alone. **Mutation-proven both ways** —
 reverting the line kills CO-1; accepting any supplied value kills five of the CO-3 cases.
+
+---
+
+**§2.61 — THE PROGRAM'S OWN RATE SHEET NAMED THE BASELINE SLICE, AND NOTHING READ IT (2026-08-18).**
+
+This closes the long-open *"fold the max-price block into the default Deephaven grid, or state why not"*
+with two different answers, because it was two different questions wearing one sentence.
+
+**FOLDED IN — the PROGRAM DESCRIPTOR.** `program-deephaven-dscr.PROGRAM.layers.rateSheet` reads as "this
+program's rate sheet" and named `buildDeephavenGrid` — the BASELINE grid: no prepay LLPAs (worth real
+points in both directions) and no ceiling at all. **Measured: nothing in `src/` reads that pointer**,
+which is exactly what made it dangerous rather than merely wrong. It is not a mispricing today; it is a
+loaded one, waiting for the first caller to wire the thing that looks authoritative — who would then
+have priced a five-year-prepay loan as though it carried no prepay adjustment and quoted it with no
+maximum, with nothing anywhere saying so. It now names `buildPrepayMaxPriceGrid`, and the descriptor
+also exposes the per-scenario ceiling by READING the `price-limit` registry rather than re-pointing the
+sheet's own function — one definition, so the descriptor and the live pricing path cannot disagree.
+
+**SAFE BY CONSTRUCTION, NOT BY ARGUMENT.** The composed grid is a strict SUPERSET: the base ladder is
+rung-for-rung identical, all 81 baseline adjustments are present unchanged, and it adds 13 (prepay +
+lock-term) plus the sheet's own minimum price and cap tiers. It can only ever ADD what the sheet says.
+
+**DELIBERATELY NOT CHANGED — the OFFLINE BATTERIES.** They measure the agreement axis against Lender
+Price; the with-prepay variant is its own deliberate run and the run report already states which of the
+two it priced. Changing what the measurement measures in order to close a pointer defect would be the
+tail wagging the dog, so the 300-scenario battery still prices the baseline — and a test asserts it, so
+that decision cannot drift silently either.
+
+**PROVED** by `scripts/test-lt-ppe-program-sheet-whole.js` (15 assertions, pure): the fold-in, the
+superset property both ways, the "nothing reads it" measurement over the source, the single definition
+of the ceiling, and the batteries left alone. **Mutation-proven twice** — reverting the pointer kills 5
+assertions, and re-pointing the ceiling at a second copy kills 2.

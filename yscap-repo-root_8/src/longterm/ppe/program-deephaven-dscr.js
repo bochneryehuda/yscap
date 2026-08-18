@@ -4,7 +4,10 @@
  * owner requires for every program (2026-08-17): the investor name lives in the program name, and the
  * three layers are wired together so one scenario resolves against all three.
  *
- *   DOT 1 — RATE SHEET (pricing): base ladder + LLPAs (deephaven-dscr-sheet.buildDeephavenGrid).
+ *   DOT 1 — RATE SHEET (pricing): the WHOLE sheet — base ladder + LLPAs
+ *           (`deephaven-dscr-sheet.buildDeephavenGrid`) PLUS the prepay / lock-term LLPAs and the
+ *           max-price block that live in the sibling `deephaven-dscr-prepay-maxprice`. See the note
+ *           on `layers.rateSheet` below for why it is the composed one and not the baseline slice.
  *   DOT 2 — ELIGIBILITY MATRIX: the published product matrix (deephaven-matrix.evaluateEligibility).
  *   DOT 3 — PPP STATE MATRIX: which states/borrower-types may carry a prepayment penalty
  *           (deephaven-ppp-matrix.pppDisqualifier) — a PPP requested where prohibited is a disqualifier.
@@ -21,7 +24,7 @@
  *
  * LT-only. Pure: no DB, no network, no clock. No RTL imports.
  */
-const { buildDeephavenGrid } = require('./deephaven-dscr-sheet');
+const { buildPrepayMaxPriceGrid } = require('./deephaven-dscr-prepay-maxprice');
 const { evaluateEligibility } = require('./deephaven-matrix');
 const { pppDisqualifier, pppResult, pppUnresolved } = require('./deephaven-ppp-matrix');
 const { evaluateInformational } = require('./informational');
@@ -98,7 +101,28 @@ const PROGRAM = {
   investor: INVESTOR,
   name: PROGRAM_NAME,
   layers: {
-    rateSheet: buildDeephavenGrid,          // dot 1 (pricing)
+    // DOT 1 — AND IT IS THE COMPOSED SHEET, DELIBERATELY.
+    //
+    // MEASURED before it was changed: nothing in `src/` reads this pointer at all. Live quotes price
+    // from the STORED rate sheet (`routes/ppe.loadProgram`), which separately attaches this investor's
+    // per-scenario max-price rule through `price-limit.scenarioRuleFor` — so this line moves no price
+    // today and cannot. What it was, was a TRAP: a pointer that reads as "this program's rate sheet",
+    // naming the BASELINE slice — no prepay LLPAs (which are worth real points either way) and no
+    // ceiling — so the first caller to wire it would have priced a 5-year-prepay loan as though it
+    // carried no prepay adjustment, and quoted it with no maximum, with nothing anywhere saying so.
+    //
+    // `buildPrepayMaxPriceGrid()` is a strict SUPERSET of the baseline: the same base ladder, the same
+    // LLPA tables plus the prepay and lock-term ones, and the sheet's own min price and cap tiers. So
+    // naming it here can only ever ADD what the sheet says; it can never subtract or move a rung. The
+    // offline batteries keep calling `buildDeephavenGrid` on purpose — they measure the agreement axis
+    // and the with-prepay variant is its own deliberate run, whose report already states which of the
+    // two it priced.
+    rateSheet: buildPrepayMaxPriceGrid,      // dot 1 (pricing) — the whole sheet, not the baseline
+    // THE PER-SCENARIO CEILING, read from the ONE registry rather than re-pointed here. This sheet's
+    // rule is "the lower of the loan-amount tier and the prepay-term ceiling", which no stored tier
+    // list can express, and `price-limit.js` is where the live pricing path looks it up. Naming the
+    // sheet's function a second time here is how the two would come to disagree.
+    priceLimitRule: () => require('./price-limit').scenarioRuleFor(INVESTOR),
     eligibility: evaluateEligibility,        // dot 2
     ppp: { result: pppResult, disqualifier: pppDisqualifier, unresolved: pppUnresolved }, // dot 3
   },
