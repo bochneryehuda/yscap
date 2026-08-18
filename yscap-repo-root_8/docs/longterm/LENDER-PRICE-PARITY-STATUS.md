@@ -2418,3 +2418,52 @@ describes the identical prohibited combination and is not marked ineligible. Bot
 does not care which group a scenario was filed under — and the test asserts on the set rather than on
 the flagged one alone. Whether the battery's own labelling should be corrected is the battery's
 business, not this leg's.
+
+**§2.41 — A BOTH-DECLINE WAS SCORED AS AGREEMENT WITHOUT CHECKING *WHY* (2026-08-18).** The eligibility
+axis in `parity-detectors` ends with "both decline — agree on the outcome (reason-set comparison is a
+later refinement)". So a scenario where WE declined on FICO and Lender Price declined on a state rule
+scored a clean agreement and was counted under `agreedDeclined` — on the gate whose owner-stated rule is
+to agree on **every eligibility AND ineligibility**. Two engines refusing one loan for two unrelated
+reasons is not agreement; it is two different disagreements that happen to cancel on the surface.
+
+**THE MACHINERY ALREADY EXISTED AND WAS CALLED BY NOTHING.** `rung-digest.js` and
+`disqualifier-reconciler.js` were complete, unit-tested and unreachable — both recorded in
+`LT-UNREACHED.md` as waiting on "the per-program agreement run (#49)". That run exists
+(`ratesheet-agreement.js`, reachable from `POST /api/lt/ppe/rate-sheets/:id/agreement/run`) and held in
+hand exactly what both of them need — our reconstruction record, LP's normalized rungs, and both sides'
+declines — and discarded all of it, keeping a verdict and a count. Same class as §2.36–§2.40: the proof
+was built, and then never asked.
+
+**THE GATE MOVED, DELIBERATELY, AND THE FOURTH OUTCOME IS THE CAREFUL ONE.** A both-decline is now
+decided by the per-layer reconciliation: reasons reconcile → a real agreement (unchanged outcome, now
+with evidence); reasons differ → NOT an agreement, and the gate names both sides; **either side
+unreadable → INCOMPARABLE with a stated reason** (`incomparableByReason.decline_reasons_unreadable`) —
+never an agreement and never a disagreement, because the reconciler reconciles what is LEFT after
+setting an unknown aside, so an unreadable vendor reason would otherwise leave our own decline standing
+alone and read as "we decline what they price"; the reconciler threw → the verdict stands exactly as it
+was and `notReconciled` says so. **A scenario that agreed before can now disagree, or fall out of
+`comparable` — that is the point, and it is stated rather than discovered on a paid run.**
+
+**THE DIGEST IS ATTACHED ONLY WHERE IT IS WORTH READING** — after `agree` is final, and only for a
+scenario that already disagrees with rungs on BOTH sides. It is what names a gap that is not an LLPA at
+all: a base-grid or margin difference itemizes as an empty dimension list, and a reader holding only the
+cell list would hunt for a wrong cell that does not exist.
+
+**WHAT REACHES THE STORED SUMMARY IS BOUNDED, AND THE BOUND IS STATED** (the §2.37 rule, applied to the
+new evidence): the summary carries the worst rung's build-up and a decline-mismatch sample capped at 8
+rows, with `declineRowsOmitted` counting the rest and each vendor reason clipped to 120 characters
+ending in an ellipsis so the cut is visible. The full per-coupon digest stays on the run RESULT, which
+is not stored, and `notStored` says so in the record. Measured worst case (300 scenarios, every one
+disagreeing across 20 mismatched dimensions): 61 KB added to a 133 KB summary.
+
+**ONE SOURCE FOR "WHICH SHEET WAS MEASURED".** A decline's DIMENSION is read from the RULE that produced
+it, never from the reason text — so the reconciliation needs the program object, and a quote result
+names its program only as a reference. `buildOursLeg` therefore stamps the sheet-under-test on the leg
+it returns: the route already holds it exactly once, and asking a caller to pass it a second time is how
+the two come to disagree about which sheet a run reconciled against. `opts.program` still wins for a
+caller (every offline test) that builds its own `ours`.
+
+Thirteen mutations proven red in `scripts/test-lt-ppe-agreement-audit-pure.js` **BY ASSERTION** — three
+originally failed by THROWING, which is the false proof this workstream keeps catching, so those
+assertions now catch their own throw. Merged onto the PPP work of §2.40 so both survive: the leg carries
+the prepayment layer AND the sheet stamp.
