@@ -470,7 +470,20 @@ REPORTS what it left behind**; and **the people steps are best-effort and may ne
 including that a roster refusal (`{ok:false}`) is reported rather than read as success, because a pass
 printing a confident "0 officers proposed" when it never ran is worse than one that admits it. Four
 mutations turn it red — among them blanking the book on an empty read, and flipping that COALESCE.
-The remaining spans are the next thread: the roster sync itself and several route handlers.
+
+**Third thread: `people/roster.js`, the pass that PROPOSES who somebody is — and the lesson that a
+belt-and-braces guard no test can reach is decoration.** The roster mirrors the Encompass user list
+and proposes matches; an admin then confirms one, and a confirmed link decides whose pipeline every
+file lands in. The rule that the machine never overwrites a human's decision is enforced TWICE —
+`matchRoster` refuses to PROPOSE for a decided login, and `writeSuggestions` refuses to WRITE over one
+(`WHERE lt_staff_links.status = 'suggested'`). **Running the whole pass only ever exercises the
+first**, so the first cut of this suite stayed green when that WHERE clause was deleted, while its own
+comment claimed to be protecting it. Same for the deactivation guard inside `writeRoster`: `syncRoster`
+refuses an empty roster before the writer is reached, so `if (seen.length)` is unreachable through the
+pass. Both inner guards are now handed the thing they exist to refuse, directly through `_internals`,
+and the header says plainly which half each assertion proves. Four mutations turn it red — including
+the machine writing `confirmed` instead of `suggested`, and an empty roster deactivating the company.
+The remaining spans are the next thread: several route handlers.
 
 **A SETTING IS EITHER READ BY SOMETHING OR SAYS IT IS NOT (2026-08-18).** §7's promise to a buyer is
 that nothing about how WE do things is hard-coded. Forty-three of the 63 settings were declared ahead
