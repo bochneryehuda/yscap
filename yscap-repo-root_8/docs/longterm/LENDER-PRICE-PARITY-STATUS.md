@@ -2650,3 +2650,51 @@ exact rule and counts). The `program-audit.js` ledger row is deliberately **left
 `check-lt-reachability.js` walks `require()` from what the server mounts and boots, so a `scripts/` command
 does not make it reachable, and striking the row would make the ledger overstate what is wired. A dead-rule
 question is **advisory by default** (`--strict` makes it exit 1) — making it blocking is the owner's call.
+
+**§2.44 — 38 OF 81 ROUTES CANNOT BE REACHED FROM ANY SCREEN, AND ONE OF THEM IS A SCHEDULER NOTHING
+TICKS (2026-08-18).** §2.39's reachability check asks whether a MODULE is loaded. **A route module is
+loaded by definition** — `src/longterm/index.js` mounts it — so every route inside it read as reachable
+however dead it was, and the check that was built precisely to find unwired code was structurally unable
+to see a single one of these. Same defect class as §2.36–§2.43, one layer up: built, loading, tested,
+and reachable by nobody.
+
+**MEASURED: 81 routes published, 43 reachable from a screen, 38 not.** Some of that is honest and
+expected — the Encompass memory is read-only reference knowledge with no screen yet, and the raw
+Lender Price pricer routes are operator commands run by hand. What matters is that until now nothing
+distinguished those from the ones below, and nothing ever will again: every one of the 38 is now
+RECORDED in `docs/longterm/LT-ROUTES-UNREACHED.md` with the reason it has no caller, and the gate
+refuses a 39th that nobody accounts for.
+
+**THE ONE THAT IS A DEFECT RATHER THAN A GAP: `POST /api/lt/ppe/canary/tick`.** It is the tick that
+fires the daily change-detection schedules (D19). Searched: no cron, no worker, no `setInterval`, no
+Render job, no other route calls it. **A schedule can be stored and will never fire**, so "the daily
+battery detects a Lender Price change" is true of the code and false of the running system. Beside it,
+`POST /ppe/canary` — the run itself — is **the only producer of the findings ledger and the parity-cell
+series**, so with no screen those two boards can only ever show what a hand-run `curl` put there, and an
+empty board looks exactly like a clean one. Both are recorded rather than guessed at: how the tick is
+driven (a Render CRON service, the existing sync worker, or an in-process scheduler) changes what happens
+when two instances run and costs a live vendor call each time, which is not an agent's call to make.
+
+**THE GATE FAILS BOTH WAYS AND REFUSES TO CREDIT A MAYBE.** A ledger row for a route a screen now calls
+is STALE and is refused; a row naming a route that no longer exists is refused; a client call matching no
+route at all is refused, because that request can only 404. And where a client path's runtime segment
+lines up with a route's LITERAL segment — `/x/${id}` against a `/x/latest` declared above `/x/:id` — the
+match is reported as AMBIGUOUS and **never counted as coverage**, whether or not a pinned route also took
+the call. Crediting a maybe is precisely how a gate comes to report a dead route as live.
+
+**THE OPPOSITE ERROR IS ALSO IN THE TEST, because it is the one that gets a gate switched off.** The
+client writes its filtered reads as `` `/ppe/findings${q}` `` — a pinned literal head with an
+interpolated query tail — and collapsing that to a wildcard made **five live routes read as unreached**
+on the first run of this scan. `segments()` therefore has three kinds, not two (`lit` / `wild` /
+`prefix`), and a test pins the prefix rule alongside the ambiguity rule.
+
+It also reports, without failing: a screen that writes its own `/api/lt/…` URL instead of going through
+the one client (a request this static scan cannot follow — there are none today), and an `ltApi` entry no
+screen calls, which is the same dead end one step nearer the user. Today that is `ppeSetPriceLimit` and
+`ppeRateSheetAgreement`: a route and a client method each, and no button.
+
+Seven mutations of the production code proven to fail `scripts/test-lt-http-reachability-gate.js` **BY
+ASSERTION** with a green control either side — including the method test, whose first fixture declared
+the POST second and would have passed either way, and the missing-ledger refusal, which a mutation was
+passing purely by CRASHING (exit 1 for the wrong reason, the false proof this workstream keeps catching;
+that assertion now reads the checker's own sentence and refuses a stack trace).
