@@ -2920,7 +2920,7 @@ router.get('/applications/:id/pricing', async (req, res) => {
 /* PER-FILE PROGRAM EXCEPTION (owner-directed 2026-08-18): a SUPER ADMIN turns a
    company-discontinued program back ON for THIS file only — "for stuff that's
    already in process that we want to give an exception". Recorded (who / when /
-   why) on applications.program_exceptions (db/582), audited, and enforced by
+   why) on applications.program_exceptions (db/583), audited, and enforced by
    every register door through src/lib/program-availability.js. Revoking removes
    the entry. Super-admin ONLY — the owner's words name the super admin, and the
    whole point of the company switch is that nobody below can re-open a

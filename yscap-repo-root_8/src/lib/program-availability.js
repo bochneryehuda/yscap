@@ -12,9 +12,9 @@
  * program").
  *
  * THE ONE DEFINITION. Company switches live in
- * company_pricing_settings.program_availability (db/582), read through
+ * company_pricing_settings.program_availability (db/583), read through
  * pricing-settings; per-file exceptions live in applications.program_exceptions
- * (db/582), written only by the super-admin-gated endpoint in routes/staff.js.
+ * (db/583), written only by the super-admin-gated endpoint in routes/staff.js.
  * Every consumer — the six register doors, the pricing GET payloads, the
  * Pricing Admin Center, the Term Sheet Studio's program cards and the public
  * /api/pricing-defaults — asks THIS module. Never re-inline the rule.

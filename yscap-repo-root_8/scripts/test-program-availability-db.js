@@ -55,8 +55,8 @@ const SCENARIO = {
 
 (async () => {
   // The migration under test is idempotent — apply it directly so this suite is
-  // self-sufficient on a database that predates db/582.
-  await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', '582_program_availability_toggles.sql'), 'utf8'));
+  // self-sufficient on a database that predates db/583.
+  await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', '583_program_availability_toggles.sql'), 'utf8'));
 
   const server = app.listen(0);
   await new Promise((r) => server.once('listening', r));

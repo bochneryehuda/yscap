@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/582 — program availability toggles (owner-directed 2026-08-18)
+-- db/583 — program availability toggles (owner-directed 2026-08-18)
 --
 -- The owner: "in the admin section where we control the RTL pricing, we should
 -- have the option to turn on and turn off certain programs. For example, right

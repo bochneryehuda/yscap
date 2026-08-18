@@ -34,7 +34,7 @@ const TIERS = ['1', '2', '3'];
 // ── Program ON/OFF switches (owner-directed 2026-08-18) ──────────────────────
 // "we should have the option to turn on and turn off certain programs … right
 // now we're discontinuing the gold program". Stored on the same settings row
-// (program_availability jsonb, db/582) shaped { gold:{active:false, note} } —
+// (program_availability jsonb, db/583) shaped { gold:{active:false, note} } —
 // only switched-OFF programs are stored; the note pre-fills the discontinued
 // wording shown wherever the program resurfaces by super-admin exception. The
 // rules live in src/lib/program-availability.js; this screen only edits them.

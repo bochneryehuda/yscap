@@ -27,7 +27,7 @@ const SYSTEM_DEFAULTS = Object.freeze({
   // reads it in markupTiersFor(). Default null so behavior is byte-identical
   // until an admin fills a tier in the Pricing Center.
   markupTiers: null,
-  // Program ON/OFF switches (owner-directed 2026-08-18, db/582). null = every
+  // Program ON/OFF switches (owner-directed 2026-08-18, db/583). null = every
   // program offered — the pre-feature behavior. When set, shaped
   // { gold: { active:false, note:'…' } } — only switched-OFF programs are
   // stored. The rules live in src/lib/program-availability.js (one definition);
