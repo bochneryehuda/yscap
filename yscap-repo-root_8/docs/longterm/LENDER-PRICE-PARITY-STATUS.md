@@ -5267,3 +5267,76 @@ what the vendor said, **not that the comparator looked**. Assertions that go thr
 accounting were added, and it now bites twice.
 
 156/156 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.87 — ⛔ THE MIRROR WAS NEVER A MISSING INTEGRATION. IT WAS A MISSING WIRE. (2026-08-18)
+
+**The owner's pivot**, in their own words:
+
+> *"we wanna set up our system as a mirror … our systems should mirror everything Lender Price had is
+> populating on the scenario … we should have the eligibility the ineligibility should be able to filter
+> by investor … only for staff users. We can search in our system. It searches on Lender Price that
+> mirrors everything, and it comes back."*
+
+**Measured before building anything.** `POST /api/lt/dscr/price` and the disqualify poll have been
+shipping — mounted, staff-gated, tested — since the pricer was built. `LT-ROUTES-UNREACHED.md` recorded
+in the repo's own words that the price route was *"used by the offline measurement scripts and by hand"*.
+And `app-v2/src/longterm/api.js` carried exactly **one** `/dscr` method: the field manifest.
+
+Meanwhile `LtScenarioEntry.jsx` drew a complete, manifest-driven Basic/Advanced form — 69 accepted
+fields, no hand-kept list, searchable — assembled the scenario, **and rendered it as JSON**. It had no
+submit. So the backend of the mirror was ~80% built and *nothing in the product could reach it*.
+
+The fix is therefore small and deliberately unglamorous: two client methods, a button, three result
+panels on the form that already existed. **Building a second screen would have duplicated a
+manifest-driven form to avoid writing one `onClick`.**
+
+**What the screen shows:** the programs Lender Price will price (lender, program, best rate, best price,
+rung count), the lenders it declines and the rules it declined them on, a client-side investor/program
+filter — and, above both, **the vendor's own confirmation of the scenario it ran** (§2.86).
+
+**Four traps, each closed and each asserted:**
+
+1. **A paid call must never be fired by rendering.** Every search is live money. The suite reads the
+   screen's `useEffect` bodies and asserts **none** of them calls `dscrPrice` — a search that ran on
+   mount would bill us for every screen anybody opened. It runs from a button, disabled while in
+   flight, and refuses an empty scenario rather than paying to price nothing.
+2. **The declines are polled by search key, never re-searched.** The suite extracts the poll loop and
+   asserts it does not call the price route: a second search is a second bill **and a different key**,
+   so the declines would belong to a different search than the prices shown beside them.
+3. **A filter must never read as "this is all there was."** The filtered count is rendered beside the
+   unfiltered total, filtering is client-side over what came back (so it never re-prices), and
+   *"no program matches that filter"* and *"Lender Price priced nothing"* are different sentences.
+4. **A mirror that renders only agreement lies.** The vendor's verdict is shown *including its
+   mismatches*, as a side-by-side of what was asked and what was run, and a field the vendor did not
+   echo is named **unconfirmed** rather than folded into the agreed count.
+
+**The ledger was corrected in the same commit, not later.** Two rows are struck because a screen reaches
+those routes now; the two that remain were **rewritten to say why they remain** — `POST /dscr/disqualify`
+blocks and would be a second kickoff the price call already performed, and the POST form of the poll is
+unused because a poll is a read and the screen uses the GET. `check-lt-http-reachability` fails on a
+stale row, which is exactly what made this discoverable.
+
+`scripts/test-lt-ppe-mirror-ui.mjs` (41 assertions) covers all of it, plus the house rules re-checked on
+the new markup: no `--ink*` token as a text colour, no `window.alert/confirm/prompt`, every wide block in
+its own scroll container.
+
+**Mutation-proven seven ways**: the search fired from an effect (2 assertions bite), the poll loop
+re-pricing (3), the mismatches hidden (1), the filtered count no longer naming the total (1), the verdict
+computed on only one response branch (1), the verdict throwing instead of degrading (1), and the stale
+ledger row returning (1).
+
+**One mutation exposed a weak assertion of mine**, recorded rather than quietly fixed: the first version
+checked only that `understood.mismatched` *appeared somewhere* in the source — which stayed true when the
+entire block was disabled, because the name still occurred inside the now-unreachable table body. **A
+mutation that hid every mismatch passed.** The render condition and the row mapping are now asserted
+separately. Naming a thing is not rendering it.
+
+**STILL PARKED, DELIBERATELY.** The request builder is hard-locked to one product profile —
+`PROFILE_FORCED` pins `loanType: Fixed`, `mortgageTypes: [Conventional]`, `propertyUse: Investment`,
+`lienPriorityType: FirstLien`, and the DSCR income-doc type. So "search any kind of scenario" is **not**
+true yet: today the mirror searches investment fixed-rate DSCR and nothing else. Recorded here rather
+than implied by silence, and it is the next item on this thread.
+
+157/157 suites, 33 database-backed. All seven gates green.

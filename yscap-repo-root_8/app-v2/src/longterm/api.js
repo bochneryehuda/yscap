@@ -346,6 +346,31 @@ export const ltApi = {
   // does not exist. Read-only and pure on the server (no Lender Price call).
   dscrFields: () => ltGet(lt('/dscr/fields')),
 
+  // ---- THE LENDER PRICE MIRROR (owner directive 2026-08-18) ---------------------
+  // ⛔ THESE THREE DOORS HAVE BEEN SHIPPING AND UNREACHABLE. `POST /api/lt/dscr/price`
+  // and the disqualify pair have existed, staff-gated, since the pricer was built —
+  // and `docs/longterm/LT-ROUTES-UNREACHED.md` recorded, in the repo's own words, that
+  // they were "used by the offline measurement scripts and by hand". Nothing in the
+  // product could reach them: this file had exactly one `/dscr` method, the manifest.
+  // The mirror was never a missing integration; it was a missing wire.
+  //
+  // ⛔ EVERY ONE OF THESE COSTS A LIVE VENDOR CALL. Same discipline as `ppeQuote`
+  // above: never fire one from an effect, never on a keystroke, only on a deliberate
+  // submit. A search that runs itself on render bills us for every mounted screen.
+  //
+  // `dscrPrice` answers the ELIGIBLE side (programs, rate ladders) plus `understood`,
+  // the vendor's own confirmation of the scenario it ran (§2.86), and a `searchKey`.
+  // The INELIGIBLE side is computed asynchronously by the vendor, so it is polled by
+  // that key rather than re-searched — `dscrDisqualifications` answers 200 when ready,
+  // 202 while computing (with Retry-After), 409 once the key has expired.
+  dscrPrice: (scenario, opts) => ltPost(lt('/dscr/price'), { scenario, ...(opts || {}) }),
+  dscrDisqualifications: (searchKey, params) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, String(v));
+    const s = q.toString();
+    return ltGet(lt(`/dscr/disqualifications/${encodeURIComponent(searchKey)}${s ? `?${s}` : ''}`));
+  },
+
   // ---- onboarding + the rate-sheet console --------------------------------
   // These are the WRITERS that had no door: before them an investor could not be
   // onboarded through the product at all, and the ≥200-scenario Lender Price

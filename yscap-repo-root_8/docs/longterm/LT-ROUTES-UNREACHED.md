@@ -43,10 +43,8 @@ stays only because a cron is not a screen; see the note under the table.
 | `GET /api/lt/encompass/status` | Whether the Encompass memory loaded. Same. |
 | `GET /api/lt/dscr/health` | The Lender Price pricer's own health. Read during build and incident work with a signed-in session; the LT PPE screen shows `GET /ppe/health` instead, which is the one a person needs. |
 | `GET /api/lt/dscr/login-check` | Confirms the vendor login works. An operator check, run by hand. |
-| `POST /api/lt/dscr/price` | The raw, unwrapped Lender Price pricing call — no shadow comparison, no ledger. Screens go through `POST /ppe/breakdown` (our engine against a stored sheet, no vendor call) and `POST /ppe/quote` (Lender Price with our engine in shadow); this one is used by the offline measurement scripts and by hand. |
-| `POST /api/lt/dscr/disqualify` | Kicks off the vendor's asynchronous disqualify computation. Driven by the pricing path and by hand, never by a screen. |
-| `POST /api/lt/dscr/disqualifications` | Polls that computation by search key. Same. |
-| `GET /api/lt/dscr/disqualifications/:searchKey` | The same poll as a GET. Same. |
+| `POST /api/lt/dscr/disqualify` | Kicks off the vendor's asynchronous disqualify computation and BLOCKS until it is ready. The mirror never calls it: `POST /dscr/price` already starts that computation as a side effect, so a screen polls the result by search key instead of paying for a second kickoff. Driven by the offline measurement scripts and by hand. |
+| `POST /api/lt/dscr/disqualifications` | The POST form of the poll. The mirror screen uses the GET form (a poll is a read, and a GET is what a browser will retry and cache-control sensibly), so this verb stays reachable only from the measurement scripts. |
 | `POST /api/lt/dscr/selftest` | The pricer's end-to-end self-test. An operator command. |
 | `POST /api/lt/ppe/canary/tick` | **Driven by the scheduled job**, not by a screen — `render.yaml`'s `ys-capital-lt-canary`. A person can also fire it by hand, and both go through the same lease. See below. |
 

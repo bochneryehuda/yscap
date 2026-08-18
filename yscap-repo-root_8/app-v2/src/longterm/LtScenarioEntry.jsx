@@ -270,6 +270,55 @@ export default function LtScenarioEntry() {
     return out;
   }, [values]);
 
+  // ---- THE MIRROR: search Lender Price with exactly this scenario ---------------------------
+  //
+  // ⛔ THE FORM HAD NO SUBMIT. Everything above drew the scenario from the pricer's own manifest and
+  // then rendered it as JSON — `POST /api/lt/dscr/price` has been shipping and staff-gated all along,
+  // and `LT-ROUTES-UNREACHED.md` recorded in the repo's own words that it was "used by the offline
+  // measurement scripts and by hand". The mirror was never a missing integration; it was a missing wire.
+  //
+  // ⛔ NEVER FROM AN EFFECT. Each search is a paid live vendor call, so it runs only from this button.
+  // A search that fired on render would bill us for every mounted screen.
+  const [searching, setSearching] = useState(false);
+  const [result, setResult] = useState(null);
+  const [searchError, setSearchError] = useState(null);
+  const [disq, setDisq] = useState(null);
+  const [investorFilter, setInvestorFilter] = useState('');
+
+  const runSearch = useCallback(async () => {
+    setSearching(true); setSearchError(null); setResult(null); setDisq(null);
+    try {
+      const r = await ltApi.dscrPrice(scenario);
+      setResult(r);
+      // The INELIGIBLE side is computed asynchronously on the vendor's side, so it is POLLED by the
+      // search key the price handed back — never re-searched, which would be a second paid call and a
+      // different key. 202 means still computing; the route asks for a 2s wait and we honour it.
+      if (r && r.searchKey) {
+        const key = r.searchKey;
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          const d = await ltApi.dscrDisqualifications(key).catch((e) => ({ _err: e }));
+          if (d && !d._err && d.ok) { setDisq(d); break; }
+          if (d && d._err && d._err.status === 409) { setDisq({ expired: true }); break; }
+          await new Promise((res) => { setTimeout(res, 2000); });
+        }
+      }
+    } catch (e) {
+      setSearchError((e && (e.message || e.error)) || 'The search failed.');
+    } finally {
+      setSearching(false);
+    }
+  }, [scenario]);
+
+  // Filtering is CLIENT-SIDE over what came back, so narrowing to one investor costs nothing and
+  // never re-prices. Every count below reports the unfiltered total beside the filtered one, so a
+  // filter can never read as "this is all there was".
+  const programs = useMemo(() => {
+    const all = (result && result.programs) || [];
+    if (!investorFilter) return all;
+    const needle = investorFilter.toLowerCase();
+    return all.filter((p) => `${p.lender || ''} ${p.program || ''}`.toLowerCase().includes(needle));
+  }, [result, investorFilter]);
+
   const countOf = (k) => (manifest && manifest.counts && Number.isFinite(manifest.counts[k]) ? manifest.counts[k] : null);
 
   return (
@@ -429,6 +478,187 @@ export default function LtScenarioEntry() {
                   border: `1px solid ${LINE}`, borderRadius: 10, padding: 12, minWidth: 260,
                 }}>{JSON.stringify(scenario, null, 2)}</pre>
               </div>
+            )}
+          </div>
+
+          {/* ---------------- THE MIRROR ---------------- */}
+          <div style={{ ...card, borderColor: 'rgba(37,97,104,.34)' }}>
+            <h2 style={h2}>Search Lender Price with this scenario</h2>
+            <p style={{ ...sub, marginBottom: 10 }}>
+              Sends exactly the scenario above and shows what Lender Price answers — the programs it
+              will price, the lenders it declines and why, and its own confirmation of the deal it
+              understood. <strong style={{ color: SLATE }}>Each search is a live call</strong>, so it
+              runs only when you press the button.
+            </p>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button
+                type="button"
+                onClick={runSearch}
+                disabled={searching || statedKeys.length === 0}
+                style={{
+                  border: `1px solid ${TEAL}`, borderRadius: 10, padding: '9px 16px',
+                  background: searching || statedKeys.length === 0 ? '#E7ECEC' : TEAL,
+                  color: searching || statedKeys.length === 0 ? MUTED : '#FFFFFF',
+                  fontWeight: 650, fontSize: 13.5,
+                  cursor: searching || statedKeys.length === 0 ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {searching ? 'Searching Lender Price…' : 'Search Lender Price'}
+              </button>
+              {statedKeys.length === 0 && (
+                <span style={{ fontSize: 12.5, color: MUTED }}>State at least one field first.</span>
+              )}
+              {result && (
+                <input
+                  value={investorFilter}
+                  onChange={(e) => setInvestorFilter(e.target.value)}
+                  placeholder="Filter by investor or program…"
+                  style={{
+                    border: `1px solid ${LINE}`, borderRadius: 8, padding: '8px 10px',
+                    fontSize: 13, color: INK, background: '#FFFFFF', minWidth: 220,
+                  }}
+                />
+              )}
+            </div>
+
+            {searchError && (
+              <p style={{ marginTop: 12, marginBottom: 0, fontSize: 13, color: '#8A2B2B' }}>
+                {String(searchError)}
+              </p>
+            )}
+
+            {result && (
+              <>
+                {/* ---- DID LENDER PRICE UNDERSTAND US? ---- */}
+                {result.understood && (
+                  <div style={{
+                    marginTop: 14, padding: 12, borderRadius: 10,
+                    border: `1px solid ${result.understood.understood ? 'rgba(37,97,104,.34)' : 'rgba(174,135,70,.5)'}`,
+                    background: result.understood.understood ? 'rgba(37,97,104,.06)' : 'rgba(174,135,70,.08)',
+                  }}>
+                    <div style={{ fontWeight: 650, fontSize: 13.5, color: result.understood.understood ? TEAL : GOLD_INK }}>
+                      {!result.understood.available
+                        ? 'Lender Price did not state the search it ran'
+                        : result.understood.understood
+                          ? `Lender Price confirms it ran the deal you entered — ${result.understood.checked} fields checked, all agreed`
+                          : `Lender Price ran something different on ${result.understood.mismatched.length} field(s)`}
+                    </div>
+                    {/* A field we sent that they did not echo is NOT agreement, and is reported as its
+                        own number so "nobody looked" can never read as "everything matched". */}
+                    {result.understood.available && (
+                      <p style={{ margin: '6px 0 0', fontSize: 12.5, color: MUTED, lineHeight: 1.6 }}>
+                        {result.understood.agreed} of {result.understood.checked} confirmed
+                        {result.understood.notEchoed && result.understood.notEchoed.length > 0
+                          ? ` · ${result.understood.notEchoed.length} field(s) they did not echo back, so those are unconfirmed rather than agreed`
+                          : ' · every field you set came back'}
+                        {result.understood.vendorComputed && result.understood.vendorComputed.length > 0
+                          ? ` · ${result.understood.vendorComputed.length} vendor-calculated field(s) excluded by name`
+                          : ''}
+                      </p>
+                    )}
+                    {!result.understood.available && result.understood.why && (
+                      <p style={{ margin: '6px 0 0', fontSize: 12.5, color: MUTED }}>{result.understood.why}</p>
+                    )}
+                    {result.understood.mismatched && result.understood.mismatched.length > 0 && (
+                      <div style={{ overflowX: 'auto', marginTop: 8 }}>
+                        <table style={{ borderCollapse: 'collapse', fontSize: 12.5, minWidth: 420 }}>
+                          <thead>
+                            <tr>
+                              {['field', 'you asked for', 'they ran'].map((h) => (
+                                <th key={h} style={{ textAlign: 'left', padding: '4px 10px 4px 0', color: SLATE, fontWeight: 650 }}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {result.understood.mismatched.map((m) => (
+                              <tr key={m.field}>
+                                <td style={{ ...mono, padding: '3px 10px 3px 0', color: INK }}>{m.field}</td>
+                                <td style={{ ...mono, padding: '3px 10px 3px 0', color: INK }}>{JSON.stringify(m.sent)}</td>
+                                <td style={{ ...mono, padding: '3px 10px 3px 0', color: GOLD_INK }}>{JSON.stringify(m.ran)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ---- ELIGIBLE ---- */}
+                <h3 style={{ fontSize: 14, color: INK, margin: '16px 0 6px' }}>
+                  Programs that will price — {programs.length}
+                  {investorFilter ? ` of ${(result.programs || []).length}` : ''}
+                  {Number.isFinite(result.lenderCount) ? ` · ${result.lenderCount} lender(s)` : ''}
+                </h3>
+                {programs.length === 0 ? (
+                  <p style={{ ...sub, marginBottom: 0 }}>
+                    {investorFilter ? 'No program matches that filter.' : 'Lender Price priced nothing for this scenario.'}
+                  </p>
+                ) : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ borderCollapse: 'collapse', fontSize: 12.5, minWidth: 560, width: '100%' }}>
+                      <thead>
+                        <tr>
+                          {['lender', 'program', 'best rate', 'best price', 'rungs'].map((h) => (
+                            <th key={h} style={{ textAlign: 'left', padding: '5px 12px 5px 0', color: SLATE, fontWeight: 650, borderBottom: `1px solid ${LINE}` }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {programs.map((p, i) => (
+                          <tr key={`${p.lender}|${p.program}|${i}`}>
+                            <td style={{ padding: '5px 12px 5px 0', color: INK }}>{p.lender || '—'}</td>
+                            <td style={{ padding: '5px 12px 5px 0', color: INK }}>{p.program || '—'}</td>
+                            <td style={{ ...mono, padding: '5px 12px 5px 0', color: INK, fontVariantNumeric: 'tabular-nums' }}>
+                              {Number.isFinite(p.minRate) ? p.minRate.toFixed(3) : '—'}
+                            </td>
+                            <td style={{ ...mono, padding: '5px 12px 5px 0', color: INK, fontVariantNumeric: 'tabular-nums' }}>
+                              {Number.isFinite(p.maxPrice) ? p.maxPrice.toFixed(3) : '—'}
+                            </td>
+                            <td style={{ ...mono, padding: '5px 12px 5px 0', color: MUTED, fontVariantNumeric: 'tabular-nums' }}>{p.rungCount}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* ---- INELIGIBLE ---- */}
+                <h3 style={{ fontSize: 14, color: INK, margin: '16px 0 6px' }}>
+                  Declined — {disq && disq.ok ? `${disq.lenderCount || 0} lender(s)` : disq && disq.expired ? 'the search key expired' : 'still computing…'}
+                </h3>
+                <p style={{ ...sub, marginBottom: 8 }}>
+                  Lender Price works the declines out after the prices, so this fills in a moment later.
+                  It is polled by the search key, never re-searched — a second search would be a second
+                  live call and a different answer.
+                </p>
+                {disq && disq.ok && Array.isArray(disq.lenders) && disq.lenders.length > 0 && (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ borderCollapse: 'collapse', fontSize: 12.5, minWidth: 520, width: '100%' }}>
+                      <thead>
+                        <tr>
+                          {['lender', 'program', 'why it was declined'].map((h) => (
+                            <th key={h} style={{ textAlign: 'left', padding: '5px 12px 5px 0', color: SLATE, fontWeight: 650, borderBottom: `1px solid ${LINE}` }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {disq.lenders
+                          .filter((l) => !investorFilter || `${l.lender || ''}`.toLowerCase().includes(investorFilter.toLowerCase()))
+                          .flatMap((l, li) => (l.items || []).slice(0, 8).map((it, ii) => (
+                            <tr key={`${li}|${ii}`}>
+                              <td style={{ padding: '4px 12px 4px 0', color: INK }}>{l.lender || '—'}</td>
+                              <td style={{ padding: '4px 12px 4px 0', color: INK }}>{it.program || '—'}</td>
+                              <td style={{ padding: '4px 12px 4px 0', color: MUTED }}>
+                                {(it.reasons || []).map((r) => r.rule).filter(Boolean).slice(0, 3).join(' · ') || '—'}
+                              </td>
+                            </tr>
+                          )))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
             )}
           </div>
 

@@ -13,6 +13,7 @@
  */
 const express = require('express');
 const lp = require('../lenderprice/client');
+const echoCheck = require('../lenderprice/echo-check');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
 const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, OCCUPANCY_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
 const { lpScenarioToFacts } = require('../ppe/lp-agreement-legs');
@@ -254,6 +255,25 @@ function cashoutNote(sc) {
 }
 
 // 422 the caller if they sent a field the builder does not implement (never silently ignore it).
+
+// ⛔ DID THE VENDOR UNDERSTAND US? (§2.86) Every priced response carries `results.baseSearch` — the
+// vendor's own statement of the search it RAN — and every field we set comes back in it. Surfacing the
+// comparison here is what lets a staff mirror say "you asked for a cash-out with a 36-month prepay,
+// and Lender Price confirms it ran exactly that", per scenario, instead of anybody having to trust
+// that our request builder got it right. Best-effort by construction: a diagnostic that could break a
+// quote would be worse than the blind spot it closes, so any failure answers `available:false` with
+// the reason rather than throwing.
+function understoodOf(sentBody, raw, parsedFull, effective) {
+  try {
+    const echo = echoCheck.compareEcho(sentBody, raw);
+    const purposes = parsedFull ? echoCheck.checkOptionPurposes(parsedFull, effective && effective.loanPurpose) : null;
+    return purposes ? { ...echo, optionPurposes: purposes } : echo;
+  } catch (e) {
+    return { available: false, understood: false, checked: 0, mismatched: [], notEchoed: [], vendorComputed: [],
+      why: `the echo check could not run: ${String((e && e.message) || e).slice(0, 120)}` };
+  }
+}
+
 function rejectUnsupported(sc, res) {
   const bad = unsupportedFields(sc);
   if (bad.length) {
@@ -367,12 +387,12 @@ async function price(req, res) {
   // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
   if (req.body && req.body.full) {
     const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    const out = { ok: true, ...full, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), informational: informationalOf(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+    const out = { ok: true, ...full, understood: understoodOf(r.request, r.raw, full, effective), requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), informational: informationalOf(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
-  const out = { ok: true, ...trimPrograms(parsed), requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), informational: informationalOf(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  const out = { ok: true, ...trimPrograms(parsed), understood: understoodOf(r.request, r.raw, null, effective), requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), informational: informationalOf(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
   // §2.5 — audit-mode rung digest: the full per-program rate ladder for a point-for-point diff
   // against the Lender Price frontend. Off by default (audit:true), so the ordinary response is
   // unchanged.
@@ -527,4 +547,4 @@ function makeRouter() {
 }
 
 module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest, fields }, BATTERY, SUPPORTED_FIELDS, META_FIELDS, CORE_FIELDS,
-  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf, rungDigest, trimPrograms, informationalOf, buildFieldManifest } };
+  _internals: { shapeDisqualified, understoodOf, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf, rungDigest, trimPrograms, informationalOf, buildFieldManifest } };
