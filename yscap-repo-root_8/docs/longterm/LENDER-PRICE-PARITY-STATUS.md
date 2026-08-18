@@ -6282,3 +6282,71 @@ removed (5), one rule stamped with a fact it never tests (1), the N/A cells give
 (3), and the cash-out fact alias removed (2) — with an unmutated control green either side.
 
 167/167 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.102 — ⛔ 90% OF LENDER PRICE'S "DECLINE REASONS" ARE NOT REFUSALS — AND THE OBVIOUS FIX DELETES THE REAL ONES (2026-08-18)
+
+§2.101 made our side of the decline reconciliation readable and said plainly that it was **not
+sufficient**: the blocker had moved to the authority side. This measures that side, attempts the fix,
+and **reverts it, because the live acceptance run proved it destroys the very rows it exists to
+protect.** Nothing about the parser changed; what changed is that the next attempt starts from evidence
+instead of from a plausible theory.
+
+**⛔ WHAT THE 4,482 UNREADABLE ROWS ACTUALLY ARE.** Classified from the committed 8-scenario run
+(`--filter-investor "Deephaven Mortgage" --filter-program-like "^dscr" --with-prepay`, feed ON):
+
+```
+4,032 of 4,482 (90%)  nine product-CLASSIFICATION tokens, 448 occurrences EACH:
+                      NONQM · None · Conventional · Conforming · Jumbo · HighBalance ·
+                      Refinance · Purchase · CashoutRefinance
+  ~450                `Origination : -5.050 (Points) x $400,000.00 (Loan Amount)` ladder rungs
+    202               distinct texts in total, across 8 scenarios
+```
+
+None of those is a refusal. They state what the program **is** and what it would have **cost**. They
+drown the handful of genuine refusals roughly **500 : 1**, which is why every scenario's verdict falls
+through to `decline_reasons_unreadable`.
+
+**WHERE THEY COME FROM.** `client.disqualifyRulesOf` falls back to a reason-string sweep when a leaf
+carries no structured disqualify adjustment, and `collectReasons` — written to gather strings under a
+REASON-bearing key — also descends into every other nested object (so a reason buried deeper is still
+found) while its string arm adds every string it meets. The key list therefore gates nothing for an
+ARRAY of strings, which is exactly how the vendor states these (hence 448 = once per leaf).
+
+**⛔ THE FIX THAT LOOKED RIGHT, AND THE MEASUREMENT THAT KILLED IT.** Gating the string arm on
+"was this found under a reason key" was built, guarded by a 15-assertion suite, mutation-proven, and
+run live against the same 8 scenarios. It worked exactly as designed on the noise — and took the real
+refusals with it:
+
+```
+                       LP rows unreadable   layer-2 agreements   onlyAuthority
+before the attempt           4,482                  3                  9
+after the attempt              450                  0                  0
+```
+
+**The nine product tokens vanished and so did every genuine refusal** — including
+`"DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%"`, the one that
+matches our own rule word for word. So the real refusals and the noise arrive through the SAME path,
+and the vendor is putting the ORIGINATION LADDER under a reason-bearing key while putting the actual
+disqualify rule somewhere else. **Reverted in full** — losing a refusal is the expensive direction, and
+a 90% quieter feed that cannot see the one thing the feed exists for is worse than a noisy one.
+
+**TWO EARLIER GUESSES THAT WOULD ALSO HAVE BEEN WRONG, recorded so nobody re-tries them:**
+`adjType == null` is NOT the discriminator — the real refusal above carries a null `adjType` too, so
+filtering on it discards the signal; and a blocklist of the nine tokens is a hand-kept list that goes
+stale the day the vendor adds a tenth.
+
+**AND THE TEST NEARLY LIED FIRST.** The first fixture built the noise from SCALAR strings, and the
+mutation that reverts the fix stayed **GREEN** — the old walk never looked at a scalar under a
+non-reason key, so the fixture did not reproduce the bug at all. Rebuilt as arrays of strings (the live
+shape), the same mutation produces 10 invented reasons, byte for byte the live ones. **A mutation that
+stays green is a hole in the test, not a pass** — that is what caught it.
+
+**⛔ WHAT THE NEXT ATTEMPT MUST DO FIRST, and it is a measurement, not a design.** Capture one raw
+disqualify payload and record, per leaf, the exact PATH each string sits at — then the separation is
+read off the vendor's own structure rather than guessed from the text. Recorded as its own item; the
+eligibility half of the gate stays unreachable until it is done, and §2.93 already makes a run that
+cannot see refusals unable to report GATE MET, so nothing can pass on the strength of this gap.
+
+167/167 suites, 33 database-backed. All seven gates green. No production behaviour changed.
