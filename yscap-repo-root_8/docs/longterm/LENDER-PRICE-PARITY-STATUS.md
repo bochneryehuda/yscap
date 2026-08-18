@@ -6495,3 +6495,79 @@ today's callers (the money families through this frame conversion, and the input
 value, months — where a minus is meaningless).
 
 169/169 suites, 33 database-backed. All seven gates green. No production behaviour changed.
+
+---
+
+### §2.105 — ⛔ A LOAN BOTH ENGINES REFUSE WAS JUDGED ON ITS PRICE, SO A BOTH-DECLINE COULD NEVER AGREE (2026-08-18)
+
+§2.103 made the decline feed readable and the run went from 0 to 6 comparable scenarios — every one of
+which came back DISAGREEING on `coupon_missing_ours`, 168 rungs. That is the finding this closes, and
+it is not a rate-sheet problem at all.
+
+**⛔ THE MECHANISM, and the run printed the contradiction in one object.** `runOne` gated `agree` on the
+COARSE rung axes FIRST and consulted the decline reconciliation afterwards, where the only moves
+available were "stay false" and "become incomparable" — `outcome === 'agree'` did nothing. On a scenario
+BOTH engines refuse:
+
+- our engine returns **no rungs, precisely because it declined**;
+- Lender Price returns its **ladder even for a program it refuses**;
+- so every coarse difference reads *"Lender Price offers coupon 6125 that we do not price"* — trivially
+  true of EVERY declined loan, and evidence about nothing;
+- `agree` was already false before the reasons were ever compared.
+
+Measured on the same 8 live scenarios: **168 of 168 coarse differences were exactly that**, on six loans
+both engines refused. One of them, `dscr 0.6`, reconciled its decline reasons as a clean **`agree` with
+an empty mismatch list** and was still counted as a disagreement. And the summary said so out loud:
+
+```
+agreed: 0,  agreedDeclined: 0          declines: { bothDeclined: 8, reasonsAgree: 1, … }
+```
+
+**`bothDeclined: 8` beside `agreedDeclined: 0`, in the same object** — the report contradicting itself,
+which is the shape this file keeps having to unpick.
+
+**THE FIX IS AN ORDERING ONE.** `bothDeclined` is now known BEFORE the coarse axes are gated, no coarse
+axis gates a both-decline, and the reconciliation decides the verdict **in both directions**. Live, same
+scenarios, same scope:
+
+```
+                     comparable   agreed   agreedDeclined   agreement
+before                 6 of 8        0            0           0.00%
+after                  6 of 8        1            1          16.67%
+```
+
+`dscr 0.6` is recorded as what it is: **both engines refused this loan, for the same stated reason.**
+
+**⛔ THE SUPPRESSION IS NARROW ON PURPOSE, and section C of the suite proves it.** A ONE-SIDED decline is
+the opposite case — if we decline and Lender Price prices, the missing coupons ARE the finding, and the
+coarse axes still gate there. Widening it to "either side declined" would hide the expensive direction,
+which is the entire reason the disqualify feed exists; the mutation that widens it fails three
+assertions.
+
+**NOTHING IS HIDDEN — the differences are still recorded** (they are true: Lender Price really did
+return a ladder), and `declines.coarseNotEvidence` counts them so the `byCategory` tally stays
+reconcilable rather than reading as 168 price disagreements on loans nobody would make. It is counted in
+the SAME loop and under the same skips as the tally itself: a first cut counted a wider population and
+reported **224 beside a tally of 168**, which re-creates the very puzzle the counter exists to remove.
+
+**ONE MUTATION STAYED GREEN, AND IT IS REDUNDANCY RATHER THAN A HOLE.** Rewriting the verdict as
+`agree = agree && outcome !== 'disagree'` behaves identically, because with the coarse axes suppressed
+`agree` already starts TRUE on every both-decline (no gating difference, and `fineAgree` is vacuously
+true since a decline produces no rungs). It is written as an assignment because the verdict's source
+should be unambiguous and because it keeps holding if `fineAgree` ever stops being vacuous — and that is
+recorded in the code rather than left as an implied guard.
+
+**THE FIVE THAT STILL DISAGREE ARE A REAL FINDING, and the next item.** Both engines refuse the loan but
+name DIFFERENT dimensions: ours says `ltv` ("Max LTV/CLTV 70%: T1 FICO 640–679…") or `loan_amount`,
+Lender Price's crosswalk says `fico` or `dscr` — for what is, in at least one case, word-for-word the
+same rule. The two vocabularies disagree about which axis a compound rule belongs to. That is now
+visible per scenario with both texts side by side, which it was not before.
+
+`scripts/test-lt-ppe-both-decline-verdict.js` (23 assertions) drives the real `runOne` and `summarize`
+with stub legs — **shapes taken from the normalizer and the sibling suite, not guessed**, because a
+hand-made `{rate, price}` option is folded to zero rungs and would make every assertion pass for the
+wrong reason. **Mutation-proven three ways**: the coarse axes gating a both-decline again (A3 bites,
+naming the coupons), the suppression widened to any decline (3 assertions), and the reconcilable counter
+dropped (1) — with an unmutated control green either side.
+
+170/170 suites, 33 database-backed. All seven gates green.

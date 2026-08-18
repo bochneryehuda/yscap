@@ -476,7 +476,18 @@ async function runOne(scenario, ours, lp, opts) {
   // Deephaven sheet `final_price` and `llpa_total` compare LP's displayed price / adjustmentPoints,
   // which carry the origination/margin, NOT the LLPA stack — so they are a compensation-layer question.
   const coarseIgnore = o.coarseIgnore instanceof Set ? o.coarseIgnore : new Set(Array.isArray(o.coarseIgnore) ? o.coarseIgnore : []);
-  const gatingCoarse = ((coarse && coarse.differences) || []).filter((d) => !coarseIgnore.has(d.category));
+  // ⛔ A SCENARIO BOTH SIDES DECLINED HAS NO PRICE TO COMPARE, so no coarse axis may gate its verdict.
+  // Our engine returns NO rungs precisely BECAUSE it declined, while Lender Price returns its ladder
+  // even for a program it refuses — so every difference there reads "Lender Price offers coupon X that
+  // we do not price", which is trivially true of EVERY declined loan and is evidence about nothing.
+  // MEASURED live 2026-08-18: 168 of 168 coarse differences in an 8-scenario run were exactly that, on
+  // six scenarios both engines refused, and they held `agree` false before the decline reconciliation
+  // below could ever be consulted. The verdict on a both-decline is the DECLINE reconciliation's — see
+  // the block below, which is the only thing that may decide it.
+  const bothDeclined = !incomparable && !ourEligible && !lpEligible;
+  const gatingCoarse = bothDeclined
+    ? []
+    : ((coarse && coarse.differences) || []).filter((d) => !coarseIgnore.has(d.category));
   let agree = !incomparable && gatingCoarse.length === 0 && fineAgree;
   const worstDeltaMilli = rungReconciles.reduce(
     (m, r) => (Math.abs(r.worstDeltaMilli) > Math.abs(m) ? r.worstDeltaMilli : m), 0,
@@ -487,7 +498,6 @@ async function runOne(scenario, ours, lp, opts) {
   // one-sided decline (`disqualification_missing` / `_extra`) already disagrees on the coarse axis and
   // this only says WHICH reason on WHICH layer, as evidence. The ONE place it moves a verdict is the
   // both-decline, where nothing compared the reasons before.
-  const bothDeclined = !incomparable && !ourEligible && !lpEligible;
   const declineReconcile = (!incomparable && (!ourEligible || !lpEligible))
     ? safeReconcileDeclines(our, lpDisq, programOf(o, ours))
     : null;
@@ -501,8 +511,21 @@ async function runOne(scenario, ours, lp, opts) {
       agree = false;
       incomparable = true;
       incomparableReason = 'decline_reasons_unreadable';
-    } else if (outcome === 'disagree') {
-      agree = false;
+    } else {
+      // ⛔ THE VERDICT IS THIS RECONCILIATION'S, IN BOTH DIRECTIONS. It used to be able only to push
+      // `agree` further false: the coarse axes had already set it false (see the both-decline note
+      // above), and `outcome === 'agree'` did nothing — so a scenario where BOTH engines declined for
+      // the SAME stated reason could never be recorded as an agreement, and `agreedDeclined` could
+      // never leave zero while Lender Price returned a ladder. The summary said so out loud and
+      // nobody could reconcile it: `bothDeclined: 8` beside `agreedDeclined: 0` in the same object.
+      //
+      // REDUNDANT TODAY, AND SAID SO RATHER THAN IMPLIED: with the coarse axes suppressed above,
+      // `agree` already starts TRUE on every both-decline (no gating difference, and `fineAgree` is
+      // vacuously true because a decline produces no rungs to reconcile), so `agree = agree &&
+      // outcome !== 'disagree'` would behave identically — the mutation proving exactly that stayed
+      // GREEN. It is written as an ASSIGNMENT because the verdict's source should be unambiguous
+      // and because it keeps holding if `fineAgree` ever stops being vacuous here.
+      agree = (outcome === 'agree');
     }
   }
 
@@ -679,6 +702,9 @@ function summarize(results) {
   const declines = {
     reconciled: 0,            // scenarios where a reconciliation actually ran (either side declined)
     bothDeclined: 0,          // ... of which both sides declined — the ones whose verdict it decides
+    // Coarse differences seen on a both-decline and deliberately NOT gated: our engine priced nothing
+    // because it declined, so "LP offers a coupon we do not price" is an artefact of the refusal.
+    coarseNotEvidence: 0,
     reasonsAgree: 0,          // ... and the per-layer reasons matched (a REAL eligibility agreement)
     reasonsDisagree: 0,       // ... and they did not (declined the same loan for different reasons)
     reasonsIndeterminate: 0,  // ... and one side's reasons could not be read → incomparable, see below
@@ -755,6 +781,13 @@ function summarize(results) {
     }
     for (const d of ((r.coarse && r.coarse.differences) || [])) {
       byCategory[d.category] = (byCategory[d.category] || 0) + 1;
+      // `byCategory` tallies EVERY coarse difference (the long-standing convention — an axis the caller
+      // ignored still shows, so a reader sees what was measured). On a both-decline NONE of them gated:
+      // our engine priced nothing because it declined, so "LP offers a coupon we do not price" is an
+      // artefact of the refusal. Counted HERE, in the same loop and under the same skips as the tally
+      // itself, so the two numbers reconcile EXACTLY — a counter taken from a different population
+      // would say 224 beside a tally of 168 and re-create the puzzle it exists to remove.
+      if (r.bothDeclined) declines.coarseNotEvidence += 1;
     }
     for (const rec of (r.rungReconciles || [])) {
       for (const it of (rec.itemized || [])) {
