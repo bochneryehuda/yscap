@@ -113,10 +113,20 @@ async function main() {
     for (const { rel, sql } of plain) {
       const name = `ltsqlcheck_${n}`;
       n += 1;
+      // EACH ONE INSIDE ITS OWN SAVEPOINT. A failed statement puts the whole
+      // transaction into an aborted state, so without this the FIRST phantom
+      // column is reported correctly and the other hundred and eight all report
+      // "current transaction is aborted" — the real cause buried under a hundred
+      // lines that name nothing. Measured, not guessed: one phantom column
+      // produced exactly 108 of them. A guard whose failure output is unreadable
+      // is a guard people learn to scroll past.
+      await client.query(`SAVEPOINT ${name}`);
       try {
         await client.query(`PREPARE ${name} AS ${sql}`);
         await client.query(`DEALLOCATE ${name}`);
+        await client.query(`RELEASE SAVEPOINT ${name}`);
       } catch (e) {
+        await client.query(`ROLLBACK TO SAVEPOINT ${name}`).catch(() => {});
         refused.push(`${rel}: ${String((e && e.message) || e).replace(/\s+/g, ' ').slice(0, 160)}\n           ${sql.trim().replace(/\s+/g, ' ').slice(0, 140)}`);
       }
     }
