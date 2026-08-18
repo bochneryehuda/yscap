@@ -13691,6 +13691,16 @@ router.get('/applications/:id/payoff', async (req, res) => {
 router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
   const appId = req.params.id;
   const b = req.body || {};
+  // Serialize concurrent ON/OFF clicks (two tabs) on a per-file advisory lock — its OWN key,
+  // never the engine's 'cond-eval:' key (we CALL the engine below; sharing its key would
+  // deadlock the two connections). Fails OPEN like the engine's lock: a missed lock costs a
+  // rare interleave the idempotent re-run below repairs, refusing the click would be worse.
+  let lockConn = null;
+  const lockKey = `payoff-fnc:${appId}`;
+  try {
+    lockConn = await db.getClient();
+    await lockConn.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
+  } catch (_) { if (lockConn) { try { lockConn.release(); } catch (_e) {} } lockConn = null; }
   try {
     const on = b.on === true;
     if (b.on !== true && b.on !== false) return res.status(400).json({ error: 'on must be true or false' });
@@ -13704,24 +13714,32 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
       return res.status(422).json({ error: 'This is a purchase — there is no payoff to mark free and clear.' });
     const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });
     if (locked) return res.status(409).json({ error: locked });
-    if (!!a.property_free_and_clear === on) return res.json({ ok: true, unchanged: true });
+    // NO early-return on "unchanged" (post-merge audit 2026-08-18): the flag UPDATE and the
+    // condition waive are separate statements, so a failure between them leaves a half-state
+    // the RETRY must be able to repair — every statement below is idempotent, so re-running
+    // the whole branch converges the conditions instead of trusting the flag alone.
+    const unchanged = !!a.property_free_and_clear === on;
 
     const AUTO_NOTE = '[auto] Waived — the property was confirmed FREE AND CLEAR (no existing loan to pay off). Turning the free-and-clear flag off reopens this condition.';
     if (on) {
       await db.query(
         `UPDATE applications
-            SET property_free_and_clear=true, free_and_clear_by=$2, free_and_clear_at=now(),
+            SET property_free_and_clear=true, free_and_clear_by=$2, free_and_clear_at=COALESCE(free_and_clear_at, now()),
                 payoff_amount=0, payoff_lender=NULL, payoff_loan_number=NULL, payoff_good_through=NULL,
                 updated_at=now()
           WHERE id=$1`, [appId, req.actor.id]);
       // The engine retracts what nobody touched; a worked condition is WAIVED
       // (the human's work stays on the record, the waive is the answer).
       try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'free_and_clear' }); } catch (_) {}
+      // The note is appended ONCE (a re-run / retry never stacks a second copy), and a
+      // pure-[auto] note is replaced wholesale per the engine's own note convention.
       await db.query(
         `UPDATE checklist_items ci
             SET status='satisfied', is_required=false, signed_off_by=$2, signed_off_at=now(),
                 waived_by=$2, waived_at=now(),
-                notes = CASE WHEN ci.notes IS NULL OR ci.notes='' OR ci.notes LIKE '[auto]%' THEN $3 ELSE ci.notes || E'\n' || $3 END,
+                notes = CASE WHEN ci.notes IS NULL OR ci.notes='' OR ci.notes LIKE '[auto]%' THEN $3
+                             WHEN ci.notes LIKE '%' || $3 || '%' THEN ci.notes
+                             ELSE ci.notes || E'\n' || $3 END,
                 updated_at=now()
            FROM checklist_templates t
           WHERE t.id=ci.template_id AND ci.application_id=$1
@@ -13730,6 +13748,7 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
         [appId, req.actor.id, AUTO_NOTE]);
       await audit(req, 'payoff_free_and_clear_set', 'application', appId, {
         priorPayoff: a.payoff_amount, priorLender: a.payoff_lender, priorLoanNumber: a.payoff_loan_number,
+        unchanged,
       });
     } else {
       await db.query(
@@ -13737,29 +13756,54 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
             SET property_free_and_clear=false, free_and_clear_by=NULL, free_and_clear_at=NULL,
                 payoff_amount=NULL, updated_at=now()
           WHERE id=$1`, [appId]);
-      // Un-waive ONLY the rows this feature waived (matched on its own note) —
-      // a waive a human recorded for their own reason is never disturbed.
+      // Un-waive ONLY the rows THIS FEATURE waived: still carrying its full [auto] note AND
+      // still waived. Matching the FULL note text (never a phrase like "confirmed FREE AND
+      // CLEAR", which a human's own waive note can legitimately contain — post-merge audit
+      // 2026-08-18) plus waived_at keeps a human's waive, and a human's reopen-then-sign-off
+      // made while the flag was on (signed_off_at set, waived_at NULL), untouched. The
+      // human's own note SURVIVES: only the auto note is stripped out of it, never notes=NULL.
       await db.query(
         `UPDATE checklist_items ci
             SET status='outstanding', is_required=true, signed_off_by=NULL, signed_off_at=NULL,
-                waived_by=NULL, waived_at=NULL, notes=NULL, updated_at=now()
+                waived_by=NULL, waived_at=NULL,
+                notes = NULLIF(TRIM(BOTH E'\n' FROM REPLACE(ci.notes, $2, '')), ''),
+                updated_at=now()
            FROM checklist_templates t
           WHERE t.id=ci.template_id AND ci.application_id=$1
             AND t.code IN ('cond_payoff_external','cond_payoff_internal')
-            AND ci.notes LIKE '%confirmed FREE AND CLEAR%'`,
-        [appId]);
+            AND ci.waived_at IS NOT NULL
+            AND ci.notes LIKE '%' || $2 || '%'`,
+        [appId, AUTO_NOTE]);
+      // A row a human RE-WORKED while the flag was on (reopened + signed off) keeps its state,
+      // but the now-stale auto note ("turning the flag off reopens this") is stripped so the
+      // condition never carries an instruction that no longer describes it.
+      await db.query(
+        `UPDATE checklist_items ci
+            SET notes = NULLIF(TRIM(BOTH E'\n' FROM REPLACE(ci.notes, $2, '')), ''), updated_at=now()
+           FROM checklist_templates t
+          WHERE t.id=ci.template_id AND ci.application_id=$1
+            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND ci.notes LIKE '%' || $2 || '%'`,
+        [appId, AUTO_NOTE]);
       try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'free_and_clear_cleared' }); } catch (_) {}
-      await audit(req, 'payoff_free_and_clear_cleared', 'application', appId, {});
+      await audit(req, 'payoff_free_and_clear_cleared', 'application', appId, {
+        priorPayoff: a.payoff_amount, wasFreeAndClear: !!a.property_free_and_clear, unchanged,
+      });
     }
     const fresh = (await db.query(
       `SELECT id, loan_type, payoff_amount, payoff_lender, payoff_loan_number, payoff_good_through,
               property_free_and_clear, free_and_clear_at, estimated_cash_out
          FROM applications WHERE id=$1`, [appId])).rows[0];
-    res.json({ ok: true, payoff: payoffLib.payoffState(fresh, null) });
+    res.json({ ok: true, unchanged: unchanged || undefined, payoff: payoffLib.payoffState(fresh, null) });
   } catch (e) {
     if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
     console.warn('[staff] free-and-clear error:', db.describeError(e));
     res.status(500).json({ error: 'server error' });
+  } finally {
+    if (lockConn) {
+      try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (_) {}
+      try { lockConn.release(); } catch (_) {}
+    }
   }
 });
 

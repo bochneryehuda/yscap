@@ -5185,7 +5185,7 @@ export default function StaffApplication() {
   const isRefiFile = payoffApplies(app.loan_type);
   const payoffMissing = isRefiFile ? payoffMissingKeys(app) : [];
   const payoffBadge = { short: payoffMissing.length ? `${payoffMissing.length} ⚠` : '✓',
-    long: payoffMissing.length ? `${payoffMissing.length} still needed` : 'Complete ✓' };
+    long: payoffMissing.length ? `${payoffMissing.length} to fill in` : 'Complete ✓' };
   const badges = {
     pricing: { short: app.registered_program ? '✓' : '', long: app.registered_program ? 'Registered ✓' : 'Not registered' },
     appraisal: (() => {

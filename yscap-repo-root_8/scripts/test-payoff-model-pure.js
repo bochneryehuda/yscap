@@ -143,6 +143,13 @@ console.log('\n--- what is still needed, on the server and in the portal ---');
       app: { loan_type: 'Refinance — Cash-Out', payoff_amount: 0 }, want: ['payoffAmount'] },
     { name: 'a payoff on an unclear refinance is still chased',
       app: { loan_type: 'Refinance', payoff_amount: 250000 }, want: ['payoffLender', 'payoffLoanNumber'] },
+    // FREE AND CLEAR (db/575): no loan to pay off, nothing to fill in — the server
+    // and the browser mirror MUST agree (post-merge audit 2026-08-18: this parity
+    // row was missing, leaving the mirror's free-and-clear branch unguarded).
+    { name: 'free and clear asks for nothing',
+      app: { loan_type: 'Refinance — Cash-Out', property_free_and_clear: true }, want: [] },
+    { name: 'free and clear beats an entered payoff amount',
+      app: { loan_type: 'Refinance — Rate & Term', property_free_and_clear: true, payoff_amount: 250000 }, want: [] },
   ];
   for (const row of ROWS) {
     const server = P.payoffState(row.app, null).missing.map((m) => m.key);
@@ -234,6 +241,13 @@ console.log('\n--- the section explains how a payoff works ---');
   // understands is a list nobody acts on.
   for (const f of P.payoffState({ loan_type: 'Refinance — Cash-Out' }, null).fields) {
     assert(typeof f.why === 'string' && f.why.length > 20, `${f.key} says why it matters`);
+  }
+  // NOTHING IS REQUIRED (owner-directed 2026-08-18, verbatim: "The account number
+  // should not be required … The amount, how much it is, and to whom the payoff is
+  // being laid out should also not be required."). The blanks are ASKED FOR — the
+  // missing list above still points at them — but no field may ever gate.
+  for (const f of P.payoffState({ loan_type: 'Refinance — Cash-Out' }, null).fields) {
+    assert(f.required === false, `${f.key} is never required (owner 2026-08-18)`);
   }
 }
 

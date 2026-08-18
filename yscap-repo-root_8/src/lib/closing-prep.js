@@ -210,6 +210,39 @@ async function gatherPackage(applicationId) {
   } catch (e) {
     console.error('[closing-prep] could not read the pending documents:', (e && e.message) || e);
   }
+  // THE PAYOFF LETTER FILED ON THE INTERNAL CONDITION (post-merge audit 2026-08-18).
+  // cond_payoff_internal is tpr_exclude=true (db/464 — an internal working condition
+  // never ships to an INVESTOR), so the chokepoint above can structurally never return
+  // its documents — yet the ordered official payoff letter is routinely filed exactly
+  // there (that condition's own hint says to order it, and it hosts the payoff form).
+  // The closing ATTORNEY is precisely who that letter is for, so it is pulled here in a
+  // narrow, payoff-scoped supplement carrying the SAME filters the chokepoint applies
+  // (current, accepted vs awaiting, never a chat attachment), deduped by id. This is a
+  // deliberate exception to the tpr_exclude inheritance for ONE group — never a second
+  // general document chokepoint.
+  try {
+    const docAccept = require('./document-acceptance');
+    const payoffDocs = async (reviewTest) => (await db.query(
+      `SELECT d.id, d.filename, d.storage_ref, d.reviewed_at, d.created_at, d.doc_kind,
+              d.slot_label, d.llc_id, d.sha256, d.size_bytes, d.content_type,
+              COALESCE(d.review_status,'pending') AS review_status,
+              ci.label AS item_label, ct.code AS template_code, s.full_name AS reviewed_by_name
+         FROM documents d
+         JOIN checklist_items ci ON ci.id=d.checklist_item_id
+         JOIN checklist_templates ct ON ct.id=ci.template_id
+         LEFT JOIN staff_users s ON s.id=d.reviewed_by
+        WHERE d.application_id=$1 AND d.is_current=true
+          AND ct.code IN ('cond_payoff_external','cond_payoff_internal')
+          AND ${reviewTest}
+          AND COALESCE(d.source_type,'') <> 'chat_attachment'
+        ORDER BY d.created_at DESC`, [applicationId])).rows;
+    const have = new Set(rows.map((r) => String(r.id)));
+    for (const d of await payoffDocs(docAccept.ACCEPTED_SQL('d'))) if (!have.has(String(d.id))) rows.push(d);
+    const havePending = new Set(pendingRows.map((r) => String(r.id)));
+    for (const d of await payoffDocs(docAccept.AWAITING_SQL('d'))) if (!havePending.has(String(d.id))) pendingRows.push(d);
+  } catch (e) {
+    console.error('[closing-prep] could not read the payoff-condition documents:', (e && e.message) || e);
+  }
 
   const groups = {};
   for (const k of GROUP_KEYS) groups[k] = [];

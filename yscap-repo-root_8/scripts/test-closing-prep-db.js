@@ -189,7 +189,13 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
       'THE HETER ISKA IS NOT IN THE PACKAGE — it never leaves the building');
     const ins = closingPrep.insuranceSlots(pkg.groups.insurance);
     assert(ins.binder && ins.invoice, 'the binder and invoice are recognised by their real stored slot labels');
-    assert(pkg.missing.length === 0, 'nothing the owner named is missing on this file');
+    // The RAW missing list now carries the (empty) payoff group on every file — a
+    // PURCHASE has no payoff by definition, and every real consumer (the card, the
+    // order email) filters through applicableMissing before showing it. Assert what
+    // the sender actually sees.
+    const dataForMissing = await closingPrep.getClosingPrepData(appId);
+    assert(closingPrep.applicableMissing(pkg.missing, dataForMissing).length === 0,
+      'nothing the owner named is missing on this file (the payoff group is inapplicable on a purchase)');
   }
 
   /* ─────────────────────────── 3. send the request ─────────────────────────── */

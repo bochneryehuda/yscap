@@ -140,6 +140,65 @@ async function payoffItems(appId) {
     ok('E4 the payoff document group is skipped as inapplicable', missing.length === 0);
     const missingOnRefi = cp.applicableMissing([{ key: 'payoff', label: 'Existing loan payoff statement' }], data1);
     ok('E5 …but awaited on an ordinary refinance', missingOnRefi.length === 1);
+
+    // ---- F. the post-merge audit fixes (2026-08-18) ---------------------------------------
+    // F1. A HUMAN'S NOTE SURVIVES an ON→OFF round trip — only the [auto] note is stripped.
+    await call(server, 'POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, tok, { on: false, confirm: true });
+    const HUMAN_NOTE = 'Payoff letter received 8/1 — verify wire instructions with Chase before closing';
+    await db.query(`UPDATE checklist_items ci SET status='received', notes=$2, waived_by=NULL, waived_at=NULL, signed_off_by=NULL, signed_off_at=NULL
+       FROM checklist_templates t WHERE t.id=ci.template_id AND ci.application_id=$1 AND t.code='cond_payoff_external'`, [appId, HUMAN_NOTE]);
+    await call(server, 'POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, tok, { on: true, confirm: true });
+    let ext = (await payoffItems(appId)).find((i) => i.code === 'cond_payoff_external');
+    ok('F1 ON keeps the human note and appends the [auto] note',
+      !!ext && ext.notes.includes(HUMAN_NOTE) && /\[auto\] Waived/.test(ext.notes));
+    await call(server, 'POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, tok, { on: false, confirm: true });
+    ext = (await payoffItems(appId)).find((i) => i.code === 'cond_payoff_external');
+    ok('F2 OFF strips ONLY the [auto] note — the human note is byte-identical',
+      !!ext && ext.notes === HUMAN_NOTE && ext.status === 'outstanding' && !ext.waived_at);
+
+    // F3. A HUMAN'S OWN WAIVE — whose note naturally contains the very phrase — is NEVER reset.
+    const HUMAN_WAIVE = 'Waived by underwriting 6/1 — title search confirmed FREE AND CLEAR ownership, no payoff needed per M. Katz';
+    await db.query(`UPDATE checklist_items ci SET status='satisfied', waived_by=$2, waived_at=now(), signed_off_by=NULL, signed_off_at=NULL, notes=$3
+       FROM checklist_templates t WHERE t.id=ci.template_id AND ci.application_id=$1 AND t.code='cond_payoff_internal'`, [appId, superId, HUMAN_WAIVE]);
+    await call(server, 'POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, tok, { on: true, confirm: true });
+    await call(server, 'POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, tok, { on: false, confirm: true });
+    const intl = (await payoffItems(appId)).find((i) => i.code === 'cond_payoff_internal');
+    ok('F3 the human waive stands — status, waive stamp and note all untouched',
+      !!intl && intl.status === 'satisfied' && !!intl.waived_at && intl.notes === HUMAN_WAIVE);
+
+    // F4. A STUCK HALF-STATE IS REPAIRED BY A RETRY — no early-return on "unchanged".
+    await db.query(`UPDATE applications SET property_free_and_clear=true, payoff_amount=0 WHERE id=$1`, [appId]);
+    await db.query(`UPDATE checklist_items ci SET status='outstanding', waived_by=NULL, waived_at=NULL, signed_off_by=NULL, signed_off_at=NULL, notes=NULL
+       FROM checklist_templates t WHERE t.id=ci.template_id AND ci.application_id=$1 AND t.code='cond_payoff_external'`, [appId]);
+    const rf = await call(server, 'POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, tok, { on: true, confirm: true });
+    ext = (await payoffItems(appId)).find((i) => i.code === 'cond_payoff_external');
+    // The stripped-bare row reads as UNTOUCHED, so the engine may simply RETRACT it
+    // (the cleanest convergence); a row it kept must be waived. Either way the file
+    // no longer shows an open payoff condition on a free-and-clear flag.
+    ok('F4 re-posting ON converges the half-state (flag already true, condition still open)',
+      rf.status === 200 && rf.body.unchanged === true
+      && (ext == null || (ext.status === 'satisfied' && !!ext.waived_at)));
+
+    // F5. THE PAYOFF LETTER FILED ON THE INTERNAL CONDITION reaches the CLOSING-PREP package
+    //     (cond_payoff_internal is tpr_exclude, so the investor chokepoint can never return it)
+    //     — while the investor TPR export still NEVER carries it.
+    await call(server, 'POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, tok, { on: false, confirm: true });
+    const intlItem = (await db.query(
+      `SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code='cond_payoff_internal' LIMIT 1`, [appId])).rows[0];
+    ok('F5 the internal payoff condition exists to file on', !!intlItem);
+    const payoffDocId = (await db.query(
+      `INSERT INTO documents (application_id, checklist_item_id, borrower_id, filename, content_type,
+                              size_bytes, storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id,
+                              review_status, reviewed_at, is_current)
+       VALUES ($1,$2,$3,'official-payoff-letter.pdf','application/pdf',9,'local','x/fnc-payoff-${sfx}','staff',$4,'accepted',now(),true) RETURNING id`,
+      [appId, intlItem.id, borId, superId])).rows[0].id;
+    const pkg = await cp.gatherPackage(appId);
+    ok('F6 the closing-prep payoff group carries the letter',
+      (pkg.groups.payoff || []).some((d) => String(d.id) === String(payoffDocId)));
+    const tprRows = await require('../src/lib/tpr-export').selectTprDocuments(appId);
+    ok('F7 the investor TPR package still never carries it',
+      !tprRows.some((d) => String(d.id) === String(payoffDocId)));
   } finally {
     try {
       if (appId) await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, purchaseId].filter(Boolean)]);

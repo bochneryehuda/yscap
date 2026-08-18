@@ -137,34 +137,37 @@ function cashOutOfRecord(d) {
   return { amount: null, source: null, structural: null };
 }
 
-/* WHAT MUST BE ENTERED, and why — in the owner's own terms.
+/* WHAT IS ASKED FOR, and why — in the owner's own terms.
  *
- * The payoff AMOUNT is required on every refinance: there is always a loan being
- * retired, and the loan cannot be sized or funded without knowing what it costs
- * to clear the existing debt.
+ * NOTHING HERE IS REQUIRED (owner-directed 2026-08-18, verbatim: "The account
+ * number should not be required, just the name and the amount, how much it is,
+ * and the good-through date. The amount, how much it is, and to whom the payoff
+ * is being laid out should also not be required."). So every `required` flag is
+ * false — the card labels the fields as optional and nothing anywhere gates on
+ * them (the missing list is display-only; the audit confirmed no sign-off gate
+ * reads `ready`).
  *
- * WHO holds it and WHICH loan it is are required as soon as a payoff amount is
- * on the file. An amount alone tells the closing attorney and the title company
- * nothing — they cannot request a payoff letter from "the lender", and a payoff
- * wired without the lender's own loan number is a wire that sits unapplied.
+ * `asked` is the separate, softer idea: a blank the screen still POINTS AT as
+ * "not filled in yet", because the reasons to fill it are real — an amount
+ * alone tells the closing attorney nothing, and a payoff wired without the
+ * lender's own loan number sits unapplied. Asked, never nagged as required.
  *
- * The cash-out amount is required only on a CASH-OUT refinance, and it is
- * OPTIONAL-with-a-default: the structure already implies a figure, so the field
- * exists to OVERRIDE it, not to make somebody retype arithmetic.
+ * The cash-out amount is OPTIONAL-with-a-default: the structure already implies
+ * a figure, so the field exists to OVERRIDE it, not to retype arithmetic.
  */
 const REQUIREMENTS = [
   { key: 'payoffAmount', column: 'payoff_amount', label: 'Payoff amount',
     why: 'The balance needed to clear the loan already on the property. Every refinance has one.',
-    kinds: [KIND.RATE_TERM, KIND.CASH_OUT, KIND.UNKNOWN], required: true },
+    kinds: [KIND.RATE_TERM, KIND.CASH_OUT, KIND.UNKNOWN], required: false, asked: true },
   { key: 'payoffLender', column: 'payoff_lender', label: 'Lender being paid off',
     why: 'Who holds the loan today — the bank, private lender or servicer the payoff request goes to. Without a name nobody can order the payoff letter.',
-    kinds: [KIND.RATE_TERM, KIND.CASH_OUT, KIND.UNKNOWN], required: true, needsPayoff: true },
+    kinds: [KIND.RATE_TERM, KIND.CASH_OUT, KIND.UNKNOWN], required: false, asked: true, needsPayoff: true },
   { key: 'payoffLoanNumber', column: 'payoff_loan_number', label: 'Their loan number',
     why: 'The existing lender’s own loan or account number. A payoff wired without it sits unapplied.',
-    kinds: [KIND.RATE_TERM, KIND.CASH_OUT, KIND.UNKNOWN], required: true, needsPayoff: true },
-  /* The payoff letter's GOOD-THROUGH date (db/575) — deliberately NOT required:
-     interest accrues daily and the working figure is often on file before the
-     letter that states its expiry. It is asked for, never nagged for. */
+    kinds: [KIND.RATE_TERM, KIND.CASH_OUT, KIND.UNKNOWN], required: false, asked: true, needsPayoff: true },
+  /* The payoff letter's GOOD-THROUGH date (db/575) — asked for on the card,
+     never listed as "not filled in yet": interest accrues daily and the working
+     figure is often on file before the letter that states its expiry. */
   { key: 'payoffGoodThrough', column: 'payoff_good_through', label: 'Payoff good through',
     why: 'The date the payoff quote is valid through, off the payoff letter. After it, the figure must be re-quoted.',
     kinds: [KIND.RATE_TERM, KIND.CASH_OUT, KIND.UNKNOWN], required: false, needsPayoff: true },
@@ -261,7 +264,7 @@ function payoffState(app, quote) {
   const missing = [];
   if (applies && !freeAndClear) {
     for (const r of REQUIREMENTS) {
-      if (!r.required) continue;
+      if (!r.asked) continue;   // nothing is REQUIRED (owner 2026-08-18); `asked` fields are pointed at while blank
       if (!r.kinds.includes(kind)) continue;
       // WHO/WHICH are asked for only once there is an amount to pay — nagging for
       // the lender's loan number on a file that has not stated a payoff yet is

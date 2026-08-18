@@ -50,7 +50,7 @@ function Row({ label, value, missing, children }) {
     <div style={{ display: 'flex', gap: 12, alignItems: 'baseline', padding: '7px 0', borderBottom: '1px solid #EDE9E0' }}>
       <div style={{ minWidth: 190, fontSize: 13, color: MUTED }}>{label}</div>
       <div style={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 600, color: missing ? '#9A6B00' : INK, wordBreak: 'break-word' }}>
-        {children != null ? children : (value || (missing ? 'Still needed' : '—'))}
+        {children != null ? children : (value || (missing ? 'Not filled in yet' : '—'))}
       </div>
     </div>
   );
@@ -169,7 +169,7 @@ export default function PayoffCard({ appId, app, onSaved }) {
         {state.ready
           ? <span className="pill ok" style={{ background: '#E7F3EC', color: '#0F6A4C' }}>Ready</span>
           : <span className="pill" style={{ background: '#FBF1DC', color: '#8A5A00' }}>
-              {state.missing.length === 1 ? '1 thing still needed' : `${state.missing.length} things still needed`}
+              {state.missing.length === 1 ? '1 detail to fill in' : `${state.missing.length} details to fill in`}
             </span>}
       </div>
 
@@ -241,7 +241,7 @@ export default function PayoffCard({ appId, app, onSaved }) {
           {state.missing.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 800, color: '#8A5A00', textTransform: 'uppercase', letterSpacing: '.04em' }}>
-                Still needed
+                Not filled in yet — nothing here is required
               </div>
               <ul style={{ margin: '4px 0 0', paddingLeft: 18, color: INK, fontSize: 13.5, lineHeight: 1.55 }}>
                 {state.missing.map((m) => <li key={m.key}><b>{m.label}</b> — {m.why}</li>)}
