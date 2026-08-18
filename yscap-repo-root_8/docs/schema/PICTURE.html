@@ -111,13 +111,13 @@ footer p{max-width:74ch;margin:0 0 9px}
   This is a picture of a copy — nothing here can change anything.</p>
   <div class="figs">
     <div class="fig"><b>345</b><span>tables</span></div>
-    <div class="fig"><b>5,663</b><span>fields</span></div>
+    <div class="fig"><b>5,665</b><span>fields</span></div>
     <div class="fig"><b>706</b><span>connections</span></div>
     <div class="fig"><b>34</b><span>automatic rules</span></div>
     <div class="fig"><b>268</b><span>value guards</span></div>
     <div class="fig"><b>1,199</b><span>lookups</span></div>
   </div>
-  <p class="stamp">Generated from the committed schema map — built from 572 migration files, up to db/575. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
+  <p class="stamp">Generated from the committed schema map — built from 573 migration files, up to db/576. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
 </div></header>
 
 <section><div class="wrap">
@@ -398,10 +398,10 @@ footer p{max-width:74ch;margin:0 0 9px}
   </div>
 </div></details><details class="tbl" data-name="lt_encompass_milestones" data-note="">
 <summary><span class="tn">lt_encompass_milestones</span>
-<span class="tm">12 fields · 1 link</span>
+<span class="tm">14 fields · 1 link</span>
 </summary>
 <div class="detail">
-  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">assignment_required <span class="req">required</span></td><td class="t">boolean</td><td class="t"></td></tr><tr><td class="c">consumer_status <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">expected_days <span class="req">required</span></td><td class="t">integer</td><td class="t"></td></tr><tr><td class="c">is_archived <span class="req">required</span></td><td class="t">boolean</td><td class="t">false</td></tr><tr><td class="c">milestone_id <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">milestone_name <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">role</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">role_id</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">sequence <span class="req">required</span></td><td class="t">integer</td><td class="t"></td></tr><tr><td class="c">tpo_status <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">updated_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr></tbody></table></div>
+  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">assignment_required <span class="req">required</span></td><td class="t">boolean</td><td class="t"></td></tr><tr><td class="c">catalog_source</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">catalog_synced_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">consumer_status <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">expected_days <span class="req">required</span></td><td class="t">integer</td><td class="t"></td></tr><tr><td class="c">is_archived <span class="req">required</span></td><td class="t">boolean</td><td class="t">false</td></tr><tr><td class="c">milestone_id <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">milestone_name <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">role</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">role_id</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">sequence <span class="req">required</span></td><td class="t">integer</td><td class="t"></td></tr><tr><td class="c">tpo_status <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">updated_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr></tbody></table></div>
   <div class="links">
     <div><h4>Depends on</h4><ul><li style="color:var(--ink-3)">Nothing — this table stands on its own.</li></ul></div>
     <div><h4>Depended on by</h4><ul><li><span class="a">lt_loans</span></li></ul></div>
