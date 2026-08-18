@@ -106,8 +106,36 @@ function describeSchedule() {
   return `every day at ${EASTERN_HOURS.map(label).join(', ')} Eastern`;
 }
 
+/**
+ * The longest a correctly-running schedule may stay quiet, in milliseconds — the widest gap between
+ * two consecutive scheduled hours, wrapping midnight.
+ *
+ * WHY IT LIVES HERE AND NOT WHERE IT IS USED. "Has the daily check gone quiet for too long?" can only
+ * be answered against the hours the schedule actually keeps, and those hours are `EASTERN_HOURS` right
+ * above. A threshold typed anywhere else is a second copy of this schedule that nobody updates when
+ * the owner changes an hour — the exact drift §2.64 and §2.65 were both about. Derived, so adding or
+ * moving an hour moves this with it and cannot be forgotten.
+ *
+ * On the owner's six hours (7, 9, 10, 11, 12, 16) the widest gap is 4pm to 7am the next day = 15h.
+ * Computed rather than stated, so that sentence cannot go stale either.
+ *
+ * NOTE it is deliberately measured in WALL-CLOCK Eastern hours, not UTC. Two days a year one of these
+ * gaps is an hour longer or shorter; a caller wanting a verdict adds slack, which is why `staleAfterMs`
+ * exists separately below rather than this number being used raw.
+ */
+function longestGapMs() {
+  const hours = [...EASTERN_HOURS].sort((a, b) => a - b);
+  if (!hours.length) return null;
+  let widest = 0;
+  for (let i = 0; i < hours.length; i += 1) {
+    const next = i + 1 < hours.length ? hours[i + 1] : hours[0] + 24;   // wrap to tomorrow
+    widest = Math.max(widest, next - hours[i]);
+  }
+  return widest * 3600000;
+}
+
 module.exports = {
   EASTERN_HOURS, ZONE,
-  isDue, nextRun, describeSchedule,
+  isDue, nextRun, describeSchedule, longestGapMs,
   _internals: { easternParts },
 };

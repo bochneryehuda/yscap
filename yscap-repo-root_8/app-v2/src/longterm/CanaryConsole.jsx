@@ -200,6 +200,78 @@ export function persistLines(result) {
 // small presentational bits
 // ---------------------------------------------------------------------------
 
+/**
+ * WHETHER THE OWNER'S DAILY CHECK IS ACTUALLY RUNNING.
+ *
+ * IT RENDERS A VERDICT, IT DOES NOT REACH ONE. `state` and the sentence beside it are computed by
+ * `canary-driver.healthOf` on the server, from `canary-clock`'s own six Eastern hours. Working it out
+ * here would mean this screen holding a second copy of the schedule — the hours, the widest gap
+ * between them, how much slack a missed wake deserves — and that copy would not move when the owner
+ * changes an hour. That is the drift §2.64 and §2.65 were both about, so the only thing this file
+ * decides is which colour to paint.
+ *
+ * `unknown` IS PAINTED AS A WARNING, NEVER AS FINE. Not being able to tell whether the check ran is
+ * not evidence that it did, and reading it as fine is exactly how the original defect stayed hidden.
+ */
+function DriverHealthView({ data, error, onRefresh }) {
+  if (error) {
+    return (
+      <div>
+        <Pill tone="bad">could not be read</Pill>
+        <p style={{ ...sub, marginTop: 8 }}>{error}</p>
+        <button type="button" className="btn" onClick={onRefresh}>Try again</button>
+      </div>
+    );
+  }
+  if (!data) return <p style={sub}>Reading…</p>;
+
+  const h = data.health || {};
+  const TONE = { ok: 'good', stale: 'bad', never: 'bad', unknown: 'warn' };
+  const WORD = {
+    ok: 'running',
+    stale: 'has gone quiet',
+    never: 'has NEVER run',
+    unknown: 'cannot be determined',
+  };
+  const tone = TONE[h.state] || 'warn';
+  const word = WORD[h.state] || 'cannot be determined';
+  const when = (v) => (v ? new Date(v).toLocaleString() : '—');
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <Pill tone={tone}>{word}</Pill>
+        {h.schedule ? <span style={{ fontSize: 13, color: SLATE }}>Scheduled {h.schedule}.</span> : null}
+      </div>
+
+      {/* The sentence the SERVER wrote. Quoted, never paraphrased — a paraphrase is a second copy. */}
+      {h.says ? <p style={{ ...sub, marginTop: 8, color: tone === 'bad' ? DANGER : SLATE }}>{h.says}</p> : null}
+
+      <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 10 }}>
+        <Figure label="Last tried" value={when(h.lastAttemptAt)} />
+        {/* WHAT drove it is the field that separates "a person pressed the button once" from "the
+            scheduled job is running", which look identical in a run series. */}
+        <Figure label="Driven by" value={h.lastDrivenBy || '—'} hint="cron = the scheduled job · manual = a person · timer = the in-process loop" />
+        <Figure label="Last outcome" value={h.lastOutcome || '—'} />
+      </div>
+
+      {/* What is actually driving it, in the server's own words — including the plain statement that
+          the in-process timer being off is NOT the same as nothing running. */}
+      {data.driver ? (
+        <div style={{ marginTop: 12, borderTop: '1px solid rgba(20,27,34,.10)', paddingTop: 10 }}>
+          <div style={eyebrow}>What drives it</div>
+          <p style={{ ...sub, margin: '6px 0 0' }}>{data.driver.scheduledJob}</p>
+          <p style={{ ...sub, margin: '4px 0 0' }}>In-process timer — {data.driver.inProcessTimer}</p>
+        </div>
+      ) : null}
+
+      <div style={{ marginTop: 10 }}>
+        <button type="button" className="btn" onClick={onRefresh}>Refresh</button>
+      </div>
+    </div>
+  );
+}
+
 function Pill({ tone, children }) {
   const tones = {
     good: { bg: 'rgba(47,127,134,.10)', fg: OK, bd: 'rgba(47,127,134,.35)' },
@@ -562,6 +634,19 @@ export default function CanaryConsole({ investors }) {
     } finally { setRunning(false); }
   };
 
+  // ---- is the daily check actually running? ------------------------------------------------------
+  const [driver, setDriver] = useState(null);
+  const [driverError, setDriverError] = useState('');
+
+  const loadDriver = useCallback(() => {
+    ltApi.ppeCanaryDriver()
+      .then((r) => { setDriver(r); setDriverError(''); })
+      // Same discipline as the schedules below: a read failure is SAID. Drawing a blank card here
+      // would read as "nothing to report", which is the one impression this card exists to prevent.
+      .catch((e) => { setDriver(null); setDriverError(e.message || 'Whether the daily check ran could not be read.'); });
+  }, []);
+  useEffect(loadDriver, [loadDriver]);
+
   // ---- the schedules ---------------------------------------------------------------------------
   const [schedules, setSchedules] = useState(null);
   const [schedError, setSchedError] = useState('');
@@ -729,6 +814,16 @@ export default function CanaryConsole({ investors }) {
         )}
 
         <CanaryRunView result={result} error={runError} running={running} />
+      </div>
+
+      <div style={card}>
+        <h2 style={h2}>Is the daily check actually running?</h2>
+        <p style={sub}>
+          The card below manages what SHOULD happen. This one says what DID. They are different
+          questions, and for weeks the answer to this one was “it has never run” while everything on
+          screen looked normal — a saved, enabled, perfectly valid schedule that nothing was calling.
+        </p>
+        <DriverHealthView data={driver} error={driverError} onRefresh={loadDriver} />
       </div>
 
       <div style={card}>

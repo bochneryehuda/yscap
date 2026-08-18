@@ -535,12 +535,72 @@ async function describe(scope = 'company', opts = {}) {
     out.readable = false;
     out.stateError = msgOf(e);
   }
+
+  out.health = healthOf(out, opts.nowMs);
   return out;
+}
+
+/**
+ * THE ONE VERDICT ON "IS THE OWNER'S DAILY CHECK ACTUALLY RUNNING?" — computed here, on the server, so
+ * a screen renders it rather than deciding it.
+ *
+ * The whole point of §2.64 was that a check which had never once run looked entirely normal to
+ * everyone. A screen that printed the raw fields would put that right back in a person's hands: they
+ * would have to know the six Eastern hours, work out the widest gap between them, compare it to a
+ * timestamp, and know that `disabled` is impossible for a cron-sourced tick. Every one of those is a
+ * rule, and a rule restated in a screen is a rule that drifts from the schedule it describes.
+ *
+ * FOUR STATES, and `unknown` is a real one:
+ *   never   - the state row does not exist. On a deployed system the job wakes hourly, so this means it
+ *             is not reaching the tick at all. An ALARM, not a neutral "no data yet".
+ *   stale   - it ran once but not within the longest gap the schedule allows, plus an hour of slack.
+ *             The slack is one hourly wake: missing a single wake is tolerable, two is a pattern.
+ *   ok      - it attempted inside that window.
+ *   unknown - the ledger could not be read. NEVER reported as ok: not being able to tell whether the
+ *             check ran is not evidence that it did, and this is precisely the reading that let the
+ *             original defect hide.
+ *
+ * PURE given its input, and it never throws: a verdict that can fail is a verdict that goes missing at
+ * exactly the moment it matters.
+ */
+function healthOf(report, nowMs) {
+  try {
+    const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+    const clock = require('./canary-clock');
+    const gap = clock.longestGapMs();
+    const staleAfterMs = gap == null ? null : gap + 3600000;   // + one hourly wake of slack
+    const base = {
+      schedule: clock.describeSchedule(),
+      staleAfterMs,
+      lastAttemptAt: (report && report.state && report.state.lastAttemptAt) || null,
+      lastDrivenBy: (report && report.state && report.state.lastDrivenBy) || null,
+      lastOutcome: (report && report.state && report.state.lastOutcome) || null,
+    };
+
+    if (report && report.readable === false) {
+      return { ...base, state: 'unknown', says: 'The driver ledger could not be read, so whether the daily check ran cannot be answered. That is not the same as it being fine.' };
+    }
+    if (!report || !report.state || !base.lastAttemptAt) {
+      return { ...base, state: 'never', says: 'Nothing has ever attempted the daily check. The scheduled job wakes every hour, so on a deployed system this means it is not reaching the tick at all.' };
+    }
+
+    const at = Date.parse(base.lastAttemptAt);
+    if (!Number.isFinite(at)) {
+      return { ...base, state: 'unknown', says: 'The last attempt carries a timestamp that cannot be read, so how long ago it ran cannot be answered.' };
+    }
+    const agoMs = now - at;
+    if (staleAfterMs != null && agoMs > staleAfterMs) {
+      return { ...base, state: 'stale', agoMs, says: `The daily check last tried ${Math.floor(agoMs / 3600000)} hours ago. The schedule is ${base.schedule}, so it should not go quiet this long — something has stopped reaching it.` };
+    }
+    return { ...base, state: 'ok', agoMs, says: `The daily check last tried ${Math.max(0, Math.floor(agoMs / 60000))} minutes ago, driven by ${base.lastDrivenBy || 'an unrecorded source'}.` };
+  } catch (e) {
+    return { state: 'unknown', says: 'The health of the daily check could not be worked out.', error: msgOf(e) };
+  }
 }
 
 module.exports = {
   driverEnabled, intervalMsOf, leaseMsOf, lockKeyFor, classifyTick,
-  tickOnce, start, stop, describe,
+  tickOnce, start, stop, describe, healthOf,
   HOLDER,
   SOURCE_TIMER, SOURCE_CRON, SOURCE_MANUAL, SOURCES,
   _internals: {

@@ -4108,3 +4108,49 @@ programs. A case that does was added, and the mutation then killed three asserti
 mutation run corrupted the module with NUL bytes via a `sed` pattern; the suite still passed against the
 damaged file, so the whole battery was re-run against a clean rewrite with Python-based edits. Neither
 affected shipped behaviour, and both are the reason to run mutations rather than trust a green suite.
+
+**§2.68 — THE DAILY CHECK RUNS AND NO SCREEN SAID SO (2026-08-18).**
+
+§2.64's finding was not really that a switch was wrong — it was that a check which had **never once run**
+looked entirely normal to everyone. The switch is fixed and the check now runs six times a day, and
+until this **there was still no surface that answered the question**. That is the same defect one step
+along: the fix removed the cause and left the blindness in place.
+
+**MEASURED.** `GET /ppe/canary/driver` already reported everything needed — whether anything drives the
+tick, when it last tried, what drove it, what it did, and an explicit alarm when nothing ever has. And
+`app-v2/src/longterm/api.js` **had no method for it**, so no screen could reach it; the routes ledger
+recorded it as read by hand "while the driver is off", a reason that stopped being true the moment
+§2.64 wired the cron. The canary console's existing card manages **schedules** — save, arm, remove —
+which is what SHOULD happen, never what DID.
+
+**THE VERDICT IS COMPUTED ON THE SERVER, AND THAT IS THE WHOLE DESIGN.** A screen printing the raw
+fields would put the judgement back in a person's hands: they would have to know the six Eastern hours,
+work out the widest gap between them, compare it to a timestamp, and know that a cron-sourced tick can
+never read `disabled`. Every one of those is a rule, and a rule restated in a screen is a rule that
+drifts from the schedule it describes — precisely §2.64/§2.65's class. So `canary-driver.healthOf`
+decides, `describe()` carries it, and the card renders it and **quotes the server's own sentence rather
+than paraphrasing** — a paraphrase is a second copy.
+
+**THE THRESHOLD IS DERIVED FROM THE OWNER'S OWN HOURS.** `canary-clock.longestGapMs()` computes the
+widest gap between consecutive scheduled hours, wrapping midnight — **15 hours on 7/9/10/11/12/4pm, from
+4pm to 7am** — plus one hourly wake of slack, because missing a single wake is tolerable and two is a
+pattern. Nothing types "15" anywhere: add or move an hour and the tolerance moves with it. Pinned by a
+test that recomputes it from the exported hours and by one asserting that adding a late hour shortens it
+on its own.
+
+**FOUR STATES, AND `unknown` IS A REAL ONE.** *never* (an alarm, not "no data yet" — the job wakes
+hourly, so never-attempted means it is not reaching the tick at all), *stale*, *ok*, and *unknown* when
+the ledger could not be read or its timestamp will not parse. **`unknown` is never painted as fine, on
+the server or on the screen**: not being able to tell whether the check ran is not evidence that it did,
+and that reading is exactly what let the original defect hide. A failed load says so rather than drawing
+an empty card, which would read as "nothing to report" — the one impression this card exists to prevent.
+
+**Mutation-proven** (8 applied, 7 meaningful, all killed): reporting an unreadable ledger as ok, widening
+the stale threshold so it never fires, dropping the midnight wrap from the gap, removing the client
+method, painting `unknown` as healthy, giving the view its own threshold, and restoring the "nothing
+reaches it" ledger row. The eighth mutated `describe()`'s `neverAttempted` sentence, which this suite
+deliberately does not own (`healthOf` derives *never* from the timestamp independently, and that field
+belongs to the driver's own suite) — recorded as a mis-designed mutation rather than a coverage gap.
+
+**WHAT THIS DOES NOT CHANGE.** No pricing, no schedule, no tick, no lease. One read-only endpoint became
+reachable and its answer became a card.

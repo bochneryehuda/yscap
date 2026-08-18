@@ -216,6 +216,10 @@ export const ltApi = {
   // `investor` on the delete is the schedule's own key, and the company-wide row (no investor) is
   // addressed as '-' — the route's own convention. `scheduleTarget` in CanaryConsole.jsx is the one
   // place that translation is made.
+  // IS THE OWNER'S DAILY CHECK ACTUALLY RUNNING? The schedule routes below say what SHOULD happen;
+  // this says what DID. Until it was wired to a screen the answer lived only in a hand-run request,
+  // which is how a check that had never once fired looked normal to everyone for weeks (2.64).
+  ppeCanaryDriver: () => ltGet(lt('/ppe/canary/driver')),
   ppeCanarySchedules: () => ltGet(lt('/ppe/canary/schedules')),
   ppeSaveCanarySchedule: (body) => ltPost(lt('/ppe/canary/schedules'), body),
   ppeDeleteCanarySchedule: (investor) => ltDel(lt(`/ppe/canary/schedules/${encodeURIComponent(investor)}`)),

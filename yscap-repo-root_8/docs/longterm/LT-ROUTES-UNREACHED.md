@@ -49,7 +49,6 @@ stays only because a cron is not a screen; see the note under the table.
 | `GET /api/lt/dscr/disqualifications/:searchKey` | The same poll as a GET. Same. |
 | `POST /api/lt/dscr/selftest` | The pricer's end-to-end self-test. An operator command. |
 | `POST /api/lt/ppe/canary/tick` | **Driven by the scheduled job**, not by a screen — `render.yaml`'s `ys-capital-lt-canary`. A person can also fire it by hand, and both go through the same lease. See below. |
-| `GET /api/lt/ppe/canary/driver` | Is anything actually driving that tick, when did it last try, what did it do, and why did it not. Read by hand while the driver is off; it is what a schedule screen would show once somebody turns one on. |
 
 The four canary rows that stood here — `POST /ppe/canary` and the three `/ppe/canary/schedules`
 routes — are gone because they are reached now: `CanaryConsole.jsx`, mounted on the PPE console, runs
