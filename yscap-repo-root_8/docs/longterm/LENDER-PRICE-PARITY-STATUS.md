@@ -367,12 +367,14 @@ from scenario values and the two address items below**: 0 null-vs-omit divergenc
   `16667` again. Regression: section J of `test-lt-lp-request-foundation.js`.
 - The `null`-vs-omit "several blank fields" item **does not reproduce**: `buildSearch`
   already omits exactly what the frontend omits (measured: 0 such fields).
-- **`street:""` / `streetCont:""` / `zipExt:""` are DELIBERATELY omitted** (see the
-  wireDiscipline "(3)" comment in `search-model.js`): our own 200-returning body
-  omitted all three (provably not required), and their absence is what keeps the
-  scenario-ownership guarantee clean (a prior session's street can never ride along)
-  — the author explicitly chose this over "cosmetic parity." Not a gap; do not fill
-  them without owner direction.
+- ~~`street:""` / `streetCont:""` / `zipExt:""` are deliberately omitted~~ — **REVERSED
+  BY §2.1a BELOW (2026-08-18); the code now SENDS all three as `""`.** The reasoning
+  recorded here was a FALSE CHOICE, and it is left visible rather than deleted because
+  the shape of the mistake is the useful part: it weighed "absence keeps the
+  scenario-ownership guarantee clean" against "cosmetic parity" as if they competed,
+  when `''` overwrites a stale foundation street exactly as deletion does — so the
+  prior-session leak stays closed AND the request matches the frontend. All SEVEN
+  captures send `""`. Read §2.1a, not this bullet.
 - The **derived `city`** is DELIBERATELY not derived from a ZIP (the `clearScenarioOwnedFields`
   comment: "per-deal city — never derived from a ZIP, so a stale one survives every
   enrichment"), and `city` is a documented known-uncarried fact. Cosmetic-only; not a gap.
@@ -3993,3 +3995,55 @@ kills 3.
 
 **WHAT THIS DOES NOT CHANGE.** The clock, the six hours, the lease, the tick and the battery are
 untouched. What changed is that the scheduler is now told the truth about them.
+
+**§2.66 — THE LEDGER OF WHAT IS LEFT LISTED ELEVEN THINGS THAT WERE ALREADY DONE (2026-08-18).**
+
+Continuing §2.64/§2.65's method into the documents: read what the artifact says beside what the code
+does, rather than trusting either alone.
+
+**MEASURED.** `docs/longterm/ppe-research/REQUIREMENTS-LEDGER.md` is the one page a person opens to ask
+*"what is still open?"*. Eleven of its rows answered wrongly — **K1, K2, K3, K4, K5, K6, K7, K8, K9, P8,
+P9 and P10 all read `TODO` while the code had closed every one of them.** Each was verified in the source
+before the row was touched: `pmiType` (`c.pmiType = 'BPMI'`), the AUS list, `showUnmatchCompPlan`, the
+closing-cost flags, the monthly-income round at the wire chokepoint, the 15-year `loanYear:30` /
+`termsCriteria` split, the blank-form registry, the address empty strings, the two review screens, the
+parity matrix with its persisted per-cell trend, and the cutover route §2.63 built.
+
+**NOTHING WAS BROKEN BY THIS, WHICH IS WHY IT SURVIVED — AND IT STILL COST SOMETHING.** No borrower was
+mispriced by a stale row. What it cost is the ability to answer the question the page exists for: the
+genuinely open items (**K2 was the only one still thought open, and it is closed too**; the real residual
+is the three fields on which the captures CONTRADICT EACH OTHER) were buried among eleven false ones, so
+"what is left?" could not be answered by reading it. A list that over-reports work is read once and then
+stops being read at all.
+
+**TWO STATEMENTS ALSO CONTRADICTED EACH OTHER INSIDE ONE DOCUMENT.** §2.1's close-out said
+`street`/`streetCont`/`zipExt` are *"DELIBERATELY omitted … do not fill them without owner direction"*,
+while §2.1a below it recorded that reasoning as a **false choice** and the code now sends all three as
+`""` (all seven captures do). A reader hits §2.1 first. That bullet is now struck through and points at
+§2.1a — **left visible rather than deleted, because the shape of the mistake is the useful part**: it
+weighed "absence keeps the scenario-ownership guarantee clean" against "cosmetic parity" as if they
+competed, when `''` overwrites a stale foundation street exactly as deletion does, so both are had at once.
+
+**THE FIX IS A COMPARISON, NOT A CORRECTION** — correcting the rows fixes today and nothing else, and a
+hand-kept status column goes stale silently by construction. `scripts/test-lt-ppe-requirements-ledger.js`
+reads the ledger and the code and compares them, **biconditionally**:
+
+- a row claiming `DONE` whose evidence is absent from the code **fails**, and
+- a row still reading `TODO` for work the code **has** finished **also fails**.
+
+**THE SECOND DIRECTION IS THE ONE THAT MATTERS HERE AND IS THE ONE EASIEST TO OMIT.** Checking only the
+`DONE` claims would let this exact defect recur — finish the work, forget the row, and the ledger
+under-reports forever with every test still green. It is coverage-checked in both directions too: every
+`K` row must carry a probe (a row added later cannot slip in unguarded) and every probe must still name a
+real row (deleting a row turns it red instead of silently retiring its guard). A probe names the
+**specific** evidence — the line that forces the field, the route registration, the module — never "some
+file mentions the word", which would have called K2 done for months while the code still omitted the
+option.
+
+**Mutation-proven five ways**: reverting one row to `TODO`, removing the `pmiType` force while the row
+still claims `DONE`, adding a new `K` row with no probe, deleting a probed row, and restoring the
+"deliberately omitted" claim that §2.1a reversed — each turns it red, with an unmutated control green either side.
+
+**WHAT THIS DOES NOT CHANGE.** Not one line of pricing, request-building or rule code moved; the only
+source added is the guard. What changed is that the page answering *"what is left?"* is now checked
+against the code that would answer it.
