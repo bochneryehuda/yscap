@@ -983,7 +983,9 @@ function SitewirePropertyControls({ appId, onChanged }) {
           <ControlRow
             title={method === 'mobile' ? 'Virtual Inspection' : 'Onsite Inspection'}
             status={method === 'mobile' ? 'Capture using the Sitewire mobile app' : 'Use preferred field inspector'}
-            sub={canSwitch ? null : 'The capital partner sets this — it can’t be switched for this file.'}
+            sub={canSwitch ? null : (insp.ground_up_physical_only
+              ? 'Ground-up construction is always inspected on site — virtual inspections aren’t available on this file.'
+              : 'The capital partner sets this — it can’t be switched for this file.')}
             btnLabel={canSwitch ? (method === 'mobile' ? 'Change to Onsite' : 'Change to Virtual') : null}
             busy={busy === 'method'} disabled={off || busy === 'method'}
             onClick={() => confirmApply(`Change the inspection type to ${INSP_LABEL[otherMethod]}?`, { inspection_method: otherMethod }, 'method', `Switched to ${INSP_LABEL[otherMethod]}.`)}
@@ -2227,7 +2229,7 @@ function StartDrawCard({ appId, onStarted }) {
               </select>
             </label>
           ) : (
-            <div style={{ marginBottom: 10 }}>{effMethod === 'traditional' ? 'On-site (traditional)' : 'Virtual (mobile)'}<span className="muted small"> — {insp.allow_virtual === false || insp.allow_physical === false ? 'set by the program, can’t switch' : 'the only method allowed'}</span></div>
+            <div style={{ marginBottom: 10 }}>{effMethod === 'traditional' ? 'On-site (traditional)' : 'Virtual (mobile)'}<span className="muted small"> — {insp.ground_up_physical_only ? 'ground-up construction is always inspected on site' : (insp.allow_virtual === false || insp.allow_physical === false ? 'set by the program, can’t switch' : 'the only method allowed')}</span></div>
           )}
           <label className="small" style={{ display: 'block' }}>Draw fee ({effKind})
             <div className="row" style={{ gap: 6, alignItems: 'center' }}>

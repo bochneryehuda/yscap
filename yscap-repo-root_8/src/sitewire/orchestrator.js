@@ -426,8 +426,28 @@ async function pushFile(appId, opts = {}) {
   // method = coordinator's per-file choice ?? rule default, validated against what the rule allows
   const existingLink = await getLink(appId);
   const insp = resolveInspection(existingLink, rule);
-  const inspectionMethod = insp.method;
-  const feeCents = insp.feeCents;
+  let inspectionMethod = insp.method;
+  let feeCents = insp.feeCents;
+  // GROUND-UP IS PHYSICAL (owner-directed 2026-08-18; src/sitewire/inspection-policy.js
+  // is the one rule). A ground-up file on OUR platform resolving to 'mobile' is
+  // FORCED to 'traditional' — journaled, with the physical fee — unless the
+  // partner's rule forbids physical, which is a genuine conflict that PARKS for a
+  // human rather than being silently overridden (the never-guess posture).
+  {
+    const policy = require('./inspection-policy');
+    const consTypeEarly = T.constructionType(a.loan_type, a.rehab_type, a.registered_program) || 'rehabilitation_or_remodel';
+    if (policy.groundUpVirtualForbidden({ constructionType: consTypeEarly, platform: routing.platformOf(rule), resolved: true }, inspectionMethod)) {
+      if (insp.allowPhysical) {
+        const forced = resolveInspection(Object.assign({}, existingLink || {}, { inspection_method: 'traditional' }), rule);
+        await journal({ appId, entity: 'property', field: 'inspection_method', oldValue: inspectionMethod, newValue: 'traditional', source: 'ground_up_policy' });
+        inspectionMethod = forced.method;
+        feeCents = forced.feeCents;
+      } else {
+        await park({ appId, reason: 'sitewire_groundup_requires_physical: this ground-up file resolves to a VIRTUAL inspection and the capital partner\'s rule forbids physical — fix the draw rule before pushing', current: 'mobile', proposed: 'traditional' });
+        return { parked: 'groundup_physical' };
+      }
+    }
+  }
   const coordinatorId = await resolveCoordinatorId();
 
   // address (G-ADDR handled by catching Sitewire's 422 below)
@@ -1007,6 +1027,16 @@ async function updatePropertyControls(appId, changes = {}, staffId = null) {
     const allowPhysical = !rule || rule.allow_physical !== false;
     if (m === 'mobile' && !allowVirtual) return { error: 'method_forbidden', method: m };
     if (m === 'traditional' && !allowPhysical) return { error: 'method_forbidden', method: m };
+    // GROUND-UP → PHYSICAL ONLY (owner-directed 2026-08-18): the live-property door must not be a way
+    // around the Start-draw refusal — a ground-up Sitewire file can never be switched to virtual, even
+    // after the property is pushed. One rule, sitewire/inspection-policy.js (call site 2 of 4).
+    if (m === 'mobile') {
+      const policy = require('./inspection-policy');
+      const consType = T.constructionType(a && a.loan_type, a && a.rehab_type, a && a.registered_program) || 'rehabilitation_or_remodel';
+      if (policy.groundUpVirtualForbidden({ constructionType: consType, platform: routing.platformOf(rule), resolved: true }, m)) {
+        return { error: 'method_forbidden_ground_up', method: m };
+      }
+    }
     patch.inspection_method = m;
     newMethod = m;
   }

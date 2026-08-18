@@ -474,7 +474,11 @@ async function reconcileOne(appId) {
   // Bidirectional Phase 1: on the file's FIRST reconcile ever, baseline the draw watermarks silently
   // (no notification burst for draws that existed before PILOT started watching); react to changes after.
   const firstReconcile = !link.last_reconciled_at;
-  const addr = (await db.query(`SELECT property_address->>'oneLine' AS a FROM applications WHERE id=$1`, [appId])).rows[0];
+  const addr = (await db.query(
+    `SELECT a.property_address->>'oneLine' AS a, a.loan_type, a.rehab_type, pr.program AS registered_program
+       FROM applications a
+       LEFT JOIN product_registrations pr ON pr.application_id = a.id AND pr.is_current
+      WHERE a.id=$1 LIMIT 1`, [appId])).rows[0];
   const addrText = (addr && addr.a) || 'the property';
   // Phase-1 routing context (2026-07-24): the file's draw platform + effective inspection
   // method, resolved ONCE per reconcile — drives method-aware inbound copy and the
@@ -489,6 +493,37 @@ async function reconcileOne(appId) {
     const rp = await routing.resolveFilePlatform(appId);
     fileCtx = { platform: rp.platform, method: rp.method, resolved: rp.resolved !== false };
   } catch (_) { /* keep the safe default — resolved:false refuses the Trinity order */ }
+  // GROUND-UP → PHYSICAL ONLY (owner-directed 2026-08-18; call site 4 of 4 in
+  // sitewire/inspection-policy.js): PILOT's own doors refuse switching a ground-up file to virtual,
+  // so a ground-up PROPERTY found on 'mobile' inside Sitewire means somebody flipped it THERE.
+  // Raise a two-sided review + a warning EMAIL to the file's team ("ground-up may not use virtual
+  // draws — it follows the Trinity process"). ONE warning per drift episode: the OPEN review row is
+  // the "already told them" record — resolving it re-arms the warning if the property drifts again.
+  // Best-effort end to end: this check may never fail the reconcile.
+  try {
+    const policy = require('./inspection-policy');
+    const consType = T.constructionType(addr && addr.loan_type, addr && addr.rehab_type, addr && addr.registered_program) || 'rehabilitation_or_remodel';
+    const propMethod = String(prop.inspection_method || '');
+    if (fileCtx.resolved && policy.groundUpVirtualForbidden({ constructionType: consType, platform: fileCtx.platform, resolved: true }, propMethod)) {
+      const open = await db.query(
+        `SELECT 1 FROM sync_review_queue WHERE application_id=$1 AND status='open' AND reason LIKE 'sitewire_groundup_virtual_drift%' LIMIT 1`, [appId]);
+      if (open.rowCount === 0) {
+        // notify:false — the team gets the plain-language warning email below instead of the
+        // generic review-row notice, so one drift never sends two emails.
+        await require('./orchestrator').park({
+          appId, dedupe: 'inspection_method', notify: false,
+          reason: `sitewire_groundup_virtual_drift: this ground-up construction project is set to VIRTUAL (mobile) inspections inside Sitewire. ${policy.reasonPhysicalRequired()} Switch the property back to on-site (traditional) — in Sitewire, or from the PILOT draw desk.`,
+          pilotValue: 'traditional', sitewireValue: propMethod,
+        });
+        await require('../lib/notify').notifyAppStaff(appId, {
+          type: 'draw_setup',
+          title: 'Ground-up project switched to VIRTUAL inspections in Sitewire',
+          body: `${addrText} is a ground-up construction project, and its Sitewire property is currently set to VIRTUAL (mobile) inspections. A ground-up construction is not allowed to be done on virtual draws — it needs to be inspected ON SITE (physical) through the Trinity process. Please switch the property back to on-site (traditional), in Sitewire or from the PILOT draw desk.`,
+          applicationId: appId, link: `/internal/app/${appId}/draws`, inAppOnly: false,
+        }).catch(() => {});
+      }
+    }
+  } catch (_) { /* best-effort — never fail the reconcile over the policy check */ }
   let n = 0;
   for (const d of draws) {
    // A poison draw (null id, bad cents, a constraint violation) must skip to the NEXT draw — not throw

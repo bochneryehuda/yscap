@@ -295,7 +295,14 @@ export default function StaffDrawRules() {
             <div />
             <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_virtual} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, allow_virtual: e.target.checked })} /> Virtual allowed<InfoTip tip={HELP.allowed} /></label>
             <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_physical} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, allow_physical: e.target.checked })} /> On-site allowed</label>
-            <div className="small muted" style={{ alignSelf: 'center' }}>Allow both to let the coordinator switch method per file.</div>
+            <div className="small" style={{ alignSelf: 'center', color: '#4B585C' }}>
+              Allow both to let the coordinator switch method per file.
+              {draft.draw_platform === 'sitewire' && (
+                <div style={{ marginTop: 4, color: '#141B22' }}>
+                  <b>Ground-up projects are always inspected on site</b> — virtual is never used on a ground-up build, whatever is allowed here.
+                </div>
+              )}
+            </div>
             <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.require_sitewire_inspector} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, require_sitewire_inspector: e.target.checked })} /> Require Sitewire inspector<InfoTip tip={HELP.inspector} /></label>
             <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.require_capital_partner_approval} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, require_capital_partner_approval: e.target.checked })} /> Require capital-partner approval<InfoTip tip={HELP.cp_approval} /></label>
             <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_reallocation} disabled={draft.draw_platform === 'external'} onChange={(e) => setDraft({ ...draft, allow_reallocation: e.target.checked })} /> Allow reallocations<InfoTip tip={HELP.realloc} /></label>

@@ -360,9 +360,15 @@ router.get('/files/:id/sitewire-property', requireDrawView, async (req, res) => 
         const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
         const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
         const insp = orchestrator.resolveInspection(link, rule);
+        // GROUND-UP → PHYSICAL ONLY (owner-directed 2026-08-18): the desk must not offer a switch
+        // the orchestrator will refuse — display mirror of updatePropertyControls' policy check.
+        const policy = require('../sitewire/inspection-policy');
+        const consType = T.constructionType(a.loan_type, a.rehab_type, a.registered_program) || 'rehabilitation_or_remodel';
+        const groundUpOnly = policy.requiredMethodFor({ constructionType: consType, platform: routing.platformOf(rule), resolved: true }) === 'traditional';
         inspection = {
           method: insp.method, allow_virtual: insp.allowVirtual, allow_physical: insp.allowPhysical,
-          can_switch: insp.allowVirtual && insp.allowPhysical, default_method: (rule && rule.inspection_method) || 'mobile',
+          ground_up_physical_only: groundUpOnly,
+          can_switch: insp.allowVirtual && insp.allowPhysical && !groundUpOnly, default_method: (rule && rule.inspection_method) || 'mobile',
           // Current draw processing fee (cents) + whether it's a per-file override or the rule default,
           // so the desk can show it and offer "Change fee". The LIVE property's processing_fee_cents is the
           // source of truth for what Sitewire is charging; insp.feeCents is what PILOT would push.
@@ -403,6 +409,7 @@ router.post('/files/:id/property-settings', requirePermission('manage_draws'), a
     if (r.error === 'invalid_method') return res.status(400).json({ error: 'Pick Virtual or On-site.' });
     if (r.error === 'invalid_fee') return res.status(400).json({ error: 'The draw fee must be a dollar amount between $0 and $100,000.' });
     if (r.error === 'method_forbidden') return res.status(422).json({ error: 'The capital partner doesn’t allow that inspection type for this file.' });
+    if (r.error === 'method_forbidden_ground_up') return res.status(422).json({ error: require('../sitewire/inspection-policy').reasonPhysicalRequired() });
     if (r.error === 'no_budget') return res.status(409).json({ error: 'This file’s construction budget isn’t in Sitewire yet, so draws can’t be blocked/allowed — start or re-push the draw first.' });
     if (r.error === 'writes_off') return res.status(409).json({ error: 'The Sitewire connection is currently turned off, so this change can’t be sent yet.' });
     if (r.error === 'nothing_to_change') return res.status(400).json({ error: 'Nothing to change.' });
@@ -691,7 +698,17 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
     // resolve by the note-buyer label first so a "handled externally" partner is recognized even when
     // it isn't in the Sitewire directory (external partners usually aren't).
     const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
-    const insp = orchestrator.resolveInspection(link, rule);
+    let insp = orchestrator.resolveInspection(link, rule);
+    // GROUND-UP → PHYSICAL ONLY (owner-directed 2026-08-18): show the coordinator the method the
+    // push will ACTUALLY use — pushFile forces a resolved 'mobile' to 'traditional' on a ground-up
+    // Sitewire file, so the preview must say so rather than promise Virtual and deliver On-site.
+    // Display-only mirror of the pushFile forcing; the one rule is sitewire/inspection-policy.js.
+    const guPolicy = require('../sitewire/inspection-policy');
+    const guConsType = T.constructionType(a.loan_type, a.rehab_type, a.registered_program) || 'rehabilitation_or_remodel';
+    const groundUpPhysicalOnly = guPolicy.requiredMethodFor({ constructionType: guConsType, platform: routing.platformOf(rule), resolved: true }) === 'traditional';
+    if (groundUpPhysicalOnly && insp.method === 'mobile' && insp.allowPhysical) {
+      insp = orchestrator.resolveInspection(Object.assign({}, link || {}, { inspection_method: 'traditional' }), rule);
+    }
     const budgetDollars = await rehab.requiredRehabBudget(appId).catch(() => null);
     const addr = T.addressForSitewire(a.property_address);
     const addressReady = !!(addr && addr.street && addr.city && addr.state && addr.zip);
@@ -773,7 +790,9 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
         method: insp.method, fee_kind: insp.feeKind, fee_cents: Number(insp.feeCents),
         rule_fee_cents: Number(insp.ruleFeeCents), fee_overridden: !!insp.overridden,
         allow_virtual: insp.allowVirtual, allow_physical: insp.allowPhysical,
-        can_switch: insp.allowVirtual && insp.allowPhysical,
+        // ground-up = on-site only: the coordinator cannot switch this file to Virtual, whatever the rule allows
+        ground_up_physical_only: groundUpPhysicalOnly,
+        can_switch: insp.allowVirtual && insp.allowPhysical && !groundUpPhysicalOnly,
         default_method: (rule && rule.inspection_method) || 'mobile',
         chosen_override: link ? link.inspection_method : null,
         fee_virtual_cents: rule ? Number(rule.fee_cents_virtual) : null,
@@ -832,6 +851,16 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       if (rule) {
         if (chosen === 'mobile' && rule.allow_virtual === false) return res.status(422).json({ error: 'virtual inspection is not allowed for this program/partner' });
         if (chosen === 'traditional' && rule.allow_physical === false) return res.status(422).json({ error: 'on-site inspection is not allowed for this program/partner' });
+      }
+      // GROUND-UP → PHYSICAL ONLY (owner-directed 2026-08-18): a ground-up construction project on a
+      // Sitewire-platform file may never START on virtual inspections, whatever the partner rule allows.
+      // The one rule lives in sitewire/inspection-policy.js (call site 1 of 4 — see its header).
+      if (chosen === 'mobile') {
+        const policy = require('../sitewire/inspection-policy');
+        const consType = T.constructionType(a.loan_type, a.rehab_type, a.registered_program) || 'rehabilitation_or_remodel';
+        if (policy.groundUpVirtualForbidden({ constructionType: consType, platform: routing.platformOf(rule), resolved: true }, chosen)) {
+          return res.status(422).json({ error: policy.reasonPhysicalRequired() });
+        }
       }
     }
     // The coordinator may set a per-file draw FEE (integer cents), overriding the rule's fee for this
