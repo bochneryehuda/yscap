@@ -695,6 +695,25 @@ function buildSearch(sc = {}, opts = {}) {
   // and the dynamic pair below read THIS value, never `months`, so they cannot disagree.
   const effMonths = months != null ? months : DEFAULT_PREPAY_MONTHS;
 
+  // ⛔ THE BODY'S COMPANY IS THE SESSION'S COMPANY, NOT THE ONE FROZEN IN THE CAPTURE.
+  //
+  // MEASURED: `search-base.json` carries `companyId: "68e4306f…"` — a literal from the HAR this
+  // request shape was captured out of — while every caller in `client.js` already passes the LIVE
+  // session's company through as `scenario.companyId` and this builder never read it. So the id was
+  // COLLECTED AND DISCARDED, the standing failure class this repo keeps finding, and the request went
+  // out naming whichever company happened to be logged in on the day of the capture.
+  //
+  // It works today only because those two are the same company. The day they are not — a second
+  // tenant, a re-provisioned company, a sandbox — the URL PATH would carry one company
+  // (`searchRaw/{companyId}/{userId}`, built from the session) and the BODY another, which is either a
+  // 500 or, far worse, a price built against somebody else's configuration. A live session's own id is
+  // strictly better evidence than a captured literal.
+  //
+  // FILL-ONLY AND NEVER INVENTED: a blank, a non-string or a caller who did not pass one leaves the
+  // captured value exactly as it was, because a request with NO company at all is refused upstream and
+  // an empty string is not an improvement on a value proven to price.
+  if (typeof sc.companyId === 'string' && sc.companyId.trim()) m.companyId = sc.companyId.trim();
+
   const c = m.criteria || (m.criteria = {});
   if (value != null) c.purchasePrice = value;
   // Appraised (as-is) value is SEPARATE from the estimated/purchase price, ON EVERY PURPOSE

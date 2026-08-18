@@ -3635,3 +3635,29 @@ holdback goes for the company"), whether this 0.25 is the existing one, what hap
 whether the split is figured on rounded points or exact dollars. The officer's own share of the
 origination is deliberately BLANK until somebody sets it: the record refuses to work out anybody's net
 rather than printing a share this codebase invented.
+
+---
+
+**§2.60 — THE COMPANY ON EVERY LENDER PRICE REQUEST WAS THE ONE FROZEN IN THE CAPTURE (2026-08-18).**
+
+**MEASURED.** `search-base.json` — the canonical frontend request this whole client is built on — carries
+a literal `companyId` captured out of the HAR. Every caller in `client.js` already passes the LIVE
+session's company through as `scenario.companyId` (three call sites: price, priceDisqualified, and the
+disqualify kickoff), and `buildSearch` never read it. Collected and discarded — the standing failure
+class this workstream keeps finding, this time on the identity of the company we are pricing as.
+
+**WHY IT MATTERS ONLY WHEN IT MATTERS.** It works today because the captured company and the logged-in
+company are the same one. The day they are not — a second tenant, a re-provisioned company, a sandbox —
+the URL PATH carries one company (`searchRaw/{companyId}/{userId}`, built from the session) and the BODY
+another. That is either a hard failure or, worse, a price built against somebody else's configuration
+with nothing in the answer saying so.
+
+**THE FIX IS FILL-ONLY AND NEVER INVENTS.** A live session's own id is strictly better evidence than a
+captured literal, so it wins; a blank, a non-string or a caller who passes none leaves the captured value
+exactly where it is, because a request with no company at all is refused upstream and an empty string is
+not an improvement on a value proven to price.
+
+**PROVED** in `scripts/test-lt-lp-scenario-ownership-pure.js` (CO-0…CO-3): the captured base really does
+carry an id (so this is a substitution, not a fill), the live one reaches the body, nothing else about the
+request moves, and seven unusable values each leave the captured one alone. **Mutation-proven both ways** —
+reverting the line kills CO-1; accepting any supplied value kills five of the CO-3 cases.

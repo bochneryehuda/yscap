@@ -130,5 +130,33 @@ const staticBuilt = sm.buildSearch({ purpose: 'Purchase', value: 500000, loan: 4
 ok(staticBuilt.criteria.purchasePrice === 500000 && staticBuilt.criteria.loanAmount === 400000,
   'STATIC-1 the captured-base path builds correctly with the clear applied');
 
+// ---------------------------------------------------------------------------
+// THE COMPANY ON THE BODY IS THE SESSION'S, NOT THE ONE FROZEN IN THE CAPTURE
+// ---------------------------------------------------------------------------
+//
+// MEASURED BEFORE THE FIX: `search-base.json` carries a literal `companyId` from the HAR this request
+// shape was captured out of, every caller in `client.js` already passes the LIVE session's company
+// through as `scenario.companyId`, and `buildSearch` never read it — collected and discarded. It works
+// only while the two happen to be the same company; the day they are not, the URL path names one
+// company and the body another, which is either a hard failure or a price built against somebody
+// else's configuration.
+const CAPTURED = sm.BASE.companyId;
+ok(typeof CAPTURED === 'string' && CAPTURED.length > 0,
+  'CO-0 the captured base does carry a company id (so this is a real substitution, not a fill)');
+
+const withLive = sm.buildSearch({ purpose: 'Purchase', value: 500000, loan: 400000, fico: 760, dscr: 1.25, companyId: 'live-company-1' });
+ok(withLive.companyId === 'live-company-1',
+  'CO-1 THE ONE THAT MATTERS: the live session\'s company reaches the body');
+ok(withLive.criteria.purchasePrice === 500000,
+  'CO-2 …and nothing else about the request moved');
+
+// NEVER INVENTED, and never made worse: a caller with no company, a blank one, or something that is
+// not a string leaves the proven captured value exactly where it was. A request with no company at all
+// is refused upstream, so an empty string is not an improvement on a value that prices.
+for (const junk of [undefined, null, '', '   ', 0, {}, []]) {
+  const b = sm.buildSearch({ purpose: 'Purchase', value: 500000, loan: 400000, fico: 760, dscr: 1.25, companyId: junk });
+  ok(b.companyId === CAPTURED, `CO-3 an unusable company (${JSON.stringify(junk)}) leaves the captured one alone`);
+}
+
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);
