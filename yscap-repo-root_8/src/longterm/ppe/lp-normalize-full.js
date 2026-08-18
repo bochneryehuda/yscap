@@ -209,5 +209,15 @@ module.exports = {
   normalizeLpFull,
   normalizeLpDisqualified,
   bestRungs,
+  // THE ONE DEFINITION OF "does this Lender Price program fall inside the scope", promoted out of
+  // `_internals` because a SECOND copy of it had already drifted. `lp-normalize.js` — the shallow
+  // ladder normalizer the /quote comparison and the canary both read — carried its own three-key
+  // version (program / product / lender) and silently ignored the other two: an `investor`-only or
+  // `programLike`-only scope built no filter at all there, so a comparison that believed it was
+  // scoped to one DSCR family was in fact merged across every program Lender Price returned
+  // (seventeen on the live Deephaven capture). The scope vocabulary is defined by `lp-scope.js`; a
+  // consumer that understands only part of it is a consumer that fails open.
+  programMatches: matches,
+  programRe,
   _internals: { marginOf, llpasOf, rungOf, matches },
 };

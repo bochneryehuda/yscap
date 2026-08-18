@@ -26,6 +26,7 @@
  * this module only PLUMBS it. LT-only. No RTL imports.
  */
 const { quoteProgram } = require('./quote');
+const lpNormalize = require('./lp-normalize');
 const { advancedFactsFromScenario } = require('./advanced-facts');
 // ZIP → state derivation (committed offline table; PURE, no network). Needed so a realistic zip-only
 // scenario carries a state for the state-keyed Layer-2/Layer-3 rules (e.g. NJ PPP): measured live
@@ -287,6 +288,64 @@ function buildLpLeg(client, opts = {}) {
 }
 
 /**
+ * THE CANARY / SHADOW leg: a scenario -> the canonical LADDER `parity.compareScenario` reads
+ * (`{ eligible, rungs:[{rate, priceMilli}] }`).
+ *
+ * WHY THIS EXISTS — the defect it closes. The canary battery (`routes/ppe.js runBattery`) wired its
+ * Lender Price leg as `theirs: (sc) => lp.price(sc)`, which is the RAW VENDOR ENVELOPE
+ * (`{ ok, raw, request, searchKey, provenance }`) and not a ladder at all. An envelope carries no
+ * `eligible` flag and no rungs, so `parity.isComparable` correctly read it as "this engine produced no
+ * result" and EVERY scenario came back `incomparable`. Measured on the canonical 299-scenario battery
+ * (`agreement-scenarios.buildAgreementScenarios`) before the fix: 299 incomparable, 0 comparable,
+ * `agreementRate` NULL — and the run was still persisted and the endpoint still answered 200. A canary
+ * that compared nothing reported like a canary that ran. It read as correct because `lp.price` is a
+ * scenario-taking async function returning an object, which is exactly what the leg's signature asks
+ * for. `buildLpLeg` above already did the same three-step chain for the agreement harness's RICH
+ * comparison; this is that chain for the SHALLOW ladder one, so neither leg is hand-wired at a route.
+ *
+ * A SCOPE IS REQUIRED, and it is refused here rather than defaulted. Lender Price answers one request
+ * with EVERY program it sells (17 on the live Deephaven capture) while our engine prices ONE, so an
+ * unscoped ladder is a merge of somebody else's product catalogue — a comparison that cannot mean
+ * anything, reported as if it did. `lp-scope.js` is the vocabulary and `lp-normalize` does the
+ * matching; nothing here invents a program name.
+ *
+ * FAIL CLOSED, AND SAY WHICH STEP FAILED. `client.price` reports a refusal IN BAND
+ * (`{ ok:false, reason }` — a bad scenario, a vendor 500, an open circuit breaker) rather than
+ * throwing. That is NOT an answer and must never be scored as one, so this THROWS with the vendor's
+ * own reason: `shadow.runOne` turns it into an `engine_error` finding on the `theirs` side carrying
+ * that reason, so the reason reaches the ledger and the scenario is never counted as agreement. A raw
+ * that parses to ZERO matched programs is a different thing entirely — that IS Lender Price's answer
+ * ("nothing in scope prices this deal") — so it normalizes to `{ eligible:false }` and is compared.
+ *
+ * `client` is INJECTED, like `buildLpLeg`'s, so this is offline-testable and never reaches a network.
+ */
+function buildCanaryLpLeg(client, opts = {}) {
+  if (!client || typeof client.price !== 'function' || typeof client.parse !== 'function') {
+    throw new Error('buildCanaryLpLeg: client must expose price() and parse()');
+  }
+  const scope = opts.scope;
+  if (!scope || typeof scope !== 'object' || Array.isArray(scope) || !Object.keys(scope).length) {
+    throw new Error('buildCanaryLpLeg: a Lender Price scope is required — an unscoped ladder merges every program Lender Price returned, which our single-program ladder cannot be compared against');
+  }
+  const filter = { ...scope };
+  if (opts.rateScale != null) filter.rateScale = opts.rateScale;
+  if (opts.priceScale != null) filter.priceScale = opts.priceScale;
+  return async function theirs(scenario) {
+    const pr = await client.price(scenario);
+    if (!pr || pr.ok !== true) {
+      const why = (pr && (pr.message || pr.error || pr.reason)) || 'unknown';
+      throw new Error(`LP price failed: ${why}`);
+    }
+    if (pr.raw == null) throw new Error('LP price answered ok with no search body to parse');
+    let parsed;
+    try { parsed = client.parse(pr.raw); } catch (e) {
+      throw new Error(`LP capture could not be parsed: ${String((e && e.message) || e).slice(0, 160)}`);
+    }
+    return lpNormalize.normalizeLpParsed(parsed, filter);
+  };
+}
+
+/**
  * The readiness / blocker report for the live run. `configured` is client.configured(); `missing` names
  * the absent credentials so the operator sees exactly what to set. `env` is injected for testability.
  */
@@ -301,4 +360,4 @@ function readiness(client, env) {
   return { configured, missing, message };
 }
 
-module.exports = { buildOursLeg, buildLpLeg, readiness, lpScenarioToFacts, _internals: { LP_CRED_ENV, normPurpose, prepayMonths } };
+module.exports = { buildOursLeg, buildLpLeg, buildCanaryLpLeg, readiness, lpScenarioToFacts, _internals: { LP_CRED_ENV, normPurpose, prepayMonths } };

@@ -47,11 +47,74 @@ dbStub.query = async (text, params) => {
 };
 require.cache[P('db.js')] = { id: P('db.js'), filename: P('db.js'), loaded: true, exports: dbStub };
 
-const lpStub = { calls: [], result: { rungs: [] }, throwWith: null };
+// ---------------------------------------------------------------------------
+// THE LENDER PRICE STUB — ONLY THE NETWORK IS FAKE
+// ---------------------------------------------------------------------------
+//
+// A STUB THAT ONLY AGREES WITH THE CODE IS DECORATION, and this one used to be exactly that. It
+// answered `price()` with `{ rungs:[{rate, price}] }` — a shape the REAL client has never produced.
+// The real `price()` resolves with the VENDOR ENVELOPE `{ ok, raw, request, searchKey, provenance }`
+// and the ladder only exists after `parse(raw)` and a normalizer. So the canary's `theirs` leg was
+// wired to the raw envelope in production (every scenario `incomparable`, `agreementRate` NULL, run
+// persisted, HTTP 200 — a green canary that compared nothing) while this suite stayed green, because
+// the stub handed the comparator the shape the mis-wiring needed. Worse, it ran BACKWARDS: correcting
+// the wiring to parse the capture would have made this suite RED, because the stub had no `parse`.
+//
+// So the stub now fakes ONLY the network call. `price()` returns a real envelope carrying a real
+// searchRaw-shaped body, and every reading function — `parse`, `parseFull`, `parseDisqualified`,
+// `hasDisqualifyData` — is the REAL client's, taken from the module itself. A wiring that skips the
+// parse now gets an envelope the comparator cannot read, and says so.
+const realLp = require('../src/longterm/lenderprice/client');
+
+// A searchRaw body in the shape the real parser walks (results -> qualified tree -> lender -> leafs).
+// Prices are POINTS and rates are PERCENT, exactly as Lender Price states them; `adjustedPoints` is
+// what the parser derives the price from (price = 100 - points).
+function lpLeaf(rate, price) {
+  return {
+    rate, adjustedPoints: Math.round((100 - price) * 1000) / 1000,
+    basePoints: 0, adjustmentPoints: 0, apr: rate + 0.2,
+    programName: 'DSCR  >= 1.25  - 30 Yr Fixed', productName: 'DSCR30', companyName: 'Deephaven',
+    dayLock: 30, term: 360, loanAmount: 400000,
+    ratePeriod: { validAsOf: '2026-08-01', expired: false, name: 'Sheet A', id: 'rp1' },
+  };
+}
+function lpRaw(rungs, programName) {
+  return {
+    search: { date: '2026-08-17T12:00:00Z' },
+    results: {
+      lenderDtos: { lenderDtoNonQm: [{ id: 'L1', name: 'Deephaven', shortName: 'DHVN' }] },
+      qualifiedNonQMData: {
+        childs: [{
+          type: 'CriteriaFromLineResultKey', keyLabel: programName || 'DSCR  >= 1.25  - 30 Yr Fixed',
+          childs: [{
+            type: 'LenderKey', keyLabel: 'Deephaven', plenderId: '"L1"',
+            leafs: rungs.map(([rate, price]) => lpLeaf(rate, price)),
+          }],
+        }],
+      },
+    },
+  };
+}
+// The sheet the route's own fixture publishes is one rung at 7.125% / 102.850, so the stub's default
+// capture states the SAME deal — which is what makes a correctly-wired canary agree and a
+// wrongly-wired one incomparable, rather than both being noise.
+const LP_DEFAULT_RAW = lpRaw([[7.125, 102.85]]);
+
+const lpStub = {
+  ...realLp,                 // parse / parseFull / parseDisqualified / hasDisqualifyData — the REAL ones
+  calls: [],
+  raw: LP_DEFAULT_RAW,
+  ok: true,
+  throwWith: null,
+  _internals: { lpRaw, lpLeaf },
+};
 lpStub.price = async (sc) => {
   lpStub.calls.push(sc);
   if (lpStub.throwWith) throw new Error(lpStub.throwWith);
-  return lpStub.result;
+  // The real client reports a refusal IN BAND rather than throwing — a leg that treats an ok:false as
+  // an answer must fail here, not in production.
+  if (!lpStub.ok) return { ok: false, reason: 'lp_scenario_invalid', message: 'stubbed refusal' };
+  return { ok: true, raw: lpStub.raw, request: { url: 'x', body: {} }, searchKey: 'k', provenance: {}, recovered: false };
 };
 require.cache[P('lenderprice/client.js')] = {
   id: P('lenderprice/client.js'), filename: P('lenderprice/client.js'), loaded: true, exports: lpStub,
@@ -217,10 +280,14 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
   r = await call(H.quoteRoute, { body: {} });
   ok(r.code === 400, 'quote: refuses a request with no scenario');
 
-  lpStub.calls = []; lpStub.result = { rungs: [{ rate: 7.125, price: 100.25 }] };
+  lpStub.calls = [];
   dbStub.queries = [];
   r = await call(H.quoteRoute, { body: { scenario: { fico: 760 } } });
-  ok(r.code === 200 && r.body.authoritative === 'lp' && r.body.answer === lpStub.result,
+  // LP's answer is passed through UNTOUCHED — the vendor envelope, which is what a caller of /quote
+  // has always received. Asserted on the envelope's own shape rather than on object identity, because
+  // the stub now builds a fresh one per call exactly as the real client does.
+  ok(r.code === 200 && r.body.authoritative === 'lp'
+     && r.body.answer && r.body.answer.ok === true && r.body.answer.raw === lpStub.raw,
     'quote: with no program, LP still answers (LP is authoritative — the shadow is what is lost)');
   ok(r.body.shadow === null && r.body.shadowSkipped === 'no_program_requested',
     'quote: and it SAYS the shadow was skipped, so a missing block is never read as "the engines agreed"');
@@ -458,11 +525,18 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
     // and the READ have to agree about the key for anything at all to come back.
     const runTable = [];
     const sheet = {
-      version: { id: 'v1', label: 'Sheet A' },
+      version: { id: 'v1', label: 'Sheet A', program_id: 'p1' },
       basePrices: [{ note_rate_milli_pct: 7125, lock_days: 30, product: 'DSCR30', price_milli: 102850 }],
       adjustments: [], priceLimit: null,
+      // THE OWNING PROGRAM ROW, CARRYING THE LENDER PRICE SCOPE (db/574). A real sheet has one, and a
+      // canary is refused without one: Lender Price answers a single request with EVERY program it
+      // sells (17 on the live Deephaven capture) while this sheet prices ONE, so an unscoped ladder is
+      // a merge of somebody else's catalogue. A fixture with no scope would have been a fixture that
+      // can never exercise a canary at all.
+      program: { id: 'p1', lp_program_like: 'DSCR .* 30 Yr Fixed' },
     };
     const withRuns = (text, params) => {
+      if (/FROM lt_ppe_program/.test(text)) return { rows: [sheet.program] };
       if (/INSERT INTO lt_ppe_shadow_run/.test(text)) {
         const [scope2, investor2, program2, , dayMs, rate, keys, summary] = params;
         const row = {

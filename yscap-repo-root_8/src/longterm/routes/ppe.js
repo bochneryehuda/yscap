@@ -794,12 +794,34 @@ async function canaryRoute(req, res) {
 async function runBattery(scope, scenarios, opts = {}) {
   const investor = opts.investor || null;
   const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
-  const { program, reason: noProgram } = await loadProgram(scope, opts.rateSheetVersionId);
+  const { program, lpScope, reason: noProgram } = await loadProgram(scope, opts.rateSheetVersionId);
   if (!program) {
     // Same reasoning as /quote, and it matters more here: a canary with no
     // program would price N scenarios against a live upstream and record N
     // engine_error findings that say nothing about agreement.
     return { refused: { status: 422, body: { error: 'A canary needs a rate-sheet version to price against.', reason: noProgram } } };
+  }
+
+  // AND IT NEEDS TO KNOW WHICH LENDER PRICE PROGRAMS IT IS ABOUT, for exactly the reason the /quote
+  // facade abstains without one (`lp-scope.js`): Lender Price answers one request with EVERY program
+  // it sells — 17 on the live Deephaven capture, across several investors and product lines — while
+  // this sheet prices ONE. Merging all of them into a single ladder does not weaken the comparison, it
+  // empties it: every coupon Lender Price offers on an unrelated product reads as one "we do not
+  // price", which looks like a defect in our engine and is really a statement about an unscoped query.
+  //
+  // REFUSED HERE, ONCE, BEFORE ANYTHING IS PRICED — not per scenario. The scope is a property of the
+  // sheet, so an unscoped battery would produce the SAME configuration complaint 299 times, bury the
+  // real findings under it and bill a live upstream for the privilege. That is the same reasoning as
+  // the no-program refusal directly above. The scope is STATED by a human on the program row (db/574);
+  // nothing here infers one from our own program code, which would be a guess about somebody else's
+  // product catalogue and is worse than no scope at all.
+  if (!lpScope) {
+    return { refused: { status: 422, body: {
+      error: 'This rate sheet does not say which Lender Price programs to compare against, so a canary '
+        + 'would compare our one ladder against every program Lender Price returned. Set the program\'s '
+        + 'Lender Price scope (its program name, or a family pattern such as "DSCR .* 30 Yr Fixed") and run it again.',
+      reason: 'no_lp_scope',
+    } } };
   }
 
   const { values: settings } = await resolveSettingsSafe(scope);
@@ -814,11 +836,21 @@ async function runBattery(scope, scenarios, opts = {}) {
   // endpoint is simply dead. It read as correct because both objects are two
   // scenario-taking functions sitting three lines apart. `theirs` is Lender Price,
   // which is authoritative; `ours` is the engine on trial.
+  //
+  // AND THAT TRAP HAD A SECOND FLOOR, WHICH IS WHAT `buildCanaryLpLeg` CLOSES. `theirs` was
+  // `(sc) => lp.price(sc)` — the RAW VENDOR ENVELOPE (`{ ok, raw, request, searchKey, provenance }`),
+  // not a ladder: no `eligible` flag, no rungs. `parity.isComparable` therefore read Lender Price as
+  // having produced no result and every scenario came back `incomparable`. Measured on the canonical
+  // 299-scenario battery before the fix: 299 incomparable, 0 comparable, agreementRate NULL — and the
+  // run was still persisted into the series the go-live gate reads, and this endpoint still answered
+  // 200. A green canary that compared nothing. The three-step chain (price -> parse -> normalize to the
+  // scoped ladder) lives in `lp-agreement-legs` beside the agreement harness's own LP leg, so neither
+  // is hand-wired here and there is no second definition of "a comparable Lender Price answer".
   const run = await canary.runCanary(
     scenarios,
     {
       ours: (sc) => quote.quoteProgram({ scenario: sc, program, settings }),
-      theirs: (sc) => lp.price(sc),
+      theirs: lpAgreementLegs.buildCanaryLpLeg(lp, { scope: lpScope }),
     },
     {
       investor,
@@ -844,6 +876,45 @@ async function runBattery(scope, scenarios, opts = {}) {
     persisted = await findingStore.persistRun(scope, run.records, { db, nowMs });
   } catch (e) {
     persistError = String((e && e.message) || e).slice(0, 200);
+  }
+
+  // FAIL CLOSED: A RUN THAT COMPARED NOTHING MAY NOT REPORT SUCCESS, AND MAY NOT ENTER THE SERIES THE
+  // GO-LIVE GATE READS. `canary.verdictOf` is the one definition of "did this battery actually compare
+  // anything" — `comparable`, less the scenarios where an engine threw. Before this, an
+  // all-incomparable run answered 200 with `agreementRate: null` and wrote a NULL-rate row into
+  // `lt_ppe_shadow_run`, plus a matrix of nothing into the parity cells: durable records that measured
+  // nothing, sitting in the two series the clean-day streak and the per-band trend are computed from.
+  // `cutover.eligibleForLive` independently refuses a null rate and any incomparable count, so the
+  // PROMOTE gate was never going to pass on it; what was wrong is that the run reported like a run, the
+  // response said `ok`, and the schedule tick counted it as having measured that investor that night.
+  //
+  // THE FINDINGS ARE STILL PERSISTED ABOVE, DELIBERATELY: an `incomparable` / `engine_error` record is
+  // the diagnosis of WHY nothing could be compared, and discarding it would leave nothing to work from.
+  // What is refused is the CLAIM that a measurement happened.
+  if (!run.verdict.proven) {
+    return { refused: { status: 422, body: {
+      ok: false,
+      scope,
+      investor,
+      proven: false,
+      error: run.verdict.reason,
+      reason: 'canary_compared_nothing',
+      scenarios: scenarios.length,
+      agreementRate: null,
+      summary: run.summary,
+      verdict: run.verdict,
+      report: run.report,
+      lpScope: lpScopeLib.describeScope(lpScope),
+      findings: run.findingKeys.length,
+      // The findings ledger DID take the diagnosis; the run series and the parity cells deliberately
+      // did not — a measurement of nothing is not a measurement.
+      persisted: !persistError,
+      persistError,
+      persistedSummary: persisted ? persisted.summary : null,
+      runPersisted: false,
+      runPersistReason: 'refused_nothing_compared',
+      cellsPersisted: false,
+    } } };
   }
 
   let runPersisted = null;
@@ -876,6 +947,12 @@ async function runBattery(scope, scenarios, opts = {}) {
     scope,
     investor,
     scenarios: scenarios.length,
+    // Stated beside the rate: a caller reading only `agreementRate` cannot tell a measured 100% from a
+    // measured nothing, and this endpoint used to answer the second one exactly like the first.
+    proven: true,
+    verdict: run.verdict,
+    // WHICH Lender Price board this was compared against, named rather than implied.
+    lpScope: lpScopeLib.describeScope(lpScope),
     agreementRate: run.agreementRate,
     summary: run.summary,
     report: run.report,

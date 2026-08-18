@@ -28,6 +28,49 @@ const shadowReport = require('./shadow-report');
 const parityMatrix = require('./parity-matrix');
 
 /**
+ * DID THIS RUN COMPARE ANYTHING AT ALL? — the one definition, because a run that compared NOTHING must
+ * never be able to report like a run that did.
+ *
+ * `parity.summarize` measures the agreement rate over what could be COMPARED, and correctly answers
+ * `null` when nothing could (§10.6: an incomparable scenario is never scored as agreement). That is the
+ * right MEASUREMENT and it had the wrong ENDING: a null rate travelled onward as an ordinary result,
+ * was written into the run series the go-live gate reads, and was answered with a 200 — so an
+ * all-incomparable battery (a mis-wired Lender Price leg, a vendor outage, an empty capture) looked
+ * exactly like a battery that ran. Measured on the canonical 299-scenario battery with the leg
+ * mis-wired: 299 incomparable, `agreementRate` null, `runRecord.agreementRate` null, run persisted,
+ * HTTP 200.
+ *
+ * COMPARED counts scenarios where BOTH engines produced an answer the comparator could read:
+ * `comparable` (agreed + disagreed) less `errors` (scenarios where an engine THREW, which
+ * `parity.summarize` counts among the disagreements). A run with zero of those has proven nothing —
+ * neither agreement nor disagreement — and `proven:false` says so, with the reason stated.
+ *
+ * This MEASURES; it does not decide what a caller does about it. The battery refuses; the go-live gate
+ * (`cutover.eligibleForLive`) independently refuses a null rate and any incomparable count.
+ */
+function verdictOf(summary) {
+  const n = (k) => (summary && Number.isFinite(summary[k]) ? summary[k] : 0);
+  const scenarios = n('scenarios');
+  const errors = n('errors');
+  const incomparable = n('incomparable');
+  const compared = Math.max(0, n('comparable') - errors);
+  if (compared > 0) return { proven: true, compared, scenarios, incomparable, errors, reason: null };
+  const parts = [];
+  if (incomparable > 0) parts.push(`${incomparable} could not be compared (an engine produced no result)`);
+  if (errors > 0) parts.push(`${errors} failed with an engine error`);
+  if (!parts.length) parts.push('no scenario was priced');
+  return {
+    proven: false,
+    compared: 0,
+    scenarios,
+    incomparable,
+    errors,
+    reason: `This canary compared NOTHING: of ${scenarios} scenario(s), ${parts.join(' and ')}. `
+      + 'An agreement rate cannot be measured over zero comparisons, so this run proves neither agreement nor disagreement.',
+  };
+}
+
+/**
  * Run one canary and package it.
  *   engines: { ours, theirs } — async(scenario) → quote, as shadow.runShadow expects.
  *   opts:
@@ -37,8 +80,9 @@ const parityMatrix = require('./parity-matrix');
  *     priceToleranceMilli / rateToleranceMilli / concurrency — passed to shadow.runShadow.
  *     bands / dimensions — passed through to the parity matrix (bands default to the program's own
  *                          rule edges; dimensions default to the facts the run actually states).
- * Returns { dayMs, investor, program, summary, results, matrix, agreementRate, records, findingKeys,
- *           runRecord, report }.
+ * Returns { dayMs, investor, program, summary, verdict, results, matrix, agreementRate, records,
+ *           findingKeys, runRecord, report }. `verdict` is `verdictOf(summary)` — whether the run
+ * compared anything at all, and why not when it did not.
  */
 async function runCanary(scenarios, engines = {}, opts = {}) {
   const nowMs = typeof opts.nowMs === 'number' && Number.isFinite(opts.nowMs) ? opts.nowMs : null;
@@ -93,6 +137,9 @@ async function runCanary(scenarios, engines = {}, opts = {}) {
     investor,
     program,
     summary: run.summary,
+    // Whether this run compared anything at all, stated beside the rate it measured — a caller that
+    // reads only `agreementRate` cannot tell a measured 100% from a measured nothing.
+    verdict: verdictOf(run.summary),
     // The per-scenario results, so a caller can slice them a second way without re-pricing anything.
     results: run.results,
     matrix,
@@ -105,4 +152,4 @@ async function runCanary(scenarios, engines = {}, opts = {}) {
   };
 }
 
-module.exports = { runCanary };
+module.exports = { runCanary, verdictOf };
