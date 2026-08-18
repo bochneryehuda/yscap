@@ -455,8 +455,22 @@ point — every refusal in it was written from reasoning, which is what a test i
 every named refusal in the words a screen shows, the confirmed-only rule that stops a machine
 suggestion attributing somebody's book, and the partial unique index that is what actually makes
 one-person-one-login true when two admins press the button at the same instant. Five mutations turn
-it red. The remaining spans are the next thread to pull: the loan sync's own `syncOnce`, the roster
-sync, and several route handlers.
+it red.
+
+**And the second thread: `sync/loans.js syncOnce`, the pass that brings the book in.** The worker
+suite stubs it out — correctly, it is testing the worker — and nothing else called it, so the heart of
+the mirror had never run in a test. `scripts/test-lt-loan-sync-db.js` runs the REAL pass against a
+real Postgres with Encompass and discovery stubbed through `require.cache`, and pins the four
+decisions inside it that are invisible when right and expensive when wrong: **an empty pipeline
+changes nothing** (an empty read is far likelier an outage or a changed filter than seven hundred
+loans vanishing); **a discovery pass never clobbers a figure it did not read in full** (the upsert is
+asymmetric on purpose — the loan NUMBER takes the newest value, the AMOUNT keeps the stored one — and
+an asymmetry that looks like a typo is exactly what somebody tidies); **the budget bounds the pass and
+REPORTS what it left behind**; and **the people steps are best-effort and may never cost the mirror**,
+including that a roster refusal (`{ok:false}`) is reported rather than read as success, because a pass
+printing a confident "0 officers proposed" when it never ran is worse than one that admits it. Four
+mutations turn it red — among them blanking the book on an empty read, and flipping that COALESCE.
+The remaining spans are the next thread: the roster sync itself and several route handlers.
 
 **A SETTING IS EITHER READ BY SOMETHING OR SAYS IT IS NOT (2026-08-18).** §7's promise to a buyer is
 that nothing about how WE do things is hard-coded. Forty-three of the 63 settings were declared ahead
