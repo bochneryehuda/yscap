@@ -611,6 +611,54 @@ function Summary({ data, file, sections, lock, contacts, history }) {
   );
 }
 
+/**
+ * WHO BOUGHT THIS LOAN — INTERNAL. Never a borrower or a TPO surface.
+ *
+ * The investor's name, their own loan number, their email and the funding channel
+ * are internal knowledge (CLAUDE.md rule 10). The channel counts because it names
+ * HOW a loan is funded, which implies WHO. This screen is behind the staff mount
+ * and there is no client version of it; if one is ever built it takes its strings
+ * through `audience.js`, never from here.
+ *
+ * The two names are shown SEPARATELY on purpose. The shorthand is typed early and
+ * the accurate name arrives later, and the difference between them is often the
+ * question — 117 recorded spellings resolve to about thirty companies, so seeing
+ * both is how somebody spots that a file is filed under a name nobody else uses.
+ * The canonical key is what the system compares; it is shown because it is the
+ * answer to "are these two files with the same investor?".
+ */
+function Investor({ data }) {
+  if (data.error) return <Unreadable error={data.error} />;
+  if (!data.recorded) {
+    return (
+      <p style={{ margin: 0, color: MUTED, fontSize: 13 }}>
+        Encompass names no investor on this loan yet — either it has not been sold,
+        or the investor has not been recorded on the file.
+      </p>
+    );
+  }
+  return (
+    <>
+      <Facts rows={[
+        ['Investor', plain(data.accurateName || data.shorthandName)],
+        ['Their loan number', plain(data.investorLoanNumber)],
+        ['Name typed early', plain(data.shorthandName)],
+        ['Name on the file', plain(data.accurateName)],
+        ['Contact', plain(data.investorEmail)],
+        ['Funding channel', plain(data.fundingChannel)],
+      ]} />
+      <p style={{ margin: '10px 0 0', color: MUTED, fontSize: 12 }}>
+        Internal only — an investor’s name never reaches a borrower or a broker.
+        {data.canonicalKey ? <> PILOT files this one under <code>{data.canonicalKey}</code>,
+          which is what it compares rather than the spelling.</> : <> PILOT does not
+          recognise this spelling, so it is stored as typed and compared to nothing —
+          worth a look if you expected a match.</>}
+        {data.readAt ? <> Read from Encompass {data.readAt}.</> : null}
+      </p>
+    </>
+  );
+}
+
 const RENDERERS = {
   // `summary` reads the loan's TERMS and then borrows from the other sections, so it is
   // given the whole file rather than one slice.
@@ -623,6 +671,7 @@ const RENDERERS = {
   assets: Assets,
   reo: Reo,
   declarations: Declarations,
+  investor: Investor,
 };
 
 /** The section key each renderer takes its own slice from. */

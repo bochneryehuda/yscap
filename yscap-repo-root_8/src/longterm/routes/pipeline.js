@@ -189,6 +189,9 @@ router.get('/:loanId', async (req, res) => {
         // The SAME income block the rail renders, so the menu can never grey a
         // section whose figures are sitting on the screen beside it.
         income: file && file.income,
+        // STAFF-ONLY, like everything on this route: whether Encompass names an
+        // investor decides whether the section is drawn at all.
+        investor: file && file.investor,
       }),
       stepper: workspace.milestoneStepper(rows[0], catalog, { reachedAt }),
       // How long it has been at this milestone — and, when the first sighting is all

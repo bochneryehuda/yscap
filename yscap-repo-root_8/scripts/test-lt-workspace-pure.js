@@ -77,6 +77,12 @@ check(!/coming soon/i.test(by('conditions').why),
 check(ws.sectionMenu(DSCR, { conditionsEnabled: true }).find((s) => s.key === 'conditions').available === true,
   '…and turns on from the SETTING, not from a code change');
 
+// Who bought the loan: shown when Encompass names somebody, greyed when it does not.
+check(by('investor').available === false && /has not been sold/i.test(by('investor').why),
+  'the investor section is greyed until Encompass names one — a heading over nothing reads as a loan nobody sold rather than as one whose buyer we cannot see');
+check(ws.sectionMenu(DSCR, { investor: { recorded: true } }).find((s) => s.key === 'investor').available === true,
+  '…and turns on the moment a buyer is on the file');
+
 check(by('lock').available === true
    && ws.sectionMenu({ ...DSCR, lock_status: null }, {}).find((s) => s.key === 'lock').available === false,
   'the lock section follows whether the loan actually has a lock');

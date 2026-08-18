@@ -26,6 +26,7 @@
  */
 
 const mapper = require('./mapper');
+const investors = require('../encompass/investors');
 
 const lazy = {
   get db() { return require('../db'); },
@@ -430,4 +431,71 @@ async function syncBorrowerPairs(loanId, loan, opts = {}) {
   return { ok: true, pairs: pairs.length, parties, children, unkeyed, orphaned };
 }
 
-module.exports = { syncSubjectProperty, syncLoanTerms, syncBorrowerPairs };
+/**
+ * WHO BOUGHT THIS LOAN — mirrored into `lt_loan_investors`.
+ *
+ * The owner's rule for this chain is that it must "survive like crazy": the
+ * investor's OWN loan number is the only shared key between our file and their
+ * system, and it is one careless overwrite away from being unrecoverable. So every
+ * column is COALESCEd onto what we already hold — Encompass OMITS an unpopulated
+ * field rather than sending a blank, so a payload that has stopped carrying the
+ * reference number must never erase it. A row is written only when the payload
+ * carries something; an empty row reads on a screen exactly like an investor we
+ * read and found blank.
+ *
+ * THE CANONICAL KEY IS RESOLVED HERE, THROUGH THE ONE DEFINITION. 117 recorded
+ * spellings resolve to about thirty companies, so a name compared as a string is
+ * how one investor becomes two. `investors.resolve()` owns that, and the ACCURATE
+ * name is asked first because it is the later, fuller step of the chain — a
+ * shorthand somebody typed in a hurry is the fallback, never the authority. A
+ * spelling the registry does not recognise resolves to nothing rather than to a
+ * guess, and the names are still stored so a human can see what was typed.
+ *
+ * THE INVESTOR'S LOAN NUMBER IS VALIDATED, not trusted: the same module knows the
+ * placeholders this tenant types into that box ("---", "n/a"), and a placeholder
+ * stored as a reference number is worse than an empty one, because it looks like
+ * an answer.
+ *
+ * STAFF-ONLY DATA. Nothing here reaches a client surface; `audience.js` remains
+ * the one definition for anything that ever formats one of these strings.
+ */
+async function syncLoanInvestor(loanId, loan, opts = {}) {
+  const row = mapper.readInvestor(loan, opts.values);
+  if (!row) return { ok: true, written: false, reason: 'the payload named no investor' };
+
+  const resolved = investors.resolve(row.accurateName || row.shorthandName || '');
+  const canonicalKey = (resolved && resolved.key) || null;
+  const ref = investors.investorLoanNumber(row.investorLoanNumber);
+
+  const db = opts.db || lazy.db;
+  await db.query(
+    `INSERT INTO lt_loan_investors
+       (loan_id, shorthand_name, accurate_name, canonical_key,
+        investor_loan_number, investor_email, funding_channel, updated_at)
+     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, now())
+     ON CONFLICT (loan_id) DO UPDATE SET
+       shorthand_name       = COALESCE(EXCLUDED.shorthand_name, lt_loan_investors.shorthand_name),
+       accurate_name        = COALESCE(EXCLUDED.accurate_name, lt_loan_investors.accurate_name),
+       canonical_key        = COALESCE(EXCLUDED.canonical_key, lt_loan_investors.canonical_key),
+       investor_loan_number = COALESCE(EXCLUDED.investor_loan_number, lt_loan_investors.investor_loan_number),
+       investor_email       = COALESCE(EXCLUDED.investor_email, lt_loan_investors.investor_email),
+       funding_channel      = COALESCE(EXCLUDED.funding_channel, lt_loan_investors.funding_channel),
+       updated_at           = now()`,
+    [loanId, row.shorthandName, row.accurateName, canonicalKey,
+      (ref && ref.usable) ? ref.value : null, row.investorEmail, row.fundingChannel],
+  );
+
+  return {
+    ok: true,
+    written: true,
+    canonicalKey,
+    // Said out loud rather than swallowed: a reference number the registry refused
+    // is the one fact on this row somebody will come looking for. A loan that
+    // simply carries none is not a refusal — reporting "blank" on every unsold
+    // file would bury the handful that hold a placeholder or an investor's NAME
+    // where their loan number belongs.
+    loanNumberRefused: (ref && !ref.usable && ref.reason !== 'blank') ? ref.reason : null,
+  };
+}
+
+module.exports = { syncSubjectProperty, syncLoanTerms, syncBorrowerPairs, syncLoanInvestor };

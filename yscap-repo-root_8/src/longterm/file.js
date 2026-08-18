@@ -176,7 +176,7 @@ async function loadFile(loanId, loan = null) {
   };
 
   const [parties, pairs, property, residences, employments, otherIncomes,
-    assets, liabilities, reo, declarations] = await Promise.all([
+    assets, liabilities, reo, declarations, investor] = await Promise.all([
     q(`SELECT p.id, p.pair_id, p.role, p.party_type, p.borrower_id,
               p.first_name, p.middle_name, p.last_name, p.name_suffix,
               p.date_of_birth, p.ssn_last4, p.citizenship, p.marital_status, p.dependent_count,
@@ -219,6 +219,7 @@ async function loadFile(loanId, loan = null) {
          JOIN lt_parties p ON p.id = d.party_id
          JOIN lt_borrower_pairs bp ON bp.id = p.pair_id
         WHERE bp.loan_id = $1::uuid`, [id]),
+    q('SELECT * FROM lt_loan_investors WHERE loan_id = $1::uuid', [id]),
   ]);
 
   const byParty = (rows, key = 'party_id') => {
@@ -257,6 +258,8 @@ async function loadFile(loanId, loan = null) {
    * "Encompass holds nothing for this borrower" and "we could not ask" look identical on
    * a screen and mean opposite things to whoever has to chase it.
    */
+  const inv = investor.rows[0] || {};
+
   const coverage = (result, count) => ({
     state: result.error ? 'unreadable' : (count > 0 ? 'read' : 'empty'),
     count: result.error ? null : count,
@@ -426,6 +429,28 @@ async function loadFile(loanId, loan = null) {
         mortgageBalance: sumOrNull(reo.rows.map((r) => r.mortgage_balance)),
         netMonthlyRentalIncome: sumOrNull(reo.rows.map((r) => r.net_monthly_rental_income)),
       },
+    },
+
+    // WHO BOUGHT THE LOAN — STAFF ONLY, and that is a hard rule rather than a
+    // preference (CLAUDE.md rule 10): the investor's name, their own loan number
+    // and the funding channel never reach a borrower or a TPO, and the channel
+    // counts because it names HOW a loan is funded, which implies WHO. This file
+    // screen is behind the staff mount and has no client audience — everything it
+    // returns is internal — so the guard here is that nothing may lift this block
+    // onto a client payload without going through `audience.js`, the one
+    // definition. `recorded` is what makes the difference between "not sold yet"
+    // and "sold, and we cannot read it" sayable on the screen.
+    investor: {
+      error: investor.error,
+      recorded: investor.rows.length > 0,
+      shorthandName: text(inv.shorthand_name),
+      accurateName: text(inv.accurate_name),
+      canonicalKey: text(inv.canonical_key),
+      // The only thing that lets us and the investor talk about the same loan.
+      investorLoanNumber: text(inv.investor_loan_number),
+      investorEmail: text(inv.investor_email),
+      fundingChannel: text(inv.funding_channel),
+      readAt: day(inv.updated_at),
     },
 
     declarations: {

@@ -719,6 +719,69 @@ function readEmployments(borrower) {
   return out;
 }
 
+// ── Who bought the loan ─────────────────────────────────────────────────────
+
+/**
+ * A CONTACT on the loan, by its type.
+ *
+ * The tenant's people arrive as `contacts: [{contactType, name, email, ...}]`,
+ * which is why the dictionary records the investor's fields as JSONPath filters
+ * rather than paths. The INVESTOR contact is the one carrying the accurate name,
+ * the email whose DOMAIN identifies them unambiguously, and — on
+ * `referenceNumber` — their OWN loan number.
+ */
+function contactOfType(loan, type) {
+  const list = loan && Array.isArray(loan.contacts) ? loan.contacts : [];
+  for (const c of list) {
+    if (c && typeof c === 'object' && String(c.contactType) === type) return c;
+  }
+  return null;
+}
+
+/**
+ * WHO BOUGHT THIS LOAN — the identity chain the owner said must "survive like
+ * crazy", read from the five fields the census measured.
+ *
+ * THREE STEPS, IN THE ORDER THEY FILL, and all three are kept: a shorthand name
+ * typed early (CX.WHICHINVESTOR, 57.1%, 83 spellings), a more accurate name added
+ * later (VEND.X263, 71.0%, 68 spellings), and the investor's OWN loan number
+ * (VEND.X276, 67.3%, 379 distinct values on 379 loans) — the only thing that lets
+ * us and them talk about the same loan. Keeping the earlier steps is the point:
+ * the later one can arrive months after somebody needs to know who this went to.
+ *
+ * THE NAME IS NEVER THE KEY. 117 recorded spellings resolve to ~30 companies, so
+ * comparing names as strings is how "Deephaven" and "Deep Haven" become two
+ * investors. This returns the two names as typed and the CALLER resolves the
+ * canonical key through `encompass/investors.js` — the one definition — because
+ * this module is pure and requires nothing.
+ *
+ * NOT VEND.X267: the owner named it, and in the live tenant it is "File Contacts
+ * Investor Zip" — eleven values, every one a postcode. Keying on it would file a
+ * PO-Box postcode as the investor's loan number on every loan.
+ *
+ * THE FUNDING CHANNEL IS A DIFFERENT QUESTION and is kept apart on purpose:
+ * CX.TABLEFUNDER says HOW the money moves, never WHO buys the loan.
+ *
+ * Returns null when the payload carries none of it, so the caller writes no row —
+ * an empty row reads on a screen exactly like an investor we read and found blank.
+ */
+function readInvestor(loan, values) {
+  if (!loan || typeof loan !== 'object') return null;
+  const inv = contactOfType(loan, 'INVESTOR');
+  const f = (spec) => fieldOf(loan, spec, values);
+
+  const row = {
+    shorthandName: text(f({ id: 'CX.WHICHINVESTOR', paths: [] })
+      ?? customField(loan, 'CX.WHICHINVESTOR')),
+    accurateName: text(f({ id: 'VEND.X263', paths: [] }) ?? (inv && inv.name)),
+    investorLoanNumber: text(f({ id: 'VEND.X276', paths: [] }) ?? (inv && inv.referenceNumber)),
+    investorEmail: text(f({ id: 'VEND.X273', paths: [] }) ?? (inv && inv.email)),
+    fundingChannel: text(f({ id: 'CX.TABLEFUNDER', paths: [] })
+      ?? customField(loan, 'CX.TABLEFUNDER')),
+  };
+  return Object.values(row).some((v) => v !== null) ? row : null;
+}
+
 // ── The loan's own terms, its PITIA and its DSCR ─────────────────────────────
 
 /**
@@ -848,6 +911,7 @@ function readLoanTerms(loan, values) {
 }
 
 module.exports = {
+  readInvestor,
   readSubjectProperty,
   readLoanTerms,
   TERM_FIELDS,

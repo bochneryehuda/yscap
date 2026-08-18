@@ -68,6 +68,10 @@ const LOAN_FOR_READ = {
   // A rate NO other fixture uses, so the assertion below can only pass if the
   // terms were written BY THE LOAN READ rather than by an earlier direct call.
   requestedInterestRatePercent: 9.875,
+  // An investor NO other fixture uses, for the same reason: the row this leaves
+  // could not have been left by the direct call above.
+  contacts: [{ contactType: 'INVESTOR', name: 'Wired Capital Partners',
+    referenceNumber: 'WIRE-77-431' }],
   applications: [{
     id: 'app-read-1', legacyId: '_borrower1', propertyUsageType: 'Investor',
     borrower: {
@@ -384,6 +388,60 @@ async function main() {
     check(byCreditor('A CARD').reo_property_id === null,
       '…and a card has no property behind it at all');
 
+    // ── WHO BOUGHT THE LOAN ────────────────────────────────────────────────
+    console.log('\nthe investor identity chain');
+
+    const INVESTOR_LOAN = {
+      ...FULL_LOAN,
+      contacts: [{ contactType: 'INVESTOR', name: 'Deephaven Mortgage LLC',
+        email: 'purchasing@deephaven.com', referenceNumber: '25098221' }],
+      customFields: [
+        ...(FULL_LOAN.customFields || []),
+        { fieldName: 'CX.WHICHINVESTOR', value: 'Deephaven' },
+        { fieldName: 'CX.TABLEFUNDER', value: 'Table funded' },
+      ],
+    };
+    const invOut = await sync.syncLoanInvestor(loanId, INVESTOR_LOAN);
+    check(invOut.ok === true && invOut.written === true, 'the investor is mirrored from the payload we already hold');
+    const invRow = (await db.query('SELECT * FROM lt_loan_investors WHERE loan_id = $1::uuid', [loanId])).rows[0];
+    check(!!invRow, 'a row lands on the loan');
+    check(invRow.investor_loan_number === '25098221',
+      'THE ONE THAT MATTERS: the investor\'s OWN loan number is stored — it is the only thing that lets us and them talk about the same loan, and it is one careless overwrite away from being unrecoverable');
+    check(invRow.shorthand_name === 'Deephaven' && invRow.accurate_name === 'Deephaven Mortgage LLC',
+      'both steps of the chain are kept — the shorthand typed early and the accurate name added later');
+    check(!!invRow.canonical_key && invRow.canonical_key === invOut.canonicalKey,
+      '…and the CANONICAL key is resolved through the one investor definition, because 117 spellings resolve to about thirty companies and comparing names as strings is how one investor becomes two');
+    check(invRow.funding_channel === 'Table funded',
+      'the funding channel is kept apart from the buyer — HOW the money moves is a different question from WHO buys the loan');
+
+    // The rule the owner asked for by name: this must survive like crazy.
+    const stripped = { ...INVESTOR_LOAN, contacts: [], customFields: [] };
+    await sync.syncLoanInvestor(loanId, stripped);
+    const after = (await db.query('SELECT * FROM lt_loan_investors WHERE loan_id = $1::uuid', [loanId])).rows[0];
+    check(after.investor_loan_number === '25098221' && after.accurate_name === 'Deephaven Mortgage LLC',
+      'a later payload that names no investor ERASES NOTHING — Encompass omits an unpopulated field rather than sending a blank, so a read that goes quiet must never take their loan number with it');
+
+    const placeholder = { ...INVESTOR_LOAN,
+      contacts: [{ contactType: 'INVESTOR', name: 'Someone Nobody Knows', referenceNumber: '---' }],
+      customFields: [] };
+    const ph = await sync.syncLoanInvestor(`${loanId}`, placeholder);
+    check(ph.loanNumberRefused,
+      'a placeholder typed into the reference box is REFUSED and said out loud — "---" stored as a loan number looks like an answer, which is worse than an empty one');
+    const afterPh = (await db.query('SELECT * FROM lt_loan_investors WHERE loan_id = $1::uuid', [loanId])).rows[0];
+    check(afterPh.investor_loan_number === '25098221', '…and the real one it already held is untouched');
+    check(afterPh.canonical_key === invRow.canonical_key,
+      'an unrecognised spelling resolves to nothing rather than to a guess, so it never overwrites a key we had');
+
+    const noInvestor = await sync.syncLoanInvestor(loanId, { applications: [] });
+    check(noInvestor.ok === true && noInvestor.written === false,
+      'a payload naming no investor at all writes no row — an empty row reads on a screen exactly like an investor we read and found blank');
+
+    // The file screen shows it, and says which state the loan is in.
+    const fileNow = await file.loadFile(loanId);
+    check(fileNow.investor && fileNow.investor.recorded === true
+      && fileNow.investor.investorLoanNumber === '25098221',
+      'and the file screen reads it back — the section nothing filled and nothing showed since db/549');
+
     // Every child table must survive a second read without multiplying.
     const before2 = (await Promise.all(['lt_residences', 'lt_other_incomes', 'lt_reo_properties', 'lt_assets', 'lt_liabilities'].map(childRows))).map((r) => r.length);
     await sync.syncBorrowerPairs(loanId, FULL_LOAN);
@@ -450,6 +508,11 @@ async function main() {
     check(viaRead.rows.length === 1 && viaRead.rows[0].city === 'PATERSON'
       && Number(viaRead.rows[0].appraised_value) === 415000,
       'the property landed FROM THE LOAN READ — a different property from the one filed directly above, so a leftover row could not have passed this');
+    check(!!out.investor && out.investor.ok === true,
+      '…and it mirrors who bought the loan, reporting what it did');
+    const viaReadInvestor = await db.query('SELECT * FROM lt_loan_investors WHERE loan_id = $1::uuid', [loanId]);
+    check(viaReadInvestor.rows.length === 1 && viaReadInvestor.rows[0].investor_loan_number === 'WIRE-77-431',
+      'THE WIRING: the investor landed FROM THE LOAN READ — a reference number no other fixture uses, so the direct call above could not have left it, and a chain nothing ever calls is the same failure as a table nothing fills');
 
   } finally {
     if (loanId) {

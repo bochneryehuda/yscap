@@ -268,13 +268,27 @@ async function readLoan(loanId, guid, settings) {
     pairs = { ok: false, reason: (e && e.message) || String(e) };
   }
 
+  // WHO BOUGHT IT. db/549 built the investor identity chain the owner said must
+  // "survive like crazy" — the shorthand name, the accurate name, their OWN loan
+  // number, their email domain and the funding channel — and nothing has ever
+  // written a row into it. Every condition in this tenant sits on a loan that is
+  // already sold, so "who is this with?" is a question staff ask on almost every
+  // file. Same payload, same pass, no extra call. STAFF-ONLY: nothing here goes
+  // near a client surface.
+  let investor = null;
+  try {
+    investor = await application.syncLoanInvestor(loanId, loan, { values });
+  } catch (e) {
+    investor = { ok: false, reason: (e && e.message) || String(e) };
+  }
+
   // The lock posture rides the loan we already have — no lock endpoint is called,
   // and none would answer: every lock-specific endpoint on this tenant is 403.
   const lock = locks.lockFromLoan(loan, values, settings);
   const lockWrite = await locks.writeLock(loanId, lock);
 
   return { ok: true, milestoneName, stageKey, team, milestone: milestoneWrite,
-    lock: { ...lockWrite, posture: lock.posture }, property, terms, pairs };
+    lock: { ...lockWrite, posture: lock.posture }, property, terms, pairs, investor };
 }
 
 /**

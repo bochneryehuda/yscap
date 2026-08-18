@@ -309,6 +309,22 @@ file screen and the pipeline's own count now read the same configured words; an 
 to the four measured across 20,569 live documents, and an unfamiliar word still counts as OUTSTANDING,
 because a word nobody recognised is not evidence that a document arrived.
 
+**WHO BOUGHT THE LOAN IS FILLED AND SHOWN — STAFF ONLY (2026-08-18).** db/549 built the identity
+chain the owner said must *"survive like crazy"* — the shorthand name typed early, the accurate name
+added later, the investor's OWN loan number (the only key shared with their system), their email
+domain and the funding channel — with every field number already measured and one of them corrected
+against the owner's own recollection. Nothing wrote a row and nothing read one. It now fills from the
+payload the loan read already holds, at no extra call, and the file screen carries a *Who bought this
+loan* section, greyed with a reason until Encompass names somebody. Four things are deliberate: the
+name is NEVER the key (117 spellings resolve to about thirty companies, so the canonical key comes
+from the one investor definition and an unrecognised spelling resolves to nothing rather than to a
+guess); the reference number is VALIDATED, because a placeholder stored there looks like an answer;
+every column is COALESCEd onto what we hold, so a payload that goes quiet can never take their loan
+number with it; and the funding channel is kept apart from the buyer, because HOW a loan is funded is
+a different question from WHO bought it. **It is internal, and that is rule 10, not a preference** —
+the borrower's own screen is built FOR the client rather than filtered from a staff payload, and a
+test asserts it never reads the table at all.
+
 **A DEBT KNOWS WHICH RENTAL IT IS SECURED ON.** Encompass hangs the link on the debt
 (`vols[].reoProperty.entityId`) and it is resolved to our own row as the 1003 is mirrored, so a
 mortgage covered by a property's own rent can be read together with that rent. On a DSCR file that is

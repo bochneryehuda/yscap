@@ -76,6 +76,16 @@ const SECTIONS = [
     why: 'The Condition Center is switched off for this company. It is built — turning it on is a settings change, not a new release.',
   },
   {
+    key: 'investor',
+    label: 'Who bought this loan',
+    // Every Encompass condition in this tenant sits on a loan that is already
+    // sold, so "who is this with?" is asked on almost every file. Greyed until
+    // Encompass names somebody, because a heading over nothing reads as a loan
+    // nobody has sold rather than as one we cannot see the buyer of.
+    applies: (l, o) => !!(o.investor && o.investor.recorded),
+    why: 'Encompass names no investor on this loan yet — either it has not been sold, or the investor has not been recorded on the file.',
+  },
+  {
     key: 'lock',
     label: 'Rate lock',
     applies: (l) => !!l.lock_status,

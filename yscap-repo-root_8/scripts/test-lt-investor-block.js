@@ -221,6 +221,25 @@ check(/require\(['"]\.\/encompass\/investors['"]\)/.test(src),
 check(A.summary().spellingsBlocked >= 80,
   `${A.summary().spellingsBlocked} spellings are actively blocked`);
 
+// ── THE INVESTOR IDENTITY CHAIN NEVER LEAVES THE STAFF SIDE ─────────────────
+//
+// `lt_loan_investors` holds who bought the loan, their own loan number, their
+// email and the funding channel — all of it internal (rule 10), the channel
+// included, because HOW a loan is funded implies WHO bought it. The borrower's own
+// screen is built FOR the client rather than filtered from a staff payload, which
+// is the first of the two defences that rule names — so the guard is that it never
+// reads the table at all.
+const fs2 = require('fs');
+const clientRoutes = ['src/longterm/routes/my-loans.js', 'src/longterm/routes/me.js'];
+for (const rel of clientRoutes) {
+  const text = fs2.readFileSync(path.join(ROOT, rel), 'utf8');
+  check(!/lt_loan_investors/.test(text),
+    `${rel} never reads the investor table — a client payload is BUILT for the client, never a staff one with fields removed`);
+}
+const fileSrc = fs2.readFileSync(path.join(ROOT, 'src/longterm/file.js'), 'utf8');
+check(/STAFF ONLY/i.test(fileSrc.slice(fileSrc.indexOf('investor: {') - 900, fileSrc.indexOf('investor: {'))),
+  'and the one place that DOES read it says on its face that it is staff-only, so nobody lifts the block onto a client surface without meeting the rule first');
+
 // ── done ─────────────────────────────────────────────────────────────────────
 if (failures) {
   console.error(`\nFAILED — ${failures} check(s). The investor name could reach a client.`);
