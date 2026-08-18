@@ -13567,6 +13567,34 @@ router.post('/applications/:id/drafting', async (req, res) => {
   res.json(out);
 });
 
+// ── A-piece / B-piece split (owner-directed 2026-08-18) ──────────────────────
+// INTERNAL ONLY, staff router only — how a MANUAL-program loan is sold in two
+// pieces. The A-piece is typed; the B-piece is DERIVED (total loan − A-piece)
+// and never stored. The columns are deliberately outside every reopen-trigger
+// watch list, so recording/editing the split never reopens Products & Pricing,
+// never un-signs a term sheet, and never flags the registration stale
+// (lib/ab-piece.js has the full rule; test-ab-piece-db.js the proof).
+// File-scoped by the /applications/:id middleware above.
+router.get('/applications/:id/ab-piece', async (req, res) => {
+  try {
+    const out = await require('../lib/ab-piece').loadAbPiece(req.params.id);
+    if (!out) return res.status(404).json({ error: 'not found' });
+    res.json(out);
+  } catch (e) { console.error('[ab-piece]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+router.post('/applications/:id/ab-piece', async (req, res) => {
+  try {
+    const out = await require('../lib/ab-piece').saveAbPiece(req.params.id, req.body || {});
+    await audit(req, 'ab_piece_set', 'application', req.params.id,
+      { enabled: out.enabled, aPiece: out.aPiece, bPiece: out.bPiece });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.error('[ab-piece]', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 // Everything the composer needs in one call: existing reminders on the file,
 // the selectable contacts, and the borrower-facing outstanding items (for the
 // "prefill outstanding conditions" helper). Access is already gated by the

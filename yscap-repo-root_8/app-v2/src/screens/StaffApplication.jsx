@@ -26,6 +26,7 @@ import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import InvestorGuidelinesPanel from '../components/InvestorGuidelinesPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import NoteBuyerCard from '../components/NoteBuyerCard.jsx';
+import AbPieceCard from '../components/AbPieceCard.jsx';
 import PayoffCard from '../components/PayoffCard.jsx';
 import { payoffApplies, payoffMissingKeys } from '../lib/payoff.js';
 import { sizesOnAsIsValue } from '../lib/dealBasis.js';
@@ -5764,6 +5765,9 @@ export default function StaffApplication() {
           switching would change. It used to live only as a pencil icon on a muted
           line inside the ClickUp panel, which is not a path anyone would find. */}
       <div id="note-buyer-slot"><NoteBuyerCard appId={id} value={app.lender} onSaved={load} /></div>
+      {/* A-piece / B-piece split (owner-directed 2026-08-18) — internal-only,
+          manual-program; self-hides elsewhere. Saving never reopens pricing. */}
+      <AbPieceCard appId={id} />
       {/* THE WORKFLOW (owner-directed 2026-07-21) — the primary way a file moves.
           Submit it to the next person; the status follows automatically. */}
       <SubmitFilePanel appId={id} onChange={load} />

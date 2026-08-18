@@ -214,6 +214,7 @@ const IR_MONTHS = Object.freeze({ min: 0, max: 24, what: 'months' });
 const COLUMN_KIND = Object.freeze({
   applications: Object.freeze({
     // numeric(14,2)
+    a_piece_amount: 'money',
     actual_appraised_value: 'money', appraised_rental_value: 'money',
     approx_appraised_rental_value: 'money', approx_appraised_value: 'money',
     arv: 'money', as_is_value: 'money', assignment_fee: 'money',
@@ -282,6 +283,7 @@ const COLUMN_KIND = Object.freeze({
    worth spelling out; anything else is humanized from the column name, which
    still reads far better than raw snake_case. */
 const COLUMN_LABEL = Object.freeze({
+  a_piece_amount: 'A-piece amount',
   purchase_price: 'Purchase price', as_is_value: 'As-is value',
   arv: 'After-repair value', rehab_budget: 'Rehab budget',
   loan_amount: 'Loan amount', payoff_amount: 'Payoff amount',

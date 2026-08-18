@@ -1198,6 +1198,9 @@ export const api = {
   // contacts, outstanding } so the composer is populated in one round-trip.
   staffReminders:      (appId) => req('GET', `/api/staff/applications/${appId}/reminders`),
   // The cross-file scheduled-tasks queue (task management, 2026-08-18).
+  // A-piece / B-piece split (internal-only, manual program).
+  staffAbPiece:        (appId) => req('GET', `/api/staff/applications/${appId}/ab-piece`),
+  staffAbPieceSave:    (appId, b) => req('POST', `/api/staff/applications/${appId}/ab-piece`, b),
   staffReminderTasks:  (q) => req('GET', `/api/staff/reminder-tasks${q ? `?${new URLSearchParams(q)}` : ''}`),
   // The queue's own Done/Dismiss door — reaches a task ASSIGNED to you even on a
   // file outside your scope (the per-file PATCH below sits behind the file-scope
