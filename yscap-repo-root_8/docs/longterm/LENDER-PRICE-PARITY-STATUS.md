@@ -4207,3 +4207,54 @@ suite's §7 was **encoding the defect as expected behaviour** — it quoted the 
 holdback and asserted it PRICED. It now runs on an ordinary sheet (its real subject is that a quote
 reports what it took off) and the new §8 pins the refusal, including a proof that unguarded it would
 have quoted exactly 0.250 light.
+
+**§2.70 — THE PHANTOM-DISAGREEMENT CLASS, GUARDED (2026-08-18). AND AN HONEST NEGATIVE.**
+
+**THE HUNT, AND WHAT IT ACTUALLY FOUND.** §2.69's lesson is that a sentence is not a guard, so the
+pricing path was swept for other load-bearing sentences nothing enforces. The sharpest was
+`agreement-scenarios.js`: *"BOTH LEGS MUST BE TOLD THE SAME LOAN."* Behind it is a **measured**
+defect from 2026-08-17 — the battery set our overlay fact `short_term_rental` while Lender Price was
+told nothing, and LP's own field **defaults to long-term**, so our engine priced a SHORT-term rental
+and LP priced a LONG-term one: **28 `llpa_extra_ours` lines, our 0.5 charge against nothing.**
+
+**That is not a sheet disagreement, it is two different loans** — and it is the worse kind of wrong,
+because a phantom disagreement is indistinguishable from a real one on the scoreboard. It does not read
+as *"we measured this badly"*, it reads as *"our sheet is off"*, and it drags the agreement rate the
+go-live gate reads.
+
+**THE NEGATIVE RESULT, STATED PLAINLY BECAUSE IT IS THE ANSWER.** The battery also sets five other
+overlay facts — rural, first-time investor, first-time homebuyer, foreign national, declining market —
+and **Lender Price is told none of them** (measured: `Citizenship` still reads `US Citizen` on the
+foreign-national scenario, `GLOBAL_DECLININGMARKET` still `null` on the declining-market one). That
+looked like four more instances of the same defect. **It is not.** Walking the built sheet's own tables
+shows it prices on exactly twelve facts, and `short_term_rental` is **the only one of the advanced set
+among them**. The other five feed the overlay **decline** layer only, which E3 scores as OVERLAY rather
+than a defect by design (§2.7). **A difference of opinion is not a phantom charge.** So there is no
+second instance today, and the STR fix was already made structurally — `buildSearch` INFERS LP's
+`rentalTerm` from our fact, so a caller cannot reintroduce it by forgetting the pair.
+
+**WHAT WAS MISSING IS THE RULE, AND IT IS ONE SENTENCE: EVERY FACT OUR SHEET PRICES ON MUST REACH
+LENDER PRICE.** Add an LLPA keyed on a fact `buildSearch` does not transmit and every scenario carrying
+it manufactures a disagreement, silently, forever. `scripts/test-lt-ppe-priced-facts-transmitted.js`
+enforces it with **both sides derived**:
+
+- what we **charge** on is walked out of the built sheet's own price-bearing tables, so a new LLPA is in
+  scope automatically. `eligibility` is deliberately NOT walked — the rule is about charges, not opinions;
+- what we **transmit** is measured by **building two real request bodies, with the fact set and unset,
+  and diffing them**. Never by matching names: our `escrow_waiver` is LP's `escrowWaive` and our
+  `interest_only` is LP's `io`, so a name check would call the healthy cases broken — and would have
+  **missed the STR case entirely**, since both sides spell that one the same.
+
+It is coverage-checked (a priced fact with no probe fails rather than being skipped), it proves its own
+instrument (a field nothing reads must measure as *not* transmitted, or "transmitted" means nothing),
+and it pins the five overlay-only facts as **out of scope on purpose** — so the day one becomes a charge,
+that assertion is what forces the question rather than letting it slip past.
+
+**Mutation-proven four ways**: removing the STR inference — which reproduces the 2026-08-17 defect
+exactly — adding a priced fact with no probe, making an overlay-only fact a charge, and a probe that
+changes nothing. Each red, control green. Two of those four **survived my first attempt** because the
+mutation never applied (`llpaTables` is an array and I injected into an object); redone against the real
+shape. Worth recording: a mutation that does not apply is a mutation that proves nothing, and it looks
+exactly like a passing test.
+
+141/141 suites.
