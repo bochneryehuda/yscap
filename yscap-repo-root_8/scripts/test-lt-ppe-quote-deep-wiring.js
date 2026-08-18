@@ -57,7 +57,11 @@ function main() {
   // from nowhere else. Its own validation lives in `lp-scope.js` and is tested there
   // (scripts/test-lt-ppe-lp-scope.js); what belongs HERE is that the route reads it from the right
   // place and hands it to the comparison.
-  ok(/const \{ program, lpScope, reason: noProgram \} = await loadProgram\(/.test(quoteBody),
+  // The assertion is that the SCOPE rides out of `loadProgram` — not that `loadProgram` returns
+  // exactly three things. It also carries the per-investor margin resolver now, and pinning the
+  // whole destructuring would fail the next thing that legitimately travels with the program and
+  // invite somebody to bend the route to fit the test instead.
+  ok(/const \{[^}]*\blpScope\b[^}]*\} = await loadProgram\(/.test(quoteBody),
     'W10 the quote route loads the sheet\'s stored scope alongside the program');
   ok(/lpFilter:\s*lpScope\b/.test(quoteBody), 'W11 …and hands exactly that to the comparison');
 

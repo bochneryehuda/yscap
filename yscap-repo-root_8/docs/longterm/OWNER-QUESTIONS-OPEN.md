@@ -244,3 +244,19 @@ said. The three outcomes are now kept apart in the code and on the answer, so no
   1. state not in the matrix → allowed, unlimited (your direction, above)
   2. state in the matrix, rule checked → whatever the rule says
   3. state in the matrix, rule not checkable → we could not tell, and we hold
+
+### 3c. Should the standard 0.25 holdback apply to every investor, or only where somebody sets it?
+
+**This is new, and it came out of building your answer — not out of a plan.** You told us what the
+holdback DOES to a price ("102 becomes 101.75"), and that is built. What that answer does not say is
+**which investors carry one.**
+
+Right now the 0.25 is a pre-filled suggestion sitting in the settings for every investor, not a number
+anybody typed. So we have made it work this way: **set a holdback and it comes off the price; leave it
+alone and nothing changes.** That way no price moves without somebody deciding it should.
+
+The alternative is that the 0.25 is simply how we do business and should come off everywhere by
+default. That is a reasonable reading of your answer — but it would quietly move the price on every
+loan on every program the moment it shipped, so we are not going to assume it.
+
+**Which is it?** If it is "everywhere by default", say so and it is a one-line change.

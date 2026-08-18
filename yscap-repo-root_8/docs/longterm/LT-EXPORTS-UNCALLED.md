@@ -18,7 +18,7 @@ striking it here in the same commit.
 against the definition instead of retyping it, an operator command, a capability written ahead of its
 caller. A row is an invitation to say which — that is what the reason field is for.
 
-## Referenced nowhere at all (133)
+## Referenced nowhere at all (134)
 
 Not by production code and not by a test. Nothing asks for these, so nothing would notice if one were
 wrong.
@@ -149,6 +149,7 @@ wrong.
 - `ppe/settings-admin.js :: COMPANY_SCOPE` — the company slot name; used inside this module and asserted against the definition rather than retyped
 - `ppe/settings-admin.js :: layerName` — plain-English name for a settings layer, used in the refusals this module writes
 - `ppe/settings-admin.js :: valueRefusalMessage` — the wording of a rejected value; used inside the validator, exported so the message can be asserted without a write
+- `ppe/store.js :: loadSettingOverridesStrict` — the strict settings read (it propagates a failure rather than degrading, which is what the PRICING path needs); the two resolvers in this module call it, and the suite asserts the strict-vs-degrading split directly
 - `ppe/store.js :: priceLimitChangedFields` — names which fields of a price limit actually moved; used by the audited write in this module so a no-op is never recorded as a change
 - `ppe/store.js :: priceLimitShape` — the canonical price-limit shape the audit records at both ends; used inside the write, exported so the suite asserts against the definition
 - `routes/settings.js :: PERSONAL_KEYS`

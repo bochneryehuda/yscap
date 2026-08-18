@@ -24,7 +24,8 @@ actually blocked?" should be answerable in one place.
 | # | The question, in plain words | What it unblocks | Where the detail is |
 | --- | --- | --- | --- |
 | — | **Rotate the Lender Price login.** It was pasted into a chat, so it must be treated as compromised and changed in the vendor's portal. | Every live run keeps working, safely. Nothing is blocked while it waits, but it should not wait. | Part 4 |
-| #78 | **How exactly does our 0.25 holdback come off the price?** We hold the number and never subtract it, so our quoted price is not yet the final one. | The last remaining price difference (7,109 across the battery). It is reported, not gated. | §2.8, §2.15 |
+| ✅ #78 | **ANSWERED AND BUILT 2026-08-18.** *"Instead of offering the investor's raw pricing, like a 102, we're only gonna offer him a 101.75."* The holdback now comes off the offered price, on its own line. | Nothing — this is done. | §2.8, §2.15, §2.52 |
+| — | **There are two company margin boxes — which one wins?** "Correspondent margin" is the one the pricer has always used; "Margin (our markup)" is the one the per-investor work reads. Both are pre-filled at 0.250, so today they agree. A margin set on an INVESTOR, or by a scenario rule, already prices; a change to the COMPANY-level "Margin (our markup)" box deliberately changes nothing until you say. | Retiring one of the two boxes, so nobody can set a margin that does nothing. Nothing is mis-priced while it waits. | §2.55 |
 | #81 | **The rate sheet prices five cells the eligibility matrix refuses. Which one governs?** If the matrix is right we are correctly stricter; if the sheet is right, these are 41 loans we refuse that the investor would do. | All 41 remaining disagreements — the whole eligibility axis, and with it the gate. | §2.10, §2.15 |
 | #69 | **Five "advanced" rules we deliberately left flagged rather than guessed** (vacant, foreign national, rural, first-time homebuyer, renovation). | Turning those five into real declines instead of warnings. | §0 (the flagged list) |
 | #57 | **Prepayment penalty: which types and terms does each investor allow, and how is each priced?** | The per-investor prepay library beyond Deephaven. | D30 |
@@ -3280,3 +3281,86 @@ hand-written one across 330,906 scenarios.
 fees and we deliberately do not invent one — so every Illinois loan to an individual now answers "we
 could not tell" instead of answering wrongly. That is the honest state, not a finished one, and it is
 what makes the open question above worth answering.
+
+---
+
+**§2.55(c) — A NARROW OPEN QUESTION THIS MERGE SURFACED, AND DID NOT ANSWER (2026-08-18).** Landing
+the per-investor margin (this section) beside the applied holdback (§2.52) exposed an interaction
+neither had on its own, and it was caught by a test that went red rather than by inspection.
+
+`prepareMarginHoldbackForInvestor` resolves margin, holdback and rules TOGETHER, and hands the pricer a
+record only once the layer is `configured` — where "configured" means ANY of the three moved off the
+shipped default. So the moment an admin set a per-investor MARGIN, the shipped 0.250 holdback pre-fill
+travelled with it and — now that the holdback is applied — would have taken a quarter point off every
+quote for that investor. **A price move nobody asked for, from a number nobody typed**, and invisible:
+the two settings look independent on the screen.
+
+**WHAT WAS DONE, and it is the conservative reading rather than a guess.** Only a holdback SOMEBODY SET
+reaches the price. A `product_default` source is reported as `product_default_not_applied` and the
+resolved figure is still published (`holdbackResolvedMilli`) so the layer can be reconstructed. That
+keeps the promise both this section and the margin plan make — byte-identical until an admin configures
+something — and it makes configured and unconfigured investors behave the same way, which is what the
+red test was really complaining about.
+
+**WHAT IS NOT ANSWERED, and is a MONEY question for the owner:** whether the shipped 0.250 should apply
+company-wide on its own. The owner's direction was about what a holdback DOES to a price ("102 becomes
+101.75"), not about which investors carry one. Applying the pre-fill everywhere would move every price
+on every program with no admin action, so it is not something to infer from an answer to a different
+question. Until it is asked: set a holdback and it prices; leave it and nothing moves.
+
+---
+
+**§2.55 — OUR MARKUP WAS DECIDED PER INVESTOR AND THE PRICER NEVER ASKED (2026-08-18).** The owner
+settled this on 2026-08-16 — *"the margin holdback should be set up for each and every Investor
+separately… reaching every Investor… different margin and holdback to different scenarios with
+different rules."* The settings, the resolver and the per-investor database reader were all built and
+tested; `quote.quoteProgram` already accepted a resolved margin and already preferred it over the
+company one. **And every production quote passed only `{ scenario, program, settings }`** — measured:
+`grep -rn "marginHoldback:" src/longterm/routes/` came back empty, on all five paths that price (the
+quote, the pricing breakdown, the canary, the rule-coverage read and the Lender Price agreement run).
+So an investor's own markup could be typed into the settings and change nothing at all.
+
+**THE SEAM IS `loadProgram`, WHICH IS THE ONE PLACE A PROGRAM IS LOADED.** The investor's layer is
+read there ONCE — two rows, not eight — and carried into all five call sites as `marginFor(facts)`.
+The per-scenario rules still run per scenario (that is what "a different margin for different
+scenarios" means); what is resolved once is the database layer they run on top of. Proven: 500
+scenarios priced from 2 database reads.
+
+**BYTE-IDENTICAL UNTIL SOMEBODY CONFIGURES IT, and that is a property of the shape rather than of the
+arithmetic.** While all three settings are still the shipped default, the pricer is handed **nothing**
+— not a margin that happens to equal today's, nothing — so the quote is literally the same object.
+Measured over the whole 299-scenario agreement battery priced through both production paths: **598
+whole priced results — every rung's rate, base price, itemized adjustments, final price and the
+pricing-basis record — byte-identical.** The comparison is proven not to be vacuous: run against a
+configured investor it FAILS, and every rung moves by exactly the configured difference.
+
+**IT SAYS WHICH MARGIN IT USED.** `pricingBasis.marginSource` reads `settings` (the company default),
+`investor`, or `rule:<the rule's own code>`, and `/quote` and `/breakdown` also return the layer that
+produced it. **An unreadable margin fails closed and says so** (`margin_unreadable: …`, naming the
+scope that failed) — it never quietly falls back to the company margin, because a loan priced at a
+margin nobody confirmed looks exactly like a correct one.
+
+**TWO THINGS WERE REFUSED RATHER THAN GUESSED, and both are owner questions:**
+
+> **(a) How does the holdback come off the price?** We hold 0.250 per investor and we do not subtract
+> it anywhere. The holdback is carried onto the record so a reader can see it, and it touches no
+> price. Nobody here knows whether it is a second cost line exactly like the margin, or something the
+> borrower's rate is built up from differently — and a wrong answer changes what every borrower pays.
+> This is the same open question as **#78**; this pass did not narrow it and deliberately did not
+> guess at it.
+>
+> **(b) There are TWO company margin boxes. Which one wins?** The pricer has always read
+> "Correspondent margin"; the new per-investor work reads "Margin (our markup)". Both are pre-filled
+> at 0.250, so today they agree and nothing is wrong. An **investor's own** margin now prices that
+> investor's loans, and a **scenario rule** prices that scenario. But if somebody changes the
+> COMPANY-level "Margin (our markup)" box we leave the price exactly where it is, because deciding
+> that it beats the box we have always used would quietly change the meaning of a live setting. Tell
+> us which of the two is the company margin and we will retire the other one.
+
+**PROVEN:** `scripts/test-lt-ppe-margin-carried-db.js` (56 assertions, real Postgres) — the
+byte-identical control over 598 priced results, a configured investor moving its own price and **no
+other investor's**, the source reported, a scenario rule naming itself, a configured holdback moving
+no price at all, and the fail-closed path at the store and again at the route. **Sixteen mutations of
+the production code were each proven to fail it** for the right reason, including one that had to be
+rewritten because dropping the fail-closed guard CRASHED rather than mispriced — a crash is not a
+proof.

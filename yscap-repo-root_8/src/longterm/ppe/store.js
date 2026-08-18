@@ -8,10 +8,14 @@
  * `db` is a pg pool/client exposing `.query(text, params)`. Everything is scoped
  * by `scope` (default 'company') — selling to a second lender is a new scope.
  *
- * DEGRADES SAFELY: an unreadable override table, a missing row, or an override
- * that no longer validates against its definition all fall back to the coded
- * default (settings.resolve already skips an invalid override), so pricing never
- * degrades to nothing — only to the industry-standard default.
+ * DEGRADES SAFELY, WITH ONE DELIBERATE EXCEPTION: an unreadable override table, a
+ * missing row, or an override that no longer validates against its definition all
+ * fall back to the coded default (settings.resolve already skips an invalid
+ * override), so a READ never degrades to nothing — only to the industry-standard
+ * default. THE EXCEPTION IS THE MARGIN THAT PRICES A LOAN
+ * (`prepareMarginHoldbackForInvestor`), which FAILS CLOSED and says which scope it
+ * could not read: falling back there would price at a margin nobody confirmed and
+ * be indistinguishable from a correct quote.
  *
  * LT-only. No RTL imports.
  */
@@ -19,17 +23,30 @@ const settings = require('./settings');
 const { resolveMarginHoldback } = require('./margin-holdback');
 const lpScope = require('./lp-scope');
 
+// Load a tenant's setting OVERRIDES as a { key: value } map, LETTING A READ FAILURE
+// REACH THE CALLER. Only keys that are real definitions are returned; an unknown/
+// legacy key is ignored.
+//
+// This is the variant anything that decides a PRICE must use. The swallowing wrapper
+// below is right for a DISPLAY read — a settings screen that cannot reach the override
+// table is better showing the coded defaults than showing nothing — and it is exactly
+// wrong for a margin: falling back to the company/product default there would price at
+// a margin nobody chose and look completely healthy doing it.
+async function loadSettingOverridesStrict(db, scope) {
+  const r = await db.query('SELECT key, value FROM lt_ppe_setting_value WHERE scope = $1', [scope]);
+  const out = {};
+  for (const row of r.rows || []) {
+    if (settings.getDefinition(row.key)) out[row.key] = row.value;
+  }
+  return out;
+}
+
 // Load a tenant's setting OVERRIDES as a { key: value } map. Only keys that are
 // real definitions are returned; an unknown/legacy key is ignored. Never throws —
 // an unreadable table returns {} so resolution falls back to the coded defaults.
 async function loadSettingOverrides(db, scope = 'company') {
   try {
-    const r = await db.query('SELECT key, value FROM lt_ppe_setting_value WHERE scope = $1', [scope]);
-    const out = {};
-    for (const row of r.rows || []) {
-      if (settings.getDefinition(row.key)) out[row.key] = row.value;
-    }
-    return out;
+    return await loadSettingOverridesStrict(db, scope);
   } catch (_e) {
     return {};
   }
@@ -208,29 +225,171 @@ async function loadInvestorOverrides(db, investorCode) {
 async function resolveMarginHoldbackForInvestor(db, investorCode, facts = {}, companyScope = 'company') {
   const org = await loadSettingOverrides(db, companyScope);
   const invScope = investorScope(investorCode);
+  // The FILTERED investor read, not the raw one: `loadInvestorOverrides` drops any key the registry
+  // does not declare per-investor, so this resolver and the settings write door agree on which keys
+  // an investor slot may carry. A raw read here would honour a key the door refuses to store.
   const tenant = await loadInvestorOverrides(db, investorCode);
+  const layer = _marginHoldbackLayer(tenant, org);
 
+  return {
+    ..._applyMarginHoldbackRules(layer, facts),
+    // where each of the three settings' DEFAULT layer resolved from (tenant=investor, org=company, product_default)
+    defaults: layer.defaults,
+    investorScope: invScope,
+  };
+}
+
+// ---- the per-investor margin, resolved ONCE and CARRIED ----------------------
+
+// Resolve the three settings' DEFAULT layer for one investor from the two already-loaded
+// override maps. PURE. `configured` is the byte-identical switch: it is false only when
+// EVERY one of the three is still the shipped product default — i.e. nobody has stored a
+// margin/holdback decision anywhere — and in that case the caller passes NOTHING to the
+// pricer, so today's quote is literally unchanged rather than merely arithmetically equal.
+function _marginHoldbackLayer(tenant, org) {
   const margin = settings.resolve('pricing.margin_milli', { tenant, org });
   const holdback = settings.resolve('pricing.holdback_milli', { tenant, org });
   const rulesRes = settings.resolve('pricing.margin_holdback_rules', { tenant, org });
   const rules = Array.isArray(rulesRes.value) ? rulesRes.value : [];
-
-  const resolved = resolveMarginHoldback({
-    marginMilli: margin.value,
-    holdbackMilli: holdback.value,
-    rules,
-    facts: facts || {},
-  });
-
+  const sources = [margin.source, holdback.source, rulesRes.source];
   return {
-    ...resolved,
-    // where each of the three settings' DEFAULT layer resolved from (tenant=investor, org=company, product_default)
+    margin,
+    holdback,
+    rulesRes,
+    rules,
+    configured: sources.some((s) => s !== 'product_default'),
     defaults: {
       margin: { value: margin.value, source: margin.source },
       holdback: { value: holdback.value, source: holdback.source },
       rules: { count: rules.length, source: rulesRes.source },
     },
+  };
+}
+
+// Apply the per-scenario rules on top of a resolved layer. PURE. One definition, so the
+// legacy `resolveMarginHoldbackForInvestor` and the carried resolver below can never
+// disagree about what a scenario's margin is.
+function _applyMarginHoldbackRules(layer, facts) {
+  return resolveMarginHoldback({
+    marginMilli: layer.margin.value,
+    holdbackMilli: layer.holdback.value,
+    rules: layer.rules,
+    facts: facts || {},
+  });
+}
+
+/**
+ * WHICH resolved margin is allowed to reach the PRICE, and it is deliberately narrow:
+ *
+ *   • a per-scenario RULE that names a margin — the owner's "different margin and holdback
+ *     to different scenarios with different rules": an explicit instruction about THIS deal.
+ *   • this INVESTOR's own stored `pricing.margin_milli` (scope `investor:<code>`) — the
+ *     owner's "set up for each and every Investor separately".
+ *
+ * Anything else leaves the price exactly where it is today:
+ *
+ *   • the COMPANY's `pricing.margin_milli` is NOT applied. The company already has a margin
+ *     knob the pricer reads (`pricing.correspondent_margin_milli`), and WHICH of the two
+ *     governs company-wide is a MONEY decision that needs the owner's own words. Guessing
+ *     it would silently change the meaning of a setting that is already live. It is recorded
+ *     as an owner question in docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.55.
+ *   • the shipped 250 product default is nobody's decision at all.
+ *
+ * Returns { applies, source } — `source` is what the reconstruction record will say.
+ */
+function _marginApplies(layer, resolved) {
+  if (resolved.marginSource === 'rule') {
+    return { applies: true, source: `rule:${resolved.marginRule || 'unnamed'}` };
+  }
+  if (layer.margin.source === 'tenant') return { applies: true, source: 'investor' };
+  // 'org' = the company's own pricing.margin_milli; 'product_default' = the shipped 250.
+  return { applies: false, source: layer.margin.source === 'org' ? 'company_margin_milli_not_applied' : 'product_default' };
+}
+
+/**
+ * Read an investor's margin/holdback layer ONCE and hand back a resolver that prices every
+ * scenario from it. This is what a caller that prices N scenarios uses: ONE pair of database
+ * reads at the seam where the program is loaded, carried into every quote — never a resolve
+ * per call site and never a resolve per scenario.
+ *
+ * FAILS CLOSED. If either override layer cannot be READ this returns { ok:false, error } and
+ * says which scope failed; it never degrades to the company scope or to the product default,
+ * because a quote priced at a margin we could not confirm looks exactly like a correct one.
+ * (`resolveMarginHoldbackForInvestor` above keeps its degrade-safely contract — it is a
+ * REPORTING read for the admin surface, not a pricing decision.)
+ *
+ * On success:
+ *   { ok:true, investorCode, investorScope, configured, defaults,
+ *     forScenario(facts) -> null | <the `marginHoldback` input quote.quoteProgram accepts> }
+ *
+ * `forScenario` returns NULL while nothing in this layer is configured, so the pricer is
+ * handed nothing at all and the quote is byte-identical to today's.
+ */
+async function prepareMarginHoldbackForInvestor(db, investorCode, companyScope = 'company') {
+  const invScope = investorScope(investorCode);
+  let org;
+  let tenant;
+  try {
+    org = await loadSettingOverridesStrict(db, companyScope);
+  } catch (e) {
+    return { ok: false, investorScope: invScope, error: `company scope "${companyScope}": ${String((e && e.message) || e).slice(0, 120)}` };
+  }
+  try {
+    // THE SAME REGISTRY FILTER THE ADMIN READ AND THE WRITE DOOR APPLY. `loadSettingOverridesStrict`
+    // is the strict READ (it propagates a failure rather than degrading, which is what the pricing
+    // path needs); the registry filter on top is what stops this path honouring an investor-scoped
+    // key that `settings-admin` refuses to store and `loadInvestorOverrides` drops. Without it the
+    // PRICE would obey a knob nothing else in the product recognises.
+    const raw = invScope ? await loadSettingOverridesStrict(db, invScope) : {};
+    tenant = {};
+    for (const k of Object.keys(raw)) if (settings.isInvestorScoped(k)) tenant[k] = raw[k];
+  } catch (e) {
+    return { ok: false, investorScope: invScope, error: `investor scope "${invScope}": ${String((e && e.message) || e).slice(0, 120)}` };
+  }
+
+  const layer = _marginHoldbackLayer(tenant, org);
+
+  return {
+    ok: true,
+    investorCode: investorCode == null ? null : String(investorCode),
     investorScope: invScope,
+    configured: layer.configured,
+    defaults: layer.defaults,
+    forScenario(facts) {
+      if (!layer.configured) return null;
+      const resolved = _applyMarginHoldbackRules(layer, facts);
+      const { applies, source } = _marginApplies(layer, resolved);
+      return {
+        // What the pricer USES. null = keep the company settings margin exactly as today.
+        marginMilli: applies ? resolved.marginMilli : null,
+        marginSource: applies ? source : 'settings',
+        // THE HOLDBACK COMES OFF THE PRICE (owner-directed 2026-08-18, §2.52) — but only a
+        // holdback SOMEBODY SET. `layer.holdback.source === 'product_default'` means nobody has
+        // set one anywhere: it is the shipped 0.250 pre-fill, not a decision. Handing that to the
+        // pricer would take a quarter point off every quote for an investor the moment an admin
+        // configured something ELSE (a margin, a rule) — a price move nobody asked for, from a
+        // number nobody typed. So `null` here, which `priceRung` reads as zero.
+        //
+        // ⚠️ OPEN, NARROW, AND DELIBERATELY NOT GUESSED: whether the shipped default should apply
+        // company-wide on its own is a MONEY question the owner has not been asked. Their answer
+        // was about what a holdback DOES to a price, not about which investors carry one. Applying
+        // the pre-fill everywhere would move every price on every program with no admin action;
+        // this way nothing moves until a human sets a holdback, which is also what the byte-identical
+        // control in scripts/test-lt-ppe-margin-carried-db.js promises. Recorded as §2.55(c).
+        holdbackMilli: layer.holdback.source === 'product_default' ? null : resolved.holdbackMilli,
+        holdbackSource: layer.holdback.source === 'product_default' ? 'product_default_not_applied' : resolved.holdbackSource,
+        // the RESOLVED holdback, applied or not, for a reader reconstructing the layer
+        holdbackResolvedMilli: resolved.holdbackMilli,
+        // The full resolution, for a reader who wants to know what was resolved even when it
+        // was not applied — `marginMilli` above is the USED number, `resolved.marginMilli` the
+        // resolved one, and they differ exactly when a company-level margin_milli was ignored.
+        resolved,
+        marginApplied: applies,
+        marginResolvedSource: source,
+        defaults: layer.defaults,
+        investorScope: invScope,
+      };
+    },
   };
 }
 
@@ -748,7 +907,8 @@ module.exports = {
   normAlias,
   loadSettingOverrides, resolveSettings, resolveSetting, setSetting, clearSetting,
   readStoredSetting, appendSettingAudit, listSettingAudit,
-  investorScope, investorCodeOfScope, loadInvestorOverrides, resolveMarginHoldbackForInvestor,
+  investorScope, investorCodeOfScope, loadInvestorOverrides, loadSettingOverridesStrict,
+  resolveMarginHoldbackForInvestor, prepareMarginHoldbackForInvestor,
   findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms, listAllPrograms,
   setProgramLpScope,
   createRateSheetVersion, replaceBasePrices, replaceAdjustments, setPriceLimit,

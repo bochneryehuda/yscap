@@ -198,15 +198,21 @@ function intIn(v, max) {
   return n;
 }
 
+/** A program that could not be loaded prices nothing, so its margin resolver answers nothing. */
+const NO_MARGIN = () => null;
+
 /**
  * Load a program (a priced rate-sheet version) if one was asked for.
- * Returns { program, reason } — `reason` is why there is no program, and it is
+ * Returns { program, marginFor, reason } — `reason` is why there is no program, and it is
  * REPORTED rather than swallowed: without a program our engine cannot run, so
  * the caller must be told the shadow was skipped instead of reading a missing
  * `shadow` block as "the two engines agreed".
+ *
+ * `marginFor(facts)` is THE PER-INVESTOR MARGIN, resolved ONCE here and CARRIED — see the
+ * block below. Every caller passes it straight into `quote.quoteProgram({ marginHoldback })`.
  */
 async function loadProgram(scope, versionId) {
-  if (!versionId) return { program: null, reason: 'no_program_requested' };
+  if (!versionId) return { program: null, marginFor: NO_MARGIN, reason: 'no_program_requested' };
   try {
     // TWO STEPS, and they are not interchangeable. `store.loadRateSheet` returns
     // the stored SHEET (raw `lt_ppe_base_price` / `_adjustment` / `_price_limit`
@@ -216,13 +222,19 @@ async function loadProgram(scope, versionId) {
     // `quote:program_has_no_base_grid` — which the facade would then record as an
     // engine_error finding on every single quote.
     const sheet = await store.loadRateSheet(db, versionId);
-    if (!sheet || !Array.isArray(sheet.basePrices)) return { program: null, reason: 'program_not_found' };
+    if (!sheet || !Array.isArray(sheet.basePrices)) return { program: null, marginFor: NO_MARGIN, reason: 'program_not_found' };
+    // The investor's own CODE, which is the key into its per-investor margin scope
+    // (`investor:<code>`). Deliberately NOT stamped onto `program.investorCode`: that
+    // reference is copied verbatim into every quote result, so filling it in would move a
+    // field on every existing quote and cost the byte-identical guarantee below for a
+    // label nothing reads.
+    const investorCode = (sheet.investor && (sheet.investor.code || sheet.investor.name)) || null;
     const program = ratesheet.rateSheetToProgram(sheet, {
       code: (sheet.version && sheet.version.id) || versionId,
       name: (sheet.version && sheet.version.label) || null,
     });
     if (!program || !Array.isArray(program.baseGrid) || !program.baseGrid.length) {
-      return { program: null, reason: 'program_has_no_base_grid' };
+      return { program: null, marginFor: NO_MARGIN, reason: 'program_has_no_base_grid' };
     }
 
     // THE ACCEPTED OVERLAY RULES, which until now reached NOTHING that prices.
@@ -257,7 +269,7 @@ async function loadProgram(scope, versionId) {
       // error would price the loan with no eligibility rules and call it eligible — which is exactly
       // the defect being fixed, reintroduced as a "graceful degradation". A program whose rule set
       // cannot be read is not a program that has no rules.
-      return { program: null, reason: `rules_unreadable: ${String((e && e.message) || e).slice(0, 120)}` };
+      return { program: null, marginFor: NO_MARGIN, reason: `rules_unreadable: ${String((e && e.message) || e).slice(0, 120)}` };
     }
     if (storedRules.length) program.rules = (program.rules || []).concat(storedRules);
 
@@ -285,6 +297,33 @@ async function loadProgram(scope, versionId) {
       program.priceLimitRuleReason = investorName ? 'no_scenario_rule_registered' : 'investor_unknown';
     }
 
+
+    // THE PER-INVESTOR MARGIN, RESOLVED ONCE — HERE, and nowhere else.
+    //
+    // MEASURED, before this line existed: `store.resolveMarginHoldbackForInvestor` was built,
+    // tested and called by nothing; `quote.quoteProgram` already accepted `{ marginHoldback }`
+    // and preferred it over the settings margin; and every production call passed only
+    // `{ scenario, program, settings }` — `grep -rn "marginHoldback:" src/longterm/routes/` came
+    // back empty. So the decision that our markup is PER INVESTOR was settled in the plan and
+    // inert in the engine. This is the seam that joins the two ends.
+    //
+    // ONE RESOLUTION, CARRIED. This function is the one place a program is loaded — the quote,
+    // the breakdown, the canary, the scheduled canary, the rule-coverage read and the agreement
+    // run all come through it — so the investor's layer is read here, once, and handed to every
+    // pricing call as `marginFor`. Resolving it at each call site instead would be four reads of
+    // the same two rows and four chances for them to disagree.
+    //
+    // The per-scenario RULES still evaluate per scenario (that is what "a different margin for
+    // different scenarios" means); what is resolved once is the DATABASE layer they run on top of.
+    //
+    // FAILS CLOSED. An unreadable override table returns no program with the reason, so the
+    // caller refuses or skips the shadow and SAYS SO — it never falls back to the company margin,
+    // because a quote priced at a margin we could not confirm is indistinguishable from a correct
+    // one and would be believed.
+    const marginCtx = await store.prepareMarginHoldbackForInvestor(db, investorCode, scope);
+    if (!marginCtx.ok) {
+      return { program: null, marginFor: NO_MARGIN, reason: `margin_unreadable: ${marginCtx.error}` };
+    }
     // WHICH Lender Price programs a comparison against this sheet is about (db/574). It rides on the
     // owning PROGRAM row, not the sheet version, because it is a statement about the investor's
     // product family and survives every reprice of the sheet. NULL is the norm until a human states
@@ -292,6 +331,17 @@ async function loadProgram(scope, versionId) {
     // one ladder against a merge of Lender Price's seventeen.
     return {
       program,
+      // The carried resolver. Returns null while nothing per-investor is configured, and
+      // `quote.quoteProgram` ignores a null `marginHoldback` — so an unconfigured tenant's
+      // quote is byte-identical to what it is today.
+      marginFor: (facts) => marginCtx.forScenario(facts),
+      // What a reader needs to tell a per-investor margin from the company default.
+      margin: {
+        investorCode: marginCtx.investorCode,
+        investorScope: marginCtx.investorScope,
+        configured: marginCtx.configured,
+        defaults: marginCtx.defaults,
+      },
       lpScope: lpScopeLib.scopeFromRow(sheet.program),
       // The investor's NAME, which is the only key into `program-registry`. Carried here so the
       // agreement run can ask that investor's own prepayment layer; every other caller ignores it.
@@ -308,7 +358,7 @@ async function loadProgram(scope, versionId) {
       reason: null,
     };
   } catch (e) {
-    return { program: null, reason: `program_load_failed: ${String((e && e.message) || e).slice(0, 120)}` };
+    return { program: null, marginFor: NO_MARGIN, reason: `program_load_failed: ${String((e && e.message) || e).slice(0, 120)}` };
   }
 }
 
@@ -818,7 +868,7 @@ async function quoteRoute(req, res) {
   // how a specific version is compared) or `programId`, in which case the version IN EFFECT for that
   // program is what prices. Nothing published is a NAMED state, never a quiet fall-back.
   const picked = await resolveRateSheetVersion(scope, b);
-  const { program, lpScope, reason: noProgram } = await loadProgram(scope, picked.versionId);
+  const { program, lpScope, marginFor, margin: marginInfo, reason: noProgram } = await loadProgram(scope, picked.versionId);
   const lp = require('../lenderprice/client');
   const nowMs = Date.now();
 
@@ -847,7 +897,7 @@ async function quoteRoute(req, res) {
     {
       mode: () => 'shadow', // §1.2 — for now, in every scenario
       priceLp: (sc) => lp.price(sc),
-      ourQuote: (sc) => quote.quoteProgram({ scenario: sc, program, settings }),
+      ourQuote: (sc) => quote.quoteProgram({ scenario: sc, program, settings, marginHoldback: marginFor(sc) }),
       // THE CAPTURE, READ PROPERLY — §2.8. `lp.price()` returns the RAW envelope
       // ({ ok, raw, request, searchKey }), NOT the parse() shape, and the façade had
       // been normalizing that envelope as if it were one: no `.programs`, so ZERO
@@ -909,10 +959,18 @@ async function quoteRoute(req, res) {
 
   // …and WHICH rate sheet version answered, so a caller can never be left guessing whether it read
   // the published sheet or a draft somebody named by hand.
+  // WHICH MARGIN OUR SHADOW USED, and where it came from — a reader must be able to tell a
+  // per-investor margin from the company default without inferring it from the number. The
+  // per-rung answer is `pricingBasis.marginSource` inside the shadow's own quote; this is the
+  // layer that produced it (`configured:false` = nothing per-investor is set, so the company
+  // settings margin priced this exactly as it always has).
+  // …and it is spread LAST on purpose: this block is the route's own statement about the margin
+  // layer, and a key the façade grows later must not be able to silently take its place.
   return res.json({
     ok: true, scope, rateSheet: rateSheetPick(picked), ...result,
     priceLimit: capRes,
     ...(priceLimitNote ? { priceLimitNote } : {}),
+    margin: marginInfo,
   });
 }
 
@@ -956,7 +1014,7 @@ async function breakdownRoute(req, res) {
   const { values: settings } = await resolveSettingsSafe(scope);
   // Same resolution as /quote: the published sheet for a named program, or the exact version named.
   const picked = await resolveRateSheetVersion(scope, b);
-  const { program, reason: noProgram } = await loadProgram(scope, picked.versionId);
+  const { program, marginFor, margin: marginInfo, reason: noProgram } = await loadProgram(scope, picked.versionId);
   if (!program) {
     // Nothing to break down without a priced sheet. Say why, don't return an empty view — and say
     // the RESOLVER's why when it is the resolver that stopped us, because "nothing is published for
@@ -970,7 +1028,7 @@ async function breakdownRoute(req, res) {
 
   let quoteResult;
   try {
-    quoteResult = quote.quoteProgram({ scenario, program, settings });
+    quoteResult = quote.quoteProgram({ scenario, program, settings, marginHoldback: marginFor(scenario) });
   } catch (e) {
     return res.status(422).json({ error: 'That scenario could not be priced.', detail: String((e && e.message) || e).slice(0, 160) });
   }
@@ -1007,7 +1065,7 @@ async function breakdownRoute(req, res) {
   // WHICH sheet this was priced from, and HOW it was chosen. A breakdown that does not say which
   // version it broke down is unauditable — and now that a caller may name a program rather than a
   // version, "the published one" has to be stated rather than assumed by whoever reads it.
-  return res.json({ ok: true, scope, investor, disqualifyPending, rateSheet: rateSheetPick(picked), breakdown });
+  return res.json({ ok: true, scope, investor, disqualifyPending, rateSheet: rateSheetPick(picked), margin: marginInfo, breakdown });
 }
 
 // ---------------------------------------------------------------------------
@@ -1104,7 +1162,7 @@ async function canaryRoute(req, res) {
 async function runBattery(scope, scenarios, opts = {}) {
   const investor = opts.investor || null;
   const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
-  const { program, lpScope, reason: noProgram } = await loadProgram(scope, opts.rateSheetVersionId);
+  const { program, lpScope, marginFor, reason: noProgram } = await loadProgram(scope, opts.rateSheetVersionId);
   if (!program) {
     // Same reasoning as /quote, and it matters more here: a canary with no
     // program would price N scenarios against a live upstream and record N
@@ -1159,7 +1217,7 @@ async function runBattery(scope, scenarios, opts = {}) {
   const run = await canary.runCanary(
     scenarios,
     {
-      ours: (sc) => quote.quoteProgram({ scenario: sc, program, settings }),
+      ours: (sc) => quote.quoteProgram({ scenario: sc, program, settings, marginHoldback: marginFor(sc) }),
       theirs: lpAgreementLegs.buildCanaryLpLeg(lp, { scope: lpScope }),
     },
     {
@@ -2550,7 +2608,7 @@ async function rateSheetCoverageRoute(req, res) {
   const found = await resolveVersion(req, res);
   if (!found) return undefined;
 
-  const { program, reason: noProgram } = await loadProgram(found.scope, found.versionId);
+  const { program, marginFor, reason: noProgram } = await loadProgram(found.scope, found.versionId);
   if (!program) {
     return res.status(422).json({
       error: 'This rate sheet cannot be priced yet, so there are no cells to check.',
@@ -2583,7 +2641,7 @@ async function rateSheetCoverageRoute(req, res) {
   let eligible = 0; let ineligible = 0; let priced = 0;
   for (let i = 0; i < scenarios.length; i += 1) {
     try {
-      const q = quote.quoteProgram({ scenario: scenarios[i], program, settings });
+      const q = quote.quoteProgram({ scenario: scenarios[i], program, settings, marginHoldback: marginFor(scenarios[i]) });
       quotes[i] = q;
       priced += 1;
       if (q.eligible) eligible += 1; else ineligible += 1;
@@ -2665,7 +2723,7 @@ async function runAgreementRoute(req, res) {
   const found = await resolveVersion(req, res);
   if (!found) return undefined;
 
-  const { program, lpScope, investorName, reason: noProgram } = await loadProgram(found.scope, found.versionId);
+  const { program, lpScope, investorName, marginFor, reason: noProgram } = await loadProgram(found.scope, found.versionId);
   if (!program) {
     return res.status(422).json({
       error: 'This rate sheet cannot be priced yet, so there is nothing to measure against Lender Price.',
@@ -2766,7 +2824,7 @@ async function runAgreementRoute(req, res) {
         // see it. WHAT THE QUOTING PATH SHOULD DO — refuse, or quote and flag for a human — is the OPEN
         // OWNER QUESTION (docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.54) and is NOT settled by this
         // line; a measurement harness choosing to keep measuring is not an answer to it.
-        ours: lpAgreementLegs.buildOursLeg(program, settings, { factsFromLp: true, pppDescriptor: pppDesc, onUnresolvedPpp: 'flag' }),
+        ours: lpAgreementLegs.buildOursLeg(program, settings, { factsFromLp: true, pppDescriptor: pppDesc, onUnresolvedPpp: 'flag', marginHoldback: marginFor }),
         lp: lpAgreementLegs.buildLpLeg(lpClient, { withDisqualify: true }),
       },
       {

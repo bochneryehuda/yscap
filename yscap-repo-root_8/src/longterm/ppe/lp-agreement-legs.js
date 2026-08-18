@@ -172,7 +172,15 @@ function lpScenarioToFacts(s) {
 /**
  * OUR leg: price a scenario off the supplied program (the sheet-under-test) + settings.
  * Returns the quote.quoteProgram result verbatim ({ eligible, ladder[], declines[] }).
- *   opts.marginHoldback — a resolved per-investor margin (see quote.js).
+ *   opts.marginHoldback — a resolved per-investor margin (see quote.js), OR a FUNCTION of the
+ *                         engine facts returning one. A function is what a real caller passes:
+ *                         the investor's margin/holdback layer is read ONCE at the seam where the
+ *                         program is loaded, and its per-scenario rules must still evaluate against
+ *                         THIS scenario's facts — a single frozen object would apply one scenario's
+ *                         rule verdict to all 299 in the battery. A function returning null (nothing
+ *                         configured) leaves the quote byte-identical, exactly like passing nothing.
+ *                         It is handed the ENGINE facts, after the LP conversion, so a margin rule
+ *                         reads the same fact names every other rule in the engine reads.
  *   opts.factsFromLp    — when true, the incoming scenario is a LENDER PRICE scenario and is converted
  *                         to engine facts via lpScenarioToFacts first (so one scenario object drives
  *                         BOTH legs of the harness). Default false: the scenario is already engine facts.
@@ -282,7 +290,8 @@ function buildOursLeg(program, settings, opts) {
   const ours = function ours(scenario) {
     const facts = o.factsFromLp ? lpScenarioToFacts(scenario) : scenario;
     const arg = { scenario: facts, program, settings: settings || {} };
-    if (o.marginHoldback) arg.marginHoldback = o.marginHoldback;
+    const mh = typeof o.marginHoldback === 'function' ? o.marginHoldback(facts) : o.marginHoldback;
+    if (mh) arg.marginHoldback = mh;
     const quote = quoteProgram(arg);
     if (!desc) return quote;
     // A quote the sheet ALREADY declined stays as it is: it is ineligible either way, and appending a
