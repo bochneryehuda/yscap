@@ -19280,7 +19280,11 @@ router.post('/applications/:id/esign/send', async (req, res) => {
   // Dormant when no Encompass loan is linked, and fails OPEN on any reconcile error.
   if (TERM_SHEET_ESIGN_PURPOSES.has(purpose)) {
     try {
-      const encGate = await require('../encompass/reconcile').issuanceGate(req.params.id);
+      // {heal:true}: a single-file, user-initiated send — the gate judges the
+      // same self-healed copy the Encompass Syncing panel shows, so it can
+      // never refuse on a stale copy the panel would show as matching
+      // (owner-reported 2026-08-18).
+      const encGate = await require('../encompass/reconcile').issuanceGate(req.params.id, undefined, { heal: true });
       if (encGate.block) {
         const ovr = String((req.body && req.body.encompassOverrideReason) || '').trim();
         // ADMIN-only override — `seesAll` also grants underwriter / closer /

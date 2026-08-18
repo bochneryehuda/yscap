@@ -268,6 +268,10 @@ app.get('/api/health', async (req, res) => {
     emailConfigured: cfg.emailProvider === 'resend' ? !!cfg.resendApiKey
                    : cfg.emailProvider === 'graph'  ? !!(cfg.msTenantId && cfg.msClientId && cfg.msClientSecret)
                    : false,
+    // The whole per-file/per-thread reply-address system (file+/title+/closing+/
+    // chat+) hinges on CHAT_REPLY_DOMAIN (owner-directed 2026-08-18: every email
+    // carries the unique reply-to). A boolean only — never the domain itself.
+    replyDomainConfigured: !!cfg.chatReplyDomain,
     // False when the secret was auto-generated at boot (env var not set): every
     // restart/deploy then invalidates all sessions (jwt) or orphans encrypted
     // SSNs (ssnKey). If either is false in production, set the env var NOW.

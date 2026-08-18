@@ -300,4 +300,31 @@ const addrRow = (ours, theirs) => {
 }
 ok('property address compares by place (Street≡St, case, ZIP+4) — the reported false mismatch is fixed');
 
+// ── THE GATE JUDGES THE SAME SELF-HEALED COPY THE PANEL SHOWS (owner-reported
+// 2026-08-18: the term-sheet gate said "7 fields don't match" while the
+// Encompass Syncing panel showed everything matching — because the panel's
+// routes heal a stale stored copy and the gate did not). Source guards pin the
+// wiring: isClear forwards opts to computeFindings, issuanceGate forwards opts
+// to isClear, and BOTH single-file callers (the e-sign panel read + the send
+// route) pass {heal:true}. The BULK tape paths must stay UNHEALED — a loop
+// over 1000 files must never fire per-file live Encompass reads — so tapeGate's
+// isClear call must carry NO heal.
+{
+  const fs = require('fs');
+  const path = require('path');
+  const rec = fs.readFileSync(path.join(__dirname, '..', 'src/encompass/reconcile.js'), 'utf8');
+  assert.ok(/async function isClear\(appId, dbc, opts\)/.test(rec)
+    && /computeFindings\(appId, dbc, opts\)/.test(rec), 'isClear forwards opts to computeFindings');
+  assert.ok(/async function issuanceGate\(appId, dbc, opts\)/.test(rec)
+    && /await isClear\(appId, dbc, opts\)/.test(rec), 'issuanceGate forwards opts to isClear');
+  assert.ok(!/isClear\([^)]*heal/.test(rec), 'no reconcile-internal caller (tapeGate) hard-codes heal');
+  const trk = fs.readFileSync(path.join(__dirname, '..', 'src/lib/esign/tracking.js'), 'utf8');
+  assert.ok(/issuanceGate\(applicationId, undefined, \{ heal: true \}\)/.test(trk),
+    'the e-sign panel read heals — the gate and the panel judge the same copy');
+  const stf = fs.readFileSync(path.join(__dirname, '..', 'src/routes/staff.js'), 'utf8');
+  assert.ok(/issuanceGate\(req\.params\.id, undefined, \{ heal: true \}\)/.test(stf),
+    'the send route heals — a send is never refused on a copy the panel would show as matching');
+}
+ok('the term-sheet gate self-heals like the panel; the bulk tape paths stay unhealed');
+
 console.log(`\nWO-B Encompass reconcile pure — ${passed} checks passed`);
