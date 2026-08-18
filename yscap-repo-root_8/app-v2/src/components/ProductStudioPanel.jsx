@@ -949,6 +949,11 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // report's middle score / higher-of-two) — a draft autosaved before credit
       // was imported must never re-register at the old estimate.
       if (filePricingFico) v.fico = String(filePricingFico);
+      // Program ON/OFF switches (owner-directed 2026-08-18): the FILE's effective
+      // availability map (company switches + this file's super-admin exceptions)
+      // SNAPS over the draft like every file-owned flag above — a draft autosaved
+      // before a program was discontinued must never keep showing its card.
+      v.tsProgAvail = (data && data.programAvailability) ? JSON.stringify(data.programAvailability) : '';
       return { v, c };
     }
     // Staff AND a broker read the parties off the FILE; a borrower reads their
@@ -1052,6 +1057,10 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         ...filePayoff(),
       });
     }
+    // Program ON/OFF switches (owner-directed 2026-08-18): the FILE's effective
+    // availability map — a discontinued program's card disappears from the studio;
+    // a super-admin per-file exception brings it back with the discontinued banner.
+    st = { ...st, v: { ...st.v, tsProgAvail: (data && data.programAvailability) ? JSON.stringify(data.programAvailability) : '' } };
     return st;
     // appPrefillSig makes this recompute when the file's own economics/identity
     // change (a details edit) — the fix for "P&P didn't update without a reload".
@@ -1632,6 +1641,67 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
             }} />
           <span>Waive the 1% closing-cost buffer on this file (admin) — removes it from the liquidity to verify.</span>
         </label>
+      )}
+      {/* Program ON/OFF switches — the per-FILE exception (owner-directed
+          2026-08-18). Renders only while a program is discontinued company-wide:
+          a SUPER ADMIN turns it back on for this one file (a recorded, audited
+          exception for a deal already in process); everyone else sees why the
+          program's box is missing. The company switch itself lives in the
+          Pricing Admin Center. */}
+      {isStaff && data && data.programAvailability
+        && Object.values(data.programAvailability).some((p) => p && p.active === false) && (
+        <div style={{ border: '1px solid #d9b26a', borderRadius: 10, padding: '10px 12px', margin: '10px 0 0', background: 'rgba(201,168,106,.07)' }}>
+          <strong style={{ color: '#141B22' }}>Discontinued programs on this file</strong>
+          {Object.values(data.programAvailability).filter((p) => p && p.active === false).map((p) => (
+            <div key={p.key} className="small" style={{ marginTop: 8, color: '#3A4550' }}>
+              <div>
+                <strong style={{ color: '#141B22' }}>{p.label}</strong> — discontinued company-wide.{' '}
+                {p.exception
+                  ? <>Turned <strong>ON for this file only</strong> by {p.exception.byName || 'a super admin'}
+                      {p.exception.reason ? <> — “{p.exception.reason}”</> : null}. Its box shows in the studio with the discontinued note.</>
+                  : (staffRole === 'super_admin'
+                    ? 'Its box is hidden in the studio. You can turn it back on for this file only (a deal already in process).'
+                    : 'Its box is hidden in the studio. A super admin can turn it back on for this file only (a deal already in process).')}
+              </div>
+              {staffRole === 'super_admin' && (
+                <button className="btn ghost small" style={{ marginTop: 6 }} disabled={busy}
+                  onClick={async () => {
+                    const enabling = !p.exception;
+                    if (enabling) {
+                      const okc = await askConfirm(
+                        `Turn the ${p.label} program back ON for this file only?\n\nThe program stays discontinued for every other file — this records a one-deal exception (who, when, why) and brings its box back in this file's studio with the discontinued note.`,
+                        { confirmLabel: `Turn ${p.label} on for this file` });
+                      if (!okc) return;
+                      const reason = await askPrompt(`Why does this file stay on the ${p.label} program? (e.g. "already in process — term sheet out before the program was discontinued")`);
+                      if (reason == null) return;
+                      if (String(reason).trim().length < 5) { setErr('Add a short reason for the exception.'); return; }
+                      setBusy(true); setErr(''); setMsg('');
+                      try {
+                        await api.staffProgramException(appId, p.key, true, String(reason).trim());
+                        setMsg(`${p.label} is back on for this file only.`);
+                        try { const dNew = await loadPricing(); setData(dNew); } catch (_) { /* keep old */ }
+                      } catch (e2) { setErr((e2 && e2.message) || 'Could not record the exception.'); }
+                      finally { setBusy(false); }
+                    } else {
+                      const okc = await askConfirm(
+                        `Turn the ${p.label} program back OFF for this file? Its box disappears from this file's studio again.`,
+                        { confirmLabel: `Turn ${p.label} off for this file` });
+                      if (!okc) return;
+                      setBusy(true); setErr(''); setMsg('');
+                      try {
+                        await api.staffProgramException(appId, p.key, false);
+                        setMsg(`${p.label} is off for this file again.`);
+                        try { const dNew = await loadPricing(); setData(dNew); } catch (_) { /* keep old */ }
+                      } catch (e2) { setErr((e2 && e2.message) || 'Could not remove the exception.'); }
+                      finally { setBusy(false); }
+                    }
+                  }}>
+                  {p.exception ? `Turn ${p.label} off for this file` : `Turn ${p.label} on for this file only`}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
       )}
       {superseded.length > 0 && (
         <p className="muted small" style={{ margin: '8px 0 0' }}>

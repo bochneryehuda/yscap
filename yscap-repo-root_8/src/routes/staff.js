@@ -2902,9 +2902,69 @@ router.get('/applications/:id/pricing', async (req, res) => {
         termSheetFinalBlockers = st.blockers.map((b) => ({ code: b.code, label: b.label, reason: b.reason }));
       }
     } catch (_) { /* initial stamp */ }
+    // Program ON/OFF switches + this file's per-deal exceptions (owner-directed
+    // 2026-08-18) — the EFFECTIVE map the studio's program cards and the panel's
+    // exception control render from. Best-effort: an unreadable map reads as
+    // "everything offered" (the register door still enforces for real).
+    let programAvailability = null;
+    try {
+      const progAvail = require('../lib/program-availability');
+      programAvailability = progAvail.availabilityFor(await pricingSettings.load(), f.app);
+    } catch (_) { programAvailability = null; }
     res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(),
       econVersion: pricing.econVersionFor(f.app), manualEscalation, manualDefaults, pricingDefaults, termSheetHold,
-      termSheetFinal, termSheetFinalBlockers });
+      termSheetFinal, termSheetFinalBlockers, programAvailability });
+  } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+/* PER-FILE PROGRAM EXCEPTION (owner-directed 2026-08-18): a SUPER ADMIN turns a
+   company-discontinued program back ON for THIS file only — "for stuff that's
+   already in process that we want to give an exception". Recorded (who / when /
+   why) on applications.program_exceptions (db/582), audited, and enforced by
+   every register door through src/lib/program-availability.js. Revoking removes
+   the entry. Super-admin ONLY — the owner's words name the super admin, and the
+   whole point of the company switch is that nobody below can re-open a
+   discontinued program. */
+router.post('/applications/:id/program-exception', requireRole('super_admin'), async (req, res) => {
+  try {
+    const progAvail = require('../lib/program-availability');
+    const b = req.body || {};
+    const program = progAvail.PROGRAM_KEYS.includes(String(b.program || '').toLowerCase())
+      ? String(b.program).toLowerCase() : null;
+    if (!program) return res.status(400).json({ error: 'Pick a real program (standard, gold or silver).' });
+    const enabled = b.enabled === true || b.enabled === 'true';
+    const reason = String(b.reason == null ? '' : b.reason).trim().slice(0, 500);
+    if (enabled && reason.length < 5) {
+      return res.status(400).json({ error: 'Add a short reason for the exception (why this in-process deal stays on the program).' });
+    }
+    // Atomic jsonb merge/remove — two admins toggling at once can never clobber
+    // each other's entry (no read-modify-write of the whole map).
+    if (enabled) {
+      const entry = {
+        by: req.actor.id, byName: req.actor.full_name || req.actor.email || 'Super admin',
+        at: new Date().toISOString(), reason,
+      };
+      await db.query(
+        `UPDATE applications
+            SET program_exceptions = COALESCE(program_exceptions,'{}'::jsonb) || jsonb_build_object($2::text, $3::jsonb)
+          WHERE id=$1`,
+        [req.params.id, program, jsonbText(entry)]);
+    } else {
+      await db.query(
+        `UPDATE applications
+            SET program_exceptions = NULLIF(COALESCE(program_exceptions,'{}'::jsonb) - $2::text, '{}'::jsonb)
+          WHERE id=$1`,
+        [req.params.id, program]);
+    }
+    await audit(req, 'program_exception', 'application', req.params.id, { program, enabled, reason: reason || null });
+    // Verify-after-write (the repo's #1 bug-class guard): re-read the row and
+    // answer with the EFFECTIVE availability the write actually produced.
+    const row = (await db.query(`SELECT program_exceptions FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    const on = !!progAvail.fileException(row, program);
+    if (on !== enabled) return res.status(500).json({ error: 'the exception did not save — try again' });
+    const settings = await pricingSettings.load();
+    res.json({ ok: true, program, enabled: on, programAvailability: progAvail.availabilityFor(settings, row) });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -3055,6 +3115,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const vestRefusal = require('../lib/vesting-program-rule')
         .registrationRefusal(f.app, inputs.program);
       if (vestRefusal) return res.status(400).json({ error: vestRefusal, field: 'vesting' });
+    }
+    /* A DISCONTINUED PROGRAM DOES NOT REGISTER (owner-directed 2026-08-18) —
+       unless a super admin turned it back on for THIS file (program_exceptions,
+       the recorded per-deal exception). Gated on the RESOLVED program, so a
+       MANUAL product (the admin-priced custom scenario with its own approval
+       chain) is never refused here. Same layered-on-top shape as the vesting
+       refusal above; no frozen engine number moves. */
+    {
+      const progRefusal = require('../lib/program-availability')
+        .registrationRefusal(program, f.app, await pricingSettings.load().catch(() => pricingSettings.current()));
+      if (progRefusal) return refuse(422, { error: progRefusal, code: 'program_discontinued', field: 'program' }, 'program_discontinued', { program });
     }
     if (inputs.asIsMissing) {
       return res.status(400).json({
@@ -4190,6 +4261,17 @@ router.post('/applications/:id/pricing/accept-counter', async (req, res) => {
     inputs.forcePrice = true;
     const requestedProgram = (esc.summary && esc.summary.program) === 'gold' ? 'gold' : (esc.summary && esc.summary.program) === 'silver' ? 'silver' : 'standard';
     const program = manualProgram.resolveProgram(requestedProgram, overrides);
+    /* A DISCONTINUED PROGRAM DOES NOT REGISTER HERE EITHER (owner-directed
+       2026-08-18). A counter authored before the program was switched off must
+       not re-open it by acceptance — the recorded way through is the same
+       per-file super-admin exception every other door honors (one click on the
+       file's Products & Pricing panel), so a blessed in-process deal is never
+       stuck. A countered MANUAL product resolves to 'manual' and is unaffected. */
+    {
+      const progRefusal = require('../lib/program-availability')
+        .registrationRefusal(program, f.app, await pricingSettings.load().catch(() => pricingSettings.current()));
+      if (progRefusal) return res.status(422).json({ error: progRefusal, code: 'program_discontinued', field: 'program' });
+    }
     // MANUAL: carry the escalation's stated months of liquidity into the quote so
     // the accepted counter's liquidity requirement reflects the reserve months
     // (owner-directed 2026-08-11) — same threading as the /register path above.

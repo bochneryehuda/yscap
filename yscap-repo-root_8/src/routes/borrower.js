@@ -1058,7 +1058,27 @@ router.get('/applications/:id/pricing', async (req, res) => {
     let termSheetHold = null;
     try { termSheetHold = await require('../lib/underwriting/appraisal-advisory').appraisalTermSheetHold(db, req.params.id); } catch (_) {}
     if (termSheetHold) termSheetHold = 'Your terms are being finalized — your loan team is reviewing the appraisal. A term sheet will be available shortly.';
-    res.json({ current, history, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app), manualEscalation, termSheetHold });
+    // Program ON/OFF switches + this file's per-deal exceptions (owner-directed
+    // 2026-08-18) — the studio hides a discontinued program's card and shows the
+    // discontinued banner on an excepted one. BORROWER-SAFE: the map carries the
+    // discontinued NOTE (admin-typed free text), so it goes through scrubText,
+    // and the exception's internal by/byName/reason never leave — a borrower
+    // only learns that the program is on for their file.
+    let programAvailability = null;
+    try {
+      const progAvail = require('../lib/program-availability');
+      const settings = await require('../lib/pricing-settings').load();
+      const full = progAvail.availabilityFor(settings, f.app);
+      programAvailability = {};
+      for (const k of Object.keys(full)) {
+        const r = full[k];
+        programAvailability[k] = {
+          key: r.key, label: r.label, active: r.active, offered: r.offered,
+          ...(r.note ? { note: scrubText(r.note) } : {}),
+        };
+      }
+    } catch (_) { programAvailability = null; }
+    res.json({ current, history, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app), manualEscalation, termSheetHold, programAvailability });
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1150,6 +1170,26 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const vestRefusal = require('../lib/vesting-program-rule')
         .registrationRefusal(f.app, inputs.program);
       if (vestRefusal) return res.status(400).json({ error: vestRefusal, field: 'vesting' });
+    }
+    /* A DISCONTINUED PROGRAM DOES NOT REGISTER (owner-directed 2026-08-18) —
+       the same gate as the staff door, minus the internal "ask a super admin"
+       coaching: a borrower is simply told the program isn't offered and to pick
+       another (their studio already hides the card; this stops a stale or
+       hand-rolled payload getting past it). A file carrying the super-admin
+       per-deal exception registers normally. */
+    {
+      const progAvail = require('../lib/program-availability');
+      const pricingSettings = require('../lib/pricing-settings');
+      const settings = await pricingSettings.load().catch(() => pricingSettings.current());
+      if (!progAvail.programOffered(program, settings, f.app)) {
+        const info = progAvail.discontinuedInfo(program, settings) || {};
+        return refuse(422, {
+          error: `${scrubText(info.note || '')
+            || `The ${progAvail.PROGRAM_LABEL[program] || 'chosen'} program is not being offered right now.`} `
+            + 'Pick a different program, or ask your loan team about this one.',
+          code: 'program_discontinued', field: 'program',
+        }, 'program_discontinued', { program });
+      }
     }
     if (inputs.asIsMissing) {
       return res.status(400).json({

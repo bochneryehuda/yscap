@@ -19,7 +19,7 @@ router.get('/', async (req, res) => {
     const cur = await pricingSettings.load();
     const hist = await db.query(
       `SELECT cps.id, cps.markup_std_pct, cps.markup_gold_pct, cps.markup_silver_pct, cps.orig_std_pct, cps.orig_gold_pct, cps.orig_silver_pct,
-              cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.extra_fees, cps.markup_tiers, cps.note,
+              cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.extra_fees, cps.markup_tiers, cps.program_availability, cps.note,
               cps.is_current, cps.created_at, s.full_name AS updated_by_name
          FROM company_pricing_settings cps
          LEFT JOIN staff_users s ON s.id = cps.updated_by
@@ -84,9 +84,22 @@ router.put('/', async (req, res) => {
   } else {
     markupTiers = pricingSettings.current().markupTiers;
   }
+  // Program ON/OFF switches (owner-directed 2026-08-18). Same preserve-if-absent
+  // contract as extraFees/markupTiers: a caller that does NOT send
+  // programAvailability keeps the current switches (the legacy V1 pricing screen
+  // never sends it); an explicit value replaces them. Cleaning lives in the ONE
+  // rule module (src/lib/program-availability.js): only the three real programs,
+  // only explicit OFF rows, note capped — so junk can never switch a program off.
+  let programAvailability;
+  if (b.programAvailability !== undefined) {
+    programAvailability = require('../lib/program-availability').cleanProgramAvailability(b.programAvailability);
+  } else {
+    programAvailability = (await pricingSettings.load()).programAvailability;
+  }
   // extra_fees + markup_tiers are jsonb columns, appended after the scalar columns.
   cols.extra_fees = F.jsonbText(extraFees);
   cols.markup_tiers = markupTiers ? F.jsonbText(markupTiers) : null;
+  cols.program_availability = programAvailability ? F.jsonbText(programAvailability) : null;
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
