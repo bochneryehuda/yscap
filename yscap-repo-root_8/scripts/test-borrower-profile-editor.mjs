@@ -72,7 +72,10 @@ for (const label of ['First name', 'Last name', 'Email', 'Cell phone', 'Date of 
   'Owns or rents', 'Employment', 'Employer', 'Dependents']) {
   ok(panel.includes(`<span>${label}</span>`), `the editor covers "${label}"`);
 }
-ok(/Current address/.test(panel) && /Mailing address/.test(panel), 'the editor covers both addresses');
+// 2026-08-18 redesign: the two address blocks live in the "Where they live"
+// section — home fields plus the mailing set (only-if-different).
+ok(/Where they live/.test(panel) && /Mailing street/.test(panel) && /Mailing address/.test(panel),
+  'the editor covers both addresses (home + mailing)');
 // The Social has its OWN audited endpoint and must never ride along in the
 // ordinary profile save.
 ok(/staffSetBorrowerSsn/.test(panel), 'the Social is settable (its own audited endpoint)');

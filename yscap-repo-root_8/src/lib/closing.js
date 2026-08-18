@@ -227,13 +227,35 @@ async function runCashToCloseCheck(appId, actualCashToClose, client) {
   const reserve = liq && liq.reserveRequirement != null ? Number(liq.reserveRequirement) : 0;
   const required0 = liq && liq.required != null ? Number(liq.required) : null;
   const closingBuffer = liq && liq.closingBuffer != null ? Number(liq.closingBuffer) : 0;
-  const { verified, accounts, excludedTotal } = await readVerifiedLiquidity(appId, c, required0);
-  const haveCountable = accounts.some((a) => a && a.tied && a.ending != null);
+  const readVerified = await readVerifiedLiquidity(appId, c, required0);
+  // The staff-editable assets ledger sits ON TOP of the document read (db/574,
+  // owner-directed 2026-08-18): an override corrects one account's amount or
+  // whether it counts, a manual row adds an account the reader never saw. The
+  // money gate must judge the LEDGER total — a processor's correction IS the
+  // verified truth — while degrading byte-identically to the raw read when the
+  // ledger is empty or unreadable (mergeLedger is the identity on no entries).
+  let verified = readVerified.verified;
+  let accounts = readVerified.accounts;
+  let haveCountable = accounts.some((a) => a && a.tied && a.ending != null);
+  let ledgerAdjusted = false;
+  let maxCashToClose = null;
+  try {
+    const ledger = require('./underwriting/asset-ledger');
+    const entries = await ledger.loadEntries(appId, c);
+    const merged = ledger.mergeLedger({ accounts, qualifyingTotal: verified }, entries);
+    verified = merged.verifiedTotal;
+    haveCountable = merged.haveCountable;
+    ledgerAdjusted = merged.adjusted;
+    maxCashToClose = liq ? ledger.maxCashToCloseOf({
+      verifiedTotal: merged.verifiedTotal, reserveRequirement: reserve,
+      closingBuffer, haveCountable: merged.haveCountable,
+    }) : null;
+  } catch (_) { /* the raw document read stands */ }
   const d = decideCashToClose({ verified, reserve, actualCashToClose, haveCountable, closingBuffer });
   return {
     ok: d.ok,
     verified,
-    excludedTotal,
+    excludedTotal: readVerified.excludedTotal,
     reserve,
     reserveBasis: liq ? liq.reserveBasis || null : null,
     estimateCashToClose: liq && liq.cashToClose != null ? Number(liq.cashToClose) : null,
@@ -243,6 +265,10 @@ async function runCashToCloseCheck(appId, actualCashToClose, client) {
     shortfall: d.shortfall,
     haveCountable,
     accounts,
+    // The most cash-to-close this borrower's verified assets can support —
+    // the algebraic inverse of the ok-test above, so the two never disagree.
+    maxCashToClose,
+    ledgerAdjusted,
   };
 }
 

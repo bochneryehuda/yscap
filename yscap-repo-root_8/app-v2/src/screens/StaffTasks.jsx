@@ -25,6 +25,88 @@ function roleDone(it, role) {
 // backend would 403 (the file view hides them too).
 const COMPLETER_ROLES = ['processor', 'admin', 'super_admin', 'underwriter', 'loan_coordinator'];
 
+/* SCHEDULED TASKS & REMINDERS across every file (task management, owner-directed
+   2026-08-18) — the reminders-engine rows (a due moment, an owner, recipients),
+   distinct from the condition queue below: these are the things somebody
+   SCHEDULED, and they fire on their own at the due time. Done / Dismiss inline;
+   the file link opens the file's own Tasks & reminders section. */
+function ScheduledTasksBlock() {
+  const [scope, setScope] = useState('mine');   // mine | all
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const load = useCallback(() => api.staffReminderTasks({ scope }).then(setData).catch((e) => setErr(e.message || 'Could not load')), [scope]);
+  useEffect(() => { load(); }, [load]);
+  const done = async (t, status) => {
+    setBusy(t.id); setErr('');
+    // The queue's OWN door (not the per-file PATCH): a task handed to you can sit
+    // on a file outside your scope, and the per-file route 403s there (audit
+    // 2026-08-18 finding 1) — this endpoint admits the assignee/creator too.
+    try { await api.staffReminderTaskUpdate(t.id, { status }); await load(); }
+    catch (e) { await showMessage((e.data && e.data.error) || e.message || 'Could not update the task.'); }
+    finally { setBusy(''); }
+  };
+  const tasks = (data && data.tasks) || [];
+  if (data && !tasks.length && scope === 'mine') {
+    return (
+      <div className="panel" style={{ marginBottom: 14 }}>
+        <div className="row" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <b style={{ color: '#141B22' }}>Scheduled tasks &amp; reminders</b>
+          <span className="muted small" style={{ flex: 1 }}>Nothing scheduled for you. Add one from any file’s “Tasks &amp; reminders” section.</span>
+          <button className="btn ghost small" onClick={() => setScope('all')}>Show every file’s</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="panel" style={{ marginBottom: 14 }}>
+      <div className="row" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
+        <b style={{ color: '#141B22' }}>Scheduled tasks &amp; reminders</b>
+        <span className="muted small" style={{ flex: 1 }}>Each fires at its due moment — these are the ones still open.</span>
+        <div className="tabs">
+          {['mine', 'all'].map((sc) => (
+            <button key={sc} className={`tab ${scope === sc ? 'on' : ''}`} onClick={() => setScope(sc)}>
+              {sc === 'mine' ? 'Mine' : 'All my files'}
+            </button>
+          ))}
+        </div>
+      </div>
+      {err && <div className="small" role="alert" style={{ color: 'var(--danger)' }}>{err}</div>}
+      {!data ? <div className="muted small">Loading…</div> : tasks.map((t) => (
+        <div key={t.id} className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '6px 0', borderBottom: '1px dotted #EFEAE0' }}>
+          <span className="pill" style={t.overdue ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>
+            {t.overdue ? 'overdue' : (t.kind === 'task' ? 'task' : 'reminder')}
+          </span>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <span style={{ fontWeight: 600, color: '#141B22' }}>{t.title}</span>
+            <div className="small" style={{ color: '#4B585C' }}>
+              Due {new Date(t.due_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+              {t.assignee_name ? ` · owned by ${t.assignee_name}` : ''}
+              {/* The file link renders only when this staffer can actually OPEN
+                  the file — a task handed to you on someone else's file keeps
+                  its name but not a link into a 403 (audit 2026-08-18 #1). */}
+              {t.file_visible !== false ? (<>{' · '}
+                <Link to={`/internal/app/${t.application_id}#sec-tasks`} style={{ color: '#0B6B63' }}>
+                  {t.ys_loan_number || addrLine(t.property_address) || (t.borrower_name ? `${t.borrower_name}’s file` : 'open the file')}
+                </Link></>) : (
+                <span> · {t.ys_loan_number || addrLine(t.property_address) || 'a file outside your list'}</span>
+              )}
+            </div>
+          </div>
+          <button className="btn ghost small" disabled={busy === t.id} onClick={() => done(t, 'done')}>Done</button>
+          <button className="btn ghost small" disabled={busy === t.id} onClick={() => done(t, 'dismissed')}>Dismiss</button>
+        </div>
+      ))}
+      {data && !tasks.length && <div className="muted small">Nothing scheduled on your files.</div>}
+      {data && data.truncated && (
+        <div className="small" style={{ color: '#4B585C', marginTop: 6 }}>
+          Showing the first 400 — finish or dismiss some to see the rest.
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* Everything on the signed-in staffer's plate across all their files — tasks
    assigned to them or role-routed to a file they own. Grouped by file. #142: each
    task carries the SAME inline Done / Sign off / Waive actions the file's
@@ -117,6 +199,7 @@ export default function StaffTasks() {
         <button className="btn link small" onClick={() => setErr('')}>Dismiss</button></div>}
 
       <div className="stack">
+        <ScheduledTasksBlock />
         <div className="kpi-grid">
           <div className="kpi"><div className="v">{dueToday}</div><div className="k">Due today</div><div className="d">Across your open files</div></div>
           <div className="kpi"><div className="v">{overdueCount}</div><div className="k">Overdue</div><div className="d">Past their due date</div></div>

@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**776 objects**, and a database rebuilt from the Prisma
+**783 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 570 numbered migrations in `db/` (highest `db/573`) remain the only thing that builds this database.
+rebuild a database from them.** The 576 numbered migrations in `db/` (highest `db/579`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 340 |
-| Columns | 5561 |
+| Tables | 342 |
+| Columns | 5589 |
 | Triggers | 34 |
 | Functions | 137 |
-| CHECK constraints | 268 |
+| CHECK constraints | 274 |
 | Generated columns | 12 |
-| Partial indexes | 325 |
-| Primary keys | 340 |
-| Foreign keys | 700 |
+| Partial indexes | 326 |
+| Primary keys | 342 |
+| Foreign keys | 705 |
 | Unique constraints | 47 |
-| Indexes (all kinds) | 1173 |
+| Indexes (all kinds) | 1178 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -225,7 +225,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (325)
+## Partial indexes (326)
 
 - **borrower_assistants_borrower_idx** on `borrower_assistants`
 - **borrower_assistants_email_uk** on `borrower_assistants`
@@ -489,6 +489,7 @@ the live database.
 - **uq_applications_clickup_task** on `applications`
 - **uq_applications_ys_loan_number** on `applications`
 - **uq_appraisals_one_current** on `appraisals`
+- **uq_asset_ledger_override** on `asset_ledger_entries`
 - **uq_assignee_active** on `application_assignees`
 - **uq_assignee_one_primary** on `application_assignees`
 - **uq_class_attach_name** on `class_attachments`
@@ -553,7 +554,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (268)
+## CHECK constraints (274)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -561,6 +562,7 @@ the live database.
 - **api_rate_limits_refill_per_min_check** on `api_rate_limits`
 - **api_rate_limits_tokens_check** on `api_rate_limits`
 - **application_assignees_role_check** on `application_assignees`
+- **applications_a_piece_amount_chk** on `applications`
 - **applications_requested_ir_months_check** on `applications`
 - **applications_status_check** on `applications`
 - **applications_sync_state_check** on `applications`
@@ -573,6 +575,9 @@ the live database.
 - **appraisal_payment_intents_performed_by_check** on `appraisal_payment_intents`
 - **appraisal_payment_intents_vendor_check** on `appraisal_payment_intents`
 - **appraisals_subject_units_basis_ck** on `appraisals`
+- **asset_ledger_entries_amount_chk** on `asset_ledger_entries`
+- **asset_ledger_entries_kind_chk** on `asset_ledger_entries`
+- **asset_ledger_entries_override_key_chk** on `asset_ledger_entries`
 - **audit_log_actor_kind_check** on `audit_log`
 - **borrower_contacts_kind_check** on `borrower_contacts`
 - **borrower_dedup_candidates_status_check** on `borrower_dedup_candidates`
@@ -632,6 +637,8 @@ the live database.
 - **clickup_field_mappings_source_of_record_check** on `clickup_field_mappings`
 - **clickup_task_index_kind_check** on `clickup_task_index`
 - **clickup_webhook_inbox_status_check** on `clickup_webhook_inbox`
+- **closing_cost_items_amount_check** on `closing_cost_items`
+- **closing_cost_items_kind_check** on `closing_cost_items`
 - **closing_thread_messages_event_kind_check** on `closing_thread_messages`
 - **closing_workflow_stage_check** on `closing_workflow`
 - **condition_clearance_proofs_result_check** on `condition_clearance_proofs`
@@ -824,7 +831,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (700)
+## Foreign keys (705)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -872,6 +879,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **applications** → `staff_users` — `FOREIGN KEY (closer_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **applications** → `borrowers` — `FOREIGN KEY (co_borrower_id) REFERENCES borrowers(id)`
 - **applications** → `staff_users` — `FOREIGN KEY (experience_exception_by) REFERENCES staff_users(id)`
+- **applications** → `staff_users` — `FOREIGN KEY (free_and_clear_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **applications** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE SET NULL`
 - **applications** → `staff_users` — `FOREIGN KEY (loan_officer_id) REFERENCES staff_users(id)`
 - **applications** → `staff_users` — `FOREIGN KEY (pipeline_removed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
@@ -902,6 +910,8 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **appraiser_contacts** → `appraisers` — `FOREIGN KEY (appraiser_id) REFERENCES appraisers(id) ON DELETE CASCADE`
 - **appraiser_contacts** → `appraisals` — `FOREIGN KEY (last_appraisal_id) REFERENCES appraisals(id) ON DELETE SET NULL`
 - **appraiser_licenses** → `appraisers` — `FOREIGN KEY (appraiser_id) REFERENCES appraisers(id) ON DELETE CASCADE`
+- **asset_ledger_entries** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **asset_ledger_entries** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **borrower_assistants** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
 - **borrower_assistants** → `staff_users` — `FOREIGN KEY (disabled_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **borrower_assistants** → `staff_users` — `FOREIGN KEY (invited_by_staff) REFERENCES staff_users(id) ON DELETE SET NULL`
@@ -973,6 +983,8 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **closing_checklists** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
 - **closing_checklists** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **closing_checklists** → `closing_checklist_templates` — `FOREIGN KEY (template_id) REFERENCES closing_checklist_templates(id) ON DELETE SET NULL`
+- **closing_cost_items** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **closing_cost_items** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **closing_notes** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
 - **closing_notes** → `staff_users` — `FOREIGN KEY (author_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **closing_thread_messages** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
@@ -1600,7 +1612,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 340 primary keys and 1173 indexes is
+Every one of the 342 primary keys and 1178 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

@@ -335,3 +335,7 @@ body{ line-height:1.6; }
 /* Underwriting note by the export buttons — Excel required, not PDF */
 .rb-underwrite-note{ border:1px solid var(--teal); background:rgba(47,127,134,.10); border-radius:12px; padding:.8rem 1.05rem; margin-top:.9rem; font-size:.85rem; line-height:1.55; color:var(--ivory); }
 .rb-underwrite-note b{ color:var(--ivory); }
+
+/* Drag-and-drop import halo (2026-08-18) — the whole page is the drop target. */
+body.rb-dropping{outline:3px dashed #2F7F86;outline-offset:-6px}
+body.rb-dropping::after{content:"Drop the Excel to import it";position:fixed;left:50%;top:18px;transform:translateX(-50%);background:#2F7F86;color:#fff;font-weight:700;padding:8px 18px;border-radius:999px;z-index:9999;pointer-events:none;font-size:14px}

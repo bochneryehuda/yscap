@@ -26,6 +26,7 @@ import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import InvestorGuidelinesPanel from '../components/InvestorGuidelinesPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import NoteBuyerCard from '../components/NoteBuyerCard.jsx';
+import AbPieceCard from '../components/AbPieceCard.jsx';
 import PayoffCard from '../components/PayoffCard.jsx';
 import { payoffApplies, payoffMissingKeys } from '../lib/payoff.js';
 import { sizesOnAsIsValue } from '../lib/dealBasis.js';
@@ -33,6 +34,8 @@ import WhatsLeftPanel from '../components/WhatsLeftPanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
 import ClosingPanel from '../components/ClosingPanel.jsx';
 import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
+import TapeSendModal from '../components/TapeSendModal.jsx';
+import FileOverviewSlideOver from '../components/FileOverviewSlideOver.jsx';
 import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
@@ -56,6 +59,7 @@ import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
+import RateTermCashCard from '../components/RateTermCashCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import AppraisalOrderSection from '../components/AppraisalOrderSection.jsx';
@@ -68,6 +72,8 @@ import StaffChangeRequests from '../components/StaffChangeRequests.jsx';
 import FileContacts from '../components/FileContacts.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import ReminderModal from '../components/ReminderModal.jsx';
+import FileTasksPanel from '../components/FileTasksPanel.jsx';
+import DraftingPanel from '../components/DraftingPanel.jsx';
 import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import LoudHint from '../components/LoudHint.jsx';
@@ -375,6 +381,12 @@ function CondInlineEntry({ it, appId, onChanged, indent }) {
     case 'cond_note_buyer_missing':  box = <CondNoteBuyerEntry appId={appId} onSaved={onChanged} />; break;
     case 'cond_loan_number_missing': box = <CondLoanNumberEntry appId={appId} onSaved={onChanged} />; break;
     case 'appraisal_as_is_verify':   box = <CondAsIsEntry appId={appId} onSaved={onChanged} />; break;
+    /* The verify-payoff condition carries the WHOLE payoff section as its
+       fillable form (owner-directed 2026-08-18: "bring in the details to fill
+       in the payoff details in the condition") — the SAME PayoffCard the
+       sec-payoff section mounts, so the two can never disagree. The condition's
+       own wording is untouched; this renders UNDER it. */
+    case 'cond_payoff_internal':     box = <PayoffCard appId={appId} app={{}} onSaved={onChanged} />; break;
     default: return null;   // never an empty wrapper — Item is a gapped flex column
   }
   return indent ? <div style={{ width: '100%', paddingLeft: 20 }}>{box}</div> : box;
@@ -1422,7 +1434,10 @@ function slotBaseLabel(label) {
   return String(label || '').replace(/\s*\(\d+\)\s*$/, '').trim();
 }
 function docInSlot(doc, slotLabel) {
-  return slotBaseLabel(doc && doc.slot_label) === String(slotLabel || '');
+  // Case-INSENSITIVE, matching the server's baseLabel (extra-slots.js) — the
+  // sign-off gate lowercases both sides, so the screen must count the same
+  // documents as filling a slot that the gate does (audit 078cb1a #7).
+  return slotBaseLabel(doc && doc.slot_label).toLowerCase() === String(slotLabel || '').trim().toLowerCase();
 }
 
 /* DOCUMENTS ON A SLOTTED CONDITION THAT ARE NOT IN A SLOT (owner-directed
@@ -1515,6 +1530,61 @@ function ConditionOrderButton({ appId, it, role, onChanged }) {
           onClose={() => setOpen(false)} onChanged={onChanged} />
       )}
     </>
+  );
+}
+
+/* REQUEST ANOTHER DOCUMENT WITHIN A CONDITION (db/578, owner-directed 2026-08-18:
+   "you got one document and you wanna request another document within that
+   condition … there should be a button for the staff members to open up another
+   slot in a condition and type the name of that slot. That should populate as an
+   open item needing it"). Opens a NAMED slot on THIS condition: an external ask
+   shows on the borrower's portal as still needed (and they are notified); an
+   internal one is our own team's to-do. The uploaded document files INTO the
+   condition — same folder in the TPR export, same SharePoint mirror. Opening a
+   slot on a signed-off condition REOPENS it (the sign-off predates this ask). */
+function RequestSlotButton({ appId, it, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  if (it.item_kind !== 'document') return null;
+  const borrowerFacing = it.audience === 'borrower' || it.audience === 'both';
+  const ask = async () => {
+    const label = await askPrompt('Name the document you are requesting on this condition (e.g. "Updated operating agreement", "October bank statement"):',
+      { placeholder: 'Document name', confirmLabel: 'Request it' });
+    if (label == null || !String(label).trim()) return;
+    const name = String(label).trim();
+    let audience = 'internal';
+    if (borrowerFacing) {
+      // Two explicit steps, so Escape/backdrop is always an ABORT — never a
+      // silent "internal" nobody chose.
+      const ext = await askConfirm(`Should the BORROWER provide "${name}"?\n\nYes — it shows on their portal as still needed and they are notified.\nNo — it stays an internal ask for our own team.`,
+        { confirmLabel: 'Yes — from the borrower', cancelLabel: 'No — internal' });
+      if (ext) audience = 'external';
+      else if (!(await askConfirm(`Add "${name}" as an INTERNAL ask? The borrower will not see it.`, { confirmLabel: 'Add internal ask' }))) return;
+    }
+    setBusy(true);
+    try {
+      let r;
+      try {
+        r = await api.conditionSlotAdd(appId, it.id, { label: name, audience });
+      } catch (e) {
+        // The stray-label guard offers "add anyway" — the same affordance every
+        // other hand-typed-label surface has (never a dead end).
+        const d = (e && e.data) || {};
+        if (d.code === 'stray_condition_label' && d.needsConfirm) {
+          if (!(await askConfirm(`${d.error}\n\nRequest "${name}" anyway?`, { confirmLabel: 'Yes — request it' }))) return;
+          r = await api.conditionSlotAdd(appId, it.id, { label: name, audience, confirmStrayLabel: true });
+        } else throw e;
+      }
+      if (r && r.reopened) await showMessage('This condition was signed off — it has been reopened, since the new request was made after that sign-off.');
+      if (onChanged) await onChanged();
+    } catch (e) {
+      await showMessage(((e && e.data && e.data.error) || (e && e.message)) || 'Could not open the document slot.');
+    } finally { setBusy(false); }
+  };
+  return (
+    <button className="btn ghost small" disabled={busy} onClick={ask}
+      title="Open another named document slot on this condition — the uploaded document stays part of this condition (same folder in the TPR export)">
+      Request another document
+    </button>
   );
 }
 
@@ -1655,11 +1725,27 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                   onDragLeave={onDropTo ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
                   onDrop={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); onFilesDropped(e, (files) => onDropTo(files, addTarget)); } : undefined}>
                   <span className="muted small" style={{ minWidth: 140 }}>{slot.label}</span>
+                  {/* An ad-hoc requested slot (db/578) says so on its face — who
+                      asked, and whether the borrower owes it or our own team. */}
+                  {slot.extra && (
+                    <span className="pill" style={{ borderColor: 'var(--gold, #AE8746)', color: 'var(--gold, #AE8746)' }}
+                      title={`Requested${slot.added_by_name ? ` by ${slot.added_by_name}` : ''} — ${slot.audience === 'external' ? 'needed from the borrower' : 'internal'}`}>
+                      requested{slot.audience === 'external' ? ' · borrower' : ' · internal'}
+                    </span>
+                  )}
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
                     {slotDocs.length === 0 ? (
                       <div className="row" style={{ gap: 8 }}>
                         <span className="small muted" style={{ flex: 1 }}>not uploaded</span>
                         {onUploadTo && <button className="btn ghost small" onClick={() => onUploadTo(addTarget)}>Upload</button>}
+                        {slot.extra && (
+                          <button className="btn ghost small" title="Remove this request (only an unfilled slot can be removed)"
+                            onClick={async () => {
+                              if (!(await askConfirm(`Remove the request for "${slot.label}"?`))) return;
+                              try { await api.conditionSlotRemove(appId, it.id, String(slot.key).replace(/^extra:/, '')); if (onChanged) await onChanged(); }
+                              catch (e) { await showMessage((e && e.message) || 'Could not remove the request.'); }
+                            }}>Remove</button>
+                        )}
                       </div>
                     ) : (
                       <>
@@ -1760,6 +1846,14 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
 
       {it.template_code === 'usps_address_verification' && (
         <UspsAddressVerification appId={appId} onChanged={onChanged} />
+      )}
+
+      {/* Ask for one more document WITHIN this condition (db/578) — never a
+          brand-new condition for a follow-up document. */}
+      {isDoc && it.template_code !== 'rtl_cond_credit' && (
+        <div className="row" style={{ gap: 8, paddingLeft: 20, alignItems: 'center', flexWrap: 'wrap' }}>
+          <RequestSlotButton appId={appId} it={it} onChanged={onChanged} />
+        </div>
       )}
 
       {/* ONE next step, everything else behind More — the shared bar, so this
@@ -3805,8 +3899,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                         // Assets & liquidity: show the registered requirement summary
                         // on the internal login too (#85), not just a bare "document".
                         const liq = it.tool_payload && it.tool_payload.liquidity;
+                        // Max cash to close (db/574) — stamped by the assets ledger under its
+                        // OWN key (liquidity.* is replaced wholesale on every re-register).
+                        const al = it.tool_payload && it.tool_payload.assetLedger;
+                        const maxBit = al && al.maxCashToClose != null ? ` · max cash to close ${money2(al.maxCashToClose)}` : '';
                         return liq && liq.required != null
-                          ? `Required liquidity ${money2(liq.required)}${liq.cashToClose ? ` · cash to close ${money2(liq.cashToClose)}` : ''}${liq.reserveRequirement ? ` · reserves ${money2(liq.reserveRequirement)}` : ''}`
+                          ? `Required liquidity ${money2(liq.required)}${liq.cashToClose ? ` · cash to close ${money2(liq.cashToClose)}` : ''}${liq.reserveRequirement ? ` · reserves ${money2(liq.reserveRequirement)}` : ''}${maxBit}`
                           : 'Assets & bank statements — the required liquidity is set the moment a product is registered';
                       })()
                     : it.template_code === 'rtl_p5_assign' ? (() => {
@@ -3899,6 +3997,20 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   )}
                 </div>
               )}
+              {/* PLANS & PERMITS ON A PURCHASE (owner-directed 2026-08-18): waivable directly
+                  "for now" — the enforcement returns before the FIRST DRAW (the condition
+                  re-populates, pre-filled with the closing-time document, and the draw
+                  coordinator signs off again). It's a required task, so the generic
+                  optional-only Waive never shows for it; on a REFINANCE this button never
+                  renders — plans are required before closing there. */}
+              {it.template_code === 'rtl_p1_plans' && app && !payoffApplies(app.loan_type)
+                && completer && !signed && it.status !== 'satisfied' && !it.waived_at && (
+                <button className="btn ghost small"
+                  title="Waive plans & permits for closing on this purchase — the condition comes back before the first construction draw for the draw coordinator to sign off"
+                  onClick={async () => { if (await askConfirm('Waive plans & permits for now? On this purchase they are not needed to close — the condition comes back before the FIRST construction draw, pre-filled with whatever was already uploaded, and the draw coordinator signs it off then.')) onPatch(it.id, { waived: true }); }}>
+                  Waive this condition
+                </button>
+              )}
               {['title_contact', 'insurance_contact'].includes(it.tool_key) && (
                 <StaffContactEntry appId={appId} toolKey={it.tool_key} current={contactFor(it.tool_key)}
                   onSaved={async () => { await loadContacts(); if (onChanged) await onChanged(); }} />
@@ -3908,6 +4020,11 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   the order without going to the Orders section. */}
               {orderKindForCondition(it) && (
                 <ConditionOrderButton appId={appId} it={it} role={role} onChanged={onChanged} />
+              )}
+              {/* Ask for one more document WITHIN this condition (db/578) — the
+                  borrower sees it as still needed; never a brand-new condition. */}
+              {it.template_code !== 'rtl_cond_credit' && (
+                <RequestSlotButton appId={appId} it={it} onChanged={onChanged} />
               )}
               {!it.tool_key && onUploadTo && (
                 <button className="btn ghost small"
@@ -3930,6 +4047,40 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
             )}
             {it.borrower_hint && /still needed/i.test(it.borrower_hint) && (
               <div className="small" style={{ color: 'var(--gold-ink)', paddingLeft: 20 }}>Requested from borrower: {it.borrower_hint.replace(/^[\s\S]*?Still needed:\s*/i, '')}</div>
+            )}
+            {/* Ad-hoc requested document slots (db/578) — each open ask on this
+                condition, whether the borrower owes it or our own team, with
+                upload / remove right on the line. A filled one points at the
+                document list below. */}
+            {Array.isArray(it.slots) && it.slots.some((s) => s.extra) && (
+              <div style={{ width: '100%', paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {it.slots.filter((s) => s.extra).map((s) => {
+                  const filled = itemDocs.some((d) => docInSlot(d, s.label));
+                  return (
+                    <div className="row" key={s.key} style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span className="pill" style={{ borderColor: 'var(--gold, #AE8746)', color: 'var(--gold, #AE8746)' }}
+                        title={`Requested${s.added_by_name ? ` by ${s.added_by_name}` : ''}`}>
+                        requested{s.audience === 'external' ? ' · borrower' : ' · internal'}
+                      </span>
+                      <span className="small" style={{ fontWeight: 600 }}>{s.label}</span>
+                      {filled ? (
+                        <span className="small muted">uploaded — see the documents below</span>
+                      ) : (
+                        <>
+                          <span className="small muted">not uploaded{s.added_by_name ? ` · asked by ${s.added_by_name}` : ''}</span>
+                          {onUploadTo && <button className="btn ghost small" onClick={() => onUploadTo({ itemId: it.id, slot: s.label })}>Upload</button>}
+                          <button className="btn ghost small" title="Remove this request (only an unfilled slot can be removed)"
+                            onClick={async () => {
+                              if (!(await askConfirm(`Remove the request for "${s.label}"?`))) return;
+                              try { await api.conditionSlotRemove(appId, it.id, String(s.key).replace(/^extra:/, '')); if (onChanged) await onChanged(); }
+                              catch (e) { await showMessage((e && e.message) || 'Could not remove the request.'); }
+                            }}>Remove</button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             )}
             <CondNote item={it} onPatch={onPatch} />
             {itemDocs.length > 0 && (
@@ -5175,7 +5326,7 @@ export default function StaffApplication() {
   const isRefiFile = payoffApplies(app.loan_type);
   const payoffMissing = isRefiFile ? payoffMissingKeys(app) : [];
   const payoffBadge = { short: payoffMissing.length ? `${payoffMissing.length} ⚠` : '✓',
-    long: payoffMissing.length ? `${payoffMissing.length} still needed` : 'Complete ✓' };
+    long: payoffMissing.length ? `${payoffMissing.length} to fill in` : 'Complete ✓' };
   const badges = {
     pricing: { short: app.registered_program ? '✓' : '', long: app.registered_program ? 'Registered ✓' : 'Not registered' },
     appraisal: (() => {
@@ -5264,7 +5415,7 @@ export default function StaffApplication() {
        asks the server for everything richer. */
     'sec-payoff': line(
       payoffMissing.length
-        ? (payoffMissing.length === 1 ? '1 thing still needed' : `${payoffMissing.length} things still needed`)
+        ? (payoffMissing.length === 1 ? '1 detail to fill in' : `${payoffMissing.length} details to fill in`)
         : 'Payoff details are complete',
       ...openHere('sec-payoff')),
     'sec-pricing': line(
@@ -5349,6 +5500,12 @@ export default function StaffApplication() {
     // AND the capital-provider data tape, which keeps its own permission gate
     // inside the section — see the note on the section itself.
     { id: 'sec-tapes', label: 'Send to investor', group: 'Send to investor' },
+    // Task management (owner-directed 2026-08-18): the file's scheduled tasks +
+    // reminders as a standing section, beside the communication they fire through.
+    { id: 'sec-tasks', label: 'Tasks & reminders', group: 'Communication' },
+    // The Drafting desk (owner-directed 2026-08-18): AI drafts emails from the
+    // file, copy-paste only — no send exists on this path.
+    { id: 'sec-drafting', label: 'Drafting', group: 'Communication' },
     { id: 'sec-messages', label: 'Communication & history', group: 'Communication' },
     // Construction draws is the LAST phase (post-funding), so it's the LAST section.
     // Shown for anyone who manages draws — funded or not — so the Draw Center is
@@ -5509,6 +5666,9 @@ export default function StaffApplication() {
 
   return (
     <>
+      {/* The file overview at a glance — the left-edge slide-over (owner-directed
+          2026-08-18), on every file screen; this is the INTERNAL audience. */}
+      <FileOverviewSlideOver key={id} fetcher={() => api.staffFileOverview(id)} />
       {/* The file's identity bar STAYS while you scroll — borrower, address,
           loan number and status pin under the app header; only the sections
           below (and the rail beside them) move. */}
@@ -5591,6 +5751,12 @@ export default function StaffApplication() {
           header's "N to clear before CTC" badge still land exactly here. */}
       <div className="deal-block">
         <DealSnapshot app={app} gating={gating} />
+        {/* THE RATE-AND-TERM $2,000 RED WARNING (owner-directed 2026-08-18) — on the
+            OUTSIDE structure screen, never inside the term sheet generator. Renders
+            nothing unless the file is a rate-&-term whose structure hands the borrower
+            more than $2,000; carries the "Validate closing costs" editor + the
+            super-admin exception request. */}
+        <RateTermCashCard appId={id} onChanged={load} />
         <WhatsLeftPanel gating={gating} items={items} conds={conds} />
       </div>
       <PropertyPhoto address={propAddress !== '—' ? propAddress : ''} />
@@ -5599,6 +5765,9 @@ export default function StaffApplication() {
           switching would change. It used to live only as a pencil icon on a muted
           line inside the ClickUp panel, which is not a path anyone would find. */}
       <div id="note-buyer-slot"><NoteBuyerCard appId={id} value={app.lender} onSaved={load} /></div>
+      {/* A-piece / B-piece split (owner-directed 2026-08-18) — internal-only,
+          manual-program; self-hides elsewhere. Saving never reopens pricing. */}
+      <AbPieceCard appId={id} />
       {/* THE WORKFLOW (owner-directed 2026-07-21) — the primary way a file moves.
           Submit it to the next person; the status follows automatically. */}
       <SubmitFilePanel appId={id} onChange={load} />
@@ -6078,6 +6247,9 @@ export default function StaffApplication() {
 
       <Section hidden={!show('sec-esign')} id="sec-esign" summary={summaries['sec-esign']} title="E-signatures" defaultOpen={false}
         info="Send and track the term-sheet package and Heter Iska, with live per-signer status, resend, void, re-issue and downloads.">
+      {/* The same rate-&-term cash card at the SEND gate (owner: the validate-closing-costs
+          button lives at both places) — the gate's blocker names this exact remedy. */}
+      <RateTermCashCard appId={id} onChanged={load} />
       <EsignFileSection appId={id} role={role} onChanged={load} onFinalizeTermSheet={finalizeTermSheetBridge} />
       </Section>
       {showClosing && (
@@ -6111,6 +6283,18 @@ export default function StaffApplication() {
       {/* Conversations, Email Center and Activity are one "Communication & history"
           section with tabs — they're all the file's talk + trail, so they share a
           home instead of three separate sections. */}
+      {/* Task management (owner-directed 2026-08-18): the file's task board. */}
+      <Section hidden={!show('sec-tasks')} id="sec-tasks" title="Tasks & reminders" defaultOpen={false}
+        info="Scheduled tasks and reminders on this file — who owns each one, when it's due, and who gets told. A task also shows on its owner's My-tasks queue; reminders fire automatically at their due moment.">
+        <FileTasksPanel appId={id} team={team} />
+      </Section>
+
+      {/* The Drafting desk (owner-directed 2026-08-18): copy-paste email drafts. */}
+      <Section hidden={!show('sec-drafting')} id="sec-drafting" title="Drafting" defaultOpen={false}
+        info="Pilot AI drafts a human-sounding email from this file — the borrower's outstanding conditions, a deal overview, or anything you describe — for you to edit and COPY into your own email program. Nothing is ever sent from here.">
+        <DraftingPanel appId={id} />
+      </Section>
+
       <Section hidden={!show('sec-messages')} id="sec-messages" title="Communication & history" defaultOpen={false}
         info="Everything said and logged on this file — chats, the email history, and the full AUDIT LOG: every action, who did it, what changed, every notification and email that went out, every push to ClickUp or the LOS, and (on request) every single API call. This is where you look when you need to know what happened.">
       <div className="comm-tabs" role="tablist" aria-label="Communication">
@@ -6523,7 +6707,8 @@ function TapeExport({ appId }) {
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState(''); // "Exported the X tape" confirmation
-  const [pending, setPending] = useState(null); // { tapeKey, name, questions } — questionnaire modal
+  const [pending, setPending] = useState(null); // { tapeKey, name, questions, forSend } — questionnaire modal
+  const [sendPending, setSendPending] = useState(null); // { tapeKey, name, answers, preview } — send-to-investor compose
   const [ln, setLn] = useState('');       // loan-number slot input
   const [lnBusy, setLnBusy] = useState(false);
   const [lnErr, setLnErr] = useState('');
@@ -6540,15 +6725,49 @@ function TapeExport({ appId }) {
   //  • New-Construction-only fields (ground-up loans), and/or
   //  • a seasoned-loan confirmation (current balance / next due / reserve).
   // If either applies, open the modal; otherwise export straight away.
-  async function start(tapeKey, name) {
+  async function start(tapeKey, name, forSend) {
     setBusy(tapeKey);
     try {
       const q = await api.staffTapeQuestions(appId, tapeKey);
       const questions = (q && q.questions) || [];
       const seasoned = q && q.seasoned && q.seasoned.isSeasoned ? q.seasoned : null;
-      if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned, supplementalMissing: (q && q.supplementalMissing) || 0 }); setBusy(null); return; }
+      if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned, supplementalMissing: (q && q.supplementalMissing) || 0, forSend: !!forSend }); setBusy(null); return; }
+      if (forSend) { await openSendCompose(tapeKey, name, undefined); return; }
       await runExport(tapeKey, name, undefined);
     } catch (e) { showMessage((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
+  }
+  // The send-to-investor compose: fetch the saved contacts + subject/figure
+  // preview, then open the modal. Any questionnaire answers ride along so the
+  // emailed tape is built with them exactly like a download.
+  async function openSendCompose(tapeKey, name, answers) {
+    try {
+      const preview = await api.staffTapeSendPreview(appId);
+      setSendPending({ tapeKey, name, answers, preview });
+    } catch (e) { showMessage((e.data && e.data.error) || e.message || 'Could not load the investor contacts.'); }
+    finally { setBusy(null); }
+  }
+  async function runSend(tapeKey, name, answers, to, note, extra) {
+    setBusy(tapeKey); setMsg('');
+    try {
+      const out = await api.staffTapeSend(appId, tapeKey, { ...(answers || {}), ...(extra || {}), to, note });
+      setSendPending(null);
+      setMsg(`Sent the ${name} tape to ${out.to.join(', ')}. Replies thread into this file.`);
+    } catch (e) {
+      const d = (e && e.data) || {};
+      // The SAME Encompass reconciliation gate as the download — super admins may
+      // allow inline with a logged reason; everyone else asks for an exception.
+      if (d.code === 'encompass_override_reason_required') {
+        const reason = await askPrompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, { defaultValue: '' });
+        if (reason && reason.trim()) { await runSend(tapeKey, name, answers, to, note, { ...(extra || {}), encompassOverrideReason: reason.trim() }); return; }
+        setBusy(null); return;
+      }
+      if (d.code === 'encompass_exception_required' || d.code === 'encompass_unreconciled') {
+        setSendPending(null); setReqOpen(true); load();
+        setBusy(null); return;
+      }
+      await showMessage(d.message || d.error || e.message || 'The send failed — nothing went out.');
+    }
+    finally { setBusy(null); }
   }
   async function runExport(tapeKey, name, answers) {
     setBusy(tapeKey); setMsg('');
@@ -6686,9 +6905,16 @@ function TapeExport({ appId }) {
                 {t.available && <span className="pill done small" style={{ marginLeft: 6 }}>this loan's provider</span>}
               </div>
               {t.available ? (
-                <button className="btn primary small" disabled={busy === t.key} onClick={() => start(t.key, t.name)}>
-                  {busy === t.key ? 'Building…' : `Export the ${t.name} tape (Excel)`}
-                </button>
+                <span className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  <button className="btn primary small" disabled={busy === t.key} onClick={() => start(t.key, t.name)}>
+                    {busy === t.key ? 'Building…' : `Export the ${t.name} tape (Excel)`}
+                  </button>
+                  <button className="btn ghost small" disabled={busy === t.key}
+                    title="Email the Excel tape to this investor's saved contacts — you pick the recipients and press Send; nothing goes out automatically"
+                    onClick={() => start(t.key, t.name, true)}>
+                    Send to investor…
+                  </button>
+                </span>
               ) : (
                 <span className="row small" style={{ gap: 6, alignItems: 'center', color: 'var(--gold-ink)', flexWrap: 'wrap' }}>
                   <button className="btn small" disabled title={t.reason}>Export the {t.name} tape</button>
@@ -6716,7 +6942,19 @@ function TapeExport({ appId }) {
           seasoned={pending.seasoned}
           busy={busy === pending.tapeKey}
           onCancel={() => setPending(null)}
-          onSubmit={(answers) => runExport(pending.tapeKey, pending.name, answers)}
+          onSubmit={(answers) => {
+            if (pending.forSend) { const p = pending; setPending(null); setBusy(p.tapeKey); openSendCompose(p.tapeKey, p.name, answers); return; }
+            runExport(pending.tapeKey, pending.name, answers);
+          }}
+        />
+      )}
+      {sendPending && (
+        <TapeSendModal
+          name={sendPending.name}
+          preview={sendPending.preview}
+          busy={busy === sendPending.tapeKey}
+          onCancel={() => setSendPending(null)}
+          onSend={({ to, note }) => runSend(sendPending.tapeKey, sendPending.name, sendPending.answers, to, note)}
         />
       )}
     </div>

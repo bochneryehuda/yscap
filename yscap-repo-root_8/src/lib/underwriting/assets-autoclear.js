@@ -68,12 +68,26 @@ async function assetsCompleteness(client, appId) {
   // with the same ctx so tied-account matching is identical to production.
   const ctx = await fileView.loadContext(client, appId);
   const res = assessBankLiquidity(ctx || {}, stmts, { requiredLiquidity: required });
-  const haveCountableTied = Array.isArray(res.accounts)
+  // The staff assets LEDGER (db/574) sits on top of the raw read everywhere money
+  // is judged — a DOWNWARD correction or an exclusion a processor recorded must
+  // never be ignored by an auto-clear, or the auto path would be LOOSER than the
+  // human one (this module's own doctrine). Fails toward the RAW read only when
+  // the ledger is unreadable, which can only ever be looser by accident in the
+  // same way today's behavior already is.
+  let have = Number(res.qualifyingTotal) || 0;
+  let haveCountableTied = Array.isArray(res.accounts)
     && res.accounts.some((a) => a && a.tied && a.ending != null);
-  const covers = haveCountableTied && Number(res.qualifyingTotal) >= required - 1;
-  if (!covers) return { complete: false, reason: 'insufficient_or_datagap', required, have: res.qualifyingTotal };
+  try {
+    const ledger = require('./asset-ledger');
+    const entries = await ledger.loadEntries(appId, client);
+    const merged = ledger.mergeLedger({ accounts: res.accounts, qualifyingTotal: res.qualifyingTotal }, entries);
+    have = merged.verifiedTotal;
+    haveCountableTied = merged.haveCountable;
+  } catch (_) { /* raw read stands */ }
+  const covers = haveCountableTied && have >= required - 1;
+  if (!covers) return { complete: false, reason: 'insufficient_or_datagap', required, have };
 
-  return { complete: true, required, have: res.qualifyingTotal };
+  return { complete: true, required, have };
 }
 
 /**

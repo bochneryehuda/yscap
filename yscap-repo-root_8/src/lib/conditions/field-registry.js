@@ -461,6 +461,19 @@ const FIELDS = [
   { key: 'payoff_loan_number', label: 'Payoff loan number', group: 'Deal economics', type: 'text', writable: true,
     borrowerLabel: 'Your current loan number',
     borrowerHint: 'The loan or account number your current lender uses — it is on your monthly statement.' },
+  { key: 'payoff_good_through', label: 'Payoff good-through date', group: 'Deal economics', type: 'date', writable: true,
+    borrowerLabel: 'Payoff good-through date',
+    borrowerHint: 'The date your payoff quote is valid through (it is on the payoff letter).' },
+  /* Property owned FREE AND CLEAR — no existing lien to pay off (db/575,
+     owner-directed 2026-08-18). Always CONCRETE (true/false, never blank), for
+     the same reason note_buyer_is_fidelis is: an `is_false` rule row must be
+     correct on every file that simply never answered. It gates BOTH payoff
+     conditions (db/464 rules widened by db/575): flag on → the engine retracts
+     them (untouched only; a worked one is waived by the free-and-clear route).
+     Set ONLY by the staff free-and-clear door (confirm popup, audited) — never
+     writable from an info-condition. */
+  { key: 'property_free_and_clear', label: 'Property is free and clear?', group: 'Deal economics', type: 'boolean',
+    description: 'True when the property has no existing loan to pay off (confirmed by staff). Retracts/waives both payoff conditions.' },
   { key: 'original_purchase_price', label: 'Original purchase price', group: 'Deal economics', type: 'money', writable: true,
     borrowerLabel: 'Original purchase price', borrowerHint: 'What you originally paid for the property (refinances).' },
   { key: 'acquisition_date', label: 'Acquisition date', group: 'Deal economics', type: 'date', writable: true,
@@ -529,6 +542,7 @@ const WRITE_TARGETS = {
   payoff_amount: { table: 'applications', column: 'payoff_amount' },
   payoff_lender: { table: 'applications', column: 'payoff_lender' },
   payoff_loan_number: { table: 'applications', column: 'payoff_loan_number' },
+  payoff_good_through: { table: 'applications', column: 'payoff_good_through' },
   original_purchase_price: { table: 'applications', column: 'original_purchase_price' },
   acquisition_date: { table: 'applications', column: 'acquisition_date' },
   underlying_contract_price: { table: 'applications', column: 'underlying_contract_price' },

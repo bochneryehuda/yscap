@@ -408,6 +408,36 @@ router.post('/orders/:orderId/cancel', async (req, res) => {
   });
 });
 
+// Delete a DRAFT / FAILED / DRYRUN attempt that never reached Richer Values
+// (owner-directed 2026-08-18). The shared decision module refuses anything the
+// vendor has seen (an intake/order token), anything paid, and anything whose
+// report was filed. If this attempt auto-recorded the file's "no appraisal XML"
+// waiver, the waiver is withdrawn with it — the order's own waiver must not
+// outlive the order. The desk mirror re-syncs afterward.
+router.delete('/orders/:orderId', async (req, res) => {
+  try {
+    const order = await loadOrder(req, res, req.params.orderId);
+    if (!order) return undefined;
+    const orderDelete = require('../lib/appraisal/order-delete');
+    const pi = (await db.query(
+      `SELECT settled_at, vendor_transaction_id, charge_started_at
+         FROM appraisal_payment_intents WHERE vendor='rv' AND vendor_order_id=$1::bigint`, [order.id])).rows[0] || null;
+    const filed = order.pdf_document_id != null ? 1 : 0;
+    const verdict = orderDelete.mayDelete('rv', order, { paymentIntent: pi, filedDocuments: filed });
+    if (!verdict.ok) return res.status(422).json({ error: verdict.reason, message: verdict.message });
+    if (order.xml_waiver_applied) {
+      try { await require('../lib/appraisal/xml-waiver').withdrawProductNoXmlWaiver(order.application_id); } catch (_) { /* non-fatal */ }
+    }
+    await db.query(`DELETE FROM appraisal_payment_intents WHERE vendor='rv' AND vendor_order_id=$1::bigint`, [order.id]);
+    await db.query(`DELETE FROM rv_orders WHERE id=$1`, [order.id]);
+    await audit(req, 'appraisal_order_attempt_deleted', 'application', order.application_id, {
+      vendor: 'rv', orderId: String(order.id), status: order.status, lastError: order.last_error || null,
+    });
+    try { await require('../lib/appraisal-order-mirror').syncOne(order.application_id); } catch (_) { /* best-effort */ }
+    return res.json({ ok: true });
+  } catch (e) { console.warn('[rv] delete attempt error:', (e && e.message) || e); return res.status(500).json({ error: 'server error' }); }
+});
+
 // PUT IT ON HOLD / TAKE IT OFF HOLD.
 router.post('/orders/:orderId/hold', async (req, res) => {
   const order = await loadOrder(req, res, req.params.orderId);

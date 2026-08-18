@@ -33,6 +33,7 @@ async function sendBorrowerTerms(appId, { quote, total, termMonths, encompassOve
   const db = require('../db');
   const notify = require('./notify');
   const email = require('./email');
+  const fileAddress = require('./file-address');
   const { borrowerTermsEmail } = require('./product-registration');
 
   // Term-sheet options (owner-directed 2026-07-22) live on the file after
@@ -137,7 +138,12 @@ async function sendBorrowerTerms(appId, { quote, total, termMonths, encompassOve
     applicationId: appId,
     link: `/app/${appId}`,
     from: officer ? email.fromWithName(officer.name) : null,
-    replyTo: officer ? officer.email : null,
+    // Owner-directed 2026-08-18 ("every single email must have the unique
+    // reply-to"): the per-file address wins so a borrower's reply threads into
+    // the file and reaches the WHOLE team — the officer included — instead of
+    // one person's inbox. The officer's inbox is only the fallback when no
+    // inbound reply domain is configured.
+    replyTo: fileAddress.fileReplyTo(appId) || (officer ? officer.email : null),
     ...(attachments ? { attachments, files: ['Term Sheet.pdf'] } : {}),
   });
 }

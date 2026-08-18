@@ -983,7 +983,9 @@ function SitewirePropertyControls({ appId, onChanged }) {
           <ControlRow
             title={method === 'mobile' ? 'Virtual Inspection' : 'Onsite Inspection'}
             status={method === 'mobile' ? 'Capture using the Sitewire mobile app' : 'Use preferred field inspector'}
-            sub={canSwitch ? null : 'The capital partner sets this — it can’t be switched for this file.'}
+            sub={canSwitch ? null : (insp.ground_up_physical_only
+              ? 'Ground-up construction is always inspected on site — virtual inspections aren’t available on this file.'
+              : 'The capital partner sets this — it can’t be switched for this file.')}
             btnLabel={canSwitch ? (method === 'mobile' ? 'Change to Onsite' : 'Change to Virtual') : null}
             busy={busy === 'method'} disabled={off || busy === 'method'}
             onClick={() => confirmApply(`Change the inspection type to ${INSP_LABEL[otherMethod]}?`, { inspection_method: otherMethod }, 'method', `Switched to ${INSP_LABEL[otherMethod]}.`)}
@@ -2149,6 +2151,7 @@ function StartDrawCard({ appId, onStarted }) {
         no_sow: 'Not pushed — there’s no saved Scope of Work to turn into a budget yet.',
         no_budget: 'Not pushed — no frozen rehab budget is set on this file yet.',
         missing_loan_number: 'Not pushed — this file has no loan number yet.',
+        groundup_physical: 'Not pushed — this is a ground-up construction project, which must be inspected ON SITE, but the capital partner’s draw rule forbids on-site inspections. Fix the rule in Draw settings, then start again.',
       };
       let m;
       if (r && r.note) m = r.note;                                            // Sitewire off / queued (transient)
@@ -2227,7 +2230,7 @@ function StartDrawCard({ appId, onStarted }) {
               </select>
             </label>
           ) : (
-            <div style={{ marginBottom: 10 }}>{effMethod === 'traditional' ? 'On-site (traditional)' : 'Virtual (mobile)'}<span className="muted small"> — {insp.allow_virtual === false || insp.allow_physical === false ? 'set by the program, can’t switch' : 'the only method allowed'}</span></div>
+            <div style={{ marginBottom: 10 }}>{effMethod === 'traditional' ? 'On-site (traditional)' : 'Virtual (mobile)'}<span className="muted small"> — {insp.ground_up_physical_only ? 'ground-up construction is always inspected on site' : (insp.allow_virtual === false || insp.allow_physical === false ? 'set by the program, can’t switch' : 'the only method allowed')}</span></div>
           )}
           <label className="small" style={{ display: 'block' }}>Draw fee ({effKind})
             <div className="row" style={{ gap: 6, alignItems: 'center' }}>
@@ -3567,6 +3570,36 @@ function AttachmentPreview({ appId, drawId, att, onClose }) {
   );
 }
 
+/* ── THE INVESTOR'S ACTUAL EMAIL REPLIES (owner-directed 2026-08-18) ─────────────────────────
+   The delivery email replies to the file's unique address, so the investor's answer lands in
+   the file's Email Center under this delivery's own thread — shown here so the desk reads what
+   they SAID next to where it was sent, not only the hand-picked answer dropdown. Previews only;
+   the Email Center tab holds the full bodies. */
+function InvestorReplies({ delivery }) {
+  const replies = (delivery && delivery.replies) || [];
+  if (!replies.length) return null;
+  return (
+    <div className="act-card-sub" style={{ marginTop: 10 }}>
+      <b style={{ color: '#141B22' }}>Investor replies ({replies.length})</b>
+      {replies.map((m) => (
+        <div key={m.id} style={{ marginTop: 6, paddingLeft: 8, borderLeft: '2px solid #D9D2C4' }}>
+          <span className="small" style={{ color: '#3A4550', fontWeight: 700 }}>
+            {m.from_name || m.from_email || 'Reply'}
+          </span>
+          <span className="small" style={{ color: '#4B585C' }}>
+            {' — '}{new Date(m.occurred_at).toLocaleString('en-US')}
+            {Number(m.attachment_n) > 0 ? ` · ${m.attachment_n} attachment${Number(m.attachment_n) === 1 ? '' : 's'}` : ''}
+          </span>
+          {m.preview ? <div className="small" style={{ color: '#141B22' }}>{m.preview}</div> : null}
+        </div>
+      ))}
+      <div className="small" style={{ color: '#4B585C', marginTop: 6 }}>
+        Full messages are on the file&rsquo;s Email Center tab; replies also reach everyone assigned to the file.
+      </div>
+    </div>
+  );
+}
+
 /* ── WHAT THE INVESTOR SAID BACK ──────────────────────────────────────────────────────────────
    "With the investor" used to be a dead end that only a reminder ever escaped. */
 function InvestorAnswer({ appId, drawId, delivery, answers, reload }) {
@@ -3597,6 +3630,7 @@ function InvestorAnswer({ appId, drawId, delivery, answers, reload }) {
         {delivery.expected_funding_date ? ` · funding ${delivery.expected_funding_date}` : ''}
         {delivery.answer_note ? <span style={{ display: 'block' }}>“{delivery.answer_note}”</span> : null}
         {label ? <span style={{ display: 'block', color: '#4B585C' }}>{label.next}</span> : null}
+        <InvestorReplies delivery={delivery} />
       </div>
     );
   }
@@ -3625,6 +3659,7 @@ function InvestorAnswer({ appId, drawId, delivery, answers, reload }) {
           aria-label="What the investor said, in their words"
           style={{ width: '100%', boxSizing: 'border-box', marginTop: 8, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--hairline,#E4E0D6)', fontSize: 14, color: '#141B22' }} />
       )}
+      <InvestorReplies delivery={delivery} />
       {err ? <div className="act-card-sub" style={{ color: 'var(--danger,#B4453C)' }}>{err}</div> : null}
     </div>
   );

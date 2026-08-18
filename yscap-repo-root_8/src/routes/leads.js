@@ -528,7 +528,11 @@ router.post('/', async (req, res) => {
       } else if (!officerId) {
         if (tool === 'subscribe') {
           const built = notify.buildEmail(notifyOpts, 'staff');
-          await mailer.sendMail({ to: [SUBSCRIBE_NOTIFY_TO], subject: built.subject, text: built.text, html: built.html }).catch(() => {});
+          // Reply-To the subscriber when we have their address — same rule as the
+          // sales-desk lead notice above (owner-directed 2026-08-18: no email
+          // goes out reply-less).
+          await mailer.sendMail({ to: [SUBSCRIBE_NOTIFY_TO], subject: built.subject, text: built.text, html: built.html,
+            replyTo: email || cfg.replyToDefault || undefined }).catch(() => {});
         } else {
           // No sales inbox configured (or low-signal tool): legacy admin-desk fan-out.
           await notify.notifyAdmins(notifyOpts);

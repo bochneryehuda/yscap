@@ -80,6 +80,17 @@ const ESIGN_BEFORE_CTC_REASONS = Object.freeze({
 });
 function isEsignReasonCode(c) { return !!c && Object.prototype.hasOwnProperty.call(ESIGN_BEFORE_CTC_REASONS, c); }
 
+// Structured reasons for the RATE-AND-TERM CASH exception (owner-directed 2026-08-18:
+// a rate-&-term whose structure hands the borrower more than $2,000 — "You can always
+// request an exception from super admin … I don't want to block without a way out").
+const RATE_TERM_CASH_REASONS = Object.freeze({
+  costs_pending:   'Closing costs are still being confirmed — the real fees will absorb the cash',
+  payoff_updating: 'The payoff figure is being updated (the current one understates the balance)',
+  investor_ok:     'The investor has confirmed the structure is acceptable as a rate-&-term',
+  switching_soon:  'The transaction is being re-papered as a cash-out — send now on the current terms',
+  other:           'Other (see note)',
+});
+
 // Structured reasons for a pricing / guideline exception (the studio's
 // "Request an exception" ask — previously a dead-end with no record at all).
 const PRICING_EXCEPTION_REASONS = Object.freeze({
@@ -312,6 +323,21 @@ const EXCEPTION_TYPES = Object.freeze({
     expirable: false,
     recordOnly: false,
     slaHours: 48,
+  }),
+  // Owner-directed 2026-08-18: a rate-&-term refinance whose structure hands the
+  // borrower more than $2,000. The approval lifts the term-sheet SEND gate's
+  // 'rate_term_cash' blocker (lib/rate-term-gate.js) — the owner's "never block
+  // without a way out". SUPER-ADMIN decided by the owner's own words ("request an
+  // exception from super admin"). Expirable so a granted allowance can carry a
+  // validity window (the deal's numbers move; a stale approval must not linger).
+  rate_term_cash: Object.freeze({
+    label: 'Rate-&-term cash over $2,000',
+    reasonCodes: RATE_TERM_CASH_REASONS,
+    subject: 'file',
+    expirable: true,
+    recordOnly: false,
+    slaHours: 24,
+    decideRole: 'super_admin',
   }),
 });
 function isExceptionType(t) { return !!t && Object.prototype.hasOwnProperty.call(EXCEPTION_TYPES, t); }
@@ -566,6 +592,20 @@ async function requestPricingException(client, { appId, reasonCode, reasonNote, 
   return requestException(client, {
     type: 'pricing_exception', appId, reasonCode, reasonNote, requestedBy,
     requestedByKind, requestedByBorrowerId, compensatingFactors, reRequestOf,
+    dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
+  });
+}
+
+/**
+ * Record a RATE-AND-TERM CASH exception request (owner-directed 2026-08-18): a
+ * rate-&-term whose structure hands the borrower more than $2,000. The approval
+ * (super-admin only — decideRole) lifts the term-sheet send gate's
+ * 'rate_term_cash' blocker via approvedForApp in lib/rate-term-gate.js.
+ */
+async function requestRateTermCash(client, { appId, reasonCode, reasonNote, requestedBy, requestedByKind, gateSnapshot, compensatingFactors, reRequestOf }) {
+  return requestException(client, {
+    type: 'rate_term_cash', appId, reasonCode, reasonNote, requestedBy,
+    requestedByKind, compensatingFactors, reRequestOf, gateSnapshot,
     dealSnapshot: await dealSnapshotFor(appId), // pool, never the tx client (25P02)
   });
 }
@@ -1218,14 +1258,14 @@ module.exports = {
   ESIGN_BEFORE_CTC_REASONS, isEsignReasonCode,
   PRICING_EXCEPTION_REASONS, ISSUANCE_OVERRIDE_REASONS, CONDITION_OVERRIDE_REASONS,
   APPRAISAL_XML_WAIVER_REASONS, OOP_REHAB_REASONS, TAPE_ENCOMPASS_REASONS,
-  CREDIT_IMPORT_WAIVER_REASONS, CONDITION_WAIVER_REASONS,
+  CREDIT_IMPORT_WAIVER_REASONS, CONDITION_WAIVER_REASONS, RATE_TERM_CASH_REASONS,
   COMPENSATING_FACTORS, sanitizeCompensatingFactors,
   EXCEPTION_TYPES, isExceptionType, typeConfig, decideRoleFor,
   reasonCodesFor, reasonLabelFor, isReasonCodeFor, typeLabelFor,
   dealSnapshotFor, dueAtFor, dealDrift, presentExpiry,
   requestException, requestGuarantyWaiver, requestEsignBeforeCtc, requestPricingException,
   requestAppraisalXmlWaiver, requestOopRehab, requestTapeEncompassOverride,
-  requestCreditImportWaiver, requestConditionWaiver,
+  requestCreditImportWaiver, requestConditionWaiver, requestRateTermCash,
   recordIssuanceOverride, recordConditionOverride, recordTapeEncompassOverride,
   recordEncompassException, approvedForApp, latestEsignBeforeCtc,
   decideException, withdrawException, clearException,

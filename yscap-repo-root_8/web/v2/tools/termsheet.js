@@ -103,6 +103,12 @@
      every caller reads the same whether or not the officer filled it in. */
   function payoffLender() { return (val("payoffLender") || "").trim(); }
   function payoffLoanNo() { return (val("payoffLoanNo") || "").trim(); }
+  /* The payoff letter's good-through date + the FREE-AND-CLEAR flag (db/575) —
+     both display/record only, carried on hidden inputs the portal host fills
+     (buildStudioState), exactly like payoffLender/payoffLoanNo. A marketing-tool
+     sheet has them blank and prints nothing new. */
+  function payoffGoodThrough() { return (val("payoffGoodThrough") || "").trim(); }
+  function freeAndClearOn() { return (val("freeAndClear") || "") === "1"; }
   /* WHAT THE STRUCTURE IMPLIES the borrower receives AT THE TABLE: the money that
      actually funds on closing day, less the loan being retired, less the closing
      costs. All three come from the frozen calc — this is arithmetic on the
@@ -1311,7 +1317,17 @@
   // applyState) and must win. Pricing reads CO for any blank field via adminNum,
   // so the math is already correct before this ever runs.
   function seedAdminDefaults() {
-    var s = function (id, v) { var e = el(id); if (e && String(e.value).trim() === "") e.value = v; };
+    // The seeded company default is STAMPED on the field (data-ts-seeded) so the
+    // admin accordion's "In use" chip can tell a seeded default from a typed
+    // override — without the stamp, seeding "0.5"/"1.25"/"2195" made three
+    // untouched sections read "In use" forever (audit 2026-08-18 finding 1).
+    // Stamped even when a value is already present: the default is the same
+    // number either way, and the chip's question is "does the value DEVIATE?".
+    var s = function (id, v) {
+      var e = el(id); if (!e) return;
+      try { e.setAttribute("data-ts-seeded", String(v)); } catch (_) { /* chip is cosmetic */ }
+      if (String(e.value).trim() === "") e.value = v;
+    };
     s("tsYspStd", String(CO.markupStd)); s("tsYspGold", String(CO.markupGold)); s("tsYspSilver", String(CO.markupSilver));
     s("tsOrigStd", String(CO.origStd)); s("tsOrigGold", String(CO.origGold)); s("tsOrigSilver", String(CO.origSilver));
     // tsOrigManual is DELIBERATELY NOT SEEDED. Its three siblings have a company
@@ -2770,11 +2786,16 @@
          and the title company request the payoff letter without a phone call; the
          net cash line is the number the borrower actually asks about, and it is
          printed only on a cash-out \u2014 a rate-&-term takes no cash by definition. */
+      if (isRefi() && freeAndClearOn()) {
+        // Owned FREE AND CLEAR (db/575) — the sheet says so instead of a blank.
+        yL = rowIn(xL, colW, "Existing loan payoff", "None — property owned free and clear", yL);
+      }
       if (isRefi() && num("payoff") > 0) {
-        var _po = num("payoff"), _poWho = payoffLender(), _poNo = payoffLoanNo();
+        var _po = num("payoff"), _poWho = payoffLender(), _poNo = payoffLoanNo(), _poGt = payoffGoodThrough();
         yL = rowIn(xL, colW, "Existing loan payoff", money(_po), yL);
         if (_poWho) yL = rowIn(xL, colW, "Paid off to", _poWho, yL);
         if (_poNo) yL = rowIn(xL, colW, "Their loan number", _poNo, yL);
+        if (_poGt) yL = rowIn(xL, colW, "Payoff good through", _poGt, yL);
         if (isCashOut() && sized) {
           /* cashOutOfRecord, NOT arithmetic inlined here: the officer may have
              typed a cash-out figure, and the printed sheet must quote the number
@@ -3647,7 +3668,14 @@
       ["Requested term", (inp.term || 12) + " months"],
       (inp.irAmount > 0)
         ? ["Requested interest reserve", money(inp.irAmount)]
-        : (inp.irMonths > 0) ? ["Requested interest reserve", inp.irMonths + " months"] : null
+        : (inp.irMonths > 0) ? ["Requested interest reserve", inp.irMonths + " months"] : null,
+      // The refinance payoff, recorded on the inputs page too (db/575) — the
+      // appendix must state everything the sheet was generated from.
+      (isRefi && freeAndClearOn()) ? ["Existing loan payoff", "None — property owned free and clear"] : null,
+      (isRefi && num("payoff") > 0) ? ["Existing loan payoff", money(num("payoff"))] : null,
+      (isRefi && num("payoff") > 0 && payoffLender()) ? ["Paid off to", payoffLender()] : null,
+      (isRefi && num("payoff") > 0 && payoffLoanNo()) ? ["Their loan number", payoffLoanNo()] : null,
+      (isRefi && num("payoff") > 0 && payoffGoodThrough()) ? ["Payoff good through", payoffGoodThrough()] : null
     ]);
 
     // derivation

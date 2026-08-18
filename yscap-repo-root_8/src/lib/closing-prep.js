@@ -85,6 +85,12 @@ const GROUPS = [
     codes: ['rtl_p1_contract', 'purchase_contract'], kinds: [] },
   { key: 'assignment', label: 'Assignment of purchase contract',
     codes: ['rtl_p5_assign'], kinds: [] },
+  /* The refinance payoff statement (db/464's two conditions; owner-directed
+     2026-08-18: "the payoff PDF uploaded to the payoff condition on any
+     refinance should be part of the closing prep email"). Skipped as
+     inapplicable on a purchase and on a free-and-clear file (applicableMissing). */
+  { key: 'payoff', label: 'Existing loan payoff statement',
+    codes: ['cond_payoff_external', 'cond_payoff_internal'], kinds: [] },
   { key: 'llc', label: 'Entity documents (EIN, good standing, formation, operating agreement)',
     codes: ['rtl_p1_llc', 'rtl_llc_formation', 'rtl_llc_ein', 'rtl_llc_opagmt', 'rtl_llc_goodstanding',
             'llc_docs', 'operating_agmt'], kinds: [], anyEntityDoc: true },
@@ -111,6 +117,7 @@ function applicableMissing(missing, data) {
     if (m.key === 'assignment' && !d.isAssignment) return false;   // purchase, not an assignment
     if (m.key === 'contract' && isRefi) return false;              // a refinance has no purchase contract
     if (m.key === 'llc' && individual) return false;               // an individual has no entity documents
+    if (m.key === 'payoff' && (!isRefi || d.freeAndClear === true)) return false; // no payoff on a purchase / free-and-clear
     return true;
   });
 }
@@ -202,6 +209,39 @@ async function gatherPackage(applicationId) {
     pendingRows = await tprExport.selectTprPending(applicationId);
   } catch (e) {
     console.error('[closing-prep] could not read the pending documents:', (e && e.message) || e);
+  }
+  // THE PAYOFF LETTER FILED ON THE INTERNAL CONDITION (post-merge audit 2026-08-18).
+  // cond_payoff_internal is tpr_exclude=true (db/464 — an internal working condition
+  // never ships to an INVESTOR), so the chokepoint above can structurally never return
+  // its documents — yet the ordered official payoff letter is routinely filed exactly
+  // there (that condition's own hint says to order it, and it hosts the payoff form).
+  // The closing ATTORNEY is precisely who that letter is for, so it is pulled here in a
+  // narrow, payoff-scoped supplement carrying the SAME filters the chokepoint applies
+  // (current, accepted vs awaiting, never a chat attachment), deduped by id. This is a
+  // deliberate exception to the tpr_exclude inheritance for ONE group — never a second
+  // general document chokepoint.
+  try {
+    const docAccept = require('./document-acceptance');
+    const payoffDocs = async (reviewTest) => (await db.query(
+      `SELECT d.id, d.filename, d.storage_ref, d.reviewed_at, d.created_at, d.doc_kind,
+              d.slot_label, d.llc_id, d.sha256, d.size_bytes, d.content_type,
+              COALESCE(d.review_status,'pending') AS review_status,
+              ci.label AS item_label, ct.code AS template_code, s.full_name AS reviewed_by_name
+         FROM documents d
+         JOIN checklist_items ci ON ci.id=d.checklist_item_id
+         JOIN checklist_templates ct ON ct.id=ci.template_id
+         LEFT JOIN staff_users s ON s.id=d.reviewed_by
+        WHERE d.application_id=$1 AND d.is_current=true
+          AND ct.code IN ('cond_payoff_external','cond_payoff_internal')
+          AND ${reviewTest}
+          AND COALESCE(d.source_type,'') <> 'chat_attachment'
+        ORDER BY d.created_at DESC`, [applicationId])).rows;
+    const have = new Set(rows.map((r) => String(r.id)));
+    for (const d of await payoffDocs(docAccept.ACCEPTED_SQL('d'))) if (!have.has(String(d.id))) rows.push(d);
+    const havePending = new Set(pendingRows.map((r) => String(r.id)));
+    for (const d of await payoffDocs(docAccept.AWAITING_SQL('d'))) if (!havePending.has(String(d.id))) pendingRows.push(d);
+  } catch (e) {
+    console.error('[closing-prep] could not read the payoff-condition documents:', (e && e.message) || e);
   }
 
   const groups = {};
@@ -584,6 +624,8 @@ async function getClosingPrepData(applicationId) {
             a.property_type, a.units, a.status, a.term,
             a.loan_amount, a.purchase_price, a.is_assignment, a.underlying_contract_price,
             a.assignment_fee, a.as_is_value, a.arv, a.rehab_budget,
+            a.payoff_amount, a.payoff_lender, a.payoff_loan_number,
+            a.payoff_good_through, a.property_free_and_clear,
             a.expected_closing, a.est_closing_date,
             a.loan_officer_id, a.processor_id, a.closer_id, a.llc_id, a.personal_name_purchase,
             NULLIF(TRIM(b.full_name),'') AS borrower_name, b.email AS borrower_email, b.cell_phone AS borrower_cell,
@@ -709,6 +751,19 @@ async function getClosingPrepData(applicationId) {
     propertyType: a.property_type || null,
     units: a.units != null ? Number(a.units) : null,
     transactionType: transactionType(a.loan_type),
+    /* The refinance's whole payoff picture, for the email body (owner-directed
+       2026-08-18: the attorney email always states purchase / rate-&-term /
+       cash-out, states free-and-clear, and lays out the payoff details).
+       KIND comes from the ONE definition in lib/payoff.js — never re-derived. */
+    isRefinance: (() => { try { const p = require('./payoff'); return p.refiKind(a.loan_type) !== p.KIND.PURCHASE; } catch (_) { return false; } })(),
+    refiKindLabel: (() => { try { const p = require('./payoff'); const k = p.refiKind(a.loan_type); return k === p.KIND.PURCHASE ? null : (p.KIND_LABEL[k] || null); } catch (_) { return null; } })(),
+    freeAndClear: a.property_free_and_clear === true,
+    payoff: {
+      amount: a.payoff_amount != null ? Number(a.payoff_amount) : null,
+      lender: a.payoff_lender || null,
+      loanNumber: a.payoff_loan_number || null,
+      goodThrough: a.payoff_good_through || null,
+    },
     borrowerName: borrowers.join(' & ') || a.borrower_email || 'Borrower',
     borrowers,
     borrowerCount: borrowers.length,
@@ -870,7 +925,15 @@ function dealMeta(data) {
   add('Loan number', data.loanNumber || '(pending)');
   add('Property', data.propertyLine);
   add('Property type', [data.propertyType, data.units ? `${data.units} unit${data.units === 1 ? '' : 's'}` : null].filter(Boolean).join(' · '));
-  add('Transaction', data.transactionType);
+  /* THE TRANSACTION, precisely (owner-directed 2026-08-18: "when you're sending
+     an email to the attorneys, you should always mention in the email body if
+     it's a purchase, refinance rate and term, or cash-out. If it's free and
+     clear, it should also say"). refiKindLabel comes from lib/payoff.js — one
+     definition — so "Refinance — Cash-Out Refinance" and the payoff block below
+     can never disagree about what the deal is. */
+  add('Transaction', [data.refiKindLabel || data.transactionType,
+    data.freeAndClear ? 'property owned FREE AND CLEAR (no existing loan to pay off)' : null]
+    .filter(Boolean).join(' — '));
   add(data.borrowerCount > 1 ? `Borrowers (${data.borrowerCount})` : 'Borrower', data.borrowers.join(' & '));
   /* WHAT KIND OF COMPANY, stated ONLY when somebody actually chose it
      (owner-directed 2026-08-09). The type decides which governing document
@@ -905,6 +968,16 @@ function dealMeta(data) {
     }
   } else {
     add('Purchase price', money(data.purchasePrice));
+  }
+  /* THE PAYOFF, laid out for counsel (owner-directed 2026-08-18: "if it's a
+     payoff, you should say in that email the details of the payoff"). Only on a
+     refinance that is NOT free and clear; every add() drops a blank value, so a
+     payoff not yet entered prints nothing rather than a row of dashes. */
+  if (data.isRefinance && !data.freeAndClear && data.payoff) {
+    add('Existing loan payoff', money(data.payoff.amount));
+    add('Payoff to', data.payoff.lender);
+    add('Their loan number', data.payoff.loanNumber);
+    add('Payoff good through', dayText(data.payoff.goodThrough));
   }
   add('Estimated loan amount', money(data.loanAmount));
   add('Estimated rate', pct(data.noteRate));

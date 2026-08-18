@@ -55,6 +55,10 @@ const SITEWIRE_BIRTH_REASONS = new Set([
   'sitewire_budget_mismatch', 'sitewire_capital_partner_unmatched', 'sitewire_address_incomplete',
   'sitewire_type_unmapped', 'sitewire_dupe_check_failed', 'sitewire_loan_already_in_sitewire',
   'sitewire_property_rejected', 'sitewire_bind_missing_property',
+  // GROUND-UP → PHYSICAL ONLY (2026-08-18, audit finding 3): a partner rule that forbids
+  // physical on a ground-up file is a SETUP problem — recorded on the file's own draw
+  // section like every other birth blocker, never a global review row + email.
+  'sitewire_groundup_requires_physical',
 ]);
 
 // Is this file under PILOT draw management yet? True only once a push bound a live Sitewire property.
@@ -426,8 +430,41 @@ async function pushFile(appId, opts = {}) {
   // method = coordinator's per-file choice ?? rule default, validated against what the rule allows
   const existingLink = await getLink(appId);
   const insp = resolveInspection(existingLink, rule);
-  const inspectionMethod = insp.method;
-  const feeCents = insp.feeCents;
+  let inspectionMethod = insp.method;
+  let feeCents = insp.feeCents;
+  // GROUND-UP IS PHYSICAL (owner-directed 2026-08-18; src/sitewire/inspection-policy.js
+  // is the one rule). A ground-up file on OUR platform resolving to 'mobile' is
+  // FORCED to 'traditional' — journaled, with the physical fee — unless the
+  // partner's rule forbids physical, which is a genuine conflict that PARKS for a
+  // human rather than being silently overridden (the never-guess posture).
+  {
+    const policy = require('./inspection-policy');
+    const consTypeEarly = T.constructionType(a.loan_type, a.rehab_type, a.registered_program) || 'rehabilitation_or_remodel';
+    if (policy.groundUpVirtualForbidden({ constructionType: consTypeEarly, platform: routing.platformOf(rule), resolved: true }, inspectionMethod)) {
+      if (insp.allowPhysical) {
+        const forced = resolveInspection(Object.assign({}, existingLink || {}, { inspection_method: 'traditional' }), rule);
+        await journal({ appId, entity: 'property', field: 'inspection_method', oldValue: inspectionMethod, newValue: 'traditional', source: 'ground_up_policy' });
+        // DURABLY record the forced choice in the SAME per-file column a coordinator's own
+        // pick lands in (audit HIGH-1, 2026-08-18): every later reader — resolveInspection,
+        // routing.resolveFilePlatform → trinity/eligibility (which decides whether the
+        // Trinity physical inspector can be ordered AT ALL), the desk mirrors, the
+        // start-draw fee comparison — resolves 'traditional' from here on instead of
+        // re-deriving 'mobile' from the rule default. Without this write the file was
+        // physical in Sitewire while every routing consumer still read it as virtual, and
+        // the Trinity doors silently refused it.
+        await db.query(
+          `INSERT INTO sitewire_property_links (application_id, matched_by, state, inspection_method, updated_at)
+           VALUES ($1,'created','pending','traditional', now())
+           ON CONFLICT (application_id) DO UPDATE SET inspection_method='traditional', updated_at=now()`,
+          [appId]);
+        inspectionMethod = forced.method;
+        feeCents = forced.feeCents;
+      } else {
+        await park({ appId, reason: 'sitewire_groundup_requires_physical: this ground-up file resolves to a VIRTUAL inspection and the capital partner\'s rule forbids physical — fix the draw rule before pushing', current: 'mobile', proposed: 'traditional' });
+        return { parked: 'groundup_physical' };
+      }
+    }
+  }
   const coordinatorId = await resolveCoordinatorId();
 
   // address (G-ADDR handled by catching Sitewire's 422 below)
@@ -1007,6 +1044,16 @@ async function updatePropertyControls(appId, changes = {}, staffId = null) {
     const allowPhysical = !rule || rule.allow_physical !== false;
     if (m === 'mobile' && !allowVirtual) return { error: 'method_forbidden', method: m };
     if (m === 'traditional' && !allowPhysical) return { error: 'method_forbidden', method: m };
+    // GROUND-UP → PHYSICAL ONLY (owner-directed 2026-08-18): the live-property door must not be a way
+    // around the Start-draw refusal — a ground-up Sitewire file can never be switched to virtual, even
+    // after the property is pushed. One rule, sitewire/inspection-policy.js (call site 2 of 4).
+    if (m === 'mobile') {
+      const policy = require('./inspection-policy');
+      const consType = T.constructionType(a && a.loan_type, a && a.rehab_type, a && a.registered_program) || 'rehabilitation_or_remodel';
+      if (policy.groundUpVirtualForbidden({ constructionType: consType, platform: routing.platformOf(rule), resolved: true }, m)) {
+        return { error: 'method_forbidden_ground_up', method: m };
+      }
+    }
     patch.inspection_method = m;
     newMethod = m;
   }

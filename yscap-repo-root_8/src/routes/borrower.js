@@ -898,6 +898,12 @@ const BORROWER_HIDDEN_APP_FIELDS = [
   // INTERNAL pricing margin + internal valuations — a borrower may see their loan
   // structure but never OUR markup or the internal appraised figures.
   'file_markup_std_pct', 'file_markup_gold_pct', 'file_markup_silver_pct', 'actual_appraised_value', 'approx_appraised_value',
+  // The A/B-piece split (db/579) — how the loan is SOLD, internal knowledge of
+  // the same class as the note buyer's name; never a borrower-facing fact
+  // (audit 2026-08-18 finding 4: the denylist-over-SELECT-a.* failed open on
+  // these two the day they were added — exactly the class the pattern note
+  // below warns about, so the pattern also gained `_piece`).
+  'ab_piece_enabled', 'a_piece_amount',
   // staff identities + the structural-unlock bookkeeping (owner-directed funded lock).
   'underwriter_id', 'processor_id', 'structural_unlocked_at', 'structural_unlocked_by', 'structural_unlock_reason',
   // stored card fields (currently populated elsewhere, but never leak them from here).
@@ -907,7 +913,7 @@ const BORROWER_HIDDEN_APP_FIELDS = [
 // until someone remembers to add it. This pattern catch-all removes anything whose
 // name matches a clearly-internal convention, so a future column can't silently
 // reach a borrower. None of these patterns can hit a borrower-facing field.
-const INTERNAL_FIELD_PATTERN = /(_encrypted$|^card_|^clickup_|_task_id$|^sync_|_synced_at$|markup|underwriter|structural_unlock|encompass|^cda_|_lien$)/i;
+const INTERNAL_FIELD_PATTERN = /(_encrypted$|^card_|^clickup_|_task_id$|^sync_|_synced_at$|markup|underwriter|structural_unlock|encompass|^cda_|_lien$|_piece)/i;
 function stripInternalAppFields(row) {
   if (!row || typeof row !== 'object') return row;
   for (const k of BORROWER_HIDDEN_APP_FIELDS) delete row[k];
@@ -1494,6 +1500,25 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   res.json(await require('../lib/appraisal/borrower-safe-view').buildBorrowerSafeAppraisalView(db, own.rows[0].id));
 });
 
+// PILOT AI — the writing assistant on the borrower's composers (owner-directed
+// 2026-08-18). ADVISORY text-in/text-out; the OUTPUT rides through the
+// borrower-safe scrub, so a capital-partner name can never come back even when
+// the borrower typed one in.
+router.post('/pilot-writer', async (req, res) => {
+  const out = await require('../lib/ai/pilot-writer').assist(req.body || {}, { scrub: scrubText, actorKey: `b:${req.actor.id}` });
+  res.json(out);
+});
+
+// The file-overview slide-over (owner-directed 2026-08-18) — the deal at a
+// glance, borrower-safe (one builder for all three surfaces: lib/file-overview).
+router.get('/applications/:id/overview-card', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const card = await require('../lib/file-overview').buildFileOverview(req.params.id, { audience: 'borrower' });
+  if (!card) return res.status(404).json({ error: 'not found' });
+  res.json(card);
+});
+
 // ---------------- CHECKLIST (borrower-visible items only) ----------------
 router.get('/applications/:id/checklist', async (req, res) => {
   const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
@@ -1522,7 +1547,11 @@ router.get('/applications/:id/checklist', async (req, res) => {
             COALESCE(ci.issue_reason,
               (SELECT d.rejection_reason FROM documents d
                 WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
-                ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1)) AS rejection_reason
+                ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1)) AS rejection_reason,
+            -- Ad-hoc requested-document slots (db/578) — read ONLY to compute the
+            -- borrower's still-needed list below; the raw column (internal slots,
+            -- audiences, who asked) is DELETED before the response ships.
+            ci.extra_slots
        FROM checklist_items ci
       WHERE ci.application_id=$1 AND ci.audience IN ('borrower','both')
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
@@ -1587,6 +1616,27 @@ router.get('/applications/:id/checklist', async (req, res) => {
       it.tool_payload = rest;
     }
   }
+  // STILL-NEEDED requested documents (db/578, owner-directed 2026-08-18: "If it's
+  // on an external condition, it should populate as an open item needing from
+  // external"). Only EXTERNAL slots with no current document yet surface, as
+  // scrubbed labels — once the borrower uploads, the item reads as in review, not
+  // a nag. The raw extra_slots column (internal slots, audiences, requester names)
+  // is ALWAYS deleted from the response, even when the compute hiccups.
+  try {
+    const extraSlots = require('../lib/conditions/extra-slots');
+    const withSlots = rows.filter((it) => Array.isArray(it.extra_slots) && it.extra_slots.length);
+    if (withSlots.length) {
+      const docs = (await db.query(
+        `SELECT checklist_item_id, slot_label FROM documents
+          WHERE application_id=$1 AND is_current AND checklist_item_id = ANY($2::uuid[])`,
+        [req.params.id, withSlots.map((it) => it.id)])).rows;
+      for (const it of withSlots) {
+        const mine = docs.filter((d) => String(d.checklist_item_id) === String(it.id));
+        it.still_needed = extraSlots.stillNeededExternal(it.extra_slots, mine).map((s) => scrubText(s));
+      }
+    }
+  } catch (_) { /* the labels degrade to nothing — the condition row still shows */ }
+  for (const it of rows) delete it.extra_slots;
   res.json(rows);
 });
 

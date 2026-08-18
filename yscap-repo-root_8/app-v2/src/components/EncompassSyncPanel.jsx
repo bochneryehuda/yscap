@@ -47,6 +47,15 @@ const LABELS = {
   funding_channel: 'How the loan funded (Encompass)',
   funding_channel_rule: 'Funding channel allowed for this note buyer',
   funding_channel_agreement: 'How the loan funded — closing desk vs Encompass',
+  // A/B-piece split (owner-directed 2026-08-18) — three COMPUTED rows from
+  // reconcile.compareAbPiece (they exist only on a file where a split is
+  // recorded somewhere), plus the three reference-only registry rows.
+  ab_piece_structure: 'A/B-piece structure (split ticked?)',
+  ab_piece_a_amount: 'A-piece amount',
+  ab_piece_b_amount: 'B-piece amount (PILOT derives: total loan − A)',
+  ref_ab_piece_structure: 'A/B-piece structure flag (reference)',
+  ref_a_piece_amount: 'A-piece amount (reference)',
+  ref_b_piece_amount: 'B-piece amount (reference)',
 };
 const CATEGORY_LABEL = {
   program: 'Program & identity', identity: 'Borrower & property', loan: 'Loan & terms', interest: 'Loan & terms',
@@ -531,6 +540,12 @@ function Row({ f, busy, onReplace, withActions, isSuper = false, onRequestExcept
         )}
         {f.exceptionRequested && (
           <div style={{ color: V.amber, fontSize: 10 }}>Exception requested{f.exceptionNote ? ` — ${f.exceptionNote}` : ''}</div>
+        )}
+        {/* The server's per-row explanation of a disagreement (what to fix and
+            how) — computed rows like the A/B-piece split and the funding
+            channel carry one; it never rendered anywhere before 2026-08-18. */}
+        {f.detail && f.status !== 'match' && (
+          <div style={{ color: V.amber, fontSize: 10, maxWidth: 360 }}>{f.detail}</div>
         )}
       </td>
       <td style={{ padding: '7px 10px', color: V.ink, fontVariantNumeric: 'tabular-nums' }}>{fmtVal(f, 'ours')}</td>

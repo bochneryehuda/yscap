@@ -359,10 +359,23 @@ router.get('/files/:id/sitewire-property', requireDrawView, async (req, res) => 
         const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
         const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
         const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
-        const insp = orchestrator.resolveInspection(link, rule);
+        let insp = orchestrator.resolveInspection(link, rule);
+        // GROUND-UP → PHYSICAL ONLY (owner-directed 2026-08-18): the desk must not offer a switch
+        // the orchestrator will refuse — display mirror of updatePropertyControls' policy check.
+        // Only claimed when physical is available (a physical-forbidden rule PARKS the push
+        // instead of forcing), and a still-'mobile' resolution is re-resolved to what the push
+        // forces, so the card never titles a forced-physical file "Virtual" (audit finding 2).
+        const policy = require('../sitewire/inspection-policy');
+        const consType = T.constructionType(a.loan_type, a.rehab_type, a.registered_program) || 'rehabilitation_or_remodel';
+        const groundUpOnly = insp.allowPhysical
+          && policy.requiredMethodFor({ constructionType: consType, platform: routing.platformOf(rule), resolved: true }) === 'traditional';
+        if (groundUpOnly && insp.method === 'mobile') {
+          insp = orchestrator.resolveInspection(Object.assign({}, link || {}, { inspection_method: 'traditional' }), rule);
+        }
         inspection = {
           method: insp.method, allow_virtual: insp.allowVirtual, allow_physical: insp.allowPhysical,
-          can_switch: insp.allowVirtual && insp.allowPhysical, default_method: (rule && rule.inspection_method) || 'mobile',
+          ground_up_physical_only: groundUpOnly,
+          can_switch: insp.allowVirtual && insp.allowPhysical && !groundUpOnly, default_method: (rule && rule.inspection_method) || 'mobile',
           // Current draw processing fee (cents) + whether it's a per-file override or the rule default,
           // so the desk can show it and offer "Change fee". The LIVE property's processing_fee_cents is the
           // source of truth for what Sitewire is charging; insp.feeCents is what PILOT would push.
@@ -403,6 +416,7 @@ router.post('/files/:id/property-settings', requirePermission('manage_draws'), a
     if (r.error === 'invalid_method') return res.status(400).json({ error: 'Pick Virtual or On-site.' });
     if (r.error === 'invalid_fee') return res.status(400).json({ error: 'The draw fee must be a dollar amount between $0 and $100,000.' });
     if (r.error === 'method_forbidden') return res.status(422).json({ error: 'The capital partner doesn’t allow that inspection type for this file.' });
+    if (r.error === 'method_forbidden_ground_up') return res.status(422).json({ error: require('../sitewire/inspection-policy').reasonPhysicalRequired() });
     if (r.error === 'no_budget') return res.status(409).json({ error: 'This file’s construction budget isn’t in Sitewire yet, so draws can’t be blocked/allowed — start or re-push the draw first.' });
     if (r.error === 'writes_off') return res.status(409).json({ error: 'The Sitewire connection is currently turned off, so this change can’t be sent yet.' });
     if (r.error === 'nothing_to_change') return res.status(400).json({ error: 'Nothing to change.' });
@@ -691,7 +705,21 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
     // resolve by the note-buyer label first so a "handled externally" partner is recognized even when
     // it isn't in the Sitewire directory (external partners usually aren't).
     const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
-    const insp = orchestrator.resolveInspection(link, rule);
+    let insp = orchestrator.resolveInspection(link, rule);
+    // GROUND-UP → PHYSICAL ONLY (owner-directed 2026-08-18): show the coordinator the method the
+    // push will ACTUALLY use — pushFile forces a resolved 'mobile' to 'traditional' on a ground-up
+    // Sitewire file, so the preview must say so rather than promise Virtual and deliver On-site.
+    // Display-only mirror of the pushFile forcing; the one rule is sitewire/inspection-policy.js.
+    const guPolicy = require('../sitewire/inspection-policy');
+    const guConsType = T.constructionType(a.loan_type, a.rehab_type, a.registered_program) || 'rehabilitation_or_remodel';
+    // Only claimed when physical is actually AVAILABLE — on a rule that forbids physical the
+    // push PARKS instead of forcing, and a "always inspected on site" note over a Virtual
+    // method would contradict itself (audit finding 2's sibling case).
+    const groundUpPhysicalOnly = insp.allowPhysical
+      && guPolicy.requiredMethodFor({ constructionType: guConsType, platform: routing.platformOf(rule), resolved: true }) === 'traditional';
+    if (groundUpPhysicalOnly && insp.method === 'mobile') {
+      insp = orchestrator.resolveInspection(Object.assign({}, link || {}, { inspection_method: 'traditional' }), rule);
+    }
     const budgetDollars = await rehab.requiredRehabBudget(appId).catch(() => null);
     const addr = T.addressForSitewire(a.property_address);
     const addressReady = !!(addr && addr.street && addr.city && addr.state && addr.zip);
@@ -773,7 +801,9 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
         method: insp.method, fee_kind: insp.feeKind, fee_cents: Number(insp.feeCents),
         rule_fee_cents: Number(insp.ruleFeeCents), fee_overridden: !!insp.overridden,
         allow_virtual: insp.allowVirtual, allow_physical: insp.allowPhysical,
-        can_switch: insp.allowVirtual && insp.allowPhysical,
+        // ground-up = on-site only: the coordinator cannot switch this file to Virtual, whatever the rule allows
+        ground_up_physical_only: groundUpPhysicalOnly,
+        can_switch: insp.allowVirtual && insp.allowPhysical && !groundUpPhysicalOnly,
         default_method: (rule && rule.inspection_method) || 'mobile',
         chosen_override: link ? link.inspection_method : null,
         fee_virtual_cents: rule ? Number(rule.fee_cents_virtual) : null,
@@ -823,6 +853,15 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     if (routing.isExternal(rule)) {
       return res.status(422).json({ error: 'This capital partner is handled externally — its draws run in the partner\'s own system and are not pushed to Sitewire.' });
     }
+    // GROUND-UP → PHYSICAL ONLY (owner-directed 2026-08-18; sitewire/inspection-policy.js is
+    // the one rule, call site 1 of 4). Computed ONCE here because two things below read it:
+    // the method refusal, and the fee comparison (audit finding 4 — without it, a ground-up
+    // file's fee box, seeded from the preview's PHYSICAL fee, was compared to the VIRTUAL
+    // rule fee and stored as a spurious per-file override on every Start).
+    const guPolicy = require('../sitewire/inspection-policy');
+    const guConsType = T.constructionType(a.loan_type, a.rehab_type, a.registered_program) || 'rehabilitation_or_remodel';
+    const guRequiresPhysical = guPolicy.requiredMethodFor({ constructionType: guConsType, platform: routing.platformOf(rule), resolved: true }) === 'traditional';
+    const ruleAllowsPhysical = !rule || rule.allow_physical !== false;
     // validate a coordinator-chosen method against what the file's rule allows (never guess)
     const body = req.body || {};
     let chosen = null;
@@ -832,6 +871,11 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       if (rule) {
         if (chosen === 'mobile' && rule.allow_virtual === false) return res.status(422).json({ error: 'virtual inspection is not allowed for this program/partner' });
         if (chosen === 'traditional' && rule.allow_physical === false) return res.status(422).json({ error: 'on-site inspection is not allowed for this program/partner' });
+      }
+      // A ground-up construction project on a Sitewire-platform file may never START on
+      // virtual inspections, whatever the partner rule allows.
+      if (chosen === 'mobile' && guRequiresPhysical) {
+        return res.status(422).json({ error: guPolicy.reasonPhysicalRequired() });
       }
     }
     // The coordinator may set a per-file draw FEE (integer cents), overriding the rule's fee for this
@@ -845,7 +889,11 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       // the already-stored per-file method, else the rule default — so "fee == default → clear override"
       // matches what resolveInspection will actually charge (never the wrong method's fee).
       const existingLink = await orchestrator.getLink(appId);
-      const methodForFee = chosen || (existingLink && existingLink.inspection_method) || (rule && rule.inspection_method) || 'mobile';
+      // A ground-up file with no stored/typed method WILL be forced to 'traditional' by the
+      // push, so the fee must be compared against the PHYSICAL rule fee (audit finding 4).
+      const methodForFee = chosen || (existingLink && existingLink.inspection_method)
+        || (guRequiresPhysical && ruleAllowsPhysical ? 'traditional' : null)
+        || (rule && rule.inspection_method) || 'mobile';
       const ruleFee = rule ? (methodForFee === 'traditional' ? (rule.fee_cents_physical != null ? Number(rule.fee_cents_physical) : Number(rule.fee_cents_virtual)) : Number(rule.fee_cents_virtual)) : 29900;
       feeOverride = (fc === Number(ruleFee)) ? null : fc;
     }
@@ -899,6 +947,11 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       const result = await orchestrator.pushFile(appId, {});
       // Property is live in Sitewire now — welcome the borrower (once), best-effort, never blocks.
       require('../sitewire/draw-setup-notify').sendDrawSetupWelcome(appId).catch(() => {});
+      // PLANS & PERMITS BEFORE THE FIRST DRAW (owner-directed 2026-08-18): raise the
+      // first-draw plans condition NOW, at draw setup, so the coordinator sees it —
+      // pre-filled with the closing-time document — before any draw is composed.
+      // Ground-up files only; best-effort, never blocks the Start.
+      require('../sitewire/plans-permits').ensureDrawPlansCondition(appId, { actorId: req.actor && req.actor.id }).catch(() => {});
       return res.json({ ok: true, started: true, result });
     } catch (e) {
       await enqueueSitewirePush(appId, 'push_file').catch(() => {});
@@ -2713,12 +2766,31 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
         `SELECT DISTINCT ON (sitewire_draw_id)
                 id, sitewire_draw_id, funding_mode, note_buyer_label, sent_at, status,
                 answer, answered_at, answer_note, expected_funding_date,
-                investor_total_cents, to_borrower_cents, to_us_cents,
+                investor_total_cents, to_borrower_cents, to_us_cents, thread_key,
                 GREATEST(0, EXTRACT(EPOCH FROM (now() - sent_at))/86400)::int AS days_waiting
            FROM draw_investor_deliveries
           WHERE application_id=$1
           ORDER BY sitewire_draw_id, sent_at DESC`, [appId])).rows;
-    } catch (_) { /* an older database has no answer columns — the desk simply shows less */ }
+      // THE INVESTOR'S ACTUAL REPLIES (owner-directed 2026-08-18): the delivery
+      // email replies to the file's unique address, so the answer lands in
+      // email_messages under the delivery's stored thread_key — surfaced here so
+      // the desk reads what the investor SAID, not only the hand-picked answer
+      // dropdown. Inbound only (the outbound send is the delivery row itself);
+      // previews only — the Email Center holds the full bodies.
+      const tkeys = investorDeliveries.map((d) => d.thread_key).filter(Boolean);
+      if (tkeys.length) {
+        const rep = (await db.query(
+          `SELECT thread_key, id, from_email, from_name, subject, preview, occurred_at,
+                  CASE WHEN jsonb_typeof(attachments)='array' THEN jsonb_array_length(attachments) ELSE 0 END AS attachment_n
+             FROM email_messages
+            WHERE application_id=$1 AND thread_key = ANY($2) AND direction='inbound'
+            ORDER BY occurred_at ASC
+            LIMIT 60`, [appId, tkeys])).rows;
+        const byKey = {};
+        for (const m of rep) { (byKey[m.thread_key] = byKey[m.thread_key] || []).push(m); }
+        for (const d of investorDeliveries) d.replies = byKey[d.thread_key] || [];
+      }
+    } catch (_) { /* an older database has no answer/thread columns — the desk simply shows less */ }
     res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, oop, waivers, release,
       investor_fee: investorFeeRule,
       investor_deliveries: investorDeliveries,

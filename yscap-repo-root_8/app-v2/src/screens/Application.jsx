@@ -32,6 +32,7 @@ import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
 import { fullNameOf } from '../lib/personName.js';
 import { splitLoudHint, LoudBanner } from '../components/LoudHint.jsx';
+import FileOverviewSlideOver from '../components/FileOverviewSlideOver.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -899,6 +900,10 @@ export default function Application() {
 
   return (
     <>
+      {/* The file overview at a glance — the left-edge slide-over (owner-directed
+          2026-08-18). BORROWER-SAFE: the server builds this payload for the
+          borrower audience; nothing internal reaches this screen. */}
+      <FileOverviewSlideOver key={id} fetcher={() => api.borrowerFileOverview(id)} title="Loan overview" />
       {/* The file's identity bar STAYS while you scroll — the address, loan
           number and status pin under the app header; only the sections below
           (and the rail beside them) move. */}
@@ -1335,6 +1340,10 @@ export default function Application() {
               {docItems.filter(show).map(it => {
                 const docs = currentDocsFor(it.id);
                 const needsFix = it.status === 'issue';
+                // Documents your loan team asked for WITHIN this condition and
+                // that are not uploaded yet (db/578) — each uploads straight
+                // into its named slot on this same condition.
+                const alsoNeeded = Array.isArray(it.still_needed) ? it.still_needed : [];
                 return (
                   <ConditionRow
                     key={it.id}
@@ -1343,19 +1352,27 @@ export default function Application() {
                     title={it.label}
                     subtitle={[it.hint, it.notes].filter(Boolean).join(' · ') || null}
                     status={statusText(it)}
-                    open={docs.length > 0 || needsFix}
+                    open={docs.length > 0 || needsFix || alsoNeeded.length > 0}
                     action={<button className="btn ghost small" title="You can select several PDFs at once" onClick={() => pick({ itemId: it.id, slotBase: docs.length })}>{docs.length ? '+ Add another' : 'Upload'}</button>}
                     onDropFiles={(f) => uploadFiles(f, { itemId: it.id, slotBase: docs.length })}
                   >
                     {/* Only carry a body (and therefore a chevron) once there IS
-                        something to reveal — a fix note or uploaded documents.
-                        A brand-new, empty condition stays a plain one-line row. */}
-                    {(docs.length > 0 || needsFix) && (<>
+                        something to reveal — a fix note, uploaded documents, or a
+                        still-needed ask. A brand-new, empty condition stays a
+                        plain one-line row. */}
+                    {(docs.length > 0 || needsFix || alsoNeeded.length > 0) && (<>
                     {needsFix && it.rejection_reason && (
                       <div className="small" style={{ color: 'var(--danger)', marginBottom: 6 }}>
                         Needs a new version: {it.rejection_reason}
                       </div>
                     )}
+                    {alsoNeeded.map((label) => (
+                      <div className="row" key={`need-${label}`} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0', alignItems: 'center' }}>
+                        <span className="pill" style={{ borderColor: 'var(--gold, #AE8746)', color: 'var(--gold, #AE8746)' }}>Also needed</span>
+                        <span className="small" style={{ flex: 1, fontWeight: 600 }}>{label}</span>
+                        <button className="btn ghost small" onClick={() => pick({ itemId: it.id, slot: label })}>Upload</button>
+                      </div>
+                    ))}
                     {docs.map((d, i) => (
                       <div className="row" key={d.id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}>
                         <span className="muted small" style={{ minWidth: 90 }}>{d.slot_label || `Document ${i + 1}`}</span>

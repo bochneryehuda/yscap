@@ -345,7 +345,11 @@ function MoneySection({ appId, money, isCloser, busy, run, onDownloadDoc }) {
         <div className="cl-money-tiles">
           <Tile k="Estimated cash to close" v={money2(money.estimateCashToClose)} />
           <Tile k="Required reserves" v={money2(money.reserve)} sub={money.reserveBasis} />
-          <Tile k="Verified liquidity" v={money2(money.verified)} sub="From bank statements on file" />
+          <Tile k="Verified liquidity" v={money2(money.verified)} sub={money.ledgerAdjusted ? 'Assets ledger (edited by staff)' : 'From bank statements on file'} />
+          {money.maxCashToClose != null && (
+            <Tile accent k="Max cash to close" v={money2(money.maxCashToClose)}
+              sub="Verified assets − reserves − closing buffer. The most this borrower can bring to the table." />
+          )}
         </div>
 
         <div className="cl-actual">

@@ -1109,6 +1109,101 @@ router.get('/my-tasks', async (req, res) => {
   res.json(r.rows);
 });
 
+// PILOT AI — the writing assistant on every composer (owner-directed
+// 2026-08-18). ADVISORY: returns text to the screen; the human replaces it into
+// the composer themselves. No file scope needed — nothing is read from or
+// written to any file; the request is only the text the person typed.
+router.post('/pilot-writer', async (req, res) => {
+  const out = await require('../lib/ai/pilot-writer').assist(req.body || {}, { staffId: req.actor.id, actorKey: `s:${req.actor.id}` });
+  res.json(out);
+});
+
+// THE SCHEDULED TASKS & REMINDERS QUEUE (owner-directed 2026-08-18 — the
+// per-file task-management build's cross-file half). Every reminders row
+// (kind 'task' or 'reminder') the signed-in staffer should see:
+//   scope=mine (default)  — assigned to me, or created by me with no assignee
+//   scope=all             — everything on files I can reach
+//   status=open (default) — scheduled/sent; status=closed — done/dismissed/cancelled
+// Visibility: a task ASSIGNED to me or CREATED by me is always mine to see,
+// whatever file it sits on; beyond that the ordinary file scope applies
+// (VISIBLE_OFFICERS_SQL for a scoped officer, everything for seesAll).
+router.get('/reminder-tasks', async (req, res) => {
+  const scope = req.query.scope === 'all' ? 'all' : 'mine';
+  const status = req.query.status === 'closed' ? 'closed' : (req.query.status === 'all' ? 'all' : 'open');
+  const statusSql = status === 'open' ? `r.status IN ('scheduled','sent')`
+    : status === 'closed' ? `r.status IN ('done','dismissed','cancelled')` : 'TRUE';
+  const mineSql = `(r.assignee_staff_id = $1 OR (r.created_by = $1 AND r.assignee_staff_id IS NULL))`;
+  const fileSql = seesAll(req) ? 'TRUE' : `(${VISIBLE_OFFICERS_SQL('a', '$1')})`;
+  const scopeSql = scope === 'mine' ? mineSql : `(${mineSql} OR ${fileSql})`;
+  // A funded / on-hold / terminal / pre-processing file stays quiet OUTSIDE the
+  // file (owner-directed 2026-07-14, the same muting /my-tasks and the reminder
+  // dispatcher already apply — audit 2026-08-18 finding 5): its open reminders
+  // stay visible INSIDE the file and simply pause, so the OPEN queue drops
+  // them; the closed/all views still list them, flagged `paused`.
+  const mutedSql = status === 'open' ? `AND a.status NOT IN ${INACTIVE_FILE_STATUSES}` : '';
+  const LIMIT = 400;
+  try {
+    const r = await db.query(
+      `SELECT r.id, r.application_id, r.kind, r.title, r.body, r.due_at, r.remind_at, r.status,
+              r.assignee_staff_id, au.full_name AS assignee_name,
+              r.created_by, cu.full_name AS created_by_name, r.created_at,
+              a.ys_loan_number, a.property_address, a.status AS app_status,
+              NULLIF(b.full_name,'') AS borrower_name,
+              (r.status='scheduled' AND r.due_at < now()) AS overdue,
+              (a.status IN ${INACTIVE_FILE_STATUSES}) AS paused,
+              -- COALESCE: the scope expression compares NULL columns (processor_id
+              -- etc.), so an off-file row evaluates NULL, not false — the repo's
+              -- standing three-valued-logic trap.
+              COALESCE((${fileSql}), false) AS file_visible
+         FROM reminders r
+         JOIN applications a ON a.id = r.application_id
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN staff_users au ON au.id = r.assignee_staff_id
+         LEFT JOIN staff_users cu ON cu.id = r.created_by
+        WHERE a.deleted_at IS NULL AND ${statusSql} AND ${scopeSql} ${mutedSql}
+        ORDER BY (r.status='scheduled' AND r.due_at < now()) DESC, r.due_at ASC
+        LIMIT ${LIMIT + 1}`, [req.actor.id]);
+    // No silent caps: fetch one over the page and SAY when the list was cut.
+    const truncated = r.rows.length > LIMIT;
+    if (truncated) console.warn(`[reminder-tasks] list truncated at ${LIMIT} rows for staff ${req.actor.id} (scope=${scope}, status=${status})`);
+    res.json({ tasks: r.rows.slice(0, LIMIT), scope, status, truncated });
+  } catch (e) { console.error('[reminder-tasks]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// Done / Dismiss / Reopen FROM THE QUEUE — reachable by the task's ASSIGNEE and
+// its CREATOR even when the file itself is outside their scope (audit
+// 2026-08-18 finding 1: the queue deliberately shows a task handed to you on
+// any file, but the per-file PATCH sits behind the /applications/:id scope
+// middleware, so the queue's own buttons 403'd — a dead end on your own task).
+// Defense-in-depth ownership: being handed the task IS the authorization to
+// finish it; everyone else still needs ordinary file visibility. Answers 404
+// (never 403) on a row you may not touch, so nothing about other files leaks.
+router.patch('/reminder-tasks/:rid', async (req, res) => {
+  try {
+    // A garbage id must answer the same 404 a stranger gets — never a 22P02
+    // uuid-cast 500 (audit 2026-08-18 on this route's own first cut).
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(req.params.rid || ''))) {
+      return res.status(404).json({ error: 'not found' });
+    }
+    const fileSql = seesAll(req) ? 'TRUE' : `(${VISIBLE_OFFICERS_SQL('a', '$1')})`;
+    const own = await db.query(
+      `SELECT r.id, r.application_id,
+              (r.assignee_staff_id = $1 OR r.created_by = $1 OR ${fileSql}) AS may
+         FROM reminders r
+         JOIN applications a ON a.id = r.application_id
+        WHERE r.id = $2 AND a.deleted_at IS NULL`, [req.actor.id, req.params.rid]);
+    if (!own.rows[0] || !own.rows[0].may) return res.status(404).json({ error: 'not found' });
+    const row = await require('../lib/reminders').update(req.params.rid, req.body || {}, req.actor);
+    await audit(req, 'update_reminder', 'application', own.rows[0].application_id,
+      { reminderId: req.params.rid, status: (req.body || {}).status, viaQueue: true });
+    res.json({ ok: true, reminder: row });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.error('[reminder-tasks patch]', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 router.get('/lead-capture', async (req, res) => {
   // Assigning unassigned files is an admin/underwriter function (a loan officer
   // or processor can't even open an unassigned file — the path-scope guard
@@ -4333,6 +4428,15 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   res.json({ ok: true, status: toolStatus || 'outstanding', mismatch: sowNotice, exports: out });
 });
 
+// The file-overview slide-over (owner-directed 2026-08-18) — the deal at a
+// glance on the left of every file screen. Internal audience: the full figure
+// set; the note buyer is deliberately NOT in this payload on any audience.
+router.get('/applications/:id/overview-card', async (req, res) => {
+  const card = await require('../lib/file-overview').buildFileOverview(req.params.id, { audience: 'internal' });
+  if (!card) return res.status(404).json({ error: 'not found' });
+  res.json(card);
+});
+
 router.get('/applications/:id/checklist', async (req, res) => {
   // Recompute the experience/track-record condition from the file's current
   // requested experience + verified counts BEFORE reading the checklist — same as
@@ -4361,6 +4465,11 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.borrower_hint,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             (SELECT slots FROM checklist_templates t WHERE t.id=ci.template_id) AS slots,
+            -- Ad-hoc document slots staff opened on THIS condition (db/578,
+            -- owner-directed 2026-08-18: "open up another slot in a condition
+            -- and type the name of that slot"). Merged into row.slots below so
+            -- the whole existing per-slot upload/drop/assign UI carries them.
+            ci.extra_slots,
             -- The condition's own rule tree, read ONLY to derive the note-buyer MARK
             -- below (never sent to the client). A condition that exists because of one
             -- capital partner must say so on its face — owner-directed 2026-08-02.
@@ -4414,6 +4523,23 @@ router.get('/applications/:id/checklist', async (req, res) => {
       delete row.rule_logic;
     }
   } catch (_) { for (const row of r.rows) { row.note_buyer_mark = null; delete row.rule_logic; } }
+  // EXTRA SLOTS ride the SAME slots array the template slots do (db/578) — one
+  // renderer, one upload/drop/assign path, one TPR folder. Each merged entry is
+  // tagged extra:true + its audience + who asked, so the UI can offer Remove and
+  // show the "requested" provenance; row.extra_slots stays on the row for the
+  // manage UI. A normalize hiccup degrades to the template slots alone.
+  try {
+    const extraSlotsLib = require('../lib/conditions/extra-slots');
+    for (const row of r.rows) {
+      const extras = extraSlotsLib.normalize(row.extra_slots);
+      if (extras.length) {
+        row.slots = [
+          ...(Array.isArray(row.slots) ? row.slots : []),
+          ...extras.map((s) => ({ key: `extra:${s.key}`, label: s.label, extra: true, audience: s.audience, added_by_name: s.added_by_name })),
+        ];
+      }
+    }
+  } catch (_) { /* template slots alone */ }
   // #191 activation 2 — condition AGING (advisory, additive): each row gains
   // daysOpen / agingBucket / overdue / overdueBy from the pure ager. The
   // response stays a bare array (no shape change for the UI); an ager hiccup
@@ -4485,6 +4611,82 @@ router.post('/applications/:id/conditions', async (req, res) => {
     [req.params.id, b.label, b.audience || 'staff', b.isRequired !== false, b.notes || null, req.actor.id]);
   await audit(req, 'add_condition', 'application', req.params.id, { label: b.label });
   res.status(201).json({ ok: true, itemId: r.rows[0].id });
+});
+
+// ---------------- Extra document slots ON a condition (db/578) ----------------
+// Owner-directed 2026-08-18: "you got one document and you wanna request another
+// document within that condition … there should be a button for the staff members
+// to open up another slot in a condition and type the name of that slot. That
+// should populate as an open item needing it" — external asks read as needed from
+// the borrower, internal ones as an internal to-do; the uploaded document files
+// INTO the condition (same TPR folder). One definition of everything:
+// src/lib/conditions/extra-slots.js.
+router.post('/applications/:id/checklist/:itemId/extra-slots', async (req, res) => {
+  const b = req.body || {};
+  const extraSlots = require('../lib/conditions/extra-slots');
+  const problem = extraSlots.slotProblem(b);
+  if (problem) return res.status(400).json({ error: problem });
+  // A borrower-facing slot name goes to the borrower verbatim — same stray-value
+  // guard as a hand-typed condition label (the 2026-07-22 root cause).
+  {
+    const stray = strayConditionReason(b.label);
+    if (stray && b.confirmStrayLabel !== true) {
+      return res.status(409).json({ error: strayConditionMessage(stray, b.label), code: 'stray_condition_label', reason: stray, needsConfirm: true });
+    }
+  }
+  // A label the TEMPLATE already declares as a slot is not a new ask — it would
+  // render two identical slot rows filled by the same document (audit 078cb1a #8).
+  {
+    const tpl = (await db.query(
+      `SELECT t.slots FROM checklist_items ci JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE ci.id=$1 AND ci.application_id=$2`, [req.params.itemId, req.params.id])).rows[0];
+    const tplSlots = (tpl && Array.isArray(tpl.slots)) ? tpl.slots : [];
+    const want = extraSlots.baseLabel(b.label);
+    if (tplSlots.some((sl) => sl && extraSlots.baseLabel(sl.label) === want)) {
+      return res.status(409).json({ error: `This condition already has a "${String(b.label).trim()}" slot — upload into it instead of requesting it again.` });
+    }
+  }
+  const out = await extraSlots.addSlot(req.params.id, req.params.itemId, {
+    label: b.label, audience: b.audience, actorId: req.actor.id, actorName: req.actor.full_name || null,
+  });
+  if (!out.added) {
+    if (out.reason === 'duplicate') return res.status(409).json({ error: 'A slot with that document name is already open on this condition.' });
+    if (out.reason === 'too_many') return res.status(409).json({ error: `This condition already carries ${extraSlots.MAX_SLOTS} requested documents — a bigger ask belongs on its own condition.` });
+    return res.status(404).json({ error: 'condition not found on this file' });
+  }
+  await audit(req, 'condition_slot_requested', 'checklist_item', req.params.itemId, {
+    label: out.slot.label, audience: out.slot.audience, reopened: out.reopened,
+  });
+  // An EXTERNAL ask is something the borrower now owes — tell them, with the
+  // slot name scrubbed (a capital-partner name typed into a slot label must
+  // never reach the borrower). Internal asks stay silent to the borrower.
+  // Through the notifyAppBorrowers CHOKEPOINT (audit 078cb1a #3), never a direct
+  // notifyBorrower: the chokepoint covers the co-borrower and carries the
+  // on-hold and TPO portal-disabled gates, so a parked file or a broker-managed
+  // borrower with no login is never emailed a link they cannot open.
+  if (out.slot.audience === 'external') {
+    try {
+      await notify.notifyAppBorrowers(req.params.id, {
+        type: 'doc_requested', title: 'Another document is needed on your file',
+        badge: { text: 'Action needed', tone: 'action' },
+        body: `Please upload "${scrubText(out.slot.label)}" — it was requested as part of an existing condition on your file.`,
+        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
+    } catch (_) { /* the ask stands either way — the portal shows it */ }
+  }
+  res.status(201).json({ ok: true, slot: out.slot, reopened: out.reopened });
+});
+
+// Remove an UNFILLED extra slot (a slot with a document in it is a record —
+// reject or delete the document first; the module refuses 'filled').
+router.delete('/applications/:id/checklist/:itemId/extra-slots/:key', async (req, res) => {
+  const extraSlots = require('../lib/conditions/extra-slots');
+  const out = await extraSlots.removeSlot(req.params.id, req.params.itemId, req.params.key);
+  if (!out.removed) {
+    if (out.reason === 'filled') return res.status(409).json({ error: 'A document is already in that slot — reject or delete the document first, then remove the request.' });
+    return res.status(404).json({ error: 'slot not found on this condition' });
+  }
+  await audit(req, 'condition_slot_removed', 'checklist_item', req.params.itemId, { label: out.slot.label, audience: out.slot.audience });
+  res.json({ ok: true });
 });
 
 // ---------------- Condition Center: per-file conditions ----------------
@@ -5010,6 +5212,74 @@ router.get('/applications/:id/export/tape/:tapeKey/questions', async (req, res) 
   }
 });
 
+// THE ONE GATE SEQUENCE every way a tape leaves the building runs — the download
+// AND the "Send to investor" email (owner-directed 2026-08-18). Extracted so the
+// two can never drift: permission is checked by the caller; this runs the
+// issuance backstop, the Encompass reconciliation gate (super-admin-only escape),
+// records the deferred overrides only once every gate passes, persists the
+// questionnaire answers, and BUILDS the tape through the buyer/program gate.
+// Returns { ok:true, tape, buf, filename, contentType, savedSupplemental } or
+// { ok:false } with the refusal ALREADY sent on `res`.
+async function runTapeExportPipeline(req, res, { action, params }) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) { res.status(404).json({ error: 'not found' }); return { ok: false }; }
+  const tapes = require('../lib/tapes');
+  const tape = tapes.registry.getTape(req.params.tapeKey);
+  if (!tape) { res.status(404).json({ error: 'unknown tape type' }); return { ok: false }; }
+  const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: params && params.overrideReason });
+  if (issuance.hardWarning && !issuance.proceed) {
+    res.status(409).json({ error: 'blocked', action, message: 'This file has a confirmed fatal issue, so its tape can\'t be exported without a super-admin override.', issuance });
+    return { ok: false };
+  }
+  // Encompass reconciliation gate (owner-directed 2026-07-26; tightened 2026-08-02):
+  // a loan's tape can't be exported until it is synced to Encompass AND every field
+  // matches. NOBODY may self-override any more — even an admin. The ONLY way past a
+  // blocked tape is a SUPER-ADMIN-approved exception, or a super-admin allowing it
+  // inline with a reason. Dormant when Encompass is off; fails CLOSED on a reconcile
+  // error. Runs BEFORE the override is recorded so a blocked export records nothing.
+  let tapeEscape = null, encGate = null;
+  {
+    const encTape = await require('../encompass/reconcile').tapeGate(req.params.id, db);
+    if (encTape.block) {
+      encGate = encTape;
+      const esc = await tapeEncompassEscape(req, req.params.id, encTape, db, params && params.encompassOverrideReason);
+      if (!esc.pass) { res.status(409).json(esc.response); return { ok: false }; }
+      tapeEscape = esc;
+    }
+  }
+  // Every gate is passable → record the deferred overrides (issuance first, then
+  // the super-admin tape override) so nothing is recorded for a blocked export.
+  if (issuance.override && issuance.override.applied) {
+    await audit(req, 'issuance_override', 'application', req.params.id, { action, tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
+    await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `${action} ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action, tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
+  }
+  if (tapeEscape && tapeEscape.via === 'super_override' && encGate) {
+    await recordTapeSuperOverride(req, req.params.id, tape, encGate, tapeEscape.reason);
+  }
+  // Persist any questionnaire answers (validated) BEFORE building, so the tape
+  // fills from them and a later export never re-asks. A no-op when none present.
+  const savedSupplemental = await tapes.persistSupplemental(req.params.id, req.params.tapeKey, params, db);
+  // A seasoned-loan export may carry the human-confirmed current balance / next
+  // due / interest reserve — applied to THIS export only (never persisted, since
+  // the live figures re-compute from the draws each time).
+  const seasonedOverrides = tapes.seasonedOverridesFromQuery(params);
+  const { buf, filename, contentType } = await tapes.buildTape(req.params.id, req.params.tapeKey, db, { seasonedOverrides, isAdmin: tapeAdmin(req) });
+  return { ok: true, tape, buf, filename, contentType, savedSupplemental, seasonedOverrides };
+}
+
+// Shared refusal shape for the tape pipeline's thrown gates.
+function tapeExportRefusal(res, e, logTag) {
+  // The export gate (owner-directed): provider mismatch, wrong/absent registered
+  // program, or a manual file a non-admin tried to export. Each carries its own
+  // plain-language message + status; the UI shows it and offers "change provider".
+  if (e && (e.code === 'buyer_mismatch' || e.code === 'program_mismatch' || e.code === 'not_registered' || e.code === 'manual_admin_only')) {
+    return res.status(e.status || 409).json({ error: e.code, message: e.message, currentBuyer: e.currentBuyer, requiredBuyer: e.requiredBuyer, requiredProgram: e.requiredProgram, registeredProgram: e.registeredProgram, tape: e.tapeName });
+  }
+  if (e && (e.code === 'loan_not_found' || e.code === 'tape_not_found')) return res.status(404).json({ error: e.message });
+  if (e && e.status && e.message) return res.status(e.status).json({ error: e.message });
+  console.error(`[${logTag}]`, e && e.message);
+  return res.status(500).json({ error: logTag === 'tape send' ? 'The send failed — nothing went out.' : 'export failed' });
+}
+
 // Export ONE loan's tape for :tapeKey. Streams the provider's .xlsx. Scoped +
 // audited; the confirmed-fatal issuance backstop applies exactly as it does to
 // the TPR / MISMO exports (a note-buyer tape must not leave a fatal file without
@@ -5019,61 +5289,60 @@ router.get('/applications/:id/export/tape/:tapeKey/questions', async (req, res) 
 router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
   if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
   try {
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
-    const tapes = require('../lib/tapes');
-    const tape = tapes.registry.getTape(req.params.tapeKey);
-    if (!tape) return res.status(404).json({ error: 'unknown tape type' });
-    const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
-    if (issuance.hardWarning && !issuance.proceed) {
-      return res.status(409).json({ error: 'blocked', action: 'export_tape', message: 'This file has a confirmed fatal issue, so its tape can\'t be exported without a super-admin override.', issuance });
-    }
-    // Encompass reconciliation gate (owner-directed 2026-07-26; tightened 2026-08-02):
-    // a loan's tape can't be exported until it is synced to Encompass AND every field
-    // matches. NOBODY may self-override any more — even an admin. The ONLY way past a
-    // blocked tape is a SUPER-ADMIN-approved exception, or a super-admin allowing it
-    // inline with a reason. Dormant when Encompass is off; fails CLOSED on a reconcile
-    // error. Runs BEFORE the override is recorded so a blocked export records nothing.
-    let tapeEscape = null, encGate = null;
-    {
-      const encTape = await require('../encompass/reconcile').tapeGate(req.params.id, db);
-      if (encTape.block) {
-        encGate = encTape;
-        const esc = await tapeEncompassEscape(req, req.params.id, encTape, db, req.query && req.query.encompassOverrideReason);
-        if (!esc.pass) return res.status(409).json(esc.response);
-        tapeEscape = esc;
-      }
-    }
-    // Every gate is passable → record the deferred overrides (issuance first, then
-    // the super-admin tape override) so nothing is recorded for a blocked export.
-    if (issuance.override && issuance.override.applied) {
-      await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tape', tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
-      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tape ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tape', tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
-    }
-    if (tapeEscape && tapeEscape.via === 'super_override' && encGate) {
-      await recordTapeSuperOverride(req, req.params.id, tape, encGate, tapeEscape.reason);
-    }
-    // Persist any questionnaire answers (validated) BEFORE building, so the tape
-    // fills from them and a later export never re-asks. A no-op when none present.
-    const savedSupplemental = await tapes.persistSupplemental(req.params.id, req.params.tapeKey, req.query, db);
-    // A seasoned-loan export may carry the human-confirmed current balance / next
-    // due / interest reserve as query params — applied to THIS export only (never
-    // persisted, since the live figures re-compute from the draws each time).
-    const seasonedOverrides = tapes.seasonedOverridesFromQuery(req.query);
-    const { buf, filename, contentType } = await tapes.buildTape(req.params.id, req.params.tapeKey, db, { seasonedOverrides, isAdmin: tapeAdmin(req) });
-    await audit(req, 'export_tape', 'application', req.params.id, { tape: tape.key, bytes: buf.length, supplemental: Object.keys(savedSupplemental), seasoned: !!seasonedOverrides });
-    res.set('Content-Type', contentType);
-    res.set('Content-Disposition', `attachment; filename="${filename}"`);
-    res.send(buf);
+    const out = await runTapeExportPipeline(req, res, { action: 'export_tape', params: req.query || {} });
+    if (!out.ok) return;
+    await audit(req, 'export_tape', 'application', req.params.id, { tape: out.tape.key, bytes: out.buf.length, supplemental: Object.keys(out.savedSupplemental), seasoned: !!out.seasonedOverrides });
+    res.set('Content-Type', out.contentType);
+    res.set('Content-Disposition', `attachment; filename="${out.filename}"`);
+    res.send(out.buf);
   } catch (e) {
-    // The export gate (owner-directed): provider mismatch, wrong/absent registered
-    // program, or a manual file a non-admin tried to export. Each carries its own
-    // plain-language message + status; the UI shows it and offers "change provider".
-    if (e && (e.code === 'buyer_mismatch' || e.code === 'program_mismatch' || e.code === 'not_registered' || e.code === 'manual_admin_only')) {
-      return res.status(e.status || 409).json({ error: e.code, message: e.message, currentBuyer: e.currentBuyer, requiredBuyer: e.requiredBuyer, requiredProgram: e.requiredProgram, registeredProgram: e.registeredProgram, tape: e.tapeName });
-    }
-    if (e && (e.code === 'loan_not_found' || e.code === 'tape_not_found')) return res.status(404).json({ error: e.message });
-    console.error('[export tape]', e && e.message);
-    res.status(500).json({ error: 'export failed' });
+    return tapeExportRefusal(res, e, 'export tape');
+  }
+});
+
+// ---------------- "Send to investor" — the tape leaves by EMAIL, manually ----------------
+// Owner-directed 2026-08-18: a button beside the tape export that emails the
+// Excel tape to the investor's saved contacts — NEVER on autopilot. Subject
+// "New file for review - {loan} - {address}", body = the deal figures (no
+// origination fee), ONLY the tape attached, the team Cc'd visibly, and the
+// Reply-To is the file's own inbox so the investor's reply threads into the
+// file. Same permission + the SAME gate pipeline as the download above.
+
+// The compose screen: saved contacts for this file's investor, the subject and
+// figure preview, the team Cc, the reply address.
+router.get('/applications/:id/tape-send', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
+  try {
+    const pre = await require('../lib/tapes/investor-send').previewTapeSend(req.params.id, db);
+    if (!pre) return res.status(404).json({ error: 'not found' });
+    const { app: _app, ...safe } = pre;   // the raw row stays server-side
+    res.json(safe);
+  } catch (e) { console.error('[tape-send preview]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/tape-send/:tapeKey', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
+  try {
+    const b = req.body || {};
+    const investorSendTape = require('../lib/tapes/investor-send');
+    // Refuse an empty recipient list BEFORE running the gates — the compose
+    // screen's Send stays disabled until at least one investor email is chosen,
+    // and the server enforces the same rule.
+    const rec = investorSendTape.cleanRecipients(b.to);
+    if (rec.problem) return res.status(400).json({ error: rec.problem });
+    const out = await runTapeExportPipeline(req, res, { action: 'send_tape', params: b });
+    if (!out.ok) return;
+    const sent = await investorSendTape.sendTapeToInvestor(req.params.id, db, {
+      tape: { buf: out.buf, filename: out.filename, contentType: out.contentType },
+      to: rec.emails, note: b.note,
+      actorId: req.actor.id, actorName: req.actor.full_name || null,
+    });
+    await audit(req, 'tape_sent_to_investor', 'application', req.params.id, {
+      tape: out.tape.key, to: sent.to, cc: sent.cc, bytes: out.buf.length, subject: sent.subject,
+    });
+    res.json({ ok: true, to: sent.to, cc: sent.cc, replyTo: sent.replyTo, subject: sent.subject, filename: out.filename });
+  } catch (e) {
+    return tapeExportRefusal(res, e, 'tape send');
   }
 });
 
@@ -6840,7 +7109,7 @@ router.post('/applications/:id/documents/:docId/slot', async (req, res) => {
   if (!UUID_RE.test(String(req.params.docId))) return res.status(404).json({ error: 'not found' });
   try {
     const doc = (await db.query(
-      `SELECT d.id, d.checklist_item_id, t.code AS template_code
+      `SELECT d.id, d.checklist_item_id, t.code AS template_code, ci.extra_slots
          FROM documents d
          LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
          LEFT JOIN checklist_templates t ON t.id = ci.template_id
@@ -6849,7 +7118,14 @@ router.post('/applications/:id/documents/:docId/slot', async (req, res) => {
     if (!doc.checklist_item_id) {
       return res.status(400).json({ error: 'This document is not on a condition, so it has no slot to go in.', code: 'no_condition' });
     }
-    const allowed = await orderSlots.slotsForConditionTemplate(db, doc.template_code);
+    // The condition's slot vocabulary = the TEMPLATE's slots PLUS the ad-hoc
+    // EXTRA slots staff opened on this item (db/578, audit 078cb1a #1) — the
+    // "Also in this condition" picker offers both, so this route must accept
+    // both, or the exact workflow the extra-slot feature exists for (file the
+    // follow-up document into its requested slot) dead-ends on a 400.
+    const templateAllowed = await orderSlots.slotsForConditionTemplate(db, doc.template_code);
+    const extraAllowed = require('../lib/conditions/extra-slots').normalize(doc.extra_slots).map((sl) => sl.label);
+    const allowed = [...templateAllowed, ...extraAllowed.filter((l) => !templateAllowed.some((t) => String(t).toLowerCase() === String(l).toLowerCase()))];
     if (!allowed.length) {
       return res.status(400).json({ error: 'This condition has no named slots — every document on it already shows.', code: 'no_slots' });
     }
@@ -8189,6 +8465,12 @@ async function pendingDocumentsBlock(itemId) {
 async function signOffGate(itemId, actor) {
   const pendingBlock = await pendingDocumentsBlock(itemId);
   if (pendingBlock) return pendingBlock;
+  // EXTRA NAMED SLOTS (db/578, owner-directed 2026-08-18): a document somebody
+  // REQUESTED on this condition that is not yet in and accepted refuses the
+  // sign-off — for EVERY condition kind, which is why this arm runs before the
+  // per-condition branches. One definition: lib/conditions/extra-slots.js.
+  const extraSlotBlock = await require('../lib/conditions/extra-slots').gateProblem(itemId);
+  if (extraSlotBlock) return extraSlotBlock;
   const it = await db.query(
     `SELECT ci.application_id, ci.borrower_id, ci.field_key, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
@@ -8833,8 +9115,10 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // may be waived — a required condition must actually be satisfied.
   if (b.waived === true) {
     const cur = await db.query(
-      `SELECT ci.is_required, ci.tool_key, t.code AS template_code
-         FROM checklist_items ci LEFT JOIN checklist_templates t ON t.id = ci.template_id
+      `SELECT ci.is_required, ci.tool_key, t.code AS template_code, a.loan_type
+         FROM checklist_items ci
+         LEFT JOIN checklist_templates t ON t.id = ci.template_id
+         LEFT JOIN applications a ON a.id = ci.application_id
         WHERE ci.id=$1`, [req.params.itemId]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
     // The appraisal credit-card condition may ALSO be waived by the loan officer
@@ -8852,7 +9136,16 @@ router.patch('/checklist/:itemId', async (req, res) => {
     // without fulfilling it is exactly what the override exists for, so it does not
     // have to be made optional first (that detour edited the file's requirements to
     // clear one item — the override records the decision instead).
-    if (!ovr.requested && !isApprCard && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
+    // PLANS & PERMITS ON A PURCHASE ARE WAIVABLE DIRECTLY (owner-directed 2026-08-18: "At
+    // the plans and permits condition, if it's a purchase, then you should be able to click
+    // 'Waive this condition' for now"). Most investors don't require them before closing on
+    // a PURCHASE — the enforcement returns before the FIRST DRAW (sitewire/plans-permits.js
+    // re-populates the condition, pre-filled, and the draw coordinator signs off again). On
+    // a REFINANCE the carve-out never applies: the plans are required before closing, so the
+    // ordinary required-condition rules stand. Same authority as any waive (sign_off_conditions).
+    const isPlansOnPurchase = cur.rows[0].template_code === 'rtl_p1_plans'
+      && require('../lib/payoff').refiKind(cur.rows[0].loan_type) === require('../lib/payoff').KIND.PURCHASE;
+    if (!ovr.requested && !isApprCard && !isPlansOnPurchase && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
     // THE APPRAISAL REVIEW CANNOT BE WAIVED AROUND ITS GATE (owner-directed 2026-07-30;
     // pre-merge audit F3). "Make it optional, then waive" would clear appraisal_review_cleared
     // with open fatal findings / an unconfirmed As-Is and NO recorded override — exactly the
@@ -9198,7 +9491,11 @@ router.post('/applications/:id/assign', async (req, res) => {
             ],
             applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your file',
             from: require('../lib/email').fromWithName(oname),
-            replyTo: oa.email || null,
+            // Owner-directed 2026-08-18: the per-file reply-to wins — the body
+            // above promises "reply and it goes straight to your loan team",
+            // which is only true of the file+ address (it fans out to the whole
+            // team). The officer's inbox is the fallback with no reply domain.
+            replyTo: require('../lib/file-address').fileReplyTo(req.params.id) || oa.email || null,
           });
         } catch (_) { /* intro email is best-effort */ }
       }
@@ -13265,6 +13562,51 @@ router.post('/applications/:id/nudge', async (req, res) => {
 // fires the notification at the due moment via the normal notify fan-out.
 const reminders = require('../lib/reminders');
 
+// THE DRAFTING DESK (owner-directed 2026-08-18): AI drafts a human-sounding
+// email FROM this file, for COPY-PASTE — no send exists anywhere on this path.
+// File-scoped by the /applications/:id middleware; output always borrower-safe.
+router.post('/applications/:id/drafting', async (req, res) => {
+  const out = await require('../lib/ai/drafting').draft(req.params.id, req.body || {}, { staffId: req.actor.id });
+  if (out.ok) await audit(req, 'drafting_generated', 'application', req.params.id, { preset: (req.body || {}).preset });
+  res.json(out);
+});
+
+// ── A-piece / B-piece split (owner-directed 2026-08-18) ──────────────────────
+// INTERNAL ONLY, staff router only — how a MANUAL-program loan is sold in two
+// pieces. The A-piece is typed; the B-piece is DERIVED (total loan − A-piece)
+// and never stored. The columns are deliberately outside every reopen-trigger
+// watch list, so recording/editing the split never reopens Products & Pricing,
+// never un-signs a term sheet, and never flags the registration stale
+// (lib/ab-piece.js has the full rule; test-ab-piece-db.js the proof).
+// File-scoped by the /applications/:id middleware above.
+router.get('/applications/:id/ab-piece', async (req, res) => {
+  try {
+    const out = await require('../lib/ab-piece').loadAbPiece(req.params.id);
+    if (!out) return res.status(404).json({ error: 'not found' });
+    // The Encompass copy's own A/B-piece fields, advisory + best-effort (null
+    // on any failure — the card must render either way). Read-only: this reads
+    // the STORED loan copy, never Encompass live (lib/ab-piece.js header rule).
+    out.encompass = await require('../lib/ab-piece').encompassAbPiece(req.params.id, undefined, out);
+    res.json(out);
+  } catch (e) { console.error('[ab-piece]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+router.post('/applications/:id/ab-piece', async (req, res) => {
+  try {
+    const out = await require('../lib/ab-piece').saveAbPiece(req.params.id, req.body || {});
+    await audit(req, 'ab_piece_set', 'application', req.params.id,
+      { enabled: out.enabled, aPiece: out.aPiece, bPiece: out.bPiece });
+    // Same advisory Encompass block as the GET, so the card's comparison
+    // doesn't vanish the moment a save replaces its data (best-effort, null on
+    // failure; compares against the values JUST saved).
+    const encompass = await require('../lib/ab-piece').encompassAbPiece(req.params.id, undefined, out);
+    res.json({ ok: true, ...out, encompass });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.error('[ab-piece]', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 // Everything the composer needs in one call: existing reminders on the file,
 // the selectable contacts, and the borrower-facing outstanding items (for the
 // "prefill outstanding conditions" helper). Access is already gated by the
@@ -13649,7 +13991,8 @@ router.get('/applications/:id/note-buyer', async (req, res) => {
 router.get('/applications/:id/payoff', async (req, res) => {
   try {
     const a = await db.query(
-      `SELECT id, loan_type, payoff_amount, payoff_lender, payoff_loan_number, estimated_cash_out
+      `SELECT id, loan_type, payoff_amount, payoff_lender, payoff_loan_number, payoff_good_through,
+              property_free_and_clear, free_and_clear_at, estimated_cash_out
          FROM applications WHERE id=$1`, [req.params.id]);
     if (!a.rows.length) return res.status(404).json({ error: 'not found' });
     // The CURRENT registration's normalized quote, when the file has one. A file
@@ -13669,6 +14012,248 @@ router.get('/applications/:id/payoff', async (req, res) => {
     if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
     console.warn('[staff] payoff section error:', db.describeError(e));
     res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ===========================================================================
+// PROPERTY IS FREE AND CLEAR (db/575, owner-directed 2026-08-18). A refinance
+// with no existing lien: staff confirm it behind a popup ("Yes, property is
+// free and clear"), and BOTH payoff conditions come off the file — the engine
+// retracts the untouched ones (their rules now carry property_free_and_clear
+// is_false) and this route WAIVES any a human already worked, with an [auto]
+// note saying why. The payoff of record becomes $0 (the figures everywhere —
+// pricing refi math, the term sheet, the attorney email — read a zero payoff,
+// never a blank that looks unanswered). Fully reversible: turning it off
+// un-waives exactly the rows this route waived (matched on its own [auto]
+// note), re-runs the engine so the conditions re-attach, and clears the $0
+// so the ordinary "payoff amount missing" nag returns.
+// Frozen files refuse with the standard freeze message — flipping the payoff
+// to $0 changes the refi cash-to-close math a sent term sheet printed.
+// ===========================================================================
+router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
+  const appId = req.params.id;
+  const b = req.body || {};
+  // Serialize concurrent ON/OFF clicks (two tabs) on a per-file advisory lock — its OWN key,
+  // never the engine's 'cond-eval:' key (we CALL the engine below; sharing its key would
+  // deadlock the two connections). Fails OPEN like the engine's lock: a missed lock costs a
+  // rare interleave the idempotent re-run below repairs, refusing the click would be worse.
+  let lockConn = null;
+  const lockKey = `payoff-fnc:${appId}`;
+  try {
+    lockConn = await db.getClient();
+    await lockConn.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [lockKey]);
+  } catch (_) { if (lockConn) { try { lockConn.release(); } catch (_e) {} } lockConn = null; }
+  try {
+    const on = b.on === true;
+    if (b.on !== true && b.on !== false) return res.status(400).json({ error: 'on must be true or false' });
+    if (on && b.confirm !== true) return res.status(400).json({ error: 'confirm is required — the person must confirm the property is free and clear' });
+    const a = (await db.query(
+      `SELECT id, loan_type, status, property_free_and_clear, payoff_amount, payoff_lender, payoff_loan_number
+         FROM applications WHERE id=$1`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    const payoffLib = require('../lib/payoff');
+    if (payoffLib.refiKind(a.loan_type) === payoffLib.KIND.PURCHASE)
+      return res.status(422).json({ error: 'This is a purchase — there is no payoff to mark free and clear.' });
+    const locked = await require('../lib/file-lock').structuralLockReason(appId, db, { actor: req.actor });
+    if (locked) return res.status(409).json({ error: locked });
+    // NO early-return on "unchanged" (post-merge audit 2026-08-18): the flag UPDATE and the
+    // condition waive are separate statements, so a failure between them leaves a half-state
+    // the RETRY must be able to repair — every statement below is idempotent, so re-running
+    // the whole branch converges the conditions instead of trusting the flag alone.
+    const unchanged = !!a.property_free_and_clear === on;
+
+    const AUTO_NOTE = '[auto] Waived — the property was confirmed FREE AND CLEAR (no existing loan to pay off). Turning the free-and-clear flag off reopens this condition.';
+    if (on) {
+      await db.query(
+        `UPDATE applications
+            SET property_free_and_clear=true, free_and_clear_by=$2, free_and_clear_at=COALESCE(free_and_clear_at, now()),
+                payoff_amount=0, payoff_lender=NULL, payoff_loan_number=NULL, payoff_good_through=NULL,
+                updated_at=now()
+          WHERE id=$1`, [appId, req.actor.id]);
+      // The engine retracts what nobody touched; a worked condition is WAIVED
+      // (the human's work stays on the record, the waive is the answer).
+      try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'free_and_clear' }); } catch (_) {}
+      // The note is appended ONCE (a re-run / retry never stacks a second copy), and a
+      // pure-[auto] note is replaced wholesale per the engine's own note convention.
+      await db.query(
+        `UPDATE checklist_items ci
+            SET status='satisfied', is_required=false, signed_off_by=$2, signed_off_at=now(),
+                waived_by=$2, waived_at=now(),
+                -- CONTAINS-the-auto-note FIRST (re-audit 2026-08-18): '[auto]%' would otherwise
+                -- wholesale-replace a note that STARTS [auto] but carries a human's addendum
+                -- below it (a reopened row someone annotated) — the exact note-loss class again.
+                notes = CASE WHEN ci.notes LIKE '%' || $3 || '%' THEN ci.notes
+                             WHEN ci.notes IS NULL OR ci.notes='' OR ci.notes LIKE '[auto]%' THEN $3
+                             ELSE ci.notes || E'\n' || $3 END,
+                updated_at=now()
+           FROM checklist_templates t
+          WHERE t.id=ci.template_id AND ci.application_id=$1
+            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND ci.status <> 'satisfied'`,
+        [appId, req.actor.id, AUTO_NOTE]);
+      await audit(req, 'payoff_free_and_clear_set', 'application', appId, {
+        priorPayoff: a.payoff_amount, priorLender: a.payoff_lender, priorLoanNumber: a.payoff_loan_number,
+        unchanged,
+      });
+    } else {
+      await db.query(
+        `UPDATE applications
+            SET property_free_and_clear=false, free_and_clear_by=NULL, free_and_clear_at=NULL,
+                -- The $0 is cleared ONLY off a file the flag actually held (re-audit 2026-08-18):
+                -- a redundant OFF on an ordinary refinance (stale tab, double-submit, a caller
+                -- "re-posting to converge") must never wipe a legitimately entered payoff amount.
+                payoff_amount = CASE WHEN property_free_and_clear THEN NULL ELSE payoff_amount END,
+                updated_at=now()
+          WHERE id=$1`, [appId]);
+      // Un-waive ONLY the rows THIS FEATURE waived: still carrying its full [auto] note AND
+      // still waived. Matching the FULL note text (never a phrase like "confirmed FREE AND
+      // CLEAR", which a human's own waive note can legitimately contain — post-merge audit
+      // 2026-08-18) plus waived_at keeps a human's waive, and a human's reopen-then-sign-off
+      // made while the flag was on (signed_off_at set, waived_at NULL), untouched. The
+      // human's own note SURVIVES: only the auto note is stripped out of it, never notes=NULL.
+      await db.query(
+        `UPDATE checklist_items ci
+            SET status='outstanding', is_required=true, signed_off_by=NULL, signed_off_at=NULL,
+                waived_by=NULL, waived_at=NULL,
+                notes = NULLIF(TRIM(BOTH E'\n' FROM REPLACE(ci.notes, $2, '')), ''),
+                updated_at=now()
+           FROM checklist_templates t
+          WHERE t.id=ci.template_id AND ci.application_id=$1
+            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND ci.waived_at IS NOT NULL
+            AND ci.notes LIKE '%' || $2 || '%'`,
+        [appId, AUTO_NOTE]);
+      // A row a human RE-WORKED while the flag was on (reopened + signed off) keeps its state,
+      // but the now-stale auto note ("turning the flag off reopens this") is stripped so the
+      // condition never carries an instruction that no longer describes it.
+      await db.query(
+        `UPDATE checklist_items ci
+            SET notes = NULLIF(TRIM(BOTH E'\n' FROM REPLACE(ci.notes, $2, '')), ''), updated_at=now()
+           FROM checklist_templates t
+          WHERE t.id=ci.template_id AND ci.application_id=$1
+            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND ci.notes LIKE '%' || $2 || '%'`,
+        [appId, AUTO_NOTE]);
+      try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'free_and_clear_cleared' }); } catch (_) {}
+      await audit(req, 'payoff_free_and_clear_cleared', 'application', appId, {
+        priorPayoff: a.payoff_amount, wasFreeAndClear: !!a.property_free_and_clear, unchanged,
+      });
+    }
+    const fresh = (await db.query(
+      `SELECT id, loan_type, payoff_amount, payoff_lender, payoff_loan_number, payoff_good_through,
+              property_free_and_clear, free_and_clear_at, estimated_cash_out
+         FROM applications WHERE id=$1`, [appId])).rows[0];
+    res.json({ ok: true, unchanged: unchanged || undefined, payoff: payoffLib.payoffState(fresh, null) });
+  } catch (e) {
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] free-and-clear error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  } finally {
+    if (lockConn) {
+      try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (_) {}
+      try { lockConn.release(); } catch (_) {}
+    }
+  }
+});
+
+// ===========================================================================
+// THE RATE-AND-TERM $2,000 CASH LIMIT + "Validate closing costs" (db/577,
+// owner-directed 2026-08-18). One check (lib/rate-term-gate.js) feeds the
+// structure-screen red warning, the term-sheet send gate, and this editor:
+// staff itemize the REAL closing-statement fees (title fees, mortgage tax,
+// transfer tax, attorney fees, custom) — borrower-paid fees reduce the
+// computed cash-to-borrower, so a deal the system mis-costed can come back
+// under $2,000 and legitimately stay a rate-&-term. The super-admin
+// 'rate_term_cash' exception is the recorded way past the gate otherwise.
+// ===========================================================================
+router.get('/applications/:id/rate-term-gate', async (req, res) => {
+  try {
+    const rtg = require('../lib/rate-term-gate');
+    const [check, items] = await Promise.all([rtg.check(req.params.id), rtg.listItems(req.params.id)]);
+    res.json({ check, items, costKinds: rtg.COST_KINDS });
+  } catch (e) {
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] rate-term-gate error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.post('/applications/:id/closing-costs', async (req, res) => {
+  const b = req.body || {};
+  try {
+    const rtg = require('../lib/rate-term-gate');
+    const problem = rtg.itemProblem(b);
+    if (problem) return res.status(400).json({ error: problem });
+    const app = (await db.query(`SELECT id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const ins = (await db.query(
+      `INSERT INTO closing_cost_items (application_id, kind, label, amount, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [req.params.id, String(b.kind || 'custom'), String(b.label).trim(),
+       Math.round(Number(b.amount) * 100) / 100, b.note ? String(b.note).slice(0, 500) : null, req.actor.id])).rows[0];
+    await audit(req, 'closing_cost_added', 'application', req.params.id,
+      { itemId: ins.id, kind: b.kind, label: String(b.label).trim(), amount: Number(b.amount) });
+    const [check, items] = await Promise.all([rtg.check(req.params.id), rtg.listItems(req.params.id)]);
+    res.json({ ok: true, id: ins.id, check, items });
+  } catch (e) {
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] closing-cost add error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.delete('/applications/:id/closing-costs/:costId', async (req, res) => {
+  try {
+    if (!/^[0-9a-f-]{36}$/i.test(String(req.params.costId))) return res.status(400).json({ error: 'invalid id' });
+    const rtg = require('../lib/rate-term-gate');
+    const del = await db.query(
+      `DELETE FROM closing_cost_items WHERE id=$1 AND application_id=$2 RETURNING kind, label, amount`,
+      [req.params.costId, req.params.id]);
+    if (!del.rows[0]) return res.status(404).json({ error: 'not found' });
+    await audit(req, 'closing_cost_removed', 'application', req.params.id,
+      { itemId: req.params.costId, label: del.rows[0].label, amount: Number(del.rows[0].amount) });
+    const [check, items] = await Promise.all([rtg.check(req.params.id), rtg.listItems(req.params.id)]);
+    res.json({ ok: true, check, items });
+  } catch (e) {
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] closing-cost delete error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Request the super-admin exception — the recorded way past the gate ("I don't
+// want to block without a way out"). Any staffer on the file may request; a
+// SUPER-ADMIN decides on the Exceptions screen (decideRole in the registry).
+router.post('/applications/:id/rate-term-gate/request-exception', async (req, res) => {
+  const b = req.body || {};
+  try {
+    const LE = require('../lib/loan-exceptions');
+    const rtg = require('../lib/rate-term-gate');
+    const reason = String(b.reason || '').trim();
+    if (!LE.isReasonCodeFor('rate_term_cash', reason)) return res.status(400).json({ error: 'Pick a reason for the exception.' });
+    const note = b.note ? String(b.note).slice(0, 2000) : null;
+    if (!note) return res.status(400).json({ error: 'Add a short note explaining why this rate-&-term should go out over the $2,000 limit — it goes to a super-admin for approval.' });
+    const check = await rtg.check(req.params.id);
+    if (!check.over) return res.status(409).json({ error: 'This file is not over the rate-&-term cash limit — nothing needs an exception.' });
+    if (check.exception) return res.status(409).json({ error: 'An approved exception is already on this file.' });
+    const row = await LE.requestRateTermCash(db, {
+      appId: req.params.id, reasonCode: reason, reasonNote: note, requestedBy: req.actor.id,
+      gateSnapshot: { cashToBorrower: check.cashToBorrower, limit: check.limit, closingCosts: check.closingCosts, payoff: check.payoff, initialAdvance: check.initialAdvance },
+      compensatingFactors: LE.sanitizeCompensatingFactors(b.compensatingFactors),
+    });
+    await audit(req, 'rate_term_cash_exception_requested', 'application', req.params.id,
+      { reason, exceptionId: row ? row.id : null, cashToBorrower: check.cashToBorrower });
+    try {
+      const ctx = await notify.fileContext(req.params.id);
+      await notify.notifyAdmins({
+        type: 'rate_term_cash_exception', title: 'Rate-&-term over the $2,000 cash limit — exception needs approval',
+        body: `${ctx ? ctx.label + ': ' : ''}the structure hands the borrower more than $2,000 on a rate-&-term refinance (reason: ${reason.replace(/_/g, ' ')}). Approving lets the term sheet go out anyway; otherwise the deal switches to a cash-out or the closing costs are validated. Decide it on the Exceptions screen (super-admin).`,
+        applicationId: req.params.id, link: `/internal/exceptions?app=${req.params.id}`,
+        meta: ctx ? ctx.meta : undefined,
+      });
+    } catch (_) { /* best-effort */ }
+    res.json({ ok: true, exception: row ? { id: row.id, status: row.status, seq: row.exception_seq } : null });
+  } catch (e) {
+    if (e && e.code === '23505') return res.status(409).json({ error: 'An exception request is already awaiting review on this file.' });
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] rate-term exception error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -14497,6 +15082,79 @@ router.get('/applications/:id/closing', async (req, res) => {
     if (!data) return res.status(404).json({ error: 'not found' });
     res.json(data);
   } catch (e) { console.warn('[closing] workspace error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+// ===========================================================================
+// THE VERIFIED-ASSETS LEDGER + MAX CASH TO CLOSE (db/574, owner-directed
+// 2026-08-18). The bank-statement reader answers "what do the documents
+// prove?"; this ledger is the staff-editable layer on top — correct an
+// account's amount, include/exclude it, or add an account the reader never
+// saw. Max cash to close = verified assets − reserve requirement − closing
+// buffer, the algebraic inverse of the closing money gate so the two can
+// never disagree. File-scoped by the /applications/:id middleware; reads are
+// open to anyone on the file, writes are audited. Every write re-stamps the
+// assets condition (an [auto]-guarded note + tool_payload.assetLedger).
+// ===========================================================================
+router.get('/applications/:id/asset-ledger', async (req, res) => {
+  try {
+    const ledger = require('../lib/underwriting/asset-ledger');
+    res.json(await ledger.computeAssetLedger(req.params.id));
+  } catch (e) { console.warn('[asset-ledger] read error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/asset-ledger/entries', async (req, res) => {
+  const appId = req.params.id;
+  const b = req.body || {};
+  try {
+    const ledger = require('../lib/underwriting/asset-ledger');
+    const problem = ledger.entryProblem(b);
+    if (problem) return res.status(400).json({ error: problem });
+    const amount = b.amount != null && String(b.amount).trim() !== '' ? Number(b.amount) : null;
+    const include = typeof b.include === 'boolean' ? b.include : null;
+    const trim = (v, n) => { const s = String(v == null ? '' : v).trim(); return s ? s.slice(0, n) : null; };
+    if (b.kind === 'override') {
+      // One override per (file, account): the upsert replaces a prior correction.
+      await db.query(
+        `INSERT INTO asset_ledger_entries
+           (application_id, kind, account_key, institution, account_number, holder, amount, include, note, created_by)
+         VALUES ($1,'override',$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (application_id, account_key) WHERE kind='override'
+         DO UPDATE SET amount=EXCLUDED.amount, include=EXCLUDED.include, note=EXCLUDED.note,
+                       institution=EXCLUDED.institution, account_number=EXCLUDED.account_number,
+                       holder=EXCLUDED.holder, updated_at=now()`,
+        [appId, trim(b.accountKey, 400), trim(b.institution, 160), trim(b.accountNumber, 60),
+         trim(b.holder, 160), amount, include, trim(b.note, 600), req.actor.id]);
+    } else {
+      await db.query(
+        `INSERT INTO asset_ledger_entries
+           (application_id, kind, institution, account_number, holder, amount, include, note, created_by)
+         VALUES ($1,'manual',$2,$3,$4,$5,$6,$7,$8)`,
+        [appId, trim(b.institution, 160), trim(b.accountNumber, 60), trim(b.holder, 160),
+         amount, include !== null ? include : true, trim(b.note, 600), req.actor.id]);
+    }
+    await audit(req, 'asset_ledger_entry', 'application', appId, {
+      kind: b.kind, accountKey: b.accountKey || null, amount, include,
+      holder: trim(b.holder, 160), institution: trim(b.institution, 160),
+    });
+    const led = await ledger.stampCondition(appId) || await ledger.computeAssetLedger(appId);
+    res.json({ ok: true, ledger: led });
+  } catch (e) { console.warn('[asset-ledger] write error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+});
+
+router.delete('/applications/:id/asset-ledger/entries/:entryId', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    if (!/^[0-9a-f-]{36}$/i.test(String(req.params.entryId || ''))) return res.status(400).json({ error: 'bad entry id' });
+    const ledger = require('../lib/underwriting/asset-ledger');
+    const r = await db.query(
+      `DELETE FROM asset_ledger_entries WHERE application_id=$1 AND id=$2
+       RETURNING kind, account_key, holder, institution, amount`,
+      [appId, req.params.entryId]);
+    if (!r.rows.length) return res.status(404).json({ error: 'not found' });
+    await audit(req, 'asset_ledger_entry_removed', 'application', appId, r.rows[0]);
+    const led = await ledger.stampCondition(appId) || await ledger.computeAssetLedger(appId);
+    res.json({ ok: true, ledger: led });
+  } catch (e) { console.warn('[asset-ledger] delete error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
 // Refresh the funded-date reconciliation from Encompass (owner-reported 2026-08-11:

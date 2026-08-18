@@ -61,6 +61,14 @@ const ALLOWLIST = new Set([
   // vendor answered it; no model chooses the template, the condition or the moment.
   'src/lib/order-inbox.js',
   'src/lib/esign/draw-wire.js',      // e-sign / draw-wire condition
+  // Plans & permits before the FIRST DRAW (owner-directed 2026-08-18): on a purchase the
+  // condition may be waived at closing and MUST re-populate when the first draw starts,
+  // pre-filled with the closing-time document. ensureDrawPlansCondition() instantiates the
+  // fixed, vetted `draw_cond_plans_permits` template (db/576, auto_apply='manual' so ONLY
+  // this module raises it) at that deterministic workflow moment. Not an AI path: no model
+  // chooses the template, the condition or the moment — it fires on the draw birth a human
+  // (the borrower's request or the coordinator's Start) set in motion.
+  'src/sitewire/plans-permits.js',
   // The Heter Iska condition ensure (ensureIskaCondition). rtl_cond_iska is a fixed,
   // vetted template (db/051); this instantiates it when the DocuSign package is sent or
   // completed so the executed Iska is never orphaned. Not an AI path — no model chooses

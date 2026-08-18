@@ -429,6 +429,40 @@ router.post('/files/:id/orders/:orderRowId/cancel', async (req, res) => {
   res.status(out.ok ? 200 : (out.error === 'bad_reasons' ? 400 : 502)).json(out);
 });
 
+// Delete a FAILED / DRYRUN attempt that never reached Class (owner-directed
+// 2026-08-18). The shared decision module (lib/appraisal/order-delete) refuses
+// anything the vendor has seen, anything paid, and anything with a filed
+// document — those are cancelled or kept, never deleted. Notes/revisions/
+// attachment rows cascade; the desk mirror re-syncs afterward.
+router.delete('/files/:id/orders/:orderRowId', async (req, res) => {
+  try {
+    const appId = req.params.id;
+    if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+    const id = bigintId(req.params.orderRowId);
+    if (!id) return res.status(404).json({ error: 'not_found' });
+    const order = (await db.query(`SELECT * FROM class_orders WHERE id=$1 AND application_id=$2`, [id, appId])).rows[0];
+    if (!order) return res.status(404).json({ error: 'not_found' });
+    const orderDelete = require('../lib/appraisal/order-delete');
+    const pi = (await db.query(
+      `SELECT settled_at, vendor_transaction_id, charge_started_at
+         FROM appraisal_payment_intents WHERE vendor='class' AND vendor_order_id=$1::bigint`, [order.id])).rows[0] || null;
+    const filed = (await db.query(
+      `SELECT count(*)::int n FROM class_attachments WHERE class_order_row=$1 AND document_id IS NOT NULL`, [order.id])).rows[0].n;
+    const verdict = orderDelete.mayDelete('class', order, { paymentIntent: pi, filedDocuments: filed });
+    if (!verdict.ok) return res.status(422).json({ error: verdict.reason, message: verdict.message });
+    await db.query(`DELETE FROM appraisal_payment_intents WHERE vendor='class' AND vendor_order_id=$1::bigint`, [order.id]);
+    await db.query(`DELETE FROM class_orders WHERE id=$1`, [order.id]);
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,detail)
+         VALUES ('staff',$1,'appraisal_order_attempt_deleted','application',$2,$3)`,
+        [req.actor.id, appId, JSON.stringify({ vendor: 'class', orderId: String(order.id), status: order.status, lastError: order.last_error || null })]);
+    } catch (_) { /* best-effort */ }
+    try { await require('../lib/appraisal-order-mirror').syncOne(appId); } catch (_) { /* best-effort */ }
+    res.json({ ok: true });
+  } catch (e) { console.warn('[class] delete attempt error:', (e && e.message) || e); res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------------------------------------------------------------------
 // CALLBACK SETUP. Deliberately NOT under /callbacks — that path is the public
 // receiver, mounted ahead of this router in server.js, and a staff route hidden

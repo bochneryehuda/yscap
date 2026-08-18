@@ -43,7 +43,7 @@ export const STATIONS = [
   { id: 'st-signing', label: 'Signing & Closing', sections: ['sec-esign', 'sec-closing'] },
   { id: 'st-delivery', label: 'Send to Investor', sections: ['sec-tapes'] },
   { id: 'st-draws', label: 'Construction Draws', sections: ['sec-draws'] },
-  { id: 'st-messages', label: 'Messages & History', sections: ['sec-messages'] },
+  { id: 'st-messages', label: 'Messages & History', sections: ['sec-tasks', 'sec-drafting', 'sec-messages'] },
 ];
 
 /* Inner anchors that external callers and page furniture jump to. Each names

@@ -189,6 +189,31 @@ async function esignSendGate(applicationId, { db = dbDefault, purpose } = {}) {
   const regBlockers = await registrationIssuabilityBlockers(applicationId, db);
   for (const b of regBlockers) outstanding.push(b);
 
+  // THE RATE-AND-TERM $2,000 CASH LIMIT (owner-directed 2026-08-18): a rate-&-term
+  // refinance whose registered structure hands the borrower more than $2,000 may not
+  // send the term-sheet package — switch it to a cash-out, validate the closing costs
+  // (real fees reduce the cash), or get the super-admin 'rate_term_cash' exception
+  // (approvedForApp — checked inside rateTermGate.check, which reports `blocked` only
+  // with no approved exception). ALLOWLIST, not a heter-iska carve-out (audit
+  // 258636b F3): the owner scoped this rule to the TERM SHEET, and the retry
+  // poller re-runs this gate for EVERY queued envelope purpose — a funded
+  // free-and-clear back-book file would otherwise dead-letter its draw wire
+  // form on an origination rule. So the blocker rides only the term-sheet
+  // package and the no-purpose snapshot (the staff panel / decide route).
+  // A read failure SKIPS the blocker (never stops every send over a hiccup — the
+  // structure-screen red warning still stands); the exception read inside fails CLOSED.
+  if (!purpose || purpose === 'term_sheet_package') {
+    try {
+      const rateTermGate = require('../rate-term-gate');
+      const rt = await rateTermGate.check(applicationId, db);
+      if (rt.blocked) outstanding.push({
+        code: 'rate_term_cash',
+        label: 'Rate-&-term cash to borrower within $2,000',
+        reason: rateTermGate.overMessage(),
+      });
+    } catch (_) { /* skip on error — see above */ }
+  }
+
   // A super-admin may approve a "send before clear-to-close" exception so a file
   // that isn't fully ready can still send the term-sheet package. The approval
   // names EXACTLY which outstanding requirements it waives (per-requirement

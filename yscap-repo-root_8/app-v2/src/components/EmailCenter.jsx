@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
+import PilotWriter from './PilotWriter.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    EMAIL CENTER — a modern Gmail/Outlook-style history of every email +
@@ -472,6 +473,10 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
         onChange={(e) => setBody(e.target.value)} onKeyDown={onKey} autoFocus />
       <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center' }}>
         <button className="btn primary small" onClick={send} disabled={busy || !body.trim()}>{busy ? 'Sending…' : (isNew ? 'Send message' : 'Send reply')}</button>
+        {/* Pilot AI (2026-08-18): fix / rewrite / draft the email — advisory,
+            replaces into the box only on "Use this". Staff surface (EmailCenter
+            is a staff screen). */}
+        <PilotWriter value={body} onReplace={(t) => setBody(t)} surface="staff" />
         <button className="btn ghost small" onClick={() => { if (isNew && onClose) onClose(); else setOpen(false); setBody(''); }} disabled={busy}>Cancel</button>
         {msg ? <span className="muted small">{msg}</span> : null}
       </div>

@@ -202,6 +202,11 @@ async function loadRuleContext(appId) {
     // silently evaluate as blank.
     payoff_lender: str(a.payoff_lender),
     payoff_loan_number: str(a.payoff_loan_number),
+    payoff_good_through: dateStr(a.payoff_good_through),
+    // Property owned FREE AND CLEAR (db/575) — `!!` so it is always concrete:
+    // an `is_false` rule row must hold on every file that never answered, or the
+    // widened payoff rules would strip the conditions off every refinance.
+    property_free_and_clear: !!a.property_free_and_clear,
     original_purchase_price: num(a.original_purchase_price),
     acquisition_date: dateStr(a.acquisition_date),
     /* HOW LONG THE BORROWER HAS OWNED IT, in whole months — DERIVED, read-only

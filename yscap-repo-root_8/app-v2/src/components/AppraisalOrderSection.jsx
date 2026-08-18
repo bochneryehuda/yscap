@@ -3645,11 +3645,33 @@ function DrawerGroup({ title, tone, children }) {
   );
 }
 
-function DrawerRow({ order, kind }) {
+function DrawerRow({ order, kind, appId, onChanged }) {
   const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [delErr, setDelErr] = useState('');
   const ad = ADAPTERS[order._vendor];
   const prop = (order.summary || []).find((s) => s.label === 'Property');
   const reason = order.last_error || order.status_reason || null;
+  /* Delete a draft / failed attempt (owner-directed 2026-08-18: "they're just
+     sitting around like crazy"). Only offered on draft/failed rows — a CLOSED
+     (cancelled/rejected) order is a vendor-side fact and stays. The server
+     re-judges through lib/appraisal/order-delete (placed / paid / filed-document
+     attempts refuse there whatever the screen shows). */
+  const canDelete = (kind === 'failed' || kind === 'draft') && !!onChanged;
+  const doDelete = async () => {
+    const sure = await askConfirm(kind === 'draft'
+      ? 'Delete this draft order? It was never sent to the vendor — nothing is cancelled, the draft just goes away.'
+      : 'Delete this failed attempt? It never went through at the vendor — the record of the failure is kept in the audit trail.');
+    if (!sure) return;
+    setBusy(true); setDelErr('');
+    try {
+      if (order._vendor === 'amc') await api.amcDeleteOrder(order.id);
+      else if (order._vendor === 'class') await api.classDeleteOrder(appId, order.id);
+      else if (order._vendor === 'rv') await api.rvDeleteOrder(order.id);
+      await onChanged();
+    } catch (e) { setDelErr((e && e.message) || 'Could not delete this attempt.'); }
+    setBusy(false);
+  };
   return (
     <div style={{ borderTop: `1px solid ${LINE}` }}>
       <div onClick={() => setOpen((v) => !v)} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '9px 12px', cursor: 'pointer' }}>
@@ -3670,6 +3692,14 @@ function DrawerRow({ order, kind }) {
         <div style={{ borderTop: `1px solid ${LINE}`, padding: 12, background: '#FBF9F4' }}>
           {kind === 'failed' ? <DrawerFailedDetail order={order} /> : null}
           <WhatWasOrdered order={order} fee={ADAPTERS[order._vendor].orderFee(order)} />
+          {canDelete ? (
+            <div style={{ marginTop: 10 }}>
+              {delErr ? <div style={{ fontSize: 12.5, color: BAD, marginBottom: 6 }}>{delErr}</div> : null}
+              <button className="btn ghost small" disabled={busy} onClick={doDelete} style={{ color: '#8A322B' }}>
+                {busy ? 'Deleting…' : (kind === 'draft' ? 'Delete this draft' : 'Delete this failed attempt')}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

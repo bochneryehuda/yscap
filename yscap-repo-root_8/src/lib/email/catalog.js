@@ -20,6 +20,7 @@
 const provider = require('./index');          // active email provider (.sendMail)
 const { render } = require('./template');
 const cfg = require('../../config');
+const fileAddress = require('../file-address'); // config-only — safe here (no cycle)
 
 // Short file identifier for the SUBJECT of a file-scoped catalog email
 // ("YS-1042 · 123 Main St"), so an invite / draw / sign email names its file in
@@ -557,8 +558,13 @@ async function deliver(built, to, opts = {}) {
     // is sent on a specific officer's behalf (invites, registrations).
     // Owner-directed 2026-07-20: default a monitored Reply-To so even auth /
     // invite emails are repliable (never a dead-end no-reply).
+    // Owner-directed 2026-08-18 ("every single email must have the unique
+    // reply-to"): a file-scoped catalog email derives the per-file address from
+    // opts.applicationId exactly like notify._emailRow — previously every
+    // caller had to pass replyTo by hand, and a caller that passed
+    // applicationId but forgot replyTo silently shipped the generic inbox.
     const r = await provider.sendMail({ to, subject: built.subject, html: built.html, text: built.text,
-      replyTo: opts.replyTo || cfg.replyToDefault || null, from: opts.from || null,
+      replyTo: opts.replyTo || fileAddress.fileReplyTo(opts.applicationId) || cfg.replyToDefault || null, from: opts.from || null,
       // Optional attachments ride along (owner-directed 2026-08-12): a lead's
       // confirmation email carries the generated term-sheet PDF. Undefined when
       // none are passed, so every other caller is byte-identical.

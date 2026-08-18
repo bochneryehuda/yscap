@@ -772,6 +772,15 @@ function logEmailConfig() {
   const domain = fromAddr.split('@')[1];
   if (p === 'resend' && domain)
     console.log(`[email] Resend will only deliver if "${domain}" is a verified domain in your Resend account.`);
+  // Owner-directed 2026-08-18 ("every single email must have the unique
+  // reply-to"): the entire per-file/per-thread reply-address system
+  // (file+/title+/insurance+/rv+/closing+/chat+) hinges on CHAT_REPLY_DOMAIN.
+  // With it unset, every email silently degrades to the generic REPLY_TO inbox
+  // and no reply can thread back into a file — say so loudly at boot instead.
+  if (!cfg.chatReplyDomain)
+    console.warn('[email] CHAT_REPLY_DOMAIN is not set — emails CANNOT carry per-file reply-to addresses '
+      + `(file+<id>@…); replies will go to the generic inbox (${cfg.replyToDefault || 'the From address'}) `
+      + 'and will not thread back into loan files. Set CHAT_REPLY_DOMAIN to the verified inbound domain.');
 }
 
 if (require.main === module) {

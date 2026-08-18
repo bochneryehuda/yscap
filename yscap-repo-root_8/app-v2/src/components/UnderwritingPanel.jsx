@@ -1294,61 +1294,191 @@ function AssignmentChain({ assignmentChain }) {
   );
 }
 
-// Bank liquidity — sum every account's ending balance and show it against the cash this deal needs.
-// The per-account table makes clear WHAT was counted (and what was excluded because it sits in an
-// account that isn't the borrower's / a verified entity's).
-function BankLiquidity({ bankLiquidity }) {
-  if (!bankLiquidity || !(bankLiquidity.accounts || []).length) return null;
+// Bank liquidity — the VERIFIED-ASSETS LEDGER (db/574). The read-only document
+// assessment underneath is untouched; this table is the staff-editable layer on
+// top of it: correct an amount PILOT read, include/exclude an account, add an
+// account the reader never saw — and read the one number the desk asks before a
+// closing: MAX CASH TO CLOSE = verified assets − reserve requirement − closing
+// buffer (the algebraic inverse of the closing money gate, so the two never
+// disagree). Falls back to the plain read-only table when the ledger payload is
+// unavailable.
+function BankLiquidity({ bankLiquidity, assetLedger, appId, readOnly }) {
+  const [led, setLed] = useState(assetLedger || null);
+  const [edit, setEdit] = useState(null);      // { key|id, amount, include, note } being edited
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({ holder: '', institution: '', accountNumber: '', amount: '', note: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  useEffect(() => { setLed(assetLedger || null); }, [assetLedger]);
   const money = (n) => n == null ? '—' : `$${Math.round(n).toLocaleString('en-US')}`;
-  const req = bankLiquidity.requiredLiquidity;
-  const total = bankLiquidity.qualifyingTotal || 0;
+  const rows = led ? (led.rows || []) : null;
+  if ((!bankLiquidity || !(bankLiquidity.accounts || []).length) && !(rows && rows.length)) return null;
+  const req = led && led.requiredLiquidity != null ? led.requiredLiquidity : (bankLiquidity ? bankLiquidity.requiredLiquidity : null);
+  const total = led ? (led.verifiedTotal || 0) : ((bankLiquidity && bankLiquidity.qualifyingTotal) || 0);
   const covered = req != null ? total >= req - 1 : null;
-  const accounts = bankLiquidity.accounts || [];
+  const maxCtc = led ? led.maxCashToClose : null;
+  const canEdit = !readOnly && !!led;
+
+  const save = async (entry) => {
+    setBusy(true); setErr('');
+    try {
+      const r = await api.assetLedgerSave(appId, entry);
+      if (r && r.ledger) setLed(r.ledger);
+      setEdit(null); setAdding(false);
+      setDraft({ holder: '', institution: '', accountNumber: '', amount: '', note: '' });
+    } catch (e) { setErr((e && e.message) || 'Could not save'); }
+    setBusy(false);
+  };
+  const remove = async (entryId) => {
+    setBusy(true); setErr('');
+    try {
+      const r = await api.assetLedgerDelete(appId, entryId);
+      if (r && r.ledger) setLed(r.ledger);
+      setEdit(null);
+    } catch (e) { setErr((e && e.message) || 'Could not remove'); }
+    setBusy(false);
+  };
+
+  const tileStyle = { border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px', minWidth: 150 };
+  const tileK = { fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' };
+  const inputStyle = { padding: '4px 8px', border: '1px solid var(--border,#D9D4C8)', borderRadius: 6, fontSize: 12.5, width: '100%', color: '#141B22', background: '#fff' };
+
+  // The read-only fallback rows when the ledger payload didn't come back.
+  const fallbackRows = (bankLiquidity && bankLiquidity.accounts || []).map((a) => ({
+    source: 'read', key: null, holder: a.holder, bankName: a.bankName, accountNumber: a.accountNumber,
+    holderIsBusiness: a.holderIsBusiness, statementCount: a.statementCount,
+    readAmount: a.ending, amount: a.ending, included: !!a.tied && a.ending != null, tied: a.tied, override: null,
+  }));
+  const shown = rows && rows.length ? rows : fallbackRows;
+
   return (
     <div style={{ marginBottom: 22 }}>
-      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Bank liquidity — do the accounts cover the cash needed?</h4>
+      <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 4px' }}>Verified assets — do the accounts cover the cash needed?</h4>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-        <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px', minWidth: 150 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>Liquid assets on file</div>
-          <div style={{ fontSize: 16, fontWeight: 700 }}>{money(total)}</div>
+        <div style={tileStyle}>
+          <div style={tileK}>Verified assets{led && led.adjusted ? ' (edited)' : ''}</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#141B22' }}>{money(total)}</div>
         </div>
-        <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px', minWidth: 150 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>Required liquidity</div>
-          <div style={{ fontSize: 16, fontWeight: 700 }}>{req != null ? money(req) : <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--muted,#4B585C)' }}>set once a product is registered</span>}</div>
+        <div style={tileStyle}>
+          <div style={tileK}>Required liquidity</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#141B22' }}>{req != null ? money(req) : <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--muted,#4B585C)' }}>set once a product is registered</span>}</div>
         </div>
         {covered != null && (
-          <div style={{ border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, background: 'var(--card,#fff)', padding: '8px 12px', minWidth: 150 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)' }}>{covered ? 'Covered' : 'Short by'}</div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: covered ? 'var(--good,#3F7A5B)' : 'var(--bad,#B4453B)' }}>{covered ? '✓' : money(bankLiquidity.shortfall)}</div>
+          <div style={tileStyle}>
+            <div style={tileK}>{covered ? 'Covered' : 'Short by'}</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: covered ? 'var(--good,#3F7A5B)' : 'var(--bad,#B4453B)' }}>{covered ? '✓' : money((led && req != null ? Math.max(0, req - total) : bankLiquidity && bankLiquidity.shortfall))}</div>
+          </div>
+        )}
+        {led && led.reserveRequirement != null && (
+          <div style={{ ...tileStyle, borderColor: 'var(--primary-border,#AECFD1)', background: 'var(--primary-soft,#E4EFF0)' }}>
+            <div style={tileK}>Max cash to close</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#1F5A60' }}>
+              {maxCtc != null ? money(maxCtc)
+                : <span style={{ fontSize: 12, fontWeight: 500, color: led && led.shortOfReserves ? 'var(--bad,#B4453B)' : 'var(--muted,#4B585C)' }}>
+                    {led && led.shortOfReserves ? 'verified assets don’t cover the reserves yet' : 'needs verified assets'}
+                  </span>}
+            </div>
+            {maxCtc != null && (
+              <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+                {money(led.verifiedTotal)} − {money(led.reserveRequirement)} reserves{led.closingBuffer > 0 ? ` − ${money(led.closingBuffer)} buffer` : ''}
+              </div>
+            )}
           </div>
         )}
       </div>
+      {err && <div style={{ color: '#B3261E', fontSize: 12.5, marginBottom: 8 }}>{err}</div>}
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
           <thead>
             <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
               <th style={{ padding: '4px 8px', fontWeight: 700 }}>Account holder</th>
-              <th style={{ padding: '4px 8px', fontWeight: 700 }}>Type</th>
               <th style={{ padding: '4px 8px', fontWeight: 700 }}>Bank</th>
               <th style={{ padding: '4px 8px', fontWeight: 700 }}>Account #</th>
-              <th style={{ padding: '4px 8px', fontWeight: 700, textAlign: 'right' }}>Ending balance</th>
+              <th style={{ padding: '4px 8px', fontWeight: 700, textAlign: 'right' }}>Read from docs</th>
+              <th style={{ padding: '4px 8px', fontWeight: 700, textAlign: 'right' }}>Verified amount</th>
               <th style={{ padding: '4px 8px', fontWeight: 700 }}>Counts?</th>
+              {canEdit && <th style={{ padding: '4px 8px' }} />}
             </tr>
           </thead>
           <tbody>
-            {accounts.map((a, i) => (
-              <tr key={i} style={{ borderTop: '1px solid var(--line,#EEE8DA)' }}>
-                <td style={{ padding: '4px 8px' }}>{a.holder || '—'}{a.statementCount > 1 ? <span style={{ color: 'var(--muted,#4B585C)' }}> · latest of {a.statementCount} statements</span> : null}</td>
-                <td style={{ padding: '4px 8px' }}>{a.holderIsBusiness ? 'Business' : 'Individual'}</td>
-                <td style={{ padding: '4px 8px' }}>{a.bankName || '—'}</td>
-                <td style={{ padding: '4px 8px', fontVariantNumeric: 'tabular-nums' }}>{a.accountNumber || '—'}</td>
-                <td style={{ padding: '4px 8px', textAlign: 'right' }}>{money(a.ending)}</td>
-                <td style={{ padding: '4px 8px', color: a.tied ? 'var(--good,#3F7A5B)' : 'var(--muted,#4B585C)' }}>{a.tied ? 'yes' : 'not counted — needs entity docs'}</td>
-              </tr>
-            ))}
+            {shown.map((r, i) => {
+              const rowId = r.key || r.id || String(i);
+              const editing = edit && edit.rowId === rowId;
+              return (
+                <tr key={rowId} style={{ borderTop: '1px solid var(--line,#EEE8DA)', opacity: r.source === 'stale_override' ? 0.6 : 1 }}>
+                  <td style={{ padding: '4px 8px', color: '#141B22' }}>
+                    {r.holder || '—'}
+                    {r.source === 'manual' && <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 700, color: '#856529', textTransform: 'uppercase' }}>added by staff</span>}
+                    {r.source === 'stale_override' && <span style={{ marginLeft: 6, fontSize: 10.5, color: 'var(--muted,#4B585C)' }}>no longer on file — remove</span>}
+                    {r.statementCount > 1 ? <span style={{ color: 'var(--muted,#4B585C)' }}> · latest of {r.statementCount} statements</span> : null}
+                  </td>
+                  <td style={{ padding: '4px 8px', color: '#141B22' }}>{r.bankName || '—'}</td>
+                  <td style={{ padding: '4px 8px', fontVariantNumeric: 'tabular-nums', color: '#141B22' }}>{r.accountNumber || '—'}</td>
+                  <td style={{ padding: '4px 8px', textAlign: 'right', color: 'var(--muted,#4B585C)' }}>{r.source === 'read' ? money(r.readAmount) : '—'}</td>
+                  <td style={{ padding: '4px 8px', textAlign: 'right', color: '#141B22', fontWeight: r.override || r.source === 'manual' ? 700 : 400 }}>
+                    {editing ? (
+                      <input style={{ ...inputStyle, width: 110, textAlign: 'right' }} inputMode="decimal" value={edit.amount}
+                        onChange={(e) => setEdit({ ...edit, amount: e.target.value })} placeholder={r.readAmount != null ? String(r.readAmount) : ''} />
+                    ) : money(r.amount)}
+                  </td>
+                  <td style={{ padding: '4px 8px' }}>
+                    {editing ? (
+                      <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', color: '#141B22' }}>
+                        <input type="checkbox" checked={!!edit.include} onChange={(e) => setEdit({ ...edit, include: e.target.checked })} /> counts
+                      </label>
+                    ) : (
+                      <span style={{ color: r.included ? 'var(--good,#3F7A5B)' : 'var(--muted,#4B585C)' }}>
+                        {r.included ? 'yes' : (r.source === 'read' && !r.tied ? 'not counted — needs entity docs' : 'no')}
+                        {r.override && (r.override.amount != null || r.override.include != null) ? ' · edited' : ''}
+                      </span>
+                    )}
+                  </td>
+                  {canEdit && (
+                    <td style={{ padding: '4px 8px', whiteSpace: 'nowrap', textAlign: 'right' }}>
+                      {editing ? (
+                        <>
+                          <button className="btn small primary" disabled={busy} onClick={() => save({
+                            kind: 'override', accountKey: r.key,
+                            institution: r.bankName, accountNumber: r.accountNumber, holder: r.holder,
+                            amount: edit.amount === '' ? null : edit.amount, include: edit.include, note: edit.note || null,
+                          })}>Save</button>{' '}
+                          <button className="btn small ghost" disabled={busy} onClick={() => setEdit(null)}>Cancel</button>
+                        </>
+                      ) : r.source === 'read' ? (
+                        <>
+                          <button className="btn small ghost" onClick={() => setEdit({ rowId, amount: r.override && r.override.amount != null ? String(r.override.amount) : (r.readAmount != null ? String(r.readAmount) : ''), include: r.included, note: (r.override && r.override.note) || '' })}>Edit</button>
+                          {r.override && r.override.id ? <>{' '}<button className="btn small ghost" disabled={busy} onClick={() => remove(r.override.id)} title="Remove the correction and go back to what the documents say">Reset</button></> : null}
+                        </>
+                      ) : (
+                        <button className="btn small ghost" disabled={busy} onClick={() => remove(r.id)}>Remove</button>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
+      {canEdit && (
+        adding ? (
+          <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-end' }}>
+            {[['holder', 'Account holder'], ['institution', 'Bank / institution'], ['accountNumber', 'Account # (last 4)'], ['amount', 'Verified amount'], ['note', 'Note']].map(([k, label]) => (
+              <label key={k} style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, fontWeight: 600, color: 'var(--muted,#4B585C)', textTransform: 'uppercase', letterSpacing: '.02em' }}>
+                {label}
+                <input style={{ ...inputStyle, width: k === 'note' ? 200 : 130 }} value={draft[k]} inputMode={k === 'amount' ? 'decimal' : undefined}
+                  onChange={(e) => setDraft({ ...draft, [k]: e.target.value })} />
+              </label>
+            ))}
+            <button className="btn small primary" disabled={busy} onClick={() => save({ kind: 'manual', ...draft, amount: draft.amount === '' ? null : draft.amount, include: true })}>Add account</button>
+            <button className="btn small ghost" disabled={busy} onClick={() => setAdding(false)}>Cancel</button>
+          </div>
+        ) : (
+          <div style={{ marginTop: 8 }}>
+            <button className="btn small soft" onClick={() => setAdding(true)}>+ Add an account by hand</button>
+          </div>
+        )
+      )}
       {/* A statement recognized as an account already listed above. Shown because otherwise a row
           simply disappears from this table and the total drops with no stated reason — which is as
           confusing as the double-count it replaced, and this is the exact table where that was
@@ -1358,10 +1488,10 @@ function BankLiquidity({ bankLiquidity }) {
           above — its balance is in the total, so listing it here would tell the owner the very
           number they are looking at was not counted. The server's own shortfall text already
           filters on this flag; the table must agree with it. */}
-      {(bankLiquidity.notCountedTwice || []).filter((n) => !n.becameRepresentative).length > 0 && (
+      {((bankLiquidity && bankLiquidity.notCountedTwice) || []).filter((n) => !n.becameRepresentative).length > 0 && (
         <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted,#4B585C)' }}>
           <div style={{ fontWeight: 700, marginBottom: 3 }}>Not counted again</div>
-          {(bankLiquidity.notCountedTwice || []).filter((n) => !n.becameRepresentative).map((n, i) => (
+          {((bankLiquidity && bankLiquidity.notCountedTwice) || []).filter((n) => !n.becameRepresentative).map((n, i) => (
             <div key={i} style={{ padding: '2px 0' }}>
               {n.holder}{n.bankName ? ` (${n.bankName})` : ''}: {money(n.ending)} —{' '}
               {n.ambiguous
@@ -3622,7 +3752,7 @@ export default function UnderwritingPanel({ appId, docs = [], readOnly = false, 
       <ChainOfTitle chainOfTitle={chainOfTitle} />
       <AssignmentChain assignmentChain={assignmentChain} />
       <EntityChain entityChain={entityChain} />
-      <BankLiquidity bankLiquidity={bankLiquidity} />
+      <BankLiquidity bankLiquidity={bankLiquidity} assetLedger={data && data.assetLedger} appId={appId} readOnly={readOnly} />
       <Experience experience={experience} appId={appId} onChange={load} readOnly={readOnly || !canWaive} />
 
       {/* document freshness / staleness */}

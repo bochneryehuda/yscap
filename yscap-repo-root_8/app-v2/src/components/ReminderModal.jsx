@@ -3,6 +3,7 @@ import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { EmailInput } from './FormattedInputs.jsx';
 import { askConfirm } from '../lib/dialog.js';
+import PilotWriter from './PilotWriter.jsx';
 
 /**
  * Reminders + task management (#93) — the popup behind a file's "Remind" button.
@@ -190,6 +191,8 @@ export default function ReminderModal({ appId, team = [], onClose, onChanged }) 
                 title="Fill the message with the file's outstanding borrower items">
                 ⤵ Prefill outstanding conditions{data.outstanding.length ? ` (${data.outstanding.length})` : ''}
               </button>
+              {/* Pilot AI (2026-08-18): advisory fix/rewrite/draft on the reminder body. */}
+              <PilotWriter value={body} onReplace={(t) => setBody(t)} surface="staff" />
               <button type="button" className="btn ghost small" onClick={() => setBody('')}>Clear</button>
             </div>
 

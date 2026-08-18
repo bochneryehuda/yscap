@@ -330,6 +330,35 @@ router.post('/orders/:orderId/cancel', async (req, res) => {
   res.json(out);
 });
 
+// Delete a DRAFT / FAILED / DRYRUN attempt that never reached the AMC
+// (owner-directed 2026-08-18: "failed and draft attempts have no option to
+// delete them … but not the successful ones"). The shared decision module
+// refuses anything placed, paid, or carrying a filed document — a placed order
+// is CANCELLED, never deleted. Children (comments/revisions/status events)
+// cascade; the write journal survives by design (SET NULL). The desk mirror is
+// re-synced afterward so a deleted error attempt stops reading as "ordered".
+router.delete('/orders/:orderId', async (req, res) => {
+  try {
+    const order = await orderScoped(req, res);
+    if (!order) return;
+    const orderDelete = require('../lib/appraisal/order-delete');
+    const pi = (await db.query(
+      `SELECT settled_at, vendor_transaction_id, charge_started_at
+         FROM appraisal_payment_intents WHERE vendor='nan' AND vendor_order_id=$1::bigint`, [order.id])).rows[0] || null;
+    const filed = (await db.query(
+      `SELECT count(*)::int n FROM amc_order_documents WHERE order_id=$1 AND document_id IS NOT NULL`, [order.id])).rows[0].n;
+    const verdict = orderDelete.mayDelete('amc', order, { paymentIntent: pi, filedDocuments: filed });
+    if (!verdict.ok) return res.status(422).json({ error: verdict.reason, message: verdict.message });
+    await db.query(`DELETE FROM appraisal_payment_intents WHERE vendor='nan' AND vendor_order_id=$1::bigint`, [order.id]);
+    await db.query(`DELETE FROM amc_orders WHERE id=$1`, [order.id]);
+    await audit(req, 'appraisal_order_attempt_deleted', 'application', order.application_id, {
+      vendor: 'nan', orderId: order.id, status: order.status, lastError: order.last_error || null,
+    });
+    try { await require('../lib/appraisal-order-mirror').syncOne(order.application_id); } catch (_) { /* best-effort */ }
+    res.json({ ok: true });
+  } catch (e) { console.warn('[amc] delete attempt error:', (e && e.message) || e); res.status(500).json({ error: 'server error' }); }
+});
+
 // The message thread on an order (both directions), plus the unread count.
 router.get('/orders/:orderId/comments', async (req, res) => {
   const order = await orderScoped(req, res);

@@ -333,6 +333,22 @@
   .ts-admin-mnote{ font-size:.74rem; color:var(--muted-2); margin:.5rem 0 0; line-height:1.4; }
   .ts-admin-lockbtn{ margin-top:.85rem; background:none; border:0; color:var(--muted-2); font-family:var(--font-b); font-size:.74rem; cursor:pointer; text-decoration:underline; text-underline-offset:2px; padding:0; }
   .ts-admin-lockbtn:hover{ color:var(--teal-br); }
+  /* Admin accordion (2026-08-18 modernization — LAYOUT ONLY, every field id and
+     engine input unchanged). Each pricing-control group is a collapsible card;
+     a gold "In use" chip marks a section whose fields deviate from the
+     untouched defaults, so a folded panel still says where the overrides are. */
+  .ts-adm-sec{ border:1px solid var(--line); border-radius:12px; background:var(--ink-1); margin:.55rem 0 0; }
+  .ts-adm-sec[open]{ border-color:var(--teal-dp); }
+  .ts-adm-sec > summary{ list-style:none; display:flex; align-items:center; gap:.55rem; padding:.62rem .75rem; cursor:pointer; user-select:none; border-radius:12px; }
+  .ts-adm-sec > summary::-webkit-details-marker{ display:none; }
+  .ts-adm-sec > summary:hover .ts-adm-title, .ts-adm-sec > summary:focus-visible .ts-adm-title{ color:var(--teal); }
+  .ts-adm-sec > summary:focus-visible{ outline:2px solid var(--teal); outline-offset:-2px; }
+  .ts-adm-chev{ flex:none; width:.5rem; height:.5rem; border-right:2px solid var(--teal-br); border-bottom:2px solid var(--teal-br); transform:rotate(-45deg); transition:transform .18s ease; margin-top:-2px; }
+  .ts-adm-sec[open] > summary .ts-adm-chev{ transform:rotate(45deg); margin-top:-4px; }
+  .ts-adm-title{ font-family:var(--font-b); font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--teal-br); line-height:1.35; }
+  .ts-adm-chip{ margin-left:auto; flex:none; font-family:var(--font-b); font-size:.58rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:#AE8746; border:1px solid #AE8746; border-radius:100px; padding:.14rem .5rem; }
+  .ts-adm-body{ padding:.2rem .75rem .8rem; border-top:1px dashed var(--line); }
+  .ts-adm-body .ts-admin-group:first-child{ margin-top:.55rem; }
   [hidden]{ display:none !important; }
 
   /* =====================================================================
@@ -604,6 +620,11 @@
                  correct — there is no file yet. -->
             <input id="payoffLender" type="hidden" value="">
             <input id="payoffLoanNo" type="hidden" value="">
+            <!-- The payoff letter's good-through date + the FREE-AND-CLEAR flag
+                 (db/575) — same read-only file-fed shape as the two above.
+                 freeAndClear carries "1" when the property has no lien. -->
+            <input id="payoffGoodThrough" type="hidden" value="">
+            <input id="freeAndClear" type="hidden" value="">
             <!-- CASH-OUT PROCEEDS (owner-directed 2026-07-31: "if it's a cash out
                  how much the cash out process is going to be according to the
                  structure, just the field for it"). It DEFAULTS to what the
@@ -677,7 +698,36 @@
                 <div class="ts-admin-head">Pricing controls <span class="ts-admin-badge">Admin</span></div>
                 <p class="ts-admin-sub">Everything below flows into the on-screen term sheet and every export. The underlying markup is never shown — only the resulting rate, fees and cash to close change.</p>
 
-                <div class="ts-admin-group">Rate markup / YSP</div>
+                <details class="ts-adm-sec" open>
+                <summary><span class="ts-adm-chev" aria-hidden="true"></span><span class="ts-adm-title">Manual scenario <span class="ts-admin-note">— set the basis yourself</span></span><span class="ts-adm-chip" hidden>In use</span></summary>
+                <div class="ts-adm-body">
+                <label class="ts-admin-check"><input type="checkbox" id="tsManualOn" data-noshare> Price as a manual scenario (admin-set basis)</label>
+                <div class="ts-admin-grid2" id="tsManualFields" hidden>
+                    <div class="field"><label for="tsMLtv">Initial / as-is LTV (%)</label><div class="input"><input id="tsMLtv" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsMArv">ARV LTV (%)</label><div class="input"><input id="tsMArv" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsMLtc">LTC (%)</label><div class="input"><input id="tsMLtc" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsMRate">Note rate (%)</label><div class="input"><input id="tsMRate" data-noshare type="number" inputmode="decimal" step="0.125" min="0" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsMIr">Interest reserve (months)</label><div class="input"><input id="tsMIr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="from form"></div></div>
+                </div>
+                <p class="ts-admin-mnote" id="tsManualHint" hidden>Blank fields fall back to the program's computed value. Overrides may exceed program limits — the term sheet prices and exports on your basis and is marked <em>manually underwritten</em>.</p>
+                </div>
+                </details>
+                <details class="ts-adm-sec">
+                <summary><span class="ts-adm-chev" aria-hidden="true"></span><span class="ts-adm-title">Loan amount <span class="ts-admin-note">— type an exact amount</span></span><span class="ts-adm-chip" hidden>In use</span></summary>
+                <div class="ts-adm-body">
+                <div class="ts-admin-grid2">
+                    <!-- The ladder rung the file was REGISTERED at, handed back by the portal so a
+                         reopened file re-registers the same loan it was signed at rather than
+                         jumping to the maximum. Adopted once by adoptLadderPick(), then blanked. -->
+                    <input id="tsLadderPick" data-noshare type="hidden">
+                    <div class="field"><label for="tsTargetLoan">Loan amount ($)</label><div class="input"><span class="adorn">$</span><input id="tsTargetLoan" data-noshare type="text" inputmode="numeric" placeholder="maximum"></div></div>
+                </div>
+                <p class="ts-admin-mnote" id="tsTargetLoanHint">Blank = the deal's maximum. A <strong>smaller</strong> amount is simply taking less: no approval needed, exactly like a step on the pricing ladder. The construction budget stays fully financed and the reduction comes off the initial advance. To go <strong>above</strong> the maximum, set the basis below (LTV / LTC / ARV) — that is an exception and goes to an admin for approval.</p>
+                </div>
+                </details>
+                <details class="ts-adm-sec">
+                <summary><span class="ts-adm-chev" aria-hidden="true"></span><span class="ts-adm-title">Rate markup / YSP</span><span class="ts-adm-chip" hidden>In use</span></summary>
+                <div class="ts-adm-body">
                 <div class="ts-admin-grid2">
                     <div class="field"><label for="tsYspStd">Standard (%)</label><div class="input"><input id="tsYspStd" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
                     <div class="field"><label for="tsYspGold">Gold (%)</label><div class="input"><input id="tsYspGold" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
@@ -687,9 +737,12 @@
                 <div class="ts-admin-grid2">
                     <div class="field"><label for="tsYspGoldT1">Gold top tier (%)</label><div class="input"><input id="tsYspGoldT1" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0 (no markup)"></div></div>
                 </div>
-                <p class="ts-admin-mnote">Gold’s top-experience tier — Fix&nbsp;&amp;&nbsp;Flip / Bridge with 10+ deals, or Ground-up with 8+ — <strong>normally carries no markup (0%)</strong>. To add one for <em>this file</em>, type it in <strong>Gold top tier</strong> above; leave it blank to keep the top tier at zero. The <strong>Gold (%)</strong> field applies to every other Gold tier. For company-wide markup per tier across all programs, use the <strong>Pricing Admin Center</strong>. Enter <strong>0</strong> in any field to waive that markup entirely; leave a field blank to use the 0.5% default. On the <strong>Silver</strong> program the note buyer’s buy rate is floored at the note rate minus 1.00 point — markup above 1.00% is never earned, so the Silver markup is <strong>hard-capped at 1.00%</strong> (a larger value prices exactly as 1.00%).
-
-                <div class="ts-admin-group">Origination points</div>
+                <p class="ts-admin-mnote">Gold’s top-experience tier — Fix&nbsp;&amp;&nbsp;Flip / Bridge with 10+ deals, or Ground-up with 8+ — <strong>normally carries no markup (0%)</strong>. To add one for <em>this file</em>, type it in <strong>Gold top tier</strong> above; leave it blank to keep the top tier at zero. The <strong>Gold (%)</strong> field applies to every other Gold tier. For company-wide markup per tier across all programs, use the <strong>Pricing Admin Center</strong>. Enter <strong>0</strong> in any field to waive that markup entirely; leave a field blank to use the 0.5% default. On the <strong>Silver</strong> program the note buyer’s buy rate is floored at the note rate minus 1.00 point — markup above 1.00% is never earned, so the Silver markup is <strong>hard-capped at 1.00%</strong> (a larger value prices exactly as 1.00%).</p>
+                </div>
+                </details>
+                <details class="ts-adm-sec">
+                <summary><span class="ts-adm-chev" aria-hidden="true"></span><span class="ts-adm-title">Origination points</span><span class="ts-adm-chip" hidden>In use</span></summary>
+                <div class="ts-adm-body">
                 <div class="ts-admin-grid2">
                     <div class="field"><label for="tsOrigStd">Standard (%)</label><div class="input"><input id="tsOrigStd" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                     <div class="field"><label for="tsOrigGold">Gold (%)</label><div class="input"><input id="tsOrigGold" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
@@ -697,15 +750,22 @@
                     <div class="field"><label for="tsOrigManual">Manual (%)</label><div class="input"><input id="tsOrigManual" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                 </div>
                 <p class="ts-admin-mnote">The <strong>Manual</strong> value prices the manual scenario — it applies only once a custom LTV / LTC / ARV basis is set (the Manual card lights). The Manual Program prices on the Standard engine and has no company default of its own, so leaving it blank means <strong>“same as Standard”</strong> — including a Standard value you typed above (the placeholder shows the number a blank field will use). The other three programs are unaffected by it.</p>
-
-                <div class="ts-admin-group">Closing-cost overrides <span class="ts-admin-note">— all programs</span></div>
+                </div>
+                </details>
+                <details class="ts-adm-sec">
+                <summary><span class="ts-adm-chev" aria-hidden="true"></span><span class="ts-adm-title">Closing-cost overrides <span class="ts-admin-note">— all programs</span></span><span class="ts-adm-chip" hidden>In use</span></summary>
+                <div class="ts-adm-body">
                 <div class="ts-admin-grid2">
                     <div class="field"><label for="tsFeeUW">UW / processing / legal ($)</label><div class="input"><input id="tsFeeUW" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="2195"></div></div>
                     <div class="field"><label for="tsFeeCredit">Credit report ($)</label><div class="input"><input id="tsFeeCredit" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="150"></div></div>
                     <div class="field"><label for="tsFeeAppr">Appraisal — POC ($)</label><div class="input"><input id="tsFeeAppr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="800"></div></div>
                     <div class="field"><label for="tsFeeTitle">Title / escrow ($)</label><div class="input"><input id="tsFeeTitle" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto-estimate"></div></div>
                 </div>
-
+                </div>
+                </details>
+                <details class="ts-adm-sec">
+                <summary><span class="ts-adm-chev" aria-hidden="true"></span><span class="ts-adm-title">Deal exceptions <span class="ts-admin-note">— effective price &amp; out-of-pocket rehab</span></span><span class="ts-adm-chip" hidden>In use</span></summary>
+                <div class="ts-adm-body">
                 <div class="ts-admin-group">Assignment exception <span class="ts-admin-note">— approved effective purchase price</span></div>
                 <div class="ts-admin-grid2">
                     <div class="field"><label for="tsEffPrice">Effective purchase price ($)</label><div class="input"><span class="adorn">$</span><input id="tsEffPrice" data-noshare type="text" inputmode="numeric" placeholder="auto"></div></div>
@@ -719,29 +779,11 @@
                     <div class="field"><label for="tsOopRehab">Out-of-pocket rehab ($)</label><div class="input"><span class="adorn">$</span><input id="tsOopRehab" data-noshare type="text" inputmode="numeric" placeholder="0"></div></div>
                 </div>
                 <p class="ts-admin-mnote">Off by default — all rehab is financed. Any amount here (or the toggle above) needs the same admin approval as any pricing override. The total loan, rate and every cap stay the same; the amount is capped at the maximum shown, and the initial advance never exceeds its own cap.</p>
-
-                <div class="ts-admin-group">Loan amount <span class="ts-admin-note">— type an exact amount</span></div>
-                <div class="ts-admin-grid2">
-                    <!-- The ladder rung the file was REGISTERED at, handed back by the portal so a
-                         reopened file re-registers the same loan it was signed at rather than
-                         jumping to the maximum. Adopted once by adoptLadderPick(), then blanked. -->
-                    <input id="tsLadderPick" data-noshare type="hidden">
-                    <div class="field"><label for="tsTargetLoan">Loan amount ($)</label><div class="input"><span class="adorn">$</span><input id="tsTargetLoan" data-noshare type="text" inputmode="numeric" placeholder="maximum"></div></div>
                 </div>
-                <p class="ts-admin-mnote" id="tsTargetLoanHint">Blank = the deal's maximum. A <strong>smaller</strong> amount is simply taking less: no approval needed, exactly like a step on the pricing ladder. The construction budget stays fully financed and the reduction comes off the initial advance. To go <strong>above</strong> the maximum, set the basis below (LTV / LTC / ARV) — that is an exception and goes to an admin for approval.</p>
-
-                <div class="ts-admin-group">Manual scenario <span class="ts-admin-note">— set the basis yourself</span></div>
-                <label class="ts-admin-check"><input type="checkbox" id="tsManualOn" data-noshare> Price as a manual scenario (admin-set basis)</label>
-                <div class="ts-admin-grid2" id="tsManualFields" hidden>
-                    <div class="field"><label for="tsMLtv">Initial / as-is LTV (%)</label><div class="input"><input id="tsMLtv" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsMArv">ARV LTV (%)</label><div class="input"><input id="tsMArv" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsMLtc">LTC (%)</label><div class="input"><input id="tsMLtc" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsMRate">Note rate (%)</label><div class="input"><input id="tsMRate" data-noshare type="number" inputmode="decimal" step="0.125" min="0" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsMIr">Interest reserve (months)</label><div class="input"><input id="tsMIr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="from form"></div></div>
-                </div>
-                <p class="ts-admin-mnote" id="tsManualHint" hidden>Blank fields fall back to the program's computed value. Overrides may exceed program limits — the term sheet prices and exports on your basis and is marked <em>manually underwritten</em>.</p>
-
-                <div class="ts-admin-group">Term-sheet options <span class="ts-admin-note">— accrual &amp; deferred fee</span></div>
+                </details>
+                <details class="ts-adm-sec">
+                <summary><span class="ts-adm-chev" aria-hidden="true"></span><span class="ts-adm-title">Term-sheet options <span class="ts-admin-note">— accrual &amp; deferred fee</span></span><span class="ts-adm-chip" hidden>In use</span></summary>
+                <div class="ts-adm-body">
                 <div class="ts-admin-grid2">
                     <div class="field"><label for="tsAccrual">Interest accrual</label><div class="input select"><select id="tsAccrual" data-noshare>
                         <option value="non_dutch">Non-Dutch / Drawn (default)</option>
@@ -761,10 +803,61 @@
                     <label class="ts-admin-check"><input type="checkbox" id="tsMinIntManual" data-noshare checked> Include the 3-month minimum earned interest (<strong>on by default</strong> for a manual product — uncheck to remove)</label>
                 </div>
                 <p class="ts-admin-mnote">A minimum earned-interest (interest floor) provision — never a prepayment penalty. Off by default on Standard, Gold &amp; Silver; on by default on a manual scenario. The wording populates on the term sheet only when it is on.</p>
+                </div>
+                </details>
 
                 <button type="button" class="ts-admin-lockbtn" id="tsAdminHide">Lock admin mode &amp; reset to defaults</button>
             </div>
         </div>
+        <script>
+        /* Admin accordion "In use" chips (2026-08-18 modernization — LAYOUT ONLY,
+           no pricing logic). A section is flagged when any of its fields deviates
+           from the untouched default: a non-empty visible input, a checked box
+           (except tsMinIntManual, which is checked BY DEFAULT on a manual
+           product), or a non-default accrual pick. tsLadderPick is an internal
+           hidden hand-off and never counts. Recomputed on input/change AND on a
+           slow tick while the panel is open, because a restored snapshot sets
+           fields programmatically and fires no events. */
+        (function () {
+            var panel = document.getElementById('tsAdminPanel');
+            if (!panel) return;
+            function fieldEngaged(e) {
+                if (e.type === 'hidden' || e.id === 'tsLadderPick') return false;
+                if (e.tagName === 'SELECT') {
+                    if (e.id === 'tsAccrual') return e.value !== 'non_dutch';
+                    return e.selectedIndex > 0;
+                }
+                if (e.type === 'checkbox') {
+                    if (e.id === 'tsMinIntManual') return false; /* checked by default */
+                    return !!e.checked;
+                }
+                var v = String(e.value || '').trim();
+                /* A field the studio SEEDED with the company default (termsheet.js
+                   seedAdminDefaults stamps data-ts-seeded) is "in use" only when it
+                   DEVIATES from that default — the seeded value itself is exactly
+                   what a blank field would price at (audit 2026-08-18 finding 1). */
+                var seeded = e.getAttribute && e.getAttribute('data-ts-seeded');
+                if (seeded != null) return v !== String(seeded).trim();
+                return v !== '';
+            }
+            function inUse(sec) {
+                var els = sec.querySelectorAll('input,select');
+                for (var i = 0; i < els.length; i++) if (fieldEngaged(els[i])) return true;
+                return false;
+            }
+            function refresh() {
+                var secs = panel.querySelectorAll('details.ts-adm-sec');
+                for (var i = 0; i < secs.length; i++) {
+                    var chip = secs[i].querySelector('.ts-adm-chip');
+                    if (chip) chip.hidden = !inUse(secs[i]);
+                }
+            }
+            panel.addEventListener('input', refresh);
+            panel.addEventListener('change', refresh);
+            setInterval(function () { if (!panel.hidden) refresh(); }, 1500);
+            refresh();
+        })();
+        </script>
     </form>
 
     <div class="results-col">
@@ -1012,7 +1105,7 @@
 <script src="silver-program.js?v=silver9-bandeps-tiermk1-tsprog1"></script>
 <script src="title-cost.js?v=admin8-tsprog1"></script>
 <script src="address-autocomplete.js?v=admin9-tsprog1"></script>
-<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1"></script>
+<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1"></script>
 <script src="../float-actions.js?v=admin10-applyfix-tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

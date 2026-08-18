@@ -477,6 +477,10 @@ export const api = {
   tpoPlaceOrder:    (appId, kind, body) => req('POST', `/api/tpo/applications/${appId}/orders/${kind}/place`, body || {}),
   // Phase 6a — the read-only appraisal ("property profile report"); same borrower-safe scrub.
   tpoAppraisal: (appId) => req('GET', `/api/tpo/applications/${appId}/appraisal`),
+  // The file-overview slide-over — one borrower-safe builder, three doors.
+  tpoFileOverview:      (appId) => req('GET', `/api/tpo/applications/${appId}/overview-card`),
+  borrowerFileOverview: (appId) => req('GET', `/api/borrower/applications/${appId}/overview-card`),
+  staffFileOverview:    (appId) => req('GET', `/api/staff/applications/${appId}/overview-card`),
   tpoAppraisalPhotoBlob: async (docId) => (await download(`/api/tpo/appraisal-photo/${docId}?inline=1`)).blob,
   // Phase 6b — the read-only DRAW view (construction-draw progress); same borrower-safe scrub.
   tpoDraws: (appId) => req('GET', `/api/tpo/applications/${appId}/draws`),
@@ -610,6 +614,10 @@ export const api = {
   amcPayment:       (orderId) => req('GET', `/api/amc/orders/${orderId}/payment`),
   amcPay:           (orderId, body) => req('POST', `/api/amc/orders/${orderId}/pay`, body || {}),
   amcCancelOrder:   (orderId, reason) => req('POST', `/api/amc/orders/${orderId}/cancel`, { reason }),
+  // Delete a draft/failed/dryrun attempt that never reached the vendor (2026-08-18).
+  amcDeleteOrder:   (orderId) => req('DELETE', `/api/amc/orders/${orderId}`),
+  classDeleteOrder: (appId, orderRowId) => req('DELETE', `/api/class/files/${appId}/orders/${orderRowId}`),
+  rvDeleteOrder:    (orderId) => req('DELETE', `/api/richer-value/orders/${orderId}`),
   amcComments:      (orderId) => req('GET', `/api/amc/orders/${orderId}/comments`),
   amcPostComment:   (orderId, body) => req('POST', `/api/amc/orders/${orderId}/comments`, { body }),
   amcReadComment:   (orderId, commentId) => req('POST', `/api/amc/orders/${orderId}/comments/${commentId}/read`),
@@ -853,6 +861,10 @@ export const api = {
   // the condition. Works for a document that reached the condition without an
   // order too (a staffer's manual upload, an agent emailing the file address).
   staffSetDocSlot: (appId, docId, slot) => req('POST', `/api/staff/applications/${appId}/documents/${docId}/slot`, { slot }),
+  // Extra requested-document slots ON a condition (db/578): open a named slot
+  // ("Request another document within this condition") / remove an unfilled one.
+  conditionSlotAdd:    (appId, itemId, body) => req('POST', `/api/staff/applications/${appId}/checklist/${itemId}/extra-slots`, body),
+  conditionSlotRemove: (appId, itemId, key) => req('DELETE', `/api/staff/applications/${appId}/checklist/${itemId}/extra-slots/${encodeURIComponent(key)}`),
   staffCancelOrder:   (appId, kind, reopen) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/cancel`, reopen ? { reopen: true } : {}),
   // AN ORDER IS A TRACKED THING (2026-08-03): who is chasing it, when the answer
   // is expected, what is known about it, and what has happened to it. `staffId`
@@ -945,6 +957,11 @@ export const api = {
   // fields). Empty for most loans.
   staffTapeQuestions:(appId, tapeKey) => req('GET', `/api/staff/applications/${appId}/export/tape/${tapeKey}/questions`),
   staffTapeExport:   (appId, tapeKey, answers) => download(`/api/staff/applications/${appId}/export/tape/${tapeKey}${qs(answers)}`),
+  // "Send to investor" — MANUAL email of the Excel tape (owner-directed 2026-08-18):
+  // the compose preview (saved investor contacts, subject, figures, team Cc), then
+  // the send itself (body carries recipients + note + any questionnaire answers).
+  staffTapeSendPreview: (appId) => req('GET', `/api/staff/applications/${appId}/tape-send`),
+  staffTapeSend:        (appId, tapeKey, body) => req('POST', `/api/staff/applications/${appId}/tape-send/${tapeKey}`, body || {}),
   staffTapeLoans:    (tapeKey) => req('GET', `/api/staff/tapes/${tapeKey}/loans`),
   staffTapeBulkExport: (tapeKey, applicationIds, encompassOverrideReason) => downloadPost(`/api/staff/tapes/${tapeKey}/export/bulk${encompassOverrideReason ? qs({ encompassOverrideReason }) : ''}`, { applicationIds }),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),
@@ -1126,6 +1143,17 @@ export const api = {
   advanceClosing:    (appId, stage) => req('POST', `/api/staff/applications/${appId}/closing-workflow`, { stage }),
   // The closing workspace (the closer's desk).
   closingWorkspace:  (appId) => req('GET', `/api/staff/applications/${appId}/closing`),
+  // Property is free and clear — waives/reopens both payoff conditions (db/575).
+  payoffFreeAndClear: (appId, on) => req('POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, { on, confirm: true }),
+  // The rate-&-term $2,000 cash limit + the itemized closing costs (db/577).
+  rateTermGate:        (appId) => req('GET', `/api/staff/applications/${appId}/rate-term-gate`),
+  closingCostAdd:      (appId, item) => req('POST', `/api/staff/applications/${appId}/closing-costs`, item),
+  closingCostDelete:   (appId, costId) => req('DELETE', `/api/staff/applications/${appId}/closing-costs/${costId}`),
+  rateTermException:   (appId, body) => req('POST', `/api/staff/applications/${appId}/rate-term-gate/request-exception`, body),
+  // The verified-assets ledger + max cash to close (db/574).
+  assetLedger:       (appId) => req('GET', `/api/staff/applications/${appId}/asset-ledger`),
+  assetLedgerSave:   (appId, entry) => req('POST', `/api/staff/applications/${appId}/asset-ledger/entries`, entry),
+  assetLedgerDelete: (appId, entryId) => req('DELETE', `/api/staff/applications/${appId}/asset-ledger/entries/${entryId}`),
   // Read-only Encompass re-pull, then hand back the fresh workspace — so a funded
   // date the closer just entered in Encompass shows up on the reconciliation.
   closingReconcileRefresh: (appId) => req('POST', `/api/staff/applications/${appId}/closing/reconcile-refresh`),
@@ -1169,6 +1197,23 @@ export const api = {
   // Reminders + task management (#93). staffReminders returns { reminders,
   // contacts, outstanding } so the composer is populated in one round-trip.
   staffReminders:      (appId) => req('GET', `/api/staff/applications/${appId}/reminders`),
+  // The cross-file scheduled-tasks queue (task management, 2026-08-18).
+  // A-piece / B-piece split (internal-only, manual program).
+  staffAbPiece:        (appId) => req('GET', `/api/staff/applications/${appId}/ab-piece`),
+  staffAbPieceSave:    (appId, b) => req('POST', `/api/staff/applications/${appId}/ab-piece`, b),
+  staffReminderTasks:  (q) => req('GET', `/api/staff/reminder-tasks${q ? `?${new URLSearchParams(q)}` : ''}`),
+  // The queue's own Done/Dismiss door — reaches a task ASSIGNED to you even on a
+  // file outside your scope (the per-file PATCH below sits behind the file-scope
+  // middleware and 403s there).
+  staffReminderTaskUpdate: (rid, b) => req('PATCH', `/api/staff/reminder-tasks/${rid}`, b),
+  // The Drafting desk (2026-08-18): AI drafts an email from the file, copy-paste only.
+  staffDraftEmail:     (appId, b) => req('POST', `/api/staff/applications/${appId}/drafting`, b || {}),
+  // PILOT AI writing assistant (2026-08-18): advisory text-in/text-out. The
+  // surface picks the door — an external user's requests ride the borrower-safe
+  // scrub server-side.
+  pilotWriter: (surface, body) => req('POST',
+    surface === 'borrower' ? '/api/borrower/pilot-writer'
+      : surface === 'tpo' ? '/api/tpo/pilot-writer' : '/api/staff/pilot-writer', body || {}),
   staffCreateReminder: (appId, b) => req('POST', `/api/staff/applications/${appId}/reminders`, b),
   staffUpdateReminder: (appId, rid, b) => req('PATCH', `/api/staff/applications/${appId}/reminders/${rid}`, b),
   staffDeleteReminder: (appId, rid) => req('DELETE', `/api/staff/applications/${appId}/reminders/${rid}`),

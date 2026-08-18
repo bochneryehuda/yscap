@@ -889,6 +889,13 @@ router.get('/:appId', async (req, res, next) => {
     // an unverified LLC → require the operating agreement) already lives in the bank-statement check.
     const bankLiquidity = assessBankLiquidity(mctx || {}, exts.rows, { requiredLiquidity });
 
+    // The staff-editable assets ledger + max cash to close (db/574) — best-effort:
+    // an unreadable ledger must never take the file view down, and with no ledger
+    // rows this is the identity over the assessment above.
+    let assetLedger = null;
+    try { assetLedger = await require('../lib/underwriting/asset-ledger').computeAssetLedger(app.id, db); }
+    catch (_) { assetLedger = null; }
+
     // Experience / track record: for a HEAVY-rehab or GROUND-UP deal the borrower must have at least
     // one VERIFIED comparable "anchor" project (right level + size, exited within 3 years). A missing
     // or unverified anchor is a DEALBREAKER that blocks clear-to-close (owner-directed) — enforced at
@@ -1462,6 +1469,8 @@ router.get('/:appId', async (req, res, next) => {
         // as the double-count it replaced, and on the very screen where the owner found that bug.
         notCountedTwice: bankLiquidity.notCountedTwice,
         findings: live(bankLiquidity.findings) },
+      // The editable verified-assets ledger + max cash to close (db/574).
+      assetLedger,
       experience: experience ? { demandTier: experience.demandTier, demandLabel: experience.demandLabel,
         requiredLabel: experience.requiredLabel, gated: experience.gated, hasVerifiedAnchor: experience.hasVerifiedAnchor,
         exceptionGranted: experience.exceptionGranted, anchors: experience.anchors, trackRecordCount: experience.trackRecordCount,

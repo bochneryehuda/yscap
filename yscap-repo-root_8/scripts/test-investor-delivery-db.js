@@ -18,6 +18,11 @@ if (!process.env.DATABASE_URL) {
   process.exit(0);
 }
 
+// The unique reply-to (owner-directed 2026-08-18) is minted from CHAT_REPLY_DOMAIN,
+// so the suite pins the per-file address behavior with a domain configured (and the
+// desk fallback by clearing it live below). Set BEFORE config loads.
+process.env.CHAT_REPLY_DOMAIN = process.env.CHAT_REPLY_DOMAIN || 'reply.pilot.test';
+
 const crypto = require('crypto');
 const db = require('../src/db');
 const send = require('../src/sitewire/investor-delivery-send');
@@ -276,7 +281,12 @@ const ID = require('../src/sitewire/investor-delivery');
   ok('I8f the subject names the draw and the property', /\bDraw 1\b/.test(msg.subject) && /Parrish/.test(msg.subject));
   ok('I8f2 …and never the old "Draw #1" form', !/Draw\s*#/.test(String(msg.subject)));
   ok('I8g it comes from the draw desk', /draws@yscapgroup\.com/.test(String(msg.from)));
-  ok('I8h replies go to the draw desk', /draws@yscapgroup\.com/.test(String(msg.replyTo)));
+  // Owner-directed 2026-08-18: "when sending out an email to an investor, it
+  // should have a unique reply-to" — the file's own address, so the reply fans
+  // out to the team and lands on the delivery card. (The desk fallback with no
+  // reply domain is pinned separately at I15b.)
+  eq('I8h replies go to the FILE\'s unique address', String(msg.replyTo),
+    `file+${String(app).toLowerCase()}@${require('../src/config').chatReplyDomain}`);
   ok('I8i the borrower is not on the actual message', !JSON.stringify([msg.to, msg.cc, msg.bcc]).toLowerCase().includes(email.toLowerCase()));
   ok('I8j the money is stated in the body', /25,000/.test(String(msg.text)) && /24,701/.test(String(msg.text)));
   ok('I8k the ask is in the body', /reimburse/i.test(String(msg.text)));
@@ -290,6 +300,25 @@ const ID = require('../src/sitewire/investor-delivery');
   eq('I11 the stored note buyer is the file\'s own label', stored.note_buyer_label, 'Fidelis Investors LLC');
   eq('I12 stored under the folded Fidelis key', stored.note_buyer_key, 'fidelis');
   ok('I13 the attachment manifest is stored', Array.isArray(stored.attachments) && stored.attachments.length >= 1);
+  // The delivery row stores its email thread key (db/580) — the join the desk's
+  // "Investor replies" card reads — and an investor's "Re:" reply derives the
+  // SAME key, which is the round-trip that puts their answer on this delivery.
+  const emailLog = require('../src/lib/email-log');
+  eq('I13b the delivery stores its email thread key', stored.thread_key, emailLog.threadKeyFor(app, msg.subject));
+  eq('I13c an investor "Re:" reply derives the SAME key', emailLog.threadKeyFor(app, 'Re: ' + msg.subject), stored.thread_key);
+  // The mailer here is a stub, so the wrapper's captureOutbound never runs —
+  // what THIS suite pins is our side of the contract: the send hands the
+  // wrapper the SAME pinned thread key the delivery row stores (the wrapper's
+  // capture behavior has its own coverage).
+  ok('I13d the send hands the wrapper the pinned thread key for Email Center capture',
+    !!(msg._ctx && msg._ctx.threadKey) && msg._ctx.threadKey === stored.thread_key);
+  await emailLog.captureInbound({ applicationId: app, subject: 'Re: ' + msg.subject,
+    from: 'funding@fidelis.example', text: 'Wire goes out tomorrow.', status: 'received' });
+  const capIn = (await db.query(
+    `SELECT from_email, preview FROM email_messages WHERE application_id=$1 AND thread_key=$2 AND direction='inbound'`,
+    [app, stored.thread_key])).rows;
+  ok('I13e a captured investor reply lands under the SAME thread key the card reads',
+    capIn.length === 1 && capIn[0].from_email === 'funding@fidelis.example');
   // REIMBURSEMENT never attaches (or even attempts) the borrower's signed wire form —
   // we already wired the borrower, the investor is only paying us back (owner-directed
   // 2026-08-05). So the wire form is neither an attachment nor a "couldn't attach" note.
@@ -303,6 +332,19 @@ const ID = require('../src/sitewire/investor-delivery');
   const p3 = await send.deliveryPreview(app, DRAW);
   ok('I15 both deliveries show in the history', p3.history.length >= 2);
 
+  // ---- THE DESK FALLBACK (owner-directed 2026-08-18) ----
+  // With no inbound reply domain configured the unique address cannot exist;
+  // the reply-to must then fall back to the draw desk so a reply still reaches
+  // humans — never a reply-less email.
+  const cfgLive = require('../src/config');
+  const savedDomain = cfgLive.chatReplyDomain;
+  cfgLive.chatReplyDomain = null;
+  await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz', acknowledgeOmissions: true });
+  const noDomMsg = outbox[outbox.length - 1] || {};
+  ok('I15b with no reply domain the reply-to falls back to the draw desk',
+    /draws@yscapgroup\.com/.test(String(noDomMsg.replyTo)));
+  cfgLive.chatReplyDomain = savedDomain;
+
   // And it REFUSES when the borrower has not agreed — re-checked at send time, not trusted from
   // the preview the screen fetched earlier.
   await db.query(`UPDATE draw_findings SET status='delivered', accepted_at=NULL, accepted_via=NULL WHERE id=$1`, [fid]);
@@ -310,13 +352,13 @@ const ID = require('../src/sitewire/investor-delivery');
   try { await send.sendInvestorDelivery(app, DRAW, {}); } catch (e) { refused = true; refusedMsg = e.message; }
   ok('I16 a draw the borrower has not agreed to is refused at send time', refused);
   ok('I17 and the refusal says why', /not agreed/.test(refusedMsg));
-  eq('I18 a refused delivery sends nothing at all', outbox.length, 2);   // the two successful sends only
+  eq('I18 a refused delivery sends nothing at all', outbox.length, 3);   // the three successful sends only
 
   // ================================================================ J. the MANUAL mode (#11)
   // A manual delivery is handled outside PILOT: it RECORDS the delivery (so the reminders stop) and
   // sends NO email. db/474 widened the funding_mode CHECK on all three tables to allow 'manual'.
   await db.query(`UPDATE draw_findings SET status='accepted', accepted_at=now(), accepted_via='portal', funding_mode='manual' WHERE id=$1`, [fid]);
-  const outboxBefore = outbox.length;   // 2 (the two successful emailed sends)
+  const outboxBefore = outbox.length;   // 3 (the three successful emailed sends)
   const man = await send.sendInvestorDelivery(app, DRAW, { staffId: null, staffName: 'Lisa Katz', mode: 'manual', note: 'Delivered through the Fidelis portal' });
   ok('J1 the manual delivery is recorded', !!man.id);
   eq('J2 it is recorded as the manual mode', man.funding_mode, 'manual');
