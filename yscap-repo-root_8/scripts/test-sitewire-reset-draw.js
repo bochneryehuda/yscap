@@ -5,7 +5,38 @@
  * (raw.reset_property_ids) so a re-push skips ONLY that copy, clears the mirrored draw rows, and KEEPS the
  * money ledger. Also proves the pushFile collision check excludes a tombstoned id but still parks a genuine
  * pre-existing property. DB-gated; Sitewire client stubbed (no network). Run: DATABASE_URL=... node scripts/test-sitewire-reset-draw.js */
-if (!process.env.DATABASE_URL) { console.log('SKIP test-sitewire-reset-draw (no DATABASE_URL)'); process.exit(0); }
+/* ---- 0. THE BUTTON AND THE ROUTE AGREE ON THE CONFIRMATION CONTRACT (source
+   guard — runs with or without a database, so CI's no-DB job holds it too).
+   The route has required a typed `confirm_loan_number` since audit B-3
+   (2026-07-21, wrong-file protection) — and the panel's button shipped posting
+   an EMPTY body, so every click 400'd with the refusal in small grey print
+   naming a field the screen never offered: "the button doesn't work"
+   (owner-reported 2026-08-18). These pin BOTH sides to the same field so the
+   contract can never drift apart silently again, and pin the owner's
+   reset-ONLY semantics (nothing re-pushes until the coordinator starts it). */
+{
+  const fs0 = require('fs'); const path0 = require('path');
+  const read0 = (p) => fs0.readFileSync(path0.join(__dirname, '..', p), 'utf8');
+  let f0 = 0;
+  const ok0 = (name, cond) => { console.log(`  ${cond ? 'ok ' : 'FAIL'} - ${name}`); if (!cond) f0++; };
+  const route0 = read0('src/routes/sitewire.js');
+  const panel0 = read0('app-v2/src/components/DrawsPanel.jsx');
+  ok0('the route still requires the typed confirm_loan_number (audit B-3 stands)',
+    /reset-draw'/.test(route0) && /confirm_loan_number/.test(route0));
+  ok0('the panel SENDS confirm_loan_number on the reset call',
+    /reset-draw`,\s*\{\s*confirm_loan_number:/.test(panel0));
+  ok0('the loan number comes from a real prompt (await askPrompt)',
+    /await askPrompt\([^)]*loan number/i.test(panel0));
+  ok0('a cancelled prompt aborts with no request (null → return)',
+    /typed == null\) return/.test(panel0));
+  ok0('a refusal surfaces in the dialog, never only the small print',
+    /await showMessage\(why/.test(panel0));
+  ok0('the button is RESET-ONLY — "Reset draw setup", never "Reset & re-push" (owner-directed 2026-08-18)',
+    /'Reset draw setup'/.test(panel0) && !/Reset & re-push/.test(panel0));
+  if (f0) { console.log(`\n${f0} FAILED source-contract assertion(s)`); process.exit(1); }
+}
+
+if (!process.env.DATABASE_URL) { console.log('SKIP test-sitewire-reset-draw DB half (no DATABASE_URL) — source contract held above'); process.exit(0); }
 
 const cfg = require('../src/config');
 const client = require('../src/sitewire/client');
@@ -70,6 +101,68 @@ const count = async (sql, p) => Number((await db.query(sql, p)).rows[0].c) || 0;
   ok('collision: numeric vs string ids compare correctly', CP([{ id: 111, loan_number: 'L1' }], 'L1', [111]) === null);
   ok('collision: no loan number → null (nothing to collide)', CP(props, '', ['111']) === null && CP(props, null, []) === null);
   ok('collision: no match → null', CP(props, 'NOPE', []) === null);
+
+  // ---- 3. THE REAL ROUTE, over real HTTP (the half that was never tested — which is
+  // exactly how the empty-body 400 shipped: the suite exercised the FUNCTION while the
+  // route grew a gate the client never learned). ----
+  process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || '0'.repeat(64);
+  process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecrettestsecrettestsecret12';
+  const C = require('../src/lib/crypto');
+  const appSrv = require('../src/server');
+  const server = appSrv.listen(0);
+  await new Promise((r) => server.once('listening', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const sfx = rnd();
+  const mkStaff = async (role) => (await db.query(
+    `INSERT INTO staff_users (email,full_name,role,is_active,mfa_enabled,password_hash,token_version)
+     VALUES ($1,$2,$3,true,false,'x',0) RETURNING id`,
+    [`rsdw-${role}-${sfx}@test.local`, `Reset ${role}`, role])).rows[0].id;
+  const adminId = await mkStaff('admin');
+  const superId = await mkStaff('super_admin');
+  const adminTok = C.signJwt({ sub: adminId, kind: 'staff', role: 'admin', tv: 0 });
+  const superTok = C.signJwt({ sub: superId, kind: 'staff', role: 'super_admin', tv: 0 });
+  const post = async (tok, appId2, body) => {
+    const res = await fetch(`${base}/api/sitewire/files/${appId2}/reset-draw`, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
+      body: JSON.stringify(body || {}),
+    });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  };
+  updateCalls = [];
+  const PROP3 = 950000 + Math.floor(Math.random() * 9000);
+  const seeded = await seedManaged(PROP3);
+  const loanNo = (await db.query(`SELECT ys_loan_number FROM applications WHERE id=$1`, [seeded.app])).rows[0].ys_loan_number;
+  let h = await post(adminTok, seeded.app, { confirm_loan_number: loanNo });
+  ok('route: a plain ADMIN is refused — super admin only', h.status === 403 && /super admin/i.test(h.body.error || ''));
+  h = await post(superTok, seeded.app, {});
+  ok('route: an EMPTY body is a 400 that NAMES confirm_loan_number (the shipped dead-click)',
+    h.status === 400 && /confirm_loan_number/.test(h.body.error || ''));
+  h = await post(superTok, seeded.app, { confirm_loan_number: 'WRONG-123' });
+  ok('route: a wrong loan number is refused, nothing reset', h.status === 400 && /match/i.test(h.body.error || '')
+    && (await count(`SELECT count(*) c FROM sitewire_property_links WHERE application_id=$1 AND sitewire_property_id IS NOT NULL`, [seeded.app])) === 1);
+  h = await post(superTok, seeded.app, { confirm_loan_number: loanNo });
+  ok('route: the right loan number RESETS — ok:true over real HTTP', h.status === 200 && h.body.ok === true && h.body.was_managed === true);
+  ok('route: after the reset the file is back at the start (not managed → Start-draw card returns)',
+    (await orch.isManaged(seeded.app)) === false);
+  ok('route: the money ledger survived the HTTP reset too',
+    (await count(`SELECT count(*) c FROM draw_disbursements WHERE application_id=$1`, [seeded.app])) === 1);
+  // The owner's exact sequence: the Sitewire property was already deleted BY HAND before the
+  // click — the deactivate fails, and the reset must STILL complete (unlink + start over).
+  updateCalls = [];
+  const failUpdate = client.updateProperty;
+  client.updateProperty = async () => { const e = new Error('404 property not found'); e.status = 404; throw e; };
+  const PROP4 = 960000 + Math.floor(Math.random() * 9000);
+  const seeded2 = await seedManaged(PROP4);
+  const loanNo2 = (await db.query(`SELECT ys_loan_number FROM applications WHERE id=$1`, [seeded2.app])).rows[0].ys_loan_number;
+  h = await post(superTok, seeded2.app, { confirm_loan_number: loanNo2 });
+  ok('route: a property already deleted in Sitewire still resets (deactivate failure never blocks)',
+    h.status === 200 && h.body.ok === true && h.body.sitewire === 'failed'
+    && (await orch.isManaged(seeded2.app)) === false);
+  client.updateProperty = failUpdate;
+  await cleanup(seeded.app, seeded.bor);
+  await cleanup(seeded2.app, seeded2.bor);
+  await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[adminId, superId]]).catch(() => {});
+  server.close();
 
   console.log(`\n${fail === 0 ? 'ALL' : fail + ' FAILED,'} ${pass} reset-draw assertions ${fail === 0 ? 'passed' : ''}`);
   process.exit(fail === 0 ? 0 : 1);
