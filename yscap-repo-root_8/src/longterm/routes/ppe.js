@@ -186,6 +186,42 @@ async function loadProgram(scope, versionId) {
     if (!program || !Array.isArray(program.baseGrid) || !program.baseGrid.length) {
       return { program: null, reason: 'program_has_no_base_grid' };
     }
+
+    // THE ACCEPTED OVERLAY RULES, which until now reached NOTHING that prices.
+    //
+    // MEASURED, on a real database: a stored, accepted "decline under FICO 660" is returned by
+    // `rule-store.rulesForProgram`, is ABSENT from the program built here, and a FICO-600 loan prices
+    // `eligible:true` with no declines at all. Everything the suggestion-accept flow produces — and
+    // everything the rule-authoring service publishes — was decorative: written to `lt_ppe_rule`,
+    // listed by `GET /rules`, analysed by `GET /rules/coverage`, and evaluated by nobody. The blast
+    // radius is every consumer of this function: the quote, the breakdown, the canary, the scheduled
+    // canary, the coverage read, AND the agreement run — so OUR leg of a gate whose whole subject is
+    // "we agree with Lender Price on every eligibility AND ineligibility" was pricing with zero
+    // eligibility rules, and a PASS was a pass on a sheet that could not decline anything.
+    //
+    // `rulesForProgram` already returns the `rules.js` shape and already scopes the set correctly —
+    // house rules (investor NULL) plus this investor's plus this program's, effective-dated — so this
+    // is the missing CALL, not a second definition of the rule set.
+    //
+    // ORDER IS SAFE BY THE ENGINE'S OWN CONTRACT: `evaluateRules` sorts by `priority` then input
+    // order, stably. Appending therefore leaves the sheet's own rules first at equal priority, which
+    // is the right default — the sheet is the base and an overlay rides on top — and a rule that
+    // means to come earlier says so with its priority.
+    let storedRules = [];
+    try {
+      storedRules = await ruleStore.rulesForProgram(
+        db, scope,
+        (sheet.program && sheet.program.investor_id) || null,
+        (sheet.program && sheet.program.id) || null,
+      );
+    } catch (e) {
+      // FAILS CLOSED, and this is the whole point rather than defensive decoration. Swallowing the
+      // error would price the loan with no eligibility rules and call it eligible — which is exactly
+      // the defect being fixed, reintroduced as a "graceful degradation". A program whose rule set
+      // cannot be read is not a program that has no rules.
+      return { program: null, reason: `rules_unreadable: ${String((e && e.message) || e).slice(0, 120)}` };
+    }
+    if (storedRules.length) program.rules = (program.rules || []).concat(storedRules);
     // WHICH Lender Price programs a comparison against this sheet is about (db/574). It rides on the
     // owning PROGRAM row, not the sheet version, because it is a statement about the investor's
     // product family and survives every reprice of the sheet. NULL is the norm until a human states
@@ -197,6 +233,10 @@ async function loadProgram(scope, versionId) {
       // The investor's NAME, which is the only key into `program-registry`. Carried here so the
       // agreement run can ask that investor's own prepayment layer; every other caller ignores it.
       investorName: (sheet.investor && (sheet.investor.name || sheet.investor.code)) || null,
+      // HOW MANY accepted rules are in force, so a caller can say so rather than leave a reader to
+      // assume. Zero is a real answer and a different one from "we could not read them", which is a
+      // refusal above.
+      storedRuleCount: storedRules.length,
       reason: null,
     };
   } catch (e) {

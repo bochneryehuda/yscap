@@ -2768,3 +2768,53 @@ registry, the Deephaven rate-sheet, eligibility, prepayment and overlay layers, 
 the overlay cut engine were all built, tested, and required by nothing the server boots. **One caller was
 the whole difference.** `test-lt-reachability-gate.js` refused the now-stale rows and forced that into
 the same commit — which is the ledger working exactly as it was meant to.
+
+---
+
+**§2.46 — NOT ONE ELIGIBILITY RULE COULD REACH A PRICED PROGRAM, AND THE GATE PASSED ANYWAY
+(2026-08-18).** `lt_ppe_rule` is the home for every overlay rule this workstream produces: the
+suggestion-accept flow writes one (§2.37), the rule-authoring service publishes one (§2.42),
+`GET /ppe/rules` lists them and `GET /ppe/rules/coverage` analyses them for double charges and holes.
+**Nothing that prices ever read that table.**
+
+**MEASURED, ON A REAL DATABASE, BEFORE ANYTHING WAS CHANGED.** A stored, accepted
+`min_fico_660` — decline under FICO 660 — is returned by `rule-store.rulesForProgram`. The program
+`loadProgram` builds from the same sheet carried **0** rules of it. A FICO-600 loan came back
+`ELIGIBLE (priced) []`: eligible, priced, and no declines at all.
+
+**THE BLAST RADIUS IS EVERY CONSUMER OF ONE FUNCTION.** `loadProgram` in
+`src/longterm/routes/ppe.js` is the single door that turns a stored rate sheet into something the
+engine can price, and the quote, the breakdown, the canary, the scheduled canary, the sheet coverage
+read AND the agreement run all go through it. So **our leg of a gate whose entire subject is "we agree
+with Lender Price on every eligibility AND ineligibility" was running with no eligibility rules**, and
+a PASS was a pass on a sheet that was structurally incapable of declining anything.
+
+**THE SHAPE IS THIS WORKSTREAM'S RECURRING ONE — built, tested, and asked by nothing — one layer
+lower than the last three times.** §2.40 found it in a module. §2.43 found it in a test suite. §2.44
+found it in an HTTP route. §2.45 found it in a CAPABILITY inside a wired module. This one is the
+TABLE: a store with a reader, a writer, a route and a coverage analyser, and no consumer that prices.
+Every one of those layers had its own tests, and every one of them was green.
+
+**THE FIX IS THE MISSING CALL, NOT A SECOND DEFINITION.** `rulesForProgram` already returns rules in
+the `rules.js` shape and already scopes the set correctly — house rules (investor NULL) plus the
+investor's plus the program's, effective-dated — so `loadProgram` now calls it and appends. Order is
+safe by the engine's own contract: `evaluateRules` sorts by `priority` then input order, **stably**, so
+appending leaves the sheet's own rules first at equal priority (the sheet is the base, an overlay rides
+on top) and a rule that means to come earlier says so with its priority.
+
+**IT FAILS CLOSED, AND THAT IS THE POINT RATHER THAN DECORATION.** A rule set that cannot be READ
+refuses to price (`rules_unreadable: …`) instead of pricing with none — swallowing that error would
+reintroduce this exact defect wearing a "graceful degradation" label. **"This program has no rules" and
+"we could not read its rules" are different facts and the answer says which**; `storedRuleCount` rides
+on the result so a caller can state how many accepted rules are in force rather than leaving a reader
+to assume.
+
+**PROVEN, INCLUDING THE CONTROLS.** `scripts/test-lt-ppe-rules-reach-program-db.js` (18 assertions,
+real Postgres): the rule is on the program, a FICO-600 loan declines with the rule's own reason and
+code, a FICO-760 loan still prices, a sheet with **no** stored rules is byte-for-byte the pure
+mapper's output, another investor's rule does not reach this program (measured with a rule that would
+have declined the control loan), a HOUSE rule does reach it, and the unreadable case refuses and then
+recovers. A source guard pins that exactly ONE production module builds a program from a stored sheet,
+so the door stays the door. **Four mutations were each proven to fail it**: dropping the concat (5
+assertions red), swallowing the read error (2), removing the scoping (8), and adding a second
+production caller (the source guard).
