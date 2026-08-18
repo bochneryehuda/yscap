@@ -3059,6 +3059,16 @@ async function compPlanRoute(req, res) {
   }
   const mode = compPlan.MODES.includes(String(q.mode || '')) ? String(q.mode) : null;
   const loanAmountCents = intIn(q.loanAmountCents, 100000000000) || 0;
+  // ASKED-FOR-AND-UNUSABLE IS NOT THE SAME AS NOT-ASKED. Without this a loan amount of "abc" — or one
+  // past the ceiling — comes back as a plan with no breakdown, which reads exactly like a caller who
+  // never named a loan at all, and the person is left wondering why the money did not appear.
+  const loanAmountAsked = q.loanAmountCents !== undefined && q.loanAmountCents !== null && q.loanAmountCents !== '';
+  if (loanAmountAsked && !loanAmountCents) {
+    return res.status(400).json({
+      error: 'That is not a loan amount this can work on. Send it in whole cents.',
+      field: 'loanAmountCents',
+    });
+  }
 
   const resolved = await store.resolveCompPlanForOfficer(db, officerId, { companyScope: scope, mode });
   // The breakdown is computed only when there is a loan to compute it on. Asking for the PLAN alone
@@ -3234,7 +3244,11 @@ async function disqualifierReviewQueueRoute(req, res) {
   // THE CAP IS REPORTED, NEVER SILENT. The store's default is 100 and a battery routinely produces
   // several hundred questions, so a door that returned 100 of 299 without saying so would show a
   // reviewer a third of the queue as though it were the whole of it.
-  const limit = intIn(q.limit, 500) || 100;
+  // A LIMIT PAST THE CEILING IS CLAMPED AND SAID, never quietly turned into the default: asking for
+  // 1,000 and silently receiving 100 is the same silent cap this door reports on the other side.
+  const askedLimit = intIn(q.limit, 100000);
+  const limit = Math.min(askedLimit || 100, 500);
+  const limitClamped = !!askedLimit && askedLimit > 500;
   const items = await disqualifierReviewStore.listQueue(db, scope, {
     programId,
     status: q.status ? String(q.status) : 'open',
@@ -3248,6 +3262,7 @@ async function disqualifierReviewQueueRoute(req, res) {
     programId: programId || null,
     items,
     limit,
+    limitClamped,
     // What is NOT on this page, counted rather than left to be inferred from a list length.
     notShown: Math.max(0, (summary.open || 0) - items.length),
     summary,

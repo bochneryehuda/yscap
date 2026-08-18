@@ -231,6 +231,13 @@ const REQ = (over = {}) => Object.assign({ params: {}, body: {}, query: {}, acto
 
     res = await call(H.disqualifierReviewQueueRoute, REQ({ query: { programId: sheet.programId, limit: '500' } }));
     ok(res.body.items.length === before && res.body.notShown === 0, 'C4b …and asking for more pages returns them');
+    ok(res.body.limitClamped === false, 'C4c …with nothing clamped at a limit the door allows');
+
+    // Asking for MORE than the door allows is answered, not silently turned into the default — the
+    // same rule as the page count above, and the reason a caller can tell 500 from 100.
+    res = await call(H.disqualifierReviewQueueRoute, REQ({ query: { programId: sheet.programId, limit: '5000' } }));
+    ok(res.body.limit === 500, `C4d a limit past the ceiling is clamped to the ceiling, not to the default (${res.body.limit})`);
+    ok(res.body.limitClamped === true, 'C4e …and the answer says it was clamped');
 
     res = await call(H.disqualifierReviewQueueRoute, REQ({ query: { programId: unscoped.programId } }));
     ok(res.body.items.length === 0, 'C5 a different program\'s queue is its own');
