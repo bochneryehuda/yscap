@@ -26,6 +26,7 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'lt-settings-test-secret';
 const db = require('../src/db');
 const ltDb = require('../src/longterm/db');
 const auth = require('../src/auth');
+const settingsStore = require('../src/longterm/settings/store');
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -188,6 +189,44 @@ const check = (cond, msg) => {
     const adminMine = await call('GET', '/api/lt/settings/mine', adminTok);
     check(adminMine.json.settings.find((s) => s.key === 'ui.defaultProduct').followsCompany === true,
       'one person\'s choice does not become anybody else\'s');
+
+    // ── The two cases this screen used to get wrong ─────────────────────────
+    //
+    // Everything above sets 'long_term', which DIFFERS from our declared default
+    // of 'rtl' — the easy half, and the half that already worked. The screen
+    // decided "do you follow the company" by asking whether the value differed
+    // from OURS, which is a different question, and both cases below fell out of
+    // that. `routes/me.js` decides the same thing by asking whether a row exists,
+    // so a screen answering the other question tells a person one thing while the
+    // application does another.
+
+    // 1. CHOOSING THE SIDE THAT HAPPENS TO BE OUR PRE-FILLED VALUE IS STILL A CHOICE.
+    const backToDeclared = await call('PATCH', '/api/lt/settings/mine', loTok,
+      { settings: { 'ui.defaultProduct': 'rtl' } });
+    check(backToDeclared.status === 200, 'a person can choose the side that happens to equal our pre-filled value');
+    const { rows: kept } = await ltDb.query(
+      `SELECT 1 FROM lt_settings WHERE scope = $1 AND key = 'ui.defaultProduct'`, [`user:${officer.id}`]);
+    check(kept.length === 1, '…and the row is really kept rather than tidied away as "same as the default"');
+    const declaredPick = (await call('GET', '/api/lt/settings/mine', loTok))
+      .json.settings.find((s) => s.key === 'ui.defaultProduct');
+    check(declaredPick.followsCompany === false,
+      'THE ONE THAT MATTERS: …and the screen says they CHOSE it, not that they follow the company — the row is what the application reads, so a screen saying otherwise would tell somebody they will move with the company when they will not');
+
+    // 2. SOMEBODY WITH NO ROW IS SHOWN WHAT THEY ACTUALLY GET.
+    // Move the company default away from ours, for a person who has never chosen.
+    await ltDb.query(
+      `INSERT INTO lt_settings (scope, key, value, updated_at)
+       VALUES ('company', 'ui.defaultProduct', '"long_term"'::jsonb, now())
+       ON CONFLICT (scope, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`);
+    settingsStore.bust();
+    const neverChose = (await call('GET', '/api/lt/settings/mine', adminTok))
+      .json.settings.find((s) => s.key === 'ui.defaultProduct');
+    check(neverChose.followsCompany === true, 'somebody who never chose still follows the company');
+    check(neverChose.value === 'long_term',
+      'THE ONE THAT MATTERS: …and is shown the value they ACTUALLY GET — the personal scope layers only OUR declared defaults, so this screen used to read back "rtl" while the shell opened them on Long-Term');
+    check(neverChose.default === 'long_term', '…with the company value beside it, which is what "back to the default" means to a person');
+    await ltDb.query(`DELETE FROM lt_settings WHERE scope = 'company' AND key = 'ui.defaultProduct'`);
+    settingsStore.bust();
 
   } catch (e) {
     failures += 1;
