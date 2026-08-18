@@ -193,8 +193,22 @@ async function main() {
     await ltDb.query(`DELETE FROM lt_settings WHERE scope = 'company' AND key = 'borrower.longTermVisible'`).catch(() => {});
     settingsStore.bust();
     if (madeBorrowers.length) {
+      // THE LINK ROW COMES OUT FIRST. Confirming a link is the whole subject of
+      // this suite, and it writes `lt_borrower_links`, which carries a foreign key
+      // to `borrowers`. Without this the borrower DELETE below fails on that key —
+      // and the `.catch(() => {})` every cleanup ends with swallows the error, so
+      // the suite reports a clean pass and leaves two borrower rows behind on every
+      // run. Caught by counting rows after the fact rather than by anything failing,
+      // which is exactly how the leftover borrowers that made test-tpo-files-db look
+      // broken got there in the first place.
+      await ltDb.query('DELETE FROM lt_borrower_links WHERE borrower_id = ANY($1::uuid[])', [madeBorrowers]).catch(() => {});
       await db.query('DELETE FROM borrower_auth WHERE borrower_id = ANY($1::uuid[])', [madeBorrowers]).catch(() => {});
-      await db.query('DELETE FROM borrowers WHERE id = ANY($1::uuid[])', [madeBorrowers]).catch(() => {});
+      const { rowCount } = await db.query('DELETE FROM borrowers WHERE id = ANY($1::uuid[])', [madeBorrowers]);
+      if (rowCount !== madeBorrowers.length) {
+        // Say so rather than swallow it. A suite that quietly cannot clean up is a
+        // suite that will make some OTHER suite look broken next week.
+        console.error(`  WARNING: cleanup removed ${rowCount} of ${madeBorrowers.length} borrowers`);
+      }
     }
     await db.query('DELETE FROM staff_users WHERE email LIKE $1', [`${stamp}%`]).catch(() => {});
     if (server) server.close();
