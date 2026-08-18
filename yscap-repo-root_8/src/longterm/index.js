@@ -92,4 +92,18 @@ router.use('/dscr', require('./routes/dscr-pricer').makeRouter());
 // findings,scoreboard,quote,canary}
 router.use('/ppe', require('./routes/ppe'));
 
+// The PPE canary driver — the thing that ASKS the tick that fires the daily change-detection
+// schedules. It is armed HERE, on the Long-Term side, rather than in src/server.js, because the one
+// permitted back-end seam is server.js MOUNTING this router and nothing more; a Long-Term background
+// loop belongs inside Long-Term.
+//
+// IT IS OFF, AND `start()` RETURNING FALSE IS THE NORMAL CASE. Without an explicit
+// `LT_PPE_CANARY_DRIVER_ENABLED` — which is set nowhere in this repository, and deliberately not in
+// render.yaml — this arms no timer, opens no connection and calls no vendor, so merging it changes
+// nothing about the running system. HOW the tick should be driven in production (a Render CRON
+// service, the existing sync worker, or this in-process scheduler) changes what happens when two
+// instances run and costs a live vendor call either way, so it is an open owner question recorded in
+// docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.46 — not a decision taken here.
+require('./ppe/canary-driver').start();
+
 module.exports = { router };

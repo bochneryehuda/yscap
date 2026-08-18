@@ -88,6 +88,9 @@ console.log('/api/lt/ppe/* — the PPE HTTP surface');
 // 1) the router itself
 // ---------------------------------------------------------------------------
 ok(typeof route === 'function' && typeof route.use === 'function', 'the module IS an express router (server.js can mount it)');
+// 36 since the canary DRIVER's operator read (`GET /canary/driver`) — "is anything actually firing
+// the daily schedules, and what did it last do?", which had no answer at all while nothing drove the
+// tick.
 // 33 since the agreement HARNESS became reachable — the gate's missing measuring half, so a sheet
 // can be made publishable by being MEASURED rather than only by the recorded override.
 // 32 was the ONBOARDING + RATE-SHEET CONSOLE — create an investor, create a
@@ -97,7 +100,7 @@ ok(typeof route === 'function' && typeof route.use === 'function', 'the module I
 // ≥200-scenario agreement gate guarded a door that did not exist. (23 was the canary schedule.)
 // This count is a deliberate guard: adding a handler without exporting/testing it should FAIL here, so
 // bump it in the same commit that adds one — never delete the assertion to make a build green.
-ok(Object.keys(H).length === 35, `all 35 handlers are exported for testing (${Object.keys(H).length})`);
+ok(Object.keys(H).length === 36, `all 36 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
 for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',

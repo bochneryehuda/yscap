@@ -2907,3 +2907,46 @@ does not cry wolf. Over the canonical 299-scenario battery with real settings: 0
 it**, including the one that matters most: a mutant that dropped an adjustment unconditionally (so it
 touched CLEAN sheets too) failed 17 assertions **including the byte-for-byte control** — which is what
 proves that control can fail at all.
+**§2.49 — WHO SHOULD PRESS THE BUTTON EVERY NIGHT? AN OPEN QUESTION FOR THE OWNER (2026-08-18).**
+
+**What the daily check is.** Every day we can re-price a small set of test deals with our own engine
+and with Lender Price side by side, and record anything the two disagree on. That is the early warning
+that Lender Price has changed something under us. It is built, it works, and a person can start it by
+hand at any time.
+
+**What was wrong.** Nothing started it. Somebody could save the daily check, switch it on, and it would
+sit there forever without ever running — and no screen would say so. Worse, the go-live scoreboard
+counts the days the check came back clean, so a check nobody is running does not read as "not measured",
+it reads as a LOW SCORE. A deal could be held back for want of an alarm clock.
+
+**What has been built.** An alarm clock that lives inside the website itself, and it is **switched
+OFF**. Turning it on is one setting; nothing changes until somebody turns it. It is safe left off and
+safe turned on: if we ever run two servers at once, only one of them can start the daily check — they
+take a ticket in the database first, so we can never be billed twice for the same run. And if anything
+stops it running (it cannot get the ticket, Lender Price is unreachable, the saved check is broken), it
+does not run, and it writes down why. There is now a page that answers: when it last tried, what it
+did, and why it did not.
+
+**THE QUESTION FOR THE OWNER — and it is a business decision, not a technical one.** There are three
+ways to run the daily check, and one should be chosen before anything is switched on:
+
+1. **A separate small service that wakes up on a schedule.** Exactly how the nightly database backup
+   already runs, so it is a shape we already trust. It costs a little more each month (a second small
+   service) and it is one more thing to keep an eye on. It runs on time whatever else is going on.
+2. **The background worker we already have** (the one that syncs ClickUp and Encompass). Nothing new to
+   pay for, nothing new to set up. The catch: if that worker is ever stopped or backed up, the daily
+   check stops with it — the two jobs now share a fate.
+3. **Inside the website itself** — what has been built here. Nothing new to pay for, nothing new to set
+   up. The catch to be aware of: if we ever run more than one copy of the website (which happens
+   briefly during every deploy, and would happen permanently if we grow), each copy has its own clock.
+   The ticket in the database is what stops them both running, and it has been tested — but it is one
+   more moving part standing between us and a duplicate bill.
+
+**What it costs either way.** Every run is a real, paid call to Lender Price for each test deal in the
+check. So the two numbers to decide are **how often it runs** (once a day is the plan) and **how many
+deals are in the check** — together, those are the monthly bill.
+
+**What happens if we do nothing.** The daily check still runs only when a person remembers to press the
+button, and the scoreboard still reads a quiet week as a poor one. That is the state today, and it is
+written down in `docs/longterm/LT-ROUTES-UNREACHED.md` rather than left to be discovered from a screen
+that has gone quiet.

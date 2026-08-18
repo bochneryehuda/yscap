@@ -16,8 +16,9 @@ It fails BOTH ways. A row here for a route a screen now calls is STALE and is re
 that overstates what is unreachable is one nobody reads.
 
 **A row is not an endorsement.** Several of these are genuinely finished work waiting on a screen, and
-one of them — `POST /ppe/canary/tick` — is a scheduler nothing ticks, which is a real defect recorded
-here rather than smoothed over (see the note under the table).
+one of them — `POST /ppe/canary/tick` — was a scheduler nothing ticks, which is a real defect recorded
+here rather than smoothed over. A driver for it now exists and ships SWITCHED OFF, so the sentence is
+still true of the running system until somebody turns it on; see the note under the table.
 
 | route | why it has no screen |
 | --- | --- |
@@ -57,20 +58,35 @@ here rather than smoothed over (see the note under the table).
 | `GET /api/lt/ppe/canary/schedules` | Reads the daily canary schedule (D19). No schedule screen yet. |
 | `POST /api/lt/ppe/canary/schedules` | Writes one. Same. |
 | `DELETE /api/lt/ppe/canary/schedules/:investor` | Removes one. Same. |
-| `POST /api/lt/ppe/canary/tick` | **Nothing calls this, and nothing else does its job.** See below. |
+| `POST /api/lt/ppe/canary/tick` | **A driver now exists and is OFF by default.** See below. |
+| `GET /api/lt/ppe/canary/driver` | Is anything actually driving that tick, when did it last try, what did it do, and why did it not? An OPERATOR read, and the answer to the defect below. It has no screen because the PPE console has no schedule surface at all yet (the three `canary/schedules` rows above are the same gap); it is the first thing that surface should show, because "no schedule is due" and "nothing has asked in three weeks" look identical on every screen that exists today. |
 
-## The one row that is a defect, not a gap
+## The one row that was a defect, not a gap — and what has changed
 
 `POST /api/lt/ppe/canary/tick` is the tick that fires the daily change-detection schedules (D19, task
-#52). Searched: no cron, no worker, no `setInterval`, no Render job, no other route. **A schedule can be
-stored and will never fire**, so "the daily battery detects a Lender Price change" is true of the code
+#52). Searched: no cron, no worker, no `setInterval`, no Render job, no other route. **A schedule could be
+stored and would never fire**, so "the daily battery detects a Lender Price change" was true of the code
 and false of the running system. That is this workstream's recurring shape — built, tested, and asked by
-nothing — and it is written here rather than left for someone to discover from a quiet screen.
+nothing — and it was written here rather than left for someone to discover from a quiet screen.
 
-Fixing it is not a one-liner and must not be guessed at: whether the tick is driven by a Render CRON
-service (the shape the off-site backup uses), by the existing sync worker, or by a scheduler inside the
-process changes what happens when two instances run, and it is a live vendor call with a cost. Recorded
-as a task; the schedule screens above are owed the same pass.
+**What now exists (§2.46 of LENDER-PRICE-PARITY-STATUS.md):** an in-process driver,
+`src/longterm/ppe/canary-driver.js`, armed from `src/longterm/index.js` and **OFF BY DEFAULT** behind
+`LT_PPE_CANARY_DRIVER_ENABLED`. That switch is set NOWHERE in this repository — not in `render.yaml`,
+not in any script — so merging it changed nothing about the running system: with the switch unset the
+driver arms no timer, opens no connection and calls no vendor. Cross-instance safety is built in
+regardless of the switch: the tick is claimed by a durable database lease
+(`lt_ppe_canary_driver_state`, db/578 — the `sync_locks` pattern, named `lt_*` because Long-Term may
+not touch an RTL table), so two instances can never both fire one schedule and pay for two vendor runs.
+It fails closed and records why: a lease it cannot take, a tick that throws, a schedule that cannot run
+at all — each is written to that row and readable at `GET /ppe/canary/driver`.
+
+**What is still open, and it is the owner's call, not an engineer's:** WHICH driver production should
+use — a Render CRON service (the shape the off-site backup uses), the existing sync worker, or this
+in-process scheduler. Each behaves differently when two servers are running and each costs a live
+vendor call, so the in-process one is built behind the off switch and the choice is recorded as an
+owner question in `docs/longterm/LENDER-PRICE-PARITY-STATUS.md` §2.46. **Until somebody answers it and
+turns the switch on, the sentence at the top of this section is still true of the running system**, and
+the schedule screens above are owed the same pass.
 
 ## Not a route, but the same dead end one step nearer the user
 

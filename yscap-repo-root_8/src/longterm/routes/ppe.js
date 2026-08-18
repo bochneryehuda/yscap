@@ -904,22 +904,30 @@ async function deleteScheduleRoute(req, res) {
 }
 
 /**
- * POST /canary/tick — run the schedules that are genuinely due.
+ * runCanaryTick — the tick itself, as a FUNCTION. ONE definition, two callers.
+ *
+ * It was extracted out of the route handler the moment a second caller existed (the in-process driver,
+ * `src/longterm/ppe/canary-driver.js`), and the extraction is the point: a tick an operator fires by
+ * hand and a tick a cadence fires at 3am must select, refuse and report IDENTICALLY, or the agreement
+ * series would mean one thing on the days a person pressed the button and another thing the rest of the
+ * week — and the go-live gate reads that series. A second copy of this loop is the ordinary way that
+ * happens, so there is one. The route below is now three lines of HTTP.
  *
  * FAILS TOWARD NOT RUNNING, at every step, because the two failures are not symmetric: a canary that
  * does not fire is a gap somebody can see on the scoreboard, while one that fires when it should not is
  * N live vendor calls per tick, forever. So an unreadable last-run stamp, an unresolvable program, an
  * unexpandable battery and a paused schedule all HOLD — each with the reason attached to that schedule,
  * never swallowed and never turned into a silent success.
+ *
+ * Returns the payload the route answers with; it never writes a response and never throws for a reason
+ * a schedule owns (a schedule's own failure is reported against that schedule).
  */
-async function canaryTickRoute(req, res) {
-  const scope = readScope(req);
-  const b = req.body || {};
-  const nowMs = Date.now();
+async function runCanaryTick(scope, opts = {}) {
+  const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
   // ONE per tick by default. Each run is a whole battery against a live upstream, so the cap is about
   // the vendor, not about speed — and whatever it holds back is REPORTED, because a tick that quietly
   // skipped half its schedules looks exactly like a tick with nothing to do.
-  const maxPerTick = intIn(b.maxPerTick, 5) || 1;
+  const maxPerTick = intIn(opts.maxPerTick, 5) || 1;
 
   const rows = await scheduleStore.listSchedules(scope, { db });
 
@@ -990,7 +998,7 @@ async function canaryTickRoute(req, res) {
     }
   }
 
-  return res.json({
+  return {
     ok: true,
     scope,
     schedules: rows.length,
@@ -1005,7 +1013,27 @@ async function canaryTickRoute(req, res) {
     // A cap that hid work is SAID, never left to be inferred from a short list.
     overCap: skipped,
     maxPerTick,
-  });
+  };
+}
+
+/** POST /canary/tick — the tick above, over HTTP. The rule lives in `runCanaryTick`, never here. */
+async function canaryTickRoute(req, res) {
+  const b = req.body || {};
+  return res.json(await runCanaryTick(readScope(req), { nowMs: Date.now(), maxPerTick: b.maxPerTick }));
+}
+
+/**
+ * GET /canary/driver — is anything actually driving the tick, and what did it last do?
+ *
+ * The question this answers is the one the defect was: a schedule can be saved, enabled and perfectly
+ * valid while NOTHING calls the tick, and every screen that reads the run series shows that as a low
+ * score rather than as "nobody is asking". So this states, plainly and in one read: whether the
+ * in-process driver is switched on at all, when it last tried, what it did, why it did not, and — when
+ * two instances raced — which one was turned away.
+ */
+async function canaryDriverRoute(req, res) {
+  const canaryDriver = require('../ppe/canary-driver');
+  return res.json(await canaryDriver.describe(readScope(req), { db }));
 }
 
 // ---------------------------------------------------------------------------
@@ -2091,6 +2119,7 @@ router.post('/canary', requirePpeAdmin, wrap(canaryRoute, 'lt_ppe_canary_error')
 router.post('/canary/schedules', requirePpeAdmin, wrap(saveScheduleRoute, 'lt_ppe_schedule_save_error'));
 router.delete('/canary/schedules/:investor', requirePpeAdmin, wrap(deleteScheduleRoute, 'lt_ppe_schedule_delete_error'));
 router.post('/canary/tick', requirePpeAdmin, wrap(canaryTickRoute, 'lt_ppe_canary_tick_error'));
+router.get('/canary/driver', requirePpeAdmin, wrap(canaryDriverRoute, 'lt_ppe_canary_driver_error'));
 router.get('/rules/coverage', requirePpeAdmin, wrap(ruleCoverageRoute, 'lt_ppe_rule_coverage_error'));
 router.post('/suggestions/:id/accept', requirePpeAdmin, wrap(acceptSuggestionRoute, 'lt_ppe_accept_error'));
 router.post('/suggestions/:id/dismiss', requirePpeAdmin, wrap(dismissSuggestionRoute, 'lt_ppe_dismiss_error'));
@@ -2114,11 +2143,16 @@ router.post('/rate-sheets/:id/agreement/run', requirePpeAdmin, wrap(runAgreement
 router.post('/rate-sheets/:id/publish', requirePpeAdmin, wrap(publishRateSheetRoute, 'lt_ppe_publish_error'));
 
 module.exports = router;
+// The tick, as a function — the in-process driver's ONE way in. Exported here (and not moved into
+// `src/longterm/ppe/`) because everything the tick composes — the program load, the tolerances, the
+// battery refusals, the three persists — already lives in this file behind `runBattery`, and moving it
+// would be a second copy of that wiring for the driver to drift from.
+module.exports.runCanaryTick = runCanaryTick;
 module.exports.handlers = {
   health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
   ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
-  listSchedulesRoute, saveScheduleRoute, deleteScheduleRoute, canaryTickRoute,
+  listSchedulesRoute, saveScheduleRoute, deleteScheduleRoute, canaryTickRoute, canaryDriverRoute,
   createInvestorRoute, createProgramRoute, createRateSheetRoute, getRateSheetRoute,
   setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, rateSheetCoverageRoute, rateSheetDiffRoute, agreementRoute, runAgreementRoute,
   publishRateSheetRoute,
