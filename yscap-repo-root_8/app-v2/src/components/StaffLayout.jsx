@@ -455,7 +455,10 @@ export default function StaffLayout({ children }) {
             <NavLink className="sb-link" to="/internal/lt/borrowers" title="Which client each long-term file belongs to — what puts it on their own login."><NavIcon name="borrowers" />Borrowers</NavLink>
             <NavLink className="sb-link" to="/internal/lt/statuses" title="Encompass's milestones, our own stage names, and what the borrower is told — side by side."><NavIcon name="conditions" />Statuses</NavLink>
             <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
-            <NavLink className="sb-link" to="/internal/lt/ppe"><NavIcon name="pricing" />Pricing engine</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/ppe" end><NavIcon name="pricing" />Pricing engine</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/ppe/scenario"><NavIcon name="pricing" />Scenario entry</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/ppe/breakdown"><NavIcon name="pricing" />Pricing transparency</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/ppe/settings" title="The numbers the pricing engine runs on — how close our price must be to Lender Price, the rounding, the lowest price we quote, and the margin per investor."><NavIcon name="settings" />Pricing settings</NavLink>
             <NavLink className="sb-link" to="/internal/lt/sync"><NavIcon name="health" />Sync</NavLink>
             <NavLink className="sb-link" to="/internal/lt/settings"><NavIcon name="settings" />Settings</NavLink>
           </>

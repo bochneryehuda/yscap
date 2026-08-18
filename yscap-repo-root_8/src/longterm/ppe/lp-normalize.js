@@ -13,15 +13,20 @@
  * magnitudes against a live searchRaw sample and pass the right scale if it differs — the code's
  * standing "VERIFY the exact body against a live searchRaw" discipline.
  *
- * PROGRAM SELECTION: LP returns many programs; our engine prices ONE. Pass { program, product } to
- * compare against exactly that program; with no filter it MERGES every program and keeps the BEST
- * (highest) price at each coupon — a defensible "best execution LP offers at this rate" ladder.
+ * PROGRAM SELECTION: LP returns many programs; our engine prices ONE. The scope vocabulary is
+ * `lp-scope.js`'s — { program, product, lender, investor, programLike } — and it is matched by
+ * `lp-normalize-full`'s ONE matcher, never a copy here. With no filter at all it MERGES every program
+ * and keeps the BEST (highest) price at each coupon; that is a "best execution LP offers at this rate"
+ * ladder, NOT a comparison against our one program, which is why every caller that means to compare
+ * states a scope and the facade abstains when none is stated.
  *
  * LT-only. No RTL imports.
  */
 
+// The scope matcher is NOT redefined here — see the note on `programMatches` below.
+const lpFull = require('./lp-normalize-full');
+
 function isNum(x) { return typeof x === 'number' && Number.isFinite(x); }
-function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
 
 // Accept the full parse() output ({programs:[...]}), a bare programs array, or a single program.
 function programsOf(parsed) {
@@ -32,18 +37,26 @@ function programsOf(parsed) {
   return [];
 }
 
-// A program matches the filter when every provided key matches (case-insensitive, exact).
-function programMatches(p, filter) {
-  if (!filter) return true;
-  if (filter.program != null && norm(p.program) !== norm(filter.program)) return false;
-  if (filter.product != null && norm(p.product) !== norm(filter.product)) return false;
-  if (filter.lender != null && norm(p.lender) !== norm(filter.lender)) return false;
-  return true;
-}
+// A program matches the filter when every provided key matches (case-insensitive, exact — except
+// `programLike`, a family PATTERN).
+//
+// THIS IS A DELEGATION, NOT A COPY, AND THE COPY IT REPLACES HAD DRIFTED. This module used to carry
+// its own three-key matcher (program / product / lender) while `lp-normalize-full` — the deep capture
+// normalizer reading the SAME stored scope (`lp-scope.js`, db/574) — understood five. So a scope
+// stated as `{ programLike: "DSCR .* 30 Yr Fixed" }`, which is the ONLY way to name the Deephaven DSCR
+// family (Lender Price splits that one sheet into three programs by DSCR band), built NO filter here
+// at all: the ladder was merged across every program in the capture, and the facade's "not scoped, so
+// abstain" guard did not fire either because a scope object WAS present. A comparison that reads as
+// scoped and is not is worse than an unscoped one that says so.
+const programMatches = lpFull.programMatches;
+
+// The scope keys `lp-scope.validateScope` can store. Kept as a list so this and the filter build below
+// cannot fall out of step the way the matcher did.
+const FILTER_KEYS = ['program', 'product', 'lender', 'investor', 'programLike'];
 
 /**
  * Normalize an LP parsed result into { eligible, rungs, programsMatched }.
- *   opts: { program, product, lender, rateScale=1000, priceScale=1000 }
+ *   opts: { program, product, lender, investor, programLike, rateScale=1000, priceScale=1000 }
  *
  * eligible = at least one matched program has at least one usable rung (both rate AND price present).
  * A parsed result with zero programs (everything disqualified) is ineligible. When several matched
@@ -52,9 +65,15 @@ function programMatches(p, filter) {
 function normalizeLpParsed(parsed, opts = {}) {
   const rateScale = opts.rateScale == null ? 1000 : opts.rateScale;
   const priceScale = opts.priceScale == null ? 1000 : opts.priceScale;
-  const filter = (opts.program != null || opts.product != null || opts.lender != null)
-    ? { program: opts.program, product: opts.product, lender: opts.lender }
-    : null;
+  // EVERY scope key, not three of them (see `programMatches`). A key that is absent stays absent, so
+  // a filter is built only when the caller actually stated a scope — `null` still means "not scoped",
+  // which is the state the facade abstains on.
+  let filter = null;
+  for (const k of FILTER_KEYS) {
+    if (opts[k] == null) continue;
+    if (!filter) filter = {};
+    filter[k] = opts[k];
+  }
 
   const programs = programsOf(parsed).filter((p) => programMatches(p, filter));
 

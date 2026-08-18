@@ -58,6 +58,49 @@ const dq = { ready: true, lenderCount: 3, itemCount: 8, reasonCount: 8, lenders:
   ok(stEff.addlOccupancyType === 'Short_Term_Rental_Property', 'a rentalTerm:short request round-trips to Short_Term_Rental_Property in effectiveScenario');
 }
 
+// 2d) §2.5 AUDIT-MODE RUNG DIGEST — the full per-program rate ladder for a point-for-point diff
+//     against the Lender Price frontend, with counted (never silent) truncation.
+{
+  const { rungDigest, trimPrograms } = dp._internals;
+  const parsed = {
+    programCount: 2, lenderCount: 2, rungCount: 5, disqualifiedCount: 0,
+    programs: [
+      { lender: 'Deephaven', investor: 'Deephaven', lenderId: 'dh', program: 'DSCR 30Y', product: 'Fixed',
+        rungCount: 3, minRate: 6.5, minPoints: -1, maxPrice: 101,
+        rungs: [{ rate: 6.5, price: 101, points: -1 }, { rate: 6.75, price: 100.5, points: -0.5 }, { rate: 7.0, price: 100, points: 0 }] },
+      { lender: 'Deephaven', investor: 'Deephaven', lenderId: 'dh', program: 'DSCR 30Y IO', product: 'IO',
+        rungCount: 2, minRate: 6.9, minPoints: 0, maxPrice: 100.25,
+        rungs: [{ rate: 6.9, price: 100.25, points: 0 }, { rate: 7.1, price: 100, points: 0.25 }] },
+    ],
+  };
+  const d = rungDigest(parsed);
+  ok(d.programsReturned === 2 && d.programsTruncated === false, 'digest returns every program');
+  ok(d.programs[0].rungs.length === 3 && d.programs[0].rungs[0].rate === 6.5 && d.programs[0].rungs[0].price === 101,
+    'digest carries the FULL rung ladder (rate/price/points), not just the best rung');
+  ok(d.programs[0].rungsTruncated === false && d.programs[0].rungCount === 3, 'a fully-returned program is not flagged truncated');
+  // A rung cap TRUNCATES but COUNTS — never a silent drop.
+  const capped = rungDigest(parsed, { rungsLimit: 1 });
+  ok(capped.programs[0].rungs.length === 1 && capped.programs[0].rungsTruncated === true && capped.programs[0].rungCount === 3,
+    'a rung cap returns 1 but reports rungsTruncated + the true rungCount');
+  // A program cap truncates + counts too.
+  const cappedP = rungDigest(parsed, { programsLimit: 1 });
+  ok(cappedP.programsReturned === 1 && cappedP.programsTruncated === true, 'a program cap reports programsTruncated');
+  // The digest is ADDITIVE: the trimmed summary is unchanged (best-rung only, no rung ladder).
+  const trimmed = trimPrograms(parsed);
+  ok(trimmed.programs[0].minRate === 6.5 && !('rungs' in trimmed.programs[0]), 'the default trimmed summary is unchanged (no rung ladder)');
+}
+
+// 2e) §2.6 the informational product layer (D26/D34) attached to the price response.
+{
+  const { informationalOf } = dp._internals;
+  const big = informationalOf({ purpose: 'Purchase', value: 1.5e6, loan: 1.2e6, fico: 760, dscr: 1.25 });
+  ok(big && big.reserves && big.reserves.months === 6, 'informationalOf: a $1.2M loan carries 6 months reserves');
+  const small = informationalOf({ purpose: 'Purchase', value: 150000, loan: 90000, fico: 760, dscr: 1.25 });
+  ok(small.exceptions.length === 1 && small.exceptions[0].code === 'delegate_only_exception' && small.exceptions[0].requiresException,
+    'informationalOf: a $90k loan surfaces the loud delegate exception');
+  ok(informationalOf({ garbage: true }) !== undefined, 'informationalOf never throws on a junk scenario');
+}
+
 // 3) Exercise the secret gate directly by pulling its first layer's handle.
 //    layer[0] is the gate middleware added by router.use((req,res,next)=>{...}).
 const gate = diag.stack && diag.stack[0] && diag.stack[0].handle;

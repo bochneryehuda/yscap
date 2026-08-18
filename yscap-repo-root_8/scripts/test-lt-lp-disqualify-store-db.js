@@ -38,9 +38,16 @@ function ok(cond, label) { console.log(`${cond ? '  ok  ' : ' FAIL '} ${label}`)
   const db = new Pool({ connectionString: process.env.DATABASE_URL });
   store._setDb(db); // client's disqStore is the SAME cached module — one injection covers both
   try {
+    // Applied TWICE — a migration here re-runs on every boot, so the second pass is the claim worth
+    // testing. This replaces `ok(true, 'db/559 applied (idempotent)')`, which could not go red for any
+    // reason: not for a non-idempotent migration, and not even for an apply that threw (that would
+    // have ended the run in an unhandled rejection and a stack trace instead of a named assertion).
     const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '559_lt_lp_disqualify_search.sql'), 'utf8');
-    await db.query(sql); // idempotent
-    ok(true, 'db/559 applied (idempotent)');
+    let applyErr = null;
+    try { await db.query(sql); await db.query(sql); } catch (e) { applyErr = e; }
+    ok(!applyErr, `db/559 applies TWICE in a row without error — which is what idempotent means${applyErr ? `: ${applyErr.message}` : ''}`);
+    const present = await db.query("SELECT to_regclass('public.lt_lp_disqualify_search') IS NOT NULL AS ok");
+    ok(present.rows[0].ok === true, '…and the table it creates is there afterwards');
     ok(store.enabled() === true, 'the store is enabled once a DB is present');
 
     const key = 'test_' + Math.abs(process.pid || 1) + '_' + Date.now();

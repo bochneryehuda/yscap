@@ -85,11 +85,29 @@ router.use('/settings', require('./routes/settings'));
 //   /api/lt/dscr/{health,login-check,price,selftest}
 router.use('/dscr', require('./routes/dscr-pricer').makeRouter());
 
-// The Product & Pricing Engine. Lender Price stays AUTHORITATIVE — our engine
-// runs beside it in shadow and every disagreement becomes a finding. Reads are
-// open to any staff member; deciding a finding and running a canary are
-// admin-gated inside the router. /api/lt/ppe/{health,settings,investors,
-// findings,scoreboard,quote,canary}
+// The Product & Pricing Engine, mounted at /api/lt/ppe. Lender Price stays
+// AUTHORITATIVE — our engine runs beside it in shadow and every disagreement
+// becomes a finding. Reads are open to any staff member; every write except the
+// two pricing doors (`POST /quote`, `POST /breakdown`) is admin-gated inside the
+// router, which is where that rule is stated and enforced.
+// NO PATH LIST HERE, deliberately: this comment used to enumerate seven paths
+// ({health,settings,investors,findings,scoreboard,quote,canary}) and the router now
+// registers thirty-five, so the list was a hand-kept index that had silently gone
+// two-thirds stale. `routes/ppe.js` is the one place the surface is described.
 router.use('/ppe', require('./routes/ppe'));
+
+// The PPE canary driver — the thing that ASKS the tick that fires the daily change-detection
+// schedules. It is armed HERE, on the Long-Term side, rather than in src/server.js, because the one
+// permitted back-end seam is server.js MOUNTING this router and nothing more; a Long-Term background
+// loop belongs inside Long-Term.
+//
+// IT IS OFF, AND `start()` RETURNING FALSE IS THE NORMAL CASE. Without an explicit
+// `LT_PPE_CANARY_DRIVER_ENABLED` — which is set nowhere in this repository, and deliberately not in
+// render.yaml — this arms no timer, opens no connection and calls no vendor, so merging it changes
+// nothing about the running system. HOW the tick should be driven in production (a Render CRON
+// service, the existing sync worker, or this in-process scheduler) changes what happens when two
+// instances run and costs a live vendor call either way, so it is an open owner question recorded in
+// docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.49, answered 2026-08-18 (§2.53) — not a decision taken here.
+require('./ppe/canary-driver').start();
 
 module.exports = { router };

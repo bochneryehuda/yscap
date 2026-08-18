@@ -87,10 +87,40 @@ function detectDifferences(input, opts) {
 
   // --- Axis 1: eligibility vs disqualification -------------------------------
   if (ours.eligible && lpDeclinedThis) {
-    // The dangerous direction: we would price a loan Lender Price declines. Attach LP's reasons so a
-    // per-investor rule can be suggested (disqualify-analysis / crosswalk).
     const reasons = [];
     for (const d of lpDisq.declined) for (const r of (d.reasons || [])) reasons.push(r);
+    if (lpRungs.length) {
+      // LENDER PRICE CONTRADICTS ITSELF ACROSS THE PROGRAM FAMILY — it BOTH priced and declined.
+      //
+      // MEASURED LIVE 2026-08-17: Lender Price splits ONE Deephaven DSCR rate sheet into THREE
+      // PROGRAMS by DSCR band. On a scenario with dscr = 1.25 it PRICES `DSCR 1.00-1.24` and
+      // `DSCR < 1.00` (28 options each) while DECLINING `DSCR >= 1.25` with the reason
+      // "DSCR >=1.25%  only eligible on this program". Our sheet models that family as ONE program
+      // with the band as an additive adjustment, so it emits ONE answer: eligible.
+      //
+      // Reporting that as `disqualification_missing` is WRONG TWICE. (1) It reads as "we would price a
+      // loan Lender Price declines", which is the dangerous direction — and it is not what happened;
+      // the loan IS priceable at this investor, LP said so itself on the very same request. (2)
+      // parity-review mines rule SUGGESTIONS from this category's `lpReasons`, so it would propose we
+      // adopt "DSCR >=1.25% only eligible on this program" as an ELIGIBILITY RULE. That sentence is a
+      // statement about LP's own program partitioning, not about the borrower; adopting it would make
+      // our engine DECLINE loans Deephaven genuinely prices.
+      //
+      // It is NOT downgraded to agreement, and that restraint is the point: a family where one band
+      // declines and another prices leaves a real open question — WHICH band is authoritative, and is
+      // LP's priced answer a "leaked price" from the wrong container (§1a of the live findings)? That
+      // is a business question about the investor's own product split, and the standing rule is never
+      // to guess one. So it stays a `high` difference and still fails the gate; it is only NAMED
+      // honestly, so a human sees "LP contradicts itself across bands" instead of "our engine is
+      // dangerous", and the miner leaves it alone.
+      add('disqualification_split', 'high',
+        'Lender Price both PRICED and DECLINED this program family (it splits one sheet across several programs); which band governs is unresolved',
+        { lpReasons: reasons, ourValue: 'eligible', lpValue: 'priced_and_declined',
+          lpDeclinedPrograms: lpDisq.declined.map((d) => d.program).filter(Boolean), lpPricedRungs: lpRungs.length });
+      return finalize(differences); // still an eligibility disagreement; the price axes are moot
+    }
+    // The dangerous direction: LP declined EVERYTHING in scope and we would still price it. Attach
+    // LP's reasons so a per-investor rule can be suggested (disqualify-analysis / crosswalk).
     add('disqualification_missing', 'high', 'Lender Price declined this program; our engine priced it', { lpReasons: reasons, ourValue: 'eligible', lpValue: 'declined' });
     return finalize(differences); // an eligibility disagreement dominates; the price axes are moot
   }

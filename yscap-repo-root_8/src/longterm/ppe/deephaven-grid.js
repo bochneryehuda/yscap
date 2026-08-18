@@ -32,6 +32,7 @@
  */
 
 const { bandPredicate } = require('./ratesheet');
+const { sheetOverlapProblems } = require('./adjustment-overlap');
 
 function isNum(x) { return typeof x === 'number' && Number.isFinite(x); }
 function milli(x, scale) { return Math.round(x * scale); }
@@ -212,6 +213,27 @@ function gridToRateSheet(grid = {}, opts = {}) {
     problems.push({ where, reason: 'llpa table is neither banded (bands+fact) nor a predicate+adj' });
   });
 
+  // ---- (4) explicit ELIGIBILITY bounds (min/max FICO, LTV, DSCR, loan amount) ------------------
+  // Beyond the N/A grid boxes: the sheet's own eligibility envelope, each an open-ended or compound
+  // decline PREDICATE on a fact the scenario carries (fico/ltv/dscr in the grid's milli scale, loan
+  // amount RAW). A missing predicate is a bug (a rule that declines nothing is silently useless), so it
+  // is recorded in problems[] and skipped — never emitted as a decline-everything rule.
+  (Array.isArray(grid.eligibility) ? grid.eligibility : []).forEach((e, ei) => {
+    const where = `eligibility[${ei}]`;
+    if (!e || typeof e !== 'object' || !e.predicate || typeof e.predicate !== 'object') {
+      problems.push({ where, reason: 'eligibility rule needs a `predicate`' });
+      return;
+    }
+    ineligibilities.push({
+      code: e.code || `${prefix}_elig_${ei}`,
+      kind: 'eligibility',
+      dimension: e.dimension || 'eligibility',
+      declineReason: e.declineReason || 'Not eligible',
+      predicate: e.predicate,
+      priority: e.priority || 0,
+    });
+  });
+
   // ---- price limit ----------------------------------------------------------
   let priceLimit;
   if (grid.priceLimit && typeof grid.priceLimit === 'object') {
@@ -224,7 +246,22 @@ function gridToRateSheet(grid = {}, opts = {}) {
     };
   }
 
-  return { basePrices, adjustments, ineligibilities, priceLimit, problems };
+  // ---- (5) DOUBLE-CHARGE CHECK ------------------------------------------------------------------
+  // Every adjustment row above ACCUMULATES onto the price, so two rows covering one loan on one
+  // dimension — two overlapping DSCR blocks, or the same row pasted twice — charge the borrower twice.
+  // A grid that compiles cleanly and then double-charges is exactly the "fail closed, and never
+  // silently" case this file's own header promises, and until now `problems[]` came back EMPTY for it.
+  // The rows are NOT rewritten: an investor's sheet is theirs, so the compiler REPORTS and a human
+  // decides. Detection is delegated whole to `rule-coverage.analyzeRuleSet` through
+  // `adjustment-overlap` — the same one definition the pricer uses, so the compile-time report and the
+  // price-time report can never say different things about the same two rules.
+  for (const p of sheetOverlapProblems(adjustments, { where: 'adjustments' })) problems.push(p);
+
+  // THE FRAME TRAVELS WITH THE PRICES. A base ladder already net of our holdback and one gross of it
+  // are different numbers wearing the same name, and the difference is only visible if it rides along.
+  // Absent on a sheet that never declared one, which is every sheet but Deephaven's — so this is inert
+  // unless a grid states it.
+  return { basePrices, adjustments, ineligibilities, priceLimit, problems, priceFrame: grid.priceFrame };
 }
 
 function unmilli(x, scale) { return x / scale; }

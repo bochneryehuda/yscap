@@ -107,6 +107,46 @@ async function offline() {
   ok(full.criteria.specialMortgageOptions.every((s) => s && s.name), 'SMOs are {id,name} objects');
   ok(full.dynaToSmo === true, 'dynaToSmo true');
 
+  // 9b) §2.2/§2.3/§2.4 — DEVELOPER FRONTEND-PARITY FIXES (2026-08-17).
+  //
+  // A minimal DSCR scenario must post the SAME AUS list, the SAME closing-cost flags, and the SAME
+  // term structure a freshly-opened frontend page sends — and a LIVE foundation carrying the trimmed
+  // CONFIG-model values must be FORCED back to the frontend shape, never inherited.
+
+  // Term parity: loanYear is the AMORTIZATION (always 30 for DSCR); the selected note term rides
+  // termsCriteria ONLY. A 15-year selection → {loanYear:30, termsCriteria:[15]}.
+  const tParity = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, propertyType: 'SingleFamily', term: 15 });
+  ok(tParity.criteria.loanYear === 30, 'term parity: 15-yr selection keeps criteria.loanYear = 30 (amortization)');
+  ok(Array.isArray(tParity.termsCriteria) && tParity.termsCriteria.length === 1 && tParity.termsCriteria[0] === 15, 'term parity: termsCriteria = [15] carries the selected term');
+  ok(full.criteria.loanYear === 30 && full.termsCriteria[0] === 30, 'term parity: an omitted term defaults loanYear 30 / termsCriteria [30]');
+
+  // AUS "All": a minimal scenario sends the full published set — never a trimmed list or one engine.
+  ok(Array.isArray(full.brokerCriteria.ausList)
+    && JSON.stringify(full.brokerCriteria.ausList) === JSON.stringify(['DU', 'LP', 'GUS', 'MUW', 'None']),
+    'AUS defaults to All [DU, LP, GUS, MUW, None]');
+
+  // A minimal DSCR scenario sends the SAME AUS list as a newly-opened frontend page (the captured base).
+  const baseAus = require('../src/longterm/lenderprice/search-base.json').brokerCriteria.ausList;
+  ok(JSON.stringify(full.brokerCriteria.ausList) === JSON.stringify(baseAus),
+    'AUS list matches the captured frontend base exactly');
+
+  // An explicit caller AUS choice is honoured verbatim (the override the developer asked to preserve).
+  const ausOverride = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, propertyType: 'SingleFamily', aus: ['DU'] });
+  ok(JSON.stringify(ausOverride.brokerCriteria.ausList) === JSON.stringify(['DU']), 'an explicit AUS choice is honoured, not overwritten with All');
+
+  // Closing-cost defaults: forced true even when a live foundation carried them false.
+  ok(full.closingCost && full.closingCost.useClosingCost === true && full.closingCost.useCompanyDefaultClosingCost === true,
+    'closing-cost flags forced true (useClosingCost + useCompanyDefaultClosingCost)');
+
+  // A LIVE foundation carrying the trimmed/false CONFIG-model values is FORCED back to the frontend shape.
+  const drift = lp.buildSearch(
+    { purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, propertyType: 'SingleFamily' },
+    { base: { brokerCriteria: { ausList: ['None'] }, closingCost: { useClosingCost: false, useCompanyDefaultClosingCost: false } } });
+  ok(JSON.stringify(drift.brokerCriteria.ausList) === JSON.stringify(['DU', 'LP', 'GUS', 'MUW', 'None']),
+    'a foundation shortened to [None] is forced back to the full AUS set');
+  ok(drift.closingCost.useClosingCost === true && drift.closingCost.useCompanyDefaultClosingCost === true,
+    'a foundation carrying closing-cost flags false is forced back to true');
+
   // 10) Live SMO registry ids win over the built-in fallbacks.
   const reg = require('../src/longterm/lenderprice/search-model').smoRegistryFromList([{ id: 'LIVE1', name: 'DSCR' }]);
   const withReg = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, propertyType: 'SingleFamily' }, { smo: reg });
@@ -248,11 +288,13 @@ async function offline() {
   ok(allOpt.maxListingPerRate === -1, 'all-options: unlimited points per rate (maxListingPerRate -1)');
   ok(allOpt.targetInterpolatedPrices.length === 0 && allOpt.rateRange.from === null && allOpt.rateRange.to === null, 'all-options: no target price, full rate range');
 
-  // 17) Term-years + lock-days are HONORED (the silent-substitution / 15-year-15-day bug).
-  const t15 = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, dscr: 1.25, termYears: 15, lockDays: 15 });
-  ok(t15.criteria.loanYear === 15 && Array.isArray(t15.termsCriteria) && t15.termsCriteria[0] === 15 && t15.termsInMonths === false, 'term 15yr → loanYear 15 + termsCriteria [15]');
-  ok(t15.brokerCriteria.dayLocks === 15 && Array.isArray(t15.dayLocksCriteria) && t15.dayLocksCriteria[0] === 15, 'lock 15-day → dayLocks 15 + dayLocksCriteria [15]');
-  ok(t15.criteria.loanYear !== t15.brokerCriteria.dayLocks || 15 === 15, 'term (years) and lock (days) are distinct fields'); // both 15 here but different paths
+  // 17) Term-years + lock-days are HONORED (the silent-substitution / 15-year-15-day bug), with the
+  // §2.2 term-parity correction: criteria.loanYear is the AMORTIZATION and stays 30 for DSCR; the
+  // selected note term rides termsCriteria only (the frontend sends {loanYear:30, termsCriteria:[15]}).
+  const t15b = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, dscr: 1.25, termYears: 15, lockDays: 15 });
+  ok(t15b.criteria.loanYear === 30 && Array.isArray(t15b.termsCriteria) && t15b.termsCriteria[0] === 15 && t15b.termsInMonths === false, 'term 15yr → loanYear STAYS 30 (amortization) + termsCriteria [15]');
+  ok(t15b.brokerCriteria.dayLocks === 15 && Array.isArray(t15b.dayLocksCriteria) && t15b.dayLocksCriteria[0] === 15, 'lock 15-day → dayLocks 15 + dayLocksCriteria [15]');
+  ok(t15b.criteria.loanYear !== t15b.termsCriteria[0], 'amortization (loanYear 30) and selected term (termsCriteria 15) are distinct'); // the parity fix: they need NOT agree
   const appr = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5, appraisedValue: 460000 });
   ok(appr.criteria.appraisedValue === 460000 && appr.criteria.purchasePrice === 500000, 'appraised value is separate from purchase price');
   // kickoff flags are always present (every search kicks off the async disqualify), poll flips only cachedDisqualified.
@@ -508,12 +550,18 @@ async function offline() {
   delete process.env.LP_CASHOUT_AMOUNT_FIELD;
 
   // 31) AUDIT §3 — appraised value is NOT manufactured from the estimated value.
+  // §2.1/TASK-31 — "BLANK" is now the frontend's own blank form: the KEY IS ABSENT. The captured
+  // kickoff req-01 (a refinance with the Appraised Value box empty) carries no `criteria.appraisedValue`
+  // at all, while req-07 — the box filled — carries the number. We used to send `null`, a third form
+  // the vendor's screen never produces. The property these assertions exist for is unchanged and is
+  // asserted more strictly: not merely "not the purchase price", but "no value of any kind".
+  const blankAppr = (b) => !Object.prototype.hasOwnProperty.call(b.criteria, 'appraisedValue');
   const buyAppr = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000 });
-  ok(buyAppr.criteria.appraisedValue === null, 'purchase: appraised value is BLANK unless separately entered — never mirrored from the price');
+  ok(blankAppr(buyAppr), 'purchase: appraised value is BLANK (key absent) unless separately entered — never mirrored from the price');
   const coBlank = lp.buildSearch({ purpose: 'CashOut', value: 6e5, loan: 42e4 });
-  ok(coBlank.criteria.appraisedValue === null, '§3 cash-out with no appraisal: appraised is BLANK, not the $600k estimated value');
+  ok(blankAppr(coBlank), '§3 cash-out with no appraisal: appraised is BLANK (key absent), not the $600k estimated value');
   const refiBlank = lp.buildSearch({ purpose: 'Refinance', value: 5e5, loan: 4e5 });
-  ok(refiBlank.criteria.appraisedValue === null, '§3 refinance with no appraisal: appraised is blank');
+  ok(blankAppr(refiBlank), '§3 refinance with no appraisal: appraised is blank (key absent)');
   const coAsIs = lp.buildSearch({ purpose: 'CashOut', value: 6e5, loan: 42e4, asIsValue: 58e4 });
   ok(coAsIs.criteria.appraisedValue === 58e4, '§3 an explicit as-is value fills appraised on a cash-out');
 
@@ -554,7 +602,7 @@ async function offline() {
   // 35) GOLDEN FIXTURE A — the audit's canonical DSCR purchase (permanent request-structure fixture).
   const goldA = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 375000, fico: 760, dscr: 1.25,
     propertyType: 'SingleFamily', prepayMonths: 60, borrowerType: 'LLC', zip: '07036', state: 'NJ', countyFps: '34039' });
-  ok(goldA.criteria.loanPurpose === 'Purchase' && goldA.criteria.purchasePrice === 5e5 && goldA.criteria.appraisedValue === null, 'GOLDEN A: purchase 500k, appraised BLANK (not mirrored)');
+  ok(goldA.criteria.loanPurpose === 'Purchase' && goldA.criteria.purchasePrice === 5e5 && blankAppr(goldA), 'GOLDEN A: purchase 500k, appraised BLANK — key absent, the frontend\'s own blank form (not mirrored)');
   ok(goldA.criteria.loanAmount === 375000 && Math.abs(goldA.criteria.ltv - 0.75) < 1e-9, 'GOLDEN A: loan 375k, LTV 0.75');
   ok(goldA.criteria.fico === 760 && goldA.criteria.dscr === 1.25, 'GOLDEN A: FICO 760 / DSCR 1.25');
   ok(goldA.criteria.loanYear === 30 && goldA.brokerCriteria.dayLocks === 30, 'GOLDEN A: 30yr / 30-day lock');
@@ -567,11 +615,11 @@ async function offline() {
     propertyType: 'CondoNonWarr', attachment: 'Detached', prepayMonths: 60, borrowerType: 'LLC', termYears: 15, lockDays: 15,
     cashoutAmount: 50000, zip: '33101', state: 'FL', countyFps: '12086' });
   ok(goldB.criteria.loanPurpose === 'CashoutRefinance', 'GOLDEN B: cash-out → CashoutRefinance');
-  ok(goldB.criteria.purchasePrice === 6e5 && goldB.criteria.appraisedValue === null, 'GOLDEN B: estimated 600k, appraised BLANK (not manufactured)');
+  ok(goldB.criteria.purchasePrice === 6e5 && blankAppr(goldB), 'GOLDEN B: estimated 600k, appraised BLANK — key absent, the frontend\'s own blank form (not manufactured)');
   ok(goldB.criteria.loanAmount === 42e4 && Math.abs(goldB.criteria.ltv - 0.70) < 1e-9, 'GOLDEN B: loan 420k, LTV 0.70');
   ok(goldB.criteria.interestOnly === true, 'GOLDEN B: interest-only');
   ok(goldB.property.propertyType === 'Condos' && goldB.property.attachmentType === 'Detached' && goldB.criteria.nonWarrantableProject === true, 'GOLDEN B: non-warrantable condo, detached');
-  ok(goldB.criteria.loanYear === 15 && goldB.brokerCriteria.dayLocks === 15, 'GOLDEN B: 15yr / 15-day lock');
+  ok(goldB.criteria.loanYear === 30 && goldB.termsCriteria[0] === 15 && goldB.brokerCriteria.dayLocks === 15, 'GOLDEN B: 15yr term (termsCriteria [15], loanYear STAYS 30) / 15-day lock');
   ok(goldB.criteria.cashoutAmount === 50000 && goldB[sm.CASHOUT_INTERNAL] === 50000, 'GOLDEN B: cashoutAmount 50000 transmitted on criteria AND retained internally (the two agree)');
 
   // 37) AUDIT — advanced numerics are STRICTLY validated (no more silent coercion of "12abc" → 123).

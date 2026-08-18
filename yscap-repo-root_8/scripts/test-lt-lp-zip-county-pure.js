@@ -201,10 +201,13 @@ for (const [zip, state, fips, name] of KNOWN) {
     }
   }
   // and the leak itself, on the three the first guard missed
+  // §2.1/TASK-31 — the leak property is unchanged; the blank form these are cleared TO is now the
+  // frontend's own empty string rather than absence (all seven captures send ""), so the assertion
+  // reads `=== ''`. What it proves is the same and is what matters: the prior session's value is gone.
   const leaked = addrOf({ purpose: 'Purchase', loan: 4e5, ltv: 75, zip: '11211', state: 'NY', countyFps: '36047' });
-  ok(leaked.street === undefined && leaked.streetCont === undefined,
-    'STALE-5 a prior session\'s STREET does not ride along (it is not in effectiveScenario either, so nothing would have shown it)');
-  ok(leaked.zipExt === undefined,
+  ok(leaked.street === '' && leaked.streetCont === '',
+    'STALE-5 a prior session\'s STREET does not ride along (replaced by the frontend\'s own blank "")');
+  ok(leaked.zipExt === '',
     'STALE-6 …nor its ZIP+4, which is a LOCATION field sitting beside a different ZIP');
   ok(leaked.country === 'US', 'STALE-7 …while the structural country survives');
 }

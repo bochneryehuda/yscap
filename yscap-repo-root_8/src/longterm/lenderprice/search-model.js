@@ -29,6 +29,13 @@ const REGISTRY_WARNINGS = Symbol.for('lp.registryWarnings');
 // transmitted upstream. The live cash-out capture carried no legitimate vendor field, so we must not
 // invent or transmit one; the route surfaces this in effectiveScenario as an internal-only value.
 const CASHOUT_INTERNAL = Symbol.for('lp.cashoutInternal');
+// D27 — internal retention channel for the VACANT-vs-LEASED occupancy fact. Symbol-keyed (skipped by
+// JSON.stringify) so the resolved value is retained on the built payload for the eligibility overlay,
+// the route's effectiveScenario echo, and diagnostics/storage — but is NEVER transmitted upstream,
+// because no live capture confirms a Lender Price wire field for vacant-vs-leased (see the SEAM in
+// buildSearch and the field-registry note on deliberately-excluded occupancy tokens). We must not
+// invent or transmit one; the route surfaces this in effectiveScenario as an internal-only value.
+const OCCUPANCY_INTERNAL = Symbol.for('lp.occupancyInternal');
 
 // SMO ids observed in real captures. The DSCR pair selects the DSCR product; it is always sent.
 // These are FALLBACKS: when a live /pricing/smo registry is passed via opts.smo, the current
@@ -56,6 +63,12 @@ const SMO_PPP = {
 // which term is in force — resolving it in two places is how a request comes to carry a 5 Yr PPP
 // option beside a 36-month term.
 const DEFAULT_PREPAY_MONTHS = 60;
+
+// The AUS "All" set the frontend sends by default (§2.3). Copied VERBATIM from the captured base
+// (search-base.json brokerCriteria.ausList) — the canonical successful frontend request — so the
+// forced value can never drift from what the UI actually posts. Note LP (not LPA): the live capture
+// carries "LP". buildSearch forces this whenever the caller omits an explicit AUS choice.
+const AUS_ALL = ['DU', 'LP', 'GUS', 'MUW', 'None'];
 
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
 function normName(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
@@ -244,6 +257,32 @@ function mapRentalTerm(v) {
   return t;
 }
 
+// ---- D27 OCCUPANCY (VACANT vs LEASED) — a first-class DSCR eligibility FACT --
+// The tenancy STATE of the rental collateral: is it currently vacant or leased? This is a DIFFERENT
+// fact from the occupancy TYPE (owner-occupied / second / investment) — which the DSCR profile LOCKS
+// to Investment (criteria.propertyUse), and whose Primary/Second tokens the field registry
+// deliberately leaves out until a capture confirms them — and from the RENTAL TERM (long- vs
+// short-term rental, the confirmed AddlOccupancyType dynamic). Vacancy can move DSCR eligibility (a
+// vacant unit has no in-place rent), so it is carried as its own fact rather than folded into either.
+//
+// ABSENT MEANS UNKNOWN, NEVER A DEFAULT. Omitting it must change nothing about the request — guessing
+// "leased" (or "vacant") would silently price/qualify a deal on a tenancy state nobody stated. So an
+// omitted occupancy resolves to null and is left unset; an UNRECOGNIZED value is REJECTED (422), never
+// coerced — the silent-substitution class this connector exists to refuse. OCCUPANCY_STATES is the one
+// source of truth read by both this mapper and validateInputs. Case/space tolerant, like rentalTerm.
+const OCCUPANCY_STATES = { vacant: 'vacant', leased: 'leased' };
+function occupancyKey(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z]/g, ''); }
+function mapOccupancy(v) {
+  const k = occupancyKey(v);
+  if (k === '') return null;                               // omitted → UNKNOWN, never defaulted
+  const t = OCCUPANCY_STATES[k];
+  if (!t) {
+    throw new LpValidationError('unknown_occupancy', 'occupancy',
+      `Unknown occupancy ${JSON.stringify(String(v))}. Supported: "vacant" or "leased". Absent means unknown and is left unset — vacancy can change DSCR eligibility, so it is never defaulted.`);
+  }
+  return t;
+}
+
 // ---- §32.3 DSCR THRESHOLD TABLE -------------------------------------------
 // The entered DSCR ratio (criteria.dscr, always the verbatim numeric value) ALSO drives a coarse
 // `DSCRRATIO` dynamic token AND — above 0.75 — one additional pricing-band special mortgage option,
@@ -361,17 +400,53 @@ function mapReserves(v) {
 //     the foundation's; a null can never over-lend.
 // Adding a field is one registry line, so the clearing stays intentional and testable — never
 // re-derived per call site.
+//
+// §2.1/TASK-31 — THE NEUTRAL IS THE FRONTEND'S OWN BLANK FORM, AND IT IS READ OFF THE CAPTURES.
+//
+// A blank field has THREE possible wire forms and they are not interchangeable to a strict service:
+// the key ABSENT, the key present carrying `null`, and the key present carrying an empty literal
+// (`""`). Choosing one ourselves is exactly the class this whole builder exists to prevent — nothing
+// errors, the vendor simply prices a slightly different request than the one the human's screen would
+// have sent, and every parity number measured against it is measuring the wrong thing.
+//
+// So the rule is: **a field the caller did not state is returned to the blank form the FRONTEND uses
+// for that field**, and that form is not a developer's judgement — it is read out of the captured
+// frontend bodies in `docs/longterm/ppe-research/anchors/` and PINNED by
+// `scripts/test-lt-lp-blank-parity.js`, which rebuilds each capture's own scenario and fails the
+// moment a leaf's blank form diverges. That is what keeps this table from drifting away from the
+// ground truth it is supposed to mirror.
+//
+// It also means THIS TABLE IS THE ONLY PLACE A BLANK FORM IS DECIDED. `buildSearch` must not write a
+// field's blank value inline — `criteria.appraisedValue` used to (`= apprSupplied != null ? … : null`,
+// against a frontend that omits the key entirely), which is why it now lives here with the rest.
+//
+// The leak-safety property that motivated the original list is UNCHANGED by stating a blank form
+// rather than deleting: `''` overwrites a stale foundation value exactly as removal does. Writing the
+// frontend's blank is therefore strictly better than inventing absence — same protection, real parity.
 const DELETE = Symbol('scenario-owned-delete');
 const SCENARIO_OWNED = [
   // Core deal economics — buildSearch RE-APPLIES each from the caller below, so clearing changes
   // behavior ONLY on OMISSION: the field then fails closed to neutral instead of inheriting the
-  // foundation's value. (appraisedValue + loanYear are ALWAYS forced by buildSearch, so they cannot
-  // leak and are deliberately NOT listed here.)
+  // foundation's value. (loanYear is ALWAYS forced by buildSearch, so it cannot leak and is
+  // deliberately NOT listed here.)
   { path: 'criteria.purchasePrice', neutral: null, why: 'per-deal purchase/estimated price' },
   { path: 'criteria.loanAmount',    neutral: null, why: 'per-deal loan amount' },
   { path: 'criteria.ltv',           neutral: null, why: 'per-deal LTV (buildSearch falls back to criteria.ltv when value/loan/ltv are all absent)' },
   { path: 'criteria.fico',          neutral: null, why: 'per-borrower credit score' },
   { path: 'criteria.dscr',          neutral: null, why: 'per-deal DSCR ratio' },
+  // §2.1/TASK-31 — APPRAISED (AS-IS) VALUE. The frontend OMITS THE KEY when the box is blank: the
+  // captured kickoff req-01 (a refinance whose Appraised Value was never filled in) carries no
+  // `criteria.appraisedValue` at all, while req-07 — the same screen with the box filled — carries the
+  // number. We used to write `null` unconditionally, which states "this field is present and empty"
+  // where the frontend states nothing at all. Appraised value is an LTV / eligibility BASIS, so this is
+  // the one blank on this list whose wire form could plausibly move a price rather than only a byte
+  // count; it is therefore the frontend's form, not ours.
+  //
+  // This entry SUPERSEDES the inline `c.appraisedValue = … : null` that used to live in buildSearch —
+  // the blank form is decided here, once, and buildSearch re-applies only a SUPPLIED value after this
+  // clear (the standing scenario-owned footgun). Neutral ABSENT also keeps the 2026-08-16 no-mirroring
+  // rule intact: a purchase price is still never copied into an appraised value on any purpose.
+  { path: 'criteria.appraisedValue', neutral: DELETE, why: 'per-deal appraised/as-is value — the frontend omits the key when the box is blank (req-01)' },
   // Per-deal amounts buildSearch NEVER writes back — the audit's leak class. Neutral is the captured
   // base default (0), so a stale non-zero from a prior session is reset and no value the engine has
   // not already accepted is ever introduced. A real value would only reach these through a wired
@@ -454,9 +529,18 @@ const SCENARIO_OWNED = [
   // whole job is to prove what went upstream could not see them.
   // `country` ("US") and `province` ("") are NOT per-deal and are deliberately absent
   // from this list: they are structural defaults every request carries.
-  { path: 'property.address.street',      neutral: DELETE, why: 'per-deal street' },
-  { path: 'property.address.streetCont',  neutral: DELETE, why: 'per-deal street line 2' },
-  { path: 'property.address.zipExt',      neutral: DELETE, why: 'per-deal ZIP+4 — a stale one contradicts the ZIP beside it' },
+  //
+  // §2.1/TASK-31 — THE BLANK FORM OF THESE THREE IS THE EMPTY STRING, NOT ABSENCE. All SEVEN captured
+  // frontend bodies — both kickoffs and all five polls, two different deals, two states — send
+  // `street: ""`, `streetCont: ""` and `zipExt: ""`. Nothing in this integration has more unanimous
+  // ground truth. We were deleting the keys, which is a blank form the vendor's own screen never
+  // produces. The earlier reasoning ("our body omitted all three and returned 200, so they are
+  // provably not required, and that is worth more than cosmetic parity") set up a false choice: `""`
+  // overwrites a stale foundation street exactly as deletion does, so the leak the audit found stays
+  // closed AND the request matches the frontend. There is nothing to trade off.
+  { path: 'property.address.street',      neutral: '', why: 'per-deal street — frontend blank form is "" (all 7 captures)' },
+  { path: 'property.address.streetCont',  neutral: '', why: 'per-deal street line 2 — frontend blank form is "" (all 7 captures)' },
+  { path: 'property.address.zipExt',      neutral: '', why: 'per-deal ZIP+4 — frontend blank form is "" (all 7 captures); a stale one contradicts the ZIP beside it' },
 ];
 // Clear every registered scenario-owned field to its neutral state, IN PLACE. Operates on the
 // already-cloned model (buildSearch clones first), so it never mutates the shared BASE or a caller's
@@ -611,6 +695,25 @@ function buildSearch(sc = {}, opts = {}) {
   // and the dynamic pair below read THIS value, never `months`, so they cannot disagree.
   const effMonths = months != null ? months : DEFAULT_PREPAY_MONTHS;
 
+  // ⛔ THE BODY'S COMPANY IS THE SESSION'S COMPANY, NOT THE ONE FROZEN IN THE CAPTURE.
+  //
+  // MEASURED: `search-base.json` carries `companyId: "68e4306f…"` — a literal from the HAR this
+  // request shape was captured out of — while every caller in `client.js` already passes the LIVE
+  // session's company through as `scenario.companyId` and this builder never read it. So the id was
+  // COLLECTED AND DISCARDED, the standing failure class this repo keeps finding, and the request went
+  // out naming whichever company happened to be logged in on the day of the capture.
+  //
+  // It works today only because those two are the same company. The day they are not — a second
+  // tenant, a re-provisioned company, a sandbox — the URL PATH would carry one company
+  // (`searchRaw/{companyId}/{userId}`, built from the session) and the BODY another, which is either a
+  // 500 or, far worse, a price built against somebody else's configuration. A live session's own id is
+  // strictly better evidence than a captured literal.
+  //
+  // FILL-ONLY AND NEVER INVENTED: a blank, a non-string or a caller who did not pass one leaves the
+  // captured value exactly as it was, because a request with NO company at all is refused upstream and
+  // an empty string is not an improvement on a value proven to price.
+  if (typeof sc.companyId === 'string' && sc.companyId.trim()) m.companyId = sc.companyId.trim();
+
   const c = m.criteria || (m.criteria = {});
   if (value != null) c.purchasePrice = value;
   // Appraised (as-is) value is SEPARATE from the estimated/purchase price, ON EVERY PURPOSE
@@ -625,8 +728,13 @@ function buildSearch(sc = {}, opts = {}) {
   // states an appraised value NOBODY SUPPLIED — and appraised value is an LTV/eligibility basis, so
   // asserting one we were never given is the same class of silent mispricing as inheriting a stale
   // address: it does not fail, it prices a different deal. Blank on every purpose unless supplied.
+  //
+  // §2.1/TASK-31 — the BLANK form moved to `SCENARIO_OWNED` (neutral ABSENT, matching the captured
+  // frontend, which omits the key when the box is empty). This is now a re-apply of a SUPPLIED value
+  // only, exactly like the other scenario-owned economics; writing a blank here would put a wire form
+  // back in a second place and is what produced the `null` the frontend never sends.
   const apprSupplied = num(sc.appraisedValue != null ? sc.appraisedValue : sc.asIsValue);
-  c.appraisedValue = apprSupplied != null ? apprSupplied : null;
+  if (apprSupplied != null) c.appraisedValue = apprSupplied;
   if (loan != null) c.loanAmount = loan;
   if (ltv != null) c.ltv = ltv;
   // §31.5 — SUBORDINATE FINANCING. Confirmed live: selecting Closed End Second and entering 50,000
@@ -655,11 +763,19 @@ function buildSearch(sc = {}, opts = {}) {
   const band = dscrBand(effDscr);
   // Loan TERM (years). The intentional DSCR profile default is 30-year FIXED (audit §1): when the
   // scenario omits the term we FORCE 30 rather than inherit whatever a live default model carried
-  // (the "some DSCR defaults are not enforced" finding). loanYear + termsCriteria must agree;
-  // termsInMonths=false means the number is years, NOT a day-lock.
+  // (the "some DSCR defaults are not enforced" finding). termsInMonths=false means the number is
+  // years, NOT a day-lock.
+  //
+  // §2.2 TERM PARITY (2026-08-17 developer report). criteria.loanYear is the AMORTIZATION and the
+  // DSCR profile always amortizes over 30 years; the SELECTED note term rides termsCriteria ONLY.
+  // Measured: for a 15-year selection the frontend sends {criteria.loanYear:30, termsCriteria:[15]}
+  // while PILOT had been sending criteria.loanYear:15 — so loanYear stays 30 (the profile default,
+  // forced so a live foundation can never carry a different amortization) and only termsCriteria
+  // carries the caller's term. A prior comment claimed "loanYear + termsCriteria must agree"; the
+  // live capture disproves it, and matching the frontend request is what this parity work requires.
   const termYears = num(sc.termYears != null ? sc.termYears : sc.term);
   const effTermYears = termYears != null ? termYears : 30;
-  c.loanYear = effTermYears; m.termsCriteria = [effTermYears]; m.termsInMonths = false;
+  c.loanYear = 30; m.termsCriteria = [effTermYears]; m.termsInMonths = false;
   // Rate-LOCK days. The intentional DSCR profile default is a 30-day lock; forced when omitted so a
   // live default carrying a different lock can never change the profile. This is a LOCK period
   // (days), NOT the loan term (years).
@@ -691,8 +807,25 @@ function buildSearch(sc = {}, opts = {}) {
   c.pmiType = 'BPMI';                         // DSCR investor loan: PMI type mirrors the frontend
   m.showUnmatchCompPlan = true;               // a search DISPLAY flag the frontend sends true
   // Monthly income is a DSCR by-product (not a qualifier here); the frontend ROUNDS it to a whole
-  // dollar. Round whatever the foundation carried; leave it absent if it was never set.
-  if (num(c.monthlyIncome) != null) c.monthlyIncome = Math.round(num(c.monthlyIncome));
+  // dollar. The round is done LAST, in wireDiscipline() — NOT here — because applyRegistry (below)
+  // can set a scenario-supplied monthlyIncome AFTER this block, and rounding it only here would miss
+  // that scenario value (it would go out as 16666.666… against the frontend's 16667).
+  // §2.3 AUS "All" (2026-08-17 developer report). The frontend defaults AUS to the FULL published
+  // set — [DU, LP, GUS, MUW, None] — never a single engine or a trimmed list. A live foundation may
+  // carry a SHORTENED brokerCriteria.ausList (a prior session narrowed it), which silently prices
+  // fewer products, so FORCE the full set unless the caller EXPLICITLY chooses AUS engines
+  // (sc.aus, a non-empty array), which is honoured verbatim. This mirrors the captured base exactly.
+  {
+    const bc = m.brokerCriteria || (m.brokerCriteria = {});
+    const callerAus = Array.isArray(sc.aus) && sc.aus.length ? sc.aus.slice() : null;
+    bc.ausList = callerAus || AUS_ALL.slice();
+  }
+  // §2.4 CLOSING-COST DEFAULTS (2026-08-17 developer report). The frontend uses the company's
+  // default closing costs (useClosingCost + useCompanyDefaultClosingCost both true). A live
+  // foundation may carry these false (a prior session cleared them), which changes the fee/closing-
+  // cost display, so FORCE both true to match the captured frontend request. Display/structural —
+  // the live report confirmed they do NOT change the eligible pricing.
+  { const cc = m.closingCost || (m.closingCost = {}); cc.useClosingCost = true; cc.useCompanyDefaultClosingCost = true; }
   // §28.5 — an OMITTED flag inherits the cloned (live) default; only an EXPLICITLY supplied value
   // overwrites it. Previously `!!sc.io` wrote `false` even when io was absent, silently clobbering
   // the live default. A provided value is already a real boolean (strict validation), so 0/false is
@@ -799,7 +932,49 @@ function buildSearch(sc = {}, opts = {}) {
   // turn it on by default again without a capture showing the frontend doing it, and re-measure the
   // program count on the same scenario when you do.
   if (band && String(process.env.LP_SEND_DSCRRATIO || '') === '1') setDyn('DSCRRATIO', band.ratio);
-  setDyn('AddlOccupancyType', mapRentalTerm(sc.rentalTerm));
+  // §37.15 — A SHORT-TERM RENTAL MUST BE TOLD TO LENDER PRICE, AND THIS IS MEASURED, NOT INFERRED.
+  //
+  // `short_term_rental` is the Advanced section's own overlay fact, and the field registry used to mark
+  // it `lpVisible: false` — one flag standing for "Lender Price does not price this". MEASURED LIVE
+  // 2026-08-17 on the Deephaven DSCR program, same scenario twice: with `rentalTerm` OMITTED, Lender
+  // Price itemizes NOTHING for it; with `rentalTerm: 'short'` it itemizes **`Short Term Rental - Short
+  // Term Rental / CLTV >65.01 % <= 70.0 %` = 0.500** — exactly the charge our own rate sheet carries
+  // from the Excel. An omitted rentalTerm DEFAULTS TO LONG-TERM, so a borrower who ticked "short-term
+  // rental" was being quoted a LONG-term rental, 0.5 points BETTER than the real price. Quoting too good
+  // is the expensive direction. The registry now records that measurement honestly as `lpPrices: true`
+  // while keeping the fact `overlayOnly: true` — two independent questions, two flags (task #82).
+  //
+  // WHY THIS IS NOT THE DSCRRATIO MISTAKE (§37.9), which the same measurement was run to rule out.
+  // DSCRRATIO was a token read out of the vendor's JS bundle that their own frontend never sends, and it
+  // cost a whole lender program for nothing. `rentalTerm` is a REAL vendor field with REAL published
+  // tokens (`Short_Term_Rental_Property` / `Long_Term_Rental_Property`) that buildSearch has always
+  // transmitted. The same probe measured the cost of asking: programs 19 → 18, lenders 10 → 10, options
+  // 494 → 473, and Deephaven's own DSCR rungs UNCHANGED at 56. The one program that drops is a program
+  // that does not do short-term rentals — removing it from a short-term-rental quote is the CORRECT
+  // answer, not a loss.
+  //
+  // AN EXPLICIT `rentalTerm` ALWAYS WINS: a caller's assertion beats an inference, and a caller may
+  // legitimately state a long-term rental while some other overlay is set. The inference runs ONE way —
+  // it never infers "long", because an omitted rentalTerm already defaults to long-term, so inferring it
+  // would change nothing and could only add a way to get it wrong.
+  const strFact = sc.short_term_rental === true || sc.shortTermRental === true;
+  setDyn('AddlOccupancyType', mapRentalTerm(sc.rentalTerm != null ? sc.rentalTerm : (strFact ? 'short' : undefined)));
+  // D27 — OCCUPANCY (VACANT vs LEASED): RETAINED as a first-class eligibility fact, NOT TRANSMITTED.
+  // Resolved once (mapOccupancy) and stashed on a Symbol channel — the CASHOUT_INTERNAL pattern — so
+  // the eligibility overlay, the route's effectiveScenario echo, and any future measured rule can READ
+  // it, WITHOUT putting a guessed token on the wire. An OMITTED occupancy resolves to null and writes
+  // nothing, so a scenario that does not state it produces a byte-identical payload.
+  //
+  // THE SEAM: no live capture confirms a Lender Price wire field for vacant-vs-leased. The field
+  // registry deliberately leaves occupancy tokens OUT until a one-field capture confirms the
+  // current-tenant token, because a guessed dynamicPropertiesMap fieldId silently prices a whole
+  // lender program away (measured for DSCRRATIO and the mortgage-late buckets); and inventing an
+  // eligibility RULE here is out of scope (D27). So WHEN a capture confirms the vendor field/token for
+  // vacant-vs-leased, wire the transmission HERE the way io/escrowWaive are — only when supplied:
+  //   if (occupancy != null) setDyn('<CONFIRMED_OCCUPANCY_FIELD>', <confirmed token for occupancy>);
+  // and surface it on effectiveScenario as a TRANSMITTED value. Do NOT wire it on a guess.
+  const occupancy = mapOccupancy(sc.occupancy);
+  if (occupancy != null) m[OCCUPANCY_INTERNAL] = occupancy;
   // §33.4/§34.2 — BORROWER TYPE. Previously ANY string was passed straight through to the vendor as a
   // vesting type; every other advanced enum 422s an unrecognized value, so this was the one silent
   // substitution left in the borrower block. Validated against the exact six-value tenant enum
@@ -952,10 +1127,13 @@ function buildSearch(sc = {}, opts = {}) {
 //     string "36047" (which also silently destroys a leading-zero FIPS such as "01001"); and an
 //     object reached `countyName` with no check at all.
 //
-//     `street` / `streetCont` / `zipExt` are deliberately left ABSENT rather than filled with the
-//     capture's empty strings: our own 6,799-byte body omitted all three and returned HTTP 200, so
-//     they are provably not required — and the scenario-ownership suite exists to prove a prior
-//     session's street can never ride along, which is worth more than cosmetic parity.
+//     `street` / `streetCont` / `zipExt` now carry the capture's own empty strings (§2.1/TASK-31).
+//     This paragraph used to argue the opposite — that leaving them ABSENT was worth more than
+//     "cosmetic parity" because our body omitted all three and still returned HTTP 200. That was a
+//     false choice: an empty string overwrites a stale foundation street exactly as deletion does, so
+//     the prior-session leak the scenario-ownership suite guards stays closed either way, and only one
+//     of the two blank forms is the one the vendor's own screen sends. Their blank form is stated in
+//     `SCENARIO_OWNED` (the one place a blank form is decided) and pinned against all seven captures.
 //
 // Nothing here invents a value. Every default is the canonical request's own, every coercion is to
 // the type the capture uses, and a field the scenario legitimately set is left alone.
@@ -978,6 +1156,12 @@ function wireDiscipline(m) {
   // other is a request no reader can honour.
   if (!Array.isArray(m.loanTypeCriteria) || m.loanTypeCriteria.length === 0) m.loanTypeCriteria = [c.loanType];
   else m.loanTypeCriteria = m.loanTypeCriteria.map(() => c.loanType).slice(0, 1);
+
+  // (1b) DSCR by-product: the frontend ROUNDS monthlyIncome to a whole dollar (§2.1 frontend parity).
+  // Forced HERE, last, because it must survive BOTH sources — a live foundation's value AND a
+  // scenario-supplied one that applyRegistry writes after the §2.1 force block. This is the ONE place
+  // it is rounded, so the two paths can never disagree with the frontend (16666.666… vs 16667).
+  if (num(c.monthlyIncome) != null) c.monthlyIncome = Math.round(num(c.monthlyIncome));
 
   // (2) is enforced in validateScenario (a refusal), deliberately NOT here — see the note above.
 
@@ -1164,6 +1348,12 @@ function validateInputs(sc = {}) {
   if (sc.borrowerType != null && sc.borrowerType !== '' && !registry.BORROWER_TYPES.has(String(sc.borrowerType))) {
     return bad('invalid_borrower_type', 'borrowerType',
       `Unknown borrower (vesting) type ${JSON.stringify(String(sc.borrowerType))}. Supported: ${Array.from(registry.BORROWER_TYPES).join(', ')}.`);
+  }
+  // D27 — OCCUPANCY (vacant vs leased) is a strict enum WHEN SUPPLIED; absent means UNKNOWN and is left
+  // unset (never defaulted). An unrecognized value is REJECTED here rather than silently dropped.
+  if (sc.occupancy != null && sc.occupancy !== '' && !Object.prototype.hasOwnProperty.call(OCCUPANCY_STATES, occupancyKey(sc.occupancy))) {
+    return bad('invalid_occupancy', 'occupancy',
+      `Unknown occupancy ${JSON.stringify(String(sc.occupancy))}. Supported: "vacant" or "leased". Absent means unknown and is left unset.`);
   }
   // Strict numerics + ranges. Returns { v } (value or null) or { err }.
   const numField = (field, opts = {}) => {
@@ -1411,5 +1601,5 @@ function validateScenario(sc = {}) {
   return { ok: true, request, scenario: sc, countyEnrichment };
 }
 
-module.exports = { BASE, buildSearch, clearScenarioOwnedFields, mergeKnownRequestDefaults, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };
+module.exports = { BASE, buildSearch, clearScenarioOwnedFields, mergeKnownRequestDefaults, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, OCCUPANCY_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue, mapOccupancy, OCCUPANCY_STATES, occupancyKey } };

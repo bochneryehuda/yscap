@@ -4,9 +4,14 @@
 // LT PRODUCT & PRICING ENGINE — the HTTP surface.  /api/lt/ppe/*
 // =============================================================================
 //
-// Everything under `src/longterm/ppe/` was built, tested (27 suites) and
-// UNREACHABLE: there was no route. This is that route. Design + rationale:
+// Everything under `src/longterm/ppe/` was built, tested and UNREACHABLE: there
+// was no route. This is that route. Design + rationale:
 // `docs/longterm/PPE-MEGA-PLAN.md`; the module map is `src/longterm/ppe/README.md`.
+// (This line used to quote a suite COUNT — "27 suites". It was true the day it was
+// written and stale within the month; the family is globbed by
+// `scripts/test-lt-ppe-all.js`, so the count lives in the runner's own output and
+// is never restated here. `scripts/test-lt-ppe-claim-drift.js` fails the build if a
+// hard-coded suite count comes back.)
 //
 // THE ONE MODEL THIS SURFACE MUST NOT BREAK (§1.2, §9): **Lender Price is the
 // source of truth — for now, in every scenario.** Our engine runs BESIDE it in
@@ -17,21 +22,44 @@
 // and this route exists to not undo it.
 //
 // WHAT IS DELIBERATELY NOT HERE, and why
-//   · **No promote-to-live control.** Promotion is a human decision gated on the
-//     scoreboard (§11). The gate and the append-only ledger are pure modules
-//     (`cutover.js`, `cutover-ledger.js`) with NO table behind them yet — the
-//     history they replay is not persisted anywhere. A promote button whose
-//     decision cannot be durably recorded is worse than no button, so the
-//     lifecycle stays out until it has a home. `GET /investors` says so rather
-//     than implying every investor is in `draft`.
-//   · **No rate-sheet write path.** Ingestion has an auto-apply-vs-review
-//     classifier (§7.4); giving it an HTTP door before that review queue has a
-//     screen would let a bad sheet reprice a book with nobody looking.
+// WHAT THE PROMOTE-TO-LIVE CONTROL WAITED FOR, AND WHY IT IS HERE NOW (§11 / P10)
+//   This bullet has been rewritten twice and both rewrites are worth keeping, because each records a
+//   reason that STOPPED being true. It first said the gate and the ledger were pure modules with no
+//   table behind them — false once db/566 (`lt_ppe_cutover_ledger`) and `ppe/cutover-store.js`
+//   landed, which gave the history a durable, append-only home. It then said what was missing was the
+//   DECISION rather than the record: who may promote, and whether a live investor keeps a Lender
+//   Price spot-check. The owner answered the first on 2026-08-18 — *"Who may publish a pricing rule;
+//   who may switch an investor from watching to live … all in the super admin"* — so
+//   `GET /cutover` and `POST /cutover/decision` exist, the second behind the role floor.
+//   THE SECOND HALF IS STILL OPEN and is answered the SAFE way rather than guessed: a live investor
+//   keeps being priced against Lender Price alongside our answer, and the clean-day bar the gate runs
+//   is REPORTED as an assumption rather than presented as settled policy. See
+//   `docs/longterm/OWNER-QUESTIONS-OPEN.md` §3a.
+//   · **No route that records an agreement run FROM A REQUEST BODY.** That
+//     qualifier is the whole rule (see rule 3 in the rate-sheet console section
+//     below) and it must never be shortened to "no route records an agreement
+//     run": `POST /rate-sheets/:id/agreement/run` exists and DOES record one —
+//     the verdict of a battery it priced itself against Lender Price. The banned
+//     thing is a hand-typed result, which would open the publish gate without a
+//     single scenario being compared.
 //
 // AUTH: staff authentication is applied at the mount seam in `src/server.js`,
 // like every other LT router. Reads are open to any staff member — an engineer has
-// to be able to see why a scenario disagreed. The ADMIN gate is on the two
-// deliberate operator actions: settling a finding, and running a canary battery.
+// to be able to see why a scenario disagreed. **Every write on this router is
+// ADMIN-gated except the two pricing doors** (`POST /quote` and `POST /breakdown`,
+// explained immediately below): settling a finding, running a canary battery,
+// arming/removing a canary schedule, ticking the scheduler, mining and deciding
+// rule suggestions, setting a program's Lender Price scope, creating an
+// investor/program/rate sheet, every rate-sheet grid write, running the agreement
+// harness, and publishing. A handful of admin-only READS sit behind the same gate
+// (the sheet read-back, its coverage and diff, the rule-coverage report, a
+// program's LP scope) because they expose what a program prices from.
+// THIS PARAGRAPH USED TO NAME A COUNT — it said the admin gate was on the two
+// deliberate operator actions and that those were the only gated routes. That was
+// true when there were two, and a count in prose is a hand-kept list, so no number
+// is restated here. The RULE is stated instead, and
+// `scripts/test-lt-ppe-claim-drift.js` fails the build if any route other than the
+// two named pricing doors is registered without the gate.
 //
 // `POST /quote` is deliberately NOT admin-gated, and it is worth being precise
 // about why, because it DOES have side effects: it calls the live Lender Price
@@ -40,8 +68,9 @@
 // false. It is left open because pricing a scenario is the ordinary thing a staff
 // member does with a pricing engine, and its write is an OBSERVATION — the ledger
 // records that the two engines disagreed, which is true whoever asked. What an
-// ordinary user must not do is SETTLE that observation or launch a 500-scenario
-// battery at the upstream, and those are the two gated routes.
+// ordinary user must not do is SETTLE that observation, launch a 500-scenario
+// battery at the upstream, or change what a program prices from — and every one of
+// those is behind the admin gate.
 
 const express = require('express');
 const router = express.Router();
@@ -51,19 +80,46 @@ const access = require('../access');
 const settingsStore = require('../settings/store');
 
 const ppeSettings = require('../ppe/settings');
+const settingsAdmin = require('../ppe/settings-admin');
 const store = require('../ppe/store');
 const facade = require('../ppe/facade');
+const lpScopeLib = require('../ppe/lp-scope');
+const parityMatrix = require('../ppe/parity-matrix');
+const parityCellStore = require('../ppe/parity-cell-store');
 const quote = require('../ppe/quote');
+const priceLimitLib = require('../ppe/price-limit');
 const canary = require('../ppe/canary');
 const finding = require('../ppe/finding');
 const findingStore = require('../ppe/finding-store');
 const reviewQueue = require('../ppe/review-queue');
 const cutover = require('../ppe/cutover');
+const cutoverStore = require('../ppe/cutover-store');
 const runStore = require('../ppe/run-store');
+const canarySchedule = require('../ppe/canary-schedule');
+const scheduleStore = require('../ppe/schedule-store');
 const scenarioMatrix = require('../ppe/scenario-matrix');
 const ratesheet = require('../ppe/ratesheet');
 const ruleStore = require('../ppe/rule-store');
+// The rule-AUTHORING service and its draft store. Four modules with no HTTP door at all until now —
+// see the RULE DRAFTS section below, including why `publishDraft` still has none.
+const ruleAuthoring = require('../ppe/rule-authoring');
+const ruleDraftStore = require('../ppe/rule-authoring-store');
+const agreementStore = require('../ppe/agreement-store');
+const ratesheetAgreement = require('../ppe/ratesheet-agreement');
+const agreementScenarios = require('../ppe/agreement-scenarios');
+const lpAgreementLegs = require('../ppe/lp-agreement-legs');
+const agreementPreflight = require('../ppe/agreement-preflight');
+const programRegistry = require('../ppe/program-registry');
+const agreementScenarioGenerator = require('../ppe/agreement-scenario-generator');
+const ratesheetCells = require('../ppe/ratesheet-cells');
+const ratesheetDiff = require('../ppe/ratesheet-diff');
 const suggestionMiner = require('../ppe/suggestion-miner');
+const pricingBreakdown = require('../ppe/pricing-breakdown');
+const lpNormalizeFull = require('../ppe/lp-normalize-full');
+const compPlan = require('../ppe/comp-plan');
+const disqualifierReview = require('../ppe/disqualifier-review');
+const disqualifierMining = require('../ppe/disqualifier-mining');
+const disqualifierReviewStore = require('../ppe/disqualifier-review-store');
 
 const SCOPE = 'company';
 
@@ -95,6 +151,51 @@ const NOT_DECIDABLE = [...finding.OPEN_STATUSES];
  * posture: a gate that cannot be CHECKED is not a gate that has been PASSED, so
  * an unreadable settings row answers 503 rather than falling open.
  */
+// ⛔ THE STRICTER GATE, AND IT IS A DIFFERENT QUESTION FROM THE ONE ABOVE.
+//
+// OWNER-DIRECTED 2026-08-18, answering §2.51 and the "who takes an investor live" half beside it:
+// *"Who may publish a pricing rule; who may switch an investor from watching to live and after how
+// many clean weeks; and whether the built-in safety checks should block a release or only warn. All
+// in the super admin."*
+//
+// `requirePpeAdmin` asks `access.mayManagePeople`, whose default set is super_admin AND admin — and
+// which a buyer can WIDEN in settings. That is right for the console's ordinary write surface: saving
+// a draft, settling a finding, loading a rate sheet. It is NOT right for publishing a rule, because
+// that changes what a real borrower is quoted, and the owner named one role for it.
+//
+// So this reads `access.ADMIN_FLOOR_ROLE` — the one role that is a FLOOR and is added back whatever
+// the setting says — rather than the configurable list. A settings change cannot widen it, which is
+// the property that makes it an answer to the owner's sentence rather than a restatement of the gate
+// next door. Everything else about the two is identical, including failing CLOSED (503) when the
+// permission itself cannot be read: an unreadable permission is not permission.
+// THE SUPER-ADMIN GATE IS ONE RULE WITH THE ACT NAMED IN IT. There is now more than one act the
+// owner reserved to a super admin (2026-08-18: *"Who may publish a pricing rule; who may switch an
+// investor from watching to live … all in the super admin"*), and a refusal that names the WRONG act
+// is worse than a bare one: somebody told "only a super admin can publish a pricing rule" while
+// trying to take an investor live goes looking for a rule they never touched. So the check is written
+// once and the SENTENCE is the parameter. `requirePpeSuperAdmin` keeps its exact previous wording, so
+// the publish door's refusal is byte-identical to what it has always answered.
+function ppeSuperAdminFor(sentence) {
+  return async function gate(req, res, next) {
+    try {
+      const role = req.actor && req.actor.role ? String(req.actor.role) : '';
+      if (role !== access.ADMIN_FLOOR_ROLE) return res.status(403).json({ error: sentence });
+      return next();
+    } catch (e) {
+      console.error('[lt-ppe] super-admin gate failed:', (e && e.message) || e);
+      return res.status(503).json({ error: 'Could not check your permissions just now. Try again in a moment.' });
+    }
+  };
+}
+
+const requirePpeSuperAdmin = ppeSuperAdminFor(
+  'Only a super admin can publish a pricing rule — publishing changes what a real borrower is quoted.',
+);
+
+const requirePpeCutoverAuthority = ppeSuperAdminFor(
+  'Only a super admin can move an investor through its lifecycle — going live makes our engine, not Lender Price, the answer a borrower is quoted.',
+);
+
 async function requirePpeAdmin(req, res, next) {
   try {
     const { settings } = await settingsStore.load();
@@ -130,6 +231,9 @@ function readScope(_req) { return SCOPE; }
 // useless one. So: one helper, used by both.
 function programLabel(program) { return (program && (program.code || program.name)) || ''; }
 
+/** An error's own words, bounded — never an object stringified into a response. */
+function msgOf(e) { return String((e && e.message) || e).slice(0, 200); }
+
 /** A UUID string, else null — for the lt_ppe_investor/program ids (UUID PKs, db/558). */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function uuidOf(v) { const s = v == null ? '' : String(v).trim(); return UUID_RE.test(s) ? s : null; }
@@ -142,15 +246,21 @@ function intIn(v, max) {
   return n;
 }
 
+/** A program that could not be loaded prices nothing, so its margin resolver answers nothing. */
+const NO_MARGIN = () => null;
+
 /**
  * Load a program (a priced rate-sheet version) if one was asked for.
- * Returns { program, reason } — `reason` is why there is no program, and it is
+ * Returns { program, marginFor, reason } — `reason` is why there is no program, and it is
  * REPORTED rather than swallowed: without a program our engine cannot run, so
  * the caller must be told the shadow was skipped instead of reading a missing
  * `shadow` block as "the two engines agreed".
+ *
+ * `marginFor(facts)` is THE PER-INVESTOR MARGIN, resolved ONCE here and CARRIED — see the
+ * block below. Every caller passes it straight into `quote.quoteProgram({ marginHoldback })`.
  */
 async function loadProgram(scope, versionId) {
-  if (!versionId) return { program: null, reason: 'no_program_requested' };
+  if (!versionId) return { program: null, marginFor: NO_MARGIN, reason: 'no_program_requested' };
   try {
     // TWO STEPS, and they are not interchangeable. `store.loadRateSheet` returns
     // the stored SHEET (raw `lt_ppe_base_price` / `_adjustment` / `_price_limit`
@@ -160,18 +270,254 @@ async function loadProgram(scope, versionId) {
     // `quote:program_has_no_base_grid` — which the facade would then record as an
     // engine_error finding on every single quote.
     const sheet = await store.loadRateSheet(db, versionId);
-    if (!sheet || !Array.isArray(sheet.basePrices)) return { program: null, reason: 'program_not_found' };
+    if (!sheet || !Array.isArray(sheet.basePrices)) return { program: null, marginFor: NO_MARGIN, reason: 'program_not_found' };
+    // The investor's own CODE, which is the key into its per-investor margin scope
+    // (`investor:<code>`). Deliberately NOT stamped onto `program.investorCode`: that
+    // reference is copied verbatim into every quote result, so filling it in would move a
+    // field on every existing quote and cost the byte-identical guarantee below for a
+    // label nothing reads.
+    const investorCode = (sheet.investor && (sheet.investor.code || sheet.investor.name)) || null;
     const program = ratesheet.rateSheetToProgram(sheet, {
       code: (sheet.version && sheet.version.id) || versionId,
       name: (sheet.version && sheet.version.label) || null,
     });
     if (!program || !Array.isArray(program.baseGrid) || !program.baseGrid.length) {
-      return { program: null, reason: 'program_has_no_base_grid' };
+      return { program: null, marginFor: NO_MARGIN, reason: 'program_has_no_base_grid' };
     }
-    return { program, reason: null };
+
+    // THE ACCEPTED OVERLAY RULES, which until now reached NOTHING that prices.
+    //
+    // MEASURED, on a real database: a stored, accepted "decline under FICO 660" is returned by
+    // `rule-store.rulesForProgram`, is ABSENT from the program built here, and a FICO-600 loan prices
+    // `eligible:true` with no declines at all. Everything the suggestion-accept flow produces — and
+    // everything the rule-authoring service publishes — was decorative: written to `lt_ppe_rule`,
+    // listed by `GET /rules`, analysed by `GET /rules/coverage`, and evaluated by nobody. The blast
+    // radius is every consumer of this function: the quote, the breakdown, the canary, the scheduled
+    // canary, the coverage read, AND the agreement run — so OUR leg of a gate whose whole subject is
+    // "we agree with Lender Price on every eligibility AND ineligibility" was pricing with zero
+    // eligibility rules, and a PASS was a pass on a sheet that could not decline anything.
+    //
+    // `rulesForProgram` already returns the `rules.js` shape and already scopes the set correctly —
+    // house rules (investor NULL) plus this investor's plus this program's, effective-dated — so this
+    // is the missing CALL, not a second definition of the rule set.
+    //
+    // ORDER IS SAFE BY THE ENGINE'S OWN CONTRACT: `evaluateRules` sorts by `priority` then input
+    // order, stably. Appending therefore leaves the sheet's own rules first at equal priority, which
+    // is the right default — the sheet is the base and an overlay rides on top — and a rule that
+    // means to come earlier says so with its priority.
+    let storedRules = [];
+    try {
+      storedRules = await ruleStore.rulesForProgram(
+        db, scope,
+        (sheet.program && sheet.program.investor_id) || null,
+        (sheet.program && sheet.program.id) || null,
+      );
+    } catch (e) {
+      // FAILS CLOSED, and this is the whole point rather than defensive decoration. Swallowing the
+      // error would price the loan with no eligibility rules and call it eligible — which is exactly
+      // the defect being fixed, reintroduced as a "graceful degradation". A program whose rule set
+      // cannot be read is not a program that has no rules.
+      return { program: null, marginFor: NO_MARGIN, reason: `rules_unreadable: ${String((e && e.message) || e).slice(0, 120)}` };
+    }
+    if (storedRules.length) program.rules = (program.rules || []).concat(storedRules);
+
+    // THE SHEET'S OWN MAX-PRICE RULE, attached HERE because this is the one door that turns a
+    // stored sheet into a priced program — and because the ceiling on some sheets depends on a
+    // SCENARIO fact, which no stored tier list can hold.
+    //
+    // MEASURED, on a real database: the Deephaven DSCR sheet states "max price is the LOWER of the
+    // loan-amount tier and the prepay-term ceiling", and only the loan-amount half ever reached a
+    // priced quote — `deephaven-dscr-prepay-maxprice.programWithPriceLimit`, the function that
+    // combines the two, had NO production caller at all. On a $1,000,000 loan with a 3-year prepay
+    // that put four coupons out at 104750 against a sheet whose own rule caps them at 103750: a FULL
+    // POINT, with nothing in the answer saying a ceiling had been skipped.
+    //
+    // `price-limit.scenarioRuleFor` is the registry; the function it returns is that sheet's OWN, so
+    // there is no second definition of any ceiling here. A sheet with no such rule attaches nothing
+    // and is priced on its stored tiers — correct, and REPORTED (`priceLimitRule`) rather than left
+    // to read as "the whole rule was applied".
+    const investorName = (sheet.investor && (sheet.investor.name || sheet.investor.code)) || null;
+    const scenarioRule = priceLimitLib.scenarioRuleFor(investorName);
+    if (scenarioRule) {
+      program.scenarioPriceLimit = scenarioRule.resolve;
+      program.priceLimitSheet = scenarioRule.sheet;
+    } else {
+      program.priceLimitRuleReason = investorName ? 'no_scenario_rule_registered' : 'investor_unknown';
+    }
+
+
+    // THE PER-INVESTOR MARGIN, RESOLVED ONCE — HERE, and nowhere else.
+    //
+    // MEASURED, before this line existed: `store.resolveMarginHoldbackForInvestor` was built,
+    // tested and called by nothing; `quote.quoteProgram` already accepted `{ marginHoldback }`
+    // and preferred it over the settings margin; and every production call passed only
+    // `{ scenario, program, settings }` — `grep -rn "marginHoldback:" src/longterm/routes/` came
+    // back empty. So the decision that our markup is PER INVESTOR was settled in the plan and
+    // inert in the engine. This is the seam that joins the two ends.
+    //
+    // ONE RESOLUTION, CARRIED. This function is the one place a program is loaded — the quote,
+    // the breakdown, the canary, the scheduled canary, the rule-coverage read and the agreement
+    // run all come through it — so the investor's layer is read here, once, and handed to every
+    // pricing call as `marginFor`. Resolving it at each call site instead would be four reads of
+    // the same two rows and four chances for them to disagree.
+    //
+    // The per-scenario RULES still evaluate per scenario (that is what "a different margin for
+    // different scenarios" means); what is resolved once is the DATABASE layer they run on top of.
+    //
+    // FAILS CLOSED. An unreadable override table returns no program with the reason, so the
+    // caller refuses or skips the shadow and SAYS SO — it never falls back to the company margin,
+    // because a quote priced at a margin we could not confirm is indistinguishable from a correct
+    // one and would be believed.
+    const marginCtx = await store.prepareMarginHoldbackForInvestor(db, investorCode, scope);
+    if (!marginCtx.ok) {
+      return { program: null, marginFor: NO_MARGIN, reason: `margin_unreadable: ${marginCtx.error}` };
+    }
+    // WHICH Lender Price programs a comparison against this sheet is about (db/574). It rides on the
+    // owning PROGRAM row, not the sheet version, because it is a statement about the investor's
+    // product family and survives every reprice of the sheet. NULL is the norm until a human states
+    // it, and null means "not scoped" — the comparison then abstains and says so, never compares our
+    // one ladder against a merge of Lender Price's seventeen.
+    return {
+      program,
+      // The carried resolver. Returns null while nothing per-investor is configured, and
+      // `quote.quoteProgram` ignores a null `marginHoldback` — so an unconfigured tenant's
+      // quote is byte-identical to what it is today.
+      marginFor: (facts) => marginCtx.forScenario(facts),
+      // What a reader needs to tell a per-investor margin from the company default.
+      margin: {
+        investorCode: marginCtx.investorCode,
+        investorScope: marginCtx.investorScope,
+        configured: marginCtx.configured,
+        defaults: marginCtx.defaults,
+      },
+      lpScope: lpScopeLib.scopeFromRow(sheet.program),
+      // The investor's NAME, which is the only key into `program-registry`. Carried here so the
+      // agreement run can ask that investor's own prepayment layer; every other caller ignores it.
+      investorName,
+      // WHICH max-price rule governs a quote off this sheet — reported so a caller never has to
+      // assume. `sheet_tiers_only` is a real and often correct answer; it is not silence.
+      priceLimitRule: scenarioRule
+        ? { rule: priceLimitLib.RULE.SCENARIO, sheet: scenarioRule.sheet }
+        : { rule: priceLimitLib.RULE.SHEET_TIERS_ONLY, sheet: null, reason: program.priceLimitRuleReason },
+      // HOW MANY accepted rules are in force, so a caller can say so rather than leave a reader to
+      // assume. Zero is a real answer and a different one from "we could not read them", which is a
+      // refusal above.
+      storedRuleCount: storedRules.length,
+      reason: null,
+    };
   } catch (e) {
-    return { program: null, reason: `program_load_failed: ${String((e && e.message) || e).slice(0, 120)}` };
+    return { program: null, marginFor: NO_MARGIN, reason: `program_load_failed: ${String((e && e.message) || e).slice(0, 120)}` };
   }
+}
+
+/**
+ * WHICH RATE-SHEET VERSION IS THIS REQUEST ABOUT? — the published sheet, or the exact one named.
+ *
+ * THE DEFECT THIS CLOSES, MEASURED. `store.currentRateSheetVersion` — the "which published version
+ * is in effect" predicate — had NO caller anywhere in `src/`. `loadProgram` takes a version ID and
+ * nothing else, and the only human path to one was a free-text UUID box on the pricing screen. So a
+ * person priced a loan by pasting a UUID, and PUBLISHING A SHEET MADE NOTHING PRICE FROM IT: the
+ * publish gate, the agreement run, the supersede of the previous version — all of it decided a status
+ * that no pricing path ever read.
+ *
+ * THIS ADDS A WAY, IT REMOVES NONE. An explicit `rateSheetVersionId` still wins and is still the way
+ * a SPECIFIC version is compared (a diff, a re-price of an old quote, the agreement harness). What is
+ * new is that a caller may instead name a PROGRAM and get the version in effect for it.
+ *
+ * WHERE NOTHING IS PUBLISHED, THAT IS A NAMED STATE — never a fall-back to the newest draft, the last
+ * superseded sheet, or anything else. Pricing a loan off a sheet nobody published is the failure this
+ * must not create, so the honest answer is `no_published_rate_sheet` and the caller says so.
+ *
+ * WHERE THE ANSWER IS AMBIGUOUS, IT REFUSES RATHER THAN INVENTING A TIE-BREAK. Two published sheets
+ * in effect for one program — two channels each holding one, or two rows written by another path —
+ * is a question about the business ("which channel does an unqualified quote mean?", "does the later
+ * effective date win?") that nobody has answered. Picking one here would be inventing a rule; naming
+ * the state and listing the candidates hands the question to a person. Recorded as an open question
+ * in docs/longterm/PPE-OPEN-QUESTIONS.md.
+ *
+ * Returns { versionId, reason, message, resolvedFrom, programId, channel, candidates } and never throws.
+ */
+async function resolveRateSheetVersion(scope, b = {}) {
+  const explicit = b.rateSheetVersionId ? String(b.rateSheetVersionId).trim() : '';
+  if (explicit) {
+    return { versionId: explicit, reason: null, message: null, resolvedFrom: 'explicit_version', programId: null, channel: null, candidates: [] };
+  }
+
+  const programId = uuidOf(b.programId);
+  if (!programId) {
+    // Unchanged from before this existed: no version and no program named is not an error, it is a
+    // caller that did not ask for a program at all.
+    if (b.programId) {
+      return {
+        versionId: null, reason: 'bad_program_id', resolvedFrom: 'program',
+        message: 'That is not a program id.', programId: null, channel: null, candidates: [],
+      };
+    }
+    return { versionId: null, reason: 'no_program_requested', message: null, resolvedFrom: 'none', programId: null, channel: null, candidates: [] };
+  }
+
+  const channel = textOrNull(b.channel, 40);
+  let inEffect;
+  try {
+    inEffect = await store.publishedRateSheetVersions(db, scope, programId, channel);
+  } catch (e) {
+    // FAILS CLOSED. A version set we could not read is not evidence that a version is in effect.
+    return {
+      versionId: null, reason: 'published_lookup_failed', resolvedFrom: 'program',
+      message: `The published rate sheets for this program could not be read: ${String((e && e.message) || e).slice(0, 120)}`,
+      programId, channel, candidates: [],
+    };
+  }
+
+  if (!inEffect.length) {
+    return {
+      versionId: null, reason: 'no_published_rate_sheet', resolvedFrom: 'program',
+      message: 'Nothing is published for this program, so there is no rate sheet to price from. Publish one, or name an exact version.',
+      programId, channel, candidates: [],
+    };
+  }
+  if (inEffect.length > 1) {
+    return {
+      versionId: null, reason: 'ambiguous_published_rate_sheet', resolvedFrom: 'program',
+      message: `${inEffect.length} rate sheets are published and in effect for this program${channel ? ` on the ${channel} channel` : ''}, so which one prices is not decided. Name the exact version you mean.`,
+      programId, channel,
+      candidates: inEffect.map((v) => ({ id: v.id, versionNo: v.version_no, channel: v.channel, effectiveFrom: v.effective_from || null })),
+    };
+  }
+
+  // EXACTLY ONE. The version is taken from the PREDICATE rather than from the row just counted, so
+  // "which published version is in effect" has one definition and this cannot drift from it.
+  const cur = await store.currentRateSheetVersion(db, scope, programId, inEffect[0].channel);
+  if (!cur) {
+    return {
+      versionId: null, reason: 'no_published_rate_sheet', resolvedFrom: 'program',
+      message: 'Nothing is published for this program, so there is no rate sheet to price from. Publish one, or name an exact version.',
+      programId, channel: inEffect[0].channel, candidates: [],
+    };
+  }
+  return {
+    versionId: cur.id, reason: null, message: null, resolvedFrom: 'published',
+    programId, channel: cur.channel,
+    candidates: [{ id: cur.id, versionNo: cur.version_no, channel: cur.channel, effectiveFrom: cur.effective_from || null }],
+  };
+}
+
+/**
+ * The resolver's answer, as the caller sees it. Says WHICH version priced and HOW it was chosen —
+ * a quote that does not state which sheet it came from cannot be audited, and "the published one"
+ * is a fact about the moment the quote ran, not a stable label.
+ */
+function rateSheetPick(picked) {
+  if (!picked) return null;
+  return {
+    versionId: picked.versionId || null,
+    resolvedFrom: picked.resolvedFrom,
+    programId: picked.programId || null,
+    channel: picked.channel || null,
+    reason: picked.reason || null,
+    message: picked.message || null,
+    candidates: picked.candidates || [],
+  };
 }
 
 // `settings.resolveAll` (and therefore `store.resolveSettings`) returns
@@ -190,6 +536,8 @@ async function loadProgram(scope, versionId) {
 const K = {
   priceTolerance: 'validation.price_tolerance_milli',
   rateTolerance: 'validation.rate_tolerance_milli',
+  marginTolerance: 'validation.margin_tolerance_milli',
+  basePriceTolerance: 'validation.base_price_tolerance_milli',
 };
 
 async function resolveSettingsSafe(scope) {
@@ -248,11 +596,200 @@ async function health(req, res) {
 async function getSettings(req, res) {
   const scope = readScope(req);
   const { values, sources, source } = await resolveSettingsSafe(scope);
+
+  // The SLOT being read. `?investor=CODE` reads that investor's own slot; no query reads
+  // the company one. The target is parsed by the SAME function the write door uses, so a
+  // code the writer would refuse can never be READ as a valid slot either — a screen that
+  // could display a slot the server will not write to is a dead end.
+  // `?investor=CODE` reads that investor's own slot, `?officer=<id>` a loan officer's own, and no
+  // query at all reads the company one. Naming BOTH is contradictory — they are two different slots
+  // and only the caller knows which they meant — so it is refused rather than resolved by picking one.
+  const q = req.query || {};
+  let ask = { target: 'company' };
+  if (q.investor && q.officer) {
+    return res.status(400).json({
+      ok: false,
+      code: 'two_slots',
+      error: 'This asks for an investor\'s settings and a loan officer\'s at the same time. Ask for one.',
+    });
+  }
+  if (q.investor) ask = { target: 'investor', investor: String(q.investor) };
+  else if (q.officer) ask = { target: 'officer', officer: String(q.officer) };
+  const t = settingsAdmin.parseTarget(ask);
+  if (!t.ok) return res.status(400).json({ ok: false, error: t.message, code: t.error });
+
+  // `described` carries, PER SETTING, the value in force, WHICH LAYER it came from, whether
+  // that is the shipped default, and — a separate fact — whether a human set it at THIS slot,
+  // with who and when. Best-effort: a screen must still render the registry when the
+  // override table cannot be read, so a failure degrades to the resolved values alone and
+  // SAYS the description is unavailable rather than implying everything is a default.
+  let described = null;
+  let describeError = null;
+  try {
+    described = await settingsAdmin.describe(db, t);
+  } catch (e) {
+    describeError = String((e && e.message) || e).slice(0, 200);
+  }
+
+  let canWrite = false;
+  try {
+    const { settings: s } = await settingsStore.load();
+    canWrite = access.mayManagePeople(req.actor, s);
+  } catch (_) { /* the values are still worth showing; the controls stay off */ }
+
   // `values` is the FLAT map keyed exactly as `allDefinitions()[].key`, so a screen
   // can do `values[def.key]`. It was previously the {values,sources} wrapper, which
   // made every one of those lookups undefined — defeating the whole "the screen is
-  // drawn from the server's own description" point.
-  return res.json({ ok: true, scope, source, definitions: ppeSettings.allDefinitions(), values, sources });
+  // drawn from the server's own description" point. It is the COMPANY resolution and
+  // is left byte-identical for the callers that already read it; a per-slot reader uses
+  // `settings[]` below.
+  return res.json({
+    ok: true,
+    scope,
+    source,
+    definitions: ppeSettings.allDefinitions(),
+    values,
+    sources,
+    canWrite,
+    target: { kind: t.kind, investor: t.investorCode || null, scope: t.scope },
+    investorScopedKeys: ppeSettings.investorScopedKeys(),
+    settings: described ? described.settings : null,
+    describeError,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// POST /settings and POST /settings/clear — the WRITE DOOR (admin)
+// ---------------------------------------------------------------------------
+//
+// Until this shipped, NOTHING in src/ called `store.setSetting` or `store.clearSetting`
+// and there was no write route at all — so the parity tolerances, the rounding, the price
+// floor and the per-investor margin could only be changed by editing the database by hand.
+// Both routes are gated by `requirePpeAdmin` (the same gate that settles a finding and runs
+// a canary) and every change they make is recorded in `lt_ppe_setting_audit`.
+//
+// THE SLOT IS ALWAYS STATED, NEVER INFERRED. See `settings-admin.parseTarget`.
+
+/**
+ * The person behind a change, for the audit trail. `req.actor` is `{ id, kind, role, sid }`
+ * — it carries NO name and NO email (the #208 dead-read bug is exactly the assumption that
+ * it does), so the label is looked up from the shared roster. `staff_users` is READ-ONLY to
+ * Long-Term and this read is authorized in docs/LONG-TERM-AUTHORIZED-COPIES.md
+ * (`sql-read staff_users`).
+ *
+ * A lookup failure returns null rather than throwing: the `actor_id` is the durable
+ * identity and is already recorded; the label is the courtesy that keeps the trail readable
+ * after a person is renamed or removed, and losing it must never lose the change.
+ */
+async function actorLabel(actorId) {
+  if (!actorId) return null;
+  try {
+    const r = await db.query('SELECT full_name, email FROM staff_users WHERE id = $1::uuid', [actorId]);
+    const row = r.rows[0];
+    if (!row) return null;
+    return row.full_name || row.email || null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+async function saveSettingsRoute(req, res) {
+  const b = req.body || {};
+  const t = settingsAdmin.parseTarget(b);
+  if (!t.ok) return res.status(400).json({ ok: false, error: t.message, code: t.error });
+
+  const plan = settingsAdmin.planSet(t.kind, b.settings);
+  if (!plan.ok) {
+    // NAMED, never dropped. Every refusal carries the key it is about, and the whole
+    // batch is refused — a request that half-applies behind a 200 is the single worst
+    // outcome on this surface.
+    // NAMED, never dropped: `error` is the sentence a person reads (it is what the
+    // Long-Term fetch helper surfaces), `refused[]` carries the machine code AND the key
+    // for each one so a screen can mark the exact fields that were turned back.
+    return res.status(400).json({
+      ok: false,
+      error: plan.refusals.map((r) => r.message).join(' '),
+      code: 'settings_refused',
+      refused: plan.refusals,
+    });
+  }
+
+  const actor = { id: (req.actor && req.actor.id) || null };
+  actor.label = await actorLabel(actor.id);
+
+  const out = await settingsAdmin.apply(db, { target: t, changes: plan.changes, actor });
+  // RE-READ FROM THE SERVER. The answer describes what the database holds NOW, read back
+  // after the commit — never the values the request happened to send.
+  const described = await settingsAdmin.describe(db, t);
+  return res.json({ ok: true, applied: out.applied, ...described });
+}
+
+async function clearSettingsRoute(req, res) {
+  const b = req.body || {};
+  const t = settingsAdmin.parseTarget(b);
+  if (!t.ok) return res.status(400).json({ ok: false, error: t.message, code: t.error });
+
+  const plan = settingsAdmin.planClear(t.kind, b.keys);
+  if (!plan.ok) {
+    // NAMED, never dropped: `error` is the sentence a person reads (it is what the
+    // Long-Term fetch helper surfaces), `refused[]` carries the machine code AND the key
+    // for each one so a screen can mark the exact fields that were turned back.
+    return res.status(400).json({
+      ok: false,
+      error: plan.refusals.map((r) => r.message).join(' '),
+      code: 'settings_refused',
+      refused: plan.refusals,
+    });
+  }
+
+  const actor = { id: (req.actor && req.actor.id) || null };
+  actor.label = await actorLabel(actor.id);
+
+  const out = await settingsAdmin.apply(db, { target: t, clears: plan.keys, actor });
+  const described = await settingsAdmin.describe(db, t);
+  return res.json({ ok: true, applied: out.applied, ...described });
+}
+
+// ---------------------------------------------------------------------------
+// GET /settings/audit — who changed what, when, from what to what
+// ---------------------------------------------------------------------------
+//
+// Open to any staff member, like the other reads on this surface: knowing why a price
+// moved is not a privilege, and a trail only an admin can see is a trail nobody checks.
+
+async function settingsAuditRoute(req, res) {
+  const q = req.query || {};
+  const t = settingsAdmin.parseTarget(
+    q.investor ? { target: 'investor', investor: String(q.investor) } : { target: 'company' });
+  if (!t.ok) return res.status(400).json({ ok: false, error: t.message, code: t.error });
+
+  const key = q.key ? String(q.key) : null;
+  if (key && !ppeSettings.getDefinition(key)) {
+    return res.status(400).json({ ok: false, error: `"${key}" is not a setting this engine has.`, code: `unknown_setting:${key}` });
+  }
+
+  const limit = intIn(q.limit, 500) || 100;
+  const out = await store.listSettingAudit(db, { scope: t.scope, key, limit });
+  return res.json({
+    ok: true,
+    target: { kind: t.kind, investor: t.investorCode || null, scope: t.scope },
+    // A history that could not be read is SAID to be unavailable. An empty list would
+    // read as "nothing has ever changed", which is a very different and possibly false claim.
+    available: out.ok,
+    error: out.ok ? null : out.error,
+    entries: (out.rows || []).map((r) => ({
+      id: r.id,
+      key: r.key,
+      action: r.action,
+      from: r.from_value,
+      fromSource: r.from_source,
+      to: r.to_value,
+      toSource: r.to_source,
+      by: r.actor_label || null,
+      byId: r.actor_id || null,
+      at: r.changed_at,
+    })),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -262,18 +799,41 @@ async function getSettings(req, res) {
 async function listInvestorsRoute(req, res) {
   const scope = readScope(req);
   const investors = await store.listInvestors(db, scope);
+
+  // THE MODE IS READ, NOT ASSERTED — and this block is the third wording it has carried, each of the
+  // first two having stopped being true. It once said the cutover ledger had no table (false since
+  // db/566), then that there was no per-investor lifecycle and every investor was in shadow (false
+  // the moment `POST /cutover/decision` shipped, because a super admin can now take one live). A
+  // response body is the worst place for a stale claim: a screen repeats it to a human verbatim. So
+  // this reads each investor's ACTUAL mode out of the ledger rather than stating one.
+  //
+  // Best-effort, and the failure is NAMED rather than defaulted: an unreadable ledger reports the mode
+  // as null with `lifecycleError` set, never as 'shadow' — "we could not check" and "it is shadowing"
+  // are different facts, and only one of them is anybody's fault.
+  let lifecycleError = null;
+  const modes = new Map();
+  try {
+    await Promise.all(investors.map(async (i) => {
+      modes.set(i.code, await cutoverStore.currentMode(scope, { db, investor: i.code }));
+    }));
+  } catch (e) { lifecycleError = msgOf(e); }
+
   return res.json({
     ok: true,
     scope,
-    investors: investors.map((i) => ({ id: i.id, code: i.code, name: i.name, active: i.active !== false, createdAt: i.created_at || null })),
-    // Honest about what is NOT modelled yet: `lt_ppe_investor` has no mode column
-    // and the cutover ledger has no table, so there is no per-investor lifecycle
-    // to report. Every investor is in shadow because §1.2 says everything is.
+    investors: investors.map((i) => ({
+      id: i.id,
+      code: i.code,
+      name: i.name,
+      active: i.active !== false,
+      createdAt: i.created_at || null,
+      mode: modes.has(i.code) ? modes.get(i.code) : null,
+    })),
     lifecycle: {
-      mode: 'shadow',
-      perInvestor: false,
-      note: 'Per-investor promotion is not persisted yet — the cutover ledger has no table. Every investor is in shadow; Lender Price is authoritative.',
+      perInvestor: true,
+      note: 'Each investor carries its own lifecycle, recorded in an append-only ledger (lt_ppe_cutover_ledger, db/566) and moved at /cutover — a super admin\'s decision. An investor is priced by Lender Price unless its mode is "live"; a live one is still priced against Lender Price alongside our answer.',
       modes: Object.values(cutover.MODES),
+      ...(lifecycleError ? { lifecycleError } : {}),
     },
   });
 }
@@ -384,7 +944,11 @@ async function quoteRoute(req, res) {
   const investor = b.investor ? String(b.investor) : null;
 
   const { values: settings } = await resolveSettingsSafe(scope);
-  const { program, reason: noProgram } = await loadProgram(scope, b.rateSheetVersionId);
+  // THE PUBLISHED SHEET, OR THE ONE NAMED. A caller may send `rateSheetVersionId` (unchanged, still
+  // how a specific version is compared) or `programId`, in which case the version IN EFFECT for that
+  // program is what prices. Nothing published is a NAMED state, never a quiet fall-back.
+  const picked = await resolveRateSheetVersion(scope, b);
+  const { program, lpScope, marginFor, margin: marginInfo, reason: noProgram } = await loadProgram(scope, picked.versionId);
   const lp = require('../lenderprice/client');
   const nowMs = Date.now();
 
@@ -398,26 +962,271 @@ async function quoteRoute(req, res) {
     const answer = await lp.price(scenario);
     return res.json({
       ok: true, scope, mode: 'shadow', authoritative: 'lp', answer,
-      shadow: null, shadowSkipped: noProgram,
+      // The RESOLVER's reason wins when it is the one that stopped us: "nothing is published for this
+      // program" is a completely different fact from "the version you named could not be loaded", and
+      // reporting the second for the first sends a reader hunting a version that was never asked for.
+      shadow: null,
+      shadowSkipped: picked.reason || noProgram,
+      shadowSkippedMessage: picked.message || null,
+      rateSheet: rateSheetPick(picked),
     });
+  }
+
+  // WHICH ENGINE ANSWERS — read from the cutover ledger, not hard-coded (§11 / P10). This line said
+  // `() => 'shadow'` and a comment reading "for now, in every scenario", which was true right up until
+  // the promote door existed: from that moment a super admin could record an investor LIVE and every
+  // quote would still have priced from Lender Price, with the ledger and the engine confidently
+  // disagreeing and nothing anywhere saying so.
+  //
+  // IT FAILS CLOSED, and the asymmetry is the point: ONLY an explicit, readable LIVE moves the answer
+  // to our engine. Draft, retired, an investor nobody has ever decided about, and — critically — a
+  // ledger we could not READ all keep Lender Price authoritative. A database hiccup must never be able
+  // to promote anybody, and a `catch` that defaulted the other way would do exactly that.
+  //
+  // A LIVE INVESTOR IS STILL MEASURED. `priceWithShadow` in live mode runs our quote as the answer AND
+  // the Lender Price comparison alongside it. Whether that spot-check should continue forever is one
+  // of the two halves the owner has not answered (OWNER-QUESTIONS-OPEN §3a), so the safe half is the
+  // default and nothing here pretends the question is settled.
+  let cutoverMode = cutover.MODES.SHADOW;
+  let cutoverModeError = null;
+  if (investor) {
+    try {
+      if (await cutoverStore.currentMode(scope, { db, investor }) === cutover.MODES.LIVE) {
+        cutoverMode = cutover.MODES.LIVE;
+      }
+    } catch (e) { cutoverModeError = msgOf(e); }
   }
 
   const result = await facade.priceWithShadow(
     { scenario, investor, program },
     {
-      mode: () => 'shadow', // §1.2 — for now, in every scenario
+      mode: () => cutoverMode,
       priceLp: (sc) => lp.price(sc),
-      ourQuote: (sc) => quote.quoteProgram({ scenario: sc, program, settings }),
+      ourQuote: (sc) => quote.quoteProgram({ scenario: sc, program, settings, marginHoldback: marginFor(sc) }),
+      // THE CAPTURE, READ PROPERLY — §2.8. `lp.price()` returns the RAW envelope
+      // ({ ok, raw, request, searchKey }), NOT the parse() shape, and the façade had
+      // been normalizing that envelope as if it were one: no `.programs`, so ZERO
+      // matched programs, so Lender Price read as INELIGIBLE and every single quote
+      // recorded a phantom eligibility finding. This turns the one envelope into the
+      // three parsed shapes — the ladder for the price comparison, the full parse and
+      // the disqualify tree for the six categorized axes (margin, itemized LLPAs,
+      // decline reasons) that the shallow ladder structurally cannot see.
+      //
+      // The disqualify tree is computed ASYNCHRONOUSLY by Lender Price, so an ordinary
+      // price call usually returns before it is ready; `hasDisqualifyData` asks rather
+      // than assuming, and the façade reports `disqualifyReady` so a half-tested
+      // eligibility axis is never mistaken for "Lender Price declined nothing".
+      lpDetail: (answer) => {
+        const raw = answer && answer.raw;
+        if (!raw) return null;
+        return {
+          parsed: lp.parse(raw),
+          full: lp.parseFull(raw),
+          disqualified: lp.hasDisqualifyData(raw) ? lp.parseDisqualified(raw) : { ready: false, lenders: [] },
+        };
+      },
       recordFinding: (records) => findingStore.persistRun(scope, records, { db, nowMs }),
       nowMs,
     },
     {
       priceToleranceMilli: settings[K.priceTolerance],
       rateToleranceMilli: settings[K.rateTolerance],
+      marginToleranceMilli: settings[K.marginTolerance],
+      basePriceToleranceMilli: settings[K.basePriceTolerance],
+      settings,
+      // WHICH Lender Price programs this comparison is about — the sheet's OWN stored scope
+      // (db/574), and the ONLY source of it. Lender Price answers one request with EVERY
+      // program it sells (17 on the live Deephaven capture, across several investors and
+      // product lines) while our engine prices ONE, so the scope has to be STATED: our
+      // `program` is a rate-sheet version of our authoring, not Lender Price's program
+      // name, and inferring one from it would be a guess about somebody else's product
+      // catalogue. Unscoped, the façade abstains with that reason rather than comparing our
+      // one ladder against a merge of seventeen.
+      //
+      // DELIBERATELY NOT READ FROM THE REQUEST BODY. A caller-supplied scope would be a
+      // SECOND source for one fact, free to disagree with the stored statement and to point
+      // a comparison at a program nobody chose — and `programLike` is compiled with
+      // `new RegExp(...)` while this route is not admin-gated, so honouring one over HTTP
+      // would let any caller hand the server a pattern to compile and run. The scope is set
+      // once, by an admin, through POST /programs/:id/lp-scope.
+      lpFilter: lpScope,
     },
   );
 
-  return res.json({ ok: true, scope, ...result });
+  // THE SHEET'S CEILING IS PART OF THE ANSWER, NOT A DETAIL BURIED IN THE SHADOW BLOCK.
+  // Our engine states, per scenario, whether the rate sheet's own max-price rule governed this
+  // quote — and, when it could not, what it fell closed onto and why. That must never be
+  // something the caller has to go and ask for: a ceiling that was skipped and a ceiling that
+  // was honoured look identical in the number alone. `priceLimitNotice` is the ONE wording, and
+  // it is null exactly when the sheet's own rule governed and there is nothing to say.
+  const capRes = (result && result.shadow && result.shadow.priceLimit) || null;
+  const priceLimitNote = quote.priceLimitNotice(capRes);
+
+  // …and WHICH rate sheet version answered, so a caller can never be left guessing whether it read
+  // the published sheet or a draft somebody named by hand.
+  // WHICH MARGIN OUR SHADOW USED, and where it came from — a reader must be able to tell a
+  // per-investor margin from the company default without inferring it from the number. The
+  // per-rung answer is `pricingBasis.marginSource` inside the shadow's own quote; this is the
+  // layer that produced it (`configured:false` = nothing per-investor is set, so the company
+  // settings margin priced this exactly as it always has).
+  // …and it is spread LAST on purpose: this block is the route's own statement about the margin
+  // layer, and a key the façade grows later must not be able to silently take its place.
+  return res.json({
+    ok: true, scope, rateSheet: rateSheetPick(picked), ...result,
+    priceLimit: capRes,
+    ...(priceLimitNote ? { priceLimitNote } : {}),
+    margin: marginInfo,
+    // NO SILENT FALL-BACK. When the lifecycle ledger could not be read this quote priced from Lender
+    // Price — the safe answer — but a caller has no way to tell that from an investor who is simply
+    // still shadowing. The two are different facts, so the read failure is named.
+    ...(cutoverModeError ? { cutoverModeError, cutoverModeNote: 'The lifecycle ledger could not be read, so this quote was priced the safe way — Lender Price answers. That is a read failure, not a decision.' } : {}),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// POST /breakdown — the LP-style pricing-transparency view for one scenario
+// ---------------------------------------------------------------------------
+//
+// The "mother interface" (owner-directed 2026-08-17): base price at the top, every
+// itemized LLPA/adjustment with its running effect, and the final price — "same way
+// everything is visible in Lender Price."
+//
+// This route only ASSEMBLES a view over an already-priced scenario; it invents no
+// number. It prices the scenario against our engine's reconstruction (`quote.quoteProgram`
+// → the §5.4 record, which maps 1:1 onto LP's priceBuild) and hands that to the PURE
+// read-model `pricing-breakdown.buildPricingBreakdown`. A rate-sheet version is required —
+// unlike /quote (where LP answers even with no program) there is nothing to break down
+// without a priced sheet, so it REFUSES with the reason rather than returning an empty view.
+//
+// Lender Price's own side is OPTIONAL context, best-effort: pass a parsed `disqualified`
+// (or a `searchKey` we poll) for LP's decline panel, and `lpRaw` to build the breakdown
+// from LP's own sheet instead of our reconstruction (`source:'lp'`). None of it is needed
+// for the core view, and a failure to fetch it never fails the breakdown.
+//
+// A READ: like /quote it is open to any staff member and it does NOT write to the findings
+// ledger (buildPricingBreakdown is pure and nothing here calls recordFinding).
+
+async function breakdownRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const scenario = b.scenario;
+  if (!scenario || typeof scenario !== 'object' || Array.isArray(scenario)) {
+    return res.status(400).json({ error: 'Send a `scenario` object describing the deal.' });
+  }
+  const investor = b.investor ? String(b.investor) : null;
+  const rate = b.rate == null || b.rate === '' ? null : Number(b.rate);
+  if (rate != null && !Number.isFinite(rate)) {
+    return res.status(400).json({ error: '`rate` must be a number (the coupon to feature), or omitted.' });
+  }
+  const source = b.source === 'lp' || b.source === 'ours' ? b.source : null;
+
+  const { values: settings } = await resolveSettingsSafe(scope);
+  // Same resolution as /quote: the published sheet for a named program, or the exact version named.
+  const picked = await resolveRateSheetVersion(scope, b);
+  const { program, marginFor, margin: marginInfo, reason: noProgram } = await loadProgram(scope, picked.versionId);
+  if (!program) {
+    // Nothing to break down without a priced sheet. Say why, don't return an empty view — and say
+    // the RESOLVER's why when it is the resolver that stopped us, because "nothing is published for
+    // this program" and "that version could not be loaded" send a person to two different places.
+    return res.status(422).json({
+      error: picked.message || 'A breakdown needs a rate-sheet version to price against.',
+      reason: picked.reason || noProgram,
+      rateSheet: rateSheetPick(picked),
+    });
+  }
+
+  let quoteResult;
+  try {
+    quoteResult = quote.quoteProgram({ scenario, program, settings, marginHoldback: marginFor(scenario) });
+  } catch (e) {
+    return res.status(422).json({ error: 'That scenario could not be priced.', detail: String((e && e.message) || e).slice(0, 160) });
+  }
+
+  const lp = require('../lenderprice/client');
+
+  // Optional: Lender Price's OWN parsed sheet, for a source:'lp' breakdown. Best-effort.
+  let lpFull = null;
+  if (b.lpRaw != null) {
+    try { lpFull = lpNormalizeFull.normalizeLpFull(lp.parseFull(b.lpRaw), { investor }); } catch (_) { lpFull = null; }
+  }
+
+  // Optional: Lender Price's OWN disqualifications, for the decline panel. Best-effort.
+  let lpDisqualified = null;
+  let disqualifyPending = false;
+  if (b.disqualified && typeof b.disqualified === 'object') {
+    try { lpDisqualified = lpNormalizeFull.normalizeLpDisqualified(b.disqualified, { investor }); } catch (_) { lpDisqualified = null; }
+  } else if (b.searchKey) {
+    try {
+      const pr = await lp.pollDisqualifiedByKey(String(b.searchKey));
+      if (pr && (pr.ready || pr.raw || pr.parsed)) {
+        const parsed = pr.parsed || lp.parseDisqualified(pr.raw);
+        lpDisqualified = lpNormalizeFull.normalizeLpDisqualified(parsed, { investor });
+      } else {
+        disqualifyPending = true; // LP is still computing; the breakdown still returns
+      }
+    } catch (_) { lpDisqualified = null; }
+  }
+
+  const breakdown = pricingBreakdown.buildPricingBreakdown({
+    quote: quoteResult, lpFull, lpDisqualified, rate, source,
+  });
+
+  // WHICH sheet this was priced from, and HOW it was chosen. A breakdown that does not say which
+  // version it broke down is unauditable — and now that a caller may name a program rather than a
+  // version, "the published one" has to be stated rather than assumed by whoever reads it.
+  return res.json({ ok: true, scope, investor, disqualifyPending, rateSheet: rateSheetPick(picked), margin: marginInfo, breakdown });
+}
+
+// ---------------------------------------------------------------------------
+// resolveBattery — WHICH scenarios a canary prices, and the refusals around it
+// ---------------------------------------------------------------------------
+//
+// Shared by the button and by a saved schedule, for the reason the size rules exist at all: a battery
+// that is silently thinned reports an agreement rate measured over scenarios nobody chose, and that
+// number feeds the promote gate. A second copy of these refusals is how one caller ends up thinning
+// what the other refuses — so a schedule and a person hit exactly the same wall.
+//
+// Returns { scenarios } or { refused: { status, body } }. It never prices anything and never throws.
+
+function resolveBattery(source) {
+  const src = source || {};
+  let scenarios;
+  if (Array.isArray(src.scenarios)) {
+    scenarios = src.scenarios;
+  } else if (src.matrix && typeof src.matrix === 'object') {
+    try {
+      // buildMatrix returns { scenarios, fullSize, truncated, stride } — NOT an array. Taking it
+      // whole made `Array.isArray(scenarios)` false below, so EVERY matrix-shaped canary answered
+      // 400 "that produced no scenarios to price" and the endpoint's own size refusal was
+      // unreachable from this branch. Found by the re-audit; it matters more now that a saved
+      // schedule can carry a matrix.
+      const expanded = scenarioMatrix.buildMatrix(src.matrix);
+      scenarios = expanded.scenarios;
+      // A STRIDED-DOWN battery is never priced silently: an agreement rate measured over scenarios
+      // nobody chose reads cleaner than it is, and this endpoint already refuses rather than
+      // truncates when a caller sends too many outright.
+      if (expanded.truncated) {
+        return { refused: { status: 422, body: {
+          error: `That matrix expands to ${expanded.fullSize} scenarios; this endpoint prices at most ${MAX_CANARY_SCENARIOS} in one run. Narrow it — it is refused rather than thinned, because an agreement rate over a thinned battery is measured on scenarios nobody chose.`,
+          limit: MAX_CANARY_SCENARIOS, asked: expanded.fullSize, reason: 'battery_truncated',
+        } } };
+      }
+    } catch (e) {
+      return { refused: { status: 400, body: { error: `That matrix could not be expanded: ${String((e && e.message) || e).slice(0, 160)}`, reason: 'bad_matrix' } } };
+    }
+  } else {
+    return { refused: { status: 400, body: { error: 'Send either `scenarios` (an array) or `matrix` (axes to expand).', reason: 'no_battery' } } };
+  }
+  if (!Array.isArray(scenarios) || !scenarios.length) {
+    return { refused: { status: 400, body: { error: 'That produced no scenarios to price.', reason: 'empty_battery' } } };
+  }
+  if (scenarios.length > MAX_CANARY_SCENARIOS) {
+    return { refused: { status: 422, body: {
+      error: `That is ${scenarios.length} scenarios; this endpoint prices at most ${MAX_CANARY_SCENARIOS} in one run. Narrow the matrix.`,
+      limit: MAX_CANARY_SCENARIOS, asked: scenarios.length, reason: 'battery_too_large',
+    } } };
+  }
+  return { scenarios };
 }
 
 // ---------------------------------------------------------------------------
@@ -433,55 +1242,67 @@ async function canaryRoute(req, res) {
   const b = req.body || {};
   const investor = b.investor ? String(b.investor) : null;
 
-  let scenarios;
-  if (Array.isArray(b.scenarios)) {
-    scenarios = b.scenarios;
-  } else if (b.matrix && typeof b.matrix === 'object') {
-    try {
-      // buildMatrix returns { scenarios, fullSize, truncated, stride } — NOT an array. Taking it
-      // whole made `Array.isArray(scenarios)` false below, so EVERY matrix-shaped canary answered
-      // 400 "that produced no scenarios to price" and the endpoint's own size refusal was
-      // unreachable from this branch. Found by the re-audit; it matters more now that a saved
-      // schedule can carry a matrix.
-      const expanded = scenarioMatrix.buildMatrix(b.matrix);
-      scenarios = expanded.scenarios;
-      // A STRIDED-DOWN battery is never priced silently: an agreement rate measured over scenarios
-      // nobody chose reads cleaner than it is, and this endpoint already refuses rather than
-      // truncates when a caller sends too many outright.
-      if (expanded.truncated) {
-        return res.status(422).json({
-          error: `That matrix expands to ${expanded.fullSize} scenarios; this endpoint prices at most ${MAX_CANARY_SCENARIOS} in one run. Narrow it — it is refused rather than thinned, because an agreement rate over a thinned battery is measured on scenarios nobody chose.`,
-          limit: MAX_CANARY_SCENARIOS, asked: expanded.fullSize,
-        });
-      }
-    } catch (e) {
-      return res.status(400).json({ error: `That matrix could not be expanded: ${String((e && e.message) || e).slice(0, 160)}` });
-    }
-  } else {
-    return res.status(400).json({ error: 'Send either `scenarios` (an array) or `matrix` (axes to expand).' });
-  }
-  if (!Array.isArray(scenarios) || !scenarios.length) {
-    return res.status(400).json({ error: 'That produced no scenarios to price.' });
-  }
-  if (scenarios.length > MAX_CANARY_SCENARIOS) {
-    return res.status(422).json({
-      error: `That is ${scenarios.length} scenarios; this endpoint prices at most ${MAX_CANARY_SCENARIOS} in one run. Narrow the matrix.`,
-      limit: MAX_CANARY_SCENARIOS,
-      asked: scenarios.length,
-    });
-  }
+  const battery = resolveBattery(b);
+  if (battery.refused) return res.status(battery.refused.status).json(battery.refused.body);
+  const scenarios = battery.scenarios;
 
-  const { program, reason: noProgram } = await loadProgram(scope, b.rateSheetVersionId);
+  const out = await runBattery(scope, scenarios, {
+    investor, rateSheetVersionId: b.rateSheetVersionId, concurrency: b.concurrency,
+  });
+  if (out.refused) return res.status(out.refused.status).json(out.refused.body);
+  return res.json(out.result);
+}
+
+// ---------------------------------------------------------------------------
+// runBattery — the canary EXECUTION, shared by the button and the schedule
+// ---------------------------------------------------------------------------
+//
+// Extracted out of `canaryRoute` the moment the SCHEDULE became reachable, and the extraction IS the
+// point: a canary somebody fires by hand and one a cadence fires overnight must produce the same
+// measurement, into the same three durable records, or the run series would mean one thing on the days
+// a person pressed the button and another thing the rest of the week — and the go-live gate reads that
+// series. A second copy of this is the ordinary way that happens, so there is one.
+//
+// It RETURNS a refusal rather than writing a response, because its second caller is not an HTTP
+// request: the route turns `refused` into a status, and the tick records it against the schedule that
+// asked. Everything else — the program load, the tolerances, the three best-effort persists and their
+// separately-reported failures — is the code that was already here, moved whole.
+
+async function runBattery(scope, scenarios, opts = {}) {
+  const investor = opts.investor || null;
+  const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
+  const { program, lpScope, marginFor, reason: noProgram } = await loadProgram(scope, opts.rateSheetVersionId);
   if (!program) {
     // Same reasoning as /quote, and it matters more here: a canary with no
     // program would price N scenarios against a live upstream and record N
     // engine_error findings that say nothing about agreement.
-    return res.status(422).json({ error: 'A canary needs a rate-sheet version to price against.', reason: noProgram });
+    return { refused: { status: 422, body: { error: 'A canary needs a rate-sheet version to price against.', reason: noProgram } } };
+  }
+
+  // AND IT NEEDS TO KNOW WHICH LENDER PRICE PROGRAMS IT IS ABOUT, for exactly the reason the /quote
+  // facade abstains without one (`lp-scope.js`): Lender Price answers one request with EVERY program
+  // it sells — 17 on the live Deephaven capture, across several investors and product lines — while
+  // this sheet prices ONE. Merging all of them into a single ladder does not weaken the comparison, it
+  // empties it: every coupon Lender Price offers on an unrelated product reads as one "we do not
+  // price", which looks like a defect in our engine and is really a statement about an unscoped query.
+  //
+  // REFUSED HERE, ONCE, BEFORE ANYTHING IS PRICED — not per scenario. The scope is a property of the
+  // sheet, so an unscoped battery would produce the SAME configuration complaint 299 times, bury the
+  // real findings under it and bill a live upstream for the privilege. That is the same reasoning as
+  // the no-program refusal directly above. The scope is STATED by a human on the program row (db/574);
+  // nothing here infers one from our own program code, which would be a guess about somebody else's
+  // product catalogue and is worse than no scope at all.
+  if (!lpScope) {
+    return { refused: { status: 422, body: {
+      error: 'This rate sheet does not say which Lender Price programs to compare against, so a canary '
+        + 'would compare our one ladder against every program Lender Price returned. Set the program\'s '
+        + 'Lender Price scope (its program name, or a family pattern such as "DSCR .* 30 Yr Fixed") and run it again.',
+      reason: 'no_lp_scope',
+    } } };
   }
 
   const { values: settings } = await resolveSettingsSafe(scope);
   const lp = require('../lenderprice/client');
-  const nowMs = Date.now();
 
   // TWO ADJACENT CONTRACTS, AND THEY ARE NOT THE SAME ONE. The /quote route above
   // drives `facade.priceWithShadow`, whose injected engines are named
@@ -492,11 +1313,21 @@ async function canaryRoute(req, res) {
   // endpoint is simply dead. It read as correct because both objects are two
   // scenario-taking functions sitting three lines apart. `theirs` is Lender Price,
   // which is authoritative; `ours` is the engine on trial.
+  //
+  // AND THAT TRAP HAD A SECOND FLOOR, WHICH IS WHAT `buildCanaryLpLeg` CLOSES. `theirs` was
+  // `(sc) => lp.price(sc)` — the RAW VENDOR ENVELOPE (`{ ok, raw, request, searchKey, provenance }`),
+  // not a ladder: no `eligible` flag, no rungs. `parity.isComparable` therefore read Lender Price as
+  // having produced no result and every scenario came back `incomparable`. Measured on the canonical
+  // 299-scenario battery before the fix: 299 incomparable, 0 comparable, agreementRate NULL — and the
+  // run was still persisted into the series the go-live gate reads, and this endpoint still answered
+  // 200. A green canary that compared nothing. The three-step chain (price -> parse -> normalize to the
+  // scoped ladder) lives in `lp-agreement-legs` beside the agreement harness's own LP leg, so neither
+  // is hand-wired here and there is no second definition of "a comparable Lender Price answer".
   const run = await canary.runCanary(
     scenarios,
     {
-      ours: (sc) => quote.quoteProgram({ scenario: sc, program, settings }),
-      theirs: (sc) => lp.price(sc),
+      ours: (sc) => quote.quoteProgram({ scenario: sc, program, settings, marginHoldback: marginFor(sc) }),
+      theirs: lpAgreementLegs.buildCanaryLpLeg(lp, { scope: lpScope }),
     },
     {
       investor,
@@ -504,7 +1335,7 @@ async function canaryRoute(req, res) {
       nowMs,
       priceToleranceMilli: settings[K.priceTolerance],
       rateToleranceMilli: settings[K.rateTolerance],
-      concurrency: intIn(b.concurrency, 8) || 4,
+      concurrency: intIn(opts.concurrency, 8) || 4,
     },
   );
 
@@ -524,6 +1355,48 @@ async function canaryRoute(req, res) {
     persistError = String((e && e.message) || e).slice(0, 200);
   }
 
+  // FAIL CLOSED: A RUN THAT COMPARED NOTHING MAY NOT REPORT SUCCESS, AND MAY NOT ENTER THE SERIES THE
+  // GO-LIVE GATE READS. `canary.verdictOf` is the one definition of "did this battery actually compare
+  // anything" — `comparable`, less the scenarios where an engine threw. Before this, an
+  // all-incomparable run answered 200 with `agreementRate: null` and wrote a NULL-rate row into
+  // `lt_ppe_shadow_run`, plus a matrix of nothing into the parity cells: durable records that measured
+  // nothing, sitting in the two series the clean-day streak and the per-band trend are computed from.
+  // `cutover.eligibleForLive` independently refuses a null rate and any incomparable count, so the
+  // PROMOTE gate was never going to pass on it; what was wrong is that the run reported like a run, the
+  // response said `ok`, and the schedule tick counted it as having measured that investor that night.
+  //
+  // THE FINDINGS ARE STILL PERSISTED ABOVE, DELIBERATELY: an `incomparable` / `engine_error` record is
+  // the diagnosis of WHY nothing could be compared, and discarding it would leave nothing to work from.
+  // What is refused is the CLAIM that a measurement happened.
+  if (!run.verdict.proven) {
+    return { refused: { status: 422, body: {
+      ok: false,
+      scope,
+      investor,
+      proven: false,
+      error: run.verdict.reason,
+      reason: 'canary_compared_nothing',
+      scenarios: scenarios.length,
+      agreementRate: null,
+      summary: run.summary,
+      verdict: run.verdict,
+      report: run.report,
+      lpScope: lpScopeLib.describeScope(lpScope),
+      findings: run.findingKeys.length,
+      // Reasoned overrides, named rather than folded into the finding count (§2.72) — they are not
+      // defects, and a run that overrode forty scenarios must not read like one that overrode none.
+      overrides: run.overrideKeys ? run.overrideKeys.length : 0,
+      // The findings ledger DID take the diagnosis; the run series and the parity cells deliberately
+      // did not — a measurement of nothing is not a measurement.
+      persisted: !persistError,
+      persistError,
+      persistedSummary: persisted ? persisted.summary : null,
+      runPersisted: false,
+      runPersistReason: 'refused_nothing_compared',
+      cellsPersisted: false,
+    } } };
+  }
+
   let runPersisted = null;
   let runPersistError = null;
   try {
@@ -534,15 +1407,44 @@ async function canaryRoute(req, res) {
     runPersistError = String((e && e.message) || e).slice(0, 200);
   }
 
-  return res.json({
+  // THE THIRD durable record, and it answers a question the other two cannot. The findings ledger is
+  // "what disagreed"; the run series is "how well the engines agreed on this date"; this is "how well
+  // they agreed IN THIS BAND on this date", which is what turns a one-off bad afternoon into a
+  // three-week regression somebody can see. Best-effort and reported separately — the three stores
+  // fail independently, and "the run landed but the cells did not" is its own problem.
+  let cellsPersisted = null;
+  let cellPersistError = null;
+  try {
+    cellsPersisted = await parityCellStore.persistCells(scope, run.matrix, {
+      db, investor, program: programLabel(program), dayMs: run.dayMs,
+    });
+  } catch (e) {
+    cellPersistError = String((e && e.message) || e).slice(0, 200);
+  }
+
+  return { ok: true, result: {
     ok: true,
     scope,
     investor,
     scenarios: scenarios.length,
+    // Stated beside the rate: a caller reading only `agreementRate` cannot tell a measured 100% from a
+    // measured nothing, and this endpoint used to answer the second one exactly like the first.
+    proven: true,
+    verdict: run.verdict,
+    // WHICH Lender Price board this was compared against, named rather than implied.
+    lpScope: lpScopeLib.describeScope(lpScope),
     agreementRate: run.agreementRate,
     summary: run.summary,
     report: run.report,
+    // WHERE it disagreed, sliced on the SHEET'S OWN band edges (P9). A single agreement rate says we
+    // disagree and never where, so one bad FICO band and a sheet that is wrong everywhere read the
+    // same. The raw per-scenario results are deliberately NOT returned — up to 500 of them is a
+    // payload nobody reads; the matrix is the answer, and it carries its own arithmetic
+    // (`reconciles`) so a reader can check that no scenario was lost in the slicing.
+    matrix: run.matrix,
+    worstCells: run.matrix ? parityMatrix.worstCells(run.matrix, 10) : null,
     findings: run.findingKeys.length,
+    overrides: run.overrideKeys ? run.overrideKeys.length : 0,
     persisted: !persistError,
     persistError,
     persistedSummary: persisted ? persisted.summary : null,
@@ -551,6 +1453,305 @@ async function canaryRoute(req, res) {
     runPersisted: runPersistError ? false : !!(runPersisted && runPersisted.persisted),
     runPersistError,
     runPersistReason: runPersisted && !runPersisted.persisted ? runPersisted.reason : null,
+    cellsPersisted: cellPersistError ? false : !!(cellsPersisted && cellsPersisted.persisted),
+    cellPersistError,
+    cellsWritten: cellsPersisted ? cellsPersisted.rows : null,
+    // A capped batch is SAID, never silently short: a series missing its tail reads as a clean stretch.
+    cellsTruncated: cellsPersisted ? cellsPersisted.truncated : null,
+    } };
+}
+
+// ---------------------------------------------------------------------------
+// The canary SCHEDULE — saving a cadence, and the tick that honours it
+// ---------------------------------------------------------------------------
+//
+// `canary-schedule.js` (the decision) and `schedule-store.js` (db/570) were built, tested and
+// UNREACHABLE: nothing created a schedule and nothing ticked one. So the only thing that ever fed the
+// findings ledger, the run series and the per-band trend was a person POSTing /canary by hand — which
+// nobody does. The scoreboard's clean-day STREAK and agreement TREND read that series, and a streak
+// nobody feeds does not read as "unmeasured": it reads as a low score. An investor could sit
+// permanently short of promotion for want of a cron rather than for want of agreement.
+//
+// THE TICK IS PULLED, NOT PUSHED — deliberately, and it is the safest shape available today. There is
+// no timer in this process: something outside asks, and a run happens only if a saved, enabled
+// schedule is genuinely due. A timer inside the web process would be the first background loop in the
+// Long-Term product AND would call a paid vendor on its own schedule, which is a decision belonging to
+// the owner, not to a refactor. Until that is asked for, the tick is an admin action a scheduler can
+// call, and every refusal it makes is reported rather than swallowed.
+
+async function listSchedulesRoute(req, res) {
+  const scope = readScope(req);
+  const rows = await scheduleStore.listSchedules(scope, { db });
+  // A saved schedule is not a running one: `enabled` defaults to false and the decision module refuses
+  // several shapes outright. So each row is reported WITH what the runner would decide about it, from
+  // the same function the tick uses — a list saying "saved" beside a schedule that can never fire is
+  // exactly how a measurement gap hides.
+  const schedules = rows.map((sch) => {
+    const v = canarySchedule.validateSchedule(sch);
+    return {
+      investor: sch.investor,
+      enabled: sch.enabled,
+      intervalMs: sch.intervalMs,
+      rateSheetVersionId: sch.rateSheetVersionId,
+      note: sch.note,
+      updatedBy: sch.updatedBy,
+      updatedAt: sch.updatedAt,
+      batteryKind: sch.matrix ? 'matrix' : 'scenarios',
+      runnable: !!v.ok && sch.enabled === true,
+      // The module's own wording, never a paraphrase: it names WHICH rule stops it.
+      reason: v.ok ? (sch.enabled === true ? null : 'disabled') : v.reason,
+      message: v.ok ? (sch.enabled === true ? null : 'This canary schedule is saved but paused.') : v.message,
+    };
+  });
+  const runnable = schedules.filter((x) => x.runnable).length;
+  return res.json({
+    ok: true,
+    scope,
+    schedules,
+    runnable,
+    // Said plainly: with nothing runnable, the agreement series only grows on the days a person presses
+    // the button, and every gate that reads it stays unmeasured.
+    note: runnable ? null : 'No canary schedule can run, so the agreement series only grows when somebody fires one by hand — and the go-live gate reads that series.',
+  });
+}
+
+async function saveScheduleRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const who = (req.actor && (req.actor.email || req.actor.id)) || null;
+  if (!who) return res.status(400).json({ error: 'A vendor loop records who armed it, and this request carries nobody.' });
+  const out = await scheduleStore.saveSchedule(scope, {
+    investor: b.investor == null ? null : String(b.investor),
+    enabled: b.enabled === true,
+    intervalMs: b.intervalMs,
+    intervalMinutes: b.intervalMinutes,
+    scenarios: b.scenarios,
+    matrix: b.matrix,
+    rateSheetVersionId: b.rateSheetVersionId || null,
+    concurrency: b.concurrency,
+    note: b.note,
+  }, { db, by: String(who), nowMs: Date.now() });
+  // The store returns the DECISION module's own reason and wording, so the person saving hears exactly
+  // what the runner would have said — silently accepting an unrunnable schedule and discovering at 3am
+  // that it has never fired is the failure this guards.
+  if (!out.ok) return res.status(400).json({ error: out.message, reason: out.reason });
+  return res.json({ ok: true, scope, schedule: out.schedule });
+}
+
+async function deleteScheduleRoute(req, res) {
+  const scope = readScope(req);
+  const investor = req.params.investor === '-' ? null : String(req.params.investor || '');
+  const out = await scheduleStore.deleteSchedule(scope, investor, { db });
+  return res.json({ ok: true, scope, removed: out.removed });
+}
+
+/**
+ * runCanaryTick — the tick itself, as a FUNCTION. ONE definition, two callers.
+ *
+ * It was extracted out of the route handler the moment a second caller existed (the in-process driver,
+ * `src/longterm/ppe/canary-driver.js`), and the extraction is the point: a tick an operator fires by
+ * hand and a tick a cadence fires at 3am must select, refuse and report IDENTICALLY, or the agreement
+ * series would mean one thing on the days a person pressed the button and another thing the rest of the
+ * week — and the go-live gate reads that series. A second copy of this loop is the ordinary way that
+ * happens, so there is one. The route below is now three lines of HTTP.
+ *
+ * FAILS TOWARD NOT RUNNING, at every step, because the two failures are not symmetric: a canary that
+ * does not fire is a gap somebody can see on the scoreboard, while one that fires when it should not is
+ * N live vendor calls per tick, forever. So an unreadable last-run stamp, an unresolvable program, an
+ * unexpandable battery and a paused schedule all HOLD — each with the reason attached to that schedule,
+ * never swallowed and never turned into a silent success.
+ *
+ * Returns the payload the route answers with; it never writes a response and never throws for a reason
+ * a schedule owns (a schedule's own failure is reported against that schedule).
+ */
+async function runCanaryTick(scope, opts = {}) {
+  const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
+  // ONE per tick by default. Each run is a whole battery against a live upstream, so the cap is about
+  // the vendor, not about speed — and whatever it holds back is REPORTED, because a tick that quietly
+  // skipped half its schedules looks exactly like a tick with nothing to do.
+  const maxPerTick = intIn(opts.maxPerTick, 5) || 1;
+
+  const rows = await scheduleStore.listSchedules(scope, { db });
+
+  // The last-run stamp is read from the RUN SERIES, never from a private column on the schedule
+  // (db/570 says why: a second stamp is a second answer, and the one that drifts is the one the gate
+  // reads). It also means a canary an admin fired BY HAND counts toward the cadence, which is right.
+  const entries = [];
+  for (const sch of rows) {
+    const entry = { investor: sch.investor, schedule: sch, lastRunMs: null, program: null, programError: null };
+    try {
+      const loaded = await loadProgram(scope, sch.rateSheetVersionId);
+      entry.program = loaded.program || null;
+      if (!loaded.program) entry.programError = loaded.reason || 'no_program';
+    } catch (e) {
+      entry.programError = msgOf(e);
+    }
+    if (entry.program) {
+      try {
+        const runs = await runStore.listRuns(scope, { db, investor: sch.investor, program: programLabel(entry.program) });
+        // The freshest run wins, and an EMPTY series is left as null — "never measured", which the
+        // decision module reads as most-overdue. A 0 here would read as 1970 and be just as due, but
+        // it would also make a read failure indistinguishable from a fresh schedule.
+        entry.lastRunMs = runs.length ? runs[runs.length - 1].dayMs : null;
+      } catch (e) {
+        // An unreadable series must NOT read as "never run" — that is the one error that would make a
+        // schedule fire on every tick forever. Held, with the reason.
+        entry.seriesError = msgOf(e);
+      }
+    }
+    entries.push(entry);
+  }
+
+  // A schedule whose program or series could not be read is never offered to the decision module: it
+  // would answer "due" on a cadence it cannot honour.
+  const blocked = entries.filter((e) => e.programError || e.seriesError);
+  const askable = entries.filter((e) => !e.programError && !e.seriesError);
+  const { run: due, skipped, held } = canarySchedule.selectDue(askable, { nowMs, maxPerTick });
+
+  const ran = [];
+  for (const item of due) {
+    const battery = resolveBattery(item.decision.battery && item.decision.battery.kind === 'matrix'
+      ? { matrix: item.decision.battery.matrix }
+      : { scenarios: item.decision.battery && item.decision.battery.scenarios });
+    if (battery.refused) {
+      ran.push({ investor: item.investor, ok: false, reason: battery.refused.body.reason || 'battery_refused', message: battery.refused.body.error });
+      continue;
+    }
+    try {
+      const out = await runBattery(scope, battery.scenarios, {
+        investor: item.investor,
+        rateSheetVersionId: item.schedule.rateSheetVersionId,
+        concurrency: item.schedule.concurrency,
+        nowMs,
+      });
+      if (out.refused) {
+        ran.push({ investor: item.investor, ok: false, reason: 'refused', message: out.refused.body.error });
+      } else {
+        const r = out.result;
+        ran.push({
+          investor: item.investor, ok: true, scenarios: r.scenarios, agreementRate: r.agreementRate,
+          findings: r.findings, runPersisted: r.runPersisted, cellsPersisted: r.cellsPersisted,
+        });
+      }
+    } catch (e) {
+      // One schedule's failure never stops the next: a vendor timeout on Deephaven must not silently
+      // cancel every other investor's measurement for the night.
+      ran.push({ investor: item.investor, ok: false, reason: 'threw', message: msgOf(e) });
+    }
+  }
+
+  return {
+    ok: true,
+    scope,
+    schedules: rows.length,
+    ran,
+    // EVERY schedule that did not run says why — the module's own reason, the program that would not
+    // resolve, or the series that would not read. A tick reporting only what it ran is a tick that
+    // reads as healthy while measuring nothing.
+    held: [
+      ...blocked.map((e) => ({ investor: e.investor, reason: e.programError ? 'no_program' : 'series_unreadable', message: e.programError || e.seriesError })),
+      ...held.map((h) => ({ investor: h.investor, reason: h.decision.reason, message: h.decision.message, dueAt: h.decision.dueAt })),
+    ],
+    // A cap that hid work is SAID, never left to be inferred from a short list.
+    overCap: skipped,
+    maxPerTick,
+  };
+}
+
+/** POST /canary/tick — the tick above, over HTTP. The rule lives in `runCanaryTick`, never here. */
+async function canaryTickRoute(req, res) {
+  const b = req.body || {};
+  // THROUGH THE LEASE, NOT AROUND IT. This door used to call `runCanaryTick` directly, so the durable
+  // lease that exists precisely to stop two callers paying the vendor for one battery
+  // (`lt_ppe_canary_driver_state`, db/578) protected the scheduled job and not the hand-fired run —
+  // two administrators pressing at the same moment both priced the whole battery, twice, live.
+  //
+  // `source: 'manual'` is what says this is a deliberate act rather than the in-process timer, so it
+  // runs whatever `LT_PPE_CANARY_DRIVER_ENABLED` says — which is exactly what this door has always
+  // done, and is why routing it through here changes nothing about who may fire it.
+  const canaryDriver = require('../ppe/canary-driver');
+  const out = await canaryDriver.tickOnce(readScope(req), {
+    db,
+    nowMs: Date.now(),
+    maxPerTick: b.maxPerTick,
+    source: canaryDriver.SOURCE_MANUAL,
+  });
+  // The tick's own report stays the body when it ran, so nothing reading this door has to learn a new
+  // shape; a run that was turned away says so instead of returning an empty report that reads as
+  // "nothing was due".
+  if (out && out.attempted && out.result) return res.json({ ...out.result, drivenBy: out.drivenBy || null });
+  return res.status(out && out.outcome === 'lease_held' ? 409 : 200).json({
+    ok: false,
+    ran: false,
+    outcome: (out && out.outcome) || 'error',
+    reason: (out && out.reason) || 'The tick did not run.',
+  });
+}
+
+/**
+ * GET /canary/driver — is anything actually driving the tick, and what did it last do?
+ *
+ * The question this answers is the one the defect was: a schedule can be saved, enabled and perfectly
+ * valid while NOTHING calls the tick, and every screen that reads the run series shows that as a low
+ * score rather than as "nobody is asking". So this states, plainly and in one read: whether the
+ * in-process driver is switched on at all, when it last tried, what it did, why it did not, and — when
+ * two instances raced — which one was turned away.
+ */
+async function canaryDriverRoute(req, res) {
+  const canaryDriver = require('../ppe/canary-driver');
+  return res.json(await canaryDriver.describe(readScope(req), { db }));
+}
+
+// ---------------------------------------------------------------------------
+// GET /parity-cells — how a slice of the book has behaved over TIME
+// ---------------------------------------------------------------------------
+//
+// The matrix on a canary response is one run. This is the same measurement across runs, which is the
+// question a cutover decision actually turns on: has this band been off for three weeks, or was that
+// one bad afternoon? It RANKS and never thresholds — what counts as clean enough is the owner's
+// decision and lives in the cutover gate.
+
+async function parityCellsRoute(req, res) {
+  const scope = readScope(req);
+  const q = req.query || {};
+  const investor = q.investor ? String(q.investor) : null;
+  const program = q.program ? String(q.program) : null;
+  const days = intIn(q.days, 400) || 30;
+  const sinceMs = Date.now() - (days * 24 * 60 * 60 * 1000);
+
+  const cells = await parityCellStore.listCells(scope, {
+    db,
+    investor,
+    program,
+    dimension: q.dimension ? String(q.dimension) : null,
+    cellKey: q.cellKey ? String(q.cellKey) : null,
+    sinceMs,
+  });
+
+  // WHICH series hold anything at all, regardless of the filter above. `listCells` matches
+  // (scope, investor, program) exactly, so asking for a key nobody wrote returns an empty list —
+  // indistinguishable, on a screen, from "the engines have never been measured". Returning the real
+  // series list means a reader can offer what exists instead of guessing a key and reporting silence.
+  const series = await parityCellStore.listSeries(scope, { db, sinceMs });
+
+  // ONE cell asked for by name gets its own history; otherwise the cells that have disagreed on the
+  // most days, which is the list worth a human's morning.
+  const single = q.dimension && q.cellKey;
+  return res.json({
+    ok: true,
+    scope,
+    investor,
+    program,
+    windowDays: days,
+    measurements: cells.length,
+    series,
+    // A capped list is SAID: a reader that cannot see a series reports it as unmeasured.
+    seriesTruncated: series.length >= parityCellStore.MAX_SERIES,
+    // Said plainly, because an empty series and a series of clean days look identical on a chart:
+    // this table starts at the first canary run after db/575, and nothing before it can be recovered.
+    note: cells.length ? null : 'No per-band measurements in this window yet — the series starts at the first canary run after this was built, and earlier runs recorded only a daily total.',
+    history: single ? parityCellStore.cellHistory(cells, { windowDays: days }) : null,
+    persistentlyWorst: single ? null : parityCellStore.persistentlyWorst(cells, { windowDays: days, limit: intIn(q.limit, 50) || 10 }),
   });
 }
 
@@ -558,15 +1759,41 @@ async function canaryRoute(req, res) {
 // GET /scoreboard — the go-live picture for one investor
 // ---------------------------------------------------------------------------
 
-async function scoreboardRoute(req, res) {
-  const scope = readScope(req);
-  const investor = req.query.investor ? String(req.query.investor) : null;
-  if (!investor) return res.status(400).json({ error: 'Which investor? Pass ?investor=<code>.' });
+/**
+ * ONE PICTURE, READ ONCE — an investor's scoreboard and its go-live verdict, for BOTH the screen that
+ * SHOWS it and the door that ACTS on it.
+ *
+ * WHY IT IS SHARED RATHER THAN COMPUTED TWICE: `/scoreboard` renders "may this investor go live?" and
+ * `POST /cutover/decision` answers the same question for real, at the moment somebody presses the
+ * button. Two copies of that derivation is two answers, and the one that drifts is the one that lets
+ * an unproven investor price real loans while the screen still reads "not eligible". So the chain is
+ * walked once here — findings → `runStore.assembleScoreboard` → `scoreboard.assemble` →
+ * `cutover.eligibleForLive` — and both callers read what comes back.
+ *
+ * IT FAILS CLOSED BY CONSTRUCTION, not by a branch anybody has to remember. When the run series
+ * cannot be read there is no agreement rate, and `eligibleForLive` reads a null rate as "no canary run
+ * has proven 100% agreement" — so a database hiccup can never come back as ELIGIBLE. The two states
+ * are still reported separately (`seriesError` vs `measured`), because "we could not check" and
+ * "nobody has checked" send a reader to two different places.
+ *
+ * Returns { scoreboard, gate, assembled, seriesError, measured, nowMs }.
+ */
+async function loadCutoverPicture(scope, opts = {}) {
+  const investor = opts.investor;
+  const program = opts.program || '';
+  const nowMs = typeof opts.nowMs === 'number' ? opts.nowMs : Date.now();
 
-  const program = req.query.program ? String(req.query.program) : '';
   const rows = await findingStore.listFindings(scope, { investor }, db);
   const records = rows.map(findingStore.rowToRecord);
-  const nowMs = Date.now();
+
+  // THE THRESHOLDS COME FROM THE SETTINGS, ONCE (§2.73). Before this the gate was called with NO
+  // settings at all, so it ran its own signature defaults — 14 clean days and no coverage floor — while
+  // `cutover.clean_weeks_required` sat on the Cutover screen at 8 weeks, editable by a super admin, and
+  // reached nothing. `resolveSettingsSafe` already degrades to the coded defaults on a read failure, and
+  // `settingsToGate` falls back to the STRICTER registry number, so a database hiccup can only ever make
+  // the gate harder to pass — never easier.
+  const { values: settingValues } = await resolveSettingsSafe(scope);
+  const gateSettings = cutover.settingsToGate(settingValues);
 
   // The canary's run history IS persisted now, so the agreement rate and the
   // clean-day streak are read from it rather than left unmeasured. `assembleScoreboard`
@@ -577,11 +1804,70 @@ async function scoreboardRoute(req, res) {
   let seriesError = null;
   try {
     assembled = await runStore.assembleScoreboard(scope, {
-      db, investor, program, findings: records, nowMs,
+      db, investor, program, findings: records, nowMs, settings: gateSettings,
     });
   } catch (e) {
     seriesError = String((e && e.message) || e).slice(0, 200);
   }
+
+  // ⛔ AN EMPTY SERIES MUST SAY WHERE THE RUNS WENT (§2.83). A run is keyed (scope, investor, program)
+  // and matched by EQUALITY. The canary writes the RATE-SHEET VERSION ID as `program`; this screen asks
+  // with none and defaults to ''. Measured against the real table: the run lands, `listRuns('')` returns
+  // zero, and the gate answers "no canary run has proven 100% agreement" — a sentence that reads as "the
+  // canary never ran" when it ran and its work is filed one shelf over. So whenever THIS key has nothing,
+  // ask what keys DO have something and report it. Diagnostic only: it decides nothing, it changes no
+  // verdict, and it can never throw.
+  const emptyHere = !assembled || !assembled.series || !assembled.series.length;
+  const seriesKeys = emptyHere ? await runStore.listSeriesKeys(scope, { db, investor }) : [];
+  const elsewhere = seriesKeys.filter((k) => k.program !== program && k.runs > 0);
+  const seriesNote = elsewhere.length
+    ? `This view is reading the run series for program "${program || '(none)'}", which has no runs. `
+      + `${elsewhere.reduce((n, k) => n + k.runs, 0)} run(s) ARE recorded for this investor under `
+      + `${elsewhere.length} other key(s): ${elsewhere.map((k) => `"${k.program}" (${k.runs})`).join(', ')}. `
+      + 'The daily check keys a run on the rate-sheet version it priced; this screen asks without one. '
+      + 'Until that is settled, the gate below is reading an empty series and its reasons describe that, '
+      + 'not the investor.'
+    : null;
+
+  if (assembled) {
+    return {
+      scoreboard: assembled.scoreboard,
+      gate: assembled.eligible,
+      assembled,
+      gateSettings,
+      seriesError: null,
+      measured: assembled.scoreboard.canaryAgreementRate != null,
+      seriesKeys,
+      seriesKeyUsed: program,
+      seriesNote,
+      nowMs,
+    };
+  }
+  const board = cutover.buildScoreboard({ findings: records, nowMs });
+  return {
+    scoreboard: board,
+    // The SAME thresholds on the fallback path. Reading the settings on one branch and the signature
+    // defaults on the other is how a screen and a refusal come to disagree about the same investor.
+    gate: cutover.eligibleForLive(board, gateSettings),
+    assembled: null,
+    gateSettings,
+    seriesError,
+    measured: false,
+    seriesKeys,
+    seriesKeyUsed: program,
+    seriesNote,
+    nowMs,
+  };
+}
+
+async function scoreboardRoute(req, res) {
+  const scope = readScope(req);
+  const investor = req.query.investor ? String(req.query.investor) : null;
+  if (!investor) return res.status(400).json({ error: 'Which investor? Pass ?investor=<code>.' });
+
+  const program = req.query.program ? String(req.query.program) : '';
+  const picture = await loadCutoverPicture(scope, { investor, program });
+  const { assembled, seriesError } = picture;
 
   if (assembled) {
     // `scoreboard.assemble` returns { scoreboard, eligible, series, trend,
@@ -610,6 +1896,10 @@ async function scoreboardRoute(req, res) {
       // time. Reported as the NUMBER, so a real zero reads as "nothing was dropped"
       // rather than collapsing into the same null a failed read would produce.
       dropped: Number.isFinite(assembled.dropped) ? assembled.dropped : null,
+      // WHERE THE RUNS WENT, when this key has none (§2.83). Null on a healthy series.
+      seriesKeyUsed: picture.seriesKeyUsed,
+      seriesKeys: picture.seriesKeys,
+      seriesNote: picture.seriesNote,
     });
   }
 
@@ -617,14 +1907,204 @@ async function scoreboardRoute(req, res) {
   // the agreement rate is unread rather than unmeasured — a missing rate reads as
   // "not proven", which is the safe verdict either way, but the two are different
   // facts and only one of them is anybody's fault.
-  const board = cutover.buildScoreboard({ findings: records, nowMs });
   return res.json({
     ok: true, scope, investor, program: program || null,
-    scoreboard: board,
-    gate: cutover.eligibleForLive(board),
+    scoreboard: picture.scoreboard,
+    gate: picture.gate,
     measured: false,
     seriesError,
+    seriesKeyUsed: picture.seriesKeyUsed,
+    seriesKeys: picture.seriesKeys,
+    seriesNote: picture.seriesNote,
     note: 'The canary run history could not be read, so the agreement rate is unknown and the gate cannot pass. That is a read failure, not a measurement.',
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The CUTOVER DOOR (§11 / P10) — draft → shadow → live → retired, and back
+// ---------------------------------------------------------------------------
+//
+// THE DEFECT THIS CLOSES. `cutover.js` (the pure lifecycle + the go-live gate), `cutover-ledger.js`
+// (the append-only history) and `cutover-store.js` (its durable bridge, db/566) were built, unit
+// tested, proven against a real Postgres — and reachable by NOTHING. Both of the latter two sat in
+// `docs/longterm/LT-UNREACHED.md` with one blocker written beside them: *"the promote-to-live route
+// (P10) — owner-gated on who may promote."* The owner answered that on 2026-08-18 — *"Who may publish
+// a pricing rule; who may switch an investor from watching to live … all in the super admin"* — so the
+// blocker is gone and this is the door.
+//
+// WHAT A PROMOTION MEANS, AND WHY THE AUTHORITY IS THE TOP ONE. Going live makes OUR engine the answer
+// a borrower is quoted for that investor, instead of Lender Price's. That is the single most
+// consequential switch in this whole engine, which is why it carries the same gate as publishing a
+// rule and why `rollback` (live → shadow) is deliberately ALWAYS allowed: the way out must never be
+// harder than the way in.
+//
+// ELIGIBILITY IS COMPUTED HERE AND NEVER READ FROM THE REQUEST. `cutover.transition` refuses a promote
+// unless it is handed `eligible === true`, so a body field called `eligible` would be a way for the
+// caller to grant themselves the gate — the whole ≥200-scenario, zero-open-findings, clean-streak
+// apparatus bypassed by one JSON key. The verdict comes from `loadCutoverPicture`, the SAME derivation
+// the /scoreboard screen renders, and the request's own opinion is ignored entirely. Same rule as `by`,
+// which is the session actor and never a body field.
+//
+// THE GATE IS NOT SOFTENED, and that is a deliberate non-decision. Two halves of this are still
+// unanswered by the owner (`docs/longterm/OWNER-QUESTIONS-OPEN.md` §3a): how many clean weeks in a row
+// we want, and whether a live investor keeps being spot-checked against Lender Price. So this door
+// invents neither. It reports the thresholds the gate is CURRENTLY running — now READ FROM THE SETTINGS
+// a super admin can edit (`cutover.clean_weeks_required`, §2.73) rather than from `eligibleForLive`'s
+// own signature defaults, which is what it used to publish while nobody could change them — rather than
+// pretending they are settled policy, refuses a promote the gate refuses, and offers no override — an
+// override would be exactly the guessed business rule that must be asked for.
+// A super admin who disagrees with the gate has a real path: resolve the findings, or say the number.
+
+// A blank investor is a COMPANY-WIDE lifecycle in the store (`normLabel` maps null → ''), which is a
+// legitimate row and a terrible default: a caller who forgot the field would be moving the whole
+// company, not the investor they had in mind. So an omitted or blank investor is refused at the door
+// and the company-wide lifecycle is simply not reachable over HTTP yet.
+function readCutoverInvestor(v) {
+  const s = typeof v === 'string' ? v.trim() : '';
+  return s || null;
+}
+
+// The gate's own thresholds, read back out of the pure module rather than retyped — a second copy of a
+// threshold is a second policy, and this one decides whether an investor may price real loans.
+//
+// IT IS A FUNCTION OF THE RESOLVED SETTINGS, NOT A MODULE CONSTANT (§2.73). As an IIFE evaluated once at
+// require time it could only ever publish the SIGNATURE defaults, so the moment the gate started reading
+// `cutover.clean_weeks_required` the screen would have gone on stating 14 days while the promote refusal
+// enforced 56 — the same investor, two numbers, and the one on screen the one nobody enforces.
+function describeCutoverThresholds(gateSettings) {
+  // `eligibleForLive` takes its thresholds from the settings it is handed, so the honest way to publish
+  // them is to ASK it: an empty scoreboard fails every gate and names each threshold in its reasons.
+  const settings = gateSettings || {};
+  const probe = cutover.eligibleForLive(
+    { openFindings: 0, canaryAgreementRate: null, consecutiveCleanDays: 0 },
+    settings,
+  );
+  return {
+    reasonsWhenNothingIsProven: probe.reasons,
+    // WHERE each number came from, beside the number itself — a threshold published without its
+    // provenance reads as settled policy, and one of these is still an assumption.
+    source: settings.source || null,
+    settingKey: cutover.SETTING_CLEAN_WEEKS,
+    note: 'How many consecutive clean weeks an investor needs before it may go live is a super-admin setting '
+      + `(${cutover.SETTING_CLEAN_WEEKS}); the gate reads it. The VALUE has still never been confirmed by the owner `
+      + '(open question 3a) — it is our most cautious assumption, stated here so it can be questioned rather than discovered. '
+      + 'The canary coverage floor is the same "measured enough" bar a rate sheet must clear before it may be published, '
+      + 'applied to the strictly bigger decision of letting our engine answer instead of Lender Price.',
+  };
+}
+
+async function cutoverStateRoute(req, res) {
+  const scope = readScope(req);
+  const investor = readCutoverInvestor(req.query.investor);
+  if (!investor) return res.status(400).json({ error: 'Which investor? Pass ?investor=<code>.' });
+  const program = req.query.program ? String(req.query.program) : '';
+
+  const summary = await cutoverStore.loadSummary(scope, { db, investor, nowMs: Date.now() });
+  // THE TRAIL IS RE-DERIVED, NEVER TRUSTED. `verifyHistory` replays every recorded step from DRAFT and
+  // reports the first one the rules would not have allowed — so a ledger somebody edited, or a partial
+  // restore, is DETECTED and said out loud rather than rendered as a tidy history.
+  const integrity = await cutoverStore.verifyHistory(scope, { db, investor });
+
+  const picture = await loadCutoverPicture(scope, { investor, program });
+  return res.json({
+    ok: true,
+    scope,
+    investor,
+    program: program || null,
+    mode: summary.mode,
+    summary,
+    integrity,
+    // What a promote would answer RIGHT NOW, from the same derivation the scoreboard screen shows.
+    scoreboard: picture.scoreboard,
+    gate: picture.gate,
+    measured: picture.measured,
+    seriesError: picture.seriesError,
+    // The thresholds the gate is running today, stated rather than left implicit — two of them are
+    // assumptions nobody has confirmed (OWNER-QUESTIONS-OPEN §3a), and a number a reader cannot see is
+    // a number nobody can question.
+    thresholds: describeCutoverThresholds(picture.gateSettings),
+    actions: Object.keys(cutover._internals.TRANSITIONS).concat(['retire']),
+  });
+}
+
+
+async function cutoverDecisionRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const investor = readCutoverInvestor(b.investor);
+  if (!investor) return res.status(400).json({ error: 'Which investor? Send `investor` — an omitted one would move the whole company.' });
+
+  const action = typeof b.action === 'string' ? b.action.trim() : '';
+  if (!action) return res.status(400).json({ error: 'Which move? Send `action` — one of activate, promote, rollback, retire, reopen.' });
+
+  const reason = typeof b.reason === 'string' ? b.reason.trim() : '';
+  if (reason.length < 8) {
+    // The ledger is APPEND-ONLY and a correction is a NEW decision, so this note is the only lasting
+    // record of why an investor was taken live — or taken back off. "ok" is not that record.
+    return res.status(400).json({ error: 'Add a short reason (at least 8 characters) — this ledger is append-only, so this note is the permanent record of why.' });
+  }
+
+  // The actor, from the session. NEVER the body: a governance trail whose author the caller supplies
+  // records whoever they say they are.
+  const decidedBy = (req.actor && req.actor.id) || null;
+  if (!decidedBy) return res.status(401).json({ error: 'This decision must be recorded against a signed-in person.' });
+
+  // THE GATE, COMPUTED — for a promote it is the whole authorization, and a request cannot influence
+  // it. Every other action ignores `eligible` (`cutover.transition` only reads it for `promote`), but
+  // the picture is loaded regardless so the ledger records what the scoreboard looked like at the
+  // moment of the decision — which is what makes a rollback readable a year later.
+  const picture = await loadCutoverPicture(scope, { investor, program: b.program ? String(b.program) : '' });
+
+  if (action === 'promote' && !picture.gate.eligible) {
+    return res.status(409).json({
+      error: 'This investor is not ready to go live yet.',
+      reason: 'gate_not_met',
+      blockers: picture.gate.reasons,
+      scoreboard: picture.scoreboard,
+      measured: picture.measured,
+      seriesError: picture.seriesError,
+      remedy: 'Resolve everything listed above and try again. There is deliberately no override — the go-live bar is a measurement, not an opinion.',
+    });
+  }
+
+  const result = await cutoverStore.appendDecision(
+    scope,
+    {
+      action,
+      by: decidedBy,
+      atMs: Date.now(),
+      reason,
+      eligible: picture.gate.eligible === true,
+      scoreboard: picture.scoreboard,
+    },
+    { db, investor },
+  );
+
+  if (!result.ok) {
+    // A CONFLICT IS NOT A BAD REQUEST. Someone else recorded a decision between our read and our
+    // write, so the caller's move may now be legal or illegal against a history they have not seen —
+    // 409 and "re-read", never a 400 that reads as "you asked for something invalid".
+    return res.status(result.conflict ? 409 : 422).json({
+      ok: false,
+      error: result.error,
+      reason: result.conflict ? 'conflict' : 'not_allowed',
+      mode: result.mode,
+      investor,
+    });
+  }
+
+  return res.json({
+    ok: true,
+    scope,
+    investor,
+    mode: result.mode,
+    entry: result.entry,
+    gate: picture.gate,
+    // Said plainly on the way out, because this is the sentence that matters: what a promotion
+    // actually changed about how this investor is priced.
+    effect: result.mode === cutover.MODES.LIVE
+      ? 'Our engine is now the answer for this investor. Lender Price still runs alongside on every quote, and rolling back is one decision away.'
+      : 'Lender Price remains the answer for this investor.',
   });
 }
 
@@ -679,7 +2159,26 @@ async function acceptSuggestionRoute(req, res) {
       ? 'Lender Price’s reason could not be mapped to a rule automatically. A human must map it first (never guessed).'
       : `This suggestion cannot be accepted (${out.error}).` });
   }
-  return res.json({ ok: true, scope, ruleId: out.ruleId, investorId, programId });
+  // The coverage report rides on the accept response, ADVISORY. It never gates the accept (the rule is
+  // already written by the time it is computed) — it is what tells the person who just pressed Accept
+  // whether the rule they added now charges the same scenario as one already in the set.
+  return res.json({ ok: true, scope, ruleId: out.ruleId, investorId, programId, coverage: out.coverage || null });
+}
+
+/**
+ * The rule set's own coverage, read-only — overlapping PRICING rules (a double charge) and holes
+ * between banded rules, for the set a program actually evaluates.
+ *
+ * ADVISORY: it reports, it never refuses a rule, and it is not a gate on anything. `?investorId=` /
+ * `?programId=` name the set; omitting both reads the house rules alone, which is a real question
+ * ("what do our own rules do on their own?") rather than an accident.
+ */
+async function ruleCoverageRoute(req, res) {
+  const scope = readScope(req);
+  const investorId = req.query.investorId != null ? uuidOf(req.query.investorId) : null;
+  const programId = req.query.programId != null ? uuidOf(req.query.programId) : null;
+  const report = await ruleStore.coverageForProgram(db, scope, investorId, programId);
+  return res.json({ ok: true, scope, investorId, programId, ...report });
 }
 
 async function dismissSuggestionRoute(req, res) {
@@ -734,28 +2233,1740 @@ async function listRulesRoute(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// RULE DRAFTS — the READ + DRAFT doors of the rule-authoring service.
+// ---------------------------------------------------------------------------
+//
+// MEASURED BEFORE THIS EXISTED: `ppe/rule-authoring.js` (642 lines) and
+// `ppe/rule-authoring-store.js` (276 lines, db/577) had NO HTTP door of any kind, and the two
+// libraries under them — `rule-builder.js` and `ppp-structures.js` — were reached from the
+// authoring service and from the layer compilers, so the authoring half of them was reachable by
+// nothing. A caller that is not itself called is not a caller.
+//
+// ⛔ THE PUBLISH DOOR EXISTS NOW, AND WHAT FOLLOWS IS THE RECORD OF WHY IT DID NOT.
+// The owner answered the authority question on 2026-08-18 — "all in the super admin" — so
+// `POST /rule-drafts/:id/publish` is registered below behind `requirePpeSuperAdmin`. It is one of two
+// routes on this router that do not take the ordinary admin gate — the other is the cutover DECISION
+// (§11 / P10), which was held back by the very same open question and released by the very same
+// sentence. The paragraph below is kept because it is the reason this door was worth waiting for, and
+// because it is the standard the NEXT price-changing door should be held to.
+//
+// ⛔ IT WAS DELIBERATELY NOT HERE, AND ITS ABSENCE WAS THE POINT.
+// `rule-authoring-store.publishDraft` writes into `lt_ppe_rule`, which is the set
+// `rule-store.rulesForProgram` hands to the engine — so publishing CHANGES A PRICED NUMBER. Who was
+// allowed to do that was an owner decision nobody had made: the question was recorded as §2.51 in
+// docs/longterm/LENDER-PRICE-PARITY-STATUS.md and was NOT answered here. Gating it behind
+// `requirePpeAdmin` because that was the gate on the neighbouring routes would have BEEN the answer,
+// chosen by convenience, and would have put a rule in front of real loans on that basis. So
+// `publishDraft` stayed unreachable over HTTP until the owner said which authority it takes — which
+// they did on 2026-08-18 ("all in the super admin"), and §2.57 records what was then built.
+//
+// EVERY OTHER DRAFT ROUTE BELOW IS STRUCTURALLY INCAPABLE OF MOVING A PRICE. Drafts live in
+// `lt_ppe_rule_draft` (db/577) and nothing in the pricing path reads that table — not "careful not
+// to", incapable. Each response says so in its own payload (`live: false`) rather than leaving the
+// screen to remember it; the publish route is the one that answers `live: true`, and it says that in
+// words as well as in a flag.
+//
+// ADMIN-GATED, apart from that one route. That is a gate on WRITING A DRAFT, not on publishing one,
+// and the two must not be confused: see §2.51 and §2.57.
+
+/** The statuses db/577's CHECK allows, plus the 'all' the store understands. */
+const DRAFT_STATUSES = ['draft', 'published', 'discarded'];
+
+/** A bigint identity id (db/577), else null. */
+function draftIdOf(v) { return intIn(v, Number.MAX_SAFE_INTEGER); }
+
+/**
+ * A UUID query/body field that is OPTIONAL but, when supplied, must parse.
+ *
+ * Returns { ok:true, value } or { ok:false }. Coercing an unreadable id to null would be worse than
+ * a refusal here: `listDrafts` reads `investorId: null` as "the HOUSE drafts", so a typo'd id would
+ * quietly answer a different question and the list would look empty for the wrong reason.
+ */
+function optionalUuid(v) {
+  if (v === undefined || v === null || v === '') return { ok: true, value: undefined };
+  const id = uuidOf(v);
+  return id ? { ok: true, value: id } : { ok: false };
+}
+
+/** The sentence every draft door says out loud, so a screen cannot forget to. */
+const DRAFT_NOT_LIVE = 'A draft prices nothing and declines nobody. It is not part of any rule set an engine evaluates, and there is no route on this server that publishes one.';
+
+// GET /rule-drafts — the drafts, plus the catalog a screen builds its pickers from.
+//
+// The catalog rides WITH the list rather than on a door of its own. That is not tidiness: a separate
+// `/rule-drafts/catalog` would share its shape with `/rule-drafts/:id`, and a call to either could
+// resolve to the other — the ambiguity `check-lt-http-reachability` refuses, and rightly.
+async function listRuleDraftsRoute(req, res) {
+  const scope = readScope(req);
+  const opts = {};
+
+  const status = textOrNull(req.query.status, 20);
+  if (status) {
+    if (status !== 'all' && !DRAFT_STATUSES.includes(status)) {
+      return res.status(400).json({ error: `A draft is ${DRAFT_STATUSES.join(', ')} — or "all". "${status}" is none of those.`, field: 'status' });
+    }
+    opts.status = status;
+  }
+  const inv = optionalUuid(req.query.investorId);
+  if (!inv.ok) return res.status(400).json({ error: 'That is not an investor id.', field: 'investorId' });
+  if (inv.value !== undefined) opts.investorId = inv.value;
+  const prg = optionalUuid(req.query.programId);
+  if (!prg.ok) return res.status(400).json({ error: 'That is not a program id.', field: 'programId' });
+  if (prg.value !== undefined) opts.programId = prg.value;
+
+  const drafts = await ruleDraftStore.listDrafts(db, scope, opts);
+  return res.json({
+    ok: true, scope, total: drafts.length, drafts,
+    // Derived from `rule-builder.DIMENSIONS` and the prepayment library, never restated here — a
+    // screen built from it cannot offer a dimension the builder would refuse.
+    catalog: ruleAuthoring.catalog(),
+    live: false,
+    liveNote: DRAFT_NOT_LIVE,
+  });
+}
+
+// GET /rule-drafts/:id — one draft, exactly as it was stored.
+async function getRuleDraftRoute(req, res) {
+  const scope = readScope(req);
+  const id = draftIdOf(req.params.id);
+  if (!id) return res.status(400).json({ error: 'That is not a draft id.' });
+  const draft = await ruleDraftStore.getDraft(db, scope, id);
+  if (!draft) return res.status(404).json({ error: 'No such draft.' });
+  return res.json({ ok: true, scope, draft, live: false, liveNote: DRAFT_NOT_LIVE });
+}
+
+// GET /rule-drafts/:id/render — the draft in words, WITH its findings re-computed against the rule
+// set as it stands now.
+//
+// The findings are never stored (see `renderDraft`): a stored warning is a statement about a rule set
+// that has since moved. `publishable` here means "nothing in the current set refuses it" and NOT
+// "you may press it" — the door exists now (§2.51, owner-answered 2026-08-18) but it is super-admin
+// only, and the payload SAYS both rather than leaving a screen to infer either.
+async function renderRuleDraftRoute(req, res) {
+  const scope = readScope(req);
+  const id = draftIdOf(req.params.id);
+  if (!id) return res.status(400).json({ error: 'That is not a draft id.' });
+  const out = await ruleDraftStore.renderDraft(db, scope, id);
+  if (!out) return res.status(404).json({ error: 'No such draft.' });
+  return res.json({
+    ok: true, scope, ...out,
+    live: false,
+    liveNote: DRAFT_NOT_LIVE,
+    // Said in the payload because `publishable: true` is the one field on this response somebody
+    // could read as "so press publish". It answers whether the RULES would refuse it, which is a
+    // different question from whether THIS PERSON may publish it — so the authority is stated too.
+    publishRoute: 'POST /api/lt/ppe/rule-drafts/:id/publish',
+    publishAuthority: 'super_admin',
+    publishNote: 'Whether this draft would be refused by the rules already in force is what `publishable` answers. Publishing it is a separate, recorded act that only a super admin can do, because it changes what a real borrower is quoted.',
+  });
+}
+
+// POST /rule-drafts — author a rule and SAVE IT AS A DRAFT.
+//
+// The whole authoring vocabulary is `rule-authoring.applyIntent`'s, one entry per `rule-builder`
+// operation. A refusal comes back as a REFUSAL (a list a screen can render), never as a stack trace —
+// that is the service's contract and this door keeps it.
+async function createRuleDraftRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const intent = b.intent;
+  if (!intent || typeof intent !== 'object' || Array.isArray(intent)) {
+    return res.status(400).json({
+      error: 'Send an `intent` saying what to author — for example { "op": "add_llpa", ... }.',
+      field: 'intent',
+      // The vocabulary comes from the service, so this can never list an operation it cannot do.
+      operations: ruleAuthoring.INTENT_OPS,
+    });
+  }
+  const inv = optionalUuid(b.investorId);
+  if (!inv.ok) return res.status(400).json({ error: 'That is not an investor id.', field: 'investorId' });
+  const prg = optionalUuid(b.programId);
+  if (!prg.ok) return res.status(400).json({ error: 'That is not a program id.', field: 'programId' });
+
+  const out = await ruleDraftStore.saveDraft(db, scope, intent, {
+    investorId: inv.value === undefined ? null : inv.value,
+    programId: prg.value === undefined ? null : prg.value,
+    rule: b.rule && typeof b.rule === 'object' && !Array.isArray(b.rule) ? b.rule : undefined,
+    basedOnRuleId: draftIdOf(b.basedOnRuleId),
+    // Passed through only when the caller SET it: `saveDraft` defaults it to the edited rule's own
+    // code, and sending `undefined` as a value would defeat that default.
+    ...(b.replacingCode === undefined ? {} : { replacingCode: textOrNull(b.replacingCode, 120) }),
+    note: textOrNull(b.note, 500),
+    createdBy: (req.actor && req.actor.id) || null,
+  });
+
+  if (!out.ok) {
+    // 409 for the one refusal that is about somebody ELSE's state (a draft already open on this
+    // code); 422 for the ones about what was sent. A single status for both would leave the screen
+    // unable to tell "fix your rule" from "go and look at the draft that already exists".
+    const taken = (out.refusals || []).some((r) => r && r.code === 'draft_exists');
+    return res.status(taken ? 409 : 422).json({
+      ok: false,
+      error: (out.refusals && out.refusals[0] && out.refusals[0].message) || 'That rule was refused.',
+      refusals: out.refusals || [],
+      warnings: out.warnings || [],
+    });
+  }
+  return res.status(201).json({
+    ok: true, scope, draft: out.draft, render: out.render, warnings: out.warnings || [],
+    live: false, liveNote: DRAFT_NOT_LIVE,
+  });
+}
+
+// DELETE /rule-drafts/:id — discard a draft. Nothing is deleted; the row is marked discarded and
+// kept, because "somebody drafted this and decided against it" is worth as much as the draft was.
+/**
+ * POST /rule-drafts/:id/publish — PUT A RULE IN FORCE.
+ *
+ * ⛔ THIS IS THE ONE DOOR ON THIS ROUTER THAT CHANGES WHAT A BORROWER IS QUOTED. `publishDraft` writes
+ * into `lt_ppe_rule`, the set `rule-store.rulesForProgram` hands the engine, so a rule published here
+ * prices the next loan. It was deliberately NOT built while the authority was an open question
+ * (§2.51); the owner answered it on 2026-08-18 — *"all in the super admin"* — and this is that answer,
+ * gated on `requirePpeSuperAdmin` rather than on the admin gate the neighbouring draft routes use.
+ *
+ * WHO PUBLISHED IT IS RECORDED FROM THE SESSION, NEVER FROM THE BODY. `publishDraft` refuses without a
+ * publisher and db/577's CHECK refuses the row as well, so a request cannot name somebody else — the
+ * name comes from `actorLabel(req)`, which is the signed-in person. A publisher a caller could type
+ * would make the audit trail a field rather than a fact.
+ *
+ * THE CHECKS RE-RUN INSIDE THE TRANSACTION, against the rule set as it is NOW rather than as it was
+ * when the draft was written — a draft can sit for a week while somebody else publishes onto the same
+ * cell. That is `publishDraft`'s own doing and is why this handler is thin: the rule about what may go
+ * live belongs with the write, not with the door.
+ */
+async function publishRuleDraftRoute(req, res) {
+  const scope = readScope(req);
+  const id = draftIdOf(req.params.id);
+  if (!id) return res.status(400).json({ error: 'That is not a draft id.' });
+
+  // WHO IS PUBLISHING COMES FROM THE SESSION, AND IS AWAITED. `actorLabel` reads the staff row, so it
+  // is a PROMISE — handing the promise straight to the store would fail its `typeof === 'string'` test
+  // and refuse EVERY publish as "nobody named", which is a refusal that looks exactly like a rule the
+  // publisher broke. Refusing here instead names the real reason: we could not tell who is signed in.
+  const publishedBy = await actorLabel(req.actor && req.actor.id);
+  if (!publishedBy) {
+    return res.status(409).json({
+      ok: false,
+      error: 'We could not tell who is publishing this. Sign in again and try once more.',
+      refusals: [{ code: 'publisher_unknown', message: 'The signed-in person could not be read, and a published rule has to record who decided it.' }],
+      warnings: [],
+    });
+  }
+
+  const out = await ruleDraftStore.publishDraft(db, scope, id, { publishedBy });
+  if (!out.ok) {
+    return res.status(409).json({
+      ok: false,
+      error: (out.refusals && out.refusals[0] && out.refusals[0].message) || 'That draft could not be published.',
+      refusals: out.refusals || [],
+      warnings: out.warnings || [],
+    });
+  }
+  // `live: true` is the mirror of the `live: false` every other draft response carries: a screen must
+  // never have to infer from the absence of a flag that a rule is now pricing loans.
+  return res.json({
+    ok: true, scope, draft: out.draft || null, ruleId: out.ruleId || null,
+    live: true,
+    liveNote: 'This rule is IN FORCE. It prices the next loan quoted against this program.',
+    warnings: out.warnings || [],
+  });
+}
+
+async function discardRuleDraftRoute(req, res) {
+  const scope = readScope(req);
+  const id = draftIdOf(req.params.id);
+  if (!id) return res.status(400).json({ error: 'That is not a draft id.' });
+  const out = await ruleDraftStore.discardDraft(db, scope, id, { note: textOrNull(req.query.note, 500) });
+  if (!out.ok) {
+    return res.status(409).json({
+      ok: false,
+      error: (out.refusals && out.refusals[0] && out.refusals[0].message) || 'That draft could not be discarded.',
+      refusals: out.refusals || [],
+    });
+  }
+  return res.json({ ok: true, scope, draft: out.draft, live: false, liveNote: DRAFT_NOT_LIVE });
+}
+
+// ---------------------------------------------------------------------------
+// The program's LENDER PRICE SCOPE — which of their programs we compare against
+// ---------------------------------------------------------------------------
+//
+// ADMIN-GATED, and that is not merely tidiness. `programLike` is compiled with
+// `new RegExp(...)`, so this is the one door in the system that accepts a pattern
+// the server will run; and a scope points every future comparison on this program
+// at one Lender Price program out of seventeen, so a wrong one compares
+// confidently against the wrong thing rather than failing. `lp-scope.validateScope`
+// bounds and grammar-checks it before a character reaches the database.
+
+// ---------------------------------------------------------------------------
+// GET /programs — every program, and whether it is scoped to Lender Price yet
+// ---------------------------------------------------------------------------
+//
+// The scope WRITER has existed since db/574 and nothing could reach it: `GET /investors` lists
+// investors, and the write door needs a program's UUID, which no read surface published. So the
+// answer to "which of our rate sheets are being compared against Lender Price at all?" was
+// unavailable, and the honest answer today is "none of them" — an unscoped program's comparison
+// ABSTAINS, which on a findings screen is indistinguishable from two engines that agree.
+//
+// READ-OPEN, WRITE-ADMIN, deliberately. The write is `requirePpeAdmin` (a scope decides which of
+// Lender Price's programs our sheet is measured against — a wrong one produces confident agreement
+// with the wrong thing). The read is not, because the thing worth seeing here is the ABSENCE of a
+// scope, and hiding that from a non-admin leaves them reading an empty findings list as good news.
+
+async function listProgramsRoute(req, res) {
+  const scope = readScope(req);
+  const rows = await store.listAllPrograms(db, scope);
+  const programs = rows.map((row) => {
+    const saved = lpScopeLib.scopeFromRow(row);
+    return {
+      id: row.id,
+      code: row.code || null,
+      name: row.name || null,
+      investorId: row.investor_id || null,
+      investorCode: row.investor_code || null,
+      investorName: row.investor_name || null,
+      lpScope: saved,
+      describe: lpScopeLib.describeScope(saved),
+      setAt: row.lp_scope_set_at || null,
+      setBy: row.lp_scope_set_by || null,
+    };
+  });
+  const unscoped = programs.filter((p) => !p.lpScope).length;
+  return res.json({
+    ok: true,
+    scope,
+    programs,
+    unscoped,
+    // Counted and SAID. A program with no scope does not compare against everything — it compares
+    // against nothing, on purpose, and that is why its findings list is empty.
+    note: unscoped
+      ? `${unscoped} of ${programs.length} program${programs.length === 1 ? '' : 's'} ${unscoped === 1 ? 'has' : 'have'} no Lender Price scope, so ${unscoped === 1 ? 'its' : 'their'} shadow comparison abstains.`
+      : null,
+  });
+}
+
+/**
+ * GET /programs/:id/current-rate-sheet — WHICH published version prices this program right now?
+ *
+ * The read behind the chooser on the pricing screen, and the first caller in `src/` of the "which
+ * published version is in effect" predicate. It answers the same three states the pricing resolver
+ * does, with the same words, so the screen can never describe a program one way while a quote against
+ * it behaves another: a version in effect, NOTHING PUBLISHED (named, never a fall-back), or MORE THAN
+ * ONE in effect (named, never a silent pick).
+ *
+ * READ-OPEN, like GET /programs and for the same reason: the thing most worth seeing here is the
+ * ABSENCE of a published sheet, and hiding that from a non-admin leaves them believing a program they
+ * cannot price is merely broken.
+ */
+async function currentRateSheetRoute(req, res) {
+  const scope = readScope(req);
+  const programId = uuidOf(req.params.id);
+  if (!programId) return res.status(400).json({ error: 'That is not a program id.' });
+
+  const prg = await db.query(
+    `SELECT p.*, i.code AS investor_code, i.name AS investor_name
+       FROM lt_ppe_program p
+       LEFT JOIN lt_ppe_investor i ON i.id = p.investor_id AND i.scope = p.scope
+      WHERE p.scope = $1 AND p.id = $2`, [scope, programId]);
+  if (!prg.rows.length) return res.status(404).json({ error: 'No such program.' });
+  const row = prg.rows[0];
+
+  const channel = textOrNull(req.query.channel, 40);
+  const picked = await resolveRateSheetVersion(scope, { programId, channel });
+
+  let version = null;
+  if (picked.versionId) {
+    const v = await store.rateSheetVersionInScope(db, scope, picked.versionId);
+    if (v) {
+      version = {
+        id: v.id, versionNo: v.version_no, channel: v.channel, status: v.status,
+        effectiveFrom: v.effective_from || null, effectiveTo: v.effective_to || null,
+      };
+    }
+  }
+
+  return res.json({
+    ok: true, scope, programId,
+    program: {
+      id: row.id, code: row.code || null, name: row.name || null,
+      investorCode: row.investor_code || null, investorName: row.investor_name || null,
+    },
+    published: version,
+    reason: picked.reason,
+    // Said in words on every branch, including the good one, so a screen never has to compose a
+    // sentence about a state the server understands better than it does.
+    message: picked.message || (version
+      ? `Version ${version.versionNo} is published and in effect for this program on the ${version.channel} channel.`
+      : 'Nothing is published for this program.'),
+    candidates: picked.candidates,
+  });
+}
+
+async function getProgramLpScopeRoute(req, res) {
+  const scope = readScope(req);
+  const programId = uuidOf(req.params.id);
+  if (!programId) return res.status(400).json({ error: 'That is not a program id.' });
+  const r = await db.query('SELECT * FROM lt_ppe_program WHERE scope = $1 AND id = $2', [scope, programId]);
+  const row = r.rows[0];
+  if (!row) return res.status(404).json({ error: 'No such program.' });
+  const saved = lpScopeLib.scopeFromRow(row);
+  return res.json({
+    ok: true, scope, programId, lpScope: saved, describe: lpScopeLib.describeScope(saved),
+    setAt: row.lp_scope_set_at || null, setBy: row.lp_scope_set_by || null,
+    // Said out loud rather than left as an empty object, because an unscoped program does not
+    // silently compare against everything — it compares against NOTHING, on purpose, and somebody
+    // looking at this screen needs to know that is why their findings list is empty.
+    note: saved ? null : 'This program has no Lender Price scope, so its shadow comparison abstains: Lender Price answers with every program it sells and ours prices one, and comparing the two would be meaningless.',
+  });
+}
+
+async function setProgramLpScopeRoute(req, res) {
+  const scope = readScope(req);
+  const programId = uuidOf(req.params.id);
+  if (!programId) return res.status(400).json({ error: 'That is not a program id.' });
+  const b = req.body || {};
+
+  // A body with no `scope` key at all is REFUSED rather than read as "clear it". Clearing a scope
+  // silently turns every future comparison on this program into an abstention, which looks exactly
+  // like the feature being switched off — so it has to be asked for, explicitly, as `scope: null`.
+  if (!Object.prototype.hasOwnProperty.call(b, 'scope')) {
+    return res.status(400).json({ error: 'Send a `scope` object naming which Lender Price programs to compare against — or `scope: null` to clear it.' });
+  }
+  const v = lpScopeLib.validateScope(b.scope);
+  if (!v.ok) return res.status(400).json({ error: v.error, field: v.field || null });
+
+  const row = await store.setProgramLpScope(db, scope, programId, v.scope, (req.actor && req.actor.id) || null);
+  if (!row) return res.status(404).json({ error: 'No such program.' });
+  const saved = lpScopeLib.scopeFromRow(row);
+
+  // THE SILENT FAILURE THIS ANSWERS: a pattern with one character wrong matches nothing, the
+  // comparison abstains politely forever, and it is indistinguishable from a feature nobody turned
+  // on. Paste the program names from a capture as `lpProgramNames` and the response says which ones
+  // this scope actually selects — a guess becomes an answer, at the moment the scope is written.
+  const preview = Array.isArray(b.lpProgramNames) ? lpScopeLib.previewScope(saved, b.lpProgramNames) : null;
+  return res.json({
+    ok: true, scope, programId, lpScope: saved, describe: lpScopeLib.describeScope(saved),
+    cleared: !saved, preview,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding + the rate-sheet console (§2.11 "no admin screen consumes the built
+// createInvestor/createProgram/rate-sheet writers yet")
+//
+// THE DEFECT THIS CLOSES is the one this workstream keeps finding: complete, tested machinery with
+// no caller. Every rate-sheet writer in `ppe/store.js` — createInvestor, createProgram,
+// createRateSheetVersion, replaceBasePrices, replaceAdjustments, setPriceLimit,
+// publishRateSheetVersion — had ZERO callers anywhere in `src/`. So an investor could not be
+// onboarded through the product at all, no sheet could be loaded, and the ≥200-scenario agreement
+// gate added at the publish guarded a door that did not exist.
+//
+// FOUR RULES RUN THROUGH ALL OF IT:
+//
+//   1. OWNERSHIP IS CHECKED BEFORE ANYTHING IS TOUCHED. A version id arrives off an HTTP request, and
+//      `loadRateSheet` is unscoped while the write helpers rewrite a whole grid — so every one of
+//      these routes resolves the version through `store.rateSheetVersionInScope` FIRST and answers a
+//      plain 404 otherwise. Another tenant's sheet must not be readable, let alone rewritable.
+//   2. ONLY A DRAFT IS EDITABLE. The store's own design is append-only and effective-dated ("a
+//      version's grid is set once"), so rewriting a PUBLISHED version in place would change what
+//      every live quote prices from, with no new version, no new effective date, and no fresh
+//      agreement run — silently. A published sheet is superseded by a NEW version, never edited.
+//   3. NOBODY TYPES AN AGREEMENT RESULT. There is deliberately no route that records a passing
+//      agreement run from a request body: a hand-typed "agreed on 240 scenarios" would satisfy the
+//      gate without a single scenario being compared, which is precisely the state the gate exists to
+//      make impossible. A run comes from the harness. The human path is the OVERRIDE, which is
+//      honest about being one and records who and why.
+//   4. A REFUSAL IS THE ANSWER, AND IT NAMES THE WAY FORWARD. The publish refusal carries the gate's
+//      own reason and message plus the override shape, because a gate whose remedy the reader cannot
+//      work out is the dead end this file has already recorded twice.
+// ---------------------------------------------------------------------------
+
+/** Bound on a single write, so one request cannot post an unbounded grid. */
+const MAX_SHEET_ROWS = 5000;
+
+/** A hard ceiling on one agreement run. Each scenario is a live, paid Lender Price call. */
+const MAX_AGREEMENT_SCENARIOS = 500;
+
+/** A finite number, else null — never NaN, never a coerced string into a numeric column. */
+function numOrNull(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+/** A required finite number; returns { ok, value } so the caller can name the field it refused. */
+function reqNum(v) { const n = numOrNull(v); return n == null ? { ok: false } : { ok: true, value: n }; }
+
+/** A non-empty trimmed string within a length bound, else null. */
+function textOrNull(v, max = 200) {
+  const s = v == null ? '' : String(v).trim();
+  return s && s.length <= max ? s : null;
+}
+
+/**
+ * Resolve a :versionId param to a version row IN THIS SCOPE, or answer and return null.
+ * `opts.draftOnly` additionally refuses a version that is no longer a draft (rule 2 above).
+ */
+async function resolveVersion(req, res, opts = {}) {
+  const scope = readScope(req);
+  const versionId = uuidOf(req.params.id);
+  if (!versionId) { res.status(400).json({ error: 'That is not a rate-sheet version id.' }); return null; }
+  const row = await store.rateSheetVersionInScope(db, scope, versionId);
+  if (!row) { res.status(404).json({ error: 'No such rate-sheet version.' }); return null; }
+  if (opts.draftOnly && row.status !== 'draft') {
+    res.status(409).json({
+      error: `This rate sheet is ${row.status}, so its grid can no longer be edited.`,
+      status: row.status,
+      // The way forward, said out loud — otherwise this reads as the feature being broken.
+      remedy: 'Create a NEW version for this program and build the grid there. A published sheet is what live quotes price from, so it is superseded by a new version rather than rewritten underneath them.',
+    });
+    return null;
+  }
+  return { scope, versionId, row };
+}
+
+async function createInvestorRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const code = textOrNull(b.code, 60);
+  const name = textOrNull(b.name, 200);
+  if (!code) return res.status(400).json({ error: 'Give the investor a short code (for example DHVN).', field: 'code' });
+  if (!name) return res.status(400).json({ error: 'Give the investor its full name.', field: 'name' });
+
+  // `store.createInvestor` is deliberately IDEMPOTENT — it UPSERTs on (scope, code) so an ingestion
+  // pass can re-run safely, and that contract is not changed here. But a HUMAN typing a code that
+  // already exists is not re-running an ingestion: they believe they are creating a new investor, and
+  // the upsert would quietly RENAME the existing one instead. So the console door refuses the
+  // collision and leaves the idempotency intact for programmatic callers.
+  //
+  // Check-then-act, so two people submitting the same code at the same instant could both pass this
+  // check. The outcome is benign BECAUSE the store upserts — one row, the later name wins, nothing
+  // corrupted — which is exactly why this is a pre-check and not a unique-violation catch.
+  const clash = await db.query('SELECT id, name FROM lt_ppe_investor WHERE scope = $1 AND code = $2', [scope, code]);
+  if (clash.rows.length) {
+    return res.status(409).json({
+      error: `An investor with the code ${code} already exists (${clash.rows[0].name}).`,
+      field: 'code',
+      investorId: clash.rows[0].id,
+    });
+  }
+  const inv = await store.createInvestor(db, scope, { code, name, createdBy: (req.actor && req.actor.id) || null });
+  return res.status(201).json({ ok: true, scope, investor: { id: inv.id, code: inv.code, name: inv.name } });
+}
+
+async function createProgramRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const code = textOrNull(b.code, 60);
+  const name = textOrNull(b.name, 200);
+  const investorId = uuidOf(b.investorId);
+  if (!investorId) return res.status(400).json({ error: 'Say which investor this program belongs to.', field: 'investorId' });
+  if (!code) return res.status(400).json({ error: 'Give the program a short code (for example DSCR30).', field: 'code' });
+  if (!name) return res.status(400).json({ error: 'Give the program its full name.', field: 'name' });
+
+  // The investor is checked IN SCOPE — a program must never be hung off another tenant's investor.
+  const inv = await db.query('SELECT id FROM lt_ppe_investor WHERE id = $1 AND scope = $2', [investorId, scope]);
+  if (!inv.rows.length) return res.status(404).json({ error: 'No such investor.', field: 'investorId' });
+
+  // Same reasoning as createInvestorRoute: the store UPSERTs so ingestion can re-run, and the human
+  // door refuses the collision so nobody renames an existing program by accident. NOTE the key is
+  // (scope, investor_id, code) — the SAME code under a DIFFERENT investor is a different program and
+  // must still be allowed, so this check is scoped to the investor too.
+  const clash = await db.query(
+    'SELECT id, name FROM lt_ppe_program WHERE scope = $1 AND investor_id = $2 AND code = $3',
+    [scope, investorId, code]);
+  if (clash.rows.length) {
+    return res.status(409).json({
+      error: `This investor already has a program with the code ${code} (${clash.rows[0].name}).`,
+      field: 'code',
+      programId: clash.rows[0].id,
+    });
+  }
+  const program = await store.createProgram(db, scope, {
+    investorId, code, name,
+    channel: textOrNull(b.channel, 60) || undefined,
+    createdBy: (req.actor && req.actor.id) || null,
+  });
+  return res.status(201).json({
+    ok: true, scope,
+    program: { id: program.id, code: program.code, name: program.name, channel: program.channel, status: program.status },
+    // Said at creation rather than discovered later on an empty findings list.
+    note: 'This program has no Lender Price scope yet, so its shadow comparison abstains until one is set.',
+  });
+}
+
+async function createRateSheetRoute(req, res) {
+  const scope = readScope(req);
+  const programId = uuidOf(req.params.id);
+  if (!programId) return res.status(400).json({ error: 'That is not a program id.' });
+  const p = await db.query('SELECT * FROM lt_ppe_program WHERE id = $1 AND scope = $2', [programId, scope]);
+  const program = p.rows[0];
+  if (!program) return res.status(404).json({ error: 'No such program.' });
+
+  const b = req.body || {};
+  const channel = textOrNull(b.channel, 60) || program.channel || undefined;
+
+  // The version number is DERIVED, not asked for. Two people onboarding the same program would
+  // otherwise both type "1" and the second would collide on a unique key with nothing explaining it.
+  const seq = await db.query(
+    'SELECT COALESCE(MAX(version_no), 0)::int AS n FROM lt_ppe_rate_sheet_version WHERE scope = $1 AND program_id = $2',
+    [scope, programId]);
+  const versionNo = seq.rows[0].n + 1;
+
+  const version = await store.createRateSheetVersion(db, scope, {
+    programId, versionNo, channel,
+    sourceFormat: textOrNull(b.sourceFormat, 40),
+    createdBy: (req.actor && req.actor.id) || null,
+  });
+  return res.status(201).json({
+    ok: true, scope, programId,
+    version: { id: version.id, versionNo: version.version_no, channel: version.channel, status: version.status },
+    note: 'A draft. Load its grid, its LLPAs and its price limits, then publish it — publishing asks the Lender Price agreement gate first.',
+  });
+}
+
+async function getRateSheetRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+  const sheet = await store.loadRateSheet(db, found.versionId);
+  const gate = await agreementStore.gateStatus(found.scope, found.versionId, { db });
+  let priceLimitHistory = [];
+  try { priceLimitHistory = await store.listPriceLimitChanges(db, found.scope, found.versionId, 20); } catch (_) { priceLimitHistory = []; }
+  return res.json({
+    ok: true,
+    scope: found.scope,
+    version: {
+      id: found.row.id, versionNo: found.row.version_no, channel: found.row.channel,
+      status: found.row.status, programId: found.row.program_id,
+      effectiveFrom: found.row.effective_from || null, effectiveTo: found.row.effective_to || null,
+    },
+    basePrices: (sheet && sheet.basePrices) || [],
+    adjustments: (sheet && sheet.adjustments) || [],
+    priceLimit: (sheet && sheet.priceLimit) || null,
+    // WHO LAST MOVED THE MONEY RULES, AND WHY — travelling with the sheet so the console can show
+    // what is in force NOW, and what it replaced, BEFORE anybody changes it. Best-effort: an
+    // unreadable history must never make the sheet itself unreadable.
+    priceLimitHistory: priceLimitHistory,
+    editable: found.row.status === 'draft',
+    // The gate's verdict travels WITH the sheet, so a console can say why Publish is refused before
+    // anyone presses it rather than after.
+    agreement: { proven: gate.proven, reason: gate.reason, message: gate.message },
+  });
+}
+
+async function setBasePricesRoute(req, res) {
+  const found = await resolveVersion(req, res, { draftOnly: true });
+  if (!found) return undefined;
+  const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : null;
+  if (!rows) return res.status(400).json({ error: 'Send a `rows` array of base prices.' });
+  if (rows.length > MAX_SHEET_ROWS) return res.status(400).json({ error: `That is more than ${MAX_SHEET_ROWS} rows in one write.` });
+
+  // EVERY row is checked BEFORE ANY is written — a half-written grid prices real loans. Same rule the
+  // completeness panels follow: nothing is filed until everything is acceptable.
+  const clean = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const r = rows[i] || {};
+    const rate = reqNum(r.noteRateMilliPct);
+    const lock = reqNum(r.lockDays);
+    const price = reqNum(r.priceMilli);
+    if (!rate.ok) return res.status(400).json({ error: `Row ${i + 1} has no note rate.`, row: i + 1, field: 'noteRateMilliPct' });
+    if (!lock.ok) return res.status(400).json({ error: `Row ${i + 1} has no lock period.`, row: i + 1, field: 'lockDays' });
+    if (!price.ok) return res.status(400).json({ error: `Row ${i + 1} has no price.`, row: i + 1, field: 'priceMilli' });
+    clean.push({
+      noteRateMilliPct: Math.round(rate.value), lockDays: Math.round(lock.value),
+      priceMilli: Math.round(price.value), product: textOrNull(r.product, 60) || '',
+    });
+  }
+  const written = await store.replaceBasePrices(db, found.scope, found.versionId, clean);
+  return res.json({ ok: true, scope: found.scope, versionId: found.versionId, rows: written });
+}
+
+async function setAdjustmentsRoute(req, res) {
+  const found = await resolveVersion(req, res, { draftOnly: true });
+  if (!found) return undefined;
+  const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : null;
+  if (!rows) return res.status(400).json({ error: 'Send a `rows` array of adjustments.' });
+  if (rows.length > MAX_SHEET_ROWS) return res.status(400).json({ error: `That is more than ${MAX_SHEET_ROWS} rows in one write.` });
+
+  const clean = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const a = rows[i] || {};
+    const dimension = textOrNull(a.dimension, 60);
+    const adj = reqNum(a.adjMilli);
+    if (!dimension) return res.status(400).json({ error: `Row ${i + 1} does not say which dimension it adjusts on.`, row: i + 1, field: 'dimension' });
+    // A blank adjustment is REFUSED rather than stored as 0: an LLPA that silently prices at zero is
+    // indistinguishable from one that was never loaded, and it is the sheet a quote prices from.
+    if (!adj.ok) return res.status(400).json({ error: `Row ${i + 1} has no adjustment amount.`, row: i + 1, field: 'adjMilli' });
+    clean.push({
+      dimension,
+      ficoMin: numOrNull(a.ficoMin), ficoMax: numOrNull(a.ficoMax),
+      ltvMin: numOrNull(a.ltvMin), ltvMax: numOrNull(a.ltvMax),
+      dscrMin: numOrNull(a.dscrMin), dscrMax: numOrNull(a.dscrMax),
+      predicate: (a.predicate && typeof a.predicate === 'object') ? a.predicate : null,
+      adjMilli: Math.round(adj.value),
+      adjustmentTarget: textOrNull(a.adjustmentTarget, 40) || 'price',
+      unit: textOrNull(a.unit, 40) || 'points',
+      cumulative: a.cumulative !== false,
+      priority: Math.round(numOrNull(a.priority) || 0),
+      reason: textOrNull(a.reason, 200),
+      code: textOrNull(a.code, 80),
+      meta: (a.meta && typeof a.meta === 'object') ? a.meta : {},
+    });
+  }
+  const written = await store.replaceAdjustments(db, found.scope, found.versionId, clean);
+  return res.json({ ok: true, scope: found.scope, versionId: found.versionId, rows: written });
+}
+
+/**
+ * PUT /rate-sheets/:id/price-limit — the sheet's MONEY RULES.
+ *
+ * A REASON IS REQUIRED AT THIS DOOR, and that is what makes this different from the store helper it
+ * calls. These five values bound every quote the sheet ever answers: the minimum price a loan may be
+ * sold at, the increment every price is snapped to, the loan-size ceilings, and what happens when a
+ * price exceeds one. Moving a floor is the same class of act as publishing a sheet unmeasured, and it
+ * is recorded the same way — in the author's own words, with their name on it. The store writes the
+ * audit row in the same transaction as the change, so a change that could not be recorded does not
+ * happen; the reason is what makes that record worth reading a year later.
+ *
+ * DRAFT-ONLY, unchanged (`resolveVersion({draftOnly:true})`): a published sheet is what live quotes
+ * price from and is superseded by a new version, never rewritten underneath them.
+ */
+async function setPriceLimitRoute(req, res) {
+  const found = await resolveVersion(req, res, { draftOnly: true });
+  if (!found) return undefined;
+  const b = req.body || {};
+
+  const reason = textOrNull(b.reason, 500);
+  if (!reason || reason.length < 8) {
+    return res.status(400).json({
+      error: 'Say why these price limits are being set. A price limit bounds every quote this sheet answers, so the change is recorded with your name on it.',
+      field: 'reason',
+    });
+  }
+
+  const row = await store.setPriceLimit(db, found.scope, found.versionId, {
+    minPriceMilli: numOrNull(b.minPriceMilli) == null ? null : Math.round(numOrNull(b.minPriceMilli)),
+    roundingIncrementMilli: numOrNull(b.roundingIncrementMilli) == null ? undefined : Math.round(numOrNull(b.roundingIncrementMilli)),
+    roundingMode: textOrNull(b.roundingMode, 40) || undefined,
+    capTiers: Array.isArray(b.capTiers) ? b.capTiers : [],
+    onExceed: textOrNull(b.onExceed, 40) || undefined,
+    changedBy: (req.actor && (req.actor.email || req.actor.id)) || null,
+    reason,
+    nowMs: Date.now(),
+  });
+
+  // The history rides back with the write so the screen shows what is in force now — and what it
+  // replaced — without a second round trip that could read a different moment.
+  let history = [];
+  try { history = await store.listPriceLimitChanges(db, found.scope, found.versionId, 20); } catch (_) { history = []; }
+
+  return res.json({
+    ok: true, scope: found.scope, versionId: found.versionId,
+    priceLimit: row, priceLimitHistory: history,
+  });
+}
+
+async function agreementRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+  const gate = await agreementStore.gateStatus(found.scope, found.versionId, { db });
+  const history = await agreementStore.listForVersion(found.scope, found.versionId, { db });
+  return res.json({
+    ok: true, scope: found.scope, versionId: found.versionId,
+    proven: gate.proven, reason: gate.reason, message: gate.message,
+    minComparableScenarios: agreementStore.MIN_COMPARABLE_SCENARIOS,
+    history,
+    // Said plainly, because the obvious next question on a refusal is "so how do I record one?".
+    note: 'An agreement run is recorded by the Lender Price agreement harness, never typed in here — a hand-entered result would satisfy this gate without a single scenario being compared.',
+  });
+}
+
+/**
+ * WHAT CHANGED between two versions of this sheet? — the pre-publish read.
+ *
+ * A new version is loaded by pasting a vendor's grid over the previous one, and the question anybody
+ * asks before publishing it is which cells actually moved. `ratesheet-diff.js` answers exactly that —
+ * a keyed set-difference with a per-cell delta, plus §7.4's split of ordinary numeric refreshes from
+ * RULE changes — and it had nothing to hand it: nothing turned a stored sheet into the flat map it
+ * consumes. `ratesheet-cells.sheetToCells` is that missing half, and this is the door.
+ *
+ * IT DECIDES NOTHING AND WRITES NOTHING. The §7.4 classification is reported for what it tells a
+ * reader — "these are small numeric moves, these are rule changes" — and no cell is applied, published
+ * or auto-accepted here. Auto-apply belongs to the ingest path, which does not exist yet; a route that
+ * quietly applied a "safe" change to a live sheet would be a very different thing from a diff.
+ *
+ * THE DEFAULT COMPARISON IS THE PREVIOUS VERSION OF THE SAME PROGRAM, because that is the question
+ * being asked; any other version in the same scope can be named explicitly. A version from another
+ * tenant is a 404 like everywhere else on this router.
+ */
+async function rateSheetDiffRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+
+  let againstId = uuidOf(req.query.against);
+  if (req.query.against && !againstId) {
+    return res.status(400).json({ error: 'That is not a rate-sheet version id.', field: 'against' });
+  }
+  if (!againstId) {
+    // The previous version OF THIS PROGRAM — the sheet this one replaces.
+    const prev = await db.query(
+      `SELECT id FROM lt_ppe_rate_sheet_version
+        WHERE scope = $1 AND program_id = $2 AND version_no < $3
+        ORDER BY version_no DESC LIMIT 1`,
+      [found.scope, found.row.program_id, found.row.version_no],
+    );
+    againstId = prev.rows.length ? prev.rows[0].id : null;
+    if (!againstId) {
+      return res.status(200).json({
+        ok: true,
+        scope: found.scope,
+        versionId: found.versionId,
+        against: null,
+        // A first version is not an empty diff — everything on it is new, and saying "no changes"
+        // about a sheet nobody has seen before would be the most misleading answer available.
+        note: 'This is the first version of this rate sheet, so there is nothing to compare it against. Name another version with ?against= to compare across programs.',
+      });
+    }
+  }
+  if (againstId === found.versionId) {
+    return res.status(400).json({ error: 'A version cannot be compared against itself.', field: 'against' });
+  }
+  const againstRow = await store.rateSheetVersionInScope(db, found.scope, againstId);
+  if (!againstRow) return res.status(404).json({ error: 'No such rate-sheet version to compare against.', field: 'against' });
+
+  const [thisSheet, thatSheet] = await Promise.all([
+    store.loadRateSheet(db, found.versionId),
+    store.loadRateSheet(db, againstId),
+  ]);
+  const now = ratesheetCells.sheetToCells(thisSheet || {});
+  const before = ratesheetCells.sheetToCells(thatSheet || {});
+
+  const diff = ratesheetDiff.diffRulesets(before.cells, now.cells);
+  const classified = ratesheetDiff.classifyDiff(diff, {
+    maxDeltaMilli: intIn(req.query.maxDeltaMilli, 100000),
+    maxCellsChanged: intIn(req.query.maxCellsChanged, 100000),
+  });
+
+  return res.json({
+    ok: true,
+    scope: found.scope,
+    versionId: found.versionId,
+    version: { id: found.versionId, versionNo: found.row.version_no, status: found.row.status },
+    against: { id: againstId, versionNo: againstRow.version_no, status: againstRow.status },
+    counts: { now: now.counts, before: before.counts },
+    changed: diff.changed,
+    added: diff.added,
+    removed: diff.removed,
+    unchanged: diff.unchanged,
+    // §7.4's own split, reported for what it TELLS a reader. Nothing here applies anything.
+    ordinary: classified.autoApply,
+    needsReading: classified.review,
+    bulkEscalated: classified.bulkEscalated,
+    // Two rows addressing one cell is a loading mistake that would otherwise be invisible in every
+    // diff from here on, because the map can only hold one of them.
+    duplicates: { now: now.duplicates, before: before.duplicates },
+    note: 'This is a comparison, not an action: no cell is applied, published or accepted here. "Needs reading" is the §7.4 split — a rule change or a large move — not a refusal.',
+  });
+}
+
+/**
+ * WHAT ON THIS SHEET CAN NOTHING EVER REACH? — the offline dead-cell guard.
+ *
+ * A rate sheet is loaded by a human from a vendor's PDF or spreadsheet, cell by cell, and a cell
+ * nobody can hit is invisible in every other way: the sheet publishes, quotes price, and the LLPA
+ * simply never applies. `agreement-scenario-generator` already answers this — it DERIVES a battery
+ * from the sheet's own compiled rules, synthesizes a facts bag per rule and then PROVES the synthesis
+ * by running the real `rules.js` evaluator, reporting the ones it could not satisfy WITH a reason.
+ * Nothing called it.
+ *
+ * TWO THINGS MAKE THIS WORTH A ROUTE RATHER THAN A SCRIPT. It is the check to run BEFORE the paid
+ * agreement battery — measuring a sheet against Lender Price is expensive, and a sheet with a
+ * contradictory cell (`fico_min 900, fico_max 800` — a transposed pair) should be fixed first. And it
+ * costs NOTHING: no vendor call, no writes, no ledger row, so it can be run on every save.
+ *
+ * IT DOES NOT TRUST THE GENERATOR'S OWN VERDICT. "Reachable" here means the sheet was actually
+ * PRICED at that scenario and the rule's own trace entry shows it CONTRIBUTED — an adjustment, a
+ * decline, or a bound. A rule the generator says is satisfiable and the engine then does not match is
+ * reported as its own disagreement rather than quietly counted as covered: the generator and the
+ * pricer reading one predicate differently is exactly the kind of thing this is for.
+ */
+const MAX_COVERAGE_SCENARIOS = 400;
+
+/**
+ * GET /rate-sheets/:id/preflight — WHAT THE PAID RUN WOULD FIND ON OUR SIDE, FOR NOTHING (§2.75).
+ *
+ * The agreement battery costs ~299 upstream calls. This answers the half of the question that needs no
+ * vendor at all — can our own sheet price this battery, where does it refuse, and does the investor's
+ * rule set contain a decline code that never fires (a dead rule)? Pressing the paid button when this
+ * says our engine prices nothing is buying a wall of disagreements about our own misconfiguration.
+ *
+ * It is the SAME check the paid route runs before it spends, reached from the same module — never a
+ * second implementation, or the door and the run would eventually answer differently about one sheet.
+ * A GET, because it changes nothing and makes no vendor call.
+ */
+async function rateSheetPreflightRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+
+  const { program, investorName, marginFor, reason: noProgram } = await loadProgram(found.scope, found.versionId);
+  if (!program) {
+    return res.status(422).json({
+      error: 'This rate sheet cannot be priced yet, so there is nothing to pre-flight.',
+      reason: noProgram,
+    });
+  }
+  const { values: settings } = await resolveSettingsSafe(found.scope);
+  const pppDesc = investorName ? programRegistry.programFor(investorName) : null;
+
+  const built = agreementScenarios.buildAgreementScenarios();
+  const all = Array.isArray(built && built.scenarios) ? built.scenarios : [];
+  const battery = all.length > MAX_AGREEMENT_SCENARIOS ? all.slice(0, MAX_AGREEMENT_SCENARIOS) : all;
+
+  // The leg is built with the SAME options the paid run uses — including the unresolved-prepayment
+  // policy — because a pre-flight answering about a differently-configured engine is worse than none.
+  const oursLeg = lpAgreementLegs.buildOursLeg(program, settings, {
+    factsFromLp: true, pppDescriptor: pppDesc, onUnresolvedPpp: 'flag', marginHoldback: marginFor,
+  });
+  const out = agreementPreflight.preflight({
+    battery, ours: oursLeg, pppDescriptor: pppDesc, factsOf: lpAgreementLegs.lpScenarioToFacts,
+  });
+
+  return res.json({
+    ok: true,
+    scope: found.scope,
+    versionId: found.versionId,
+    // Whether the PAID run would start, said plainly — this door exists to be read before pressing it.
+    wouldRun: out.ok,
+    preflight: out,
+    scenarios: battery.length,
+    truncated: all.length > battery.length ? all.length - battery.length : 0,
+    pppLayer: pppDesc ? { asked: true, investor: investorName } : { asked: false, investor: investorName || null },
+    upstreamCalls: 0,
+  });
+}
+
+async function rateSheetCoverageRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+
+  const { program, marginFor, reason: noProgram } = await loadProgram(found.scope, found.versionId);
+  if (!program) {
+    return res.status(422).json({
+      error: 'This rate sheet cannot be priced yet, so there are no cells to check.',
+      reason: noProgram,
+    });
+  }
+  if (!Array.isArray(program.rules) || !program.rules.length) {
+    return res.json({
+      ok: true, scope: found.scope, versionId: found.versionId,
+      rules: { total: 0, reachable: 0, unreachable: [], disagreed: [] },
+      scenarios: { generated: 0, priced: 0, eligible: 0, ineligible: 0, errors: [], errorCount: 0 },
+      truncated: 0,
+      // A grid with no LLPAs and no ineligibility rows is a legitimate sheet, not an empty result.
+      note: 'This sheet carries a base grid and no adjustment or ineligibility rules, so there is nothing whose reachability could be in question.',
+    });
+  }
+
+  const { values: settings } = await resolveSettingsSafe(found.scope);
+  const built = agreementScenarioGenerator.buildProgramAgreementScenarios({
+    program,
+    opts: { maxScenarios: MAX_COVERAGE_SCENARIOS },
+  });
+  const scenarios = Array.isArray(built && built.scenarios) ? built.scenarios : [];
+
+  // Price every generated scenario. A scenario our OWN engine cannot price is a sheet defect in its
+  // own right (the `nearest_eighth` rounding-mode trap was exactly this shape), so the failures are
+  // reported rather than swallowed — bounded, with the full count beside the sample.
+  const quotes = new Array(scenarios.length);
+  const errors = [];
+  let eligible = 0; let ineligible = 0; let priced = 0;
+  for (let i = 0; i < scenarios.length; i += 1) {
+    try {
+      const q = quote.quoteProgram({ scenario: scenarios[i], program, settings, marginHoldback: marginFor(scenarios[i]) });
+      quotes[i] = q;
+      priced += 1;
+      if (q.eligible) eligible += 1; else ineligible += 1;
+    } catch (e) {
+      quotes[i] = null;
+      errors.push({ scenario: scenarios[i]._label || `#${i}`, error: msgOf(e) });
+    }
+  }
+
+  const unreachable = [];
+  const disagreed = [];
+  let reachable = 0;
+  for (const r of (built.coverage && built.coverage.rules) || []) {
+    if (!r.targeted || r.scenarioIndex == null) {
+      unreachable.push({ code: r.code, kind: r.kind, dimension: r.dimension, reason: r.reason || 'no_scenario_targets_it' });
+      continue;
+    }
+    const q = quotes[r.scenarioIndex];
+    if (!q) {
+      disagreed.push({ code: r.code, kind: r.kind, reason: 'its scenario could not be priced' });
+      continue;
+    }
+    const t = (q.trace || []).find((x) => x.code === r.code);
+    if (t && t.matched && t.contribution) { reachable += 1; continue; }
+    disagreed.push({
+      code: r.code,
+      kind: r.kind,
+      // Stated as a disagreement between two readings of one predicate, never as "unreachable" — the
+      // fix is different, and so is who has to look at it.
+      reason: t ? 'the generator satisfied this rule but the pricer did not apply it' : 'the rule is not in the priced trace at all',
+    });
+  }
+
+  return res.json({
+    ok: true,
+    scope: found.scope,
+    versionId: found.versionId,
+    status: found.row.status,
+    rules: { total: (built.coverage && built.coverage.total) || 0, reachable, unreachable, disagreed },
+    scenarios: {
+      generated: scenarios.length,
+      priced,
+      eligible,
+      ineligible,
+      errorCount: errors.length,
+      errors: errors.slice(0, 20),
+    },
+    // No silent caps, here as everywhere: a truncated battery covers fewer cells than the sheet has.
+    truncated: built.meta && built.meta.truncated ? true : false,
+    budget: MAX_COVERAGE_SCENARIOS,
+    note: unreachable.length
+      ? 'Each unreachable cell is a cell no loan can ever land in — usually a transposed band (a minimum above its maximum) or a rule another rule already excludes.'
+      : 'Every encoded cell on this sheet was reached by a generated scenario and applied by the pricer.',
+  });
+}
+
+/**
+ * RUN the ≥200-scenario Lender Price agreement harness against this sheet, and RECORD the verdict.
+ *
+ * THE MISSING HALF OF THE GATE. `ratesheet-agreement.js` has always MEASURED the owner's hard rule,
+ * and db/576 gave the verdict somewhere to live — but nothing ever called the harness, so no run
+ * could be recorded and the publish gate could only ever be passed by the recorded override. This is
+ * what makes the gate satisfiable the honest way: a sheet becomes publishable because it was
+ * MEASURED and agreed, never because somebody said it did. That is also why there is no route that
+ * takes a result in a request body, and why this one takes none.
+ *
+ * IT IS PULLED, NOT PUSHED — no timer, same as the canary tick. This prices the whole battery against
+ * a paid vendor, so a background loop firing it on its own schedule is the owner's decision, not a
+ * refactor's.
+ *
+ * IT REFUSES BEFORE IT SPENDS. A run with no resolvable program, or with the upstream not configured,
+ * would price N scenarios into N error verdicts that say nothing about agreement and cost real money
+ * — the same reasoning `runBattery` already applies to a canary with no program.
+ *
+ * A FAILING RUN IS RECORDED TOO, and that is deliberate: it moves the gate from "nobody has measured
+ * this" to "this disagrees", which are different answers that send a reader to different places.
+ */
+async function runAgreementRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+
+  const { program, lpScope, investorName, marginFor, reason: noProgram } = await loadProgram(found.scope, found.versionId);
+  if (!program) {
+    return res.status(422).json({
+      error: 'This rate sheet cannot be priced yet, so there is nothing to measure against Lender Price.',
+      reason: noProgram,
+    });
+  }
+  // THE COMPARISON MUST BE SCOPED, and an unscoped run is refused rather than run — the same rule the
+  // shadow façade already applies, and it matters more here. Lender Price answers a scenario with its
+  // WHOLE catalogue (an investor's seventeen product lines) while our sheet prices ONE; with no filter
+  // the harness would reconcile our single ladder against a merge of all of them, and whatever verdict
+  // came back — agree or disagree — would be about the wrong question. A recorded PASS from an
+  // unscoped run is the worst outcome available: it opens the publish gate on a measurement that
+  // measured something nobody asked for.
+  if (!lpScope) {
+    return res.status(422).json({
+      error: 'This program has no Lender Price scope, so a run could not tell which of their programs to compare against.',
+      reason: 'no_lp_scope',
+      remedy: 'Set the scope first with POST /api/lt/ppe/programs/:id/lp-scope, then run the harness.',
+    });
+  }
+
+  const lpClient = require('../lenderprice/client');
+  if (typeof lpClient.configured === 'function' && !lpClient.configured()) {
+    // Refused BEFORE the battery runs. Every scenario would come back an error verdict, the summary
+    // would read "0 comparable", and the gate would record a measurement that measured nothing.
+    return res.status(503).json({
+      error: 'Lender Price is not configured, so this sheet cannot be measured against it yet.',
+      reason: 'upstream_not_configured',
+    });
+  }
+
+  const { values: settings } = await resolveSettingsSafe(found.scope);
+  // `buildAgreementScenarios` returns **{ scenarios, count, byGroup }**, NOT an array. The first cut
+  // read `.length` off that object: undefined, so nothing was ever capped and the OBJECT itself was
+  // handed to the harness — which reads a non-array as an EMPTY list. The run then measured zero
+  // scenarios, summarized them as a clean nothing, and recorded a verdict against a sheet it had never
+  // compared. That is the exact shape this route exists to prevent, so an empty battery is a refusal
+  // rather than a run: there is no honest verdict to record when there is nothing to measure.
+  // Which investor's prepayment layer applies, resolved ONCE and reported either way. A run that
+  // silently did not ask is the failure this whole workstream keeps finding, so the response says
+  // whether the layer was asked and, when it was not, why — a green gate must never be able to hide
+  // "we did not look".
+  const pppDesc = investorName ? programRegistry.programFor(investorName) : null;
+  const pppLayer = pppDesc
+    ? { asked: true, investor: investorName }
+    : {
+      asked: false,
+      investor: investorName || null,
+      reason: investorName ? 'no_registered_program' : 'investor_unknown',
+      note: investorName
+        ? `No investor program is registered for “${investorName}”, so its prepayment-penalty rules were not part of this measurement.`
+        : 'This sheet\'s investor could not be read, so no prepayment-penalty rules were part of this measurement.',
+    };
+
+  const built = agreementScenarios.buildAgreementScenarios();
+  const all = Array.isArray(built && built.scenarios) ? built.scenarios : [];
+  if (!all.length) {
+    return res.status(500).json({
+      error: 'The agreement battery came back empty, so there is nothing to measure and nothing will be recorded.',
+      reason: 'empty_battery',
+    });
+  }
+  const capped = all.length > MAX_AGREEMENT_SCENARIOS;
+  const battery = capped ? all.slice(0, MAX_AGREEMENT_SCENARIOS) : all;
+
+  // THE SAME BATTERY ANSWERS THE REVIEW QUESTION TOO (§2.58 + §2.62), at no extra vendor call: this run
+  // already asks Lender Price for its refusal list on every scenario, which is exactly what the
+  // disqualifier review reads. Without this the only way to fill that queue is a SECOND paid battery
+  // asking the same questions about the same sheet.
+  //
+  // EVERY PART OF IT IS BEST-EFFORT AND CANNOT TOUCH THE MEASUREMENT: the hook is wrapped by the
+  // harness, the review is computed inside its own try, and a scenario whose refusal list did not
+  // arrive is left OUT of the covered set — so a partial feed can never retire a real question.
+  const reviewItems = [];
+  const reviewCovered = [];
+  let reviewErrors = 0;
+  // P2's auto-wiring rides the SAME normalized refusal list the review reads, so the run pays Lender
+  // Price once and answers both questions. See `disqualifier-mining.js` for why the payload is
+  // regrouped rather than handed over raw (the scope filter lives in the normalizer) and why the run
+  // is merged before ONE mine call rather than mined per scenario (`occurrences` is overwritten, not
+  // accumulated, by the store).
+  const mineAcc = disqualifierMining.createAccumulator();
+  const collectReview = ({ scenario, ours: our, legs }) => {
+    try {
+      const lpDisq = lpNormalizeFull.normalizeLpDisqualified((legs && legs.disqualified) || {}, lpScope);
+      // MINING IS FED BEFORE THE REVIEW'S OWN READINESS TEST, AND THAT SEPARATION IS DELIBERATE.
+      // `rev.ready` answers "could this scenario be reviewed against our sheet"; mining only needs
+      // "did Lender Price tell us what it refused", which is `lpDisq.ready` and which `add()` checks
+      // itself. Folding mining in after the `return` below would silently drop every scenario the
+      // review could not use, so a sheet with a gap would also stop suggesting the rules that would
+      // close it - the two questions must not share one gate.
+      disqualifierMining.add(mineAcc, lpDisq);
+      const rev = disqualifierReview.reviewScenario({ scenario, lp: lpDisq, ours: our, program });
+      if (!rev.ready) return;
+      reviewCovered.push(disqualifierReviewStore.scenarioKey(scenario));
+      for (const it of rev.items) reviewItems.push(it);
+    } catch (_) { reviewErrors += 1; }
+  };
+
+  // THE FREE PRE-FLIGHT (§2.75) — OUR side of the harness, run over the whole battery for nothing,
+  // before a single vendor call.
+  //
+  // Every guard above this point is about THEIR side or about the inputs (no program, no scope, no
+  // credentials, an empty battery). Nothing looked at ours, so a sheet whose own leg declines or throws
+  // on every scenario still paid for the full battery and came back a wall of eligibility
+  // disagreements that were our own misconfiguration — the same outcome the settings comment in this
+  // file records, arriving through another door and costing money on the way.
+  //
+  // THE LEG IS BUILT ONCE AND SHARED. Handing the pre-flight its own leg would be answering about a
+  // different engine than the one about to be measured; this way the thing that says "we can price
+  // this" IS the thing that prices it.
+  const oursLeg = lpAgreementLegs.buildOursLeg(program, settings, {
+    factsFromLp: true, pppDescriptor: pppDesc, onUnresolvedPpp: 'flag', marginHoldback: marginFor,
+  });
+  const preflight = agreementPreflight.preflight({
+    battery,
+    ours: oursLeg,
+    pppDescriptor: pppDesc,
+    factsOf: lpAgreementLegs.lpScenarioToFacts,
+  });
+  if (!preflight.ok) {
+    // 422, not 500: nothing failed — we looked, and there is nothing to measure. Reported with the
+    // counts that say WHERE the sheet is refusing, because a refusal a reader cannot act on is a dead
+    // end (§2.72/§2.73).
+    return res.status(422).json({
+      error: 'This sheet cannot be measured against Lender Price yet, so no vendor calls were made.',
+      reason: preflight.reason,
+      detail: preflight.detail,
+      preflight,
+      scenarios: battery.length,
+      spentUpstreamCalls: 0,
+    });
+  }
+
+  let run;
+  try {
+    run = await ratesheetAgreement.runRatesheetAgreement(
+      battery,
+      // BOTH LEGS COME FROM `lp-agreement-legs`, and hand-rolling either one is how this route quietly
+      // measured nothing. The canonical battery is a list of LENDER PRICE scenarios (value/loan/fico/
+      // dscr/purpose/state/zip), NOT engine facts — our engine reads `ltv`/`loan_amount`/`dscr` in
+      // MILLI and a normalized purpose, so handing it the raw LP object leaves nearly every rule
+      // predicate reading an unknown fact and produces a confident, meaningless verdict. And
+      // `client.price` answers `{ ok, raw }`, not the `{ full, disqualified }` the harness consumes:
+      // passing it straight through means `legs.full` is undefined, every scenario is INCOMPARABLE,
+      // and a live run reports "Lender Price gave no usable answer" on a perfectly healthy upstream.
+      // `buildOursLeg({ factsFromLp: true })` and `buildLpLeg` are the ONE definition of each side —
+      // the same pair the live agreement script uses, so the route and the script cannot drift.
+      {
+        // THE PREPAYMENT LAYER IS ASKED, and leaving it out is what made this gate structurally blind.
+        // The harness prices a SHEET; a state's prepayment-penalty law lives in the INVESTOR's own
+        // Layer 3 (`deephaven-ppp-matrix`), and the sheet carries no borrower-type rule at all — so
+        // without the descriptor the battery's own scenario flagged INELIGIBLE for "NJ Individual PPP
+        // prohibited" comes back PRICED and the run reports agreement on a loan the investor will not
+        // buy. The capability landed with the leg; this is the caller it never had.
+        //
+        // OPT-IN BY CONSTRUCTION: `programFor` answers null for an investor with no registered program,
+        // and the leg with no descriptor is byte-for-byte what it was — so this can only ever ADD the
+        // layer where one exists, never change an investor nobody has encoded.
+        //
+        // AND THE POLICY FOR AN UNANSWERABLE STATE IS DECLARED, because the leg refuses to guess one
+        // (defect A8.1, 2026-08-18). `'flag'` is right for THIS caller specifically: the agreement run
+        // MEASURES our engine against Lender Price, and declining a scenario here would change what is
+        // being measured — the scenario would report as ineligible on our side and the divergence
+        // report would blame the sheet for a question about state law. Flagged, the scenario is still
+        // priced, still compared, and the "we could not tell" rides on the quote where a report can
+        // see it. WHAT THE QUOTING PATH SHOULD DO — refuse, or quote and flag for a human — is the OPEN
+        // OWNER QUESTION (docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.54) and is NOT settled by this
+        // line; a measurement harness choosing to keep measuring is not an answer to it.
+        ours: oursLeg,
+        lp: lpAgreementLegs.buildLpLeg(lpClient, { withDisqualify: true }),
+      },
+      {
+        // The stored scope, never a body value — same reasoning as the shadow route: a caller-supplied
+        // filter is a second source for one fact, and `programLike` is compiled with `new RegExp`.
+        filter: lpScope,
+        priceToleranceMilli: settings[K.priceTolerance],
+        rateToleranceMilli: settings[K.rateTolerance],
+        concurrency: intIn(req.body && req.body.concurrency, 8) || 4,
+        onScenario: collectReview,
+      },
+    );
+  } catch (e) {
+    return res.status(502).json({ error: `The agreement run could not finish: ${msgOf(e)}`, reason: 'run_failed' });
+  }
+
+  // THE RECORD IS THE POINT, so a failure to store it is reported as a failure — not as a run that
+  // "worked". A caller told the sheet agreed, whose verdict never reached the ledger, would press
+  // Publish and be refused with `never_measured` and no idea why.
+  // Recorded AFTER the run and BEFORE the verdict, on its own clock, and never allowed to fail the
+  // measurement: a review queue that could not be written is news, but it is not a reason to lose a
+  // battery somebody has just paid for.
+  const reviewAt = Date.now();
+  const review = { collected: reviewItems.length, scenariosRead: reviewCovered.length, errors: reviewErrors };
+  const programId = found.row && found.row.program_id;
+  if (programId && reviewCovered.length) {
+    try {
+      const wrote = await disqualifierReviewStore.recordItems(db, found.scope, programId, reviewItems, { now: reviewAt });
+      review.inserted = wrote.inserted;
+      review.refreshed = wrote.refreshed;
+      review.reopened = wrote.reopened;
+      const staled = await disqualifierReviewStore.markStaleFor(db, found.scope, programId, reviewCovered, { now: reviewAt });
+      review.staled = staled.staled;
+    } catch (e) {
+      review.error = msgOf(e);
+    }
+  } else if (!programId) {
+    review.skipped = 'no_program_row';
+  } else {
+    review.skipped = 'nothing_read';
+  }
+
+  // P2 — MINE THE RUN'S REFUSALS INTO RULE SUGGESTIONS, ONCE, HERE.
+  //
+  // This is the "auto/scheduled wiring" the ledger recorded as the P workstream's last open item. It
+  // deliberately does NOT depend on the review above: the review needs a program row to write against,
+  // while suggestions are stored per INVESTOR and are useful on a sheet that has not been wired to a
+  // program yet - which is exactly when you most want to be told which rules to add.
+  //
+  // BEST-EFFORT, LIKE EVERY OTHER PASSENGER ON THIS RUN. `mineFromParsed` never throws by contract and
+  // is wrapped anyway; a suggestion queue that could not be written is news, not a reason to lose a
+  // battery somebody has just paid for. Nothing here can publish a rule: it writes PROPOSALS, the store
+  // dedupes them and never reopens one a human has decided, and accepting one is a separate,
+  // super-admin-gated act.
+  const mining = { ...disqualifierMining.summarize(mineAcc) };
+  try {
+    const parsedForMining = disqualifierMining.toParsed(mineAcc);
+    if (!parsedForMining.ready) {
+      // Said plainly rather than reported as a clean zero: no scenario carried a refusal list at all,
+      // which is a statement about the FEED, not about the sheet being in agreement.
+      mining.skipped = 'no_refusals_read';
+    } else {
+      const mined = await suggestionMiner.mineFromParsed(db, found.scope, parsedForMining);
+      mining.ok = mined.ok;
+      if (mined.ok) {
+        mining.saved = mined.saved;
+        mining.investorCount = mined.investorCount;
+        mining.suggestionCount = mined.suggestionCount;
+        mining.unmappedCount = mined.unmappedCount;
+      } else {
+        mining.error = mined.error;
+      }
+    }
+  } catch (e) {
+    mining.ok = false;
+    mining.error = msgOf(e);
+  }
+
+  const rec = await agreementStore.recordRun(found.scope, {
+    db,
+    versionId: found.versionId,
+    summary: run.summary,
+    recordedBy: (req.actor && (req.actor.email || req.actor.id)) || null,
+    nowMs: Date.now(),
+  });
+  // No silent caps: if the battery was trimmed the caller is told, because a run over fewer scenarios
+  // than intended is a weaker claim than the one they asked for.
+  const measured = {
+    scope: found.scope,
+    versionId: found.versionId,
+    scenarios: battery.length,
+    truncated: capped ? all.length - battery.length : 0,
+    // The free pre-flight rides on the ANSWER too, not only on the refusal (§2.75). Its advisory half —
+    // how much of the battery our own sheet declines, which decline codes never fired at all (a dead
+    // rule), scenarios our leg threw on — never gates, and a report nobody is shown is a report that
+    // does not exist. This is the repo's no-silent-caps rule applied to a measurement of ourselves.
+    preflight,
+    // WHETHER THE PREPAYMENT LAYER WAS ASKED, on every answer including the failed ones. A gate that
+    // reports agreement while a whole layer of the investor's own rules went unasked is exactly the
+    // silent-green failure this engine keeps producing, and a caller cannot tell from a verdict alone.
+    pppLayer,
+    summary: run.summary,
+    // What this run ALSO answered, off the same battery: the per-scenario disqualifier questions, and
+    // the rule suggestions mined from Lender Price's own refusals (P2). Both ride the ONE paid battery.
+    review,
+    mining,
+  };
+
+  if (!rec.ok) {
+    // A FAILED RECORD IS A FAILED RUN, answered as one. The measurement still rides along — the
+    // battery has already been priced against a paid vendor and throwing the answer away to make a
+    // point would be worse — but the caller is never told "ok" about a verdict that did not land.
+    // Silently returning 200 here is precisely how somebody presses Publish, is refused with
+    // `never_measured`, and has no way to know the run they just watched succeed was never stored.
+    return res.status(500).json({
+      ok: false,
+      error: 'The agreement run finished but its verdict could not be recorded, so this sheet is still unmeasured as far as the publish gate is concerned.',
+      reason: 'not_recorded',
+      recorded: false,
+      recordError: rec.message || rec.reason || null,
+      ...measured,
+    });
+  }
+
+  const gate = await agreementStore.gateStatus(found.scope, found.versionId, { db });
+
+  return res.json({
+    ok: true,
+    ...measured,
+    recorded: true,
+    recordError: null,
+    gate: { proven: gate.proven, reason: gate.reason, message: gate.message },
+  });
+}
+
+async function publishRateSheetRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+  const b = req.body || {};
+  const out = await store.publishRateSheetVersion(db, found.scope, found.versionId, {
+    override: b.override === true,
+    overrideBy: (req.actor && (req.actor.email || req.actor.id)) || null,
+    overrideReason: textOrNull(b.overrideReason, 500),
+    nowMs: Date.now(),
+  });
+  if (out && out.refused) {
+    return res.status(409).json({
+      ok: false,
+      error: out.refused.message,
+      reason: out.refused.reason,
+      gate: out.refused.gate || null,
+      // Rule 4: the refusal names the two ways forward, so this can never read as a dead end.
+      remedy: {
+        measure: 'Run the Lender Price agreement harness against this sheet — that records a run and, if it agrees, the gate opens on its own.',
+        override: 'Or publish it anyway by sending { "override": true, "overrideReason": "<why>" }. That is recorded against this version with your name on it, and it never counts as proof the sheet agrees.',
+      },
+    });
+  }
+  return res.json({
+    ok: true, scope: found.scope, versionId: found.versionId,
+    version: { id: out.id, versionNo: out.version_no, status: out.status, effectiveFrom: out.effective_from || null },
+  });
+}
+
+
+// === WHO MAKES WHAT ON A FILE (D18 / E9, owner-answered 2026-08-18) ============================
+//
+// The owner's two sentences that unblocked this: *"Company default: the minimum is not enforced. It's
+// not a hard rule. It's a movable default, and every loan officer can set this movable default
+// differently. The split does not apply for the margin. The entire margin hold back goes for the
+// company."* The numbers live in the settings registry (company-wide, and per officer under an
+// `officer:` slot); `comp-plan.js` works out the stack; this is the read that puts the two together.
+//
+// IT PRICES NOTHING, and that is not a limitation to be tidied away later — whether the company's
+// quarter point is the SAME one the pipeline already subtracts or a second one on top is an open
+// owner question whose two answers differ by a quarter point on every loan.
+async function compPlanRoute(req, res) {
+  const scope = readScope(req);
+  const q = req.query || {};
+  const officerId = uuidOf(q.officerId);
+  if (!officerId) {
+    return res.status(400).json({ error: 'Say which loan officer this is for.', field: 'officerId' });
+  }
+  const mode = compPlan.MODES.includes(String(q.mode || '')) ? String(q.mode) : null;
+  const loanAmountCents = intIn(q.loanAmountCents, 100000000000) || 0;
+  // ASKED-FOR-AND-UNUSABLE IS NOT THE SAME AS NOT-ASKED. Without this a loan amount of "abc" — or one
+  // past the ceiling — comes back as a plan with no breakdown, which reads exactly like a caller who
+  // never named a loan at all, and the person is left wondering why the money did not appear.
+  const loanAmountAsked = q.loanAmountCents !== undefined && q.loanAmountCents !== null && q.loanAmountCents !== '';
+  if (loanAmountAsked && !loanAmountCents) {
+    return res.status(400).json({
+      error: 'That is not a loan amount this can work on. Send it in whole cents.',
+      field: 'loanAmountCents',
+    });
+  }
+
+  const resolved = await store.resolveCompPlanForOfficer(db, officerId, { companyScope: scope, mode });
+  // The breakdown is computed only when there is a loan to compute it on. Asking for the PLAN alone
+  // is a legitimate question ("what are this officer's numbers?") and must not be answered with a
+  // refusal about a loan amount nobody supplied.
+  const breakdown = loanAmountCents > 0
+    ? compPlan.computeComp(resolved.plan, { loanAmountCents })
+    : null;
+
+  return res.json({
+    scope,
+    officerId,
+    officerScope: resolved.officerScope,
+    plan: resolved.plan,
+    sources: resolved.sources,
+    loanAmountCents: loanAmountCents || null,
+    breakdown,
+    // Said on the answer rather than left to be inferred from the absence of a price field.
+    priceEffect: {
+      applied: false,
+      reason: 'These numbers say who earns what. Nothing here changes a quoted price.',
+    },
+    settingsRoute: 'POST /api/lt/ppe/settings with target:"officer" and the officer id',
+  });
+}
+
+// === THE DISQUALIFIER REVIEW QUEUE (§2.58, owner-instructed 2026-08-18) =========================
+// The owner's instruction, in their own words: "look on the eligibility rule in Lender Price, go into
+// the disqualifier, and look for the actual disqualifier. You then look at the rate to see if you can
+// find where he's taking this disqualifier. You need a human to review these findings for every single
+// scenario." These three doors are those three steps and nothing more — the run ASKS the question, the
+// queue SHOWS it, and the decide door records what a person concluded.
+//
+// THEY DECIDE NOTHING. Recording "we should refuse this" writes no rule, moves no price and publishes
+// nothing: putting a rule in force is a super admin's separate act with its own door (§2.57). That is
+// why these carry `requirePpeAdmin` rather than the publish gate — refusing an administrator the right
+// to WRITE DOWN a conclusion would only push the conclusion somewhere PILOT cannot see.
+
+const MAX_REVIEW_SCENARIOS = 500;
+
+/**
+ * Run one battery and record what a human has to look at.
+ *
+ * REFUSED RATHER THAN RUN whenever the comparison could not be honest — no priceable program, no
+ * Lender Price scope, upstream not configured, an empty battery. Each of those would otherwise produce
+ * an EMPTY QUEUE, which is indistinguishable from a clean one: the exact failure the review module
+ * itself fails closed on, and it must not be reintroduced by its caller.
+ */
+async function runDisqualifierReviewRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+  const programId = found.row && found.row.program_id;
+  if (!programId) {
+    return res.status(422).json({ error: 'This rate sheet is not attached to a program, so there is nothing to review it against.', reason: 'no_program_row' });
+  }
+
+  const { program, lpScope, investorName, marginFor, reason: noProgram } = await loadProgram(found.scope, found.versionId);
+  if (!program) {
+    return res.status(422).json({ error: 'This rate sheet cannot be priced yet, so there is nothing to line up against Lender Price.', reason: noProgram });
+  }
+  if (!lpScope) {
+    return res.status(422).json({
+      error: 'This program has no Lender Price scope, so a run could not tell which of their programs to read the refusals from.',
+      reason: 'no_lp_scope',
+      remedy: 'Set the scope first with POST /api/lt/ppe/programs/:id/lp-scope, then run the review.',
+    });
+  }
+  const lpClient = require('../lenderprice/client');
+  if (typeof lpClient.configured === 'function' && !lpClient.configured()) {
+    return res.status(503).json({ error: 'Lender Price is not configured, so their refusals cannot be read yet.', reason: 'upstream_not_configured' });
+  }
+
+  const { values: settings } = await resolveSettingsSafe(found.scope);
+  const built = agreementScenarios.buildAgreementScenarios();
+  const all = Array.isArray(built && built.scenarios) ? built.scenarios : [];
+  if (!all.length) {
+    return res.status(500).json({ error: 'The scenario battery came back empty, so there is nothing to review and nothing will be recorded.', reason: 'empty_battery' });
+  }
+  const capped = all.length > MAX_REVIEW_SCENARIOS;
+  const battery = capped ? all.slice(0, MAX_REVIEW_SCENARIOS) : all;
+
+  // Both legs from `lp-agreement-legs`, for the reason the agreement route spells out at length: a
+  // hand-rolled leg reads the wrong shape and produces a confident, meaningless answer.
+  const pppDesc = investorName ? programRegistry.programFor(investorName) : null;
+  const oursLeg = lpAgreementLegs.buildOursLeg(program, settings, {
+    factsFromLp: true, pppDescriptor: pppDesc, onUnresolvedPpp: 'flag', marginHoldback: marginFor,
+  });
+  const lpLeg = lpAgreementLegs.buildLpLeg(lpClient, { withDisqualify: true });
+
+  const items = [];
+  const covered = [];             // ONLY the scenarios genuinely read — see markStaleFor's contract
+  const notReady = [];
+  const errors = [];
+  const concurrency = Math.min(Math.max(intIn(req.body && req.body.concurrency, 8) || 4, 1), 8);
+  let next = 0;
+  async function worker() {
+    for (;;) {
+      const i = next; next += 1;
+      if (i >= battery.length) return;
+      const sc = battery[i];
+      try {
+        const our = await oursLeg(sc);
+        const legs = (await lpLeg(sc)) || {};
+        const lpDisq = lpNormalizeFull.normalizeLpDisqualified(legs.disqualified || {}, lpScope);
+        const rev = disqualifierReview.reviewScenario({ scenario: sc, lp: lpDisq, ours: our, program });
+        if (!rev.ready) {
+          // NOT recorded as covered. Retiring this scenario's earlier questions on the strength of a
+          // feed that never arrived would read a vendor outage as "the disagreement went away".
+          notReady.push({ scenario: sc._label || null, reason: rev.notReadyReason });
+          continue;
+        }
+        covered.push(disqualifierReviewStore.scenarioKey(sc));
+        for (const it of rev.items) items.push(it);
+      } catch (e) {
+        errors.push({ scenario: (sc && sc._label) || null, error: msgOf(e) });
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+  // ONE CLOCK FOR THE WHOLE RUN, and it is not tidiness. `markStaleFor` retires a covered scenario's
+  // rows whose `last_seen_at` is OLDER than the moment it is given, so a SECOND `Date.now()` a few
+  // milliseconds later retires every question this run has just written — measured, not theorised:
+  // the first cut recorded 299 questions and immediately staled all 299, leaving a run that reported
+  // work done and a queue with nothing in it.
+  const runAt = Date.now();
+
+  let wrote;
+  try {
+    wrote = await disqualifierReviewStore.recordItems(db, found.scope, programId, items, { now: runAt });
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      error: 'The review ran but its questions could not be stored, so nothing is waiting for anybody to look at.',
+      reason: 'not_recorded', recordError: msgOf(e),
+    });
+  }
+  let staled = 0;
+  try {
+    const r = await disqualifierReviewStore.markStaleFor(db, found.scope, programId, covered, { now: runAt });
+    staled = r.staled;
+  } catch (_) { staled = 0; }
+
+  // BEST-EFFORT, and deliberately so: the questions are already stored, and answering 500 because the
+  // COUNT could not be read would tell somebody a paid run failed when it succeeded — and the obvious
+  // response to that is to press it again.
+  let summary = null;
+  try { summary = await disqualifierReviewStore.queueSummary(db, found.scope, programId); } catch (_) { summary = null; }
+  return res.json({
+    ok: true,
+    scope: found.scope,
+    versionId: found.versionId,
+    programId,
+    scenarios: battery.length,
+    // No silent caps, and no silent gaps: a run that could not read part of the battery says so.
+    truncated: capped ? all.length - battery.length : 0,
+    notReady: notReady.length,
+    notReadySample: notReady.slice(0, 5),
+    errors: errors.length,
+    errorSample: errors.slice(0, 5),
+    wrote: { inserted: wrote.inserted, refreshed: wrote.refreshed, reopened: wrote.reopened },
+    staled,
+    summary,
+    note: 'This records questions only. Deciding one writes down what a person concluded — it never changes a price or publishes a rule.',
+  });
+}
+
+/** The queue itself, plus the shape of the work waiting. */
+async function disqualifierReviewQueueRoute(req, res) {
+  const scope = readScope(req);
+  const q = req.query || {};
+  const programId = uuidOf(q.programId);
+  // THE CAP IS REPORTED, NEVER SILENT. The store's default is 100 and a battery routinely produces
+  // several hundred questions, so a door that returned 100 of 299 without saying so would show a
+  // reviewer a third of the queue as though it were the whole of it.
+  // A LIMIT PAST THE CEILING IS CLAMPED AND SAID, never quietly turned into the default: asking for
+  // 1,000 and silently receiving 100 is the same silent cap this door reports on the other side.
+  const askedLimit = intIn(q.limit, 100000);
+  const limit = Math.min(askedLimit || 100, 500);
+  const limitClamped = !!askedLimit && askedLimit > 500;
+  const items = await disqualifierReviewStore.listQueue(db, scope, {
+    programId,
+    status: q.status ? String(q.status) : 'open',
+    dimension: q.dimension ? String(q.dimension).slice(0, 60) : null,
+    needsHumanOnly: q.needsHumanOnly === '1' || q.needsHumanOnly === 'true',
+    limit,
+  });
+  const summary = await disqualifierReviewStore.queueSummary(db, scope, programId);
+  return res.json({
+    scope,
+    programId: programId || null,
+    items,
+    limit,
+    limitClamped,
+    // What is NOT on this page, counted rather than left to be inferred from a list length.
+    notShown: Math.max(0, (summary.open || 0) - items.length),
+    summary,
+    decisions: disqualifierReviewStore.DECISIONS.map((d) => ({ decision: d, means: disqualifierReviewStore.DECISION_WORDS[d] })),
+    runRoute: 'POST /api/lt/ppe/rate-sheets/:id/disqualifier-review/run',
+  });
+}
+
+/** Record what a person concluded. It writes a DECISION, never a rule. */
+async function decideDisqualifierReviewRoute(req, res) {
+  const scope = readScope(req);
+  const id = uuidOf(req.params.id);
+  if (!id) return res.status(400).json({ ok: false, error: 'That is not a review-question id.' });
+  const b = req.body || {};
+  // WHO decided it is read from the session, never the body — a decision naming somebody who did not
+  // make it is worse than one naming nobody, and the store refuses the second case outright.
+  const decidedBy = await actorLabel(req.actor && req.actor.id);
+  if (!decidedBy) {
+    return res.status(409).json({
+      ok: false,
+      error: 'We could not tell who is deciding this. Sign in again and try once more.',
+      code: 'decider_unknown',
+    });
+  }
+  const out = await disqualifierReviewStore.decide(db, scope, id, {
+    decision: String(b.decision || ''),
+    note: textOrNull(b.note, 2000),
+    decidedBy,
+  }, { now: Date.now() });
+  if (!out.ok) {
+    const status = out.code === 'not_found' ? 404 : 400;
+    return res.status(status).json({ ...out, decisions: disqualifierReviewStore.DECISIONS });
+  }
+  return res.json({
+    ok: true,
+    item: out.item,
+    note: 'Recorded. This is what a person concluded — it changes no price and publishes no rule; a super admin still has to put any rule in force.',
+  });
+}
+
+// ---------------------------------------------------------------------------
 
 router.get('/health', wrap(health, 'lt_ppe_health_error'));
 router.get('/settings', wrap(getSettings, 'lt_ppe_settings_error'));
+router.get('/settings/audit', wrap(settingsAuditRoute, 'lt_ppe_settings_audit_error'));
 router.get('/investors', wrap(listInvestorsRoute, 'lt_ppe_investors_error'));
 router.get('/findings', wrap(listFindingsRoute, 'lt_ppe_findings_error'));
 router.get('/scoreboard', wrap(scoreboardRoute, 'lt_ppe_scoreboard_error'));
+// The cutover lifecycle (§11 / P10). READING it is an admin act like every other governance surface
+// here; MOVING it is the super admin's, because a promotion changes which engine answers a borrower.
+router.get('/cutover', requirePpeAdmin, wrap(cutoverStateRoute, 'lt_ppe_cutover_state_error'));
+router.post('/cutover/decision', requirePpeCutoverAuthority, wrap(cutoverDecisionRoute, 'lt_ppe_cutover_decision_error'));
 router.get('/suggestions', wrap(listSuggestionsRoute, 'lt_ppe_suggestions_error'));
 router.get('/rules', wrap(listRulesRoute, 'lt_ppe_rules_error'));
+router.get('/parity-cells', wrap(parityCellsRoute, 'lt_ppe_parity_cells_error'));
+router.get('/programs', wrap(listProgramsRoute, 'lt_ppe_programs_error'));
+router.get('/canary/schedules', wrap(listSchedulesRoute, 'lt_ppe_schedules_error'));
 router.post('/quote', wrap(quoteRoute, 'lt_ppe_quote_error'));
+router.post('/breakdown', wrap(breakdownRoute, 'lt_ppe_breakdown_error'));
+
+router.post('/settings', requirePpeAdmin, wrap(saveSettingsRoute, 'lt_ppe_settings_save_error'));
+router.post('/settings/clear', requirePpeAdmin, wrap(clearSettingsRoute, 'lt_ppe_settings_clear_error'));
 
 router.post('/findings/:key/decide', requirePpeAdmin, wrap(decideFindingRoute, 'lt_ppe_decide_error'));
 router.post('/canary', requirePpeAdmin, wrap(canaryRoute, 'lt_ppe_canary_error'));
+router.post('/canary/schedules', requirePpeAdmin, wrap(saveScheduleRoute, 'lt_ppe_schedule_save_error'));
+router.delete('/canary/schedules/:investor', requirePpeAdmin, wrap(deleteScheduleRoute, 'lt_ppe_schedule_delete_error'));
+router.post('/canary/tick', requirePpeAdmin, wrap(canaryTickRoute, 'lt_ppe_canary_tick_error'));
+router.get('/canary/driver', requirePpeAdmin, wrap(canaryDriverRoute, 'lt_ppe_canary_driver_error'));
+router.get('/rules/coverage', requirePpeAdmin, wrap(ruleCoverageRoute, 'lt_ppe_rule_coverage_error'));
 router.post('/suggestions/:id/accept', requirePpeAdmin, wrap(acceptSuggestionRoute, 'lt_ppe_accept_error'));
 router.post('/suggestions/:id/dismiss', requirePpeAdmin, wrap(dismissSuggestionRoute, 'lt_ppe_dismiss_error'));
 router.post('/suggestions/mine', requirePpeAdmin, wrap(mineSuggestionsRoute, 'lt_ppe_mine_error'));
+// WHICH published version prices this program right now. READ-OPEN like GET /programs — the state
+// most worth seeing is "nothing is published", and hiding it does not make it less true.
+router.get('/programs/:id/current-rate-sheet', wrap(currentRateSheetRoute, 'lt_ppe_current_rate_sheet_error'));
+router.get('/programs/:id/lp-scope', requirePpeAdmin, wrap(getProgramLpScopeRoute, 'lt_ppe_lp_scope_read_error'));
+
+// The rule-authoring service's READ, DRAFT and PUBLISH doors. The publish door was deliberately absent
+// while the authority was an open owner question (§2.51); the owner answered it on 2026-08-18 — "all in
+// the super admin" — so it exists now, gated on `requirePpeSuperAdmin`, which reads the role floor
+// rather than the widenable admin list. It is one of TWO super-gated doors on this router: the other
+// is the cutover DECISION (§11 / P10), because taking an investor live changes which engine answers a
+// borrower, and the owner reserved that to the super admin in the same sentence. Order matters: `/rule-drafts/:id/render` is declared before `/rule-drafts/:id` would
+// swallow it — Express matches in declaration order and both are three-and-four segment paths, so
+// they are written longest-first to keep that obvious rather than accidental.
+router.get('/rule-drafts', requirePpeAdmin, wrap(listRuleDraftsRoute, 'lt_ppe_rule_drafts_error'));
+router.post('/rule-drafts', requirePpeAdmin, wrap(createRuleDraftRoute, 'lt_ppe_rule_draft_save_error'));
+router.post('/rule-drafts/:id/publish', requirePpeSuperAdmin, wrap(publishRuleDraftRoute, 'lt_ppe_rule_draft_publish_error'));
+router.get('/rule-drafts/:id/render', requirePpeAdmin, wrap(renderRuleDraftRoute, 'lt_ppe_rule_draft_render_error'));
+router.get('/rule-drafts/:id', requirePpeAdmin, wrap(getRuleDraftRoute, 'lt_ppe_rule_draft_read_error'));
+router.delete('/rule-drafts/:id', requirePpeAdmin, wrap(discardRuleDraftRoute, 'lt_ppe_rule_draft_discard_error'));
+router.post('/programs/:id/lp-scope', requirePpeAdmin, wrap(setProgramLpScopeRoute, 'lt_ppe_lp_scope_write_error'));
+
+// Onboarding + the rate-sheet console. ALL admin-gated: these writers decide what every quote on this
+// program prices from. Rule 3 above, stated with the qualifier that makes it true: there is deliberately
+// no route that records an agreement run FROM A REQUEST BODY. `POST /rate-sheets/:id/agreement/run`
+// DOES record one — the verdict of a battery it priced itself against Lender Price, which is the only
+// honest way through the publish gate. This line used to state the rule WITHOUT that qualifier, four
+// lines above the very registration that contradicts it.
+router.post('/investors', requirePpeAdmin, wrap(createInvestorRoute, 'lt_ppe_investor_create_error'));
+router.post('/programs', requirePpeAdmin, wrap(createProgramRoute, 'lt_ppe_program_create_error'));
+router.post('/programs/:id/rate-sheets', requirePpeAdmin, wrap(createRateSheetRoute, 'lt_ppe_ratesheet_create_error'));
+router.get('/rate-sheets/:id', requirePpeAdmin, wrap(getRateSheetRoute, 'lt_ppe_ratesheet_read_error'));
+router.put('/rate-sheets/:id/base-prices', requirePpeAdmin, wrap(setBasePricesRoute, 'lt_ppe_base_prices_error'));
+router.put('/rate-sheets/:id/adjustments', requirePpeAdmin, wrap(setAdjustmentsRoute, 'lt_ppe_adjustments_error'));
+router.put('/rate-sheets/:id/price-limit', requirePpeAdmin, wrap(setPriceLimitRoute, 'lt_ppe_price_limit_error'));
+router.get('/rate-sheets/:id/coverage', requirePpeAdmin, wrap(rateSheetCoverageRoute, 'lt_ppe_ratesheet_coverage_error'));
+router.get('/rate-sheets/:id/preflight', requirePpeAdmin, wrap(rateSheetPreflightRoute, 'lt_ppe_ratesheet_preflight_error'));
+router.get('/rate-sheets/:id/diff', requirePpeAdmin, wrap(rateSheetDiffRoute, 'lt_ppe_ratesheet_diff_error'));
+router.get('/rate-sheets/:id/agreement', requirePpeAdmin, wrap(agreementRoute, 'lt_ppe_agreement_read_error'));
+router.post('/rate-sheets/:id/agreement/run', requirePpeAdmin, wrap(runAgreementRoute, 'lt_ppe_agreement_run_error'));
+router.post('/rate-sheets/:id/publish', requirePpeAdmin, wrap(publishRateSheetRoute, 'lt_ppe_publish_error'));
+router.get('/comp-plan', requirePpeAdmin, wrap(compPlanRoute, 'lt_ppe_comp_plan_error'));
+router.post('/rate-sheets/:id/disqualifier-review/run', requirePpeAdmin, wrap(runDisqualifierReviewRoute, 'lt_ppe_disq_review_run_error'));
+router.get('/disqualifier-review', requirePpeAdmin, wrap(disqualifierReviewQueueRoute, 'lt_ppe_disq_review_read_error'));
+router.post('/disqualifier-review/:id/decide', requirePpeAdmin, wrap(decideDisqualifierReviewRoute, 'lt_ppe_disq_review_decide_error'));
 
 module.exports = router;
+// The tick, as a function — the in-process driver's ONE way in. Exported here (and not moved into
+// `src/longterm/ppe/`) because everything the tick composes — the program load, the tolerances, the
+// battery refusals, the three persists — already lives in this file behind `runBattery`, and moving it
+// would be a second copy of that wiring for the driver to drift from.
+module.exports.runCanaryTick = runCanaryTick;
 module.exports.handlers = {
-  health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, canaryRoute, scoreboardRoute,
+  health, getSettings, saveSettingsRoute, clearSettingsRoute, settingsAuditRoute,
+  listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
+  cutoverStateRoute, cutoverDecisionRoute,
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
+  ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
+  listRuleDraftsRoute, getRuleDraftRoute, renderRuleDraftRoute, createRuleDraftRoute, discardRuleDraftRoute,
+  publishRuleDraftRoute,
+  currentRateSheetRoute,
+  listSchedulesRoute, saveScheduleRoute, deleteScheduleRoute, canaryTickRoute, canaryDriverRoute,
+  createInvestorRoute, createProgramRoute, createRateSheetRoute, getRateSheetRoute,
+  setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, rateSheetCoverageRoute, rateSheetPreflightRoute, rateSheetDiffRoute, agreementRoute, runAgreementRoute,
+  publishRateSheetRoute,
+  runDisqualifierReviewRoute, disqualifierReviewQueueRoute, decideDisqualifierReviewRoute,
+  compPlanRoute,
 };
 module.exports._internals = {
-  requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
-  MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel,
+  requirePpeAdmin, requirePpeSuperAdmin, requirePpeCutoverAuthority, intIn, readScope, loadProgram, resolveSettingsSafe, actorLabel,
+  resolveRateSheetVersion, rateSheetPick,
+  MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel, resolveBattery, runBattery, msgOf,
+  resolveVersion, numOrNull, textOrNull, MAX_SHEET_ROWS, MAX_AGREEMENT_SCENARIOS, MAX_COVERAGE_SCENARIOS,
+  DRAFT_STATUSES, DRAFT_NOT_LIVE, draftIdOf, optionalUuid,
 };

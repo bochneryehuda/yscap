@@ -211,12 +211,30 @@ if (fs.existsSync(LT_SCHEMA) && fs.existsSync(SNAPSHOT)) {
   // "declared but missing" direction; everything else is still compared, and a
   // CURRENT map still answers strictly. Assert both, so "stale" can never
   // quietly become "skip the whole check".
+  //
+  // "DECLARED BUT MISSING" HAS TWO SHAPES, and this assertion used to name only
+  // one. `compareLtSchema` excuses a missing TABLE and a missing COLUMN alike
+  // while the map is stale — both are the ordinary shape of a migration that has
+  // landed since the photograph was taken — but the wording here said "a table",
+  // which held only because no earlier change had added a COLUMN to an existing
+  // long-term table on a stale map. db/574 is the first that does, and it turned
+  // the narrow wording into a failure of a check that was working correctly. The
+  // guard's real point is untouched: the SURPLUS direction (the database has a
+  // column the schema does not declare) is never excused, because that column was
+  // in the snapshot and is therefore not something the map is behind on.
   if (stale) {
     const strict = compareLtSchema(declared, real, { stale: false });
     ok(strict.length >= problems.length,
       'the strict comparison is a superset — abstaining only ever REMOVES accusations');
-    ok(strict.every((p) => /has no such table/.test(p) || problems.includes(p)),
-      'and the only thing a stale map excuses is a table the map has not caught up with yet');
+    ok(strict.every((p) => /has no such table/.test(p) || /with no column/.test(p) || problems.includes(p)),
+      'and the only thing a stale map excuses is a table or column the map has not caught up with yet');
+    ok(!problems.some((p) => /has no such table/.test(p) || /with no column/.test(p)),
+      'the abstained problems really were abstained, not merely re-listed');
+    // The surplus direction survives the abstention intact — otherwise "stale"
+    // would be a way to hide a column nobody has declared.
+    const surplus = strict.filter((p) => /column\(s\) the schema does not declare/.test(p));
+    ok(surplus.every((p) => problems.includes(p)),
+      'a column the database has and the schema does not is reported even on a stale map');
   }
 
   // AND THE PARSER IS NOT SIMPLY RETURNING NOTHING. A parser that produced an

@@ -18,11 +18,87 @@
  * LT-only. No RTL imports.
  */
 
+// Both are PURE (neither requires anything of its own; `agreement-store` is a store only by name — the
+// module is the gate LOGIC, and its constant is the one definition of "measured enough"). Reading them
+// here is what stops this file growing a second copy of a threshold that decides whether our engine, and
+// not Lender Price, answers a borrower.
+const ppeSettings = require('./settings');
+const agreementStore = require('./agreement-store');
+
 const MODES = { DRAFT: 'draft', SHADOW: 'shadow', LIVE: 'live', RETIRED: 'retired' };
+
+// ---------------------------------------------------------------------------
+// SETTINGS -> THE GATE'S THRESHOLDS (§2.73)
+// ---------------------------------------------------------------------------
+//
+// ⛔ THE GATE USED TO RUN NUMBERS NOBODY COULD SET, AND THREE ARTIFACTS TOLD THREE STORIES ABOUT ONE OF
+// THEM. `eligibleForLive` was called with NO settings from anywhere, so it ran its own signature
+// defaults: 14 clean days and NO coverage floor. Meanwhile the settings registry carried
+// `cutover.clean_weeks_required` — 8 weeks, on the Cutover screen, editable by a super admin, and read
+// by NOTHING; and the owner's answer about taking an investor live was that the number belongs in the
+// super admin. So the dial the screen showed was connected to nothing and the gate ran a quarter of it.
+//
+// WORSE, THE COVERAGE FLOOR WAS OFF ENTIRELY. Publishing a rate sheet demands agreement with Lender
+// Price over `MIN_COMPARABLE_SCENARIOS` comparable scenarios (the owner's HARD RULE). Promoting an
+// investor to LIVE — which makes OUR engine, not Lender Price, the answer a borrower is quoted — asked
+// for no minimum at all: a canary that compared ONE scenario at 100% satisfied it. The bigger decision
+// demanded less proof than the smaller one, which is the whole of this defect.
+//
+// UNITS ARE THE OTHER HALF, and they are exactly the kind of join that goes wrong quietly: the SETTING
+// is in WEEKS and the GATE counts DAYS. The conversion lives here, once.
+//
+// WHAT THIS DOES NOT DO IS INVENT A BUSINESS RULE. The clean-week COUNT stays the owner's — this only
+// makes the gate read the dial they were given. The coverage floor is the owner's OWN already-stated
+// "measured enough" number applied to a strictly bigger decision; it is the cautious reading, it is
+// stated as an assumption in `source`, and it is recorded in the open-questions doc for confirmation.
+const SETTING_CLEAN_WEEKS = 'cutover.clean_weeks_required';
+const DAYS_PER_WEEK = 7;
+
+function registryDefault(key) {
+  const def = ppeSettings.getDefinition(key);
+  return def && Number.isFinite(def.default) ? def.default : null;
+}
+
+/**
+ * Turn a resolved PPE settings map into the `settings` object `eligibleForLive` takes.
+ * PURE. Never throws — a settings map that cannot be read falls back to the registry default, which is
+ * the STRICTER number, so a bad read can only ever make the gate harder to pass.
+ *
+ * Returns { minCleanDays, minCanaryScenarios, requireCanaryPerfect, source } where `source` says where
+ * each number came from, so a screen can publish the thresholds AND their provenance rather than
+ * presenting an assumption as settled policy.
+ */
+function settingsToGate(values = {}) {
+  const raw = values && values[SETTING_CLEAN_WEEKS];
+  const fallbackWeeks = registryDefault(SETTING_CLEAN_WEEKS);
+  const weeks = (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) ? raw : fallbackWeeks;
+  const usable = (typeof weeks === 'number' && Number.isFinite(weeks) && weeks > 0) ? weeks : null;
+  return {
+    // A registry with no readable default leaves the gate on its own signature default rather than on
+    // zero — `minCleanDays: 0` would mean "no clean days required", the one answer a broken read must
+    // never produce.
+    minCleanDays: usable == null ? undefined : Math.round(usable * DAYS_PER_WEEK),
+    minCanaryScenarios: agreementStore.MIN_COMPARABLE_SCENARIOS,
+    requireCanaryPerfect: true,
+    source: {
+      cleanWeeks: usable == null ? 'gate-default' : (raw === usable ? 'settings' : 'registry-default'),
+      cleanWeeksValue: usable,
+      minCanaryScenarios: 'the same "measured enough" bar a rate sheet must clear to be published — an assumption, pending the owner (open question 3a)',
+    },
+  };
+}
 const OPEN_FINDING_STATUSES = new Set(['open', 'triaged']);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function isOpen(f) { return !!f && OPEN_FINDING_STATUSES.has(f.status); }
+
+// A SETTLED finding that has come back — the fix did not hold (`finding.mergeOne` sets the flag).
+//
+// ⛔ IT IS COUNTED SEPARATELY, AND ONLY WHERE IT IS NOT ALREADY OPEN. A regressed row keeps its settled
+// status (`fixed`/`verified`), so `isOpen` is false for it and NOTHING in this file used to see it: the
+// gate answered `eligible` with no reasons for an investor whose price fix had come apart. A human can
+// later triage it back to `open`, and then it must produce ONE reason, not two.
+function isRegressed(f) { return !!f && f.regressed === true && !isOpen(f); }
 
 /**
  * Build one investor's scoreboard.
@@ -49,13 +125,28 @@ function buildScoreboard(input = {}) {
   return {
     canaryAgreementRate: typeof input.canaryAgreementRate === 'number' ? input.canaryAgreementRate : null,
     openFindings: open.length,
+    // Fixes that did not hold (§2.74). The ledger already carried this and the scoreboard threw it away.
+    regressedFindings: findings.filter(isRegressed).length,
     oldestOpenFindingDays,
     consecutiveCleanDays: consecutiveCleanDays(input.dailyNewFindings),
-    // How much the latest canary actually COMPARED (§10.5/§10.6). null when not supplied.
+    // How much the latest canary actually COMPARED (§10.5/§10.6) — comparable LESS the scenarios where
+    // an engine threw, which is `parity.comparedOf` and is what the caller must supply (§2.77). null
+    // when not supplied, which is NOT the same as zero: one is "nobody measured", the other is
+    // "measured nothing", and the coverage floor below fails closed on the first.
     canaryScenarioCount: typeof input.canaryScenarioCount === 'number' ? input.canaryScenarioCount : null,
     canaryIncomparable: typeof input.canaryIncomparable === 'number' ? input.canaryIncomparable : null,
+    // THE REST OF THE RUN'S SPLIT (§2.79), so the coverage figure above can be RECONCILED rather than
+    // taken on faith: compared + errors + overlay + incomparable = scenarios. They gate nothing on their
+    // own — `canaryUnaccounted` is the one exception, because buckets that do not add up mean the
+    // measurement itself is broken and a broken measurement is not proof of anything.
+    canaryScenarios: num(input.canaryScenarios),
+    canaryOverlay: num(input.canaryOverlay),
+    canaryErrors: num(input.canaryErrors),
+    canaryUnaccounted: num(input.canaryUnaccounted),
   };
 }
+
+function num(v) { return typeof v === 'number' && Number.isFinite(v) ? v : null; }
 
 // Trailing run of days (from the most recent) with zero new findings. Sorted by dayMs descending
 // first so the caller need not pre-sort. A day with a positive count breaks the streak.
@@ -74,14 +165,67 @@ function consecutiveCleanDays(daily) {
  *   settings: { minCleanDays=14, requireCanaryPerfect=true, minCanaryScenarios=0 }
  * Returns { eligible, reasons } — reasons lists every gate that FAILED (empty when eligible).
  */
+/**
+ * NAME WHAT WAS SUBTRACTED, or the refusal points at the wrong remedy (§2.79).
+ *
+ * MEASURED: a 300-scenario battery with 100 reasoned overrides and 4 throws refused with *"only 196
+ * compared canary scenario(s), needs at least 200"*. Every word of that is true and it reads as "your
+ * battery is too small" — so the obvious response is to add scenarios, which changes nothing, while the
+ * actual causes (a third of the battery is deliberately not scored, and four scenarios threw) go unsaid.
+ *
+ * Both helpers stay SILENT on anything they were not told, so a scoreboard assembled without the split
+ * produces exactly the message it produced before.
+ */
+function ofTotal(sb) {
+  return typeof sb.canaryScenarios === 'number' ? ` of ${sb.canaryScenarios}` : '';
+}
+
+function subtractedText(sb) {
+  const parts = [];
+  if (typeof sb.canaryOverlay === 'number' && sb.canaryOverlay > 0) {
+    parts.push(`${sb.canaryOverlay} were reasoned overlay overrides (deliberately not scored against Lender Price)`);
+  }
+  if (typeof sb.canaryErrors === 'number' && sb.canaryErrors > 0) {
+    parts.push(`${sb.canaryErrors} hit an engine error`);
+  }
+  if (typeof sb.canaryIncomparable === 'number' && sb.canaryIncomparable > 0) {
+    parts.push(`${sb.canaryIncomparable} could not be compared`);
+  }
+  if (!parts.length) return '';
+  return ` — ${parts.join(', ')}, so a bigger battery is not the remedy`;
+}
+
 function eligibleForLive(scoreboard = {}, settings = {}) {
-  const minClean = settings.minCleanDays == null ? 14 : settings.minCleanDays;
+  // ⛔ THE DEFAULTS ARE THE STRICT ONES, so forgetting to pass settings can only ever make the gate
+  // HARDER (§2.73). They used to be `14` clean days and a coverage floor of `0` — and the one production
+  // caller passed nothing, so those were the numbers that actually ran while the super admin's dial sat
+  // unread and a one-scenario canary satisfied the coverage requirement that did not exist. A source
+  // guard would catch the caller that forgets; strict defaults mean it does not matter if one does.
+  const fallback = settingsToGate({});
+  const minClean = settings.minCleanDays == null
+    ? (Number.isFinite(fallback.minCleanDays) ? fallback.minCleanDays : 14)
+    : settings.minCleanDays;
   const requirePerfect = settings.requireCanaryPerfect !== false;
-  const minScenarios = settings.minCanaryScenarios == null ? 0 : settings.minCanaryScenarios;
+  const minScenarios = settings.minCanaryScenarios == null
+    ? (Number.isFinite(fallback.minCanaryScenarios) ? fallback.minCanaryScenarios : 0)
+    : settings.minCanaryScenarios;
   const reasons = [];
 
   if (scoreboard.openFindings > 0) {
     reasons.push(`${scoreboard.openFindings} open finding(s) must be resolved`);
+  }
+  // §2.74 HARD RULE, and no setting turns it off — for the same reason the incomparable gate has none.
+  // A disagreement somebody marked FIXED and which is reproducing again is not a matter of degree: it
+  // says the fix did not hold, which is precisely what "may this engine be trusted on its own?" asks.
+  // Neither of the other two terms can see it — the row is settled, so `openFindings` is 0, and its key
+  // was seen on an earlier day, so the clean-day streak counts the day it came back as CLEAN.
+  //
+  // THE REMEDY IS REAL, which is what makes this safe to block on: deciding the finding again (re-fix,
+  // verify, or dismiss it) CLEARS the flag — `finding-store.decideFinding` writes `regressed = false`
+  // beside the status. Blocking on a flag nothing could clear would be the §2.72 dead end all over
+  // again, so the two halves ship together and the test proves the clearing works.
+  if (scoreboard.regressedFindings > 0) {
+    reasons.push(`${scoreboard.regressedFindings} finding(s) marked fixed have come back — the fix did not hold; look at them again`);
   }
   if (requirePerfect) {
     if (scoreboard.canaryAgreementRate == null) {
@@ -104,8 +248,13 @@ function eligibleForLive(scoreboard = {}, settings = {}) {
     if (typeof nSc !== 'number') {
       reasons.push(`no canary coverage recorded, needs at least ${minScenarios} compared scenario(s)`);
     } else if (nSc < minScenarios) {
-      reasons.push(`only ${nSc} compared canary scenario(s), needs at least ${minScenarios}`);
+      reasons.push(`only ${nSc}${ofTotal(scoreboard)} compared canary scenario(s), needs at least ${minScenarios}${subtractedText(scoreboard)}`);
     }
+  }
+  // BUCKETS THAT DO NOT ADD UP ARE NOT A ROUNDING QUIRK — they mean the run's own summary cannot be
+  // reconciled, so nothing it reports is proof. Reported and blocking, never absorbed silently.
+  if (typeof scoreboard.canaryUnaccounted === 'number' && scoreboard.canaryUnaccounted !== 0) {
+    reasons.push(`the latest canary does not add up — ${Math.abs(scoreboard.canaryUnaccounted)} scenario(s) are in no bucket, so the run cannot be trusted as proof`);
   }
   if ((scoreboard.consecutiveCleanDays || 0) < minClean) {
     reasons.push(`only ${scoreboard.consecutiveCleanDays || 0} consecutive clean day(s), needs ${minClean}`);
@@ -144,6 +293,8 @@ function transition(current, action, opts = {}) {
 }
 
 module.exports = {
+  SETTING_CLEAN_WEEKS, settingsToGate,
+  _isRegressed: isRegressed,
   MODES, OPEN_FINDING_STATUSES, DAY_MS,
   buildScoreboard, consecutiveCleanDays, eligibleForLive, transition,
   _internals: { isOpen, TRANSITIONS },

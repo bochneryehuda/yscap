@@ -196,6 +196,13 @@ function priceRung(input) {
   if (!input || typeof input !== 'object') throw new Error('pricing:no_input');
   const basePriceMilli = assertMilli('base_price', input.basePriceMilli);
   const marginMilli = assertMilli('margin', input.marginMilli || 0);
+  // HOLDBACK — OUR retained spread, and a SEPARATE component from margin (plan §3, Layer 4b).
+  // OWNER-AUTHORIZED 2026-08-18, in the owner's own words: "instead of offering for the bar or the
+  // investors' raw pricing, like a 102, we're only gonna offer him a 101.75." So it is a COST on
+  // price under this file's cost-positive convention — exactly like margin — and it is reported on
+  // its own line rather than folded into margin, because the two are set independently per investor
+  // and a quote has to be able to say which of them moved the number.
+  const holdbackMilli = assertMilli('holdback', input.holdbackMilli || 0);
   const srpMilli = assertMilli('srp', input.srpMilli || 0);
   const compMilli = assertMilli('comp', input.compMilli || 0);
   const roundingIncrementMilli = input.roundingIncrementMilli == null
@@ -220,7 +227,7 @@ function priceRung(input) {
 
   // On PRICE (cost-positive): a cost lowers the price.
   const roundingMode = input.roundingMode || 'nearest';
-  const rawPriceMilli = basePriceMilli - adjustmentCostMilli - marginMilli - compMilli + srpMilli;
+  const rawPriceMilli = basePriceMilli - adjustmentCostMilli - marginMilli - holdbackMilli - compMilli + srpMilli;
   const roundedPriceMilli = roundPrice(rawPriceMilli, roundingIncrementMilli, roundingMode);
   const finalPriceMilli = clamp(roundedPriceMilli, floorMilli, capMilli);
   const clamped = finalPriceMilli !== roundedPriceMilli;
@@ -243,6 +250,7 @@ function priceRung(input) {
     // Layers 3–5 — separate components, never folded silently —
     srpMilli,
     marginMilli,
+    holdbackMilli,
     compMilli,
     // the result —
     rawPriceMilli,

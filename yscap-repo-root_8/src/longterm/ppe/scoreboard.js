@@ -24,6 +24,7 @@
  */
 
 const cutover = require('./cutover');
+const parity = require('./parity');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -135,11 +136,31 @@ function assemble(runs = [], findings = [], opts = {}) {
   const { days, dropped } = dailySeries(runs);
   const canaryAgreementRate = latestAgreementRate(runs);
   const latestSummary = latestRunSummary(runs);
+  const buckets = parity.bucketsOf(latestSummary);
   const scoreboard = cutover.buildScoreboard({
     canaryAgreementRate,
     // how much the freshest canary actually compared (§10.5/§10.6) — the gate reads these
-    canaryScenarioCount: isFiniteNum(latestSummary.comparable) ? latestSummary.comparable : null,
+    //
+    // ⛔ THROUGH THE SHARED DEFINITION (§2.77), not off `comparable` directly. `comparable` is
+    // agreed + disagreed and an ENGINE ERROR lands in `disagreed`, so the raw figure counts scenarios
+    // where nothing was compared at all — and since §2.73 this number is a real coverage FLOOR on
+    // promotion. The canary's own verdict has always subtracted the errors; the gate's copy did not,
+    // so one run reported `compared: 6` and `coverage: 10` about the same ten scenarios.
+    //
+    // A run with NO summary must stay `null` — "not measured" and "measured zero" send a reader to two
+    // different places, and `comparedOf` answers 0 for both.
+    // THROUGH `parity.bucketsOf`, which is `comparedOf` plus the three buckets the board was silently
+    // dropping (§2.79). `compared` is byte-identical to what this line computed before — bucketsOf keeps
+    // comparedOf's own precondition, so a summary with no `comparable` figure still reports null.
+    canaryScenarioCount: buckets.compared,
     canaryIncomparable: isFiniteNum(latestSummary.incomparable) ? latestSummary.incomparable : null,
+    // THE REST OF THE SPLIT, so the page adds up. A 300-scenario run reporting `196 compared` beside a
+    // `0` incomparable count leaves 104 scenarios named nowhere, and the only remedy its refusal
+    // suggested — a bigger battery — is the one that cannot help.
+    canaryScenarios: buckets.scenarios,
+    canaryOverlay: buckets.compared == null ? null : buckets.overlay,
+    canaryErrors: buckets.compared == null ? null : buckets.errors,
+    canaryUnaccounted: buckets.unaccounted,
     findings: Array.isArray(findings) ? findings : [],
     dailyNewFindings: days.map((d) => ({ dayMs: d.dayMs, count: d.newFindings })),
     nowMs,

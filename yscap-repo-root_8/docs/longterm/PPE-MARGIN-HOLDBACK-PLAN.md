@@ -2,15 +2,17 @@
 LT-only. The margin & holdback layer of the Product & Pricing Engine — the deep plan.
 Grounded in (a) Lender Price's ACTUAL response (`holdBackResult`), (b) the LLPA/rate-sheet industry
 research already in docs/longterm/ppe-research/, and (c) the owner's directive of 2026-08-16.
-Layer 1 (settings + resolver) is BUILT; Layers 2–6 are the plan. The final-rate money formula is
+Layers 1 and 2 (settings + resolver + the caller that carries it into every price) are BUILT;
+Layers 3–6 are the plan. The final-rate money formula is
 flagged as NEEDING THE OWNER'S EXACT NUMBERS before any wiring — never guessed.
 -->
 
 # PPE — Margin & Holdback: how a real PPE does it, and how ours will
 
-**Status:** Layer 1 BUILT (per-investor margin + holdback settings, the pure resolver, the DB-backed
-investor resolver, tests). Layers 2–6 planned. **The step that changes a borrower's final rate is a
-MONEY rule and is NOT built — it waits on the owner's exact combine-formula.**
+**Status:** Layers 1 and 2 BUILT — the per-investor margin now reaches the price on every production
+path (resolved ONCE at the seam where a program is loaded, byte-identical until an admin configures
+something; §2.55 of LENDER-PRICE-PARITY-STATUS.md). Layer 3 (the HOLDBACK on the price) BUILT 2026-08-18 on the owner's own written
+direction — see §2.52. Layers 4–6 planned.
 
 This is the margin/holdback companion to `PPE-MEGA-PLAN.md` §5 (the numeric pipeline) and §5.3 (the
 verified 0.25 margin). It exists because the owner asked for something §5 only sketched: margin AND
@@ -173,9 +175,9 @@ input; holdback has no pipeline consumer yet — on purpose (see §5).
 
 ---
 
-## 5. Layers 2–6 — the plan (NOT built; the money step needs the owner)
+## 5. Layers 2–6 (Layer 2 is now BUILT; the money step still needs the owner)
 
-### Layer 2 — the opt-in per-investor margin hook (the MECHANISM is BUILT; the DB caller is planned)
+### Layer 2 — the per-investor margin hook, and the DB caller that now uses it (BUILT)
 `quote.quoteProgram` now accepts an OPTIONAL `marginHoldback` input (the exact shape
 `resolveMarginHoldback` / `resolveMarginHoldbackForInvestor` returns). When the caller passes it, its
 `marginMilli` OVERRIDES the settings margin and its `holdbackMilli` is carried into the reconstruction
@@ -185,15 +187,41 @@ whole ladder), so today's pricing is untouched. A garbage resolved margin (negat
 back to the settings margin. `priceRung` already subtracts `marginMilli`, so only the SOURCE of the
 number changed — no money math moved.
 
-**Still planned (needs a DB-aware caller):** the façade/route that actually prices a scenario resolves
-`resolveMarginHoldbackForInvestor(db, program.investorCode, scenarioFacts)` and passes the result in as
-`marginHoldback`. That is a pure plumbing change on top of the hook above; because no per-investor
-overrides are seeded, it keeps every price identical until an admin sets one. **Holdback is carried but
-never applied** by this layer — see Layer 3.
+**BUILT 2026-08-18 — the DB-aware caller now exists** (`docs/longterm/LENDER-PRICE-PARITY-STATUS.md`
+§2.55). `routes/ppe.js loadProgram` — the ONE place a program is loaded, and therefore the one seam
+every pricing path passes through — resolves the investor's layer ONCE via the new
+`store.prepareMarginHoldbackForInvestor(db, investorCode, scope)` and carries it into all five
+production pricing calls (the quote's shadow, the pricing breakdown, the canary, the rule-coverage
+read, and the Lender Price agreement leg) as `marginHoldback`. Two departures from the sketch above,
+both deliberate and both proven:
 
-### Layer 3 — wire holdback into the final rate (⚠️ MONEY RULE — needs the owner)
-Holdback has no pipeline consumer today because **how holdback combines into the final borrower rate is
-a money rule I do not have and must not guess** (CLAUDE.md HARD RULE). The open questions for the owner,
+- **Resolved ONCE, carried — not `resolveMarginHoldbackForInvestor` per call.** That function does its
+  own two database reads and applies the rules in one step, which would mean two reads per SCENARIO on
+  a 299-scenario battery and four independent resolutions across the four call sites. `prepare…` reads
+  the layer once and returns `forScenario(facts)`; the per-scenario RULES still evaluate per scenario.
+  `resolveMarginHoldbackForInvestor` is unchanged and stays the admin/reporting read.
+- **It FAILS CLOSED.** `resolveMarginHoldbackForInvestor` degrades to the company scope and then to the
+  coded 250, which is right for a settings screen and exactly wrong for a price: it would quote at a
+  margin nobody confirmed and look healthy doing it. The pricing path uses a STRICT read and, when
+  either layer is unreadable, returns no program with the reason `margin_unreadable: <scope>: …`.
+
+**And it is byte-identical until configured by CONSTRUCTION, not by arithmetic:** while all three
+settings are still the shipped product default, `forScenario` returns `null` and the pricer is handed
+nothing at all. Measured over the 299-scenario agreement battery through both production paths — 598
+whole priced results, identical. A margin reaches the price only from the INVESTOR's own scope or from
+a per-scenario RULE; a COMPANY-level `pricing.margin_milli` deliberately does not, because which of the
+two company margin knobs governs is an OWNER question (§2.55). **Holdback is carried but never applied by THIS
+layer** — the margin layer resolves it and hands it on; Layer 3 is what subtracts it from the price.
+
+### Layer 3 — wire holdback into the price ✅ BUILT 2026-08-18 (owner-directed)
+**ANSWERED AND BUILT.** The owner's own words: *"instead of offering for the bar or the investors' raw
+pricing, like a 102, we're only gonna offer him a 101.75."* So the holdback is a COST on price, applied
+in `pricing.priceRung` beside — and never inside — the margin, and reported on its own line. Proof,
+including the byte-for-byte inertness control and four mutations: `scripts/test-lt-ppe-holdback-price.js`
+and §2.52 of LENDER-PRICE-PARITY-STATUS.md. The paragraph below is kept as the record of why it waited.
+
+Until 2026-08-18 holdback had no pipeline consumer because **how holdback combines into the final
+borrower rate is a money rule I do not have and must not guess** (CLAUDE.md HARD RULE). The open questions for the owner,
 each with the industry reading as a *starting point for the conversation only*:
 
 1. **Is holdback a second cost line, exactly like margin?** Industry stack order (§3) and Lender Price's

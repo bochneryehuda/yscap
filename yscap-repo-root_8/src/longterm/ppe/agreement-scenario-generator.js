@@ -1,0 +1,302 @@
+'use strict';
+/**
+ * LT PPE — the SCALED per-program SCENARIO AUTO-GENERATOR (#49, part 1). PURE: no DB, no network, no
+ * randomness (deterministic, so a battery is reproducible). Given a compiled `program` (the
+ * `{ baseGrid, rules[], priceLimit }` shape quote.quoteProgram prices) plus the program's DECLARED
+ * axes (the investor's enumerated field options per dimension), it systematically generates a bounded
+ * scenario matrix that EXERCISES EVERY ENCODED RULE / LLPA CELL AT LEAST ONCE, and carries coverage
+ * metadata saying which rule/cell each scenario targets and — critically — which rules NOTHING could
+ * reach (the dead-rule / reachability guard).
+ *
+ * WHY generate instead of hand-list (CLAUDE.md build rule #4 "Generate, don't hand-maintain"): the
+ * rate sheet compiles to `program.rules[]` — one rule per grid cell / LLPA / eligibility / bound.
+ * A hand-kept AXES list goes stale the moment a cell is added. So the battery is DERIVED from the
+ * rules themselves: for each rule we synthesize a facts bag that satisfies its `when` predicate, then
+ * we PROVE it (CLAUDE.md build rule #1 "prove it, don't assert it") by running the REAL rules.js
+ * evaluator (`evalPredicate`) and only calling the cell "targeted" when the predicate actually fires.
+ * A rule the synthesizer cannot satisfy (a contradictory `when`, an unreachable overlay) is reported
+ * `targeted:false` WITH a reason — never silently dropped (fail closed, and never silently — build
+ * rule #5). That surfaced list IS the dead-rule guard.
+ *
+ * THREE LAYERS, concatenated, de-duped, deterministic, bounded (no silent caps — the truncation is
+ * reported):
+ *   1. TARGETING — one scenario per rule, synthesized to fire that rule's cell. The coverage guarantee.
+ *   2. EDGES — for each numeric threshold a rule reads, a just-OUTSIDE probe (the band flip), built
+ *      from the rule's OWN threshold values (real numbers, never invented) ± a 1-unit probe step —
+ *      the same convention coverage.boundaryScenarios already uses.
+ *   3. AXES — a bounded pairwise cross of the DECLARED axes (units × purpose × prepay × occupancy ×
+ *      borrower_type × cashout × …), so dimensions a pricing rule does not individually gate still
+ *      get combinatorial coverage. Uses coverage.pairwise (deterministic greedy, bounded).
+ *
+ * UNITS: the scenario is a flat bag of facts in the engine's integer units (ltv/cltv milli-percent,
+ * dscr milli, fico integer, loan_amount dollars) — exactly what quote.js / rules.js read. This module
+ * never interprets a value; it reads thresholds out of the rules and mirrors them back as facts.
+ *
+ * LT-only. No RTL imports.
+ */
+
+const { evalPredicate } = require('./rules');
+const { describeScenario } = require('./scenario-matrix');
+const coverage = require('./coverage');
+const { dimensionOfRule } = require('./agreement-dimensions');
+
+const PROBE_EPS = 1; // the 1-unit adjacent-to-a-real-threshold probe step (coverage.js convention)
+
+function isNum(v) { return typeof v === 'number' && Number.isFinite(v); }
+
+// THE SENTINELS ARE PRINTABLE, AND THAT IS A CORRECTNESS REQUIREMENT, NOT A STYLE CHOICE.
+//
+// Both of these were built from a NUL byte (`\0x`, `\0notin`) — the classic "a value nothing real can
+// collide with" trick, and here a landmine. A sentinel is assigned into a scenario's FACTS, the facts
+// become its `_label`, and that label travels: verdict.scenario → summarize()'s `disagreeing` /
+// `disagreements` → `agreement-store.recordRun`, which stores the summary as **jsonb**. Postgres
+// REFUSES a NUL in jsonb (22P05 `unsupported Unicode escape sequence` — measured against a real
+// database, with the identical summary minus the NUL storing fine). So a battery that generated one
+// and then disagreed on it would complete a paid ≥200-scenario run against the vendor and be unable to
+// record its verdict — the run's whole point, lost at the last step, for an invisible byte.
+//
+// The repo's existing NUL defence cannot help: `lib/nul-strip` scrubs INBOUND request bodies, and this
+// value is minted by our own code well past that boundary. A printable sentinel is equally impossible
+// to collide with (no state code, purpose, property type, occupancy or borrower type is spelled like
+// this) and has the additional virtue of being READABLE in a scenario label a human is reading.
+//
+// A value distinct from `value` (for neq/eq-falsify). Numeric → +eps; otherwise a sentinel suffix.
+function distinctFrom(value, eps) {
+  if (isNum(value)) return value + eps;
+  return `${String(value)}__ppe_ne__`;
+}
+// A value NOT in `list` (for nin-satisfy / in-falsify). Numeric list → max+eps; else a sentinel.
+function notIn(list, eps) {
+  const arr = Array.isArray(list) ? list : [list];
+  if (arr.every(isNum)) return Math.max(...arr) + eps;
+  return '__ppe_not_in__';
+}
+
+// Assign into `facts` a value making the leaf { fact, op, value } TRUE. Values come straight from the
+// rule's own thresholds; only strict inequalities need a ±eps probe step adjacent to that threshold.
+function satisfyLeaf(facts, leaf, eps) {
+  const { fact, op, value } = leaf;
+  switch (op) {
+    case 'eq': facts[fact] = value; break;
+    case 'neq': facts[fact] = distinctFrom(value, eps); break;
+    case 'in': facts[fact] = Array.isArray(value) ? value[0] : value; break;
+    case 'nin': facts[fact] = notIn(value, eps); break;
+    case 'gte': facts[fact] = value; break;
+    case 'lte': facts[fact] = value; break;
+    case 'gt': facts[fact] = isNum(value) ? value + eps : value; break;
+    case 'lt': facts[fact] = isNum(value) ? value - eps : value; break;
+    case 'between': facts[fact] = Array.isArray(value) ? value[0] : value; break; // min (inside [min,max))
+    case 'exists': if (!(fact in facts)) facts[fact] = 1; break;
+    default: break;
+  }
+}
+// Assign a value making the leaf FALSE (for none/not, and for the just-outside edge probes).
+function falsifyLeaf(facts, leaf, eps) {
+  const { fact, op, value } = leaf;
+  switch (op) {
+    case 'eq': facts[fact] = distinctFrom(value, eps); break;
+    case 'neq': facts[fact] = value; break;
+    case 'in': facts[fact] = notIn(value, eps); break;
+    case 'nin': facts[fact] = Array.isArray(value) ? value[0] : value; break;
+    case 'gte': facts[fact] = isNum(value) ? value - eps : value; break;
+    case 'gt': facts[fact] = value; break;
+    case 'lte': facts[fact] = isNum(value) ? value + eps : value; break;
+    case 'lt': facts[fact] = value; break;
+    case 'between': facts[fact] = Array.isArray(value) ? value[1] : value; break; // max is OUTSIDE [min,max)
+    case 'exists': delete facts[fact]; break;
+    default: break;
+  }
+}
+
+// Walk a predicate tree, assigning facts to make it evaluate to `want`. Best-effort for compound
+// same-fact conflicts; correctness is GUARANTEED by the caller re-running the real evaluator.
+function assignFor(node, facts, want, eps) {
+  if (node == null) return; // absent predicate matches everything — nothing to assign
+  const isLeaf = Object.prototype.hasOwnProperty.call(node, 'fact') && Object.prototype.hasOwnProperty.call(node, 'op');
+  if (isLeaf) { (want ? satisfyLeaf : falsifyLeaf)(facts, node, eps); return; }
+  if (Array.isArray(node.all)) {
+    if (want) node.all.forEach((n) => assignFor(n, facts, true, eps));
+    else if (node.all.length) assignFor(node.all[0], facts, false, eps); // one false ⇒ all false
+    return;
+  }
+  if (Array.isArray(node.any)) {
+    if (want) { if (node.any.length) assignFor(node.any[0], facts, true, eps); } // one true ⇒ any true
+    else node.any.forEach((n) => assignFor(n, facts, false, eps));
+    return;
+  }
+  if (Array.isArray(node.none)) {
+    // none = every child false. want(true) ⇒ falsify all; want(false) ⇒ satisfy the first.
+    if (want) node.none.forEach((n) => assignFor(n, facts, false, eps));
+    else if (node.none.length) assignFor(node.none[0], facts, true, eps);
+    return;
+  }
+  if (node.not != null) { assignFor(node.not, facts, !want, eps); return; }
+}
+
+// Collect the numeric thresholds a predicate reads, per fact, for the EDGE layer.
+function collectThresholds(node, into) {
+  if (node == null || typeof node !== 'object') return;
+  const isLeaf = Object.prototype.hasOwnProperty.call(node, 'fact') && Object.prototype.hasOwnProperty.call(node, 'op');
+  if (isLeaf) {
+    const vals = node.op === 'between' && Array.isArray(node.value) ? node.value : [node.value];
+    for (const v of vals) if (isNum(v)) (into[node.fact] = into[node.fact] || new Set()).add(v);
+    return;
+  }
+  for (const k of ['all', 'any', 'none']) if (Array.isArray(node[k])) node[k].forEach((n) => collectThresholds(n, into));
+  if (node.not != null) collectThresholds(node.not, into);
+}
+
+// Stable identity of a scenario = its human facts (everything except _-prefixed metadata).
+function factKey(s) {
+  const clean = {};
+  for (const k of Object.keys(s)) if (k[0] !== '_') clean[k] = s[k];
+  return JSON.stringify(clean, Object.keys(clean).sort());
+}
+
+/**
+ * buildAgreementScenarios({ program, axes, base, opts }) → { scenarios, coverage, meta }
+ *
+ *   program — { baseGrid, rules[], priceLimit? } (quote.quoteProgram's program). REQUIRED.
+ *   axes    — { dimension: [option, ...] } declared enumerated options for the cross-coverage layer.
+ *   base    — flat facts merged UNDER every scenario (fixed defaults, e.g. term/lock/product).
+ *   opts    — { maxScenarios=600, includeAxes=true, includeEdges=true, eps=1 }.
+ *
+ * Returns:
+ *   scenarios: [ { ...facts, _index, _label, _layer, _probe?, _targets:[{code,kind,dimension}] } ]
+ *   coverage: {
+ *     rules: [ { code, kind, dimension, targeted, scenarioIndex|null, reason? } ],
+ *     total, targeted, uncovered:[code…], complete:boolean,
+ *     axes: { pairsCovered, pairsTotal, complete } | null,
+ *   }
+ *   meta: { total, targetingCount, edgeCount, axesCount, dedupedAway, truncated, budget }
+ */
+function buildAgreementScenarios(arg = {}) {
+  const program = arg.program;
+  if (!program || typeof program !== 'object' || !Array.isArray(program.rules)) {
+    throw new Error('agreement-scenarios:no_program_rules');
+  }
+  const base = arg.base && typeof arg.base === 'object' ? arg.base : {};
+  const axes = arg.axes && typeof arg.axes === 'object' ? arg.axes : {};
+  const opts = arg.opts || {};
+  const eps = opts.eps == null ? PROBE_EPS : opts.eps;
+  const maxScenarios = opts.maxScenarios == null ? 600 : opts.maxScenarios;
+  const includeAxes = opts.includeAxes !== false;
+  const includeEdges = opts.includeEdges !== false;
+
+  const rules = program.rules;
+  const out = [];               // accepted scenarios (de-duped), stamped later
+  const seen = new Set();       // factKey de-dupe
+  let dedupedAway = 0;
+
+  // push a candidate; returns its index in `out`, or the index of the existing duplicate.
+  const dupIndex = new Map();
+  function push(s) {
+    const key = factKey(s);
+    if (seen.has(key)) { dedupedAway += 1; return dupIndex.get(key); }
+    seen.add(key);
+    const idx = out.length;
+    dupIndex.set(key, idx);
+    out.push(s);
+    return idx;
+  }
+
+  // ---- Layer 1: TARGETING — one scenario per rule, self-verified against the real evaluator ----
+  const ruleCoverage = [];
+  const edgeThresholds = {}; // fact -> Set(threshold) accumulated for the EDGE layer
+  for (const rule of rules) {
+    const dimension = dimensionOfRule(rule);
+    const synth = { ...base };
+    assignFor(rule.when, synth, true, eps);
+    // PROVE it: does the rule's own predicate actually fire on the synthesized facts?
+    const fires = evalPredicate(rule.when, synth).value === true;
+    if (includeEdges) collectThresholds(rule.when, edgeThresholds);
+    if (!fires) {
+      ruleCoverage.push({
+        code: rule.code || null, kind: rule.kind, dimension, targeted: false, scenarioIndex: null,
+        reason: rule.when == null ? 'predicate_matches_nothing' : 'unsatisfiable_by_synthesis',
+      });
+      continue;
+    }
+    const scenario = { ...synth, _layer: 'target', _targets: [{ code: rule.code || null, kind: rule.kind, dimension }] };
+    scenario._label = describeScenario(scenario);
+    const idx = push(scenario);
+    // if this fact-bag already existed, note that scenario also targets this rule
+    if (out[idx] && out[idx] !== scenario) {
+      const t = out[idx]._targets || (out[idx]._targets = []);
+      t.push({ code: rule.code || null, kind: rule.kind, dimension });
+    }
+    ruleCoverage.push({ code: rule.code || null, kind: rule.kind, dimension, targeted: true, scenarioIndex: idx });
+  }
+  const targetingCount = out.length;
+
+  // ---- Layer 2: EDGES — a just-outside probe per numeric threshold (real values from the rules) ----
+  let edgeCount = 0;
+  if (includeEdges) {
+    for (const fact of Object.keys(edgeThresholds)) {
+      for (const thr of [...edgeThresholds[fact]].sort((a, b) => a - b)) {
+        for (const [delta, role] of [[-eps, 'just-below'], [eps, 'just-above']]) {
+          const s = { ...base, [fact]: thr + delta, _layer: 'edge', _probe: `${fact}=${thr + delta} (${role} ${thr})` };
+          s._label = describeScenario(s);
+          const before = out.length;
+          push(s);
+          if (out.length > before) edgeCount += 1;
+        }
+      }
+    }
+  }
+
+  // ---- Layer 3: AXES — bounded pairwise cross of the declared enumerated options ----
+  let axesInfo = null;
+  let axesCount = 0;
+  const axisKeys = Object.keys(axes).filter((k) => Array.isArray(axes[k]) && axes[k].length);
+  if (includeAxes && axisKeys.length) {
+    const budgetLeft = Math.max(0, maxScenarios - out.length);
+    const pw = coverage.pairwise(axes, { base, maxCases: budgetLeft > 0 ? budgetLeft : 1 });
+    axesInfo = { pairsCovered: pw.pairsCovered, pairsTotal: pw.pairsTotal, complete: pw.complete };
+    for (const s of pw.scenarios) {
+      if (out.length >= maxScenarios) break;
+      const scenario = { ...s, _layer: 'axes' };
+      scenario._label = describeScenario(scenario);
+      const before = out.length;
+      push(scenario);
+      if (out.length > before) axesCount += 1;
+    }
+  }
+
+  // stamp deterministic indices last (dedupe/ordering is settled)
+  out.forEach((s, i) => { s._index = i; });
+
+  const targeted = ruleCoverage.filter((r) => r.targeted).length;
+  const uncovered = ruleCoverage.filter((r) => !r.targeted).map((r) => r.code);
+  const truncated = includeAxes && axisKeys.length && axesInfo && !axesInfo.complete && out.length >= maxScenarios;
+
+  return {
+    scenarios: out,
+    coverage: {
+      rules: ruleCoverage,
+      total: rules.length,
+      targeted,
+      uncovered,
+      complete: uncovered.length === 0,
+      axes: axesInfo,
+    },
+    meta: {
+      total: out.length,
+      targetingCount,
+      edgeCount,
+      axesCount,
+      dedupedAway,
+      truncated: !!truncated,
+      budget: maxScenarios,
+    },
+  };
+}
+
+module.exports = {
+  // Disambiguated on integration: the CANONICAL fixed 299-scenario battery already lives in
+  // agreement-scenarios.js under buildAgreementScenarios. This module is the PROGRAM-RULE-DRIVEN
+  // generator (different signature, different job), so it exports its own name.
+  buildProgramAgreementScenarios: buildAgreementScenarios,
+  buildAgreementScenarios,
+  _internals: { assignFor, satisfyLeaf, falsifyLeaf, collectThresholds, factKey, distinctFrom, notIn },
+};

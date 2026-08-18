@@ -199,9 +199,12 @@ console.log('\nG. wireDiscipline — the DSCR profile constants are FORCED, not 
   ok(a.city === '42', 'a numeric city is coerced to the string the capture uses');
 
   // And the scenario-ownership property this must not undo.
+  // §2.1/TASK-31 — the blank form of these is the frontend's own empty string, not absence (all seven
+  // captures send ""). The leak property this assertion exists for is UNCHANGED: what matters is that
+  // the stale value is GONE, and an empty string overwrites it exactly as deletion did.
   const stale = buildSearch(SCEN, { base: { property: { address: { street: '12 Somewhere Else', zipExt: '9999' } } } });
-  ok(stale.property.address.street === undefined && stale.property.address.zipExt === undefined,
-    'a prior session\'s street/ZIP+4 still cannot ride along');
+  ok(stale.property.address.street === '' && stale.property.address.zipExt === '',
+    'a prior session\'s street/ZIP+4 still cannot ride along — it is replaced by the frontend\'s own blank ""');
 }
 
 // ---- H. a credit score is REQUIRED, and refused LOCALLY ---------------------------------------
@@ -290,6 +293,44 @@ console.log('\nI. §37.12 a rate carries WHICH sheet it came from, and whether t
     'and every option carries its own sheet provenance');
   ok(opts.some((o) => o.rateSheet.name === 'Old Sheet' && o.rateSheet.validAsOf),
     'including the sheet NAME and date, which were dropped entirely before');
+}
+
+// ---- J. §2.1 frontend-parity forces survive a DIVERGENT live foundation AND a scenario value -----
+// The §2.1 forces (pmiType BPMI, showUnmatchCompPlan true, the FULL AUS list, monthlyIncome rounded
+// to a whole dollar) exist because a live foundation carries the CONFIG-model values instead, and
+// production once diverged from the frontend request — the HTTP-500 class. Section A proves the
+// foundation-merge ADOPTS a live pmiType 'None'; nothing proved buildSearch then FORCES it back. And
+// monthlyIncome had a live gap: a scenario-supplied value is written by applyRegistry AFTER the §2.1
+// force block, so rounding only there left it fractional (16666.666… vs the frontend's 16667).
+console.log('\nJ. §2.1 frontend-parity forces beat a divergent live foundation');
+{
+  const SCEN = { purpose: 'Purchase', value: 500000, loan: 400000, fico: 760, dscr: 1.5,
+    state: 'NY', zip: '11211', countyFps: '36047', propertyType: 'SingleFamily', units: 1 };
+
+  // A live foundation carrying the frontend-divergent CONFIG-model values on every §2.1 field.
+  const divergent = { criteria: { pmiType: 'None', monthlyIncome: 16666.6667 },
+    showUnmatchCompPlan: false, brokerCriteria: { ausList: ['LP'] } };
+  const b = buildSearch(SCEN, { base: divergent });
+  ok(b.criteria.pmiType === 'BPMI', 'a live pmiType "None" is forced back to the frontend\'s "BPMI"');
+  ok(b.showUnmatchCompPlan === true, 'a live showUnmatchCompPlan false is forced true');
+  ok(JSON.stringify(b.brokerCriteria.ausList) === JSON.stringify(['DU', 'LP', 'GUS', 'MUW', 'None']),
+    'a live SHORTENED AUS list is forced back to the full published set');
+  ok(Number.isInteger(b.criteria.monthlyIncome),
+    'a live fractional monthlyIncome is rounded to a whole dollar (frontend parity)');
+
+  // The measured gap: a SCENARIO-supplied fractional monthlyIncome. applyRegistry writes it after the
+  // §2.1 block, so it must be rounded LAST (wireDiscipline) — this asserts the final body matches the
+  // frontend regardless of which source carried the value.
+  const scn = buildSearch({ ...SCEN, monthlyIncome: 16666.6667 }, {});
+  ok(Number.isInteger(scn.criteria.monthlyIncome) && scn.criteria.monthlyIncome === 16667,
+    'a SCENARIO-supplied fractional monthlyIncome is rounded to 16667, not sent as 16666.666…');
+
+  // A caller's EXPLICIT AUS engine choice is still honoured (the force only replaces a narrowed default).
+  const chosen = buildSearch(SCEN, { base: divergent, /* no sc.aus */ });
+  ok(chosen.brokerCriteria.ausList.length === 5, 'with no explicit AUS choice, the full set wins over a narrowed live list');
+  const explicit = buildSearch({ ...SCEN, aus: ['DU'] }, { base: divergent });
+  ok(JSON.stringify(explicit.brokerCriteria.ausList) === JSON.stringify(['DU']),
+    'an explicit caller AUS choice is honoured verbatim over both the force and the live list');
 }
 
 console.log('\n' + (failed === 0 ? 'OFFLINE: all passed' : 'FAILURES') + ' (' + passed + ' passed, ' + failed + ' failed)');

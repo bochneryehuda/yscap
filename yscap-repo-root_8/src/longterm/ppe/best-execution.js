@@ -14,8 +14,24 @@
  * EXCLUDED and reported in `excluded`, never silently dropped and never treated as $0 (§10.6 spirit).
  * Ties break deterministically by investor then program so a run is reproducible.
  *
- * Input result shape: { investor, program, rungs:[{ rate, priceMilli }] } — the normalized ladder
- * (parity.normalizeOurQuote / lp-normalize produce it). LT-only. No RTL imports.
+ * Input result shape: { investor, program, rungs:[{ rate, priceMilli }] }.
+ *
+ * WHERE THAT SHAPE COMES FROM — MEASURED, because this line used to name the wrong two modules.
+ * `lp-normalize-full.normalizeLpFull(...).programs[]` produces it whole: each entry carries
+ * `investor`, `program` and a `rungs[]` of `{ rate, priceMilli, … }`, so it can be handed to
+ * `bestByRate` / `bestByPrice` directly. `parity.normalizeOurQuote` and
+ * `lp-normalize.normalizeLpParsed` do NOT: both return `{ eligible, rungs }` and carry no
+ * `investor` and no `program` at all, so a caller using either must supply that identity itself.
+ * Ranking results that all carry `investor: undefined` is not an error here — they simply all tie,
+ * and the tiebreak degenerates — which is exactly the quiet wrong answer the old wording invited.
+ *
+ * NOTHING IN `src/` REQUIRES THIS MODULE TODAY. It is complete and unit-tested and has no production
+ * caller: no route, no quote path and no screen picks a best execution. Do not read a comment
+ * elsewhere calling it "the production picker" as evidence that one exists — one such comment was
+ * found and corrected; `scripts/test-lt-ppe-claim-drift.js` now fails the build if the wiring and
+ * the wording disagree in either direction.
+ *
+ * LT-only. No RTL imports.
  */
 
 function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }

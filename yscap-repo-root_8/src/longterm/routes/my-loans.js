@@ -21,17 +21,30 @@
 // nobody — the safe direction, and the reason the mapping is confirm-and-not-guess
 // in the first place.
 //
-// THE INVESTOR NAME NEVER REACHES A CLIENT — the hard rule (charter §10). Nothing
-// investor-related is selected here at all, and every free-text field that could
-// carry a spelling of one goes through the shared scrub on the way out. Building
-// the payload FOR the client rather than filtering one built for staff is the
-// first of the two defences that rule names.
+// THE INVESTOR NAME NEVER REACHES A CLIENT — the hard rule (charter §10), and
+// BOTH of the defences that rule names are wired here:
+//
+//   (a) DON'T SEND IT. The payload is built FOR the client by `client-view.js`,
+//       which asks `audience.maySeeField` / `audience.internalOnlyColumns` about
+//       every field before it assembles one and runs `audience.stripInternalOnly`
+//       over the finished object. The SELECT below is checked at load time by
+//       `clientView.assertNoInternalColumns`, so a join that reaches
+//       `lt_loan_investors` cannot start the server.
+//   (b) SCRUB FREE TEXT. Every free-text field a human may have typed goes
+//       through `audience.scrubInvestorNames` on the way out — the SECOND
+//       defence, not a replacement for the first.
+//
+// The audience is DERIVED from the signed-in actor (`audience.audienceOfActor`),
+// never hard-coded: this route is mounted borrower-only today, and a broker
+// surface added tomorrow is a client by the same rule with nothing to remember.
+// Anything that is not exactly our own staff is a client — it fails closed.
 
 const express = require('express');
 const router = express.Router();
 
 const db = require('../db');
 const audience = require('../audience');
+const clientView = require('../client-view');
 const productTerm = require('../product-term');
 const settingsStore = require('../settings/store');
 const stages = require('../stages');
@@ -52,6 +65,11 @@ async function longTermVisible() {
 /**
  * Everything the client is allowed to know about one of their long-term files.
  *
+ * THE WHOLE LIST lives in `client-view.js` — this adds only the row's own id,
+ * which names nothing and is what the screen keys on. Building it there rather
+ * than here is what lets a second client surface (a broker portal) answer with
+ * exactly the same payload instead of a hand-copied one that drifts.
+ *
  * THE STATUS IS THE ONE WRITTEN FOR A BORROWER, never the stored key. There are
  * three layers of wording on this side — Encompass's 19 milestones, our 9 stages,
  * and the tenant's own consumer wording per milestone (`consumer_status`, db/547) —
@@ -64,30 +82,30 @@ async function longTermVisible() {
  * `clear_to_close` at a borrower is showing them a database value. With neither, it
  * says NOTHING — a status invented for a client is worse than a blank one.
  */
-function shape(row, stageCfg) {
-  const verdict = productTerm.classifyProduct({
-    programName: row.program_name, termMonths: row.term_months,
-  });
-  const scrub = (v) => (v == null ? null : audience.scrubInvestorNames(String(v), 'borrower'));
-
-  const consumer = stages.consumerStatusOf({ consumer_status: row.consumer_status });
-  const ourStage = (stageCfg.stages || []).find((s) => s.key === row.stage_key);
-
-  return {
-    id: row.id,
-    file: row.loan_number || '(not numbered yet)',
-    status: scrub(consumer || (ourStage && ourStage.label) || null),
-    milestone: scrub(row.milestone_name),
-    loanAmount: row.loan_amount == null ? null : Number(row.loan_amount),
-    termMonths: verdict.termMonths,
-    // The program is shown SCRUBBED. A long-term program name is ordinarily
-    // descriptive ("Investor DSCR 30 YEAR FRM"), but it is free text a human typed
-    // and the one place an investor's name could ride along.
-    programName: scrub(verdict.programName),
-    product: verdict.product,
-    updatedAt: row.encompass_synced_at || null,
-  };
+function shape(row, stageCfg, aud) {
+  return { id: row.id, ...clientView.buildLoanView(row, { stageCfg }, aud) };
 }
+
+// The one query behind this route. Held as a constant so the load-time guard below
+// can read it: the FIRST defence is "don't select the column", and a constant is
+// what makes that a property of the code rather than a habit.
+//
+// A LEFT JOIN, deliberately: a milestone the tenant has not published consumer
+// wording for — or one added since we last read the list — must still return the
+// loan. An INNER join would make a client's own file disappear because of a gap in
+// OUR reference data, which is the worst possible failure here.
+const LOANS_SQL = `SELECT l.id, l.loan_number, l.stage_key, l.milestone_name, l.loan_amount,
+              l.term_months, l.program_name, l.encompass_synced_at,
+              m.consumer_status
+         FROM lt_loans l
+         LEFT JOIN lt_encompass_milestones m ON m.milestone_name = l.milestone_name
+        WHERE l.borrower_id = $1::uuid
+        ORDER BY l.encompass_synced_at DESC NULLS LAST, l.loan_number NULLS LAST`;
+
+// Refused at load time, loudly, so a client query can never reach a running server
+// carrying an investor column. Deterministic: the SQL is a constant, so this either
+// always throws or never does.
+clientView.assertNoInternalColumns(LOANS_SQL, 'GET /api/lt/my/loans');
 
 // GET /api/lt/my/loans — the signed-in borrower's own long-term files.
 router.get('/loans', async (req, res) => {
@@ -102,20 +120,15 @@ router.get('/loans', async (req, res) => {
     const borrowerId = req.actor && req.actor.id;
     if (!borrowerId) return res.status(401).json({ error: 'Please sign in again.' });
 
-    // A LEFT JOIN, deliberately: a milestone the tenant has not published consumer
-    // wording for — or one added since we last read the list — must still return
-    // the loan. An INNER join would make a client's own file disappear because of
-    // a gap in OUR reference data, which is the worst possible failure here.
-    const { rows } = await db.query(
-      `SELECT l.id, l.loan_number, l.stage_key, l.milestone_name, l.loan_amount,
-              l.term_months, l.program_name, l.encompass_synced_at,
-              m.consumer_status
-         FROM lt_loans l
-         LEFT JOIN lt_encompass_milestones m ON m.milestone_name = l.milestone_name
-        WHERE l.borrower_id = $1::uuid
-        ORDER BY l.encompass_synced_at DESC NULLS LAST, l.loan_number NULLS LAST`,
-      [borrowerId],
-    );
+    // WHO IS ASKING. Derived, never assumed: a borrower and a broker are both
+    // CLIENTS and anything unrecognised is a client too, because `audience.js`
+    // fails closed. Our own staff — who may see an investor — cannot reach this
+    // route at all (the mount is borrower-only), so on this surface this only ever
+    // resolves to a client today; it is written this way so the answer stays
+    // correct the day a second client door is opened.
+    const aud = audience.audienceOfActor(req.actor);
+
+    const { rows } = await db.query(LOANS_SQL, [borrowerId]);
 
     // The stage list is only the FALLBACK wording, so a settings read that fails
     // must not fail the request — the consumer status is what normally answers.
@@ -127,7 +140,14 @@ router.get('/loans', async (req, res) => {
     // the switch would show a borrower their short-term files a second time, under
     // a heading saying they are long-term. The rule is `product-term.js`, the same
     // one the staff census reads, so the two can never disagree about a file.
-    const loans = rows.map((r) => shape(r, stageCfg)).filter((r) => r.product === productTerm.PRODUCT.LONG);
+    //
+    // It is asked of the ROW, not of the client's view of it: which product a file
+    // belongs to is a fact about the loan, and reading it off a payload the guard
+    // may have narrowed would make the filter depend on what the client is allowed
+    // to see — two unrelated rules, tangled.
+    const loans = rows
+      .filter((r) => productTerm.isLongTerm({ programName: r.program_name, termMonths: r.term_months }))
+      .map((r) => shape(r, stageCfg, aud));
 
     res.json({
       enabled: true,

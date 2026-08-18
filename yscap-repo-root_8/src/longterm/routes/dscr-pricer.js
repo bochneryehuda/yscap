@@ -14,7 +14,11 @@
 const express = require('express');
 const lp = require('../lenderprice/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
-const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
+const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, OCCUPANCY_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
+const { lpScenarioToFacts } = require('../ppe/lp-agreement-legs');
+const { evaluateInformational } = require('../ppe/informational');
+const { advancedFactKeys, advancedSection } = require('../ppe/advanced-facts');
+const { describeFields } = require('../ppe/field-manifest-meta');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
 const BATTERY = [
@@ -36,14 +40,51 @@ function trimPrograms(parsed, limit = 60) {
   };
 }
 
+// §2.5 AUDIT-MODE RUNG DIGEST (2026-08-17 developer report). The trimmed program summary reports
+// only the BEST rung per program (minRate / minPoints / maxPrice), so a developer comparing PILOT to
+// the Lender Price frontend cannot check the FULL rate ladder point-for-point without the heavy
+// `full:true` capture (itemized LLPAs, margin, fees, monthly payment). The digest is the middle
+// ground: every program's complete rung list as {rate, price, points} — the exact rows LP paints —
+// with nothing else, so a rate-sheet diff is a straight array comparison. Gated behind `audit:true`
+// so the default response is unchanged. `programsLimit`/`rungsLimit` bound the size (a caller can
+// page or raise them); anything dropped is COUNTED, never silently truncated.
+function rungDigest(parsed, opts = {}) {
+  const programsLimit = clampInt(opts.programsLimit, 1, 500, 200);
+  const rungsLimit = clampInt(opts.rungsLimit, 1, 500, 200);
+  const programs = parsed.programs.slice(0, programsLimit).map((p) => {
+    const rungs = (p.rungs || []).slice(0, rungsLimit).map((r) => ({ rate: r.rate, price: r.price, points: r.points }));
+    return {
+      lender: p.lender, investor: p.investor || null, lenderId: p.lenderId || null,
+      program: p.program, product: p.product || null,
+      rungCount: p.rungCount,
+      rungsReturned: rungs.length,
+      rungsTruncated: (p.rungs || []).length > rungs.length,
+      rungs,
+    };
+  });
+  return {
+    programsReturned: programs.length,
+    programsTruncated: parsed.programs.length > programs.length,
+    programs,
+  };
+}
+
 // The scenario fields the builder ACTUALLY honors. Anything else a caller sends must be REJECTED,
 // never silently ignored — otherwise the caller gets plausible pricing for a DIFFERENT scenario
 // (the "silent substitution" data-integrity bug). Grow this set (and the builder) together as
 // fields are implemented; a not-yet-implemented field is rejected with 422 unsupported_field.
-const SUPPORTED_FIELDS = new Set([
+// The CORE pricing contract — the "basic" search fields (§3). Kept as a named segment (not merged
+// inline) so the field manifest can expose the basic / registry-advanced / overlay split from ONE
+// source of truth instead of a hand-kept UI list.
+const CORE_FIELDS = [
   'purpose', 'value', 'appraisedValue', 'asIsValue', 'loan', 'ltv', 'fico', 'dscr',
   'propertyType', 'units', 'attachment', 'attachmentType', 'nonWarrantable', 'zip', 'state', 'county', 'countyFps', 'city', 'countyName',
   'borrowerType', 'prepayMonths', 'io', 'escrowWaive', 'fthb', 'date', 'rentalTerm', 'reservesMonths',
+  // D27 — VACANT vs LEASED occupancy is DELIBERATELY NOT LISTED HERE. It is already published as an
+  // OVERLAY fact by advanced-facts.advancedFactKeys(), and SUPPORTED_FIELDS is core ∪ registry ∪
+  // advanced — so listing it again in core would make the three sets overlap and break the manifest's
+  // disjointness contract (test-lt-dscr-fields-manifest). Its validation + retention live in
+  // search-model.js; its value is surfaced in effectiveScenario below.
   'term', 'termYears', 'lockDays', 'cashoutAmount',
   // §33.2/§33.3 — the two menu fields the builder used to hard-code (IncomeDocType always "DSCR",
   // PrePayment_Plan_Type always "Standard"). Both carry the CONFIRMED live token sets; an
@@ -54,14 +95,50 @@ const SUPPORTED_FIELDS = new Set([
   // entered as the POSITIVE number a human sees; the vendor's negative wire form is produced by one
   // named conversion in the builder. HELOC/HELOAN subtype selectors stay unsupported (uncaptured).
   'subordinateLoanAmount', 'compPercent',
-  // Registry-backed advanced fields (borrower criteria + adverse-credit dynamics). Each maps to an
-  // exact upstream path/token; an invalid VALUE for one is rejected as invalid_field_value (below).
-  ...REGISTRY_FIELDS,
-]);
+  // §Layer-3 PPP — an OPTIONAL, explicitly-supplied APR feeds the high-cost natural-person prepay
+  // prohibitions (deephaven-ppp-matrix `aprGt` rules). APR is derived (rate+fees), never invented: a
+  // scenario that omits it fails OPEN (the rule requires a numeric apr), so this only lets a caller
+  // that already knows the APR trip the high-cost rule. Accepted here so it is not 422'd as unsupported.
+  'apr',
+];
+// SUPPORTED_FIELDS = the CORE contract + the registry-backed advanced fields (borrower criteria +
+// adverse-credit dynamics, each mapping to an exact upstream path/token) + the ADVANCED overlay facts
+// (D27–D29, occupancy/rural/STR/FTI/FTHB/foreign_national/declining_market/renovation, registry-driven).
+// The three segments are DISJOINT (asserted by test-lt-dscr-fields-manifest.js), so their union is the
+// full accepted set and the manifest can partition it without a second list.
+const SUPPORTED_FIELDS = new Set([...CORE_FIELDS, ...REGISTRY_FIELDS, ...advancedFactKeys()]);
 // Request-envelope keys the ROUTE consumes (not pricing inputs) — always allowed.
-const META_FIELDS = new Set(['scenario', 'debug', 'full', 'raw', 'poll', 'disqualify', 'maxWaitMs', 'pollMs', 'companyId']);
+const META_FIELDS = new Set(['scenario', 'debug', 'full', 'raw', 'poll', 'disqualify', 'maxWaitMs', 'pollMs', 'companyId',
+  // §2.5 — audit-mode rung digest (never a pricing input): the per-program rate ladder for a
+  // point-for-point rate-sheet diff, plus its two size bounds.
+  'audit', 'programsLimit', 'rungsLimit']);
 function unsupportedFields(sc) {
   return Object.keys(sc || {}).filter((k) => !SUPPORTED_FIELDS.has(k) && !META_FIELDS.has(k));
+}
+// The FIELD MANIFEST (D28) — the machine-readable contract of what the pricer accepts, split into the
+// three sections the frontend's basic/advanced search UI needs, derived ENTIRELY from the existing
+// source-of-truth segments (no hand-kept UI list). `core` = the basic pricing contract; `advanced` =
+// the registry-backed advanced fields (LP-priced borrower/credit criteria); `overlay` = the D27–D29
+// Advanced OVERLAY facts our own matrix cuts on independently (each carries its label/type/enum/category/
+// effect from the advanced-facts registry, plus BOTH of that registry's flags — `overlayOnly` and the
+// separately-MEASURED `lpPrices`, which is `null` where nobody has probed Lender Price for that fact and
+// is NOT a claim that they ignore it); `meta` = request-envelope keys that are not pricing inputs. The three
+// FIELD sections are disjoint and their union is exactly SUPPORTED_FIELDS.
+function buildFieldManifest() {
+  const overlay = advancedSection();
+  return {
+    core: [...CORE_FIELDS],
+    advanced: [...REGISTRY_FIELDS],
+    // Per-field metadata for the bare-key sections, DERIVED from the validators' own definitions
+    // (booleans, enums, the milli units) with a COMPUTED label — never a hand-maintained table, so it
+    // cannot go stale. Published alongside the key lists rather than replacing them, so every existing
+    // reader of `core`/`advanced` is untouched. Anything not genuinely known is simply absent.
+    coreMeta: describeFields(CORE_FIELDS),
+    advancedMeta: describeFields(REGISTRY_FIELDS),
+    overlay,
+    meta: [...META_FIELDS],
+    counts: { core: CORE_FIELDS.length, advanced: REGISTRY_FIELDS.length, overlay: overlay.length, meta: META_FIELDS.size, supported: SUPPORTED_FIELDS.size },
+  };
 }
 // The EFFECTIVE scenario actually sent upstream — so a caller can see requested-vs-effective and
 // catch any silent default. Read straight off the built searchRaw payload.
@@ -98,6 +175,10 @@ function effectiveOf(payload) {
     interestOnly: c.interestOnly, escrowWaiver: c.escrowWaiver, firstTimeHomeBuyer: c.firstTimeHomeBuyer,
     // Reserves / rental-term / prepay-structure selectors (audit — must appear in effectiveScenario).
     reserves: dyn('GLOBAL_RESERVES'), addlOccupancyType: dyn('AddlOccupancyType'),
+    // D27 — the VACANT-vs-LEASED occupancy fact, read off the built payload's internal (Symbol)
+    // channel. It is available to the eligibility overlay but deliberately NOT on the wire (no captured
+    // vendor token); undefined when the scenario did not state it (unknown, never defaulted).
+    occupancy: payload[OCCUPANCY_INTERNAL],
     prepayPlanType: dyn('PrePayment_Plan_Type'),
     compensationType: c.compensationType, incomeDocType: dyn('IncomeDocType'), borrowerType: dyn('GLOBAL_BorrowerType'),
     // Every special-mortgage-option IDENTITY (id + name), not just the names, so a caller can verify
@@ -236,6 +317,15 @@ function priceErrorBody(r) {
   return out;
 }
 
+// §2.6 — THE INFORMATIONAL PRODUCT LAYER (D26/D34): the non-blocking notes a chosen product carries —
+// reserves (months), cash-out-toward-reserves, the small-loan LTV cut, and the LOUD delegate-only
+// exception. PURE + independent of Lender Price (computed from the scenario facts), so it enriches the
+// response without touching the priced result. Never throws → null on any failure. The reserve DOLLAR
+// is left to the caller/UI (it needs the product's monthly PITIA); months + notes are always available.
+function informationalOf(sc) {
+  try { return evaluateInformational(lpScenarioToFacts(sc)); } catch (_e) { return null; }
+}
+
 // §36.11 — the REQUESTED scenario, echoed back exactly as the caller sent it (minus the request
 // envelope keys, which are not pricing inputs). Paired with `derivedScenario` and `effectiveScenario`
 // this is what lets a caller prove a short request was expanded into the intended full DSCR profile
@@ -277,12 +367,16 @@ async function price(req, res) {
   // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
   if (req.body && req.body.full) {
     const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    const out = { ok: true, ...full, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+    const out = { ok: true, ...full, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), informational: informationalOf(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
-  const out = { ok: true, ...trimPrograms(parsed), requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  const out = { ok: true, ...trimPrograms(parsed), requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), informational: informationalOf(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  // §2.5 — audit-mode rung digest: the full per-program rate ladder for a point-for-point diff
+  // against the Lender Price frontend. Off by default (audit:true), so the ordinary response is
+  // unchanged.
+  if (req.body && req.body.audit) out.rungDigest = rungDigest(parsed, { programsLimit: req.body.programsLimit, rungsLimit: req.body.rungsLimit });
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
@@ -408,6 +502,12 @@ async function selftest(req, res) {
   res.json({ ok: results.every((x) => x.ok), count: results.length, results });
 }
 
+// GET /fields — the field manifest (D28): the accepted-field contract split into core / advanced /
+// overlay / meta for the frontend's basic vs advanced search sections. Pure (no network, no LP call).
+async function fields(req, res) {
+  res.json({ ok: true, manifest: buildFieldManifest() });
+}
+
 // A router with the endpoints wired. Auth is applied by the mount (staff at /api/lt, or the
 // secret gate at /api/lt/_diag/lenderprice).
 function makeRouter() {
@@ -421,8 +521,10 @@ function makeRouter() {
   router.post('/disqualifications', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));
   router.post('/disqualify', (req, res) => disqualify(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualify_error' })));
   router.post('/selftest', (req, res) => selftest(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_selftest_error' })));
+  // GET /fields — machine-readable accepted-field manifest (core/advanced/overlay/meta). Read-only.
+  router.get('/fields', (req, res) => fields(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_fields_error' })));
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
-  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf } };
+module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest, fields }, BATTERY, SUPPORTED_FIELDS, META_FIELDS, CORE_FIELDS,
+  _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf, rungDigest, trimPrograms, informationalOf, buildFieldManifest } };

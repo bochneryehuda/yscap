@@ -96,18 +96,19 @@ eq(S.latestAgreementRate([{ dayMs: d(0), agreementRate: null }, { dayMs: d(2), a
   // A perfect, settled investor: 14 clean days at 100% agreement, no open findings.
   const cleanRuns = [];
   for (let i = 0; i < 14; i += 1) cleanRuns.push({ dayMs: d(i), agreementRate: 1, findingKeys: [] });
-  const clean = S.assemble(cleanRuns, [], { nowMs: NOW, settings: { minCleanDays: 14, requireCanaryPerfect: true } });
+  const GATE = { minCleanDays: 14, requireCanaryPerfect: true, minCanaryScenarios: 0 };
+  const clean = S.assemble(cleanRuns, [], { nowMs: NOW, settings: GATE });
   near(clean.scoreboard.canaryAgreementRate, 1, 'assemble: canary rate carried through');
   eq(clean.scoreboard.openFindings, 0, 'assemble: no open findings');
   eq(clean.scoreboard.consecutiveCleanDays, 14, 'assemble: 14 consecutive clean days');
   eq(clean.eligible.eligible, true, 'assemble: clean 14-day investor is eligible for live');
 
   // The SAME scoreboard fed straight to cutover must agree — proves we delegate, not re-implement.
-  const direct = cutover.eligibleForLive(clean.scoreboard, { minCleanDays: 14, requireCanaryPerfect: true });
+  const direct = cutover.eligibleForLive(clean.scoreboard, GATE);
   eq(direct.eligible, clean.eligible.eligible, 'assemble: eligibility matches cutover.eligibleForLive exactly');
 
   // An open finding blocks, whatever the canary says.
-  const blocked = S.assemble(cleanRuns, [{ status: 'open', firstSeenMs: d(3) }], { nowMs: NOW, settings: { minCleanDays: 14 } });
+  const blocked = S.assemble(cleanRuns, [{ status: 'open', firstSeenMs: d(3) }], { nowMs: NOW, settings: GATE });
   eq(blocked.eligible.eligible, false, 'assemble: an open finding blocks promotion');
   ok(blocked.scoreboard.oldestOpenFindingDays >= 3, 'assemble: oldest-open-finding age measured from the ledger');
 

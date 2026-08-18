@@ -140,8 +140,45 @@ function diagnose(finding = {}, opts = {}) {
   return explainSimple(finding);
 }
 
+/**
+ * Attach one `explanation` per finding, in place, from our own reconstruction.
+ *
+ * THE RUNG IS MATCHED BY EXACT COUPON, and abstains otherwise. A near-match would diagnose the gap on
+ * a rate the finding is not about — every LLPA and the margin would be read off the wrong rung — and
+ * `divergence` would then name a suspect with full confidence. No rung is the honest answer, and the
+ * module already words it: "our reconstruction record is unavailable, so the cause cannot be narrowed".
+ *
+ * IT CAN NEVER BREAK A COMPARISON. A diagnosis is a convenience laid on top of a verdict that has
+ * already been reached; if it throws, the finding stands exactly as it was.
+ *
+ * ⛔ IT LIVES HERE, NOT IN ONE CALLER (§2.78). It was written inside `facade.js` — the LIVE shadow path,
+ * which needs vendor credentials — so the CANARY, the owner's daily check that actually runs six times
+ * a day and fills the review queue, recorded WHAT disagreed and never WHY. Measured: a canary run with a
+ * 250-milli price gap and a 250-milli margin recorded `price_mismatch, deltaMilli -250` with no
+ * explanation at all, while this module would have named the margin as exactly accounting for it.
+ *
+ * The evidence exists for BOTH paths at the same moment and nowhere afterwards — the ledger stores
+ * `our_payload` as NULL, so a later screen re-deriving this would have to re-price against whatever the
+ * sheet says today and quietly answer a different question. So the attach is one function with two
+ * callers rather than a second copy inside the runner.
+ */
+function attachDiagnosis(cmp, ourQuote, cmpOpts) {
+  if (!cmp || !Array.isArray(cmp.findings) || !cmp.findings.length) return;
+  const ladder = (ourQuote && Array.isArray(ourQuote.ladder)) ? ourQuote.ladder : [];
+  for (const f of cmp.findings) {
+    if (!f || typeof f !== 'object') continue;
+    try {
+      const rung = (f.rate != null) ? ladder.find((r) => r && r.rate === f.rate) : null;
+      f.explanation = diagnose(f, {
+        reconstruction: rung || null,
+        toleranceMilli: cmpOpts && cmpOpts.priceToleranceMilli,
+      });
+    } catch (_) { /* a diagnosis must never cost a verdict that has already been reached */ }
+  }
+}
+
 module.exports = {
   PAR_MILLI,
-  diagnose, explainPriceDivergence, explainSimple,
+  diagnose, explainPriceDivergence, explainSimple, attachDiagnosis,
   _internals: { componentsOf, buildUpOf },
 };

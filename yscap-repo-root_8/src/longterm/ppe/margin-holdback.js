@@ -24,14 +24,19 @@
  * function decides "does this scenario's rule change it?".
  *
  * PER-SCENARIO RULES: an ordered list; each row { code?, when?, marginMilli?,
- * holdbackMilli?, priority? }. Evaluated in priority order (then input order). The
- * FIRST matching row that NAMES a field wins for that field — margin and holdback
- * resolve independently, so one row may override the margin, a later row the
- * holdback, and a scenario can legitimately carry a different margin and a
- * different holdback. A row's predicate is evaluated by rules.evalPredicate
- * (all/any/none/not + leaf ops), which FAILS SAFE on a missing fact (an unknown
- * fact never fires an override), so a rule can never invent an override off a fact
- * the scenario does not carry.
+ * holdbackMilli?, marginDeltaMilli?, holdbackDeltaMilli?, priority? }. Evaluated in
+ * priority order (then input order). Two mechanisms, deliberately separate:
+ *   • SET (marginMilli / holdbackMilli): the FIRST matching row that NAMES a field
+ *     wins for that field — margin and holdback resolve independently.
+ *   • ADD (marginDeltaMilli / holdbackDeltaMilli): EVERY matching row's delta SUMS on
+ *     top of the resolved base (a signed integer; the final value is clamped ≥ 0).
+ * The two never merge: the base and the extra stay separately visible in the result
+ * (marginBaseMilli/holdbackBaseMilli + marginDeltaMilli/holdbackDeltaMilli), because
+ * the owner's softer-PPP overlay is explicitly "two separate holdbacks — 0.25 base
+ * and 0.375 extra" (2026-08-17), NOT a single merged 0.625. A row's predicate is
+ * evaluated by rules.evalPredicate (all/any/none/not + leaf ops), which FAILS SAFE
+ * on a missing fact (an unknown fact never fires an override), so a rule can never
+ * invent an override — or a delta — off a fact the scenario does not carry.
  *
  * NOTHING HERE TOUCHES THE PRICE. This resolves the two NUMBERS + records how they
  * were reached. Wiring holdback into the final-rate math is a MONEY rule that needs
@@ -51,6 +56,14 @@ const { evalPredicate } = require('./rules');
 // the same fail-safe discipline as an invalid setting override.
 function _milliOrNull(v) {
   if (typeof v !== 'number' || !Number.isFinite(v) || !Number.isInteger(v) || v < 0) return null;
+  return v;
+}
+
+// A DELTA may be negative (a credit) as well as positive (an extra holdback), so it accepts any finite
+// integer; a garbage delta is IGNORED for that field (same fail-safe as a garbage set). The final value
+// is clamped ≥ 0 by the caller, so a delta can never drive a holdback below zero.
+function _deltaOrNull(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v) || !Number.isInteger(v)) return null;
   return v;
 }
 
@@ -94,6 +107,11 @@ function resolveMarginHoldback(input) {
   const unknownAll = new Set();
   const trace = [];
   const appliedRules = [];
+  // Accumulated additive deltas (summed across EVERY matching row) + which rules contributed them.
+  let marginDelta = 0;
+  let holdbackDelta = 0;
+  const marginDeltaRules = [];
+  const holdbackDeltaRules = [];
 
   // Stable ordered pass by priority asc, then input order.
   rawRules
@@ -107,7 +125,7 @@ function resolveMarginHoldback(input) {
       const code = r.code || null;
       const sets = [];
       if (matched) {
-        // FIRST matching row that NAMES a field wins for that field.
+        // FIRST matching row that NAMES a field wins for that field (SET).
         const rm = _milliOrNull(r.marginMilli);
         if (rm != null && marginSource === 'default') {
           marginMilli = rm; marginSource = 'rule'; marginRule = code; sets.push('margin');
@@ -116,6 +134,11 @@ function resolveMarginHoldback(input) {
         if (rh != null && holdbackSource === 'default') {
           holdbackMilli = rh; holdbackSource = 'rule'; holdbackRule = code; sets.push('holdback');
         }
+        // ADD: every matching row's delta SUMS on top (a separate, tracked component).
+        const dm = _deltaOrNull(r.marginDeltaMilli);
+        if (dm != null && dm !== 0) { marginDelta += dm; marginDeltaRules.push({ code, deltaMilli: dm }); sets.push('margin_delta'); }
+        const dh = _deltaOrNull(r.holdbackDeltaMilli);
+        if (dh != null && dh !== 0) { holdbackDelta += dh; holdbackDeltaRules.push({ code, deltaMilli: dh }); sets.push('holdback_delta'); }
         if (sets.length) appliedRules.push({ code, sets });
       }
       const entry = { code, matched, sets };
@@ -123,9 +146,23 @@ function resolveMarginHoldback(input) {
       trace.push(entry);
     });
 
+  // The base (default-or-set) stays separately visible; the deltas add on top, clamped ≥ 0. The two
+  // never merge — a caller that wants to show "0.25 + 0.375" reads base + delta, not just the sum.
+  const marginBaseMilli = marginMilli;
+  const holdbackBaseMilli = holdbackMilli;
+  marginMilli = Math.max(0, marginBaseMilli + marginDelta);
+  holdbackMilli = Math.max(0, holdbackBaseMilli + holdbackDelta);
+
   return {
     marginMilli,
     holdbackMilli,
+    // the base (before deltas) + the summed extra, kept separate on purpose.
+    marginBaseMilli,
+    holdbackBaseMilli,
+    marginDeltaMilli: marginDelta,
+    holdbackDeltaMilli: holdbackDelta,
+    marginDeltaRules,
+    holdbackDeltaRules,
     marginSource,
     holdbackSource,
     marginRule,

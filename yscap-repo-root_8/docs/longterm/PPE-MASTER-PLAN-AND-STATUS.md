@@ -67,13 +67,21 @@ versioned/effective-dated/audited. *(MEGA §1.)*
 ### 2.2 Data model `lt_ppe_*` — **PARTIAL**
 - **DONE:** investor + alias + program anchors (db/558); rate-sheet version + base-price grid + LLPA
   adjustment + price-limit tables (db/560); findings ledger (db/561); shadow-run series (db/565);
-  cutover ledger (db/566); canary schedule (db/570); LP disqualify store (db/559).
-- **TO-BUILD:** a first-class **`lt_ppe_rule` / ruleset table** for *eligibility & bound* rules.
+  cutover ledger (db/566); canary schedule (db/570); LP disqualify store (db/559); the ≥200-scenario
+  agreement ledger (db/576 — §2.10 below).
+- **DONE (2026-08-17, db/571):** the first-class **`lt_ppe_rule` / ruleset table** for *eligibility &
+  bound* rules, plus `lt_ppe_rule_suggestion` (the proposal queue). Read/written through
+  `ppe/rule-store.js`; §2.6 below is its consumer. The paragraph that follows described the gap it
+  closed and is kept for the reasoning:
   Today pricing rules come from `lt_ppe_adjustment` rows, but eligibility/bound rules have **no
   persistent home** — `ratesheet.js` itself notes "eligibility/bound rules live in a later rule table"
   that does not exist yet. **This is a prerequisite for the rule-suggestion loop (Part 3, P6).**
-- **HOUSEKEEPING:** `schedule-store.js` / `canary-schedule.js` doc-comments still cite db/567; the table
-  is really db/570 (renumbered to dodge a collision). Fix the stale comments.
+- ~~**HOUSEKEEPING:** `schedule-store.js` / `canary-schedule.js` doc-comments still cite db/567.~~
+  **CLOSED 2026-08-17 — the item was itself stale, and measured false.** `schedule-store.js` cites
+  **db/570** (its header line 3) and `canary-schedule.js` cites no migration number at all; `db/567`
+  does not appear anywhere under `src/longterm/**`. (It is a real migration — RTL's AMC order detail —
+  which is what makes a grep for it look alive.) Nothing to fix. Recorded rather than deleted because
+  a housekeeping list that keeps naming work already done is how a reader learns to stop trusting it.
 
 ### 2.3 Settings / configuration layer — **DONE (core)**
 Typed definitions, tenant→org→product-default resolution, validated writes, per-investor scope
@@ -97,19 +105,75 @@ is a setting. Layer-2 per-investor margin hook is wired (opt-in, byte-identical 
 - **DONE:** the evaluator (`rules.js`) — three rule shapes (eligibility / bound / pricing), half-open
   `[min,max)` bands, most-restrictive tightening (overlays only tighten), fail-safe on missing facts,
   full trace. Pure, fully tested. *(MEGA §6.)*
-- **TO-BUILD:** the persistent rule *table* (2.2 above) and publish-time gap/overlap coverage validation
-  wired to a stored rule set.
+- **DONE:** gap/overlap coverage validation (`rule-coverage.js` — `analyzeRuleSet`). It answers two
+  questions about a rule set: do two PRICING rules on one dimension both charge the same scenario (a
+  DOUBLE CHARGE, the only one of the three rule shapes where a collision is a money defect), and does a
+  banded axis have a hole between the rules' own edges. It reads a predicate as a **REGION** — a box of
+  numeric bands plus enum value sets — not as a single interval, which is the whole reason it is worth
+  having: measured on the real Deephaven sheet, **129 of its 133 pricing rules** are read, and an
+  interval-only version read **1**. Advisory: it returns findings and never refuses a rule. What it
+  cannot prove it REFUSES and NAMES (`unanalyzable`, today the four `dhvn_condo_*` rules' `neq`
+  complement). GAPS are an exact GRID decomposition (parity status §2.20): every axis is cut at the
+  rules' own edges, so a region contains an elementary cell wholly or not at all and the answer is
+  exact — which is what lets it read a sheet whose rules are grid cells. Measured on the real sheet:
+  holes checked on 2 of 10 dimensions (the other 8 abstain, each with its REASON in `gapsSkippedWhy`)
+  and **4 found — 3 in cells the eligibility matrix declines, 1 the DSCR par band** — so a gap is
+  reported as a QUESTION, never a defect. Suite `scripts/test-lt-ppe-rule-coverage.js` (69 assertions,
+  incl. a section pinned to the real sheet and a live eligibility probe proving the three declined
+  cells). Detail: parity status §2.19 + §2.20.
+- **DONE:** the coverage check is WIRED to the stored rule set. `rule-store.coverageForProgram` hands
+  it the set a program actually evaluates — `rulesForProgram`, house rules plus this investor's plus
+  this program's, effective-dated — because two rules collide only if they can both fire on ONE loan;
+  analyzing the whole table would report a house rule against another investor's as a double charge.
+  `acceptSuggestion` returns a `coverage` report on the accept (computed AFTER the commit, so a read
+  error can never abort a write a human authorised, and never refusing the accept — coverage is
+  advisory and a refused button is a dead end for a finding you can only act on by looking at both
+  rules), and `GET /api/lt/ppe/rules/coverage` reads it on demand. An accepted ELIGIBILITY or BOUND
+  rule is reported as NOT overlap-checked WITH the reason, rather than as an empty overlap list — most
+  mined suggestions are eligibility rules, so a clean-looking `overlaps: []` there would be a check
+  that never ran. Suite `scripts/test-lt-ppe-rule-coverage-wiring.js` (27 assertions, stubbed db, 8
+  mutations proven).
+- Nothing remains TO-BUILD here: the rule table itself landed in db/571 (2.2 above).
 
 ### 2.7 Locks & secondary market — **DONE (engine) / TO-BUILD (surface)**
 `lock.js` — full lifecycle, frozen price stack, worst-case relock, expiry block; pure, tested. No HTTP
 surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
 
-### 2.8 The dual-run "LP wins" model — **PARTIAL** ⭐ active
+### 2.8 The dual-run "LP wins" model — **DONE** (deepened 2026-08-17)
 - **DONE:** `facade.js priceWithShadow` (shadow default, LP is the business answer, our engine's failure
   never breaks it, comparison is best-effort/async). *(MEGA §9.)*
-- **TO-BUILD:** the comparison today is **shallow** — it consumes only `client.parse()` (qualified
-  rungs + an LLPA *count*), so it cannot see **margin, itemized LLPAs, or disqualification reasons.**
-  Deepening this is P1 of the active workstream.
+- **DONE (P1 of the active workstream):** the comparison is no longer shallow. `deps.lpDetail` turns the
+  one Lender Price answer into the three parsed shapes and the façade now runs **both** halves — the
+  ladder (as before) **and** `lp-normalize-full` + `parity-detectors`, the same two modules the ≥200-scenario
+  agreement harness has always used, **reused rather than re-implemented**. So the live shadow finally sees
+  **margin, itemized LLPAs and Lender Price's own decline reasons**. Additive and optional: with no
+  `deps.lpDetail` the façade is byte-identical, and the deep block says in words why it did not run.
+- **Two defects it uncovered on the live route, both fixed:** `lp.price()` returns the **raw envelope**
+  (`{ok, raw, request, searchKey}`), which the façade was normalizing as if it were the `parse()` shape —
+  no `.programs`, so **zero matched programs, so Lender Price read as INELIGIBLE on every single quote**;
+  and the route passed the whole program **object** as Lender Price's program-*name* filter, which renders
+  `"[object object]"` and matches nothing — the same wrong answer by a second route. Every live quote was
+  recording a phantom `eligibility_mismatch`: a wiring fact filling the ledger, which is exactly the failure
+  the route's own no-program rule exists to prevent. Reproduced before the fix, guarded after it.
+- **Scope is STATED, never inferred.** Lender Price answers one request with every program it sells (17 on
+  the live Deephaven capture); our engine prices one. Unscoped, **both halves abstain with the reason** rather
+  than compare our ladder against a merge.
+- **DONE — the durable scope (db/574, 2026-08-17).** Each PROGRAM carries its own Lender Price scope
+  (`lp_investor` / `lp_lender` / `lp_program` / `lp_product` / `lp_program_like`), set through the admin-gated
+  `POST /programs/:id/lp-scope` and read by `loadProgram` into `opts.lpFilter`. It lives on the program, not
+  the sheet version, because it is a statement about the investor's product family and survives every reprice.
+  **NO backfill** — a guessed scope points a comparison confidently at the wrong program, which is worse than
+  comparing nothing. `programLike` is a FAMILY pattern because Lender Price splits one Deephaven DSCR sheet
+  into three programs by band. It is the **one** source: the transitional request-body filter is REMOVED, so
+  two sources can never disagree and no caller can hand `/quote` (not admin-gated) a RegExp to run.
+  `lp-scope.safePattern` bounds and grammar-checks every pattern — it refuses the nested-quantifier shape, a
+  pattern that matches everything (provably: for an unanchored pattern, matching the empty string IS matching
+  every name), look-around and back-references — while still accepting the real Deephaven family pattern.
+  `previewScope` answers "which program names does this actually select?" at the moment it is written, because
+  the failure of a stored scope is otherwise SILENT: one character wrong matches nothing and looks exactly like
+  a feature nobody switched on. Test `scripts/test-lt-ppe-lp-scope.js` (102); 15 mutations proven to fail it.
+- Tests `scripts/test-lt-ppe-facade-deep.js` (74) + `scripts/test-lt-ppe-quote-deep-wiring.js` (22); 18
+  mutations of the production code were each proven to fail them.
 
 ### 2.9 Validation / parity strategy — **PARTIAL** ⭐ active
 - **DONE:** `parity.js` (eligibility / rate / price comparison, incomparable never scored as agreement),
@@ -127,15 +191,148 @@ surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
 ### 2.10 Per-investor onboarding & cutover — **PARTIAL**
 - **DONE (engine):** `cutover.js` (draft→shadow→live→retired gate), `cutover-ledger.js` + `cutover-store.js`
   (append-only decision history), the scoreboard. *(MEGA §11.)*
+- **DONE (2026-08-17) — the ⛔ ≥200-scenario agreement gate is ENFORCED, at the publish (db/576).**
+  `ratesheet-agreement.js` has always MEASURED the owner's hard rule and returned `summary.gateMet`;
+  nothing kept the answer. The verdict lived as long as the return value was on the stack and was then
+  discarded, and `publishRateSheetVersion` — the moment a sheet becomes the one every quote prices from
+  — never asked. So the rule was written down in three places and enforced in none: any sheet could be
+  published, and priced from, with not one scenario ever compared. `lt_ppe_ratesheet_agreement` is the
+  missing memory (one row per run, append-only — a later run that disagrees with an earlier one is a
+  second fact about the sheet, not a correction of the first), `agreement-store.js` holds the one PURE
+  definition of "proven" (`gateDecision`), and the publish now consults it.
+  - **Four states, never collapsed:** *nobody measured it* (fixed by running the harness), *it
+    disagrees* (fixed by fixing the sheet), *it agreed on too few scenarios*, and *we could not read the
+    record*. They send a reader to four different places, so they are four reasons and four messages.
+  - **It fails CLOSED.** An unreadable ledger answers `unreadable` — never a pass, and deliberately not
+    `never_measured`, because "we could not check" is the state most likely to occur exactly when
+    something else is already wrong.
+  - **The SCALE test lives in the gate, not the harness.** `gateMet` is already
+    `errors===0 && disagreed===0 && comparable>0`, which a battery of three scenarios satisfies — true,
+    and not the owner's rule. `MIN_COMPARABLE_SCENARIOS` is a named constant so it is read in code
+    review rather than found in a row somebody edited, and a run is counted on its COMPARABLE
+    scenarios (200 scenarios of which 190 were incomparable proves almost nothing).
+  - **The override is part of the design, not a hole in it.** On the day this lands no sheet has a
+    recorded run and the harness needs live Lender Price credentials to produce one, so a gate whose
+    only remedy is a state nothing can produce is a dead end. A publish may proceed against an unproven
+    sheet only when somebody asks explicitly and says why, recorded as its own row with their name on
+    it. `gate_met` stays NULL there — writing false would claim the sheet was measured and failed,
+    which is a different and more damning statement than "unmeasured" — and an override is never
+    counted as proof of agreement afterwards. **When the recording fails the publish does not proceed:
+    the record IS the authorization.** The point is never to make refusal impossible to get past; it is
+    to make getting past it impossible to do silently.
+  - **No backfill, and none is possible** — no agreement run has ever been recorded anywhere, so there
+    is nothing to import, and marking existing sheets proven would invent the exact evidence the table
+    exists to require.
+  - Tests `test-lt-ppe-agreement-gate.js` (pure, stub db) + the refusal asserted at the publish itself
+    in `test-lt-ppe-ratesheet-db.js`. Verified against a real Postgres built by the full 572-migration
+    chain; eight mutations of the production rule were each proven to turn the suite red.
+- **DONE (2026-08-17) — the gate has a MEASURING half: `POST /rate-sheets/:id/agreement/run`.** The
+  four states above were the right vocabulary and the gate was still only half a gate: **nothing called
+  the harness**, so no run could be recorded and the only exit was the override. A gate whose one exit
+  is "publish it anyway" is a gate in name. The route runs the canonical 299-scenario battery
+  (`agreement-scenarios.js`) through `ratesheet-agreement.js` and records the verdict — so a sheet
+  becomes publishable because it was MEASURED. There is deliberately still no route that accepts a
+  result in a request body, and `test-lt-ppe-console-db` D8 now asserts exactly one recorder whose
+  input is the harness's own return value.
+  - **PULLED, never scheduled** — the battery prices against a paid vendor, so a timer firing it is the
+    owner's call, the same line drawn for the canary tick.
+  - **It refuses before it spends:** no program / no base grid (422), upstream not configured (503),
+    another tenant's version (404), and **no Lender Price scope (422 `no_lp_scope`)** — LP answers with
+    its whole catalogue while our sheet prices one ladder, and a PASS from an unscoped run would open
+    the gate on a measurement of the wrong question.
+  - **A fifth state was needed: `nothing_comparable`.** `gateMet` requires `comparable > 0`, so a run
+    where LP gave no usable answer fails with zero disagreements and zero errors. Calling that "it
+    disagrees" sends somebody to fix a sheet that may be correct.
+  - **A record that does not land is a 500 (`not_recorded`) carrying the summary**, never a 200 with a
+    quiet `recorded:false` — that is exactly how somebody watches a run succeed, presses Publish, and
+    is refused with `never_measured` with no way to find out why.
+  - **BOTH LEGS come from `lp-agreement-legs`** (`buildOursLeg({factsFromLp:true})` + `buildLpLeg`),
+    the same pair the live agreement script uses. Hand-rolling either is the silent-wrong-answer class:
+    the battery is LENDER PRICE scenarios and our engine reads FACTS (ltv/dscr in milli), and
+    `client.price` answers `{ok,raw}` rather than the `{full,disqualified}` the harness consumes — that
+    second one makes every scenario INCOMPARABLE against a healthy vendor. Caught only once the test's
+    stub was shaped like the VENDOR instead of like the harness's input.
+  - **Three silent defects came out of the testing**, all of which ran green while measuring nothing:
+    the battery builder returns `{scenarios,count,byGroup}` and the route read `.length` off the object
+    (so the harness received an empty list and recorded a verdict over ZERO scenarios), and
+    `summarize()` names the count `total` while `recordRun` read `s.scenarios` (so every real run
+    stored 0 in the column the gate reads). Both are pinned by mutation-proven assertions.
+  - Test `test-lt-ppe-agreement-run-db.js` (real Postgres, stubbed LP client, sections A–F; every
+    assertion proven to fail by mutating the guard it protects). **It still cannot RUN** — the route
+    refuses `upstream_not_configured` until the Lender Price login is present in this environment's settings (the owner withdrew the rotation requirement on 2026-08-18 and authorized the login for live use).
 - **TO-BUILD:** **no promote-to-live HTTP route exists** — the gate is reachable only in code. Add the
-  route + the human promote/rollback action (P10).
+  route + the human promote/rollback action (P10). The agreement gate above is the E3 half of the same
+  question (may this SHEET be trusted); promote-to-live is the P10 half (may this PROGRAM go live).
 
 ### 2.11 Interfaces (admin surface) — **PARTIAL**
 - **DONE:** `/api/lt/ppe/*` (health, settings, investors, findings, scoreboard, quote, decide-finding,
   canary) + the `LtPpe.jsx` findings/scoreboard/readiness screen (staff-only, wired).
-- **TO-BUILD:** investor/program manager, rule-authoring editor, rate-sheet console, LLPA manager,
-  settings center, scenario playground, and the **manual-review + suggested-rules UI** (P8). No admin
-  screen consumes the built `createInvestor`/`createProgram`/rate-sheet writers yet. *(MEGA §12.)*
+- **DONE (2026-08-17):** the canary SCHEDULE is reachable — `GET/POST /canary/schedules`,
+  `DELETE /canary/schedules/:investor` and `POST /canary/tick`. `canary-schedule.js` (the decision) and
+  `schedule-store.js` (db/570) were built, tested and callable by NOTHING, so the findings ledger, the
+  run series and the per-band trend only ever grew on the days a person fired a canary by hand — and
+  the promote gate reads that series, where an unfed clean-day streak does not read as "unmeasured", it
+  reads as a low score. The tick is PULLED, not pushed: no timer was added, because a background loop
+  calling a paid vendor on its own schedule is the owner's decision, not a refactor's. The execution
+  (`runBattery`) and the battery rules (`resolveBattery`) were EXTRACTED so a canary fired by hand and
+  one fired by a cadence produce the same measurement into the same three records — a second copy is
+  how the series comes to mean two different things. Every uncertainty HOLDS with its reason
+  (unresolvable program, unreadable run series, paused, not due), because a canary that does not fire
+  is a visible gap while one that fires wrongly is N live vendor calls per tick, forever.
+- **DONE (2026-08-17):** `GET /programs` + the LP-scope editor on `LtPpe.jsx` — the first admin surface
+  that consumes a program writer. It exists because db/574's scope route needs a program UUID no read
+  surface published, so no sheet could be scoped and every shadow comparison abstained silently. The
+  list leads with how many programs are UNSCOPED and says what that means; the form previews which
+  Lender Price program names a pattern actually picks, with zero matches called out.
+- **DONE (2026-08-17) — the rate-sheet writers have a door.** EVERY writer in `ppe/store.js`
+  (`createInvestor`, `createProgram`, `createRateSheetVersion`, `replaceBasePrices`,
+  `replaceAdjustments`, `setPriceLimit`, `publishRateSheetVersion`) had **zero callers anywhere in
+  `src/`** — so an investor could not be onboarded through the product at all, no sheet could be
+  loaded, and the ≥200-scenario agreement gate guarded a door that did not exist. Nine admin-gated
+  routes now cover the whole journey: `POST /investors`, `POST /programs`,
+  `POST /programs/:id/rate-sheets`, `GET /rate-sheets/:id`, `PUT /rate-sheets/:id/{base-prices,
+  adjustments,price-limit}`, `GET /rate-sheets/:id/agreement`, `POST /rate-sheets/:id/publish`.
+  - **Ownership first.** `store.rateSheetVersionInScope` is the ONE check and every route runs it
+    before touching anything — the grid writers replace a WHOLE grid, so a missing check destroys
+    another tenant's live pricing rather than merely leaking it.
+  - **Only a DRAFT is editable.** A published sheet is what live quotes price from; it is superseded
+    by a new version, never rewritten underneath them, and the refusal says so.
+  - **Nobody types an agreement result.** There is deliberately NO route recording a passing run from
+    a request body — that would satisfy the gate with nothing compared. **A tenth route,
+    `POST /rate-sheets/:id/agreement/run`, was added the same day (§2.10): it RUNS the harness and
+    records what the harness returned**, which is the opposite of typing one in. The guard that used to
+    read "no route records a run" was narrowed to what it was always protecting — exactly one recorder,
+    fed the harness's own result — because the broad form would have banned the measuring half forever.
+    The recorded override remains the other way past the gate.
+  - **A LATENT DEFECT FIXED ON THE WAY:** `replaceBasePrices`/`replaceAdjustments` took a scope and
+    DELETEd by `version_id` alone. Unreachable while nothing called them; armed the moment a door
+    opened. Both are scoped now, guarded at the store layer (see the note in §2.9's suites below).
+  - Tests `test-lt-ppe-console-db.js` (the journey end to end over a real Postgres) + section E of
+    `test-lt-ppe-store-roundtrip-db.js`; ten mutations proven to bite.
+- **DONE (2026-08-17) — the sheet's own DEAD-CELL check has a door: `GET /rate-sheets/:id/coverage`.**
+  `agreement-scenario-generator.js` derives a battery from a sheet's OWN compiled rules and names every
+  cell it cannot satisfy; nothing called it. The route is FREE (no vendor call, no writes, no ledger
+  row), which is what makes it the check to run BEFORE a paid battery — a transposed band
+  (`fico_min 900, fico_max 800`) is invisible in every other way. It does NOT take the generator's word:
+  a cell counts as reachable only when the sheet was PRICED there and the rule's own trace shows it
+  contributed; a generator/pricer disagreement and an unpriceable scenario each get their own bucket.
+  Wires `agreement-scenario-generator` + `agreement-dimensions` + `coverage` off the unreached ledger.
+  Test `test-lt-ppe-ratesheet-coverage-db.js` (healthy sheet AND broken sheet, four mutations proven).
+- **DONE (2026-08-17) — both new checks are on the SCREEN.** The console offers "Check its own cells
+  (free)" and "Measure against Lender Price", with the cost of the paid one stated beside the free one;
+  a finished run re-reads the sheet, an unrecorded verdict is shown as unrecorded, and a 503 renders as
+  the upstream speaking. Still no control that records a typed run (asserted, R7).
+- **DONE (2026-08-17) — the console SCREEN.** `RateSheetConsole.jsx` on `LtPpe.jsx` walks the whole
+  journey: add the investor, add its program, open a draft sheet, load the grid and the LLPAs, read it
+  back, publish. The gate's verdict is shown BEFORE Publish is pressed, and its refusal carries both
+  ways forward (measure it, or override with a reason). **The grid is PASTED** — the source is an
+  Excel tab, and re-keying a price sheet by hand is how a digit moves — through the pure, unit-tested
+  `ratesheetPaste.js`, which lists every line it could not use with its number and a reason and blocks
+  the load while any line is unreadable. There is deliberately NO control that records an agreement
+  RUN. Style tokens live in `ppeStyles.js` so the two PPE screens cannot drift.
+- **TO-BUILD:** rule-authoring editor, LLPA manager (the console loads them; nothing edits one in
+  place yet), settings center, scenario playground, and the **manual-review + suggested-rules UI**
+  (P8). *(MEGA §12.)*
 
 ### 2.12 The LP connector — **DONE**
 `lenderprice/client.js` (login/token/price/parse/parseFull/parseDisqualified, read-only viewer, fails
@@ -189,7 +386,7 @@ owner wants to start.
   correct for the key shapes we have seen and **refuses the rest** — so it is safe and extends cleanly,
   but the full per-investor rule vocabulary can only be locked in from a live capture. **That capture
   needs the Lender Price credentials, which are currently COMPROMISED (pasted in chat) and must be
-  rotated first.** Owner action: rotate `LP_PASSWORD` / `LP_CLIENT_SECRET` / `LP_DIAG_TOKEN`, then a
+  present in this environment's settings first.** ROTATION IS NOT REQUIRED — the owner withdrew it in writing on 2026-08-18 and authorized the login for live comparison at all times. Owner action: set `LP_PASSWORD` / `LP_CLIENT_SECRET` / `LP_DIAG_TOKEN` in the settings, then a
   read-only disqualify capture (e.g. against the Deephaven sheet) feeds every real `adjType`/key into
   the crosswalk map. Until then the engine is built and safe; the map grows as real keys arrive.
 
@@ -268,7 +465,7 @@ owner wants to start.
 - **Acceptance test.** One pure test per detector with a fixture that isolates that single difference.
 - **Depends on:** P1 (all), P4 (P3e). **Owner gate:** none for detection.
 
-### P4 — The curated Lender-Price-key → rule-predicate crosswalk  ·  TO-BUILD
+### P4 — The curated Lender-Price-key → rule-predicate crosswalk  ·  **DONE** ✅ *(status corrected 2026-08-17)*
 - **What.** A **curated** map from LP's free-text LLPA/disqualify `key` strings (e.g. "LTV >75.01% <=
   80.0%", "DSCR - Interest Only") → our rule predicate `{fact, op, value}` (half-open, milli units).
   Start with the **Deephaven ("DPave")** sheet the owner named.
@@ -281,7 +478,7 @@ owner wants to start.
 - **Depends on:** P1. **Owner gate:** ⚠️ **owner confirms the curated-crosswalk approach** (curated map,
   human-verified, never auto-guessed) before it drives any suggested rule.
 
-### P5 — The rule-suggestion engine + a suggestion store  ·  WRITES A PROPOSAL  ·  TO-BUILD
+### P5 — The rule-suggestion engine + a suggestion store  ·  WRITES A PROPOSAL  ·  **DONE** ✅ *(status corrected 2026-08-17)*
 - **What.** Given a missing disqualification (or a missing LLPA) from P3e/P3f, synthesize a **suggested
   rule** — `{ kind:'eligibility'|'pricing', source:'overlay', when:<predicate from P4>, declineReason:<LP
   key verbatim>, code:<generated> }` scoped to `investor:<code>` — and record it as a **proposal** in a
@@ -322,7 +519,7 @@ owner wants to start.
   `evaluateRules` declines the scenario it targets — and that an overlay can only tighten.
 - **Depends on:** nothing new. **Owner gate:** none (structure only).
 
-### P7 — Close the loop: accept a suggestion → write the rule → re-run parity  ·  TO-BUILD
+### P7 — Close the loop: accept a suggestion → write the rule → re-run parity  ·  **DONE** ✅ *(status corrected 2026-08-17)*
 - **What.** Accepting a P5 suggestion writes it into the P6 rule table (overlay, scoped to the investor);
   the next parity run shows the finding **resolved** (our engine now declines exactly what LP declines).
 - **Why.** This is the whole point — the review makes our engine converge on Lender Price, investor by
@@ -331,7 +528,7 @@ owner wants to start.
   rule written → re-run → finding settles and does not re-open.
 - **Depends on:** P5, P6. **Owner gate:** ⚠️ a human performs the accept.
 
-### P8 — The manual-review + suggested-rules UI  ·  TO-BUILD
+### P8 — The manual-review + suggested-rules UI  ·  **DONE** ✅ *(built 2026-08-17)*
 - **What.** A staff-only screen (`app-v2/src/longterm/**`): per scenario, LP's answer beside ours, the
   categorized diffs (P3a–f), and the suggested rules (P5) with an **Accept** button (P7). Investor names
   stay staff-only.
@@ -339,14 +536,92 @@ owner wants to start.
   the house rule.
 - **Depends on:** P2, P3, P5, P7. **Owner gate:** none.
 
-### P9 — The point-for-point price parity matrix per investor  ·  TO-BUILD
+- **STATUS CORRECTED 2026-08-17, against the code rather than from memory.** P4/P5/P7 were still marked
+  TO-BUILD here while P6 two rows down already announced "+ P5-store + P7 accept-and-write" — the
+  document contradicted itself, and a plan that reports built work as outstanding sends the next person
+  to rebuild it. Verified present: the crosswalk `ppe/disqualify-crosswalk.js` (`keyToPredicate`, which
+  REFUSES an unrecognised key rather than guessing), the miner `ppe/suggestion-miner.js`, the store
+  `ppe/rule-store.js` (`saveSuggestions` / `listSuggestions` / `acceptSuggestion` / `dismissSuggestion`,
+  idempotent on `(scope, investor_label, dedupe_key)`, and a decided suggestion is never reopened), the
+  tables `db/571_lt_ppe_rule_and_suggestion_store.sql`, and the routes `GET /ppe/suggestions` +
+  `POST /ppe/suggestions/:id/{accept,dismiss,…}` with accept/dismiss admin-gated.
+- **P8 was the one that was genuinely missing, and it is now built** — the "Rules Lender Price's
+  refusals suggest" section of `app-v2/src/longterm/LtPpe.jsx`. It was the human end of the loop: every
+  server piece existed, so the only way to accept a suggestion was to call the endpoint by hand.
+  `scripts/test-lt-ppe-suggestion-ui.mjs` (25 assertions, 4 mutation-proven) pins the two traps it is
+  built around — the list is deliberately NOT filtered by the screen's investor picker (that carries OUR
+  investor CODE while a suggestion carries Lender Price's VERBATIM label, so filtering would return an
+  empty list indistinguishable from "nothing to do"), and a failed read is STATED rather than falling
+  back to an empty list that reads as all-clear.
+
+### P9 — The point-for-point price parity matrix per investor  ·  **DONE (the measurement)** ✅ *(2026-08-17)*
 - **What.** Run the real rate-for-rate comparison across the scenario matrix for the pilot investor
   (Deephaven), producing the sliced parity dashboard (by state / DSCR band / FICO / LTV) and the trend.
 - **Why.** Today's parity is count/eligibility; this is the sustained-agreement metric that gates
   cutover. *(MEGA §10.3a / §10.5.)*
-- **Acceptance test.** A canary run over the matrix records per-cell price deltas and the scoreboard
-  reflects them.
-- **Depends on:** P1, P3. **Owner gate:** ⚠️ tolerances + clean-weeks threshold — Part 4.2/4.3.
+- **THE BLOCKER WAS A DATA-LOSS DEFECT, not missing analysis.** `shadow.runOne` reduced each scenario
+  to a display STRING and threw the object away — one function before anybody could use it. So the
+  findings ledger's `scenario_facts` column (db/561) was NULL on every finding the canary ever recorded,
+  and a dashboard "sliced by state / DSCR band / FICO / LTV" had no facts to slice by. The facts now
+  ride beside the label (`result.facts`), and the canary hands them to the ledger. The LABEL is
+  unchanged — the finding key is built from it and must not move.
+- **Built.** `parity-matrix.js` (pure): `buildParityMatrix(results, {program})` slices a run by the
+  scenarios' own facts and reports, per cell, agreed / disagreed / errors / incomparable / **overlay**
+  (a D29 reasoned override is not a defect and is never hidden inside `disagreed`) plus the price gap —
+  `scenarios` vs `samples` kept apart, a SIGNED mean (a sheet uniformly light is a different problem
+  from one scattered either side) and `worstAbsMilli` for how bad it gets. `worstCells` ranks without
+  inventing a threshold — what counts as bad enough to act on is the owner's tolerance decision.
+- **THE BANDS ARE THE SHEET'S OWN EDGES, derived, never invented.** `bandsFromProgram` reads each
+  axis's cut points off the program's OWN rules, REUSING `rule-coverage.regionOf` so the two can never
+  disagree about where a sheet breaks. Measured on the real Deephaven sheet: seven axes, FICO at
+  640/660/680/700/720/740/760/780. A dashboard cutting at "the usual" 660/680/700 would straddle real
+  breaks and average a good band with a bad one. Half-open, so a scenario on an edge lands in exactly
+  one cell. An axis the sheet does not describe is NOT given invented bands.
+- **Nothing is silently bucketed.** Every unplaceable scenario is counted with its own reason, there is
+  no catch-all cell masquerading as a band, and every dimension RECONCILES (cells + unsliceable = the
+  run's total) with the arithmetic carried on the report. A slice that loses scenarios reports a better
+  agreement rate than the run earned — the one direction this must never be wrong in.
+- **Reachable:** it rides on `canary.runCanary` and `POST /canary` publishes `matrix` + `worstCells`
+  (not the up-to-500 raw results). Test `scripts/test-lt-ppe-parity-matrix.js` (95); 17 mutations
+  proven to fail it.
+- **DONE — the TREND across runs (db/575, 2026-08-17).** `lt_ppe_parity_cell` stores one row per cell
+  per run, so "has THIS band been off for three weeks, or was that one bad afternoon?" — the question a
+  cutover decision actually turns on — is answerable. `parity-cell-store.js` writes it from the canary
+  (a third durable record beside the findings ledger and the run series, reported separately because
+  the three fail independently) and reads it back as `GET /parity-cells`. **A MISSING ROW MEANS "NOT
+  MEASURED", NEVER "MEASURED BADLY":** a run with no scenarios in a band writes nothing for it, gaps
+  are never zero-filled, and `daysMeasured` vs `windowDays` is reported so a cell measured on two of
+  twenty days is not presented like one measured on all twenty. Ranked by PERSISTENCE (days seen
+  disagreeing) — a chronic band that has just started recovering outranks one that broke this morning,
+  which a latest-rate sort inverts. The direction is `scoreboard.trend`, reused so "improving" means
+  one thing here. It RANKS and never thresholds. Test
+  `scripts/test-lt-ppe-parity-cell-store.js` (118); 18 mutations proven to fail it.
+- **DONE — the SCREEN (2026-08-17).** "Where it disagrees" on `LtPpe.jsx`, reading `GET /parity-cells`:
+  the bands that have disagreed on the most days, each with its latest agreement, its worst gap and
+  its direction, and a day-by-day view behind each row. It holds no threshold and does no sorting of
+  its own. Four ways a parity screen can lie are each closed and each mutation-proven:
+  **(a) THE EMPTY-VIEW LIE** — the series is keyed EXACTLY on (investor, program) as the canary wrote
+  it, so asking for a key nobody wrote returns an empty list, which drawn as "nothing has ever been
+  measured" is indistinguishable from a clean book. So the read now also returns
+  `parityCellStore.listSeries` — the series that actually hold rows — the picker is built from THAT,
+  the default is named "runs recorded against no investor" rather than "everything", and an empty view
+  names the series that do hold measurements instead of reporting silence.
+  **(b) THE GAP LIE** — days measured is shown against the window asked about, and days-disagreeing
+  against the same denominator, so a band measured on two of thirty days never sits beside one
+  measured on all thirty as though they weigh the same.
+  **(c) THE ZERO-FILL LIE** — only the days the server returned are drawn, and an unmeasured rate is a
+  dash, never 0%.
+  **(d) THE UNITS LIE** — parity gaps are canonical integer MILLI-points, so a 1.25-point gap printed
+  raw reads as "1250" — a catastrophe on a rate sheet. Converted once, in one helper.
+  Guards: `scripts/test-lt-ppe-screen-pure.mjs` (extended) + `test-lt-ppe-parity-cell-store.js` (146).
+  Along the way `listCells` turned out to have **no coverage at all** — a mutation removing its window
+  clause left the whole suite green, which would have served a whole quarter's measurements under a
+  "last 30 days" heading. It has its own section now, and two of the new screen guards came back GREEN
+  when first mutated because they matched a NAME the mutation left behind (`parity.series` still
+  matched inside `parity.seriesTruncated`); both are pinned to their composed form, and the guards now
+  run against comment-stripped source so a test can never be satisfied by the prose explaining it.
+- **Depends on:** P1, P3. **Owner gate:** ⚠️ tolerances + clean-weeks threshold — Part 4.2/4.3 — which
+  gate the CUTOVER decision, not the measurement; the matrix ranks and never thresholds.
 
 ### P10 — The promote-to-live route + human promote/rollback  ·  TO-BUILD (supporting)
 - **What.** The missing HTTP endpoint that drives the built cutover gate: a human promotes an investor
@@ -404,7 +679,8 @@ the parity engine is built and pure-tested (39/39 suites).**
 Detection-only and safe to build next (LP still wins; nothing auto-applies): **P1 → P2 → P3 (a–f) → P9**.
 Rule-writing loop, gated on Part 4.1/4.4 + a human in the loop: **P6 → P5-store → P7 → P8** (P4's
 disqualify crosswalk is already built by P-DQ; widen it from a live capture once credentials are
-rotated). Supporting: **P10** (after P9). Housekeeping alongside: fix the stale db/567 comments (2.2).
+present in the settings). Supporting: **P10** (after P9). *(The db/567 housekeeping item that used to be named here was
+closed 2026-08-17 — see §2.2: it was measured and found already done.)*
 
 Progress is tracked against these numbers. Each step is one commit (or a tight set) with `[skip ci]`,
 its tests green, on branch `claude/lender-price-frontend-agent-7g7tm9`, and reported by its P-number so
@@ -462,10 +738,20 @@ fields/Excel-grid→rule design; the disqualify-always workflow + troubleshooter
       deterministic, many axes, truncation-reported) + `parity-review.reviewScenario` +
       `parity-detectors` (base_price / final_price / coupon / margin / **llpa_total** differences AND
       `disqualification_missing`/`_extra`) + `lp-normalize-full` (carries base rates, adjustment points,
-      **max/min price**, margin, LLPAs in canonical milli units). The one thin piece to add is a
-      per-investor grid-validation report that composes them over the ≥200 battery and emits a
-      per-scenario pass/fail (eligible price+LLPA+cap/floor match AND disqualify match), plus the summary
-      "we agree on N/200, here is every disagreement."
+      margin, LLPAs in canonical milli units). The one thin piece to add is a per-investor
+      grid-validation report that composes them over the ≥200 battery and emits a per-scenario pass/fail
+      (eligible price+LLPA+cap/floor match AND disqualify match), plus the summary "we agree on N/200,
+      here is every disagreement."
+      - **CORRECTED 2026-08-17 (§2.18 of the parity status): `lp-normalize-full` does NOT carry max/min
+        price** — the claim above said it did, and it never has. Lender Price's payload publishes a rung
+        LADDER; `client.parse` derives a `maxPrice` from it that is the **best observed price on that
+        ladder, not a declared ceiling**, and the two must never be read as the same thing. Whether the
+        vendor declares a cap/floor field at all is UNMEASURED and needs a live capture. The cap/floor
+        axis is therefore checked against **our own** stated limit (frame-free) — `boundsProbe` +
+        `runOne` opts.boundsGate + the `summary.bounds` roll-up — never against a vendor number we do
+        not have. MEASURED at the same time: the DEFAULT built-in Deephaven grid states no ceiling at
+        all and prices to 110.500 against a sheet whose ceiling is 105 (the max-price block is the
+        `--with-prepay` grid, where 4,180 of 7,168 rungs clamp at the cap).
     - **BLOCKED on two owner action items (both in Part 4):** (a) the Lender Price login was exposed in
       chat and is compromised — ROTATE it before any live scenario runs; (b) the actual Deephaven Excel
       (`Corr_Flow_Rate_Sheet__T0__Excel.xlsx`) so the grid is built from the real cells, not the written
@@ -526,7 +812,7 @@ fields/Excel-grid→rule design; the disqualify-always workflow + troubleshooter
     min/max a hard floor or a replaceable default?).
 
 **Sequencing:** E2 (parser audit) and E8 (troubleshooter record) are backend and can proceed as the
-research lands; E1 (auto-disqualify wiring) needs the live upstream (credentials rotated); E3/E4/E5 (the
+research lands; E1 (auto-disqualify wiring) needs the live upstream (credentials present in the settings); E3/E4/E5 (the
 Excel-grid UI + import) are GATED by the ⛔ ≥200-scenario Lender Price agreement (E3 above); E6 is a
 scheduled job; E7 extends the scoreboard; E9 (comp model) is design-ready pending 2 owner answers. The
 three owner decisions in Part 4 still gate the money math + go-live.

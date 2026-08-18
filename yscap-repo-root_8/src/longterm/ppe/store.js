@@ -8,27 +8,45 @@
  * `db` is a pg pool/client exposing `.query(text, params)`. Everything is scoped
  * by `scope` (default 'company') — selling to a second lender is a new scope.
  *
- * DEGRADES SAFELY: an unreadable override table, a missing row, or an override
- * that no longer validates against its definition all fall back to the coded
- * default (settings.resolve already skips an invalid override), so pricing never
- * degrades to nothing — only to the industry-standard default.
+ * DEGRADES SAFELY, WITH ONE DELIBERATE EXCEPTION: an unreadable override table, a
+ * missing row, or an override that no longer validates against its definition all
+ * fall back to the coded default (settings.resolve already skips an invalid
+ * override), so a READ never degrades to nothing — only to the industry-standard
+ * default. THE EXCEPTION IS THE MARGIN THAT PRICES A LOAN
+ * (`prepareMarginHoldbackForInvestor`), which FAILS CLOSED and says which scope it
+ * could not read: falling back there would price at a margin nobody confirmed and
+ * be indistinguishable from a correct quote.
  *
  * LT-only. No RTL imports.
  */
 const settings = require('./settings');
 const { resolveMarginHoldback } = require('./margin-holdback');
+const lpScope = require('./lp-scope');
+
+// Load a tenant's setting OVERRIDES as a { key: value } map, LETTING A READ FAILURE
+// REACH THE CALLER. Only keys that are real definitions are returned; an unknown/
+// legacy key is ignored.
+//
+// This is the variant anything that decides a PRICE must use. The swallowing wrapper
+// below is right for a DISPLAY read — a settings screen that cannot reach the override
+// table is better showing the coded defaults than showing nothing — and it is exactly
+// wrong for a margin: falling back to the company/product default there would price at
+// a margin nobody chose and look completely healthy doing it.
+async function loadSettingOverridesStrict(db, scope) {
+  const r = await db.query('SELECT key, value FROM lt_ppe_setting_value WHERE scope = $1', [scope]);
+  const out = {};
+  for (const row of r.rows || []) {
+    if (settings.getDefinition(row.key)) out[row.key] = row.value;
+  }
+  return out;
+}
 
 // Load a tenant's setting OVERRIDES as a { key: value } map. Only keys that are
 // real definitions are returned; an unknown/legacy key is ignored. Never throws —
 // an unreadable table returns {} so resolution falls back to the coded defaults.
 async function loadSettingOverrides(db, scope = 'company') {
   try {
-    const r = await db.query('SELECT key, value FROM lt_ppe_setting_value WHERE scope = $1', [scope]);
-    const out = {};
-    for (const row of r.rows || []) {
-      if (settings.getDefinition(row.key)) out[row.key] = row.value;
-    }
-    return out;
+    return await loadSettingOverridesStrict(db, scope);
   } catch (_e) {
     return {};
   }
@@ -71,15 +89,239 @@ async function clearSetting(db, scope, key) {
   return { ok: true };
 }
 
+// ---- the audit trail (db/580) -----------------------------------------------
+//
+// setSetting/clearSetting above are the low-level PRIMITIVES: they write the value and
+// nothing else, and a seed script or a test may legitimately use them with no person
+// behind the change. The AUDITED door a human goes through is `settings-admin.js`, which
+// reads the before-state, calls the primitive, and records the row below. Adding the
+// audit inside the primitives instead would make a test fixture write governance rows
+// claiming a change nobody made.
+
+// Read the stored override row for one (scope, key), or null when there is none. This is
+// deliberately a different question from `resolveSetting`: "did a human set this?" and
+// "what value is in force?" are separate facts, and the whole point of the audit is to
+// keep them apart. Never throws — an unreadable table reads as "nothing stored", which is
+// the same answer the resolver already degrades to.
+async function readStoredSetting(db, scope, key) {
+  try {
+    const r = await db.query(
+      'SELECT scope, key, value, updated_by, updated_at FROM lt_ppe_setting_value WHERE scope = $1 AND key = $2',
+      [scope, key]);
+    return r.rows[0] || null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+// Append ONE audit row. INSERT only — this table is append-only and the store performs no
+// UPDATE or DELETE against it, ever (db/580). Throws on failure ON PURPOSE: the caller
+// records the change and the trail in one transaction, and a change that cannot be
+// recorded must not be committed. That is the opposite posture from every other read in
+// this module, and it is deliberate — "a number that moves a price never changes without
+// a record" is only true if the record failing takes the change down with it.
+async function appendSettingAudit(db, row) {
+  const r = await db.query(
+    `INSERT INTO lt_ppe_setting_audit
+       (scope, key, action, from_value, from_source, to_value, to_source, actor_id, actor_label)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9)
+     RETURNING id, changed_at`,
+    [row.scope, row.key, row.action,
+      row.fromValue === undefined ? null : JSON.stringify(row.fromValue),
+      row.fromSource,
+      row.toValue === undefined ? null : JSON.stringify(row.toValue),
+      row.toSource,
+      row.actorId || null, row.actorLabel || null]);
+  return r.rows[0] || null;
+}
+
+// The trail, newest first. `opts.scope` narrows to one slot, `opts.key` to one setting.
+// Never throws — a settings screen that cannot read the history must still render the
+// settings, and it says the history is unavailable rather than showing an empty one.
+async function listSettingAudit(db, opts = {}) {
+  const where = [];
+  const params = [];
+  if (opts.scope) { params.push(opts.scope); where.push(`scope = $${params.length}`); }
+  if (opts.key) { params.push(opts.key); where.push(`key = $${params.length}`); }
+  const limit = Number.isInteger(opts.limit) && opts.limit > 0 && opts.limit <= 500 ? opts.limit : 100;
+  try {
+    const r = await db.query(
+      `SELECT id, scope, key, action, from_value, from_source, to_value, to_source,
+              actor_id, actor_label, changed_at
+         FROM lt_ppe_setting_audit
+        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        ORDER BY changed_at DESC, id DESC
+        LIMIT ${limit}`, params);
+    return { ok: true, rows: r.rows || [] };
+  } catch (e) {
+    return { ok: false, rows: [], error: String((e && e.message) || e).slice(0, 200) };
+  }
+}
+
 // ---- margin & holdback (Layer 1) --------------------------------------------
 
 // The setting scope key for a per-investor override layer. An investor's own margin/
 // holdback/rules live under scope `investor:<code>` in lt_ppe_setting_value (the same
 // override table, a distinct scope), layered OVER the company scope, layered over the
 // coded product defaults. Never throws — an unusable code degrades to the company scope.
+//
+// THE CODE SHAPE IS ENFORCED HERE, at the ONE place the prefix is ever attached, so no
+// caller anywhere builds an `investor:` string by hand. A code carrying a colon, a space
+// or the word `company` could otherwise be typed into a scope that collides with the
+// GLOBAL slot — `investor:` + `` is `investor:`, and a code of `x` on a hand-built
+// `investor:${code}` is only one typo away from writing a per-investor value into the
+// company row. An unusable code returns null and the caller falls back to the company
+// layer, which is the safe direction: the pre-fill, never another investor's number.
+const INVESTOR_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 function investorScope(code) {
   const c = String(code == null ? '' : code).trim();
-  return c ? `investor:${c}` : null;
+  return INVESTOR_CODE_RE.test(c) ? `investor:${c}` : null;
+}
+
+// Read an `investor:<code>` scope string back to its code, else null. The inverse of
+// investorScope, and it applies the SAME shape test, so a hand-written scope string that
+// investorScope would never have produced is not recognised as an investor scope either.
+// ---- the OFFICER slot, exactly the shape the investor slot has ---------------
+//
+// A loan officer's own compensation numbers live under `officer:<staffId>`, where the id is the
+// SHARED `staff_users` record (identity zone, read-only to Long-Term). Same discipline as the
+// investor scope: the prefix is attached in exactly one function, so every stored scope string has a
+// guaranteed shape rather than a hoped-for one, and a value that is not a plain uuid never becomes a
+// scope at all.
+const OFFICER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function officerScope(staffId) {
+  const c = String(staffId == null ? '' : staffId).trim().toLowerCase();
+  return OFFICER_ID_RE.test(c) ? `officer:${c}` : null;
+}
+
+function officerIdOfScope(scope) {
+  const s = String(scope == null ? '' : scope);
+  if (!s.startsWith('officer:')) return null;
+  const c = s.slice('officer:'.length);
+  return OFFICER_ID_RE.test(c) ? c.toLowerCase() : null;
+}
+
+/**
+ * An officer's OWN stored overrides, filtered to the keys the registry declares per-officer.
+ *
+ * THE FILTER IS THE OWNER'S "NON-OVERRIDABLE", ENFORCED STRUCTURALLY. `comp.company_holdback_milli`
+ * is not declared `perOfficer`, so it is dropped here — which means an officer-scope row for it,
+ * however it came to exist, can never reach the resolver. The write door refuses to store one and
+ * this refuses to read one; the two ends agree because they read the SAME declaration, not because
+ * somebody kept two lists in step.
+ */
+async function loadOfficerOverrides(db, staffId) {
+  const scope = officerScope(staffId);
+  if (!scope) return {};
+  const raw = await loadSettingOverrides(db, scope);
+  const out = {};
+  for (const k of Object.keys(raw)) if (settings.isOfficerScoped(k)) out[k] = raw[k];
+  return out;
+}
+
+/**
+ * Resolve one officer's compensation plan: officer layer over company layer over the coded default.
+ *
+ * The HOLDBACK is resolved from the company layer ALONE — the officer layer is not passed for it, so
+ * there is no override to ignore. `holdbackSource` rides on the answer so `comp-plan.computeComp` can
+ * refuse a plan built by code that got this wrong, rather than silently substituting the right value
+ * and hiding the mistake.
+ *
+ * DEGRADES SAFELY: an unreadable override table falls back to the company scope, which falls back to
+ * the coded defaults — the plan resolves to the pre-fills, never to nothing.
+ */
+async function resolveCompPlanForOfficer(db, staffId, opts = {}) {
+  const org = await loadSettingOverrides(db, opts.companyScope || 'company');
+  const tenant = await loadOfficerOverrides(db, staffId);
+
+  const pick = (key) => settings.resolve(key, { tenant, org });
+  const companyOnly = (key) => settings.resolve(key, { org });
+
+  const holdback = companyOnly('comp.company_holdback_milli');
+  const margin = pick('comp.officer_margin_milli');
+  const front = pick('comp.officer_front_milli');
+  const back = pick('comp.officer_back_milli');
+  const minC = pick('comp.officer_min_cents');
+  const maxC = pick('comp.officer_max_cents');
+  const split = pick('comp.officer_split_pct');
+  const basis = companyOnly('comp.split_basis');
+  const defaultMode = companyOnly('comp.default_mode');
+
+  // THE FRONT/BACK SPLIT MUST COME FROM THE SAME LAYER AS THE MARGIN IT SPLITS, and this is a real
+  // defect found by running it: an officer whose own margin is 3.000 while the front and back are
+  // still somebody ELSE'S 2.000 and 0 does not add up, and `computeComp` — correctly — refuses the
+  // whole file rather than repairing it. So a split that is STALER than the margin is treated as
+  // unstated, and the engine derives it from how the officer is paid (all origination on a
+  // borrower-paid file, all rebate on a lender-paid one). Setting a margin alone is the ordinary
+  // thing an administrator does; it must not leave a person's compensation unworkable-out.
+  const RANK = { product_default: 0, org: 1, tenant: 2 };
+  const rank = (r) => RANK[r.source] || 0;
+  const splitIsStale = rank(front) < rank(margin) || rank(back) < rank(margin);
+
+  return {
+    plan: {
+      companyHoldbackMilli: holdback.value,
+      holdbackSource: 'company',
+      officerMarginMilli: margin.value,
+      officerFrontMilli: splitIsStale ? null : front.value,
+      officerBackMilli: splitIsStale ? null : back.value,
+      minCents: minC.value,
+      maxCents: maxC.value,
+      splitPct: split.value,
+      splitBasis: basis.value,
+      mode: opts.mode || defaultMode.value,
+    },
+    officerScope: officerScope(staffId),
+    // WHERE EACH NUMBER CAME FROM — the officer's own, the company's, or the shipped default. The
+    // same provenance record the margin/holdback resolver returns, and the thing that lets a screen
+    // say "this is your number" rather than only showing a figure.
+    sources: {
+      companyHoldbackMilli: holdback.source === 'org' ? 'company' : holdback.source,
+      officerMarginMilli: margin.source === 'tenant' ? 'officer' : (margin.source === 'org' ? 'company' : margin.source),
+      officerFrontMilli: splitIsStale ? 'derived_from_how_they_are_paid'
+        : (front.source === 'tenant' ? 'officer' : (front.source === 'org' ? 'company' : front.source)),
+      officerBackMilli: splitIsStale ? 'derived_from_how_they_are_paid'
+        : (back.source === 'tenant' ? 'officer' : (back.source === 'org' ? 'company' : back.source)),
+      minCents: minC.source === 'tenant' ? 'officer' : (minC.source === 'org' ? 'company' : minC.source),
+      maxCents: maxC.source === 'tenant' ? 'officer' : (maxC.source === 'org' ? 'company' : maxC.source),
+      splitPct: split.source === 'tenant' ? 'officer' : (split.source === 'org' ? 'company' : split.source),
+      splitBasis: basis.source === 'org' ? 'company' : basis.source,
+      mode: opts.mode ? 'requested' : (defaultMode.source === 'org' ? 'company' : defaultMode.source),
+    },
+  };
+}
+
+function investorCodeOfScope(scope) {
+  const s = String(scope == null ? '' : scope);
+  if (!s.startsWith('investor:')) return null;
+  const c = s.slice('investor:'.length);
+  return INVESTOR_CODE_RE.test(c) ? c : null;
+}
+
+/**
+ * ONE investor's override LAYER — the rows stored under `investor:<code>`, filtered to the
+ * keys the registry declares `perInvestor`.
+ *
+ * THE FILTER IS THE READ HALF OF ONE RULE WHOSE WRITE HALF IS THE ADMIN DOOR. The door
+ * refuses to STORE any other key at an investor scope; this refuses to READ one. Both ends
+ * ask `settings.isInvestorScoped`, so the declaration in settings.js is the single source of
+ * truth for "which settings are per-investor" and the two ends cannot drift apart — and a
+ * stray row written straight into the table by hand (or left behind by an older release, or
+ * by a key that stops being per-investor in a later one) can never quietly change a price
+ * through this path.
+ *
+ * A separate function rather than four lines inside the resolver so the defence can be
+ * asserted directly. Never throws — an unusable code or an unreadable table is an empty
+ * layer, which falls through to the company scope and then to the coded defaults.
+ */
+async function loadInvestorOverrides(db, investorCode) {
+  const invScope = investorScope(investorCode);
+  if (!invScope) return {};
+  const raw = await loadSettingOverrides(db, invScope);
+  const out = {};
+  for (const k of Object.keys(raw)) if (settings.isInvestorScoped(k)) out[k] = raw[k];
+  return out;
 }
 
 // Resolve the DEFAULT margin + holdback + per-scenario rules for an investor, layering
@@ -94,29 +336,171 @@ function investorScope(code) {
 async function resolveMarginHoldbackForInvestor(db, investorCode, facts = {}, companyScope = 'company') {
   const org = await loadSettingOverrides(db, companyScope);
   const invScope = investorScope(investorCode);
-  const tenant = invScope ? await loadSettingOverrides(db, invScope) : {};
+  // The FILTERED investor read, not the raw one: `loadInvestorOverrides` drops any key the registry
+  // does not declare per-investor, so this resolver and the settings write door agree on which keys
+  // an investor slot may carry. A raw read here would honour a key the door refuses to store.
+  const tenant = await loadInvestorOverrides(db, investorCode);
+  const layer = _marginHoldbackLayer(tenant, org);
 
+  return {
+    ..._applyMarginHoldbackRules(layer, facts),
+    // where each of the three settings' DEFAULT layer resolved from (tenant=investor, org=company, product_default)
+    defaults: layer.defaults,
+    investorScope: invScope,
+  };
+}
+
+// ---- the per-investor margin, resolved ONCE and CARRIED ----------------------
+
+// Resolve the three settings' DEFAULT layer for one investor from the two already-loaded
+// override maps. PURE. `configured` is the byte-identical switch: it is false only when
+// EVERY one of the three is still the shipped product default — i.e. nobody has stored a
+// margin/holdback decision anywhere — and in that case the caller passes NOTHING to the
+// pricer, so today's quote is literally unchanged rather than merely arithmetically equal.
+function _marginHoldbackLayer(tenant, org) {
   const margin = settings.resolve('pricing.margin_milli', { tenant, org });
   const holdback = settings.resolve('pricing.holdback_milli', { tenant, org });
   const rulesRes = settings.resolve('pricing.margin_holdback_rules', { tenant, org });
   const rules = Array.isArray(rulesRes.value) ? rulesRes.value : [];
-
-  const resolved = resolveMarginHoldback({
-    marginMilli: margin.value,
-    holdbackMilli: holdback.value,
-    rules,
-    facts: facts || {},
-  });
-
+  const sources = [margin.source, holdback.source, rulesRes.source];
   return {
-    ...resolved,
-    // where each of the three settings' DEFAULT layer resolved from (tenant=investor, org=company, product_default)
+    margin,
+    holdback,
+    rulesRes,
+    rules,
+    configured: sources.some((s) => s !== 'product_default'),
     defaults: {
       margin: { value: margin.value, source: margin.source },
       holdback: { value: holdback.value, source: holdback.source },
       rules: { count: rules.length, source: rulesRes.source },
     },
+  };
+}
+
+// Apply the per-scenario rules on top of a resolved layer. PURE. One definition, so the
+// legacy `resolveMarginHoldbackForInvestor` and the carried resolver below can never
+// disagree about what a scenario's margin is.
+function _applyMarginHoldbackRules(layer, facts) {
+  return resolveMarginHoldback({
+    marginMilli: layer.margin.value,
+    holdbackMilli: layer.holdback.value,
+    rules: layer.rules,
+    facts: facts || {},
+  });
+}
+
+/**
+ * WHICH resolved margin is allowed to reach the PRICE, and it is deliberately narrow:
+ *
+ *   • a per-scenario RULE that names a margin — the owner's "different margin and holdback
+ *     to different scenarios with different rules": an explicit instruction about THIS deal.
+ *   • this INVESTOR's own stored `pricing.margin_milli` (scope `investor:<code>`) — the
+ *     owner's "set up for each and every Investor separately".
+ *
+ * Anything else leaves the price exactly where it is today:
+ *
+ *   • the COMPANY's `pricing.margin_milli` is NOT applied. The company already has a margin
+ *     knob the pricer reads (`pricing.correspondent_margin_milli`), and WHICH of the two
+ *     governs company-wide is a MONEY decision that needs the owner's own words. Guessing
+ *     it would silently change the meaning of a setting that is already live. It is recorded
+ *     as an owner question in docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.55.
+ *   • the shipped 250 product default is nobody's decision at all.
+ *
+ * Returns { applies, source } — `source` is what the reconstruction record will say.
+ */
+function _marginApplies(layer, resolved) {
+  if (resolved.marginSource === 'rule') {
+    return { applies: true, source: `rule:${resolved.marginRule || 'unnamed'}` };
+  }
+  if (layer.margin.source === 'tenant') return { applies: true, source: 'investor' };
+  // 'org' = the company's own pricing.margin_milli; 'product_default' = the shipped 250.
+  return { applies: false, source: layer.margin.source === 'org' ? 'company_margin_milli_not_applied' : 'product_default' };
+}
+
+/**
+ * Read an investor's margin/holdback layer ONCE and hand back a resolver that prices every
+ * scenario from it. This is what a caller that prices N scenarios uses: ONE pair of database
+ * reads at the seam where the program is loaded, carried into every quote — never a resolve
+ * per call site and never a resolve per scenario.
+ *
+ * FAILS CLOSED. If either override layer cannot be READ this returns { ok:false, error } and
+ * says which scope failed; it never degrades to the company scope or to the product default,
+ * because a quote priced at a margin we could not confirm looks exactly like a correct one.
+ * (`resolveMarginHoldbackForInvestor` above keeps its degrade-safely contract — it is a
+ * REPORTING read for the admin surface, not a pricing decision.)
+ *
+ * On success:
+ *   { ok:true, investorCode, investorScope, configured, defaults,
+ *     forScenario(facts) -> null | <the `marginHoldback` input quote.quoteProgram accepts> }
+ *
+ * `forScenario` returns NULL while nothing in this layer is configured, so the pricer is
+ * handed nothing at all and the quote is byte-identical to today's.
+ */
+async function prepareMarginHoldbackForInvestor(db, investorCode, companyScope = 'company') {
+  const invScope = investorScope(investorCode);
+  let org;
+  let tenant;
+  try {
+    org = await loadSettingOverridesStrict(db, companyScope);
+  } catch (e) {
+    return { ok: false, investorScope: invScope, error: `company scope "${companyScope}": ${String((e && e.message) || e).slice(0, 120)}` };
+  }
+  try {
+    // THE SAME REGISTRY FILTER THE ADMIN READ AND THE WRITE DOOR APPLY. `loadSettingOverridesStrict`
+    // is the strict READ (it propagates a failure rather than degrading, which is what the pricing
+    // path needs); the registry filter on top is what stops this path honouring an investor-scoped
+    // key that `settings-admin` refuses to store and `loadInvestorOverrides` drops. Without it the
+    // PRICE would obey a knob nothing else in the product recognises.
+    const raw = invScope ? await loadSettingOverridesStrict(db, invScope) : {};
+    tenant = {};
+    for (const k of Object.keys(raw)) if (settings.isInvestorScoped(k)) tenant[k] = raw[k];
+  } catch (e) {
+    return { ok: false, investorScope: invScope, error: `investor scope "${invScope}": ${String((e && e.message) || e).slice(0, 120)}` };
+  }
+
+  const layer = _marginHoldbackLayer(tenant, org);
+
+  return {
+    ok: true,
+    investorCode: investorCode == null ? null : String(investorCode),
     investorScope: invScope,
+    configured: layer.configured,
+    defaults: layer.defaults,
+    forScenario(facts) {
+      if (!layer.configured) return null;
+      const resolved = _applyMarginHoldbackRules(layer, facts);
+      const { applies, source } = _marginApplies(layer, resolved);
+      return {
+        // What the pricer USES. null = keep the company settings margin exactly as today.
+        marginMilli: applies ? resolved.marginMilli : null,
+        marginSource: applies ? source : 'settings',
+        // THE HOLDBACK COMES OFF THE PRICE (owner-directed 2026-08-18, §2.52) — but only a
+        // holdback SOMEBODY SET. `layer.holdback.source === 'product_default'` means nobody has
+        // set one anywhere: it is the shipped 0.250 pre-fill, not a decision. Handing that to the
+        // pricer would take a quarter point off every quote for an investor the moment an admin
+        // configured something ELSE (a margin, a rule) — a price move nobody asked for, from a
+        // number nobody typed. So `null` here, which `priceRung` reads as zero.
+        //
+        // ⚠️ OPEN, NARROW, AND DELIBERATELY NOT GUESSED: whether the shipped default should apply
+        // company-wide on its own is a MONEY question the owner has not been asked. Their answer
+        // was about what a holdback DOES to a price, not about which investors carry one. Applying
+        // the pre-fill everywhere would move every price on every program with no admin action;
+        // this way nothing moves until a human sets a holdback, which is also what the byte-identical
+        // control in scripts/test-lt-ppe-margin-carried-db.js promises. Recorded as §2.55(c).
+        holdbackMilli: layer.holdback.source === 'product_default' ? null : resolved.holdbackMilli,
+        holdbackSource: layer.holdback.source === 'product_default' ? 'product_default_not_applied' : resolved.holdbackSource,
+        // the RESOLVED holdback, applied or not, for a reader reconstructing the layer
+        holdbackResolvedMilli: resolved.holdbackMilli,
+        // The full resolution, for a reader who wants to know what was resolved even when it
+        // was not applied — `marginMilli` above is the USED number, `resolved.marginMilli` the
+        // resolved one, and they differ exactly when a company-level margin_milli was ignored.
+        resolved,
+        marginApplied: applies,
+        marginResolvedSource: source,
+        defaults: layer.defaults,
+        investorScope: invScope,
+      };
+    },
   };
 }
 
@@ -175,11 +559,63 @@ async function createProgram(db, scope, { investorId = null, code, name, channel
   return r.rows[0];
 }
 
+/**
+ * Set (or CLEAR) a program's Lender Price scope — which of Lender Price's programs a comparison
+ * against this program is about (db/574; see lp-scope.js for why it must be stated rather than
+ * inferred, and why the family PATTERN is what the Deephaven DSCR split actually needs).
+ *
+ * EVERY scope column is written on every call, so a partial body CLEARS the keys it omits rather than
+ * leaving them at their previous value. A half-updated scope is the dangerous outcome: it points the
+ * comparison at some blend of the old statement and the new one, which nobody chose and nobody can
+ * see. Passing null clears the scope entirely, which is a legitimate, explicit outcome — with no scope
+ * the comparison abstains and says so.
+ *
+ * The scope must already be VALIDATED (`lpScope.validateScope`); this writes what it is given.
+ * Returns the updated row, or null when there is no such program in this tenant scope.
+ */
+async function setProgramLpScope(db, scope, programId, validatedScope, setBy = null) {
+  const c = lpScope.scopeToColumns(validatedScope);
+  const any = validatedScope && Object.keys(validatedScope).length;
+  const r = await db.query(
+    `UPDATE lt_ppe_program
+        SET lp_investor = $3, lp_lender = $4, lp_program = $5, lp_product = $6, lp_program_like = $7,
+            lp_scope_set_by = $8, lp_scope_set_at = CASE WHEN $9::boolean THEN now() ELSE NULL END,
+            updated_at = now()
+      WHERE scope = $1 AND id = $2
+      RETURNING *`,
+    [scope, programId, c.lp_investor, c.lp_lender, c.lp_program, c.lp_product, c.lp_program_like,
+      any ? setBy : null, !!any]);
+  return r.rows[0] || null;
+}
+
 // List an investor's programs.
 async function listPrograms(db, scope, investorId) {
   const r = await db.query(
     'SELECT * FROM lt_ppe_program WHERE scope = $1 AND investor_id IS NOT DISTINCT FROM $2 ORDER BY created_at DESC',
     [scope, investorId]);
+  return r.rows;
+}
+
+/**
+ * Every program in the scope, with the investor it belongs to.
+ *
+ * `listPrograms` answers "this investor's programs" and needs an investor id to do it — which is the
+ * wrong shape for the one question a scope screen has to answer: WHICH programs have no Lender Price
+ * scope yet? An unscoped program's shadow comparison abstains, silently and forever, and a per-investor
+ * read cannot see the ones hanging off no investor at all (`investor_id IS NULL`), so the very rows most
+ * likely to be unscoped are the ones a per-investor loop would never show.
+ *
+ * The join is LEFT: a program whose investor row has gone is still a program, and dropping it here
+ * would take it off the list that exists to find unscoped programs.
+ */
+async function listAllPrograms(db, scope = 'company') {
+  const r = await db.query(
+    `SELECT p.*, i.code AS investor_code, i.name AS investor_name
+       FROM lt_ppe_program p
+       LEFT JOIN lt_ppe_investor i ON i.id = p.investor_id AND i.scope = p.scope
+      WHERE p.scope = $1
+      ORDER BY COALESCE(i.name, i.code, ''), p.created_at DESC`,
+    [scope]);
   return r.rows;
 }
 
@@ -207,24 +643,85 @@ async function createRateSheetVersion(db, scope, opts = {}) {
 
 // Replace a version's base-price grid (append-only versioning means a version's grid is set once; this
 // is a full-set write used at ingestion). Each row: { noteRateMilliPct, lockDays, product?, priceMilli }.
-async function replaceBasePrices(db, scope, versionId, rows = []) {
-  await db.query('DELETE FROM lt_ppe_base_price WHERE version_id = $1', [versionId]);
-  for (const bp of rows) {
-    await db.query(
-      `INSERT INTO lt_ppe_base_price (scope, version_id, note_rate_milli_pct, lock_days, product, price_milli)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-      [scope, versionId, bp.noteRateMilliPct, bp.lockDays, bp.product || '', bp.priceMilli]);
+/**
+ * ATOMIC, and that is the whole point of the transaction.
+ *
+ * This is DELETE-then-INSERT-in-a-loop over the grid every quote prices from. On a pool each
+ * statement is its own transaction, so a failure part way through used to leave the OLD grid already
+ * deleted and the new one half written — reproduced against a real Postgres with an ordinary
+ * copy/paste mistake: one duplicated cell trips `lt_ppe_base_price_cell_uk`, and a live two-row sheet
+ * became a one-row sheet with an error returned to the caller. Any INSERT failure does it (a value too
+ * big for INTEGER, a NOT NULL), not only a duplicate. A rate sheet is the one thing here that must
+ * never be half-written, so the whole replacement commits or none of it does.
+ *
+ * `opts.client` lets a caller that is ALREADY inside a transaction pass its client in and keep the
+ * grid write in the same unit of work rather than opening a nested one.
+ */
+/**
+ * AND IT REFUSES A VERSION THAT IS NOT THE CALLER'S.
+ *
+ * Scoping the DELETE stopped one tenant DESTROYING another's grid, and that is only half of it: the
+ * INSERTs still stamped the caller's own scope, so an intruder could ADD rows onto somebody else's
+ * version. That is not harmless, because `loadRateSheet` selects the grid by `version_id` ALONE — so
+ * those foreign rows would join the grid the owner's quotes price from. Refusing here makes the store
+ * safe for ANY caller rather than only for callers that remember to check first; the routes check
+ * ownership too, and defence in depth is the point.
+ */
+async function assertVersionInScope(c, scope, versionId) {
+  const r = await c.query('SELECT 1 FROM lt_ppe_rate_sheet_version WHERE id = $1 AND scope = $2', [versionId, scope]);
+  if (!r.rows.length) {
+    const e = new Error('That rate-sheet version does not belong to this scope.');
+    e.code = 'LT_PPE_VERSION_OUT_OF_SCOPE';
+    throw e;
   }
-  return rows.length;
+}
+
+async function replaceGridRows(db, scope, versionId, opts, run) {
+  if (opts && opts.client) {
+    await assertVersionInScope(opts.client, scope, versionId);
+    return run(opts.client);
+  }
+  const client = await (typeof db.getClient === 'function' ? db.getClient() : db.connect());
+  try {
+    await client.query('BEGIN');
+    await assertVersionInScope(client, scope, versionId);
+    const out = await run(client);
+    await client.query('COMMIT');
+    return out;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* the original error is the one that matters */ }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function replaceBasePrices(db, scope, versionId, rows = [], opts = {}) {
+  return replaceGridRows(db, scope, versionId, opts, async (c) => {
+    // SCOPED DELETE. Every row is INSERTed with the caller's scope, so deleting by version_id alone was
+    // asymmetric: a caller holding a version id from ANOTHER tenant would wipe that tenant's grid and
+    // re-stamp the rows as its own. Unreachable while nothing called this, and armed the moment a door
+    // opened — so the scope the function already takes is now actually used. Multi-tenancy is a
+    // governing principle here (§2.1), not a later feature.
+    await c.query('DELETE FROM lt_ppe_base_price WHERE version_id = $1 AND scope = $2', [versionId, scope]);
+    for (const bp of rows) {
+      await c.query(
+        `INSERT INTO lt_ppe_base_price (scope, version_id, note_rate_milli_pct, lock_days, product, price_milli)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+        [scope, versionId, bp.noteRateMilliPct, bp.lockDays, bp.product || '', bp.priceMilli]);
+    }
+    return rows.length;
+  });
 }
 
 // Replace a version's LLPA adjustment rows. Each row: { dimension, ficoMin?, ficoMax?, ltvMin?,
 // ltvMax?, dscrMin?, dscrMax?, predicate?, adjMilli, adjustmentTarget?, unit?, signConvention?,
 // cumulative?, priority?, reason?, code?, meta? }. Bands are half-open [min,max).
-async function replaceAdjustments(db, scope, versionId, rows = []) {
-  await db.query('DELETE FROM lt_ppe_adjustment WHERE version_id = $1', [versionId]);
+async function replaceAdjustments(db, scope, versionId, rows = [], opts = {}) {
+  return replaceGridRows(db, scope, versionId, opts, async (c) => {
+  await c.query('DELETE FROM lt_ppe_adjustment WHERE version_id = $1 AND scope = $2', [versionId, scope]); // scoped — see replaceBasePrices
   for (const a of rows) {
-    await db.query(
+    await c.query(
       `INSERT INTO lt_ppe_adjustment
          (scope, version_id, dimension, fico_min, fico_max, ltv_min, ltv_max, dscr_min, dscr_max,
           predicate, adj_milli, adjustment_target, unit, sign_convention, cumulative, priority, reason, code, meta)
@@ -235,41 +732,225 @@ async function replaceAdjustments(db, scope, versionId, rows = []) {
         a.cumulative !== false, a.priority || 0, a.reason || null, a.code || null, JSON.stringify(a.meta || {})]);
   }
   return rows.length;
+  });
 }
 
-// Set (upsert) a version's price limits. { minPriceMilli?, roundingIncrementMilli?, roundingMode?,
-// capTiers?, onExceed? }.
+// The five values a price limit IS. Named once so the audit's before/after snapshots, the
+// changed-field diff and the readers all mean the same thing by "the price limit".
+const PRICE_LIMIT_FIELDS = ['minPriceMilli', 'roundingIncrementMilli', 'roundingMode', 'capTiers', 'onExceed'];
+
+/** The stored row as the five values, in the vocabulary the route and the screen speak. */
+function priceLimitShape(row) {
+  if (!row) return null;
+  return {
+    minPriceMilli: row.min_price_milli == null ? null : Number(row.min_price_milli),
+    roundingIncrementMilli: row.rounding_increment_milli == null ? null : Number(row.rounding_increment_milli),
+    roundingMode: row.rounding_mode || null,
+    capTiers: Array.isArray(row.cap_tiers) ? row.cap_tiers : [],
+    onExceed: row.on_exceed || null,
+  };
+}
+
+/** WHICH of the five moved. Named rather than left to a reader diffing two JSON blobs. */
+function priceLimitChangedFields(before, after) {
+  const out = [];
+  for (const k of PRICE_LIMIT_FIELDS) {
+    const a = before ? before[k] : undefined;
+    const b = after ? after[k] : undefined;
+    const same = (k === 'capTiers')
+      ? JSON.stringify(a || []) === JSON.stringify(b || [])
+      : (a === b || (a == null && b == null));
+    if (!same) out.push(k);
+  }
+  return out;
+}
+
+/**
+ * Set (upsert) a version's price limits — AND RECORD THE CHANGE, IN ONE TRANSACTION.
+ *
+ * { minPriceMilli?, roundingIncrementMilli?, roundingMode?, capTiers?, onExceed?, changedBy?, reason?, nowMs? }
+ *
+ * WHY THE AUDIT IS INSIDE THE TRANSACTION RATHER THAN BESIDE IT. These five values are the MONEY
+ * RULES of the sheet — the floor a loan may be sold at, the increment every price is snapped to, the
+ * loan-size ceilings. The write was an `ON CONFLICT DO UPDATE` that overwrote the previous floor in
+ * place, so a floor that moved from 98.000 to 95.000 was indistinguishable afterwards from a sheet
+ * that had always said 95.000. An audit written AFTER the update, best-effort, would be skippable
+ * exactly when it is most wanted (the write that errors, the process that dies); so the before-image,
+ * the write and the audit row are one transaction and A CHANGE THAT COULD NOT BE RECORDED DOES NOT
+ * HAPPEN — the same rule the publish gate applies to an override.
+ *
+ * `reason` is nullable here on purpose: the ingest path loads limits straight off a vendor sheet and
+ * its honest answer is "nobody typed a reason". The HUMAN door (the route) requires one.
+ */
 async function setPriceLimit(db, scope, versionId, opts = {}) {
   const { minPriceMilli = null, roundingIncrementMilli = 125, roundingMode = 'nearest_eighth',
-    capTiers = [], onExceed = 'cap_and_keep_eligible' } = opts;
+    capTiers = [], onExceed = 'cap_and_keep_eligible', changedBy = null, reason = null } = opts;
+  const nowMs = opts.nowMs || Date.now();
+
+  const client = await (typeof db.getClient === 'function' ? db.getClient() : db.connect());
+  try {
+    await client.query('BEGIN');
+    const prev = await client.query(
+      'SELECT * FROM lt_ppe_price_limit WHERE scope = $1 AND version_id = $2', [scope, versionId]);
+    const before = priceLimitShape(prev.rows[0] || null);
+
+    const r = await client.query(
+      `INSERT INTO lt_ppe_price_limit
+         (scope, version_id, min_price_milli, rounding_increment_milli, rounding_mode, cap_tiers, on_exceed)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+       ON CONFLICT (scope, version_id)
+         DO UPDATE SET min_price_milli = EXCLUDED.min_price_milli,
+                       rounding_increment_milli = EXCLUDED.rounding_increment_milli,
+                       rounding_mode = EXCLUDED.rounding_mode, cap_tiers = EXCLUDED.cap_tiers,
+                       on_exceed = EXCLUDED.on_exceed, updated_at = now()
+       RETURNING *`,
+      [scope, versionId, minPriceMilli, roundingIncrementMilli, roundingMode, JSON.stringify(capTiers), onExceed]);
+    const row = r.rows[0];
+    const after = priceLimitShape(row);
+
+    await client.query(
+      `INSERT INTO lt_ppe_price_limit_audit
+         (scope, version_id, before_limit, after_limit, changed_fields, reason, changed_by, changed_at)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::text[], $6, $7, $8)`,
+      [scope, versionId, before ? JSON.stringify(before) : null, JSON.stringify(after),
+        priceLimitChangedFields(before, after), reason, changedBy, nowMs]);
+
+    await client.query('COMMIT');
+    return row;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* the original error is the one that matters */ }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * The recorded history of one version's price limits, latest first.
+ *
+ * Read by the console so a person sees WHAT IS IN FORCE NOW, and who last moved it and why, BEFORE
+ * they change it. Append-only: this returns facts, never a current state — `loadRateSheet`'s
+ * `priceLimit` is the current state.
+ */
+async function listPriceLimitChanges(db, scope, versionId, limit = 20) {
+  const n = Number.isInteger(limit) && limit > 0 && limit <= 200 ? limit : 20;
   const r = await db.query(
-    `INSERT INTO lt_ppe_price_limit
-       (scope, version_id, min_price_milli, rounding_increment_milli, rounding_mode, cap_tiers, on_exceed)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
-     ON CONFLICT (scope, version_id)
-       DO UPDATE SET min_price_milli = EXCLUDED.min_price_milli,
-                     rounding_increment_milli = EXCLUDED.rounding_increment_milli,
-                     rounding_mode = EXCLUDED.rounding_mode, cap_tiers = EXCLUDED.cap_tiers,
-                     on_exceed = EXCLUDED.on_exceed, updated_at = now()
-     RETURNING *`,
-    [scope, versionId, minPriceMilli, roundingIncrementMilli, roundingMode, JSON.stringify(capTiers), onExceed]);
-  return r.rows[0];
+    `SELECT id, before_limit, after_limit, changed_fields, reason, changed_by, changed_at
+       FROM lt_ppe_price_limit_audit
+      WHERE scope = $1 AND version_id = $2
+      ORDER BY changed_at DESC, created_at DESC
+      LIMIT ${n}`, [scope, versionId]);
+  return r.rows.map((row) => ({
+    id: row.id,
+    before: row.before_limit || null,
+    after: row.after_limit || null,
+    changedFields: Array.isArray(row.changed_fields) ? row.changed_fields : [],
+    reason: row.reason || null,
+    changedBy: row.changed_by || null,
+    changedAt: row.changed_at == null ? null : Number(row.changed_at),
+  }));
+}
+
+/**
+ * Does this rate-sheet version belong to this scope? Returns the version row, or null.
+ *
+ * THE ONE OWNERSHIP CHECK, and every door that takes a version id from a request must run it FIRST.
+ * `loadRateSheet` deliberately keeps its unscoped signature — the pricing path already knows which
+ * version it resolved and re-filtering there would be noise — but that makes a version id straight
+ * off an HTTP request a cross-tenant read waiting to happen, and the write helpers are worse: they
+ * would rewrite another tenant's grid. So the check lives here, once, rather than as a WHERE clause
+ * copied into each route, where the copy that gets forgotten is the hole.
+ */
+async function rateSheetVersionInScope(db, scope, versionId) {
+  if (!versionId) return null;
+  const r = await db.query('SELECT * FROM lt_ppe_rate_sheet_version WHERE id = $1 AND scope = $2', [versionId, scope]);
+  return r.rows[0] || null;
 }
 
 // Load a complete rate sheet for pricing: { version, basePrices[], adjustments[], priceLimit }.
+// UNSCOPED BY DESIGN — see rateSheetVersionInScope above; a caller holding an id from a request
+// checks ownership there first.
 async function loadRateSheet(db, versionId) {
   const v = await db.query('SELECT * FROM lt_ppe_rate_sheet_version WHERE id = $1', [versionId]);
   if (!v.rows.length) return null;
   const bp = await db.query('SELECT * FROM lt_ppe_base_price WHERE version_id = $1 ORDER BY note_rate_milli_pct, lock_days', [versionId]);
   const adj = await db.query('SELECT * FROM lt_ppe_adjustment WHERE version_id = $1 ORDER BY priority, id', [versionId]);
   const pl = await db.query('SELECT * FROM lt_ppe_price_limit WHERE version_id = $1', [versionId]);
-  return { version: v.rows[0], basePrices: bp.rows, adjustments: adj.rows, priceLimit: pl.rows[0] || null };
+  // The owning PROGRAM row rides along, because that is where the Lender Price SCOPE lives (db/574)
+  // and the pricing route needs it in the same breath it loads the sheet. Best-effort: a sheet whose
+  // program cannot be read still prices — it just compares against nothing and says so, which is the
+  // same honest outcome as a program nobody has scoped yet.
+  let program = null;
+  try {
+    const p = await db.query('SELECT * FROM lt_ppe_program WHERE id = $1', [v.rows[0].program_id]);
+    program = p.rows[0] || null;
+  } catch (_) { program = null; }
+  // The INVESTOR rides along for the same reason the program does: the agreement harness has to ask
+  // that investor's own prepayment-penalty layer about every scenario, and the only key into
+  // `program-registry` is the investor's NAME. Without it the harness prices a sheet that carries no
+  // borrower-type rule at all and reports agreement on a loan the investor will not buy. Best-effort
+  // and additive — a sheet whose investor cannot be read still prices exactly as before.
+  let investor = null;
+  try {
+    if (program && program.investor_id) {
+      const iq = await db.query('SELECT * FROM lt_ppe_investor WHERE id = $1', [program.investor_id]);
+      investor = iq.rows[0] || null;
+    }
+  } catch (_) { investor = null; }
+  return { version: v.rows[0], program, investor, basePrices: bp.rows, adjustments: adj.rows, priceLimit: pl.rows[0] || null };
 }
 
 // Publish a version: mark it published + effective from now, and CLOSE the prior published version's
 // effective_to (the effective-dating discipline — nothing is deleted, "current" is a thin predicate).
 // One transaction. Returns the published version row.
-async function publishRateSheetVersion(db, scope, versionId) {
+//
+// IT NOW REFUSES AN UNPROVEN SHEET, and this is the enforcement point for the owner's HARD RULE:
+// agree with Lender Price on every LLPA, every eligibility and ineligibility, and the max/min price,
+// to the penny, over ~200 scenarios, BEFORE a sheet is trusted. Publishing is precisely the moment it
+// becomes trusted — it is what every later quote prices from — and until now this function promoted a
+// sheet with no reference to the agreement harness at all. The rule was written in three places and
+// enforced in none.
+//
+// THE OVERRIDE IS NOT A HOLE IN THE GATE, IT IS WHAT KEEPS THE GATE FROM BEING A DEAD END. On the day
+// this lands no sheet has a recorded run, and producing one needs live Lender Price credentials — a
+// refusal whose only remedy is a state nothing can currently reach would simply mean nobody can
+// publish. So `opts.override` publishes anyway, and RECORDS who decided and why (db/576). Refusal is
+// meant to be gettable past; it is not meant to be gettable past silently.
+//
+// Returns the version row on success, or `{ refused: { reason, message } }` — a shape the caller must
+// look at. Throwing would have been the other option and is worse here: this runs inside a transaction
+// the caller owns, and the two existing callers already read the returned row.
+async function publishRateSheetVersion(db, scope, versionId, opts = {}) {
+  const agreementStore = require('./agreement-store');
+
+  // ASKED BEFORE THE TRANSACTION IS OPENED, deliberately: a refusal must not leave a BEGIN hanging,
+  // and the gate read is a plain SELECT that has nothing to do with the publish's own atomicity.
+  const gate = await agreementStore.gateStatus(scope, versionId, { db });
+  if (!gate.proven) {
+    if (!opts.override) {
+      return { refused: {
+        reason: gate.reason,
+        // The gate's OWN wording, never a paraphrase — it names which of the four states this is
+        // ("never measured", "disagrees", "too few scenarios", "could not be read"), and those send a
+        // reader to four different places.
+        message: `${gate.message} Run the Lender Price agreement battery against this sheet, or publish it deliberately with a reason.`,
+        gate,
+      } };
+    }
+    const rec = await agreementStore.recordOverride(scope, {
+      db, versionId, recordedBy: opts.overrideBy, reason: opts.overrideReason, nowMs: opts.nowMs || Date.now(),
+    });
+    // AN OVERRIDE THAT COULD NOT BE RECORDED DOES NOT PUBLISH. The recording IS the authorization — a
+    // publish that proceeded here would be exactly the silent unmeasured promotion the gate exists to
+    // prevent, with the added property that nothing anywhere would say it happened.
+    if (!rec.ok) return { refused: { reason: rec.reason, message: rec.message, gate } };
+  }
+  return publishRateSheetVersionUnchecked(db, scope, versionId);
+}
+
+// The publish itself, unchanged, with the gate lifted off it. Kept separate so the transaction has one
+// job and so the gate above can be read in isolation.
+async function publishRateSheetVersionUnchecked(db, scope, versionId) {
   // Works with LT's db wrapper (getClient) or a raw pg Pool (connect).
   const client = await (typeof db.getClient === 'function' ? db.getClient() : db.connect());
   try {
@@ -306,11 +987,44 @@ async function currentRateSheetVersion(db, scope, programId, channel = 'correspo
   return r.rows[0] || null;
 }
 
+/**
+ * EVERY published version in effect for a program right now — the COUNT behind the predicate above.
+ *
+ * `currentRateSheetVersion` answers "which one prices?" with `LIMIT 1`, which is the right shape for
+ * a caller that already knows there is exactly one. It cannot tell "none" from "two", and those are
+ * completely different facts: none means nothing is published for this program, two means WHICH ONE
+ * PRICES IS NOT DECIDED. `publishRateSheetVersionUnchecked` supersedes the other published rows for
+ * the same (scope, program, channel), so one is the norm — but a row written by another path, or two
+ * channels each holding their own published sheet, both produce a set this must be able to describe
+ * rather than silently take the first of. The caller decides what to do with a count that is not 1;
+ * this only reports it.
+ *
+ * `channel` is OPTIONAL here, and that is deliberate: a caller who did not name a channel is asking
+ * about the program, so it must see a sheet published under a channel it did not think to ask for.
+ */
+async function publishedRateSheetVersions(db, scope, programId, channel = null) {
+  const params = [scope, programId];
+  let where = '';
+  if (channel) { params.push(channel); where = ' AND channel = $3'; }
+  const r = await db.query(
+    `SELECT * FROM lt_ppe_rate_sheet_version
+      WHERE scope = $1 AND program_id = $2${where} AND status = 'published'
+        AND effective_from <= now() AND (effective_to IS NULL OR effective_to > now())
+      ORDER BY effective_from DESC, created_at DESC`, params);
+  return r.rows;
+}
+
 module.exports = {
   normAlias,
   loadSettingOverrides, resolveSettings, resolveSetting, setSetting, clearSetting,
-  investorScope, resolveMarginHoldbackForInvestor,
-  findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms,
+  readStoredSetting, appendSettingAudit, listSettingAudit,
+  investorScope, investorCodeOfScope, loadInvestorOverrides, loadSettingOverridesStrict,
+  officerScope, officerIdOfScope, loadOfficerOverrides, resolveCompPlanForOfficer,
+  resolveMarginHoldbackForInvestor, prepareMarginHoldbackForInvestor,
+  findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms, listAllPrograms,
+  setProgramLpScope,
   createRateSheetVersion, replaceBasePrices, replaceAdjustments, setPriceLimit,
-  loadRateSheet, publishRateSheetVersion, currentRateSheetVersion,
+  priceLimitShape, priceLimitChangedFields, listPriceLimitChanges,
+  loadRateSheet, rateSheetVersionInScope, publishRateSheetVersion, publishRateSheetVersionUnchecked,
+  currentRateSheetVersion, publishedRateSheetVersions,
 };

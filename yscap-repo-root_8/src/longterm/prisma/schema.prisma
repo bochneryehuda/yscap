@@ -1168,8 +1168,10 @@ model LtPpeInvestor {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  aliases  LtPpeInvestorAlias[]
-  programs LtPpeProgram[]
+  aliases         LtPpeInvestorAlias[]
+  programs        LtPpeProgram[]
+  rules           LtPpeRule[]
+  ruleSuggestions LtPpeRuleSuggestion[]
 
   @@unique([scope, code], map: "lt_ppe_investor_scope_code_uk")
   @@map("lt_ppe_investor")
@@ -1196,6 +1198,57 @@ model LtPpeInvestorAlias {
 /// per-investor lifecycle: draft | shadow | live | retired — the engine prices a
 /// program for the business only when it is shadow or live, and Lender Price
 /// stays authoritative until it is live.
+/// The PER-CELL parity series (db/575) — one row per matrix cell per canary run. The daily aggregate
+/// in LtPpeShadowRun cannot answer "has THIS band been off for three weeks?", which is the question a
+/// cutover decision turns on. A MISSING row means "not measured that day", never "measured badly":
+/// a run with no scenarios in a band writes nothing for it, and a reader must not zero-fill the gap.
+model LtPpeParityCell {
+  id             String   @id @default(uuid()) @db.Uuid
+  scope          String   @default("company")
+  investor       String   @default("")
+  program        String   @default("")
+  programId      String?  @map("program_id") @db.Uuid
+  dayMs          BigInt   @map("day_ms")
+
+  /// `cellKey` is the stable identity a trend joins on across days; `cellLabel` is display text and
+  /// must never be joined on — a reprice can change a label without changing which loans it holds.
+  dimension      String
+  cellKey        String   @map("cell_key")
+  cellLabel      String   @map("cell_label")
+  kind           String
+
+  total          Int      @default(0)
+  agreed         Int      @default(0)
+  disagreed      Int      @default(0)
+  errors         Int      @default(0)
+  incomparable   Int      @default(0)
+  /// A D29 reasoned override is intentional, not a defect — counted in its own right, never folded
+  /// into `disagreed`.
+  overlay        Int      @default(0)
+  /// Nullable on purpose: a cell with no comparable scenarios has NO rate, and a 0 would read as
+  /// total disagreement.
+  agreementRate  Decimal? @map("agreement_rate") @db.Decimal
+
+  /// `priceScenarios` counts LOANS with a gap, `priceSamples` the individual COUPONS — different
+  /// questions, and one under the other's name makes one scenario off on eight coupons read as eight
+  /// bad loans.
+  priceScenarios Int      @default(0) @map("price_scenarios")
+  priceSamples   Int      @default(0) @map("price_samples")
+  worstAbsMilli  BigInt?  @map("worst_abs_milli")
+  /// SIGNED: uniformly light is a different problem from scattered either side.
+  meanMilli      Decimal? @map("mean_milli") @db.Decimal
+
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  program_       LtPpeProgram? @relation(fields: [programId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@unique([scope, investor, program, dayMs, dimension, cellKey], map: "lt_ppe_parity_cell_key_uk")
+  @@index([scope, investor, program, dimension, cellKey, dayMs], map: "lt_ppe_parity_cell_series_idx")
+  @@index([scope, investor, program, dayMs], map: "lt_ppe_parity_cell_day_idx")
+  @@map("lt_ppe_parity_cell")
+}
+
 model LtPpeProgram {
   id             String   @id @default(uuid()) @db.Uuid
   scope          String   @default("company")
@@ -1215,8 +1268,24 @@ model LtPpeProgram {
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  /// WHICH of Lender Price's programs a shadow comparison against this program is about (db/574).
+  /// Lender Price answers one request with every program it sells while our engine prices one, so the
+  /// scope is STATED here; NULL means "not scoped" and the comparison abstains and says so.
+  /// `lpProgramLike` is a program-FAMILY pattern, because Lender Price splits one Deephaven DSCR sheet
+  /// into three programs by DSCR band and no exact name can name that family. It is bounded and
+  /// grammar-checked by `ppe/lp-scope.safePattern` before it is ever written.
+  lpInvestor     String?   @map("lp_investor")
+  lpLender       String?   @map("lp_lender")
+  lpProgram      String?   @map("lp_program")
+  lpProduct      String?   @map("lp_product")
+  lpProgramLike  String?   @map("lp_program_like")
+  lpScopeSetBy   String?   @map("lp_scope_set_by") @db.Uuid
+  lpScopeSetAt   DateTime? @map("lp_scope_set_at") @db.Timestamptz(6)
+
   investor          LtPpeInvestor?          @relation(fields: [investorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   rateSheetVersions LtPpeRateSheetVersion[]
+  rules             LtPpeRule[]
+  parityCells       LtPpeParityCell[]
 
   @@unique([scope, investorId, code], map: "lt_ppe_program_scope_investor_code_uk")
   @@index([investorId])
@@ -1235,6 +1304,28 @@ model LtPpeSettingValue {
 
   @@id([scope, key])
   @@map("lt_ppe_setting_value")
+}
+
+// The APPEND-ONLY trail of every change to a PPE setting (db/579). lt_ppe_setting_value keeps
+// only a last-writer stamp; this keeps the history — who, when, from what to what, and whether
+// each end was a human's stored override or the shipped coded default. Never UPDATEd, never
+// DELETEd: a correction is a new row. LT-only.
+model LtPpeSettingAudit {
+  id         String   @id @default(uuid()) @db.Uuid
+  scope      String
+  key        String
+  action     String
+  fromValue  Json?    @map("from_value") @db.JsonB
+  fromSource String   @map("from_source")
+  toValue    Json?    @map("to_value") @db.JsonB
+  toSource   String   @map("to_source")
+  actorId    String?  @map("actor_id") @db.Uuid
+  actorLabel String?  @map("actor_label")
+  changedAt  DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
+
+  @@index([scope, changedAt(sort: Desc)], map: "lt_ppe_setting_audit_scope_time_idx")
+  @@index([scope, key, changedAt(sort: Desc)], map: "lt_ppe_setting_audit_key_time_idx")
+  @@map("lt_ppe_setting_audit")
 }
 
 // Lender Price ineligible (disqualify) durable store (db/555). Best-effort L2 behind the client's
@@ -1447,6 +1538,18 @@ model LtPpeCanarySchedule {
   @@map("lt_ppe_canary_schedule")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The per-investor rule store (db/571) — where an accepted overlay rule lives,
+// and the proposal queue it is accepted FROM.
+//
+// `lt_ppe_rule` is the persistent home `ratesheet.js` points at when it says
+// "eligibility/bound rules live in a later rule table". `lt_ppe_rule_suggestion`
+// is the PROPOSAL store: the review engine mines Lender Price's own declines and
+// suggests a rule; a human accepts one, which writes an `lt_ppe_rule` and links
+// back through `created_rule_id`. Nothing here prices or blocks anything by
+// itself — a suggestion is never auto-applied.
+// ─────────────────────────────────────────────────────────────────────────────
+
 // PPE RULE store (db/571) — the persistent home for eligibility / bound / pricing
 // rules. `ratesheet.js` produces PRICING rules from lt_ppe_adjustment rows, and
 // said in its own words that "eligibility/bound rules live in a later rule table";
@@ -1481,6 +1584,10 @@ model LtPpeRule {
   createdBy       String?   @map("created_by")
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  investor    LtPpeInvestor?          @relation(fields: [investorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  program     LtPpeProgram?           @relation(fields: [programId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  suggestions LtPpeRuleSuggestion[]
 
   @@index([scope, investorId, programId], map: "lt_ppe_rule_lookup_idx")
   @@map("lt_ppe_rule")
@@ -1519,7 +1626,11 @@ model LtPpeRuleSuggestion {
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  investor    LtPpeInvestor? @relation(fields: [investorId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  createdRule LtPpeRule?     @relation(fields: [createdRuleId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
   @@unique([scope, investorLabel, dedupeKey], map: "lt_ppe_rule_suggestion_uk")
+  @@index([scope, status], map: "lt_ppe_rule_suggestion_open_idx")
   @@map("lt_ppe_rule_suggestion")
 }
 

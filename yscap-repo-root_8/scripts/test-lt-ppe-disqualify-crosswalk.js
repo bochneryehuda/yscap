@@ -29,7 +29,7 @@ console.log('LT PPE disqualify crosswalk — offline\n');
   ok(cltv.ok && cltv.fact === 'cltv' && J(cltv.predicate) === J({ fact: 'cltv', op: 'gt', value: 80000 }), 'CapAdjustment CLTV > 80.0% → cltv > 80000 (milli-percent)');
 
   const st = keyToPredicate({ rule: 'Interest Only not available in NY', adjType: 'StatesRateAdjustment' });
-  ok(st.ok && st.fact === 'state' && J(st.predicate) === J({ all: [{ fact: 'io', op: 'eq', value: true }, { fact: 'state', op: 'eq', value: 'NY' }] }),
+  ok(st.ok && st.fact === 'state' && J(st.predicate) === J({ all: [{ fact: 'interest_only', op: 'eq', value: true }, { fact: 'state', op: 'eq', value: 'NY' }] }),
     'IO not available in NY → (io=true AND state=NY)');
 }
 
@@ -76,19 +76,19 @@ console.log('LT PPE disqualify crosswalk — offline\n');
     return { code: `r${i}`, kind: 'eligibility', when: c.predicate, declineReason: rule };
   });
 
-  const badFico = evaluateRules(rules, { fico: 640, cltv: 70000, io: false, state: 'TX' });
+  const badFico = evaluateRules(rules, { fico: 640, cltv: 70000, interest_only: false, state: 'TX' });
   ok(!badFico.eligible && badFico.declines.some((d) => d.reason === 'FICO - below 660'), 'a 640-FICO loan is declined by the imported FICO rule');
 
-  const badLtv = evaluateRules(rules, { fico: 720, cltv: 85000, io: false, state: 'TX' });
+  const badLtv = evaluateRules(rules, { fico: 720, cltv: 85000, interest_only: false, state: 'TX' });
   ok(!badLtv.eligible && badLtv.declines.some((d) => d.reason === 'Max LTV exceeded / CLTV > 80.0 %'), 'an 85% CLTV loan is declined by the imported cap rule');
 
-  const ioNy = evaluateRules(rules, { fico: 720, cltv: 70000, io: true, state: 'NY' });
+  const ioNy = evaluateRules(rules, { fico: 720, cltv: 70000, interest_only: true, state: 'NY' });
   ok(!ioNy.eligible && ioNy.declines.some((d) => /Interest Only not available in NY/.test(d.reason)), 'an IO loan in NY is declined; ');
 
-  const ioTx = evaluateRules(rules, { fico: 720, cltv: 70000, io: true, state: 'TX' });
+  const ioTx = evaluateRules(rules, { fico: 720, cltv: 70000, interest_only: true, state: 'TX' });
   ok(ioTx.eligible, 'an IO loan in TX is NOT declined by the NY rule (the AND matters)');
 
-  const clean = evaluateRules(rules, { fico: 720, cltv: 70000, io: false, state: 'TX' });
+  const clean = evaluateRules(rules, { fico: 720, cltv: 70000, interest_only: false, state: 'TX' });
   ok(clean.eligible, 'a clean loan passes all three imported rules');
 }
 

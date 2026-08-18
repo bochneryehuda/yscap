@@ -2,6 +2,14 @@
 
 Compiled 2026-08-17 from the owner's directives + the LT control docs + the LT code inventory. Read-only research; no code changed.
 
+> ⛔ **THIS LEDGER IS A SNAPSHOT OF 2026-08-17 AND IS STALE. DO NOT USE IT AS THE WORK LIST.**
+> It was compiled from the plan documents rather than from the code, and it has since been
+> contradicted by a measurement: several items it lists as TODO are built and screened (P8 and P9
+> among them). **The current, code-measured outstanding-work list is §2.47 of
+> `docs/longterm/LENDER-PRICE-PARITY-STATUS.md`, and everything genuinely waiting on the owner is
+> `docs/longterm/OWNER-QUESTIONS-OPEN.md`.** This file is kept for the cross-index of the owner's
+> clauses, which is still useful; its STATUS column is not.
+
 **Status key:** DONE = built + tested; PARTIAL = core built, real gap remains; TODO = not built.
 **Scope:** LT code lives ONLY in `src/longterm/**`; LT docs in `docs/longterm/**`. Repo root: `/home/user/yscap/yscap-repo-root_8`.
 
@@ -64,7 +72,7 @@ Compiled 2026-08-17 from the owner's directives + the LT control docs + the LT c
 
 | # | Requirement (plain) | Status | Where | Gap / next step |
 |---|---|---|---|---|
-| E1 | Daily base-rate refresh at 10 / 11 / 12 AM Eastern, per investor (pull the updated base rate) | PARTIAL | Plan **E6**; `ppe/canary-schedule.js` + `ppe/schedule-store.js` (db/570 — the cadence/schedule store); rate-sheet version store `ppe/ratesheet.js` + db/560 | Schedule store exists. The scheduled JOB that runs a basic scenario per investor at those NY times and pulls the updated base rate is TODO. (Housekeeping: stale doc-comments cite db/567; the table is db/570.) |
+| E1 | Daily base-rate refresh at 10 / 11 / 12 AM Eastern, per investor (pull the updated base rate) | PARTIAL | Plan **E6**; `ppe/canary-schedule.js` + `ppe/schedule-store.js` (db/570 — the cadence/schedule store); rate-sheet version store `ppe/ratesheet.js` + db/560 | Schedule store exists, and so does the tick that runs the due schedules (`POST /canary/tick`). What is TODO is the scheduled JOB that PULLS that tick at those NY times, per investor, plus the advisory lock that keeps N instances to one battery. (The db/567 housekeeping note that used to sit here was measured and closed 2026-08-17 — no LT file cites db/567.) |
 | E2 | Confidence MATURITY (know which scenarios we're more/less confident on) | PARTIAL | Plan **E7**; `ppe/scoreboard.js` + `ppe/run-store.js` (db/565 — agreement over time) | Scoreboard measures agreement over time. The build is SLICING it by scenario type / investor / program. TODO. |
 | E3 | Major backend TROUBLESHOOTER: "this is what LP gave, this is what I planned/showed, these are the rules I'm suggesting" | PARTIAL | Plan **E8**; `ppe/parity-review.js` (`reviewScenario`: one record = categorized diffs + suggested per-investor rules, proven end-to-end) + the suggestion store | Composer built (parity-review + suggestion store). The RECORD (persisted troubleshooter row) + the SCREEN is the build. TODO. |
 
@@ -116,15 +124,15 @@ Compiled 2026-08-17 from the owner's directives + the LT control docs + the LT c
 |---|---|---|---|
 | P-DQ | Read disqualify side per investor, suggest rules to import | DONE (analysis) | `ppe/disqualify-crosswalk.js`, `ppe/disqualify-analysis.js` |
 | P1 | Feed the FULL LP capture into the comparator (base rate, itemized LLPAs, margin, decline reasons) | DONE | `ppe/lp-normalize-full.js` |
-| P2 | Mine suggestions from a disqualifying scenario, persist to review store | PARTIAL | `ppe/suggestion-miner.js` + `POST /suggestions/mine` (mine action DONE); auto/scheduled wiring TODO |
+| P2 | Mine suggestions from a disqualifying scenario, persist to review store | DONE | `ppe/suggestion-miner.js` + `POST /suggestions/mine` (hand-fired) AND the AUTO wiring (2.67): the agreement run merges every scenario's scoped refusals via `ppe/disqualifier-mining.js` and mines once per run.|
 | P3 | The six difference detectors | DONE | `ppe/parity-detectors.js` |
 | P4 | Curated LP-key → rule-predicate crosswalk | DONE (via P-DQ) | `ppe/disqualify-crosswalk.js` (widen from live capture — BLK1) |
 | P5 | Rule-suggestion engine + suggestion store | DONE | `ppe/rule-store.js`, `db/571` |
 | P6 | The eligibility/bound rule table | DONE | `db/571` `lt_ppe_rule`; `ppe/rule-store.js` `rulesForProgram` |
 | P7 | Close the loop: accept → write rule → re-run parity settles | DONE | `ppe/rule-store.js` `acceptSuggestion` (proven end-to-end) |
-| P8 | The manual-review + suggested-rules UI (`app-v2/src/longterm/**`) | TODO | Not built |
-| P9 | Point-for-point price parity matrix per investor (sliced dashboard + trend) | TODO | Gated on tolerances/clean-weeks (Part 4) + BLK1/BLK2 |
-| P10 | Promote-to-live HTTP route + human promote/rollback | TODO | Gate exists in code (`ppe/cutover.js` + `ppe/cutover-store.js`); NO HTTP route |
+| P8 | The manual-review + suggested-rules UI (`app-v2/src/longterm/**`) | DONE | `app-v2/src/longterm/RuleBoard.jsx` (suggested rules) + `DisqualifierReview.jsx` (per-scenario review, §2.62) + the findings queue/scoreboard on `LtPpe.jsx`|
+| P9 | Point-for-point price parity matrix per investor (sliced dashboard + trend) | DONE | `ppe/parity-matrix.js` + `ppe/parity-cell-store.js` (persisted per-cell trend)|
+| P10 | Promote-to-live HTTP route + human promote/rollback | DONE | `GET /cutover` + `POST /cutover/decision` (§2.63), super-admin gated; the quote path reads the ledger mode|
 
 ---
 
@@ -134,19 +142,33 @@ Compiled 2026-08-17 from the owner's directives + the LT control docs + the LT c
 |---|---|---|---|---|
 | K0 | DSCR omitted sent `dscr:null` → collapsed 439 rows to 28; default to 1.5 (nullish) | DONE | `lenderprice/search-model.js` L649 `const effDscr = dscrVal != null ? dscrVal : 1.5;` (§32.6); restored exact 439-row parity. A real 0 (NoDSCR) is preserved; only null/undefined/blank → 1.5. |
 
-**The 31 outstanding request-shape differences on blank/derived fields** (parity doc §2.1; tested eligible results already match — these did not change the 439 rows but should be normalized for strict parity). Recommended fix: preserve the live LP default request structure and override ONLY fields the scenario explicitly supplies. All **TODO** unless noted:
+**The request-shape differences on blank/derived fields — ALL CLOSED (2026-08-18); and "31" was itself
+mostly a measurement error.** §2.1a measured the captures in the two groups they actually form: `req-01`
+and `req-07` are KICKOFFS, `req-02`…`req-06` are POLLS of req-01, and the frontend's own poll differs from
+its own kickoff in 14 leaves — so diffing our kickoff against their poll reported 14 of THEIR
+re-serialisations as our defects. Like for like: 58 kickoff leaves are blank on one side or the other, 55
+already matched, 2 were fixed, and the 3 that remain are fields on which the two captures CONTRADICT EACH
+OTHER (`companyId`, `nonWarrantableProject`, `GLOBAL_Section184`) — pinned, not guessed. The fix was a RULE,
+not spot-patches: `SCENARIO_OWNED` is the one place a blank form is decided and `test-lt-lp-blank-parity.js`
+derives each expected form from the anchors themselves.
+
+⛔ **THE STATUSES BELOW ARE COMPARED TO THE CODE, BOTH WAYS.**
+`scripts/test-lt-ppe-requirements-ledger.js` fails when a row claims DONE the code does not show — AND when
+a row still reads TODO for work the code has finished. That second direction is why this table is now
+accurate: every one of K1–K9, P8, P9 and P10 read TODO on 2026-08-18 while the code had closed all eleven,
+which buried the genuinely open items among false ones. Every K row must carry a probe there.
 
 | # | Diff | Status | Note |
 |---|---|---|---|
-| K1 | `pmiType`: frontend `"BPMI"` vs PILOT `"None"` | TODO | |
-| K2 | Prepay Buyout special-mortgage-option: frontend includes; PILOT omits | TODO | Tracked under §5 derived SMO selectors — needs a capture (BLK1). |
-| K3 | AUS list membership/order differs | TODO | The selected-criteria field name was never captured; do NOT write a guessed AUS token. Registry publishes only `brokerCriteria.ausList`. |
-| K4 | `showUnmatchCompPlan`: frontend `true` vs PILOT `false` | TODO | |
-| K5 | Default closing-cost flags: frontend enables; PILOT disables | TODO | |
-| K6 | Monthly income rounding: frontend `16667` vs PILOT `16666.666…` | TODO | Round to match frontend. |
-| K7 | 15-year selection: frontend keeps `criteria.loanYear:30` + `termsCriteria:[15]`; PILOT sets BOTH to 15 | TODO | |
-| K8 | Several blank fields: frontend OMITS; PILOT transmits `null` | TODO | Prefer omission over null. |
-| K9 | Blank address fields + a derived city: frontend includes; PILOT omits some | TODO | |
+| K1 | `pmiType`: frontend `"BPMI"` vs PILOT `"None"` | DONE | `search-model.js` `c.pmiType = 'BPMI'` — FORCED in the §2.1 block, so a live foundation can never diverge.|
+| K2 | Prepay Buyout special-mortgage-option: frontend includes; PILOT omits | DONE | §37.10: we stopped inventing a fourth SMO and carry the FOUNDATION's own through (`preserved`) — on the captured base that is exactly Prepay Buyout. Live SMO registry captured 2026-08-17.|
+| K3 | AUS list membership/order differs | DONE | `bc.ausList = callerAus || AUS_ALL` — the full captured list, FORCED.|
+| K4 | `showUnmatchCompPlan`: frontend `true` vs PILOT `false` | DONE | `m.showUnmatchCompPlan = true` — FORCED.|
+| K5 | Default closing-cost flags: frontend enables; PILOT disables | DONE | `cc.useClosingCost` + `cc.useCompanyDefaultClosingCost` both FORCED true.|
+| K6 | Monthly income rounding: frontend `16667` vs PILOT `16666.666…` | DONE | Rounded in `wireDiscipline` (the one-place-last chokepoint) so it survives a live foundation AND a scenario value. Regression: section J of `test-lt-lp-request-foundation.js`.|
+| K7 | 15-year selection: frontend keeps `criteria.loanYear:30` + `termsCriteria:[15]`; PILOT sets BOTH to 15 | DONE | `c.loanYear = 30; m.termsCriteria = [effTermYears]` — the amortization stays 30, the note term rides termsCriteria only (§2.2).|
+| K8 | Several blank fields: frontend OMITS; PILOT transmits `null` | DONE | Does not reproduce: measured 0 null-vs-omit divergences. The RULE replaced the spot-patches — `SCENARIO_OWNED` is the one place a blank form is decided and `test-lt-lp-blank-parity.js` DERIVES each from the anchors.|
+| K9 | Blank address fields + a derived city: frontend includes; PILOT omits some | DONE | §2.1a REVERSED the earlier "deliberately omitted" call as a false choice: all seven captures send `""`, so we do too (`SCENARIO_OWNED` neutral `''`). `city` stays deliberately underived from a ZIP — cosmetic, documented, not a gap.|
 
 Notes recorded (no code change needed): PILOT authenticates independently (username/password + refresh token, not the temporary frontend browser token); the health-probe "pricing unavailable" was only a missing location on the probe; the 15-day 695-vs-256 mismatch was a frontend multi-select artifact (with only 15 selected, parity was exact). **Refinance parity is NOT claimed** (frontend masked numeric controls rejected the automated edits).
 
@@ -171,5 +193,5 @@ Notes recorded (no code change needed): PILOT authenticates independently (usern
 
 ## HOUSEKEEPING (non-owner, engineering)
 
-- Stale doc-comments in `ppe/schedule-store.js` / `ppe/canary-schedule.js` cite db/567; the real table is db/570 (renumbered to dodge a collision). Fix the comments (Part 2.2).
+- ~~Stale doc-comments in `ppe/schedule-store.js` / `ppe/canary-schedule.js` cite db/567.~~ **CLOSED 2026-08-17, and the item was itself false when measured:** `schedule-store.js` cites db/570 and `canary-schedule.js` names no migration; `db/567` appears nowhere under `src/longterm/**`. Nothing to fix.
 - Part 2.11: no admin screen yet consumes the built `createInvestor` / `createProgram` / rate-sheet writers.

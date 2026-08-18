@@ -1,0 +1,228 @@
+{
+  "schema": "lt-ppe/investor-eligibility-matrix",
+  "schemaVersion": 1,
+  "investor": "Deephaven",
+  "program": "Deephaven DSCR",
+  "layer": "eligibility",
+  "dataVersion": "2026-08-04",
+  "citation": "Deephaven Corr Flow DSCR matrix, eff 08/04/26",
+  "source": "docs/longterm/ppe-research/matrices/deephaven-dscr-matrix.json (Deephaven Correspondent Flow, effective 08/04/26)",
+  "notes": [
+    "This is the DATA form of the same published matrix src/longterm/ppe/deephaven-matrix.js encodes by hand.",
+    "It is sourced ONLY from the published matrix — never from Lender Price's own disqualify reasons — so the",
+    "independence rule in deephaven-matrix.js's header holds for the compiled form too.",
+    "Every number here is transcribed from the hand-written module; nothing was re-derived or rounded."
+  ],
+
+  "numericFacts": ["loan_amount", "fico", "dscr", "ltv", "cashout_amount", "units", "subordinate_amount"],
+
+  "derivedFacts": {
+    "purpose_lc": { "kind": "string", "from": "purpose", "fallbackOn": "falsy", "case": "lower", "strip": "none" },
+    "property_type_is_row_home": {
+      "kind": "substring_any", "from": "property_type",
+      "fallbackOn": "falsy", "case": "lower", "strip": "nonalnum",
+      "needles": ["rowhome", "rowhouse"]
+    }
+  },
+
+  "rules": [
+    {
+      "id": "max_loan", "code": "dhvn_max_loan", "kind": "eligibility", "priority": 10,
+      "dimension": "loan_amount",
+      "declineReason": "Maximum Loan Amount $2.5MM",
+      "citationDetail": "Program Parameters, maxLoan = $2,500,000",
+      "when": { "fact": "loan_amount", "op": "gt", "value": 2500000 }
+    },
+    {
+      "id": "min_loan_ge1", "code": "dhvn_min_loan_ge1", "kind": "eligibility", "priority": 20,
+      "dimension": "loan_amount",
+      "declineReason": "Minimum Loan Amount $75,000 (DSCR >= 1.00x)",
+      "citationDetail": "Program Parameters, minLoanDscrGe1 = $75,000",
+      "when": { "all": [
+        { "fact": "dscr", "op": "gte", "value": 1000 },
+        { "fact": "loan_amount", "op": "lt", "value": 75000 }
+      ] }
+    },
+    {
+      "id": "min_loan_lt1", "code": "dhvn_min_loan_lt1", "kind": "eligibility", "priority": 30,
+      "dimension": "loan_amount",
+      "declineReason": "Minimum Loan Amount $200,000 (DSCR < 1.00x)",
+      "citationDetail": "Program Parameters, minLoanDscrLt1 = $200,000",
+      "when": { "all": [
+        { "fact": "dscr", "op": "lt", "value": 1000 },
+        { "fact": "loan_amount", "op": "lt", "value": 200000 }
+      ] }
+    },
+    {
+      "id": "min_dscr", "code": "dhvn_min_dscr", "kind": "eligibility", "priority": 40,
+      "dimension": "dscr",
+      "declineReason": "Minimum DSCR 0.75x",
+      "citationDetail": "DSCR floor 0.75x",
+      "when": { "fact": "dscr", "op": "lt", "value": 750 }
+    },
+
+    {
+      "id": "cashout_le65", "code": "dhvn_cashout_le65", "kind": "eligibility", "priority": 60,
+      "dimension": "cashout_amount",
+      "declineReason": "Max Cash-Out $1,000,000 (LTV <= 65%)",
+      "citationDetail": "Program Parameters, maxCashOut LTV<=65% = $1,000,000",
+      "when": { "all": [
+        { "fact": "purpose_lc", "op": "eq", "value": "cashout" },
+        { "fact": "ltv", "op": "lte", "value": 65000 },
+        { "fact": "cashout_amount", "op": "gt", "value": 1000000 }
+      ] }
+    },
+    {
+      "id": "cashout_gt65", "code": "dhvn_cashout_gt65", "kind": "eligibility", "priority": 61,
+      "dimension": "cashout_amount",
+      "declineReason": "Max Cash-Out $500,000 (LTV > 65%)",
+      "citationDetail": "Program Parameters, maxCashOut LTV>65% = $500,000",
+      "when": { "all": [
+        { "fact": "purpose_lc", "op": "eq", "value": "cashout" },
+        { "fact": "ltv", "op": "gt", "value": 65000 },
+        { "fact": "cashout_amount", "op": "gt", "value": 500000 }
+      ] }
+    },
+
+    {
+      "id": "small_loan_ltv", "code": "dhvn_small_loan_ltv", "kind": "eligibility", "priority": 70,
+      "dimension": "ltv",
+      "declineReason": "Loan < $125,000: Max LTV 75%",
+      "citationDetail": "Overlay: small-loan LTV reduction",
+      "when": { "all": [
+        { "fact": "loan_amount", "op": "lt", "value": 125000 },
+        { "fact": "ltv", "op": "gt", "value": 75000 }
+      ] }
+    },
+    {
+      "id": "small_loan_ltv_cap", "kind": "bound", "priority": 1000,
+      "target": "ltv", "op": "max", "value": 75000,
+      "description": "The small-loan LTV reduction, as the max-LTV bound it tightens. Its `when` deliberately carries the SAME ltv>75000 leaf the decline rule does, because the hand-written module only lowers maxLtvMilli inside the branch that has already seen the requested LTV violate the cap.",
+      "when": { "all": [
+        { "fact": "loan_amount", "op": "lt", "value": 125000 },
+        { "fact": "ltv", "op": "gt", "value": 75000 }
+      ] }
+    },
+
+    {
+      "id": "io_max_ltv", "code": "dhvn_io_max_ltv", "kind": "eligibility", "priority": 80,
+      "dimension": "ltv",
+      "declineReason": "Interest-Only: Max LTV 80%",
+      "citationDetail": "Overlay: Interest Only",
+      "when": { "all": [
+        { "fact": "interest_only", "op": "eq", "value": true },
+        { "fact": "ltv", "op": "gt", "value": 80000 }
+      ] }
+    },
+    {
+      "id": "io_min_dscr", "code": "dhvn_io_min_dscr", "kind": "eligibility", "priority": 81,
+      "dimension": "dscr",
+      "declineReason": "Interest-Only: Min DSCR 1.00x",
+      "citationDetail": "Overlay: Interest Only",
+      "when": { "all": [
+        { "fact": "interest_only", "op": "eq", "value": true },
+        { "fact": "dscr", "op": "lt", "value": 1000 }
+      ] }
+    },
+
+    {
+      "id": "subordinate", "code": "dhvn_subordinate", "kind": "eligibility", "priority": 90,
+      "dimension": "subordinate_amount",
+      "declineReason": "Subordinate Financing not allowed",
+      "citationDetail": "Subordinate Financing: Not Allowed",
+      "when": { "fact": "subordinate_amount", "op": "gt", "value": 0 }
+    },
+    {
+      "id": "units_5plus", "code": "dhvn_units_5plus", "kind": "eligibility", "priority": 100,
+      "dimension": "units",
+      "declineReason": "5+ units ineligible (program is 1–4 units + condos)",
+      "citationDetail": "Property Types: 1-4 Units + Condos only",
+      "when": { "fact": "units", "op": "gte", "value": 5 }
+    },
+    {
+      "id": "row_home", "code": "dhvn_row_home", "kind": "eligibility", "priority": 110,
+      "dimension": "property_type",
+      "declineReason": "Row Homes ineligible",
+      "citationDetail": "Property Types: Row Homes Ineligible",
+      "when": { "fact": "property_type_is_row_home", "op": "eq", "value": true }
+    }
+  ],
+
+  "grid": {
+    "priority": 50,
+    "loanFact": "loan_amount",
+    "ficoFact": "fico",
+    "ltvFact": "ltv",
+    "requireFacts": ["loan_amount", "fico", "dscr"],
+    "maxLoan": 2500000,
+    "capScale": 1000,
+    "capUnitLabel": "%",
+    "boundTarget": "ltv",
+    "purposeClasses": [
+      { "key": "CO", "label": "Cash-Out", "when": { "fact": "purpose_lc", "op": "eq", "value": "cashout" } },
+      { "key": "P_RT", "label": "Purchase/R&T", "when": { "not": { "fact": "purpose_lc", "op": "eq", "value": "cashout" } } }
+    ],
+    "dscrBands": [
+      { "key": "ge1", "label": ">=1.00", "when": { "fact": "dscr", "op": "gte", "value": 1000 } },
+      { "key": "lt1", "label": "<1.00", "when": { "fact": "dscr", "op": "lt", "value": 1000 } }
+    ],
+    "codes": {
+      "belowMinFico": "dhvn_min_fico_tier",
+      "naCell": "dhvn_grid_na",
+      "capExceeded": "dhvn_grid_ltv"
+    },
+    "dimensions": {
+      "belowMinFico": "fico",
+      "naCell": "fico_ltv_dscr",
+      "capExceeded": "ltv"
+    },
+    "templates": {
+      "belowMinFicoReason": "Min FICO {minFico} (loan tier <= ${tierMM}MM)",
+      "belowMinFicoCitation": "Eligibility grid, tier <=${tierMax} minimum FICO {minFico}",
+      "naCellReason": "Not eligible (tier <=${tierMM}MM, FICO {ficoFloor}+, {purposeLabel}, DSCR {dscrBandLabel})",
+      "naCellCitation": "Eligibility grid, N/A cell",
+      "capExceededReason": "Max LTV {capPct}% (tier <=${tierMM}MM, FICO {ficoFloor}+, {purposeLabel}, DSCR {dscrBandLabel})",
+      "capExceededCitation": "Eligibility grid cell cap {capPct}%"
+    },
+    "tiers": [
+      {
+        "maxLoan": 1500000, "minLoanExclusive": null, "minFico": 640,
+        "rows": [
+          { "fico": 720, "caps": { "P_RT_ge1": 80, "CO_ge1": 80, "P_RT_lt1": 75, "CO_lt1": 70 } },
+          { "fico": 700, "caps": { "P_RT_ge1": 80, "CO_ge1": 75, "P_RT_lt1": 75, "CO_lt1": 65 } },
+          { "fico": 680, "caps": { "P_RT_ge1": 75, "CO_ge1": 75, "P_RT_lt1": 70, "CO_lt1": 65 } },
+          { "fico": 640, "caps": { "P_RT_ge1": 70, "CO_ge1": 70, "P_RT_lt1": null, "CO_lt1": null } }
+        ]
+      },
+      {
+        "maxLoan": 2000000, "minLoanExclusive": 1500000, "minFico": 660,
+        "rows": [
+          { "fico": 700, "caps": { "P_RT_ge1": 80, "CO_ge1": 75, "P_RT_lt1": 70, "CO_lt1": 65 } },
+          { "fico": 680, "caps": { "P_RT_ge1": 75, "CO_ge1": 75, "P_RT_lt1": 65, "CO_lt1": 65 } },
+          { "fico": 660, "caps": { "P_RT_ge1": 65, "CO_ge1": 65, "P_RT_lt1": null, "CO_lt1": null } }
+        ]
+      },
+      {
+        "maxLoan": 2500000, "minLoanExclusive": 2000000, "minFico": 660,
+        "rows": [
+          { "fico": 700, "caps": { "P_RT_ge1": 70, "CO_ge1": 70, "P_RT_lt1": 60, "CO_lt1": 60 } },
+          { "fico": 660, "caps": { "P_RT_ge1": 65, "CO_ge1": 65, "P_RT_lt1": null, "CO_lt1": null } }
+        ]
+      }
+    ]
+  },
+
+  "unverifiable": [
+    { "overlay": "Rural: Max 65% LTV, DSCR > 1.0x, Long-Term Rent only, <=10 acres no ag/farm use", "needs": "rural_property + acreage facts", "facts": ["rural_property"] },
+    { "overlay": "Short-Term Rental: Min DSCR 1.15, Min FICO 720, -5% LTV (75% max), no FTI/2+unit/rural", "needs": "short_term_rental fact", "facts": ["short_term_rental"] },
+    { "overlay": "First-Time Investor: Min DSCR 1.00, Min FICO 700, long-term rental only", "needs": "first_time_investor fact", "facts": ["first_time_investor"] },
+    { "overlay": "First-Time Homebuyer: ineligible unless 2+ borrowers with one non-FTHB", "needs": "first_time_homebuyer fact", "facts": ["first_time_homebuyer"] },
+    { "overlay": "Foreign National: max loan $1.5M, LTV caps 70/60, DSCR >= 1.00 only", "needs": "foreign_national fact", "facts": ["foreign_national"] },
+    { "overlay": "Declining market: Max LTV -5%", "needs": "declining_market fact (appraisal-driven)", "facts": ["declining_market"] },
+    { "overlay": "Vacant/Unleased: ineligible for R/T & C/O refi; -5% LTV on refi; 2+unit max 1 vacant", "needs": "vacancy/leased fact", "facts": ["occupancy"] },
+    { "overlay": "Renovation cash-out: appraised value under 6mo ownership at max 75% LTV", "needs": "renovation + seasoning facts", "facts": ["renovation"] },
+    { "overlay": "Philadelphia, PA: Max LTV -10%", "needs": "city fact (state alone is insufficient)", "facts": ["city"] },
+    { "overlay": "Ineligible geos: HI lava zones 1&2; Baltimore City, MD", "needs": "sub-state city / lava-zone fact", "facts": ["city"] },
+    { "overlay": "Loan < $100,000: delegated delivery only", "needs": "delivery_channel fact (advisory, not a decline)", "facts": ["delivery_channel"] }
+  ]
+}

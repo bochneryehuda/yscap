@@ -20,6 +20,7 @@
  */
 
 const parity = require('./parity');
+const divergence = require('./divergence');
 const { describeScenario } = require('./scenario-matrix');
 
 const ERROR_KIND = 'engine_error';
@@ -32,15 +33,49 @@ async function runOne(scenario, ours, theirs, opts) {
   try {
     a = await ours(scenario);
   } catch (e) {
-    return { agree: false, scenario: tag, error: 'ours', findings: [{ kind: ERROR_KIND, side: 'ours', detail: `our engine threw: ${errText(e)}`, scenario: tag }] };
+    return { agree: false, scenario: tag, facts: factsOf(scenario), error: 'ours', findings: [{ kind: ERROR_KIND, side: 'ours', detail: `our engine threw: ${errText(e)}`, scenario: tag }] };
   }
   try {
     b = await theirs(scenario);
   } catch (e) {
-    return { agree: false, scenario: tag, error: 'theirs', findings: [{ kind: ERROR_KIND, side: 'theirs', detail: `Lender Price threw: ${errText(e)}`, scenario: tag }] };
+    return { agree: false, scenario: tag, facts: factsOf(scenario), error: 'theirs', findings: [{ kind: ERROR_KIND, side: 'theirs', detail: `Lender Price threw: ${errText(e)}`, scenario: tag }] };
   }
-  const cmp = parity.compareScenario(a, b, { ...opts, scenario: tag });
-  return { agree: cmp.agree, incomparable: cmp.incomparable || false, scenario: tag, findings: cmp.findings };
+  // Thread our raw declines so a reasoned overlay divergence is typed as OVERLAY, not a defect (D29).
+  const ourDeclines = Array.isArray(a && a.declines) ? a.declines : undefined;
+  const cmp = parity.compareScenario(a, b, { ...opts, scenario: tag, ourDeclines });
+  // WHY it disagreed, diagnosed HERE because here is where the evidence is (§2.78). Our reconstruction
+  // record — base → itemized LLPAs → margin → round → clamp — exists on the quote we were just handed
+  // and NOWHERE afterwards: the runner returns the verdict and drops the quote, and the findings ledger
+  // stores `our_payload` as NULL, so a screen re-deriving this later would have to re-price against
+  // whatever the sheet says today and quietly answer a different question.
+  //
+  // This was wired only in `facade.js` — the LIVE shadow path, which needs vendor credentials — so the
+  // canary, the owner's daily check that runs six times a day and is what actually fills the review
+  // queue, recorded WHAT disagreed and never WHY. Same function, not a second copy.
+  divergence.attachDiagnosis(cmp, a, opts);
+  return { agree: cmp.agree, incomparable: cmp.incomparable || false, overlay: cmp.overlay || false, scenario: tag, facts: factsOf(scenario), findings: cmp.findings };
+}
+
+// The scenario's own FACTS, carried beside its label.
+//
+// `scenario` was reduced to a display STRING here and the object thrown away — one function before
+// anybody could use it. Everything downstream inherited that: the findings ledger has a
+// `scenario_facts` column (db/561) that the canary path could never fill, and a parity dashboard
+// sliced "by state / DSCR band / FICO / LTV" had no facts to slice by. The label is a SENTENCE about
+// the scenario; it is not the scenario, and re-parsing it back into facts would be inventing a format.
+// This is the repo's recurring "a value computed and then discarded by the summarizer" class.
+//
+// Carried ADDITIVELY and only when it really is an object, so a caller passing a bare string label as
+// its scenario gets `null` rather than a facts bag made of characters.
+function factsOf(scenario) {
+  if (!scenario || typeof scenario !== 'object' || Array.isArray(scenario)) return null;
+  const out = {};
+  for (const [k, v] of Object.entries(scenario)) {
+    if (k === '_label') continue;             // the label is carried separately, as `scenario`
+    if (v === undefined) continue;
+    out[k] = v;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 function errText(e) {
@@ -97,4 +132,4 @@ function summarize(results) {
   return base;
 }
 
-module.exports = { runShadow, runOne, summarize, ERROR_KIND };
+module.exports = { runShadow, runOne, summarize, ERROR_KIND, _internals: { factsOf } };

@@ -59,6 +59,31 @@ function isClient(audience) {
   return audience !== AUDIENCES.INTERNAL;
 }
 
+/**
+ * WHICH AUDIENCE IS THIS CALLER? The one translation from a signed-in actor to an
+ * audience, so a route never has to decide it — and so a route can never decide it
+ * DIFFERENTLY from the route beside it.
+ *
+ * The session kinds are the ones the login mints: `staff` is our own people, `tpo`
+ * is a broker's own staff (an OUTSIDE company), `borrower` is the person on the
+ * loan. Only the first is internal.
+ *
+ * IT FAILS CLOSED, exactly like `isClient`: an actor with no kind, an unrecognised
+ * kind, a missing actor entirely — every one of them reads as a CLIENT. The
+ * expensive mistake is handing an unrecognised caller the investor's name, so the
+ * cheap direction is the default. A surface that genuinely serves nobody in
+ * particular (an ops door behind a shared secret, say) must therefore say so
+ * DELIBERATELY rather than arrive here and be guessed at.
+ *
+ * @param {{kind?: string}|string|null|undefined} actor — req.actor, or its kind.
+ */
+function audienceOfActor(actor) {
+  const kind = actor && typeof actor === 'object' ? actor.kind : actor;
+  if (kind === 'staff') return AUDIENCES.INTERNAL;
+  if (kind === 'tpo') return AUDIENCES.TPO;
+  return AUDIENCES.BORROWER;
+}
+
 // ── What is internal-only ────────────────────────────────────────────────────
 // A named list rather than a scattering of checks, so "what may a client see?"
 // has ONE answer and adding a new secret is one line.
@@ -315,6 +340,7 @@ module.exports = {
   INTERNAL_ONLY_KEYS,
   REDACTION,
   isClient,
+  audienceOfActor,
   maySeeField,
   internalOnlyFieldIds,
   internalOnlyColumns,

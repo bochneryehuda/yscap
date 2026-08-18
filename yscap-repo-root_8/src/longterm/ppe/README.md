@@ -115,9 +115,39 @@ Never introduce a float price/rate on a stored or compared value; never re-deriv
   matches the gap (`strong`/`possible`/`none`). Honest by design — LP gives only a final price, so a
   suspect is a HYPOTHESIS, never a claim that either side is wrong.
 
+### Investor layers as DATA — the scalable foundation (PPE #47)
+
+Layers 2 (eligibility matrix) and 3 (PPP state matrix) started as hand-written JavaScript for ONE
+investor. They are now expressible as **DATA + pure compilers** that emit the SAME canonical rules
+`rules.evaluateRules` already runs, so onboarding investor #2 is *two JSON files and one registry
+entry*, not a second module.
+
+- **`investor-data/*.json`** — an investor's eligibility matrix / PPP matrix as data. Versioned by
+  effective date (`deephaven-dscr.eligibility.v2026-08-04.json`, `deephaven-dscr.ppp.v2026-03.json`).
+- **`layer-facts.js`** — the CLOSED derived-fact vocabulary (`string`, `is_number`, `truthy`,
+  `number_gt`, `substring_any`, `classify`). It exists because `LEAF_OPS` deliberately has no regex,
+  no substring test and no "is a finite number" test, while the hand-written modules normalize and
+  type-check before comparing. Derivations chain in declaration order. An unknown kind is REFUSED.
+- **`layer-compile-eligibility.js`** / **`layer-compile-ppp.js`** — the pure compilers. They build
+  every rule through **`rule-builder`** and validate through **`rule-builder.validateRule`** (never a
+  second rule shape, never a second validator), inject the numeric guard leaf-LOCALLY, and carry the
+  presentation the canonical shape has no field for (`dimension`, `citation`) in a CATALOG keyed by
+  each rule's unique internal code. Diagnostics that are not declines (the resolved grid cell, which
+  PPP rule matched) ride BOUNDS on non-fact targets, which are inert by construction.
+- **`layer-data-registry.js`** — the versioned catalog: `(investor, layer, version) → document`, a
+  memoized compile, and the compiled program descriptor `program-engine.runProgram` runs. A program
+  PINS the version of each layer it prices on; `getData` never guesses a version. Overlay and
+  informational are still code, and `describeProgram()` says so rather than implying otherwise.
+
+The hand-written `deephaven-matrix.js` / `deephaven-ppp-matrix.js` remain in place and are the
+**ORACLE**: `scripts/test-lt-ppe-layer-compilers.js` drives both forms with the same facts over
+~330,000 scenarios and demands a byte-identical verdict, then mutation-proves the harness bites.
+
 ## Data flow
 
 ```
+layer data:   investor-data/*.json ─ layer-compile-* ─▶ canonical rules ─ rules.evaluateRules ─▶ verdict
+                                   └─ layer-data-registry (investor × layer × VERSION) ─▶ program descriptor
 daily sync:   raw grid ─ ratesheet-ingest ─▶ cells ─ ratesheet-diff ─▶ classify ─▶ auto-apply | review
 pricing:      scenario ─ quote(program, settings) ─▶ ladder (reconstruction records)
 shadow:       scenario ─ facade ─┬─ ourQuote ─ normalizeOurQuote ─┐
@@ -137,24 +167,35 @@ DB; `-db` suites add a round-trip when `DATABASE_URL` is set). All suites are cu
 
 ## Pending (deliberately not built yet)
 
-- **The canary WORKER.** The cadence DECISION now exists (`canary-schedule.js`, below) and is fully
-  tested; what is still missing is the thin IO wrapper around it — the tick that reads each scope's
-  saved schedule, takes a per-scope Postgres advisory lock (so N Render instances fire one battery,
-  not N), re-checks due-ness under the lock, calls the same `runCanary` → persist path the admin
-  button uses, and is OFF unless switched on. Deliberately not half-wired: a scheduler that fires
-  live vendor batteries is a "stage anything that touches production" change, and the piece worth
-  getting right first was the rule, not the plumbing.
-- **Storing a saved battery.** `canary-schedule` describes what a schedule must contain; nothing
-  persists one yet (no table, no `PUT /canary/schedule`). Note the ordering constraint that follows
-  from the module's one hard rule: the worker cannot ship before the store, because a schedule with
-  no saved battery never runs — and it must never invent one.
+- **The canary worker's TIMER.** Corrected 2026-08-17 — this entry used to say the whole IO wrapper
+  was missing, and most of it now exists. What is BUILT: `POST /canary/tick` reads every saved
+  schedule for the scope, resolves each one's program, reads its last run from the RUN SERIES (never a
+  private stamp), asks `canary-schedule.selectDue`, and runs the same `runCanary` →
+  `finding-store.persistRun` + `run-store.persistRun` path the admin button uses — holding, with the
+  reason attached, on any schedule whose program or series it could not read. What is STILL missing is
+  the two things that make it a worker rather than a button: **a timer that pulls the tick**, and **a
+  per-scope Postgres advisory lock** so N Render instances fire one battery and not N. Until both
+  land, a canary fires only when a human presses it. Deliberately not half-wired: a loop that fires
+  live vendor batteries is a "stage anything that touches production" change.
+- **Storing a saved battery — DONE, and this entry was stale.** It used to read "nothing persists one
+  yet (no table, no `PUT /canary/schedule`)". Both halves are now false: `db/570_lt_ppe_canary_schedule.sql`
+  is the table and `ppe/schedule-store.js` the bridge (it writes only what `canary-schedule.validateSchedule`
+  accepts, so a schedule the runner would refuse can never reach the table), and the route carries
+  `GET /canary/schedules`, `POST /canary/schedules` and `DELETE /canary/schedules/:investor`. The
+  ordering constraint the entry recorded held and was honoured: the store shipped before the tick,
+  because a schedule with no saved battery never runs — and it must never invent one.
 
 _(Done 2026-08-16 — **the `/api/lt/ppe/*` route and the admin UI both shipped**; this section used to
 list them as pending and was simply stale. The route mounts `facade.js` against the real LP client +
 `quote.js` + the store and carries `POST /canary` (the "run canary now" button) → `canary.runCanary`
 → `finding-store.persistRun` + `run-store.persistRun` → `GET /scoreboard`. The admin screen carries
-the scoreboard/trend surface, the findings ledger with `divergence` diagnoses, and the human-gated
-promote/rollback controls.)_
+the scoreboard/trend surface and the findings ledger with `divergence` diagnoses.
+**Corrected 2026-08-17:** this sentence also claimed the screen carries "the human-gated
+promote/rollback controls". It does not, and never did — `app-v2/src/longterm/LtPpe.jsx` has no
+promote and no rollback control, and says so itself at the foot of the go-live card. The router has no
+promote route either. What promotion waits on is an owner decision (who may promote; whether a live
+investor keeps a Lender Price spot-check), not a missing record: the decision ledger has been durable
+since db/566 + `cutover-store.js`.)_
 _(Done 2026-08-16 — **the suites now run in CI.** `node scripts/test-lt-ppe-all.js` is wired into
 `package.json`'s `test` chain as ONE entry, right after `test-lt-dscr-routes.js`. One entry, not 27,
 because the aggregator auto-discovers every `test-lt-ppe-*.js` — so a suite added later is picked up

@@ -65,9 +65,17 @@ function ok(cond, label) { console.log(`${cond ? '  ok  ' : ' FAIL '} ${label}`)
   const { Pool } = require('pg');
   const db = new Pool({ connectionString: process.env.DATABASE_URL });
   try {
+    // IDEMPOTENCE IS PROVEN BY APPLYING IT TWICE, not by saying so. This line used to read
+    // `ok(true, 'db/558 applied (idempotent)')` — an assertion that cannot be false, over a migration
+    // applied exactly ONCE, so the word "idempotent" was unearned and a failing apply would have
+    // arrived as an unhandled rejection and a stack trace rather than as a named red assertion.
+    // Every migration in this repo is re-applied on every boot, so this is the property that matters.
     const sql = fs.readFileSync(path.join(__dirname, '..', 'db', '558_lt_ppe_foundation.sql'), 'utf8');
-    await db.query(sql); // idempotent — safe to re-run
-    ok(true, 'db/558 applied (idempotent)');
+    let applyErr = null;
+    try { await db.query(sql); await db.query(sql); } catch (e) { applyErr = e; }
+    ok(!applyErr, `db/558 applies TWICE in a row without error — which is what idempotent means${applyErr ? `: ${applyErr.message}` : ''}`);
+    const present = await db.query("SELECT to_regclass('public.lt_ppe_investor') IS NOT NULL AS ok");
+    ok(present.rows[0].ok === true, '…and the table it creates is there afterwards');
 
     const scope = 'test_' + Math.abs((process.pid || 1)); // isolate this run
     await db.query('DELETE FROM lt_ppe_program WHERE scope = $1', [scope]);

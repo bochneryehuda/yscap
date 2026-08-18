@@ -266,6 +266,66 @@ services:
   #
   # 07:10 UTC ≈ 3:10am New York — after the day's work, before anyone starts.
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # THE DAILY LENDER PRICE CHECK (Long-Term PPE) — owner-directed 2026-08-18.
+  #
+  # The owner's own words: "This should be a scheduled run: every day at 9:00 a.m. Eastern, 10:00 a.m.
+  # Eastern, 11:00 a.m. Eastern, 12:00 p.m. Eastern, 4:00 p.m. Eastern, and 7:00 a.m. Eastern."
+  #
+  # ⛔ THE SCHEDULE BELOW IS HOURLY ON PURPOSE, AND IT IS NOT A SHORTCUT. Render's scheduler is UTC and
+  # the owner named EASTERN hours, which are UTC-5 for part of the year and UTC-4 for the rest. Six
+  # UTC-pinned entries would be an hour wrong for roughly half of every year, silently, and each firing
+  # costs a live vendor call. So this wakes every hour and `src/longterm/ppe/canary-clock.js` — the ONE
+  # place the six hours are written down — decides against the real New York clock. Twice a year it
+  # simply does not fire on the hour that is not there. Do not "tidy" this into six UTC entries.
+  #
+  # Two servers can never both fire one hour: the tick claims a durable database lease before it does
+  # anything (lt_ppe_canary_driver_state, db/578).
+  # ---------------------------------------------------------------------------
+  - type: cron
+    name: ys-capital-lt-canary
+    runtime: node
+    plan: starter
+    rootDir: yscap-repo-root_8
+    buildCommand: npm install
+    schedule: "0 * * * *"
+    startCommand: node scripts/lt-ppe-canary-cron.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase: { name: yscap, property: connectionString }
+      # The Lender Price login. Authorized by the owner in writing on 2026-08-18 for live comparison at
+      # all times; it lives here as a dashboard value and never in the code.
+      #
+      # ⛔ ALL THREE, AND THE THIRD IS NOT OPTIONAL. `lenderprice/client.credentials()` is
+      # `!!(username && password && clientSecret)` — with LP_CLIENT_SECRET absent, `configured()` is
+      # false and every scenario in the battery comes back `lp_creds_missing`. This service declared
+      # only the first two, so the moment the schedule could actually reach the tick (§2.64) it would
+      # still have priced nothing. The web service has carried all three all along, which is why
+      # pricing works there and is exactly the comparison nothing was making.
+      # `scripts/test-lt-ppe-canary-driver.js` now derives the required list from the code and reads
+      # THIS FILE, so a credential added to the client can never be forgotten here again.
+      - key: LP_USERNAME
+        sync: false
+      - key: LP_PASSWORD
+        sync: false
+      - key: LP_CLIENT_SECRET
+        sync: false
+      # ⛔ FAIL CLOSED ON A STALE FOUNDATION — and this matters MORE here than on the web service.
+      # The connector clones the company's live defaultSearch + SMO registry for every pricing job and
+      # falls back to a months-old captured snapshot if either call fails. That fallback is accepted
+      # upstream and prices a materially different loan without erroring anywhere (the 2026-08-16 audit
+      # measured 475 frontend rows against 752 from the fallback on one matched scenario).
+      #
+      # This job's WHOLE PURPOSE is noticing when Lender Price changes. Priced against a stale
+      # foundation it would not merely be wrong — it would manufacture disagreements, record them as
+      # real findings, and drag down the agreement rate and the clean-day streak that the go-live gate
+      # reads. A run that refuses is a gap somebody can see; a run that quietly compares against last
+      # quarter's configuration is a measurement nobody can trust. Deployment policy, not a secret.
+      - key: LP_REQUIRE_LIVE_FOUNDATION
+        value: "1"
+
   - type: cron
     name: ys-capital-backup
     runtime: docker

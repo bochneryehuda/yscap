@@ -30,13 +30,39 @@ function isNum(x) { return typeof x === 'number' && Number.isFinite(x); }
 function norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
 function milli(v, scale) { return isNum(v) ? Math.round(v * scale) : null; }
 
-// A program/investor matches the filter when every provided key matches (case-insensitive, exact).
+/**
+ * `programLike` — a program-FAMILY pattern, because an exact program name CANNOT express the thing we
+ * actually need to scope to.
+ *
+ * MEASURED LIVE (2026-08-17, one canonical scenario): Lender Price splits ONE Deephaven DSCR rate
+ * sheet into THREE separate PROGRAMS by DSCR band — `DSCR < 1.00 - 30 Yr Fixed`,
+ * `DSCR  1.00-1.24   -  30 Yr Fixed`, `DSCR  >= 1.25  - 30 Yr Fixed` — and prices whichever band it
+ * selects while DECLINING the other two ("DSCR >=1.25%  only eligible on this program"). The same
+ * investor also sells Expanded Prime, Non Prime and ITIN, which decline on every DSCR scenario. So
+ * scoping by `investor` alone leaves 535 declined items on the table and scoping by an exact
+ * `program` name pins us to ONE band that LP may not have chosen — either way the disqualification
+ * comparison is meaningless. Our sheet models the whole DSCR family as one program with the band as an
+ * additive adjustment, so the LP side must be scoped to that FAMILY.
+ *
+ * Accepts a RegExp or a string pattern (compiled case-insensitively). A pattern that does not compile
+ * THROWS here rather than being ignored — a filter that silently matches everything is exactly the
+ * failure this exists to prevent.
+ */
+function programRe(v) {
+  if (v == null) return null;
+  if (v instanceof RegExp) return v;
+  return new RegExp(String(v), 'i');
+}
+
+// A program/investor matches the filter when every provided key matches (case-insensitive, exact —
+// except `programLike`, which is a family PATTERN; see above).
 function matches(p, filter) {
   if (!filter) return true;
   if (filter.program != null && norm(p.program) !== norm(filter.program)) return false;
   if (filter.product != null && norm(p.product) !== norm(filter.product)) return false;
   if (filter.lender != null && norm(p.lender) !== norm(filter.lender)) return false;
   if (filter.investor != null && norm(p.investor) !== norm(filter.investor)) return false;
+  if (filter.programLike != null && !programRe(filter.programLike).test(String(p.program == null ? '' : p.program))) return false;
   return true;
 }
 
@@ -101,8 +127,8 @@ function rungOf(option, rateScale, priceScale) {
 function normalizeLpFull(full, opts = {}) {
   const rateScale = opts.rateScale == null ? 1000 : opts.rateScale;
   const priceScale = opts.priceScale == null ? 1000 : opts.priceScale;
-  const filter = (opts.program != null || opts.product != null || opts.lender != null || opts.investor != null)
-    ? { program: opts.program, product: opts.product, lender: opts.lender, investor: opts.investor }
+  const filter = (opts.program != null || opts.product != null || opts.lender != null || opts.investor != null || opts.programLike != null)
+    ? { program: opts.program, product: opts.product, lender: opts.lender, investor: opts.investor, programLike: opts.programLike }
     : null;
 
   const src = (full && Array.isArray(full.programs)) ? full.programs : [];
@@ -128,6 +154,28 @@ function normalizeLpFull(full, opts = {}) {
 }
 
 /**
+ * The best-priced RUNG per coupon across every matched program — the whole rich rung, not just its
+ * price, because every axis past the ladder (base points, margin, the itemized LLPAs) lives ON the
+ * rung and `bestLadder` above deliberately carries only { rate, priceMilli }.
+ *
+ * This is what a detector-driven comparison consumes, and it lives HERE — beside the normalizer whose
+ * output it folds — so the agreement harness and the live shadow façade fold LP's programs the SAME
+ * way. Two copies of "which rung wins at this coupon" is exactly how one surface comes to disagree
+ * with another about a price neither of them computed.
+ */
+function bestRungs(lpNorm) {
+  const byRate = new Map();
+  for (const p of ((lpNorm && lpNorm.programs) || [])) {
+    for (const r of (p.rungs || [])) {
+      if (!isNum(r.rate) || !isNum(r.priceMilli)) continue;
+      const prev = byRate.get(r.rate);
+      if (prev == null || r.priceMilli > prev.priceMilli) byRate.set(r.rate, r);
+    }
+  }
+  return Array.from(byRate.values()).sort((a, b) => a.rate - b.rate);
+}
+
+/**
  * Normalize a parseDisqualified result into the declined-programs shape, filtered to the scenario's
  * investor/program if given.
  *   disq: client.parseDisqualified(raw) → { ready, lenders:[{ lender, investor, items:[…] }] }
@@ -141,8 +189,13 @@ function normalizeLpDisqualified(disq, opts = {}) {
   for (const lg of d.lenders) {
     if (opts.investor != null && norm(lg.investor) !== norm(opts.investor) && norm(lg.lender) !== norm(opts.investor)) continue;
     if (opts.lender != null && norm(lg.lender) !== norm(opts.lender)) continue;
+    // The disqualify tree's rows carry the PROGRAM on the item, not on the lender group, so the family
+    // pattern is applied here — this is what finally makes the disqualify side of the E3 gate usable
+    // (see programRe: an investor declines its own other product lines on every DSCR scenario).
+    const progRe = programRe(opts.programLike);
     for (const item of (lg.items || [])) {
       if (opts.program != null && norm(item.program) !== norm(opts.program)) continue;
+      if (progRe && !progRe.test(String(item.program == null ? '' : item.program))) continue;
       declined.push({
         lender: lg.lender || null, investor: lg.investor || null, program: item.program || null,
         reasons: (item.reasons || []).map((r) => ({ rule: r.rule || null, adjType: r.adjType || null })),
@@ -155,5 +208,16 @@ function normalizeLpDisqualified(disq, opts = {}) {
 module.exports = {
   normalizeLpFull,
   normalizeLpDisqualified,
+  bestRungs,
+  // THE ONE DEFINITION OF "does this Lender Price program fall inside the scope", promoted out of
+  // `_internals` because a SECOND copy of it had already drifted. `lp-normalize.js` — the shallow
+  // ladder normalizer the /quote comparison and the canary both read — carried its own three-key
+  // version (program / product / lender) and silently ignored the other two: an `investor`-only or
+  // `programLike`-only scope built no filter at all there, so a comparison that believed it was
+  // scoped to one DSCR family was in fact merged across every program Lender Price returned
+  // (seventeen on the live Deephaven capture). The scope vocabulary is defined by `lp-scope.js`; a
+  // consumer that understands only part of it is a consumer that fails open.
+  programMatches: matches,
+  programRe,
   _internals: { marginOf, llpasOf, rungOf, matches },
 };
