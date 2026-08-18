@@ -147,9 +147,19 @@ const armCols = (tables.lt_loans || []).filter((c) => /^arm_/.test(c));
 check(armCols.length >= 8,
   `the schema really carries the ARM columns (${armCols.length}) — a parser that found none would make the next check pass by finding nothing`);
 
-const armGap = armCols.filter((c) => !new RegExp(`\\b${c}\\b`).test(loanWriterSrc) && !unsourced.unsourced('lt_loans', c));
+const armWritten = (c) => new RegExp(`\\b${c}\\b`).test(loanWriterSrc);
+const armGap = armCols.filter((c) => !armWritten(c) && !unsourced.unsourced('lt_loans', c));
 check(armGap.length === 0,
   `no ARM term is silently empty${armGap.length ? ` — unwritten and unexplained: ${armGap.join(', ')}` : ''}`);
+
+// BOTH DIRECTIONS, like the settings guard. A column that has since been WIRED
+// while its "we do not hold this" entry stays behind is its own lie, and a worse
+// one than the blank it replaced: the screen would print that reason on a row
+// showing a real figure, and beside the other terms it would flatly contradict
+// them. Wiring one is what forces its entry out.
+const armStale = armCols.filter((c) => armWritten(c) && unsourced.unsourced('lt_loans', c));
+check(armStale.length === 0,
+  `…and none of them is written while still claiming we do not hold it${armStale.length ? ` — these are: ${armStale.join(', ')}` : ''}`);
 
 console.log('\nevery reason is a reason, not a shrug');
 
