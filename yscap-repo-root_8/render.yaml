@@ -266,6 +266,42 @@ services:
   #
   # 07:10 UTC ≈ 3:10am New York — after the day's work, before anyone starts.
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # THE DAILY LENDER PRICE CHECK (Long-Term PPE) — owner-directed 2026-08-18.
+  #
+  # The owner's own words: "This should be a scheduled run: every day at 9:00 a.m. Eastern, 10:00 a.m.
+  # Eastern, 11:00 a.m. Eastern, 12:00 p.m. Eastern, 4:00 p.m. Eastern, and 7:00 a.m. Eastern."
+  #
+  # ⛔ THE SCHEDULE BELOW IS HOURLY ON PURPOSE, AND IT IS NOT A SHORTCUT. Render's scheduler is UTC and
+  # the owner named EASTERN hours, which are UTC-5 for part of the year and UTC-4 for the rest. Six
+  # UTC-pinned entries would be an hour wrong for roughly half of every year, silently, and each firing
+  # costs a live vendor call. So this wakes every hour and `src/longterm/ppe/canary-clock.js` — the ONE
+  # place the six hours are written down — decides against the real New York clock. Twice a year it
+  # simply does not fire on the hour that is not there. Do not "tidy" this into six UTC entries.
+  #
+  # Two servers can never both fire one hour: the tick claims a durable database lease before it does
+  # anything (lt_ppe_canary_driver_state, db/578).
+  # ---------------------------------------------------------------------------
+  - type: cron
+    name: ys-capital-lt-canary
+    runtime: node
+    plan: starter
+    rootDir: yscap-repo-root_8
+    buildCommand: npm install
+    schedule: "0 * * * *"
+    startCommand: node scripts/lt-ppe-canary-cron.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase: { name: yscap, property: connectionString }
+      # The Lender Price login. Authorized by the owner in writing on 2026-08-18 for live comparison at
+      # all times; it lives here as a dashboard value and never in the code.
+      - key: LP_USERNAME
+        sync: false
+      - key: LP_PASSWORD
+        sync: false
+
   - type: cron
     name: ys-capital-backup
     runtime: docker

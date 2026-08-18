@@ -158,7 +158,7 @@ wrong.
 - `sync/loans.js :: readLoan`
 - `views.js :: defaultView`
 
-## Named by a test and by no production code (186)
+## Named by a test and by no production code (185)
 
 This is the §2.45 / §2.46 shape exactly — built, tested, and asked by nothing — and it is also the
 shape of a perfectly good exported table that a suite asserts against. The list is watched, not
@@ -255,7 +255,6 @@ banned.
 - `ppe/canary-driver.js :: leaseMsOf` — the lease-length reader; same
 - `ppe/canary-driver.js :: lockKeyFor` — the lease key; the suite races two contenders through it
 - `ppe/canary-driver.js :: MIN_LEASE_MS` — the floor the suite asserts against rather than retyping
-- `ppe/canary-driver.js :: tickOnce` — the one pass; start() calls it internally and the suite drives it directly
 - `ppe/canary-schedule.js :: MAX_BATTERY_SCENARIOS`
 - `ppe/canary-schedule.js :: MAX_INTERVAL_MS`
 - `ppe/cutover.js :: consecutiveCleanDays`

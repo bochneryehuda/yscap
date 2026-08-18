@@ -3364,3 +3364,65 @@ no price at all, and the fail-closed path at the store and again at the route. *
 the production code were each proven to fail it** for the right reason, including one that had to be
 rewritten because dropping the fail-closed guard CRASHED rather than mispriced — a crash is not a
 proof.
+
+---
+
+**§2.56 — THE DAILY LENDER PRICE CHECK NOW HAS A SCHEDULE, AND THE HARD PART WAS THE CLOCK
+(2026-08-18).** §2.49 recorded a question with three answers and refused to pick one, because each
+firing costs a live vendor call and two of the three behave differently when more than one server is
+running. The owner answered it:
+
+> "This should be a scheduled run: Every day at 9:00 a.m. Eastern, 10:00 a.m. Eastern, 11:00 a.m.
+> Eastern, 12:00 p.m. Eastern, 4:00 p.m. Eastern, and 7:00 a.m. Eastern."
+
+**SIX HOURS IN A LIST IS NOT THE PART THAT GOES WRONG.** Render's scheduler speaks UTC and the owner
+named EASTERN hours, which are UTC−5 for part of the year and UTC−4 for the rest. Six UTC-pinned cron
+entries would be an hour wrong for roughly half of every year — **silently, annually, and while
+spending money at the vendor on each wrong firing.** So the cron entry says `0 * * * *` (every hour)
+and `src/longterm/ppe/canary-clock.js` decides, against the real New York clock, whether the hour it
+woke in is one of the six. Twice a year it simply does not fire on the hour that is not there. The
+`render.yaml` comment says all of this at the schedule line, because "why is this hourly?" is exactly
+the question a future reader will try to tidy away.
+
+**AND IT ASKS `Intl`, NOT AN OFFSET TABLE.** `Intl.DateTimeFormat` with `timeZone: 'America/New_York'`
+consults the platform's own zone database, which updates with the platform. A hand-written
+"March to November" rule is a private copy of that database that stops being true the year a
+legislature moves the dates — and that bill has been in front of the United States more than once.
+
+**IT FAILS CLOSED.** An unreadable clock is NOT due, and says so. A skipped check is a gap somebody
+can see on the scoreboard; one fired at an hour nobody chose spends the owner's money and cannot be
+taken back.
+
+**TWO SERVERS CAN STILL NEVER BOTH FIRE ONE HOUR** — the tick claims the durable database lease built
+in §2.49 (`lt_ppe_canary_driver_state`, db/578) before it does anything. That protection was never
+specific to the in-process driver, which is exactly why the driver CHOICE could be left to the owner
+without leaving the double-billing risk open in the meantime. The in-process driver stays OFF and
+unchanged: it is not what the owner chose.
+
+**THE PRODUCT-SEPARATION RULE SHAPED THE FILE LAYOUT, and that is worth stating because the first cut
+got it wrong and the gate caught it.** Long-Term back-end code lives ONLY in `src/longterm/**`, and
+`check-product-separation.js` refuses any file outside it that requires Long-Term — other than
+`src/server.js` mounting the router and `scripts/test-lt-*.js`. A scheduled command is neither. So the
+body is `src/longterm/ppe/canary-cron-command.js` and `scripts/lt-ppe-canary-cron.js` is a LAUNCHER
+that spawns it and imports nothing: the operator-facing name is where a person looks for it, and no
+RTL file gains a dependency on Long-Term. Same shape, same reason, as `program-audit-command.js`.
+
+**PROVEN** — `scripts/test-lt-ppe-canary-clock.js` (25 assertions, offline). The daylight-saving half
+is the part worth having: the SAME New York hour at TWO different UTC hours is asserted due in both,
+and the two instants a UTC-pinned cron would have fired on (6am in winter, 8am in summer) are asserted
+NOT due. Plus: every other hour of the day refused; the fail-closed paths; the slot key that makes
+"once per scheduled hour" expressible; `nextRun` walked hour by hour so the zone database decides,
+sampled across a whole year and across the 23-hour spring-forward day; and a source guard that the
+schedule is written down ONCE — the command reads it from the module, and the launcher does not
+require Long-Term.
+
+**SEVEN MUTATIONS, each red for the right reason**, control green either side: the zone swapped to UTC
+(8 assertions red), a fixed UTC−4 offset table in place of `Intl` (2 — the classic DST bug), an
+unreadable clock firing anyway (2), an hour dropped from the schedule (2), the slot key losing its
+hour (1), the cron pinned to a UTC hour (1), and the cron service removed from `render.yaml`
+altogether (2).
+
+**WHAT THIS DOES NOT DO.** The schedule fires the tick; the tick still only runs schedules an admin
+has saved, and still cannot reach Lender Price from an environment with no login in its settings. The
+job existing is the half that was missing — a saved cadence that nothing fires was §2.49's whole
+finding — not a claim that comparisons are now happening.
