@@ -271,6 +271,53 @@ async function returnItem(client, itemId, actorId, outcomeLabel, note) {
   return item;
 }
 
+// REMOVE FROM THE WORKFLOW (owner-directed 2026-08-18: "The Remove button was
+// intent to go on the workflows to remove and restore to the workflows") — a
+// hand-off that landed in a queue by mistake is taken OFF that workflow without
+// deleting anything: the item leaves the live queue into a restorable
+// `removed` state (db/582). Distinct from `cancelled` (the submitter's own
+// withdrawal via cancelSubmission) and from `returned` (finished work) so the
+// history never claims a removed item was worked or withdrawn.
+async function removeItem(client, itemId, actorId, reason) {
+  const r = await client.query(
+    `UPDATE workflow_items
+        SET status='removed', removed_at=now(), removed_by=$2, removed_reason=$3, updated_at=now()
+      WHERE id=$1 AND status IN ('open','in_progress') RETURNING *`,
+    [itemId, actorId || null, reason ? String(reason).slice(0, 500) : null]);
+  const item = r.rows[0];
+  if (item) {
+    await client.query(
+      `INSERT INTO workflow_events (workflow_item_id, application_id, event_type, actor_staff_id, submission_type, note)
+       VALUES ($1,$2,'removed',$3,$4,$5)`,
+      [item.id, item.application_id, actorId || null, item.submission_type,
+       reason ? String(reason).slice(0, 500) : null]);
+  }
+  return item;
+}
+
+// RESTORE a removed item back into the live queue. Refuses when the SAME
+// (file, hand-off kind) already has another live item — restoring would put the
+// same work in the queue twice (the same duplicate the submit door suppresses).
+async function restoreItem(client, itemId, actorId) {
+  const r = await client.query(
+    `UPDATE workflow_items w
+        SET status='open', removed_at=NULL, removed_by=NULL, removed_reason=NULL, updated_at=now()
+      WHERE w.id=$1 AND w.status='removed'
+        AND NOT EXISTS (SELECT 1 FROM workflow_items live
+                         WHERE live.application_id = w.application_id
+                           AND live.submission_type = w.submission_type
+                           AND live.status IN ('open','in_progress')
+                           AND live.id <> w.id)
+      RETURNING *`, [itemId]);
+  const item = r.rows[0];
+  if (item) {
+    await client.query(
+      `INSERT INTO workflow_events (workflow_item_id, application_id, event_type, actor_staff_id, submission_type)
+       VALUES ($1,$2,'restored',$3,$4)`, [item.id, item.application_id, actorId || null, item.submission_type]);
+  }
+  return item;
+}
+
 // ---------------------------------------------------------------------------
 // AUTO-CLEAR the closer's hand-off when the closing is COMPLETED (owner-directed
 // 2026-07-26: "once the reconciliation of a file is done and it's marked as
@@ -461,13 +508,16 @@ async function listQueue(staffId, { tab = 'next', sort = 'received', type = null
         LIMIT 300`, params);
     return r.rows;
   }
-  // The live "up next" queue.
+  // The live "up next" queue — or, tab 'removed', the items taken OFF this
+  // workflow (db/582), same visibility arms, restorable from the screen.
+  const removedTab = tab === 'removed';
   const params = [staffId];
   let typeClause = '';
   if (type && TYPES[type]) { params.push(type); typeClause = ` AND w.submission_type = $${params.length}`; }
-  const orderBy = SORTS[sort] || SORTS.received;
+  const orderBy = removedTab ? 'w.removed_at DESC NULLS LAST, w.id' : (SORTS[sort] || SORTS.received);
   const r = await client.query(
     `SELECT w.id, w.application_id, w.submission_type, w.status, w.priority, w.note,
+            w.removed_at, w.removed_reason, rb.full_name AS removed_by_name,
             w.est_closing_date, w.received_at, w.picked_up_at, w.to_role, w.due_at, w.auto,
             EXTRACT(EPOCH FROM (now() - w.received_at)) AS age_seconds,
             -- on-time / at-risk (past 75% of the SLA window) / overdue (past due)
@@ -482,6 +532,7 @@ async function listQueue(staffId, { tab = 'next', sort = 'received', type = null
        JOIN applications a ON a.id = w.application_id
        JOIN borrowers b ON b.id = a.borrower_id
        LEFT JOIN staff_users fr ON fr.id = w.from_staff_id
+       LEFT JOIN staff_users rb ON rb.id = w.removed_by
       WHERE (w.to_staff_id = $1
              -- Role INBOX (narrowed 2026-07-31, owner-directed per-file
              -- contacts): an UNASSIGNED hand-off addressed to my ROLE shows to
@@ -506,10 +557,10 @@ async function listQueue(staffId, { tab = 'next', sort = 'received', type = null
                  AND EXISTS (SELECT 1 FROM application_assignees aa
                               WHERE aa.application_id = w.application_id AND aa.role = w.to_role
                                 AND aa.staff_id = $1 AND aa.removed_at IS NULL)))
-        AND w.status IN ('open','in_progress')
+        AND ${removedTab ? `w.status = 'removed'` : `w.status IN ('open','in_progress')`}
         AND a.deleted_at IS NULL
         ${typeClause}
-      ORDER BY ${orderBy}`, params);
+      ORDER BY ${orderBy}${removedTab ? ' LIMIT 200' : ''}`, params);
   return r.rows;
 }
 
@@ -522,13 +573,15 @@ const WORKFLOW_ROLES = ['processor', 'closer', 'draw_coordinator', 'underwriter'
 // view (the closer workflow, the processing workflow, the draw workflow…), not a
 // merged "everyone" list. Returns the same row shape as the personal queue PLUS
 // `to_name`/`to_staff_role` (whose queue each item is in).
-async function listByRole(role, { sort = 'received', type = null } = {}, client = db) {
+async function listByRole(role, { sort = 'received', type = null, tab = 'next' } = {}, client = db) {
+  const removedTab = tab === 'removed';
   const params = [role];
   let typeClause = '';
   if (type && TYPES[type]) { params.push(type); typeClause = ` AND w.submission_type = $${params.length}`; }
-  const orderBy = SORTS[sort] || SORTS.received;
+  const orderBy = removedTab ? 'w.removed_at DESC NULLS LAST, w.id' : (SORTS[sort] || SORTS.received);
   const r = await client.query(
     `SELECT w.id, w.application_id, w.submission_type, w.status, w.priority, w.note,
+            w.removed_at, w.removed_reason, rb.full_name AS removed_by_name,
             w.est_closing_date, w.received_at, w.picked_up_at, w.to_role, w.due_at, w.auto,
             EXTRACT(EPOCH FROM (now() - w.received_at)) AS age_seconds,
             CASE WHEN w.due_at IS NULL THEN NULL
@@ -543,10 +596,11 @@ async function listByRole(role, { sort = 'received', type = null } = {}, client 
        JOIN borrowers b ON b.id = a.borrower_id
        LEFT JOIN staff_users fr ON fr.id = w.from_staff_id
        LEFT JOIN staff_users ts ON ts.id = w.to_staff_id
-      WHERE w.status IN ('open','in_progress') AND a.deleted_at IS NULL
+       LEFT JOIN staff_users rb ON rb.id = w.removed_by
+      WHERE ${removedTab ? `w.status = 'removed'` : `w.status IN ('open','in_progress')`} AND a.deleted_at IS NULL
         AND (ts.role = $1 OR (w.to_staff_id IS NULL AND w.to_role = $1))
         ${typeClause}
-      ORDER BY ${orderBy}`, params);
+      ORDER BY ${orderBy}${removedTab ? ' LIMIT 200' : ''}`, params);
   return r.rows;
 }
 
@@ -738,6 +792,6 @@ module.exports = {
   TYPES, TYPE_KEYS, typeConfig, OUTCOME_LABELS, SLA_HOURS, slaHoursFor,
   candidatesForRole, allActiveStaff,
   conditionsClearedPct, fileLiveItems, fileTimeline,
-  submitItem, pickItem, returnItem, lockClosingItems, resolveClosingItem, reopenClosingItem, maybeFinishClosing, closingIsFinished, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient, overdueItemsFor,
+  submitItem, pickItem, returnItem, removeItem, restoreItem, lockClosingItems, resolveClosingItem, reopenClosingItem, maybeFinishClosing, closingIsFinished, listQueue, listByRole, WORKFLOW_ROLES, queueCounts, overdueByRecipient, overdueItemsFor,
   CLOSING_STAGES, getClosing, openClosing, advanceClosing,
 };

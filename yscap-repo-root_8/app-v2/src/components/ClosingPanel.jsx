@@ -106,6 +106,10 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
         </div>
       </div>
 
+      {/* How this loan funds — the clear delegate ↔ table-funding path, beside
+          what Encompass says (owner-directed 2026-08-18). */}
+      <FundingChannelCard appId={appId} ws={ws} isCloser={isCloser} busy={busy} run={run} />
+
       {/* Deal details */}
       <DealDetails appId={appId} app={app} structure={ws.structure} />
 
@@ -167,6 +171,104 @@ export default function ClosingPanel({ appId, app, can, onDownloadDoc, onPreview
 
       {/* Notes */}
       <NotesSection appId={appId} notes={ws.notes || []} onChanged={refresh} setErr={setErr} />
+    </div>
+  );
+}
+
+/* HOW THIS LOAN FUNDS (owner-directed 2026-08-18: "there's no clear path on the
+   file now in pilot to change it from a delegate file to a table funding file …
+   somewhere on the closing section … a clear path to change it to table funding
+   or to change it from delegate … so it should match with Encompass").
+
+   One card at the top of the closing section that says plainly whether this
+   loan is TABLE FUNDING (sold at the closing table) or DELEGATE (we fund it,
+   sold after closing), shows what Encompass says right beside it, and switches
+   it in one click. It writes the SAME `warehouse` field the Funding card writes
+   — the ONE thing that decides `table_funded` — never a second flag, so the two
+   surfaces can never disagree. Gated like the field it writes: only the closer
+   (manage_closings) or an admin can change it; everyone else reads it. */
+function FundingChannelCard({ appId, ws, isCloser, busy, run }) {
+  const fc = ws.fundingChannel;
+  // The line NAME always comes from the server payload — the client never
+  // spells it (guarded by test-table-funding-control-pure B2: a second copy of
+  // the constant silently stops matching the day the line is renamed).
+  const tfWarehouse = ws.tableFundingWarehouse || '';
+  const [wh, setWh] = useState('');
+  if (!fc) return null;
+  const delegateLines = (ws.warehouses || []).filter((w) => w !== tfWarehouse);
+  const isTF = fc.ours === 'table_funding';
+  const ourLabel = isTF ? 'Table funding — sold at the closing table'
+    : fc.ours === 'direct' ? `Delegate — we fund it (warehouse: ${fc.warehouse})`
+    : 'Not set yet — pick how this loan funds';
+  const encLabel = !fc.encompassRaw ? 'not filled in yet'
+    : fc.encompassChannel === 'table_funding' ? `table funding (“${fc.encompassRaw}”)`
+    : fc.encompassChannel === 'direct' ? `direct / delegate (“${fc.encompassRaw}”)`
+    : `“${fc.encompassRaw}” — a value PILOT doesn’t recognise`;
+  const toTable = async () => {
+    if (!tfWarehouse) return;   // the server names the line; never write a guess
+    const warn = fc.mayTableFund === false
+      ? '\n\nNOTE: this note buyer’s loans are normally NEVER table funded — double-check before switching.' : '';
+    const ok = await askConfirm(
+      `Switch this file to TABLE FUNDING?\n\nThat means the loan is sold right at the closing table: it will not go to the purchasing desk and no purchase advice date is expected. It sets the warehouse to “${tfWarehouse}” — the one field that decides this.${warn}`,
+      { title: 'Table funding', confirmLabel: 'Yes, table funding' });
+    if (!ok) return;
+    run('fchan', () => api.closingUpdate(appId, { warehouse: tfWarehouse }), 'Saved — this file is now table funding.');
+  };
+  const toDelegate = async () => {
+    if (!wh) return;
+    const ok = await askConfirm(
+      `Switch this file to DELEGATE — we fund it on “${wh}”?\n\nThat means the loan is NOT sold at the closing table: after closing it goes to the purchasing desk to be sold, and a purchase advice date is expected.`,
+      { title: 'Delegate — we fund it', confirmLabel: 'Yes, we fund it' });
+    if (!ok) return;
+    run('fchan', () => api.closingUpdate(appId, { warehouse: wh }), `Saved — this file is delegate (we fund it on “${wh}”).`);
+    setWh('');
+  };
+  return (
+    <div className="panel" style={{ marginBottom: 14 }}>
+      <div className="panel-h"><h3 style={{ margin: 0 }}>How this loan funds</h3>
+        <span className={`pill ${fc.agrees === false ? 'warn' : fc.agrees === true ? 'ok' : 'muted'}`}>
+          {fc.agrees === true ? 'Matches Encompass' : fc.agrees === false ? 'Doesn’t match Encompass' : 'Nothing to compare yet'}
+        </span></div>
+      <div className="panel-b">
+        <div style={{ color: '#141B22' }}><b>PILOT:</b> {ourLabel}</div>
+        <div className="small" style={{ color: '#4B585C', marginTop: 2 }}><b>Encompass says:</b> {encLabel}</div>
+        {fc.agrees === false && (
+          <div className="notice warn" style={{ margin: '8px 0 0' }}>
+            The two systems disagree about how this loan funds. Set PILOT to match Encompass below — or, if
+            Encompass is the wrong one, fix it there (PILOT never writes to Encompass).
+          </div>
+        )}
+        {fc.mayTableFund === false && (isTF || fc.encompassChannel === 'table_funding') && (
+          <div className="notice warn" style={{ margin: '8px 0 0' }}>
+            This note buyer’s loans are never table funded — they should always be direct RTL (delegate).
+          </div>
+        )}
+        {isCloser ? (
+          <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
+            {!isTF && !!tfWarehouse && (
+              <button type="button" className="btn ghost small" disabled={busy === 'fchan'}
+                title={`Sets the warehouse to “${tfWarehouse}” — sold at the closing table`}
+                onClick={toTable}>Switch to table funding</button>
+            )}
+            {(isTF || !fc.ours) && (
+              <>
+                <select className="input" style={{ width: 220 }} value={wh} onChange={(e) => setWh(e.target.value)} aria-label="Warehouse line for delegate funding">
+                  <option value="">Delegate — pick the warehouse…</option>
+                  {delegateLines.map((w) => <option key={w} value={w}>{w}</option>)}
+                </select>
+                <button type="button" className="btn ghost small" disabled={busy === 'fchan' || !wh} onClick={toDelegate}>
+                  {isTF ? 'Switch to delegate (we fund it)' : 'Set delegate (we fund it)'}
+                </button>
+              </>
+            )}
+            {fc.ours === 'direct' && (
+              <span className="muted small">To change the warehouse line itself, use the Funding card below.</span>
+            )}
+          </div>
+        ) : (
+          <div className="muted small" style={{ marginTop: 8 }}>Only the closer (or an admin) can change how this loan funds.</div>
+        )}
+      </div>
     </div>
   );
 }

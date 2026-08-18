@@ -4,7 +4,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import InviteApplicant from '../components/InviteApplicant.jsx';
 import { useFlash } from '../components/FlashToast.jsx';
-import { confirmRemoveFromWorkflow } from '../lib/workflowRemove.js';
+import { askPrompt } from '../lib/dialog.js';
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
@@ -44,7 +44,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 const monthShort = (ym) => MONTHS[Number(ym.split('-')[1]) - 1] || ym;
 
 // The server-side filter params (everything except UI-only keys like `mine`/`tab`).
-const SERVER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'loanType', 'q', 'sort', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'flag', 'limit', 'offset', 'removed'];
+const SERVER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'loanType', 'q', 'sort', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'flag', 'limit', 'offset'];
 // The subset that counts as an "active filter" for Clear-filters / KPI-active UI.
 // `sort` is a view preference, not a filter, so it's intentionally excluded.
 const FILTER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'loanType', 'q', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'flag'];
@@ -302,7 +302,7 @@ function RiskScoreChip({ score }) {
   );
 }
 
-function Row({ a, removed, onRemove, onRestore }) {
+function Row({ a, onArchive }) {
   const pct = a.total_items > 0 ? Math.round((a.done_items / a.total_items) * 100) : 0;
   const off = a.loan_officer_name;
   const act = (e, fn) => { e.preventDefault(); e.stopPropagation(); fn(a); };
@@ -333,9 +333,13 @@ function Row({ a, removed, onRemove, onRestore }) {
         {a.total_items > 0
           ? <><span className="pct">{pct}%</span><div className="prog-bar"><i style={{ width: pct + '%' }} /></div></>
           : <span className="mut">—</span>}
-        {removed
-          ? <button type="button" className="btn ghost small" style={{ marginTop: 6 }} onClick={(e) => act(e, onRestore)}>Restore</button>
-          : <button type="button" className="btn ghost small" style={{ marginTop: 6 }} title="Remove this file from the pipeline view (does not delete it)" onClick={(e) => act(e, onRemove)}>Remove</button>}
+        {/* The pipeline's only off-ramp is ARCHIVE (owner-directed 2026-08-18:
+            "For files in the pipeline, the only button that should work is the
+            Archive button and Restore From Archive"). Remove/restore lives on
+            the WORKFLOWS, never here. Rendered only for delete_files holders. */}
+        {onArchive
+          ? <button type="button" className="btn ghost small" style={{ marginTop: 6 }} title="Archive this file — it leaves the pipeline but is kept in the Archived folder and can be restored anytime" onClick={(e) => act(e, onArchive)}>Archive</button>
+          : null}
       </div>
     </Link>
   );
@@ -464,18 +468,18 @@ export default function StaffQueue() {
   };
   const clearFilters = () => setSearchParams({});
 
-  // Remove-from-this-view (owner-directed 2026-08-11): the row coordinator can
-  // take a file OFF the pipeline (e.g. it landed here by mistake) without deleting
-  // it — it stays on every other screen and can be restored from the "Removed"
-  // view. Double warning is handled by confirmRemoveFromWorkflow.
-  const showRemoved = searchParams.get('removed') === '1';
-  const removeApp = async (a) => {
-    const ok = await confirmRemoveFromWorkflow(a.id, 'pipeline', [a.first_name, a.last_name].filter(Boolean).join(' '));
-    if (ok) { flash('Removed from the pipeline'); fetchList(); }
-  };
-  const restoreApp = async (a) => {
-    try { await api.staffRestoreToWorkflow(a.id, 'pipeline'); flash('Restored to the pipeline'); fetchList(); }
-    catch (e) { flashErr((e && e.message) || 'Could not restore the file'); }
+  // ARCHIVE is the pipeline's only off-ramp (owner-directed 2026-08-18 —
+  // the old Remove / Show removed pipeline view is retired; remove/restore
+  // lives on the workflows). Same reversible soft-archive the file screen
+  // offers (applications.deleted_at), gated on delete_files, restorable from
+  // the Archived folder.
+  const canArchive = can('delete_files');
+  const archiveApp = async (a) => {
+    const who = [a.first_name, a.last_name].filter(Boolean).join(' ') || 'this file';
+    const reason = await askPrompt(`Archive ${who}? It leaves the pipeline and stops counting in the dashboard, but is kept in the Archived folder and can be restored anytime. Optional reason:`);
+    if (reason === null) return;
+    try { await api.staffArchiveApp(a.id, reason || undefined); flash('Archived — restorable from the Archived folder'); fetchList(); }
+    catch (e) { flashErr((e && e.message) || 'Could not archive the file'); }
   };
 
   // Current control values, read from the URL.
@@ -674,13 +678,13 @@ export default function StaffQueue() {
 
       <div className="panel">
         <div className="panel-h">
-          <h3>{tab === 'mine' ? (showRemoved ? 'Removed from the pipeline' : 'Active files') : 'Lead capture'}</h3>
+          <h3>{tab === 'mine' ? 'Active files' : 'Lead capture'}</h3>
           {displayList && <span className="pill mut">{displayList.length} file(s)</span>}
-          {tab === 'mine' && (
-            <button className="btn ghost small" style={{ marginLeft: 'auto' }}
-              onClick={() => setParam({ removed: showRemoved ? '' : '1' })}>
-              {showRemoved ? '← Back to pipeline' : 'Show removed'}
-            </button>
+          {tab === 'mine' && canArchive && (
+            <Link className="btn ghost small" style={{ marginLeft: 'auto' }} to="/internal/archived"
+              title="Archived files — restore any of them back to the pipeline">
+              Archived files
+            </Link>
           )}
         </div>
         {displayList == null
@@ -697,7 +701,7 @@ export default function StaffQueue() {
                   <div>Status</div>
                   <div>Progress</div>
                 </div>
-                {displayList.map(a => <Row key={a.id} a={a} removed={showRemoved} onRemove={removeApp} onRestore={restoreApp} />)}
+                {displayList.map(a => <Row key={a.id} a={a} onArchive={canArchive ? archiveApp : null} />)}
               </div>
             )}
       </div>

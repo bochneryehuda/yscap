@@ -482,6 +482,58 @@ async function readRegisteredStructure(appId, client) {
 }
 
 // ---------------------------------------------------------------------------
+// HOW THIS LOAN FUNDS — PILOT's table-funding-vs-delegate answer beside what
+// ENCOMPASS says (owner-directed 2026-08-18: "there's no clear path on the
+// file now in pilot to change it from a delegate file to a table funding
+// file … somewhere on the closing section … a clear path to change it to
+// table funding or to change it from delegate … so it should match with
+// Encompass").
+//
+// PILOT's side is DERIVED from the warehouse through tableFundedFor — the ONE
+// definition of table funding; there is still no second flag. Encompass's side
+// is CX.TABLEFUNDER read from the stored copy (the flat by-number map, falling
+// back to the customFields[] array an older pull stored — the same COALESCE the
+// purchase-advice chase uses) and normalized through the ONE shared value map
+// (funding-channel.channelKey), so this card, the Encompass sync panel and the
+// funding-channel rule can never read one value two ways.
+//
+// READ-ONLY + best-effort: it computes a comparison, writes nothing, and the
+// caller's `safe()` turns a failure into null (the card simply doesn't render).
+// Agreement is judged only when BOTH sides carry a readable value — a blank or
+// unrecognised Encompass spelling is reported as itself, never as a mismatch.
+// ---------------------------------------------------------------------------
+async function readFundingChannel(appId, lender, closingRow, client) {
+  const c = client || db;
+  const FC = require('./funding-channel');
+  const row = (await c.query(
+    `SELECT COALESCE(
+              a.encompass_extra->'_fieldValues'->>'CX.TABLEFUNDER',
+              (SELECT cf->>'value'
+                 FROM jsonb_array_elements(
+                        CASE WHEN jsonb_typeof(a.encompass_extra->'customFields') = 'array'
+                             THEN a.encompass_extra->'customFields' ELSE '[]'::jsonb END) cf
+                WHERE cf->>'fieldName' = 'CX.TABLEFUNDER' LIMIT 1)
+            ) AS raw
+       FROM applications a WHERE a.id = $1`, [appId])).rows[0];
+  const encRaw = row && row.raw ? String(row.raw).trim() : '';
+  const encChannel = encRaw ? FC.channelKey(encRaw) : null;
+  const warehouse = (closingRow && closingRow.warehouse) || null;
+  const ours = warehouse ? (tableFundedFor(warehouse) ? FC.CHANNEL.TABLE_FUNDING : FC.CHANNEL.DIRECT) : null;
+  const buyer = FC.toBuyerKey(lender);
+  return {
+    ours,                                  // 'table_funding' | 'direct' | null (warehouse not picked yet)
+    warehouse,
+    encompassRaw: encRaw || null,          // the tenant's exact wording, shown beside the reading
+    encompassChannel: encChannel,          // normalized, or null (blank / a spelling the map doesn't carry)
+    agrees: ours && encChannel ? ours === encChannel : null,
+    // The buyer's own rule, for the card's advisory note — informational here,
+    // never a refusal (the enforced rule lives on the Encompass sync panel).
+    buyer,
+    mayTableFund: FC.mayTableFund(buyer),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // THE aggregate workspace payload the Closing screen renders. Best-effort per
 // sub-part — a failure in one block never blanks the whole page.
 // ---------------------------------------------------------------------------
@@ -504,6 +556,7 @@ async function getClosingWorkspace(appId, client) {
   const notes = await safe(() => readNotes(appId, c), []);
   const reconciliation = await safe(() => reconcileClosingDates(appId, c), null);
   const structure = await safe(() => readRegisteredStructure(appId, c), null);
+  const fundingChannel = await safe(() => readFundingChannel(appId, app.lender, closing, c), null);
 
   return {
     structure,
@@ -534,6 +587,9 @@ async function getClosingWorkspace(appId, client) {
        line is renamed, leaving a button that writes an unrecognised warehouse and a
        file that never reads as table funded. */
     tableFundingWarehouse: TABLE_FUNDING,
+    // HOW THIS LOAN FUNDS — table funding vs delegate, beside Encompass's own
+    // answer (owner-directed 2026-08-18). See readFundingChannel above.
+    fundingChannel,
     // THE USUAL ANSWER FOR THIS NOTE BUYER — a SUGGESTION for the closer, never a decision
     // (owner-directed 2026-08-09: "most of the properties that have Fidelis as a note buyer should
     // be defaulted to table funding … but there are a few Fidelis deals that are not being table
@@ -569,6 +625,7 @@ module.exports = {
   CLOSER_ONLY_CLOSING_FIELDS,
   tableFundedFor,
   warehouseSuggestionFor,
+  readFundingChannel,
   WAREHOUSES,
   TABLE_FUNDING,
   CLOSING_RETIRED_SQL,

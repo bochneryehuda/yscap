@@ -9,17 +9,17 @@
 // *** IT IS INCOMPLETE, AND THAT IS NOT A DEFECT — IT IS A PROPERTY OF THE
 // *** PRISMA SCHEMA LANGUAGE. It cannot express triggers, functions, CHECK
 // *** constraints, generated columns or partial indexes. On this database
-// *** that is 789 objects it cannot see, listed in full in
+// *** that is 790 objects it cannot see, listed in full in
 // *** BEYOND-PRISMA.md next to this file.
 //
 // *** SO: NEVER REBUILD A DATABASE FROM THIS FILE. Doing so produces SQL that
 // *** runs without a single error and silently leaves out every one of those
-// *** 789 objects — including the guard that keeps a budget
+// *** 790 objects — including the guard that keeps a budget
 // *** condition from being signed off unless the totals match to the cent.
-// *** The 579 numbered migrations in db/ (highest db/582) are the only
+// *** The 580 numbered migrations in db/ (highest db/583) are the only
 // *** thing that builds this database.
 //
-// Snapshot: 342 tables, 5594 columns.
+// Snapshot: 342 tables, 5597 columns.
 // ===========================================================================
 datasource db {
   provider = "postgresql"
@@ -271,6 +271,31 @@ model amc_orders {
   cancel_reason                                           String?
   cancel_requested_at                                     DateTime?             @db.Timestamptz(6)
   cancel_requested_by                                     String?               @db.Uuid
+  appraiser_name                                          String?
+  appraiser_company                                       String?
+  appraiser_email                                         String?
+  appraiser_phone                                         String?
+  appraiser_city                                          String?
+  appraiser_state                                         String?
+  appraiser_license                                       String?
+  amc_company                                             String?
+  amc_license                                             String?
+  amc_file_number                                         String?
+  vendor_due_date                                         DateTime?             @db.Date
+  inspection_date                                         DateTime?             @db.Date
+  vendor_completed_date                                   DateTime?             @db.Date
+  assigned_at_text                                        String?
+  accepted_at_text                                        String?
+  inspection_scheduled_at_text                            String?
+  inspection_completed_at_text                            String?
+  report_uploaded_at_text                                 String?
+  vendor_updated_at_text                                  String?
+  form_fee                                                Decimal?              @db.Decimal(12, 2)
+  due_amount                                              Decimal?              @db.Decimal(12, 2)
+  paid_amount                                             Decimal?              @db.Decimal(12, 2)
+  invoiced_amount                                         Decimal?              @db.Decimal(12, 2)
+  last_detail_response                                    Json?
+  detail_polled_at                                        DateTime?             @db.Timestamptz(6)
   amc_order_comments                                      amc_order_comments[]
   amc_order_documents                                     amc_order_documents[]
   amc_order_revisions                                     amc_order_revisions[]
@@ -599,6 +624,13 @@ model applications {
   borrower_portal_enabled                                                                  Boolean                          @default(true)
   purchase_advice_notified_at                                                              DateTime?                        @db.Timestamptz(6)
   lock_box_code                                                                            String?
+  property_free_and_clear                                                                  Boolean                          @default(false)
+  free_and_clear_by                                                                        String?                          @db.Uuid
+  free_and_clear_at                                                                        DateTime?                        @db.Timestamptz(6)
+  payoff_good_through                                                                      DateTime?                        @db.Date
+  ab_piece_enabled                                                                         Boolean                          @default(false)
+  a_piece_amount                                                                           Decimal?                         @db.Decimal(14, 2)
+  program_exceptions                                                                       Json?
   ai_admin_questions                                                                       ai_admin_questions[]
   ai_cost_events                                                                           ai_cost_events[]
   ai_suggestions                                                                           ai_suggestions[]
@@ -613,6 +645,7 @@ model applications {
   staff_users_applications_closer_idTostaff_users                                          staff_users?                     @relation("applications_closer_idTostaff_users", fields: [closer_id], references: [id], onUpdate: NoAction)
   borrowers_applications_co_borrower_idToborrowers                                         borrowers?                       @relation("applications_co_borrower_idToborrowers", fields: [co_borrower_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   staff_users_applications_experience_exception_byTostaff_users                            staff_users?                     @relation("applications_experience_exception_byTostaff_users", fields: [experience_exception_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  staff_users_applications_free_and_clear_byTostaff_users                                  staff_users?                     @relation("applications_free_and_clear_byTostaff_users", fields: [free_and_clear_by], references: [id], onUpdate: NoAction)
   llcs_applications_llc_idTollcs                                                           llcs?                            @relation("applications_llc_idTollcs", fields: [llc_id], references: [id], onUpdate: NoAction)
   staff_users_applications_loan_officer_idTostaff_users                                    staff_users?                     @relation("applications_loan_officer_idTostaff_users", fields: [loan_officer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   staff_users_applications_pipeline_removed_byTostaff_users                                staff_users?                     @relation("applications_pipeline_removed_byTostaff_users", fields: [pipeline_removed_by], references: [id], onUpdate: NoAction)
@@ -624,6 +657,7 @@ model applications {
   appraisal_payment_intents                                                                appraisal_payment_intents[]
   appraisal_xml_waivers                                                                    appraisal_xml_waivers?
   appraisals                                                                               appraisals[]
+  asset_ledger_entries                                                                     asset_ledger_entries[]
   borrower_view_sessions                                                                   borrower_view_sessions[]
   change_requests                                                                          change_requests[]
   checklist_items                                                                          checklist_items[]
@@ -634,6 +668,7 @@ model applications {
   class_revisions                                                                          class_revisions[]
   clickup_task_index                                                                       clickup_task_index[]
   closing_checklists                                                                       closing_checklists[]
+  closing_cost_items                                                                       closing_cost_items[]
   closing_notes                                                                            closing_notes[]
   closing_thread_messages                                                                  closing_thread_messages[]
   closing_threads                                                                          closing_threads?
@@ -1547,7 +1582,7 @@ model borrowers {
   id                                                                                 String                               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   first_name                                                                         String
   last_name                                                                          String
-  email                                                                              String                               @db.Citext
+  email                                                                              String?                              @db.Citext
   cell_phone                                                                         String?
   date_of_birth                                                                      DateTime?                            @db.Date
   ssn_encrypted                                                                      Bytes?
@@ -1632,6 +1667,7 @@ model borrowers {
   llcs                                                                               llcs[]
   loan_exceptions_loan_exceptions_requested_by_borrower_idToborrowers                loan_exceptions[]                    @relation("loan_exceptions_requested_by_borrower_idToborrowers")
   loan_exceptions_loan_exceptions_subject_borrower_idToborrowers                     loan_exceptions[]                    @relation("loan_exceptions_subject_borrower_idToborrowers")
+  lt_borrower_links                                                                  lt_borrower_links[]
   lt_loans                                                                           lt_loans[]
   lt_parties                                                                         lt_parties[]
   messages                                                                           messages[]
@@ -1771,6 +1807,7 @@ model checklist_items {
   delete_requested_by                                                       String?                      @db.Uuid
   delete_requested_at                                                       DateTime?                    @db.Timestamptz(6)
   delete_request_reason                                                     String?
+  extra_slots                                                               Json?
   ai_suggestions_ai_suggestions_checklist_item_idTochecklist_items          ai_suggestions[]             @relation("ai_suggestions_checklist_item_idTochecklist_items")
   ai_suggestions_ai_suggestions_linked_condition_idTochecklist_items        ai_suggestions[]             @relation("ai_suggestions_linked_condition_idTochecklist_items")
   amc_orders                                                                amc_orders[]
@@ -2254,24 +2291,25 @@ model closing_workflow {
 }
 
 model company_pricing_settings {
-  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  markup_std_pct    Decimal?     @db.Decimal
-  markup_gold_pct   Decimal?     @db.Decimal
-  orig_std_pct      Decimal?     @db.Decimal
-  orig_gold_pct     Decimal?     @db.Decimal
-  lender_fee        Decimal?     @db.Decimal
-  credit_fee        Decimal?     @db.Decimal
-  appraisal_fee     Decimal?     @db.Decimal
-  title_fee         Decimal?     @db.Decimal
-  note              String?
-  is_current        Boolean      @default(true)
-  updated_by        String?      @db.Uuid
-  created_at        DateTime     @default(now()) @db.Timestamptz(6)
-  extra_fees        Json         @default("[]")
-  markup_silver_pct Decimal?     @db.Decimal
-  orig_silver_pct   Decimal?     @db.Decimal
-  markup_tiers      Json?
-  staff_users       staff_users? @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+  id                   String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  markup_std_pct       Decimal?     @db.Decimal
+  markup_gold_pct      Decimal?     @db.Decimal
+  orig_std_pct         Decimal?     @db.Decimal
+  orig_gold_pct        Decimal?     @db.Decimal
+  lender_fee           Decimal?     @db.Decimal
+  credit_fee           Decimal?     @db.Decimal
+  appraisal_fee        Decimal?     @db.Decimal
+  title_fee            Decimal?     @db.Decimal
+  note                 String?
+  is_current           Boolean      @default(true)
+  updated_by           String?      @db.Uuid
+  created_at           DateTime     @default(now()) @db.Timestamptz(6)
+  extra_fees           Json         @default("[]")
+  markup_silver_pct    Decimal?     @db.Decimal
+  orig_silver_pct      Decimal?     @db.Decimal
+  markup_tiers         Json?
+  program_availability Json?
+  staff_users          staff_users? @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -3342,6 +3380,7 @@ model draw_investor_deliveries {
   answered_by                                                   String?      @db.Uuid
   answer_note                                                   String?
   expected_funding_date                                         DateTime?    @db.Date
+  thread_key                                                    String?
   staff_users_draw_investor_deliveries_answered_byTostaff_users staff_users? @relation("draw_investor_deliveries_answered_byTostaff_users", fields: [answered_by], references: [id], onUpdate: NoAction)
   applications                                                  applications @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   staff_users_draw_investor_deliveries_sent_byTostaff_users     staff_users? @relation("draw_investor_deliveries_sent_byTostaff_users", fields: [sent_by], references: [id], onUpdate: NoAction)
@@ -5294,6 +5333,10 @@ model lt_loans {
   encompass_sync_error            String?
   milestone_since                 DateTime?                @db.Timestamptz(6)
   milestone_since_is_baseline     Boolean                  @default(true)
+  borrower_name                   String?
+  borrower_first_name             String?
+  borrower_last_name              String?
+  borrower_email                  String?
   lt_borrower_pairs               lt_borrower_pairs[]
   lt_loan_contacts                lt_loan_contacts[]
   lt_loan_investors               lt_loan_investors?
@@ -5311,6 +5354,7 @@ model lt_loans {
   @@index([product_kind])
   @@index([stage_key], map: "lt_loans_stage_idx")
   @@index([encompass_synced_at], map: "lt_loans_synced_idx")
+  @@index([borrower_email])
 }
 
 model lt_lock_events {
@@ -6614,6 +6658,8 @@ model reminders {
   meta                                                 Json         @default("{}")
   created_at                                           DateTime     @default(now()) @db.Timestamptz(6)
   updated_at                                           DateTime     @default(now()) @db.Timestamptz(6)
+  priority                                             String       @default("normal")
+  recur                                                String?
   applications                                         applications @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   staff_users_reminders_assignee_staff_idTostaff_users staff_users? @relation("reminders_assignee_staff_idTostaff_users", fields: [assignee_staff_id], references: [id], onUpdate: NoAction)
   staff_users_reminders_completed_byTostaff_users      staff_users? @relation("reminders_completed_byTostaff_users", fields: [completed_by], references: [id], onUpdate: NoAction)
@@ -7316,6 +7362,7 @@ model staff_users {
   application_status_history                                                            application_status_history[]
   applications_applications_closer_idTostaff_users                                      applications[]                   @relation("applications_closer_idTostaff_users")
   applications_applications_experience_exception_byTostaff_users                        applications[]                   @relation("applications_experience_exception_byTostaff_users")
+  applications_applications_free_and_clear_byTostaff_users                              applications[]                   @relation("applications_free_and_clear_byTostaff_users")
   applications_applications_loan_officer_idTostaff_users                                applications[]                   @relation("applications_loan_officer_idTostaff_users")
   applications_applications_pipeline_removed_byTostaff_users                            applications[]                   @relation("applications_pipeline_removed_byTostaff_users")
   applications_applications_processor_idTostaff_users                                   applications[]                   @relation("applications_processor_idTostaff_users")
@@ -7325,6 +7372,7 @@ model staff_users {
   appraisal_xml_waivers                                                                 appraisal_xml_waivers[]
   appraisals_appraisals_arv_confirmed_byTostaff_users                                   appraisals[]                     @relation("appraisals_arv_confirmed_byTostaff_users")
   appraisals_appraisals_as_is_confirmed_byTostaff_users                                 appraisals[]                     @relation("appraisals_as_is_confirmed_byTostaff_users")
+  asset_ledger_entries                                                                  asset_ledger_entries[]
   borrower_assistants_borrower_assistants_disabled_byTostaff_users                      borrower_assistants[]            @relation("borrower_assistants_disabled_byTostaff_users")
   borrower_assistants_borrower_assistants_invited_by_staffTostaff_users                 borrower_assistants[]            @relation("borrower_assistants_invited_by_staffTostaff_users")
   borrower_dedup_candidates                                                             borrower_dedup_candidates[]
@@ -7353,6 +7401,7 @@ model staff_users {
   closing_checklist_items                                                               closing_checklist_items[]
   closing_checklist_templates                                                           closing_checklist_templates[]
   closing_checklists                                                                    closing_checklists[]
+  closing_cost_items                                                                    closing_cost_items[]
   closing_notes                                                                         closing_notes[]
   closing_thread_messages                                                               closing_thread_messages[]
   closing_threads                                                                       closing_threads[]
@@ -7540,6 +7589,7 @@ model staff_users {
   workflow_events_workflow_events_from_staff_idTostaff_users                            workflow_events[]                @relation("workflow_events_from_staff_idTostaff_users")
   workflow_events_workflow_events_to_staff_idTostaff_users                              workflow_events[]                @relation("workflow_events_to_staff_idTostaff_users")
   workflow_items_workflow_items_from_staff_idTostaff_users                              workflow_items[]                 @relation("workflow_items_from_staff_idTostaff_users")
+  workflow_items_workflow_items_removed_byTostaff_users                                 workflow_items[]                 @relation("workflow_items_removed_byTostaff_users")
   workflow_items_workflow_items_to_staff_idTostaff_users                                workflow_items[]                 @relation("workflow_items_to_staff_idTostaff_users")
 }
 
@@ -8534,10 +8584,14 @@ model workflow_items {
   due_at                                                DateTime?          @db.Timestamptz(6)
   sla_hours                                             Int?               @db.SmallInt
   auto                                                  Boolean            @default(false)
+  removed_at                                            DateTime?          @db.Timestamptz(6)
+  removed_by                                            String?            @db.Uuid
+  removed_reason                                        String?
   closing_workflow                                      closing_workflow[]
   workflow_events                                       workflow_events[]
   applications                                          applications       @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   staff_users_workflow_items_from_staff_idTostaff_users staff_users?       @relation("workflow_items_from_staff_idTostaff_users", fields: [from_staff_id], references: [id], onUpdate: NoAction)
+  staff_users_workflow_items_removed_byTostaff_users    staff_users?       @relation("workflow_items_removed_byTostaff_users", fields: [removed_by], references: [id], onUpdate: NoAction)
   staff_users_workflow_items_to_staff_idTostaff_users   staff_users?       @relation("workflow_items_to_staff_idTostaff_users", fields: [to_staff_id], references: [id], onUpdate: NoAction)
 
   @@index([application_id, status], map: "idx_wf_app")
@@ -8599,6 +8653,10 @@ model appraisal_payment_intents {
   settled_by                                                    String?      @db.Uuid
   settled_note                                                  String?
   updated_at                                                    DateTime     @default(now()) @db.Timestamptz(6)
+  payment_reference                                             String?
+  vendor_transaction_id                                         String?
+  charge_started_at                                             DateTime?    @db.Timestamptz(6)
+  charge_error                                                  String?
   applications                                                  applications @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   staff_users_appraisal_payment_intents_chosen_byTostaff_users  staff_users? @relation("appraisal_payment_intents_chosen_byTostaff_users", fields: [chosen_by], references: [id], onUpdate: NoAction)
   staff_users_appraisal_payment_intents_settled_byTostaff_users staff_users? @relation("appraisal_payment_intents_settled_byTostaff_users", fields: [settled_by], references: [id], onUpdate: NoAction)
@@ -8697,16 +8755,18 @@ model lt_ppe_finding {
 }
 
 model lt_ppe_investor {
-  id                    String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  scope                 String                  @default("company")
-  code                  String
-  name                  String
-  active                Boolean                 @default(true)
-  created_by            String?                 @db.Uuid
-  created_at            DateTime                @default(now()) @db.Timestamptz(6)
-  updated_at            DateTime                @default(now()) @db.Timestamptz(6)
-  lt_ppe_investor_alias lt_ppe_investor_alias[]
-  lt_ppe_program        lt_ppe_program[]
+  id                     String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scope                  String                   @default("company")
+  code                   String
+  name                   String
+  active                 Boolean                  @default(true)
+  created_by             String?                  @db.Uuid
+  created_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  lt_ppe_investor_alias  lt_ppe_investor_alias[]
+  lt_ppe_program         lt_ppe_program[]
+  lt_ppe_rule            lt_ppe_rule[]
+  lt_ppe_rule_suggestion lt_ppe_rule_suggestion[]
 
   @@unique([scope, code], map: "lt_ppe_investor_scope_code_uk")
 }
@@ -8762,6 +8822,8 @@ model lt_ppe_program {
   lt_ppe_finding            lt_ppe_finding[]
   lt_ppe_investor           lt_ppe_investor?            @relation(fields: [investor_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   lt_ppe_rate_sheet_version lt_ppe_rate_sheet_version[]
+  lt_ppe_rule               lt_ppe_rule[]
+  lt_ppe_shadow_run         lt_ppe_shadow_run[]
 
   @@unique([scope, investor_id, code], map: "lt_ppe_program_scope_investor_code_uk")
   @@index([investor_id], map: "lt_ppe_program_investor_idx")
@@ -8805,6 +8867,180 @@ model lt_ppe_setting_value {
   updated_at DateTime @default(now()) @db.Timestamptz(6)
 
   @@id([scope, key])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model asset_ledger_entries {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  application_id String       @db.Uuid
+  kind           String
+  account_key    String?
+  institution    String?
+  account_number String?
+  holder         String?
+  amount         Decimal?     @db.Decimal(14, 2)
+  include        Boolean?
+  note           String?
+  created_by     String?      @db.Uuid
+  created_at     DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime     @default(now()) @db.Timestamptz(6)
+  applications   applications @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users    staff_users? @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+
+  @@index([application_id], map: "idx_asset_ledger_app")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model closing_cost_items {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  application_id String       @db.Uuid
+  kind           String       @default("custom")
+  label          String
+  amount         Decimal      @db.Decimal(14, 2)
+  note           String?
+  created_by     String?      @db.Uuid
+  created_at     DateTime     @default(now()) @db.Timestamptz(6)
+  applications   applications @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users    staff_users? @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+
+  @@index([application_id], map: "idx_closing_cost_items_app")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model lt_borrower_links {
+  encompass_email String         @id
+  borrower_id     String?        @db.Uuid
+  status          lt_link_status @default(suggested)
+  match_method    String?
+  encompass_name  String?
+  confirmed_by    String?        @db.Uuid
+  confirmed_at    DateTime?      @db.Timestamptz(6)
+  created_at      DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime       @default(now()) @db.Timestamptz(6)
+  borrowers       borrowers?     @relation(fields: [borrower_id], references: [id], onUpdate: NoAction)
+
+  @@index([borrower_id])
+  @@index([status])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model lt_ppe_canary_schedule {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scope                 String   @default("company")
+  investor              String   @default("")
+  enabled               Boolean  @default(false)
+  interval_ms           BigInt
+  battery_kind          String
+  battery               Json
+  rate_sheet_version_id String?  @db.Uuid
+  concurrency           Int?
+  note                  String?
+  updated_by            String
+  updated_at            BigInt
+  created_at            DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([scope, investor], map: "lt_ppe_canary_schedule_scope_uk")
+  @@index([scope, enabled], map: "lt_ppe_canary_schedule_enabled_idx")
+}
+
+model lt_ppe_cutover_ledger {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scope      String   @default("company")
+  investor   String   @default("")
+  seq        Int
+  action     String
+  from_mode  String
+  to_mode    String
+  decided_by String
+  decided_at BigInt
+  reason     String
+  eligible   Boolean  @default(false)
+  scoreboard Json?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([scope, investor, seq], map: "lt_ppe_cutover_ledger_seq_uk")
+  @@index([scope, investor, seq], map: "lt_ppe_cutover_ledger_history_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model lt_ppe_rule {
+  id                     BigInt                   @id @default(autoincrement())
+  scope                  String                   @default("company")
+  investor_id            String?                  @db.Uuid
+  program_id             String?                  @db.Uuid
+  code                   String
+  kind                   String                   @default("eligibility")
+  source                 String                   @default("overlay")
+  predicate              Json?
+  decline_reason         String?
+  bound_target           String?
+  bound_op               String?
+  bound_value            Decimal?                 @db.Decimal
+  adjustment             Json?
+  priority               Int                      @default(0)
+  description            String?
+  active                 Boolean                  @default(true)
+  origin                 String                   @default("manual")
+  lp_decline_reason      String?
+  effective_from         DateTime                 @default(now()) @db.Timestamptz(6)
+  effective_to           DateTime?                @db.Timestamptz(6)
+  created_by             String?
+  created_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  lt_ppe_investor        lt_ppe_investor?         @relation(fields: [investor_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  lt_ppe_program         lt_ppe_program?          @relation(fields: [program_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  lt_ppe_rule_suggestion lt_ppe_rule_suggestion[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model lt_ppe_rule_suggestion {
+  id              BigInt           @id @default(autoincrement())
+  scope           String           @default("company")
+  investor_id     String?          @db.Uuid
+  investor_label  String
+  dedupe_key      String
+  code            String
+  kind            String           @default("eligibility")
+  source          String           @default("overlay")
+  predicate       Json?
+  decline_reason  String
+  adj_type        String?
+  fact            String?
+  confidence      String?
+  matched_by      String?
+  needs_human     Boolean          @default(false)
+  programs        Json             @default("[]")
+  occurrences     Int              @default(1)
+  status          String           @default("open")
+  created_rule_id BigInt?
+  decided_by      String?
+  decided_at      DateTime?        @db.Timestamptz(6)
+  decision_note   String?
+  created_at      DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime         @default(now()) @db.Timestamptz(6)
+  lt_ppe_rule     lt_ppe_rule?     @relation(fields: [created_rule_id], references: [id], onUpdate: NoAction)
+  lt_ppe_investor lt_ppe_investor? @relation(fields: [investor_id], references: [id], onUpdate: NoAction)
+
+  @@unique([scope, investor_label, dedupe_key], map: "lt_ppe_rule_suggestion_uk")
+}
+
+model lt_ppe_shadow_run {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  scope          String          @default("company")
+  investor       String          @default("")
+  program        String          @default("")
+  program_id     String?         @db.Uuid
+  day_ms         BigInt
+  agreement_rate Decimal?        @db.Decimal
+  finding_keys   Json            @default("[]")
+  summary        Json?
+  created_at     DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime        @default(now()) @db.Timestamptz(6)
+  lt_ppe_program lt_ppe_program? @relation(fields: [program_id], references: [id], onUpdate: NoAction)
+
+  @@unique([scope, investor, program, day_ms], map: "lt_ppe_shadow_run_key_uk")
+  @@index([scope, investor, program, day_ms], map: "lt_ppe_shadow_run_series_idx")
 }
 
 enum lt_amortization_type {
