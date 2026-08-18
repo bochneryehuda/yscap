@@ -161,8 +161,16 @@ model LtLoan {
   borrowerFirstName String? @map("borrower_first_name")
   borrowerLastName String? @map("borrower_last_name")
   borrowerEmail String? @map("borrower_email")
-  /// The assigned officer — the shared `staff_users` roster. Authorized crossing
-  /// `sql-ref staff_users` (ledger, 2026-08-03).
+  /// NOT THE OFFICER, AND NOTHING HAS EVER WRITTEN IT. Left from the phase-1 shape,
+  /// before the loan TEAM was mirrored. Who the officer is lives in
+  /// `lt_loan_contacts` — one row per role, carrying Encompass's answer and the
+  /// local override beside it — and the effective person is
+  /// `access.effectiveStaffSql`. The owner's census read THIS column until
+  /// 2026-08-18 and therefore reported "no loan officer" on every long-term file.
+  /// Nothing reads it now. It is kept rather than dropped because dropping a column
+  /// is not something to do to a live database on an inference; the decision is
+  /// recorded for the owner in the plan's §11. Do not wire it up — write a contact.
+  /// Authorized crossing `sql-ref staff_users` (ledger, 2026-08-03).
   loanOfficerId String? @map("loan_officer_id") @db.Uuid
 
   // ── Program and purpose (URLA 4a) ─────────────────────────────────────────

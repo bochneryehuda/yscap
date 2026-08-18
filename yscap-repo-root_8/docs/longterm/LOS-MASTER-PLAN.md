@@ -225,6 +225,29 @@ truth, and the way this codebase already handles that class is the way it is han
 5. **Nothing is written back to Encompass.** Ever. The override is a PILOT-side routing and
    visibility decision, not a correction to the system of record.
 
+**ONE EXPRESSION ANSWERS "WHOSE FILE IS THIS", AND EVERY SCREEN ASKS IT (2026-08-18).**
+`COALESCE(override_staff_id, staff_id)` per contact row was typed out in five places. Five
+copies agreeing today is not one rule — the drift §8 phase 8 describes is exactly what five
+copies look like a year later, and the copy that went wrong was the one nobody thought of as
+a copy. It is now `access.effectiveStaffSql(alias)`, and the access scope, both pipeline
+predicates and the row's own `staffId` are built from it.
+
+That change was forced by a sixth reader. **The owner's census read `lt_loans.loan_officer_id`
+— a column NOTHING IN THE REPOSITORY HAS EVER WRITTEN** — so the book reported *"No officer
+yet"* on every long-term file, and its CSV shipped an empty *Loan officer* column, while the
+pipeline beside it showed the officer on the same loans. The officer lives in
+`lt_loan_contacts`, and the census now reads it through the one expression, so a locally
+reassigned file names the new person there too.
+
+The census also stopped saying *"no officer"* about a file Encompass plainly names an officer
+on: **three answers, not two** — nobody on the file, somebody PILOT has not matched (named, in
+Encompass's own wording, one click from the people map), and somebody matched. A census whose
+whole job is *"these files need somebody matched"* has to say who to match.
+
+`lt_loans.loan_officer_id` is now read by nothing. It is left in place, LABELLED in the schema
+with where the officer really lives — dropping a column is not something to do to a live
+database on an inference. **Whether to drop it is §11's question 15.**
+
 ### 2.4 The screens
 
 - **Admin → Long-Term → People.** The Encompass roster on the left, PILOT staff on the
@@ -1236,6 +1259,14 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     words ("this role moves to them, so they stop seeing the file — unless they are named on
     another role"), so nobody presses it thinking it only adds somebody. One predicate, no
     migration.
+
+15. **Should `lt_loans.loan_officer_id` be dropped?** It is left from the phase-1 shape,
+    before the loan TEAM was mirrored. **Nothing has ever written it**, and since 2026-08-18
+    nothing reads it either — the census, which was its one reader, now asks
+    `lt_loan_contacts` like every other surface (§2.3). It is labelled in the schema so
+    nobody wires it back up, and left in place because dropping a column on a live database
+    is a decision to take deliberately rather than on an inference that it is empty. One
+    answer from the owner, one small migration, no code change.
 
 ---
 

@@ -66,7 +66,17 @@ const DEFAULT_ENCOMPASS_ROLE_NAMES = {
   post_closer: 'Post Closer',
 };
 
-const DEFAULT_ROLES = ['loan_officer', 'processor', 'underwriter', 'closer', 'funder', 'post_closer'];
+/**
+ * The role key that means "this is the loan officer".
+ *
+ * Named once because three different questions turn on it and they must give the
+ * same answer: the pipeline's officer filter, the owner's census column, and the
+ * roster's "an officer with an empty book". A string typed in three places is a
+ * string somebody eventually renames in two.
+ */
+const OFFICER_ROLE = 'loan_officer';
+
+const DEFAULT_ROLES = [OFFICER_ROLE, 'processor', 'underwriter', 'closer', 'funder', 'post_closer'];
 
 /** The roles we mirror, and what each is called in Encompass, out of settings. */
 function roleConfig(settings = {}) {
@@ -472,6 +482,7 @@ async function reassign(loanId, role, staffId, actorId, reason, client = null) {
 
 module.exports = {
   PARTS,
+  OFFICER_ROLE,
   DEFAULT_ROLES,
   DEFAULT_ENCOMPASS_ROLE_NAMES,
   roleConfig,
