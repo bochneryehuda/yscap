@@ -1326,9 +1326,33 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
    real borrower PII. This matters before anything writes.
 8. **The ten files** carrying a 12- or 24-month interest-only period on the plain 30-year
    program — real short-I/O deals, or values left behind from a file that started as a bridge?
-9. **The loan doc type stores `DSCR` on 486 files**, which is not a valid code — and the
-   tenant's base Milestone Completion rule is conditioned on Doc Type = "No Documentation",
-   so those files never switch those requirements on.
+9. ~~**The loan doc type stores `DSCR` on 486 files**~~ — **RE-MEASURED 2026-08-18, and it is
+   nine, not 486.** The number was right and attached to the wrong value: `NoDocumentation`
+   is on 484 files, and that is the VALID code the base rule wants. Counted straight off the
+   census (`field-dictionary.json`, 772 loans), field 2867 `loan.rateLock.loanDocumentationType`
+   — 750 observations: **`NoDocumentation` 484**, `Fix & Flip` 245, `FullDocumentation` 10,
+   **`DSCR` 9**, `Alternative` 1, `fix & flip` 1. Field MORNET.X67
+   (`loanProductData.loanDocumentationType`) agrees: NoDocumentation 488, Fix & Flip 244,
+   DSCR 5.
+
+   **So the long-term book is modelled correctly and the base rule DOES fire on it.** Rule #12
+   is conditioned on `Loan Doc Type is No Documentation` and carries the 117-field long-term
+   core set; the DSCR cohort is 490 loans and 484 of them carry exactly that code. What does
+   NOT satisfy it is 255 files carrying a value Encompass's own allowed list does not contain
+   — and 246 of those are `Fix & Flip` / `fix & flip`, which is the SHORT-TERM book (the
+   FIXFLIP cohort is 251), where this rule was never meant to apply.
+
+   **What is left for the owner is small and specific: nine long-term files whose doc type is
+   the literal word `DSCR`.** Encompass cannot act on it, so those nine alone miss the
+   117-field requirement set the other 484 get. It is a data-entry correction in Encompass —
+   PILOT reads that field and cannot write it — and PILOT does not mirror the column today,
+   so naming the nine on a screen would be a new column, a writer and a reader. Worth doing
+   only if the owner says those nine matter; **whether a doc type is worth chasing is a
+   business judgement, not one to infer from a field name.**
+
+   The lesson is the one this side keeps re-learning: the original line quoted a real number
+   from a real table and hung it on the neighbouring row. A measurement is only a measurement
+   while it still names what was counted.
 10. **Do long-term files appear in the RTL dashboards and KPIs**, or are the two books counted
     separately?
 11. **The underwriter's long-term access** (see item 2) — entire pipeline, or their own files?
