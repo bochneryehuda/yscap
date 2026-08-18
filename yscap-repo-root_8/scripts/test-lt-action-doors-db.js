@@ -53,6 +53,18 @@ async function main() {
     },
   };
 
+  // The CONDITION sweep, stubbed the same way, for the button beside it. Its own
+  // pass is proven in test-lt-condition-sweep-db.js; what is unproven is the DOOR.
+  const CONDS = require.resolve('../src/longterm/conditions/sync');
+  const askedConds = [];
+  require.cache[CONDS] = {
+    id: CONDS, filename: CONDS, loaded: true,
+    exports: {
+      DEFAULT_READ_BUDGET: 20,
+      syncOnce: async (opts) => { askedConds.push(opts); return { ok: true, due: 0, read: 0, failed: 0 }; },
+    },
+  };
+
   const app = require('../src/server');
   const crypto = require('../src/lib/crypto');
   const db = require('../src/db');
@@ -182,6 +194,41 @@ async function main() {
     asked.length = 0;
     await call('POST', '/api/lt/sync', admin, { readBudget: -5 });
     eq(asked[0].readBudget, 25, '…and so does a negative one');
+
+    // ── B2. THE CONDITION-REFRESH BUTTON BESIDE IT ───────────────────────
+    // Same shape, same ceiling, and one rule of its own that is easy to lose.
+    const condGate = await call('POST', '/api/lt/sync/conditions', officer, {});
+    eq(condGate.status, 403, 'a plain officer may not re-read the conditions either');
+
+    askedConds.length = 0;
+    const condBig = await call('POST', '/api/lt/sync/conditions', admin, { readBudget: 100000 });
+    eq(condBig.status, 200, 'an admin may');
+    eq(askedConds.length, 1, '…reaching the sweep exactly once');
+    eq(askedConds[0].readBudget, 200,
+      'THE ONE THAT MATTERS: and the same 200 ceiling applies — a condition read is two HTTP calls per loan against the allowance every other integration shares, so an unclamped button is somebody else\'s outage');
+
+    askedConds.length = 0;
+    await call('POST', '/api/lt/sync/conditions', admin, { readBudget: 4 });
+    eq(askedConds[0].readBudget, 4, 'a smaller pass is honoured exactly');
+
+    askedConds.length = 0;
+    await call('POST', '/api/lt/sync/conditions', admin, { readBudget: 'lots' });
+    eq(askedConds[0].readBudget, 20, '…and a budget that is not a number falls back to the sweep\'s own default');
+
+    // THE ONE WORTH WRITING DOWN: `refreshHours` is handed through RAW.
+    // `refreshHoursFor` inside the sweep is the ONE definition of what an age
+    // means — 0 is "re-read everything now", which is the whole point of asking
+    // for this pass by hand. A door that sanitised it would decide the rule a
+    // second time, and the button and the scheduled sweep would drift apart.
+    askedConds.length = 0;
+    await call('POST', '/api/lt/sync/conditions', admin, { refreshHours: 0 });
+    eq(askedConds[0].refreshHours, 0,
+      'THE ONE THAT MATTERS: asking for 0 hours reaches the sweep AS 0 — "re-read everything now" is the reason this button exists, and a door that helpfully replaced a falsy 0 with a default would silently do nothing');
+
+    askedConds.length = 0;
+    await call('POST', '/api/lt/sync/conditions', admin, { refreshHours: 'soon' });
+    eq(askedConds[0].refreshHours, 'soon',
+      '…and junk is passed through UNTOUCHED rather than corrected here, because the sweep owns that rule — deciding it twice is how the button and the scheduled pass come to mean different things');
 
     // ── C. THE OTHER ADMIN DOORS REFUSE, IN WORDS ─────────────────────────
     for (const [method, p, what] of [
