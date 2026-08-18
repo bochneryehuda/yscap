@@ -1423,6 +1423,19 @@ router.get('/applications/:id/appraisal', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// The file-overview slide-over (owner-directed 2026-08-18) — the SAME
+// borrower-safe payload the borrower portal shows, firm-scoped. One builder
+// (lib/file-overview) serves all three surfaces so a broker can never be
+// handed a wider view than the borrower.
+router.get('/applications/:id/overview-card', async (req, res, next) => {
+  try {
+    if (!(await appInFirm(req.actor.id, req.params.id))) return res.status(404).json({ error: 'file not found' });
+    const card = await require('../lib/file-overview').buildFileOverview(req.params.id, { audience: 'borrower' });
+    if (!card) return res.status(404).json({ error: 'file not found' });
+    res.json(card);
+  } catch (e) { next(e); }
+});
+
 // The appraisal PHOTO bytes for the property report. Deliberately NOT a generic document-download
 // door: it authorizes via the appraisal-photo linkage + firm scope, so the ONLY bytes a broker can
 // ever fetch here are appraisal photos of THEIR OWN firm's files (the same discipline as the

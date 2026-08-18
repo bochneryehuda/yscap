@@ -32,6 +32,7 @@ import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
 import { fullNameOf } from '../lib/personName.js';
 import { splitLoudHint, LoudBanner } from '../components/LoudHint.jsx';
+import FileOverviewSlideOver from '../components/FileOverviewSlideOver.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -899,6 +900,10 @@ export default function Application() {
 
   return (
     <>
+      {/* The file overview at a glance — the left-edge slide-over (owner-directed
+          2026-08-18). BORROWER-SAFE: the server builds this payload for the
+          borrower audience; nothing internal reaches this screen. */}
+      <FileOverviewSlideOver fetcher={() => api.borrowerFileOverview(id)} title="Loan overview" />
       {/* The file's identity bar STAYS while you scroll — the address, loan
           number and status pin under the app header; only the sections below
           (and the rail beside them) move. */}

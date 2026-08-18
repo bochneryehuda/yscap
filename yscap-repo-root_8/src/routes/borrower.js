@@ -1494,6 +1494,16 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   res.json(await require('../lib/appraisal/borrower-safe-view').buildBorrowerSafeAppraisalView(db, own.rows[0].id));
 });
 
+// The file-overview slide-over (owner-directed 2026-08-18) — the deal at a
+// glance, borrower-safe (one builder for all three surfaces: lib/file-overview).
+router.get('/applications/:id/overview-card', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const card = await require('../lib/file-overview').buildFileOverview(req.params.id, { audience: 'borrower' });
+  if (!card) return res.status(404).json({ error: 'not found' });
+  res.json(card);
+});
+
 // ---------------- CHECKLIST (borrower-visible items only) ----------------
 router.get('/applications/:id/checklist', async (req, res) => {
   const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);

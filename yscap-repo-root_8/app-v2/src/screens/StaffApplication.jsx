@@ -34,6 +34,7 @@ import LoanProgress from '../components/LoanProgress.jsx';
 import ClosingPanel from '../components/ClosingPanel.jsx';
 import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
 import TapeSendModal from '../components/TapeSendModal.jsx';
+import FileOverviewSlideOver from '../components/FileOverviewSlideOver.jsx';
 import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
@@ -5656,6 +5657,9 @@ export default function StaffApplication() {
 
   return (
     <>
+      {/* The file overview at a glance — the left-edge slide-over (owner-directed
+          2026-08-18), on every file screen; this is the INTERNAL audience. */}
+      <FileOverviewSlideOver fetcher={() => api.staffFileOverview(id)} />
       {/* The file's identity bar STAYS while you scroll — borrower, address,
           loan number and status pin under the app header; only the sections
           below (and the rail beside them) move. */}

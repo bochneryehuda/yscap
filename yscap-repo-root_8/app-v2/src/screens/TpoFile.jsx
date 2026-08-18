@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { askConfirm } from '../lib/dialog.js';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
+import FileOverviewSlideOver from '../components/FileOverviewSlideOver.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import TpoDraws from '../components/TpoDraws.jsx';
 import TpoOrders from '../components/TpoOrders.jsx';
@@ -132,6 +133,9 @@ export default function TpoFile() {
 
   return (
     <div style={{ maxWidth: 760 }}>
+      {/* The file overview at a glance (owner-directed 2026-08-18) — the SAME
+          borrower-safe payload the borrower portal shows, firm-scoped. */}
+      <FileOverviewSlideOver fetcher={() => api.tpoFileOverview(id)} title="File overview" />
       <input ref={fileInput} type="file" style={{ display: 'none' }} onChange={onFilePicked} />
       <div style={{ marginBottom: 12 }}><Link to="/tpo" className="btn link small">← Back to pipeline</Link></div>
       <div className="page-head" style={{ marginBottom: 18 }}>

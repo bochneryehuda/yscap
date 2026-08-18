@@ -477,6 +477,10 @@ export const api = {
   tpoPlaceOrder:    (appId, kind, body) => req('POST', `/api/tpo/applications/${appId}/orders/${kind}/place`, body || {}),
   // Phase 6a — the read-only appraisal ("property profile report"); same borrower-safe scrub.
   tpoAppraisal: (appId) => req('GET', `/api/tpo/applications/${appId}/appraisal`),
+  // The file-overview slide-over — one borrower-safe builder, three doors.
+  tpoFileOverview:      (appId) => req('GET', `/api/tpo/applications/${appId}/overview-card`),
+  borrowerFileOverview: (appId) => req('GET', `/api/borrower/applications/${appId}/overview-card`),
+  staffFileOverview:    (appId) => req('GET', `/api/staff/applications/${appId}/overview-card`),
   tpoAppraisalPhotoBlob: async (docId) => (await download(`/api/tpo/appraisal-photo/${docId}?inline=1`)).blob,
   // Phase 6b — the read-only DRAW view (construction-draw progress); same borrower-safe scrub.
   tpoDraws: (appId) => req('GET', `/api/tpo/applications/${appId}/draws`),
