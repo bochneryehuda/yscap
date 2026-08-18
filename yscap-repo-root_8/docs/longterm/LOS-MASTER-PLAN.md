@@ -615,6 +615,26 @@ is the copy somebody adds later, not the field already reviewed. And both `vols[
 workhorse would silently halve somebody's debts the day the other starts filling, which makes a file
 look better than it is.
 
+**THE COVERAGE SWEEP IS IN THE REPOSITORY — `scripts/lt-coverage-sweep.sh` and
+`scripts/lt-coverage-report.py` (2026-08-18).** It runs every long-term suite under V8 coverage and
+lists the code no suite has ever executed; it is a DISCOVERY tool and never fails a build, because
+most of what it lists is legitimately untested vendor code and deciding what is worth covering is a
+judgement. It found the Condition Center's two dead doors and the canary endpoint. It lived in a
+temp directory until now, which meant every coverage claim on this branch was unreproducible by
+anybody else — the method was documented and the tool was not.
+
+Three things in it were learned the hard way and are written into the files so they are not
+re-learned: **the innermost V8 range wins** (an uncalled function sits inside the script's own
+range, which has a count, so subtracting the outer erases the very thing being looked for — the
+first reporter returned a clean sweep and could not see a function planted for it to find); **it
+refuses to run without a database** (the db-gated suites skip cleanly, their coverage vanishes, and
+the report comes back LONGER — 229 spans against a stopped Postgres, 96 against a running one, with
+nothing saying which was which); and **it never truncates silently** (it printed the 25 largest
+spans and the total, so a 261-byte planted control was found and simply not shown, which read
+exactly like the reporter being blind to it). Both guards are control-proven: the refusal fires on
+an unreachable database, and the report names a planted function and stops naming it when the plant
+is removed.
+
 **A PATH BEHIND A DEFAULT-OFF SWITCH HAS NEVER BEEN RUN BY ANYBODY — SWEPT 2026-08-18.** This is
 how the Condition Center's two dead doors survived from the day they shipped: with
 `conditions.enabled` unset the route returns before the broken line, so every test and every human
