@@ -1,4 +1,6 @@
 'use strict';
+
+const { normalizePurpose } = require('./purpose');
 /**
  * LT PPE — LAYER 2: the INDEPENDENT eligibility engine for the Deephaven DSCR program, encoded from the
  * OFFICIAL published product matrix (docs/longterm/ppe-research/matrices/deephaven-dscr-matrix.json,
@@ -63,7 +65,13 @@ const GRID = [
 ];
 
 function isNum(x) { return typeof x === 'number' && Number.isFinite(x); }
-const purposeClass = (purpose) => (String(purpose || '').toLowerCase() === 'cashout' ? 'CO' : 'P_RT');
+// §2.84 — every spelling of cash-out lands in the CO column, not just the exact canonical token.
+// Before this, `'CashoutRefinance'` (Lender Price's own word) read as P_RT, so a cash-out at 78% LTV
+// passed the 75% cash-out cap and came back ELIGIBLE. `normalizePurpose` answers null on a spelling
+// nobody taught us, and null is P_RT here — deliberately, because an eligibility grid must place a
+// loan SOMEWHERE; the refusal for an unknown purpose belongs to the pricing door's unknown-fact
+// guard, which sees the same null and declines to price at all.
+const purposeClass = (p) => (normalizePurpose(p) === 'cashout' ? 'CO' : 'P_RT');
 const dscrBandKey = (dscrMilli) => (dscrMilli >= 1000 ? 'ge1' : 'lt1');
 
 /**

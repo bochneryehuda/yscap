@@ -33,6 +33,7 @@ const { advancedFactsFromScenario } = require('./advanced-facts');
 // 2026-08-17, LP declines an NJ individual PPP that our engine allowed ONLY because `state` was never
 // derived from the ZIP here. A caller-supplied state is an assertion and always wins.
 const { lookupZip } = require('../lenderprice/zip-county');
+const { normalizePurpose } = require('./purpose');
 
 // The three credentials client.credentials() reads. Named here only to report WHICH are missing (the
 // client exposes a boolean, not the gap). Keep in step with lenderprice/client.js credentials().
@@ -40,13 +41,15 @@ const LP_CRED_ENV = ['LP_USERNAME', 'LP_PASSWORD', 'LP_CLIENT_SECRET'];
 
 function num(x) { const n = Number(x); return Number.isFinite(n) ? n : null; }
 
-// Lender Price loan purpose → our engine's purpose fact. LP uses "Purchase" / "Refinance" / "Cash out".
-function normPurpose(p) {
-  const k = String(p == null ? '' : p).toLowerCase().replace(/[^a-z]/g, '');
-  if (k.includes('cashout')) return 'cashout';
-  if (k.includes('refinance') || k === 'refi') return 'refinance';
-  return 'purchase';
-}
+// Lender Price loan purpose → our engine's purpose fact, through the ONE canonical normalizer.
+//
+// §2.84 — this used to end `return 'purchase';`, so null, undefined, '', a number, and every typo
+// became a PURCHASE. It also over-caught: `'Limited Cash Out'` and `'No Cash-Out Refinance'` are the
+// industry's names for a RATE/TERM refinance, and `k.includes('cashout')` read both as cash-out.
+// Both directions are silent mispricing, and both are the reason `mapPurpose` on the vendor door was
+// made to refuse rather than default. Now an unknown purpose is `null` — which the engine reads as an
+// unknown price-bearing fact and declines to price, instead of quoting a loan it misread.
+function normPurpose(p) { return normalizePurpose(p); }
 // "60 Months" / "No Prepay" → a number of months (0 = no prepay). Unreadable → null.
 function prepayMonths(v) {
   const s = String(v == null ? '' : v).toLowerCase();

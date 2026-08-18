@@ -5030,3 +5030,88 @@ than quietly re-aimed, since a mutation that does not bite is either a test gap 
 changes nothing, and telling the two apart is the entire value of the exercise.
 
 153/153 suites, 32 database-backed (this suite is the 32nd). All seven gates green.
+
+---
+
+### §2.84 — ⛔ EVERY SPELLING OF CASH-OUT EXCEPT ONE PRICED AS A PURCHASE (2026-08-18)
+
+**The owner predicted this defect in their own words**, before anybody had measured it:
+
+> *"if you're pressing a cash-out, you see it for a purchase and stuff like that, then you know that
+> your system … is not understanding it."*
+
+**Measured on the Deephaven DSCR sheet**, FICO 720 / 70% LTV / DSCR 1.10, coupon 6.125:
+
+| purpose as written | price | cash-out LLPA |
+|---|---|---|
+| `cashout` | **99.000** | `dhvn_cashout_ge720_4` applied |
+| `Cash out` | 99.500 | none — priced as a PURCHASE |
+| `Cash-Out` | 99.500 | none — priced as a PURCHASE |
+| `CASHOUT` | 99.500 | none — priced as a PURCHASE |
+| **`CashoutRefinance`** | 99.500 | none — **and this is Lender Price's OWN token** |
+
+**Half a point, every time, against us.** And it is not only price: at 78% LTV / FICO 705 the cash-out
+LTV cap is 75%, so `cashout` was correctly **declined** while `CashoutRefinance` came back **eligible**.
+
+**Root cause.** Two independent readers both demand the exact canonical token, and nothing normalized
+the fact on the way in — `deephaven-dscr-sheet.js:200` compiles
+`{fact:'purpose', op:'eq', value:'cashout'}`, and `deephaven-matrix.js:66` did
+`String(purpose).toLowerCase() === 'cashout'`. The bridge that was supposed to canonicalize,
+`lp-agreement-legs.normPurpose`, ended `return 'purchase';` — so it never reported a failure, it
+manufactured a purchase. It over-caught in the other direction too: `'Limited Cash Out'` and
+`'No Cash-Out Refinance'` are the industry's names for a **rate/term** refi, and a
+`k.includes('cashout')` substring match read both as cash-out.
+
+**⛔ THE PRESENT-BUT-UNKNOWN VALUE IS THE DANGEROUS ONE, and it is why the existing guard missed
+this.** The engine already refuses to price a *missing* price-bearing fact — measured: `purpose: null`
+and an absent purpose both yield `unknownFacts: ['purpose']` and no ladder. But `rules.js` treats a
+**present** fact as knowable, so `purpose: 'zzz'` resolves `eq 'cashout'` to a determinate `false` and
+prices happily. **The safety net catches the null and misses the typo.** So the fix does not add a
+guard — it makes the existing one reachable, by normalizing an unrecognized spelling to `null`.
+
+**The fix is at the DOORS, not the call sites.** A new `ppe/purpose.js` owns the one normalization;
+`quote.quoteProgram` and `deephaven-matrix.evaluateEligibility` call it on the way in, so every
+caller — `/ppe/quote`, `/ppe/breakdown`, the canary, the agreement run — is covered without any of
+them knowing it exists, and the next route added is covered too.
+
+**ONE VOCABULARY, NOT TWO.** The accepted spellings are the vendor connector's own `PURPOSE_ALIASES`
+table, **read live rather than copied**, and the suite asserts over that live table that *every*
+spelling the vendor door accepts is one the engine understands, and that the two doors agree on which
+spellings mean cash-out. A second copy beside it would be free to drift, which is how the two halves
+came apart in the first place.
+
+**A deliberate asymmetry, asserted rather than left to be discovered:** an unknown purpose is refused
+at the **pricing** door but still lands in the Purchase/R&T column at the **eligibility** door — a
+grid must place a loan somewhere, and the refusal belongs at one door, not both.
+
+**⛔ WHY NO TEST CAUGHT THIS, MEASURED.** On the canonical 299-scenario battery the fix changes the
+normalized purpose of **0 scenarios**: the battery uses `"Purchase"` (270), `"Cash out"` (25) and
+`"Refinance"` (4) — three spellings the old substring match happened to handle. The defect was
+invisible to every existing test *because the tests only ever spelled it the way the code liked*. A
+battery that exercises only the vocabulary its own author had in mind measures the author, not the code.
+
+`scripts/test-lt-ppe-purpose-canonical.js` (86 assertions) pins all four layers — the normalizer, the
+pricing door, the eligibility door, the LP bridge — plus the cross-door vocabulary equivalence.
+**Mutation-proven six ways**: the normalizer falling back to purchase (12 assertions bite), the
+pricing door not normalizing (15), the eligibility door not normalizing (9), the bridge restored to
+its substring match (7), `purpose.js` growing its own alias table (32), and `withCanonicalPurpose`
+inventing a key the caller never had (1).
+
+**Two things this turned up that were not the subject.**
+
+1. **A source guard that failed on its own documentation.** The assertion "the silent fallback is gone
+   from the source" matched the *comment explaining the removal*, which necessarily quotes the line it
+   removed. A guard that cannot tell a retracted quotation from a live statement punishes good
+   documentation, so it now strips comments first — and asserts **both** halves: the quotation is still
+   there, and the code is not. Same class as §2.78 and §2.80; third occurrence, now with a helper.
+
+2. **`test-lt-ppe-holdback-price.js` could not survive a new cross-directory dependency.** It copies a
+   stripped `ppe/` into the OS temp dir, so any module reaching `require('../lenderprice/…')` — of
+   which **four already existed** — resolved to `/tmp/lenderprice/…`. It had simply never fired,
+   because no module in `quote.js`'s require graph reached outward yet; the first one that did took the
+   suite down with a `MODULE_NOT_FOUND` stack trace instead of an assertion. The copy is now rooted at
+   a stand-in `longterm/` whose other entries are symlinked back to the real ones, so `../anything`
+   resolves exactly as it does live. **A crashing suite is a failing suite that looks like a broken
+   test** — the ninth instance of that class in this file.
+
+154/154 suites, 33 database-backed. All seven gates green.

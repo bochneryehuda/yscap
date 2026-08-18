@@ -40,6 +40,7 @@
  */
 
 const { evaluateRules } = require('./rules');
+const purpose = require('./purpose');
 const pricing = require('./pricing');
 const { resolveDoubleCharges } = require('./adjustment-overlap');
 
@@ -220,7 +221,15 @@ function unpriceableReasons(program, scenario, decision, rungs) {
  * eligibility.result_mode drives this at the caller).
  */
 function quoteProgram(arg, opts) {
-  const { scenario, program, settings } = arg || {};
+  const { program, settings } = arg || {};
+  // ⛔ THE PURPOSE IS CANONICALIZED AT THE DOOR (§2.84). Our sheet's cash-out LLPAs compile to
+  // `{fact:'purpose', op:'eq', value:'cashout'}` — an EXACT lowercase match — so every other spelling
+  // of the same word used to price as a purchase, silently, half a point in the borrower's favour.
+  // 'CashoutRefinance' — Lender Price's OWN token, which is what comes back to us — was one of them.
+  // Normalizing here covers every caller (the /quote route, /breakdown, the canary, the agreement run)
+  // without any of them having to know, and an unrecognized purpose becomes `null`, which the
+  // unknown-fact guard below already refuses to price rather than guessing at.
+  const scenario = purpose.withCanonicalPurpose((arg || {}).scenario);
   if (!scenario || typeof scenario !== 'object') throw new Error('quote:no_scenario');
   if (!program || typeof program !== 'object') throw new Error('quote:no_program');
   if (!Array.isArray(program.baseGrid) || !program.baseGrid.length) throw new Error('quote:program_has_no_base_grid');

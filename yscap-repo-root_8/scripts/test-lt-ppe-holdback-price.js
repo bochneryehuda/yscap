@@ -81,12 +81,32 @@ function strippedEngine() {
   // A WHOLE stripped copy of the engine directory, so `quote.js` there resolves the STRIPPED
   // `pricing.js` by its own relative require. Redirecting requires back at the live directory would
   // have quietly compared the live engine with itself.
-  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'lt-ppe-hb-'));
+  //
+  // ⛔ THE COPY MUST KEEP ITS SIBLINGS (§2.84). The stripped tree used to be dropped straight into the
+  // OS temp dir, so any ppe module reaching OUT of ppe/ — `require('../lenderprice/…')`, of which
+  // there are already four — resolved to `/tmp/lenderprice/…` and threw MODULE_NOT_FOUND. It had
+  // never fired only because no module in `quote.js`'s require graph reached outward yet; the first
+  // one that did took this suite down with a stack trace instead of an assertion. So the copy is
+  // rooted at a stand-in `longterm/` whose OTHER entries are symlinked back to the real ones: the
+  // stripped `ppe/` is genuinely stripped, and `../anything` still resolves exactly as it does live.
+  const root = fs.mkdtempSync(path.join(require('os').tmpdir(), 'lt-ppe-hb-'));
+  const LONGTERM = path.dirname(PPE);
+  const home = path.join(root, path.basename(LONGTERM));
+  const dir = path.join(home, path.basename(PPE));
+  fs.mkdirSync(dir, { recursive: true });
+  for (const entry of fs.readdirSync(LONGTERM)) {
+    if (entry === path.basename(PPE)) continue;             // the one directory we are replacing
+    fs.symlinkSync(path.join(LONGTERM, entry), path.join(home, entry));
+  }
   for (const f of fs.readdirSync(PPE)) {
     const from = path.join(PPE, f);
     if (fs.statSync(from).isDirectory()) continue;
     fs.writeFileSync(path.join(dir, f), f === 'pricing.js' ? out : fs.readFileSync(from));
   }
+  // node_modules is resolved by walking UP from the module, and the temp root has no ancestor
+  // carrying one — so link it beside the stand-in tree rather than leaving a bare `require('pg')`
+  // to fail somewhere deep in the graph with a message about the wrong thing.
+  fs.symlinkSync(path.join(__dirname, '..', 'node_modules'), path.join(root, 'node_modules'));
   return require(path.join(dir, 'quote.js'));
 }
 const preFix = strippedEngine();
