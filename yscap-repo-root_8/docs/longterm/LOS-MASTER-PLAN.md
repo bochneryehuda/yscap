@@ -1723,6 +1723,27 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 
 ---
 
+
+**q17. Should removing a member of staff erase who they decided?** (raised 2026-08-18, not urgent)
+
+`lt_staff_links.confirmed_by` and `lt_loan_contacts.override_by` — the two "who decided this" columns
+on this side — are both `ON DELETE SET NULL`. Today this is harmless and untestable: the application
+never hard-deletes a member of staff, it deactivates them, and a deactivated person is still resolved
+by name, so the record survives exactly as intended. The question is only about a row deleted
+straight from the database, which would silently take the decision's author with it while leaving the
+decision itself standing.
+
+I am not proposing a change, because whether an audit record should outlive the person is a
+retention decision rather than a technical one, and this side does not guess those. If the answer is
+"it should survive", the fix is `ON DELETE SET NULL` → keeping the id with the FK dropped, or a
+separate immutable record; both are migrations on a shared table and want the owner's word first.
+
+What IS fixed: the comment in `people/roster.js` claimed an id we could not name would travel AS THE
+ID rather than as a blank. That state cannot occur — the foreign key removes the id before the code
+sees it — and the claim sent me looking for a case that does not exist. It now says what actually
+happens.
+
+
 ## 12. The honest risks
 
 - **The eFolder write may not be confirmable from the outside.** If the request shapes cannot
