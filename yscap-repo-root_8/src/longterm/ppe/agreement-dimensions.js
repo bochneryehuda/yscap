@@ -59,6 +59,19 @@ function factsForDimension(dimension) {
   return [String(dimension), ...(FACT_ALIASES[dimension] || [])];
 }
 
+// EVERY fact a predicate tests, at any depth. `soleLeafFact` answers "which ONE fact is this about"
+// and is null for a compound predicate; this answers "which facts does it MENTION", which is what lets
+// two vocabularies that file the same compound rule under different headings be recognised as talking
+// about the same rule. Never throws; a shape it cannot read contributes nothing.
+function factsOfPredicate(pred, acc) {
+  const out = acc || new Set();
+  if (!pred || typeof pred !== 'object') return out;
+  if (pred.fact) out.add(pred.fact);
+  for (const k of ['all', 'any']) if (Array.isArray(pred[k])) pred[k].forEach((p) => factsOfPredicate(p, out));
+  if (pred.not != null) factsOfPredicate(pred.not, out);
+  return out;
+}
+
 // dimension of one of OUR rules, read from the rule's OWN structure (never guessed from text).
 function dimensionOfRule(rule) {
   if (!rule || typeof rule !== 'object') return null;
@@ -92,6 +105,7 @@ module.exports = {
   CANONICAL,
   FACT_ALIASES,
   factsForDimension,
+  factsOfPredicate,
   soleLeafFact,
   dimensionOfRule,
   dimensionOfOurAdjustment,

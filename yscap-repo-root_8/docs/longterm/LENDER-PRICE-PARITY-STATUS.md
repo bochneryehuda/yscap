@@ -6571,3 +6571,78 @@ naming the coupons), the suppression widened to any decline (3 assertions), and 
 dropped (1) — with an unmutated control green either side.
 
 170/170 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.106 — ⛔ THE TWO ENGINES FILE THE SAME REFUSAL UNDER DIFFERENT HEADINGS, AND THAT WAS SCORED AS A DISAGREEMENT (2026-08-18)
+
+§2.105 left five comparable scenarios disagreeing and named this as the next item. It is not a
+rate-sheet defect either.
+
+**⛔ THE MECHANISM.** The per-layer reconciler pairs declines by a SINGLE dimension each. **Our stamp
+names the fact a rule CONSTRAINS** (§2.101); **Lender Price's `adjType` names the fact it FILES the rule
+under.** Every real rule on both sides is COMPOUND, so the two headings differ for one and the same
+refusal. Measured live on scenarios both engines declined:
+
+```
+ours  loan_amount  "Minimum Loan Amount $75,000 (DSCR >= 1.00x)"
+LP    dscr         "DSCR >= 1.00, Minimum Loan Amount $75,000"                       <- the same rule
+
+ours  ltv          "Max LTV/CLTV 70%: T1 FICO 640-679, purchase/rate-term, DSCR >= 1.00"
+LP    fico         "DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%"
+```
+
+Each landed as `onlyOurs` **plus** `onlyAuthority` — a DISAGREEMENT — which reads as *"our rate sheet is
+wrong here"* and would send somebody to fix a sheet nothing has been shown to be wrong with.
+
+**THE FIX READS EACH SIDE'S OWN STRUCTURE, NEVER THE TWO TEXTS.** `agreement-dimensions.factsOfPredicate`
+(the sibling of `soleLeafFact`, in the same one place that answers structural questions about a rule)
+gives every fact our rule TESTS; a pair is **RELATED** when the authority's dimension is one of them,
+through the shared `factsForDimension` so the cash-out alias is honoured once. The two texts looking
+alike is never the reason — that is the prose-guessing this file bans.
+
+**⛔ RELATED IS NOT AGREEMENT, and that is the load-bearing decision.** Nearly every Deephaven rule tests
+`dscr`, so treating a gate-fact overlap as proof would merge genuinely different refusals and
+manufacture a pass — the more expensive error. A related pair makes the layer **indeterminate**, and the
+scenario incomparable under its own name **`decline_reasons_unpaired`**, never confused with
+`decline_reasons_unreadable` (a parsing failure — a different piece of news). Both headings and the fact
+that paired them (`via`) are recorded, so a human sees exactly what was matched and why.
+
+**LIVE, same 8 scenarios, across the last three items:**
+
+```
+                                    comparable   agreed   disagreed   agreement   why incomparable
+§2.103 (feed readable)                 6 of 8       0          6         0.00%    2 unreadable
+§2.105 (both-decline verdict)          6 of 8       1          5        16.67%    2 unreadable
+§2.106 (this)                          3 of 8       1          2        33.33%    2 unreadable, 3 UNPAIRED
+```
+
+**Three false disagreements became honestly unproven, and the two that remain are real**: on both,
+Lender Price names a reason we never state at all — `"DSCR >=1.25%  only eligible on this program"` —
+which is the DSCR-BAND CONTAINER refusing a loan outside its own band. That is task #80's question
+showing up as evidence rather than as a hunch, and it is the next thing to work.
+
+**A FALLING "comparable" COUNT IS THE POINT, NOT A REGRESSION.** 6 → 3 comparable is the harness
+declining to claim it measured something it did not. §2.90 already makes incomparable scenarios block a
+sheet from being proven, so the honesty costs nothing and buys a number that means what it says.
+
+**TWO MUTATIONS EXPOSED HOLES IN MY OWN TEST BEFORE THEY EXPOSED ANYTHING ELSE.** Removing the related
+bucket entirely made the suite **CRASH** on `.length` — a crashing test "fails" in a way that looks like
+proof while naming no assertion, so every read of `related` is now defensive and the same mutation
+produces seven named failures. And the once-only pairing guard stayed **GREEN**, because my fixture used
+two of our declines with the SAME dimension: `reconcileLayer` keys our rows by dimension and keeps the
+first, so the second never reached the pairing at all. Rebuilt with two DIFFERENT dimensions that both
+test `dscr`, the mutation fails two assertions. **A mutation that stays green is a hole in the test.**
+
+**OBSERVED AND RECORDED, not fixed here**: `reconcileLayer` keeps only the FIRST of our declines per
+dimension, so a second rule on the same axis is silently dropped before any comparison. Pre-existing and
+unrelated to this change; noted because the fixture above walked straight into it.
+
+`scripts/test-lt-ppe-decline-vocabulary.js` (24 assertions): both live pairs verbatim, a genuine
+disagreement staying a disagreement, an exact match staying an agreement, one related pair unable to
+launder a real disagreement beside it, the once-only pairing, and the scenario naming its own cause
+against `runOne`. **Mutation-proven five ways**: the pairing not run (7 assertions), related counted as
+agreement (4), the fact test removed so anything pairs (4), the once-only guard dropped (2), and the
+cause not named (1) — with an unmutated control green either side.
+
+171/171 suites, 33 database-backed. All seven gates green.

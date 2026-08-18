@@ -38,7 +38,7 @@
  */
 
 const { keyToPredicate } = require('./disqualify-crosswalk');
-const { dimensionOfRule } = require('./agreement-dimensions');
+const { dimensionOfRule, factsOfPredicate, factsForDimension } = require('./agreement-dimensions');
 
 // Layer 3 = prepayment-penalty dimensions; everything else is Layer 2 (eligibility).
 const PPP_DIMENSIONS = new Set(['prepay', 'ppp', 'prepayment', 'prepayment_penalty', 'prepay_penalty']);
@@ -59,7 +59,17 @@ function ourVerdictFromQuote(ours, program, opts = {}) {
     const rule = d && d.code != null ? byCode.get(d.code) : null;
     return rule ? dimensionOfRule(rule) : null;             // read from the rule, never the prose
   });
-  return declines.map((d) => ({ code: d.code || null, reason: d.reason || 'ineligible', dimension: dimensionOf(d) }));
+  // `facts` = every fact the rule's own predicate tests. Carried so a decline can be recognised as
+  // being ABOUT a dimension it does not NAME — see relateLayer. Read from the rule, never the prose.
+  return declines.map((d) => {
+    const rule = d && d.code != null ? byCode.get(d.code) : null;
+    return {
+      code: d.code || null,
+      reason: d.reason || 'ineligible',
+      dimension: dimensionOf(d),
+      facts: rule ? [...factsOfPredicate(rule.when)] : [],
+    };
+  });
 }
 
 // Normalize whatever `ours` was passed into { layer2:[row], layer3:[row], unknown:[row] }.
@@ -76,7 +86,7 @@ function normalizeOurs(ours, opts) {
   for (const r of rows) {
     if (r.dimension == null) { unknown.push({ side: 'ours', reason: r.reason, why: 'no_dimension' }); continue; }
     const layer = r._forced || layerOf(r.dimension, { side: 'ours' });
-    (layer === 'layer3' ? layer3 : layer2).push({ dimension: r.dimension, reason: r.reason, code: r.code || null });
+    (layer === 'layer3' ? layer3 : layer2).push({ dimension: r.dimension, reason: r.reason, code: r.code || null, facts: r.facts || [] });
   }
   return { layer2, layer3, unknown, ineligible: rows.length > 0 };
 }
@@ -118,16 +128,63 @@ function reconcileLayer(ourRows, lpRows) {
   const agreements = []; const onlyOurs = []; const onlyAuthority = [];
   for (const [dim, our] of ourByDim) {
     if (lpByDim.has(dim)) agreements.push({ dimension: dim, ourReason: our.reason, lpReason: lpByDim.get(dim).reason });
-    else onlyOurs.push({ dimension: dim, reason: our.reason });
+    else onlyOurs.push({ dimension: dim, reason: our.reason, facts: our.facts || [] });
   }
   for (const [dim, lp] of lpByDim) {
     if (!ourByDim.has(dim)) onlyAuthority.push({ dimension: dim, reason: lp.reason, adjType: lp.adjType || null });
   }
-  return { agreements, onlyOurs, onlyAuthority };
+  return { agreements, onlyOurs, onlyAuthority, related: [] };
+}
+
+// ⛔ THE TWO VOCABULARIES FILE THE SAME COMPOUND RULE UNDER DIFFERENT HEADINGS, and matching on one
+// dimension each cannot see it. OUR stamp names the fact a rule CONSTRAINS; Lender Price's `adjType`
+// names the fact it FILES the rule under. MEASURED live 2026-08-18 on four both-decline scenarios both
+// engines refused:
+//
+//   ours  loan_amount "Minimum Loan Amount $75,000 (DSCR >= 1.00x)"
+//   LP    dscr        "DSCR >= 1.00, Minimum Loan Amount $75,000"          <- the SAME rule
+//   ours  ltv         "Max LTV/CLTV 70%: T1 FICO 640-679, purchase/rate-term, DSCR >= 1.00"
+//   LP    fico        "DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%"
+//
+// Scored as `onlyOurs` + `onlyAuthority`, i.e. a DISAGREEMENT, which would send somebody to fix a sheet
+// nothing has been shown to be wrong with.
+//
+// A pair is RELATED when the authority's dimension is one of the facts OUR rule actually tests — read
+// from each side's own structure, never from the two texts looking alike. It is deliberately NOT an
+// agreement: a gate fact is weak evidence (nearly every Deephaven rule tests `dscr`, so pairing on it
+// would merge genuinely different refusals), and claiming agreement we cannot prove is the more
+// expensive error. It makes the layer INDETERMINATE — the honest verdict, and the same shape §2.91
+// established for a reason that could not be paired.
+function relateLayer(rep) {
+  const ours = [...rep.onlyOurs];
+  const lp = [...rep.onlyAuthority];
+  const related = [];
+  const usedOurs = new Set(); const usedLp = new Set();
+  for (let i = 0; i < ours.length; i += 1) {
+    for (let j = 0; j < lp.length; j += 1) {
+      if (usedOurs.has(i) || usedLp.has(j)) continue;
+      const facts = new Set(ours[i].facts || []);
+      const names = factsForDimension(lp[j].dimension);
+      if (!names.some((f) => facts.has(f))) continue;
+      usedOurs.add(i); usedLp.add(j);
+      related.push({
+        ourDimension: ours[i].dimension, ourReason: ours[i].reason,
+        lpDimension: lp[j].dimension, lpReason: lp[j].reason,
+        // WHY they were paired, so a reader is never left guessing which fact did it.
+        via: names.find((f) => facts.has(f)) || null,
+      });
+    }
+  }
+  rep.onlyOurs = ours.filter((_, i) => !usedOurs.has(i));
+  rep.onlyAuthority = lp.filter((_, j) => !usedLp.has(j));
+  rep.related = related;
+  return rep;
 }
 
 function layerVerdict(rep) {
   if (rep.onlyOurs.length || rep.onlyAuthority.length) return 'disagree';
+  // A related pair is NOT an agreement — see relateLayer. It is the honest "we cannot tell".
+  if ((rep.related || []).length) return 'indeterminate';
   if (rep.unknown.length) return 'indeterminate';
   return 'agree';
 }
@@ -138,7 +195,7 @@ function reconcileDisqualifiers(ours, authority, opts = {}) {
 
   const layers = {};
   for (const layer of ['layer2', 'layer3']) {
-    const rep = reconcileLayer(ourN[layer], lpN[layer]);
+    const rep = relateLayer(reconcileLayer(ourN[layer], lpN[layer]));
     // per-layer unknowns are the side-specific rows that could not be placed on THIS analysis at all;
     // they live at the top level (they carry no layer), but each layer inherits the authority-not-ready
     // signal so a layer is never a clean "agree" when the authority feed is missing.
@@ -157,14 +214,22 @@ function reconcileDisqualifiers(ours, authority, opts = {}) {
 
   const agree = Object.values(layers).reduce((n, l) => n + l.agreements.length, 0);
   const disagree = Object.values(layers).reduce((n, l) => n + l.onlyOurs.length + l.onlyAuthority.length, 0);
+  const related = Object.values(layers).reduce((n, l) => n + (l.related || []).length, 0);
+  // TRUE when the ONLY thing standing between this and an agreement is the vocabulary gap: something
+  // was related, nothing genuinely disagreed, and nothing was unreadable. Carried so the caller can
+  // name the cause rather than filing it under the unreadable-reasons bucket, which is a different
+  // piece of news entirely.
+  const relatedOnly = related > 0 && disagree === 0 && unknown.length === 0;
 
   return {
     verdict,
     layers,
     unknown,
+    relatedOnly,
     summary: {
       agree,
       disagree,
+      related,
       unknown: unknown.length,
       ineligibleOurs: ourN.ineligible,
       ineligibleAuthority: lpN.ineligible,

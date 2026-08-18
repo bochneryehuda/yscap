@@ -504,13 +504,17 @@ async function runOne(scenario, ours, lp, opts) {
   const outcome = declineOutcome(declineReconcile);
   if (bothDeclined && outcome) {
     if (outcome === 'indeterminate') {
+      // ⛔ NAME THE CAUSE. "The reasons could not be read" and "both engines named a reason and the two
+      // vocabularies file it differently" are different pieces of news, and merging them sends a reader
+      // hunting a parsing bug that is not there. `relatedOnly` says the second one happened.
+      const unpaired = !!(declineReconcile && declineReconcile.relatedOnly);
       // Counting this as agreement is the gap being closed; counting it as a disagreement would send
       // somebody to fix a sheet nothing has been shown to be wrong with — the same collapse
       // `agreement-store` refuses between "never measured" and "measured and failed".
       // `incomparableByReason` in the summary names it, so it is stated and never silent.
       agree = false;
       incomparable = true;
-      incomparableReason = 'decline_reasons_unreadable';
+      incomparableReason = unpaired ? 'decline_reasons_unpaired' : 'decline_reasons_unreadable';
     } else {
       // ⛔ THE VERDICT IS THIS RECONCILIATION'S, IN BOTH DIRECTIONS. It used to be able only to push
       // `agree` further false: the coarse axes had already set it false (see the both-decline note
