@@ -56,13 +56,13 @@ function call(server, method, path, token, body) {
     IS.subjectFor({ property_address: { oneLine: '10 Fidelis Way' } }) === 'New file for review - 10 Fidelis Way');
   ok('A3 a parts-only address composes', /Newark, NJ 07104$/.test(IS.subjectFor({ property_address: { line1: '10 Way', city: 'Newark', state: 'NJ', zip: '07104' } })));
 
-  const QUOTE = { noteRate: 10.5, sizing: { totalLoan: 360000, initialAdvance: 248000, rehabHoldback: 80000, financedReserve: 32000, acqLtvPct: 0.8, arvPct: 0.8, oopRehab: 0 } };
+  const QUOTE = { noteRate: 0.105, sizing: { totalLoan: 360000, initialAdvance: 248000, rehabHoldback: 80000, financedReserve: 32000, acqLtvPct: 0.8, arvPct: 0.8, oopRehab: 0 } };
   {
     const rows = IS.dealFigures({ loan_type: 'Purchase', purchase_price: 300000, as_is_value: 310000, rehab_budget: 80000 }, QUOTE);
     const by = Object.fromEntries(rows.map((r) => [r.label, r.value]));
     ok('B1 a purchase leads with the purchase price', by['Purchase price'] === '$300,000');
     ok('B2 the loan structure figures ride', by['Loan amount'] === '$360,000' && by['Construction holdback'] === '$80,000'
-      && by['Interest reserve (financed)'] === '$32,000' && by['Interest rate'] === '10.5%');
+      && by['Interest reserve (financed)'] === '$32,000' && by['Interest rate'] === '10.50%');
     ok('B3 the three ratios are labelled with their formulas',
       by['Initial LTV (initial advance ÷ acquisition value)'] === '80%' && by['ARV LTV (total loan ÷ after-repair value)'] === '80%'
       && /Effective LTV/.test(rows.map((r) => r.label).join('|')));
@@ -73,7 +73,7 @@ function call(server, method, path, token, body) {
     // silently divided every ratio past 150% by 100 in an email to an investor).
     {
       const gu = IS.dealFigures({ loan_type: 'Ground Up Construction', purchase_price: 100000, as_is_value: 100000 },
-        { noteRate: 11, sizing: { totalLoan: 400000, initialAdvance: 80000, rehabHoldback: 300000, financedReserve: 20000 } });
+        { noteRate: 0.11, sizing: { totalLoan: 400000, initialAdvance: 80000, rehabHoldback: 300000, financedReserve: 20000 } });
       const gv = Object.fromEntries(gu.map((r) => [r.label, r.value]));
       ok('B8 a leverage ratio past 150% prints as itself, never divided by 100',
         gv['Effective LTV (total loan ÷ as-is value)'] === '400%');

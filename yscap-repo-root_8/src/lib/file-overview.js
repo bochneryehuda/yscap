@@ -24,8 +24,12 @@ const payoffLib = require('./payoff');
 const { scrubText } = require('./borrower-safe');
 
 const money = (n) => {
+  // NULL/'' is UNKNOWN → null (the row is omitted) — never "$0". Number(null)
+  // is 0, which is exactly how a refinance's doctrine-NULL purchase price was
+  // printing as "$0" (audit 9a05513 #3). A genuine zero still prints.
+  if (n == null || n === '') return null;
   const x = Number(n);
-  return Number.isFinite(x) && x !== 0 ? `$${Math.round(x).toLocaleString('en-US')}` : (x === 0 ? '$0' : null);
+  return Number.isFinite(x) ? `$${Math.round(x).toLocaleString('en-US')}` : null;
 };
 const pctOf = (frac) => {
   // Ratios here are engine FRACTIONS (pricing.normalize) — no percent-form
@@ -79,6 +83,10 @@ async function buildFileOverview(appId, { audience = 'internal' } = {}, client =
   const s = (quote && quote.sizing) || {};
   const kind = payoffLib.refiKind(a.loan_type);
   const kindLabel = payoffLib.KIND_LABEL ? payoffLib.KIND_LABEL[kind] : null;
+  // Sizes on the as-is value = a refinance (deal-basis, one definition): no
+  // purchase-price row at all (db/399 — a refinance carries none), and the
+  // payoff row shows for EVERY refinance, unknown subtype included.
+  const isRefi = require('./deal-basis').sizesOnAsIsValue(a.loan_type);
 
   const sections = [];
   const section = (title, rows) => {
@@ -96,26 +104,31 @@ async function buildFileOverview(appId, { audience = 'internal' } = {}, client =
     { label: 'Address', value: safe(addrOf(a.property_address)) },
     { label: 'Transaction type', value: [safe(a.loan_type), kindLabel && kindLabel !== a.loan_type ? kindLabel : null].filter(Boolean).join(' · ') || null },
     { label: 'Rehab type', value: safe(a.rehab_type) },
-    { label: 'Purchase price', value: money(a.purchase_price) },
+    // A refinance never shows a purchase price (db/399 doctrine) — its
+    // headline figure is the as-is value below.
+    ...(!isRefi ? [{ label: 'Purchase price', value: money(a.purchase_price) }] : []),
     // On an ASSIGNMENT the price splits into what the seller gets and the
     // wholesaler's fee — the owner named both.
-    ...(a.is_assignment ? [
+    ...(a.is_assignment && !isRefi ? [
       { label: 'Underlying contract price', value: money(a.underlying_contract_price) },
       { label: 'Assignment fee', value: money(a.assignment_fee) },
     ] : []),
     { label: 'As-is value', value: money(a.as_is_value) },
     { label: 'After-repair value (ARV)', value: money(a.arv) },
     { label: 'Construction budget', value: money(a.rehab_budget) },
-    ...(kind === payoffLib.KIND.RATE_TERM || kind === payoffLib.KIND.CASH_OUT ? [
+    ...(isRefi ? [
       { label: 'Payoff', value: a.property_free_and_clear ? 'Free & clear — no payoff' : money(a.payoff_amount) },
     ] : []),
   ]);
 
-  // Origination: percent + dollars together when both are known.
+  // Origination: percent + dollars together when both are known. quote.origPct
+  // is a FRACTION (pricing.normalize divides by 100), so it renders through the
+  // same fraction→percent formatter the rate uses (audit 9a05513 #2).
+  const RF = require('./rate-format');
   const origPct = quote && quote.origPct != null ? Number(quote.origPct) : null;
   const origDollars = quote && quote.origination != null ? Number(quote.origination) : null;
   const origination = (origPct || origDollars)
-    ? [origPct ? `${Math.round(origPct * 100) / 100}%` : null, origDollars ? money(origDollars) : null].filter(Boolean).join(' · ')
+    ? [origPct ? `${RF.fmtRatePct(origPct)}%` : null, origDollars ? money(origDollars) : null].filter(Boolean).join(' · ')
     : null;
 
   section('The loan', [
@@ -125,7 +138,9 @@ async function buildFileOverview(appId, { audience = 'internal' } = {}, client =
     { label: 'Construction holdback', value: money(s.rehabHoldback) },
     { label: 'Interest reserve (financed)', value: money(s.financedReserve) },
     { label: 'Origination points', value: origination },
-    { label: 'Interest rate', value: quote && quote.noteRate != null ? `${quote.noteRate}%` : null },
+    // quote.noteRate is a FRACTION (0.10625) — the ONE rate formatter renders it
+    // "10.625" (audit 9a05513 #1: a raw print showed "0.104%").
+    { label: 'Interest rate', value: quote && quote.noteRate != null && Number.isFinite(Number(quote.noteRate)) ? `${RF.fmtRatePct(quote.noteRate)}%` : null },
     { label: 'Initial LTV', value: pctOf(s.acqLtvPct) },
     { label: 'ARV LTV', value: pctOf(s.arvPct) },
   ]);

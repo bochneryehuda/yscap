@@ -88,7 +88,11 @@ function dealFigures(app, quote) {
   add('Initial advance', usd(s.initialAdvance));
   add('Construction holdback', usd(s.rehabHoldback));
   add('Interest reserve (financed)', usd(s.financedReserve));
-  add('Interest rate', quote && quote.noteRate != null ? `${quote.noteRate}%` : null);
+  // quote.noteRate is a FRACTION (0.10625) — rendered through the ONE rate
+  // formatter (rate-format.fmtRatePct → "10.625"), never printed raw (the
+  // audit 9a05513 class: a raw fraction reads "0.104%").
+  add('Interest rate', quote && quote.noteRate != null && Number.isFinite(Number(quote.noteRate))
+    ? `${require('../rate-format').fmtRatePct(quote.noteRate)}%` : null);
   // Out-of-pocket rehab: the applied exception amount when one exists, else the
   // plain arithmetic gap between the construction budget and what is financed.
   let oop = Number(s.oopRehab);

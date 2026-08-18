@@ -4848,16 +4848,19 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 /* ---- File-overview slide-over (owner-directed 2026-08-18) — .fov-* namespace.
    One component on all three file screens (staff / borrower / broker): a slim
    vertical tab on the LEFT edge opens a panel with the whole deal at a glance.
-   Dark text on white per the HARD RULE (never a --ink* token as a text color);
-   sits UNDER the app dialogs (z 1000+) and over page content. */
-.fov-tab{position:fixed;left:0;top:42%;z-index:880;writing-mode:vertical-rl;transform:rotate(180deg);
+   Dark text on white per the HARD RULE (never a --ink* token as a text color).
+   Z-ORDER (audit 9a05513 #4): the app dialogs live on .cv-modal-back at z 200,
+   so the WHOLE fov layer sits BELOW 200 — a confirm dialog must always paint
+   over (and block clicks to) this panel and its tab. The tab anchors LOW on
+   the left edge, clear of the staff shell's sidebar navigation band. */
+.fov-tab{position:fixed;left:0;bottom:140px;z-index:120;writing-mode:vertical-rl;transform:rotate(180deg);
   background:#FFFFFF;color:#141B22;border:1px solid #D9D4C8;border-left:none;border-radius:0 8px 8px 0;
   padding:12px 6px;font:600 12px/1 'Hanken Grotesk',system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase;
   cursor:pointer;box-shadow:2px 2px 10px rgba(20,27,34,.08)}
 .fov-tab:hover{color:#AE8746;border-color:#AE8746}
 .fov-tab-text{display:inline-block}
-.fov-back{position:fixed;inset:0;background:rgba(20,27,34,.45);z-index:890}
-.fov-panel{position:fixed;top:0;left:0;bottom:0;width:min(420px,94vw);z-index:895;background:#FFFFFF;
+.fov-back{position:fixed;inset:0;background:rgba(20,27,34,.45);z-index:130}
+.fov-panel{position:fixed;top:0;left:0;bottom:0;width:min(420px,94vw);z-index:135;background:#FFFFFF;
   border-right:1px solid #D9D4C8;box-shadow:6px 0 28px rgba(20,27,34,.16);
   transform:translateX(-102%);transition:transform .22s ease;display:flex;flex-direction:column;
   visibility:hidden}
@@ -4887,5 +4890,6 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .fov-retry{background:none;border:none;color:#2F7F86;text-decoration:underline;cursor:pointer;padding:0;font:inherit}
 @media(max-width:720px){
   .fov-panel{width:min(360px,94vw)}
-  .fov-tab{top:auto;bottom:96px;padding:10px 5px;font-size:11px}
+  /* Above the .cv-modal bottom-sheet band and the safe area on phones. */
+  .fov-tab{bottom:calc(180px + env(safe-area-inset-bottom, 0px));padding:10px 5px;font-size:11px}
 }

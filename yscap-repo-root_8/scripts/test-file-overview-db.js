@@ -65,7 +65,7 @@ const valOf = (card, label) => { const r = rowsOf(card).find((x) => x.label === 
     await db.query(
       `INSERT INTO product_registrations (application_id, program, product_label, inputs, quote, is_current)
        VALUES ($1,'gold','Gold Standard Program','{}'::jsonb,$2,true)`,
-      [appId, JSON.stringify({ noteRate: 10.5, origPct: 2, origination: 7200,
+      [appId, JSON.stringify({ noteRate: 0.105, origPct: 0.02, origination: 7200,
         sizing: { totalLoan: 360000, initialAdvance: 248000, rehabHoldback: 80000, financedReserve: 32000, acqLtvPct: 0.8, arvPct: 0.8 } })]);
     // A bare, unregistered file for the omit-don't-guess check.
     bareId = (await db.query(
@@ -82,7 +82,7 @@ const valOf = (card, label) => { const r = rowsOf(card).find((x) => x.label === 
       && valOf(card, 'Underlying contract price') === '$280,000' && valOf(card, 'Assignment fee') === '$20,000');
     ok('A4 the loan structure', valOf(card, 'Total loan') === '$360,000' && valOf(card, 'Initial loan (advance)') === '$248,000'
       && valOf(card, 'Construction holdback') === '$80,000' && valOf(card, 'Interest reserve (financed)') === '$32,000');
-    ok('A5 origination points + rate', valOf(card, 'Origination points') === '2% · $7,200' && valOf(card, 'Interest rate') === '10.5%');
+    ok('A5 origination points + rate', valOf(card, 'Origination points') === '2.00% · $7,200' && valOf(card, 'Interest rate') === '10.50%');
     ok('A6 leverage', valOf(card, 'Initial LTV') === '80%' && valOf(card, 'ARV LTV') === '80%');
     ok('A7 the header names the file', card.header.loanNumber === 'YSCAP-FOV-1' && /Overview Ave/.test(card.header.address || ''));
 
@@ -90,6 +90,19 @@ const valOf = (card, label) => { const r = rowsOf(card).find((x) => x.label === 
     ok('A8 an unregistered file OMITS the loan figures rather than guessing $0',
       valOf(bare, 'Total loan') === undefined && valOf(bare, 'Interest rate') === undefined
       && valOf(bare, 'Borrower') === 'Frank Overview');
+    ok('A8b …and NOTHING on the bare card reads "$0" (audit 9a05513 #3: NULL is unknown, never zero)',
+      !rowsOf(bare).some((r) => r.value === '$0'));
+
+    // A REFINANCE: no purchase-price row at all (db/399 doctrine), the payoff
+    // shows — even with the subtype unknown — and no NULL column prints "$0".
+    const refiId = (await db.query(
+      `INSERT INTO applications (borrower_id, loan_officer_id, status, property_address, loan_type, as_is_value, payoff_amount)
+       VALUES ($1,$2,'underwriting','{"oneLine":"7 Refi Rd"}','Refinance',400000,250000) RETURNING id`, [borId, staffId])).rows[0].id;
+    const refi = await FO.buildFileOverview(refiId, { audience: 'internal' });
+    ok('A9 a refinance shows NO purchase price, shows the payoff, and prints no "$0"',
+      valOf(refi, 'Purchase price') === undefined && valOf(refi, 'Payoff') === '$250,000'
+      && valOf(refi, 'As-is value') === '$400,000' && !rowsOf(refi).some((r) => r.value === '$0'));
+    await db.query(`DELETE FROM applications WHERE id=$1`, [refiId]);
 
     // ---- B. borrower-safe + the note buyer never rides -------------------------------------
     const bCard = await FO.buildFileOverview(appId, { audience: 'borrower' });

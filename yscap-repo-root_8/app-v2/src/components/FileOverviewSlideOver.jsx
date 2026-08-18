@@ -15,13 +15,18 @@ export default function FileOverviewSlideOver({ fetcher, title = 'File overview'
   const [card, setCard] = useState(null);
   const [state, setState] = useState('idle'); // idle | loading | ready | error
 
-  useEffect(() => {
-    if (!open || state === 'ready' || state === 'loading') return;
+  // Fetch directly (called on first open and by Try again) — never via an
+  // effect keyed on `open` alone, whose stale closure made the retry a dead
+  // button that blanked the panel (audit 9a05513 #5).
+  const fetchCard = () => {
     setState('loading');
     Promise.resolve()
       .then(() => fetcher())
       .then((c) => { setCard(c); setState('ready'); })
       .catch(() => setState('error'));
+  };
+  useEffect(() => {
+    if (open && state === 'idle') fetchCard();
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -56,7 +61,7 @@ export default function FileOverviewSlideOver({ fetcher, title = 'File overview'
           {state === 'error' && (
             <p className="fov-muted">
               Couldn’t load the overview.{' '}
-              <button type="button" className="fov-retry" onClick={() => setState('idle')}>Try again</button>
+              <button type="button" className="fov-retry" onClick={fetchCard}>Try again</button>
             </p>
           )}
           {state === 'ready' && card && (card.sections || []).map((sec) => (
