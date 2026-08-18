@@ -45,6 +45,48 @@ function num(v) {
 function int(v) { const n = num(v); return n == null ? 0 : Math.round(n); }
 
 /** A stored row → the reading shape. Postgres returns BIGINT/INTEGER as strings. */
+
+/**
+ * HOW MANY SCENARIOS COULD NOT BE COMPARED AT ALL — the term the publish gate never read (§2.90).
+ *
+ * ⛔ WHY THIS HAD TO EXIST. `gateMet` is `errors === 0 && disagreed === 0 && comparable > 0`, and
+ * `comparable` is `agreed + disagreed`. A scenario Lender Price gave no usable answer for is in NONE
+ * of those terms — it leaves the battery silently. So a 299-scenario run with 295 agreed and 4
+ * incomparable reported **agreement 100.00%, GATE MET YES**, and this store called the sheet `proven`
+ * with the message "Agreed with Lender Price on all 295 comparable scenarios" — literally true, and
+ * silent about the four. Measured on the live 2026-08-18 run, the four that vanished were `ltv 85`,
+ * `huge loan 3.5M`, and **both** of the battery's only prepayment-penalty-prohibition probes.
+ *
+ * ⛔ AND THE RULE ALREADY EXISTED, one file over. `cutover.eligibleForLive` blocks a promotion on ANY
+ * incomparable canary scenario, with no setting to turn it off, saying in its own words: *"100%
+ * 'agreement' over scenarios that could not all be compared is not 100% agreement."* The same
+ * discipline was enforced on the canary path and merely COMMENTED on this one — the comment on
+ * `MIN_COMPARABLE_SCENARIOS` above even names the danger ("a 200-scenario battery where 190 were
+ * incomparable proves almost nothing") and then counts only the comparable ones. Two definitions of
+ * one rule, and the weaker one guarded the money.
+ *
+ * TWO SOURCES, AND THEY MUST AGREE. The harness states `summary.incomparable`; the row's own columns
+ * imply it, because `total = comparable + incomparable + errors` (errors are counted and skipped
+ * before anything reaches agreed/disagreed). Both are read: the stated number is preferred, the
+ * derived one is the fallback for a row whose summary blob is missing or from an older shape — and
+ * when both are present and DISAGREE, that is a row contradicting itself and is refused rather than
+ * resolved. Returns `{ count, source, stated, derived }`, or a null count when neither can be read.
+ */
+function incomparableOf(run) {
+  const s = run && run.summary;
+  const stated = s && typeof s === 'object' && Number.isFinite(s.incomparable) ? s.incomparable : null;
+  const t = num(run && run.scenarios); const c = num(run && run.comparable); const e = num(run && run.errors);
+  // A negative is not a count — it means the row does not add up, and inventing a 0 there would be the
+  // silent-substitution class this whole file exists to refuse.
+  const derived = (t == null || c == null || e == null || t - c - e < 0) ? null : t - c - e;
+  if (stated != null && derived != null && stated !== derived) {
+    return { count: null, source: 'contradiction', stated, derived };
+  }
+  if (stated != null) return { count: stated, source: 'summary', stated, derived };
+  if (derived != null) return { count: derived, source: 'derived', stated, derived };
+  return { count: null, source: 'unreadable', stated, derived };
+}
+
 function rowToRecord(row) {
   if (!row) return null;
   return {
@@ -122,6 +164,35 @@ function gateDecision(records) {
       run: latest,
     };
   }
+  // ⛔ A SCENARIO THAT VANISHED IS NOT A SCENARIO THAT AGREED (§2.90). Checked BEFORE the scale test,
+  // because "we compared 295 of 299" is a different and worse fact than "we compared only 295", and a
+  // reader told the second would never go looking for the first. Same rule `cutover.eligibleForLive`
+  // already enforces for the canary, now enforced here too.
+  const inc = incomparableOf(latest);
+  if (inc.source === 'contradiction') {
+    return {
+      proven: false,
+      reason: 'coverage_contradiction',
+      message: `The last agreement run contradicts itself about how much it compared: its summary says ${inc.stated} scenario(s) could not be compared, while its own counts imply ${inc.derived}. A verdict that cannot state its own coverage is not a verdict.`,
+      run: latest,
+    };
+  }
+  if (inc.count == null) {
+    return {
+      proven: false,
+      reason: 'coverage_unknown',
+      message: 'The last agreement run does not say how many scenarios could not be compared, so it cannot be read as full agreement. Re-run the battery.',
+      run: latest,
+    };
+  }
+  if (inc.count > 0) {
+    return {
+      proven: false,
+      reason: 'incomparable_scenarios',
+      message: `The last agreement run agreed on all ${latest.comparable} scenarios it could compare, but ${inc.count} of ${latest.scenarios} produced no usable answer from Lender Price and were never compared at all. Agreement over the scenarios that survived is not agreement over the battery.`,
+      run: latest,
+    };
+  }
   // A PASSING run still has to have measured something. `gateMet` is already `errors === 0 &&
   // disagreed === 0 && comparable > 0`, so a battery of three scenarios can satisfy it — which is
   // true and is not the owner's rule. The scale test lives here rather than inside the harness because
@@ -137,7 +208,9 @@ function gateDecision(records) {
   return {
     proven: true,
     reason: null,
-    message: `Agreed with Lender Price on all ${latest.comparable} comparable scenarios.`,
+    // States COVERAGE as well as agreement: "all 295 comparable" was true of a run that quietly lost
+    // four, so the sentence now accounts for the whole battery.
+    message: `Agreed with Lender Price on all ${latest.comparable} of ${latest.scenarios} scenarios, with none left uncompared.`,
     run: latest,
   };
 }
@@ -241,6 +314,7 @@ async function gateStatus(scope, versionId, opts = {}) {
 }
 
 module.exports = {
+  incomparableOf,
   gateDecision, gateStatus, recordRun, recordOverride, listForVersion, rowToRecord,
   MIN_COMPARABLE_SCENARIOS, KIND_RUN, KIND_OVERRIDE,
 };

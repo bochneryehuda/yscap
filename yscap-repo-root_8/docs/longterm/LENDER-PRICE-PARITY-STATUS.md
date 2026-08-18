@@ -5481,3 +5481,75 @@ produced it.
    Deephaven's, or the priced answer came from another lender inside the scope. This one is measurable
    without asking anybody, and is the first thing to settle.
 
+
+---
+
+### §2.90 — ⛔ A SCENARIO THAT VANISHED IS NOT A SCENARIO THAT AGREED (2026-08-18)
+
+**Found by auditing the live run of §2.89, and it would have shipped a sheet.**
+
+The publish gate is `gateMet = errors === 0 && disagreed === 0 && comparable > 0`, and
+`comparable = agreed + disagreed`. A scenario Lender Price gave no usable answer for is in **none** of
+those terms — it leaves the battery silently. So the live 299-scenario run, once its 41 disagreements
+were repaired, would have reported **agreement 100.00%, GATE MET YES**, and `agreement-store.gateDecision`
+would have called the sheet **proven** with the message *"Agreed with Lender Price on all 295 comparable
+scenarios"* — literally true, and silent about the four that never happened.
+
+**The four that vanished on the real run were `ltv 85`, `huge loan 3.5M`, and BOTH of the battery's only
+prepayment-penalty-prohibition probes.** The axis the owner has asked about repeatedly is precisely the
+axis that disappeared, and the verdict said nothing.
+
+**⛔ AND THE RULE ALREADY EXISTED, ONE FILE OVER.** `cutover.eligibleForLive` blocks a promotion on ANY
+incomparable canary scenario — no setting can turn it off — saying in its own words:
+
+> *"100% 'agreement' over scenarios that could not all be compared is not 100% agreement."*
+
+The same discipline was **enforced** on the canary path and merely **commented** on the publish path.
+`agreement-store`'s own note on `MIN_COMPARABLE_SCENARIOS` even names the danger — *"a 200-scenario
+battery where 190 were incomparable proves almost nothing"* — and then counts only the comparable ones.
+**Two definitions of one rule, and the weaker one guarded the money.** That is this file's dominant
+defect class in its purest form: not a wrong rule, but the right rule enforced in one place and
+described in the other.
+
+**The fix.** `incomparableOf(run)` reads the count two independent ways — the harness's stated
+`summary.incomparable`, and the arithmetic `total − comparable − errors` over columns that are always
+present (errors are counted and skipped before anything reaches agreed/disagreed). The stated number is
+preferred; the derived one covers a row whose summary blob is missing or from an older shape. **When
+both are present and disagree, that is a row contradicting itself about the thing being gated on, and it
+is refused rather than resolved** — picking one silently would be choosing which of two disagreeing
+records to believe. A negative derived count is refused for the same reason: the row does not add up, and
+inventing a `0` there is the silent-substitution class this file exists to refuse.
+
+Three new refusals, each distinct so a reader knows what to do next: `incomparable_scenarios`,
+`coverage_contradiction`, `coverage_unknown`. **Ordering is load-bearing and asserted**: a run that is
+both incomparable-heavy *and* under the scale floor reports the vanished scenarios first, because *"we
+compared 295 of 299"* and *"we compared only 295"* are different facts and a reader told the second would
+never go looking for the first. The success message now states **coverage** as well as agreement.
+
+**⛔ THIS GATE IS STRICTER, and that is said out loud rather than left as a side effect.** A run that
+previously proved a sheet with scenarios missing no longer does.
+
+**⛔ THE EXISTING TEST'S OWN FIXTURE WAS AN INSTANCE OF THE DEFECT.**
+`test-lt-ppe-store-roundtrip-db.js` recorded `scenarios: 240, comparable: 236` — 240 run, 236 compared,
+**four vanished** — and asserted `proven === true`. It went red on the fix, correctly. The fixture is now
+a complete run, and a new **D5b** drives the incomplete shape through the real store against the real
+table and asserts it is recorded but does **not** prove the sheet. The suite now documents the rule
+instead of depending on its absence. (Resequencing that insert also broke `D7`'s "latest word wins"
+ordering — my timestamp put the second run after the override; fixed by stamping it before.)
+
+`scripts/test-lt-ppe-vanished-scenarios.js` (39 assertions) covers the counting helper, the three
+refusals, the ordering, the unchanged pre-existing refusals, the explicit statement that the gate is
+stricter, and — section D — **that the canary path and the publish path now reach the same verdict on the
+same fact**, asserted against the real `cutover.eligibleForLive` rather than restated.
+
+**Mutation-proven seven ways**: the check removed (7 assertions bite), an unreadable coverage passing
+(1), a self-contradicting row silently believing the summary (3), a negative derived count read as real
+(1), the columns fallback dropped (2), the check moved after the scale floor (1), and the success message
+reverted to claiming only the comparable scenarios (1).
+
+For the third time today a source guard failed on its own documentation — the assertion that the publish
+path does not import the canary gate matched the **comment naming it**. Stripped comments, and asserted
+both halves: the rule is named in the prose (so the next reader finds its twin) and not imported in the
+code.
+
+159/159 suites, 33 database-backed. All seven gates green.

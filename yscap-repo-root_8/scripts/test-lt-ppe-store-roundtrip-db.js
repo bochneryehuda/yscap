@@ -252,10 +252,15 @@ const twoCellMatrix = () => ({
     const program = await store.createProgram(db, scope, { investorId: inv.id, code: 'DSCR30', name: 'DSCR 30yr' });
     const ver = await store.createRateSheetVersion(db, scope, { programId: program.id, versionNo: 1, channel: 'correspondent' });
 
-    const summary = { gateMet: true, scenarios: 240, comparable: 236, agreed: 236, disagreed: 0, errors: 0, byDimension: { fico: 'ok' } };
+    // ⛔ THIS FIXTURE USED TO BE `scenarios: 240, comparable: 236` — 240 run, 236 compared, four
+    // vanished — and D5 asserted the sheet was PROVEN. It was itself an instance of the defect §2.90
+    // closes: agreement over the scenarios that survived is not agreement over the battery. The
+    // fixture is now a COMPLETE run, and the incomplete shape is asserted to be refused (D5b), so
+    // this suite documents the rule instead of depending on its absence.
+    const summary = { gateMet: true, scenarios: 240, comparable: 240, agreed: 240, disagreed: 0, errors: 0, incomparable: 0, byDimension: { fico: 'ok' } };
     const run = await agreementStore.recordRun(scope, { db, versionId: ver.id, summary, recordedBy: 'roundtrip@ys', nowMs: DAY });
     ok(run.ok === true, 'D1 recordRun INSERTs — the ::jsonb cast and every count column are legal');
-    ok(run.record.gateMet === true && run.record.comparable === 236 && run.record.scenarios === 240,
+    ok(run.record.gateMet === true && run.record.comparable === 240 && run.record.scenarios === 240,
       'D2 …and the counts read back off INTEGER columns as numbers');
     ok(typeof run.record.recordedAt === 'number' && run.record.recordedAt === DAY,
       'D3 …with the BIGINT clock coerced, not left a string');
@@ -265,8 +270,20 @@ const twoCellMatrix = () => ({
     const gate = await agreementStore.gateStatus(scope, ver.id, { db });
     ok(gate.proven === true, 'D5 gateStatus reads the persisted run and answers PROVEN');
 
+    // D5b — §2.90, through the REAL store against the REAL table. A second run on the same version
+    // that compared four fewer scenarios than it ran must NOT prove the sheet, however clean the
+    // comparable ones were. Asserted here rather than only in the pure suite because this is the path
+    // a publish actually takes: harness summary -> jsonb column -> read back -> verdict.
+    const partial = { gateMet: true, scenarios: 240, comparable: 236, agreed: 236, disagreed: 0, errors: 0, incomparable: 4 };
+    const run2 = await agreementStore.recordRun(scope, { db, versionId: ver.id, summary: partial, recordedBy: 'roundtrip@ys', nowMs: DAY + 1 });
+    ok(run2.ok === true, 'D5b a run that could not compare everything is still RECORDED — the ledger keeps it');
+    const gate2 = await agreementStore.gateStatus(scope, ver.id, { db });
+    ok(gate2.proven === false && gate2.reason === 'incomparable_scenarios',
+      `D5b …and it does NOT prove the sheet (${gate2.reason}) — four scenarios vanished`);
+    ok(/4 of 240/.test(gate2.message || ''), 'D5b …with the message naming both numbers');
+
     const ovr = await agreementStore.recordOverride(scope,
-      { db, versionId: ver.id, recordedBy: 'roundtrip@ys', reason: 'publishing unmeasured on purpose', nowMs: DAY + 1 });
+      { db, versionId: ver.id, recordedBy: 'roundtrip@ys', reason: 'publishing unmeasured on purpose', nowMs: DAY + 2 });
     ok(ovr.ok === true && ovr.record.gateMet === null,
       'D6 an override stores gate_met as NULL — the column really is nullable');
     const afterOverride = await agreementStore.gateStatus(scope, ver.id, { db });
