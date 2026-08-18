@@ -1439,8 +1439,10 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     now shows the owner their own folders with a count each; picking them is a few clicks and no
     code change.
 
-    **What is still needed is the list of folder names and which of them mean the deal is over** —
-    one answer from the owner, typed into one setting, no code change.
+    (A second closing paragraph here asked for "the list of folder names" as well — left behind by
+    the 2026-08-17 correction, and asking for the very thing that correction says we already have
+    and already show. Removed 2026-08-18. It is the same failure the item is about: a sentence
+    outliving the fact it described.)
 
 14. **ANSWERED (owner, 2026-08-17) — a reassignment MOVES the file within that role, and
     every role is its own slot.** The owner's words: *"if you reassign the Loan Coordinator,
