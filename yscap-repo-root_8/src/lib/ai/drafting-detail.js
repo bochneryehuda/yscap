@@ -65,7 +65,12 @@ async function liquidityBlock(appId, client) {
     const gap = Number(led.requiredLiquidity) - Number(led.verifiedTotal || 0);
     if (Number.isFinite(gap) && gap > 0) lines.push(`- Still to document: ${money(gap)}`);
   }
-  lines.push('- Bank statements needed: the two (2) most recent months; a recent transaction printout may be added when funds are not yet in the latest statement’s ending balance.');
+  // The statement COUNT comes from the ONE definition (liquidity.js — the
+  // owner's 2026-08-11 two-months rule), never restated here (audit finding 3).
+  try {
+    const months = require('../liquidity').bankStatementMonths();
+    lines.push(`- Bank statements needed: the ${months === 2 ? 'two (2)' : months} most recent months; a recent transaction printout may be added when funds are not yet in the latest statement’s ending balance.`);
+  } catch (_) { /* an unreadable count is simply not stated */ }
   return {
     facts: lines.join('\n'),
     guidance: 'On the bank-statement / assets item, break the requirement down (cash to close, reserves, the closing-cost cushion) using the figures given, and warmly suggest sending statements showing a LITTLE MORE than the minimum so cash to close is never tight.',
@@ -114,9 +119,22 @@ async function experienceBlock(appId, client) {
 }
 
 /* ---- the SOW / construction-budget agreement (checkSowBudget is the ONE
-        cent-exact rule the sign-off gate applies). ---- */
+        cent-exact rule the sign-off gate applies). The SAVED SOW payload is
+        loaded exactly as the sign-off gate loads it (the budget condition's
+        tool_payload) and passed in — the first cut passed null, which made
+        checkSowBudget read a $0.00 line-item total and FABRICATE a full-budget
+        gap on every file, matched SOWs included (audit 2026-08-18 finding 1).
+        No saved SOW → NO block: nothing has been entered, so there is no
+        figure to state. ---- */
 async function budgetBlock(appId, client) {
-  const chk = await require('../rehab-budget').checkSowBudget(appId, null, client);
+  const pr = await (client || db).query(
+    `SELECT ci.tool_payload FROM checklist_items ci
+       LEFT JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.application_id = $1 AND (ci.tool_key = 'rehab_budget' OR t.code = 'rtl_p1_budget')
+      ORDER BY ci.created_at LIMIT 1`, [appId]);
+  const payload = pr.rows[0] && pr.rows[0].tool_payload;
+  if (!payload) return null;
+  const chk = await require('../rehab-budget').checkSowBudget(appId, payload, client);
   if (!chk || chk.ok || chk.seed) return null;
   const lines = ['About the Scope of Work / construction-budget item:'];
   if (chk.required != null) lines.push(`- The construction budget on the loan: ${money(chk.required)}`);

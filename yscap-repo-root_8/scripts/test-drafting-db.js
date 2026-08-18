@@ -109,8 +109,11 @@ const azure = require('../src/lib/ai/azure-openai');
       ov.ok === true && !!sent && /Total loan: \$360,000/.test(sent.userContent) && /3 Draft Drive/.test(sent.userContent));
 
     // ---- D. no send, structurally ----------------------------------------------------------
-    const src = fs.readFileSync(path.join(__dirname, '..', 'src/lib/ai/drafting.js'), 'utf8');
-    ok('D1 the drafting module imports no mailer OR notify module and never sends',
+    // BOTH halves of the drafting desk (drafting.js + the 2.0 detail layer it
+    // requires) — a mailer slipped into either would defeat the no-send rule.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src/lib/ai/drafting.js'), 'utf8')
+      + fs.readFileSync(path.join(__dirname, '..', 'src/lib/ai/drafting-detail.js'), 'utf8');
+    ok('D1 the drafting modules import no mailer OR notify module and never send',
       // The require test covers ANY notify alias (notifyStaff/notifyAdmins/a
       // future one) — a verb list alone was foolable (audit 2026-08-18 #6).
       !/require\(['"][^'"]*(email|notify)/.test(src) && !/sendMail|notifyBorrower|notifyApp|notifyStaff|notifyAdmins/.test(src));
@@ -208,6 +211,28 @@ const azure = require('../src/lib/ai/azure-openai');
     ok('F7b the pasted-back draft is scrubbed on the way IN', !!sent && !/blue\s*lake/i.test(sent.userContent));
     ok('F7c feedback with no previous draft refuses',
       /no previous draft/.test(D.requestProblem({ preset: 'deal_overview', feedback: 'shorter' })));
+    // F8/F9: the SOW budget block states the REAL saved totals (audit finding 1:
+    // the first cut passed no payload, so checkSowBudget read a $0.00 line-item
+    // total and fabricated a full-budget gap on every file — matched SOWs
+    // included). A mismatched saved SOW states both true figures; a MATCHED one
+    // produces no block at all.
+    await db.query(`UPDATE applications SET rehab_budget=126000 WHERE id=$1`, [appId]);
+    await db.query(
+      `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,is_required,status,tool_key,tool_payload)
+       VALUES ('application',$1,'Rehab budget','Scope of Work','borrower','task',true,'issue','rehab_budget',$2)`,
+      [appId, JSON.stringify({ state: { target: 126000 }, total: 100000 })]);
+    sent = null;
+    await D.draft(appId, { preset: 'outstanding_conditions', scope: 'open', detail: true });
+    ok('F8 the SOW block states the REAL saved totals, never a fabricated $0',
+      !!sent && /\$126,000/.test(sent.userContent) && /\$100,000/.test(sent.userContent)
+      && !/\$0\.00/.test(sent.userContent));
+    await db.query(
+      `UPDATE checklist_items SET tool_payload=$2 WHERE application_id=$1 AND tool_key='rehab_budget'`,
+      [appId, JSON.stringify({ state: { target: 126000 }, total: 126000 })]);
+    sent = null;
+    await D.draft(appId, { preset: 'outstanding_conditions', scope: 'open', detail: true });
+    ok('F9 a MATCHED Scope of Work produces no budget block at all',
+      !!sent && !/What needs to happen/.test(sent.userContent) && !/line-item total/.test(sent.userContent));
   } finally {
     azure.available = realAvailable; azure.complete = realComplete;
     try {
