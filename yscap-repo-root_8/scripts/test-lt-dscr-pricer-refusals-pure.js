@@ -45,6 +45,7 @@ const eq = (a, b, w) => { assert.strictEqual(a, b, w); checks++; };
 const LP = require.resolve('../src/longterm/lenderprice/client');
 const asked = [];
 let nextResult = null;
+let nextDisq = null;
 const realLp = require(LP);
 require.cache[LP] = {
   id: LP,
@@ -56,11 +57,21 @@ require.cache[LP] = {
       asked.push(sc);
       return nextResult;
     },
+    // The DISQUALIFY door's two vendor calls. Recorded into the SAME list, so
+    // "spent nothing upstream" means the same thing on every door below.
+    priceDisqualified: async (sc) => {
+      asked.push(sc);
+      return nextDisq;
+    },
+    pollDisqualified: async (sc) => {
+      asked.push(sc);
+      return nextDisq;
+    },
   },
 };
 
 const pricer = require('../src/longterm/routes/dscr-pricer');
-const { price } = pricer.handlers;
+const { price, disqualify } = pricer.handlers;
 const { REGISTRY_WARNINGS } = require('../src/longterm/lenderprice/search-model');
 
 /** A minimal express-ish res that records what the handler answered. */
@@ -75,6 +86,11 @@ function fakeRes() {
 const post = async (body) => {
   const res = fakeRes();
   await price({ body }, res);
+  return res.out;
+};
+const postDisq = async (body) => {
+  const res = fakeRes();
+  await disqualify({ body }, res);
   return res.out;
 };
 
@@ -200,6 +216,85 @@ async function main() {
     nextResult = { ok: false, http: 400, error: 'bad_request' };
     const r = await post({ scenario: { ...GOOD } });
     eq(r.code, 400, 'while a 4xx from the engine stays the caller\'s to fix');
+  }
+
+  // ── G. THE SAME THREE GATES ON THE DISQUALIFY DOOR ──────────────────────
+  //
+  // /disqualify prices too — it returns the qualified summary AND the reasons a
+  // lender said no. So every argument above applies to it unchanged, and a gate
+  // that holds on one door and not its neighbour is not a gate. Nothing had ever
+  // checked that this door applies them; it is the largest single span the
+  // coverage sweep still reported as never executed.
+  const disqOk = {
+    ok: true, ready: true, polls: 1,
+    qualified: { results: {} }, disqualified: { results: {} },
+    request: { criteria: {}, property: {}, dynamicPropertiesMap: {} },
+  };
+
+  {
+    asked.length = 0;
+    nextDisq = disqOk;
+    const r = await postDisq({ scenario: { ...GOOD } });
+    eq(r.code, 200, 'a complete scenario reaches the disqualify door too — the control for everything below it');
+    eq(asked.length, 1, '…asking the engine once');
+    ok(r.body.qualified && r.body.disqualified, '…and coming back with both halves, which is what this door is for');
+  }
+  {
+    asked.length = 0;
+    const r = await postDisq({ scenario: { ...GOOD, secondLienBalloonRider: true } });
+    eq(r.code, 422,
+      'THE ONE THAT MATTERS: an unimplemented field is refused on the DISQUALIFY door as well — a gate that holds on one door and not its neighbour is not a gate');
+    eq(r.body.error, 'unsupported_field', '…under the same name');
+    eq(asked.length, 0, '…having spent nothing upstream');
+  }
+  {
+    asked.length = 0;
+    const r = await postDisq({ scenario: { ...GOOD, purpose: 'SomethingElse' } });
+    eq(r.code, 422, 'an unknown loan purpose is refused here too');
+    eq(asked.length, 0, '…before any upstream call');
+  }
+  {
+    asked.length = 0;
+    const built = { criteria: {}, property: {}, dynamicPropertiesMap: {} };
+    built[REGISTRY_WARNINGS] = [{ field: 'prepayStructure', value: 'Vibes', reason: 'not a known token' }];
+    nextDisq = { ...disqOk, request: built };
+    const r = await postDisq({ scenario: { ...GOOD } });
+    eq(r.code, 422,
+      'THE ONE THAT MATTERS: and a recognised field carrying an unrecognised value throws the whole answer away here too — the reasons a lender said no are worth no more than the request they were computed from');
+    eq(r.body.error, 'invalid_field_value', '…under the same name');
+  }
+  {
+    // The ZIP enrichment holds on this door as well: validating one request and
+    // sending a different one upstream would be the same substitution.
+    asked.length = 0;
+    nextDisq = disqOk;
+    const bare = { ...GOOD };
+    delete bare.county; delete bare.countyFps; delete bare.state;
+    const r = await postDisq({ scenario: bare });
+    eq(r.code, 200, 'a ZIP-only scenario is accepted');
+    eq((asked[0] || {}).state, 'NJ', 'and the ENRICHED scenario is what reaches the engine, exactly as on /price');
+    eq((asked[0] || {}).countyFps, '34039', '…county included');
+  }
+  {
+    // Poll-only mode is a different branch of the same handler, and applies the
+    // same gates before it polls anything.
+    asked.length = 0;
+    const r = await postDisq({ scenario: { ...GOOD, secondLienBalloonRider: true }, poll: true });
+    eq(r.code, 422, 'poll-only mode refuses an unimplemented field before polling anything');
+    eq(asked.length, 0, '…and spends nothing');
+
+    asked.length = 0;
+    nextDisq = { ok: true, ready: false, request: { criteria: {}, property: {}, dynamicPropertiesMap: {} } };
+    const waiting = await postDisq({ scenario: { ...GOOD }, poll: true });
+    eq(waiting.code, 202,
+      'and a computation still running answers 202 rather than an empty 200 — "not ready" and "no lender said no" are different facts, and a screen that read one as the other would tell somebody their loan is eligible everywhere');
+    eq(waiting.body.ready, false, '…saying so plainly');
+  }
+  {
+    asked.length = 0;
+    nextDisq = { ok: false, http: 503, error: 'upstream_down' };
+    const r = await postDisq({ scenario: { ...GOOD } });
+    eq(r.code, 502, 'an engine that is down reads as a bad gateway here too, not as the caller\'s bad request');
   }
 
   console.log(`\n✓ lt dscr pricer refusals (pure): ${checks} assertions passed`);
