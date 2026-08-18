@@ -151,7 +151,11 @@ async function main() {
       '/api/lt/ppe/health',
       '/api/lt/ppe/investors',
     ];
-    ok(DOORS.length >= 22, 'the door list is the whole long-term surface, not a sample of it');
+    // A guard on THIS FILE rather than on the application — no change to the
+    // product can turn it red. It is here because the cheapest way to make this
+    // suite pass is to delete the door that fails, and a list that can quietly
+    // shrink proves less every time somebody is in a hurry.
+    ok(DOORS.length >= 22, 'the door list is still the whole long-term surface rather than a sample somebody trimmed');
 
     // ── A. THE POSITIVE CONTROL ───────────────────────────────────────────
     // Without this, everything below would stay green if the application had
