@@ -4640,3 +4640,70 @@ lost) and `lp-drift`'s summary counters (the drift pass is deliberately unwired,
 changed.
 
 148/148 suites.
+
+**§2.78 — THE OWNER'S DAILY CHECK RECORDED *WHAT* DISAGREED AND NEVER *WHY*, THOUGH THE EVIDENCE WAS
+IN OUR HANDS AT THAT EXACT MOMENT (2026-08-18).**
+
+**MEASURED.** `divergence.diagnose` puts our whole price build-up — base → itemized LLPAs → margin →
+round → clamp — beside Lender Price's single number and names the ONE component whose magnitude matches
+the gap. It was wired in exactly one place: `facade.js`, the LIVE shadow path, which needs vendor
+credentials. The **canary** — the owner's daily check, six runs a day, the thing that actually fills the
+review queue — goes through `shadow.runOne`, which compared the two quotes and then dropped ours. Run on
+a scenario whose margin is exactly 250 and whose gap is exactly −250:
+
+```
+finding kind: price_mismatch | deltaMilli: -250
+explanation present? NO
+ourPayload: null
+```
+
+…on the one case where the diagnosis would have said *"strong: the margin exactly accounts for the
+gap"*. Every review-queue row the owner has ever been shown named the coupon and the number of points
+and stopped there.
+
+**WHY IT COULD NOT BE ADDED LATER, WHICH IS WHY IT HAD TO MOVE.** The reconstruction exists on the quote
+we are holding and NOWHERE afterwards: the runner returns the verdict and drops the quote, and the
+findings ledger stores `our_payload` as **NULL** (asserted, not assumed — B4). A screen re-deriving the
+cause next week would have to re-price against whatever the sheet says *then* and would quietly answer a
+different question. So the fix is not a screen; it is attaching the explanation at the only moment the
+evidence is in the room.
+
+**THE FIX IS A MOVE, NOT A SECOND COPY.** `attachDiagnosis` left `facade.js` and now lives in
+`divergence.js`, beside the `diagnose` it calls; `facade.js` calls that same function (and re-exports it
+from `_internals`, so a test of one is a test of both) and `shadow.runOne` calls it too, immediately
+after `compareScenario`. One function, two callers. The facade's behaviour did not change by a byte.
+
+**A SELF-INFLICTED INSTANCE OF THE VERY CLASS THIS FILE KEEPS RECORDING — worth writing down plainly.**
+The moved body kept the facade's wording, `divergence.diagnose(...)`. Inside `divergence.js` there is no
+`divergence` binding, so every call threw a `ReferenceError` — which the function's own
+`catch (_) { /* a diagnosis must never cost a verdict */ }` swallowed, exactly as designed. The wiring
+was "done". Nothing threw. Every suite passed. **Not one explanation was attached.** It was caught only
+by re-measuring the canary rather than trusting that the edit had worked. The swallow is still right —
+an explanation may never cost a verdict — so the suite now pins **both halves together**: C1–C3 prove a
+diagnosis that cannot be written is swallowed and the verdict stands, and **C4 is the control** proving
+the identical call on a writable finding really does attach. Either assertion alone passes happily on a
+build where the attach does nothing at all; only the pair can tell a working attach from a dead one.
+
+**WHAT IT REFUSES TO DO.** The rung is matched by **exact coupon** and abstains otherwise — diagnosing a
+7.5 gap off the 7.25 rung would read every LLPA and the margin off the wrong coupon and then name a
+suspect with full confidence. With no rung it says so in words (*"our reconstruction record is
+unavailable, so the cause cannot be narrowed"*, `confidence: 'none'`, `topSuspect: null`). It invents
+nothing on a scenario that agreed, and a malformed or absent quote narrows nothing rather than throwing.
+
+**Re-measured after the fix**, same scenario, through `shadow.runOne`: `confidence: 'strong'`,
+`topSuspect.component: 'margin'`, and the summary a human reads — *"The gap exactly equals our margin
+(0.250 pts) — most likely Lender Price treats that one differently; check it first."* It rides through
+`finding.recordsFromComparison` verbatim, so the ledger row carries it.
+
+`scripts/test-lt-ppe-diagnosis-reaches-the-canary.js` (33 assertions) drives the REAL runner — not a
+hand-built comparison — and covers the canary path, the ledger record, the swallow **and its control**,
+the honest abstention, the whole batch (every scenario, not just the first) with `parity.comparedOf`
+unmoved, and a source guard that there is exactly ONE definition of `attachDiagnosis` in the PPE tree.
+**Mutation-proven five ways**: unwiring the runner (8 assertions fall), restoring the `divergence.`
+qualifier that shipped (13 fall, including C4 and the source guard), matching a rung by near rate
+instead of exactly (the abstention collapses into a confident wrong answer), a second copy of the
+function in `facade.js`, and removing the swallow. The source guard strips comments before it reads —
+this very section names the broken form, and a guard that read its own explanation would fail on the fix
+it protects and then be "fixed" by deleting the explanation.
+
+149/149 suites.

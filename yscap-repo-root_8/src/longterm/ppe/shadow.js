@@ -20,6 +20,7 @@
  */
 
 const parity = require('./parity');
+const divergence = require('./divergence');
 const { describeScenario } = require('./scenario-matrix');
 
 const ERROR_KIND = 'engine_error';
@@ -42,6 +43,16 @@ async function runOne(scenario, ours, theirs, opts) {
   // Thread our raw declines so a reasoned overlay divergence is typed as OVERLAY, not a defect (D29).
   const ourDeclines = Array.isArray(a && a.declines) ? a.declines : undefined;
   const cmp = parity.compareScenario(a, b, { ...opts, scenario: tag, ourDeclines });
+  // WHY it disagreed, diagnosed HERE because here is where the evidence is (§2.78). Our reconstruction
+  // record — base → itemized LLPAs → margin → round → clamp — exists on the quote we were just handed
+  // and NOWHERE afterwards: the runner returns the verdict and drops the quote, and the findings ledger
+  // stores `our_payload` as NULL, so a screen re-deriving this later would have to re-price against
+  // whatever the sheet says today and quietly answer a different question.
+  //
+  // This was wired only in `facade.js` — the LIVE shadow path, which needs vendor credentials — so the
+  // canary, the owner's daily check that runs six times a day and is what actually fills the review
+  // queue, recorded WHAT disagreed and never WHY. Same function, not a second copy.
+  divergence.attachDiagnosis(cmp, a, opts);
   return { agree: cmp.agree, incomparable: cmp.incomparable || false, overlay: cmp.overlay || false, scenario: tag, facts: factsOf(scenario), findings: cmp.findings };
 }
 

@@ -330,7 +330,7 @@ async function compareSafely(ourAnswerMaybe, scenario, deps, program, cmpOpts, c
   // suspect is ranked purely by numeric proximity to the gap and carries its own confidence
   // ('strong' = a component EXACTLY equals the gap, 'possible' = within tolerance, 'none' = no single
   // component matches). It never claims which side is wrong.
-  attachDiagnosis(cmp, ourQuote, cmpOpts);
+  divergence.attachDiagnosis(cmp, ourQuote, cmpOpts);
 
   const deep = deepCompare({ ourQuote, ourErr, detail, detailErr, wantDetail, scope, cmpOpts });
   const { persist, held, supersede } = deepRecordable(deep, cmp);
@@ -367,32 +367,6 @@ async function compareSafely(ourAnswerMaybe, scenario, deps, program, cmpOpts, c
   };
 }
 
-/**
- * Attach one `explanation` per finding, in place, from our own reconstruction.
- *
- * THE RUNG IS MATCHED BY EXACT COUPON, and abstains otherwise. A near-match would diagnose the gap on
- * a rate the finding is not about — every LLPA and the margin would be read off the wrong rung — and
- * `divergence` would then name a suspect with full confidence. No rung is the honest answer, and the
- * module already words it: "our reconstruction record is unavailable, so the cause cannot be narrowed".
- *
- * IT CAN NEVER BREAK A COMPARISON. A diagnosis is a convenience laid on top of a verdict that has
- * already been reached; if it throws, the finding stands exactly as it was.
- */
-function attachDiagnosis(cmp, ourQuote, cmpOpts) {
-  if (!cmp || !Array.isArray(cmp.findings) || !cmp.findings.length) return;
-  const ladder = (ourQuote && Array.isArray(ourQuote.ladder)) ? ourQuote.ladder : [];
-  for (const f of cmp.findings) {
-    if (!f || typeof f !== 'object') continue;
-    try {
-      const rung = (f.rate != null) ? ladder.find((r) => r && r.rate === f.rate) : null;
-      f.explanation = divergence.diagnose(f, {
-        reconstruction: rung || null,
-        toleranceMilli: cmpOpts && cmpOpts.priceToleranceMilli,
-      });
-    } catch (_) { /* a diagnosis must never cost a verdict that has already been reached */ }
-  }
-}
-
 function parityLabel(scenario) {
   // reuse scenario-matrix's describe via parity? keep a tiny inline to avoid a cycle
   if (!scenario || typeof scenario !== 'object') return String(scenario == null ? '' : scenario);
@@ -401,5 +375,5 @@ function parityLabel(scenario) {
 
 module.exports = {
   priceWithShadow,
-  _internals: { compareSafely, detach, parityLabel, lpScope, lpLadder, deepCompare, deepRecordable, attachDiagnosis, DEEP_ONLY, DEEP_ELIGIBILITY },
+  _internals: { compareSafely, detach, parityLabel, lpScope, lpLadder, deepCompare, deepRecordable, attachDiagnosis: divergence.attachDiagnosis, DEEP_ONLY, DEEP_ELIGIBILITY },
 };
