@@ -47,7 +47,12 @@ ok(at('className="panel team-panel"') >= 0, 'then the team');
     'nothing else is mounted after the team — it is the last thing on the overview');
 }
 {
-  const block = overview.slice(at('<div className="deal-block">'), at('<div className="deal-block">') + 400);
+  // Measure to the block's next SIBLING, not a fixed character window — the
+  // rate-and-term warning card (owner-directed 2026-08-18) legitimately sits
+  // between the two mounts inside the same block, and a 400-char window read
+  // that as the block losing its second half.
+  const blockEnd = overview.indexOf('<PropertyPhoto', at('<div className="deal-block">'));
+  const block = overview.slice(at('<div className="deal-block">'), blockEnd > 0 ? blockEnd : at('<div className="deal-block">') + 400);
   ok(/<DealSnapshot/.test(block) && /<WhatsLeftPanel/.test(block),
     'both parts really are inside the one block');
   ok(/\.deal-block\{/.test(css), 'the block has a style that joins them');
