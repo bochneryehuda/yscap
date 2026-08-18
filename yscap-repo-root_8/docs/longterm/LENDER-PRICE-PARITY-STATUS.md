@@ -4258,3 +4258,50 @@ shape. Worth recording: a mutation that does not apply is a mutation that proves
 exactly like a passing test.
 
 141/141 suites.
+
+**§2.71 — A REASONED OVERRIDE MUST NOT BE SCORED AS A BUG (2026-08-18). ANOTHER HONEST NEGATIVE, AND
+ONE AVOIDABLE FAILURE MODE REMOVED.**
+
+**THE MECHANISM, WHICH IS THE WHOLE RISK.** `parity.normalizeOurQuote` returns `{eligible, rungs}` and
+**drops `declines[]`**. `compareScenario` needs those declines to tell two very different things apart
+when our engine says ineligible and Lender Price says eligible: a decline resting entirely on an
+overlay-only fact LP cannot see is an **intentional override** (scored OVERLAY, correctly not counted
+against the sheet), and anything else is a **real eligibility disagreement**. So a caller that loses the
+declines between those two lines turns every reasoned override into a **phantom defect** — the §2.70
+class exactly: a phantom disagreement is indistinguishable from a real one on the scoreboard, so it does
+not read as *"we measured this badly"*, it reads as *"our sheet is off"*, and it drags the agreement
+rate the go-live gate reads. The failure is silent and one-directional.
+
+**THE NEGATIVE RESULT, MEASURED 2026-08-18.** Both production callers already pass them —
+`shadow.js:44` and `facade.js:315` — so **nothing is broken today**. That is the finding, and it is
+stated plainly rather than dressed up as a fix.
+
+**WHAT CHANGED IS THAT ONE WAY TO GET IT WRONG NO LONGER EXISTS.** `shadow.js` hands over the **raw
+quote**, which still carries `declines` — the declines were sitting right there in the argument and had
+to be passed a second time by hand. `compareScenario` now **falls back to a raw quote's own declines**
+when the caller did not separate them out. Three properties, each deliberate:
+
+- the **explicit option still WINS**, because `facade.js` passes an already-**normalized** ladder — by
+  then the declines are genuinely gone and only the caller has them, so the option can never become
+  optional;
+- an explicit **`[]` means "there are none"**, not "go looking" — treating it as absent would let the
+  fallback overrule a caller who deliberately said there were none;
+- the fallback fires only on the eligibility branch, only when the two sides disagree about eligibility
+  at all, and **malformed declines never throw** (this runs inside a paid battery).
+
+`scripts/test-lt-ppe-overlay-declines-reach.js` (19 assertions) pins all of it, with the fixtures built
+from the **real `overlay.overlayDecline()` builder** rather than hand-rolled — the first cut invented the
+shape (`{overlayDecline:true}` against the real `{overlay, fact, reason}`) and three assertions failed
+against a contract that does not exist. A fixture that spells a contract out is a second copy of it, and
+it drifts.
+
+**Mutation-proven six ways**, and worth recording: **two survived my first guard.** It asked whether the
+word `ourDeclines` appeared **anywhere in the file**, and both blanking the value
+(`const ourDeclines = undefined`) and renaming one occurrence leave the word present elsewhere. *"The
+file mentions it"* is not *"the call passes it"* — the same over-loose matching this repo has been bitten
+by before. The guard now extracts **each call's own argument text** and inspects that, plus D2b (no
+hard-coded `undefined`/`null` value), D2c (no binding to a constant nothing) and D3 (the call sites were
+actually found — a regex that matched nothing would have passed every check above it). All six then
+killed.
+
+142/142 suites.

@@ -100,8 +100,21 @@ function compareScenario(ours, theirs, opts = {}) {
     // overlay-only facts is an intentional override, scored as OVERLAY, not a defect. Anything else —
     // and every case when no declines are supplied — is the plain ELIGIBILITY mismatch, byte-identical
     // to before. `overlay` is surfaced so the scoreboard can bucket a reasoned override apart from a bug.
-    if (Array.isArray(opts.ourDeclines)) {
-      const c = overlay.classifyEligibilityDivergence({ oursEligible: A.eligible, theirsEligible: B.eligible, ourDeclines: opts.ourDeclines });
+    //
+    // ⛔ AND IT READS THEM OFF THE QUOTE WHEN THE CALLER DID NOT SEPARATE THEM OUT. `normalizeOurQuote`
+    // DROPS `declines[]`, so a caller that hands this function a raw quote and forgets `opts.ourDeclines`
+    // loses them between the two lines — and the failure is silent and one-directional: a reasoned
+    // override is typed as a DEFECT, which is a phantom disagreement on the scoreboard, and phantom
+    // disagreements are indistinguishable from real ones (the §2.70 class). `shadow.js` already passes
+    // the raw quote AND the option, so the declines were sitting right there in the argument.
+    //
+    // The explicit option still WINS and is still required by `facade.js`, which passes an
+    // already-normalized ladder — by then the declines are genuinely gone and only the caller has them.
+    // This is a fallback, never a replacement: `[]` from a caller means "no declines", not "go looking".
+    const ourDeclines = Array.isArray(opts.ourDeclines) ? opts.ourDeclines
+      : (Array.isArray(ours && ours.declines) ? ours.declines : null);
+    if (Array.isArray(ourDeclines)) {
+      const c = overlay.classifyEligibilityDivergence({ oursEligible: A.eligible, theirsEligible: B.eligible, ourDeclines });
       if (c.classification === overlay.CLASS.OVERLAY) {
         findings.push(tag({ kind: SEVERITY.OVERLAY, detail: c.detail, ourEligible: A.eligible, theirEligible: B.eligible, overlayReasons: c.overlayReasons }));
         return { agree: false, overlay: true, findings };
