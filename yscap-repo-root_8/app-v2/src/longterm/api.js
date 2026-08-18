@@ -149,6 +149,33 @@ export const ltApi = {
     return ltGet(lt(`/ppe/parity-cells${q ? `?${q}` : ''}`));
   },
 
+  // THE CANARY — the ONE producer of everything the two screens above read.
+  //
+  // `ppeFindings` and `ppeParityCells` are both READS of a ledger that only a canary run writes, and
+  // until this method existed nothing in the product could write it: the route was reachable by a
+  // hand-run curl and by nothing else, so the findings queue and the per-band series could only ever
+  // show what somebody typed into a terminal. That is why the run button is owed to this console.
+  //
+  // IT COSTS MONEY. One live Lender Price call per scenario in the battery, every time. The screen
+  // arms it behind a deliberate second confirmation and nothing on any page may call this on load —
+  // the cost is the reason the client method is not enough on its own.
+  //
+  // The battery is the CALLER's: either `scenarios` (an array) or `matrix` (axes to expand). Nothing
+  // here supplies a default, because an agreement rate measured over scenarios nobody chose still
+  // feeds the promotion gate.
+  ppeCanary: (body) => ltPost(lt('/ppe/canary'), body),
+
+  // The DAILY cadence (D19). A saved schedule is not a running one — the server reports what the
+  // runner would decide about each row, and the screen prints that verbatim rather than drawing a
+  // saved-but-unrunnable schedule as armed.
+  //
+  // `investor` on the delete is the schedule's own key, and the company-wide row (no investor) is
+  // addressed as '-' — the route's own convention. `scheduleTarget` in CanaryConsole.jsx is the one
+  // place that translation is made.
+  ppeCanarySchedules: () => ltGet(lt('/ppe/canary/schedules')),
+  ppeSaveCanarySchedule: (body) => ltPost(lt('/ppe/canary/schedules'), body),
+  ppeDeleteCanarySchedule: (investor) => ltDel(lt(`/ppe/canary/schedules/${encodeURIComponent(investor)}`)),
+
   // WHICH Lender Price programs each of our rate sheets is measured against (db/574).
   //
   // The write door has existed since the scope columns landed and nothing could reach it: it needs a

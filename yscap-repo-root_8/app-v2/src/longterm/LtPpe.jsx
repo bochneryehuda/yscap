@@ -10,6 +10,7 @@ import { rate, day } from './format.js';
 // slightly different cards. Same values, one definition.
 import { INK, MUTED, SLATE, GOLD, PAPER, card, h2, sub, eyebrow } from './ppeStyles.js';
 import RateSheetConsole from './RateSheetConsole.jsx';
+import CanaryConsole from './CanaryConsole.jsx';
 
 // ---------------------------------------------------------------------------
 // The Product & Pricing Engine, made visible.
@@ -541,6 +542,15 @@ export default function LtPpe() {
 
       {/* ---- onboard an investor and load its rate sheet ---- */}
       <RateSheetConsole />
+
+      {/* ---- THE CANARY: the only thing that writes the two lists above ----
+          Both the differences queue and the per-band series are READS of a ledger a canary run
+          writes, and the run route had no caller in the product at all — so an empty queue meant
+          "nobody has run a curl", which on this page is indistinguishable from "the two engines
+          agree". The investors already read above are passed down rather than fetched a second
+          time; one screen asking the same route twice is how two halves of a page come to disagree
+          about which investors exist. */}
+      <CanaryConsole investors={(investors && investors.investors) || []} />
 
       {/* ---- what each sheet is compared AGAINST (db/574) ---- */}
       <div style={card}>

@@ -54,12 +54,16 @@ still true of the running system until somebody turns it on; see the note under 
 | `POST /api/lt/ppe/suggestions/mine` | Mines rule suggestions out of the recorded findings. Same: an editor action with no editor. |
 | `GET /api/lt/ppe/programs/:id/lp-scope` | Reads a program's Lender Price scope. The console SETS the scope (`POST` is reached) and re-reads it from the write's own response, so the GET has no caller. |
 | `GET /api/lt/ppe/rate-sheets/:id/diff` | What changed between two versions of a sheet (§2.35). Built; the console has no version-history view yet. |
-| `POST /api/lt/ppe/canary` | Runs a canary battery. **It is still the only producer of the RUN SERIES and the PARITY-CELL series** (`run-store.persistRun` / `parity-cell-store.persistCells` are called from `runBattery` and nowhere else), so the scoreboard's agreement rate and clean-day streak — and therefore the go-live gate — can only ever show what a hand-run `curl` put there. It is no longer the only producer of the FINDINGS ledger: the shadow comparison on the pricing-transparency screen reaches `POST /ppe/quote`. Its own screen is the next thing owed to the PPE console. |
-| `GET /api/lt/ppe/canary/schedules` | Reads the daily canary schedule (D19). No schedule screen yet. |
-| `POST /api/lt/ppe/canary/schedules` | Writes one. Same. |
-| `DELETE /api/lt/ppe/canary/schedules/:investor` | Removes one. Same. |
 | `POST /api/lt/ppe/canary/tick` | **A driver now exists and is OFF by default.** See below. |
-| `GET /api/lt/ppe/canary/driver` | Is anything actually driving that tick, when did it last try, what did it do, and why did it not? An OPERATOR read, and the answer to the defect below. It has no screen because the PPE console has no schedule surface at all yet (the three `canary/schedules` rows above are the same gap); it is the first thing that surface should show, because "no schedule is due" and "nothing has asked in three weeks" look identical on every screen that exists today. |
+| `GET /api/lt/ppe/canary/driver` | Is anything actually driving that tick, when did it last try, what did it do, and why did it not. Read by hand while the driver is off; it is what a schedule screen would show once somebody turns one on. |
+
+The four canary rows that stood here — `POST /ppe/canary` and the three `/ppe/canary/schedules`
+routes — are gone because they are reached now: `CanaryConsole.jsx`, mounted on the PPE console, runs
+a battery behind a two-step arming step that states the number of live vendor calls before it fires,
+and lists, saves and removes the daily schedules. The tick above stays, and the console says ON THE
+SCREEN that nothing fires a saved schedule unless the driver is switched on — a schedule editor that
+drew a stored cadence as armed would be the surface that finally HID this defect instead of the one
+that shows it.
 
 ## The one row that was a defect, not a gap — and what has changed
 
@@ -85,8 +89,11 @@ use — a Render CRON service (the shape the off-site backup uses), the existing
 in-process scheduler. Each behaves differently when two servers are running and each costs a live
 vendor call, so the in-process one is built behind the off switch and the choice is recorded as an
 owner question in `docs/longterm/LENDER-PRICE-PARITY-STATUS.md` §2.46. **Until somebody answers it and
-turns the switch on, the sentence at the top of this section is still true of the running system**, and
-the schedule screens above are owed the same pass.
+turns the switch on, the sentence at the top of this section is still true of the running system.**
+
+**The schedule SCREENS are owed no longer:** they are built (`CanaryConsole.jsx`) and they say on the
+page that a saved cadence is honoured by nothing until the driver is switched on — which is the only
+honest way to ship a schedule editor over a tick that may never fire.
 
 ## Not a route, but the same dead end one step nearer the user
 
