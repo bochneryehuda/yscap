@@ -1306,6 +1306,28 @@ model LtPpeSettingValue {
   @@map("lt_ppe_setting_value")
 }
 
+// The APPEND-ONLY trail of every change to a PPE setting (db/579). lt_ppe_setting_value keeps
+// only a last-writer stamp; this keeps the history — who, when, from what to what, and whether
+// each end was a human's stored override or the shipped coded default. Never UPDATEd, never
+// DELETEd: a correction is a new row. LT-only.
+model LtPpeSettingAudit {
+  id         String   @id @default(uuid()) @db.Uuid
+  scope      String
+  key        String
+  action     String
+  fromValue  Json?    @map("from_value") @db.JsonB
+  fromSource String   @map("from_source")
+  toValue    Json?    @map("to_value") @db.JsonB
+  toSource   String   @map("to_source")
+  actorId    String?  @map("actor_id") @db.Uuid
+  actorLabel String?  @map("actor_label")
+  changedAt  DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
+
+  @@index([scope, changedAt(sort: Desc)], map: "lt_ppe_setting_audit_scope_time_idx")
+  @@index([scope, key, changedAt(sort: Desc)], map: "lt_ppe_setting_audit_key_time_idx")
+  @@map("lt_ppe_setting_audit")
+}
+
 // Lender Price ineligible (disqualify) durable store (db/555). Best-effort L2 behind the client's
 // in-memory Map; survives a reboot / deploy / instance-move so a mid-poll client never loses the
 // kickoff or the cached result. LT-only.

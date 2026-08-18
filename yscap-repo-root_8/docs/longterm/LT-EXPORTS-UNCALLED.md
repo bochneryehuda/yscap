@@ -18,7 +18,7 @@ striking it here in the same commit.
 against the definition instead of retyping it, an operator command, a capability written ahead of its
 caller. A row is an invitation to say which — that is what the reason field is for.
 
-## Referenced nowhere at all (121)
+## Referenced nowhere at all (132)
 
 Not by production code and not by a test. Nothing asks for these, so nothing would notice if one were
 wrong.
@@ -77,6 +77,8 @@ wrong.
 - `ppe/deephaven-dscr-prepay-maxprice.js :: NOT_FIXED5` — the "any structure except 5% fixed" predicate fragment; used inside this module
 - `ppe/deephaven-dscr-prepay-maxprice.js :: prepayLlpaTables` — the raw prepayment tables the compiler reads inside this module
 - `ppe/deephaven-dscr-prepay-maxprice.js :: prepayReason` — the plain-language reason attached to a prepayment cap; used inside this module
+- `ppe/deephaven-ppp-matrix.js :: BUSINESS_ENTITY_WORDS` — the whole-word needles that classify a borrower as a company; used inside this module, exported so the suite can assert against the definition instead of retyping nine words
+- `ppe/deephaven-ppp-matrix.js :: NATURAL_PERSON_WORDS` — the same for a natural person — four words, asserted here rather than retyped
 - `ppe/disqualifier-reconciler.js :: defaultLayerOf`
 - `ppe/disqualifier-reconciler.js :: normalizeAuthority`
 - `ppe/disqualifier-reconciler.js :: ourVerdictFromQuote`
@@ -92,17 +94,23 @@ wrong.
 - `ppe/facade.js :: deepRecordable`
 - `ppe/facade.js :: lpLadder`
 - `ppe/facade.js :: parityLabel`
-- `ppe/lp-normalize-full.js :: rungOf`
+- `ppe/lp-agreement-legs.js :: declineForPpp` — turns a prepayment refusal into a leg decline; used inside `buildOursLeg`, exported for its own wording assertions
+- `ppe/lp-agreement-legs.js :: flagUnresolvedPpp` — the FLAG half of the unresolved-prepayment policy; used inside this module, exported so both policies can be asserted apart
+- `ppe/lp-agreement-legs.js :: normPurpose` — the loan-purpose normalizer this leg builds on; used inside the module
+- `ppe/lp-normalize-full.js :: programRe` — builds the program-family matcher from an LP scope; used by the scope filter in this module
 - `ppe/lp-scope.js :: EQUALITY_KEYS`
 - `ppe/overlay.js :: overlayReasonsOf`
 - `ppe/parity-matrix.js :: addToCell`
 - `ppe/parity-matrix.js :: emptyCell`
 - `ppe/parity-matrix.js :: finishCell`
+- `ppe/ppp-unresolved.js :: fieldUsable` — decides whether one fact is usable for a state rule; used inside the missing-fact rule
+- `ppe/ppp-unresolved.js :: NUMERIC_FIELDS` — which prepayment facts must read as numbers; used inside this module and asserted against the definition
 - `ppe/price-limit.js :: listScenarioRules` — lists the scenario-level cap rules a sheet publishes; exported so the suite can assert the set without pricing anything
 - `ppe/pricing-breakdown.js :: normRungFromLpRung`
 - `ppe/pricing-breakdown.js :: pickRung`
 - `ppe/pricing.js :: DEFAULT_ROUNDING_INCREMENT_MILLI`
 - `ppe/pricing.js :: roundToIncrement`
+- `ppe/quote.js :: unpriceableReasons` — every reason a scenario cannot be priced confidently; used by `quoteProgram`, exported so each reason can be asserted without pricing
 - `ppe/ratesheet-agreement.js :: declineMismatchRows`
 - `ppe/ratesheet-agreement.js :: KNOWN_UNENCODED_FAMILIES`
 - `ppe/ratesheet-agreement.js :: matchByRate`
@@ -138,6 +146,9 @@ wrong.
 - `ppe/rule-coverage.js :: regionsMeet`
 - `ppe/rung-digest.js :: theirRungs`
 - `ppe/scoreboard.js :: latestRunSummary`
+- `ppe/settings-admin.js :: COMPANY_SCOPE` — the company slot name; used inside this module and asserted against the definition rather than retyped
+- `ppe/settings-admin.js :: layerName` — plain-English name for a settings layer, used in the refusals this module writes
+- `ppe/settings-admin.js :: valueRefusalMessage` — the wording of a rejected value; used inside the validator, exported so the message can be asserted without a write
 - `ppe/store.js :: publishRateSheetVersionUnchecked`
 - `routes/settings.js :: PERSONAL_KEYS`
 - `settings/store.js :: DEFAULT_SCOPE`
@@ -145,7 +156,7 @@ wrong.
 - `sync/loans.js :: readLoan`
 - `views.js :: defaultView`
 
-## Named by a test and by no production code (177)
+## Named by a test and by no production code (186)
 
 This is the §2.45 / §2.46 shape exactly — built, tested, and asked by nothing — and it is also the
 shape of a perfectly good exported table that a suite asserts against. The list is watched, not
@@ -266,12 +277,17 @@ banned.
 - `ppe/deephaven-overlay-rules.js :: STR_MIN_FICO`
 - `ppe/deephaven-ppp-matrix.js :: normBorrowerType`
 - `ppe/deephaven-ppp-matrix.js :: STATE_RULES`
+- `ppe/deephaven-ppp-matrix.js :: STATE_WHEN_KEYS` — the condition keys a state rule may test; the compiler reads them, and the suite proves every key has a handler
 - `ppe/deephaven-ppp-matrix.js :: SUPPORTED_WHEN_KEYS`
+- `ppe/deephaven-ppp-matrix.js :: unsupportedWhenKeys` — names any condition key this engine cannot evaluate — the self-check behind the "we could not tell" outcome
 - `ppe/deephaven-ppp-matrix.js :: WHEN_HANDLERS`
+- `ppe/deephaven-ppp-matrix.js :: whenMatches` — evaluates one state rule condition; used inside the matcher, exported so each key can be asserted on its own
 - `ppe/divergence.js :: explainPriceDivergence`
 - `ppe/finding.js :: mergeOne`
 - `ppe/finding.js :: RATE_KINDS`
+- `ppe/lp-agreement-legs.js :: UNRESOLVED_PPP_POLICIES` — the two policies a caller must choose between; the route names one explicitly, and the suite asserts the set rather than retyping it
 - `ppe/lp-normalize-full.js :: llpasOf`
+- `ppe/lp-normalize-full.js :: rungOf`
 - `ppe/lp-scope.js :: MAX_LEN`
 - `ppe/lp-scope.js :: safePattern`
 - `ppe/parity-cell-store.js :: MAX_CELLS_PER_RUN`
@@ -287,6 +303,9 @@ banned.
 - `ppe/pricing.js :: interpolatePrice`
 - `ppe/pricing.js :: pointsToPrice`
 - `ppe/pricing.js :: roundPrice`
+- `ppe/quote.js :: activeBasisFacts` — the pricing-basis dependencies live for THIS program; used by the refusal, exported so the table can be asserted directly
+- `ppe/quote.js :: PRICING_BASIS_FACTS` — the declaration itself — which scenario facts the pricing BASIS reads outside any rule; the suite scans the source against it
+- `ppe/quote.js :: RUNG_SELECTION_FACTS` — the facts that choose WHICH rungs rather than their price; the source scan needs both lists to tell a real hole from a selector
 - `ppe/ratesheet-agreement.js :: bestRungsOf`
 - `ppe/ratesheet-agreement.js :: DECLINE_ROWS_PER_SCENARIO`
 - `ppe/ratesheet-agreement.js :: declineOutcome`
@@ -302,15 +321,17 @@ banned.
 - `ppe/rule-store.js :: coverageForAcceptedRule`
 - `ppe/rule-store.js :: dedupeKeyOf`
 - `ppe/rule-store.js :: rowToRule`
+- `ppe/rules.js :: declaredAbsentFacts` — the facts whose ABSENCE a rule set itself gives a meaning to; used by the evaluator, exported so the carve-out can be asserted directly
+- `ppe/rules.js :: evalPredicate3` — the three-valued (true/false/unknown) predicate pass that runs beside the boolean one; exported so the Kleene truth table can be asserted node by node
+- `ppe/rules.js :: missingFactsOf` — which facts a rule needs and this scenario lacks; used by the evaluator, exported for its own assertions
 - `ppe/scoreboard.js :: dailySeries`
-- `ppe/store.js :: clearSetting`
+- `ppe/settings-admin.js :: checkKeyForTarget` — refuses a key at a slot it does not belong to; used inside the batch plan, exported so the whole refusal table can be asserted
 - `ppe/store.js :: currentRateSheetVersion`
-- `ppe/store.js :: investorScope`
-- `ppe/store.js :: loadSettingOverrides`
+- `ppe/store.js :: investorCodeOfScope` — reads the investor code back out of a scope string; used by the settings layer here
+- `ppe/store.js :: loadInvestorOverrides`
 - `ppe/store.js :: normAlias`
 - `ppe/store.js :: resolveMarginHoldbackForInvestor`
 - `ppe/store.js :: resolveSetting`
-- `ppe/store.js :: setSetting`
 - `product-term.js :: productSql`
 - `product-term.js :: programSaysShortTerm`
 - `product-term.js :: splitByProduct`
@@ -325,6 +346,5 @@ banned.
 - `sync/loans.js :: needsRead`
 - `sync/loans.js :: stageFor`
 - `sync/loans.js :: upsertDiscovered`
-- `views.js :: FILTER_KEYS`
 - `views.js :: sanitizeFilters`
 - `views.js :: sanitizeName`

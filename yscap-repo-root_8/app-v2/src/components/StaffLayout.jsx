@@ -458,6 +458,7 @@ export default function StaffLayout({ children }) {
             <NavLink className="sb-link" to="/internal/lt/ppe" end><NavIcon name="pricing" />Pricing engine</NavLink>
             <NavLink className="sb-link" to="/internal/lt/ppe/scenario"><NavIcon name="pricing" />Scenario entry</NavLink>
             <NavLink className="sb-link" to="/internal/lt/ppe/breakdown"><NavIcon name="pricing" />Pricing transparency</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/ppe/settings" title="The numbers the pricing engine runs on — how close our price must be to Lender Price, the rounding, the lowest price we quote, and the margin per investor."><NavIcon name="settings" />Pricing settings</NavLink>
             <NavLink className="sb-link" to="/internal/lt/sync"><NavIcon name="health" />Sync</NavLink>
             <NavLink className="sb-link" to="/internal/lt/settings"><NavIcon name="settings" />Settings</NavLink>
           </>

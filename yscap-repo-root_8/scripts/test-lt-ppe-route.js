@@ -170,7 +170,11 @@ ok(typeof route === 'function' && typeof route.use === 'function', 'the module I
 // (list/create/read/render/discard a draft). There is deliberately NO sixth for publishing: that door
 // changes a priced number and who may press it is an open owner question (§2.51), so this count is
 // also the guard that would go red if somebody quietly added one.
-ok(Object.keys(H).length === 41, `all 41 handlers are exported for testing (${Object.keys(H).length})`);
+// 44 with the SETTINGS WRITE DOOR — save, clear, and the audit read. Before them nothing in src/
+// called store.setSetting/clearSetting and the router published the settings READ with no write
+// route at all, so every parity tolerance, the rounding, the price floor and the per-investor
+// margin could only be changed by editing the database by hand.
+ok(Object.keys(H).length === 44, `all 44 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
 for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',
@@ -182,7 +186,8 @@ for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSug
   'setBasePricesRoute', 'setAdjustmentsRoute', 'setPriceLimitRoute', 'agreementRoute',
   'rateSheetCoverageRoute', 'rateSheetDiffRoute', 'runAgreementRoute', 'publishRateSheetRoute',
   'listRuleDraftsRoute', 'createRuleDraftRoute', 'getRuleDraftRoute', 'renderRuleDraftRoute',
-  'discardRuleDraftRoute']) {
+  'discardRuleDraftRoute',
+  'saveSettingsRoute', 'clearSettingsRoute', 'settingsAuditRoute']) {
   ok(typeof H[name] === 'function', `the ${name} handler is exported by name`);
 }
 

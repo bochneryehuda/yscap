@@ -72,15 +72,128 @@ async function clearSetting(db, scope, key) {
   return { ok: true };
 }
 
+// ---- the audit trail (db/578) -----------------------------------------------
+//
+// setSetting/clearSetting above are the low-level PRIMITIVES: they write the value and
+// nothing else, and a seed script or a test may legitimately use them with no person
+// behind the change. The AUDITED door a human goes through is `settings-admin.js`, which
+// reads the before-state, calls the primitive, and records the row below. Adding the
+// audit inside the primitives instead would make a test fixture write governance rows
+// claiming a change nobody made.
+
+// Read the stored override row for one (scope, key), or null when there is none. This is
+// deliberately a different question from `resolveSetting`: "did a human set this?" and
+// "what value is in force?" are separate facts, and the whole point of the audit is to
+// keep them apart. Never throws — an unreadable table reads as "nothing stored", which is
+// the same answer the resolver already degrades to.
+async function readStoredSetting(db, scope, key) {
+  try {
+    const r = await db.query(
+      'SELECT scope, key, value, updated_by, updated_at FROM lt_ppe_setting_value WHERE scope = $1 AND key = $2',
+      [scope, key]);
+    return r.rows[0] || null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+// Append ONE audit row. INSERT only — this table is append-only and the store performs no
+// UPDATE or DELETE against it, ever (db/578). Throws on failure ON PURPOSE: the caller
+// records the change and the trail in one transaction, and a change that cannot be
+// recorded must not be committed. That is the opposite posture from every other read in
+// this module, and it is deliberate — "a number that moves a price never changes without
+// a record" is only true if the record failing takes the change down with it.
+async function appendSettingAudit(db, row) {
+  const r = await db.query(
+    `INSERT INTO lt_ppe_setting_audit
+       (scope, key, action, from_value, from_source, to_value, to_source, actor_id, actor_label)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9)
+     RETURNING id, changed_at`,
+    [row.scope, row.key, row.action,
+      row.fromValue === undefined ? null : JSON.stringify(row.fromValue),
+      row.fromSource,
+      row.toValue === undefined ? null : JSON.stringify(row.toValue),
+      row.toSource,
+      row.actorId || null, row.actorLabel || null]);
+  return r.rows[0] || null;
+}
+
+// The trail, newest first. `opts.scope` narrows to one slot, `opts.key` to one setting.
+// Never throws — a settings screen that cannot read the history must still render the
+// settings, and it says the history is unavailable rather than showing an empty one.
+async function listSettingAudit(db, opts = {}) {
+  const where = [];
+  const params = [];
+  if (opts.scope) { params.push(opts.scope); where.push(`scope = $${params.length}`); }
+  if (opts.key) { params.push(opts.key); where.push(`key = $${params.length}`); }
+  const limit = Number.isInteger(opts.limit) && opts.limit > 0 && opts.limit <= 500 ? opts.limit : 100;
+  try {
+    const r = await db.query(
+      `SELECT id, scope, key, action, from_value, from_source, to_value, to_source,
+              actor_id, actor_label, changed_at
+         FROM lt_ppe_setting_audit
+        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        ORDER BY changed_at DESC, id DESC
+        LIMIT ${limit}`, params);
+    return { ok: true, rows: r.rows || [] };
+  } catch (e) {
+    return { ok: false, rows: [], error: String((e && e.message) || e).slice(0, 200) };
+  }
+}
+
 // ---- margin & holdback (Layer 1) --------------------------------------------
 
 // The setting scope key for a per-investor override layer. An investor's own margin/
 // holdback/rules live under scope `investor:<code>` in lt_ppe_setting_value (the same
 // override table, a distinct scope), layered OVER the company scope, layered over the
 // coded product defaults. Never throws — an unusable code degrades to the company scope.
+//
+// THE CODE SHAPE IS ENFORCED HERE, at the ONE place the prefix is ever attached, so no
+// caller anywhere builds an `investor:` string by hand. A code carrying a colon, a space
+// or the word `company` could otherwise be typed into a scope that collides with the
+// GLOBAL slot — `investor:` + `` is `investor:`, and a code of `x` on a hand-built
+// `investor:${code}` is only one typo away from writing a per-investor value into the
+// company row. An unusable code returns null and the caller falls back to the company
+// layer, which is the safe direction: the pre-fill, never another investor's number.
+const INVESTOR_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 function investorScope(code) {
   const c = String(code == null ? '' : code).trim();
-  return c ? `investor:${c}` : null;
+  return INVESTOR_CODE_RE.test(c) ? `investor:${c}` : null;
+}
+
+// Read an `investor:<code>` scope string back to its code, else null. The inverse of
+// investorScope, and it applies the SAME shape test, so a hand-written scope string that
+// investorScope would never have produced is not recognised as an investor scope either.
+function investorCodeOfScope(scope) {
+  const s = String(scope == null ? '' : scope);
+  if (!s.startsWith('investor:')) return null;
+  const c = s.slice('investor:'.length);
+  return INVESTOR_CODE_RE.test(c) ? c : null;
+}
+
+/**
+ * ONE investor's override LAYER — the rows stored under `investor:<code>`, filtered to the
+ * keys the registry declares `perInvestor`.
+ *
+ * THE FILTER IS THE READ HALF OF ONE RULE WHOSE WRITE HALF IS THE ADMIN DOOR. The door
+ * refuses to STORE any other key at an investor scope; this refuses to READ one. Both ends
+ * ask `settings.isInvestorScoped`, so the declaration in settings.js is the single source of
+ * truth for "which settings are per-investor" and the two ends cannot drift apart — and a
+ * stray row written straight into the table by hand (or left behind by an older release, or
+ * by a key that stops being per-investor in a later one) can never quietly change a price
+ * through this path.
+ *
+ * A separate function rather than four lines inside the resolver so the defence can be
+ * asserted directly. Never throws — an unusable code or an unreadable table is an empty
+ * layer, which falls through to the company scope and then to the coded defaults.
+ */
+async function loadInvestorOverrides(db, investorCode) {
+  const invScope = investorScope(investorCode);
+  if (!invScope) return {};
+  const raw = await loadSettingOverrides(db, invScope);
+  const out = {};
+  for (const k of Object.keys(raw)) if (settings.isInvestorScoped(k)) out[k] = raw[k];
+  return out;
 }
 
 // Resolve the DEFAULT margin + holdback + per-scenario rules for an investor, layering
@@ -95,7 +208,7 @@ function investorScope(code) {
 async function resolveMarginHoldbackForInvestor(db, investorCode, facts = {}, companyScope = 'company') {
   const org = await loadSettingOverrides(db, companyScope);
   const invScope = investorScope(investorCode);
-  const tenant = invScope ? await loadSettingOverrides(db, invScope) : {};
+  const tenant = await loadInvestorOverrides(db, investorCode);
 
   const margin = settings.resolve('pricing.margin_milli', { tenant, org });
   const holdback = settings.resolve('pricing.holdback_milli', { tenant, org });
@@ -510,7 +623,8 @@ async function currentRateSheetVersion(db, scope, programId, channel = 'correspo
 module.exports = {
   normAlias,
   loadSettingOverrides, resolveSettings, resolveSetting, setSetting, clearSetting,
-  investorScope, resolveMarginHoldbackForInvestor,
+  readStoredSetting, appendSettingAudit, listSettingAudit,
+  investorScope, investorCodeOfScope, loadInvestorOverrides, resolveMarginHoldbackForInvestor,
   findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms, listAllPrograms,
   setProgramLpScope,
   createRateSheetVersion, replaceBasePrices, replaceAdjustments, setPriceLimit,

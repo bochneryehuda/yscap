@@ -68,13 +68,28 @@ const DEFINITIONS = {
   // NOTE `pricing.correspondent_margin_milli` (above) is the LEGACY single margin knob the pricing
   // pipeline already consumes; `pricing.margin_milli` is the new per-investor-resolvable margin the
   // margin/holdback resolver reads. They share the same 250 default so nothing changes today.
+  //
+  // `perInvestor: true` on the three keys below is LOAD-BEARING, not documentation. It is the ONE
+  // declaration of "this setting may be overridden under scope `investor:<code>`", and BOTH ends
+  // read it: the write door refuses to store any other key at an investor scope, and
+  // `store.resolveMarginHoldbackForInvestor` FILTERS the investor layer through the same list before
+  // resolving. That is what makes the two ends agree by construction rather than by two hand-kept
+  // lists that drift. Measured before it was added: `resolveMarginHoldbackForInvestor` is the ONLY
+  // function anywhere in src/ that reads an `investor:` scope, and it reads exactly these three keys
+  // — so a per-investor value written for any OTHER key would be stored, would look saved, and would
+  // be read by nothing. That is the outcome this flag exists to make impossible.
+  //
+  // OPEN QUESTION, deliberately NOT answered here: whether any OTHER setting (the price floor, the
+  // rounding, a parity tolerance) should also be settable per investor is a BUSINESS decision about
+  // how the company prices, not something to infer from the code. Adding a flag here without that
+  // decision would create a knob a human could set and nothing would honour.
   'pricing.margin_milli': {
-    type: 'number', integer: true, min: 0, max: 5000, default: 250,
+    type: 'number', integer: true, min: 0, max: 5000, default: 250, perInvestor: true,
     group: 'Pricing', label: 'Margin (our markup)',
     help: 'Our margin/markup, in thousandths of a point (250 = 0.250). Pre-filled 0.250; set per-investor and per-scenario as needed.',
   },
   'pricing.holdback_milli': {
-    type: 'number', integer: true, min: 0, max: 5000, default: 250,
+    type: 'number', integer: true, min: 0, max: 5000, default: 250, perInvestor: true,
     group: 'Pricing', label: 'Margin holdback',
     help: 'Buffer/retained spread held back per investor, in thousandths of a point (250 = 0.250). Pre-filled 0.250; changeable per investor and per scenario.',
   },
@@ -85,7 +100,7 @@ const DEFINITIONS = {
   //   is rules.evalPredicate (all/any/none/not + leaf ops). Blank = no per-scenario overrides (the
   //   investor/company default applies to every scenario).
   'pricing.margin_holdback_rules': {
-    type: 'json', default: [],
+    type: 'json', default: [], perInvestor: true,
     group: 'Pricing', label: 'Per-scenario margin/holdback rules',
     help: 'Optional list of per-scenario margin/holdback overrides ({ when, marginMilli?, holdbackMilli? }). Blank = the investor/company default applies to every scenario.',
   },
@@ -165,6 +180,22 @@ function allDefinitions() {
   return Object.keys(DEFINITIONS).map((key) => ({ key, ...DEFINITIONS[key] }));
 }
 
+/**
+ * Every key that may be overridden under scope `investor:<code>`, DERIVED from the
+ * definitions rather than listed a second time — a hand-kept list of "which settings
+ * are per-investor" would go stale the first time one is added and nothing would say so.
+ * Sorted so callers can print it without re-sorting.
+ */
+function investorScopedKeys() {
+  return Object.keys(DEFINITIONS).filter((k) => DEFINITIONS[k].perInvestor === true).sort();
+}
+
+/** Is this a key a per-investor override may be stored for? Unknown key → false. */
+function isInvestorScoped(key) {
+  const def = getDefinition(key);
+  return !!(def && def.perInvestor === true);
+}
+
 // Validate a value against its definition. Returns { ok:true } or { ok:false, error }.
 function validateValue(key, value) {
   const def = getDefinition(key);
@@ -232,4 +263,7 @@ function resolveAll(layers = {}) {
   return { values, sources };
 }
 
-module.exports = { DEFINITIONS, getDefinition, allDefinitions, validateValue, resolve, resolveAll };
+module.exports = {
+  DEFINITIONS, getDefinition, allDefinitions, validateValue, resolve, resolveAll,
+  investorScopedKeys, isInvestorScoped,
+};

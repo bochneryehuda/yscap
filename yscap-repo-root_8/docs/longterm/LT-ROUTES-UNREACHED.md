@@ -48,7 +48,6 @@ still true of the running system until somebody turns it on; see the note under 
 | `POST /api/lt/dscr/disqualifications` | Polls that computation by search key. Same. |
 | `GET /api/lt/dscr/disqualifications/:searchKey` | The same poll as a GET. Same. |
 | `POST /api/lt/dscr/selftest` | The pricer's end-to-end self-test. An operator command. |
-| `GET /api/lt/ppe/settings` | The typed settings registry + resolved values. The console reads settings through the screens that need them; there is no settings editor on the Long-Term PPE surface yet. |
 | `POST /api/lt/ppe/canary/tick` | **A driver now exists and is OFF by default.** See below. |
 | `GET /api/lt/ppe/canary/driver` | Is anything actually driving that tick, when did it last try, what did it do, and why did it not. Read by hand while the driver is off; it is what a schedule screen would show once somebody turns one on. |
 

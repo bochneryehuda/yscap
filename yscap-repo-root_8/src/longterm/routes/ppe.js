@@ -83,6 +83,7 @@ const access = require('../access');
 const settingsStore = require('../settings/store');
 
 const ppeSettings = require('../ppe/settings');
+const settingsAdmin = require('../ppe/settings-admin');
 const store = require('../ppe/store');
 const facade = require('../ppe/facade');
 const lpScopeLib = require('../ppe/lp-scope');
@@ -387,11 +388,187 @@ async function health(req, res) {
 async function getSettings(req, res) {
   const scope = readScope(req);
   const { values, sources, source } = await resolveSettingsSafe(scope);
+
+  // The SLOT being read. `?investor=CODE` reads that investor's own slot; no query reads
+  // the company one. The target is parsed by the SAME function the write door uses, so a
+  // code the writer would refuse can never be READ as a valid slot either — a screen that
+  // could display a slot the server will not write to is a dead end.
+  const t = settingsAdmin.parseTarget(
+    req.query && req.query.investor ? { target: 'investor', investor: String(req.query.investor) } : { target: 'company' });
+  if (!t.ok) return res.status(400).json({ ok: false, error: t.message, code: t.error });
+
+  // `described` carries, PER SETTING, the value in force, WHICH LAYER it came from, whether
+  // that is the shipped default, and — a separate fact — whether a human set it at THIS slot,
+  // with who and when. Best-effort: a screen must still render the registry when the
+  // override table cannot be read, so a failure degrades to the resolved values alone and
+  // SAYS the description is unavailable rather than implying everything is a default.
+  let described = null;
+  let describeError = null;
+  try {
+    described = await settingsAdmin.describe(db, t);
+  } catch (e) {
+    describeError = String((e && e.message) || e).slice(0, 200);
+  }
+
+  let canWrite = false;
+  try {
+    const { settings: s } = await settingsStore.load();
+    canWrite = access.mayManagePeople(req.actor, s);
+  } catch (_) { /* the values are still worth showing; the controls stay off */ }
+
   // `values` is the FLAT map keyed exactly as `allDefinitions()[].key`, so a screen
   // can do `values[def.key]`. It was previously the {values,sources} wrapper, which
   // made every one of those lookups undefined — defeating the whole "the screen is
-  // drawn from the server's own description" point.
-  return res.json({ ok: true, scope, source, definitions: ppeSettings.allDefinitions(), values, sources });
+  // drawn from the server's own description" point. It is the COMPANY resolution and
+  // is left byte-identical for the callers that already read it; a per-slot reader uses
+  // `settings[]` below.
+  return res.json({
+    ok: true,
+    scope,
+    source,
+    definitions: ppeSettings.allDefinitions(),
+    values,
+    sources,
+    canWrite,
+    target: { kind: t.kind, investor: t.investorCode || null, scope: t.scope },
+    investorScopedKeys: ppeSettings.investorScopedKeys(),
+    settings: described ? described.settings : null,
+    describeError,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// POST /settings and POST /settings/clear — the WRITE DOOR (admin)
+// ---------------------------------------------------------------------------
+//
+// Until this shipped, NOTHING in src/ called `store.setSetting` or `store.clearSetting`
+// and there was no write route at all — so the parity tolerances, the rounding, the price
+// floor and the per-investor margin could only be changed by editing the database by hand.
+// Both routes are gated by `requirePpeAdmin` (the same gate that settles a finding and runs
+// a canary) and every change they make is recorded in `lt_ppe_setting_audit`.
+//
+// THE SLOT IS ALWAYS STATED, NEVER INFERRED. See `settings-admin.parseTarget`.
+
+/**
+ * The person behind a change, for the audit trail. `req.actor` is `{ id, kind, role, sid }`
+ * — it carries NO name and NO email (the #208 dead-read bug is exactly the assumption that
+ * it does), so the label is looked up from the shared roster. `staff_users` is READ-ONLY to
+ * Long-Term and this read is authorized in docs/LONG-TERM-AUTHORIZED-COPIES.md
+ * (`sql-read staff_users`).
+ *
+ * A lookup failure returns null rather than throwing: the `actor_id` is the durable
+ * identity and is already recorded; the label is the courtesy that keeps the trail readable
+ * after a person is renamed or removed, and losing it must never lose the change.
+ */
+async function actorLabel(actorId) {
+  if (!actorId) return null;
+  try {
+    const r = await db.query('SELECT full_name, email FROM staff_users WHERE id = $1::uuid', [actorId]);
+    const row = r.rows[0];
+    if (!row) return null;
+    return row.full_name || row.email || null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+async function saveSettingsRoute(req, res) {
+  const b = req.body || {};
+  const t = settingsAdmin.parseTarget(b);
+  if (!t.ok) return res.status(400).json({ ok: false, error: t.message, code: t.error });
+
+  const plan = settingsAdmin.planSet(t.kind, b.settings);
+  if (!plan.ok) {
+    // NAMED, never dropped. Every refusal carries the key it is about, and the whole
+    // batch is refused — a request that half-applies behind a 200 is the single worst
+    // outcome on this surface.
+    // NAMED, never dropped: `error` is the sentence a person reads (it is what the
+    // Long-Term fetch helper surfaces), `refused[]` carries the machine code AND the key
+    // for each one so a screen can mark the exact fields that were turned back.
+    return res.status(400).json({
+      ok: false,
+      error: plan.refusals.map((r) => r.message).join(' '),
+      code: 'settings_refused',
+      refused: plan.refusals,
+    });
+  }
+
+  const actor = { id: (req.actor && req.actor.id) || null };
+  actor.label = await actorLabel(actor.id);
+
+  const out = await settingsAdmin.apply(db, { target: t, changes: plan.changes, actor });
+  // RE-READ FROM THE SERVER. The answer describes what the database holds NOW, read back
+  // after the commit — never the values the request happened to send.
+  const described = await settingsAdmin.describe(db, t);
+  return res.json({ ok: true, applied: out.applied, ...described });
+}
+
+async function clearSettingsRoute(req, res) {
+  const b = req.body || {};
+  const t = settingsAdmin.parseTarget(b);
+  if (!t.ok) return res.status(400).json({ ok: false, error: t.message, code: t.error });
+
+  const plan = settingsAdmin.planClear(t.kind, b.keys);
+  if (!plan.ok) {
+    // NAMED, never dropped: `error` is the sentence a person reads (it is what the
+    // Long-Term fetch helper surfaces), `refused[]` carries the machine code AND the key
+    // for each one so a screen can mark the exact fields that were turned back.
+    return res.status(400).json({
+      ok: false,
+      error: plan.refusals.map((r) => r.message).join(' '),
+      code: 'settings_refused',
+      refused: plan.refusals,
+    });
+  }
+
+  const actor = { id: (req.actor && req.actor.id) || null };
+  actor.label = await actorLabel(actor.id);
+
+  const out = await settingsAdmin.apply(db, { target: t, clears: plan.keys, actor });
+  const described = await settingsAdmin.describe(db, t);
+  return res.json({ ok: true, applied: out.applied, ...described });
+}
+
+// ---------------------------------------------------------------------------
+// GET /settings/audit — who changed what, when, from what to what
+// ---------------------------------------------------------------------------
+//
+// Open to any staff member, like the other reads on this surface: knowing why a price
+// moved is not a privilege, and a trail only an admin can see is a trail nobody checks.
+
+async function settingsAuditRoute(req, res) {
+  const q = req.query || {};
+  const t = settingsAdmin.parseTarget(
+    q.investor ? { target: 'investor', investor: String(q.investor) } : { target: 'company' });
+  if (!t.ok) return res.status(400).json({ ok: false, error: t.message, code: t.error });
+
+  const key = q.key ? String(q.key) : null;
+  if (key && !ppeSettings.getDefinition(key)) {
+    return res.status(400).json({ ok: false, error: `"${key}" is not a setting this engine has.`, code: `unknown_setting:${key}` });
+  }
+
+  const limit = intIn(q.limit, 500) || 100;
+  const out = await store.listSettingAudit(db, { scope: t.scope, key, limit });
+  return res.json({
+    ok: true,
+    target: { kind: t.kind, investor: t.investorCode || null, scope: t.scope },
+    // A history that could not be read is SAID to be unavailable. An empty list would
+    // read as "nothing has ever changed", which is a very different and possibly false claim.
+    available: out.ok,
+    error: out.ok ? null : out.error,
+    entries: (out.rows || []).map((r) => ({
+      id: r.id,
+      key: r.key,
+      action: r.action,
+      from: r.from_value,
+      fromSource: r.from_source,
+      to: r.to_value,
+      toSource: r.to_source,
+      by: r.actor_label || null,
+      byId: r.actor_id || null,
+      at: r.changed_at,
+    })),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2458,6 +2635,7 @@ async function publishRateSheetRoute(req, res) {
 
 router.get('/health', wrap(health, 'lt_ppe_health_error'));
 router.get('/settings', wrap(getSettings, 'lt_ppe_settings_error'));
+router.get('/settings/audit', wrap(settingsAuditRoute, 'lt_ppe_settings_audit_error'));
 router.get('/investors', wrap(listInvestorsRoute, 'lt_ppe_investors_error'));
 router.get('/findings', wrap(listFindingsRoute, 'lt_ppe_findings_error'));
 router.get('/scoreboard', wrap(scoreboardRoute, 'lt_ppe_scoreboard_error'));
@@ -2468,6 +2646,9 @@ router.get('/programs', wrap(listProgramsRoute, 'lt_ppe_programs_error'));
 router.get('/canary/schedules', wrap(listSchedulesRoute, 'lt_ppe_schedules_error'));
 router.post('/quote', wrap(quoteRoute, 'lt_ppe_quote_error'));
 router.post('/breakdown', wrap(breakdownRoute, 'lt_ppe_breakdown_error'));
+
+router.post('/settings', requirePpeAdmin, wrap(saveSettingsRoute, 'lt_ppe_settings_save_error'));
+router.post('/settings/clear', requirePpeAdmin, wrap(clearSettingsRoute, 'lt_ppe_settings_clear_error'));
 
 router.post('/findings/:key/decide', requirePpeAdmin, wrap(decideFindingRoute, 'lt_ppe_decide_error'));
 router.post('/canary', requirePpeAdmin, wrap(canaryRoute, 'lt_ppe_canary_error'));
@@ -2519,7 +2700,8 @@ module.exports = router;
 // would be a second copy of that wiring for the driver to drift from.
 module.exports.runCanaryTick = runCanaryTick;
 module.exports.handlers = {
-  health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
+  health, getSettings, saveSettingsRoute, clearSettingsRoute, settingsAuditRoute,
+  listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
   ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
   listRuleDraftsRoute, getRuleDraftRoute, renderRuleDraftRoute, createRuleDraftRoute, discardRuleDraftRoute,
@@ -2529,7 +2711,7 @@ module.exports.handlers = {
   publishRateSheetRoute,
 };
 module.exports._internals = {
-  requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
+  requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe, actorLabel,
   MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel, resolveBattery, runBattery, msgOf,
   resolveVersion, numOrNull, textOrNull, MAX_SHEET_ROWS, MAX_AGREEMENT_SCENARIOS, MAX_COVERAGE_SCENARIOS,
   DRAFT_STATUSES, DRAFT_NOT_LIVE, draftIdOf, optionalUuid,

@@ -102,6 +102,28 @@ export const ltApi = {
   // the SHADOW: what our engine disagreed with, and how far it is from ready.
   // Every list is served pre-ordered by the server's own review queue, so this
   // client never sorts and cannot drift from "what to work on first".
+  // The pricing engine's own SETTINGS — the parity tolerances, the rounding, the price
+  // floor, the per-investor margin/holdback. The screen is drawn ENTIRELY from what the
+  // server returns (`settings[]` carries the type, the range, the options, the default and
+  // where the value in force came from), so this client holds no list of setting keys and
+  // cannot drift from the server's.
+  //
+  // The SLOT is stated in words and never as a scope string: no investor reads/writes the
+  // company-wide value, `investor` reads/writes that investor's own. The server refuses a
+  // hand-built scope outright, which is what makes a per-investor value unable to land in
+  // the global slot by accident.
+  ppeSettings: (investor) => ltGet(lt(`/ppe/settings${investor ? `?investor=${encodeURIComponent(investor)}` : ''}`)),
+  ppeSaveSettings: (target, settingsPatch) => ltPost(lt('/ppe/settings'), { ...target, settings: settingsPatch }),
+  ppeClearSettings: (target, keys) => ltPost(lt('/ppe/settings/clear'), { ...target, keys }),
+  ppeSettingsAudit(params = {}) {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+    }
+    const q = qs.toString();
+    return ltGet(lt(`/ppe/settings/audit${q ? `?${q}` : ''}`));
+  },
+
   ppeHealth: () => ltGet(lt('/ppe/health')),
   ppeInvestors: () => ltGet(lt('/ppe/investors')),
   ppeFindings(params = {}) {

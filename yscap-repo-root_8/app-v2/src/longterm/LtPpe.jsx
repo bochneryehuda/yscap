@@ -851,6 +851,12 @@ export default function LtPpe() {
         </div>
       )}
 
+      <p style={{ fontSize: 13, color: MUTED, marginTop: 4 }}>
+        The numbers this engine runs on — how close our price has to be to Lender Price before we call
+        it a disagreement, the rounding, the lowest price we quote, and the margin per investor — are on
+        the <a href="#/internal/lt/ppe/settings" style={{ color: '#256168' }}>Pricing settings</a> screen.
+      </p>
+
       <p style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>
         Rate-sheet loading is on this screen now (the card at the top). PROMOTION to live is still
         deliberately absent — that is a decision this page cannot yet record durably, and a button
