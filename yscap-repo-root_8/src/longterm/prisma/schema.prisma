@@ -485,6 +485,13 @@ model LtParty {
   entityTitle String? @map("entity_title")
   entityOwnershipPct Decimal? @map("entity_ownership_pct") @db.Decimal(6, 3)
 
+  /// Encompass's own party id, kept BESIDE the identity rather than as it: the slot
+  /// (pair + role) is the key, because a name changes and a slot does not. This is
+  /// what a later reader needs to tie a residence, an employment or an income row
+  /// back to the person when the payload names the party rather than the pair.
+  /// Indexed, deliberately NOT unique — db/575 says why.
+  encompassId String? @map("encompass_id")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -529,6 +536,13 @@ model LtResidence {
   /// What they pay each month when renting. Meaningless when they own.
   monthlyRent Decimal? @map("monthly_rent") @db.Decimal(14, 2)
 
+  /// Encompass's OWN id for this row — what lets a second read of the same loan
+  /// UPDATE it instead of adding a duplicate. Nullable because the payload omits it
+  /// on some rows, which is why db/575's unique index on (party_id, encompass_id) is
+  /// PARTIAL — a shape Prisma cannot express, so it lives in the migration alone and
+  /// any writer keying on it must repeat the `WHERE encompass_id IS NOT NULL`.
+  encompassId String? @map("encompass_id")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -571,6 +585,13 @@ model LtEmployment {
   employerZip    String? @map("employer_zip")
   employerPhone  String? @map("employer_phone")
 
+  /// Encompass's OWN id for this row — what lets a second read of the same loan
+  /// UPDATE it instead of adding a duplicate. Nullable because the payload omits it
+  /// on some rows, which is why db/575's unique index on (party_id, encompass_id) is
+  /// PARTIAL — a shape Prisma cannot express, so it lives in the migration alone and
+  /// any writer keying on it must repeat the `WHERE encompass_id IS NOT NULL`.
+  encompassId String? @map("encompass_id")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -591,6 +612,13 @@ model LtOtherIncome {
   incomeType    String  @map("income_type")
   monthlyAmount Decimal @map("monthly_amount") @db.Decimal(14, 2)
   description   String?
+
+  /// Encompass's OWN id for this row — what lets a second read of the same loan
+  /// UPDATE it instead of adding a duplicate. Nullable because the payload omits it
+  /// on some rows, which is why db/575's unique index on (party_id, encompass_id) is
+  /// PARTIAL — a shape Prisma cannot express, so it lives in the migration alone and
+  /// any writer keying on it must repeat the `WHERE encompass_id IS NOT NULL`.
+  encompassId String? @map("encompass_id")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -623,6 +651,13 @@ model LtAsset {
   /// Whether a document has been seen for it. An asset nobody verified is a claim.
   isVerified Boolean @default(false) @map("is_verified")
 
+  /// Encompass's OWN id for this row — what lets a second read of the same loan
+  /// UPDATE it instead of adding a duplicate. Nullable because the payload omits it
+  /// on some rows, which is why db/575's unique index on (party_id, encompass_id) is
+  /// PARTIAL — a shape Prisma cannot express, so it lives in the migration alone and
+  /// any writer keying on it must repeat the `WHERE encompass_id IS NOT NULL`.
+  encompassId String? @map("encompass_id")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -654,6 +689,13 @@ model LtLiability {
   /// makes an REO schedule reconcile against the credit report.
   reoPropertyId String? @map("reo_property_id") @db.Uuid
   reoProperty   LtReoProperty? @relation(fields: [reoPropertyId], references: [id], onDelete: SetNull)
+
+  /// Encompass's OWN id for this row — what lets a second read of the same loan
+  /// UPDATE it instead of adding a duplicate. Nullable because the payload omits it
+  /// on some rows, which is why db/575's unique index on (party_id, encompass_id) is
+  /// PARTIAL — a shape Prisma cannot express, so it lives in the migration alone and
+  /// any writer keying on it must repeat the `WHERE encompass_id IS NOT NULL`.
+  encompassId String? @map("encompass_id")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -703,6 +745,13 @@ model LtReoProperty {
   /// Whether a document has been seen for it. Experience counted from an unverified
   /// claim is how a file gets priced on leverage it did not earn.
   isVerified Boolean @default(false) @map("is_verified")
+
+  /// Encompass's OWN id for this row — what lets a second read of the same loan
+  /// UPDATE it instead of adding a duplicate. Nullable because the payload omits it
+  /// on some rows, which is why db/575's unique index on (party_id, encompass_id) is
+  /// PARTIAL — a shape Prisma cannot express, so it lives in the migration alone and
+  /// any writer keying on it must repeat the `WHERE encompass_id IS NOT NULL`.
+  encompassId String? @map("encompass_id")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
