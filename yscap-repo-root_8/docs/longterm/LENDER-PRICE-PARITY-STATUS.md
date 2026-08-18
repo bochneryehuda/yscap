@@ -2698,3 +2698,33 @@ ASSERTION** with a green control either side — including the method test, whos
 the POST second and would have passed either way, and the missing-ledger refusal, which a mutation was
 passing purely by CRASHING (exit 1 for the wrong reason, the false proof this workstream keeps catching;
 that assertion now reads the checker's own sentence and refuses a stack trace).
+
+**§2.44a — THE GATE'S FIRST CONTACT WITH `main` FOUND TWO BLIND SPOTS IN THE GATE (2026-08-18).** Merging
+`origin/main` into this branch put nine routes and eight client calls in front of the new check that it
+had never seen, and it reported two things that were not true. Both are recorded here because the
+correction matters more than the original build: **a gate that cries wolf is a gate somebody switches
+off**, and both were the same mistake — restating a rule instead of reading its source.
+
+1. **It read only ONE of the two mount seams.** `/api/lt` is mounted staff-only, so a Long-Term route
+   with a different audience cannot live inside that router and is mounted BESIDE it in `src/server.js`
+   — the borrower's own long-term files (`my-loans.js`), and the secret-gated diagnostics. Reading only
+   `src/longterm/index.js`, the check reported `GET /api/lt/my/loans` as **a client call that can only
+   404** while the borrower's screen calls it perfectly happily. It now reads both seams.
+2. **It carried a hand-written list of the client's five verbs**, and the client had grown a sixth
+   (`ltDownload`, for the book CSV export). Every call through it was invisible, so a live route read as
+   unreachable. The verbs are now DERIVED from `app-v2/src/longterm/http.js` — the arrows by the method
+   they pass to `ltFetch`, and any other exported helper by the `method:` in its own `fetch` (absent
+   means GET, which is fetch's own default and a fact rather than an assumption). **A helper the scan
+   cannot classify now FAILS the gate**, because calls it cannot see are worse than either wrong answer.
+
+Both are pinned by fixtures (`G24`–`G26`) and mutation-proven: forgetting the server seam and
+re-hard-coding the verb list each turn the guard red. One limit remains and is stated rather than
+patched over — `lenderprice-diag.js` publishes no routes of its own (it re-mounts the DSCR pricer's
+router behind a secret header), so those routes are counted once, under `/dscr`.
+
+**The merge itself:** `package.json`'s two test chains were UNIONED (1,073 commands, every command from
+both sides present, no duplicate); the Prisma documentation kept **both** sides' descriptions of the
+db/571 rule store, main's more faithful `@db.Decimal`, this branch's relation fields and open-status
+index, and main's whole new `LtBorrowerLink` model; and the built portal bundle was **REBUILT from the
+merged `app-v2/src`** rather than either side's copy being chosen — verified by finding a distinctive
+string from each side in the new bundle.

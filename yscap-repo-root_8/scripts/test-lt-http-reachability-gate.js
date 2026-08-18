@@ -53,7 +53,23 @@ const SCAN = path.join(HERE, 'lt-http-scan.js');
  *   ledger     — ['GET /api/lt/ppe/a', …] (null omits the file entirely)
  *   screens    — { 'LtX.jsx': "…" } extra front-end files
  */
-function runGate({ routeFiles, mounts, apiBody, ledger, screens = {} }) {
+/** The client's fetch helpers, in the product's own shape — the scan DERIVES the verbs from this. */
+const HTTP_JS = `export async function ltFetch(method, path, body) { return fetch(path, { method, body }); }
+export async function ltDownload(path, filename) { const r = await fetch(path); return r; }
+export const ltGet = (p) => ltFetch('GET', p);
+export const ltPost = (p, b) => ltFetch('POST', p, b);
+export const ltPut = (p, b) => ltFetch('PUT', p, b);
+export const ltPatch = (p, b) => ltFetch('PATCH', p, b);
+export const ltDel = (p) => ltFetch('DELETE', p);
+`;
+
+/**
+ * Build a fixture repo and run the REAL checker in it.
+ *   serverMounts — [['/api/lt/my','my-loans'], …] as `app.use(path, requireAuth, require(...))`,
+ *                  the SECOND seam (a Long-Term router with a different audience)
+ *   httpJs       — override the client's fetch helpers
+ */
+function runGate({ routeFiles, mounts, apiBody, ledger, screens = {}, serverMounts = [], httpJs = HTTP_JS }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lt-http-reach-'));
   try {
     const routesDir = path.join(dir, 'src', 'longterm', 'routes');
@@ -69,6 +85,12 @@ function runGate({ routeFiles, mounts, apiBody, ledger, screens = {} }) {
     const idx = mounts.map(([p, f]) => `router.use('${p}', require('./routes/${f}'));`).join('\n');
     fs.writeFileSync(path.join(dir, 'src', 'longterm', 'index.js'), `${idx}\n`);
 
+    const srv = serverMounts
+      .map(([p, f]) => `  app.use('${p}', requireAuth, requireBorrower, require('./longterm/routes/${f}'));`)
+      .join('\n');
+    fs.writeFileSync(path.join(dir, 'src', 'server.js'), `function build(app) {\n${srv}\n}\n`);
+
+    fs.writeFileSync(path.join(dir, 'app-v2', 'src', 'longterm', 'http.js'), httpJs);
     fs.writeFileSync(path.join(dir, 'app-v2', 'src', 'longterm', 'api.js'),
       `const lt = (p) => \`/api/lt\${p}\`;\nexport const ltApi = {\n${apiBody}\n};\n`);
     for (const [name, src] of Object.entries(screens)) {
@@ -230,7 +252,51 @@ const BASE = {
     'G22 an ltApi entry with a route and no button is reported — the same dead end, nearer the user');
 }
 
-// ---- 12) the REAL repository is clean ------------------------------------------------------------------
+// ---- 12) THE SECOND MOUNT SEAM — a route mounted in server.js, not by the composer ------------------
+{
+  // `/api/lt` is staff-only, so a Long-Term route with a different audience (the borrower's own files)
+  // is mounted BESIDE it in server.js. Reading only the composer reports its route as not existing, so
+  // the screen that calls it reads as a 404 — the cry-wolf failure this fixture exists to prevent. It
+  // was found for real, by this gate refusing a client call it could not resolve.
+  const r = runGate({
+    routeFiles: { 'ppe.js': "router.get('/a', h);\n", 'my-loans.js': "router.get('/loans', h);\n" },
+    mounts: [['/ppe', 'ppe']],
+    serverMounts: [['/api/lt/my', 'my-loans']],
+    apiBody: "  a: () => ltGet(lt('/ppe/a')),\n  myLoans: () => ltGet(lt('/my/loans')),",
+    screens: { 'LtX.jsx': 'ltApi.a(); ltApi.myLoans();' },
+    ledger: [],
+  });
+  ok(r.status === 0 && !/can only 404/.test(r.out),
+    'G24 a route mounted at the server.js seam is FOUND — its caller is not reported as a 404');
+}
+
+// ---- 13) THE VERBS ARE DERIVED — a new client helper is not a blind spot ----------------------------
+{
+  // `ltDownload` is the sixth helper the client grew, and a hand-kept verb list made every call through
+  // it invisible — so a live route (the book CSV export) read as unreachable.
+  const r = runGate({
+    routeFiles: { 'ppe.js': "router.get('/export.csv', h);\n" },
+    mounts: [['/ppe', 'ppe']],
+    apiBody: "  csv: () => ltDownload(lt('/ppe/export.csv'), 'x.csv'),",
+    screens: { 'LtX.jsx': 'ltApi.csv();' },
+    ledger: [],
+  });
+  ok(r.status === 0, 'G25 a call through ltDownload counts — the verbs come from http.js, not a list');
+
+  // And a helper whose method cannot be read is REFUSED rather than silently ignoring its calls.
+  const r2 = runGate({
+    routeFiles: { 'ppe.js': "router.get('/a', h);\n" },
+    mounts: [['/ppe', 'ppe']],
+    apiBody: "  a: () => ltGet(lt('/ppe/a')),",
+    screens: { 'LtX.jsx': 'ltApi.a();' },
+    ledger: [],
+    httpJs: `${HTTP_JS}export function ltMystery(p) { return sendSomehow(p); }\n`,
+  });
+  ok(r2.status === 1 && /ltMystery/.test(r2.out),
+    'G26 a client helper whose method cannot be read FAILS — its calls would be invisible');
+}
+
+// ---- 14) the REAL repository is clean ------------------------------------------------------------------
 {
   const r = spawnSync(process.execPath, [CHECKER], { encoding: 'utf8' });
   ok(r.status === 0, 'G23 CONTROL — the real repository passes the gate today');

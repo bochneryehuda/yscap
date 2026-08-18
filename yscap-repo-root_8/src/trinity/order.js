@@ -30,6 +30,7 @@ const db = require('../db');
 const cfg = require('../config');
 const client = require('./client');
 const mapper = require('./mapper');
+const drawCommitted = require('../lib/draw-committed');   // "how much of this line is already spoken for"
 
 const usd = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const err = (status, message) => { const e = new Error(message); e.status = status; return e; };
@@ -84,50 +85,26 @@ async function budgetLines(appId, opts = {}) {
         AND COALESCE(l.sow_line_key, '') NOT LIKE '\\_\\_media\\_\\_%'
       ORDER BY l.unit_index NULLS FIRST, l.id`, [appId])).rows;
 
-  const drawn = (await db.query(
-    `SELECT r.sitewire_job_item_id AS jid, COALESCE(SUM(COALESCE(r.approved_cents,0)),0)::bigint AS c
-       FROM sitewire_draw_requests r
-       JOIN sitewire_draws d ON d.sitewire_draw_id = r.sitewire_draw_id
-      WHERE d.application_id = $1
-        AND ($2::bigint IS NULL OR d.sitewire_draw_id <> $2::bigint)
-      GROUP BY r.sitewire_job_item_id`, [appId, exclDraw])).rows;
-  const drawnBy = new Map(drawn.map((d) => [Number(d.jid), Number(d.c)]));
-
-  // …PLUS the money THIS program has already approved that has not reached Sitewire yet.
+  // WHAT IS ALREADY DRAWN ON EACH LINE — `lib/draw-committed.js`, the ONE definition,
+  // shared with the draw composer so the inspector and the borrower can never be shown
+  // two different pictures of the same budget.
   //
-  // A Trinity draw is approved on our desk and only afterwards closed out into Sitewire
-  // as a HISTORICAL draw (`portal-draws.historicalCloseOut`). That close-out can be
-  // skipped or parked for perfectly ordinary reasons — Sitewire writes switched off, no
-  // Sitewire property link yet, a lease lost to another driver, a sum that did not
-  // reconcile. Until it lands, the approval exists ONLY on the portal draw request.
+  // It reads Sitewire's per-line ledger PLUS any portal draw request whose money is
+  // approved but whose ledger rows do not exist yet. Both halves are needed, and the
+  // second one is not an edge case: Sitewire refuses a manual draw entry, so a Trinity
+  // draw lives only as a portal request until it is approved and closed out as a
+  // HISTORICAL draw — and even then its per-line rows appear only when the reconcile
+  // next runs (default every 300s). Reading Sitewire alone would, in either window, tell
+  // the inspector a line still had its whole budget available when the borrower had
+  // already been paid for it: the single most expensive thing this integration could get
+  // wrong, and the exact opposite of what the historical draws are for.
   //
-  // The query above reads Sitewire alone, so in that window the next order would tell
-  // the inspector a line still had its money available when the borrower had already
-  // been paid for it — the single most expensive thing this integration could get wrong,
-  // and the exact opposite of what the historical draws are for. So the approved-but-
-  // not-yet-closed-out requests are added here.
-  //
-  // No double counting: a request that HAS closed out carries its `sitewire_draw_id` and
-  // its money is already in `sitewire_draw_requests` above, so only rows still missing
-  // that id are counted. The draw being ordered right now is 'submitted', never
-  // 'approved', so it can never count itself as history.
-  const pending = (await db.query(
-    `SELECT l.value->>'sitewire_job_item_id' AS jid,
-            COALESCE(SUM((l.value->>'approved_cents')::bigint), 0)::bigint AS c
-       FROM portal_draw_requests p
-       CROSS JOIN LATERAL jsonb_array_elements(p.lines) AS l(value)
-      WHERE p.application_id = $1
-        AND p.status = 'approved'
-        AND p.sitewire_draw_id IS NULL
-        AND ($2::bigint IS NULL OR p.id <> $2::bigint)
-        AND l.value->>'sitewire_job_item_id' IS NOT NULL
-        AND COALESCE(l.value->>'approved_cents', '') <> ''
-      GROUP BY l.value->>'sitewire_job_item_id'`, [appId, exclReq])).rows;
-  for (const p of pending) {
-    const jid = Number(p.jid);
-    if (!Number.isFinite(jid)) continue;
-    drawnBy.set(jid, (drawnBy.get(jid) || 0) + Number(p.c || 0));
-  }
+  // It cannot double count — a portal request stops counting the moment its draw's
+  // ledger rows exist — and the draw being ordered right now is excluded by id, so it
+  // can never be reported as its own history.
+  const drawnBy = await drawCommitted.committedByJobItem(appId, {
+    excludeDrawId: exclDraw, excludePortalRequestId: exclReq,
+  });
 
   return rows.map((r) => ({
     sitewire_job_item_id: Number(r.sitewire_job_item_id),

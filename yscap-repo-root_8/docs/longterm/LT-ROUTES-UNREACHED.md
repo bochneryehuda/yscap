@@ -5,6 +5,13 @@ front-end client (`app-v2/src/longterm/api.js`) makes, and refuses a route neith
 ledger accounts for. This file is the deliberate escape hatch, and a row is only worth having if it
 says **who does reach the route** — "nothing calls it" is the finding, not the excuse.
 
+It reads **both mount seams**: the composer `src/longterm/index.js`, and `src/server.js`, where a
+Long-Term router with a different audience is mounted beside the staff-only `/api/lt` (the borrower's
+own long-term files, the secret-gated diagnostics). It also derives the client's HTTP verbs from
+`app-v2/src/longterm/http.js` rather than listing them. **One route file is still invisible to it**:
+`lenderprice-diag.js` publishes nothing of its own — it re-mounts the DSCR pricer's router behind a
+secret header — so its routes are counted once, under `/dscr`, which is where they are recorded below.
+
 It fails BOTH ways. A row here for a route a screen now calls is STALE and is refused, because a ledger
 that overstates what is unreachable is one nobody reads.
 

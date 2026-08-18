@@ -18,8 +18,31 @@ nothing in this list needs a developer, and nothing needs a deploy except the fi
 |---|---|
 | `TRINITY_USERNAME` | the username Trinity gives you for the LIVE account |
 | `TRINITY_PASSWORD` | the password for that account |
+| **`TRINITY_FORM_ID`** | **`1079`** — see below. This one is not optional. |
 | `TRINITY_BASE_URL` | leave it blank unless Trinity gives you a different web address for the live account |
 | `TRINITY_WEBHOOK_TOKEN` | leave it alone — Render fills this in itself with a random secret |
+| `TRINITY_COMPANY_ID` | **leave it blank.** The system asks Trinity who we are and gets the right answer on its own (checked live: 45798). If you type the practice number here, every order goes to the wrong place. |
+
+### Why `TRINITY_FORM_ID` has to be 1079
+
+**This is the one setting that would have stopped go-live, and we only found it by signing
+in to the live account.** Trinity's practice system and your live system do not offer the
+same inspection products — their own documentation warns of it: *"Not all form types are
+available to all customers in production."*
+
+- Practice account: **form 19**, "Blank General Purpose Line Item Draw"
+- **Your live account: form 1079**, "General Purpose Line Item Draw PCR"
+
+They are the same product with a different number. Checked against Trinity's published
+specification field by field: identical order form, identical line items (cost, amount
+requested, percent complete before and after, remarks), identical budget read-back. So
+nothing had to be rebuilt — this is one setting.
+
+Left at 19, **every single order would be refused**, on live files, after a coordinator had
+already pressed the button.
+
+The API Health page now checks this for you and says in plain words whether the form is
+enabled on the account, before anything is ordered.
 
 Two things to know:
 
@@ -88,17 +111,53 @@ already know — the only thing that changed is who did the inspecting.
 This is deliberate and is not a gap. Virtual inspections release on their own; physical ones
 do not.
 
-## Two things to confirm with Trinity in the first week
+## What has now been checked against the live account
 
-1. **Work one real order end to end.** Trinity's practice account has no completed orders —
-   they do not work practice orders — so the "report comes back" half has been proven
-   against their own data formats and our database, but never against a real finished
-   inspection. The first live order is the proof.
-2. **Watch the first delivery.** When you press Deliver on a draw the borrower submitted in
-   Sitewire, PILOT writes the inspector's figures onto that draw first. That write has never
-   been tested against a live Sitewire draw (there is no practice Sitewire to try it on). If
-   Sitewire refuses it, PILOT stops, sends the borrower nothing, and puts a message on the
-   desk saying so — it cannot go wrong quietly. Check the first one.
+Signed in to the real Trinity production account on 2026-08-16 and read it (read-only —
+nothing was ordered, changed or cancelled):
+
+- **Sign-in works**, and the pass it hands back lasts 2 hours, exactly as expected.
+- **The account is real**: company 45798, "YS Capital Group" — and the system worked that
+  out by itself without being told.
+- **There are already six completed inspections on it**, on form 1079. Somebody has been
+  ordering these by hand.
+- **The "report comes back" half is now proven on a real finished inspection** — this was
+  the biggest unknown. Reading a genuinely completed order returned its status, its
+  **6 budget lines**, **36 photographs**, its documents, the report and the invoice. Every
+  one of those paths had only ever been tested against sample data before today.
+- **The money adds up, on a real finished report.** Re-checked on 2026-08-17: PILOT read
+  that completed inspection's six budget lines, worked out what each one had earned, and
+  the total came to **$30,000.00 — the same figure to the cent that Trinity itself
+  reports** for the job. This is the part that decides what a borrower is paid, and until
+  now it had only ever been checked against practice data. If those two figures ever
+  disagree by more than a rounding cent, PILOT refuses the report and asks for a person
+  rather than releasing a number it cannot stand behind.
+- **All 19 of Trinity's statuses** were read and compared to how we interpret them. All six
+  flavours of "Report Completed" are recognised, so a **revised** report is never missed.
+- **Each budget line keeps our own reference, there and back.** This is the part that makes
+  everything else work: we tag every line of the construction budget with our own
+  reference, and the inspector's answer comes back on a line still carrying it. That is
+  how "what did he approve on the roof?" has an answer, and how his figure lands on the
+  right line in Sitewire instead of the wrong one. Checked three ways: it was proven on a
+  real order on the practice system; **Trinity's own published specification uses the very
+  same line format for the practice product and for your live one** — not a similar one,
+  the same one — and their own note on that field says it *"will carry forward to future
+  orders in this project"*; and the live account's own completed report carries exactly
+  that format. On top of that, **every order checks itself**: the moment one is placed we
+  read their budget straight back and compare, line by line, our reference, the cost, the
+  amount requested and how much was already drawn. Anything that does not match shows up
+  in **red on the draw desk** — before the inspection happens, not after.
+- **All five document folders** we file into exist on the live account.
+- **The safety net that stops a duplicate order** (looking an order up by our own reference
+  after a lost reply) works against the live system.
+
+## The one thing still to watch
+
+**The first delivery.** When you press Deliver on a draw the borrower submitted in Sitewire,
+PILOT writes the inspector's figures onto that draw first. That write has never been tested
+against a live Sitewire draw — there is no practice Sitewire to try it on. If Sitewire
+refuses it, PILOT stops, sends the borrower nothing, and puts a message on the desk saying
+so — it cannot go wrong quietly. Check the first one.
 
 ## If something looks wrong
 

@@ -68,6 +68,35 @@ async function listUploadable(dbh, appId, orderId = null) {
   }));
 }
 
+/**
+ * THE THREE UPLOAD ACTIONS THE VENDOR DOCUMENTS, AND NOTHING ELSE.
+ *
+ * `action` arrives from the request body and was passed STRAIGHT THROUGH to
+ * `buildUploadDocuments`, which puts it on the wire as `requestActionType`. So a
+ * typo — or a caller inventing a name that reads plausibly — became a request the
+ * gateway has never heard of, which is the exact class the invented `CancelOrder`
+ * belonged to: a button that looks like it works and answers a NACK the first time
+ * anybody presses it in anger.
+ *
+ * `UploadContract` is on the list because it is one of the three (mapping workbook,
+ * Request sheet) and because sending the purchase contract as the CONTRACT rather
+ * than as a generic supporting document is what puts it where the appraiser looks
+ * for it. It had no caller only because nothing offered it.
+ */
+const UPLOAD_ACTIONS = ['UploadDocument', 'UploadDocumentMulti', 'UploadContract'];
+
+/**
+ * Which action to send. A caller may NAME one; otherwise it follows the count, which
+ * is what every existing caller relies on and is byte-identical to before.
+ * Returns null for a name the vendor does not document — never a guess.
+ */
+function uploadAction(action, count) {
+  if (action == null || action === '') return count > 1 ? 'UploadDocumentMulti' : 'UploadDocument';
+  const wanted = String(action).trim();
+  const hit = UPLOAD_ACTIONS.find((a) => a.toLowerCase() === wanted.toLowerCase());
+  return hit || null;   // the vendor's own casing, whatever the caller typed
+}
+
 // Upload the picked documents to an order. Returns
 // { ok, uploaded:[{documentId, objectName}], skipped:[{documentId, reason}] }.
 async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, deps = {}) {
@@ -77,6 +106,15 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
   const authCtx = deps.authContext || (await session.authContext());
   const ids = (documentIds || []).filter(Boolean);
   if (!ids.length) return { ok: false, error: 'no_documents' };
+  // REFUSED HERE, not on the wire. Checked before anything is read or staged, so an
+  // unrecognised action costs nothing and says plainly what is allowed.
+  const wantedAction = uploadAction(action, ids.length);
+  if (!wantedAction) {
+    return {
+      ok: false, error: 'unknown_action',
+      message: `AppraisalScope has no "${String(action)}" upload — it is one of ${UPLOAD_ACTIONS.join(', ')}.`,
+    };
+  }
 
   const rows = (await dbh.query(
     `SELECT d.id, d.filename, d.content_type, d.storage_ref, d.doc_kind, d.llc_id,
@@ -117,7 +155,11 @@ async function uploadToOrder(dbh, order, { staffId, documentIds, action } = {}, 
     documentType: docTypeForCategory(specs[i].category),
   }));
   const built = cdg.buildUploadDocuments({
-    action: action || (documents.length > 1 ? 'UploadDocumentMulti' : 'UploadDocument'),
+    // Recomputed from what SURVIVED the read/stage above: a caller's named action
+    // still wins, but an unnamed two-document pick that lost one to an unreadable
+    // file is a SINGLE upload, and calling it UploadDocumentMulti would describe a
+    // request that no longer matches itself.
+    action: uploadAction(action, documents.length),
     apiKey: authCtx.apiKey, subdomain: order.sp_subdomain || authCtx.subdomain,
     spOrderNumber: order.sp_order_number, clientOrderNumber: order.client_order_number, documents,
   });
@@ -168,4 +210,5 @@ async function autoUploadForOrder(dbh, order, deps = {}) {
   return { ok: out.ok, uploaded: out.uploaded ? out.uploaded.length : 0, error: out.error, skipped: out.skipped };
 }
 
-module.exports = { listUploadable, uploadToOrder, autoUploadForOrder, docTypeForCategory, categoryOf, CAT_SOW, CAT_CONTRACT };
+module.exports = { listUploadable, uploadToOrder, autoUploadForOrder, docTypeForCategory, categoryOf,
+  uploadAction, UPLOAD_ACTIONS, CAT_SOW, CAT_CONTRACT };

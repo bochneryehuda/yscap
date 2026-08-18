@@ -310,5 +310,34 @@ check(!store.validate({ 'ui.defaultSide': 'long_term' }).ok,
 check(store.save.length >= 1 && /keepDefault/.test(store.save.toString()),
   'the store honours keepDefault, which is what stops a per-user choice being deleted for matching the default');
 
+// ── The officer map refreshes WITH the loans, and still never decides ───────
+// Owner-directed 2026-08-17: "make sure officer mapping is on". Before this the
+// roster only refreshed when somebody pressed the button on the people screen, so
+// a sync could mirror a hundred loans naming logins nobody had ever been offered a
+// match for — and an officer whose login is unlinked has an empty pipeline, because
+// their scope is `own`. This is a SOURCE guard because the branch it protects needs
+// a live Encompass to reach, and the failure it guards against is the call quietly
+// going away, which no amount of stubbing downstream would notice.
+console.log('\nthe officer map refreshes with the loans');
+
+const loanSyncSrc = require('fs').readFileSync(
+  require('path').join(__dirname, '..', 'src', 'longterm', 'sync', 'loans.js'), 'utf8');
+
+check(/people\/roster/.test(loanSyncSrc) && /syncRoster\(\)/.test(loanSyncSrc),
+  'the loan sync refreshes the officer roster on the same pass — the proposals are always about the logins the book actually carries');
+check(/officersProposed/.test(loanSyncSrc) && /officersUnmatched/.test(loanSyncSrc),
+  '…and REPORTS what a human still has to do, so "nobody confirmed anything" is never silent');
+
+// The one thing that must never be automated here. `syncRoster` writes `suggested`
+// rows only; a sync that confirmed its own proposals would hand somebody another
+// officer's book with nothing on any screen to say so.
+check(!/links\.confirmLink|confirmLink\(/.test(loanSyncSrc),
+  'the loan sync NEVER confirms a link — it proposes, a person decides');
+
+// `syncRoster` reports an ordinary failure by RETURNING {ok:false}, so a caller that
+// only try/catches reads a pass that never ran as a confident "0 proposed".
+check(/\.ok\b/.test(loanSyncSrc) && /officerSyncReason/.test(loanSyncSrc),
+  'an ok:false from the roster is surfaced as a reason, not swallowed as a zero');
+
 console.log(`\n${failures ? `${failures} FAILED` : 'all passed'}`);
 process.exit(failures ? 1 : 0);

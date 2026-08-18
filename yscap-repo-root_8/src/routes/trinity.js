@@ -585,6 +585,41 @@ router.get('/status', async (req, res, next) => {
       try { out.ping = await client.ping(); } catch (e) { out.ping = { error: String(e && e.message).slice(0, 200) }; }
       try { out.forms = await client.forms(); } catch (_) { /* best-effort */ }
       try { out.subscriptions = await client.subscriptions(); } catch (_) { /* best-effort */ }
+
+      // IS THE FORM WE ORDER ACTUALLY ENABLED ON THIS ACCOUNT?
+      //
+      // Found live on 2026-08-16, and it is the single thing most likely to stop go-live:
+      // the SANDBOX company has form 19 ("Blank General Purpose Line Item Draw"), the
+      // PRODUCTION company does not — it has form 1079 ("General Purpose Line Item Draw
+      // PCR") instead. Same product, same schema to the field (verified against Trinity's
+      // own published spec: identical request model, identical `DollarLineItem`, identical
+      // budget read-back), different id. Trinity's own documentation warns of exactly this:
+      // *"Not all form types are available to all customers in production."*
+      //
+      // Without this, the mismatch surfaces as a refused order on the first real draw —
+      // after a coordinator has already pressed the button on a live file. Reading it here
+      // turns it into a red line on the API Health page BEFORE anything is ordered. It is
+      // computed from the forms list we already fetched, so it costs no extra call.
+      const want = client.formId();
+      const ids = [];
+      (function collect(node) {
+        if (Array.isArray(node)) return node.forEach(collect);
+        if (node && typeof node === 'object') {
+          if (Number.isFinite(Number(node.id)) && typeof node.name === 'string') ids.push(Number(node.id));
+          Object.values(node).forEach(collect);
+        }
+      })(out.forms);
+      out.formCheck = ids.length
+        ? {
+          formId: want,
+          enabled: ids.includes(Number(want)),
+          available: ids,
+          message: ids.includes(Number(want))
+            ? `Form ${want} is enabled on this account — orders will be accepted.`
+            : `Form ${want} is NOT enabled on this Trinity account, so every order would be refused. `
+              + `This account offers: ${ids.join(', ')}. Set TRINITY_FORM_ID to the line-item draw form for this account.`,
+        }
+        : { formId: want, enabled: null, message: 'Could not read the form list, so the form could not be checked.' };
     }
     res.json(out);
   } catch (e) { next(e); }

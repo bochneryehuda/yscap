@@ -47,10 +47,70 @@ const ROUTE_RE = /\brouter\s*\.\s*(get|post|put|patch|delete)\s*\(\s*(['"`])([^'
 /** `router.use('/ppe', require('./routes/ppe'))` — how index.js composes the prefixes. */
 const MOUNT_RE = /\brouter\s*\.\s*use\s*\(\s*(['"`])([^'"`]*)\1\s*,\s*require\(\s*['"`]\.\/routes\/([A-Za-z0-9_.-]+)['"`]\s*\)/g;
 
-/** `ltGet(lt('/x'))` / `ltPost(lt(`/x/${y}`), body)` — the ONE client's call shape. */
-const CALL_RE = /\blt(Get|Post|Put|Patch|Del)\s*\(\s*lt\s*\(\s*([`'"])((?:\\.|(?!\2)[\s\S])*)\2/g;
+/**
+ * `app.use('/api/lt/my', requireAuth, requireBorrower, require('./longterm/routes/my-loans'))` — the
+ * SECOND seam, in `src/server.js`.
+ *
+ * THIS IS NOT AN EDGE CASE AND MISSING IT IS NOT COSMETIC. `/api/lt` is mounted staff-only, so any
+ * Long-Term route with a DIFFERENT audience — the borrower's own long-term files, a secret-gated
+ * diagnostic — cannot live inside that router and is mounted beside it instead. Reading only
+ * `index.js` therefore reports those routes as not existing at all, which turns a working screen into
+ * a reported 404 and is exactly the false alarm that gets a gate switched off. Caught the first time
+ * this scan met `my-loans.js`, by the check refusing a client call it could not resolve; the middleware
+ * between the path and the `require` is why the composer's own pattern does not match here.
+ */
+const SERVER_MOUNT_RE = /\bapp\s*\.\s*use\s*\(\s*(['"`])(\/api\/lt[^'"`]*)\1\s*,[\s\S]{0,200}?require\(\s*['"`]\.\/longterm\/routes\/([A-Za-z0-9_.-]+)['"`]\s*\)/g;
 
-const VERB_OF = { Get: 'GET', Post: 'POST', Put: 'PUT', Patch: 'PATCH', Del: 'DELETE' };
+/**
+ * THE CLIENT'S VERBS ARE DERIVED FROM ITS OWN FETCH HELPER, NEVER LISTED HERE.
+ *
+ * A hand-kept list of `ltGet | ltPost | …` was the first shape of this, and it went stale the moment
+ * it met `ltDownload` — a sixth helper the client had grown for the book CSV export, whose calls this
+ * scan then could not see at all, so it reported a live route as unreachable. That is the same
+ * cry-wolf failure as reading only one of the two mount seams, and the fix is the same: read the
+ * source of truth instead of restating it.
+ *
+ *   `export const ltGet = (p) => ltFetch('GET', p)`      → the verb is in the call
+ *   `export async function ltDownload(path, filename)`   → its own `fetch(...)` decides; no `method:`
+ *                                                          means GET, which is fetch's own default and
+ *                                                          a fact rather than an assumption.
+ *
+ * A helper this cannot classify is REPORTED (`unknownClientVerbs`) and fails the gate, because an
+ * unclassified helper means calls that are silently invisible — the worst of the three outcomes.
+ */
+function clientVerbs(root, opts = {}) {
+  const file = opts.httpFile || path.join(root, 'app-v2', 'src', 'longterm', 'http.js');
+  let src = '';
+  try { src = fs.readFileSync(file, 'utf8'); } catch (_) { return { verbs: {}, unknown: [] }; }
+
+  const verbs = {};
+  const unknown = [];
+
+  // The thin arrows over ltFetch.
+  const ARROW = /export\s+const\s+(lt[A-Za-z0-9_$]*)\s*=\s*\([^)]*\)\s*=>\s*ltFetch\(\s*['"]([A-Z]+)['"]/g;
+  let m;
+  while ((m = ARROW.exec(src))) verbs[m[1]] = m[2];
+
+  // Any other exported lt* helper: read its own body for an explicit method.
+  const FN = /export\s+(?:async\s+)?function\s+(lt[A-Za-z0-9_$]*)\s*\(/g;
+  while ((m = FN.exec(src))) {
+    const name = m[1];
+    if (name === 'ltFetch') continue;               // the primitive itself is never a call site
+    if (verbs[name]) continue;
+    const body = src.slice(m.index, m.index + 2000);
+    const explicit = /\bmethod\s*:\s*['"]([A-Z]+)['"]/.exec(body);
+    if (explicit) { verbs[name] = explicit[1]; continue; }
+    if (/\bfetch\s*\(/.test(body)) { verbs[name] = 'GET'; continue; }  // fetch's own default
+    unknown.push(name);
+  }
+  return { verbs, unknown };
+}
+
+/** `ltGet(lt('/x'))` / `ltPost(lt(`/x/${y}`), body)` — built from the verbs above, never from a list. */
+function callRe(names) {
+  const alt = names.slice().sort((a, b) => b.length - a.length).map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  return new RegExp(`\\b(${alt})\\s*\\(\\s*lt\\s*\\(\\s*([\`'"])((?:\\\\.|(?!\\2)[\\s\\S])*)\\2`, 'g');
+}
 
 /**
  * A path as SEGMENTS. Three kinds, and the third is what keeps this honest:
@@ -95,24 +155,34 @@ function serverRoutes(root, opts = {}) {
   const base = opts.base || '/api/lt';
   const routesDir = opts.routesDir || path.join(root, 'src', 'longterm', 'routes');
   const mountsFile = opts.mountsFile || path.join(root, 'src', 'longterm', 'index.js');
-
-  let mountSrc = '';
-  try { mountSrc = fs.readFileSync(mountsFile, 'utf8'); } catch (_) { return []; }
+  const serverFile = opts.serverFile || path.join(root, 'src', 'server.js');
 
   const out = [];
-  let m;
+
+  // Every (full prefix, route file) pair, from BOTH seams. `index.js` composes the staff-only router;
+  // `server.js` mounts the ones that need a different audience, already carrying `/api/lt` themselves.
+  const pairs = [];
+  const read = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch (_) { return ''; } };
+
+  const mountSrc = read(mountsFile);
   MOUNT_RE.lastIndex = 0;
-  while ((m = MOUNT_RE.exec(mountSrc))) {
-    const prefix = m[2];
-    const file = m[3].endsWith('.js') ? m[3] : `${m[3]}.js`;
-    let src = '';
-    try { src = fs.readFileSync(path.join(routesDir, file), 'utf8'); } catch (_) { continue; }
+  let m;
+  while ((m = MOUNT_RE.exec(mountSrc))) pairs.push({ prefix: `${base}${m[2]}`, file: m[3] });
+
+  const serverSrc = read(serverFile);
+  SERVER_MOUNT_RE.lastIndex = 0;
+  while ((m = SERVER_MOUNT_RE.exec(serverSrc))) pairs.push({ prefix: m[2], file: m[3] });
+
+  for (const { prefix, file: f } of pairs) {
+    const file = f.endsWith('.js') ? f : `${f}.js`;
+    const src = read(path.join(routesDir, file));
+    if (!src) continue;
     let r;
     ROUTE_RE.lastIndex = 0;
     while ((r = ROUTE_RE.exec(src))) {
       const method = r[1].toUpperCase();
       const sub = r[3];
-      const full = `${base}${prefix}${sub === '/' ? '' : sub}`;
+      const full = `${prefix}${sub === '/' ? '' : sub}`;
       out.push({ method, path: full, file, segs: segments(full) });
     }
   }
@@ -131,11 +201,14 @@ function clientCalls(root, opts = {}) {
   const file = opts.apiFile || path.join(root, 'app-v2', 'src', 'longterm', 'api.js');
   let src = '';
   try { src = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
+  const { verbs } = clientVerbs(root, opts);
+  const names = Object.keys(verbs);
+  if (!names.length) return [];
+  const re = callRe(names);
   const out = [];
   let m;
-  CALL_RE.lastIndex = 0;
-  while ((m = CALL_RE.exec(src))) {
-    const method = VERB_OF[m[1]];
+  while ((m = re.exec(src))) {
+    const method = verbs[m[1]];
     const raw = m[3];
     // `lt(p)` prefixes `/api/lt`; the template's own text is the rest.
     const full = `/api/lt${raw.startsWith('/') ? raw : `/${raw}`}`;
@@ -260,9 +333,10 @@ function reachability(routes, calls) {
 module.exports = {
   serverRoutes,
   clientCalls,
+  clientVerbs,
   clientEntries,
   strayFetches,
   reachability,
   segments,
-  _internals: { ROUTE_RE, MOUNT_RE, CALL_RE, VERB_OF },
+  _internals: { ROUTE_RE, MOUNT_RE, SERVER_MOUNT_RE, callRe },
 };

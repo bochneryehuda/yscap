@@ -131,6 +131,26 @@ const eq = (a, b, label) => ok(a === b, `${label} (got ${JSON.stringify(a)}, exp
   eq(ctx.contractor.email, 'sam@builderco.example.com', 'A5 the contractor is read off the file');
   eq(ctx.address.city, 'Lakewood', 'A6 the property address is read off the file');
 
+  // The two REPORTS a mid-project inspector needs on the file before the order goes
+  // (owner-directed 2026-08-17). A Trinity inspector arriving at draw 3 has never seen
+  // the property: the percentages tell him how much money was released, and only the
+  // PREVIOUS inspection report tells him what the last inspector actually saw and
+  // refused. Seeded as REAL stored bytes, because `sendDocuments` reads them back
+  // through the storage layer — a fixture that only wrote the `documents` row would
+  // prove the query and not the attachment.
+  const storage = require('../src/lib/storage');
+  const pdf = (tag) => Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from(tag), Buffer.from('\n%%EOF\n')]);
+  const seedDoc = async (kind, filename, tag) => {
+    const s = await storage.save(pdf(tag), { filename });
+    await db.query(
+      `INSERT INTO documents (application_id, filename, content_type, storage_ref, storage_provider, doc_kind, is_current, review_status)
+       VALUES ($1,$2,'application/pdf',$3,$4,$5,true,'accepted')`,
+      [a.id, filename, s.ref, s.provider, kind]);
+  };
+  await seedDoc('appraisal_pdf', 'original-appraisal.pdf', 'APPRAISAL');
+  await seedDoc('draw_inspection_report', 'draw-2-findings.pdf', 'PRIOR-INSPECTION');
+  await seedDoc('sow_pdf', 'scope.pdf', 'SOW');
+
   // ---- B. the order record + placing it -----------------------------------------
   const pr = (await db.query(
     `INSERT INTO portal_draw_requests (application_id, source, platform, lines, total_requested_cents)
@@ -165,6 +185,39 @@ const eq = (a, b, label) => ok(a === b, `${label} (got ${JSON.stringify(a)}, exp
   ok(calls.documents.every((d) => !/\.csv$/i.test(d.fileName)), 'B11 nothing is sent with an extension the group refuses');
   ok(calls.comments.length >= 1, 'B12 an opening message goes to the Trinity team');
   ok(/budget/i.test(calls.comments[0].content), 'B13 and it states the budget picture');
+
+  // THE TWO REPORTS THE INSPECTOR NEEDS. The code that attaches these has existed since
+  // the integration shipped and nothing proved it ran: `sendDocuments` does
+  // `if (!row) continue`, so a wrong doc_kind, a wrong template code or the `.pdf`
+  // filter excluding a real file would attach NOTHING, silently, and the first anyone
+  // would know is an inspector on site with no idea what the last one refused.
+  const apprDoc = calls.documents.find((d) => d.groupId === order.DOC_GROUP.APPRAISAL);
+  ok(apprDoc, 'B14 the ORIGINAL APPRAISAL is attached');
+  const priorDoc = calls.documents.find((d) => /PREVIOUS-INSPECTION-REPORT/i.test(d.fileName || ''));
+  ok(priorDoc, 'B15 the PREVIOUS inspection report is attached');
+  ok(priorDoc && priorDoc.groupId === order.DOC_GROUP.MISC,
+    'B16 …in Miscellaneous, never the group Trinity files THIS order’s own report into');
+  // The filename is the only label Trinity's screen shows. An inspector opening
+  // "inspection report" on a live order would reasonably assume it describes this visit.
+  ok(priorDoc && /not-this-visit/i.test(priorDoc.fileName || ''),
+    'B17 …and its name says it is not about this visit');
+  ok(calls.documents.some((d) => d.groupId === order.DOC_GROUP.SOW), 'B18 the scope of work is attached');
+  // Every document carries an exactly-once key, so a retry can never attach twice.
+  const docKeys = calls.documents.map((d) => d.customerKey);
+  ok(docKeys.every(Boolean) && new Set(docKeys).size === docKeys.length,
+    'B19 every document carries its own exactly-once key');
+  // The opening message names what ACTUALLY attached — an inspector told to look for a
+  // document that is not there wastes a phone call. Asserted on the phrase that ONLY
+  // appears when the report really went: the no-report fallback also says "previous
+  // inspection report" (it offers to send one), so testing for that phrase alone passes
+  // whether or not anything attached — proven, by mutation, to be a dead assertion.
+  ok(/ATTACHED UNDER MISCELLANEOUS/.test(calls.comments[0].content),
+    'B20 the opening message tells the inspector the previous report is waiting');
+  // THE LINE-ITEM TIE, SAID OUT LOUD. Our whole crosswalk is `customerKey` coming back
+  // on each line, so the inspector is asked in plain words to keep it — the one thing
+  // that makes "what did he approve on OUR line" answerable.
+  ok(/customerKey/.test(calls.comments[0].content),
+    'B21 the message asks the inspector to keep our per-line reference');
 
   // ---- C. it can never place two orders -----------------------------------------
   const again = await order.placeOrder(a.id, rec.id);

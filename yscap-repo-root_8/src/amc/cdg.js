@@ -164,6 +164,41 @@ function buildGetPaymentOptions({ apiKey, subdomain }) {
   };
 }
 
+/**
+ * WHAT CAN BE ADDED TO THIS FORM — the add-ons available for ONE job type.
+ *
+ * IT IS NOT A CATALOG LOOKUP, WHICH IS WHY IT ANSWERED NOTHING. Every other lookup
+ * here asks a question with one answer per account ("what forms exist", "what
+ * property types exist"), so `buildLookup` sends no products and `lookups.js`
+ * caches one row per account. This one asks "what can be added to THIS form" —
+ * their sample request carries `products[0].productcode` (lower-case 'c', the
+ * spelling the vendor uses on this action and on CheckFHA) and their own guide
+ * marks it as the input. Sent through `buildLookup` it carried no form at all, so
+ * the account-wide refresh was asking an unanswerable question every cycle and
+ * caching whatever came back as though it applied to every form.
+ *
+ * WHERE THE ANSWER GOES. The ids that come back are the SAME ids an order carries
+ * as `products[].subproducts[].identifier` (mapping workbook, Request row 4 —
+ * "Additional Products", Optional on CreateAppraisal / AddForm / UpdateAppraisal),
+ * which `buildCreateAppraisal` already emits from `spec.subproductCodes`, and which
+ * `GetAppraisalDetail` reads back (Response row 209). So this lookup is the one
+ * missing half: it is what turns a bare code somebody had to know into a named
+ * thing a person can choose.
+ */
+function buildJobTypeAddOns({ apiKey, subdomain, productCode }) {
+  return {
+    message: {
+      clientSystem: clientSystem({ apiKey }),
+      // `productcode`, lower-case — the vendor's spelling on THIS action. Their
+      // sample is in this repository at
+      // docs/vendor/appraisalscope/samples/Lookups/CDG JSON getjobtypeaddons request.json.
+      products: [{ productcode: productCode != null ? String(productCode) : '' }],
+      serviceProviderSystem: serviceProviderSystem({ subdomain }),
+      requestActionType: 'GetJobTypeAddOns',
+    },
+  };
+}
+
 // ---- payment ---------------------------------------------------------------
 /**
  * THE CARD BLOCK — one shape, built once, used by every request that carries a card.
@@ -245,44 +280,37 @@ function buildPaymentAuthCapture({ apiKey, subdomain, clientOrderNumber, spOrder
   };
 }
 
-/**
- * VAULT THE CARD WITHOUT CHARGING IT. Their words: *"Saves payment details on the
- * authorize.net PCI compliance server, but does not apply the charge until the
- * PaymentCapture request is made."* Same block as the charge; only the action
- * differs. The response carries no transaction id, because nothing was charged.
+/* ---- THE VAULT-THEN-CHARGE-LATER ROUTE IS DELIBERATELY NOT BUILT ------------
+ *
+ * AppraisalScope offers a second way to take money: `PaymentToCaptureLeter` (their
+ * spelling) saves the card on Authorize.net's vault WITHOUT charging it, and
+ * `PaymentCapture` charges the vaulted card later by the same
+ * `paymentReferenceIdentifier` — no card number, no security code the second time.
+ * Builders for both existed here and NOTHING ever called them: a two-request money
+ * path that had never been sent, never been tested against the live tenant, and had
+ * no route, no button and no record of which orders were vaulted.
+ *
+ * WHY IT IS NOT WIRED, rather than merely unfinished. It answers a problem PILOT
+ * does not have and would introduce failure modes it does not have either:
+ *
+ *   · The card is already stored HERE (owner-directed 2026-08-17: encrypted on the
+ *     file, security code included, charged by hand). Vaulting it at the vendor
+ *     would be a SECOND place a card lives and a second answer to "can this file's
+ *     card be charged?".
+ *   · Splitting one charge into two requests doubles the states a payment can be
+ *     stuck in — vaulted-but-never-charged, and charged-against-a-reference-nobody-
+ *     recorded — on the one path in this integration where being wrong costs real
+ *     money. `payment.js` charges in ONE guarded step, claims BEFORE it sends, and
+ *     refuses to release the claim without a receipt; that is what makes it safe.
+ *   · Nobody has asked for it. The three ways to pay the owner named are all live.
+ *
+ * IF IT IS EVER WANTED, it needs the whole shape, not the two builders: a place to
+ * record the reference against the order, a claim covering BOTH legs, a reconcile
+ * for a vault whose capture never happened, and a live test on the UAT tenant. The
+ * envelopes are two `paymentAccount(...)` blocks with a different requestActionType
+ * — the cheapest part of the job, which is exactly why having only them looked like
+ * progress and was not.
  */
-function buildPaymentToCaptureLater({ apiKey, subdomain, clientOrderNumber, spOrderNumber, payment }) {
-  return {
-    message: {
-      clientSystem: clientSystem({ apiKey, clientOrderNumber }),
-      products: [{ payments: [paymentAccount(payment)] }],
-      serviceProviderSystem: serviceProviderSystem({ subdomain, spOrderNumber }),
-      // The vendor spells it "Leter". That is their spelling, on the wire, and
-      // correcting it here would simply make the request unrecognised.
-      requestActionType: 'PaymentToCaptureLeter',
-    },
-  };
-}
-
-/**
- * CHARGE A CARD THEY ALREADY HOLD. Addressed by the SAME
- * `paymentReferenceIdentifier` the vault call used, plus the cardholder's email —
- * and NOTHING ELSE. No card number, no security code: that is the entire point of
- * having vaulted it, and sending them again would defeat it.
- */
-function buildPaymentCapture({ apiKey, subdomain, clientOrderNumber, spOrderNumber, referenceId, email }) {
-  const pay = {};
-  if (referenceId != null) pay.paymentReferenceIdentifier = String(referenceId);
-  if (email) pay.paymentAccountCardHolderEmail = String(email);
-  return {
-    message: {
-      clientSystem: clientSystem({ apiKey, clientOrderNumber }),
-      products: [{ payments: [pay] }],
-      serviceProviderSystem: serviceProviderSystem({ subdomain, spOrderNumber }),
-      requestActionType: 'PaymentCapture',
-    },
-  };
-}
 
 /**
  * EMAIL SOMEBODY THE INVOICE FOR THIS ORDER — the vendor's own payment page, sent
@@ -732,23 +760,19 @@ function buildAddComment({ apiKey, subdomain, spOrderNumber, clientOrderNumber, 
   };
 }
 // ---- cancel an order -------------------------------------------------------
-// AppraisalScope initiates a cancellation with a requestActionType action carrying the
-// reason as a comment (the AddComment shape). The EXACT action name is NOT confirmed
-// from the repo/docs, so it is env-overridable (AMC_CANCEL_ACTION, default 'CancelOrder')
-// and MUST be verified against the live tenant before enabling outbound — the same
-// dry-run-first posture the flood-order contract carries. Asking is not agreeing: the
-// order only moves to 'cancelled' when the vendor's own status callback returns
-// Cancellation (1051), which mapStatusToLifecycle already handles.
-function buildCancelOrder({ apiKey, subdomain, spOrderNumber, clientOrderNumber, text, action }) {
-  return {
-    message: {
-      clientSystem: clientSystem({ apiKey, clientOrderNumber }),
-      products: { requestCommentText: text },
-      serviceProviderSystem: serviceProviderSystem({ subdomain, spOrderNumber }),
-      requestActionType: action || process.env.AMC_CANCEL_ACTION || 'CancelOrder',
-    },
-  };
-}
+// THERE IS NO CANCEL ACTION, AND THERE IS DELIBERATELY NO BUILDER FOR ONE.
+//
+// A `buildCancelOrder` used to live here, emitting an INVENTED `CancelOrder` action
+// behind an `AMC_CANCEL_ACTION` override with a note that the real name had to be
+// dialled in against the live tenant. No spelling of "cancel" appears anywhere in the
+// vendor's package — not in the integration guide's process flow, not in the mapping
+// workbook's request types, not in the Postman collection, not in any sample. It was
+// a guess wearing an env var, and the first real press would have NACKed.
+//
+// A cancellation now travels as a plainly-worded message on the order's own thread
+// (`buildAddComment`, which IS documented and IS what their coordinators read) — see
+// `src/amc/cancel.js`. Do not re-add a cancel builder on a guessed action name; if
+// AppraisalScope ever publishes one, add it with their spelling and a sample to pin it.
 function buildGetComments(ctx) { return orderLookup('GetComments', ctx); }
 function parseComments(resp) {
   const products = resp && resp.message && resp.message.products;
@@ -820,6 +844,38 @@ function buildRetrieveDocuments({ apiKey, subdomain, spOrderNumber, clientOrderN
   };
   message.searchCriteria = [{ fieldName: 'retrieveAdditionalDocuments', fieldValue: includeAdditional ? '1' : '0' }];
   return { message };
+}
+// RetriveDocumentContent — HOW THE MISMO DATA FILE IS ACTUALLY FETCHED, and the
+// answer the vendor's package does give once you read the mapping rather than the
+// samples alone. `RetriveAppraisalDocuments` returns ONE entry per report whose
+// `objectURL` is the PDF; the data file is not an entry of its own, it is named on
+// that entry (`objectXMLFileName`) and flagged by `includeXMLIndicator`. The
+// mapping workbook (Response row 82, "Service Provider Document Identifier")
+// records the identifier's own example value as `1843_XML` — the `_XML` suffix IS
+// the handle for the data rendition — and row 23 of the Request sheet makes
+// `products[].documentId` the REQUIRED input to this call, which answers with a
+// fresh `objectURL`. So: list the documents, then ask this for the data file by
+// that id. Nothing about the shape is guessed; what stays unproven until it runs
+// against the live tenant is whether the bytes come back as the XML or as the PDF
+// again, which is why the CALLER verifies the bytes rather than trusting the name.
+function buildRetrieveDocumentContent({ apiKey, subdomain, spOrderNumber, clientOrderNumber, documentId }) {
+  return {
+    message: {
+      clientSystem: clientSystem({ apiKey, clientOrderNumber }),
+      products: [{ documentId: documentId != null ? String(documentId) : '' }],
+      serviceProviderSystem: serviceProviderSystem({ subdomain, spOrderNumber }),
+      requestActionType: 'RetriveDocumentContent',
+    },
+  };
+}
+// The answer carries ONE embedded file and only a URL — no name, no size, nothing
+// else to go on (their own sample response is exactly `{objectURL}`), so this
+// returns the string or null and never invents a filename around it.
+function parseDocumentContentUrl(resp) {
+  const deals = resp && resp.message && resp.message.deals;
+  const files = Array.isArray(deals) && deals[0] && deals[0].embeddedFiles;
+  const first = Array.isArray(files) ? files.find((f) => f && f.objectURL) : null;
+  return first ? detailText(first.objectURL) : null;
 }
 function parseDocuments(resp) {
   const deals = resp && resp.message && resp.message.deals;
@@ -1055,12 +1111,14 @@ module.exports = {
   buildDoLogin, parseDoLogin,
   buildLookup, parseLookup,
   buildGetFee, buildAppraiserFeesByLocation, buildGetPaymentOptions, buildGetAppraisals,
-  buildPaymentAuthCapture, buildPaymentToCaptureLater, buildPaymentCapture, buildSendInvoice,
+  buildJobTypeAddOns,
+  buildPaymentAuthCapture, buildSendInvoice,
   parsePaymentTransactionId,
   buildCreateAppraisal, parseAck,
-  buildAddComment, buildCancelOrder, buildGetComments, parseComments,
+  buildAddComment, buildGetComments, parseComments,
   buildAddRevision, parseRevisionAck, buildGetRevisions, parseRevisions,
   buildUploadDocuments, buildRetrieveDocuments, parseDocuments,
+  buildRetrieveDocumentContent, parseDocumentContentUrl,
   buildGetStatus, buildGetDetail, parseStatus, parseDetail,
   parseError, parseFileErrors, mapStatusToLifecycle, maskRequest,
   // exported for tests

@@ -122,10 +122,15 @@ module.exports = live;
   ok(staleRows.length === 0,
     `R13 every ledger row is genuinely unwired${staleRows.length ? ` — stale: ${staleRows.join(', ')}` : ''}`);
 
-  // The two findings the ledger leads with, asserted rather than left as prose: if either becomes
-  // reachable this test fails and the write-up must be corrected in the same commit.
-  ok(unreachable.some((f) => rel(f).endsWith('src/longterm/audience.js')),
-    'R14 audience.js is still uncalled by production code — the ledger says so, so it must be true');
+  // The two findings the ledger leads with, asserted rather than left as prose. BOTH have now MOVED,
+  // and both assertions are INVERTED rather than deleted — an unbacked claim in that file is exactly
+  // what it warns about, and a deleted tripwire silently permits the wiring to be lost again.
+  //
+  // R14 flipped on 2026-08-18: `my-loans.js` — the borrower's own long-term files, the first
+  // client-facing Long-Term surface there has ever been — runs its free text through
+  // `audience.scrubInvestorNames`. This assertion is now what stops that scrub being removed.
+  ok(!unreachable.some((f) => rel(f).endsWith('src/longterm/audience.js')),
+    'R14 the investor-name block IS wired now — the first client-facing surface calls it, and losing that turns this red');
   // The agreement harness is the one this check has already MOVED. It was unreachable when the ledger
   // was written — which is why the publish gate could only ever be passed by the recorded override —
   // and the run route wired it. The assertion is INVERTED rather than deleted, because the ledger's

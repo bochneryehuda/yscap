@@ -57,6 +57,7 @@ function main() {
   const rows = scan.reachability(routes, calls);
   const entries = scan.clientEntries(ROOT);
   const strays = scan.strayFetches(ROOT);
+  const { unknown: unknownVerbs } = scan.clientVerbs(ROOT);
 
   console.log('check-lt-http-reachability: which LT routes can a screen actually reach?');
   console.log(`  · routes published: ${routes.length}`);
@@ -104,6 +105,16 @@ function main() {
     failed += 1;
     console.log(`\n  ✗ ${gone.length} ledger row(s) name a route that no longer exists:`);
     for (const k of gone) console.log(`      ${k}`);
+  }
+
+  if (unknownVerbs.length) {
+    // A helper whose method cannot be read makes every call through it INVISIBLE to this scan, which
+    // would report live routes as unreachable — the cry-wolf failure that gets a gate switched off.
+    failed += 1;
+    console.log(`\n  ✗ ${unknownVerbs.length} client helper(s) whose HTTP method cannot be read:`);
+    for (const v of unknownVerbs) console.log(`      ${v}`);
+    console.log('    Every call made through one is invisible here. Give it an explicit method, or');
+    console.log('    route it through ltFetch.');
   }
 
   if (orphanCalls.length) {

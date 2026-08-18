@@ -291,10 +291,29 @@ async function listPeople() {
     counts,
     total: people.length,
     // The pickable people, so the screen can offer a manual link without a second call.
-    staff: staff
-      .filter((s) => s.is_active !== false)
-      .map((s) => ({ id: String(s.id), name: match.staffName(s), email: s.email, role: s.role })),
+    staff: pickableFrom(staff),
   };
+}
+
+/**
+ * The PILOT people a screen may offer to pick from. PURE.
+ *
+ * ONE definition, because two screens now ask the same question — the People screen
+ * offering a manual link, and the loan workspace offering to reassign a file — and
+ * "who may be picked" is exactly the sort of list that grows a second copy and then
+ * disagrees with itself. `loadStaff` has already excluded external accounts (a TPO
+ * broker must never be offered a long-term file); this drops the deactivated, who
+ * would route a file to nobody while looking on screen like a real assignment.
+ */
+function pickableFrom(staff) {
+  return (staff || [])
+    .filter((s) => s.is_active !== false)
+    .map((s) => ({ id: String(s.id), name: match.staffName(s), email: s.email, role: s.role }));
+}
+
+/** The same list, for a caller that wants only it and not the whole roster. */
+async function pickableStaff(dbc = lazy.db) {
+  return pickableFrom(await loadStaff(dbc));
 }
 
 module.exports = {
@@ -303,5 +322,6 @@ module.exports = {
   fetchRoster,
   syncRoster,
   listPeople,
+  pickableStaff,
   _internals: { writeRoster, writeSuggestions, loadStaff, MAX_PAGES, PAGE },
 };

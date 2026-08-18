@@ -21,7 +21,19 @@ schema-drift checks: making it blocking is the owner's call, not an agent's.
 
 ---
 
-## The one that matters most
+## The one that mattered most — and the day it warned about has arrived
+
+**SETTLED 2026-08-18: `audience.js` IS WIRED NOW.** The first Long-Term client-facing surface exists —
+`src/longterm/routes/my-loans.js`, the borrower's own long-term files, mounted borrower-authenticated
+at `/api/lt/my` — and it runs every free-text field it returns through `audience.scrubInvestorNames`
+before it leaves. That is exactly what this section asked for, so its row is off the ledger and the
+guard's assertion is INVERTED rather than deleted: if the wiring is ever lost, `test-lt-reachability-gate.js`
+turns red instead of the claim quietly becoming untrue again. **The second defence is only half
+present**: the route builds a payload FOR the borrower rather than filtering a staff one (the stronger
+of the two defences, and the one the hard rule names first), but `maySeeField` / `stripInternalOnly`
+are still uncalled anywhere — so the NEXT client surface must not assume they are in the path.
+
+The original finding is kept below, because the reasoning is why the wiring was owed at all.
 
 `src/longterm/audience.js` is the investor-name block — the ONE definition behind the owner's HARD
 RULE that a capital provider's name never reaches a borrower or a TPO, built on the registry of 117
@@ -143,7 +155,6 @@ was, which is the safe half of the answer.
 
 | Module | Why it is not wired yet | What would wire it |
 | --- | --- | --- |
-| `src/longterm/audience.js` | The investor-name block. No Long-Term client-facing surface exists yet, so there is nothing to scrub. | The first LT borrower/TPO payload — see above. |
 | `src/longterm/ppe/program-audit.js` | The offline our-side half of the same harness (dead-rule / coverage profiler). | NOT the agreement run — that is now wired and does not call this. It profiles OUR sheet alone, with no vendor leg, so its home is the free pre-flight beside `GET …/coverage`, not the paid battery. |
 | `src/longterm/ppe/program-audit-command.js` | **Deliberately unwired, and it IS run.** It is the body of the offline operator command `scripts/lt-ppe-program-audit.js`, which starts it as its own process — so nothing the server boots requires it, by design. It lives here rather than in `scripts/` because Long-Term back-end code may live nowhere else, and the launcher imports nothing so no RTL file gains a Long-Term dependency. | Nothing should. If the audit is ever wanted *inside* the product (a scheduled run, an admin screen), that surface would require it — and this row comes off then. |
 | `src/longterm/ppe/disqualify-reconcile.js` | The earlier per-layer disqualifier reconciler. | Superseded in practice by `disqualifier-reconciler.js`, which the agreement run now calls. Keep or retire deliberately — nothing should call two of these. |

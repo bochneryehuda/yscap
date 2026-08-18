@@ -64,6 +64,18 @@ const SCRIPTS = path.join(ROOT, 'scripts');
  * improvement and needs no permission.
  */
 const QUARANTINE = {
+  // THE THREE LONG-TERM SUITES BELOW ARE NOT BROKEN — they are deliberately outside the chain, and
+  // their reasons live in ONE place: `docs/longterm/LT-SUITES-UNRUN.md`, which
+  // `check-lt-suite-coverage.js` holds to the same both-ways standard this file does (a row for a
+  // suite that IS run fails as stale). These entries CITE that ledger rather than restating it, so the
+  // two gates cannot come to disagree about why a suite is unrun.
+  'scripts/test-lt-lp-agreement-run.js':
+    'Needs LIVE Lender Price credentials — see docs/longterm/LT-SUITES-UNRUN.md.',
+  'scripts/test-lt-lp-disqualify-crosscheck.js':
+    'Needs LIVE Lender Price credentials — see docs/longterm/LT-SUITES-UNRUN.md.',
+  'scripts/test-lt-lp-login-pad.js':
+    'Signs in to the LIVE vendor; its own header states it is deliberately kept out of npm test — '
+    + 'see docs/longterm/LT-SUITES-UNRUN.md.',
   // test-cure-pure.js was here and is now REGISTERED. Settled 2026-08-16: the
   // TEST was wrong, not the rule. cure.js and that suite were added in the SAME
   // commit (cc78975, #1127), so it had never passed — its "entity not screened"
@@ -86,19 +98,18 @@ const QUARANTINE = {
   // would accept since the owner-directed 2026-08-02 rule, which the MISMO import
   // is named as enforcing. The import NORMALISES it; the suite still expected the
   // contradiction back. Now asserted the other way round, as a guard.
-  'scripts/test-register-econversion.js':
-    '12 of 14 pass. The two failures assert a 403 for a loan officer sending '
-    + 'engaged manual pricing keys, and an "admin_override_stripped" audit row. '
-    + 'BOTH LOOK SUPERSEDED rather than broken: the 2026-07-27 owner-directed '
-    + 'rule opened the pricing admin zone to every staff role and states that '
-    + '"nothing is stripped and no role is refused" — the 403 branches were '
-    + 'REMOVED and approval replaced them. Updating this suite is very likely '
-    + 'the right fix, but it is a claim about the pricing rules and belongs to '
-    + 'whoever owns them, not to a chain-registration pass.',
-  'scripts/test-reregister-save.js':
-    '4 of 5 pass; one re-register assertion fails. Same pricing-rules '
-    + 'neighbourhood as test-register-econversion.js above and probably the '
-    + 'same root cause.',
+  // test-register-econversion.js and test-reregister-save.js were here and are
+  // now REGISTERED. Settled 2026-08-17 by the OWNER, who was asked directly and
+  // confirmed the rule in writing: a loan officer who engages manual pricing
+  // REGISTERS — the 403 is gone — but never silently, and the borrower's term
+  // sheet is withheld until an admin approves. So the protection these two cases
+  // existed to give CHANGED SHAPE rather than disappearing, and asserting the old
+  // 403 (and the "admin_override_stripped" audit row of the stripping era) was
+  // asserting a door that the 2026-07-27 rule deliberately removed. Both suites
+  // now assert the thing that actually protects the file: the registration is
+  // flagged as needing approval, an escalation is opened naming WHY, and the
+  // escalation is audited. Each of those assertions was proven to FAIL with the
+  // approval rule neutralised, with clean runs either side.
 };
 
 /**
@@ -110,7 +121,11 @@ const QUARANTINE = {
  * would run all 27 of them twice.
  */
 const AGGREGATORS = {
-  'scripts/test-lt-ppe-all.js': /^scripts\/test-lt-ppe-.*\.js$/,
+  // `.mjs` TOO, and that is not a widening for convenience — `lt-suite-scan.js`'s own
+  // `PPE_SUITE_RE` is `/^test-lt-ppe-.*\.(js|mjs)$/`, so the aggregator genuinely discovers and runs
+  // the five ES-module PPE suites. A `.js`-only pattern here described the runner as it was, not as it
+  // is, and reported five suites as running nowhere while the aggregate was running them every time.
+  'scripts/test-lt-ppe-all.js': /^scripts\/test-lt-ppe-.*\.(?:js|mjs)$/,
 };
 
 function chainFiles() {

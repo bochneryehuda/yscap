@@ -20,8 +20,18 @@ const session = require('./session');
 
 // The lookups we cache. GetJobType + Get_JobTypes_By_LoanType are the FORM catalog that
 // drives form selection; the rest populate the order-form dropdowns.
+//
+// EVERY LOOKUP IN THIS LIST HAS ONE ANSWER PER ACCOUNT — that is what makes it
+// fetchable with no parameters and cacheable under (type, subdomain). `GetJobTypeAddOns`
+// was in this list and does NOT belong to it: it asks "what can be added to THIS FORM"
+// and their sample request carries `products[0].productcode`. Sent through the generic
+// `buildLookup` it carried no form at all, so it asked an unanswerable question on
+// every refresh cycle — and `refreshAll` is best-effort, so the failure landed in a
+// `failed[]` array nobody reads and no screen ever showed an add-on. It now lives in
+// `src/amc/add-ons.js`, cached per form. BEFORE ADDING A LOOKUP HERE, check that it
+// takes no parameters; if it takes one, it belongs beside the add-ons, not here.
 const LOOKUP_TYPES = [
-  'GetJobType', 'Get_JobTypes_By_LoanType', 'GetJobTypeAddOns',
+  'GetJobType', 'Get_JobTypes_By_LoanType',
   'GetLoanType', 'GetPropertyType', 'GetPropertyViewType',
   'GetAMCPreference', 'GetLoanOfficer', 'GetProcessor',
   'GetIntendedUse', 'GetInvestorList', 'Get_Branch_List',
