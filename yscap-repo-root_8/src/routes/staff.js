@@ -1147,8 +1147,11 @@ router.get('/reminder-tasks', async (req, res) => {
     // for the actor's own queue, one aggregate query, no rows shipped.
     if (req.query.count === '1') {
       const c = await db.query(
+        // `overdue` matches the LIST's own definition (status='scheduled' AND
+        // past due) so the red badge can never disagree with the rows it opens
+        // onto — a fired ('sent') reminder is done firing, not overdue work.
         `SELECT count(*)::int AS open,
-                count(*) FILTER (WHERE r.due_at < now())::int AS overdue,
+                count(*) FILTER (WHERE r.status='scheduled' AND r.due_at < now())::int AS overdue,
                 count(*) FILTER (WHERE r.due_at >= now() AND r.due_at < now() + interval '24 hours')::int AS due_soon
            FROM reminders r
            JOIN applications a ON a.id = r.application_id
