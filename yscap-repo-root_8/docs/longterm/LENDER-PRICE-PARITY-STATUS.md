@@ -2467,3 +2467,53 @@ Thirteen mutations proven red in `scripts/test-lt-ppe-agreement-audit-pure.js` *
 originally failed by THROWING, which is the false proof this workstream keeps catching, so those
 assertions now catch their own throw. Merged onto the PPP work of §2.40 so both survive: the leg carries
 the prepayment layer AND the sheet stamp.
+
+**§2.42 — THE RULE-AUTHORING SERVICE, AND A DRAFT THAT CANNOT MOVE A PRICE (2026-08-18).** Two complete,
+tested modules were waiting on "the rule-authoring editor" (§2.15's builder, `rule-builder.js`, and the
+prepayment structure catalog `ppp-structures.js`), and neither is a service: the builder knows how to
+shape ONE rule and nothing about the rules already in the set; the catalog knows about structures and
+nothing about rules. `rule-authoring.js` is the layer between them and a screen — an authoring intent in,
+either a canonical rule plus a screen-ready render or a refusal written for somebody who does not know
+what a predicate is.
+
+**IT INVENTS NO SECOND VOCABULARY**, which is the only reason a second authoring path is safe to add:
+every operation is a `rule-builder` operation, every shape check is `rule-builder.validateRule`, every
+predicate is reduced by `rule-coverage`'s ONE reducer, every prepayment structure comes from
+`ppp-structures`. What is genuinely new is only what needs the WHOLE set — does this collide with what
+is already here, can it ever fire at all, and what does it say in words.
+
+**AUTHORING IS NOT PUBLISHING, STRUCTURALLY AND NOT BY CONVENTION.** `rule-authoring-store.js` writes to
+`lt_ppe_rule_draft` (db/577), a table the pricing path does not read — `rule-store.rulesForProgram`
+selects from `lt_ppe_rule` alone — so **a draft cannot move a priced number no matter what it says.** It
+reaches the live table only through `publishDraft`, which refuses without a named human, records who it
+was (the database's own CHECK refuses a published-with-nobody row, so it cannot be got round by writing
+directly), and **RE-RUNS the full check against the set as it is NOW** — a draft can sit for a week while
+somebody else publishes onto the same cell.
+
+**A SEPARATE TABLE RATHER THAN `active=false`**, and the reason is a real constraint: `lt_ppe_rule_code_uk`
+is unique on (scope, investor, program, code) with no `active` term, so holding a live rule and its
+proposed next version at once — the editor's most ordinary operation — is not storable there at all.
+
+**WHAT IS REFUSED VS WHAT IS REPORTED IS THE JUDGEMENT CALL WORTH READING.** REFUSED: an unknown
+dimension, an unparseable or backwards band, a value of the wrong kind, a rule whose own conditions
+contradict each other, a code already in use, and a PRICING rule on exactly the same cell as an existing
+one. REPORTED, NOT REFUSED: a PARTIAL overlap and a gap between bands — **a whole-column rule plus a cell
+inside it is how every sheet here layers**, so refusing that would refuse the ordinary case. Neither is
+dropped; both ride out on `warnings[]`.
+
+**ONE REDUCER STILL, WITH ONE MORE FACT.** `regionOf` collapsed "cannot read this" and "this can never
+fire" into one null. Coverage never needed the difference; the authoring layer must REFUSE the second and
+must NOT refuse the first — so `regionDetail` says which of the two it found and `regionOf` is now a
+wrapper over it, leaving `analyzeRuleSet` unchanged. `sameRegion` draws the line between the same cell and
+an overlapping one.
+
+`rule-builder` gains `ppp_structure_key` as an authorable dimension (the fact name `ppp-structures` and
+`agreement-scenarios` already write), with the service supplying the allowed values from the library — and
+**warning when a structure already carries a holdback from the separate margin-holdback overlay: two
+mechanisms, deliberately not merged, and a double charge nobody would otherwise see.**
+
+Both suites run every authored rule through the REAL interpreter and assert the answer — the DB suite
+after a full round trip through Postgres, for all four result kinds, including that a half-open band
+survives it (fires at 640 and 659, not at 660). Fourteen mutations proven red with a green control either
+side. Nothing mounts either module yet, so both are on the `LT-UNREACHED` ledger; **WHO may press publish
+is an owner decision, not an agent's** — see the open questions below.
