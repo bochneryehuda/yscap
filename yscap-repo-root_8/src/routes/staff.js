@@ -5097,6 +5097,74 @@ router.get('/applications/:id/export/tape/:tapeKey/questions', async (req, res) 
   }
 });
 
+// THE ONE GATE SEQUENCE every way a tape leaves the building runs — the download
+// AND the "Send to investor" email (owner-directed 2026-08-18). Extracted so the
+// two can never drift: permission is checked by the caller; this runs the
+// issuance backstop, the Encompass reconciliation gate (super-admin-only escape),
+// records the deferred overrides only once every gate passes, persists the
+// questionnaire answers, and BUILDS the tape through the buyer/program gate.
+// Returns { ok:true, tape, buf, filename, contentType, savedSupplemental } or
+// { ok:false } with the refusal ALREADY sent on `res`.
+async function runTapeExportPipeline(req, res, { action, params }) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) { res.status(404).json({ error: 'not found' }); return { ok: false }; }
+  const tapes = require('../lib/tapes');
+  const tape = tapes.registry.getTape(req.params.tapeKey);
+  if (!tape) { res.status(404).json({ error: 'unknown tape type' }); return { ok: false }; }
+  const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: params && params.overrideReason });
+  if (issuance.hardWarning && !issuance.proceed) {
+    res.status(409).json({ error: 'blocked', action, message: 'This file has a confirmed fatal issue, so its tape can\'t be exported without a super-admin override.', issuance });
+    return { ok: false };
+  }
+  // Encompass reconciliation gate (owner-directed 2026-07-26; tightened 2026-08-02):
+  // a loan's tape can't be exported until it is synced to Encompass AND every field
+  // matches. NOBODY may self-override any more — even an admin. The ONLY way past a
+  // blocked tape is a SUPER-ADMIN-approved exception, or a super-admin allowing it
+  // inline with a reason. Dormant when Encompass is off; fails CLOSED on a reconcile
+  // error. Runs BEFORE the override is recorded so a blocked export records nothing.
+  let tapeEscape = null, encGate = null;
+  {
+    const encTape = await require('../encompass/reconcile').tapeGate(req.params.id, db);
+    if (encTape.block) {
+      encGate = encTape;
+      const esc = await tapeEncompassEscape(req, req.params.id, encTape, db, params && params.encompassOverrideReason);
+      if (!esc.pass) { res.status(409).json(esc.response); return { ok: false }; }
+      tapeEscape = esc;
+    }
+  }
+  // Every gate is passable → record the deferred overrides (issuance first, then
+  // the super-admin tape override) so nothing is recorded for a blocked export.
+  if (issuance.override && issuance.override.applied) {
+    await audit(req, 'issuance_override', 'application', req.params.id, { action, tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
+    await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `${action} ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action, tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
+  }
+  if (tapeEscape && tapeEscape.via === 'super_override' && encGate) {
+    await recordTapeSuperOverride(req, req.params.id, tape, encGate, tapeEscape.reason);
+  }
+  // Persist any questionnaire answers (validated) BEFORE building, so the tape
+  // fills from them and a later export never re-asks. A no-op when none present.
+  const savedSupplemental = await tapes.persistSupplemental(req.params.id, req.params.tapeKey, params, db);
+  // A seasoned-loan export may carry the human-confirmed current balance / next
+  // due / interest reserve — applied to THIS export only (never persisted, since
+  // the live figures re-compute from the draws each time).
+  const seasonedOverrides = tapes.seasonedOverridesFromQuery(params);
+  const { buf, filename, contentType } = await tapes.buildTape(req.params.id, req.params.tapeKey, db, { seasonedOverrides, isAdmin: tapeAdmin(req) });
+  return { ok: true, tape, buf, filename, contentType, savedSupplemental, seasonedOverrides };
+}
+
+// Shared refusal shape for the tape pipeline's thrown gates.
+function tapeExportRefusal(res, e, logTag) {
+  // The export gate (owner-directed): provider mismatch, wrong/absent registered
+  // program, or a manual file a non-admin tried to export. Each carries its own
+  // plain-language message + status; the UI shows it and offers "change provider".
+  if (e && (e.code === 'buyer_mismatch' || e.code === 'program_mismatch' || e.code === 'not_registered' || e.code === 'manual_admin_only')) {
+    return res.status(e.status || 409).json({ error: e.code, message: e.message, currentBuyer: e.currentBuyer, requiredBuyer: e.requiredBuyer, requiredProgram: e.requiredProgram, registeredProgram: e.registeredProgram, tape: e.tapeName });
+  }
+  if (e && (e.code === 'loan_not_found' || e.code === 'tape_not_found')) return res.status(404).json({ error: e.message });
+  if (e && e.status && e.message) return res.status(e.status).json({ error: e.message });
+  console.error(`[${logTag}]`, e && e.message);
+  return res.status(500).json({ error: 'export failed' });
+}
+
 // Export ONE loan's tape for :tapeKey. Streams the provider's .xlsx. Scoped +
 // audited; the confirmed-fatal issuance backstop applies exactly as it does to
 // the TPR / MISMO exports (a note-buyer tape must not leave a fatal file without
@@ -5106,61 +5174,60 @@ router.get('/applications/:id/export/tape/:tapeKey/questions', async (req, res) 
 router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
   if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
   try {
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id)) return res.status(404).json({ error: 'not found' });
-    const tapes = require('../lib/tapes');
-    const tape = tapes.registry.getTape(req.params.tapeKey);
-    if (!tape) return res.status(404).json({ error: 'unknown tape type' });
-    const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
-    if (issuance.hardWarning && !issuance.proceed) {
-      return res.status(409).json({ error: 'blocked', action: 'export_tape', message: 'This file has a confirmed fatal issue, so its tape can\'t be exported without a super-admin override.', issuance });
-    }
-    // Encompass reconciliation gate (owner-directed 2026-07-26; tightened 2026-08-02):
-    // a loan's tape can't be exported until it is synced to Encompass AND every field
-    // matches. NOBODY may self-override any more — even an admin. The ONLY way past a
-    // blocked tape is a SUPER-ADMIN-approved exception, or a super-admin allowing it
-    // inline with a reason. Dormant when Encompass is off; fails CLOSED on a reconcile
-    // error. Runs BEFORE the override is recorded so a blocked export records nothing.
-    let tapeEscape = null, encGate = null;
-    {
-      const encTape = await require('../encompass/reconcile').tapeGate(req.params.id, db);
-      if (encTape.block) {
-        encGate = encTape;
-        const esc = await tapeEncompassEscape(req, req.params.id, encTape, db, req.query && req.query.encompassOverrideReason);
-        if (!esc.pass) return res.status(409).json(esc.response);
-        tapeEscape = esc;
-      }
-    }
-    // Every gate is passable → record the deferred overrides (issuance first, then
-    // the super-admin tape override) so nothing is recorded for a blocked export.
-    if (issuance.override && issuance.override.applied) {
-      await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tape', tape: tape.key, tier: issuance.tier, reason: issuance.override.reason });
-      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tape ${tape.key}: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tape', tape: tape.key, tier: issuance.tier || null, at: new Date().toISOString() } });
-    }
-    if (tapeEscape && tapeEscape.via === 'super_override' && encGate) {
-      await recordTapeSuperOverride(req, req.params.id, tape, encGate, tapeEscape.reason);
-    }
-    // Persist any questionnaire answers (validated) BEFORE building, so the tape
-    // fills from them and a later export never re-asks. A no-op when none present.
-    const savedSupplemental = await tapes.persistSupplemental(req.params.id, req.params.tapeKey, req.query, db);
-    // A seasoned-loan export may carry the human-confirmed current balance / next
-    // due / interest reserve as query params — applied to THIS export only (never
-    // persisted, since the live figures re-compute from the draws each time).
-    const seasonedOverrides = tapes.seasonedOverridesFromQuery(req.query);
-    const { buf, filename, contentType } = await tapes.buildTape(req.params.id, req.params.tapeKey, db, { seasonedOverrides, isAdmin: tapeAdmin(req) });
-    await audit(req, 'export_tape', 'application', req.params.id, { tape: tape.key, bytes: buf.length, supplemental: Object.keys(savedSupplemental), seasoned: !!seasonedOverrides });
-    res.set('Content-Type', contentType);
-    res.set('Content-Disposition', `attachment; filename="${filename}"`);
-    res.send(buf);
+    const out = await runTapeExportPipeline(req, res, { action: 'export_tape', params: req.query || {} });
+    if (!out.ok) return;
+    await audit(req, 'export_tape', 'application', req.params.id, { tape: out.tape.key, bytes: out.buf.length, supplemental: Object.keys(out.savedSupplemental), seasoned: !!out.seasonedOverrides });
+    res.set('Content-Type', out.contentType);
+    res.set('Content-Disposition', `attachment; filename="${out.filename}"`);
+    res.send(out.buf);
   } catch (e) {
-    // The export gate (owner-directed): provider mismatch, wrong/absent registered
-    // program, or a manual file a non-admin tried to export. Each carries its own
-    // plain-language message + status; the UI shows it and offers "change provider".
-    if (e && (e.code === 'buyer_mismatch' || e.code === 'program_mismatch' || e.code === 'not_registered' || e.code === 'manual_admin_only')) {
-      return res.status(e.status || 409).json({ error: e.code, message: e.message, currentBuyer: e.currentBuyer, requiredBuyer: e.requiredBuyer, requiredProgram: e.requiredProgram, registeredProgram: e.registeredProgram, tape: e.tapeName });
-    }
-    if (e && (e.code === 'loan_not_found' || e.code === 'tape_not_found')) return res.status(404).json({ error: e.message });
-    console.error('[export tape]', e && e.message);
-    res.status(500).json({ error: 'export failed' });
+    return tapeExportRefusal(res, e, 'export tape');
+  }
+});
+
+// ---------------- "Send to investor" — the tape leaves by EMAIL, manually ----------------
+// Owner-directed 2026-08-18: a button beside the tape export that emails the
+// Excel tape to the investor's saved contacts — NEVER on autopilot. Subject
+// "New file for review - {loan} - {address}", body = the deal figures (no
+// origination fee), ONLY the tape attached, the team Cc'd visibly, and the
+// Reply-To is the file's own inbox so the investor's reply threads into the
+// file. Same permission + the SAME gate pipeline as the download above.
+
+// The compose screen: saved contacts for this file's investor, the subject and
+// figure preview, the team Cc, the reply address.
+router.get('/applications/:id/tape-send', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
+  try {
+    const pre = await require('../lib/tapes/investor-send').previewTapeSend(req.params.id, db);
+    if (!pre) return res.status(404).json({ error: 'not found' });
+    const { app: _app, ...safe } = pre;   // the raw row stays server-side
+    res.json(safe);
+  } catch (e) { console.error('[tape-send preview]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/tape-send/:tapeKey', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
+  try {
+    const b = req.body || {};
+    const investorSendTape = require('../lib/tapes/investor-send');
+    // Refuse an empty recipient list BEFORE running the gates — the compose
+    // screen's Send stays disabled until at least one investor email is chosen,
+    // and the server enforces the same rule.
+    const rec = investorSendTape.cleanRecipients(b.to);
+    if (rec.problem) return res.status(400).json({ error: rec.problem });
+    const out = await runTapeExportPipeline(req, res, { action: 'send_tape', params: b });
+    if (!out.ok) return;
+    const sent = await investorSendTape.sendTapeToInvestor(req.params.id, db, {
+      tape: { buf: out.buf, filename: out.filename, contentType: out.contentType },
+      to: rec.emails, note: b.note,
+      actorId: req.actor.id, actorName: req.actor.full_name || null,
+    });
+    await audit(req, 'tape_sent_to_investor', 'application', req.params.id, {
+      tape: out.tape.key, to: sent.to, cc: sent.cc, bytes: out.buf.length, subject: sent.subject,
+    });
+    res.json({ ok: true, to: sent.to, cc: sent.cc, replyTo: sent.replyTo, subject: sent.subject, filename: out.filename });
+  } catch (e) {
+    return tapeExportRefusal(res, e, 'tape send');
   }
 });
 

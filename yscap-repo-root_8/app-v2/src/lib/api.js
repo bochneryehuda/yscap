@@ -953,6 +953,11 @@ export const api = {
   // fields). Empty for most loans.
   staffTapeQuestions:(appId, tapeKey) => req('GET', `/api/staff/applications/${appId}/export/tape/${tapeKey}/questions`),
   staffTapeExport:   (appId, tapeKey, answers) => download(`/api/staff/applications/${appId}/export/tape/${tapeKey}${qs(answers)}`),
+  // "Send to investor" — MANUAL email of the Excel tape (owner-directed 2026-08-18):
+  // the compose preview (saved investor contacts, subject, figures, team Cc), then
+  // the send itself (body carries recipients + note + any questionnaire answers).
+  staffTapeSendPreview: (appId) => req('GET', `/api/staff/applications/${appId}/tape-send`),
+  staffTapeSend:        (appId, tapeKey, body) => req('POST', `/api/staff/applications/${appId}/tape-send/${tapeKey}`, body || {}),
   staffTapeLoans:    (tapeKey) => req('GET', `/api/staff/tapes/${tapeKey}/loans`),
   staffTapeBulkExport: (tapeKey, applicationIds, encompassOverrideReason) => downloadPost(`/api/staff/tapes/${tapeKey}/export/bulk${encompassOverrideReason ? qs({ encompassOverrideReason }) : ''}`, { applicationIds }),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),

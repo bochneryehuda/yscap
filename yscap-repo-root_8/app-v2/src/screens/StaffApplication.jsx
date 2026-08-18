@@ -33,6 +33,7 @@ import WhatsLeftPanel from '../components/WhatsLeftPanel.jsx';
 import LoanProgress from '../components/LoanProgress.jsx';
 import ClosingPanel from '../components/ClosingPanel.jsx';
 import TapeQuestionsModal from '../components/TapeQuestionsModal.jsx';
+import TapeSendModal from '../components/TapeSendModal.jsx';
 import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
@@ -6664,7 +6665,8 @@ function TapeExport({ appId }) {
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState(''); // "Exported the X tape" confirmation
-  const [pending, setPending] = useState(null); // { tapeKey, name, questions } — questionnaire modal
+  const [pending, setPending] = useState(null); // { tapeKey, name, questions, forSend } — questionnaire modal
+  const [sendPending, setSendPending] = useState(null); // { tapeKey, name, answers, preview } — send-to-investor compose
   const [ln, setLn] = useState('');       // loan-number slot input
   const [lnBusy, setLnBusy] = useState(false);
   const [lnErr, setLnErr] = useState('');
@@ -6681,15 +6683,49 @@ function TapeExport({ appId }) {
   //  • New-Construction-only fields (ground-up loans), and/or
   //  • a seasoned-loan confirmation (current balance / next due / reserve).
   // If either applies, open the modal; otherwise export straight away.
-  async function start(tapeKey, name) {
+  async function start(tapeKey, name, forSend) {
     setBusy(tapeKey);
     try {
       const q = await api.staffTapeQuestions(appId, tapeKey);
       const questions = (q && q.questions) || [];
       const seasoned = q && q.seasoned && q.seasoned.isSeasoned ? q.seasoned : null;
-      if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned, supplementalMissing: (q && q.supplementalMissing) || 0 }); setBusy(null); return; }
+      if (questions.length || seasoned) { setPending({ tapeKey, name, questions, seasoned, supplementalMissing: (q && q.supplementalMissing) || 0, forSend: !!forSend }); setBusy(null); return; }
+      if (forSend) { await openSendCompose(tapeKey, name, undefined); return; }
       await runExport(tapeKey, name, undefined);
     } catch (e) { showMessage((e.data && e.data.message) || e.message || 'Export failed'); setBusy(null); }
+  }
+  // The send-to-investor compose: fetch the saved contacts + subject/figure
+  // preview, then open the modal. Any questionnaire answers ride along so the
+  // emailed tape is built with them exactly like a download.
+  async function openSendCompose(tapeKey, name, answers) {
+    try {
+      const preview = await api.staffTapeSendPreview(appId);
+      setSendPending({ tapeKey, name, answers, preview });
+    } catch (e) { showMessage((e.data && e.data.error) || e.message || 'Could not load the investor contacts.'); }
+    finally { setBusy(null); }
+  }
+  async function runSend(tapeKey, name, answers, to, note, extra) {
+    setBusy(tapeKey); setMsg('');
+    try {
+      const out = await api.staffTapeSend(appId, tapeKey, { ...(answers || {}), ...(extra || {}), to, note });
+      setSendPending(null);
+      setMsg(`Sent the ${name} tape to ${out.to.join(', ')}. Replies thread into this file.`);
+    } catch (e) {
+      const d = (e && e.data) || {};
+      // The SAME Encompass reconciliation gate as the download — super admins may
+      // allow inline with a logged reason; everyone else asks for an exception.
+      if (d.code === 'encompass_override_reason_required') {
+        const reason = await askPrompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, { defaultValue: '' });
+        if (reason && reason.trim()) { await runSend(tapeKey, name, answers, to, note, { ...(extra || {}), encompassOverrideReason: reason.trim() }); return; }
+        setBusy(null); return;
+      }
+      if (d.code === 'encompass_exception_required' || d.code === 'encompass_unreconciled') {
+        setSendPending(null); setReqOpen(true); load();
+        setBusy(null); return;
+      }
+      await showMessage(d.message || d.error || e.message || 'The send failed — nothing went out.');
+    }
+    finally { setBusy(null); }
   }
   async function runExport(tapeKey, name, answers) {
     setBusy(tapeKey); setMsg('');
@@ -6827,9 +6863,16 @@ function TapeExport({ appId }) {
                 {t.available && <span className="pill done small" style={{ marginLeft: 6 }}>this loan's provider</span>}
               </div>
               {t.available ? (
-                <button className="btn primary small" disabled={busy === t.key} onClick={() => start(t.key, t.name)}>
-                  {busy === t.key ? 'Building…' : `Export the ${t.name} tape (Excel)`}
-                </button>
+                <span className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  <button className="btn primary small" disabled={busy === t.key} onClick={() => start(t.key, t.name)}>
+                    {busy === t.key ? 'Building…' : `Export the ${t.name} tape (Excel)`}
+                  </button>
+                  <button className="btn ghost small" disabled={busy === t.key}
+                    title="Email the Excel tape to this investor's saved contacts — you pick the recipients and press Send; nothing goes out automatically"
+                    onClick={() => start(t.key, t.name, true)}>
+                    Send to investor…
+                  </button>
+                </span>
               ) : (
                 <span className="row small" style={{ gap: 6, alignItems: 'center', color: 'var(--gold-ink)', flexWrap: 'wrap' }}>
                   <button className="btn small" disabled title={t.reason}>Export the {t.name} tape</button>
@@ -6857,7 +6900,19 @@ function TapeExport({ appId }) {
           seasoned={pending.seasoned}
           busy={busy === pending.tapeKey}
           onCancel={() => setPending(null)}
-          onSubmit={(answers) => runExport(pending.tapeKey, pending.name, answers)}
+          onSubmit={(answers) => {
+            if (pending.forSend) { const p = pending; setPending(null); setBusy(p.tapeKey); openSendCompose(p.tapeKey, p.name, answers); return; }
+            runExport(pending.tapeKey, pending.name, answers);
+          }}
+        />
+      )}
+      {sendPending && (
+        <TapeSendModal
+          name={sendPending.name}
+          preview={sendPending.preview}
+          busy={busy === sendPending.tapeKey}
+          onCancel={() => setSendPending(null)}
+          onSend={({ to, note }) => runSend(sendPending.tapeKey, sendPending.name, sendPending.answers, to, note)}
         />
       )}
     </div>
