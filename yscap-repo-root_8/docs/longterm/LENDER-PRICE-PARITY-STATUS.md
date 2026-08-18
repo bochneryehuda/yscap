@@ -2818,3 +2818,44 @@ recovers. A source guard pins that exactly ONE production module builds a progra
 so the door stays the door. **Four mutations were each proven to fail it**: dropping the concat (5
 assertions red), swallowing the read error (2), removing the scoping (8), and adding a second
 production caller (the source guard).
+
+---
+
+**§2.47 — THE OUTSTANDING WORK, MEASURED AGAINST THE CODE RATHER THAN THE PLAN (2026-08-18).** Every
+plan item (D-numbers, P-numbers, the §2 series, the roadmap phases) was re-checked by reading the code
+that would have to call it, not by reading the plan that describes it. `check-lt-reachability.js` (143
+LT modules, 121 reachable, **22 not**) and `check-lt-http-reachability.js` (90 routes, 52 reachable
+from a screen, **38 not**) were both run and both are currently ACCURATE — which is the point worth
+stating plainly: **a green ledger is a RECORD of unwired work, not the absence of it.**
+
+**THE ONE-SENTENCE FINDING: the detection half of this engine is complete and correct, and nothing in
+the running product triggers it.** The three producers of every finding, every parity cell and every
+agreement verdict are `POST /ppe/quote` (no screen, and `app-v2/src/longterm/api.js` carries no
+`ppeQuote` method at all — the screens price through `POST /ppe/breakdown`, which is a READ and
+deliberately writes no findings), `POST /ppe/canary` (no screen) and `POST /ppe/canary/tick` (no
+driver of any kind — `grep -rn "setInterval" src/longterm/` returns nothing, and `render.yaml`'s only
+two cron services are the off-site backup jobs). **So an EMPTY findings board is today
+indistinguishable from a CLEAN one.**
+
+**FIVE THINGS ARE BUILT, WIRED TO NOTHING, AND NEED NO DECISION FROM ANYONE** — they are the shortest
+path from a library to a running product, and they are being built now: the shadow comparison has no
+caller a person can reach; **no PPE setting can be changed through the product at all**
+(`store.setSetting`/`clearSetting` have no caller in `src/` and there is no write route);
+**publishing a rate sheet makes nothing price from it** (`store.currentRateSheetVersion` has no
+caller, and the only human path to a version is a free-text UUID box); the **per-investor margin** is
+resolvable and `quoteProgram` already accepts it, but every production call passes only
+`{scenario, program, settings}`; and the **stronger half of the investor-name block**
+(`audience.maySeeField` / `stripInternalOnly`) is called by nothing — only the free-text scrub is
+wired, while three other modules cite that file as "the ONE definition", which reads as though the
+whole guard is in the path.
+
+**WHAT IS GENUINELY BLOCKED IS NOW ON ONE PAGE, IN PLAIN LANGUAGE:
+`docs/longterm/OWNER-QUESTIONS-OPEN.md`.** Rotating the Lender Price login gates every live
+measurement there is; after that, the holdback formula, the sheet-versus-matrix precedence, the five
+advanced overlay rules, the daily-tick driver, and who may publish a rule or promote an investor to
+live. Nothing on that page is a request for more research — each item is a decision or a five-minute
+action, and each names the work it releases.
+
+**TWO PLAN ITEMS WERE ALREADY CLOSED AND STILL LISTED AS OPEN** (the stale `db/567` comments — `grep
+-rn "db/567" src/longterm/` returns nothing — and P8/P9 in `REQUIREMENTS-LEDGER.md`, both built and
+screened). That ledger is stale and must not be used as the work list; this measurement is.
