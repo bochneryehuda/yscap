@@ -165,6 +165,13 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   console.log('\n===== Lender Price agreement (E3 gate) =====');
   console.log(`  scenarios     ${summary.total}`);
   console.log(`  comparable    ${summary.comparable}  (incomparable ${summary.incomparable}, errors ${summary.errors})`);
+  // ⛔ WHY the battery shrank, not just by how much (§2.90/§2.91). An incomparable scenario is neither a
+  // match nor a miss, so it leaves the denominator — and the COUNT alone cannot tell "Lender Price
+  // answered nothing" from "we never asked it for its refusals". Those send a reader to two different
+  // places, so the reasons are named here rather than buried in the --out JSON.
+  if (summary.incomparableByReason && Object.keys(summary.incomparableByReason).length) {
+    console.log(`                why: ${JSON.stringify(summary.incomparableByReason)}`);
+  }
   // The COMPOSITION of the agreement, not just its size. A both-decline is a real agreement (the owner
   // asked for ineligible scenarios by name), but it says far less about the SHEET than a priced scenario
   // whose every LLPA reconciled — so a headline built mostly of declines would read stronger than it is.
@@ -197,6 +204,18 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
     }
   }
   if (summary.disagreeing.length) console.log(`  disagreeing   ${summary.disagreeing.slice(0, 10).join(' | ')}${summary.disagreeing.length > 10 ? ' …' : ''}`);
+  // ⛔ THE DECLINE FEED, STATED BEFORE THE VERDICT (§2.93). The disqualify tree is the ONLY place
+  // Lender Price states a refusal. Without it the run cannot see the EXPENSIVE direction — LP declines
+  // and we price, i.e. we quote a loan the investor will not buy — because `lpDeclined` is false on
+  // every scenario. So the gate cannot pass, and the report says why in the same breath rather than
+  // leaving a reader to wonder which of the numbers above cost them the gate.
+  if (!summary.declineFeedComplete) {
+    console.log(`  ⚠ declines    NOT OBSERVED on ${summary.total - summary.declineFeedReady} of ${summary.total} scenarios`);
+    console.log('                Lender Price states a refusal ONLY in its disqualify tree. This run could');
+    console.log('                not see one, so it cannot prove eligibility either way — and it CANNOT see');
+    console.log('                the expensive case, LP declining a loan we price. The price comparison above');
+    console.log('                stands; the eligibility verdict does not. Re-run without --no-disqualify to gate.');
+  }
   console.log(`  GATE MET      ${summary.gateMet ? 'YES' : 'NO'}`);
 
   const out = arg('--out');

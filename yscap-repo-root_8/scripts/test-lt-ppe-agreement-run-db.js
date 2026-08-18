@@ -328,7 +328,12 @@ const REQ = (over = {}) => Object.assign(
     // than of a shape this file invented.
     const verdicts = [];
     for (let i = 0; i < 240; i += 1) {
-      verdicts.push({ scenario: `s${i}`, agree: true, incomparable: false, ourEligible: true, lpEligible: true, coarse: { differences: [] }, rungReconciles: [], bounds: [], worstDeltaMilli: 0 });
+      // `lpDisqReady: true` because this fixture claims to be what a REAL passing run produces, and a
+      // real passing run observed Lender Price's refusals — §2.93 makes the gate require it, since the
+      // disqualify tree is the only place LP states a refusal and without it the expensive direction
+      // (LP declines, we price) is undetectable. Omitting it here made E1/E3 go red on that change,
+      // which is the fixture being incomplete rather than the rule being wrong.
+      verdicts.push({ scenario: `s${i}`, agree: true, incomparable: false, ourEligible: true, lpEligible: true, lpDisqReady: true, coarse: { differences: [] }, rungReconciles: [], bounds: [], worstDeltaMilli: 0 });
     }
     const passSummary = ratesheetAgreement.summarize(verdicts);
     ok(passSummary.gateMet === true && passSummary.comparable === 240, 'E1 a fully-agreeing battery meets the harness gate');

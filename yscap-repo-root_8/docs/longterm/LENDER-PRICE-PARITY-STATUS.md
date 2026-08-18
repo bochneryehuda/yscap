@@ -5689,3 +5689,58 @@ cell that agrees (2), and the matrix row lookup taking the loosest row instead o
 The source matrix was restored byte-for-byte after the third of those — checked, not assumed.
 
 161/161 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.93 — ⛔ A GATE THAT CANNOT SEE A REFUSAL CANNOT PASS (2026-08-18)
+
+§2.91 stopped a run made without the decline feed from manufacturing **findings**. This closes the other
+half, which §2.91 recorded as its own open item: such a run could still report **GATE MET YES**.
+
+**⛔ AND THE DIRECTION IT CANNOT SEE IS THE EXPENSIVE ONE.** The disqualify tree is the only place
+Lender Price states a refusal, so with the feed off `lpDeclined` is false on **every** scenario. §2.91's
+arm covers the harmless direction — we decline, they appear to price — by marking it incomparable. The
+direction it cannot cover is **Lender Price declines and we price**: that case is not merely unproven,
+it is **undetectable**, because there is no decline row for anything to compare against. That is the
+case where we quote a loan the investor will not buy.
+
+So `gateMet` now requires that the refusals were observed on **every** scenario in the battery.
+`--no-disqualify` remains a legitimate and useful way to measure price parity; it simply cannot support
+a verdict about eligibility, **and now says so instead of answering**.
+
+That is the same reasoning the runner's own mis-invocation guard already applies to an unscoped run —
+*"a gate that answers confidently when it was asked the wrong question is worse than a gate that
+refuses"* — applied to the **scope** and never to the **feed**. Third instance of that class in this
+file, and the first two are §2.89 and §2.91.
+
+**Three details that are the whole difference between a real check and a decorative one, each asserted:**
+
+- **COMPLETE means every scenario, not a majority.** "Most of it was checked" is exactly the shape §2.90
+  refused, and a partial feed does not pass.
+- **An EMPTY battery is not complete.** Nothing was observed, so nothing can be claimed — the same
+  distinction `agreement-store` draws between *never measured* and *measured and failed*.
+- **The count is over the WHOLE battery, not the survivors.** An errored or incomparable scenario still
+  had, or lacked, the feed. Counting only the comparable ones would let a run with one clean scenario
+  and ninety-nine errors report a complete feed.
+
+**The report says it BEFORE the verdict, and says which direction it cannot see** — not merely that
+something is missing — that the **price comparison above still stands**, and what to do about it. The
+ordering is asserted: a reader who meets `GATE MET NO` first has already stopped reading. The runner
+also now prints `incomparableByReason`, so a shrunken battery says *why* rather than only *how much*
+— "Lender Price answered nothing" and "we never asked for its refusals" send a reader to two different
+places, and the count alone cannot tell them apart.
+
+**⛔ AN EXISTING FIXTURE WAS INCOMPLETE, AND SAID SO ITSELF.** `test-lt-ppe-agreement-run-db.js` builds
+its passing battery from hand-made verdicts, with a comment claiming they carry *"the real key names a
+real run produces"*. They did not carry `lpDisqReady`, so E1 and E3 went red on this change. **A real
+passing run observes the refusals** — the fixture was incomplete, not the rule wrong, and it now says
+that where it is built. Second fixture in two sections to be caught this way; the first was §2.90's.
+
+`scripts/test-lt-ppe-gate-needs-declines.js` (28 assertions) covers the verdict, the partial and empty
+cases, the denominator, an end-to-end pass through the real `runOne`, and the report's wording **and
+ordering**. **Mutation-proven seven ways**: the gate dropping the requirement (3 assertions bite),
+"complete" becoming "at least one" (5), an empty battery counting as complete (2), the count skipping
+errored scenarios (1), `runOne` no longer recording readiness (2), the CLI warning removed (1), and the
+warning printed after the verdict (1).
+
+162/162 suites, 33 database-backed. All seven gates green.

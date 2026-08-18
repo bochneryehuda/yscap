@@ -524,6 +524,10 @@ async function runOne(scenario, ours, lp, opts) {
     ourEligible,
     lpEligible,
     lpDeclined,
+    // ⛔ WHETHER LENDER PRICE'S REFUSALS WERE OBSERVED AT ALL (§2.93). Carried per scenario because
+    // the gate below is a claim about the whole battery, and a claim nobody can trace to the runs
+    // that support it is the shape this file keeps having to unpick.
+    lpDisqReady,
     bothDeclined,
     coarse,
     rungReconciles,
@@ -594,6 +598,9 @@ async function runRatesheetAgreement(scenarios, engines = {}, opts = {}) {
 function summarize(results) {
   const list = Array.isArray(results) ? results : [];
   let agreed = 0; let disagreed = 0; let incomparable = 0; let errors = 0;
+  // ⛔ HOW MANY SCENARIOS ACTUALLY SAW LENDER PRICE'S REFUSALS (§2.93). Counted over every result,
+  // including the errored ones, so the denominator is the battery rather than the survivors.
+  let declineFeedReady = 0;
   // The agreement's own composition + magnitude, so the headline can be read for what it is.
   let agreedPriced = 0; let agreedDeclined = 0; let worstDeltaMilli = 0;
   const byCategory = {};
@@ -635,6 +642,7 @@ function summarize(results) {
   const incomparableByReason = {};
   for (const r of list) {
     if (!r) continue;
+    if (r.lpDisqReady) declineFeedReady += 1;
     if (r.error) { errors += 1; continue; }
     // TALLIED BEFORE THE INCOMPARABLE BRANCH, on purpose: a both-decline whose reasons could not be
     // read is now INCOMPARABLE, and that is exactly the state these counters exist to make visible.
@@ -730,6 +738,9 @@ function summarize(results) {
     else surprises.push(dim);
   }
   const comparable = agreed + disagreed;
+  // COMPLETE means every scenario in the battery saw the feed — not "most", and not "at least one".
+  // An empty battery is NOT complete: nothing was observed, so nothing can be claimed.
+  const declineFeedComplete = list.length > 0 && declineFeedReady === list.length;
   return {
     total: list.length,
     agreed,
@@ -769,7 +780,25 @@ function summarize(results) {
     // per-coupon digest ever existed unless the row says so. A cap nobody is told about reads as the
     // whole story — the same rule `disagreementsOmitted` and `dimensionsOmitted` already follow.
     notStored: WHAT_IS_NOT_STORED,
-    gateMet: errors === 0 && disagreed === 0 && comparable > 0,
+    // ⛔ HOW MUCH OF THE BATTERY COULD SEE A REFUSAL AT ALL (§2.93). `list.length`, not `comparable`:
+    // the question is what the RUN was able to observe, and a scenario that errored or went
+    // incomparable still had (or lacked) the feed.
+    declineFeedReady,
+    declineFeedComplete,
+    // ⛔ THE GATE NOW REQUIRES THAT THE REFUSALS WERE OBSERVED (§2.93).
+    //
+    // `--no-disqualify` is a legitimate and useful way to measure PRICE parity, and it stays. What it
+    // cannot do is support a verdict about ELIGIBILITY, because the disqualify tree is the only place
+    // Lender Price states a refusal. §2.91 already stops the harmless direction — we decline, they
+    // seem to price — from being scored as a finding. THIS closes the expensive direction, which
+    // nothing could catch: **Lender Price declines and we price**. With the feed off `lpDeclined` is
+    // false on every scenario, so that case is not merely unproven, it is UNDETECTABLE — and it is the
+    // one where we quote a loan the investor will not buy.
+    //
+    // So a run that never looked at the refusals cannot pass. The runner's own mis-invocation guard
+    // already refuses an unscoped built-in run on exactly this reasoning: a gate that answers
+    // confidently when it was asked the wrong question is worse than a gate that refuses.
+    gateMet: errors === 0 && disagreed === 0 && comparable > 0 && declineFeedComplete,
   };
 }
 
