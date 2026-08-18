@@ -393,6 +393,28 @@ quietly stopped being checked while every assertion still read green. A guard th
 nothing is the same failure it exists to catch, so it now COUNTS: every percentage quoted in any
 reason must bind to a cited field, and one that binds to none fails the build.
 
+**A VENDOR'S MINUS SIGN IS THE MEANING, AND ONE OF THE THREE READERS WAS DELETING IT (2026-08-18).**
+Turning a Lender Price number into one of ours had been written THREE times in
+`src/longterm/lenderprice/`. Two were audited and corrected; the third — `client.js`, the one that
+reads the PRICED RESULT — still carried the original `parseFloat(String(v).replace(/[^0-9.]/g, ''))`,
+and that expression deletes a minus sign. So every negative LLPA the vendor sent came back as its
+positive twin: a price CREDIT of −0.375 read as a CHARGE of +0.375, and a −0.25 lender margin read as
++0.25. Not only for text — the sign is stripped after `String(v)`, so a plain JSON number was flipped
+too. **It stayed hidden because the headline figures take a different road**: `firstNum` uses
+`Number()` and keeps the sign, so the price, the note rate and the LLPA stack TOTAL were always
+right. Only the ITEMISED breakdown flipped — the lines somebody reads to understand why a price is
+what it is — so the total and its own itemisation sat on one screen disagreeing by twice the figure,
+and nothing compared them. **And no fixture had ever sent a negative one**: the existing test carries
+a negative `basePoints` (−3.75), which travels the sign-safe road, beside a POSITIVE itemised
+adjustment — so the suite proved the half that worked. A fixture that only carries the easy sign
+tests nothing about the hard one. The parse is now ONE definition (`lenderprice/parse-num.js`) that
+all three files read: the sign is never stripped, currency formatting is tolerated, and anything else
+is REFUSED rather than salvaged — "12abc3" is not 123, "1e3" is not 13, and a boolean is not a number
+(`Number(true)` is a perfectly innocent 1, the same trap the 1003 mapper documents). Proven through
+the REAL parser on a real-shaped payload rather than on the helper in isolation, because the claim is
+that a credit reaches the screen as a credit; four mutations turn it red, and all 100+ LenderPrice
+and pricing-engine suites pass unchanged, so nothing was traded for it.
+
 **A SETTING IS EITHER READ BY SOMETHING OR SAYS IT IS NOT (2026-08-18).** §7's promise to a buyer is
 that nothing about how WE do things is hard-coded. Forty-three of the 63 settings were declared ahead
 of the code that would read them, so the settings screen offered knobs that changed NOTHING and said
@@ -1397,7 +1419,14 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
    from a real table and hung it on the neighbouring row. A measurement is only a measurement
    while it still names what was counted.
 10. **Do long-term files appear in the RTL dashboards and KPIs**, or are the two books counted
-    separately?
+    separately? **MEASURED 2026-08-18 — today they are separate, and by construction rather than by
+    anybody's intention.** No file outside `src/longterm/` references any `lt_` table, and every
+    write `src/longterm` makes is to an `lt_` one — so long-term data is not merely absent from the
+    RTL dashboards, it is unreachable from RTL code. A long-term loan never becomes an
+    `applications` row, which is what those numbers count. That is the separation rule working, so
+    the measurement settles what IS, not what SHOULD be: whether one company wants one set of
+    numbers over both books is still the owner's answer, and merging them is a READ-layer job (§9's
+    front-end-may-show-both rule), never a join.
 11. **The underwriter's long-term access** (see item 2) — entire pipeline, or their own files?
 12. **A webhook subscription already exists on this tenant** pointing at
     `automations.drivekosher.com` for `milestone` and `milestoneupdate` events. It is not ours.
@@ -1545,12 +1574,12 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     counts, and a percentage no citation owns fails the build.
 
 16. **Should `lt_loans.loan_officer_id` be dropped?** It is left from the phase-1 shape,
-    before the loan TEAM was mirrored. **Nothing has ever written it**, and since 2026-08-18
-    nothing reads it either — the census, which was its one reader, now asks
-    `lt_loan_contacts` like every other surface (§2.3). It is labelled in the schema so
-    nobody wires it back up, and left in place because dropping a column on a live database
-    is a decision to take deliberately rather than on an inference that it is empty. One
-    answer from the owner, one small migration, no code change.
+    before the loan TEAM was mirrored. **Re-checked 2026-08-18 and the claim holds exactly**: the
+    only two mentions of it in the whole long-term tree are the schema line that declares it and a
+    comment in `product-book.js` recording that nothing reads it — no writer, no reader, no query.
+    It is labelled in the schema so nobody wires it back up, and left in place because dropping a
+    column on a live database is a decision to take deliberately rather than on an inference that
+    it is empty. One answer from the owner, one small migration, no code change.
 
 ---
 
