@@ -970,6 +970,9 @@ export const api = {
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   // 1% closing-cost liquidity buffer waiver (owner-authorized 2026-07-31; admin).
   staffSetLiquidityBuffer: (appId, waived) => req('POST', `/api/staff/applications/${appId}/liquidity-buffer`, { waived: !!waived }),
+  // Per-file program exception (owner-directed 2026-08-18): a SUPER ADMIN turns a
+  // company-discontinued program back on for this one file (recorded + audited).
+  staffProgramException: (appId, program, enabled, reason) => req('POST', `/api/staff/applications/${appId}/program-exception`, { program, enabled: !!enabled, reason }),
   // Per-officer business settings (owner-directed 2026-07-31) — self-scoped.
   mySettings:        () => req('GET', '/api/staff/my-settings'),
   saveMySettings:    (settings) => req('PUT', '/api/staff/my-settings', { settings }),

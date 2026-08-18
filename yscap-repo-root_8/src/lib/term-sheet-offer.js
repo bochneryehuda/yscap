@@ -548,6 +548,20 @@ async function registerFromOffer(appId, offer) {
   const vestRefusal = require('./vesting-program-rule').registrationRefusal(app, program);
   if (vestRefusal) return { registered: false, reason: 'vesting_refused' };
 
+  /* A DISCONTINUED PROGRAM DOES NOT AUTO-REGISTER (owner-directed 2026-08-18) —
+     the same gate every interactive door applies, asked through the shared
+     module so this door can never be the lenient one. A MANUAL product is
+     exempt (it is the admin-priced exception path); a brand-new file has no
+     per-deal exception yet, so the file lands unregistered for a human to
+     price — exactly this door's stated refusal posture. */
+  if (!isManual) {
+    const pset = require('./pricing-settings');
+    const settings = await pset.load().catch(() => pset.current());
+    if (require('./program-availability').registrationRefusal(program, app, settings)) {
+      return { registered: false, reason: 'program_discontinued' };
+    }
+  }
+
   let quote;
   try { quote = pricing.quoteProgram(program, inputs); }
   catch (e) { return { registered: false, reason: 'quote_error', detail: e.message }; }

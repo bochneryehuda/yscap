@@ -27,6 +27,12 @@ const SYSTEM_DEFAULTS = Object.freeze({
   // reads it in markupTiersFor(). Default null so behavior is byte-identical
   // until an admin fills a tier in the Pricing Center.
   markupTiers: null,
+  // Program ON/OFF switches (owner-directed 2026-08-18, db/583). null = every
+  // program offered — the pre-feature behavior. When set, shaped
+  // { gold: { active:false, note:'…' } } — only switched-OFF programs are
+  // stored. The rules live in src/lib/program-availability.js (one definition);
+  // this file only stores/cleans the value.
+  programAvailability: null,
 });
 
 // Normalize an extra-fees value (from a jsonb column or an API body) into a clean
@@ -62,6 +68,8 @@ function shape(row) {
     titleFee:      row.title_fee == null || row.title_fee === '' ? null : Number(row.title_fee),
     extraFees:     cleanExtraFees(row.extra_fees),
     markupTiers:   cleanMarkupTiers(row.markup_tiers),
+    // Cleaned by the ONE rule module — never a second copy of the shape here.
+    programAvailability: require('./program-availability').cleanProgramAvailability(row.program_availability),
   };
 }
 
@@ -104,7 +112,7 @@ async function load() {
   try {
     const r = await db.query(
       `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct,
-              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers
+              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability
          FROM company_pricing_settings WHERE is_current LIMIT 1`);
     _cache = { at: Date.now(), val: shape(r.rows[0]) };
   } catch (e) {

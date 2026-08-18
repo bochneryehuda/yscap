@@ -888,6 +888,43 @@
   // and the auto comparison note. Returns the Gold Standard result for reuse.
   function renderPrograms(d, ready) {
     var EM = "\u2014";
+    /* Program ON/OFF switches (owner-directed 2026-08-18): a discontinued
+       program's ENTIRE box disappears; on a file with a super-admin per-deal
+       exception it returns carrying the pre-filled discontinued banner. Applied
+       FIRST so everything below renders into the surviving cards only. */
+    var PROG_CARD = { standard: { card: "pcardStd", disc: "stdDisc" }, gold: { card: "pcardGold", disc: "goldDisc" }, silver: { card: "pcardSilver", disc: "silverDisc" } };
+    for (var pk in PROG_CARD) {
+      var pc = el(PROG_CARD[pk].card);
+      var gone = !progOffered(pk);
+      if (pc) pc.classList.toggle("pcard-gone", gone);
+      var dEl = el(PROG_CARD[pk].disc);
+      if (dEl) {
+        var di = gone ? null : progDiscInfo(pk);
+        if (di) {
+          // The suffix names no internal role \u2014 this banner renders on the
+          // borrower's and the broker's studio too (audit 2026-08-18 #5). The
+          // fallback note mirrors program-availability.defaultDiscontinuedNote.
+          dEl.hidden = false;
+          dEl.textContent = "\u26a0 " + (di.note || ("The " + (pk === "gold" ? "Gold Standard" : pk === "silver" ? "Silver" : "Standard") + " program has been discontinued and is not being offered on new deals right now."))
+            + " Turned back on for this file only by an approved exception.";
+        } else { dEl.hidden = true; dEl.textContent = ""; }
+      }
+    }
+    // Re-rank the SURVIVING cards left/right for the help-bubble direction:
+    // :nth-child parity counts hidden cards too, so once a discontinued
+    // program's box disappears and the next program slides into its slot, a
+    // parity selector would aim the right-column bubbles at the wrong cards.
+    var pcWrap = el("progCompare");
+    if (pcWrap) {
+      var visIdx = 0;
+      for (var ci = 0; ci < pcWrap.children.length; ci++) {
+        var cd = pcWrap.children[ci];
+        if (!cd.classList || !cd.classList.contains("pcard")) continue;
+        if (cd.classList.contains("pcard-gone")) { cd.classList.remove("pcard-right"); continue; }
+        cd.classList.toggle("pcard-right", visIdx % 2 === 1);
+        visIdx++;
+      }
+    }
     // ---- Standard card ----
     var stdExit = ready && (d.exitShortfall > 0);
     var stdCity = ready && !!d.cityReview;
@@ -1023,12 +1060,14 @@
     // Structural manual basis: the program comparison is meaningless (every card
     // prices on the admin-set basis and a register records a Manual Program).
     if (manualBasisOn()) return "";
-    // Normalize the three programs into comparable rows.
+    // Normalize the three programs into comparable rows. A DISCONTINUED program's
+    // card is gone (owner-directed 2026-08-18), so the note must never recommend
+    // it — its row is filtered out with the same progOffered() the cards use.
     var progs = [
-      { name: "Standard", ok: d.status !== "INELIGIBLE" && d.totalLoan > 0 && d.pricingReady, rate: (d.rate || 0) / 100, loan: d.totalLoan || 0, manual: d.status === "MANUAL" },
-      { name: "Gold Standard", ok: !!(G && G.available !== false && G.status !== "INELIGIBLE" && G.sizing && G.sizing.totalLoan > 0 && G.pricingReady && G.noteRate > 0), rate: (G && G.noteRate) || 0, loan: (G && G.sizing && G.sizing.totalLoan) || 0, manual: !!(G && G.status === "MANUAL") },
-      { name: "Silver", ok: !!(S && S.status !== "INELIGIBLE" && S.sizing && S.sizing.totalLoan > 0 && S.pricingReady && S.noteRate > 0), rate: (S && S.noteRate) || 0, loan: (S && S.sizing && S.sizing.totalLoan) || 0, manual: !!(S && S.status === "MANUAL") }
-    ];
+      { key: "standard", name: "Standard", ok: d.status !== "INELIGIBLE" && d.totalLoan > 0 && d.pricingReady, rate: (d.rate || 0) / 100, loan: d.totalLoan || 0, manual: d.status === "MANUAL" },
+      { key: "gold", name: "Gold Standard", ok: !!(G && G.available !== false && G.status !== "INELIGIBLE" && G.sizing && G.sizing.totalLoan > 0 && G.pricingReady && G.noteRate > 0), rate: (G && G.noteRate) || 0, loan: (G && G.sizing && G.sizing.totalLoan) || 0, manual: !!(G && G.status === "MANUAL") },
+      { key: "silver", name: "Silver", ok: !!(S && S.status !== "INELIGIBLE" && S.sizing && S.sizing.totalLoan > 0 && S.pricingReady && S.noteRate > 0), rate: (S && S.noteRate) || 0, loan: (S && S.sizing && S.sizing.totalLoan) || 0, manual: !!(S && S.status === "MANUAL") }
+    ].filter(function (p) { return progOffered(p.key); });
     var live = progs.filter(function (p) { return p.ok; });
     if (!live.length) return "";
     if (live.length === 1) {
@@ -1163,6 +1202,9 @@
     var hint = el("progHint"); if (hint) hint.style.display = (ready && !chosenProgram) ? "" : "none";
   }
   function selectProgram(p) {
+    // A discontinued program is not selectable (owner-directed 2026-08-18) — its
+    // card is display:none, but a keyboard/programmatic path must refuse too.
+    if (p && p !== "manual" && !progOffered(p)) return;
     // A dimmed card is not selectable: Gold when not offered in the state,
     // Silver with no engine, Manual while the admin scenario is off, and the
     // three program cards while the admin scenario is ON (a register would
@@ -1370,6 +1412,14 @@
     CO.title = (d.titleFee != null ? Number(d.titleFee) : null);
     CO.extraFees = Array.isArray(d.extraFees) ? d.extraFees : [];
     CO.markupTiers = (d.markupTiers && typeof d.markupTiers === "object") ? d.markupTiers : null;
+    // Program ON/OFF switches (owner-directed 2026-08-18) — the COMPANY map
+    // ({ gold:{active:false, note} }); a host-pushed per-file map (tsProgAvail)
+    // always outranks it in progAvailRow(). PRESERVE-IF-ABSENT: only a payload
+    // that carries the key may change it, so the TPO host push (whose resolved
+    // firm settings ride the same shape) can never silently clear the switches.
+    if (d.programAvailability !== undefined) {
+      CO.programAvailability = (d.programAvailability && typeof d.programAvailability === "object") ? d.programAvailability : null;
+    }
     // TPO broker origination points — present ONLY on a resolved TPO settings
     // object; retail /api/pricing-defaults never carries it, so it resets to 0.
     CO.brokerFeePct = (d.brokerFeePct != null && isFinite(Number(d.brokerFeePct)) && Number(d.brokerFeePct) > 0) ? Number(d.brokerFeePct) : 0;
@@ -1383,6 +1433,45 @@
   // predicate, never on the checkbox alone (audit 2026-07-30 #2).
   function manualBasisOn() {
     return manualOn() && (adminNumRaw("tsMLtv") != null || adminNumRaw("tsMArv") != null || adminNumRaw("tsMLtc") != null);
+  }
+
+  /* ---- Program ON/OFF switches (owner-directed 2026-08-18) ----
+     A company-DISCONTINUED program's whole card disappears from the offers grid;
+     it comes back ONLY on a file where a super admin recorded a per-deal
+     exception — and then it carries the pre-filled "discontinued" banner. Two
+     sources, host wins: the portal host writes the FILE's effective map into the
+     hidden #tsProgAvail (the server's availabilityFor shape — active / offered /
+     note / exception per program); the public/standalone tool falls back to the
+     COMPANY map from /api/pricing-defaults ({ gold:{active:false, note} }, no
+     `offered` key — active decides). Anything unreadable reads as OFFERED: the
+     server's register door is the real gate, and hiding programs over a parse
+     hiccup would break the public generator. DISPLAY ONLY — no engine input,
+     formula or number moves. */
+  function progAvailRow(p) {
+    var e = el("tsProgAvail");
+    if (e && String(e.value).trim()) {
+      try {
+        var m = JSON.parse(e.value);
+        if (m && typeof m === "object" && m[p] && typeof m[p] === "object") return m[p];
+        if (m && typeof m === "object") return null;   // valid map, program absent → offered
+      } catch (er) { /* fall through to the company map */ }
+    }
+    var co = CO.programAvailability;
+    return (co && typeof co === "object" && co[p] && typeof co[p] === "object") ? co[p] : null;
+  }
+  function progOffered(p) {
+    if (!p || p === "manual") return true;             // manual is the exception path, never togglable
+    var row = progAvailRow(p);
+    if (!row) return true;
+    if (row.offered != null) return row.offered !== false;   // the file's effective map
+    return row.active !== false;                              // the company map
+  }
+  // The discontinued banner: only for a program that is company-OFF yet showing
+  // by per-file exception. Returns the pre-filled note ('' → caller defaults).
+  function progDiscInfo(p) {
+    var row = progAvailRow(p);
+    if (!row || row.active !== false || !progOffered(p)) return null;
+    return { note: String(row.note || "") };
   }
 
   /* ---- Term-sheet options (owner-directed 2026-07-22) ----
@@ -1697,6 +1786,10 @@
     // register records.
     if (manualBasisOn() && chosenProgram && chosenProgram !== "manual") chosenProgram = "manual";
     if (chosenProgram === "manual" && !manualBasisOn()) chosenProgram = null;   // basis cleared → collapse to the offers view
+    // A DISCONTINUED program can't stay drilled-into (owner-directed 2026-08-18):
+    // a restored draft, a shared link, or the switches changing mid-session all
+    // collapse back to the offers view — the hidden card can't be the detail.
+    if (chosenProgram && chosenProgram !== "manual" && !progOffered(chosenProgram)) chosenProgram = null;
     renderLeverage(ready);                                        // clamp chosenLTC + draw the Standard slider
     var dStd = calc();                                            // Standard, priced at the chosen leverage
     renderPrograms(dStd, ready);                                  // both offer cards + comparison note
@@ -2308,9 +2401,14 @@
     // the admin basis) — title it honestly so the export never claims a Standard
     // registration the server wouldn't record.
     var stdTitle = manualBasisOn() ? "Manual Program (admin-set basis)" : "Standard Program";
+    // A DISCONTINUED program's section is dropped from the Excel exactly as its
+    // card is dropped from the grid (owner-directed 2026-08-18) — the export must
+    // never resurface a program the screen hides. The manual-basis Standard block
+    // survives regardless: it IS the Manual Program's pricing, not an offer.
     return [{ title: "Deal & property", items: deal.filter(Boolean) }, { title: isRefi() ? "Property & project costs" : "Purchase & project costs", items: costs.filter(Boolean) },
-            { title: stdTitle, items: std.filter(Boolean) }, { title: "Gold Standard Program", items: gold.filter(Boolean) },
-            { title: "Silver Program", items: silver.filter(Boolean) }];
+            (progOffered("standard") || manualBasisOn()) ? { title: stdTitle, items: std.filter(Boolean) } : null,
+            progOffered("gold") ? { title: "Gold Standard Program", items: gold.filter(Boolean) } : null,
+            progOffered("silver") ? { title: "Silver Program", items: silver.filter(Boolean) } : null].filter(Boolean);
   }
   async function exportXlsx(btn) {
     var o = btn ? btn.textContent : ""; if (btn) { btn.textContent = "Exporting\u2026"; btn.disabled = true; }

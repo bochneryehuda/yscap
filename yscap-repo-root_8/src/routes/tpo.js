@@ -667,8 +667,26 @@ router.get('/applications/:id/pricing', async (req, res, next) => {
     // pass through untouched (adversarial-security audit 2026-08-06).
     let pricingDefaults = null;
     try { pricingDefaults = scrubDeepStrings(tpoPricing.effectiveSettingsFor(f.app)); } catch (_) { pricingDefaults = null; }
+    // Program ON/OFF switches + this file's per-deal exceptions (owner-directed
+    // 2026-08-18) — the broker studio hides a discontinued program's card, and an
+    // excepted file shows it with the discontinued banner. Broker-safe like the
+    // borrower route: the admin-typed note is scrubbed and the exception's
+    // internal by/byName/reason never leave.
+    let programAvailability = null;
+    try {
+      const progAvail = require('../lib/program-availability');
+      const full = progAvail.availabilityFor(await require('../lib/pricing-settings').load(), f.app);
+      programAvailability = {};
+      for (const k of Object.keys(full)) {
+        const r = full[k];
+        programAvailability[k] = {
+          key: r.key, label: r.label, active: r.active, offered: r.offered,
+          ...(r.note ? { note: scrubText(r.note) } : {}),
+        };
+      }
+    } catch (_) { programAvailability = null; }
     res.json({ current, history, quote, enginesReady: pricing.enginesReady(),
-      econVersion: pricing.econVersionFor(f.app), manualEscalation, termSheetHold, termSheetFinal, pricingDefaults });
+      econVersion: pricing.econVersionFor(f.app), manualEscalation, termSheetHold, termSheetFinal, pricingDefaults, programAvailability });
   } catch (e) { console.error('[tpo pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -734,6 +752,24 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     {
       const vestRefusal = require('../lib/vesting-program-rule').registrationRefusal(f.app, inputs.program);
       if (vestRefusal) return res.status(400).json({ error: vestRefusal, field: 'vesting' });
+    }
+    /* A DISCONTINUED PROGRAM DOES NOT REGISTER (owner-directed 2026-08-18) —
+       same gate as the borrower door, broker-safe wording (the internal
+       "super admin can except this file" coaching stays off an external
+       surface). A file carrying the per-deal exception registers normally. */
+    {
+      const progAvail = require('../lib/program-availability');
+      const pset = require('../lib/pricing-settings');
+      const settings = await pset.load().catch(() => pset.current());
+      if (!progAvail.programOffered(program, settings, f.app)) {
+        const info = progAvail.discontinuedInfo(program, settings) || {};
+        return refuse(422, {
+          error: `${scrubText(info.note || '')
+            || `The ${progAvail.PROGRAM_LABEL[program] || 'chosen'} program is not being offered right now.`} `
+            + 'Pick a different program, or ask the loan team about this one.',
+          code: 'program_discontinued', field: 'program',
+        }, 'program_discontinued', { program });
+      }
     }
     // A refinance is sized on the as-is value — with none on file there is no
     // denominator and nothing to register (owner-directed 2026-08-02).

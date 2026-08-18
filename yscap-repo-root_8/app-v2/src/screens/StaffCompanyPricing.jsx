@@ -31,6 +31,38 @@ const PROGRAMS = [
 ];
 const TIERS = ['1', '2', '3'];
 
+// ── Program ON/OFF switches (owner-directed 2026-08-18) ──────────────────────
+// "we should have the option to turn on and turn off certain programs … right
+// now we're discontinuing the gold program". Stored on the same settings row
+// (program_availability jsonb, db/583) shaped { gold:{active:false, note} } —
+// only switched-OFF programs are stored; the note pre-fills the discontinued
+// wording shown wherever the program resurfaces by super-admin exception. The
+// rules live in src/lib/program-availability.js; this screen only edits them.
+const defaultDiscNote = (label) => `The ${label} program has been discontinued and is not being offered on new deals right now.`;
+// Editable per-program form: { standard: { on:true, note:'' }, … }
+const availToForm = (o) => {
+  const pa = (o && o.programAvailability) || {};
+  const out = {};
+  for (const p of PROGRAMS) {
+    const row = pa[p.key];
+    const off = !!(row && row.active === false);
+    out[p.key] = { on: !off, note: off ? String(row.note || '') : '' };
+  }
+  return out;
+};
+// Reduce to the stored map: only switched-OFF programs, note only when typed.
+// All-on → {} (server stores NULL = every program offered).
+const availToBody = (f) => {
+  const out = {};
+  for (const p of PROGRAMS) {
+    const row = f[p.key];
+    if (!row || row.on) continue;
+    const note = String(row.note || '').trim();
+    out[p.key] = note ? { active: false, note } : { active: false };
+  }
+  return out;
+};
+
 const toForm = (o) => {
   const f = {};
   for (const k of KEYS) f[k] = (o && o[k] != null) ? String(o[k]) : '';
@@ -196,6 +228,7 @@ export default function StaffCompanyPricing() {
   const [form, setForm] = useState(toForm(null));
   const [tiers, setTiers] = useState(tiersToForm(null));   // per-tier markup grid
   const [fees, setFees] = useState([]);         // extra fees: [{ name, amount, state }]
+  const [avail, setAvail] = useState(availToForm(null));   // program ON/OFF switches
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);         // { ok, text }
@@ -206,7 +239,7 @@ export default function StaffCompanyPricing() {
     .map((f) => ({ name: String(f.name || ''), amount: String(f.amount == null ? '' : f.amount), state: String(f.state || '') }));
 
   const load = () => api.adminPricingGet()
-    .then((d) => { setData(d); setForm(toForm(d.current)); setTiers(tiersToForm(d.current)); setFees(feesFrom(d.current)); })
+    .then((d) => { setData(d); setForm(toForm(d.current)); setTiers(tiersToForm(d.current)); setFees(feesFrom(d.current)); setAvail(availToForm(d.current)); })
     .catch((e) => flash(false, e.message || 'could not load pricing settings'));
   useEffect(() => { if (isAdmin) load(); /* eslint-disable-next-line */ }, [isAdmin]);
 
@@ -225,14 +258,23 @@ export default function StaffCompanyPricing() {
   const cleanFees = (arr) => arr.map((f) => ({ name: (f.name || '').trim(), amount: Number(f.amount), state: (f.state || '').toUpperCase() }))
     .filter((f) => f.name && isFinite(f.amount) && f.amount > 0);
   const setTier = (prog, t, v) => setTiers((tt) => ({ ...tt, [prog]: { ...tt[prog], [t]: String(v).replace(/[^0-9.]/g, '') } }));
+  // Program switches: flipping one OFF pre-fills the discontinued note so the
+  // wording is ready the moment the program resurfaces by exception (owner:
+  // "Pre-fill the saying that the gold program is discontinued").
+  const setProgOn = (key, on) => setAvail((a) => ({
+    ...a,
+    [key]: { on, note: on ? '' : (a[key].note || defaultDiscNote((PROGRAMS.find((p) => p.key === key) || {}).label || key)) },
+  }));
+  const setProgNote = (key, v) => setAvail((a) => ({ ...a, [key]: { ...a[key], note: String(v).slice(0, 300) } }));
   const feesDirty = JSON.stringify(cleanFees(fees)) !== JSON.stringify(cleanFees(feesFrom(cur)));
   const tiersDirty = JSON.stringify(tiersToBody(tiers)) !== JSON.stringify(tiersToBody(tiersToForm(cur)));
-  const dirty = feesDirty || tiersDirty || KEYS.some((k) => String(cur[k] == null ? '' : cur[k]) !== String(form[k] == null ? '' : form[k]));
+  const availDirty = JSON.stringify(availToBody(avail)) !== JSON.stringify(availToBody(availToForm(cur)));
+  const dirty = feesDirty || tiersDirty || availDirty || KEYS.some((k) => String(cur[k] == null ? '' : cur[k]) !== String(form[k] == null ? '' : form[k]));
 
   async function save() {
     setBusy(true);
     try {
-      const body = { note: note.trim() || undefined, extraFees: cleanFees(fees), markupTiers: tiersToBody(tiers) };
+      const body = { note: note.trim() || undefined, extraFees: cleanFees(fees), markupTiers: tiersToBody(tiers), programAvailability: availToBody(avail) };
       for (const k of KEYS) body[k] = form[k] === '' ? null : Number(form[k]);
       await api.adminPricingPut(body);
       setNote('');
@@ -246,6 +288,7 @@ export default function StaffCompanyPricing() {
     setForm(toForm(data.systemDefaults));
     setTiers(tiersToForm(data.systemDefaults));
     setFees(feesFrom(data.systemDefaults));
+    setAvail(availToForm(data.systemDefaults));
     flash(true, 'Loaded the original system defaults into the form — review them, then Save to apply.');
   };
 
@@ -261,6 +304,40 @@ export default function StaffCompanyPricing() {
         </p>
 
         {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} role="alert" style={{ marginTop: 12 }}>{msg.text}</div>}
+
+        <h3 style={{ margin: '18px 0 0' }}>Programs offered</h3>
+        <p className="muted small" style={{ margin: '2px 0 8px', maxWidth: 640 }}>
+          Turn a whole program <strong>on or off</strong> — any program, any time. A discontinued
+          program’s box <strong>disappears</strong> from Products &amp; Pricing and the public
+          term-sheet generator, and nobody can register a new deal into it. For a deal already in
+          process, a <strong>super admin</strong> can turn the program back on for that one file from
+          the file’s Products &amp; Pricing panel — the note below (pre-filled) is what shows on that
+          file’s program box. Files already registered on the program keep their locked-in terms.
+        </p>
+        {PROGRAMS.map((p) => (
+          <div key={p.key} style={{ border: '1px solid var(--line, #E5E0D5)', borderRadius: 10, padding: '10px 12px', marginBottom: 8 }}>
+            <div className="row" style={{ gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+              <strong style={{ color: '#141B22', minWidth: 130 }}>{p.label}</strong>
+              <label className="row small" style={{ gap: 6, alignItems: 'center', color: '#141B22' }}>
+                <input type="radio" name={`prog-${p.key}`} checked={avail[p.key].on} onChange={() => setProgOn(p.key, true)} />
+                <span>Offered</span>
+              </label>
+              <label className="row small" style={{ gap: 6, alignItems: 'center', color: '#141B22' }}>
+                <input type="radio" name={`prog-${p.key}`} checked={!avail[p.key].on} onChange={() => setProgOn(p.key, false)} />
+                <span>Discontinued (turned off)</span>
+              </label>
+              {!avail[p.key].on && <span className="pill" style={{ color: '#8a5b00', borderColor: '#d9b26a' }}>OFF — not offered</span>}
+            </div>
+            {!avail[p.key].on && (
+              <div className="field" style={{ marginTop: 8 }}>
+                <label>Discontinued note (shows on the program box when a super admin turns it back on for one file)</label>
+                <input className="input" value={avail[p.key].note} maxLength={300}
+                  onChange={(e) => setProgNote(p.key, e.target.value)} />
+                <div className="hint">Plain language, borrower-safe — never name a capital partner here.</div>
+              </div>
+            )}
+          </div>
+        ))}
 
         <h3 style={{ margin: '18px 0 0' }}>Markup over the note-buyer rate</h3>
         <p className="muted small" style={{ margin: '2px 0 8px' }}>The spread added on top of the wholesale rate for each program.</p>
@@ -370,7 +447,7 @@ export default function StaffCompanyPricing() {
               <tr>
                 <th>When</th><th>By</th>
                 <th>Markup (Std / Gold / Silver)</th><th>Orig (Std / Gold / Silver)</th>
-                <th>UW</th><th>Credit</th><th>Appraisal</th><th>Title</th><th>Note</th>
+                <th>UW</th><th>Credit</th><th>Appraisal</th><th>Title</th><th>Programs off</th><th>Note</th>
               </tr>
             </thead>
             <tbody>
@@ -384,10 +461,15 @@ export default function StaffCompanyPricing() {
                   <td>{money(h.credit_fee)}</td>
                   <td>{money(h.appraisal_fee)}</td>
                   <td>{h.title_fee == null ? 'auto' : money(h.title_fee)}</td>
+                  <td className="muted small">{(() => {
+                    const pa = h.program_availability || {};
+                    const off = PROGRAMS.filter((p) => pa[p.key] && pa[p.key].active === false).map((p) => p.label);
+                    return off.length ? off.join(', ') : '—';
+                  })()}</td>
                   <td className="muted small">{h.note || ''}</td>
                 </tr>
               ))}
-              {!(data.history || []).length && <tr><td colSpan={9} className="muted small">No changes yet.</td></tr>}
+              {!(data.history || []).length && <tr><td colSpan={10} className="muted small">No changes yet.</td></tr>}
             </tbody>
           </table>
         </div>

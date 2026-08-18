@@ -124,6 +124,18 @@ async function autoRegisterFromIntake(appId, rawProgram, client) {
     const vestRefusal = require('./vesting-program-rule').registrationRefusal(app, program);
     if (vestRefusal) return { registered: false, reason: 'vesting_refused' };
 
+    // A DISCONTINUED PROGRAM DOES NOT AUTO-REGISTER (owner-directed 2026-08-18) —
+    // the same gate every interactive door applies. An anonymous public post can
+    // never carry a per-deal exception, so the file simply lands unregistered
+    // for a human to price (this door's own posture: never the lenient one).
+    {
+      const pset = require('./pricing-settings');
+      const settings = await pset.load().catch(() => pset.current());
+      if (require('./program-availability').registrationRefusal(program, app, settings)) {
+        return { registered: false, reason: 'program_discontinued' };
+      }
+    }
+
     const quote = pricing.quoteProgram(program, inputs);
     if (!quote || quote.status !== 'ELIGIBLE') {
       // MANUAL / INELIGIBLE / ERROR all mean a human decides. Never an automatic

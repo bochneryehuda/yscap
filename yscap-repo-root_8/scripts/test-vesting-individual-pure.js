@@ -208,8 +208,15 @@ console.log('\nE. every register door asks, and asks the same way');
 {
   const staff = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'staff.js'), 'utf8');
   const borrower = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'borrower.js'), 'utf8');
-  const inStaff = (staff.match(/registrationRefusal\(/g) || []).length;
-  const inBorrower = (borrower.match(/registrationRefusal\(/g) || []).length;
+  // Count invocations of THE VESTING MODULE's refusal specifically — the require
+  // and the call together — not the bare method name. Other door gates follow the
+  // same layered-on-top shape and deliberately reuse the `registrationRefusal`
+  // name (program-availability, 2026-08-18), so a bare-name count broke the
+  // moment a sibling gate appeared while proving nothing extra about vesting.
+  // This still fails the moment either staff door stops asking the vesting rule.
+  const VEST_CALL = /require\('\.\.\/lib\/vesting-program-rule'\)\s*\.registrationRefusal\(/g;
+  const inStaff = (staff.match(VEST_CALL) || []).length;
+  const inBorrower = (borrower.match(VEST_CALL) || []).length;
   // Three doors register a product: the staff register, the staff accept-counter,
   // and the borrower register. Guarding two of three leaves a way around it.
   ok(inStaff === 2, `both staff register doors ask (found ${inStaff})`);
