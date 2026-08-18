@@ -5405,3 +5405,79 @@ five profile fields and is not slipped in beside them. Until it is answered, `mi
 *shape* (occupancy, lien, amortization, comp) but not its *product line*.
 
 158/158 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.89 — ⛔ THE FIRST REAL LIVE MEASUREMENT: 86.10%, AND EVERY MISS RUNS THE SAME WAY (2026-08-18)
+
+The owner supplied the Lender Price credentials with written authorization. **The full 299-scenario
+agreement battery has now been run against the live vendor.** This is the first end-to-end measurement
+anyone has been able to take; every number in this section is measured, not modelled.
+
+```
+scenarios     299
+comparable    295   (incomparable 4, errors 0)
+agreed        254   (all priced; both-declined 0)
+disagreed      41
+agreement   86.10%
+by category   {"final_price": 7109, "disqualification_extra": 41}
+GATE MET      NO
+```
+
+**⛔ EVERY ONE OF THE 41 RUNS THE SAME DIRECTION: `disqualification_extra` — OUR ENGINE DECLINED A LOAN
+LENDER PRICE PRICED. Zero the other way.** Not one scenario where we would price something they refuse.
+That is the commercially safe direction and the operationally expensive one: it is business we are
+turning away, and under the standing rule we may only disagree with Lender Price's eligibility **with a
+stated reason**.
+
+**The 41 are 34 distinct rules, and every one is an ELIGIBILITY rule — none is a price.** The whole
+disagreement lives in one corner of the grid: low FICO, high LTV, and sub-1.00 DSCR. The heaviest:
+
+| fired | rule | what ours says |
+|---|---|---|
+| 8× | `dhvn_ltv_t1_640_purchase_ge1` | Max LTV/CLTV **70%** — T1, FICO 640–679, purchase/R&T, DSCR ≥ 1.00 |
+| 7× | `dhvn_min_fico_lt100` | DSCR < 1.00 → **min FICO 680** |
+| 3× | `DHVN_DSCR30_fc___640_660_75.5_80.5` | **N/A cell** — FICO 640–660 × CLTV 75.5–80.5% |
+| 3× | `dhvn_max_ltv_lt100` | DSCR < 1.00 → **max LTV 75%** |
+
+**A RUN THAT ANSWERED CONFIDENTLY UNTIL IT WAS ASKED THE RIGHT QUESTION.** The first attempt — the same
+battery, same scope, but *with* the disqualify leg — reported **0.00% agreement**, 254 of 256 in
+`disqualification_split`. That is not a pricing failure and not a regression: Lender Price splits one
+Deephaven sheet across several **DSCR-band programs**, so within the `^dscr` family it *prices* the
+matching band and *declines* the others with `"DSCR >=1.25% only eligible on this program"`. Scoped to
+the family, the disqualifier axis dominates and, in the comparator's own words, *"the price axes are
+moot"* — so the rungs were never compared at all.
+
+**0.00% and 86.10% are the same engine on the same day.** The difference is entirely which question was
+asked. This is the runner's own documented trap — it already refuses an *unscoped* built-in run for
+exactly this reason — and the family-scoped-with-disqualify run is a second instance of it that the
+guard does not catch. Recorded here rather than quietly re-run, because **a confident wrong number is
+worse than a refusal**, and the next person to run this will hit the same wall.
+
+**The four `incomparable` scenarios are `lp_no_signal`** — `NJ Individual 5yr PPP`,
+`NJ Individual PPP prohibited`, `ltv 85`, `huge loan 3.5M`. Two of them are the **only** prepayment-
+prohibition scenarios in the battery, so that axis is currently unmeasured. An incomparable scenario is
+neither a match nor a miss, so it silently leaves the denominator — the reason `parity.bucketsOf` and
+the coverage reconciliation of §2.79 exist.
+
+`final_price` differed on **7109 rungs** and is **reported, not gated** — the known unreconciled
+origination/margin gap (task #78). It is not evidence about the rate sheet.
+
+A durable summary — the verdict, the 34 rules, the incomparables — is committed at
+`docs/longterm/ppe-research/runs/2026-08-18-lp-agreement-price-only.json`. The multi-megabyte vendor
+report is **not** committed: it does not belong in git, but the verdict must outlive the container that
+produced it.
+
+**⛔ OWNER QUESTIONS — the three that block closing the gap. Not guessed.**
+
+1. **The low-FICO / high-LTV corner.** Our grid caps FICO 640–679 at 70% LTV and Lender Price prices it
+   at 80%. Is our transcription of the Deephaven matrix wrong, is Lender Price pricing outside its own
+   published matrix, or is it pricing on a band our sheet does not model? Until that is answered we are
+   declining loans they would do.
+2. **Sub-1.00 DSCR.** We enforce min FICO 680 and max LTV 75% below 1.00 DSCR; Lender Price priced
+   through both. Same three explanations, same consequence.
+3. **The out-of-bounds probes.** `fico 600`, `dscr 0.6`, `tiny loan 60k`, `min-loan 150k` were built as
+   deliberate INELIGIBLE controls — and Lender Price priced all of them. Either those bounds are not
+   Deephaven's, or the priced answer came from another lender inside the scope. This one is measurable
+   without asking anybody, and is the first thing to settle.
+

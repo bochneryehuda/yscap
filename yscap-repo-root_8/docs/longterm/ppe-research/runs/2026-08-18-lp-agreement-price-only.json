@@ -1,0 +1,1069 @@
+{
+ "measuredAt": "2026-08-18",
+ "run": "scripts/test-lt-lp-agreement-run.js --filter-investor \"Deephaven Mortgage\" --filter-program-like \"^dscr\" --with-prepay --no-disqualify",
+ "summary": {
+  "total": 299,
+  "agreed": 254,
+  "agreedPriced": 254,
+  "agreedDeclined": 0,
+  "disagreed": 41,
+  "incomparable": 4,
+  "incomparableByReason": {
+   "lp_no_signal": 4
+  },
+  "declines": {
+   "reconciled": 41,
+   "bothDeclined": 0,
+   "reasonsAgree": 0,
+   "reasonsDisagree": 0,
+   "reasonsIndeterminate": 0,
+   "notReconciled": 0,
+   "byLayer": {
+    "layer2": {
+     "agreements": 0,
+     "onlyOurs": 2,
+     "onlyAuthority": 0
+    },
+    "layer3": {
+     "agreements": 0,
+     "onlyOurs": 0,
+     "onlyAuthority": 0
+    }
+   }
+  },
+  "errors": 0,
+  "comparable": 295,
+  "agreementRate": 0.8610169491525423,
+  "byCategory": {
+   "final_price": 7109,
+   "disqualification_extra": 41
+  },
+  "byDimension": {},
+  "byDimensionStatus": {},
+  "byStatus": {},
+  "bounds": {
+   "rungsProbed": 7112,
+   "capStated": 7112,
+   "floorStated": 7112,
+   "clamped": 4201,
+   "boundByCap": 4144,
+   "boundByFloor": 57,
+   "failures": {
+    "samePrice": 7109
+   },
+   "gated": [
+    "clampFaithful"
+   ],
+   "ungated": [
+    "samePrice"
+   ]
+  },
+  "pendingEncodeFamilies": [],
+  "surprises": [],
+  "worstDeltaMilli": 0,
+  "disagreeing": [
+   "fico=680 cltv=80 dscr=1.25",
+   "fico=660 cltv=75 dscr=1.25",
+   "fico=660 cltv=80 dscr=1.25",
+   "fico=640 cltv=75 dscr=1.25",
+   "fico=640 cltv=80 dscr=1.25",
+   "fico=680 cltv=80 dscr=1",
+   "fico=660 cltv=75 dscr=1",
+   "fico=660 cltv=80 dscr=1",
+   "fico=640 cltv=75 dscr=1",
+   "fico=640 cltv=80 dscr=1",
+   "fico=760 cltv=80 dscr=0.95",
+   "fico=760 cltv=80 dscr=0.85",
+   "cashout fico=700 cltv=80",
+   "T2 fico=700 Cash out dscr=0.95",
+   "T2 fico=680 Purchase dscr=0.95",
+   "T2 fico=680 Cash out dscr=0.95",
+   "T2 fico=660 Purchase dscr=1.25",
+   "T2 fico=660 Purchase dscr=0.95",
+   "T2 fico=660 Cash out dscr=1.25",
+   "T2 fico=660 Cash out dscr=0.95",
+   "T3 fico=700 Purchase dscr=0.95",
+   "T3 fico=700 Cash out dscr=0.95",
+   "T3 fico=680 Purchase dscr=1.25",
+   "T3 fico=680 Purchase dscr=0.95",
+   "T3 fico=680 Cash out dscr=1.25",
+   "T3 fico=680 Cash out dscr=0.95",
+   "T3 fico=660 Purchase dscr=1.25",
+   "T3 fico=660 Purchase dscr=0.95",
+   "T3 fico=660 Cash out dscr=1.25",
+   "T3 fico=660 Cash out dscr=0.95",
+   "T1 fico=700 Cash out dscr=0.95",
+   "T1 fico=680 Cash out dscr=0.95",
+   "T1 fico=640 Purchase dscr=0.95",
+   "T1 fico=640 Cash out dscr=0.95",
+   "fico 600",
+   "dscr 0.6",
+   "tiny loan 60k",
+   "fico 640 ltv 80 dscr 0.9",
+   "min-loan 150k dscr 0.9",
+   "T2 fico 640",
+   "T3 fico 640"
+  ],
+  "disagreements": [
+   {
+    "scenario": "fico=680 cltv=80 dscr=1.25",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico=660 cltv=75 dscr=1.25",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico=660 cltv=80 dscr=1.25",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico=640 cltv=75 dscr=1.25",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico=640 cltv=80 dscr=1.25",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico=680 cltv=80 dscr=1",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico=660 cltv=75 dscr=1",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico=660 cltv=80 dscr=1",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico=640 cltv=75 dscr=1",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico=640 cltv=80 dscr=1",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico=760 cltv=80 dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico=760 cltv=80 dscr=0.85",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "cashout fico=700 cltv=80",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T2 fico=700 Cash out dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T2 fico=680 Purchase dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T2 fico=680 Cash out dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T2 fico=660 Purchase dscr=1.25",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T2 fico=660 Purchase dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T2 fico=660 Cash out dscr=1.25",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T2 fico=660 Cash out dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T3 fico=700 Purchase dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T3 fico=700 Cash out dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T3 fico=680 Purchase dscr=1.25",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T3 fico=680 Purchase dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T3 fico=680 Cash out dscr=1.25",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T3 fico=680 Cash out dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T3 fico=660 Purchase dscr=1.25",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T3 fico=660 Purchase dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T3 fico=660 Cash out dscr=1.25",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T3 fico=660 Cash out dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T1 fico=700 Cash out dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T1 fico=680 Cash out dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T1 fico=640 Purchase dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T1 fico=640 Cash out dscr=0.95",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico 600",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [
+     {
+      "layer": "layer2",
+      "side": "ours",
+      "dimension": "fico",
+      "reason": "Min FICO 640"
+     }
+    ],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "dscr 0.6",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [
+     {
+      "layer": "layer2",
+      "side": "ours",
+      "dimension": "dscr",
+      "reason": "Minimum DSCR 0.75"
+     }
+    ],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "tiny loan 60k",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "fico 640 ltv 80 dscr 0.9",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "min-loan 150k dscr 0.9",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T2 fico 640",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   },
+   {
+    "scenario": "T3 fico 640",
+    "ourEligible": false,
+    "lpEligible": true,
+    "worstDeltaMilli": 0,
+    "categories": [
+     "disqualification_extra"
+    ],
+    "dimensions": [],
+    "dimensionsOmitted": 0,
+    "boundsFailed": [],
+    "worstRung": null,
+    "declineVerdict": "indeterminate",
+    "declineMismatch": [],
+    "declineRowsOmitted": 0
+   }
+  ],
+  "disagreementsOmitted": 0,
+  "notStored": "per-coupon rung digests and full per-layer decline reports live on the run result only; this summary carries the worst rung's build-up and a capped decline-mismatch sample, with each decline reason cut to 120 characters (a cut reason ends in '…').",
+  "gateMet": false
+ },
+ "disagreementDirection": "every one is disqualification_extra: OUR engine declined, Lender Price priced. Zero the other way.",
+ "byRule": {
+  "DHVN_DSCR30_fc___680_700_75.5_80.5": {
+   "reason": "Not eligible: FICO 680–700 × CLTV 75.5%–80.5% × DSCR any",
+   "count": 2,
+   "scenarios": [
+    "fico=680 cltv=80 dscr=1.25",
+    "fico=680 cltv=80 dscr=1"
+   ]
+  },
+  "dhvn_ltv_t1_680_purchase_ge1": {
+   "reason": "Max LTV/CLTV 75%: T1 FICO 680–699, purchase/rate-term, DSCR >= 1.00",
+   "count": 2,
+   "scenarios": [
+    "fico=680 cltv=80 dscr=1.25",
+    "fico=680 cltv=80 dscr=1"
+   ]
+  },
+  "dhvn_ltv_t1_640_purchase_ge1": {
+   "reason": "Max LTV/CLTV 70%: T1 FICO 640–679, purchase/rate-term, DSCR >= 1.00",
+   "count": 8,
+   "scenarios": [
+    "fico=660 cltv=75 dscr=1.25",
+    "fico=660 cltv=80 dscr=1.25",
+    "fico=640 cltv=75 dscr=1.25",
+    "fico=640 cltv=80 dscr=1.25",
+    "fico=660 cltv=75 dscr=1",
+    "fico=660 cltv=80 dscr=1",
+    "fico=640 cltv=75 dscr=1",
+    "fico=640 cltv=80 dscr=1"
+   ]
+  },
+  "DHVN_DSCR30_fc___660_680_75.5_80.5": {
+   "reason": "Not eligible: FICO 660–680 × CLTV 75.5%–80.5% × DSCR any",
+   "count": 2,
+   "scenarios": [
+    "fico=660 cltv=80 dscr=1.25",
+    "fico=660 cltv=80 dscr=1"
+   ]
+  },
+  "DHVN_DSCR30_fc___640_660_70.5_75.5": {
+   "reason": "Not eligible: FICO 640–660 × CLTV 70.5%–75.5% × DSCR any",
+   "count": 2,
+   "scenarios": [
+    "fico=640 cltv=75 dscr=1.25",
+    "fico=640 cltv=75 dscr=1"
+   ]
+  },
+  "DHVN_DSCR30_fc___640_660_75.5_80.5": {
+   "reason": "Not eligible: FICO 640–660 × CLTV 75.5%–80.5% × DSCR any",
+   "count": 3,
+   "scenarios": [
+    "fico=640 cltv=80 dscr=1.25",
+    "fico=640 cltv=80 dscr=1",
+    "fico 640 ltv 80 dscr 0.9"
+   ]
+  },
+  "dhvn_max_ltv_lt100": {
+   "reason": "DSCR < 1.00: Max LTV 75%",
+   "count": 3,
+   "scenarios": [
+    "fico=760 cltv=80 dscr=0.95",
+    "fico=760 cltv=80 dscr=0.85",
+    "fico 640 ltv 80 dscr 0.9"
+   ]
+  },
+  "dhvn_ltv_t1_720_purchase_lt1": {
+   "reason": "Max LTV/CLTV 75%: T1 FICO 720+, purchase/rate-term, DSCR < 1.00",
+   "count": 2,
+   "scenarios": [
+    "fico=760 cltv=80 dscr=0.95",
+    "fico=760 cltv=80 dscr=0.85"
+   ]
+  },
+  "dhvn_ltv_t1_700_cashout_ge1": {
+   "reason": "Max LTV/CLTV 75%: T1 FICO 700–719, cash-out, DSCR >= 1.00",
+   "count": 1,
+   "scenarios": [
+    "cashout fico=700 cltv=80"
+   ]
+  },
+  "dhvn_ltv_t2_700_cashout_lt1": {
+   "reason": "Max LTV/CLTV 65%: T2 FICO 700+, cash-out, DSCR < 1.00",
+   "count": 1,
+   "scenarios": [
+    "T2 fico=700 Cash out dscr=0.95"
+   ]
+  },
+  "dhvn_ltv_t2_680_purchase_lt1": {
+   "reason": "Max LTV/CLTV 65%: T2 FICO 680–699, purchase/rate-term, DSCR < 1.00",
+   "count": 1,
+   "scenarios": [
+    "T2 fico=680 Purchase dscr=0.95"
+   ]
+  },
+  "dhvn_ltv_t2_680_cashout_lt1": {
+   "reason": "Max LTV/CLTV 65%: T2 FICO 680–699, cash-out, DSCR < 1.00",
+   "count": 1,
+   "scenarios": [
+    "T2 fico=680 Cash out dscr=0.95"
+   ]
+  },
+  "dhvn_ltv_t2_660_purchase_ge1": {
+   "reason": "Max LTV/CLTV 65%: T2 FICO 660–679, purchase/rate-term, DSCR >= 1.00",
+   "count": 1,
+   "scenarios": [
+    "T2 fico=660 Purchase dscr=1.25"
+   ]
+  },
+  "dhvn_min_fico_lt100": {
+   "reason": "DSCR < 1.00: Min FICO 680",
+   "count": 7,
+   "scenarios": [
+    "T2 fico=660 Purchase dscr=0.95",
+    "T2 fico=660 Cash out dscr=0.95",
+    "T3 fico=660 Purchase dscr=0.95",
+    "T3 fico=660 Cash out dscr=0.95",
+    "T1 fico=640 Purchase dscr=0.95",
+    "T1 fico=640 Cash out dscr=0.95",
+    "fico 640 ltv 80 dscr 0.9"
+   ]
+  },
+  "dhvn_na_t2_660_purchase_lt1": {
+   "reason": "Not eligible: T2 FICO 660–679, purchase/rate-term, DSCR < 1.00",
+   "count": 1,
+   "scenarios": [
+    "T2 fico=660 Purchase dscr=0.95"
+   ]
+  },
+  "dhvn_ltv_t2_660_cashout_ge1": {
+   "reason": "Max LTV/CLTV 65%: T2 FICO 660–679, cash-out, DSCR >= 1.00",
+   "count": 1,
+   "scenarios": [
+    "T2 fico=660 Cash out dscr=1.25"
+   ]
+  },
+  "dhvn_na_t2_660_cashout_lt1": {
+   "reason": "Not eligible: T2 FICO 660–679, cash-out, DSCR < 1.00",
+   "count": 1,
+   "scenarios": [
+    "T2 fico=660 Cash out dscr=0.95"
+   ]
+  },
+  "dhvn_ltv_t3_700_purchase_lt1": {
+   "reason": "Max LTV/CLTV 60%: T3 FICO 700+, purchase/rate-term, DSCR < 1.00",
+   "count": 1,
+   "scenarios": [
+    "T3 fico=700 Purchase dscr=0.95"
+   ]
+  },
+  "dhvn_ltv_t3_700_cashout_lt1": {
+   "reason": "Max LTV/CLTV 60%: T3 FICO 700+, cash-out, DSCR < 1.00",
+   "count": 1,
+   "scenarios": [
+    "T3 fico=700 Cash out dscr=0.95"
+   ]
+  },
+  "dhvn_ltv_t3_660_purchase_ge1": {
+   "reason": "Max LTV/CLTV 65%: T3 FICO 660–699, purchase/rate-term, DSCR >= 1.00",
+   "count": 2,
+   "scenarios": [
+    "T3 fico=680 Purchase dscr=1.25",
+    "T3 fico=660 Purchase dscr=1.25"
+   ]
+  },
+  "dhvn_na_t3_660_purchase_lt1": {
+   "reason": "Not eligible: T3 FICO 660–699, purchase/rate-term, DSCR < 1.00",
+   "count": 2,
+   "scenarios": [
+    "T3 fico=680 Purchase dscr=0.95",
+    "T3 fico=660 Purchase dscr=0.95"
+   ]
+  },
+  "dhvn_ltv_t3_660_cashout_ge1": {
+   "reason": "Max LTV/CLTV 65%: T3 FICO 660–699, cash-out, DSCR >= 1.00",
+   "count": 2,
+   "scenarios": [
+    "T3 fico=680 Cash out dscr=1.25",
+    "T3 fico=660 Cash out dscr=1.25"
+   ]
+  },
+  "dhvn_na_t3_660_cashout_lt1": {
+   "reason": "Not eligible: T3 FICO 660–699, cash-out, DSCR < 1.00",
+   "count": 2,
+   "scenarios": [
+    "T3 fico=680 Cash out dscr=0.95",
+    "T3 fico=660 Cash out dscr=0.95"
+   ]
+  },
+  "dhvn_ltv_t1_700_cashout_lt1": {
+   "reason": "Max LTV/CLTV 65%: T1 FICO 700–719, cash-out, DSCR < 1.00",
+   "count": 1,
+   "scenarios": [
+    "T1 fico=700 Cash out dscr=0.95"
+   ]
+  },
+  "dhvn_ltv_t1_680_cashout_lt1": {
+   "reason": "Max LTV/CLTV 65%: T1 FICO 680–699, cash-out, DSCR < 1.00",
+   "count": 1,
+   "scenarios": [
+    "T1 fico=680 Cash out dscr=0.95"
+   ]
+  },
+  "dhvn_na_t1_640_purchase_lt1": {
+   "reason": "Not eligible: T1 FICO 640–679, purchase/rate-term, DSCR < 1.00",
+   "count": 2,
+   "scenarios": [
+    "T1 fico=640 Purchase dscr=0.95",
+    "fico 640 ltv 80 dscr 0.9"
+   ]
+  },
+  "dhvn_na_t1_640_cashout_lt1": {
+   "reason": "Not eligible: T1 FICO 640–679, cash-out, DSCR < 1.00",
+   "count": 1,
+   "scenarios": [
+    "T1 fico=640 Cash out dscr=0.95"
+   ]
+  },
+  "dhvn_min_fico": {
+   "reason": "Min FICO 640",
+   "count": 1,
+   "scenarios": [
+    "fico 600"
+   ]
+  },
+  "dhvn_min_dscr": {
+   "reason": "Minimum DSCR 0.75",
+   "count": 1,
+   "scenarios": [
+    "dscr 0.6"
+   ]
+  },
+  "dhvn_min_loan_ge1": {
+   "reason": "Minimum Loan Amount $75,000 (DSCR >= 1.00x)",
+   "count": 1,
+   "scenarios": [
+    "tiny loan 60k"
+   ]
+  },
+  "dhvn_max_ltv_lt100_weakfico": {
+   "reason": "DSCR < 1.00, FICO < 700: Max LTV 70%",
+   "count": 1,
+   "scenarios": [
+    "fico 640 ltv 80 dscr 0.9"
+   ]
+  },
+  "dhvn_min_loan_lt1": {
+   "reason": "Minimum Loan Amount $200,000 (DSCR < 1.00x)",
+   "count": 1,
+   "scenarios": [
+    "min-loan 150k dscr 0.9"
+   ]
+  },
+  "dhvn_min_fico_t2": {
+   "reason": "Loan > $1.5MM: Min FICO 660",
+   "count": 1,
+   "scenarios": [
+    "T2 fico 640"
+   ]
+  },
+  "dhvn_min_fico_t3": {
+   "reason": "Loan > $2.0MM: Min FICO 660",
+   "count": 1,
+   "scenarios": [
+    "T3 fico 640"
+   ]
+  }
+ },
+ "incomparable": [
+  {
+   "scenario": "NJ Individual 5yr PPP",
+   "reason": "lp_no_signal"
+  },
+  {
+   "scenario": "ltv 85",
+   "reason": "lp_no_signal"
+  },
+  {
+   "scenario": "huge loan 3.5M",
+   "reason": "lp_no_signal"
+  },
+  {
+   "scenario": "NJ Individual PPP prohibited",
+   "reason": "lp_no_signal"
+  }
+ ]
+}
