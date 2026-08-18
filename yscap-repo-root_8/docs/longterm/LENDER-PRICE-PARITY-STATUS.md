@@ -6137,3 +6137,79 @@ either field to the foundation, and deleting the live measurement from beside th
 **The class:** an assertion that checks an outcome while its label claims a cause is a mislabelled
 assertion, and mislabelled assertions are how a wrong mechanism survives a green suite. When a claim
 names a *source*, test the source — feed it the opposite and prove the source wins.
+
+### §2.100 — ⛔ THE VENDOR REORDERS ITS OWN LLPAs, SO OUR ANSWER MOVED WHEN NOTHING HAD (2026-08-18)
+
+**Found while sizing the capture layer the owner asked for** (*"save all the data that is coming back,
+compress the data somewhere in the logs"*). Before designing it, two questions had to be answered with
+numbers rather than guesses: how big is a response, and does the same request give the same answer?
+
+**How big.** One Lender Price response is **8.0 MB of raw JSON** — 17 programs × ~30 rungs × itemized
+adjustment rows with heavily repeated reason strings.
+
+| | size | ratio |
+|---|---|---|
+| raw JSON | 8,029 KB | — |
+| gzip -9 | 327 KB | 24.5× |
+| **brotli** | **56 KB** | **143×** |
+
+Brotli is decisively right and is in Node's built-in `zlib`, so it costs no dependency (the standing
+no-native-deps rule). At 192 paid calls a day that is 10.7 MB/day rather than 62.8 — **3.8 GB/year
+instead of 22.4 GB**.
+
+**Does the same request give the same answer? No — and the first reading of why was wrong.** The same
+scenario priced twice, seconds apart, diffed leaf by leaf, reported:
+
+```
+202x  results…leafs[].groupAdjustmentProperties[].adjustments[].adjType
+      "LoanAmountRateAdjustment" -> "SimpleRateAdjustment"
+```
+
+Read literally that says the vendor **relabels** adjustments between calls — which would be serious,
+because `ratesheet-agreement-diff.lpLlpaDimension` keys the LLPA dimension on `adjType` FIRST, so every
+comparison would bucket the same adjustment differently depending on which call you happened to make.
+
+**It is not what is happening.** A leaf diff walks arrays **by index**, so a reordered array reads as a
+relabelled one. Compared as SETS:
+
+```
+2,889 raw adjustment arrays  ->  2,445 identical
+                                   444 SAME SET, different ORDER
+                                     0 genuinely different
+```
+
+Nothing is relabelled. The vendor simply returns the same adjustments in a **non-deterministic order**
+on ~15% of arrays. Through `normalizeLpFull` that was **222 of 499 rungs**, so our normalized answer was
+byte-different on every call while nothing about the pricing had changed.
+
+**Why it matters even though nothing was visibly broken.** Two consumers were already safe, and both are
+now pinned so they stay that way: `rung-digest.theirRungs` sums into a dimension-keyed Map, and
+`finding.findingKey` keys on identity rather than detail — so a reordered evidence array can never mint
+a duplicate finding. What was NOT safe is anything that asks *"is the vendor's answer the same as last
+time?"* — a content hash over an unsorted answer says **no every time**, which would have made the
+capture and change-detection layer worse than useless. It also stopped the mirror's adjustment list
+reshuffling between two refreshes of one search.
+
+**The fix** is a canonical order at the normalizer — reason, then adjType, then group, then value; total,
+so no tie is left in arrival order. `normalizeLpFull` is now byte-stable across the two real captures:
+**499 of 499 rungs identical, 0 reordered**.
+
+**Two holes in my own suite, both found by mutation and both worth remembering.**
+
+1. **Removing the sort from the shipped builder left every assertion green.** Section C sorted the
+   fixture rows *by hand*, so it proved the comparator was total and that ordering made the two calls
+   agree — while never asserting that the production path applies it. That is the recurring shape: a
+   test that proves a property of a HELPER while its label claims the SHIPPED PATH. Section C2 now
+   drives the real builder, feeding the vendor's own rows in reversed so an unsorted builder cannot
+   accidentally agree.
+2. **A builder that de-duplicated while sorting also passed.** Duplicate adjustment rows are real and
+   they **SUM** — dropping one silently removes points from the stack and under-charges. The suite now
+   feeds a genuine duplicate and asserts both copies survive and the total is 750 rather than 625.
+
+`scripts/fixtures/lp-llpa-order.json` keeps six of the real rung pairs — the vendor's own bytes, with
+the whole-response measurement beside them — so the ordering can never be "simplified" away as
+unnecessary, and so the alarming index-wise reading can never be re-derived from this data. Seven
+mutations each turn the suite red.
+
+**Still open:** the capture layer itself. The two numbers it needed are now measured — 56 KB brotli per
+response, and a normalized answer that is finally stable enough for a content hash to mean something.

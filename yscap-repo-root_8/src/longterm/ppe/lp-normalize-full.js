@@ -87,11 +87,39 @@ function marginOf(option, priceScale) {
 
 // The itemized LLPAs on an option, in milli-points, keys verbatim. adjustments[] rows are
 // { group, reason, adjType, type, valueType, value }.
+//
+// ⛔ SORTED, BECAUSE THE VENDOR IS NOT DETERMINISTIC ABOUT THIS AND WE ARE (§2.100). Measured live
+// 2026-08-18 by pricing ONE scenario TWICE, seconds apart, and diffing the two whole responses:
+//
+//     2,889 raw adjustment arrays   ->  2,445 identical
+//                                       444 the SAME SET in a DIFFERENT ORDER
+//                                         0 genuinely different
+//
+// Through this normalizer that is 222 of 499 rungs, so without a canonical order `normalizeLpFull`
+// returns a byte-different answer on every single call while nothing about the pricing has changed.
+// The set is never wrong — only its sequence — so sorting LOSES NOTHING and buys determinism for every
+// consumer at once.
+//
+// WHY IT MATTERS EVEN THOUGH NOTHING IS VISIBLY BROKEN TODAY. `rung-digest.theirRungs` already sums
+// into a dimension-keyed Map and `finding.findingKey` keys on identity rather than detail, so neither
+// churns — both asserted in the suite so they stay that way. What this protects is everything that
+// asks "is the vendor's answer the same as last time?": a content hash over an unsorted answer says NO
+// every time, which would make a change-detection or capture layer worse than useless — it would
+// report a vendor change on every call, forever. It also stops the mirror's adjustment list
+// reshuffling between two refreshes of the same search.
+//
+// THE ORDER IS TOTAL AND DEFINED ON THE CONTENT, never on arrival: reason, then adjType, then group,
+// then value. A partial comparator would leave ties in arrival order and reintroduce exactly the
+// instability this removes. `String(x)` on each part keeps a null from being compared to a string.
+function llpaSortKey(a) {
+  return `${String(a.reason)}\u0000${String(a.adjType)}\u0000${String(a.group)}\u0000${String(a.valueMilli)}`;
+}
 function llpasOf(rows, priceScale) {
   if (!Array.isArray(rows)) return [];
   return rows
     .filter((a) => a && (a.reason != null || a.value != null))
-    .map((a) => ({ reason: a.reason || null, adjType: a.adjType || null, group: a.group || null, valueMilli: milli(a.value, priceScale) }));
+    .map((a) => ({ reason: a.reason || null, adjType: a.adjType || null, group: a.group || null, valueMilli: milli(a.value, priceScale) }))
+    .sort((x, y) => { const kx = llpaSortKey(x), ky = llpaSortKey(y); return kx < ky ? -1 : kx > ky ? 1 : 0; });
 }
 
 // One canonical rung from a parseFull option.
@@ -207,6 +235,8 @@ function normalizeLpDisqualified(disq, opts = {}) {
 
 module.exports = {
   normalizeLpFull,
+  // Exported so the ordering suite can drive the comparator directly rather than re-typing it.
+  llpaSortKey,
   normalizeLpDisqualified,
   bestRungs,
   // THE ONE DEFINITION OF "does this Lender Price program fall inside the scope", promoted out of

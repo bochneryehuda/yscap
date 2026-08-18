@@ -1,0 +1,370 @@
+{
+ "_README": "REAL Lender Price captures — the SAME scenario priced TWICE, seconds apart, on 2026-08-18. Each row is one rung whose itemized LLPA SET is identical and whose ORDER differs. This is the vendor being non-deterministic, not us: across the two full responses 444 of 2,889 raw adjustment arrays came back reordered and ZERO came back genuinely different. Kept as evidence so the canonical ordering in lp-normalize-full can never be \"simplified\" away as unnecessary.",
+ "capturedAt": "2026-08-18",
+ "scenario": {
+  "purpose": "Purchase",
+  "value": 500000,
+  "loan": 350000,
+  "fico": 760,
+  "dscr": 1.25,
+  "state": "NY",
+  "zip": "11211",
+  "propertyType": "SingleFamily",
+  "prepayMonths": 60,
+  "borrowerType": "LLC"
+ },
+ "measured": {
+  "rawAdjustmentArrays": 2889,
+  "identical": 2445,
+  "sameSetDifferentOrder": 444,
+  "genuinelyDifferent": 0,
+  "normalizedRungs": 499,
+  "normalizedIdenticalOrder": 277,
+  "normalizedReordered": 222,
+  "normalizedDifferent": 0
+ },
+ "rows": [
+  {
+   "lender": "eResi",
+   "program": "30 Yr Fixed eXperienced Investor DSCR >=1.25",
+   "rate": 5990,
+   "a": [
+    {
+     "reason": "FICO/CLTV Price Adjusters - 760+ / CLTV >65.01 % <= 70.0 %",
+     "adjType": "FicoRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 875
+    },
+    {
+     "reason": "Additional LLPAs - DSCR >= 1.250 / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 500
+    },
+    {
+     "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 125
+    },
+    {
+     "reason": "60 Mnth",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 625
+    }
+   ],
+   "b": [
+    {
+     "reason": "FICO/CLTV Price Adjusters - 760+ / CLTV >65.01 % <= 70.0 %",
+     "adjType": "FicoRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 875
+    },
+    {
+     "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 125
+    },
+    {
+     "reason": "Additional LLPAs - DSCR >= 1.250 / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 500
+    },
+    {
+     "reason": "60 Mnth",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 625
+    }
+   ]
+  },
+  {
+   "lender": "eResi",
+   "program": "30 Yr Fixed eXperienced Investor DSCR >=1.25",
+   "rate": 6125,
+   "a": [
+    {
+     "reason": "FICO/CLTV Price Adjusters - 760+ / CLTV >65.01 % <= 70.0 %",
+     "adjType": "FicoRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 875
+    },
+    {
+     "reason": "Additional LLPAs - DSCR >= 1.250 / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 500
+    },
+    {
+     "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 125
+    },
+    {
+     "reason": "60 Mnth",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 625
+    }
+   ],
+   "b": [
+    {
+     "reason": "FICO/CLTV Price Adjusters - 760+ / CLTV >65.01 % <= 70.0 %",
+     "adjType": "FicoRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 875
+    },
+    {
+     "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 125
+    },
+    {
+     "reason": "Additional LLPAs - DSCR >= 1.250 / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 500
+    },
+    {
+     "reason": "60 Mnth",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 625
+    }
+   ]
+  },
+  {
+   "lender": "eResi",
+   "program": "30 Yr Fixed eXperienced Investor DSCR >=1.25",
+   "rate": 6250,
+   "a": [
+    {
+     "reason": "FICO/CLTV Price Adjusters - 760+ / CLTV >65.01 % <= 70.0 %",
+     "adjType": "FicoRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 875
+    },
+    {
+     "reason": "Additional LLPAs - DSCR >= 1.250 / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 500
+    },
+    {
+     "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 125
+    },
+    {
+     "reason": "60 Mnth",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 625
+    }
+   ],
+   "b": [
+    {
+     "reason": "FICO/CLTV Price Adjusters - 760+ / CLTV >65.01 % <= 70.0 %",
+     "adjType": "FicoRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 875
+    },
+    {
+     "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 125
+    },
+    {
+     "reason": "Additional LLPAs - DSCR >= 1.250 / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 500
+    },
+    {
+     "reason": "60 Mnth",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 625
+    }
+   ]
+  },
+  {
+   "lender": "eResi",
+   "program": "30 Yr Fixed eXperienced Investor DSCR >=1.25",
+   "rate": 6375,
+   "a": [
+    {
+     "reason": "FICO/CLTV Price Adjusters - 760+ / CLTV >65.01 % <= 70.0 %",
+     "adjType": "FicoRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 875
+    },
+    {
+     "reason": "Additional LLPAs - DSCR >= 1.250 / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 500
+    },
+    {
+     "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 125
+    },
+    {
+     "reason": "60 Mnth",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 625
+    }
+   ],
+   "b": [
+    {
+     "reason": "FICO/CLTV Price Adjusters - 760+ / CLTV >65.01 % <= 70.0 %",
+     "adjType": "FicoRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 875
+    },
+    {
+     "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 125
+    },
+    {
+     "reason": "Additional LLPAs - DSCR >= 1.250 / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 500
+    },
+    {
+     "reason": "60 Mnth",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 625
+    }
+   ]
+  },
+  {
+   "lender": "eResi",
+   "program": "30 Yr Fixed eXperienced Investor DSCR >=1.25",
+   "rate": 6490,
+   "a": [
+    {
+     "reason": "FICO/CLTV Price Adjusters - 760+ / CLTV >65.01 % <= 70.0 %",
+     "adjType": "FicoRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 875
+    },
+    {
+     "reason": "Additional LLPAs - DSCR >= 1.250 / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 500
+    },
+    {
+     "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 125
+    },
+    {
+     "reason": "60 Mnth",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 625
+    }
+   ],
+   "b": [
+    {
+     "reason": "FICO/CLTV Price Adjusters - 760+ / CLTV >65.01 % <= 70.0 %",
+     "adjType": "FicoRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 875
+    },
+    {
+     "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 125
+    },
+    {
+     "reason": "Additional LLPAs - DSCR >= 1.250 / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 500
+    },
+    {
+     "reason": "60 Mnth",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 625
+    }
+   ]
+  },
+  {
+   "lender": "eResi",
+   "program": "30 Yr Fixed eXperienced Investor DSCR >=1.25",
+   "rate": 6625,
+   "a": [
+    {
+     "reason": "FICO/CLTV Price Adjusters - 760+ / CLTV >65.01 % <= 70.0 %",
+     "adjType": "FicoRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 875
+    },
+    {
+     "reason": "Additional LLPAs - DSCR >= 1.250 / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 500
+    },
+    {
+     "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 125
+    },
+    {
+     "reason": "60 Mnth",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 625
+    }
+   ],
+   "b": [
+    {
+     "reason": "FICO/CLTV Price Adjusters - 760+ / CLTV >65.01 % <= 70.0 %",
+     "adjType": "FicoRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 875
+    },
+    {
+     "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 125
+    },
+    {
+     "reason": "Additional LLPAs - DSCR >= 1.250 / CLTV >65.01 % <= 70.0 %",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 500
+    },
+    {
+     "reason": "60 Mnth",
+     "adjType": "SimpleRateAdjustment",
+     "group": "Adjustments - eXperienced Investor DSCR",
+     "valueMilli": 625
+    }
+   ]
+  }
+ ]
+}
