@@ -2214,3 +2214,48 @@ route that quietly applied a "safe" change to a live sheet would be a very diffe
 and auto-apply belongs to the ingest path, which does not exist yet. A first version says so rather
 than reporting an empty diff, which would be the most misleading answer available about a sheet nobody
 has seen before.
+
+**§2.36 — THE NINTH INSTANCE WAS THE TEST RUNNER ITSELF (2026-08-18).** Everything above rests on the
+suites, and the one command that says whether they passed was the one thing nobody had checked. Run
+`node scripts/test-lt-ppe-all.js` on a machine with no database and it printed **"98/98 LT PPE suites
+passed"** — a green line over a run in which not one real-Postgres proof executed. The DB suites skip
+politely when `DATABASE_URL` is unset and exit 0, which is right for a laptop and is exactly how the
+summary came to describe a run that proved nothing about ownership, atomicity, the driver's string
+types or the publish gate. Same class as §2.25–§2.35, in the last place it can live: a person reads
+that line INSTEAD of reading the run.
+
+**IT NOW COUNTS WHAT DID NOT RUN.** Every suite whose source READS the variable — or opens a pg
+connection — is a database suite whether or not it announces itself; a suite that PRINTS a skip is
+named individually, including with a database configured, where a skip means it could not use the one
+it was given, which is worse than not having one; and `LT_REQUIRE_DB=1` makes an unproven run a
+FAILURE, which is what CI should set. The three runs, measured: no database → exit 0 with
+`! 11 of those suites need a REAL Postgres`; no database + `LT_REQUIRE_DB=1` → **exit 1**; the scratch
+Postgres + `LT_REQUIRE_DB=1` → exit 0, `99/99` and `✓ all 11 database-backed suites ran against a real
+Postgres.`
+
+**OVER-COUNTING IS THE SAME FAILURE AS UNDER-COUNTING, and the first cut did it.** Keying on the bare
+name `DATABASE_URL` counted THREE pure suites — `cutover-store-db.js`, `schedule-store-db.js` and
+`route.js` — whose only mention of it is a header line saying they deliberately run WITHOUT one, so the
+summary claimed 14 suites had proven nothing against a database when 3 of them never wanted one. A
+number nobody can reconcile stops being read, which is how the original line survived. `needsDb` now
+matches `process.env.DATABASE_URL` — the actual read, which cannot appear in prose by accident — with
+a pg-driver arm as the belt for a suite that gets its connection string from somewhere else. It reads
+the SOURCE, never the filename: `-db.js` is a habit, not a contract, in both directions.
+
+**AND THE MATCH-A-WORD TRAP, AGAIN.** The skip detector first matched `/skipped/`, which fired on four
+suites whose ordinary assertion labels contain the word ("the header row Excel copies along is
+skipped", "invalid tenant override skipped") — with a database configured, all four were reported as
+having skipped. A real skip names the thing it wanted, so both halves must appear on the SAME line.
+Stated plainly in the file: this can only see a suite that ANNOUNCES its skip, which is why the summary
+leads with how many suites NEED a database rather than how many said they skipped.
+
+**`scripts/test-lt-ppe-runner-guard.js` pins all of it** by SPAWNING the real file over a fixture
+directory of nine tiny suites whose behaviour is known — copied there verbatim, so what is measured is
+the file that ships and there is no test-only seam in it that could drift from how it actually runs.
+Two of the fixtures mention the variable only in prose precisely so the two rules give different
+answers; without that, both the retired rule and the current one count four and the assertion would
+prove nothing. Six mutations of the runner were each proven to turn it red: the bare word, dropping the
+pg arm, keying on the filename, the word-only skip match, dropping the require-DB exit, and ignoring
+the no-database case. The guard is itself a suite the runner scans, so its fixture text is built from
+joined tokens — spelled out, the runner would count this pure test as one that needs a database, which
+is the very over-count it exists to prevent.
