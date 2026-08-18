@@ -349,6 +349,9 @@ async function syncBorrowerPairs(loanId, loan, opts = {}) {
     const route = (rowsIn, table, cols) => rowsIn.filter((r) => partyIdByRole.has(r.role))
       .map((r) => ({ partyId: partyIdByRole.get(r.role), id: r.encompassId, cols: cols(r), table }));
 
+    // WRITTEN BEFORE THE DEBTS, on purpose: a liability names the rental it is
+    // secured on by Encompass's id, and the row it points at has to exist before
+    // that can be turned into our own key.
     const childWrites = [
       ...route(pair.incomes, 'lt_other_incomes', (r) => ({
         income_type: { v: r.incomeType }, monthly_amount: { v: r.monthlyAmount },
@@ -369,13 +372,6 @@ async function syncBorrowerPairs(loanId, loan, opts = {}) {
         asset_type: { v: r.assetType }, institution_name: { v: r.institutionName },
         account_last4: { v: r.accountLast4 }, value: { v: r.value },
       })),
-      ...route(pair.liabilities, 'lt_liabilities', (r) => ({
-        section: { v: r.section, cast: '::lt_liability_section' },
-        liability_type: { v: r.liabilityType }, creditor_name: { v: r.creditorName },
-        account_last4: { v: r.accountLast4 }, unpaid_balance: { v: r.unpaidBalance },
-        monthly_payment: { v: r.monthlyPayment }, months_remaining: { v: r.monthsRemaining },
-        to_be_paid_off: { v: r.toBePaidOff },
-      })),
     ];
 
     for (const w of childWrites) {
@@ -383,10 +379,50 @@ async function syncBorrowerPairs(loanId, loan, opts = {}) {
       else unkeyed += 1;
     }
 
+    // ── The debts, once their rentals are on the table ──────────────────────
+    //
+    // A mortgage on a rental is a different fact from a mortgage on nothing: the
+    // first is covered by that property's own rent and the second is not, which on
+    // a DSCR file is the difference between two underwriting answers. Encompass
+    // hangs the link on the DEBT (`vols[].reoProperty.entityId`), so it is resolved
+    // to our own row here rather than stored as a foreign id nothing can join.
+    //
+    // An id that resolves to NOTHING leaves the link empty rather than guessing —
+    // the commonest reason is honest: a debt secured on the SUBJECT property, whose
+    // REO row this mirror deliberately does not keep (see mapper.readReoProperties),
+    // because filing it would show an investor's subject twice on their schedule.
+    const reoIds = new Map();
+    const partyIds = [...partyIdByRole.values()];
+    if (partyIds.length) {
+      const { rows: reoRows } = await db.query(
+        `SELECT id, party_id, encompass_id FROM lt_reo_properties
+          WHERE party_id = ANY($1::uuid[]) AND encompass_id IS NOT NULL`,
+        [partyIds],
+      );
+      for (const r of reoRows) reoIds.set(`${r.party_id}:${r.encompass_id}`, r.id);
+    }
+
+    const debtWrites = route(pair.liabilities, 'lt_liabilities', (r) => ({
+      section: { v: r.section, cast: '::lt_liability_section' },
+      liability_type: { v: r.liabilityType }, creditor_name: { v: r.creditorName },
+      account_last4: { v: r.accountLast4 }, unpaid_balance: { v: r.unpaidBalance },
+      monthly_payment: { v: r.monthlyPayment }, months_remaining: { v: r.monthsRemaining },
+      to_be_paid_off: { v: r.toBePaidOff },
+      reo_property_id: {
+        v: (r.reoEncompassId && reoIds.get(`${partyIdByRole.get(r.role)}:${r.reoEncompassId}`)) || null,
+        cast: '::uuid',
+      },
+    }));
+
+    for (const w of debtWrites) {
+      if (await upsertChild(db, w.table, w.partyId, w.id, w.cols)) children += 1;
+      else unkeyed += 1;
+    }
+
     // A row the OWNER named as somebody not on this file. Counted rather than
     // parked on the primary: one person's debts on another's schedule is what a
     // DSCR file is underwritten on, and a silent drop is how nobody finds out.
-    const routed = childWrites.length;
+    const routed = childWrites.length + debtWrites.length;
     const offered = pair.incomes.length + pair.reo.length + pair.assets.length + pair.liabilities.length;
     orphaned += offered - routed;
   }

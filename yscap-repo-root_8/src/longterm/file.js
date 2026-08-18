@@ -32,6 +32,8 @@
  * SEPARATION: reads only `lt_*` tables.
  */
 
+const unsourced = require('./application/unsourced');
+
 const lazy = {
   get db() { return require('./db'); },
 };
@@ -299,6 +301,10 @@ async function loadFile(loanId, loan = null) {
 
     property: {
       error: property.error,
+      // What PILOT knowingly does not hold, so the screen can SAY so rather than
+      // draw a dash — a dash beside "In a flood zone" reads as "No", and "No" is an
+      // answer somebody prices a loan on.
+      notSourced: unsourced.notSourcedFor('lt_properties'),
       recorded: !!prop,
       address: prop
         ? [text(prop.street), text(prop.city), text(prop.state), text(prop.zip)].filter(Boolean).join(', ') || null
@@ -351,6 +357,9 @@ async function loadFile(loanId, loan = null) {
     },
 
     income: {
+      // The same list as the property section, because two of the three figures on
+      // this one live on `lt_properties` and one of them is knowingly empty.
+      notSourced: unsourced.notSourcedFor('lt_properties'),
       // The DSCR as Encompass computed it, beside the two figures it is built from,
       // so an underwriter can see what the ratio rests on rather than a bare number.
       dscr: num(l.dscr_ratio),

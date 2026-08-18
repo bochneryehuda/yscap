@@ -138,9 +138,21 @@ const FULL_LOAN = {
       accountIdentifier: '1234567', cashOrMarketValueAmount: 50000, owner: 'Borrower' }],
     otherAssets: [{ id: 'oa-1', assetType: 'EarnestMoney', cashOrMarketValue: 65000 }],
     // §2c is `vols[]` — where the tradelines actually live here.
-    vols: [{ id: 'vol-1', liabilityType: 'MortgageLoan', holderName: 'OCEANFIR/DMI',
-      accountIdentifier: '9999888', unpaidBalanceAmount: 750451, monthlyPaymentAmount: 6529,
-      remainingTermMonths: 339, owner: 'Borrower' }],
+    vols: [
+      // The mortgage ON THE RENTAL: Encompass hangs the link on the DEBT.
+      { id: 'vol-1', liabilityType: 'MortgageLoan', holderName: 'OCEANFIR/DMI',
+        accountIdentifier: '9999888', unpaidBalanceAmount: 750451, monthlyPaymentAmount: 6529,
+        remainingTermMonths: 339, owner: 'Borrower',
+        reoProperty: { entityId: 'reo-1', entityType: 'ReoProperty' } },
+      // A debt secured on the SUBJECT, whose REO row this mirror deliberately does
+      // not keep — the link must come out EMPTY rather than land on the wrong row.
+      { id: 'vol-2', liabilityType: 'MortgageLoan', holderName: 'SUBJECT LENDER',
+        unpaidBalanceAmount: 400000, monthlyPaymentAmount: 2500, owner: 'Borrower',
+        reoProperty: { entityId: 'reo-subject', entityType: 'ReoProperty' } },
+      // A card: no property behind it at all.
+      { id: 'vol-3', liabilityType: 'Revolving', holderName: 'A CARD',
+        unpaidBalanceAmount: 1200, monthlyPaymentAmount: 40, owner: 'Borrower' },
+    ],
   }],
   property: {
     streetAddress: '11 Maple Ave', city: 'NEWARK', county: 'Essex',
@@ -354,11 +366,23 @@ async function main() {
       'and only the last four of an account number are kept');
 
     const liab = await childRows('lt_liabilities');
-    check(liab.length === 1 && liab[0].section === 'debts' && liab[0].creditor_name === 'OCEANFIR/DMI'
-      && Number(liab[0].unpaid_balance) === 750451 && liab[0].months_remaining === 339,
+    const byCreditor = (n) => liab.find((r) => r.creditor_name === n);
+    check(liab.length === 3 && byCreditor('OCEANFIR/DMI')
+      && byCreditor('OCEANFIR/DMI').section === 'debts'
+      && Number(byCreditor('OCEANFIR/DMI').unpaid_balance) === 750451
+      && byCreditor('OCEANFIR/DMI').months_remaining === 339,
       'the tradelines come from vols[], which is where this tenant actually keeps them');
-    check(liab[0].to_be_paid_off === false,
+    check(byCreditor('OCEANFIR/DMI').to_be_paid_off === false,
       'and an ABSENT payoff flag is not a plan to pay it off');
+
+    // WHICH RENTAL THE DEBT IS AGAINST. On a DSCR file that is the difference
+    // between a mortgage covered by that property's own rent and one that is not.
+    check(byCreditor('OCEANFIR/DMI').reo_property_id === reo[0].id,
+      'THE ONE THAT MATTERS: the mortgage on the rental is linked to THAT rental\'s row — Encompass names it by its own id and it is resolved to ours, so the debt and the rent it is covered by can be read together');
+    check(byCreditor('SUBJECT LENDER').reo_property_id === null,
+      'a debt secured on the SUBJECT links to nothing rather than to the wrong row — the subject\'s REO row is deliberately not on the schedule, and half a link is worse than none');
+    check(byCreditor('A CARD').reo_property_id === null,
+      '…and a card has no property behind it at all');
 
     // Every child table must survive a second read without multiplying.
     const before2 = (await Promise.all(['lt_residences', 'lt_other_incomes', 'lt_reo_properties', 'lt_assets', 'lt_liabilities'].map(childRows))).map((r) => r.length);

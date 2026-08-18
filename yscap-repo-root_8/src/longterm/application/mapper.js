@@ -552,6 +552,12 @@ function readLiabilities(app) {
       unpaidBalance: num(l.unpaidBalanceAmount),
       monthlyPayment: num(l.monthlyPaymentAmount),
       monthsRemaining: int(l.remainingTermMonths),
+      // WHICH RENTAL THIS DEBT IS AGAINST. Encompass hangs the link on the debt —
+      // `reoProperty: {entityId, entityType}` — and it is the difference between a
+      // mortgage that is covered by that property's own rent and one that is not,
+      // which on a DSCR file is the difference between two underwriting answers.
+      // The id travels; `sync.js` turns it into the row it points at.
+      reoEncompassId: text(l.reoProperty && l.reoProperty.entityId),
       // Only an explicit TRUE is a payoff. An absent flag is not a plan.
       toBePaidOff: l.payoffIncludedIndicator === true || l.payoffStatusIndicator === true,
     });
@@ -571,6 +577,9 @@ function readLiabilities(app) {
       unpaidBalance: num(l.unpaidBalanceAmount),
       monthlyPayment: num(l.monthlyPaymentAmount),
       monthsRemaining: int(l.remainingTermMonths),
+      // §2d is alimony, child support, a job-related expense — an obligation, not a
+      // debt secured on a property. There is nothing for it to point at.
+      reoEncompassId: null,
       toBePaidOff: false,
     });
   }

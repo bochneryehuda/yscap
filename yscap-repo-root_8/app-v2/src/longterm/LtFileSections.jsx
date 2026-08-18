@@ -50,12 +50,27 @@ export function Facts({ rows, columns = 2 }) {
       display: 'grid', gridTemplateColumns: `repeat(${columns}, minmax(0,1fr))`,
       gap: '8px 18px', margin: 0,
     }}>
-      {shown.map(([label, value]) => (
-        <div key={label} style={{ minWidth: 0 }}>
-          <dt style={{ fontSize: 11, letterSpacing: '.04em', textTransform: 'uppercase', color: MUTED }}>{label}</dt>
-          <dd style={{ margin: 0, color: INK, fontSize: 14, overflowWrap: 'anywhere' }}>{value}</dd>
-        </div>
-      ))}
+      {shown.map(([label, value, notSourced]) => {
+        // A THIRD ANSWER, BESIDE A VALUE AND A DASH. Some of these fields can never
+        // fill — Encompass does not record the fact, or nobody has decided where it
+        // is read from — and a dash there reads as an ANSWER: "not in a flood zone",
+        // "no rent". So the server sends the reason and it is shown IN PLACE of the
+        // value, in the reader's own language. It never hides a real value: the
+        // moment one arrives the sentence gives way to it.
+        const blank = value == null || value === '' || value === '—';
+        return (
+          <div key={label} style={{ minWidth: 0 }}>
+            <dt style={{ fontSize: 11, letterSpacing: '.04em', textTransform: 'uppercase', color: MUTED }}>{label}</dt>
+            {notSourced && blank ? (
+              <dd style={{ margin: 0, color: MUTED, fontSize: 12, fontStyle: 'italic', overflowWrap: 'anywhere' }}>
+                {notSourced}
+              </dd>
+            ) : (
+              <dd style={{ margin: 0, color: INK, fontSize: 14, overflowWrap: 'anywhere' }}>{value}</dd>
+            )}
+          </div>
+        );
+      })}
     </dl>
   );
 }
@@ -215,6 +230,9 @@ function Borrowers({ data }) {
 }
 
 function Property({ data }) {
+  // What PILOT knowingly does not hold, keyed by column, straight from the one
+  // ledger on the server (src/longterm/application/unsourced.js).
+  const ns = data.notSourced || {};
   if (data.error) return <Unreadable error={data.error} />;
   if (!data.recorded) {
     return <p style={{ margin: 0, color: MUTED, fontSize: 13 }}>No property has been read from Encompass for this loan yet.</p>;
@@ -234,9 +252,10 @@ function Property({ data }) {
       ['LTV', data.ltvPct != null ? pct(data.ltvPct) : '—'],
       ['CLTV', data.cltvPct != null ? pct(data.cltvPct) : '—'],
       // A determination that the property is NOT in a flood zone is a real answer and
-      // reads as "No"; one nobody has made yet reads as a dash.
-      ['In a flood zone', yesNo(data.inFloodZone)],
-      ['Flood zone', plain(data.floodZone)],
+      // reads as "No". PILOT has no field it can read one from, so rather than a
+      // dash — which reads as "No" too — the reason says so in words.
+      ['In a flood zone', yesNo(data.inFloodZone), ns.in_flood_zone],
+      ['Flood zone', plain(data.floodZone), ns.flood_zone],
     ]} />
   );
 }
@@ -279,13 +298,14 @@ function Terms({ data }) {
 }
 
 function Income({ data }) {
+  const ns = data.notSourced || {};
   const e = data.housingExpense || {};
   return (
     <>
       <Facts columns={3} rows={[
         ['DSCR', ratio(data.dscr)],
         ['Gross monthly rent', money2(data.grossMonthlyRent)],
-        ['Actual monthly rent', money2(data.actualMonthlyRent)],
+        ['Actual monthly rent', money2(data.actualMonthlyRent), ns.actual_monthly_rent],
       ]} />
       <Group
         title="Monthly housing expense"

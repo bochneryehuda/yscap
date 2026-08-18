@@ -246,7 +246,7 @@ whole job is *"these files need somebody matched"* has to say who to match.
 
 `lt_loans.loan_officer_id` is now read by nothing. It is left in place, LABELLED in the schema
 with where the officer really lives — dropping a column is not something to do to a live
-database on an inference. **Whether to drop it is §11's question 15.**
+database on an inference. **Whether to drop it is §11's question 16.**
 
 ### 2.4 The screens
 
@@ -275,6 +275,25 @@ endpoints; and the investor-name block with a test that sweeps every recorded sp
 **What does not exist:** any screen at all, any sync that writes a row into an `lt_*` table,
 the condition tables, the settings persistence, and every pipeline surface. That is what
 this plan builds.
+
+**EVERY COLUMN OF THE 1003 MIRROR IS EITHER FILLED OR EXPLAINED (2026-08-18).** A column with no
+writer is invisible: the screen shows a dash, the dash reads as an ANSWER — *"not in a flood zone"*,
+*"no rent"* — and nothing anywhere fails. This side has now found that same shape five times, every
+one of them because somebody went looking. So `src/longterm/application/unsourced.js` is the ONE list
+of what the mirror deliberately does not fill, each entry saying what a SCREEN shows, what was
+MEASURED in the 3,783-field census, what would unblock it, and which of three kinds it is —
+*Encompass does not have it*, *the owner has not decided*, and *it is ours to judge* are different
+sentences and the difference is what the next person needs. `scripts/test-lt-unsourced-pure.js` fails
+the build on a column that is neither filled nor listed, and on an entry that has gone stale. Thirteen
+columns are listed today; the file screen says the reason in the reader's own words where a dash used
+to sit. The flood determination and the entity record are the two the owner can unblock — §11.
+
+**A DEBT KNOWS WHICH RENTAL IT IS SECURED ON.** Encompass hangs the link on the debt
+(`vols[].reoProperty.entityId`) and it is resolved to our own row as the 1003 is mirrored, so a
+mortgage covered by a property's own rent can be read together with that rent. On a DSCR file that is
+the difference between two underwriting answers. A link that resolves to nothing stays empty rather
+than guessing — the commonest reason is honest: a debt secured on the SUBJECT, whose REO row this
+mirror deliberately does not keep.
 
 **Three measured findings that must survive into the code**, because each one produces a
 confidently wrong number if forgotten:
@@ -1260,7 +1279,19 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     another role"), so nobody presses it thinking it only adds somebody. One predicate, no
     migration.
 
-15. **Should `lt_loans.loan_officer_id` be dropped?** It is left from the phase-1 shape,
+15. **Where is the borrowing ENTITY recorded on a DSCR file, and can we read a flood determination?**
+    Two of the thirteen knowingly-empty columns are the owner's to unblock (§3, `unsourced.js`).
+    (a) **The entity.** A DSCR loan very often closes in an LLC and this tenant keeps no structured
+    record of it: `CX.LLCNAME` / `CX.LLCSTATE` / `CX.LLCCORP` are filled on 4 long-term files (0.8%),
+    field 1867 is free text on 38%, and field 33 "Manner Held" is a dropdown staff type the vesting
+    entity's name into about half the time. Which of those IS the entity is a business rule, and
+    guessing would put a company name on a loan file nobody put there. (b) **The flood
+    determination.** Nothing in the census answers *"is the subject in a special flood hazard area"*
+    in a form we can trust — field 541 is filled on 40% and its six values were withheld from the
+    census by its own PII policy, so reading it as a yes/no would be guessing a vocabulary. One read
+    of that field on a live loan in each state settles it. Neither is a build; each is one answer.
+
+16. **Should `lt_loans.loan_officer_id` be dropped?** It is left from the phase-1 shape,
     before the loan TEAM was mirrored. **Nothing has ever written it**, and since 2026-08-18
     nothing reads it either — the census, which was its one reader, now asks
     `lt_loan_contacts` like every other surface (§2.3). It is labelled in the schema so
