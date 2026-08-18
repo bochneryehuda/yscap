@@ -43,9 +43,15 @@ export default function PilotWriter({ value, onReplace, surface = 'staff', label
     if (!r) return;
     const vw = window.innerWidth;
     const w = Math.min(340, Math.floor(vw * 0.86));
+    // Vertical: open ABOVE the button (the composer sits at the bottom of its
+    // panel), but a button near the TOP of the viewport flips it BELOW instead
+    // of pushing the popover off-screen (audit 2026-08-18 note — unreachable on
+    // today's mounts, real on a future one). ~320px covers the tallest state.
+    const openBelow = r.top < 340;
     setPos({
       left: Math.max(8, Math.min(r.left, vw - w - 8)),
-      bottom: Math.max(8, window.innerHeight - r.top + 6),
+      bottom: openBelow ? null : Math.max(8, window.innerHeight - r.top + 6),
+      top: openBelow ? Math.min(window.innerHeight - 60, r.bottom + 6) : null,
       width: w,
     });
   };
@@ -91,7 +97,8 @@ export default function PilotWriter({ value, onReplace, surface = 'staff', label
         {busy ? 'Pilot AI…' : label}
       </button>
       {open && pos && (
-        <div style={{ position: 'fixed', bottom: pos.bottom, left: pos.left, zIndex: 260, width: pos.width,
+        <div style={{ position: 'fixed', ...(pos.top != null ? { top: pos.top } : { bottom: pos.bottom }), left: pos.left, zIndex: 260, width: pos.width,
+          maxHeight: 'calc(100vh - 16px)', overflowY: 'auto',
           background: '#FFFFFF', border: '1px solid #D9D4C8', borderRadius: 10, boxShadow: '0 8px 28px rgba(20,27,34,.16)', padding: 10 }}>
           <div style={{ font: '600 11px/1 "Hanken Grotesk", system-ui, sans-serif', letterSpacing: '.08em', textTransform: 'uppercase', color: '#AE8746', marginBottom: 6 }}>
             Pilot AI

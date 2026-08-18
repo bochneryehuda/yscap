@@ -118,6 +118,13 @@ function call(server, method, path, token, body) {
     const bCard = await call(server, 'GET', `/api/borrower/applications/${appId}/overview-card`, bTok);
     ok('C3 the borrower overview payload never carries the split',
       bCard.status === 200 && !/a_?piece|ab_?piece|bPiece/i.test(JSON.stringify(bCard.body)));
+    // The MAIN borrower application payload is SELECT a.* + a denylist, which
+    // "fails open" on a new column — the audit reproduced exactly this leak
+    // (ab_piece_enabled / a_piece_amount reaching the borrower) before the
+    // denylist + _piece pattern entry landed. Pin the whole payload.
+    const bApp = await call(server, 'GET', `/api/borrower/applications/${appId}`, bTok);
+    ok('C3b the MAIN borrower application payload never carries the split either',
+      bApp.status === 200 && !/a_?piece|ab_?piece/i.test(JSON.stringify(bApp.body)));
     const aud = await db.query(`SELECT 1 FROM audit_log WHERE action='ab_piece_set' AND entity_id=$1 LIMIT 1`, [appId]);
     ok('C4 every save writes its audit row', !!aud.rows[0]);
   } finally {

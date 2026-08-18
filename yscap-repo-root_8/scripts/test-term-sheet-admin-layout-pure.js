@@ -112,6 +112,14 @@ const script = scriptM ? scriptM[0] : '';
 ok('D …and excludes tsMinIntManual (checked by default is not "in use")', /tsMinIntManual/.test(script));
 ok('D …and excludes the internal tsLadderPick hand-off', /tsLadderPick/.test(script));
 ok('D …and re-checks on a tick (programmatic snapshot restores fire no events)', /setInterval/.test(script));
+// A field the studio SEEDS with the company default must not read as "in use"
+// (audit 2026-08-18 finding 1): the seeder stamps data-ts-seeded and the chip
+// compares against the stamp, not against blankness. Both halves pinned.
+ok('D a seeded company default is NOT "in use" — the chip compares against data-ts-seeded',
+  /data-ts-seeded/.test(script));
+const tsjs = fs.readFileSync(path.join(__dirname, '..', 'web', 'v2', 'tools', 'termsheet.js'), 'utf8');
+ok('D …and seedAdminDefaults stamps data-ts-seeded on every field it seeds',
+  /setAttribute\("data-ts-seeded"/.test(tsjs));
 
 // ---- E. the frozen engine script tags are untouched ------------------------------------------
 for (const eng of ['standard-program.js', 'gold-standard.js', 'silver-program.js', 'termsheet.js']) {

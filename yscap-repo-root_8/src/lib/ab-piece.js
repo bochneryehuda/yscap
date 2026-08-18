@@ -40,6 +40,11 @@ function shape(row) {
     aPiece: a,
     bPiece: b,
     totalLoan: total,
+    // A re-register can LOWER the loan under an already-recorded A-piece (the
+    // save's ceiling check is read-then-write); rather than silently clamping
+    // the B-piece to $0, the overage is FLAGGED so the card says so plainly
+    // (audit 2026-08-18 note).
+    aPieceOverTotal: !!(row.ab_piece_enabled && a != null && total != null && a > total + 0.005),
     registeredProgram: row.registered_program || null,
     // The UI keys on this: the split is a MANUAL-program structure. A file that
     // already carries a split keeps showing it whatever the program becomes.

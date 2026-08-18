@@ -34,7 +34,9 @@ export default function AbPieceCard({ appId }) {
   const save = async () => {
     setBusy(true); setErr(''); setSavedAt(0);
     try {
-      const out = await api.staffAbPieceSave(appId, { enabled, aPieceAmount: enabled && amount !== '' ? Number(amount) : null });
+      // The typed amount is kept even when the box is un-ticked, so re-enabling
+      // later doesn't mean retyping it (audit 2026-08-18 note).
+      const out = await api.staffAbPieceSave(appId, { enabled, aPieceAmount: amount !== '' ? Number(amount) : null });
       setData(out); setEnabled(!!out.enabled);
       setAmount(out.aPiece != null ? String(out.aPiece) : '');
       setSavedAt(Date.now());
@@ -71,6 +73,11 @@ export default function AbPieceCard({ appId }) {
               <span className="small" style={{ color: '#4B585C', marginLeft: 8 }}>of {usd(data.totalLoan)} total</span>
             )}
           </div>
+        </div>
+      )}
+      {data.aPieceOverTotal && (
+        <div className="small" role="alert" style={{ color: 'var(--danger)', marginTop: 6 }}>
+          The recorded A-piece is now MORE than the loan itself (the loan was re-registered smaller) — correct the A-piece.
         </div>
       )}
       <div className="row" style={{ gap: 10, alignItems: 'center', marginTop: 10 }}>

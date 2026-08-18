@@ -1317,7 +1317,17 @@
   // applyState) and must win. Pricing reads CO for any blank field via adminNum,
   // so the math is already correct before this ever runs.
   function seedAdminDefaults() {
-    var s = function (id, v) { var e = el(id); if (e && String(e.value).trim() === "") e.value = v; };
+    // The seeded company default is STAMPED on the field (data-ts-seeded) so the
+    // admin accordion's "In use" chip can tell a seeded default from a typed
+    // override — without the stamp, seeding "0.5"/"1.25"/"2195" made three
+    // untouched sections read "In use" forever (audit 2026-08-18 finding 1).
+    // Stamped even when a value is already present: the default is the same
+    // number either way, and the chip's question is "does the value DEVIATE?".
+    var s = function (id, v) {
+      var e = el(id); if (!e) return;
+      try { e.setAttribute("data-ts-seeded", String(v)); } catch (_) { /* chip is cosmetic */ }
+      if (String(e.value).trim() === "") e.value = v;
+    };
     s("tsYspStd", String(CO.markupStd)); s("tsYspGold", String(CO.markupGold)); s("tsYspSilver", String(CO.markupSilver));
     s("tsOrigStd", String(CO.origStd)); s("tsOrigGold", String(CO.origGold)); s("tsOrigSilver", String(CO.origSilver));
     // tsOrigManual is DELIBERATELY NOT SEEDED. Its three siblings have a company

@@ -51,7 +51,13 @@ function throttleProblem(actorKey, now = Date.now()) {
   }
   mine.push(now); _hits.perUser.set(key, mine); _hits.global.push(now);
   // Bound the map so an id-churning caller can never grow memory without bound.
-  if (_hits.perUser.size > 5000) _hits.perUser.delete(_hits.perUser.keys().next().value);
+  // Prune EXPIRED users first — evicting oldest-INSERTED could reset an active
+  // user's count (audit 2026-08-18 note); only if everyone is live does the
+  // oldest entry go.
+  if (_hits.perUser.size > 5000) {
+    for (const [k, ts] of _hits.perUser) { if (!ts.some((t) => t > cutoff)) _hits.perUser.delete(k); }
+    if (_hits.perUser.size > 5000) _hits.perUser.delete(_hits.perUser.keys().next().value);
+  }
   return '';
 }
 

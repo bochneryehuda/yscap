@@ -898,6 +898,12 @@ const BORROWER_HIDDEN_APP_FIELDS = [
   // INTERNAL pricing margin + internal valuations — a borrower may see their loan
   // structure but never OUR markup or the internal appraised figures.
   'file_markup_std_pct', 'file_markup_gold_pct', 'file_markup_silver_pct', 'actual_appraised_value', 'approx_appraised_value',
+  // The A/B-piece split (db/579) — how the loan is SOLD, internal knowledge of
+  // the same class as the note buyer's name; never a borrower-facing fact
+  // (audit 2026-08-18 finding 4: the denylist-over-SELECT-a.* failed open on
+  // these two the day they were added — exactly the class the pattern note
+  // below warns about, so the pattern also gained `_piece`).
+  'ab_piece_enabled', 'a_piece_amount',
   // staff identities + the structural-unlock bookkeeping (owner-directed funded lock).
   'underwriter_id', 'processor_id', 'structural_unlocked_at', 'structural_unlocked_by', 'structural_unlock_reason',
   // stored card fields (currently populated elsewhere, but never leak them from here).
@@ -907,7 +913,7 @@ const BORROWER_HIDDEN_APP_FIELDS = [
 // until someone remembers to add it. This pattern catch-all removes anything whose
 // name matches a clearly-internal convention, so a future column can't silently
 // reach a borrower. None of these patterns can hit a borrower-facing field.
-const INTERNAL_FIELD_PATTERN = /(_encrypted$|^card_|^clickup_|_task_id$|^sync_|_synced_at$|markup|underwriter|structural_unlock|encompass|^cda_|_lien$)/i;
+const INTERNAL_FIELD_PATTERN = /(_encrypted$|^card_|^clickup_|_task_id$|^sync_|_synced_at$|markup|underwriter|structural_unlock|encompass|^cda_|_lien$|_piece)/i;
 function stripInternalAppFields(row) {
   if (!row || typeof row !== 'object') return row;
   for (const k of BORROWER_HIDDEN_APP_FIELDS) delete row[k];

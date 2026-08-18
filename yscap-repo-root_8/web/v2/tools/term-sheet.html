@@ -831,7 +831,14 @@
                     if (e.id === 'tsMinIntManual') return false; /* checked by default */
                     return !!e.checked;
                 }
-                return String(e.value || '').trim() !== '';
+                var v = String(e.value || '').trim();
+                /* A field the studio SEEDED with the company default (termsheet.js
+                   seedAdminDefaults stamps data-ts-seeded) is "in use" only when it
+                   DEVIATES from that default — the seeded value itself is exactly
+                   what a blank field would price at (audit 2026-08-18 finding 1). */
+                var seeded = e.getAttribute && e.getAttribute('data-ts-seeded');
+                if (seeded != null) return v !== String(seeded).trim();
+                return v !== '';
             }
             function inUse(sec) {
                 var els = sec.querySelectorAll('input,select');
@@ -1098,7 +1105,7 @@
 <script src="silver-program.js?v=silver9-bandeps-tiermk1-tsprog1"></script>
 <script src="title-cost.js?v=admin8-tsprog1"></script>
 <script src="address-autocomplete.js?v=admin9-tsprog1"></script>
-<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1"></script>
+<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1"></script>
 <script src="../float-actions.js?v=admin10-applyfix-tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr
