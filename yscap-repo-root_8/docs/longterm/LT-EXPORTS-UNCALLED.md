@@ -58,6 +58,7 @@ wrong.
 - `people/match.js :: DEFAULT_PLACEHOLDER_EMAILS`
 - `people/roster.js :: fetchRoster`
 - `pipeline-book.js :: BOOKS`
+- `ppe/adjustment-overlap.js :: collisionsIn` — the overlap primitive its own suite asserts through; the pricing path calls `resolveDoubleCharges`, which wraps it
 - `ppe/agreement-dimensions.js :: soleLeafFact`
 - `ppe/agreement-scenario-generator.js :: collectThresholds`
 - `ppe/agreement-scenario-generator.js :: falsifyLeaf`
@@ -90,7 +91,6 @@ wrong.
 - `ppe/pricing-breakdown.js :: normRungFromLpRung`
 - `ppe/pricing-breakdown.js :: pickRung`
 - `ppe/pricing.js :: DEFAULT_ROUNDING_INCREMENT_MILLI`
-- `ppe/pricing.js :: normalizeAdjustment`
 - `ppe/pricing.js :: roundToIncrement`
 - `ppe/ratesheet-agreement.js :: declineMismatchRows`
 - `ppe/ratesheet-agreement.js :: KNOWN_UNENCODED_FAMILIES`

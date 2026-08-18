@@ -268,7 +268,10 @@ function resolveDoubleCharges(matchedRules, adjustments) {
 }
 
 module.exports = {
-  OPEN_QUESTION,
+  // OPEN_QUESTION is deliberately NOT exported. It is used only inside this module, and
+  // `check-lt-export-reachability.js` caught it on its first run as an exported name nothing
+  // anywhere references — which is the whole class this workstream keeps tripping over, in
+  // miniature. An export nothing outside uses is not an export.
   collisionsIn,
   sheetOverlapProblems,
   resolveDoubleCharges,
