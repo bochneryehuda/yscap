@@ -4856,23 +4856,31 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 @media(max-width:640px){ .ltf-facts{grid-template-columns:1fr !important} }
 
 /* ---- File-overview slide-over (owner-directed 2026-08-18) — .fov-* namespace.
-   One component on all three file screens (staff / borrower / broker): a slim
-   vertical tab on the LEFT edge opens a panel with the whole deal at a glance.
-   Dark text on white per the HARD RULE (never a --ink* token as a text color).
-   Z-ORDER (audit 9a05513 #4): the app dialogs live on .cv-modal-back at z 200,
-   so the WHOLE fov layer sits BELOW 200 — a confirm dialog must always paint
-   over (and block clicks to) this panel and its tab. The tab anchors LOW on
-   the left edge, clear of the staff shell's sidebar navigation band. */
-.fov-tab{position:fixed;left:0;bottom:140px;z-index:120;writing-mode:vertical-rl;transform:rotate(180deg);
-  background:#FFFFFF;color:#141B22;border:1px solid #D9D4C8;border-left:none;border-radius:0 8px 8px 0;
-  padding:12px 6px;font:600 12px/1 'Hanken Grotesk',system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase;
-  cursor:pointer;box-shadow:2px 2px 10px rgba(20,27,34,.08)}
-.fov-tab:hover{color:#AE8746;border-color:#AE8746}
+   One component on all three file screens (staff / borrower / broker): a
+   vertical tab on the RIGHT edge (owner-directed 2026-08-18: "should go on the
+   right side … a little nicer, and everybody should realize what it is" —
+   moved off the left, restyled as an ink tab with a gold accent so it reads
+   as PILOT's own control, labelled in full) opens a panel with the whole deal
+   at a glance. The tab is an ink-on-gold BUTTON (button coloring, like
+   .btn.primary — the dark-text-on-white HARD RULE governs body text, and the
+   panel itself stays dark-on-white). Z-ORDER (audit 9a05513 #4): the app
+   dialogs live on .cv-modal-back at z 200, so the WHOLE fov layer sits BELOW
+   200 — a confirm dialog must always paint over (and block clicks to) this
+   panel and its tab. The tab anchors LOW on the right edge, clear of the
+   sticky headers and any bottom action bars. */
+.fov-tab{position:fixed;right:0;bottom:140px;z-index:120;writing-mode:vertical-rl;
+  background:#141B22;color:#F6F3EC;border:1px solid #141B22;border-right:none;border-radius:10px 0 0 10px;
+  padding:14px 7px;font:700 12px/1 'Hanken Grotesk',system-ui,sans-serif;letter-spacing:.1em;text-transform:uppercase;
+  cursor:pointer;box-shadow:-2px 2px 12px rgba(20,27,34,.22);
+  border-left:3px solid #AE8746;transition:background .15s ease}
+.fov-tab:hover{background:#AE8746;border-color:#AE8746;color:#FFFFFF}
+.fov-tab-ico{display:inline-block;margin-bottom:7px;font-size:13px;letter-spacing:0;color:#AE8746}
+.fov-tab:hover .fov-tab-ico{color:#FFFFFF}
 .fov-tab-text{display:inline-block}
 .fov-back{position:fixed;inset:0;background:rgba(20,27,34,.45);z-index:130}
-.fov-panel{position:fixed;top:0;left:0;bottom:0;width:min(420px,94vw);z-index:135;background:#FFFFFF;
-  border-right:1px solid #D9D4C8;box-shadow:6px 0 28px rgba(20,27,34,.16);
-  transform:translateX(-102%);transition:transform .22s ease;display:flex;flex-direction:column;
+.fov-panel{position:fixed;top:0;right:0;bottom:0;width:min(420px,94vw);z-index:135;background:#FFFFFF;
+  border-left:1px solid #D9D4C8;box-shadow:-6px 0 28px rgba(20,27,34,.16);
+  transform:translateX(102%);transition:transform .22s ease;display:flex;flex-direction:column;
   visibility:hidden}
 .fov-panel.fov-open{transform:translateX(0);visibility:visible}
 .fov-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;
