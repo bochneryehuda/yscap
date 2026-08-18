@@ -55,6 +55,33 @@ function Recipient({ r }) {
   );
 }
 
+/* The estimated-closing-date blocker carries its own fix (owner-directed
+   2026-08-18: "make that field available right here on that gate, so that you
+   can import it on that screen right away"). Typing the date here writes
+   through the ONE closing-date door (POST /applications/:id/closing-date), so
+   the ClickUp push and the attorney-chain announcement fire exactly as they do
+   from every other place the date is set — never a second write path. */
+function InlineClosingDate({ appId, onSaved }) {
+  const [val, setVal] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const save = async () => {
+    if (!val || busy) return;
+    setBusy(true); setErr('');
+    try { await api.staffSetClosingDate(appId, { expectedClosing: val }); if (onSaved) await onSaved(); }
+    catch (e) { setErr((e && e.message) || 'Could not save the date — please try again.'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', marginLeft: 8, flexWrap: 'wrap' }}>
+      <input type="date" className="input" style={{ width: 170, padding: '4px 8px', fontSize: 16 }} value={val}
+        aria-label="Estimated closing date" onChange={(e) => setVal(e.target.value)} />
+      <button type="button" className="btn btn-sm" disabled={busy || !val} onClick={save}>{busy ? 'Saving…' : 'Save date'}</button>
+      {err ? <span className="small" style={{ color: '#B3261E' }}>{err}</span> : null}
+    </span>
+  );
+}
+
 export default function EsignFileSection({ appId, role, onChanged, onFinalizeTermSheet }) {
   const { actor } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
@@ -568,6 +595,12 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
                     {' '}— <span className="muted small">{o.waived ? 'waived by an approved super-admin exception' : o.reason}</span>
                     {!o.waived && o.tier === 'floor' ? (
                       <span className="ts-badge warn" style={{ marginLeft: 6 }} title="This requirement makes the signed term sheet itself correct.">term-sheet correctness</span>
+                    ) : null}
+                    {/* The blocker and its one-step way out appear together: the
+                        closing date is typeable RIGHT HERE (owner 2026-08-18). */}
+                    {!o.waived && o.code === 'expected_closing' ? (
+                      <InlineClosingDate appId={appId}
+                        onSaved={async () => { await load(true); if (onChanged) { try { await onChanged(); } catch (_) { /* parent refresh is best-effort */ } } }} />
                     ) : null}
                   </li>
                 ))}
