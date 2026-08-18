@@ -55,6 +55,10 @@ const SITEWIRE_BIRTH_REASONS = new Set([
   'sitewire_budget_mismatch', 'sitewire_capital_partner_unmatched', 'sitewire_address_incomplete',
   'sitewire_type_unmapped', 'sitewire_dupe_check_failed', 'sitewire_loan_already_in_sitewire',
   'sitewire_property_rejected', 'sitewire_bind_missing_property',
+  // GROUND-UP → PHYSICAL ONLY (2026-08-18, audit finding 3): a partner rule that forbids
+  // physical on a ground-up file is a SETUP problem — recorded on the file's own draw
+  // section like every other birth blocker, never a global review row + email.
+  'sitewire_groundup_requires_physical',
 ]);
 
 // Is this file under PILOT draw management yet? True only once a push bound a live Sitewire property.
@@ -440,6 +444,19 @@ async function pushFile(appId, opts = {}) {
       if (insp.allowPhysical) {
         const forced = resolveInspection(Object.assign({}, existingLink || {}, { inspection_method: 'traditional' }), rule);
         await journal({ appId, entity: 'property', field: 'inspection_method', oldValue: inspectionMethod, newValue: 'traditional', source: 'ground_up_policy' });
+        // DURABLY record the forced choice in the SAME per-file column a coordinator's own
+        // pick lands in (audit HIGH-1, 2026-08-18): every later reader — resolveInspection,
+        // routing.resolveFilePlatform → trinity/eligibility (which decides whether the
+        // Trinity physical inspector can be ordered AT ALL), the desk mirrors, the
+        // start-draw fee comparison — resolves 'traditional' from here on instead of
+        // re-deriving 'mobile' from the rule default. Without this write the file was
+        // physical in Sitewire while every routing consumer still read it as virtual, and
+        // the Trinity doors silently refused it.
+        await db.query(
+          `INSERT INTO sitewire_property_links (application_id, matched_by, state, inspection_method, updated_at)
+           VALUES ($1,'created','pending','traditional', now())
+           ON CONFLICT (application_id) DO UPDATE SET inspection_method='traditional', updated_at=now()`,
+          [appId]);
         inspectionMethod = forced.method;
         feeCents = forced.feeCents;
       } else {

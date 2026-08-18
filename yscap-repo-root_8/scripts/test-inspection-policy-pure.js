@@ -76,9 +76,10 @@ const drawsJsx = read('app-v2/src/components/DrawsPanel.jsx');
 
 // 1. the Start-draw door refuses a 'mobile' choice on a ground-up file, 422, with the shared wording
 ok('B1 start-draw consults the policy on a mobile choice',
-  /chosen === 'mobile'[\s\S]{0,400}groundUpVirtualForbidden/.test(routes));
+  /guRequiresPhysical = guPolicy\.requiredMethodFor/.test(routes)
+  && /chosen === 'mobile' && guRequiresPhysical/.test(routes));
 ok('B2 start-draw answers 422 with the ONE wording',
-  /groundUpVirtualForbidden[\s\S]{0,200}status\(422\)\.json\(\{ error: policy\.reasonPhysicalRequired\(\) \}\)/.test(routes));
+  /chosen === 'mobile' && guRequiresPhysical[\s\S]{0,120}status\(422\)\.json\(\{ error: guPolicy\.reasonPhysicalRequired\(\) \}\)/.test(routes));
 
 // 2. the live-property controls door — the same refusal AFTER the property is pushed
 ok('B3 updatePropertyControls refuses mobile on a ground-up file',
@@ -118,6 +119,30 @@ ok('B15 the admin Draw Rules screen states the rule beside the allow checkboxes'
   /Ground-up projects are always inspected on site/.test(rulesJsx));
 ok('B16 the desk explains WHY the switch is absent on a ground-up file',
   /ground_up_physical_only/.test(drawsJsx) && /always inspected on site/i.test(drawsJsx));
+
+// AUDIT FIXES (2026-08-18) — each of these closed a confirmed defect; never remove one.
+// HIGH-1: the forced method is DURABLY recorded in the per-file column every routing reader
+// (resolveInspection → routing.resolveFilePlatform → trinity/eligibility) resolves from — without
+// this write the file was physical in Sitewire while the Trinity doors silently refused it.
+ok('C1 pushFile persists the forced method on the link',
+  /ON CONFLICT \(application_id\) DO UPDATE SET inspection_method='traditional'/.test(orch));
+// Finding 3: a physical-forbidden partner rule is a BIRTH-phase setup problem — on the file,
+// never a global review row + LO email; and the desk names it plainly.
+ok('C2 the physical-forbidden park is a birth reason',
+  /SITEWIRE_BIRTH_REASONS = new Set\(\[[\s\S]{0,900}'sitewire_groundup_requires_physical'/.test(orch));
+ok('C3 the desk explains the physical-forbidden park',
+  /groundup_physical: 'Not pushed — this is a ground-up construction project/.test(drawsJsx));
+// Finding 4: the Start fee compares against the PHYSICAL rule fee on a forced file, so the
+// preview-seeded physical fee never becomes a spurious per-file override.
+ok('C4 the fee comparison accounts for the forcing',
+  /guRequiresPhysical && ruleAllowsPhysical \? 'traditional' : null/.test(routes));
+// Finding 2 + sibling: the mirrors only claim physical-only when physical is AVAILABLE, and a
+// still-mobile resolution is re-resolved so no card titles a forced file "Virtual".
+ok('C5 the preview gates the claim on allowPhysical',
+  /const groundUpPhysicalOnly = insp\.allowPhysical\s*\n\s*&& guPolicy\.requiredMethodFor/.test(routes));
+ok('C6 the live-property read gates + re-resolves too',
+  /const groundUpOnly = insp\.allowPhysical\s*\n\s*&& policy\.requiredMethodFor/.test(routes)
+  && /groundUpOnly && insp\.method === 'mobile'[\s\S]{0,200}resolveInspection\(Object\.assign\(\{\}, link \|\| \{\}, \{ inspection_method: 'traditional' \}\), rule\)/.test(routes));
 
 // the module itself stays PURE — a require() in it would let IO leak into the four call sites' rule
 const policySrc = read('src/sitewire/inspection-policy.js');

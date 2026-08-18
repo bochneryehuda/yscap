@@ -2151,6 +2151,7 @@ function StartDrawCard({ appId, onStarted }) {
         no_sow: 'Not pushed — there’s no saved Scope of Work to turn into a budget yet.',
         no_budget: 'Not pushed — no frozen rehab budget is set on this file yet.',
         missing_loan_number: 'Not pushed — this file has no loan number yet.',
+        groundup_physical: 'Not pushed — this is a ground-up construction project, which must be inspected ON SITE, but the capital partner’s draw rule forbids on-site inspections. Fix the rule in Draw settings, then start again.',
       };
       let m;
       if (r && r.note) m = r.note;                                            // Sitewire off / queued (transient)
