@@ -119,10 +119,21 @@ async function main() {
   const lenient = await agreement.runOne(CASHOUT, ours, lpMargin, { ...OPTS, coarseIgnore: ['final_price', 'llpa_total', 'margin'], skipBounds: true });
   ok(lenient.agree === true, '…and with coarseIgnore + skipBounds (the compensation layer) the rate-sheet agreement holds');
 
-  // ---- 3) an ELIGIBILITY agreement (both decline) COUNTS as agreement ---------------------------
-  const bothDecline = await agreement.runOne(NY, ours, () => ({ full: { programs: [] }, disqualified: lpDisq([{ rule: 'state', adjType: 'StatesRateAdjustment' }]) }), OPTS);
+  // ---- 3) an ELIGIBILITY agreement (both decline FOR THE SAME REASON) COUNTS as agreement -------
+  // The reason halves used to be ignored entirely — a both-decline agreed on the outcome and nothing
+  // compared WHY (parity-detectors says so in its own eligibility axis). It is now reconciled per
+  // layer, so this case must supply the sheet the declines came from (`program`, so our decline's
+  // dimension is read from its RULE) and a Lender Price reason its crosswalk can actually read. Both
+  // land on layer 2 / `state`, which is what makes this an agreement rather than a coincidence. The
+  // full contract — including a both-decline for DIFFERENT reasons — is
+  // scripts/test-lt-ppe-agreement-audit-pure.js.
+  const DECLINE_OPTS = { ...OPTS, program: PROGRAM };
+  const bothDecline = await agreement.runOne(NY, ours, () => ({ full: { programs: [] }, disqualified: lpDisq([{ rule: 'Not available in NY', adjType: 'StatesRateAdjustment' }]) }), DECLINE_OPTS);
   ok(bothDecline.agree === true && !bothDecline.incomparable && !bothDecline.ourEligible && !bothDecline.lpEligible,
-    'ELIGIBILITY: both decline the NY scenario → a real agreement, counted');
+    'ELIGIBILITY: both decline the NY scenario for the same reason → a real agreement, counted');
+  ok(bothDecline.declineReconcile && bothDecline.declineReconcile.verdict === 'agree'
+    && bothDecline.declineReconcile.layers.layer2.agreements[0].dimension === 'state',
+    '  and the agreement is itemized — layer 2, dimension `state`, on both sides');
 
   // ---- 4) the DANGEROUS direction — we price what LP declines -----------------------------------
   const danger = await agreement.runOne(CASHOUT, ours, () => ({ full: { programs: [] }, disqualified: lpDisq([{ rule: 'dscr', adjType: 'DscrRateAdjustment' }]) }), OPTS);

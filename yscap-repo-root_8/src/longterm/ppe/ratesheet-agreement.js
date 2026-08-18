@@ -12,6 +12,8 @@
  *   ratesheet-agreement-diff.reconcileLlpas     → the FINE per-DIMENSION LLPA reconciliation (two
  *                                                 offsetting cell errors a stack total agrees on)
  *   ratesheet-agreement-diff.boundsProbe        → the cap (max price) / floor (min price), to the penny
+ *   disqualifier-reconciler.reconcileDisqualifiers → WHY each side declined, per LAYER (see below)
+ *   rung-digest.buildRungDigest                 → WHERE in the price build-up a disagreement sits
  *
  * IO IS INJECTED (the shadow.js contract), so this module is PURE and offline-testable. The caller
  * supplies `ours(scenario)` (wire quote.quoteProgram with the sheet-under-test program + settings) and
@@ -23,7 +25,32 @@
  * `engine_error` verdict on that scenario and the run continues — one LP timeout can never lose the
  * rest of the run. Concurrency is bounded so the live LP search is not hammered. A scenario AGREES only
  * when the coarse axes agree AND every matched rung reconciles to the penny on every dimension AND
- * every cap/floor probe is faithful.
+ * every cap/floor probe is faithful AND — when BOTH sides declined — they declined for the SAME reason.
+ *
+ * THE BOTH-DECLINE GAP, AND WHY THIS IS THE FIX (2026-08-18). `parity-detectors` ends its eligibility
+ * axis with `if (!ours.eligible && !lpEligible) return finalize(differences)` — "both decline — agree
+ * on the outcome (reason-set comparison is a later refinement)". So a scenario where WE declined on
+ * FICO and Lender Price declined on a state prepayment prohibition scored as a clean agreement, and
+ * `summarize()` counted it under `agreedDeclined`. That is not the owner's rule, which names
+ * "eligibility AND ineligibility" as things to agree on, and it hides the exact defect it is most
+ * likely to be covering: two engines that decline the same loan for different reasons will DISAGREE on
+ * the neighbouring scenario where only one of those reasons applies — and that scenario is the
+ * dangerous direction (we price a loan LP declines). `disqualifier-reconciler` is the later refinement
+ * that sentence promised, and it now decides a both-decline:
+ *
+ *   its verdict 'agree'        → the outcome AND the per-layer reasons match → a real agreement.
+ *   its verdict 'disagree'     → both declined, on DIFFERENT dimensions → NOT an agreement.
+ *   ANY unknown reason      → we could not READ one side's reasons (an uncrosswalkable vendor reason,
+ *                                a decline whose rule carries no dimension) → the scenario becomes
+ *                                INCOMPARABLE with a stated reason. Never an agreement (that is the
+ *                                gap), and never a disagreement either — nothing was shown to differ,
+ *                                and calling it one sends a reader to fix a sheet that may be right.
+ *                                An unknown VETOES a disagreement, because the reconciler reconciles
+ *                                what is left after setting it aside — see `declineOutcome`.
+ *   the reconciler THREW       → the verdict stands exactly as it was, and `notReconciled` says so.
+ *
+ * That is a deliberate BEHAVIOUR CHANGE TO A GATE: a scenario that agreed before can now disagree or
+ * fall out of `comparable`. It is proven by `scripts/test-lt-ppe-agreement-audit-pure.js`.
  *
  * LT-only. No RTL imports.
  */
@@ -31,6 +58,8 @@ const { detectDifferences } = require('./parity-detectors');
 const { reconcileLlpas, boundsProbe } = require('./ratesheet-agreement-diff');
 const { normalizeLpFull, normalizeLpDisqualified, bestRungs } = require('./lp-normalize-full');
 const { describeScenario } = require('./scenario-matrix');
+const { reconcileDisqualifiers } = require('./disqualifier-reconciler');
+const { buildRungDigest } = require('./rung-digest');
 
 const ERROR_KIND = 'engine_error';
 
@@ -123,6 +152,127 @@ const BOUNDS_CHECKS = ['samePrice', 'clampFaithful'];
 // with nothing to say about the truncation reads as the whole story (repo rule: no silent caps).
 const DISAGREEMENT_SAMPLE = 50;
 const DIMENSION_ROWS_PER_SCENARIO = 12;
+// The two audit modules' contribution to that stored record, and both are capped for the same reason.
+// A rung DIGEST is per-coupon × per-dimension — on a 28-coupon ladder that is hundreds of rows for ONE
+// scenario, and 50 of them would not belong in a jsonb column. So the summary carries the ONE rung
+// where the build-up diverged worst (rate + the five build-up deltas), which is the question the digest
+// exists to answer — base, adjustments, margin or the clamp — and the FULL digest stays on the run
+// RESULT, which is returned to the caller and is not stored. `WHAT_IS_NOT_STORED` says that in the
+// summary itself rather than leaving a reader of an old row to work out what they are missing.
+const DECLINE_ROWS_PER_SCENARIO = 8;
+// A decline REASON is free text a vendor wrote, so it is the one thing in this record with no natural
+// size at all — every other field is a number or a short dimension key. Capped, and the cap SHOWS: a
+// truncated reason ends in '…', so a reader is never shown a sentence that looks complete and is not.
+const REASON_TEXT_MAX = 120;
+const WHAT_IS_NOT_STORED = 'per-coupon rung digests and full per-layer decline reports live on the run '
+  + 'result only; this summary carries the worst rung\'s build-up and a capped decline-mismatch sample, '
+  + `with each decline reason cut to ${REASON_TEXT_MAX} characters (a cut reason ends in '…').`;
+
+function clipReason(v) {
+  if (v == null) return null;
+  const s = String(v);
+  return s.length <= REASON_TEXT_MAX ? s : `${s.slice(0, REASON_TEXT_MAX - 1)}…`;
+}
+
+/**
+ * The PROGRAM whose rules a decline's dimension is read from.
+ *
+ * ONE SOURCE, NOT TWO. The reconciler reads our decline's dimension from the RULE that produced it
+ * (`agreement-dimensions.dimensionOfRule`) and never from the reason text, so it needs the sheet-
+ * under-test. That sheet is already in the caller's hand exactly once — it is what `buildOursLeg` was
+ * given — so `lp-agreement-legs` stamps it on the leg it returns and this reads it from there. Asking
+ * the caller to pass the same program a second time in `opts` is how the two come to disagree about
+ * which sheet was measured; `opts.program` still wins for a caller that has no leg to stamp (every
+ * offline test builds its own `ours`). With NEITHER, nothing is guessed: every decline reports
+ * `no_dimension` and the reconciliation is `indeterminate`, which is the honest answer.
+ */
+function programOf(o, ours) {
+  if (o && o.program) return o.program;
+  return (typeof ours === 'function' && ours.program) ? ours.program : null;
+}
+
+/**
+ * The per-layer decline reconciliation, GUARDED. Returns null if it throws — and a null leaves the
+ * verdict exactly as the coarse and fine axes left it (`attachDiagnosis` in facade.js is the shape:
+ * an audit laid on top of a comparison may never cost that comparison its answer). The one place a
+ * SUCCESSFUL reconciliation changes a verdict is the both-decline branch in runOne, and that is the
+ * defect this wiring exists to close.
+ */
+function safeReconcileDeclines(our, lpDisq, program) {
+  try {
+    return reconcileDisqualifiers(our, lpDisq, program ? { program } : {});
+  } catch (_) { return null; }
+}
+
+/**
+ * What a reconciliation MEANS for a both-decline — the ONE reading, computed once in runOne and put on
+ * the verdict so `summarize()` cannot come to a different conclusion about the same report.
+ *
+ * AN UNKNOWN ON EITHER SIDE VETOES A DISAGREEMENT. The reconciler puts a reason it cannot read into
+ * `unknown` and then reconciles what is LEFT, so an unreadable vendor reason leaves OUR decline
+ * standing alone on its dimension and the layer reports `only_ours` — which reads as "we decline
+ * something Lender Price does not" when the truth may be that they declined for the very same reason
+ * in words nothing could parse. With either reason set incompletely known, neither agreement nor
+ * disagreement is established.
+ */
+function declineOutcome(rep) {
+  if (!rep) return null;
+  const unknowns = (rep.summary && rep.summary.unknown) || 0;
+  if (unknowns > 0 || rep.verdict === 'indeterminate') return 'indeterminate';
+  return rep.verdict === 'disagree' ? 'disagree' : 'agree';
+}
+
+/**
+ * The rung digest, GUARDED, and computed strictly AFTER `agree` is decided so it can never move it.
+ * Built only for a scenario that is already known to disagree with rungs on both sides — an agreeing
+ * scenario has nothing to line up, and building a per-coupon table for every scenario in a 300-run
+ * battery is bloat nobody reads.
+ */
+function safeDigest(our, lpEligible, lpRungs, rateTol) {
+  try {
+    return buildRungDigest(our, { eligible: lpEligible, rungs: lpRungs }, { rateToleranceMilli: rateTol });
+  } catch (_) { return null; }
+}
+
+/** The digest's worst rung, flattened to the six numbers the stored summary carries. */
+function worstRungOf(digest) {
+  const list = (digest && Array.isArray(digest.rungs)) ? digest.rungs : [];
+  let w = null;
+  for (const r of list) {
+    if (!r) continue;
+    const d = isNum(r.worstDeltaMilli) ? r.worstDeltaMilli : 0;
+    if (!w || Math.abs(d) > Math.abs(isNum(w.worstDeltaMilli) ? w.worstDeltaMilli : 0)) w = r;
+  }
+  if (!w) return null;
+  return {
+    rate: w.rate == null ? null : w.rate,
+    baseDeltaMilli: w.base ? w.base.deltaMilli : null,
+    adjustmentTotalDeltaMilli: w.adjustmentTotal ? w.adjustmentTotal.deltaMilli : null,
+    marginDeltaMilli: w.margin ? w.margin.deltaMilli : null,
+    finalDeltaMilli: w.final ? w.final.deltaMilli : null,
+    clampedOurs: !!(w.clamped && w.clamped.ours),
+    clampedTheirs: w.clamped ? w.clamped.theirs : null,
+  };
+}
+
+/** The reconciliation's one-sided rows, capped, with what was left out counted. */
+function declineMismatchRows(rep) {
+  const rows = [];
+  let omitted = 0;
+  const layers = (rep && rep.layers) || {};
+  for (const layer of ['layer2', 'layer3']) {
+    const l = layers[layer];
+    if (!l) continue;
+    const push = (side, row) => {
+      if (!row) return;
+      if (rows.length >= DECLINE_ROWS_PER_SCENARIO) { omitted += 1; return; }
+      rows.push({ layer, side, dimension: row.dimension || null, reason: clipReason(row.reason) });
+    };
+    for (const row of (l.onlyOurs || [])) push('ours', row);
+    for (const row of (l.onlyAuthority || [])) push('authority', row);
+  }
+  return { rows, omitted };
+}
 
 /**
  * One disagreeing verdict → the compact record of WHERE it disagreed. Pure; never throws on a
@@ -157,6 +307,7 @@ function disagreementRecord(r) {
       if (b && b.checks && b.checks[name] === false && !boundsFailed.includes(name)) boundsFailed.push(name);
     }
   }
+  const decline = declineMismatchRows(r && r.declineReconcile);
   return {
     scenario: r && r.scenario,
     ourEligible: !!(r && r.ourEligible),
@@ -166,6 +317,16 @@ function disagreementRecord(r) {
     dimensions: rows,
     dimensionsOmitted,
     boundsFailed,
+    // WHERE in the price build-up the worst rung diverged — base, the adjustment stack, the margin,
+    // or the final price after the clamp. `dimensions` above already names WHICH LLPA cells moved;
+    // this is the half that says a gap sits somewhere other than an LLPA at all (a base-grid or margin
+    // difference itemizes as nothing, and a reader with only the cell list would hunt for a cell).
+    worstRung: worstRungOf(r && r.digest),
+    // WHY each side declined, when they declined differently. Null verdict → no rows, which is right:
+    // a priced disagreement has no declines to reconcile.
+    declineVerdict: (r && (r.declineOutcome || (r.declineReconcile && r.declineReconcile.verdict))) || null,
+    declineMismatch: decline.rows,
+    declineRowsOmitted: decline.omitted,
   };
 }
 
@@ -260,28 +421,73 @@ async function runOne(scenario, ours, lp, opts) {
 
   // INCOMPARABLE = LP gave no usable signal for our filter (not ready / nothing matched). A both-decline
   // is NOT incomparable — it is a real ELIGIBILITY agreement (the owner's "run a few ineligible ones and
-  // confirm the disqualifier matches"), so it counts, and the coarse eligibility axis decides it.
-  const incomparable = !lpHasSignal;
+  // confirm the disqualifier matches"), so it counts, and the coarse eligibility axis decides its
+  // OUTCOME; whether the two declined for the SAME REASON is decided a few lines below.
+  let incomparable = !lpHasSignal;
+  let incomparableReason = incomparable ? 'lp_no_signal' : null;
   // `coarseIgnore` drops margin-laden coarse axes from the GATE (still fully reported): on the live
   // Deephaven sheet `final_price` and `llpa_total` compare LP's displayed price / adjustmentPoints,
   // which carry the origination/margin, NOT the LLPA stack — so they are a compensation-layer question.
   const coarseIgnore = o.coarseIgnore instanceof Set ? o.coarseIgnore : new Set(Array.isArray(o.coarseIgnore) ? o.coarseIgnore : []);
   const gatingCoarse = ((coarse && coarse.differences) || []).filter((d) => !coarseIgnore.has(d.category));
-  const agree = !incomparable && gatingCoarse.length === 0 && fineAgree;
+  let agree = !incomparable && gatingCoarse.length === 0 && fineAgree;
   const worstDeltaMilli = rungReconciles.reduce(
     (m, r) => (Math.abs(r.worstDeltaMilli) > Math.abs(m) ? r.worstDeltaMilli : m), 0,
   );
+
+  // === WHY, per LAYER — the disqualifier reconciliation ==========================================
+  // Run whenever a side declined at all, because that is when there are declines to itemize; a
+  // one-sided decline (`disqualification_missing` / `_extra`) already disagrees on the coarse axis and
+  // this only says WHICH reason on WHICH layer, as evidence. The ONE place it moves a verdict is the
+  // both-decline, where nothing compared the reasons before.
+  const bothDeclined = !incomparable && !ourEligible && !lpEligible;
+  const declineReconcile = (!incomparable && (!ourEligible || !lpEligible))
+    ? safeReconcileDeclines(our, lpDisq, programOf(o, ours))
+    : null;
+  const outcome = declineOutcome(declineReconcile);
+  if (bothDeclined && outcome) {
+    if (outcome === 'indeterminate') {
+      // Counting this as agreement is the gap being closed; counting it as a disagreement would send
+      // somebody to fix a sheet nothing has been shown to be wrong with — the same collapse
+      // `agreement-store` refuses between "never measured" and "measured and failed".
+      // `incomparableByReason` in the summary names it, so it is stated and never silent.
+      agree = false;
+      incomparable = true;
+      incomparableReason = 'decline_reasons_unreadable';
+    } else if (outcome === 'disagree') {
+      agree = false;
+    }
+  }
+
+  // === WHERE in the build-up — the rung digest ====================================================
+  // AFTER `agree` is final, so it can never move it, and only for a scenario that already disagrees
+  // with rungs on BOTH sides. An agreeing scenario has nothing to line up and does not need a table.
+  const digest = (!agree && !incomparable && ourEligible && lpEligible)
+    ? safeDigest(our, lpEligible, lpRungs, rateTol)
+    : null;
 
   return {
     scenario: tag,
     agree,
     incomparable,
+    // WHY it was incomparable — `lp_no_signal` (Lender Price answered nothing for our filter) or
+    // `decline_reasons_unreadable` (both declined and the reasons could not be compared). Two very
+    // different pieces of news that used to be one number.
+    incomparableReason,
     ourEligible,
     lpEligible,
     lpDeclined,
+    bothDeclined,
     coarse,
     rungReconciles,
     bounds,
+    // The two audit outputs. Both are null when there was nothing to say; `declineReconcile` is also
+    // null when the reconciler THREW, which is what leaves the verdict untouched. `declineOutcome` is
+    // the ONE reading of that report (see the function), carried so summarize() cannot re-derive a
+    // different one from the same rows.
+    declineReconcile,
+    declineOutcome: outcome,
+    digest,
     // Which bounds checks GATED this verdict. Carried on the result (not only in the caller's opts) so
     // summarize() can report the ungated ones as ungated rather than as passing.
     boundsGate,
@@ -362,10 +568,51 @@ function summarize(results) {
     gated: null,       // which checks counted toward agreement (null until a result says)
     ungated: [],
   };
+  // THE INELIGIBILITY AXIS, ROLLED UP. The owner's rule names ineligibility beside price, and until the
+  // reconciler was wired the only thing recorded about a both-decline was that it happened. These are
+  // the numbers that say whether the `agreedDeclined` headline is evidence or a coincidence.
+  const declines = {
+    reconciled: 0,            // scenarios where a reconciliation actually ran (either side declined)
+    bothDeclined: 0,          // ... of which both sides declined — the ones whose verdict it decides
+    reasonsAgree: 0,          // ... and the per-layer reasons matched (a REAL eligibility agreement)
+    reasonsDisagree: 0,       // ... and they did not (declined the same loan for different reasons)
+    reasonsIndeterminate: 0,  // ... and one side's reasons could not be read → incomparable, see below
+    notReconciled: 0,         // ... and the reconciler threw, so the verdict stands unchanged
+    byLayer: {
+      layer2: { agreements: 0, onlyOurs: 0, onlyAuthority: 0 },
+      layer3: { agreements: 0, onlyOurs: 0, onlyAuthority: 0 },
+    },
+  };
+  const incomparableByReason = {};
   for (const r of list) {
     if (!r) continue;
     if (r.error) { errors += 1; continue; }
-    if (r.incomparable) { incomparable += 1; continue; }
+    // TALLIED BEFORE THE INCOMPARABLE BRANCH, on purpose: a both-decline whose reasons could not be
+    // read is now INCOMPARABLE, and that is exactly the state these counters exist to make visible.
+    if (r.bothDeclined) {
+      declines.bothDeclined += 1;
+      const outcome = r.declineOutcome || null;
+      if (!outcome) declines.notReconciled += 1;
+      else if (outcome === 'agree') declines.reasonsAgree += 1;
+      else if (outcome === 'disagree') declines.reasonsDisagree += 1;
+      else declines.reasonsIndeterminate += 1;
+    }
+    if (r.declineReconcile) {
+      declines.reconciled += 1;
+      for (const layer of ['layer2', 'layer3']) {
+        const l = (r.declineReconcile.layers || {})[layer];
+        if (!l) continue;
+        declines.byLayer[layer].agreements += (l.agreements || []).length;
+        declines.byLayer[layer].onlyOurs += (l.onlyOurs || []).length;
+        declines.byLayer[layer].onlyAuthority += (l.onlyAuthority || []).length;
+      }
+    }
+    if (r.incomparable) {
+      incomparable += 1;
+      const why = r.incomparableReason || 'unstated';
+      incomparableByReason[why] = (incomparableByReason[why] || 0) + 1;
+      continue;
+    }
     // WHAT KIND of agreement it was. A both-decline is a REAL agreement (the owner asked for ineligible
     // scenarios explicitly — "confirm the disqualifier matches"), but it is weaker evidence about the
     // SHEET than a priced scenario whose every LLPA reconciled, and a headline built mostly of declines
@@ -440,9 +687,13 @@ function summarize(results) {
     // agreed = agreedPriced + agreedDeclined. A priced agreement means BOTH sides quoted and every
     // itemized LLPA reconciled; a declined agreement means both refused the loan.
     agreedPriced,
+    // A declined agreement now means both sides refused the loan AND the per-layer reasons reconciled.
+    // Before the reconciler was wired it meant only that both refused, which is a far weaker claim.
     agreedDeclined,
     disagreed,
     incomparable,
+    incomparableByReason,
+    declines,
     errors,
     comparable,
     agreementRate: comparable ? agreed / comparable : null,
@@ -464,6 +715,11 @@ function summarize(results) {
     disagreeing,
     disagreements,
     disagreementsOmitted,
+    // What this record does NOT hold, stated in the record. `agreement-store.recordRun` stores this
+    // summary whole and stores nothing else, so a reader months later has no way to know that a fuller
+    // per-coupon digest ever existed unless the row says so. A cap nobody is told about reads as the
+    // whole story — the same rule `disagreementsOmitted` and `dimensionsOmitted` already follow.
+    notStored: WHAT_IS_NOT_STORED,
     gateMet: errors === 0 && disagreed === 0 && comparable > 0,
   };
 }
@@ -476,5 +732,11 @@ module.exports = {
   KNOWN_UNENCODED_FAMILIES,
   DISAGREEMENT_SAMPLE,
   DIMENSION_ROWS_PER_SCENARIO,
-  _internals: { ourAdjustmentsOf, bestRungsOf, matchByRate, disagreementRecord },
+  DECLINE_ROWS_PER_SCENARIO,
+  REASON_TEXT_MAX,
+  WHAT_IS_NOT_STORED,
+  _internals: {
+    ourAdjustmentsOf, bestRungsOf, matchByRate, disagreementRecord,
+    programOf, safeReconcileDeclines, declineOutcome, safeDigest, worstRungOf, declineMismatchRows,
+  },
 };

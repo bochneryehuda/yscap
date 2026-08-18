@@ -5,7 +5,10 @@
  * stays pure and offline-testable. Two legs + one readiness report:
  *
  *   buildOursLeg(program, settings, marginHoldback)  → (scenario) => quote.quoteProgram(...)
- *       OUR engine pricing a scenario off the sheet-under-test (a rateSheetToProgram result).
+ *       OUR engine pricing a scenario off the sheet-under-test (a rateSheetToProgram result). The
+ *       returned function carries `.program` — the sheet it prices from — because the harness's
+ *       per-layer disqualifier reconciliation reads a decline's dimension from the RULE that produced
+ *       it, and a quote result names its program only as a reference. See the note on the stamp.
  *
  *   buildLpLeg(client, opts)                          → async (scenario) => { full, disqualified }
  *       Lender Price's answer for the same scenario, in the shape lp-normalize-full consumes. `client`
@@ -222,7 +225,7 @@ function buildOursLeg(program, settings, opts) {
   if (desc && (typeof desc.pppInputFromFacts !== 'function' || typeof desc.pppDisqualifier !== 'function')) {
     throw new Error('buildOursLeg: pppDescriptor must expose pppInputFromFacts() and pppDisqualifier()');
   }
-  return function ours(scenario) {
+  const ours = function ours(scenario) {
     const facts = o.factsFromLp ? lpScenarioToFacts(scenario) : scenario;
     const arg = { scenario: facts, program, settings: settings || {} };
     if (o.marginHoldback) arg.marginHoldback = o.marginHoldback;
@@ -234,6 +237,21 @@ function buildOursLeg(program, settings, opts) {
     const dq = desc.pppDisqualifier(desc.pppInputFromFacts(facts));
     return dq ? declineForPpp(quote, dq) : quote;
   };
+  // THE LEG CARRIES THE SHEET IT PRICES FROM, and that is the whole point of stamping it here.
+  //
+  // A quote result names its program only as a REFERENCE (`{code,name,investorCode}` — quote.js), which
+  // is enough to label a row and not enough to read a decline's DIMENSION: that comes from the RULE
+  // that produced the decline, never from the reason text (agreement-dimensions.dimensionOfRule). So
+  // the agreement harness's per-layer disqualifier reconciliation needs the program itself, and the
+  // only place it exists at that moment is inside this closure.
+  //
+  // Stamping it is what keeps ONE source for one fact. The alternative is for every caller to hand the
+  // orchestrator the same program a second time in its opts — and the day one caller passes a
+  // different one, the run reconciles declines against a sheet it did not price with, and says so
+  // nowhere. `runOne` still honours an explicit `opts.program` first, for a caller (every offline test)
+  // that builds its own `ours` function and has no leg to stamp.
+  ours.program = program;
+  return ours;
 }
 
 /**

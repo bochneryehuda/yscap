@@ -82,6 +82,29 @@ NULL on every finding either producer has ever written, so a later screen would 
 against whatever the sheet says today and would quietly answer about a different sheet). The
 explanation rides onto the recorded row, so it outlives the request that made it.
 
+## The two that told you WHERE and WHY — now wired
+
+`rung-digest.js` and `disqualifier-reconciler.js` were both waiting on "the per-program agreement run
+(#49)". That run has existed since `POST /api/lt/ppe/rate-sheets/:id/agreement/run` landed, and it had
+in hand exactly what both of them need — our reconstruction record, Lender Price's normalized rungs,
+and both sides' declines — and threw all of it away, keeping a verdict and a count. Both are wired in
+`ratesheet-agreement.js runOne`, which is the only place they CAN be wired for the same reason
+`divergence.js` had to go in `facade.js`: the evidence exists while the comparison is being made and
+nowhere afterwards.
+
+**The reconciler did more than explain a verdict — it corrected one.** `parity-detectors` ends its
+eligibility axis with *"both decline — agree on the outcome (reason-set comparison is a later
+refinement)"*, so a scenario where we declined on FICO and Lender Price declined on a state rule was a
+clean agreement, counted under `agreedDeclined`, on a gate whose owner-stated rule is to agree on
+"every eligibility AND ineligibility". That is a real gap and this is the fix, so a both-decline now
+agrees only when the per-layer reasons reconcile. It is a **behaviour change to a gate**: a scenario
+that agreed before can now disagree, or become incomparable when neither side's reasons can be read.
+
+The digest is attached only to a scenario that already disagrees with rungs on both sides — an
+agreeing scenario needs no divergence table — and it is what names a gap that is NOT an LLPA at all: a
+base-grid or margin difference itemizes as an empty dimension list, and without it a reader is sent
+hunting for a cell that is not wrong.
+
 ## What changed between two versions of a sheet — now wired
 
 `ratesheet-diff.js` diffs two rulesets as a KEYED set-difference (a localized per-cell delta, plus
@@ -98,10 +121,8 @@ does not exist yet).
 | Module | Why it is not wired yet | What would wire it |
 | --- | --- | --- |
 | `src/longterm/audience.js` | The investor-name block. No Long-Term client-facing surface exists yet, so there is nothing to scrub. | The first LT borrower/TPO payload — see above. |
-| `src/longterm/ppe/disqualifier-reconciler.js` | Reconciles our declines against Lender Price's, per layer. | The per-program agreement run (#49). |
-| `src/longterm/ppe/rung-digest.js` | The compact rung-by-rung audit output of that run. | The per-program agreement run (#49). |
-| `src/longterm/ppe/program-audit.js` | The offline our-side half of the same harness (dead-rule / coverage profiler). | The per-program agreement run (#49). |
-| `src/longterm/ppe/disqualify-reconcile.js` | The earlier per-layer disqualifier reconciler. | Superseded in practice by the two rows above; keep or retire deliberately. |
+| `src/longterm/ppe/program-audit.js` | The offline our-side half of the same harness (dead-rule / coverage profiler). | NOT the agreement run — that is now wired and does not call this. It profiles OUR sheet alone, with no vendor leg, so its home is the free pre-flight beside `GET …/coverage`, not the paid battery. |
+| `src/longterm/ppe/disqualify-reconcile.js` | The earlier per-layer disqualifier reconciler. | Superseded in practice by `disqualifier-reconciler.js`, which the agreement run now calls. Keep or retire deliberately — nothing should call two of these. |
 | `src/longterm/ppe/deephaven-dscr-sheet.js` | Layer 1 — the Deephaven DSCR sheet encoded from the live tables. | The program registry becoming the pricing path (P10 / cutover). |
 | `src/longterm/ppe/deephaven-dscr-prepay-maxprice.js` | The same sheet's prepay / max-price / lock block. | As above. |
 | `src/longterm/ppe/deephaven-matrix.js` | Layer 2 — the independent eligibility engine. | As above. |
