@@ -108,7 +108,7 @@ async function itemizedTotal(appId, client = db) {
 async function check(appId, client = db) {
   try {
     const a = (await client.query(
-      `SELECT a.loan_type, a.payoff_amount, a.property_free_and_clear, a.estimated_cash_out,
+      `SELECT a.loan_type, a.payoff_amount, a.property_free_and_clear,
               pr.quote
          FROM applications a
          LEFT JOIN product_registrations pr ON pr.application_id = a.id AND pr.is_current
@@ -154,12 +154,20 @@ async function check(appId, client = db) {
 
 const usd = (n) => `$${Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 
-/** The one wording every surface quotes for the over-limit state. */
-function overMessage(c) {
-  return `This is a rate-&-term refinance, but the structure hands the borrower ${usd(c.cashToBorrower)} — `
-    + `more than the ${usd(LIMIT)} a rate-&-term allows${c.freeAndClear ? ' (the property is free and clear, so there is no payoff absorbing the loan)' : ''}. `
+/**
+ * The one wording every surface quotes for the over-limit state. DELIBERATELY
+ * STABLE — no live figure is interpolated. The esign gate-disposition pins a
+ * per-requirement waiver to this EXACT string (gate-disposition.js
+ * `decidedReason === String(o.reason)`), so a reason carrying the live cash
+ * figure would silently void a super-admin's waiver the moment any fee, payoff
+ * or registration moved the number by a dollar (the exact hazard gate.js's own
+ * APPRAISAL_REVIEW comment documents). The live figures render on the file's
+ * red rate-&-term warning card (RateTermCashCard), which reads check() itself.
+ */
+function overMessage() {
+  return `This is a rate-&-term refinance, but the registered structure hands the borrower more than the ${usd(LIMIT)} a rate-&-term allows. `
     + 'Switch the transaction to a cash-out, validate the closing costs (real fees the borrower pays reduce the cash), '
-    + 'or request a super-admin exception.';
+    + 'or request a super-admin exception. The live figures are on the red rate-&-term warning on the file.';
 }
 
 module.exports = { LIMIT, COST_KINDS, itemProblem, listItems, itemizedTotal, check, overMessage };
