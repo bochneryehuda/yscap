@@ -146,7 +146,8 @@ const REQ = (over = {}) => Object.assign(
   const ledger = (versionId, scope = SCOPE) => agreementStore.listForVersion(scope, versionId, { db });
 
   try {
-    for (const f of ['558_lt_ppe_foundation.sql', '560_lt_ppe_ratesheet.sql', '576_lt_ppe_ratesheet_agreement_gate.sql']) {
+    for (const f of ['558_lt_ppe_foundation.sql', '560_lt_ppe_ratesheet.sql', '576_lt_ppe_ratesheet_agreement_gate.sql',
+      '581_lt_ppe_disqualifier_review_queue.sql']) {
       await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', f), 'utf8'));
     }
     await cleanup();
@@ -407,6 +408,56 @@ const REQ = (over = {}) => Object.assign(
       'G3 the run route builds OUR leg through the shared builder, converting from Lender Price scenarios');
     ok(/buildLpLeg\(lpClient/.test(routeSrc) && !/lp:\s*\(sc\)\s*=>\s*lpClient\.price/.test(routeSrc),
       'G4 …and THEIR leg through the shared builder, never handing client.price straight to the harness');
+
+    // =========================================================================
+    // H. THE SAME BATTERY ANSWERS THE REVIEW QUESTION TOO — at no extra vendor call
+    // =========================================================================
+    console.log('\nH. the disqualifier review, off the battery already paid for\n');
+
+    const reviewStore = require('../src/longterm/ppe/disqualifier-review-store');
+    const queue = (programId, status = 'open') =>
+      reviewStore.listQueue(db, SCOPE, { programId, status, limit: 500 });
+
+    // Lender Price refuses every scenario over the DSCR; our bare grid says nothing about it.
+    const reviewSheet = await buildSheet('V');
+    lpStub.answer = () => ({
+      disqualified: {
+        ready: true,
+        lenders: [{ lender: 'Deephaven', investor: 'Deephaven', items: [{ program: 'DSCR 30 Year Fixed', reasons: [{ rule: 'DSCR below 1.10', adjType: 'DscrRateAdjustment' }] }] }],
+      },
+    });
+    lpStub.calls = 0; lpStub.disqCalls = 0;
+    res = await call(H.runAgreementRoute, REQ({ params: { id: reviewSheet.versionId } }));
+    ok(res.statusCode === 200 && res.body.ok === true, 'H1 the agreement run completes');
+    ok(res.body.review && res.body.review.collected > 0,
+      `H2 THE ONE THAT MATTERS: it also laid out the disqualifier questions (${res.body.review && res.body.review.collected})`);
+    ok(lpStub.disqCalls === BUILT,
+      `H3 …asking Lender Price for its refusal list exactly ONCE per scenario (${lpStub.disqCalls} of ${BUILT}) — no second battery`);
+
+    const q = await queue(reviewSheet.programId);
+    ok(q.length === res.body.review.inserted && q.length > 0,
+      'H4 …and the questions are in the queue a reviewer opens');
+    ok(q.length > 0 && q.every((r) => r.dimension === 'dscr'), 'H5 …naming what they are about');
+
+    // A re-run refreshes rather than re-asking, exactly as the review-only run does.
+    const firstCount = q.length;
+    res = await call(H.runAgreementRoute, REQ({ params: { id: reviewSheet.versionId } }));
+    ok(res.body.review.inserted === 0 && res.body.review.refreshed === firstCount,
+      'H6 a second run refreshes the same questions — the queue does not grow');
+
+    // AND IT CANNOT TOUCH THE MEASUREMENT. The agreement verdict on this sheet is computed from the
+    // priced ladders; the review rides alongside. Proven by asserting the run still reports its own
+    // scenario count and gate verdict with the review attached.
+    ok(res.body.scenarios === BUILT && res.body.summary && res.body.summary.total === BUILT,
+      'H7 …and the measurement itself is unchanged — the review is an observer, never a participant');
+
+    // A REFUSAL LIST THAT NEVER ARRIVED READS NOTHING AND RETIRES NOTHING.
+    lpStub.answer = () => ({ disqualified: { ready: false, lenders: [] } });
+    res = await call(H.runAgreementRoute, REQ({ params: { id: reviewSheet.versionId } }));
+    ok(res.body.review.scenariosRead === 0 && res.body.review.staled === undefined,
+      'H8 a run whose refusal list never arrived reads nothing…');
+    ok((await queue(reviewSheet.programId)).length === firstCount,
+      'H9 …and retires nothing — a vendor outage is not "the disagreement went away"');
   } finally {
     await cleanup();
     if (typeof db.end === 'function') await db.end().catch(() => {});

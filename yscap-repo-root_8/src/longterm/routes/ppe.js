@@ -2907,6 +2907,27 @@ async function runAgreementRoute(req, res) {
   const capped = all.length > MAX_AGREEMENT_SCENARIOS;
   const battery = capped ? all.slice(0, MAX_AGREEMENT_SCENARIOS) : all;
 
+  // THE SAME BATTERY ANSWERS THE REVIEW QUESTION TOO (§2.58 + §2.62), at no extra vendor call: this run
+  // already asks Lender Price for its refusal list on every scenario, which is exactly what the
+  // disqualifier review reads. Without this the only way to fill that queue is a SECOND paid battery
+  // asking the same questions about the same sheet.
+  //
+  // EVERY PART OF IT IS BEST-EFFORT AND CANNOT TOUCH THE MEASUREMENT: the hook is wrapped by the
+  // harness, the review is computed inside its own try, and a scenario whose refusal list did not
+  // arrive is left OUT of the covered set — so a partial feed can never retire a real question.
+  const reviewItems = [];
+  const reviewCovered = [];
+  let reviewErrors = 0;
+  const collectReview = ({ scenario, ours: our, legs }) => {
+    try {
+      const lpDisq = lpNormalizeFull.normalizeLpDisqualified((legs && legs.disqualified) || {}, lpScope);
+      const rev = disqualifierReview.reviewScenario({ scenario, lp: lpDisq, ours: our, program });
+      if (!rev.ready) return;
+      reviewCovered.push(disqualifierReviewStore.scenarioKey(scenario));
+      for (const it of rev.items) reviewItems.push(it);
+    } catch (_) { reviewErrors += 1; }
+  };
+
   let run;
   try {
     run = await ratesheetAgreement.runRatesheetAgreement(
@@ -2952,6 +2973,7 @@ async function runAgreementRoute(req, res) {
         priceToleranceMilli: settings[K.priceTolerance],
         rateToleranceMilli: settings[K.rateTolerance],
         concurrency: intIn(req.body && req.body.concurrency, 8) || 4,
+        onScenario: collectReview,
       },
     );
   } catch (e) {
@@ -2961,6 +2983,29 @@ async function runAgreementRoute(req, res) {
   // THE RECORD IS THE POINT, so a failure to store it is reported as a failure — not as a run that
   // "worked". A caller told the sheet agreed, whose verdict never reached the ledger, would press
   // Publish and be refused with `never_measured` and no idea why.
+  // Recorded AFTER the run and BEFORE the verdict, on its own clock, and never allowed to fail the
+  // measurement: a review queue that could not be written is news, but it is not a reason to lose a
+  // battery somebody has just paid for.
+  const reviewAt = Date.now();
+  const review = { collected: reviewItems.length, scenariosRead: reviewCovered.length, errors: reviewErrors };
+  const programId = found.row && found.row.program_id;
+  if (programId && reviewCovered.length) {
+    try {
+      const wrote = await disqualifierReviewStore.recordItems(db, found.scope, programId, reviewItems, { now: reviewAt });
+      review.inserted = wrote.inserted;
+      review.refreshed = wrote.refreshed;
+      review.reopened = wrote.reopened;
+      const staled = await disqualifierReviewStore.markStaleFor(db, found.scope, programId, reviewCovered, { now: reviewAt });
+      review.staled = staled.staled;
+    } catch (e) {
+      review.error = msgOf(e);
+    }
+  } else if (!programId) {
+    review.skipped = 'no_program_row';
+  } else {
+    review.skipped = 'nothing_read';
+  }
+
   const rec = await agreementStore.recordRun(found.scope, {
     db,
     versionId: found.versionId,
@@ -2980,6 +3025,8 @@ async function runAgreementRoute(req, res) {
     // silent-green failure this engine keeps producing, and a caller cannot tell from a verdict alone.
     pppLayer,
     summary: run.summary,
+    // What this run ALSO answered, off the same battery: the per-scenario disqualifier questions.
+    review,
   };
 
   if (!rec.ok) {

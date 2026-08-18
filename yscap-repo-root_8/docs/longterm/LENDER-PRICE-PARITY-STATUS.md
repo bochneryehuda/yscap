@@ -26,7 +26,7 @@ actually blocked?" should be answerable in one place.
 | — | **Rotate the Lender Price login.** It was pasted into a chat, so it must be treated as compromised and changed in the vendor's portal. | Every live run keeps working, safely. Nothing is blocked while it waits, but it should not wait. | Part 4 |
 | ✅ #78 | **ANSWERED AND BUILT 2026-08-18.** *"Instead of offering the investor's raw pricing, like a 102, we're only gonna offer him a 101.75."* The holdback now comes off the offered price, on its own line. | Nothing — this is done. | §2.8, §2.15, §2.52 |
 | — | **There are two company margin boxes — which one wins?** "Correspondent margin" is the one the pricer has always used; "Margin (our markup)" is the one the per-investor work reads. Both are pre-filled at 0.250, so today they agree. A margin set on an INVESTOR, or by a scenario rule, already prices; a change to the COMPANY-level "Margin (our markup)" box deliberately changes nothing until you say. | Retiring one of the two boxes, so nobody can set a margin that does nothing. Nothing is mis-priced while it waits. | §2.55 |
-| ⏳ THE QUESTION IS NOW LAID OUT | **When the rate sheet and the eligibility rules disagree, which wins?** The owner answered with a PROCEDURE, not a rule, and it is built: every scenario Lender Price refuses is lined up against our sheet and waits as a question a person answers. The WINNER is still an open decision. | Nothing waits on it — but a recorded answer changes no price until somebody publishes a rule. | §2.58, §2.10 |
+| ⏳ THE QUESTION IS NOW LAID OUT | **When the rate sheet and the eligibility rules disagree, which wins?** The owner answered with a PROCEDURE, not a rule, and it is built: every scenario Lender Price refuses is lined up against our sheet and waits as a question a person answers. The WINNER is still an open decision. | Nothing waits on it — but a recorded answer changes no price until somebody publishes a rule. | §2.58, §2.62, §2.10 |
 | #81 | **The rate sheet prices five cells the eligibility matrix refuses. Which one governs?** If the matrix is right we are correctly stricter; if the sheet is right, these are 41 loans we refuse that the investor would do. | All 41 remaining disagreements — the whole eligibility axis, and with it the gate. | §2.10, §2.15 |
 | #69 | **Five "advanced" rules we deliberately left flagged rather than guessed** (vacant, foreign national, rural, first-time homebuyer, renovation). | Turning those five into real declines instead of warnings. | §0 (the flagged list) |
 | #57 | **Prepayment penalty: which types and terms does each investor allow, and how is each priced?** | The per-investor prepay library beyond Deephaven. | D30 |
@@ -3522,7 +3522,9 @@ per scenario, with the result laid out as a question and the answer kept.
   item's own facts.
 · `db/581` + `src/longterm/ppe/disqualifier-review-store.js` — where the questions wait and, far more
   importantly, where the ANSWERS stay.
-· Three doors on `/api/lt/ppe`, all `requirePpeAdmin`: the RUN, the QUEUE, and the DECIDE.
+· Three doors on `/api/lt/ppe`, all `requirePpeAdmin`: the RUN, the QUEUE, and the DECIDE. (The
+  ≥200-scenario agreement run fills the same queue for free off the battery it already pays for —
+  §2.62 — so the dedicated RUN door is no longer the only way in.)
 · `app-v2/src/longterm/DisqualifierReview.jsx`, mounted on the rate-sheet console.
 
 **IT DECIDES NOTHING, AND THAT IS WHY IT IS ADMIN-GATED.** Recording "we should refuse this" writes no
@@ -3693,3 +3695,57 @@ that decision cannot drift silently either.
 superset property both ways, the "nothing reads it" measurement over the source, the single definition
 of the ceiling, and the batteries left alone. **Mutation-proven twice** — reverting the pointer kills 5
 assertions, and re-pointing the ceiling at a second copy kills 2.
+
+---
+
+**§2.62 — ONE PAID BATTERY, TWO ANSWERS: THE DISQUALIFIER REVIEW RIDES THE AGREEMENT RUN (2026-08-18).**
+
+§2.58 built the owner's own procedure into a door — every scenario Lender Price refuses, lined up
+against our rate sheet, waiting as a question a person answers. It had exactly one way to be filled: a
+dedicated review run that priced its own battery against a paid vendor. So a shop that wanted both the
+agreement verdict and the review questions on one sheet was asking Lender Price the same hundreds of
+questions **twice**, on the same afternoon, about the same sheet.
+
+**THE MEASUREMENT CAME FIRST, and it is what chose where this goes.** Two runs could have carried the
+review; only one of them already holds the answer:
+
+- The **daily canary** (`lp-agreement-legs.buildCanaryLpLeg`) calls `client.price` and **nothing else** —
+  it never asks for the refusal feed. Folding the review in there is a real, recurring cost decision
+  about a vendor bill, six times a day, and it is not an agent's to take unilaterally. Left alone.
+- The **agreement run** (`buildLpLeg(client, { withDisqualify: true })`) already fetches the refusal list
+  on every scenario, because the eligibility half of the verdict is computed from it. The review reads
+  precisely that. **It rides free.**
+
+**THE HOOK IS AN OBSERVER, AND THE WRAPPING IS THE WHOLE CONTRACT.** `runOne` calls an optional
+`onScenario({ scenario, ours, legs, tag })` once per scenario, with both raw legs, immediately after
+they resolve — inside a `try/catch` that swallows anything it does. A reporter must never be able to
+change a measurement, which is the same rule `onResult` already follows one level up. **Mutation-proven
+in both directions**: a reporter that throws leaves the run completing and the verdict byte-identical
+(`H1`/`H7` green while the review assertions go red), and **removing the wrapper** with that same
+throwing reporter takes the entire battery down — 5 assertions in section B, before H is even reached.
+So the guard is load-bearing rather than decorative.
+
+**ONE CLOCK FOR THE WHOLE RUN**, the same rule §2.58 learned the hard way: the questions are recorded and
+the covered scenarios retired against a single `reviewAt`, or the run stales the very items it just
+wrote. And a scenario whose refusal list **never arrived** is left out of the covered set entirely — a
+vendor outage is not "the disagreement went away", pinned by `H8`/`H9`.
+
+**NOTHING IS SILENT.** The run's response carries its own `review` block — how many questions were
+collected, how many scenarios were actually read, how many were inserted / refreshed / reopened / staled,
+how many scenarios errored, and, when nothing was recorded, **which** of the two reasons applied
+(`no_program_row` — the sheet has no program to hang the queue on; `nothing_read` — the refusal feed
+never arrived). A review that could not be written is reported as news and is **never** a reason to lose
+a battery somebody has just paid for: the agreement verdict is recorded regardless, and the review block
+carries its own `error` string.
+
+**MEASURED, on the canonical battery:** 299 scenarios, 299 questions laid out, and Lender Price asked for
+its refusal list **299 times — exactly once per scenario**, which is the number it was already being
+asked before any of this. There is no second battery.
+
+**PROVED** by section H of `scripts/test-lt-ppe-agreement-run-db.js` (9 assertions, real Postgres, real
+routes): the run completing, the questions collected, the once-per-scenario call count, the questions
+being in the queue a reviewer opens and naming what they are about, a second run refreshing rather than
+growing the queue, the verdict unchanged by the observer, and the two outage cases reading nothing and
+retiring nothing. **Mutation-proven three ways** — removing the hook from `runOne` kills 3, unwiring
+`onScenario` at the route kills 4, and a throwing reporter kills the same 4 while leaving every
+measurement assertion green.

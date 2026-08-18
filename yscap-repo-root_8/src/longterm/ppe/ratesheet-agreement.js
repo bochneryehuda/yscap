@@ -357,6 +357,22 @@ async function runOne(scenario, ours, lp, opts) {
   try { legs = await lp(scenario); } catch (e) { return errorVerdict(tag, 'lp', e); }
   legs = legs || {};
 
+  // THE OBSERVER HOOK — both legs, raw, exactly once per scenario, for a caller that wants to answer a
+  // SECOND question off a battery that has already been paid for.
+  //
+  // WHY IT EXISTS: the disqualifier review (§2.58) needs precisely these two things — our quote and
+  // Lender Price's own refusal list — and the agreement run already fetches both. Without the hook the
+  // only way to fill the review queue is a SECOND battery against a paid vendor, asking the same
+  // questions twice for one sheet.
+  //
+  // IT IS STRICTLY OBSERVATIONAL, and the wrapping is the whole contract: a hook that throws, hangs on
+  // its own error, or returns something is ignored, and the verdict below is computed exactly as it
+  // would be with no hook at all. A reporter must never be able to change a measurement — that is the
+  // same rule `onResult` already follows one level up.
+  if (typeof o.onScenario === 'function') {
+    try { o.onScenario({ scenario, ours: our, legs, tag }); } catch (_) { /* never changes a verdict */ }
+  }
+
   const filter = o.filter || {};
   const lpNorm = normalizeLpFull(legs.full || {}, { ...filter, rateScale: o.rateScale, priceScale: o.priceScale });
   const lpDisq = normalizeLpDisqualified(legs.disqualified || {}, filter);
@@ -507,7 +523,9 @@ async function runOne(scenario, ours, lp, opts) {
  * Run a whole scenario batch (the E3 gate). Mirrors shadow.runShadow's bounded worker pool.
  *   scenarios — [...] from scenario-matrix.buildMatrix (+ coverage golden/boundary/pairwise)
  *   engines   — { ours, lp } (see runOne)
- *   opts      — runOne opts + { concurrency=1, onResult(result,i) }
+ *   opts      — runOne opts + { concurrency=1, onResult(result,i), onScenario({scenario,ours,legs,tag}) }
+ *               `onScenario` is called once per scenario with BOTH RAW LEGS, for a caller answering a
+ *               second question off a battery already paid for (see runOne). Observational only.
  * Returns { results:[<runOne verdict>], summary }.
  */
 async function runRatesheetAgreement(scenarios, engines = {}, opts = {}) {
