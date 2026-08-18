@@ -433,7 +433,10 @@ for (const [re, what] of [
   [/LOCK-TERM WIRING/i, 'the lock_term_days vs lock_days engine question'],
   [/MIN PRICE vs THE HOLDBACK/i, 'whether the holdback shifts the 98.000 floor'],
   [/WHICH KNOB IS THE 0\.25/i, 'margin vs holdback — which knob the owner means'],
-  [/NOT YET APPLIED TO THE PRICE BY THE ENGINE/i, 'that quote.js still does not subtract the holdback'],
+  // The engine DOES subtract the holdback now (§2.69), so this entry records the frame question that
+  // is genuinely still open rather than the wiring that is not. That the note matches the code is proven
+  // biconditionally in test-lt-ppe-sheet-claims.js — this row only asserts the sheet still records it.
+  [/THE HOLDBACK AND THE BASE LADDER'S FRAME/i, 'which frame the base ladder is in'],
   [/CLAMP ORDER/i, 'cap-then-floor vs floor-then-cap'],
   [/ABOVE \$2,500,000/i, 'no published tier above the max loan'],
   [/ONE CAP PER TERM/i, 'one max-price column for both pricing models'],

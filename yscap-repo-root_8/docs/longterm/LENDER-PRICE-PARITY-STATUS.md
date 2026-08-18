@@ -4540,3 +4540,57 @@ route was arranged: moving the pre-flight to after the vendor calls was caught b
 assertions meant to catch it. The guard now cuts out the paid route's own body by brace-matching.
 
 146/146 suites.
+
+**§2.76 — THE MONEY NOTE §2.69's OWN FIX LEFT BEHIND, AND THE GUARD THAT MAKES THE CLASS IMPOSSIBLE
+(2026-08-18).**
+
+**MY OWN INCOMPLETE FIX, FOUND BY SWEEPING RATHER THAN BY BEING TOLD.** §2.69 wired the margin holdback
+into `pricing.priceRung` and corrected the stale wiring note on `deephaven-dscr-sheet.js`. **The same
+false sentence survived in the sibling max-price sheet**, whose `UNMEASURED` list still read:
+
+> *"THE HOLDBACK IS NOT YET APPLIED TO THE PRICE BY THE ENGINE. quote.js carries holdbackMilli … and
+> deliberately does NOT subtract it … wiring it into pricing.priceRung … belongs in its own commit."*
+
+**Measured 2026-08-18:** `priceRung` on a 105.000 base with a 0.25 holdback prices **104.750**. It
+subtracts. So the note described a commit that had already happened and, on a **money** path, would have
+sent the next reader to make the change **a second time** — the repo's own *"fix the root and every place
+it surfaces"* rule, failed by the commit that fixed the root. The entry now records what is actually
+open (the base ladder's frame, and that quote.js refuses rather than double-counting) instead of what
+was open a day ago. The module's FRAME INVARIANT header was re-read and is still true — it is about
+which frame a cap may clamp in, not about whether the engine applies the holdback — so it was left
+alone.
+
+**THE NOTES ARE PROSE ABOUT CODE, AND THEY ARE EXPORTED, so they can be checked rather than trusted.**
+`UNMEASURED` is the most valuable prose in this workstream — it is what separates *"we chose not to"*
+from *"nobody looked"* — and the most drift-prone, because every entry sits where an owner question
+meets a piece of code. `scripts/test-lt-ppe-sheet-claims.js` reads both sheets' lists and holds five of
+their sentences **BICONDITIONAL** against a live measurement: the claim is in the prose **if and only
+if** the code still behaves that way.
+
+Both directions matter, and a *"must not appear"* test would only have caught one of them. A **stale**
+note fails (the sentence is there, the code moved); and code that **changes back** without the note
+being restored fails too, because a decision nobody wrote down is one nobody can question. The five:
+the holdback wiring, the uncapped loan above $2.5MM, the floor-then-cap clamp order, the minimum price
+being a floor rather than a decline, and the floor reaching the grid unshifted by our holdback. Each
+`holds()` is a real call — `priceRung`, `clamp`, `loanAmountMaxPrice`, the built grid — and **never
+reads the prose**, which would be the claim marking its own homework.
+
+**AND THE MONEY CLAIM IS ALSO GUARDED AGAINST BEING RE-WORDED.** A biconditional on one exact sentence
+is defeated by a paraphrase, so a small family of rewordings is refused as well — but only while the
+engine really does subtract, measured live in the same section, so the guard cannot fire on a day when
+those sentences would be true again. A third section proves the guard can see the prose at all: a claim
+table matched against an empty corpus passes every biconditional whose code half is false, which is most
+of them.
+
+**Mutation-proven five ways**: the stale sentence put back, a paraphrase of it, the engine ceasing to
+subtract with the notes unchanged (the reverse direction), the clamp order flipped, and the floor
+shifted by the holdback. Each red, control green either side.
+
+**AND THE SHEET'S OWN SUITE WAS ASSERTING THE STALE CLAIM AS EXPECTED BEHAVIOUR** — a row reading
+*"UNMEASURED records: that quote.js still does not subtract the holdback"*, which is the same shape
+§2.69 found when the existing holdback suite was pinning the double-count. It was re-pointed at the
+entry as it now reads and its label now says where the proof lives, so that suite asserts the sheet
+still RECORDS the open question while the claims guard owns whether the record is true — one fact, one
+owner, rather than two files half-checking it.
+
+147/147 suites.
