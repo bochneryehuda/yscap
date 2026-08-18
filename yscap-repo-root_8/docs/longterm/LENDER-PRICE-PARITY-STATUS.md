@@ -2378,3 +2378,43 @@ Twelve assertions in `scripts/test-lt-suite-coverage-gate.js`, which spawns the 
 fixture repositories: the undocumented orphan, the ledger escape hatch, the stale row, the idle
 aggregate runner, a missing ledger failing rather than passing with nothing to compare, and a CONTROL
 that the real repository passes today.
+
+**§2.40 — THE GATE COULD NOT SEE A PREPAYMENT-PENALTY PROHIBITION (2026-08-18).** Measured, and it is
+the dangerous direction: the canonical battery's OWN scenario flagged `_ineligible` for "NJ Individual
+PPP prohibited" came back from our leg **PRICED**, while `pppDisqualifier` on the identical facts
+returned `dhvn_ppp_prohibited_nj`. We were quoting a loan the investor will not buy, and the gate was
+structurally blind to it.
+
+**THE CAUSE IS A SHAPE MISMATCH, NOT A MISSED CALL.** The harness prices a SHEET (`quote.quoteProgram`);
+the state prepayment-penalty law lives in an investor PROGRAM's Layer 3 (`deephaven-ppp-matrix`),
+reachable only through `program-engine.runProgram`, which the harness never calls. The two are different
+objects with different interfaces, so `buildOursLeg` never asked — and the sheet cannot cover for it,
+because it carries **no borrower-type rule at all**. The one PPP ineligibility the battery claims to
+prove was not being asked of the code that prices.
+
+`buildOursLeg` now takes an optional `pppDescriptor` and, for a scenario the sheet priced, asks that
+descriptor's prepayment layer. A prohibition becomes a decline in exactly the shape `quoteProgram`
+produces for its own rules — `eligible:false`, empty ladder, a `declines[]` row — so every consumer
+downstream reads it identically, stamped `source:'ppp_matrix'` so the layer is visible in a report
+rather than disguised as a sheet rule. A scenario the sheet ALREADY declined is left alone: a second
+reason would double-count it in the by-dimension tallies.
+
+**PPP ONLY, AND THAT BOUNDARY IS THE POINT.** The same descriptor carries a Layer-2 ELIGIBILITY matrix,
+and folding that in would silently answer an OPEN OWNER QUESTION — the rate sheet prices cells the
+matrix refuses, and which one governs is the owner's call (§2.10, task #81). PPP is the case where the
+sheet is SILENT, so asking the matrix fills a silence rather than overriding a price. **OPT-IN** for the
+same reason: with no descriptor the leg is byte-for-byte what it was, so no existing caller's gate moves
+without being asked, and a descriptor that cannot answer is refused at WIRING time rather than ignored
+once per scenario — a silently-dropped descriptor would be the very defect being fixed.
+
+**THE CONTROLS ARE WHAT MAKE THE FIX MEAN ANYTHING.** A leg that declined everything would satisfy "the
+NJ scenario is declined" while being far more wrong, so the identical loan is asserted to still PRICE as
+an LLC (an entity may carry a penalty), in California, and with no penalty requested at all. Five
+mutations proven red, including the over-eager fix that declines everything.
+
+**A BATTERY OBSERVATION, RECORDED RATHER THAN FIXED HERE:** the battery holds **two** NJ
+individual-with-prepay scenarios and flags only one. "NJ Individual 5yr PPP" (group `borrower`)
+describes the identical prohibited combination and is not marked ineligible. Both decline now — the law
+does not care which group a scenario was filed under — and the test asserts on the set rather than on
+the flagged one alone. Whether the battery's own labelling should be corrected is the battery's
+business, not this leg's.

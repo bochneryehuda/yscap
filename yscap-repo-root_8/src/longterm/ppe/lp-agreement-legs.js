@@ -166,13 +166,73 @@ function lpScenarioToFacts(s) {
  *                         BOTH legs of the harness). Default false: the scenario is already engine facts.
  * (Back-compat: a non-object 3rd arg is still accepted as marginHoldback.)
  */
+/**
+ * A PPP prohibition turned into a decline on the quote, in exactly the shape `quoteProgram` produces for
+ * its own eligibility rules — `{ eligible:false, ladder:[], declines:[{code, reason, source}] }` — so
+ * every consumer downstream (the harness's `ourEligible`, the reconciler, the summary) reads it the same
+ * way it reads a base decline. The `source` is `ppp_matrix` rather than `base`, which is what makes the
+ * new layer visible in a report instead of masquerading as a sheet rule.
+ *
+ * Never mutates the quote: the caller's object may be shared, and a verdict that changed under a reader
+ * is a debugging nightmare in a batch of 299.
+ */
+function declineForPpp(quote, dq) {
+  const prior = Array.isArray(quote && quote.declines) ? quote.declines : [];
+  return {
+    ...quote,
+    eligible: false,
+    ladder: [],
+    declines: [...prior, {
+      code: dq.code,
+      reason: dq.declineReason,
+      dimension: dq.dimension,
+      citation: dq.citation,
+      source: 'ppp_matrix',
+    }],
+  };
+}
+
+/**
+ * OUR leg for the agreement harness.
+ *
+ * `opts.pppDescriptor` — an investor PROGRAM DESCRIPTOR (`program-registry.programFor(...)`) whose
+ * prepayment-penalty layer should be asked about every scenario ALONGSIDE the sheet's own rules.
+ *
+ * WHY THIS IS NEEDED AT ALL. The harness prices a SHEET; the state prepayment-penalty law lives in an
+ * investor PROGRAM (Layer 3, `deephaven-ppp-matrix`), and the two are different objects with different
+ * shapes. So this leg has always answered with `quoteProgram` alone, and the PPP layer was never asked —
+ * measured: the canonical battery's own scenario flagged INELIGIBLE for "NJ Individual PPP prohibited"
+ * came back from this leg PRICED, while `pppDisqualifier` on the identical facts returned
+ * `dhvn_ppp_prohibited_nj`. That is the dangerous direction — we quote a loan the investor will not buy —
+ * and the gate was structurally blind to it, because the sheet carries no borrower-type rule at all.
+ *
+ * PPP ONLY, DELIBERATELY. The descriptor also carries a Layer-2 ELIGIBILITY matrix, and folding that in
+ * here would silently answer an OPEN OWNER QUESTION: the rate sheet prices cells the matrix refuses, and
+ * which one governs is the owner's call, not this function's (§2.10, task #81). PPP is a different case —
+ * the sheet is SILENT on it, so asking the matrix fills a silence rather than overriding a price.
+ *
+ * OPT-IN. With no descriptor the leg is byte-identical to before, so no existing caller's gate moves
+ * without being asked. A descriptor that cannot answer is rejected HERE, at wiring time, rather than
+ * being ignored once per scenario — a silently-dropped descriptor would be exactly the defect this fixes.
+ */
 function buildOursLeg(program, settings, opts) {
   if (!program || typeof program !== 'object') throw new Error('buildOursLeg: no program (the sheet-under-test)');
   const o = (opts && typeof opts === 'object') ? opts : { marginHoldback: opts };
+  const desc = o.pppDescriptor || null;
+  if (desc && (typeof desc.pppInputFromFacts !== 'function' || typeof desc.pppDisqualifier !== 'function')) {
+    throw new Error('buildOursLeg: pppDescriptor must expose pppInputFromFacts() and pppDisqualifier()');
+  }
   return function ours(scenario) {
-    const arg = { scenario: o.factsFromLp ? lpScenarioToFacts(scenario) : scenario, program, settings: settings || {} };
+    const facts = o.factsFromLp ? lpScenarioToFacts(scenario) : scenario;
+    const arg = { scenario: facts, program, settings: settings || {} };
     if (o.marginHoldback) arg.marginHoldback = o.marginHoldback;
-    return quoteProgram(arg);
+    const quote = quoteProgram(arg);
+    if (!desc) return quote;
+    // A quote the sheet ALREADY declined stays as it is: it is ineligible either way, and appending a
+    // second reason would double-count the scenario in the by-dimension tallies.
+    if (!quote || quote.eligible !== true) return quote;
+    const dq = desc.pppDisqualifier(desc.pppInputFromFacts(facts));
+    return dq ? declineForPpp(quote, dq) : quote;
   };
 }
 
