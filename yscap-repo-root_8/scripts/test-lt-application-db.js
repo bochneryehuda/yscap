@@ -247,6 +247,34 @@ async function main() {
       && Number(lt2.note_rate_pct) === 8 && Number(lt2.housing_expense_total) === 1700.81,
       'a payload that says nothing about the amortization leaves the row\'s own value alone rather than failing the whole write on a NOT NULL column');
 
+    // THE VALUE THE TENANT ACTUALLY SENDS. Field 608's observed values across 772
+    // live loans are `Fixed` (765) and `AdjustableRate` (1) — and the map used to
+    // carry `adjustable` and `arm`, neither of which anybody has ever sent, so the
+    // one ARM in the book fell through to null and the COALESCE above left it on
+    // the column's own `fixed` default. Not blank: FIXED, a confident wrong answer
+    // about whether that borrower's payment can move.
+    //
+    // Run through the real sync onto a row that currently says `fixed`, which is
+    // also the proof that the live loan heals itself on its next pass rather than
+    // needing anything back-dated.
+    const armTerms = await sync.syncLoanTerms(loanId, {
+      ...FULL_LOAN, loanAmortizationType: 'AdjustableRate',
+    });
+    const lt3 = (await db.query('SELECT * FROM lt_loans WHERE id = $1::uuid', [loanId])).rows[0];
+    check(armTerms.ok && lt3.amortization_type === 'adjustable',
+      'THE ONE THAT MATTERS: `AdjustableRate` — the word Encompass really sends — lands as `adjustable`, the value the enum really holds, over a row that said fixed');
+
+    // And the two Encompass allows but nobody has sent must NOT be guessed into
+    // either bucket: the column is exactly (fixed, adjustable), and calling a
+    // graduated-payment mortgage "fixed" is a claim about the payment schedule.
+    await db.query('UPDATE lt_loans SET amortization_type = $2 WHERE id = $1::uuid', [loanId, 'adjustable']);
+    const gpm = await sync.syncLoanTerms(loanId, {
+      ...FULL_LOAN, loanAmortizationType: 'GraduatedPaymentMortgage',
+    });
+    const lt4 = (await db.query('SELECT * FROM lt_loans WHERE id = $1::uuid', [loanId])).rows[0];
+    check(gpm.ok && lt4.amortization_type === 'adjustable',
+      '…while a kind we deliberately do not map writes NOTHING and leaves the row as it was — the write survives, and no amortization is invented for a loan that is neither');
+
     console.log('\nthe people on the file');
 
     await db.query(`DELETE FROM lt_parties WHERE pair_id IN (SELECT id FROM lt_borrower_pairs WHERE loan_id = $1::uuid)`, [loanId]);
