@@ -850,7 +850,12 @@ function buildSearch(sc = {}, opts = {}) {
   // preserved and a string can never sneak through.
   if (sc.io !== undefined) c.interestOnly = !!sc.io;
   if (sc.escrowWaive !== undefined) c.escrowWaiver = !!sc.escrowWaive;
-  if (sc.fthb !== undefined) c.firstTimeHomeBuyer = !!sc.fthb;
+  // §2.96 — `fthb` and `first_time_homebuyer` are one fact under the manifest's two naming
+  // conventions, and only the first reached the wire. Either spelling now does.
+  {
+    const fthbFact = [sc.fthb, sc.first_time_homebuyer].find((v) => v !== undefined);
+    if (fthbFact !== undefined) c.firstTimeHomeBuyer = !!fthbFact;
+  }
   c.nonWarrantableProject = pm.nonWarrantableProject;
 
   // Special mortgage options: DSCR pair (+ PPP), resolved to the company's CURRENT {id,name}

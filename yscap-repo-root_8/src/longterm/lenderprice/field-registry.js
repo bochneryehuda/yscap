@@ -283,7 +283,14 @@ function applyRegistry(m, sc) {
   if (sc.waiveLenderFee != null) c.lenderFeeWaiver = !!sc.waiveLenderFee;
 
   // --- property / collateral ---
-  if (sc.rural != null) c.rural = !!sc.rural;
+  // ⛔ ONE FACT, TWO SPELLINGS, AND ONLY ONE OF THEM WORKED (§2.96). The route accepts BOTH `rural` and
+  // `rural_property` — they are the same fact under the manifest's two naming conventions (the core
+  // contract is camelCase, the D27–D29 overlay registry is snake_case) — and only `rural` reached the
+  // wire. A caller who set `rural_property: true` got a 200 and a quote that had never heard of it.
+  // Measured, and the same shape for two more pairs below. `short_term_rental || shortTermRental` a few
+  // lines away is the pattern being followed, not invented.
+  const ruralFact = [sc.rural, sc.rural_property].find((v) => v != null);
+  if (ruralFact != null) c.rural = !!ruralFact;
   // EXPLICIT-FALSE four-state (audit): omitted → inherit the live default; true → on; false → OFF.
   // Previously we only wrote the field when TRUE, so a live default of `true` survived an explicit
   // `false`. These are strict booleans (search-model BOOLEAN_FIELDS), so the value is a real boolean.
@@ -302,7 +309,7 @@ function applyRegistry(m, sc) {
   // All three are strict booleans (search-model BOOLEAN_FIELDS), so a string like "false" is 422'd
   // upstream and never reaches here.
   if (sc.crossCollateral != null) setDyn(m, 'GLOBAL_Cross_Collateralization_Product', sc.crossCollateral ? 'true' : 'false');
-  if (sc.firstTimeInvestor === true) setDyn(m, 'FirstTimeInvestor', 'true');
+  if (sc.firstTimeInvestor === true || sc.first_time_investor === true) setDyn(m, 'FirstTimeInvestor', 'true');
   if (sc.livingRentFree === true) setDyn(m, 'Global_Living_Rent_Free', 'true');
   // §31.3 — DSCR WITH ASSET DEPLETION. The ON value is the confirmed live token "Yes" (NOT the string
   // "true" the sibling flags use — copying their shape here would be a guess). The OFF token was

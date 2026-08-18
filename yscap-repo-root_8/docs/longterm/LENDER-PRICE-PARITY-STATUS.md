@@ -5855,3 +5855,65 @@ crashing the run (1), the runner keying on the scenario instead of the request (
 passing a key at all (1).
 
 163/163 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.96 — ⛔ THREE FIELDS WERE ACCEPTED AND SILENTLY DROPPED, AND NOTHING COULD TELL WHY (2026-08-18)
+
+**Measured against the real builder** — set the field, see whether the outgoing request changes:
+
+```
+rural              -> reaches the wire      rural_property        -> DROPPED
+firstTimeInvestor  -> reaches the wire      first_time_investor   -> DROPPED
+fthb               -> reaches the wire      first_time_homebuyer  -> DROPPED
+```
+
+**One fact under the manifest's two naming conventions** — the core contract is camelCase, the D27–D29
+overlay registry is snake_case — and the route publishes **both**, so a caller picking the wrong half got
+a **200 and a quote that had never heard of their input**. Exactly the class the owner named: *"the
+system understands your scenario exactly and it doesn't get any of your fields wrong."* Fixed by
+accepting either spelling, in the shape `short_term_rental || shortTermRental` and
+`attachmentType || attachment` already use — a pattern followed, not invented.
+
+**⛔ THE DURABLE HALF IS THE GUARD, NOT THE FIX.** Five more fields are accepted and never transmitted,
+and until now **nothing could tell a deliberate omission from a forgotten one**. `occupancy` is
+deliberate and documented at length; `foreign_national` is an open gap. From outside they were
+identical. Now every one of the **69** supported fields is measured against the real builder, and a
+field that changes nothing must appear in `NOT_TRANSMITTED` with a written reason. **61 reach the wire;
+8 are recorded** — and the record distinguishes **DECISIONS** (`occupancy`, `apr`, and the amount
+triangle's derived `ltv`) from **OPEN GAPS** (`foreign_national`, `declining_market`, `renovation`) and
+from **fields the profile silently overwrites** (`compensationType`, `incomeDocType` — accepted,
+applied, then forced back by the DSCR profile identity). The list cannot rot in either direction: an
+unrecorded drop fails, and a record for a field that now reaches the wire fails.
+
+**⛔ MY FIRST PROBE TABLE REPORTED FIVE FALSE DEFECTS, every one my error rather than the code's.**
+`ltv: 0.7` **is** 350k/500k so nothing moved; `attachmentType: 'Detached'` is what `SingleFamily`
+already maps to; and `bankruptcy` / `mortgageLates` are **object-shaped** (`{chapter,…}`,
+`{last12:{'30':…}}`) and correctly *warn* on a string rather than silently ignoring it. A guard that
+cries wolf teaches its reader to ignore it — so the probe values are now taken from the registry's own
+token sets, with that reasoning written where they are declared. **An unprobed field also fails**, so
+the table cannot quietly stop covering one.
+
+**⛔ AND ONE OF MY OWN ASSERTIONS WAS VACUOUS.** "A scenario stating neither spelling is unchanged"
+compared `buildSearch({...BASE})` to `baseBody` — **the same expression**, true whatever the bridge did.
+A mutation making the bridge fire unconditionally passed it. It now reads the body's contents: the
+captured base carries no `criteria.rural` key at all, and a bare scenario must not introduce one, while
+an explicit `false` must. Caught by the mutation battery, which is what it is for.
+
+**⛔ THE FIX PAID FOR ITSELF SOMEWHERE ELSE, AND A PINNED NUMBER CAUGHT IT.** §2.95 pinned *"32 of 305
+scenarios build a byte-identical request"*. It went red at **29** — because the three advanced scenarios
+that set the dropped fields were duplicates **precisely because the fields were dropped**. Bridging them
+turned three wasted paid calls into three real measurements. **Four advanced duplicates remain
+(`occupancy vacant`, `foreign national`, `declining market`, `renovation cash-out`) and they are exactly
+the fields still recorded as not-transmitted** — so the duplicate list and the not-transmitted record now
+move together, asserted in both suites.
+
+`scripts/test-lt-ppe-field-reaches-wire.js` (37 assertions). **Mutation-proven seven ways**: each of the
+three twins un-bridged (5, 4 and 4 assertions bite), the bridge firing on absence (1), a
+`NOT_TRANSMITTED` entry deleted (2), a stale record for a transmitted field (2), and a supported field
+losing its probe value (1).
+
+**Environment note, recorded because it looked like a code failure:** the scratch Postgres died
+mid-session again and 33 suites reported `ECONNREFUSED`. Restarted; 164/164 after.
+
+164/164 suites, 33 database-backed. All seven gates green.

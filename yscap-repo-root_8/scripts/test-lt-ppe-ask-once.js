@@ -44,8 +44,20 @@ console.log('-- A: what the battery actually asks --');
   const all = buildAgreementScenarios().scenarios;
   const keys = new Set(all.map(bodyKey));
   ok(all.length === 305, `the battery is ${all.length} scenarios`);
-  ok(keys.size === 273, `…asking ${keys.size} distinct requests`);
-  ok(all.length - keys.size === 32, `…so ${all.length - keys.size} paid calls per run are duplicates`);
+  // ⛔ THIS NUMBER MOVED 32 -> 29 WHEN §2.96 BRIDGED THREE DROPPED FIELDS, and that is the number
+  // working. `rural_property`, `first_time_investor` and `first_time_homebuyer` were accepted and never
+  // transmitted, so the three advanced scenarios that set them sent a request byte-identical to the
+  // plain baseline — they were duplicates BECAUSE the fields were dropped. Bridging the fields turned
+  // three wasted calls into three real measurements. The remaining four advanced duplicates
+  // (`occupancy vacant`, `foreign national`, `declining market`, `renovation cash-out`) are the fields
+  // still recorded as not-transmitted in `test-lt-ppe-field-reaches-wire.js`: they will stop being
+  // duplicates when, and only when, those are bridged or ruled out.
+  ok(keys.size === 276, `…asking ${keys.size} distinct requests`);
+  ok(all.length - keys.size === 29, `…so ${all.length - keys.size} paid calls per run are duplicates`);
+  // The pinned count and the not-transmitted record must move together, or one will quietly go stale.
+  const advDup = all.filter((s2) => /^(occupancy vacant|foreign national|declining market|renovation cash-out)$/.test(s2._label || ''));
+  ok(advDup.length === 4, 'the four advanced scenarios whose fields are still not transmitted are present');
+  ok(advDup.every((s2) => keys.has(bodyKey(s2))), '…and each still sends a request identical to another scenario\'s');
   // The key must be the REQUEST. A scenario-object key would miss the ones that differ in their fields
   // and agree on the wire — `ppp 5yr` states a 60-month prepay and `state CA` states none, and 60 IS
   // the default, so they send the same body. Asserted, because it is the reason for the design.
