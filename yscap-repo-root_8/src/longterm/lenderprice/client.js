@@ -1075,6 +1075,22 @@ function mapPrepay(months) {
   if (!m) return { PrepayTerm: null, PrePayment_Plan_Type: null, ppp: 'No PPP' };
   return { PrepayTerm: m + ' Months', PrePayment_Plan_Type: 'Standard', ppp: (m / 12) + ' Yr PPP' };
 }
+// ⛔ THE SIGN STRIPPING HERE IS LOAD-BEARING — DO NOT "FIX" IT WITHOUT READING THIS.
+// `replace(/[^0-9.]/g, '')` removes the MINUS SIGN, so a vendor value of -0.25 is read as 0.25. That
+// looks like an obvious bug and it is doing real work: Lender Price states an adjustment
+// CHARGE-POSITIVE (a charge is +, a credit is -) while our rate sheet states the SAME adjustment
+// PREMIUM-POSITIVE (+ improves the price — deephaven-dscr-sheet.js SHEET_FICO_CLTV says so in its own
+// words). MEASURED live 2026-08-18 across four scoped Deephaven searches, EIGHT of eight observable
+// families are EXACT negations, so taking the magnitude IS the frame conversion and the itemized-LLPA
+// agreement holds for a real reason. Restore the sign on its own and every parsed adjustment flips.
+//
+// The relationship is enforced, not assumed: `scripts/test-lt-ppe-llpa-sign-frames.js` holds it family
+// by family against `scripts/fixtures/lp-raw-adjustment-signs.json` (the raw vendor values) and fails
+// if any family stops being an exact negation. Changing this function means changing that suite, the
+// sheet's frame, and the comparison in lp-normalize-full together. Parity doc §2.104.
+//
+// For the INPUT side (fico / dscr / loan / value / months) the stripping is simply a sanitizer: none of
+// those is ever negative.
 function num(v) { if (v == null || v === '') return null; const n = parseFloat(String(v).replace(/[^0-9.]/g, '')); return isFinite(n) ? n : null; }
 
 // ---- parser (blueprint step 6): flatten the raw tree to clean ladders ------

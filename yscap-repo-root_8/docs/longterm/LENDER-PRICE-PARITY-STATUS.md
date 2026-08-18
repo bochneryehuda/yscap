@@ -6429,3 +6429,69 @@ element given an invented adjType (1), and the fallback sweep deleted (2) — wi
 green either side.
 
 168/168 suites, 33 database-backed. All seven gates green.
+
+---
+
+### §2.104 — ⛔ THE STRIPPED MINUS SIGN IS DOING THE WORK: LENDER PRICE IS CHARGE-POSITIVE, OUR SHEET IS PREMIUM-POSITIVE (2026-08-18)
+
+**This corrects §2.103's own characterisation, which is why it is written at length.** That section
+recorded `client.num` stripping the minus sign as a probable money defect and named it the next item to
+fix. **It is not a money defect, and fixing it as described would have BEEN the bug.**
+
+**WHAT WAS MEASURED, and it is the whole answer.** Four scoped live Deephaven searches (cash-out /
+condo / 2–4 units / interest-only + escrow waiver) captured every adjustment the vendor states, with
+its own sign, before any parsing. Set beside the rate sheet's own signed cells:
+
+```
+Lender Price (raw)   our sheet        family
+      -0.125           +0.125         DSCR (All) - 760-779 / CLTV 65.01-70.0
+      -0.250           +0.250         DSCR Ratio - DSCR >= 1.25
+      +0.500           -0.500         Cash Out Refinance, FICO >= 720
+      +0.125           -0.125         Condo
+      +0.750           -0.750         2-4 Units
+      +0.625           -0.625         Interest Only
+      +0.250           -0.250         Escrow Waiver
+      +0.375           -0.375         State of DC, MA, NJ, NY
+```
+
+**Eight of eight are EXACT negations.** Lender Price states an adjustment **CHARGE-POSITIVE** (a charge
+is +, a credit is −); our sheet states the same adjustment **PREMIUM-POSITIVE** (+ improves the price —
+`SHEET_FICO_CLTV`'s own words, from §2.8's rebuild). So taking the magnitude **is** the frame
+conversion: the itemized-LLPA agreement of §2.15 holds for a real reason, and restoring the sign
+without converting the frame would have flipped every parsed adjustment on a comparison that is
+currently correct.
+
+**⛔ WHAT IS ACTUALLY WRONG IS THAT NOTHING SAID SO.** The relationship was implicit — no statement, no
+guard — and a family that ever stopped being an exact negation would sail through the magnitude
+comparison while the price moved by **twice** the adjustment. On 2–4 units that is 1.500 points. The
+sign-stripping also sits inside a helper whose name (`num`) advertises none of this, in a file where
+the obvious reading is "somebody forgot the minus".
+
+**THE BUILD IS THE INVARIANT, NOT A CODE CHANGE.** No behaviour moved. `scripts/fixtures/
+lp-raw-adjustment-signs.json` commits the raw vendor values as evidence, and
+`scripts/test-lt-ppe-llpa-sign-frames.js` (15 assertions) holds LP's value to be the **exact** negation
+of the sheet's — no tolerance, family by family, reading the sheet's own tables so it can never drift
+from them. `client.num` now carries the explanation where a reader meets it, naming what else must move
+if the stripping is ever changed.
+
+**Both directions are covered deliberately**: a family where LP is POSITIVE and the sheet negative (a
+charge), and one where LP is NEGATIVE and the sheet positive (a credit) — a one-sided sample would let
+a broken frame pass. **Two rows are recorded as NOT held to the invariant**, with the reason on each,
+because neither is a cell of this sheet: `5 Year Prepay Penalty` (the prepay block is priced separately)
+and `NDC Margin - 0.25%` (ours, not the sheet's). The record cannot go stale — an exclusion pattern
+matching no captured row FAILS.
+
+**Mutation-proven four ways**: one sheet family flipped to agree in sign with Lender Price (B3 bites,
+naming the family and the non-zero sum), a sheet magnitude changed while staying opposite (B3), the
+fixture stripped of its negative rows so the sample is one-sided (5 assertions), and an exclusion
+pattern pointed at something that does not exist (3). Control green either side — **by hand, because
+the new suite is UNTRACKED and `git checkout` silently restores nothing**, which is how a "restored"
+control stayed red once before in this session.
+
+**STILL TRUE, and unchanged by this**: the comparison remains magnitude-based, so it cannot by itself
+detect a sign disagreement — it is the invariant above that makes that safe rather than lucky. And
+`num` is still the wrong tool for any FUTURE field that can legitimately be negative; it is correct for
+today's callers (the money families through this frame conversion, and the inputs — fico, dscr, loan,
+value, months — where a minus is meaningless).
+
+169/169 suites, 33 database-backed. All seven gates green. No production behaviour changed.

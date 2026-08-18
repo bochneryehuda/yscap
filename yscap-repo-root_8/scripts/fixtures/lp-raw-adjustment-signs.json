@@ -1,0 +1,123 @@
+{
+ "_README": "REAL Lender Price adjustment values, captured live 2026-08-18 from four scoped Deephaven searches (cash-out / condo / 2-4 units / interest-only + escrow waiver). Each row is the VENDOR RAW value with its own sign, BEFORE any parsing. Kept as the evidence that Lender Price states its adjustments CHARGE-POSITIVE while our rate sheet states the same adjustments PREMIUM-POSITIVE, and that the two are exact negations family by family. test-lt-ppe-llpa-sign-frames.js enforces that relationship.",
+ "capturedAt": "2026-08-18",
+ "investor": "Deephaven Mortgage",
+ "cltvBand": ">65.01 % <= 70.0 %  (the band all four scenarios landed in)",
+ "rows": [
+  {
+   "key": "5 Year Prepay Penalty",
+   "adjType": "SimpleRateAdjustment",
+   "raw": -0.625,
+   "type": "LLPA",
+   "valueType": "Points",
+   "seenIn": [
+    "cashout fico=760 cltv=70",
+    "condo",
+    "2-4 units",
+    "io + escrow waiver"
+   ]
+  },
+  {
+   "key": "DSCR (All) - 760 - 779 / CLTV >65.01 % <= 70.0 %",
+   "adjType": "FicoRateAdjustment",
+   "raw": -0.125,
+   "type": "LLPA",
+   "valueType": "Points",
+   "seenIn": [
+    "cashout fico=760 cltv=70",
+    "condo",
+    "2-4 units",
+    "io + escrow waiver"
+   ]
+  },
+  {
+   "key": "DSCR Ratio - DSCR >= 1.25 / CLTV >65.01 % <= 70.0 %",
+   "adjType": "SimpleRateAdjustment",
+   "raw": -0.25,
+   "type": "LLPA",
+   "valueType": "Points",
+   "seenIn": [
+    "cashout fico=760 cltv=70",
+    "condo",
+    "2-4 units",
+    "io + escrow waiver"
+   ]
+  },
+  {
+   "key": "NDC Margin - 0.25%",
+   "adjType": "SimpleRateAdjustment",
+   "raw": 0.25,
+   "type": "Margin",
+   "valueType": "Points",
+   "seenIn": [
+    "cashout fico=760 cltv=70",
+    "condo",
+    "2-4 units",
+    "io + escrow waiver"
+   ]
+  },
+  {
+   "key": "Other - 2-4 Units / CLTV >65.01 % <= 70.0 %",
+   "adjType": "UnitRateAdjustment",
+   "raw": 0.75,
+   "type": "LLPA",
+   "valueType": "Points",
+   "seenIn": [
+    "2-4 units"
+   ]
+  },
+  {
+   "key": "Other - Cash Out Refinance, FICO >= 720 / CLTV >65.01 % <= 70.0 %",
+   "adjType": "FicoRateAdjustment",
+   "raw": 0.5,
+   "type": "LLPA",
+   "valueType": "Points",
+   "seenIn": [
+    "cashout fico=760 cltv=70"
+   ]
+  },
+  {
+   "key": "Other - Condo / CLTV >65.01 % <= 70.0 %",
+   "adjType": "AllCondoRateAdjustment",
+   "raw": 0.125,
+   "type": "LLPA",
+   "valueType": "Points",
+   "seenIn": [
+    "condo"
+   ]
+  },
+  {
+   "key": "Other - Escrow Waiver / CLTV >65.01 % <= 70.0 %",
+   "adjType": "EscrowWaiverRateAdjustment",
+   "raw": 0.25,
+   "type": "LLPA",
+   "valueType": "Points",
+   "seenIn": [
+    "io + escrow waiver"
+   ]
+  },
+  {
+   "key": "Other - Interest Only / CLTV >65.01 % <= 70.0 %",
+   "adjType": "SimpleRateAdjustment",
+   "raw": 0.625,
+   "type": "LLPA",
+   "valueType": "Points",
+   "seenIn": [
+    "io + escrow waiver"
+   ]
+  },
+  {
+   "key": "Other - State of DC, MA, NJ, NY / CLTV >65.01 % <= 70.0 %",
+   "adjType": "StatesRateAdjustment",
+   "raw": 0.375,
+   "type": "LLPA",
+   "valueType": "Points",
+   "seenIn": [
+    "cashout fico=760 cltv=70",
+    "condo",
+    "2-4 units",
+    "io + escrow waiver"
+   ]
+  }
+ ]
+}
