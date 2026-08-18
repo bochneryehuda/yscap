@@ -24,6 +24,7 @@
  */
 
 const cutover = require('./cutover');
+const parity = require('./parity');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -138,7 +139,16 @@ function assemble(runs = [], findings = [], opts = {}) {
   const scoreboard = cutover.buildScoreboard({
     canaryAgreementRate,
     // how much the freshest canary actually compared (§10.5/§10.6) — the gate reads these
-    canaryScenarioCount: isFiniteNum(latestSummary.comparable) ? latestSummary.comparable : null,
+    //
+    // ⛔ THROUGH THE SHARED DEFINITION (§2.77), not off `comparable` directly. `comparable` is
+    // agreed + disagreed and an ENGINE ERROR lands in `disagreed`, so the raw figure counts scenarios
+    // where nothing was compared at all — and since §2.73 this number is a real coverage FLOOR on
+    // promotion. The canary's own verdict has always subtracted the errors; the gate's copy did not,
+    // so one run reported `compared: 6` and `coverage: 10` about the same ten scenarios.
+    //
+    // A run with NO summary must stay `null` — "not measured" and "measured zero" send a reader to two
+    // different places, and `comparedOf` answers 0 for both.
+    canaryScenarioCount: isFiniteNum(latestSummary.comparable) ? parity.comparedOf(latestSummary) : null,
     canaryIncomparable: isFiniteNum(latestSummary.incomparable) ? latestSummary.incomparable : null,
     findings: Array.isArray(findings) ? findings : [],
     dailyNewFindings: days.map((d) => ({ dayMs: d.dayMs, count: d.newFindings })),

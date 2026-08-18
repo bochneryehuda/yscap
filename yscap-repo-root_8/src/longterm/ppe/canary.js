@@ -22,6 +22,7 @@
  * LT-only; no RTL import.
  */
 
+const parity = require('./parity');
 const shadow = require('./shadow');
 const finding = require('./finding');
 const shadowReport = require('./shadow-report');
@@ -60,7 +61,9 @@ function verdictOf(summary) {
   // below rather than left to read as "no scenario was priced", which is what an all-override battery
   // would otherwise report about a run in which every scenario priced perfectly well.
   const overlay = n('overlay');
-  const compared = Math.max(0, n('comparable') - errors);
+  // ONE definition, shared with the go-live gate's coverage floor (§2.77) — the two used to compute
+  // this differently and the gate's copy counted errored scenarios as proof.
+  const compared = parity.comparedOf(summary);
   if (compared > 0) return { proven: true, compared, scenarios, incomparable, overlay, errors, reason: null };
   const parts = [];
   if (incomparable > 0) parts.push(`${incomparable} could not be compared (an engine produced no result)`);

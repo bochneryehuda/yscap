@@ -4594,3 +4594,49 @@ still RECORDS the open question while the claims guard owns whether the record i
 owner, rather than two files half-checking it.
 
 147/147 suites.
+
+**§2.77 — TWO DEFINITIONS OF "HOW MUCH DID WE COMPARE", AND §2.73 MADE ONE OF THEM A GATE
+(2026-08-18).**
+
+**MEASURED.** `comparable` is agreed + disagreed, and an **engine error lands in `disagreed`** — a
+scenario where our side or Lender Price threw is not agreement. `shadow.summarize` tallies those
+separately as `errors`, and two readers of the same summary then disagreed about what the run proved:
+
+- `canary.verdictOf` subtracts them (*"a run with zero of those has proven nothing"*);
+- `scoreboard.assemble` handed the go-live gate the **raw `comparable`** as `canaryScenarioCount` —
+  which **§2.73 turned into a real coverage FLOOR** on promotion.
+
+On a ten-scenario run with four engine errors that is `compared: 6` on the verdict and `coverage: 10` to
+the gate, about the same ten scenarios — while `cutover.js` documented the field as *"how much the
+latest canary actually COMPARED"*. **`parity.comparedOf(summary)` is now the one definition** and both
+read it; the doc comment was corrected in the same pass.
+
+**IT IS BELT-AND-BRACES TODAY, AND THAT IS STATED RATHER THAN IMPLIED — the repo's own rule about a
+guard that is redundant.** An engine error also drags the agreement rate below 1, and
+`requireCanaryPerfect` (which `settingsToGate` always sets) refuses on that first, so no promotion could
+actually have turned on the difference. **The suite proves that redundancy rather than asserting it**:
+one section measures that the rate really does fall, that the gate really does demand 100% — and then
+relaxes the rate gate and shows the **coverage floor refusing on its own**, which is the whole point.
+The belt no longer depends on the braces, so the day somebody relaxes the rate the floor still means
+what its own name says.
+
+Two smaller honesty points ride with it: `comparedOf` never goes negative (more errors than comparable
+is a broken summary, not a negative amount of proof), and a run with **no summary at all** still reports
+`null` coverage rather than `0` — *"nobody measured"* and *"measured nothing"* send a reader to two
+different places, and the floor fails closed on the first.
+
+`scripts/test-lt-ppe-compared-definition.js` (20 assertions) drives a REAL ten-scenario shadow run with
+four throwing scenarios rather than a hand-built summary, so the arithmetic is proven on the shape the
+code actually produces. **Mutation-proven four ways**: the gate reading the raw `comparable` again,
+`comparedOf` ceasing to subtract, a missing summary reporting 0 instead of null, and the count going
+negative.
+
+**Two leads were followed and closed as NEGATIVES in the same pass, recorded because a hunt that reports
+only its hits is not a measurement.** A sweep for values computed and never read surfaced
+`ratesheet-agreement.gatedAgree` (it is a per-rung REPORT of what the gate used; the gating itself is
+done by `boundsAgree` in the same loop, and `summarize` does roll the bounds axis up — so nothing is
+lost) and `lp-drift`'s summary counters (the drift pass is deliberately unwired, recorded as such in
+`LT-UNREACHED.md`, so its counters having no reader is consistent rather than a defect). Neither was
+changed.
+
+148/148 suites.

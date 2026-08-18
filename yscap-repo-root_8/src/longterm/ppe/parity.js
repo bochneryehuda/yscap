@@ -155,6 +155,31 @@ function normalizeOurQuoteMaybe(x) {
   return x;
 }
 
+/**
+ * HOW MUCH DID THIS RUN ACTUALLY COMPARE? — ONE definition (§2.77).
+ *
+ * `comparable` is agreed + disagreed, and an ENGINE ERROR lands in `disagreed` (a scenario where our
+ * side or Lender Price THREW is not agreement, and shadow.summarize tallies them separately as
+ * `errors`). So `comparable` counts scenarios where nothing was compared at all, and the number that
+ * answers "how much proof is there" is `comparable` LESS those errors.
+ *
+ * ⛔ THE TWO READERS USED TO DISAGREE. `canary.verdictOf` subtracted the errors — its whole job is to
+ * refuse to call a run proof — while `scoreboard.assemble` handed the go-live gate the raw `comparable`
+ * as `canaryScenarioCount`, which §2.73 turned into a real coverage FLOOR. Measured: a ten-scenario run
+ * with four engine errors reported `compared: 6` on the verdict and `coverage: 10` to the gate, and
+ * `cutover.js` documented that field as "how much the latest canary actually COMPARED".
+ *
+ * IT IS BELT-AND-BRACES TODAY AND THAT IS WRITTEN DOWN RATHER THAN IMPLIED: an error also drags the
+ * agreement rate below 1, and `requireCanaryPerfect` (which `settingsToGate` always sets) refuses on
+ * that first — so no promotion could actually turn on the difference. What is fixed is that there is
+ * one definition of the word, so the day somebody relaxes the rate the coverage floor still means what
+ * its own name says.
+ */
+function comparedOf(summary) {
+  const n = (k) => (summary && Number.isFinite(summary[k]) ? summary[k] : 0);
+  return Math.max(0, n('comparable') - n('errors'));
+}
+
 // Roll a batch of per-scenario results into a scoreboard (§10.5): totals + per-kind finding counts.
 // Is this per-scenario result a reasoned OVERLAY override rather than a comparison?
 //
@@ -200,4 +225,4 @@ function summarize(results) {
   return out;
 }
 
-module.exports = { SEVERITY, normalizeOurQuote, normalizeLadder, compareScenario, summarize, isOverlayResult, _internals: { isComparable } };
+module.exports = { SEVERITY, normalizeOurQuote, normalizeLadder, compareScenario, summarize, isOverlayResult, comparedOf, _internals: { isComparable } };

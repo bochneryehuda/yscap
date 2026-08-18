@@ -129,7 +129,10 @@ function buildScoreboard(input = {}) {
     regressedFindings: findings.filter(isRegressed).length,
     oldestOpenFindingDays,
     consecutiveCleanDays: consecutiveCleanDays(input.dailyNewFindings),
-    // How much the latest canary actually COMPARED (§10.5/§10.6). null when not supplied.
+    // How much the latest canary actually COMPARED (§10.5/§10.6) — comparable LESS the scenarios where
+    // an engine threw, which is `parity.comparedOf` and is what the caller must supply (§2.77). null
+    // when not supplied, which is NOT the same as zero: one is "nobody measured", the other is
+    // "measured nothing", and the coverage floor below fails closed on the first.
     canaryScenarioCount: typeof input.canaryScenarioCount === 'number' ? input.canaryScenarioCount : null,
     canaryIncomparable: typeof input.canaryIncomparable === 'number' ? input.canaryIncomparable : null,
   };
