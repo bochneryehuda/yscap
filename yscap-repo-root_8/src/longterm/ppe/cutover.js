@@ -18,7 +18,75 @@
  * LT-only. No RTL imports.
  */
 
+// Both are PURE (neither requires anything of its own; `agreement-store` is a store only by name — the
+// module is the gate LOGIC, and its constant is the one definition of "measured enough"). Reading them
+// here is what stops this file growing a second copy of a threshold that decides whether our engine, and
+// not Lender Price, answers a borrower.
+const ppeSettings = require('./settings');
+const agreementStore = require('./agreement-store');
+
 const MODES = { DRAFT: 'draft', SHADOW: 'shadow', LIVE: 'live', RETIRED: 'retired' };
+
+// ---------------------------------------------------------------------------
+// SETTINGS -> THE GATE'S THRESHOLDS (§2.73)
+// ---------------------------------------------------------------------------
+//
+// ⛔ THE GATE USED TO RUN NUMBERS NOBODY COULD SET, AND THREE ARTIFACTS TOLD THREE STORIES ABOUT ONE OF
+// THEM. `eligibleForLive` was called with NO settings from anywhere, so it ran its own signature
+// defaults: 14 clean days and NO coverage floor. Meanwhile the settings registry carried
+// `cutover.clean_weeks_required` — 8 weeks, on the Cutover screen, editable by a super admin, and read
+// by NOTHING; and the owner's answer about taking an investor live was that the number belongs in the
+// super admin. So the dial the screen showed was connected to nothing and the gate ran a quarter of it.
+//
+// WORSE, THE COVERAGE FLOOR WAS OFF ENTIRELY. Publishing a rate sheet demands agreement with Lender
+// Price over `MIN_COMPARABLE_SCENARIOS` comparable scenarios (the owner's HARD RULE). Promoting an
+// investor to LIVE — which makes OUR engine, not Lender Price, the answer a borrower is quoted — asked
+// for no minimum at all: a canary that compared ONE scenario at 100% satisfied it. The bigger decision
+// demanded less proof than the smaller one, which is the whole of this defect.
+//
+// UNITS ARE THE OTHER HALF, and they are exactly the kind of join that goes wrong quietly: the SETTING
+// is in WEEKS and the GATE counts DAYS. The conversion lives here, once.
+//
+// WHAT THIS DOES NOT DO IS INVENT A BUSINESS RULE. The clean-week COUNT stays the owner's — this only
+// makes the gate read the dial they were given. The coverage floor is the owner's OWN already-stated
+// "measured enough" number applied to a strictly bigger decision; it is the cautious reading, it is
+// stated as an assumption in `source`, and it is recorded in the open-questions doc for confirmation.
+const SETTING_CLEAN_WEEKS = 'cutover.clean_weeks_required';
+const DAYS_PER_WEEK = 7;
+
+function registryDefault(key) {
+  const def = ppeSettings.getDefinition(key);
+  return def && Number.isFinite(def.default) ? def.default : null;
+}
+
+/**
+ * Turn a resolved PPE settings map into the `settings` object `eligibleForLive` takes.
+ * PURE. Never throws — a settings map that cannot be read falls back to the registry default, which is
+ * the STRICTER number, so a bad read can only ever make the gate harder to pass.
+ *
+ * Returns { minCleanDays, minCanaryScenarios, requireCanaryPerfect, source } where `source` says where
+ * each number came from, so a screen can publish the thresholds AND their provenance rather than
+ * presenting an assumption as settled policy.
+ */
+function settingsToGate(values = {}) {
+  const raw = values && values[SETTING_CLEAN_WEEKS];
+  const fallbackWeeks = registryDefault(SETTING_CLEAN_WEEKS);
+  const weeks = (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) ? raw : fallbackWeeks;
+  const usable = (typeof weeks === 'number' && Number.isFinite(weeks) && weeks > 0) ? weeks : null;
+  return {
+    // A registry with no readable default leaves the gate on its own signature default rather than on
+    // zero — `minCleanDays: 0` would mean "no clean days required", the one answer a broken read must
+    // never produce.
+    minCleanDays: usable == null ? undefined : Math.round(usable * DAYS_PER_WEEK),
+    minCanaryScenarios: agreementStore.MIN_COMPARABLE_SCENARIOS,
+    requireCanaryPerfect: true,
+    source: {
+      cleanWeeks: usable == null ? 'gate-default' : (raw === usable ? 'settings' : 'registry-default'),
+      cleanWeeksValue: usable,
+      minCanaryScenarios: 'the same "measured enough" bar a rate sheet must clear to be published — an assumption, pending the owner (open question 3a)',
+    },
+  };
+}
 const OPEN_FINDING_STATUSES = new Set(['open', 'triaged']);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -75,9 +143,19 @@ function consecutiveCleanDays(daily) {
  * Returns { eligible, reasons } — reasons lists every gate that FAILED (empty when eligible).
  */
 function eligibleForLive(scoreboard = {}, settings = {}) {
-  const minClean = settings.minCleanDays == null ? 14 : settings.minCleanDays;
+  // ⛔ THE DEFAULTS ARE THE STRICT ONES, so forgetting to pass settings can only ever make the gate
+  // HARDER (§2.73). They used to be `14` clean days and a coverage floor of `0` — and the one production
+  // caller passed nothing, so those were the numbers that actually ran while the super admin's dial sat
+  // unread and a one-scenario canary satisfied the coverage requirement that did not exist. A source
+  // guard would catch the caller that forgets; strict defaults mean it does not matter if one does.
+  const fallback = settingsToGate({});
+  const minClean = settings.minCleanDays == null
+    ? (Number.isFinite(fallback.minCleanDays) ? fallback.minCleanDays : 14)
+    : settings.minCleanDays;
   const requirePerfect = settings.requireCanaryPerfect !== false;
-  const minScenarios = settings.minCanaryScenarios == null ? 0 : settings.minCanaryScenarios;
+  const minScenarios = settings.minCanaryScenarios == null
+    ? (Number.isFinite(fallback.minCanaryScenarios) ? fallback.minCanaryScenarios : 0)
+    : settings.minCanaryScenarios;
   const reasons = [];
 
   if (scoreboard.openFindings > 0) {
@@ -144,6 +222,7 @@ function transition(current, action, opts = {}) {
 }
 
 module.exports = {
+  SETTING_CLEAN_WEEKS, settingsToGate,
   MODES, OPEN_FINDING_STATUSES, DAY_MS,
   buildScoreboard, consecutiveCleanDays, eligibleForLive, transition,
   _internals: { isOpen, TRANSITIONS },

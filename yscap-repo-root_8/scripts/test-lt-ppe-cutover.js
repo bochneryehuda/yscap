@@ -51,10 +51,26 @@ eq(C.consecutiveCleanDays([{ dayMs: NOW - DAY, count: 0 }, { dayMs: NOW, count: 
 
 // ---- eligibleForLive --------------------------------------------------------
 (() => {
-  const good = { canaryAgreementRate: 1, openFindings: 0, consecutiveCleanDays: 14 };
+  // §2.73: the gate's own defaults are the STRICT ones now — the configured clean WEEKS (x7) and the
+  // publish gate's "measured enough" coverage floor — so a fixture that passes with no settings has to
+  // clear both. The old fixture (14 clean days, no coverage recorded) asserted the permissive defaults
+  // that were the defect, and is kept below as an assertion of what changed.
+  const strict = C.settingsToGate({});
+  const good = {
+    canaryAgreementRate: 1, openFindings: 0,
+    consecutiveCleanDays: strict.minCleanDays,
+    canaryScenarioCount: strict.minCanaryScenarios,
+    canaryIncomparable: 0,
+  };
   const r = C.eligibleForLive(good);
   eq(r.eligible, true, 'eligible: all gates pass');
   eq(r.reasons.length, 0, 'eligible: no reasons');
+
+  // A caller that passes NO settings can no longer be promoted on the old permissive numbers.
+  const oldPermissive = C.eligibleForLive({ canaryAgreementRate: 1, openFindings: 0, consecutiveCleanDays: 14 });
+  eq(oldPermissive.eligible, false, 'eligible: 14 clean days and no recorded coverage is no longer enough');
+  ok(oldPermissive.reasons.some((x) => x.includes('consecutive clean')), 'eligible: ...and says the clean-day shortfall');
+  ok(oldPermissive.reasons.some((x) => x.includes('coverage')), 'eligible: ...and the missing coverage');
 })();
 
 (() => {
@@ -82,10 +98,14 @@ eq(C.consecutiveCleanDays([{ dayMs: NOW - DAY, count: 0 }, { dayMs: NOW, count: 
 
 (() => {
   // custom settings
+  // "Relaxed" now has to say so about the coverage floor too, since that is ON by default (§2.73).
   const r = C.eligibleForLive({ canaryAgreementRate: 0.9, openFindings: 3, consecutiveCleanDays: 2 },
-    { minCleanDays: 2, requireCanaryPerfect: false });
+    { minCleanDays: 2, requireCanaryPerfect: false, minCanaryScenarios: 0 });
   eq(r.eligible, false, 'ineligible: still blocked by open findings under relaxed settings');
-  ok(!r.reasons.some((x) => x.includes('canary')), 'relaxed: canary gate dropped when requireCanaryPerfect false');
+  // Matched on the AGREEMENT wording specifically — a bare `canary` also matches the coverage reason,
+  // so the loose version would report the agreement gate as dropped when it was a different gate.
+  ok(!r.reasons.some((x) => x.includes('canary agreement') || x.includes('no canary run')),
+    'relaxed: canary agreement gate dropped when requireCanaryPerfect false');
   ok(!r.reasons.some((x) => x.includes('consecutive')), 'relaxed: clean-day gate met at 2');
 })();
 
@@ -115,17 +135,33 @@ eq(C.consecutiveCleanDays([{ dayMs: NOW - DAY, count: 0 }, { dayMs: NOW, count: 
     { minCleanDays: 0, requireCanaryPerfect: false });
   ok(!relaxed.eligible, 'incomparable gate cannot be relaxed away');
 
-  // zero incomparable is fine
-  const clean = C.eligibleForLive({ ...base, canaryIncomparable: 0 });
+  // zero incomparable is fine — stated against a base that clears the strict defaults, so this asserts
+  // the incomparable gate rather than accidentally re-asserting the clean-day or coverage one.
+  const strict = C.settingsToGate({});
+  const clean = C.eligibleForLive({
+    ...base, canaryIncomparable: 0,
+    consecutiveCleanDays: strict.minCleanDays, canaryScenarioCount: strict.minCanaryScenarios,
+  });
   eq(clean.eligible, true, 'zero incomparable does not block');
 })();
 
-// ---- §10.5 coverage floor: opt-in, fails closed on an unknown count --------
+// ---- §10.5 coverage floor: ON by default (§2.73), fails closed on an unknown count --------
 (() => {
-  const base = { canaryAgreementRate: 1, openFindings: 0, consecutiveCleanDays: 14 };
+  // The clean-day side is satisfied from the gate's own configured number so this block asserts the
+  // COVERAGE gate and nothing else — a fixture stuck on 14 days would fail here for another reason.
+  const base = {
+    canaryAgreementRate: 1, openFindings: 0,
+    consecutiveCleanDays: C.settingsToGate({}).minCleanDays,
+  };
 
-  // off by default: no count present, still eligible
-  eq(C.eligibleForLive(base).eligible, true, 'coverage floor off by default');
+  // §2.73: ON by default now, at the SAME "measured enough" number a rate sheet must clear to be
+  // published — it used to be off, which let an investor go live on a canary that compared one
+  // scenario while publishing a sheet demanded 200. An unknown count fails CLOSED, as it always did.
+  const noCount = C.eligibleForLive(base);
+  eq(noCount.eligible, false, 'coverage floor is ON by default');
+  ok(noCount.reasons.some((x) => x.includes('coverage')), 'coverage floor: names the missing coverage');
+  eq(C.settingsToGate({}).minCanaryScenarios, require('../src/longterm/ppe/agreement-store').MIN_COMPARABLE_SCENARIOS,
+    'coverage floor: the default IS the publish gate\'s number, not a second copy');
 
   // met
   eq(C.eligibleForLive({ ...base, canaryScenarioCount: 300 }, { minCanaryScenarios: 200 }).eligible, true,
@@ -172,16 +208,33 @@ eq(C.consecutiveCleanDays([{ dayMs: NOW - DAY, count: 0 }, { dayMs: NOW, count: 
 
 // ---- end-to-end: scoreboard -> gate -> promote ------------------------------
 (() => {
+  // Built from the gate's OWN configured thresholds (§2.73) rather than a literal 14 days, so this
+  // stays an end-to-end proof of the chain and does not quietly become an assertion about the number.
+  const strict = C.settingsToGate({});
   const sb = C.buildScoreboard({
     canaryAgreementRate: 1,
     findings: [{ status: 'verified', firstSeenMs: NOW - 30 * DAY }],
-    dailyNewFindings: Array.from({ length: 14 }, (_, i) => ({ dayMs: NOW - i * DAY, count: 0 })),
+    dailyNewFindings: Array.from({ length: strict.minCleanDays }, (_, i) => ({ dayMs: NOW - i * DAY, count: 0 })),
     nowMs: NOW,
+    canaryScenarioCount: strict.minCanaryScenarios,
+    canaryIncomparable: 0,
   });
   const gate = C.eligibleForLive(sb);
-  eq(gate.eligible, true, 'e2e: 14 clean days + no open findings + perfect canary -> eligible');
+  eq(gate.eligible, true, 'e2e: enough clean days + coverage + no open findings + perfect canary -> eligible');
   const t = C.transition(C.MODES.SHADOW, 'promote', { eligible: gate.eligible });
   eq(t.mode, C.MODES.LIVE, 'e2e: promotes to live');
+
+  // ...and one day short of the configured streak is refused, so the e2e proves the gate is live rather
+  // than that a fixture happened to satisfy it.
+  const short = C.buildScoreboard({
+    canaryAgreementRate: 1,
+    findings: [],
+    dailyNewFindings: Array.from({ length: strict.minCleanDays - 1 }, (_, i) => ({ dayMs: NOW - i * DAY, count: 0 })),
+    nowMs: NOW,
+    canaryScenarioCount: strict.minCanaryScenarios,
+    canaryIncomparable: 0,
+  });
+  eq(C.eligibleForLive(short).eligible, false, 'e2e: one day short of the streak still refuses');
 })();
 
 console.log(`ok - lt ppe cutover (${n} assertions)`);

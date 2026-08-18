@@ -4366,3 +4366,74 @@ the verdict going quiet about them, and a fourth file spelling the kind itself. 
 on either side.
 
 143/143 suites.
+
+**§2.73 — THE GO-LIVE GATE RAN NUMBERS NOBODY COULD SET, AND THREE ARTIFACTS TOLD THREE STORIES ABOUT
+ONE OF THEM (2026-08-18).**
+
+**MEASURED.** `cutover.eligibleForLive` is called from exactly one place in production
+(`loadCutoverPicture`), and it was called with **no settings at all** — so it ran its own signature
+defaults:
+
+- **14 clean days**, while the settings registry carried **`cutover.clean_weeks_required` at 8 weeks**,
+  on the Cutover screen, editable by a super admin, and **read by nothing**. Three artifacts, three
+  stories about one number: the registry said 8 weeks and attributed it to the owner; the gate ran 2
+  weeks; and the route's own comment said the number *"has never been confirmed by the owner"*. The one
+  that actually decided anything was the one nobody could change. The owner's answer on taking an
+  investor live (#114) was that the number belongs **in the super admin** — the dial was built and never
+  plugged in.
+- **no coverage floor at all** (`minCanaryScenarios` is opt-in and nobody opted in), while PUBLISHING a
+  rate sheet demands agreement with Lender Price over `MIN_COMPARABLE_SCENARIOS` **comparable**
+  scenarios. So an investor could be promoted to **LIVE — our engine, not Lender Price, answering a
+  borrower — on a canary that compared ONE scenario.** *The bigger decision demanded less proof than
+  the smaller one.*
+
+**AND THE UNITS ARE THE OTHER HALF**, which is the join at its purest: the SETTING is in **weeks** and
+the GATE counts **days**. Two individually-correct halves, nothing between them.
+
+**WHAT CHANGED, and what deliberately did not.** `cutover.settingsToGate(values)` is the one place the
+settings map becomes the gate's thresholds — the weeks→days conversion, the coverage floor, and a
+`source` block saying where each number came from so a screen can publish a threshold **with its
+provenance** instead of presenting an assumption as settled policy. The route resolves the settings once
+and threads them to both the assembled and the fallback path (reading settings on one branch and
+signature defaults on the other is how a screen and a refusal come to disagree about the same investor),
+and the published thresholds became a **function of** those settings — as a module-level constant it
+could only ever have kept printing 14 days while the promote refusal enforced 56.
+
+**THE DEFAULTS THEMSELVES ARE NOW THE STRICT ONES**, which is the structural half: a caller that forgets
+the thresholds gets the configured weeks and the publish gate's floor, so **forgetting can only ever
+make the gate harder**. The source guard that catches a one-argument call is belt to that brace, not the
+only defence. `settingsToGate` also fails closed — an unreadable or nonsensical clean-weeks value falls
+back to the stricter registry number and never to zero, which would mean *"no clean days required"*.
+
+**NO BUSINESS RULE WAS INVENTED, and the two assumptions are stated rather than buried.** The clean-week
+count stays the owner's — this only makes the gate read their dial. The coverage floor is the owner's
+OWN already-stated "measured enough" number applied to a strictly bigger decision; it is the cautious
+reading, it says so in `source`, and it is written into `OWNER-QUESTIONS-OPEN.md` §3a for confirmation.
+Two false attributions were corrected in the same pass: the settings help text claimed 8 weeks was the
+*owner's* default (it is ours), and the route claimed to publish *"the thresholds the gate is currently
+running"* when nobody could change them.
+
+**Mutation-proven nine ways** — weeks handed over as days, the floor switched off, a junk setting
+falling through to zero, the route dropping the thresholds on either path, each half of the strict
+defaults going permissive again, and the published thresholds reverting to a settings-blind constant.
+
+**AND ONE OF THOSE MUTATIONS EXPOSED A HOLE IN THE PROOF ITSELF, worth writing down.** Because the
+defaults are now strict, reverting the route's threading changes NO answer while the setting sits at its
+default — so the first version of the door test passed with the wiring removed. The strict defaults are
+right and stay; what was missing was a test that could see the difference. The DB door test now **writes
+the setting** (1 week), asserts the real route lets the investor through, asserts the door publishes the
+number it is running, then clears it and asserts the strict default snaps back. That is what makes
+"the route reads the settings" a claim with evidence rather than a comment. **The first cut of the source guard was wrong** and was caught by
+making it prove its own balance: a lazy `eligibleForLive\(([\s\S]*?)\);` stops at the first `);` in the
+file, which on the real call site (`gate: cutover.eligibleForLive(board, gateSettings),`) is hundreds of
+characters away inside another statement — so it "read" an argument list that was never one. It scans
+with balanced parentheses now. **The first cut of the strict-default assertions was also wrong**, for
+the classic reason: the fixture was short on BOTH thresholds, so it was refused either way and passed
+with the floor mutated back to zero. Each half is isolated now.
+
+Three assertions in the existing cutover suite encoded the permissive defaults (*"14 clean days →
+eligible"*, *"coverage floor off by default"*, *"zero incomparable does not block"* on a 14-day
+fixture). They were re-pointed at what is now true and **strengthened**, never dropped — the suite now
+also asserts that the old permissive numbers are refused, and names both reasons.
+
+144/144 suites.

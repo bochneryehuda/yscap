@@ -123,14 +123,20 @@ async function main() {
     eq(summary.disagreed, 0, 'with no perturbation every scenario agrees');
     eq(summary.agreementRate, 1, 'perfect agreement rate');
 
+    // Built from the gate's OWN configured thresholds (§2.73 — the clean-week setting x7, and the
+    // coverage floor), so this stays an end-to-end proof and does not silently become an assertion
+    // about a particular number of days.
+    const strict = cutover.settingsToGate({});
     const sb = cutover.buildScoreboard({
       canaryAgreementRate: summary.agreementRate,
       findings: [], // all resolved
-      dailyNewFindings: Array.from({ length: 14 }, (_, i) => ({ dayMs: NOW - i * DAY, count: 0 })),
+      dailyNewFindings: Array.from({ length: strict.minCleanDays }, (_, i) => ({ dayMs: NOW - i * DAY, count: 0 })),
       nowMs: NOW,
+      canaryScenarioCount: strict.minCanaryScenarios,
+      canaryIncomparable: 0,
     });
     const gate = cutover.eligibleForLive(sb);
-    eq(gate.eligible, true, 'eligible for live: 100% canary + 0 open findings + 14 clean days');
+    eq(gate.eligible, true, 'eligible for live: 100% canary + 0 open findings + a full clean streak');
     const t = cutover.transition(cutover.MODES.SHADOW, 'promote', { eligible: gate.eligible });
     eq(t.mode, cutover.MODES.LIVE, 'the investor promotes shadow -> live');
   }

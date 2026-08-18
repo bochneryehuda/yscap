@@ -1785,6 +1785,15 @@ async function loadCutoverPicture(scope, opts = {}) {
   const rows = await findingStore.listFindings(scope, { investor }, db);
   const records = rows.map(findingStore.rowToRecord);
 
+  // THE THRESHOLDS COME FROM THE SETTINGS, ONCE (§2.73). Before this the gate was called with NO
+  // settings at all, so it ran its own signature defaults — 14 clean days and no coverage floor — while
+  // `cutover.clean_weeks_required` sat on the Cutover screen at 8 weeks, editable by a super admin, and
+  // reached nothing. `resolveSettingsSafe` already degrades to the coded defaults on a read failure, and
+  // `settingsToGate` falls back to the STRICTER registry number, so a database hiccup can only ever make
+  // the gate harder to pass — never easier.
+  const { values: settingValues } = await resolveSettingsSafe(scope);
+  const gateSettings = cutover.settingsToGate(settingValues);
+
   // The canary's run history IS persisted now, so the agreement rate and the
   // clean-day streak are read from it rather than left unmeasured. `assembleScoreboard`
   // loads the series and DELEGATES to `scoreboard.assemble`, which in turn delegates the
@@ -1794,7 +1803,7 @@ async function loadCutoverPicture(scope, opts = {}) {
   let seriesError = null;
   try {
     assembled = await runStore.assembleScoreboard(scope, {
-      db, investor, program, findings: records, nowMs,
+      db, investor, program, findings: records, nowMs, settings: gateSettings,
     });
   } catch (e) {
     seriesError = String((e && e.message) || e).slice(0, 200);
@@ -1805,6 +1814,7 @@ async function loadCutoverPicture(scope, opts = {}) {
       scoreboard: assembled.scoreboard,
       gate: assembled.eligible,
       assembled,
+      gateSettings,
       seriesError: null,
       measured: assembled.scoreboard.canaryAgreementRate != null,
       nowMs,
@@ -1813,8 +1823,11 @@ async function loadCutoverPicture(scope, opts = {}) {
   const board = cutover.buildScoreboard({ findings: records, nowMs });
   return {
     scoreboard: board,
-    gate: cutover.eligibleForLive(board),
+    // The SAME thresholds on the fallback path. Reading the settings on one branch and the signature
+    // defaults on the other is how a screen and a refusal come to disagree about the same investor.
+    gate: cutover.eligibleForLive(board, gateSettings),
     assembled: null,
+    gateSettings,
     seriesError,
     measured: false,
     nowMs,
@@ -1902,9 +1915,11 @@ async function scoreboardRoute(req, res) {
 // THE GATE IS NOT SOFTENED, and that is a deliberate non-decision. Two halves of this are still
 // unanswered by the owner (`docs/longterm/OWNER-QUESTIONS-OPEN.md` §3a): how many clean weeks in a row
 // we want, and whether a live investor keeps being spot-checked against Lender Price. So this door
-// invents neither. It reports the thresholds the gate is CURRENTLY running (`cutover.eligibleForLive`
-// defaults) rather than pretending they are settled policy, refuses a promote the gate refuses, and
-// offers no override — an override would be exactly the guessed business rule that must be asked for.
+// invents neither. It reports the thresholds the gate is CURRENTLY running — now READ FROM THE SETTINGS
+// a super admin can edit (`cutover.clean_weeks_required`, §2.73) rather than from `eligibleForLive`'s
+// own signature defaults, which is what it used to publish while nobody could change them — rather than
+// pretending they are settled policy, refuses a promote the gate refuses, and offers no override — an
+// override would be exactly the guessed business rule that must be asked for.
 // A super admin who disagrees with the gate has a real path: resolve the findings, or say the number.
 
 // A blank investor is a COMPANY-WIDE lifecycle in the store (`normLabel` maps null → ''), which is a
@@ -1916,17 +1931,34 @@ function readCutoverInvestor(v) {
   return s || null;
 }
 
-// The gate's own defaults, read back out of the pure module rather than retyped — a second copy of a
+// The gate's own thresholds, read back out of the pure module rather than retyped — a second copy of a
 // threshold is a second policy, and this one decides whether an investor may price real loans.
-const CUTOVER_THRESHOLDS = (() => {
-  // `eligibleForLive` takes its defaults from its own signature, so the honest way to publish them is
-  // to ASK it: an empty scoreboard fails every gate and names each threshold in its reasons.
-  const probe = cutover.eligibleForLive({ openFindings: 0, canaryAgreementRate: null, consecutiveCleanDays: 0 });
+//
+// IT IS A FUNCTION OF THE RESOLVED SETTINGS, NOT A MODULE CONSTANT (§2.73). As an IIFE evaluated once at
+// require time it could only ever publish the SIGNATURE defaults, so the moment the gate started reading
+// `cutover.clean_weeks_required` the screen would have gone on stating 14 days while the promote refusal
+// enforced 56 — the same investor, two numbers, and the one on screen the one nobody enforces.
+function describeCutoverThresholds(gateSettings) {
+  // `eligibleForLive` takes its thresholds from the settings it is handed, so the honest way to publish
+  // them is to ASK it: an empty scoreboard fails every gate and names each threshold in its reasons.
+  const settings = gateSettings || {};
+  const probe = cutover.eligibleForLive(
+    { openFindings: 0, canaryAgreementRate: null, consecutiveCleanDays: 0 },
+    settings,
+  );
   return {
     reasonsWhenNothingIsProven: probe.reasons,
-    note: 'How many consecutive clean days an investor needs before it may go live has never been confirmed by the owner — the number the gate runs today is an assumption, and it is stated here so it can be questioned rather than discovered.',
+    // WHERE each number came from, beside the number itself — a threshold published without its
+    // provenance reads as settled policy, and one of these is still an assumption.
+    source: settings.source || null,
+    settingKey: cutover.SETTING_CLEAN_WEEKS,
+    note: 'How many consecutive clean weeks an investor needs before it may go live is a super-admin setting '
+      + `(${cutover.SETTING_CLEAN_WEEKS}); the gate reads it. The VALUE has still never been confirmed by the owner `
+      + '(open question 3a) — it is our most cautious assumption, stated here so it can be questioned rather than discovered. '
+      + 'The canary coverage floor is the same "measured enough" bar a rate sheet must clear before it may be published, '
+      + 'applied to the strictly bigger decision of letting our engine answer instead of Lender Price.',
   };
-})();
+}
 
 async function cutoverStateRoute(req, res) {
   const scope = readScope(req);
@@ -1957,7 +1989,7 @@ async function cutoverStateRoute(req, res) {
     // The thresholds the gate is running today, stated rather than left implicit — two of them are
     // assumptions nobody has confirmed (OWNER-QUESTIONS-OPEN §3a), and a number a reader cannot see is
     // a number nobody can question.
-    thresholds: CUTOVER_THRESHOLDS,
+    thresholds: describeCutoverThresholds(picture.gateSettings),
     actions: Object.keys(cutover._internals.TRANSITIONS).concat(['retire']),
   });
 }

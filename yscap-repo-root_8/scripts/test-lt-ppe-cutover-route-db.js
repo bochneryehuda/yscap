@@ -154,7 +154,38 @@ const REQ = (over = {}) => Object.assign({ params: {}, body: {}, query: {}, acto
     // =========================================================================
 
     const nowMs = Date.now();
-    await seedCleanDays(30, nowMs);
+    // §2.73: the route reads the CONFIGURED clean-week setting (weeks x7), not a hard-coded 14 days —
+    // so the streak is seeded from the gate's own numbers rather than a literal, and a run one day
+    // short is seeded FIRST to prove the door really is enforcing the configured length end to end.
+    const GATE = cutover.settingsToGate({});
+    await seedCleanDays(GATE.minCleanDays - 1, nowMs);
+
+    res = await call(H.cutoverStateRoute, REQ({ actor: ACTOR, query: { investor: INVESTOR } }));
+    ok(res.statusCode === 200 && res.body.gate && res.body.gate.eligible === false
+      && (res.body.gate.reasons || []).some((r) => /consecutive clean day/.test(r)),
+      `C0 one day short of the CONFIGURED streak is refused by the real route — the setting is wired, not decorative (${JSON.stringify((res.body.gate || {}).reasons || [])})`);
+    ok(res.body.thresholds && res.body.thresholds.settingKey === cutover.SETTING_CLEAN_WEEKS,
+      'C0b …and the door publishes WHICH setting it is running, so the number on screen is the number enforced');
+
+    // ⛔ AND THE DIAL IS PROVEN THROUGH THE REAL DOOR, not just in the pure module. `eligibleForLive`
+    // now DEFAULTS to the strict numbers (§2.73), which is deliberate — a caller that forgets the
+    // thresholds cannot loosen the gate — but it also means the route's threading is invisible while the
+    // setting sits at its default: reverting the threading changes no answer. So the SETTING is changed
+    // here and the door must follow it, or "the route reads the settings" would have no test that bites.
+    const ppeStore = require('../src/longterm/ppe/store');
+    await ppeStore.setSetting(ltDb, SCOPE, cutover.SETTING_CLEAN_WEEKS, 1, null);
+    res = await call(H.cutoverStateRoute, REQ({ actor: ACTOR, query: { investor: INVESTOR } }));
+    ok(res.statusCode === 200 && res.body.gate && res.body.gate.eligible === true,
+      `C0c a super admin lowering the clean-weeks setting to 1 really does let this investor through the REAL door (${JSON.stringify((res.body.gate || {}).reasons || [])})`);
+    ok(res.body.thresholds && res.body.thresholds.source && res.body.thresholds.source.cleanWeeksValue === 1,
+      'C0d …and the door publishes the number it is actually running, read from that setting');
+
+    await ppeStore.clearSetting(ltDb, SCOPE, cutover.SETTING_CLEAN_WEEKS);
+    res = await call(H.cutoverStateRoute, REQ({ actor: ACTOR, query: { investor: INVESTOR } }));
+    ok(res.statusCode === 200 && res.body.gate && res.body.gate.eligible === false,
+      'C0e …and clearing the override puts the strict default straight back');
+
+    await seedCleanDays(GATE.minCleanDays, nowMs);
 
     res = await call(H.cutoverStateRoute, REQ({ actor: ACTOR, query: { investor: INVESTOR } }));
     ok(res.statusCode === 200 && res.body.gate && res.body.gate.eligible === true,

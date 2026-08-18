@@ -229,7 +229,7 @@ const DEFINITIONS = {
   'cutover.clean_weeks_required': {
     type: 'number', integer: true, min: 1, max: 52, default: 8,
     group: 'Cutover', label: 'Clean weeks required to go live',
-    help: 'Consecutive weeks of zero disagreements (with the canary matrix at 100%) before an investor may be promoted to live (leaving shadow mode). Owner default: 8 (most cautious).',
+    help: 'Consecutive weeks of zero disagreements (with the canary matrix at 100%) before an investor may be promoted to live (leaving shadow mode). The go-live gate READS this number. 8 is OUR most cautious assumption, not a number the owner has confirmed (open question 3a) — say the word and it changes here, in one place.',
   },
 
   // ---- Investor / program defaults (owner pre-fills; per-investor overridable) ----

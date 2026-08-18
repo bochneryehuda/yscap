@@ -153,7 +153,9 @@ const defectResult = () => parity.compareScenario(OURS_INELIGIBLE, THEIRS_ELIGIB
   eq(sb.openFindings, 0, 'D1 an override is not an open finding on the scoreboard');
   eq(sb.canaryAgreementRate, 1, 'D2 ...and the rate it reads is 100%');
 
-  const verdict = cutover.eligibleForLive(sb, { minCleanDays: 14 });
+  // The coverage floor is stated rather than inherited: this section is about OVERRIDES, and a
+  // refusal for thin coverage would pass D4 for a reason that has nothing to do with what it tests.
+  const verdict = cutover.eligibleForLive(sb, { minCleanDays: 14, minCanaryScenarios: 0 });
   ok(verdict.eligible,
     `D3 AN INVESTOR WHOSE OVERRIDES ARE WORKING CAN GO LIVE - the dead end is gone (refused for: ${verdict.reasons.join('; ') || 'nothing'})`);
 
@@ -168,7 +170,7 @@ const defectResult = () => parity.compareScenario(OURS_INELIGIBLE, THEIRS_ELIGIB
     canaryScenarioCount: 3,
     canaryIncomparable: 0,
   });
-  const badVerdict = cutover.eligibleForLive(bad, { minCleanDays: 14 });
+  const badVerdict = cutover.eligibleForLive(bad, { minCleanDays: 14, minCanaryScenarios: 0 });
   ok(!badVerdict.eligible, 'D4 a REAL disagreement still refuses promotion');
   ok(badVerdict.reasons.some((r) => /open finding/.test(r)), 'D5 ...because it is open work');
   ok(badVerdict.reasons.some((r) => /agreement is/.test(r)), 'D6 ...and because it dragged the rate');

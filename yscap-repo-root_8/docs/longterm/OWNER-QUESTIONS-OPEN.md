@@ -131,6 +131,19 @@ shows the number it is currently using and says plainly that nobody has confirme
 investor keeps being checked against Lender Price by default, which is the safe half of the second
 question. Say the word on either and it changes in one place.
 
+**Updated 2026-08-18 — the number is now a real dial, and there are two of them.** Until today the
+clean-weeks box on the settings screen was connected to nothing: it said 8 weeks while the check
+actually being run was 2 weeks, and there was no way to change the one that mattered. That is fixed —
+the check now reads the box, so **a super admin sets the number and it takes effect**. Two things about
+it are still OUR assumption rather than your decision, and both are one word away from changing:
+
+- **8 weeks** is the number in the box. We picked the most cautious of the numbers that were floating
+  around; you have never said one.
+- **How much testing counts as enough** before an investor may go live. There was no minimum at all — an
+  investor could have been switched over on a single test — while putting a *rate sheet* live has always
+  required about 200 tests agreeing with Lender Price. Switching an investor over is the bigger decision
+  of the two, so it now uses that same 200. Sensible, but ours, not yours.
+
 ### 3b. Should the built-in safety checks block a release, or just warn?
 
 Three checks currently warn and do not stop anything: the rule self-audit, the schema drift check, and
