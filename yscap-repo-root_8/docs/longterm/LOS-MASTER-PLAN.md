@@ -295,6 +295,25 @@ into a lifetime cap would print a ceiling equal to the start rate. There the rea
 the block rather than on eight rows, because eight identical sentences is as unreadable as the eight
 dashes it replaces, and it gives way term by term the day a writer lands.
 
+**POSTGRES JUDGES EVERY STATEMENT THIS SIDE SENDS (2026-08-18).** A query naming a column that does
+not exist is the quietest bug this repository produces: it throws at run time, inside a `try` that
+exists for a good reason — a section that cannot be read must not take the loan down — and the caller
+answers null, an empty list or a confident zero. Nothing logs, nothing fails, the screen says "none"
+forever. It has happened at least four times here (`b.full_name`, `is_current`/`created_at` on
+`appraisals`, `property_state`, `wire_due_at`), every one found late by a person. No test that reads
+source can catch it and a mocked database agrees with whatever it is handed — so
+`scripts/test-lt-sql-prepared-db.js` asks the database: `PREPARE` parses and plans a statement against
+the real schema and refuses one that does not fit. All 110 whole statements in `src/longterm` are
+accepted; a phantom column put into a real query was proven to fail it. Nothing is executed — PREPARE
+plans, and it runs inside a transaction that is rolled back regardless, which is what makes it safe to
+point at the INSERTs and UPDATEs too. **The extractor is the whole difference between this and a wall
+of false alarms**: comments are stripped first (a header quoting its own SQL otherwise hands Postgres
+English prose), and it anchors on `.query(` rather than "a backtick containing SELECT" — which picks up
+ordinary JavaScript and the shared query FRAGMENTS, where `product-book.js`'s SELECT alone reports
+"missing FROM-clause entry for table l" and looks exactly like a real defect. The eleven statements
+assembled at run time cannot be prepared from source, so each is NAMED with where it is executed
+instead — a coverage number that quietly excluded them would read as total.
+
 **EVERY LONG-TERM DOOR IS OPENED, OR EXEMPT IN WRITING (2026-08-18).** The smoke suite opened 29 of
 the 44 GET doors the routers declare, and its list is hand-written for a good reason — the point is to
 notice a door NOBODY listed, and deriving the list from the same source the app mounts would make it
@@ -304,8 +323,13 @@ Center's own two reads among them, plus the census CSV and the per-person settin
 the phantom-column bugs live in — a wrong column name inside a swallowing catch answers a confident
 empty forever, and only opening the door finds it. So the routers are now ALSO read: the list still
 decides what gets CALLED, and a declared GET door that is neither called nor exempt with a written
-reason fails the build. Thirteen were opened (all answer, none 500s); the two LenderPrice doors are
-exempt because a smoke test that dials an outside company is not a smoke test. Matching is a real
+reason fails the build. Fourteen were opened (all answer, none 500s), so forty-six doors are exercised
+against a real database; ONE is exempt — LenderPrice's `login-check`, because a smoke test that dials
+an outside company is not a smoke test and a failure there would report our side as broken. The
+disqualifications poll was exempted out of the same caution and did not deserve it: with an unknown key
+it answers from its own store and returns before any vendor call, which was checked rather than
+assumed. An exemption is a hole in a coverage check, and the shorter that list is for reasons somebody
+verified, the more the number above it means. Matching is a real
 route match off the DECLARED door's own parameters, never a guess at which segments look like ids —
 that guess swallows `export.csv`, and a coverage check that lies in either direction is worse than
 none.
