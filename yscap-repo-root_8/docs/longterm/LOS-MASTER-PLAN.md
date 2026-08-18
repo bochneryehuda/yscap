@@ -1815,11 +1815,15 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
   two this file's work actually is (`face`) — a centre that only ever showed conditions would
   read as empty on most of the book. Whether the eFolder needs-list should become the primary
   workflow is still a question for the owner rather than a decision for us.
-- **The URLA arrays are not where a modern reader would look.** In this tenant the loan
-  carries its data in `vols[]` / `vods[]` / `otherAssets[]`, while the modern `assets[]` and
-  `liabilities[]` arrays are **empty**. A 1003 screen built against the modern arrays would
-  render blank on every real file. The whole application is readable in one GET via 18 accepted
-  sub-entity names.
+- **The URLA arrays are not where a modern reader would look — GUARDED 2026-08-18.** In this
+  tenant the loan carries its data in `vols[]` / `vods[]` / `otherAssets[]`, while the modern
+  `assets[]` and `liabilities[]` arrays are **empty**. A 1003 screen built against the modern
+  arrays would render blank on every real file. The whole application is readable in one GET via
+  18 accepted sub-entity names. `readLiabilities` reads BOTH — the workhorse and the modern
+  array — and until this morning nothing tested it at all; the fixture is now the recorded live
+  `vols[0]` row, and dropping either array turns the suite red. The risk is that the tenant
+  starts populating the modern array and a reader built for one silently halves somebody's
+  debts, which is why the test asserts the two are additive rather than alternatives.
 - **The token has no stated lifetime, and the client already survives it — GUARDED 2026-08-18.**
   It lasts 30 minutes and `expires_in` is **not returned** by this tenant, so a client caching on
   `expires_in - 60` would be caching on `undefined`. `src/longterm/encompass/client.js` reads
