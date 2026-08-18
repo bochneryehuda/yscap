@@ -41,6 +41,12 @@ const investorSend = require('../../sitewire/investor-delivery-send');   // cont
 const EMAIL_RE = /^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]+$/;
 
 const usd = (n) => {
+  // NULL/blank is UNKNOWN and is omitted, never "$0" — Number(null) is 0, which
+  // is finite, so without this guard a missing column prints as a confident
+  // zero-dollar figure in an email to an investor (audit 2026-08-18 finding 4;
+  // the same money(null) rule lib/file-overview already applies). A genuine 0
+  // still prints "$0".
+  if (n == null || n === '') return null;
   const x = Number(n);
   return Number.isFinite(x) ? `$${Math.round(x).toLocaleString('en-US')}` : null;
 };

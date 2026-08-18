@@ -1642,7 +1642,7 @@ router.post('/applications/:id/findings/:findingId/dispute', async (req, res, ne
 // 2026-08-18). ADVISORY text-in/text-out through the borrower-safe scrub, same
 // boundary as the borrower door — an external broker never gets a wider AI.
 router.post('/pilot-writer', async (req, res) => {
-  const out = await require('../lib/ai/pilot-writer').assist(req.body || {}, { scrub: scrubText });
+  const out = await require('../lib/ai/pilot-writer').assist(req.body || {}, { scrub: scrubText, actorKey: `t:${req.actor.id}` });
   res.json(out);
 });
 

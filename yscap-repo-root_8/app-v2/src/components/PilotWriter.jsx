@@ -28,13 +28,41 @@ export default function PilotWriter({ value, onReplace, surface = 'staff', label
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);   // { text } | null
   const [err, setErr] = useState('');
+  const [pos, setPos] = useState(null);         // { left, bottom, width } — viewport-clamped
   const boxRef = useRef(null);
+
+  // The popover is position:FIXED and viewport-CLAMPED (audit 2026-08-18
+  // finding 2: absolute-anchored left:0 was clipped by the chat thread's
+  // overflow:hidden on phones — a whole rewrite tone sat off-canvas). Fixed
+  // positioning escapes every overflow container (none of the mounts sits
+  // under a transformed ancestor); the clamp keeps all 340px (or 86vw) on
+  // screen with an 8px gutter whichever side the ✦ button is on.
+  const place = () => {
+    const btn = boxRef.current && boxRef.current.querySelector('button');
+    const r = btn && btn.getBoundingClientRect();
+    if (!r) return;
+    const vw = window.innerWidth;
+    const w = Math.min(340, Math.floor(vw * 0.86));
+    setPos({
+      left: Math.max(8, Math.min(r.left, vw - w - 8)),
+      bottom: Math.max(8, window.innerHeight - r.top + 6),
+      width: w,
+    });
+  };
+  const toggle = () => { setErr(''); setOpen((v) => { if (!v) place(); return !v; }); };
 
   useEffect(() => {
     if (!open) return;
     const onDoc = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
     document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    // A fixed popover stays put while the page scrolls/resizes under it — track.
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
   }, [open]);
 
   const run = async (body) => {
@@ -59,11 +87,11 @@ export default function PilotWriter({ value, onReplace, surface = 'staff', label
     <span ref={boxRef} style={{ position: 'relative', display: 'inline-block' }}>
       <button type="button" className="btn ghost small" disabled={busy}
         title="Pilot AI — fix, rewrite, or draft this message. Nothing changes until you choose to use the suggestion."
-        onClick={() => { setOpen((v) => !v); setErr(''); }}>
+        onClick={toggle}>
         {busy ? 'Pilot AI…' : label}
       </button>
-      {open && (
-        <div style={{ position: 'absolute', bottom: 'calc(100% + 6px)', left: 0, zIndex: 60, width: 'min(340px, 86vw)',
+      {open && pos && (
+        <div style={{ position: 'fixed', bottom: pos.bottom, left: pos.left, zIndex: 260, width: pos.width,
           background: '#FFFFFF', border: '1px solid #D9D4C8', borderRadius: 10, boxShadow: '0 8px 28px rgba(20,27,34,.16)', padding: 10 }}>
           <div style={{ font: '600 11px/1 "Hanken Grotesk", system-ui, sans-serif', letterSpacing: '.08em', textTransform: 'uppercase', color: '#AE8746', marginBottom: 6 }}>
             Pilot AI

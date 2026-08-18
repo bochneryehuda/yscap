@@ -1114,7 +1114,7 @@ router.get('/my-tasks', async (req, res) => {
 // the composer themselves. No file scope needed — nothing is read from or
 // written to any file; the request is only the text the person typed.
 router.post('/pilot-writer', async (req, res) => {
-  const out = await require('../lib/ai/pilot-writer').assist(req.body || {}, { staffId: req.actor.id });
+  const out = await require('../lib/ai/pilot-writer').assist(req.body || {}, { staffId: req.actor.id, actorKey: `s:${req.actor.id}` });
   res.json(out);
 });
 
@@ -1180,6 +1180,11 @@ router.get('/reminder-tasks', async (req, res) => {
 // (never 403) on a row you may not touch, so nothing about other files leaks.
 router.patch('/reminder-tasks/:rid', async (req, res) => {
   try {
+    // A garbage id must answer the same 404 a stranger gets — never a 22P02
+    // uuid-cast 500 (audit 2026-08-18 on this route's own first cut).
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(req.params.rid || ''))) {
+      return res.status(404).json({ error: 'not found' });
+    }
     const fileSql = seesAll(req) ? 'TRUE' : `(${VISIBLE_OFFICERS_SQL('a', '$1')})`;
     const own = await db.query(
       `SELECT r.id, r.application_id,

@@ -137,6 +137,15 @@ function call(server, method, path, token, body) {
     // A plain REMINDER has recipients, not an owner.
     const re8 = await call(server, 'PATCH', `/api/staff/applications/${appId}/reminders/${remId}`, tok1, { assigneeStaffId: lo1 });
     ok('B8 assigning a plain reminder is refused (only a task carries an owner)', re8.status === 400);
+    let remAssignErr = null;
+    try {
+      await reminders.create(appId, {
+        kind: 'reminder', title: 'assigned reminder?', dueAt: new Date(Date.now() + 3600 * 1000).toISOString(),
+        recipients: [{ kind: 'self' }], assigneeStaffId: lo1,
+      }, actor1);
+    } catch (e) { remAssignErr = e; }
+    ok('B9 create() refuses an assignee on a plain reminder too (never a silent drop)',
+      remAssignErr && remAssignErr.status === 400);
 
     // ---- C. the per-file doors stay file-scoped ---------------------------------------------
     const strangerPatch = await call(server, 'PATCH', `/api/staff/applications/${appId}/reminders/${taskId}`, tokS, { status: 'done' });
@@ -158,6 +167,8 @@ function call(server, method, path, token, body) {
     ok('D5 a stranger gets 404 from the queue door (no existence leak)', qstranger.status === 404);
     const qgone = await call(server, 'PATCH', `/api/staff/reminder-tasks/${crypto.randomUUID()}`, tok1, { status: 'done' });
     ok('D6 an unknown id answers 404', qgone.status === 404);
+    const qbad = await call(server, 'PATCH', `/api/staff/reminder-tasks/not-a-uuid`, tok1, { status: 'done' });
+    ok('D7 a garbage id answers the same 404 — never a uuid-cast 500', qbad.status === 404);
 
     // ---- E. an on-hold file's rows pause out of the OPEN queue ------------------------------
     await db.query(`UPDATE applications SET status='on_hold' WHERE id=$1`, [appId]);

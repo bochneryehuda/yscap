@@ -25,6 +25,36 @@
  */
 const azureOpenai = require('./azure-openai');
 
+// THE SPEND BRAKE (audit 2026-08-18 finding 1). Every other metered AI door in
+// this repo caps its spend (aiReason / ai-guideline-verify / the as-is reader
+// all gate on the per-FILE costMeter) — pilot-writer has NO file, so its spend
+// records with applicationId:null and no per-file cap can ever see it, and the
+// borrower door is reachable by any SELF-REGISTERED account. So the cap here is
+// per ACTOR + aggregate, sliding one hour, enforced BEFORE the model is called:
+//   PILOT_WRITER_PER_USER_HOUR (default 40)  — one person's hourly allowance
+//   PILOT_WRITER_TOTAL_HOUR    (default 400) — the whole system's hourly ceiling
+// In-process on purpose (a DB round trip to refuse a text helper is not worth
+// it; multiple instances multiply the ceiling by the instance count, which is
+// still a hard bill bound where today there is none). A refusal is a plain
+// sentence, never an error.
+const HOUR_MS = 3600 * 1000;
+const _hits = { perUser: new Map(), global: [] };
+function _cap(env, dflt) { const n = Number(process.env[env]); return Number.isFinite(n) && n > 0 ? Math.floor(n) : dflt; }
+function throttleProblem(actorKey, now = Date.now()) {
+  const cutoff = now - HOUR_MS;
+  _hits.global = _hits.global.filter((t) => t > cutoff);
+  const key = String(actorKey || 'anon');
+  const mine = (_hits.perUser.get(key) || []).filter((t) => t > cutoff);
+  if (mine.length >= _cap('PILOT_WRITER_PER_USER_HOUR', 40)
+    || _hits.global.length >= _cap('PILOT_WRITER_TOTAL_HOUR', 400)) {
+    return 'Pilot AI has been used a lot this hour — give it a few minutes and try again.';
+  }
+  mine.push(now); _hits.perUser.set(key, mine); _hits.global.push(now);
+  // Bound the map so an id-churning caller can never grow memory without bound.
+  if (_hits.perUser.size > 5000) _hits.perUser.delete(_hits.perUser.keys().next().value);
+  return '';
+}
+
 const MODES = Object.freeze(['fix', 'rewrite', 'draft']);
 const TONES = Object.freeze({
   professional: 'professional and courteous',
@@ -86,6 +116,10 @@ async function assist(b = {}, opts = {}) {
     const problem = requestProblem(b);
     if (problem) return { ok: false, reason: problem };
     if (!azureOpenai.available()) return { ok: false, reason: 'Pilot AI is not turned on for this system yet.' };
+    // The brake sits AFTER validation (a refused request never spends budget)
+    // and BEFORE the model (a throttled request never reaches it).
+    const throttled = throttleProblem(opts.actorKey || (opts.staffId ? `s:${opts.staffId}` : 'anon'));
+    if (throttled) return { ok: false, reason: throttled };
     const mode = String(b.mode);
     const userContent = mode === 'draft'
       ? `Write this message:\n${String(b.instruction).trim()}${String(b.text || '').trim() ? `\n\nWhat is typed so far (build on it):\n${String(b.text).trim().slice(0, MAX_INPUT)}` : ''}`
@@ -107,4 +141,4 @@ async function assist(b = {}, opts = {}) {
   }
 }
 
-module.exports = { MODES, TONES, MAX_INPUT, requestProblem, systemFor, assist };
+module.exports = { MODES, TONES, MAX_INPUT, requestProblem, systemFor, assist, throttleProblem, _hits };

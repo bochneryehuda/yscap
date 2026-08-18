@@ -85,6 +85,46 @@ const azure = require('../src/lib/ai/azure-openai');
     .toString().trim().split('\n').filter(Boolean).sort();
   ok('D4 nothing outside the three routes (and the module itself) touches pilot-writer',
     JSON.stringify(callers) === JSON.stringify(['src/lib/ai/pilot-writer.js', 'src/routes/borrower.js', 'src/routes/staff.js', 'src/routes/tpo.js']));
+  ok('D5 every door passes a per-actor key to the spend brake',
+    /actorKey:\s*`s:\$\{req\.actor\.id\}`/.test(staff)
+    && /actorKey:\s*`b:\$\{req\.actor\.id\}`/.test(borrower)
+    && /actorKey:\s*`t:\$\{req\.actor\.id\}`/.test(tpo));
+
+  // ---- E. the spend brake (audit 2026-08-18 finding 1: pilot-writer has no
+  // file to cap against and the borrower door is reachable by any
+  // self-registered account — so the cap is per-actor + aggregate, hourly). --
+  ok('E1 the per-user hourly allowance refuses the call past the cap', (() => {
+    PW._hits.perUser.clear(); PW._hits.global.length = 0;
+    const t0 = Date.now();
+    for (let i = 0; i < 40; i++) if (PW.throttleProblem('s:alice', t0) !== '') return false;
+    return /this hour/.test(PW.throttleProblem('s:alice', t0));
+  })());
+  ok('E2 a different person is untouched by someone else\'s burn', PW.throttleProblem('b:bob') === '');
+  ok('E3 an hour later the allowance is back',
+    PW.throttleProblem('s:alice', Date.now() + 3601 * 1000) === '');
+  ok('E4 the aggregate ceiling binds even when no single user is over', (() => {
+    PW._hits.perUser.clear(); PW._hits.global.length = 0;
+    const t0 = Date.now();
+    for (let i = 0; i < 400; i++) PW.throttleProblem(`u:${i % 20}`, t0);
+    return /this hour/.test(PW.throttleProblem('u:fresh', t0));
+  })());
+  ok('E5 a throttled assist() answers the plain refusal and NEVER reaches the model', await (async () => {
+    const realA = azure.available, realC = azure.complete;
+    try {
+      azure.available = () => true;
+      let reached = false;
+      azure.complete = async () => { reached = true; return { ok: true, text: 'x' }; };
+      PW._hits.perUser.clear(); PW._hits.global.length = 0;
+      const t0 = Date.now();
+      for (let i = 0; i < 40; i++) PW.throttleProblem('s:carol', t0);
+      const out = await PW.assist({ mode: 'fix', text: 'abc' }, { actorKey: 's:carol' });
+      return out.ok === false && /this hour/.test(out.reason) && !reached;
+    } finally { azure.available = realA; azure.complete = realC; PW._hits.perUser.clear(); PW._hits.global.length = 0; }
+  })());
+  ok('E6 validation refuses BEFORE the brake, so junk never spends a slot', (() => {
+    const src = read('src/lib/ai/pilot-writer.js');
+    return src.indexOf('requestProblem(b)') > -1 && src.indexOf('requestProblem(b)') < src.indexOf('throttleProblem(opts.actorKey');
+  })());
 
   console.log(`test-pilot-writer-pure: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

@@ -249,7 +249,10 @@ async function create(appId, input, actor, client = db) {
   const recipients = await resolveRecipients(app, actor && actor.id, input.recipients, client);
   if (!recipients.length) { const e = new Error('add at least one recipient'); e.status = 400; throw e; }
   let assignee = null;
-  if (kind === 'task' && input.assigneeStaffId) {
+  if (input.assigneeStaffId) {
+    // Same rule as update(): only a TASK carries an owner, and a named owner is
+    // validated — never silently dropped (audit 2026-08-18 residual finding 7).
+    if (kind !== 'task') { const e = new Error('only a task can be assigned to someone'); e.status = 400; throw e; }
     assignee = await resolveAssignee(input.assigneeStaffId, client);
   }
 

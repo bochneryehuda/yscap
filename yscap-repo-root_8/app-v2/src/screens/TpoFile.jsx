@@ -135,7 +135,7 @@ export default function TpoFile() {
     <div style={{ maxWidth: 760 }}>
       {/* The file overview at a glance (owner-directed 2026-08-18) — the SAME
           borrower-safe payload the borrower portal shows, firm-scoped. */}
-      <FileOverviewSlideOver fetcher={() => api.tpoFileOverview(id)} title="File overview" />
+      <FileOverviewSlideOver key={id} fetcher={() => api.tpoFileOverview(id)} title="File overview" />
       <input ref={fileInput} type="file" style={{ display: 'none' }} onChange={onFilePicked} />
       <div style={{ marginBottom: 12 }}><Link to="/tpo" className="btn link small">← Back to pipeline</Link></div>
       <div className="page-head" style={{ marginBottom: 18 }}>

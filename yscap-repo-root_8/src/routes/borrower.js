@@ -1499,7 +1499,7 @@ router.get('/applications/:id/appraisal', async (req, res) => {
 // borrower-safe scrub, so a capital-partner name can never come back even when
 // the borrower typed one in.
 router.post('/pilot-writer', async (req, res) => {
-  const out = await require('../lib/ai/pilot-writer').assist(req.body || {}, { scrub: scrubText });
+  const out = await require('../lib/ai/pilot-writer').assist(req.body || {}, { scrub: scrubText, actorKey: `b:${req.actor.id}` });
   res.json(out);
 });
 

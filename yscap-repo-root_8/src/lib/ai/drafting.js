@@ -137,6 +137,13 @@ async function draft(appId, b = {}, opts = {}) {
     const problem = requestProblem(b);
     if (problem) return { ok: false, reason: problem };
     if (!azureOpenai.available()) return { ok: false, reason: 'Pilot AI is not turned on for this system yet.' };
+    // The per-FILE spend cap every other metered AI door here honors (aiReason,
+    // ai-guideline-verify, the as-is reader) — drafting has an appId, so it
+    // gates the same way (audit 2026-08-18 finding 1, drafting half).
+    try {
+      const capOk = await require('./cost-meter').allowSpend(appId, opts.client || db);
+      if (!capOk) return { ok: false, reason: 'This file has reached its AI spending cap for now — try again later.' };
+    } catch (_) { /* an unreadable meter never blocks a draft */ }
     const g = await groundingFor(appId, b, opts.client || db);
     if (g.empty && b.preset === 'outstanding_conditions') {
       return { ok: false, reason: 'Nothing is outstanding in that scope — there is nothing to ask the borrower for.' };

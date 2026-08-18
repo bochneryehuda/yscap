@@ -903,7 +903,7 @@ export default function Application() {
       {/* The file overview at a glance — the left-edge slide-over (owner-directed
           2026-08-18). BORROWER-SAFE: the server builds this payload for the
           borrower audience; nothing internal reaches this screen. */}
-      <FileOverviewSlideOver fetcher={() => api.borrowerFileOverview(id)} title="Loan overview" />
+      <FileOverviewSlideOver key={id} fetcher={() => api.borrowerFileOverview(id)} title="Loan overview" />
       {/* The file's identity bar STAYS while you scroll — the address, loan
           number and status pin under the app header; only the sections below
           (and the rail beside them) move. */}

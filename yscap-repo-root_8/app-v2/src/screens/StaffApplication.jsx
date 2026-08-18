@@ -5667,7 +5667,7 @@ export default function StaffApplication() {
     <>
       {/* The file overview at a glance — the left-edge slide-over (owner-directed
           2026-08-18), on every file screen; this is the INTERNAL audience. */}
-      <FileOverviewSlideOver fetcher={() => api.staffFileOverview(id)} />
+      <FileOverviewSlideOver key={id} fetcher={() => api.staffFileOverview(id)} />
       {/* The file's identity bar STAYS while you scroll — borrower, address,
           loan number and status pin under the app header; only the sections
           below (and the rail beside them) move. */}

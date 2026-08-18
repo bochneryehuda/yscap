@@ -110,11 +110,23 @@ const azure = require('../src/lib/ai/azure-openai');
 
     // ---- D. no send, structurally ----------------------------------------------------------
     const src = fs.readFileSync(path.join(__dirname, '..', 'src/lib/ai/drafting.js'), 'utf8');
-    ok('D1 the drafting module imports no mailer and never sends',
-      !/require\(['"][^'"]*email/.test(src) && !/sendMail|notifyBorrower|notifyApp/.test(src));
+    ok('D1 the drafting module imports no mailer OR notify module and never sends',
+      // The require test covers ANY notify alias (notifyStaff/notifyAdmins/a
+      // future one) — a verb list alone was foolable (audit 2026-08-18 #6).
+      !/require\(['"][^'"]*(email|notify)/.test(src) && !/sendMail|notifyBorrower|notifyApp|notifyStaff|notifyAdmins/.test(src));
     const staffSrc = fs.readFileSync(path.join(__dirname, '..', 'src/routes/staff.js'), 'utf8');
     const routeBlock = (staffSrc.match(/router\.post\('\/applications\/:id\/drafting'[\s\S]{0,600}/) || [''])[0];
     ok('D2 the route returns the draft and sends nothing', !!routeBlock && !/sendMail|notify/.test(routeBlock));
+
+    // ---- E. the per-file AI spend cap (audit 2026-08-18 finding 1) -------------------------
+    const meter = require('../src/lib/ai/cost-meter');
+    const realAllow = meter.allowSpend;
+    try {
+      meter.allowSpend = async () => false;
+      const capped = await D.draft(appId, { preset: 'deal_overview' });
+      ok('E1 a file over its AI spending cap is refused with a plain reason',
+        capped.ok === false && /spending cap/.test(capped.reason));
+    } finally { meter.allowSpend = realAllow; }
   } finally {
     azure.available = realAvailable; azure.complete = realComplete;
     try {

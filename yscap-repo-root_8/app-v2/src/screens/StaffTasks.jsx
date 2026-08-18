@@ -98,6 +98,11 @@ function ScheduledTasksBlock() {
         </div>
       ))}
       {data && !tasks.length && <div className="muted small">Nothing scheduled on your files.</div>}
+      {data && data.truncated && (
+        <div className="small" style={{ color: '#4B585C', marginTop: 6 }}>
+          Showing the first 400 — finish or dismiss some to see the rest.
+        </div>
+      )}
     </div>
   );
 }
