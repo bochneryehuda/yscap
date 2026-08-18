@@ -73,7 +73,13 @@ function mergeLedger(assessment, entries) {
   const usedOverrides = new Set();
   for (const a of accounts) {
     const key = accountKeyOf(a);
-    const ov = overrides.get(key) || null;
+    /* AN OVERRIDE CORRECTS EXACTLY ONE ACCOUNT (audit 2026-08-18). Two read
+       accounts CAN share a key (same holder + bank, both with no readable
+       number) — applying one override to both would silently DOUBLE the
+       corrected money into the verified total that feeds the closing money
+       gate. First account with the key gets the correction; any later
+       collision keeps its own document read, untouched. */
+    const ov = usedOverrides.has(key) ? null : (overrides.get(key) || null);
     if (ov) usedOverrides.add(key);
     const readAmount = a.ending != null && Number.isFinite(Number(a.ending)) ? Number(a.ending) : null;
     const ovAmount = ov && ov.amount != null && Number.isFinite(Number(ov.amount)) ? Number(ov.amount) : null;
@@ -128,13 +134,25 @@ function mergeLedger(assessment, entries) {
 
 // PURE. The one formula (see the header). null when nothing countable is
 // verified — a blank is honest, a $0 would read as "this borrower can close
-// on nothing", which is a claim, not an absence.
+// on nothing", which is a claim, not an absence. ALSO null when the verified
+// assets cannot even cover the reserves + buffer (audit 2026-08-18): a $0
+// "max" there would be a number the money gate itself refuses (decideCashToClose
+// fails a $0 actual when verified < reserve + buffer), and the two surfaces
+// must never disagree — the shortOfReserves flag carries the real story.
 function maxCashToCloseOf({ verifiedTotal, reserveRequirement, closingBuffer, haveCountable }) {
   if (!haveCountable) return null;
   const v = Number(verifiedTotal) || 0;
   const r = Number(reserveRequirement) || 0;
   const b = Number(closingBuffer) || 0;
-  return round2(Math.max(0, v - r - b));
+  const max = v - r - b;
+  return max < 0 ? null : round2(max);
+}
+
+// PURE. True when there ARE countable verified assets but they fall short of
+// the reserves + buffer alone — the case where no cash-to-close can pass.
+function shortOfReservesOf({ verifiedTotal, reserveRequirement, closingBuffer, haveCountable }) {
+  if (!haveCountable) return false;
+  return ((Number(verifiedTotal) || 0) - (Number(reserveRequirement) || 0) - (Number(closingBuffer) || 0)) < 0;
 }
 
 async function loadEntries(appId, client) {
@@ -165,7 +183,12 @@ async function computeAssetLedger(appId, client) {
     verifiedTotal: merged.verifiedTotal, reserveRequirement: reserve, closingBuffer,
     haveCountable: merged.haveCountable,
   });
+  const shortOfReserves = reserve == null ? false : shortOfReservesOf({
+    verifiedTotal: merged.verifiedTotal, reserveRequirement: reserve, closingBuffer,
+    haveCountable: merged.haveCountable,
+  });
   return {
+    shortOfReserves,
     rows: merged.rows,
     verifiedTotal: merged.verifiedTotal,
     readTotal: merged.readTotal,
@@ -193,7 +216,21 @@ async function stampCondition(appId, client) {
   const c = client || db;
   try {
     const led = await computeAssetLedger(appId, c);
-    if (led.maxCashToClose == null) return led;
+    if (led.maxCashToClose == null) {
+      /* THE MAX WENT AWAY (audit 2026-08-18) — the stamp and OUR note must go
+         with it, or the condition keeps advertising a figure that no longer
+         exists. Only our own note is cleared; a human's note is never touched. */
+      await c.query(
+        `UPDATE checklist_items ci
+            SET tool_payload = (COALESCE(ci.tool_payload,'{}'::jsonb) - 'assetLedger'),
+                notes = CASE WHEN ci.notes LIKE '[auto] Max cash to close%' THEN NULL ELSE ci.notes END,
+                updated_at = now()
+           FROM checklist_templates t
+          WHERE t.id = ci.template_id AND ci.application_id = $1 AND t.code = 'rtl_p3_assets'
+            AND (ci.tool_payload ? 'assetLedger' OR ci.notes LIKE '[auto] Max cash to close%')`,
+        [appId]);
+      return led;
+    }
     const stamp = {
       maxCashToClose: led.maxCashToClose,
       verifiedTotal: led.verifiedTotal,
@@ -223,6 +260,9 @@ function entryProblem(body) {
   const b = body || {};
   if (b.kind !== 'override' && b.kind !== 'manual') return 'kind must be "override" or "manual"';
   if (b.kind === 'override' && !String(b.accountKey || '').trim()) return 'an override must name the account it corrects';
+  // REFUSED, never truncated (audit 2026-08-18): a silently-shortened key would
+  // store a correction that never matches its account again — a 200 that didn't save.
+  if (b.kind === 'override' && String(b.accountKey || '').length > 400) return 'the account identity is too long to store — this account cannot be corrected by key; add it as a manual row instead';
   if (b.amount != null && String(b.amount).trim() !== '') {
     const n = Number(b.amount);
     if (!Number.isFinite(n) || n < 0) return 'the amount must be a positive number';
@@ -241,7 +281,7 @@ function entryProblem(body) {
 }
 
 module.exports = {
-  accountKeyOf, mergeLedger, maxCashToCloseOf,
+  accountKeyOf, mergeLedger, maxCashToCloseOf, shortOfReservesOf,
   loadEntries, computeAssetLedger, stampCondition, entryProblem,
   _internals: { round2, money, MAX_AMOUNT },
 };

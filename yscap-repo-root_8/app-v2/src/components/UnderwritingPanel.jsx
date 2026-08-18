@@ -1373,7 +1373,10 @@ function BankLiquidity({ bankLiquidity, assetLedger, appId, readOnly }) {
           <div style={{ ...tileStyle, borderColor: 'var(--primary-border,#AECFD1)', background: 'var(--primary-soft,#E4EFF0)' }}>
             <div style={tileK}>Max cash to close</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: '#1F5A60' }}>
-              {maxCtc != null ? money(maxCtc) : <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--muted,#4B585C)' }}>needs verified assets</span>}
+              {maxCtc != null ? money(maxCtc)
+                : <span style={{ fontSize: 12, fontWeight: 500, color: led && led.shortOfReserves ? 'var(--bad,#B4453B)' : 'var(--muted,#4B585C)' }}>
+                    {led && led.shortOfReserves ? 'verified assets don’t cover the reserves yet' : 'needs verified assets'}
+                  </span>}
             </div>
             {maxCtc != null && (
               <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 2 }}>

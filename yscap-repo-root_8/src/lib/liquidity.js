@@ -187,17 +187,24 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
     // A one-time backfill over ALREADY-registered files writes the breakdown
     // without disturbing conditions staff already cleared (opts.noReopen) — it
     // just makes the detail appear and seeds prevRequired for future increases.
+    // Re-stamp the assets-ledger max after either write below (db/574, audit
+    // 2026-08-18): the reserve requirement just moved, so a Max-Cash-to-Close
+    // note computed off the OLD reserve would sit beside the NEW requirement in
+    // one summary line. Best-effort — a stamp failure never fails the sync.
+    const restamp = () => require('./underwriting/asset-ledger').stampCondition(appId, client).catch(() => null);
     if ((firstConcrete || increased) && wasCleared && !opts.noReopen) {
       await client.query(
         `UPDATE checklist_items
             SET tool_payload=$2, hint=$3, borrower_hint=$3, status='outstanding',
                 signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
           WHERE id=$1`, [item.id, JSON.stringify(payload), hint]);
+      await restamp();
       return { reopened: true, reason: increased ? 'increase' : 'first', required, prevRequired };
     }
     await client.query(
       `UPDATE checklist_items SET tool_payload=$2, hint=$3, borrower_hint=$3, updated_at=now() WHERE id=$1`,
       [item.id, JSON.stringify(payload), hint]);
+    await restamp();
     return { reopened: false, required, prevRequired };
   } catch (e) { console.error('[liquidity] syncLiquidityCondition failed', appId, e.message); return null; }
 }

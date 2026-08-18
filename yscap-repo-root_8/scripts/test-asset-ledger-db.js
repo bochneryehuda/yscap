@@ -74,8 +74,20 @@ function call(server, method, path, token, body) {
     && stale.rows.some((r) => r.source === 'stale_override' && r.included === false));
 
   ok('A9 max cash to close = verified − reserve − buffer', ledger.maxCashToCloseOf({ verifiedTotal: 100000, reserveRequirement: 20000, closingBuffer: 5000, haveCountable: true }) === 75000);
-  ok('A10 never negative', ledger.maxCashToCloseOf({ verifiedTotal: 10000, reserveRequirement: 20000, closingBuffer: 0, haveCountable: true }) === 0);
+  ok('A10 NULL when reserves alone exceed the assets — never a $0 the gate itself would refuse',
+    ledger.maxCashToCloseOf({ verifiedTotal: 10000, reserveRequirement: 20000, closingBuffer: 0, haveCountable: true }) === null
+    && ledger.shortOfReservesOf({ verifiedTotal: 10000, reserveRequirement: 20000, closingBuffer: 0, haveCountable: true }) === true);
+  ok('A10b an exact-cover file maxes at $0 AND the gate passes a $0 actual — the inverse holds at the boundary',
+    ledger.maxCashToCloseOf({ verifiedTotal: 20000, reserveRequirement: 20000, closingBuffer: 0, haveCountable: true }) === 0
+    && closing.decideCashToClose({ verified: 20000, reserve: 20000, closingBuffer: 0, actualCashToClose: 0, haveCountable: true }).ok === true);
   ok('A11 NULL with nothing countable — never a confident $0', ledger.maxCashToCloseOf({ verifiedTotal: 0, reserveRequirement: 20000, closingBuffer: 0, haveCountable: false }) === null);
+  ok('A11b an override never applies twice across colliding keys',
+    (() => {
+      const c1 = acct({ accountNumber: null }); const c2 = acct({ accountNumber: null, ending: 20000, statementCount: 1 });
+      const k = ledger.accountKeyOf(c1);
+      const m = ledger.mergeLedger({ accounts: [c1, c2], qualifyingTotal: 70000 }, [{ kind: 'override', account_key: k, amount: '50000', include: true }]);
+      return m.verifiedTotal === 70000; // 50000 corrected + 20000 untouched — never 100000
+    })());
 
   ok('A12 entryProblem: bad kind refused', !!ledger.entryProblem({ kind: 'x' }));
   ok('A13 entryProblem: override needs its account', !!ledger.entryProblem({ kind: 'override' }));
@@ -169,6 +181,24 @@ function call(server, method, path, token, body) {
     // The audit trail says who touched the money.
     const aud = (await db.query(`SELECT count(*)::int n FROM audit_log WHERE entity_id=$1 AND action LIKE 'asset_ledger%'`, [appId])).rows[0].n;
     ok('D5 every write is audited', aud >= 4);
+
+    // THE STAMP GOES AWAY WITH THE MAX (audit 2026-08-18): excluding every
+    // countable account leaves no max — the payload stamp and OUR note must be
+    // cleared, never left advertising a figure that no longer exists.
+    await db.query(`UPDATE checklist_items SET notes=NULL WHERE id=$1`, [itemId]);
+    // remove the manual accounts, then exclude the read account
+    for (const row of (await db.query(`SELECT id FROM asset_ledger_entries WHERE application_id=$1 AND kind='manual'`, [appId])).rows) {
+      await call(server, 'DELETE', `/api/staff/applications/${appId}/asset-ledger/entries/${row.id}`, tok);
+    }
+    const px = await call(server, 'POST', `/api/staff/applications/${appId}/asset-ledger/entries`, tok,
+      { kind: 'override', accountKey: rowKey, include: false });
+    // Nothing countable left ⇒ no max AND not "short of reserves" (that flag is
+    // only for countable-but-insufficient — with nothing countable the honest
+    // message is "needs verified assets").
+    ok('D6 excluding the last countable account leaves no max', px.status === 200 && px.body.ledger.maxCashToClose === null && px.body.ledger.shortOfReserves === false);
+    const item3 = (await db.query(`SELECT tool_payload, notes FROM checklist_items WHERE id=$1`, [itemId])).rows[0];
+    ok('D7 the stale stamp and our note are cleared with it',
+      !(item3.tool_payload && item3.tool_payload.assetLedger) && (item3.notes == null || !/Max cash to close/.test(item3.notes)));
   } finally {
     try {
       if (appId) {
