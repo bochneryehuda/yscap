@@ -374,10 +374,20 @@ export default function LtPpe() {
           )}
         </div>
 
+        {/*
+          AN EMPTY LIST IS NOT A CLEAN ONE, and this board cannot tell the two apart on its own.
+          Findings are written by exactly two producers — a canary battery, and the shadow
+          comparison on the pricing-transparency screen — so "nothing is waiting" means either
+          "everything measured agreed" or "nothing has been measured", and until this page is
+          told which it must say both. The scoreboard answers it for ONE investor and only
+          renders once an investor is chosen, so it cannot be the whole answer here.
+        */}
         {queue && items.length === 0 && (
           <p style={{ ...sub, marginBottom: 0 }}>
-            Nothing is waiting. Either the two engines agreed on everything measured so far, or nothing has
-            been measured yet — the scoreboard below says which.
+            Nothing is waiting — and that is two different things this list cannot tell apart. Either the two
+            engines agreed on everything measured so far, or nothing has been measured yet. Differences only
+            arrive here when somebody runs a comparison: pick an investor above to see whether that one has
+            ever been measured, or run one deal against Lender Price on the pricing-transparency screen.
           </p>
         )}
 

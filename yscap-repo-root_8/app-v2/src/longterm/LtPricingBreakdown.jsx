@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
+import LtShadowCompare from './LtShadowCompare.jsx';
 
 // ---------------------------------------------------------------------------
 // PRICING TRANSPARENCY — the "mother interface" (owner-directed 2026-08-17):
@@ -236,6 +237,18 @@ export default function LtPricingBreakdown() {
             <button className="btn" type="submit" disabled={busy}>{busy ? 'Pricing…' : 'Break down the price'}</button>
             <span style={{ fontSize: 12, color: MUTED }}>Values are in the engine's own integer units.</span>
           </div>
+          {/*
+            THE READ SAYS IT IS A READ. `/ppe/breakdown` prices our engine against a stored
+            rate sheet and calls nobody; the shadow comparison below it calls Lender Price and
+            writes to the findings ledger. Two buttons that cost wildly different things must
+            not read the same, which is exactly why the shadow was NOT folded in here — a tap
+            on a ladder row re-posts this form, and nobody taps a rate meaning "spend a vendor
+            call and file a finding".
+          */}
+          <p style={{ margin: '8px 0 0', fontSize: 12, color: MUTED }}>
+            This breaks the price down from a stored rate sheet. It does not call Lender Price and it
+            records nothing.
+          </p>
         </form>
 
         {error && (
@@ -244,6 +257,14 @@ export default function LtPricingBreakdown() {
           </div>
         )}
       </div>
+
+      {/*
+        The one control on the whole front end that reaches `POST /ppe/quote` — and therefore
+        the only automatic producer of the findings ledger and the parity-cell series. It reuses
+        THIS form's scenario (`buildBody`) so the deal broken down above and the deal measured
+        against Lender Price are the same deal, rather than two forms that drift apart.
+      */}
+      <LtShadowCompare buildBody={buildBody} />
 
       {b && (
         <>

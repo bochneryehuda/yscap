@@ -42,7 +42,7 @@ here rather than smoothed over (see the note under the table).
 | `GET /api/lt/encompass/status` | Whether the Encompass memory loaded. Same. |
 | `GET /api/lt/dscr/health` | The Lender Price pricer's own health. Read during build and incident work with a signed-in session; the LT PPE screen shows `GET /ppe/health` instead, which is the one a person needs. |
 | `GET /api/lt/dscr/login-check` | Confirms the vendor login works. An operator check, run by hand. |
-| `POST /api/lt/dscr/price` | The raw Lender Price pricing call. Screens go through `POST /ppe/quote`'s successor `POST /ppe/breakdown` and the PPE surface; this is the unwrapped vendor call, used by the offline measurement scripts and by hand. |
+| `POST /api/lt/dscr/price` | The raw, unwrapped Lender Price pricing call — no shadow comparison, no ledger. Screens go through `POST /ppe/breakdown` (our engine against a stored sheet, no vendor call) and `POST /ppe/quote` (Lender Price with our engine in shadow); this one is used by the offline measurement scripts and by hand. |
 | `POST /api/lt/dscr/disqualify` | Kicks off the vendor's asynchronous disqualify computation. Driven by the pricing path and by hand, never by a screen. |
 | `POST /api/lt/dscr/disqualifications` | Polls that computation by search key. Same. |
 | `GET /api/lt/dscr/disqualifications/:searchKey` | The same poll as a GET. Same. |
@@ -53,8 +53,7 @@ here rather than smoothed over (see the note under the table).
 | `POST /api/lt/ppe/suggestions/mine` | Mines rule suggestions out of the recorded findings. Same: an editor action with no editor. |
 | `GET /api/lt/ppe/programs/:id/lp-scope` | Reads a program's Lender Price scope. The console SETS the scope (`POST` is reached) and re-reads it from the write's own response, so the GET has no caller. |
 | `GET /api/lt/ppe/rate-sheets/:id/diff` | What changed between two versions of a sheet (§2.35). Built; the console has no version-history view yet. |
-| `POST /api/lt/ppe/quote` | Prices one scenario, LP authoritative with our engine in shadow. The scenario screen uses `POST /ppe/breakdown`, which answers the richer question. Kept because it is the shadow-mode entry the cutover plan turns on. |
-| `POST /api/lt/ppe/canary` | Runs a canary battery. **It is the only producer of the findings ledger and the parity-cell series**, so with no caller those two screens can only ever show what a hand-run `curl` put there. Its screen is the next thing owed to the PPE console. |
+| `POST /api/lt/ppe/canary` | Runs a canary battery. **It is still the only producer of the RUN SERIES and the PARITY-CELL series** (`run-store.persistRun` / `parity-cell-store.persistCells` are called from `runBattery` and nowhere else), so the scoreboard's agreement rate and clean-day streak — and therefore the go-live gate — can only ever show what a hand-run `curl` put there. It is no longer the only producer of the FINDINGS ledger: the shadow comparison on the pricing-transparency screen reaches `POST /ppe/quote`. Its own screen is the next thing owed to the PPE console. |
 | `GET /api/lt/ppe/canary/schedules` | Reads the daily canary schedule (D19). No schedule screen yet. |
 | `POST /api/lt/ppe/canary/schedules` | Writes one. Same. |
 | `DELETE /api/lt/ppe/canary/schedules/:investor` | Removes one. Same. |

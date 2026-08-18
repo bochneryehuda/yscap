@@ -118,6 +118,19 @@ export const ltApi = {
   // and both engines' eligibility/disqualifications, for ONE scenario. The server assembles
   // the view over an already-priced scenario; this client never re-does the math.
   ppeBreakdown: (body) => ltPost(lt('/ppe/breakdown'), body),
+  // THE SHADOW COMPARISON — Lender Price answers, our engine prices the same scenario
+  // beside it, and every disagreement is written to the findings ledger.
+  //
+  // This is the ONLY caller of the only route that runs `facade.priceWithShadow` and
+  // `finding-store.persistRun` outside a canary battery. Until it existed the ledger and
+  // the parity-cell series had no producer a screen could reach, so an EMPTY pricing-engine
+  // board was indistinguishable from a CLEAN one — a measurement surface reporting success
+  // by having never run.
+  //
+  // IT COSTS A LIVE VENDOR CALL AND IT WRITES. Deliberately NOT wired to any load, poll or
+  // form change: `LtShadowCompare` calls it from a click handler only, behind copy that
+  // states the cost before the press. Do not call it from an effect.
+  ppeQuote: (body) => ltPost(lt('/ppe/quote'), body),
   // Admin-only on the server. Called anyway from a non-admin's screen so the
   // REFUSAL is shown — a hidden button is indistinguishable from a broken one.
   ppeDecideFinding: (key, body) => ltPost(lt(`/ppe/findings/${encodeURIComponent(key)}/decide`), body),
