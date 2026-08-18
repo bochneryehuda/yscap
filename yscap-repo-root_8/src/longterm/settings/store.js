@@ -63,7 +63,10 @@ function defaults() {
  * The effective settings for a scope: the declared defaults with any saved
  * overrides laid over them.
  *
- * Returns `{settings, degraded, source}`. `degraded` is true when the stored
+ * Returns `{settings, degraded, stored, source}`. `stored` is the set of keys
+ * this scope holds a row of its own for — which is a different question from
+ * "does the value differ from the default", and the one a caller asking "did
+ * somebody choose this" needs. `degraded` is true when the stored
  * overrides could not be read — the caller still gets a complete, usable settings
  * object, and anything that wants to warn a human can see that it is not the full
  * picture.
@@ -108,18 +111,6 @@ async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
 
   cache.set(key, { at: Date.now(), settings: base, degraded, stored });
   return { settings: base, degraded, stored, source: 'db' };
-}
-
-/**
- * Does this scope hold a row of its own for this setting?
- *
- * Deliberately NOT `isOverridden`: that asks whether the effective value differs
- * from our pre-filled default, which is what a settings screen wants and is a
- * different question from "did somebody choose this".
- */
-async function isStored(settingKey, scope = DEFAULT_SCOPE) {
-  const { stored } = await load(scope);
-  return !!(stored && stored.has(String(settingKey)));
 }
 
 /** One effective value. */
@@ -241,7 +232,6 @@ module.exports = {
   defaults,
   load,
   get,
-  isStored,
   validate,
   save,
   bust,

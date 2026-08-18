@@ -53,8 +53,11 @@ async function resolveProduct(staffId) {
   // value, and the day an admin moved that default they were moved with it —
   // having explicitly asked not to be. Proven end to end before it was changed:
   // the row was there the whole time and nothing read it.
-  const chosenByUser = (me.stored && me.stored.has('ui.defaultProduct'))
-    || (await settingsStore.isStored('ui.defaultProduct', scopeFor(staffId)));
+  // ONE test, deliberately. `load` always returns `stored`, so a second lookup
+  // beside this could never be reached, and a guard no mutation can reach is
+  // decoration — the rule `conditions/read.js doneStatusesFrom` records for the
+  // same reason.
+  const chosenByUser = me.stored.has('ui.defaultProduct');
   const chosen = chosenByUser ? me.settings['ui.defaultProduct'] : company.settings['ui.defaultProduct'];
   return {
     product: PRODUCTS.includes(chosen) ? chosen : 'rtl',
