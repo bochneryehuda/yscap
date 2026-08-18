@@ -83,16 +83,43 @@ function intersect(a, b) {
  * and the rule is REPORTED as unanalyzable. A negation describes the complement of a region, and the
  * complement of a box is not a box — guessing at it would invent overlaps that cannot happen.
  */
-function regionOf(pred) {
+function regionOf(pred) { return regionDetail(pred).region; }
+
+/**
+ * The SAME reduction, saying WHY it came back with nothing.
+ *
+ * ⛔ THE REASON IS NOT A NICETY — `regionOf` COLLAPSES TWO OPPOSITE ANSWERS INTO ONE null. "I could not
+ * read this predicate" and "this predicate is a contradiction and the rule can never fire" are the two
+ * findings a reader most needs to tell apart: the first means *check it by hand*, the second means *this
+ * rule is dead and will never price anything*. Coverage never needed the difference — an unreadable rule
+ * and an impossible one both simply fail to overlap anything — so `regionOf` was right to fold them.
+ * The authoring layer needs it: it must REFUSE the contradiction (loudly, naming the fact that
+ * contradicts itself) and must NOT refuse the merely-unreadable, because refusing what we cannot read
+ * would ban every `any` / `not` rule in the engine.
+ *
+ * ONE REDUCER, NOT TWO. `regionOf` is now a wrapper over this, so there is still exactly one place that
+ * knows how a predicate becomes a box, and the coverage analyzer's behaviour is unchanged: every path
+ * that returned null still returns null.
+ *
+ * Returns { region, reason, fact }:
+ *   reason 'ok'             — region is the box
+ *   reason 'no_predicate'   — pred was null: it matches everything, which is not a box
+ *   reason 'empty'          — a contradiction; `fact` names the fact that contradicts itself
+ *   reason 'unanalyzable'   — an any/not/none tree, or a neq/nin/exists complement
+ *   reason 'no_constraints' — read cleanly and constrained nothing
+ * region is null for every reason but 'ok'. PURE, never throws.
+ */
+function regionDetail(pred) {
   const numeric = new Map();
   const sets = new Map();
   let okAll = true;
+  let emptyFact = null;              // the fact whose own leaves contradict each other, if any
 
   const addNumeric = (fact, iv) => {
     const prev = numeric.get(fact);
     if (!prev) { numeric.set(fact, iv); return true; }
     const hit = intersect(prev, iv);
-    if (!hit) return false;          // an empty conjunction: the rule can never fire
+    if (!hit) { emptyFact = emptyFact || fact; return false; } // an empty conjunction: the rule can never fire
     numeric.set(fact, hit);
     return true;
   };
@@ -100,7 +127,7 @@ function regionOf(pred) {
     const prev = sets.get(fact);
     if (!prev) { sets.set(fact, new Set(values)); return true; }
     const both = new Set([...prev].filter((v) => values.includes(v)));
-    if (!both.size) return false;
+    if (!both.size) { emptyFact = emptyFact || fact; return false; }
     sets.set(fact, both);
     return true;
   };
@@ -132,11 +159,44 @@ function regionOf(pred) {
     if (!leaf(node)) okAll = false;
   };
 
-  if (pred == null) return null;     // no predicate: it applies to everything, which is not a region
+  if (pred == null) return { region: null, reason: 'no_predicate', fact: null }; // matches everything — not a box
   walk(pred);
-  if (!okAll) return null;
-  if (!numeric.size && !sets.size) return null;
-  return { numeric, sets };
+  // EMPTINESS IS REPORTED BEFORE UNREADABILITY, and the order matters: a contradiction also sets
+  // `okAll = false` (the leaf that produced it returned false), so testing readability first would
+  // report every dead rule as merely unreadable and the authoring layer would never refuse one.
+  if (emptyFact) return { region: null, reason: 'empty', fact: emptyFact };
+  if (!okAll) return { region: null, reason: 'unanalyzable', fact: null };
+  if (!numeric.size && !sets.size) return { region: null, reason: 'no_constraints', fact: null };
+  return { region: { numeric, sets }, reason: 'ok', fact: null };
+}
+
+/**
+ * Are these two regions THE SAME CELL — the identical box, not merely an overlapping one?
+ *
+ * ⛔ IDENTICAL AND OVERLAPPING ARE DIFFERENT FINDINGS AND GET DIFFERENT ANSWERS. Two pricing rules on
+ * the same cell are the same charge written twice, and there is no reading of a rate sheet in which
+ * that is intended. Two rules that merely INTERSECT are routinely intended — a whole-column rule plus a
+ * cell rule inside it is how every sheet in this engine layers, and this module's own header says a
+ * whole-column rule correctly overlaps every cell in its column. So the authoring layer refuses the
+ * first and reports the second, and this predicate is the line between them.
+ *
+ * PURE. Compares the boxes, never the rules that produced them — two differently-written predicates
+ * that reduce to one box ARE one cell, which is exactly the duplicate worth catching.
+ */
+function sameRegion(a, b) {
+  if (!a || !b) return false;
+  if (a.numeric.size !== b.numeric.size || a.sets.size !== b.sets.size) return false;
+  for (const [fact, iv] of a.numeric) {
+    const o = b.numeric.get(fact);
+    if (!o) return false;
+    if (iv.min !== o.min || iv.max !== o.max || iv.minInc !== o.minInc || iv.maxInc !== o.maxInc) return false;
+  }
+  for (const [fact, set] of a.sets) {
+    const o = b.sets.get(fact);
+    if (!o || o.size !== set.size) return false;
+    for (const v of set) if (!o.has(v)) return false;
+  }
+  return true;
 }
 
 /**
@@ -393,14 +453,21 @@ function analyzeRuleSet(rules, opts = {}) {
     pricingRules += 1;
     const dim = dimensionOf(r);
     const code = r.code || null;
-    let region = null;
-    try { region = regionOf(r.when); } catch (e) { region = null; }
+    // The reducer now says WHICH of its refusals this is, so the report can too. "Cannot be read" and
+    // "can never fire" both land here and both stop the analysis, but they send a reader to opposite
+    // places: the first to check the rule by hand, the second to a rule that is DEAD and is charging
+    // nobody. Folding them into one sentence made the second unfindable.
+    let detail = { region: null, reason: 'unanalyzable', fact: null };
+    try { detail = regionDetail(r.when); } catch (e) { detail = { region: null, reason: 'unanalyzable', fact: null }; }
+    const region = detail.region;
     if (!region) {
       unanalyzable.push({
-        code, kind: r.kind, dimension: dim,
-        why: r.when == null
+        code, kind: r.kind, dimension: dim, reason: detail.reason,
+        why: detail.reason === 'no_predicate'
           ? 'no predicate — it applies to every scenario on this dimension, which cannot be expressed as a region'
-          : 'the predicate cannot be read as a region — an any/not/none tree, a neq/nin/exists complement, or a conjunction it could never satisfy',
+          : detail.reason === 'empty'
+            ? `this rule can never fire: its conditions on ${detail.fact} contradict each other, so no scenario satisfies them all and the rule adjusts nothing`
+            : 'the predicate cannot be read as a region — an any/not/none tree, or a neq/nin/exists complement',
       });
       continue;
     }
@@ -468,5 +535,10 @@ function analyzeRuleSet(rules, opts = {}) {
 
 module.exports = {
   analyzeRuleSet,
+  // The reducer and the two predicates the authoring layer composes. Exported (rather than left in
+  // `_internals`) because they are now a supported way to ask this module a question, not test hooks.
+  regionDetail,
+  sameRegion,
+  describeRegion,
   _internals: { regionOf, regionsMeet, intersect, describe, describeRegion, dimensionOf, gapsForDimension, halfOpenStandard, MAX_GAP_CELLS },
 };

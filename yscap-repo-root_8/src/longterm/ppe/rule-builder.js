@@ -107,6 +107,14 @@ const DIMENSIONS = Object.freeze({
   prepay: { fact: 'prepay', kind: 'enum' },
   borrower_type: { fact: 'borrower_type', kind: 'enum' },
   io: { fact: 'io', kind: 'bool' },
+  // The PREPAYMENT-PENALTY STRUCTURE a scenario carries. The fact name is not invented here — it is
+  // the one `ppp-structures.pppMarginHoldbackRules` writes and `agreement-scenarios` already sets on
+  // its scenarios, so a rule scoped this way reads the fact that is actually on the bag. It is an
+  // `enum` for the reason every other enum here is: the MECHANISM takes any token, and WHICH tokens
+  // exist is the structure library's business, not this file's — the authoring service checks a value
+  // against `ppp-structures` before it reaches here. Note this is NOT `prepay`, which is the scenario's
+  // prepay term; the two are different facts and conflating them would scope rules by the wrong one.
+  ppp_structure_key: { fact: 'ppp_structure_key', kind: 'enum' },
 });
 const NUMERIC_KINDS = new Set(['int', 'milli', 'dollars']);
 

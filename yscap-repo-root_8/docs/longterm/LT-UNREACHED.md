@@ -116,6 +116,29 @@ of the same program. It DECIDES nothing: the §7.4 classification is reported fo
 reader, and no cell is applied, published or accepted (auto-apply belongs to the ingest path, which
 does not exist yet).
 
+## The rule-authoring editor now has a service under it — and the service itself is not wired
+
+`rule-builder.js` (the authoring operations over the ONE rule shape) and `ppp-structures.js` (the
+reusable prepayment-penalty catalog) both said "waiting on the rule-authoring editor". That editor is a
+screen, and a screen needs something to sit on: a layer that takes an authoring intent, validates it,
+checks it against the ruleset it would join, and stores it somewhere that prices nothing until somebody
+publishes it. `rule-authoring.js` + `rule-authoring-store.js` are that layer, and they are the first
+thing in this engine to call either module.
+
+**Both of those rows stay, and it would be dishonest to strike them off.** A caller that is itself
+unreachable is not a caller — nothing in `src/` reaches the service, so nothing reaches the two modules
+through it, and the check agrees (it still lists all four). What changed is the answer to "what would
+wire it", which is now one thing rather than two: a route mounting the service. Their rows say so.
+
+**The service is unreachable for a stated reason, not an oversight.** `src/longterm/routes/ppe.js` is
+owned by another workstream right now and was not touched, so the four doors this needs
+(`POST /rules/drafts`, `GET /rules/drafts`, `GET /rules/drafts/:id`, `POST /rules/drafts/:id/publish`)
+do not exist yet. The publish door in particular is not a mechanical addition: it is the one that
+changes what a loan is priced at, so **who may press it is an owner decision** — the rest of this
+router splits on `requirePpeAdmin`, and whether publishing a pricing rule belongs to that same group has
+not been asked. Until it is, the service refuses to publish without a named human and records who it
+was, which is the safe half of the answer.
+
 ## The ledger
 
 | Module | Why it is not wired yet | What would wire it |
@@ -137,8 +160,10 @@ does not exist yet).
 | `src/longterm/ppe/layer-compile-ppp.js` | Pure compiler: prepayment data → canonical rules. | As above. |
 | `src/longterm/ppe/layer-facts.js` | The closed derived-fact vocabulary the two compilers share. | As above. |
 | `src/longterm/ppe/overlay-cut-engine.js` | The generic overlay-cut interpreter (D36, the scalable middle). | As above. |
-| `src/longterm/ppe/rule-builder.js` | The universal rule / condition authoring layer (#48). | The rule-authoring editor (§2.11 TO-BUILD). |
-| `src/longterm/ppe/ppp-structures.js` | The reusable prepayment-penalty structure library (D31). | The rule-authoring editor, or a per-investor PPP screen. |
+| `src/longterm/ppe/rule-builder.js` | The universal rule / condition authoring layer (#48). `rule-authoring.js` calls it now, but that service is itself unwired, so this is still reached by nothing. | A route mounting `rule-authoring` — the same one thing that wires the two rows below. |
+| `src/longterm/ppe/ppp-structures.js` | The reusable prepayment-penalty structure library (D31). Same as above: `rule-authoring.js` offers its structures as the value set for the `ppp_structure_key` dimension, and warns when one already carries a holdback — but nothing reaches that service. | As above. |
+| `src/longterm/ppe/rule-authoring.js` | The rule-authoring SERVICE — an authoring intent in, a validated canonical rule plus a screen-ready render out, or a refusal in plain language. Pure. | `POST /api/lt/ppe/rules/drafts` (+ the list/read doors). `src/longterm/routes/ppe.js` belongs to another workstream at the moment and was deliberately not edited. |
+| `src/longterm/ppe/rule-authoring-store.js` | Its durable half: `lt_ppe_rule_draft` (db/577), and the one deliberate `publishDraft` act that puts a rule into `lt_ppe_rule` where quotes read it. | The same route, plus an owner decision on WHO may publish — this is the door that changes a priced number, and whether `requirePpeAdmin` is the right gate for it has not been asked. |
 | `src/longterm/ppe/ratesheet-ingest.js` | Rate-sheet ingestion normalizer. | A file-upload path for a sheet; the console pastes instead today. |
 | `src/longterm/ppe/lp-drift.js` | Daily Lender-Price drift detection + classification (D19). | A scheduled run — deliberately not added, for the same reason the canary has no timer: a background loop calling a paid vendor is the owner's decision. |
 | `src/longterm/ppe/lp-daily-run.js` | The IO-injected wrapper tying the drift pieces together. | As above. |
