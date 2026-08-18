@@ -74,10 +74,21 @@ function assertPricedChain(program, label) {
   const { Pool } = require('pg');
   const db = new Pool({ connectionString: process.env.DATABASE_URL });
   try {
-    for (const f of ['558_lt_ppe_foundation.sql', '560_lt_ppe_ratesheet.sql', '576_lt_ppe_ratesheet_agreement_gate.sql']) {
-      await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', f), 'utf8'));
-    }
-    ok(true, 'db/558 + db/560 + db/576 applied (idempotent)');
+    // APPLIED TWICE, because "idempotent" is a claim about the SECOND run. This was
+    // `ok(true, '… applied (idempotent)')` — an assertion nothing could falsify, sitting over three
+    // migrations applied once each; a failing apply would have surfaced as an unhandled rejection and
+    // a stack trace instead of a named red line. Every migration here re-runs on every boot.
+    const files = ['558_lt_ppe_foundation.sql', '560_lt_ppe_ratesheet.sql', '576_lt_ppe_ratesheet_agreement_gate.sql'];
+    let applyErr = null;
+    try {
+      for (const pass of [1, 2]) {
+        for (const f of files) await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', f), 'utf8'));
+        void pass;
+      }
+    } catch (e) { applyErr = e; }
+    ok(!applyErr, `db/558 + db/560 + db/576 apply TWICE in a row without error${applyErr ? `: ${applyErr.message}` : ''}`);
+    const present = await db.query("SELECT to_regclass('public.lt_ppe_base_price') IS NOT NULL AS ok");
+    ok(present.rows[0].ok === true, '…and the grid table they create is there afterwards');
 
     const scope = 'test_rs_' + Math.abs(process.pid || 1);
     await db.query('DELETE FROM lt_ppe_program WHERE scope = $1', [scope]);

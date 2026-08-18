@@ -100,13 +100,22 @@ const twoCellMatrix = () => ({
   const DAY = 1700000000000;
 
   try {
-    // The four migrations this suite is about, applied idempotently so the file stands on its own.
-    for (const f of ['558_lt_ppe_foundation.sql', '560_lt_ppe_ratesheet.sql', '566_lt_ppe_cutover_ledger.sql',
+    // The migrations this suite is about, applied TWICE — which is what "idempotently" claims and
+    // what every boot of this system does. The line under it used to be `ok(true, '… (idempotent)')`,
+    // an assertion with no false branch: it passed whether the migrations were idempotent or not, and
+    // an apply that threw would have ended the run in a stack trace rather than a named failure.
+    const files = ['558_lt_ppe_foundation.sql', '560_lt_ppe_ratesheet.sql', '566_lt_ppe_cutover_ledger.sql',
       '570_lt_ppe_canary_schedule.sql', '575_lt_ppe_parity_cell_series.sql',
-      '576_lt_ppe_ratesheet_agreement_gate.sql']) {
-      await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', f), 'utf8'));
-    }
-    ok(true, 'db/558 + 560 + 566 + 570 + 575 + 576 applied (idempotent)');
+      '576_lt_ppe_ratesheet_agreement_gate.sql'];
+    let applyErr = null;
+    try {
+      for (let pass = 0; pass < 2; pass += 1) {
+        for (const f of files) await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', f), 'utf8'));
+      }
+    } catch (e) { applyErr = e; }
+    ok(!applyErr, `db/558 + 560 + 566 + 570 + 575 + 576 apply TWICE in a row without error${applyErr ? `: ${applyErr.message}` : ''}`);
+    const present = await db.query("SELECT to_regclass('public.lt_ppe_parity_cell') IS NOT NULL AS ok");
+    ok(present.rows[0].ok === true, '…and the parity-cell table they create is there afterwards');
 
     // ---- A. parity cells (db/575) -----------------------------------------
     console.log('\nA. parity cell series (db/575)\n');

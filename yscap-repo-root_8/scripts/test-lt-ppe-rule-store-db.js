@@ -57,10 +57,20 @@ const parsedDisq = {
   const db = new Pool({ connectionString: process.env.DATABASE_URL });
   const scope = 'rs_test_' + Math.abs(process.pid || 1);
   try {
-    for (const f of ['558_lt_ppe_foundation.sql', '571_lt_ppe_rule_and_suggestion_store.sql']) {
-      await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', f), 'utf8'));
-    }
-    ok(true, 'db/558 + db/571 applied');
+    // Applied TWICE: a migration in this repo re-runs on every boot, so "it applied" is only half the
+    // claim and the half nothing here was checking. The line this replaces was `ok(true, …)` — it
+    // could not go red for any reason, including the apply throwing (which would have arrived as an
+    // unhandled rejection and a stack trace).
+    const files = ['558_lt_ppe_foundation.sql', '571_lt_ppe_rule_and_suggestion_store.sql'];
+    let applyErr = null;
+    try {
+      for (let pass = 0; pass < 2; pass += 1) {
+        for (const f of files) await db.query(fs.readFileSync(path.join(__dirname, '..', 'db', f), 'utf8'));
+      }
+    } catch (e) { applyErr = e; }
+    ok(!applyErr, `db/558 + db/571 apply TWICE in a row without error${applyErr ? `: ${applyErr.message}` : ''}`);
+    const present = await db.query("SELECT to_regclass('public.lt_ppe_rule_suggestion') IS NOT NULL AS ok");
+    ok(present.rows[0].ok === true, '…and the suggestion table they create is there afterwards');
     const clean = async () => {
       await db.query('DELETE FROM lt_ppe_rule_suggestion WHERE scope = $1', [scope]);
       await db.query('DELETE FROM lt_ppe_rule WHERE scope = $1', [scope]);
