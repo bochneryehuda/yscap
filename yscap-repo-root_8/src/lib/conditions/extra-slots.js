@@ -109,13 +109,21 @@ async function addSlot(appId, itemId, { label, audience, actorId = null, actorNa
   let reopened = false;
   if (row.status === 'satisfied' || row.signed_off_at || row.waived_at) {
     // A NEW ask reopens the condition — the sign-off that stood was made before
-    // this slot existed. The [auto] note says exactly why (appended once).
+    // this slot existed. The [auto] note says exactly why (appended once — the
+    // idempotence guard uses strpos, never LIKE, so a % or _ in a slot label can
+    // never read as a wildcard). The REVIEW and db/344 OVERRIDE stamps clear
+    // with the sign-off (audit 078cb1a #2): a reopened condition is not
+    // "reviewed" and not "cleared by override", and a later ordinary sign-off
+    // must never inherit a stale override reason — the same semantics as the
+    // push-back door and every other reopen in this repo.
     const note = `[auto] Reopened — a new document was requested on this condition: "${slot.label}". Sign off again once it is in and accepted.`;
     await client.query(
       `UPDATE checklist_items
           SET status='requested', signed_off_by=NULL, signed_off_at=NULL, waived_by=NULL, waived_at=NULL,
+              reviewed_by=NULL, reviewed_at=NULL,
+              override_by=NULL, override_at=NULL, override_reason=NULL, override_blocked_reason=NULL,
               notes = CASE WHEN notes IS NULL OR notes='' THEN $2
-                           WHEN notes LIKE '%' || $2 || '%' THEN notes
+                           WHEN strpos(notes, $2) > 0 THEN notes
                            ELSE notes || E'\n' || $2 END,
               updated_at=now()
         WHERE id=$1`, [itemId, note]);
@@ -147,10 +155,21 @@ async function removeSlot(appId, itemId, key, client = db) {
         AND lower(btrim(regexp_replace(COALESCE(slot_label,''), ' \\(\\d+\\)$', ''))) = lower(btrim($2))
       LIMIT 1`, [itemId, slot.label])).rows[0];
   if (filled) return { removed: false, reason: 'filled' };
-  const next = slots.filter((s) => s.key !== slot.key);
-  await client.query(
-    `UPDATE checklist_items SET extra_slots = $3::jsonb, updated_at=now() WHERE id=$1 AND application_id=$2`,
-    [itemId, appId, JSON.stringify(next)]);
+  // ATOMIC removal — the filtered array is rebuilt INSIDE the statement (audit
+  // 078cb1a #4), so an addSlot landing between the read above and this write is
+  // never clobbered: only the element with THIS key is removed, whatever else
+  // the column holds by the time the UPDATE runs.
+  const r = await client.query(
+    `UPDATE checklist_items ci
+        SET extra_slots = (SELECT COALESCE(jsonb_agg(e), '[]'::jsonb)
+                             FROM jsonb_array_elements(COALESCE(ci.extra_slots, '[]'::jsonb)) e
+                            WHERE e->>'key' IS DISTINCT FROM $3),
+            updated_at = now()
+      WHERE ci.id=$1 AND ci.application_id=$2
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(ci.extra_slots, '[]'::jsonb)) e
+                     WHERE e->>'key' = $3)
+      RETURNING ci.id`, [itemId, appId, String(slot.key)]);
+  if (!r.rows[0]) return { removed: false, reason: 'not_found' };
   return { removed: true, slot };
 }
 

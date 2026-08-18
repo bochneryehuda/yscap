@@ -209,7 +209,7 @@ async function esignSendGate(applicationId, { db = dbDefault, purpose } = {}) {
       if (rt.blocked) outstanding.push({
         code: 'rate_term_cash',
         label: 'Rate-&-term cash to borrower within $2,000',
-        reason: rateTermGate.overMessage(rt),
+        reason: rateTermGate.overMessage(),
       });
     } catch (_) { /* skip on error — see above */ }
   }

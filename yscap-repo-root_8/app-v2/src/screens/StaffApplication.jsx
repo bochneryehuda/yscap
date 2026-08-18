@@ -1430,7 +1430,10 @@ function slotBaseLabel(label) {
   return String(label || '').replace(/\s*\(\d+\)\s*$/, '').trim();
 }
 function docInSlot(doc, slotLabel) {
-  return slotBaseLabel(doc && doc.slot_label) === String(slotLabel || '');
+  // Case-INSENSITIVE, matching the server's baseLabel (extra-slots.js) — the
+  // sign-off gate lowercases both sides, so the screen must count the same
+  // documents as filling a slot that the gate does (audit 078cb1a #7).
+  return slotBaseLabel(doc && doc.slot_label).toLowerCase() === String(slotLabel || '').trim().toLowerCase();
 }
 
 /* DOCUMENTS ON A SLOTTED CONDITION THAT ARE NOT IN A SLOT (owner-directed
@@ -1555,11 +1558,22 @@ function RequestSlotButton({ appId, it, onChanged }) {
     }
     setBusy(true);
     try {
-      const r = await api.conditionSlotAdd(appId, it.id, { label: name, audience });
+      let r;
+      try {
+        r = await api.conditionSlotAdd(appId, it.id, { label: name, audience });
+      } catch (e) {
+        // The stray-label guard offers "add anyway" — the same affordance every
+        // other hand-typed-label surface has (never a dead end).
+        const d = (e && e.data) || {};
+        if (d.code === 'stray_condition_label' && d.needsConfirm) {
+          if (!(await askConfirm(`${d.error}\n\nRequest "${name}" anyway?`, { confirmLabel: 'Yes — request it' }))) return;
+          r = await api.conditionSlotAdd(appId, it.id, { label: name, audience, confirmStrayLabel: true });
+        } else throw e;
+      }
       if (r && r.reopened) await showMessage('This condition was signed off — it has been reopened, since the new request was made after that sign-off.');
       if (onChanged) await onChanged();
     } catch (e) {
-      await showMessage((e && e.message) || 'Could not open the document slot.');
+      await showMessage(((e && e.data && e.data.error) || (e && e.message)) || 'Could not open the document slot.');
     } finally { setBusy(false); }
   };
   return (

@@ -4333,6 +4333,15 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   res.json({ ok: true, status: toolStatus || 'outstanding', mismatch: sowNotice, exports: out });
 });
 
+// The file-overview slide-over (owner-directed 2026-08-18) — the deal at a
+// glance on the left of every file screen. Internal audience: the full figure
+// set; the note buyer is deliberately NOT in this payload on any audience.
+router.get('/applications/:id/overview-card', async (req, res) => {
+  const card = await require('../lib/file-overview').buildFileOverview(req.params.id, { audience: 'internal' });
+  if (!card) return res.status(404).json({ error: 'not found' });
+  res.json(card);
+});
+
 router.get('/applications/:id/checklist', async (req, res) => {
   // Recompute the experience/track-record condition from the file's current
   // requested experience + verified counts BEFORE reading the checklist — same as
@@ -4530,6 +4539,18 @@ router.post('/applications/:id/checklist/:itemId/extra-slots', async (req, res) 
       return res.status(409).json({ error: strayConditionMessage(stray, b.label), code: 'stray_condition_label', reason: stray, needsConfirm: true });
     }
   }
+  // A label the TEMPLATE already declares as a slot is not a new ask — it would
+  // render two identical slot rows filled by the same document (audit 078cb1a #8).
+  {
+    const tpl = (await db.query(
+      `SELECT t.slots FROM checklist_items ci JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE ci.id=$1 AND ci.application_id=$2`, [req.params.itemId, req.params.id])).rows[0];
+    const tplSlots = (tpl && Array.isArray(tpl.slots)) ? tpl.slots : [];
+    const want = extraSlots.baseLabel(b.label);
+    if (tplSlots.some((sl) => sl && extraSlots.baseLabel(sl.label) === want)) {
+      return res.status(409).json({ error: `This condition already has a "${String(b.label).trim()}" slot — upload into it instead of requesting it again.` });
+    }
+  }
   const out = await extraSlots.addSlot(req.params.id, req.params.itemId, {
     label: b.label, audience: b.audience, actorId: req.actor.id, actorName: req.actor.full_name || null,
   });
@@ -4544,18 +4565,17 @@ router.post('/applications/:id/checklist/:itemId/extra-slots', async (req, res) 
   // An EXTERNAL ask is something the borrower now owes — tell them, with the
   // slot name scrubbed (a capital-partner name typed into a slot label must
   // never reach the borrower). Internal asks stay silent to the borrower.
+  // Through the notifyAppBorrowers CHOKEPOINT (audit 078cb1a #3), never a direct
+  // notifyBorrower: the chokepoint covers the co-borrower and carries the
+  // on-hold and TPO portal-disabled gates, so a parked file or a broker-managed
+  // borrower with no login is never emailed a link they cannot open.
   if (out.slot.audience === 'external') {
     try {
-      const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
-      if (app.rows[0]) {
-        const ctx = await notify.fileContext(req.params.id);
-        await notify.notifyBorrower(app.rows[0].borrower_id, {
-          type: 'doc_requested', title: 'Another document is needed on your file',
-          badge: { text: 'Action needed', tone: 'action' },
-          body: `Please upload "${scrubText(out.slot.label)}" on ${ctx ? ctx.label : 'your file'} — it was requested as part of an existing condition.`,
-          meta: (ctx && ctx.borrowerMeta) || undefined,
-          applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
-      }
+      await notify.notifyAppBorrowers(req.params.id, {
+        type: 'doc_requested', title: 'Another document is needed on your file',
+        badge: { text: 'Action needed', tone: 'action' },
+        body: `Please upload "${scrubText(out.slot.label)}" — it was requested as part of an existing condition on your file.`,
+        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
     } catch (_) { /* the ask stands either way — the portal shows it */ }
   }
   res.status(201).json({ ok: true, slot: out.slot, reopened: out.reopened });
@@ -6994,7 +7014,7 @@ router.post('/applications/:id/documents/:docId/slot', async (req, res) => {
   if (!UUID_RE.test(String(req.params.docId))) return res.status(404).json({ error: 'not found' });
   try {
     const doc = (await db.query(
-      `SELECT d.id, d.checklist_item_id, t.code AS template_code
+      `SELECT d.id, d.checklist_item_id, t.code AS template_code, ci.extra_slots
          FROM documents d
          LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
          LEFT JOIN checklist_templates t ON t.id = ci.template_id
@@ -7003,7 +7023,14 @@ router.post('/applications/:id/documents/:docId/slot', async (req, res) => {
     if (!doc.checklist_item_id) {
       return res.status(400).json({ error: 'This document is not on a condition, so it has no slot to go in.', code: 'no_condition' });
     }
-    const allowed = await orderSlots.slotsForConditionTemplate(db, doc.template_code);
+    // The condition's slot vocabulary = the TEMPLATE's slots PLUS the ad-hoc
+    // EXTRA slots staff opened on this item (db/578, audit 078cb1a #1) — the
+    // "Also in this condition" picker offers both, so this route must accept
+    // both, or the exact workflow the extra-slot feature exists for (file the
+    // follow-up document into its requested slot) dead-ends on a 400.
+    const templateAllowed = await orderSlots.slotsForConditionTemplate(db, doc.template_code);
+    const extraAllowed = require('../lib/conditions/extra-slots').normalize(doc.extra_slots).map((sl) => sl.label);
+    const allowed = [...templateAllowed, ...extraAllowed.filter((l) => !templateAllowed.some((t) => String(t).toLowerCase() === String(l).toLowerCase()))];
     if (!allowed.length) {
       return res.status(400).json({ error: 'This condition has no named slots — every document on it already shows.', code: 'no_slots' });
     }

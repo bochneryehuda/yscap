@@ -98,17 +98,29 @@ function call(server, method, path, token, body) {
     ok('B1 an external ask moves an outstanding condition to requested', st1.status === 'requested');
 
     // ---- B. reopen of a signed-off condition ----------------------------------------------
+    // The condition carries EVERY completion stamp — sign-off, review, and a
+    // db/344 override — so the reopen is proven to clear them ALL (audit
+    // 078cb1a #2: a reopened condition is not "reviewed" and not "cleared by
+    // override"; a later ordinary sign-off must never inherit a stale reason).
     const signedItem = await mkItem('Insurance package', 'both');
-    await db.query(`UPDATE checklist_items SET status='satisfied', signed_off_by=$2, signed_off_at=now() WHERE id=$1`, [signedItem, superId]);
+    await db.query(
+      `UPDATE checklist_items
+          SET status='satisfied', signed_off_by=$2, signed_off_at=now(),
+              reviewed_by=$2, reviewed_at=now(),
+              override_by=$2, override_at=now(), override_reason='test override', override_blocked_reason='was missing X'
+        WHERE id=$1`, [signedItem, superId]);
     const re = await call(server, 'POST', `/api/staff/applications/${appId}/checklist/${signedItem}/extra-slots`, tok, { label: 'Wind rider', audience: 'external' });
     // The route's external-ask notification is awaited before it answers, so the
-    // borrower's in-app row exists by now.
+    // borrower's in-app row exists by now (through the notifyAppBorrowers
+    // chokepoint — audit 078cb1a #3).
     const notif = (await db.query(
       `SELECT 1 FROM notifications WHERE borrower_id=$1 AND type='doc_requested' AND body LIKE '%Wind rider%' LIMIT 1`, [borId])).rows[0];
     ok('B2 the borrower is told about the external ask', !!notif);
-    const reRow = (await db.query(`SELECT status, signed_off_at, waived_at, notes FROM checklist_items WHERE id=$1`, [signedItem])).rows[0];
+    const reRow = (await db.query(`SELECT status, signed_off_at, waived_at, reviewed_at, override_at, override_reason, override_blocked_reason, notes FROM checklist_items WHERE id=$1`, [signedItem])).rows[0];
     ok('B3 a new ask REOPENS a signed-off condition', re.status === 201 && re.body.reopened === true
       && reRow.status === 'requested' && reRow.signed_off_at === null);
+    ok('B3b the review AND override stamps clear with the reopen',
+      reRow.reviewed_at === null && reRow.override_at === null && reRow.override_reason === null && reRow.override_blocked_reason === null);
     ok('B4 the [auto] note says exactly why', /\[auto\] Reopened — a new document was requested/.test(reRow.notes || '') && /Wind rider/.test(reRow.notes || ''));
 
     // ---- C. the sign-off gate --------------------------------------------------------------
@@ -172,6 +184,32 @@ function call(server, method, path, token, body) {
       && merged.every((s) => !s.extra || String(s.key).startsWith('extra:'))
       && merged.some((s) => s.extra && s.label === 'Updated operating agreement' && s.audience === 'external' && s.added_by_name === 'Slot Super'));
     ok('F2 the raw extra_slots column rides for the manage UI', Array.isArray(sItem && sItem.extra_slots) && sItem.extra_slots.length === 2);
+
+    // ---- H. the slot-assignment route accepts an EXTRA slot's label ------------------------
+    // (audit 078cb1a #1 — the "Also in this condition" picker offers the ad-hoc
+    // label, so the assignment route must accept it; before the fix this was a
+    // guaranteed dead-end 400 on the exact workflow the feature exists for.)
+    const looseDoc = await addDoc(itemId, null, 'pending', 'unfiled.pdf');
+    const assign = await call(server, 'POST', `/api/staff/applications/${appId}/documents/${looseDoc}/slot`, tok, { slot: 'Updated operating agreement' });
+    const assigned = (await db.query(`SELECT slot_label FROM documents WHERE id=$1`, [looseDoc])).rows[0];
+    ok('H1 an unfiled document can be filed into an extra slot', assign.status === 200 && assigned.slot_label === 'Updated operating agreement');
+    const badAssign = await call(server, 'POST', `/api/staff/applications/${appId}/documents/${looseDoc}/slot`, tok, { slot: 'Not a slot anywhere' });
+    ok('H2 a label that is neither a template slot nor an extra slot still refuses', badAssign.status === 400);
+    await db.query(`UPDATE documents SET slot_label=NULL WHERE id=$1`, [looseDoc]);
+    // H3 (audit #8): an extra ask duplicating a TEMPLATE slot's label is refused —
+    // two identical slot rows filled by one document is a rendering lie.
+    const tplItem = (await db.query(
+      `INSERT INTO checklist_items (scope,application_id,template_id,label,audience,item_kind,is_required,created_by_kind)
+       SELECT 'application',$1,t.id,t.label,'both','document',true,'system'
+         FROM checklist_templates t WHERE t.slots IS NOT NULL AND jsonb_array_length(t.slots) > 0 LIMIT 1
+       RETURNING id, (SELECT slots FROM checklist_templates t2 WHERE t2.id=template_id) AS slots`, [appId])).rows[0];
+    if (tplItem) {
+      const tplSlotLabel = tplItem.slots[0].label;
+      const dupTpl = await call(server, 'POST', `/api/staff/applications/${appId}/checklist/${tplItem.id}/extra-slots`, tok, { label: tplSlotLabel, audience: 'internal' });
+      ok('H3 an extra ask duplicating a template slot label is refused', dupTpl.status === 409 && /already has/.test((dupTpl.body && dupTpl.body.error) || ''));
+    } else {
+      ok('H3 an extra ask duplicating a template slot label is refused (no slotted template found)', false);
+    }
 
     // ---- G. the TPR export ships the slot document with the condition -----------------------
     const otherDoc = await addDoc(itemId, null, 'accepted', 'articles.pdf');
