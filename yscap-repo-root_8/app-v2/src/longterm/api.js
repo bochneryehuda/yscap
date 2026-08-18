@@ -200,6 +200,79 @@ export const ltApi = {
   },
   ppeAcceptSuggestion: (id, body = {}) => ltPost(lt(`/ppe/suggestions/${encodeURIComponent(id)}/accept`), body),
   ppeDismissSuggestion: (id, body = {}) => ltPost(lt(`/ppe/suggestions/${encodeURIComponent(id)}/dismiss`), body),
+  // MINE new proposals out of a Lender Price decline. It COSTS A LIVE VENDOR CALL when it is given a
+  // `searchKey` — the server polls Lender Price for the disqualification result — so nothing on a
+  // screen may fire it on load. It is a button, pressed by a person who has a search key in hand.
+  ppeMineSuggestions: (body = {}) => ltPost(lt('/ppe/suggestions/mine'), body),
+
+  // THE RULES IN FORCE, and what that set does to itself.
+  //
+  // Both routes existed with no caller. `/ppe/rules` is the stored set — house rules, an investor's,
+  // a program's — which is the only place a person can see WHAT our engine enforces. `/rules/coverage`
+  // is the advisory read over the set a program actually evaluates: PRICING rules that overlap (a loan
+  // adjusted twice) and holes between banded ones. It refuses nothing and decides nothing.
+  ppeRules(params = {}) {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+    }
+    const s = q.toString();
+    return ltGet(lt(`/ppe/rules${s ? `?${s}` : ''}`));
+  },
+  ppeRuleCoverage(params = {}) {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+    }
+    const s = q.toString();
+    return ltGet(lt(`/ppe/rules/coverage${s ? `?${s}` : ''}`));
+  },
+
+  // WHAT CHANGED between two versions of a rate sheet. A new version is loaded by pasting a vendor's
+  // grid over the previous one, and "which cells actually moved" was answerable by nothing. Reads
+  // only: no cell is applied, published or accepted by asking.
+  ppeRateSheetDiff(id, params = {}) {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+    }
+    const s = q.toString();
+    return ltGet(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/diff${s ? `?${s}` : ''}`));
+  },
+
+  // A program's Lender Price scope, READ FROM THE SERVER. The console sets a scope and re-reads it
+  // from the write's own response, which proves the request was accepted and nothing about what is
+  // stored. This is the read that can disagree with it.
+  ppeProgramLpScope: (id) => ltGet(lt(`/ppe/programs/${encodeURIComponent(id)}/lp-scope`)),
+
+  // ---- rule DRAFTS: authoring, which is not publishing -----------------------
+  // The rule-authoring service (`ppe/rule-authoring.js` + its store, db/577) had no HTTP door at all.
+  // These are the READ and DRAFT doors. A draft lives in its own table that nothing in the pricing
+  // path reads, so none of these can move a priced number.
+  //
+  // There is deliberately NO `ppePublishRuleDraft`, and its absence is not an oversight: publishing a
+  // rule DOES change what a loan is priced at, and who is allowed to do that is an open owner
+  // question (§2.51 in docs/longterm/LENDER-PRICE-PARITY-STATUS.md). A method here would need a route,
+  // and building the route behind the nearest available gate would answer the question by accident.
+  ppeRuleDrafts(params = {}) {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+    }
+    const s = q.toString();
+    return ltGet(lt(`/ppe/rule-drafts${s ? `?${s}` : ''}`));
+  },
+  ppeRuleDraft: (id) => ltGet(lt(`/ppe/rule-drafts/${encodeURIComponent(id)}`)),
+  ppeRenderRuleDraft: (id) => ltGet(lt(`/ppe/rule-drafts/${encodeURIComponent(id)}/render`)),
+  ppeSaveRuleDraft: (body) => ltPost(lt('/ppe/rule-drafts'), body),
+  ppeDiscardRuleDraft(id, params = {}) {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+    }
+    const s = q.toString();
+    return ltDel(lt(`/ppe/rule-drafts/${encodeURIComponent(id)}${s ? `?${s}` : ''}`));
+  },
 
   // The DSCR FIELD MANIFEST (D28) — the machine-readable contract of what the pricer
   // accepts, split into {core, advanced, overlay, meta, counts}. It is what the Basic

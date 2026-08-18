@@ -18,7 +18,7 @@ striking it here in the same commit.
 against the definition instead of retyping it, an operator command, a capability written ahead of its
 caller. A row is an invitation to say which — that is what the reason field is for.
 
-## Referenced nowhere at all (95)
+## Referenced nowhere at all (115)
 
 Not by production code and not by a test. Nothing asks for these, so nothing would notice if one were
 wrong.
@@ -107,6 +107,26 @@ wrong.
 - `ppe/ratesheet-diff.js :: stableJson`
 - `ppe/review-queue.js :: priorityScore`
 - `ppe/review-queue.js :: SEVERITY_BY_KIND`
+- `ppe/rule-authoring-store.js :: rowToDraft` — the row→draft mapper; every read in this store already goes through it, so nothing outside needs it
+- `ppe/rule-authoring-store.js :: targetRuleset` — loads the ruleset a draft would land in; used inside `checkDraft`, exported so the DB suite can assert the scoping directly
+- `ppe/rule-authoring.js :: collisionFindings` — one of the checks `checkRule` composes; exported so its own truth table can be asserted without going through the whole check
+- `ppe/rule-authoring.js :: coverageWarnings` — same — a composed check, exported for its own assertions
+- `ppe/rule-authoring.js :: DIMENSION_LABELS` — the dimension wording; the board gets it through the catalog on the list route, and the suite asserts against this definition
+- `ppe/rule-authoring.js :: dimensionOfFact` — used by `catalog`; exported so the fact→dimension map can be asserted fact by fact
+- `ppe/rule-authoring.js :: INTENTS` — the intent vocabulary; served to the board inside the catalog, asserted here rather than retyped
+- `ppe/rule-authoring.js :: labelOfFact` — used by the renderer; exported so every fact can be checked for a label
+- `ppe/rule-authoring.js :: milliText` — milli→plain-English formatter used by `renderRule`; exported for its own rounding assertions
+- `ppe/rule-authoring.js :: neverFiresRefusal` — a composed check inside `checkRule`; exported for its own assertions
+- `ppe/rule-authoring.js :: plainShapeError` — turns a validator throw into plain words for a refusal; used inside this module
+- `ppe/rule-authoring.js :: pppKeysIn` — walks a predicate for prepayment keys; used by `pppWarnings`, exported so the walk can be asserted on nested shapes
+- `ppe/rule-authoring.js :: pppStructureRefusal` — a composed check inside `checkRule`; exported for its own assertions
+- `ppe/rule-authoring.js :: pppWarnings` — a composed check inside `checkRule`; exported for its own assertions
+- `ppe/rule-authoring.js :: predicateText` — the predicate half of `renderRule`; exported so each node shape can be asserted on its own
+- `ppe/rule-authoring.js :: resultText` — the result half of `renderRule`; same reason
+- `ppe/rule-builder.js :: factAppearsNested` — predicate-walk helper used by the builder; exported so the nesting cases can be asserted directly
+- `ppe/rule-builder.js :: factContains` — same — a predicate-walk helper with its own assertions
+- `ppe/rule-builder.js :: fromConjuncts` — builds an AND node from a list; used inside the builder, exported for its own shape assertions
+- `ppe/rule-builder.js :: leafForDimension` — builds one dimension leaf; used inside the builder, exported so every dimension can be asserted
 - `ppe/rule-coverage.js :: halfOpenStandard`
 - `ppe/rule-coverage.js :: intersect`
 - `ppe/rule-coverage.js :: regionsMeet`
@@ -119,7 +139,7 @@ wrong.
 - `sync/loans.js :: readLoan`
 - `views.js :: defaultView`
 
-## Named by a test and by no production code (164)
+## Named by a test and by no production code (166)
 
 This is the §2.45 / §2.46 shape exactly — built, tested, and asked by nothing — and it is also the
 shape of a perfectly good exported table that a suite asserts against. The list is watched, not
@@ -245,6 +265,7 @@ banned.
 - `ppe/parity-matrix.js :: bandsFromProgram`
 - `ppe/parity-matrix.js :: MAX_CELLS_PER_DIMENSION`
 - `ppe/parity-matrix.js :: reconcilesAll`
+- `ppe/ppp-structures.js :: PPP_STRUCTURES` — the prepayment-structure library itself; the rule board reads it through `rule-authoring.catalog`, and the suite asserts against this definition rather than retyping it
 - `ppe/pricing-breakdown.js :: humanLabel`
 - `ppe/pricing.js :: interpolatePrice`
 - `ppe/pricing.js :: pointsToPrice`
@@ -259,6 +280,7 @@ banned.
 - `ppe/ratesheet-agreement.js :: REASON_TEXT_MAX`
 - `ppe/ratesheet-agreement.js :: safeDigest`
 - `ppe/ratesheet-agreement.js :: safeReconcileDeclines`
+- `ppe/rule-authoring.js :: verifyDimensionLabels` — a self-check that every dimension carries a label — an operator/suite command, deliberately not on a request path
 - `ppe/rule-store.js :: coverageAfterAcceptSafe`
 - `ppe/rule-store.js :: coverageForAcceptedRule`
 - `ppe/rule-store.js :: dedupeKeyOf`

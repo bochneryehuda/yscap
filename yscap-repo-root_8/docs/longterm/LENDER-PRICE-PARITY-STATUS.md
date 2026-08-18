@@ -29,6 +29,8 @@ actually blocked?" should be answerable in one place.
 | #69 | **Five "advanced" rules we deliberately left flagged rather than guessed** (vacant, foreign national, rural, first-time homebuyer, renovation). | Turning those five into real declines instead of warnings. | §0 (the flagged list) |
 | #57 | **Prepayment penalty: which types and terms does each investor allow, and how is each priced?** | The per-investor prepay library beyond Deephaven. | D30 |
 | #51 | **The loan officer margin and commission rules** (front/back split, per-loan minimum and maximum, who pays). | The whole compensation layer. | D18 |
+| — | **Is being a PPE administrator the right authority to PUBLISH a pricing rule, or does that need its own sign-off?** Publishing changes what a real loan is priced at. | The publish button. Drafting, reading and checking a rule already work; nothing can put one in force. | §2.51 |
+| — | **Who may switch OFF a rule that is already pricing loans, and does that retire it or effective-date it?** | Editing a live rule's name at all — today that publishes a second rule and is refused as a double charge. | §2.42, §2.51 |
 
 **Two more that need a CAPTURE rather than a decision** — nobody has to answer these, someone has to
 record one screen of the vendor's own frontend: **#80** (how Lender Price picks which DSCR band program a
@@ -3064,3 +3066,51 @@ at the two sentences that must change with it.
 Corroborated independently: `LT-UNREACHED.md` has listed this module as unreached all along — so the
 repo's own inventory and the comment in `ratesheet-agreement.js` were saying opposite things about the
 same file, which is exactly how a false comment survives a review.
+
+---
+
+**§2.51 — THE RULE SURFACES WERE BUILT AND NO HUMAN COULD REACH THEM, AND THE PUBLISH DOOR IS AN OWNER
+QUESTION (2026-08-18).** Measured before anything was written: five live routes had no screen
+(`GET /ppe/rules`, `GET /ppe/rules/coverage`, `POST /ppe/suggestions/mine`,
+`GET /ppe/rate-sheets/:id/diff`, `GET /ppe/programs/:id/lp-scope` — all five recorded on the
+`LT-ROUTES-UNREACHED` ledger), and the rule-AUTHORING service — `rule-authoring.js` (642 lines),
+`rule-authoring-store.js` (276, db/577), `rule-builder.js` (564) and `ppp-structures.js` (231) — had **no
+HTTP door at all**. The two libraries were required only by the authoring service and by the layer
+compilers; the authoring service was required by nothing. **A caller that is not itself called is not a
+caller.**
+
+**WHAT WAS BUILT.** The READ and DRAFT doors, admin-gated like the rest of this console:
+`GET /ppe/rule-drafts` (with the authoring catalog riding on the list, so a screen's pickers come from
+`rule-builder`'s own dimensions rather than a list typed into a screen), `POST /ppe/rule-drafts`,
+`GET /ppe/rule-drafts/:id`, `GET /ppe/rule-drafts/:id/render` and `DELETE /ppe/rule-drafts/:id`. The
+screen is `app-v2/src/longterm/RuleBoard.jsx`, mounted unconditionally on the LT PPE surface: the rules
+in force with their reach (house / this investor / this program), the coverage read, the miner as a
+BUTTON (it costs a live vendor call, so it never fires on load), the rate-sheet version diff, a
+program's stored Lender Price scope, and the drafts. Every draft response and every draft row says a
+draft is not in force, because saying it once at the top is saying it where it scrolls away.
+
+**THE PUBLISH DOOR WAS NOT BUILT, AND THIS IS THE QUESTION FOR THE OWNER.**
+`rule-authoring-store.publishDraft` exists, is tested, and stays unreachable over HTTP.
+
+> **Is being a PPE administrator the right authority to publish a pricing rule — or does publishing a
+> rule that changes what a real loan is priced at need its own separate sign-off?**
+
+Everything else on this console is gated on the PPE-admin permission, so wiring publish to that gate
+would have been one line. That line would BE the answer, chosen because it was convenient, and the
+result is a rule pricing real loans on that basis. So it was left undone and written down instead.
+**This section does not answer it.** What is worth knowing while deciding: a publish is already
+recorded with the name of whoever did it and is re-checked against the live rule set at the moment it
+lands (db/577's own CHECK refuses a published row with nobody named), so the question is only about
+WHO, not about whether it leaves a record.
+
+**One question rides with it**, from §2.42 and unanswered for the same reason: **who may switch OFF a
+rule that is already pricing loans, and does that retire it or effective-date it?** A draft that renames
+a live rule publishes as a second rule and is correctly refused as a double charge; the way through is
+to retire the first, and nothing here does that.
+
+**PROVEN.** `scripts/test-lt-ppe-rule-drafts-db.js` drives every new route over real HTTP against a real
+Postgres, including the admin gate on each one and a draft round trip re-read from the SERVER rather
+than trusted from the write's own 200, and asserts that **no route publishes a draft**.
+`scripts/test-lt-ppe-rule-board-render.mjs` renders the board's presentational half through
+`renderToString` and asserts the LOADED text — stripped of SSR's `<!-- -->` markers — rather than the
+source. Every assertion in both was proven to fail by mutation, for the right reason.

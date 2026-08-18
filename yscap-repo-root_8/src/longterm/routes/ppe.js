@@ -100,6 +100,10 @@ const scheduleStore = require('../ppe/schedule-store');
 const scenarioMatrix = require('../ppe/scenario-matrix');
 const ratesheet = require('../ppe/ratesheet');
 const ruleStore = require('../ppe/rule-store');
+// The rule-AUTHORING service and its draft store. Four modules with no HTTP door at all until now —
+// see the RULE DRAFTS section below, including why `publishDraft` still has none.
+const ruleAuthoring = require('../ppe/rule-authoring');
+const ruleDraftStore = require('../ppe/rule-authoring-store');
 const agreementStore = require('../ppe/agreement-store');
 const ratesheetAgreement = require('../ppe/ratesheet-agreement');
 const agreementScenarios = require('../ppe/agreement-scenarios');
@@ -1324,6 +1328,190 @@ async function listRulesRoute(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// RULE DRAFTS — the READ + DRAFT doors of the rule-authoring service.
+// ---------------------------------------------------------------------------
+//
+// MEASURED BEFORE THIS EXISTED: `ppe/rule-authoring.js` (642 lines) and
+// `ppe/rule-authoring-store.js` (276 lines, db/577) had NO HTTP door of any kind, and the two
+// libraries under them — `rule-builder.js` and `ppp-structures.js` — were reached from the
+// authoring service and from the layer compilers, so the authoring half of them was reachable by
+// nothing. A caller that is not itself called is not a caller.
+//
+// ⛔ THE PUBLISH DOOR IS DELIBERATELY NOT HERE, AND ITS ABSENCE IS THE POINT.
+// `rule-authoring-store.publishDraft` writes into `lt_ppe_rule`, which is the set
+// `rule-store.rulesForProgram` hands to the engine — so publishing CHANGES A PRICED NUMBER. Who is
+// allowed to do that is an owner decision that has not been made: the question is recorded as §2.51
+// in docs/longterm/LENDER-PRICE-PARITY-STATUS.md and is NOT answered here. Gating it behind
+// `requirePpeAdmin` because that is the gate on the neighbouring routes would BE the answer, chosen
+// by convenience, and would put a rule in front of real loans on that basis. So `publishDraft` stays
+// unreachable over HTTP until somebody with the authority to decide says which authority it takes.
+//
+// EVERYTHING BELOW IS STRUCTURALLY INCAPABLE OF MOVING A PRICE. Drafts live in `lt_ppe_rule_draft`
+// (db/577) and nothing in the pricing path reads that table — not "careful not to", incapable. Each
+// response says so in its own payload (`live: false`) rather than leaving the screen to remember it.
+//
+// ADMIN-GATED, like the rest of this console's write surface. That is a gate on WRITING A DRAFT, not
+// on publishing one, and the two must not be confused: see §2.51.
+
+/** The statuses db/577's CHECK allows, plus the 'all' the store understands. */
+const DRAFT_STATUSES = ['draft', 'published', 'discarded'];
+
+/** A bigint identity id (db/577), else null. */
+function draftIdOf(v) { return intIn(v, Number.MAX_SAFE_INTEGER); }
+
+/**
+ * A UUID query/body field that is OPTIONAL but, when supplied, must parse.
+ *
+ * Returns { ok:true, value } or { ok:false }. Coercing an unreadable id to null would be worse than
+ * a refusal here: `listDrafts` reads `investorId: null` as "the HOUSE drafts", so a typo'd id would
+ * quietly answer a different question and the list would look empty for the wrong reason.
+ */
+function optionalUuid(v) {
+  if (v === undefined || v === null || v === '') return { ok: true, value: undefined };
+  const id = uuidOf(v);
+  return id ? { ok: true, value: id } : { ok: false };
+}
+
+/** The sentence every draft door says out loud, so a screen cannot forget to. */
+const DRAFT_NOT_LIVE = 'A draft prices nothing and declines nobody. It is not part of any rule set an engine evaluates, and there is no route on this server that publishes one.';
+
+// GET /rule-drafts — the drafts, plus the catalog a screen builds its pickers from.
+//
+// The catalog rides WITH the list rather than on a door of its own. That is not tidiness: a separate
+// `/rule-drafts/catalog` would share its shape with `/rule-drafts/:id`, and a call to either could
+// resolve to the other — the ambiguity `check-lt-http-reachability` refuses, and rightly.
+async function listRuleDraftsRoute(req, res) {
+  const scope = readScope(req);
+  const opts = {};
+
+  const status = textOrNull(req.query.status, 20);
+  if (status) {
+    if (status !== 'all' && !DRAFT_STATUSES.includes(status)) {
+      return res.status(400).json({ error: `A draft is ${DRAFT_STATUSES.join(', ')} — or "all". "${status}" is none of those.`, field: 'status' });
+    }
+    opts.status = status;
+  }
+  const inv = optionalUuid(req.query.investorId);
+  if (!inv.ok) return res.status(400).json({ error: 'That is not an investor id.', field: 'investorId' });
+  if (inv.value !== undefined) opts.investorId = inv.value;
+  const prg = optionalUuid(req.query.programId);
+  if (!prg.ok) return res.status(400).json({ error: 'That is not a program id.', field: 'programId' });
+  if (prg.value !== undefined) opts.programId = prg.value;
+
+  const drafts = await ruleDraftStore.listDrafts(db, scope, opts);
+  return res.json({
+    ok: true, scope, total: drafts.length, drafts,
+    // Derived from `rule-builder.DIMENSIONS` and the prepayment library, never restated here — a
+    // screen built from it cannot offer a dimension the builder would refuse.
+    catalog: ruleAuthoring.catalog(),
+    live: false,
+    liveNote: DRAFT_NOT_LIVE,
+  });
+}
+
+// GET /rule-drafts/:id — one draft, exactly as it was stored.
+async function getRuleDraftRoute(req, res) {
+  const scope = readScope(req);
+  const id = draftIdOf(req.params.id);
+  if (!id) return res.status(400).json({ error: 'That is not a draft id.' });
+  const draft = await ruleDraftStore.getDraft(db, scope, id);
+  if (!draft) return res.status(404).json({ error: 'No such draft.' });
+  return res.json({ ok: true, scope, draft, live: false, liveNote: DRAFT_NOT_LIVE });
+}
+
+// GET /rule-drafts/:id/render — the draft in words, WITH its findings re-computed against the rule
+// set as it stands now.
+//
+// The findings are never stored (see `renderDraft`): a stored warning is a statement about a rule set
+// that has since moved. `publishable` here means "nothing in the current set refuses it" and NOT
+// "there is a button" — there is no publish route, which the payload says rather than implies.
+async function renderRuleDraftRoute(req, res) {
+  const scope = readScope(req);
+  const id = draftIdOf(req.params.id);
+  if (!id) return res.status(400).json({ error: 'That is not a draft id.' });
+  const out = await ruleDraftStore.renderDraft(db, scope, id);
+  if (!out) return res.status(404).json({ error: 'No such draft.' });
+  return res.json({
+    ok: true, scope, ...out,
+    live: false,
+    liveNote: DRAFT_NOT_LIVE,
+    // Said in the payload because `publishable: true` is the one field on this response somebody
+    // could read as "so press publish".
+    publishRoute: null,
+    publishNote: 'Whether this draft would be refused by the rules already in force is what `publishable` answers. It is not an offer: publishing a pricing rule has no door on this server, because who may do it has not been decided (§2.51).',
+  });
+}
+
+// POST /rule-drafts — author a rule and SAVE IT AS A DRAFT.
+//
+// The whole authoring vocabulary is `rule-authoring.applyIntent`'s, one entry per `rule-builder`
+// operation. A refusal comes back as a REFUSAL (a list a screen can render), never as a stack trace —
+// that is the service's contract and this door keeps it.
+async function createRuleDraftRoute(req, res) {
+  const scope = readScope(req);
+  const b = req.body || {};
+  const intent = b.intent;
+  if (!intent || typeof intent !== 'object' || Array.isArray(intent)) {
+    return res.status(400).json({
+      error: 'Send an `intent` saying what to author — for example { "op": "add_llpa", ... }.',
+      field: 'intent',
+      // The vocabulary comes from the service, so this can never list an operation it cannot do.
+      operations: ruleAuthoring.INTENT_OPS,
+    });
+  }
+  const inv = optionalUuid(b.investorId);
+  if (!inv.ok) return res.status(400).json({ error: 'That is not an investor id.', field: 'investorId' });
+  const prg = optionalUuid(b.programId);
+  if (!prg.ok) return res.status(400).json({ error: 'That is not a program id.', field: 'programId' });
+
+  const out = await ruleDraftStore.saveDraft(db, scope, intent, {
+    investorId: inv.value === undefined ? null : inv.value,
+    programId: prg.value === undefined ? null : prg.value,
+    rule: b.rule && typeof b.rule === 'object' && !Array.isArray(b.rule) ? b.rule : undefined,
+    basedOnRuleId: draftIdOf(b.basedOnRuleId),
+    // Passed through only when the caller SET it: `saveDraft` defaults it to the edited rule's own
+    // code, and sending `undefined` as a value would defeat that default.
+    ...(b.replacingCode === undefined ? {} : { replacingCode: textOrNull(b.replacingCode, 120) }),
+    note: textOrNull(b.note, 500),
+    createdBy: (req.actor && req.actor.id) || null,
+  });
+
+  if (!out.ok) {
+    // 409 for the one refusal that is about somebody ELSE's state (a draft already open on this
+    // code); 422 for the ones about what was sent. A single status for both would leave the screen
+    // unable to tell "fix your rule" from "go and look at the draft that already exists".
+    const taken = (out.refusals || []).some((r) => r && r.code === 'draft_exists');
+    return res.status(taken ? 409 : 422).json({
+      ok: false,
+      error: (out.refusals && out.refusals[0] && out.refusals[0].message) || 'That rule was refused.',
+      refusals: out.refusals || [],
+      warnings: out.warnings || [],
+    });
+  }
+  return res.status(201).json({
+    ok: true, scope, draft: out.draft, render: out.render, warnings: out.warnings || [],
+    live: false, liveNote: DRAFT_NOT_LIVE,
+  });
+}
+
+// DELETE /rule-drafts/:id — discard a draft. Nothing is deleted; the row is marked discarded and
+// kept, because "somebody drafted this and decided against it" is worth as much as the draft was.
+async function discardRuleDraftRoute(req, res) {
+  const scope = readScope(req);
+  const id = draftIdOf(req.params.id);
+  if (!id) return res.status(400).json({ error: 'That is not a draft id.' });
+  const out = await ruleDraftStore.discardDraft(db, scope, id, { note: textOrNull(req.query.note, 500) });
+  if (!out.ok) {
+    return res.status(409).json({
+      ok: false,
+      error: (out.refusals && out.refusals[0] && out.refusals[0].message) || 'That draft could not be discarded.',
+      refusals: out.refusals || [],
+    });
+  }
+  return res.json({ ok: true, scope, draft: out.draft, live: false, liveNote: DRAFT_NOT_LIVE });
+}
+
+// ---------------------------------------------------------------------------
 // The program's LENDER PRICE SCOPE — which of their programs we compare against
 // ---------------------------------------------------------------------------
 //
@@ -2161,6 +2349,17 @@ router.post('/suggestions/:id/accept', requirePpeAdmin, wrap(acceptSuggestionRou
 router.post('/suggestions/:id/dismiss', requirePpeAdmin, wrap(dismissSuggestionRoute, 'lt_ppe_dismiss_error'));
 router.post('/suggestions/mine', requirePpeAdmin, wrap(mineSuggestionsRoute, 'lt_ppe_mine_error'));
 router.get('/programs/:id/lp-scope', requirePpeAdmin, wrap(getProgramLpScopeRoute, 'lt_ppe_lp_scope_read_error'));
+
+// The rule-authoring service's READ + DRAFT doors. There is NO publish door here, on purpose —
+// `publishDraft` changes a priced number and the authority for that is an open owner question
+// (§2.51). Order matters: `/rule-drafts/:id/render` is declared before `/rule-drafts/:id` would
+// swallow it — Express matches in declaration order and both are three-and-four segment paths, so
+// they are written longest-first to keep that obvious rather than accidental.
+router.get('/rule-drafts', requirePpeAdmin, wrap(listRuleDraftsRoute, 'lt_ppe_rule_drafts_error'));
+router.post('/rule-drafts', requirePpeAdmin, wrap(createRuleDraftRoute, 'lt_ppe_rule_draft_save_error'));
+router.get('/rule-drafts/:id/render', requirePpeAdmin, wrap(renderRuleDraftRoute, 'lt_ppe_rule_draft_render_error'));
+router.get('/rule-drafts/:id', requirePpeAdmin, wrap(getRuleDraftRoute, 'lt_ppe_rule_draft_read_error'));
+router.delete('/rule-drafts/:id', requirePpeAdmin, wrap(discardRuleDraftRoute, 'lt_ppe_rule_draft_discard_error'));
 router.post('/programs/:id/lp-scope', requirePpeAdmin, wrap(setProgramLpScopeRoute, 'lt_ppe_lp_scope_write_error'));
 
 // Onboarding + the rate-sheet console. ALL admin-gated: these writers decide what every quote on this
@@ -2192,6 +2391,7 @@ module.exports.handlers = {
   health, getSettings, listInvestorsRoute, listFindingsRoute, decideFindingRoute, quoteRoute, breakdownRoute, canaryRoute, scoreboardRoute,
   listSuggestionsRoute, acceptSuggestionRoute, dismissSuggestionRoute, listRulesRoute, mineSuggestionsRoute,
   ruleCoverageRoute, getProgramLpScopeRoute, setProgramLpScopeRoute, parityCellsRoute, listProgramsRoute,
+  listRuleDraftsRoute, getRuleDraftRoute, renderRuleDraftRoute, createRuleDraftRoute, discardRuleDraftRoute,
   listSchedulesRoute, saveScheduleRoute, deleteScheduleRoute, canaryTickRoute, canaryDriverRoute,
   createInvestorRoute, createProgramRoute, createRateSheetRoute, getRateSheetRoute,
   setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, rateSheetCoverageRoute, rateSheetDiffRoute, agreementRoute, runAgreementRoute,
@@ -2201,4 +2401,5 @@ module.exports._internals = {
   requirePpeAdmin, intIn, readScope, loadProgram, resolveSettingsSafe,
   MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel, resolveBattery, runBattery, msgOf,
   resolveVersion, numOrNull, textOrNull, MAX_SHEET_ROWS, MAX_AGREEMENT_SCENARIOS, MAX_COVERAGE_SCENARIOS,
+  DRAFT_STATUSES, DRAFT_NOT_LIVE, draftIdOf, optionalUuid,
 };

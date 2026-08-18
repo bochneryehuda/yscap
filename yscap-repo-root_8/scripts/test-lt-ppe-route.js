@@ -102,17 +102,41 @@ ok(typeof route === 'function' && typeof route.use === 'function', 'the module I
 // ≥200-scenario agreement gate guarded a door that did not exist. (23 was the canary schedule.)
 // This count is a deliberate guard: adding a handler without exporting/testing it should FAIL here, so
 // bump it in the same commit that adds one — never delete the assertion to make a build green.
-ok(Object.keys(H).length === 36, `all 36 handlers are exported for testing (${Object.keys(H).length})`);
+// 36 added the canary DRIVER read (`GET /ppe/canary/driver`) — the in-process tick's own status door.
+// 41 since the rule-authoring service gained its READ + DRAFT doors — five handlers
+// (list/create/read/render/discard a draft). There is deliberately NO sixth for publishing: that door
+// changes a priced number and who may press it is an open owner question (§2.51), so this count is
+// also the guard that would go red if somebody quietly added one.
+ok(Object.keys(H).length === 41, `all 41 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
 for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',
   'listRulesRoute', 'mineSuggestionsRoute', 'ruleCoverageRoute',
   'getProgramLpScopeRoute', 'setProgramLpScopeRoute', 'parityCellsRoute', 'listProgramsRoute',
   'listSchedulesRoute', 'saveScheduleRoute', 'deleteScheduleRoute', 'canaryTickRoute',
+  'canaryDriverRoute',
   'createInvestorRoute', 'createProgramRoute', 'createRateSheetRoute', 'getRateSheetRoute',
   'setBasePricesRoute', 'setAdjustmentsRoute', 'setPriceLimitRoute', 'agreementRoute',
-  'rateSheetCoverageRoute', 'rateSheetDiffRoute', 'runAgreementRoute', 'publishRateSheetRoute']) {
+  'rateSheetCoverageRoute', 'rateSheetDiffRoute', 'runAgreementRoute', 'publishRateSheetRoute',
+  'listRuleDraftsRoute', 'createRuleDraftRoute', 'getRuleDraftRoute', 'renderRuleDraftRoute',
+  'discardRuleDraftRoute']) {
   ok(typeof H[name] === 'function', `the ${name} handler is exported by name`);
+}
+
+// ⛔ AND THE ABSENCE, asserted rather than assumed. A draft becomes a rule that prices real loans
+// through `rule-authoring-store.publishDraft`, and WHO may do that is an owner question nobody has
+// answered (§2.51 in docs/longterm/LENDER-PRICE-PARITY-STATUS.md). Wiring it to `requirePpeAdmin`
+// because that is the gate next door would answer the question by convenience, so this guard goes red
+// the moment a publish handler appears — the count above cannot catch it on its own, because adding
+// one while removing another leaves the count intact.
+{
+  const publishers = Object.keys(H).filter((k) => /RuleDraft/.test(k) && /publish/i.test(k));
+  ok(publishers.length === 0,
+    `no handler publishes a rule draft — that authority is an open owner question${publishers.length ? ` (found ${publishers.join(', ')})` : ''}`);
+  const src = require('fs').readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'routes', 'ppe.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  ok(!/publishDraft/.test(src),
+    '…and the route file never calls publishDraft at all (comment-stripped, so the reason it is absent may still be written down)');
 }
 
 // It must actually be MOUNTED, or the whole surface is unreachable — the exact

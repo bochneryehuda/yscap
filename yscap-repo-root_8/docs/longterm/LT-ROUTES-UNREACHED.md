@@ -49,11 +49,6 @@ still true of the running system until somebody turns it on; see the note under 
 | `GET /api/lt/dscr/disqualifications/:searchKey` | The same poll as a GET. Same. |
 | `POST /api/lt/dscr/selftest` | The pricer's end-to-end self-test. An operator command. |
 | `GET /api/lt/ppe/settings` | The typed settings registry + resolved values. The console reads settings through the screens that need them; there is no settings editor on the Long-Term PPE surface yet. |
-| `GET /api/lt/ppe/rules` | The stored rule set. Waiting on the rule-authoring editor (§2.42) — the service exists, the screen does not. |
-| `GET /api/lt/ppe/rules/coverage` | Which cells that rule set covers. Same — it is the editor's own dead-cell view. |
-| `POST /api/lt/ppe/suggestions/mine` | Mines rule suggestions out of the recorded findings. Same: an editor action with no editor. |
-| `GET /api/lt/ppe/programs/:id/lp-scope` | Reads a program's Lender Price scope. The console SETS the scope (`POST` is reached) and re-reads it from the write's own response, so the GET has no caller. |
-| `GET /api/lt/ppe/rate-sheets/:id/diff` | What changed between two versions of a sheet (§2.35). Built; the console has no version-history view yet. |
 | `POST /api/lt/ppe/canary/tick` | **A driver now exists and is OFF by default.** See below. |
 | `GET /api/lt/ppe/canary/driver` | Is anything actually driving that tick, when did it last try, what did it do, and why did it not. Read by hand while the driver is off; it is what a schedule screen would show once somebody turns one on. |
 
@@ -73,7 +68,7 @@ stored and would never fire**, so "the daily battery detects a Lender Price chan
 and false of the running system. That is this workstream's recurring shape — built, tested, and asked by
 nothing — and it was written here rather than left for someone to discover from a quiet screen.
 
-**What now exists (§2.46 of LENDER-PRICE-PARITY-STATUS.md):** an in-process driver,
+**What now exists (§2.49 of LENDER-PRICE-PARITY-STATUS.md):** an in-process driver,
 `src/longterm/ppe/canary-driver.js`, armed from `src/longterm/index.js` and **OFF BY DEFAULT** behind
 `LT_PPE_CANARY_DRIVER_ENABLED`. That switch is set NOWHERE in this repository — not in `render.yaml`,
 not in any script — so merging it changed nothing about the running system: with the switch unset the
@@ -88,7 +83,7 @@ at all — each is written to that row and readable at `GET /ppe/canary/driver`.
 use — a Render CRON service (the shape the off-site backup uses), the existing sync worker, or this
 in-process scheduler. Each behaves differently when two servers are running and each costs a live
 vendor call, so the in-process one is built behind the off switch and the choice is recorded as an
-owner question in `docs/longterm/LENDER-PRICE-PARITY-STATUS.md` §2.46. **Until somebody answers it and
+owner question in `docs/longterm/LENDER-PRICE-PARITY-STATUS.md` §2.49. **Until somebody answers it and
 turns the switch on, the sentence at the top of this section is still true of the running system.**
 
 **The schedule SCREENS are owed no longer:** they are built (`CanaryConsole.jsx`) and they say on the
@@ -97,6 +92,20 @@ honest way to ship a schedule editor over a tick that may never fire.
 
 ## Not a route, but the same dead end one step nearer the user
 
-The checker also reports `ltApi` entries no screen calls. Today: `ppeSetPriceLimit` (the sheet's
-price-limit editor) and `ppeRateSheetAgreement` (the stored agreement read). Both have a route and a
-client method and no button — the client is ahead of the console by exactly one control each.
+The checker also reports `ltApi` entries no screen calls. Today there is exactly one:
+`ppeSetPriceLimit` (the sheet's price-limit editor). It has a route and a client method and no
+button — the client is ahead of the console by that one control. (`ppeRateSheetAgreement` was listed
+here too and no longer is: the agreement record has a screen.)
+
+## What came off this list, and what did NOT
+
+The rule surfaces came off in one pass: `GET /ppe/rules`, `GET /ppe/rules/coverage`,
+`POST /ppe/suggestions/mine`, `GET /ppe/rate-sheets/:id/diff` and `GET /ppe/programs/:id/lp-scope` are
+now reached by the rule board (`app-v2/src/longterm/RuleBoard.jsx`), which also opens the READ and
+DRAFT doors of the rule-authoring service — a service that until then had no HTTP door at all.
+
+**The publish door was deliberately NOT built and is not recorded here, because it does not exist.**
+`rule-authoring-store.publishDraft` writes a rule that changes a priced number, and who may do that is
+an open owner question (§2.51 in `LENDER-PRICE-PARITY-STATUS.md`). Building the route behind the
+nearest available gate would have answered that question by convenience. This ledger records routes
+with no caller; a function with no route belongs in the status document, where the question is.

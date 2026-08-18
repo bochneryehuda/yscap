@@ -11,6 +11,7 @@ import { rate, day } from './format.js';
 import { INK, MUTED, SLATE, GOLD, PAPER, card, h2, sub, eyebrow } from './ppeStyles.js';
 import RateSheetConsole from './RateSheetConsole.jsx';
 import CanaryConsole from './CanaryConsole.jsx';
+import RuleBoard from './RuleBoard.jsx';
 
 // ---------------------------------------------------------------------------
 // The Product & Pricing Engine, made visible.
@@ -551,6 +552,12 @@ export default function LtPpe() {
           time; one screen asking the same route twice is how two halves of a page come to disagree
           about which investors exist. */}
       <CanaryConsole investors={(investors && investors.investors) || []} />
+
+      {/* ---- the rules our engine enforces, and a place to draft one ----
+          Five routes and a whole authoring service were reachable by nothing a person can press until
+          this board existed. It is mounted UNCONDITIONALLY: a guarded mount renders nothing and they
+          all go back to being unreachable. */}
+      <RuleBoard />
 
       {/* ---- what each sheet is compared AGAINST (db/574) ---- */}
       <div style={card}>
