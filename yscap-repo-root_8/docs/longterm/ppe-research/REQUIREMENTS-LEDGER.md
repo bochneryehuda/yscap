@@ -2,6 +2,14 @@
 
 Compiled 2026-08-17 from the owner's directives + the LT control docs + the LT code inventory. Read-only research; no code changed.
 
+> ⛔ **THIS LEDGER IS A SNAPSHOT OF 2026-08-17 AND IS STALE. DO NOT USE IT AS THE WORK LIST.**
+> It was compiled from the plan documents rather than from the code, and it has since been
+> contradicted by a measurement: several items it lists as TODO are built and screened (P8 and P9
+> among them). **The current, code-measured outstanding-work list is §2.47 of
+> `docs/longterm/LENDER-PRICE-PARITY-STATUS.md`, and everything genuinely waiting on the owner is
+> `docs/longterm/OWNER-QUESTIONS-OPEN.md`.** This file is kept for the cross-index of the owner's
+> clauses, which is still useful; its STATUS column is not.
+
 **Status key:** DONE = built + tested; PARTIAL = core built, real gap remains; TODO = not built.
 **Scope:** LT code lives ONLY in `src/longterm/**`; LT docs in `docs/longterm/**`. Repo root: `/home/user/yscap/yscap-repo-root_8`.
 
