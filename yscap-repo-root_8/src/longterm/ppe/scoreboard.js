@@ -136,6 +136,7 @@ function assemble(runs = [], findings = [], opts = {}) {
   const { days, dropped } = dailySeries(runs);
   const canaryAgreementRate = latestAgreementRate(runs);
   const latestSummary = latestRunSummary(runs);
+  const buckets = parity.bucketsOf(latestSummary);
   const scoreboard = cutover.buildScoreboard({
     canaryAgreementRate,
     // how much the freshest canary actually compared (§10.5/§10.6) — the gate reads these
@@ -148,8 +149,18 @@ function assemble(runs = [], findings = [], opts = {}) {
     //
     // A run with NO summary must stay `null` — "not measured" and "measured zero" send a reader to two
     // different places, and `comparedOf` answers 0 for both.
-    canaryScenarioCount: isFiniteNum(latestSummary.comparable) ? parity.comparedOf(latestSummary) : null,
+    // THROUGH `parity.bucketsOf`, which is `comparedOf` plus the three buckets the board was silently
+    // dropping (§2.79). `compared` is byte-identical to what this line computed before — bucketsOf keeps
+    // comparedOf's own precondition, so a summary with no `comparable` figure still reports null.
+    canaryScenarioCount: buckets.compared,
     canaryIncomparable: isFiniteNum(latestSummary.incomparable) ? latestSummary.incomparable : null,
+    // THE REST OF THE SPLIT, so the page adds up. A 300-scenario run reporting `196 compared` beside a
+    // `0` incomparable count leaves 104 scenarios named nowhere, and the only remedy its refusal
+    // suggested — a bigger battery — is the one that cannot help.
+    canaryScenarios: buckets.scenarios,
+    canaryOverlay: buckets.compared == null ? null : buckets.overlay,
+    canaryErrors: buckets.compared == null ? null : buckets.errors,
+    canaryUnaccounted: buckets.unaccounted,
     findings: Array.isArray(findings) ? findings : [],
     dailyNewFindings: days.map((d) => ({ dayMs: d.dayMs, count: d.newFindings })),
     nowMs,

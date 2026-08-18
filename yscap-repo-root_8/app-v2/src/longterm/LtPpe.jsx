@@ -101,6 +101,39 @@ function Figure({ label, value, hint }) {
   );
 }
 
+/**
+ * WHERE THE REST OF THE RUN WENT (§2.79).
+ *
+ * "Compared 196" beside a 300-scenario battery is a true number a person cannot reconcile, and the only
+ * remedy it suggests — run more scenarios — is the one that cannot help. Every scenario lands in exactly
+ * one bucket, so every bucket is shown and the line adds up out loud.
+ *
+ * It renders NOTHING when the run did not record its split (an older persisted run), rather than
+ * printing zeros that would claim a partition nobody measured.
+ */
+function CoverageSplit({ sb }) {
+  const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const total = n(sb.canaryScenarios);
+  const compared = n(sb.canaryScenarioCount);
+  if (total == null || compared == null) return null;
+  const parts = [`${compared} compared`];
+  const add = (v, word) => { const x = n(v); if (x) parts.push(`${x} ${word}`); };
+  add(sb.canaryOverlay, 'reasoned overrides (not scored against Lender Price)');
+  add(sb.canaryErrors, 'hit an engine error');
+  add(sb.canaryIncomparable, 'could not be compared');
+  const off = n(sb.canaryUnaccounted);
+  return (
+    <div style={{ fontSize: 12, color: SLATE, marginBottom: 10 }}>
+      {`The last run priced ${total} scenario(s): ${parts.join(', ')}.`}
+      {!!off && (
+        <span style={{ color: INK, fontWeight: 600 }}>
+          {` ${Math.abs(off)} scenario(s) are in no bucket — this run's own tally does not add up, so it is not proof of anything.`}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export default function LtPpe() {
   const [health, setHealth] = useState(null);
   const [investors, setInvestors] = useState(null);
@@ -888,7 +921,13 @@ export default function LtPpe() {
                 <Figure label="Still open" value={board.scoreboard.openFindings} />
                 <Figure label="Oldest open" value={board.scoreboard.oldestOpenFindingDays == null ? '—' : `${board.scoreboard.oldestOpenFindingDays}d`} />
                 <Figure label="Clean days" value={board.scoreboard.consecutiveCleanDays} hint="in a row" />
+                <Figure
+                  label="Compared"
+                  value={board.scoreboard.canaryScenarioCount == null ? '—' : board.scoreboard.canaryScenarioCount}
+                  hint={board.scoreboard.canaryScenarios == null ? 'in the last run' : `of ${board.scoreboard.canaryScenarios} in the last run`}
+                />
               </div>
+              <CoverageSplit sb={board.scoreboard} />
               <div style={{ marginBottom: 8 }}>
                 {board.gate && board.gate.eligible
                   ? <Pill tone="good">Meets the bar</Pill>

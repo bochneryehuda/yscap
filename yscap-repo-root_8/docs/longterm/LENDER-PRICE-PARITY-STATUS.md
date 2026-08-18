@@ -4707,3 +4707,70 @@ this very section names the broken form, and a guard that read its own explanati
 it protects and then be "fixed" by deleting the explanation.
 
 149/149 suites.
+
+**§2.78a — a footnote worth keeping: the review screen has always had a renderer for the explanation.**
+`LtPpe.jsx` renders `it.diff.explanation.summary` on every queue row, with the confidence beside it
+worded *"(strong match — a place to look, not a verdict)"*. It was not dead code — the facade path fills
+it — but for every row the CANARY produced there was nothing to render, and a blank space on a screen
+looks exactly like a row that had nothing to say. The fix lights that renderer up for the six-runs-a-day
+path without a line of screen work; it is also why the defect was invisible from the screen's side.
+
+**§2.79 — THE GO-LIVE BOARD SHOWED A NUMBER NOBODY COULD RECONCILE: 104 OF 300 SCENARIOS VANISHED
+BETWEEN THE RUN AND THE GATE (2026-08-18).**
+
+**MEASURED.** A 300-scenario canary with 100 reasoned overlay overrides and 4 scenarios where an engine
+threw, put through the real `scoreboard.assemble`:
+
+```
+board:   canaryScenarioCount: 196   canaryIncomparable: 0
+refusal: "only 196 compared canary scenario(s), needs at least 200"
+```
+
+Every number there is **correct**. And 104 scenarios are named nowhere on the page. Read by a human,
+*"196, and none were incomparable"* says the battery is too small — so the obvious response is to add
+scenarios, which cannot help, while the two real causes go unsaid: a third of the battery is
+**deliberately** not scored against Lender Price (§2.72's reasoned overrides), and four scenarios threw.
+Two independent subtractions, both invisible, on the one figure that since §2.73 is a real **coverage
+floor** on promotion.
+
+This is the repo's standing rule, stated for SharePoint and true here: **a number a person cannot
+reconcile is a defect even when it is right; when a total splits into buckets, show every bucket** — an
+"e.g." on a third of the population is not an explanation.
+
+**THE PROPERTY, PROVEN ON A REAL RUN RATHER THAN ASSERTED.** Every scenario lands in exactly one of four
+buckets, so `compared + errors + overlay + incomparable === scenarios`. `parity.bucketsOf` is the one
+definition of that split — it *is* `comparedOf` plus the three the board was dropping, so there is no
+second copy of "how much did we compare" (§2.77 stands) — and the suite proves the partition against a
+seven-scenario battery driven through `shadow.runShadow` with one of every kind, not against a summary
+somebody typed.
+
+**`unaccounted` IS THE BELT TO THAT BRACE.** Normally 0; anything else means the run's own tally does not
+partition, which is a broken measurement, and a broken measurement is not proof of anything — so it is
+reported AND it blocks promotion, rather than being absorbed into whichever bucket sits nearest. The
+suite proves an otherwise-perfect investor is refused on that ground alone.
+
+**THE REFUSAL NOW NAMES THE REMEDY IT IS NOT.** *"only 196 of 300 compared canary scenario(s), needs at
+least 200 — 100 were reasoned overlay overrides (deliberately not scored against Lender Price), 4 hit an
+engine error, so a bigger battery is not the remedy."* Both helpers stay **silent on anything they were
+not told**, so a genuinely thin battery still reads as thin and names no subtraction, and a scoreboard
+assembled from an older persisted run with no split produces the previous message **verbatim** — pinned
+by its own assertion, because a change to a refusal a human reads is a change to what they will do next.
+
+**NULL IS NOT ZERO, THROUGHOUT.** A summary that never recorded a coupling reports `null`, not `0` —
+*"nobody measured"* and *"measured nothing"* send a reader to two different places, and the coverage
+floor fails closed on the first. `unaccounted` is likewise `null` rather than "wrong by 10" when the
+partition is unknowable.
+
+**AND IT IS ON THE SCREEN**, because a figure carried to the board and rendered nowhere is the same
+defect one step later. The go-live card gained a **Compared** figure (*"of 300 in the last run"*) and one
+line under it that adds up out loud — *"The last run priced 300 scenario(s): 196 compared, 100 reasoned
+overrides (not scored against Lender Price), 4 hit an engine error."* — plus, in full ink, the sentence
+that says the tally does not add up when it does not. It renders **nothing** for a run that never
+recorded its split, rather than printing zeros that would claim a partition nobody measured.
+
+`scripts/test-lt-ppe-coverage-reconciles.js` (45 assertions). **Mutation-proven seven ways**: the board
+dropping the split again (13 assertions fall), the refusal naming no subtraction, the refusal dropping
+the battery total, a broken tally ceasing to block, `null` collapsing back into `0`, the overlay bucket
+falling out of the partition, and the screen quietly ceasing to render one of the two subtractions.
+
+150/150 suites.

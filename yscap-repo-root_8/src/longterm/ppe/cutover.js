@@ -135,8 +135,18 @@ function buildScoreboard(input = {}) {
     // "measured nothing", and the coverage floor below fails closed on the first.
     canaryScenarioCount: typeof input.canaryScenarioCount === 'number' ? input.canaryScenarioCount : null,
     canaryIncomparable: typeof input.canaryIncomparable === 'number' ? input.canaryIncomparable : null,
+    // THE REST OF THE RUN'S SPLIT (§2.79), so the coverage figure above can be RECONCILED rather than
+    // taken on faith: compared + errors + overlay + incomparable = scenarios. They gate nothing on their
+    // own — `canaryUnaccounted` is the one exception, because buckets that do not add up mean the
+    // measurement itself is broken and a broken measurement is not proof of anything.
+    canaryScenarios: num(input.canaryScenarios),
+    canaryOverlay: num(input.canaryOverlay),
+    canaryErrors: num(input.canaryErrors),
+    canaryUnaccounted: num(input.canaryUnaccounted),
   };
 }
+
+function num(v) { return typeof v === 'number' && Number.isFinite(v) ? v : null; }
 
 // Trailing run of days (from the most recent) with zero new findings. Sorted by dayMs descending
 // first so the caller need not pre-sort. A day with a positive count breaks the streak.
@@ -155,6 +165,36 @@ function consecutiveCleanDays(daily) {
  *   settings: { minCleanDays=14, requireCanaryPerfect=true, minCanaryScenarios=0 }
  * Returns { eligible, reasons } — reasons lists every gate that FAILED (empty when eligible).
  */
+/**
+ * NAME WHAT WAS SUBTRACTED, or the refusal points at the wrong remedy (§2.79).
+ *
+ * MEASURED: a 300-scenario battery with 100 reasoned overrides and 4 throws refused with *"only 196
+ * compared canary scenario(s), needs at least 200"*. Every word of that is true and it reads as "your
+ * battery is too small" — so the obvious response is to add scenarios, which changes nothing, while the
+ * actual causes (a third of the battery is deliberately not scored, and four scenarios threw) go unsaid.
+ *
+ * Both helpers stay SILENT on anything they were not told, so a scoreboard assembled without the split
+ * produces exactly the message it produced before.
+ */
+function ofTotal(sb) {
+  return typeof sb.canaryScenarios === 'number' ? ` of ${sb.canaryScenarios}` : '';
+}
+
+function subtractedText(sb) {
+  const parts = [];
+  if (typeof sb.canaryOverlay === 'number' && sb.canaryOverlay > 0) {
+    parts.push(`${sb.canaryOverlay} were reasoned overlay overrides (deliberately not scored against Lender Price)`);
+  }
+  if (typeof sb.canaryErrors === 'number' && sb.canaryErrors > 0) {
+    parts.push(`${sb.canaryErrors} hit an engine error`);
+  }
+  if (typeof sb.canaryIncomparable === 'number' && sb.canaryIncomparable > 0) {
+    parts.push(`${sb.canaryIncomparable} could not be compared`);
+  }
+  if (!parts.length) return '';
+  return ` — ${parts.join(', ')}, so a bigger battery is not the remedy`;
+}
+
 function eligibleForLive(scoreboard = {}, settings = {}) {
   // ⛔ THE DEFAULTS ARE THE STRICT ONES, so forgetting to pass settings can only ever make the gate
   // HARDER (§2.73). They used to be `14` clean days and a coverage floor of `0` — and the one production
@@ -208,8 +248,13 @@ function eligibleForLive(scoreboard = {}, settings = {}) {
     if (typeof nSc !== 'number') {
       reasons.push(`no canary coverage recorded, needs at least ${minScenarios} compared scenario(s)`);
     } else if (nSc < minScenarios) {
-      reasons.push(`only ${nSc} compared canary scenario(s), needs at least ${minScenarios}`);
+      reasons.push(`only ${nSc}${ofTotal(scoreboard)} compared canary scenario(s), needs at least ${minScenarios}${subtractedText(scoreboard)}`);
     }
+  }
+  // BUCKETS THAT DO NOT ADD UP ARE NOT A ROUNDING QUIRK — they mean the run's own summary cannot be
+  // reconciled, so nothing it reports is proof. Reported and blocking, never absorbed silently.
+  if (typeof scoreboard.canaryUnaccounted === 'number' && scoreboard.canaryUnaccounted !== 0) {
+    reasons.push(`the latest canary does not add up — ${Math.abs(scoreboard.canaryUnaccounted)} scenario(s) are in no bucket, so the run cannot be trusted as proof`);
   }
   if ((scoreboard.consecutiveCleanDays || 0) < minClean) {
     reasons.push(`only ${scoreboard.consecutiveCleanDays || 0} consecutive clean day(s), needs ${minClean}`);

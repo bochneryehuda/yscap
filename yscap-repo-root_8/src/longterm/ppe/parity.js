@@ -180,6 +180,51 @@ function comparedOf(summary) {
   return Math.max(0, n('comparable') - n('errors'));
 }
 
+/**
+ * THE WHOLE SPLIT OF ONE RUN, so a total can be RECONCILED rather than taken on faith (§2.79).
+ *
+ * Every scenario a battery runs lands in exactly one of four buckets, and the go-live gate reads only
+ * the first of them:
+ *
+ *   compared     agreed + disagreed, LESS the scenarios where an engine threw (`comparedOf`, §2.77)
+ *   errors       our side or Lender Price threw — a verdict was reached about nothing
+ *   overlay      a reasoned override on a fact Lender Price cannot see (D29) — deliberately not scored
+ *   incomparable one side produced no ladder at all
+ *
+ * MEASURED 2026-08-18: a 300-scenario run with 100 reasoned overrides and 4 throws put `196` on the
+ * board beside `incomparable: 0`, and the coverage refusal read *"only 196 compared canary scenario(s),
+ * needs at least 200"*. Both numbers are correct and 104 scenarios are missing from the page, so the
+ * only remedy the wording suggests — run a bigger battery — is the one that cannot help. This is the
+ * repo's standing rule that a number a person cannot reconcile is a defect even when it is right, and
+ * that when a total splits into buckets you show every bucket.
+ *
+ * `unaccounted` is the belt to that brace: normally 0, and anything else means the four buckets do NOT
+ * partition the run — a broken summary, which is reported rather than absorbed into a bucket that
+ * happens to be nearby.
+ *
+ * NULL IS NOT ZERO, throughout. A summary that never measured its coupling reports `null`, because
+ * "nobody measured" and "measured nothing" send a reader to two different places and the coverage floor
+ * fails closed on the first.
+ */
+function bucketsOf(summary) {
+  const has = (k) => !!summary && Number.isFinite(summary[k]);
+  const n = (k) => (has(k) ? summary[k] : 0);
+  if (!summary || typeof summary !== 'object') {
+    return { scenarios: null, compared: null, errors: null, overlay: null, incomparable: null, unaccounted: null };
+  }
+  const scenarios = has('scenarios') ? summary.scenarios : null;
+  // `compared` keeps `comparedOf`'s own precondition: without a `comparable` figure nothing was coupled,
+  // and answering 0 would read as a battery that compared nothing rather than one nobody measured.
+  const compared = has('comparable') ? comparedOf(summary) : null;
+  const errors = n('errors');
+  const overlay = n('overlay');
+  const incomparable = n('incomparable');
+  const unaccounted = (scenarios == null || compared == null)
+    ? null
+    : scenarios - (compared + errors + overlay + incomparable);
+  return { scenarios, compared, errors, overlay, incomparable, unaccounted };
+}
+
 // Roll a batch of per-scenario results into a scoreboard (§10.5): totals + per-kind finding counts.
 // Is this per-scenario result a reasoned OVERLAY override rather than a comparison?
 //
@@ -225,4 +270,4 @@ function summarize(results) {
   return out;
 }
 
-module.exports = { SEVERITY, normalizeOurQuote, normalizeLadder, compareScenario, summarize, isOverlayResult, comparedOf, _internals: { isComparable } };
+module.exports = { SEVERITY, normalizeOurQuote, normalizeLadder, compareScenario, summarize, isOverlayResult, comparedOf, bucketsOf, _internals: { isComparable } };
