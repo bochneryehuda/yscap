@@ -316,10 +316,24 @@ function Contacts({ contacts, canReassign = false, staff = [], onReassign }) {
           </div>
           {/* The reason sits on its own line under both sides: it explains the pair,
               not either half of it, and it is the sentence the next person reads when
-              the two names disagree. */}
-          {c.overridden && c.overrideReason ? (
+              the two names disagree.
+
+              WITH WHO AND WHEN. Reassigning a file GRANTS THE NAMED PERSON ACCESS to
+              it, and Long-Term writes nothing to `audit_log` (an RTL table), so this
+              row is the only record there is — and for a while it was showing only
+              the reason, so a file could say it had been moved and why and never by
+              whom. Each part is drawn only if we hold it: an unnamed actor (somebody
+              since deleted) or a missing date must not print "by  on ". */}
+          {c.overridden && (c.overrideReason || c.overrideByName || c.overrideAt) ? (
             <div style={{ flexBasis: '100%', color: MUTED, fontSize: 12 }}>
-              Why: {c.overrideReason}
+              {c.overrideByName || c.overrideAt ? (
+                <span>
+                  Reassigned{c.overrideByName ? ` by ${c.overrideByName}` : ''}
+                  {c.overrideAt ? ` on ${day(c.overrideAt)}` : ''}
+                  {c.overrideReason ? ' · ' : ''}
+                </span>
+              ) : null}
+              {c.overrideReason ? <span>Why: {c.overrideReason}</span> : null}
             </div>
           ) : null}
         </div>

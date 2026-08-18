@@ -119,7 +119,9 @@ router.get('/:loanId', async (req, res) => {
       return res.status(404).json({ error: 'No such long-term loan.' });
     }
 
-    const staffIds = [...new Set(team.flatMap((t) => [t.staff_id, t.override_staff_id]).filter(Boolean).map(String))];
+    // `override_by` rides along in the SAME lookup: naming who reassigned a file is
+    // one more id in a query that was already being made, not a second round trip.
+    const staffIds = [...new Set(team.flatMap((t) => [t.staff_id, t.override_staff_id, t.override_by]).filter(Boolean).map(String))];
     const names = new Map();
     if (staffIds.length) {
       const { rows: people } = await db.query(
@@ -212,6 +214,7 @@ router.get('/:loanId', async (req, res) => {
       contacts: team.map((t) => contacts.describeContact(t, {
         staffName: t.staff_id ? names.get(String(t.staff_id)) : null,
         overrideName: t.override_staff_id ? names.get(String(t.override_staff_id)) : null,
+        overrideByName: t.override_by ? names.get(String(t.override_by)) : null,
         labels,
       })),
       canReassign,
@@ -255,7 +258,7 @@ router.post('/:loanId/contacts/:role/override', async (req, res) => {
 
     // Answer with the contact as the screen will now draw it, so the row updates
     // from what the server actually stored rather than from what was typed.
-    const ids = [row.staff_id, row.override_staff_id].filter(Boolean).map(String);
+    const ids = [row.staff_id, row.override_staff_id, row.override_by].filter(Boolean).map(String);
     const names = new Map();
     if (ids.length) {
       const { rows: people } = await db.query(
@@ -267,6 +270,7 @@ router.post('/:loanId/contacts/:role/override', async (req, res) => {
       contact: contacts.describeContact(row, {
         staffName: row.staff_id ? names.get(String(row.staff_id)) : null,
         overrideName: row.override_staff_id ? names.get(String(row.override_staff_id)) : null,
+        overrideByName: row.override_by ? names.get(String(row.override_by)) : null,
         labels: settings['contacts.roleLabels'] || {},
       }),
     });

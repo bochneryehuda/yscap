@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
+import { day } from './format.js';
 
 /**
  * THE PEOPLE MAP — which PILOT person each Encompass login is.
@@ -103,6 +104,14 @@ export default function LtPeople() {
                     <div style={{ fontSize: 12, color: '#4B585C' }}>
                       {p.loginId}{p.email ? ` · ${p.email}` : ''}{p.active ? '' : ' · disabled'}
                     </div>
+                    {/* WHAT THEY DO IN ENCOMPASS. The roster has recorded each
+                        person's roles on every sync since it shipped and nothing
+                        showed them — yet they are the evidence this screen exists to
+                        weigh: confirming a link on a name alone is how the wrong
+                        Nussbaum ends up owning somebody else's files. */}
+                    {p.roles && p.roles.length ? (
+                      <div style={{ fontSize: 12, color: '#4B585C' }}>{p.roles.join(', ')}</div>
+                    ) : null}
                   </td>
                   <td style={td}>
                     {p.staff ? <>
@@ -110,7 +119,21 @@ export default function LtPeople() {
                       <div style={{ fontSize: 12, color: '#4B585C' }}>{p.staff.email}</div>
                     </> : <span style={{ color: '#4B585C' }}>{p.whyNoMatch || '—'}</span>}
                   </td>
-                  <td style={td}>{chip(p.status)}</td>
+                  <td style={td}>
+                    {chip(p.status)}
+                    {/* WHO DECIDED, AND WHEN. Confirming a link decides whose
+                        pipeline this person's files land in, and both facts were
+                        written on the row from the day it shipped and shown to
+                        nobody. Each half draws only if we hold it, so a confirmer
+                        since removed never prints as "by  on ". */}
+                    {p.status === 'confirmed' && (p.confirmedByName || p.confirmedAt) ? (
+                      <div style={{ fontSize: 12, color: '#4B585C', marginTop: 4 }}>
+                        {p.confirmedByName ? `by ${p.confirmedByName}` : ''}
+                        {p.confirmedByName && p.confirmedAt ? ' · ' : ''}
+                        {p.confirmedAt ? day(p.confirmedAt) : ''}
+                      </div>
+                    ) : null}
+                  </td>
                   {data.canManage && (
                     <td style={td}>
                       {p.status === 'suggested' && p.staff && (

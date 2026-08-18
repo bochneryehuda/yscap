@@ -295,6 +295,25 @@ into a lifetime cap would print a ceiling equal to the start rate. There the rea
 the block rather than on eight rows, because eight identical sentences is as unreadable as the eight
 dashes it replaces, and it gives way term by term the day a writer lands.
 
+**WHO GRANTED ACCESS, AND WHEN, IS ON A SCREEN (2026-08-18).** Two long-term actions hand somebody
+access to files — REASSIGNING one (`access.onFileSql` matches `override_staff_id`, so naming somebody
+puts the file in their pipeline and lets them open it) and CONFIRMING a person's Encompass link (which
+decides whose pipeline that login's files land in). Both write who did it and when, on the row, at the
+moment they do it, and Long-Term writes nothing to `audit_log` — an RTL table — so **the row is the
+only record there is**. Both stamps were then read by nothing: the file screen said a file had been
+reassigned and why and never by whom; the people screen said a link was confirmed and never by whom or
+when. That is the every-column rule inverted — nothing fails, the data is perfectly correct, and the
+only place it exists is a table nobody looks at. Both now reach the screen (out of lookups those routes
+were already making, so neither costs a query), each half drawn only if we hold it so a person since
+removed never prints as "by  on ". The people map also finally shows the ENCOMPASS ROLES it has
+recorded on every sync and never displayed — the evidence somebody confirming a link is meant to weigh,
+since matching on a name alone is how the wrong person ends up owning another's files.
+`scripts/test-lt-access-record-pure.js` follows each fact from the row it is written on to the element
+that draws it. **Its first cut passed four of its own six mutations** — it asserted that a token
+appeared somewhere in the file, which survives both renaming the property and disarming the branch that
+draws it; the assertions now pin the actual shape. A source guard that greps for a name is decoration,
+and this one proved it about itself before it was believed.
+
 **EVERY VALUE MAP IS KEYED ON WHAT ENCOMPASS ACTUALLY SENDS (2026-08-18).** The mirror translates
 Encompass's words into our enums through hand-written maps, and a map is a GUESS at somebody else's
 vocabulary — being wrong about one is completely silent. `AMORTIZATION` carried `fixed`, `adjustable`
