@@ -29,6 +29,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ltApi } from './api.js';
 import { parseBasePrices, parseAdjustments, points } from './ratesheetPaste.js';
 import { INK, MUTED, SLATE, DANGER, CAUTION, card, h2, sub, eyebrow, input, mono, label } from './ppeStyles.js';
+import AgreementRecord from './AgreementRecord.jsx';
 
 const row = { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 10 };
 const field = { flex: '1 1 180px', minWidth: 0 };
@@ -421,6 +422,13 @@ export default function RateSheetConsole() {
             <p style={{ margin: '0 0 10px', fontSize: 13, color: SLATE }}>
               {sheet.agreement ? sheet.agreement.message : 'The agreement record could not be read.'}
             </p>
+
+            {/* THE EVIDENCE, not just the verdict. The one-line message above says whether the sheet may
+                be published; this says WHICH scenarios disagreed and WHERE, which is the only thing that
+                tells somebody which cell to fix. It was stored from the first paid run and displayed
+                nowhere — `ppeRateSheetAgreement` had no caller at all. `reloadKey` re-reads it after a
+                measurement so the panel can never sit on a verdict the run above just replaced. */}
+            <AgreementRecord versionId={sheet.version.id} reloadKey={run ? run.recordedAt || 'ran' : ''} />
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
               <button className="btn" disabled={busy || sheet.version.status !== 'draft'} onClick={() => publish(false)}>
                 Publish

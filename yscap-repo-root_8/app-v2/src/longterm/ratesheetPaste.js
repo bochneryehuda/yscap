@@ -79,12 +79,18 @@ export function parseBasePrices(text) {
     const lineNo = i + 1;
     if (!raw.trim()) return;                       // a blank line is not a problem
     const cells = splitCells(raw);
-    const rate = decimal(cells[0]);
+    // Named `noteRate` rather than `rate`: `format.js` exports a formatter called `rate`, and
+    // `test-lt-pipeline-columns-pure.js` refuses ANY definition of that name anywhere in a
+    // Long-Term front-end file — deliberately, because a second copy of a formatter is how one
+    // screen comes to print 0.97% where another prints 97%. A local variable is not a formatter,
+    // but the rule cannot see scope and the honest fix is the name, not a weaker rule. It is also
+    // the more accurate name: this column IS the note rate.
+    const noteRate = decimal(cells[0]);
 
-    if (rate === null && firstContent) { headerSkipped = true; firstContent = false; return; }
+    if (noteRate === null && firstContent) { headerSkipped = true; firstContent = false; return; }
     firstContent = false;
 
-    if (rate === null) {
+    if (noteRate === null) {
       problems.push({ line: lineNo, text: raw.trim(), why: 'the first column is not a rate' });
       return;
     }
@@ -109,16 +115,16 @@ export function parseBasePrices(text) {
       });
       return;
     }
-    const key = `${milli(rate)}|${lock}|${product}`;
+    const key = `${milli(noteRate)}|${lock}|${product}`;
     if (seen.has(key)) {
       problems.push({
         line: lineNo, text: raw.trim(),
-        why: `the same cell is already on line ${seen.get(key)} (rate ${rate}, ${lock}-day lock${product ? `, ${product}` : ''})`,
+        why: `the same cell is already on line ${seen.get(key)} (rate ${noteRate}, ${lock}-day lock${product ? `, ${product}` : ''})`,
       });
       return;
     }
     seen.set(key, lineNo);
-    rows.push({ noteRateMilliPct: milli(rate), lockDays: lock, priceMilli: milli(price), product });
+    rows.push({ noteRateMilliPct: milli(noteRate), lockDays: lock, priceMilli: milli(price), product });
   });
 
   return { rows, problems, headerSkipped };
