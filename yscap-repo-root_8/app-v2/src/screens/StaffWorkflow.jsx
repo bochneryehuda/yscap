@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { fmtDate } from '../lib/dates.js';
 import { useFlash } from '../components/FlashToast.jsx';
+import { confirmRemoveWorkflowItem } from '../lib/workflowRemove.js';
 
 /* THE WORKFLOW (owner-directed 2026-07-21) — my personal work queue.
    Everything submitted to me, in the order it arrived, with a live "up next"
@@ -75,15 +76,17 @@ export default function StaffWorkflow() {
 
   const isMine = view === 'mine';
   const roleView = view.startsWith('role:') ? view.slice(5) : null;
-  // A role view has no per-person history — force the live tab.
-  const effTab = roleView ? 'next' : tab;
+  // A role view has no per-person history — force the live tab (the Removed
+  // view works everywhere: remove/restore lives on the workflows, owner-directed
+  // 2026-08-18).
+  const effTab = roleView ? (tab === 'removed' ? 'removed' : 'next') : tab;
 
   useEffect(() => { if (isAdmin) api.workflowRoster().then(setRoster).catch(() => {}); }, [isAdmin]);
 
   const reload = useCallback(() => {
     setRows(null); setReturning(null);
     const p = { tab: effTab };
-    if (view.startsWith('role:')) { p.role = view.slice(5); p.tab = 'next'; }
+    if (view.startsWith('role:')) { p.role = view.slice(5); }
     else if (view.startsWith('staff:')) { p.staffId = view.slice(6); }
     api.workflowQueue(p).then(setRows).catch(e => setErr(e.message));
   }, [effTab, view]);
@@ -109,6 +112,23 @@ export default function StaffWorkflow() {
       setReturning(null); setOutcome(''); setNote(''); reload();
     } catch (e) { setErr(e.message || 'Could not send it back'); } finally { setBusy(null); }
   }, [busy, outcome, note, reload]);
+
+  // Remove a hand-off from THIS workflow (restorable from the Removed view) /
+  // restore it. Owner-directed 2026-08-18: the Remove button lives on the
+  // workflows — never on the pipeline. Double warning inside the confirm helper.
+  const removeIt = useCallback(async (it, queueLabel) => {
+    if (busy) return; setBusy(it.id); setErr('');
+    try {
+      const ok = await confirmRemoveWorkflowItem(it.id, queueLabel,
+        [it.first_name, it.last_name].filter(Boolean).join(' '));
+      if (ok) { say('Removed from the workflow — restorable from the Removed view.'); reload(); }
+    } finally { setBusy(null); }
+  }, [busy, reload]);
+  const restoreIt = useCallback(async (it) => {
+    if (busy) return; setBusy(it.id); setErr('');
+    try { await api.workflowRestoreItem(it.id); say('Restored — it’s back in the workflow.'); reload(); }
+    catch (e) { setErr(e.message || 'Could not restore it'); } finally { setBusy(null); }
+  }, [busy, reload]);
 
   // KPI tiles for the live queue.
   const kpis = useMemo(() => {
@@ -156,12 +176,11 @@ export default function StaffWorkflow() {
               </select>
             </label>
           )}
-          {!roleView && (
-            <div className="tabs">
-              <button className={`tab ${tab === 'next' ? 'on' : ''}`} onClick={() => setTab('next')}>Up next</button>
-              <button className={`tab ${tab === 'history' ? 'on' : ''}`} onClick={() => setTab('history')}>Completed / Sent back</button>
-            </div>
-          )}
+          <div className="tabs">
+            <button className={`tab ${effTab === 'next' ? 'on' : ''}`} onClick={() => setTab('next')}>Up next</button>
+            {!roleView && <button className={`tab ${effTab === 'history' ? 'on' : ''}`} onClick={() => setTab('history')}>Completed / Sent back</button>}
+            <button className={`tab ${effTab === 'removed' ? 'on' : ''}`} onClick={() => setTab('removed')}>Removed</button>
+          </div>
         </div>
       </div>
 
@@ -218,6 +237,9 @@ export default function StaffWorkflow() {
                           {isMine && it.status === 'open' && <button className="btn ghost small" disabled={busy === it.id} onClick={() => pickup(it.id)}>Pick up</button>}
                           {isMine && it.submission_type === 'escalation' && <Link className="btn primary small" to={`/internal/escalations?app=${it.application_id}`} title="Review the exception request and approve, decline, or counter-offer">Review exception</Link>}
                           {isMine && <button className="btn primary small" disabled={busy === it.id} onClick={() => { setReturning(returning === it.id ? null : it.id); setOutcome(''); setNote(''); }}>Send back</button>}
+                          {(isMine || isAdmin) && <button className="btn ghost small" disabled={busy === it.id}
+                            title="Take this hand-off off the workflow (does not delete the file — restorable from the Removed view)"
+                            onClick={() => removeIt(it, wfMeta ? wfMeta.label.toLowerCase() : isMine ? 'your workflow' : 'this workflow')}>Remove</button>}
                           <Link className="btn ghost small" to={`/internal/app/${it.application_id}`}>Open</Link>
                         </span>
                       </div>
@@ -236,6 +258,36 @@ export default function StaffWorkflow() {
                         </div>
                       )}
                     </React.Fragment>
+                  ))}
+                </div>
+              </div>)}
+
+          {/* Removed — hand-offs taken off this workflow (owner-directed
+              2026-08-18). Nothing here is deleted; Restore puts it back. */}
+          {effTab === 'removed' && (rows.length === 0
+            ? <div className="panel"><div className="panel-b"><div className="empty-state"><h3>Nothing removed</h3><p>A hand-off removed from this workflow would be listed here, with a Restore button to put it back.</p></div></div></div>
+            : <div className="panel">
+                <div className="q-table wf-table">
+                  <div className="q-head">
+                    <span>File</span><span>What for</span><span>Removed</span><span>Why</span><span>Put back</span>
+                  </div>
+                  {rows.map(it => (
+                    <div className="q-row wf-row" key={it.id}>
+                      <Link to={`/internal/app/${it.application_id}`} className="wf-file">
+                        <span className="mono">{initials(it.first_name, it.last_name)}</span>
+                        <span>
+                          <span className="who">{it.first_name} {it.last_name}</span>
+                          <span className="what">{addrLine(it.property_address) || it.ys_loan_number || 'File'}</span>
+                        </span>
+                      </Link>
+                      <span><span className="pill">{TYPE_LABEL[it.submission_type] || it.submission_type}</span></span>
+                      <span className="muted small">{it.removed_at ? fmtWhen(it.removed_at) : '—'}{it.removed_by_name ? <span style={{ display: 'block' }}>by {it.removed_by_name}</span> : null}</span>
+                      <span className="muted small">{it.removed_reason || '—'}</span>
+                      <span className="wf-acts">
+                        {(isMine || isAdmin) && <button className="btn ghost small" disabled={busy === it.id} onClick={() => restoreIt(it)}>Restore</button>}
+                        <Link className="btn ghost small" to={`/internal/app/${it.application_id}`}>Open</Link>
+                      </span>
+                    </div>
                   ))}
                 </div>
               </div>)}
