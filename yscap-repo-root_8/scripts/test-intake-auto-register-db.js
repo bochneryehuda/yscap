@@ -32,7 +32,16 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
 (async () => {
   const sfx = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
   let borrowerId = null, staffId = null;
+  let priorProgAvail = null;
   try {
+    // THIS SUITE'S BASELINE: every program OFFERED. Since db/584 a FRESH database
+    // boots with Gold already discontinued (the owner's shipped state), so a
+    // suite that REGISTERS Gold must state its own precondition — establish the
+    // all-offered map, then put back whatever was there (the db/584 seed's
+    // history guard keeps it from ever re-firing over this).
+    priorProgAvail = (await db.query(`SELECT program_availability FROM company_pricing_settings WHERE is_current LIMIT 1`)).rows[0] || null;
+    await db.query(`UPDATE company_pricing_settings SET program_availability=NULL WHERE is_current`);
+    require('../src/lib/pricing-settings').bust();
     // ---- the pure half first: what may a public post register at all? --------
     assert(AR.publicProgram('standard') === 'standard' && AR.publicProgram('gold') === 'gold'
         && AR.publicProgram('silver') === 'silver', 'P1 the three self-registerable programs are accepted');
@@ -171,5 +180,10 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
     await db.pool.end().catch(() => {});
 
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');
+  // Put back whatever program map the database held before this suite ran —
+  // AFTER the Z-section, which registers Gold too (restoring it mid-file put a
+  // fresh database's gold-off seed back in front of Z1).
+  if (priorProgAvail) await db.query(`UPDATE company_pricing_settings SET program_availability=$1 WHERE is_current`, [priorProgAvail.program_availability]).catch(() => {});
+  require('../src/lib/pricing-settings').bust();
   process.exit(failures ? 1 : 0);
 })();
