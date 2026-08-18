@@ -300,6 +300,10 @@ still a capture question.
 
 ### §2.1 — the 31 request-shape differences on BLANK fields (task #31; live report 2026-08-17)
 
+**READ §2.1a BELOW FIRST — the "31" is a MEASUREMENT ERROR, corrected 2026-08-18. Most of it was
+our KICKOFF diffed against the frontend's own POLL, two different shapes. Like for like the count is 3,
+and all three are fields on which the two captures contradict each other.**
+
 A side-by-side of PILOT's request vs the live frontend on a minimal DSCR deal
 found the **tested eligible results already match** (439 rows after the §32.6 DSCR
 fix above), but **31 structural differences remain on blank/derived fields**. These
@@ -376,6 +380,74 @@ from scenario values and the two address items below**: 0 null-vs-omit divergenc
   capture beside this list — it is NOT guessed. So the offline §2.1 work is done and
   the SMO space is now captured; the one residual is that frontend-request-vs-token
   mapping.
+
+### §2.1a — task #31 CLOSED: the blank-field parity is MEASURED, and most of "31" was a measurement error (2026-08-18)
+
+**READ THE CAPTURES IN TWO GROUPS OR THE COUNT IS WRONG.** The seven captured bodies in
+`docs/longterm/ppe-research/anchors/` are not one population. `req-01` and `req-07` carry
+`cachedDisqualified:false` — they are KICKOFFS, the shape we post for every quote. `req-02`…`req-06`
+carry `true` — they are POLLS of req-01. **The frontend's own poll differs from its own kickoff in 14
+leaves**: it drops nine keys it had itself sent as `null` seconds earlier and adds
+`disqualifiedResultsByProduct`. Diffing our KICKOFF against their POLL therefore reports 14 of THEIR
+re-serialisations as OUR defects, which is where most of the recorded "31" came from.
+
+**Like for like: 58 leaves in the kickoff captures are blank on one side or the other. 55 already
+matched; 2 were fixed; 3 remain, and all 3 are fields on which the two captures CONTRADICT EACH OTHER.**
+After the fix, **our built kickoff for req-07's own deal is BYTE-EXACT against req-07 — zero differing
+leaves.**
+
+| field | frontend blank form | we sent | now | risk if wrong |
+| --- | --- | --- | --- | --- |
+| `criteria.appraisedValue` | **key OMITTED** (req-01, box empty; req-07 carries the number with the box filled) | `null`, unconditionally | omitted; a SUPPLIED value still transmits | **PRICE/ELIGIBILITY** — appraised value is an LTV/eligibility basis |
+| `property.address.street` / `streetCont` / `zipExt` | **`""`** — all SEVEN captures | keys deleted | `""` | cosmetic (pricing is ZIP/county-driven) |
+
+**THE FIX IS A RULE, NOT TWO SPOT-PATCHES.** The blank form of a field is the FRONTEND's, and it is no
+longer a developer's judgement: `SCENARIO_OWNED` is the ONE place a blank form is decided, and
+`scripts/test-lt-lp-blank-parity.js` DERIVES each path's expected blank form from the anchors themselves
+and fails when the builder diverges — so the table cannot drift away from the evidence it cites.
+`criteria.appraisedValue` moved out of an inline `c.appraisedValue = … : null` in `buildSearch` and into
+that registry, which is what makes the rule true rather than merely stated; keeping a second place that
+writes a blank is exactly how this defect existed.
+
+**The earlier "absence is worth more than cosmetic parity" reasoning was a FALSE CHOICE.** `''`
+overwrites a stale foundation street exactly as deletion does, so the prior-session leak
+`clearScenarioOwnedFields` guards stays closed AND the request matches the frontend. Proven, not argued:
+the suite feeds a foundation carrying a Beverly Hills street and a stale appraised value and asserts
+neither survives anywhere in the transmitted body. Moving `appraisedValue` into the registry additionally
+**CLOSED A LATENT LEAK** — without the entry, a live foundation's stale appraised value rides onto a
+scenario that states none (reproduced at $400,000 by mutation 3).
+
+**THREE DIFFERENCES REMAIN AND ARE DELIBERATELY UNRESOLVED — the captures disagree with each other, so
+there is no single frontend behaviour to match and picking one would be inventing a rule.** They are
+PINNED, so a future capture that settles one turns the suite red and forces the question to be answered
+rather than quietly re-guessed:
+
+| field | req-01 | req-07 | ours | note |
+| --- | --- | --- | --- | --- |
+| `companyId` | `null` | the real company id | the captured id (or the live foundation's) | **`client.js` passes `companyId` into `buildSearch` and `buildSearch` IGNORES it** — a collected-then-discarded field. Harmless while there is one tenant; a second Lender Price company would be named wrongly in every body. |
+| `criteria.nonWarrantableProject` | omitted | `false` | derived from the property type (matches req-07) | neither capture is a condo, so the disagreement has no visible cause |
+| `dynamicPropertiesMap.GLOBAL_Section184.value` | `"false"` | `null` | `null` (matches req-07) | HUD Section 184 is a Native American lending programme, irrelevant to a DSCR investor loan |
+
+**THE DISQUALIFY POLL BODY IS PINNED, NOT FIXED.** Ours differs from the captured poll in 15 leaves; 11
+are keys their OWN kickoff sent as `null`. We deliberately do not copy their normalisation: the vendor
+plainly does not cache-key on the whole body — if it did, the frontend's own 14-leaf-different poll could
+not read back the computation its kickoff started, and it demonstrably does. Correlation is by
+`requestId`, which we already echo and without which `pollDisqualifiedByKey` refuses outright. Reshaping
+a working async handshake on that inference, with no live re-measure, would risk the ineligible-reasons
+read on every deal to gain byte parity on a body whose response we only read. **The `applyPollDelta`
+comment claiming it matched "byte-for-byte" was measurably false and has been corrected in the code.**
+
+**NO EVIDENCE, stated as such:** Purchase and Cash-out blank behaviour (every capture is a Refinance);
+and `property.address.city`, where the frontend always sends a city derived from the ZIP while our Census
+ZCTA→county table carries no city at all — we omit the key, which is not what they send either, and no
+offline source can settle it.
+
+Test `scripts/test-lt-lp-blank-parity.js` (pure, offline, wired into the `npm test` chain — the
+suite-coverage gate of §2.39 caught it as unrun the moment it landed, which is the gate doing its job).
+Proven to FAIL by three mutations with green controls either side: the street neutral reverted to
+`DELETE` (9 rows), `appraisedValue` re-forced to `null` (12 rows), and `appraisedValue` removed from the
+registry (13 rows — and the capture-diff row stays GREEN through that one, which is why the leak sections
+exist beside the capture diff rather than instead of it).
 
 ### §2.2 — the ≥200-scenario AGREEMENT harness is BUILT; the only blocker is the login (2026-08-17)
 
