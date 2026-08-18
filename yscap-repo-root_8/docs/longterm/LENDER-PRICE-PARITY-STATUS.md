@@ -30,7 +30,7 @@ actually blocked?" should be answerable in one place.
 | #81 | **The rate sheet prices five cells the eligibility matrix refuses. Which one governs?** If the matrix is right we are correctly stricter; if the sheet is right, these are 41 loans we refuse that the investor would do. | All 41 remaining disagreements — the whole eligibility axis, and with it the gate. | §2.10, §2.15 |
 | #69 | **Five "advanced" rules we deliberately left flagged rather than guessed** (vacant, foreign national, rural, first-time homebuyer, renovation). | Turning those five into real declines instead of warnings. | §0 (the flagged list) |
 | #57 | **Prepayment penalty: which types and terms does each investor allow, and how is each priced?** | The per-investor prepay library beyond Deephaven. | D30 |
-| #51 | **The loan officer margin and commission rules** (front/back split, per-loan minimum and maximum, who pays). | The whole compensation layer. | D18 |
+| ⏳ ANSWERED AND BUILT, PARTLY | **The loan officer margin and commission rules.** The two answers that were holding it are in and built (§2.59): the per-loan minimum is a movable default, and the entire margin holdback is the company's. What is still owed: the officer's SHARE of the origination (a real percentage nobody has stated — the record refuses to work out a net until it is set), and five smaller questions in COMPENSATION-MARGIN-MODEL.md. | Nothing prices from it either way — the stack reports who earns what and never moves a quote. | §2.59, D18 |
 | ✅ ANSWERED AND BUILT | **Is being a PPE administrator the right authority to PUBLISH a pricing rule, or does that need its own sign-off?** Owner, 2026-08-18: *"all in the super admin"*. | Nothing — the publish door is built, super-admin gated, and the rule board has the button. | §2.51, §2.57 |
 | — | **Who may switch OFF a rule that is already pricing loans, and does that retire it or effective-date it?** | Editing a live rule's name at all — today that publishes a second rule and is refused as a double charge. | §2.42, §2.51 |
 
@@ -3569,3 +3569,69 @@ assertions, and the unmutated control passed.
 answers; it does not decide which side wins, and no decision recorded here changes a price. Turning a
 run of recorded conclusions into an actual rule is the rule-authoring path (§2.51/§2.57) and is
 deliberately a separate, super-admin act.
+
+---
+
+**§2.59 — WHO MAKES WHAT ON A FILE: THE COMPENSATION STACK, BUILT (D18 / E9, 2026-08-18).**
+
+**WHAT UNBLOCKED IT.** The design (`ppe-research/COMPENSATION-MARGIN-MODEL.md`) had been complete and
+unbuilt since 2026-08-17 because two of its seven open questions were load-bearing. The owner answered
+both: *"Company default: the minimum is not enforced. It's not a hard rule. It's a movable default, and
+every loan officer can set this movable default differently. The split does not apply for the margin.
+The entire margin hold back goes for the company."*
+
+**WHAT WAS BUILT.**
+· `src/longterm/ppe/comp-plan.js` — PURE. A resolved plan, a loan amount and a mode in; who earns what
+  out, in integer milli-points and integer cents.
+· Eight new `comp.*` settings and a new **`officer:<staffId>`** slot, mirroring the per-investor slot
+  exactly — including `perOfficer`, which is DERIVED-not-listed and read by both the write door and the
+  resolver, so the two agree by construction.
+· `store.resolveCompPlanForOfficer` — officer over company over the shipped default, reporting WHERE
+  every number came from.
+· `GET /api/lt/ppe/comp-plan`, and the compensation card on the pricing-engine settings screen (whose
+  "Whose settings" picker now offers a loan officer alongside an investor and the company).
+
+**THE OWNER'S TWO ANSWERS, ENFORCED RATHER THAN DOCUMENTED.**
+· **THE MINIMUM IS A DEFAULT.** There is deliberately no floor check anywhere: an officer's own
+  minimum, higher OR lower than the company's, is simply what resolves. A test sets a $500 officer
+  minimum against a $3,000 company one and asserts nothing bumps it back up.
+· **THE HOLDBACK IS THE COMPANY'S, WHOLE.** Never split, never clamped by the officer's minimum or
+  maximum, never counted toward what he earned — three separate places it could have leaked, each
+  asserted by moving the holdback and proving his figures do not move at all. And it is
+  non-overridable STRUCTURALLY: the key is not declared per-officer, so the write door refuses it and
+  the resolver's officer layer is filtered through the same declaration. A row written straight into
+  the table BEHIND the door is proven to be read by nothing.
+
+**IT PRICES NOTHING, AND THAT IS A REFUSAL RATHER THAN AN OMISSION.** Whether this quarter point is the
+SAME one the pipeline already subtracts as `pricing.correspondent_margin_milli` or a SECOND one on top
+is still open (design question 5) and the two answers differ by a quarter point on every loan. So the
+stack reports who earns what and never moves a number — the same posture `quote.js` has held on
+`holdbackMilli` since it was carried.
+
+**AND WHERE A NUMBER WOULD HAVE TO BE INVENTED, IT IS WITHHELD.** When a per-loan minimum or maximum
+moves an officer who earns on BOTH sides, whether the change comes out of the origination or the
+rebate is design question 3 — unanswered. The TOTAL is exact and is shown; the two halves come back
+null with the reason, and the split (which is taken from the origination) is withheld with it rather
+than computed off a guess. Where an officer earns on ONE side only, arithmetic decides it and there is
+nothing to choose.
+
+**A REAL DEFECT THE DB TEST FOUND.** Setting an officer's margin alone — the ordinary administrative
+act — left the front/back split behind at an OUTER layer's 2.000 and 0 against a margin of 3.000. Those
+do not add up, and `computeComp` correctly refuses a plan whose halves disagree with its total, so that
+officer's compensation became unworkable-out the moment somebody raised his margin. A split staler than
+the margin it splits is now treated as unstated and derived from how he is paid.
+
+**HOW IT IS PROVED.** `scripts/test-lt-ppe-comp-plan.js` (67, pure — the owner's own worked examples,
+the three holdback leaks, the movable-default rule, and every refusal) and
+`scripts/test-lt-ppe-comp-plan-db.js` (real Postgres — the layering, the two independent locks on the
+holdback, the lower-officer-minimum case, and the door). **Mutation-proven nine ways**, including one
+that did NOT kill the suite and led to a better test: passing the officer layer for the holdback
+survives, because the FILTER already empties it — so the suite now proves each lock separately rather
+than letting one cover for the other.
+
+**WHAT IS STILL OPEN.** Design questions 3, 4, 5, 6 and 7 — where a clamp lands on a mixed plan, whether
+the holdback counts toward the minimum (this build assumes not, which follows from "the entire margin
+holdback goes for the company"), whether this 0.25 is the existing one, what happens below par, and
+whether the split is figured on rounded points or exact dollars. The officer's own share of the
+origination is deliberately BLANK until somebody sets it: the record refuses to work out anybody's net
+rather than printing a share this codebase invented.

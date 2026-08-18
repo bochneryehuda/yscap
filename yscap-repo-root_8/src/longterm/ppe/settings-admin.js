@@ -67,7 +67,7 @@ function parseTarget(body = {}) {
     return {
       ok: false,
       error: 'scope_not_accepted',
-      message: 'Do not send a scope. Send target:"company", or target:"investor" with the investor code.',
+      message: 'Do not send a scope. Send target:"company", target:"investor" with the investor code, or target:"officer" with the officer id.',
     };
   }
   const target = b.target === undefined || b.target === null ? '' : String(b.target).trim();
@@ -79,8 +79,16 @@ function parseTarget(body = {}) {
     };
   }
   const investorRaw = b.investor === undefined || b.investor === null ? '' : String(b.investor).trim();
+  const officerRaw = b.officer === undefined || b.officer === null ? '' : String(b.officer).trim();
 
   if (target === 'company') {
+    if (officerRaw) {
+      return {
+        ok: false,
+        error: 'officer_with_company_target',
+        message: `This asks for the company-wide value but names a loan officer. Those are different slots — send target:"officer" to set it for that officer only.`,
+      };
+    }
     if (investorRaw) {
       return {
         ok: false,
@@ -89,6 +97,21 @@ function parseTarget(body = {}) {
       };
     }
     return { ok: true, kind: 'company', scope: COMPANY_SCOPE, investorCode: null };
+  }
+
+  if (target === 'officer') {
+    if (!officerRaw) {
+      return { ok: false, error: 'officer_required', message: 'Name the loan officer these settings are for.' };
+    }
+    const scope = store.officerScope(officerRaw);
+    if (!scope) {
+      return {
+        ok: false,
+        error: `bad_officer_id:${officerRaw}`,
+        message: `"${officerRaw}" is not a loan officer id.`,
+      };
+    }
+    return { ok: true, kind: 'officer', scope, investorCode: null, officerId: officerRaw.toLowerCase() };
   }
 
   if (target === 'investor') {
@@ -109,7 +132,7 @@ function parseTarget(body = {}) {
   return {
     ok: false,
     error: `unknown_target:${target}`,
-    message: `Unknown target "${target}". Use "company" or "investor".`,
+    message: `Unknown target "${target}". Use "company", "investor" or "officer".`,
   };
 }
 
@@ -133,6 +156,13 @@ function checkKeyForTarget(kind, key) {
       key,
       error: `unknown_setting:${key}`,
       message: `"${key}" is not a setting this engine has. Nothing was saved.`,
+    };
+  }
+  if (kind === 'officer' && def.perOfficer !== true) {
+    return {
+      key,
+      error: `not_per_officer:${key}`,
+      message: `"${def.label || key}" is a company-wide setting — a loan officer cannot set it. Per-officer settings: ${settings.officerScopedKeys().join(', ')}.`,
     };
   }
   if (kind === 'investor' && def.perInvestor !== true) {
@@ -226,6 +256,7 @@ function valueRefusalMessage(def, key, value, code) {
 function layerName(kind, source) {
   if (source === 'product_default') return 'product_default';
   if (kind === 'investor') return source === 'tenant' ? 'investor' : 'company';
+  if (kind === 'officer') return source === 'tenant' ? 'officer' : 'company';
   return 'company';
 }
 
@@ -252,10 +283,14 @@ async function describe(db, target) {
   let layers;
   let hereRows = {};
 
-  if (target.kind === 'investor') {
+  // A NON-COMPANY SLOT IS READ THE SAME WAY WHOEVER IT BELONGS TO — the only difference is which
+  // declaration says a key may live there, and that comes from the registry rather than from a second
+  // list here. Adding a third kind of slot is one entry.
+  const SLOT_FILTER = { investor: settings.isInvestorScoped, officer: settings.isOfficerScoped };
+  if (SLOT_FILTER[target.kind]) {
     const raw = await store.loadSettingOverrides(db, target.scope);
     const filtered = {};
-    for (const k of Object.keys(raw)) if (settings.isInvestorScoped(k)) filtered[k] = raw[k];
+    for (const k of Object.keys(raw)) if (SLOT_FILTER[target.kind](k)) filtered[k] = raw[k];
     layers = { tenant: filtered, org: companyOverrides };
     hereRows = await loadRows(db, target.scope);
   } else {
@@ -267,7 +302,9 @@ async function describe(db, target) {
   const rows = settings.allDefinitions().map((def) => {
     const r = settings.resolve(def.key, layers);
     const source = layerName(target.kind, r.source);
-    const settable = target.kind === 'company' || def.perInvestor === true;
+    const settable = target.kind === 'company'
+      || (target.kind === 'investor' && def.perInvestor === true)
+      || (target.kind === 'officer' && def.perOfficer === true);
     const storedRaw = hereRows[def.key] || null;
     // A row at this slot for a key that is NOT settable here is a row NOTHING READS — the
     // door refuses to write one and the resolver filters it out. Reporting it as "set here"
@@ -287,6 +324,7 @@ async function describe(db, target) {
       nullable: def.nullable === true,
       itemType: def.itemType || null,
       perInvestor: def.perInvestor === true,
+      perOfficer: def.perOfficer === true,
       // settable AT THIS SLOT. A company-wide setting shown on an investor screen is
       // read-only there, and the screen says so rather than offering a control the
       // server would refuse.
@@ -304,14 +342,18 @@ async function describe(db, target) {
       // a stored row at this slot that nothing reads (see above) — normally false
       ignoredHere: !settable && !!storedRaw,
       // what an investor slot falls back TO, so the screen can show both numbers
-      companyValue: target.kind === 'investor' ? company.values[def.key] : undefined,
-      companySource: target.kind === 'investor' ? layerName('company', company.sources[def.key]) : undefined,
+      companyValue: target.kind === 'company' ? undefined : company.values[def.key],
+      companySource: target.kind === 'company' ? undefined : layerName('company', company.sources[def.key]),
     };
   });
 
   return {
-    target: { kind: target.kind, investor: target.investorCode || null, scope: target.scope },
+    target: {
+      kind: target.kind, investor: target.investorCode || null,
+      officer: target.officerId || null, scope: target.scope,
+    },
     investorScopedKeys: settings.investorScopedKeys(),
+    officerScopedKeys: settings.officerScopedKeys(),
     settings: rows,
   };
 }

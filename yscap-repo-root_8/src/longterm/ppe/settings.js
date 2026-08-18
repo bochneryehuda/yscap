@@ -105,6 +105,80 @@ const DEFINITIONS = {
     help: 'Optional list of per-scenario margin/holdback overrides ({ when, marginMilli?, holdbackMilli? }). Blank = the investor/company default applies to every scenario.',
   },
 
+  // ---- Loan-officer compensation (D18 / E9; per-officer under scope `officer:<staffId>`) ----
+  //
+  // THE OWNER'S RULES THESE CARRY. 2026-08-17: the 0.25 company holdback is non-overridable; the
+  // officer's own default margin is 2.00, earned either as a 2-point origination at par or as a
+  // rebate in the back, and every officer sets his own split of the two; a minimum and a maximum in
+  // DOLLARS per loan; the compensation split is on the origination. 2026-08-18, settling the two
+  // questions that were holding the build: *"Company default: the minimum is not enforced. It's not a
+  // hard rule. It's a movable default, and every loan officer can set this movable default
+  // differently. The split does not apply for the margin. The entire margin hold back goes for the
+  // company."*
+  //
+  // `perOfficer: true` is LOAD-BEARING in exactly the way `perInvestor` is: it is the ONE declaration
+  // that a key may be overridden under an `officer:` scope, read by both ends — the write door and
+  // `store.resolveCompPlanForOfficer` — so the two agree by construction. **The company holdback is
+  // deliberately NOT on that list**, and that absence is the mechanism the owner's "non-overridable"
+  // rests on: the resolver simply never passes an officer layer for a key that is not per-officer, so
+  // an officer's override of it cannot take effect even if one were somehow stored.
+  //
+  // NOTHING HERE PRICES ANYTHING. Whether this 0.25 is the same quarter point the pipeline already
+  // subtracts as `pricing.correspondent_margin_milli`, or a second one on top, is an open owner
+  // question (COMPENSATION-MARGIN-MODEL.md, question 5) whose two answers differ by a quarter point on
+  // every loan — so `comp-plan.js` computes who earns what and never touches a price.
+  'comp.company_holdback_milli': {
+    type: 'number', integer: true, min: 0, max: 5000, default: 250,
+    group: 'Compensation', label: 'Company holdback (never the officer\'s)',
+    help: 'The company margin holdback in thousandths of a point (250 = 0.250). A loan officer can never set or remove it, it is never split with them, and it is never counted toward their per-loan minimum or maximum.',
+  },
+  'comp.officer_margin_milli': {
+    type: 'number', integer: true, min: 0, max: 20000, default: 2000, perOfficer: true,
+    group: 'Compensation', label: 'Loan officer margin', 
+    help: 'What the loan officer earns on a file, in thousandths of a point (2000 = 2.000). The company default; each officer may set their own.',
+  },
+  'comp.officer_front_milli': {
+    type: 'number', integer: true, min: 0, max: 20000, default: 2000, perOfficer: true,
+    group: 'Compensation', label: 'Taken as origination (front)',
+    help: 'How much of the officer margin is charged to the borrower as origination. The front and the back must add up to the margin.',
+  },
+  'comp.officer_back_milli': {
+    type: 'number', integer: true, min: 0, max: 20000, default: 0, perOfficer: true,
+    group: 'Compensation', label: 'Taken as rebate (back)',
+    help: 'How much of the officer margin is earned in the back instead of being charged to the borrower. The front and the back must add up to the margin.',
+  },
+  // DOLLARS, and DEFAULTS RATHER THAN LIMITS — the owner's own words. There is deliberately no
+  // company floor an officer's own number must clear: writing one would be the hard rule they said
+  // this is not. Blank means there is no minimum (or no maximum) at all, never zero.
+  'comp.officer_min_cents': {
+    type: 'number', integer: true, min: 0, max: 100000000, default: null, nullable: true, perOfficer: true,
+    group: 'Compensation', label: 'Least the officer makes on a loan',
+    help: 'A per-loan minimum in CENTS ($3,000 = 300000). A movable default, not a floor — an officer may set their own, higher or lower. Blank = no minimum.',
+  },
+  'comp.officer_max_cents': {
+    type: 'number', integer: true, min: 0, max: 100000000, default: null, nullable: true, perOfficer: true,
+    group: 'Compensation', label: 'Most the officer makes on a loan',
+    help: 'A per-loan maximum in CENTS ($50,000 = 5000000). A movable default, not a ceiling nobody may cross. Blank = no maximum.',
+  },
+  // DELIBERATELY BLANK. The officer's share of the origination is a real money figure and nobody has
+  // stated it, so the compensation record REFUSES to work out anybody's net until it is set rather
+  // than printing a share off a number this file invented.
+  'comp.officer_split_pct': {
+    type: 'number', integer: true, min: 0, max: 100, default: null, nullable: true, perOfficer: true,
+    group: 'Compensation', label: 'Officer share of the origination (%)',
+    help: 'The officer keeps this percentage of the origination; the company keeps the rest. Blank until somebody sets it — no share is assumed.',
+  },
+  'comp.split_basis': {
+    type: 'enum', options: ['front_only', 'front_and_back'], default: 'front_only',
+    group: 'Compensation', label: 'What the split is taken from',
+    help: 'The recorded reading of "the split does not apply for the margin — the entire margin holdback goes for the company": the company takes its share of the ORIGINATION only. The holdback is never part of it either way.',
+  },
+  'comp.default_mode': {
+    type: 'enum', options: ['borrower_paid', 'lender_paid'], default: 'borrower_paid',
+    group: 'Compensation', label: 'Who pays the officer by default',
+    help: 'Borrower-paid means the officer is paid by an origination charge; lender-paid means they are paid out of the rebate. Lender Price is searched under the matching comp type.',
+  },
+
   // ---- Eligibility ---------------------------------------------------------
   'eligibility.result_mode': {
     type: 'enum', options: ['hard_fail_only', 'show_with_reasons', 'soft_warn'],
@@ -190,6 +264,21 @@ function investorScopedKeys() {
   return Object.keys(DEFINITIONS).filter((k) => DEFINITIONS[k].perInvestor === true).sort();
 }
 
+/**
+ * The keys an `officer:<staffId>` override may be stored for — DERIVED from the definitions, exactly
+ * as the per-investor list is. The company holdback is absent by design: that absence IS the owner's
+ * "a loan officer can never override it", enforced structurally rather than by a check.
+ */
+function officerScopedKeys() {
+  return Object.keys(DEFINITIONS).filter((k) => DEFINITIONS[k].perOfficer === true).sort();
+}
+
+/** Is this a key a per-officer override may be stored for? Unknown key → false. */
+function isOfficerScoped(key) {
+  const def = getDefinition(key);
+  return !!(def && def.perOfficer === true);
+}
+
 /** Is this a key a per-investor override may be stored for? Unknown key → false. */
 function isInvestorScoped(key) {
   const def = getDefinition(key);
@@ -266,4 +355,5 @@ function resolveAll(layers = {}) {
 module.exports = {
   DEFINITIONS, getDefinition, allDefinitions, validateValue, resolve, resolveAll,
   investorScopedKeys, isInvestorScoped,
+  officerScopedKeys, isOfficerScoped,
 };

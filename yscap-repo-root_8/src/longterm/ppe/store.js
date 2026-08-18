@@ -181,6 +181,117 @@ function investorScope(code) {
 // Read an `investor:<code>` scope string back to its code, else null. The inverse of
 // investorScope, and it applies the SAME shape test, so a hand-written scope string that
 // investorScope would never have produced is not recognised as an investor scope either.
+// ---- the OFFICER slot, exactly the shape the investor slot has ---------------
+//
+// A loan officer's own compensation numbers live under `officer:<staffId>`, where the id is the
+// SHARED `staff_users` record (identity zone, read-only to Long-Term). Same discipline as the
+// investor scope: the prefix is attached in exactly one function, so every stored scope string has a
+// guaranteed shape rather than a hoped-for one, and a value that is not a plain uuid never becomes a
+// scope at all.
+const OFFICER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function officerScope(staffId) {
+  const c = String(staffId == null ? '' : staffId).trim().toLowerCase();
+  return OFFICER_ID_RE.test(c) ? `officer:${c}` : null;
+}
+
+function officerIdOfScope(scope) {
+  const s = String(scope == null ? '' : scope);
+  if (!s.startsWith('officer:')) return null;
+  const c = s.slice('officer:'.length);
+  return OFFICER_ID_RE.test(c) ? c.toLowerCase() : null;
+}
+
+/**
+ * An officer's OWN stored overrides, filtered to the keys the registry declares per-officer.
+ *
+ * THE FILTER IS THE OWNER'S "NON-OVERRIDABLE", ENFORCED STRUCTURALLY. `comp.company_holdback_milli`
+ * is not declared `perOfficer`, so it is dropped here — which means an officer-scope row for it,
+ * however it came to exist, can never reach the resolver. The write door refuses to store one and
+ * this refuses to read one; the two ends agree because they read the SAME declaration, not because
+ * somebody kept two lists in step.
+ */
+async function loadOfficerOverrides(db, staffId) {
+  const scope = officerScope(staffId);
+  if (!scope) return {};
+  const raw = await loadSettingOverrides(db, scope);
+  const out = {};
+  for (const k of Object.keys(raw)) if (settings.isOfficerScoped(k)) out[k] = raw[k];
+  return out;
+}
+
+/**
+ * Resolve one officer's compensation plan: officer layer over company layer over the coded default.
+ *
+ * The HOLDBACK is resolved from the company layer ALONE — the officer layer is not passed for it, so
+ * there is no override to ignore. `holdbackSource` rides on the answer so `comp-plan.computeComp` can
+ * refuse a plan built by code that got this wrong, rather than silently substituting the right value
+ * and hiding the mistake.
+ *
+ * DEGRADES SAFELY: an unreadable override table falls back to the company scope, which falls back to
+ * the coded defaults — the plan resolves to the pre-fills, never to nothing.
+ */
+async function resolveCompPlanForOfficer(db, staffId, opts = {}) {
+  const org = await loadSettingOverrides(db, opts.companyScope || 'company');
+  const tenant = await loadOfficerOverrides(db, staffId);
+
+  const pick = (key) => settings.resolve(key, { tenant, org });
+  const companyOnly = (key) => settings.resolve(key, { org });
+
+  const holdback = companyOnly('comp.company_holdback_milli');
+  const margin = pick('comp.officer_margin_milli');
+  const front = pick('comp.officer_front_milli');
+  const back = pick('comp.officer_back_milli');
+  const minC = pick('comp.officer_min_cents');
+  const maxC = pick('comp.officer_max_cents');
+  const split = pick('comp.officer_split_pct');
+  const basis = companyOnly('comp.split_basis');
+  const defaultMode = companyOnly('comp.default_mode');
+
+  // THE FRONT/BACK SPLIT MUST COME FROM THE SAME LAYER AS THE MARGIN IT SPLITS, and this is a real
+  // defect found by running it: an officer whose own margin is 3.000 while the front and back are
+  // still somebody ELSE'S 2.000 and 0 does not add up, and `computeComp` — correctly — refuses the
+  // whole file rather than repairing it. So a split that is STALER than the margin is treated as
+  // unstated, and the engine derives it from how the officer is paid (all origination on a
+  // borrower-paid file, all rebate on a lender-paid one). Setting a margin alone is the ordinary
+  // thing an administrator does; it must not leave a person's compensation unworkable-out.
+  const RANK = { product_default: 0, org: 1, tenant: 2 };
+  const rank = (r) => RANK[r.source] || 0;
+  const splitIsStale = rank(front) < rank(margin) || rank(back) < rank(margin);
+
+  return {
+    plan: {
+      companyHoldbackMilli: holdback.value,
+      holdbackSource: 'company',
+      officerMarginMilli: margin.value,
+      officerFrontMilli: splitIsStale ? null : front.value,
+      officerBackMilli: splitIsStale ? null : back.value,
+      minCents: minC.value,
+      maxCents: maxC.value,
+      splitPct: split.value,
+      splitBasis: basis.value,
+      mode: opts.mode || defaultMode.value,
+    },
+    officerScope: officerScope(staffId),
+    // WHERE EACH NUMBER CAME FROM — the officer's own, the company's, or the shipped default. The
+    // same provenance record the margin/holdback resolver returns, and the thing that lets a screen
+    // say "this is your number" rather than only showing a figure.
+    sources: {
+      companyHoldbackMilli: holdback.source === 'org' ? 'company' : holdback.source,
+      officerMarginMilli: margin.source === 'tenant' ? 'officer' : (margin.source === 'org' ? 'company' : margin.source),
+      officerFrontMilli: splitIsStale ? 'derived_from_how_they_are_paid'
+        : (front.source === 'tenant' ? 'officer' : (front.source === 'org' ? 'company' : front.source)),
+      officerBackMilli: splitIsStale ? 'derived_from_how_they_are_paid'
+        : (back.source === 'tenant' ? 'officer' : (back.source === 'org' ? 'company' : back.source)),
+      minCents: minC.source === 'tenant' ? 'officer' : (minC.source === 'org' ? 'company' : minC.source),
+      maxCents: maxC.source === 'tenant' ? 'officer' : (maxC.source === 'org' ? 'company' : maxC.source),
+      splitPct: split.source === 'tenant' ? 'officer' : (split.source === 'org' ? 'company' : split.source),
+      splitBasis: basis.source === 'org' ? 'company' : basis.source,
+      mode: opts.mode ? 'requested' : (defaultMode.source === 'org' ? 'company' : defaultMode.source),
+    },
+  };
+}
+
 function investorCodeOfScope(scope) {
   const s = String(scope == null ? '' : scope);
   if (!s.startsWith('investor:')) return null;
@@ -908,6 +1019,7 @@ module.exports = {
   loadSettingOverrides, resolveSettings, resolveSetting, setSetting, clearSetting,
   readStoredSetting, appendSettingAudit, listSettingAudit,
   investorScope, investorCodeOfScope, loadInvestorOverrides, loadSettingOverridesStrict,
+  officerScope, officerIdOfScope, loadOfficerOverrides, resolveCompPlanForOfficer,
   resolveMarginHoldbackForInvestor, prepareMarginHoldbackForInvestor,
   findInvestorByName, createInvestor, listInvestors, createProgram, listPrograms, listAllPrograms,
   setProgramLpScope,

@@ -117,6 +117,7 @@ const ratesheetDiff = require('../ppe/ratesheet-diff');
 const suggestionMiner = require('../ppe/suggestion-miner');
 const pricingBreakdown = require('../ppe/pricing-breakdown');
 const lpNormalizeFull = require('../ppe/lp-normalize-full');
+const compPlan = require('../ppe/comp-plan');
 const disqualifierReview = require('../ppe/disqualifier-review');
 const disqualifierReviewStore = require('../ppe/disqualifier-review-store');
 
@@ -587,8 +588,21 @@ async function getSettings(req, res) {
   // the company one. The target is parsed by the SAME function the write door uses, so a
   // code the writer would refuse can never be READ as a valid slot either — a screen that
   // could display a slot the server will not write to is a dead end.
-  const t = settingsAdmin.parseTarget(
-    req.query && req.query.investor ? { target: 'investor', investor: String(req.query.investor) } : { target: 'company' });
+  // `?investor=CODE` reads that investor's own slot, `?officer=<id>` a loan officer's own, and no
+  // query at all reads the company one. Naming BOTH is contradictory — they are two different slots
+  // and only the caller knows which they meant — so it is refused rather than resolved by picking one.
+  const q = req.query || {};
+  let ask = { target: 'company' };
+  if (q.investor && q.officer) {
+    return res.status(400).json({
+      ok: false,
+      code: 'two_slots',
+      error: 'This asks for an investor\'s settings and a loan officer\'s at the same time. Ask for one.',
+    });
+  }
+  if (q.investor) ask = { target: 'investor', investor: String(q.investor) };
+  else if (q.officer) ask = { target: 'officer', officer: String(q.officer) };
+  const t = settingsAdmin.parseTarget(ask);
   if (!t.ok) return res.status(400).json({ ok: false, error: t.message, code: t.error });
 
   // `described` carries, PER SETTING, the value in force, WHICH LAYER it came from, whether
@@ -3025,6 +3039,52 @@ async function publishRateSheetRoute(req, res) {
 }
 
 
+// === WHO MAKES WHAT ON A FILE (D18 / E9, owner-answered 2026-08-18) ============================
+//
+// The owner's two sentences that unblocked this: *"Company default: the minimum is not enforced. It's
+// not a hard rule. It's a movable default, and every loan officer can set this movable default
+// differently. The split does not apply for the margin. The entire margin hold back goes for the
+// company."* The numbers live in the settings registry (company-wide, and per officer under an
+// `officer:` slot); `comp-plan.js` works out the stack; this is the read that puts the two together.
+//
+// IT PRICES NOTHING, and that is not a limitation to be tidied away later — whether the company's
+// quarter point is the SAME one the pipeline already subtracts or a second one on top is an open
+// owner question whose two answers differ by a quarter point on every loan.
+async function compPlanRoute(req, res) {
+  const scope = readScope(req);
+  const q = req.query || {};
+  const officerId = uuidOf(q.officerId);
+  if (!officerId) {
+    return res.status(400).json({ error: 'Say which loan officer this is for.', field: 'officerId' });
+  }
+  const mode = compPlan.MODES.includes(String(q.mode || '')) ? String(q.mode) : null;
+  const loanAmountCents = intIn(q.loanAmountCents, 100000000000) || 0;
+
+  const resolved = await store.resolveCompPlanForOfficer(db, officerId, { companyScope: scope, mode });
+  // The breakdown is computed only when there is a loan to compute it on. Asking for the PLAN alone
+  // is a legitimate question ("what are this officer's numbers?") and must not be answered with a
+  // refusal about a loan amount nobody supplied.
+  const breakdown = loanAmountCents > 0
+    ? compPlan.computeComp(resolved.plan, { loanAmountCents })
+    : null;
+
+  return res.json({
+    scope,
+    officerId,
+    officerScope: resolved.officerScope,
+    plan: resolved.plan,
+    sources: resolved.sources,
+    loanAmountCents: loanAmountCents || null,
+    breakdown,
+    // Said on the answer rather than left to be inferred from the absence of a price field.
+    priceEffect: {
+      applied: false,
+      reason: 'These numbers say who earns what. Nothing here changes a quoted price.',
+    },
+    settingsRoute: 'POST /api/lt/ppe/settings with target:"officer" and the officer id',
+  });
+}
+
 // === THE DISQUALIFIER REVIEW QUEUE (§2.58, owner-instructed 2026-08-18) =========================
 // The owner's instruction, in their own words: "look on the eligibility rule in Lender Price, go into
 // the disqualifier, and look for the actual disqualifier. You then look at the rate to see if you can
@@ -3294,6 +3354,7 @@ router.get('/rate-sheets/:id/diff', requirePpeAdmin, wrap(rateSheetDiffRoute, 'l
 router.get('/rate-sheets/:id/agreement', requirePpeAdmin, wrap(agreementRoute, 'lt_ppe_agreement_read_error'));
 router.post('/rate-sheets/:id/agreement/run', requirePpeAdmin, wrap(runAgreementRoute, 'lt_ppe_agreement_run_error'));
 router.post('/rate-sheets/:id/publish', requirePpeAdmin, wrap(publishRateSheetRoute, 'lt_ppe_publish_error'));
+router.get('/comp-plan', requirePpeAdmin, wrap(compPlanRoute, 'lt_ppe_comp_plan_error'));
 router.post('/rate-sheets/:id/disqualifier-review/run', requirePpeAdmin, wrap(runDisqualifierReviewRoute, 'lt_ppe_disq_review_run_error'));
 router.get('/disqualifier-review', requirePpeAdmin, wrap(disqualifierReviewQueueRoute, 'lt_ppe_disq_review_read_error'));
 router.post('/disqualifier-review/:id/decide', requirePpeAdmin, wrap(decideDisqualifierReviewRoute, 'lt_ppe_disq_review_decide_error'));
@@ -3317,6 +3378,7 @@ module.exports.handlers = {
   setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, rateSheetCoverageRoute, rateSheetDiffRoute, agreementRoute, runAgreementRoute,
   publishRateSheetRoute,
   runDisqualifierReviewRoute, disqualifierReviewQueueRoute, decideDisqualifierReviewRoute,
+  compPlanRoute,
 };
 module.exports._internals = {
   requirePpeAdmin, requirePpeSuperAdmin, intIn, readScope, loadProgram, resolveSettingsSafe, actorLabel,

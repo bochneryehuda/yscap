@@ -18,7 +18,7 @@ striking it here in the same commit.
 against the definition instead of retyping it, an operator command, a capability written ahead of its
 caller. A row is an invitation to say which — that is what the reason field is for.
 
-## Referenced nowhere at all (140)
+## Referenced nowhere at all (142)
 
 Not by production code and not by a test. Nothing asks for these, so nothing would notice if one were
 wrong.
@@ -70,6 +70,7 @@ wrong.
 - `ppe/canary-driver.js :: recordOutcome` — writes the tick result onto the state row; internal
 - `ppe/canary-driver.js :: TIMING_HOLDS` — the timing-hold set; internal to classifyTick
 - `ppe/canary-schedule.js :: MINUTE_MS`
+- `ppe/comp-plan.js :: SPLIT_BASES`
 - `ppe/cutover.js :: OPEN_FINDING_STATUSES`
 - `ppe/deephaven-dscr-prepay-maxprice.js :: lockTermLlpaTables` — the raw lock-term tables; the compiler reads them inside this module
 - `ppe/deephaven-dscr-prepay-maxprice.js :: maxPriceLpMilli` — the measured Lender Price ceiling this block was built from — kept as the source figure, read inside this module
@@ -156,6 +157,7 @@ wrong.
 - `ppe/settings-admin.js :: layerName` — plain-English name for a settings layer, used in the refusals this module writes
 - `ppe/settings-admin.js :: valueRefusalMessage` — the wording of a rejected value; used inside the validator, exported so the message can be asserted without a write
 - `ppe/store.js :: loadSettingOverridesStrict` — the strict settings read (it propagates a failure rather than degrading, which is what the PRICING path needs); the two resolvers in this module call it, and the suite asserts the strict-vs-degrading split directly
+- `ppe/store.js :: officerIdOfScope`
 - `ppe/store.js :: priceLimitChangedFields` — names which fields of a price limit actually moved; used by the audited write in this module so a no-op is never recorded as a change
 - `ppe/store.js :: priceLimitShape` — the canonical price-limit shape the audit records at both ends; used inside the write, exported so the suite asserts against the definition
 - `routes/settings.js :: PERSONAL_KEYS`
@@ -164,7 +166,7 @@ wrong.
 - `sync/loans.js :: readLoan`
 - `views.js :: defaultView`
 
-## Named by a test and by no production code (186)
+## Named by a test and by no production code (187)
 
 This is the §2.45 / §2.46 shape exactly — built, tested, and asked by nothing — and it is also the
 shape of a perfectly good exported table that a suite asserts against. The list is watched, not
@@ -336,6 +338,7 @@ banned.
 - `ppe/settings-admin.js :: checkKeyForTarget` — refuses a key at a slot it does not belong to; used inside the batch plan, exported so the whole refusal table can be asserted
 - `ppe/store.js :: investorCodeOfScope` — reads the investor code back out of a scope string; used by the settings layer here
 - `ppe/store.js :: loadInvestorOverrides`
+- `ppe/store.js :: loadOfficerOverrides`
 - `ppe/store.js :: normAlias`
 - `ppe/store.js :: publishRateSheetVersionUnchecked`
 - `ppe/store.js :: resolveMarginHoldbackForInvestor`

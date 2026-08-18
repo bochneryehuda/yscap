@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
+import CompPlanCard from './CompPlanCard.jsx';
 import { INK, MUTED, SLATE, PAPER, DANGER, CAUTION, card, h2, sub, eyebrow, input, label } from './ppeStyles.js';
 
 // ---------------------------------------------------------------------------
@@ -95,12 +96,19 @@ const SOURCE_WORDS = {
   product_default: 'the shipped default',
   company: 'the company-wide value',
   investor: "this investor's own value",
+  officer: "this loan officer's own value",
 };
 
 export default function LtPpeSettings() {
   const [data, setData] = useState(null);
   const [investors, setInvestors] = useState([]);
   const [investor, setInvestor] = useState('');
+  // The loan officers PILOT can key a settings slot on. They come from the people map, and only a
+  // row that is LINKED to one of our staff records carries an id to key on — an unlinked Encompass
+  // login is a person we cannot store a number against, and offering one would be a control the
+  // server refuses.
+  const [officers, setOfficers] = useState([]);
+  const [officer, setOfficer] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -114,20 +122,29 @@ export default function LtPpeSettings() {
   const [history, setHistory] = useState(null);
   const [historyFor, setHistoryFor] = useState(null);
 
-  const target = useMemo(
-    () => (investor ? { target: 'investor', investor } : { target: 'company' }),
-    [investor]);
+  const target = useMemo(() => {
+    if (investor) return { target: 'investor', investor };
+    if (officer) return { target: 'officer', officer };
+    return { target: 'company' };
+  }, [investor, officer]);
 
   const load = useCallback(() => {
     setNote('');
-    ltApi.ppeSettings(investor || undefined)
+    ltApi.ppeSettings(investor || undefined, officer || undefined)
       .then((d) => { setData(d); setDraft({}); setRowError({}); setRowOk({}); })
       .catch((e) => setNote(e.message || 'Could not read the pricing engine settings.'));
-  }, [investor]);
+  }, [investor, officer]);
   useEffect(load, [load]);
 
   useEffect(() => {
     ltApi.ppeInvestors().then((d) => setInvestors((d && d.investors) || [])).catch(() => setInvestors([]));
+    ltApi.people().then((d) => {
+      const seen = new Map();
+      for (const p of ((d && d.people) || [])) {
+        if (p && p.staff && p.staff.id && !seen.has(p.staff.id)) seen.set(p.staff.id, p.staff);
+      }
+      setOfficers([...seen.values()]);
+    }).catch(() => setOfficers([]));
   }, []);
 
   // The server's own answer is what redraws the screen after a save — never the values
@@ -230,14 +247,24 @@ export default function LtPpeSettings() {
             {/* Wide enough for the longest option to read in full — a truncated
                 "Everyone — the company-wide val" is the one control on this screen
                 where a misread means changing the wrong investor's numbers. */}
+            {/* ONE control for the three slots, because they are one choice. Two pickers would let
+                somebody name an investor AND an officer, which the server refuses — and a control that
+                can produce a refused request is a control that reads as broken. */}
             <select
               style={{ ...input, maxWidth: 380 }}
-              value={investor}
-              onChange={(e) => setInvestor(e.target.value)}
+              value={investor ? `investor:${investor}` : (officer ? `officer:${officer}` : '')}
+              onChange={(e) => {
+                const v = e.target.value;
+                setInvestor(v.startsWith('investor:') ? v.slice('investor:'.length) : '');
+                setOfficer(v.startsWith('officer:') ? v.slice('officer:'.length) : '');
+              }}
             >
               <option value="">Everyone — the company-wide values</option>
               {investors.map((i) => (
-                <option key={i.id || i.code} value={i.code}>{i.name || i.code} only</option>
+                <option key={i.id || i.code} value={`investor:${i.code}`}>{i.name || i.code} only</option>
+              ))}
+              {officers.map((o) => (
+                <option key={o.id} value={`officer:${o.id}`}>{o.name || o.email} (loan officer) only</option>
               ))}
             </select>
           </div>
@@ -249,6 +276,14 @@ export default function LtPpeSettings() {
           )}
         </div>
 
+        {officer && (
+          <p style={{ ...sub, marginTop: 12, marginBottom: 0 }}>
+            Only this loan officer&rsquo;s own compensation numbers can differ here — what they earn, how
+            it splits between origination and rebate, their per-loan least and most, and their share.
+            The company holdback is deliberately not on that list: it is the company&rsquo;s and an
+            officer can never set it. Everything else is company-wide and read-only here.
+          </p>
+        )}
         {investor && (
           <p style={{ ...sub, marginTop: 12, marginBottom: 0 }}>
             Only a few settings can differ per investor — the margin, the holdback, and the per-scenario
@@ -281,6 +316,7 @@ export default function LtPpeSettings() {
                     ? <Pill tone="flat" title="Nobody has changed this — it is the value the engine ships with.">the shipped default</Pill>
                     : <Pill tone="good" title={`In force from ${SOURCE_WORDS[row.source] || row.source}.`}>set to {show(row.value)}</Pill>}
                   {row.perInvestor && <Pill tone="warn">can differ per investor</Pill>}
+                  {row.perOfficer && <Pill tone="warn">can differ per loan officer</Pill>}
                   {readOnly && <Pill tone="flat">company-wide only</Pill>}
                 </div>
 
@@ -293,8 +329,8 @@ export default function LtPpeSettings() {
                     <> Set here{row.setAt ? ` on ${String(row.setAt).slice(0, 10)}` : ''}
                       {row.setBy ? ' by a person on the team' : ''}.</>
                   )}
-                  {!row.setHere && !row.isDefault && investor && (
-                    <> This investor has nothing of their own for this, so it follows the company value ({show(row.companyValue)}).</>
+                  {!row.setHere && !row.isDefault && (investor || officer) && (
+                    <> Nothing of their own is set here, so it follows the company value ({show(row.companyValue)}).</>
                   )}
                   {row.ignoredHere && (
                     <span style={{ color: CAUTION }}>
@@ -430,6 +466,7 @@ export default function LtPpeSettings() {
         Every change here is written down — what it was, what it became, who changed it and when — and
         that record is never edited or removed.
       </p>
+      <CompPlanCard officers={officers} />
     </LtLayout>
   );
 }

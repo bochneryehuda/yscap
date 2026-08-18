@@ -112,7 +112,15 @@ export const ltApi = {
   // company-wide value, `investor` reads/writes that investor's own. The server refuses a
   // hand-built scope outright, which is what makes a per-investor value unable to land in
   // the global slot by accident.
-  ppeSettings: (investor) => ltGet(lt(`/ppe/settings${investor ? `?investor=${encodeURIComponent(investor)}` : ''}`)),
+  // ONE SLOT AT A TIME. An investor's own settings, a loan officer's own, or — with neither — the
+  // company-wide ones. Asking for two is refused by the server rather than resolved by picking one.
+  ppeSettings: (investor, officer) => {
+    const q = new URLSearchParams();
+    if (investor) q.set('investor', investor);
+    else if (officer) q.set('officer', officer);
+    const qs = q.toString();
+    return ltGet(lt(`/ppe/settings${qs ? `?${qs}` : ''}`));
+  },
   ppeSaveSettings: (target, settingsPatch) => ltPost(lt('/ppe/settings'), { ...target, settings: settingsPatch }),
   ppeClearSettings: (target, keys) => ltPost(lt('/ppe/settings/clear'), { ...target, keys }),
   ppeSettingsAudit(params = {}) {
@@ -362,6 +370,17 @@ export const ltApi = {
     if (params.limit) q.set('limit', String(params.limit));
     const qs = q.toString();
     return ltGet(lt(`/ppe/disqualifier-review${qs ? `?${qs}` : ''}`));
+  },
+  // WHO MAKES WHAT ON A FILE (D18/E9). A READ — there is deliberately no method here that writes a
+  // compensation number: those are settings, and they go through the audited settings door with an
+  // `officer` target, which is what records who changed a person's pay figures and when.
+  ppeCompPlan: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.officerId) q.set('officerId', params.officerId);
+    if (params.loanAmountCents) q.set('loanAmountCents', String(params.loanAmountCents));
+    if (params.mode) q.set('mode', params.mode);
+    const qs = q.toString();
+    return ltGet(lt(`/ppe/comp-plan${qs ? `?${qs}` : ''}`));
   },
   ppeDecideDisqualifierReview: (id, body = {}) => ltPost(lt(`/ppe/disqualifier-review/${encodeURIComponent(id)}/decide`), body),
 };

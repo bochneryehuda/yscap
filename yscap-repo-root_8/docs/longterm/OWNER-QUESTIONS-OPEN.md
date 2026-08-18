@@ -218,6 +218,16 @@ Owner's words:
 2. The officer's split applies to **origination only**. The margin holdback is **entirely the
    company's** and no part of it is split with the officer.
 
+**BUILT THE SAME DAY (§2.59).** Both answers are now in the product: each officer carries their own
+compensation numbers, a minimum set for one officer is simply that officer's (nothing bumps it back up
+to the company's), and the holdback is the company's in full — never split, never counted toward what
+an officer must make on a loan, and structurally impossible for an officer to set. Nothing here changes
+a price.
+
+**One number is still missing before anybody's pay can be worked out: what share of the origination the
+officer keeps.** It is deliberately left blank rather than filled with a figure we chose — the screen
+says "nobody has set it" and works out no net until you do.
+
 ### 2026-08-18 — Deephaven's prepayment penalties are already given, and encoded
 
 Owner's words:
