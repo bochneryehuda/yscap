@@ -127,6 +127,14 @@ const PROBES = {
         probe: () => ['street', 'streetCont', 'zipExt'].every((f) =>
           new RegExp(`path:\\s*'property\\.address\\.${f}',\\s*neutral:\\s*''`).test(SRC.searchModel)) },
 
+  // P2's auto-wiring (2.67): the run must merge the scenarios and mine ONCE. Probing the merge as
+  // well as the call is deliberate - a per-scenario mine would also "call the miner" while leaving
+  // `occurrences` meaningless, so calling it is not evidence that the wiring is right.
+  P2: { what: 'the agreement run merges the run\'s refusals and mines them once (disqualifier-mining)',
+        probe: () => /disqualifierMining\.add\(mineAcc, lpDisq\)/.test(SRC.ppeRoutes)
+                  && /suggestionMiner\.mineFromParsed\(db, found\.scope, parsedForMining\)/.test(SRC.ppeRoutes)
+                  && exists('src/longterm/ppe/disqualifier-mining.js') },
+
   P8: { what: 'the manual-review and suggested-rules screens exist',
         probe: () => exists('app-v2/src/longterm/RuleBoard.jsx')
                   && exists('app-v2/src/longterm/DisqualifierReview.jsx') },

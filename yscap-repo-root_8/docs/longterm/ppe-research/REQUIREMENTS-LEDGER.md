@@ -124,7 +124,7 @@ Compiled 2026-08-17 from the owner's directives + the LT control docs + the LT c
 |---|---|---|---|
 | P-DQ | Read disqualify side per investor, suggest rules to import | DONE (analysis) | `ppe/disqualify-crosswalk.js`, `ppe/disqualify-analysis.js` |
 | P1 | Feed the FULL LP capture into the comparator (base rate, itemized LLPAs, margin, decline reasons) | DONE | `ppe/lp-normalize-full.js` |
-| P2 | Mine suggestions from a disqualifying scenario, persist to review store | PARTIAL | `ppe/suggestion-miner.js` + `POST /suggestions/mine` (mine action DONE); auto/scheduled wiring TODO |
+| P2 | Mine suggestions from a disqualifying scenario, persist to review store | DONE | `ppe/suggestion-miner.js` + `POST /suggestions/mine` (hand-fired) AND the AUTO wiring (2.67): the agreement run merges every scenario's scoped refusals via `ppe/disqualifier-mining.js` and mines once per run.|
 | P3 | The six difference detectors | DONE | `ppe/parity-detectors.js` |
 | P4 | Curated LP-key → rule-predicate crosswalk | DONE (via P-DQ) | `ppe/disqualify-crosswalk.js` (widen from live capture — BLK1) |
 | P5 | Rule-suggestion engine + suggestion store | DONE | `ppe/rule-store.js`, `db/571` |

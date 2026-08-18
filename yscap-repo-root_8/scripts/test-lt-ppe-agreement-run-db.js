@@ -458,6 +458,82 @@ const REQ = (over = {}) => Object.assign(
       'H8 a run whose refusal list never arrived reads nothing…');
     ok((await queue(reviewSheet.programId)).length === firstCount,
       'H9 …and retires nothing — a vendor outage is not "the disagreement went away"');
+
+    // =========================================================================
+    // I. THE SAME BATTERY ALSO MINES RULE SUGGESTIONS (P2's auto-wiring)
+    // =========================================================================
+    console.log('\nI. rule suggestions, mined from the refusals already paid for\n');
+
+    // The defect this closes: `mineFromParsed` had ONE caller, the hand-fired POST /suggestions/mine,
+    // so the daily run gathered Lender Price's refusal list 299 times and mined nothing from it. These
+    // assertions are what make "the run mines" true rather than stated — the pure suite can prove the
+    // accumulator's arithmetic but cannot prove the route reaches the store.
+    const ruleStore = require('../src/longterm/ppe/rule-store');
+    const sugg = (status = 'all') => ruleStore.listSuggestions(db, SCOPE, { status });
+
+    // Start from a clean slate for this section so the counts below mean this run.
+    await db.query('DELETE FROM lt_ppe_rule_suggestion WHERE scope = $1', [SCOPE]);
+
+    lpStub.answer = () => ({
+      disqualified: {
+        ready: true,
+        lenders: [{ lender: 'Deephaven', investor: 'Deephaven', items: [{ program: 'DSCR 30 Year Fixed', reasons: [{ rule: 'DSCR below 1.10', adjType: 'DscrRateAdjustment' }] }] }],
+      },
+    });
+    // The stub's counters are CUMULATIVE across this file and section H has already driven the route
+    // three times, so they must be zeroed here or I6 measures the whole suite rather than this run.
+    lpStub.calls = 0; lpStub.disqCalls = 0;
+    res = await call(H.runAgreementRoute, REQ({ params: { id: reviewSheet.versionId } }));
+    ok(res.statusCode === 200 && res.body.ok === true, 'I1 the run completes with mining wired in');
+    ok(res.body.mining && res.body.mining.ok === true,
+      `I2 THE ONE THAT MATTERS: the run mined the refusals it had already paid for (${JSON.stringify(res.body.mining || null)})`);
+
+    const after = await sugg();
+    ok(after.length > 0, `I3 …and rule suggestions are in the store a reviewer opens (${after.length})`);
+    ok(after.every((r) => r.investor_label === 'Deephaven'),
+      'I4 …filed under the INVESTOR, which is how suggestions are keyed');
+
+    // `occurrences` is the whole reason the run is merged before ONE mine call. Mining per scenario
+    // would leave this at 1 (the store OVERWRITES the count), and it is the signal a reviewer uses to
+    // decide which suggested rule matters most.
+    const top = after[0];
+    ok(Number(top.occurrences) === BUILT,
+      `I5 …with occurrences counting the WHOLE run, not the last scenario (${top.occurrences} of ${BUILT})`);
+
+    // No second battery: the refusal list is the same one the review read.
+    ok(lpStub.disqCalls === BUILT,
+      `I6 …asking Lender Price exactly once per scenario (${lpStub.disqCalls} of ${BUILT})`);
+
+    // A RE-RUN MUST NOT GROW THE QUEUE. The store dedupes on (scope, investor, dedupeKey); without
+    // that, six runs a day would file the same suggestion six times, every day, forever.
+    const firstSugg = after.length;
+    res = await call(H.runAgreementRoute, REQ({ params: { id: reviewSheet.versionId } }));
+    ok((await sugg()).length === firstSugg,
+      'I7 a second run refreshes the same suggestions — the queue does not grow');
+
+    // A DECIDED SUGGESTION IS NEVER REOPENED by a later run. This is what makes an automatic miner
+    // safe to point at a scheduler: dismissing something must be final, or the reviewer is asked the
+    // same question six times a day for the rest of the sheet's life.
+    await db.query("UPDATE lt_ppe_rule_suggestion SET status = 'dismissed' WHERE scope = $1", [SCOPE]);
+    res = await call(H.runAgreementRoute, REQ({ params: { id: reviewSheet.versionId } }));
+    const openAfterDismiss = await sugg('open');
+    ok(openAfterDismiss.length === 0,
+      'I8 …and a dismissed suggestion stays dismissed through the next run');
+    ok((await sugg()).length === firstSugg,
+      'I9 …without minting a duplicate beside it');
+
+    // A FEED THAT NEVER ARRIVED SAYS SO, rather than reporting a clean zero. "No scenario carried a
+    // refusal list" and "nothing was refused" are different facts and only one of them is good news.
+    await db.query('DELETE FROM lt_ppe_rule_suggestion WHERE scope = $1', [SCOPE]);
+    lpStub.answer = () => ({ disqualified: { ready: false, lenders: [] } });
+    res = await call(H.runAgreementRoute, REQ({ params: { id: reviewSheet.versionId } }));
+    ok(res.body.mining && res.body.mining.skipped === 'no_refusals_read',
+      'I10 a run whose refusal list never arrived says so plainly…');
+    ok((await sugg()).length === 0, 'I11 …and writes nothing');
+
+    // AND MINING CANNOT TOUCH THE MEASUREMENT — the same guarantee the review carries.
+    ok(res.body.scenarios === BUILT && res.body.summary && res.body.summary.total === BUILT,
+      'I12 …with the agreement verdict itself unchanged — mining is an observer, never a participant');
   } finally {
     await cleanup();
     if (typeof db.end === 'function') await db.end().catch(() => {});

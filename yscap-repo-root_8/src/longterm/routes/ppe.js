@@ -117,6 +117,7 @@ const pricingBreakdown = require('../ppe/pricing-breakdown');
 const lpNormalizeFull = require('../ppe/lp-normalize-full');
 const compPlan = require('../ppe/comp-plan');
 const disqualifierReview = require('../ppe/disqualifier-review');
+const disqualifierMining = require('../ppe/disqualifier-mining');
 const disqualifierReviewStore = require('../ppe/disqualifier-review-store');
 
 const SCOPE = 'company';
@@ -3217,9 +3218,22 @@ async function runAgreementRoute(req, res) {
   const reviewItems = [];
   const reviewCovered = [];
   let reviewErrors = 0;
+  // P2's auto-wiring rides the SAME normalized refusal list the review reads, so the run pays Lender
+  // Price once and answers both questions. See `disqualifier-mining.js` for why the payload is
+  // regrouped rather than handed over raw (the scope filter lives in the normalizer) and why the run
+  // is merged before ONE mine call rather than mined per scenario (`occurrences` is overwritten, not
+  // accumulated, by the store).
+  const mineAcc = disqualifierMining.createAccumulator();
   const collectReview = ({ scenario, ours: our, legs }) => {
     try {
       const lpDisq = lpNormalizeFull.normalizeLpDisqualified((legs && legs.disqualified) || {}, lpScope);
+      // MINING IS FED BEFORE THE REVIEW'S OWN READINESS TEST, AND THAT SEPARATION IS DELIBERATE.
+      // `rev.ready` answers "could this scenario be reviewed against our sheet"; mining only needs
+      // "did Lender Price tell us what it refused", which is `lpDisq.ready` and which `add()` checks
+      // itself. Folding mining in after the `return` below would silently drop every scenario the
+      // review could not use, so a sheet with a gap would also stop suggesting the rules that would
+      // close it - the two questions must not share one gate.
+      disqualifierMining.add(mineAcc, lpDisq);
       const rev = disqualifierReview.reviewScenario({ scenario, lp: lpDisq, ours: our, program });
       if (!rev.ready) return;
       reviewCovered.push(disqualifierReviewStore.scenarioKey(scenario));
@@ -3305,6 +3319,42 @@ async function runAgreementRoute(req, res) {
     review.skipped = 'nothing_read';
   }
 
+  // P2 — MINE THE RUN'S REFUSALS INTO RULE SUGGESTIONS, ONCE, HERE.
+  //
+  // This is the "auto/scheduled wiring" the ledger recorded as the P workstream's last open item. It
+  // deliberately does NOT depend on the review above: the review needs a program row to write against,
+  // while suggestions are stored per INVESTOR and are useful on a sheet that has not been wired to a
+  // program yet - which is exactly when you most want to be told which rules to add.
+  //
+  // BEST-EFFORT, LIKE EVERY OTHER PASSENGER ON THIS RUN. `mineFromParsed` never throws by contract and
+  // is wrapped anyway; a suggestion queue that could not be written is news, not a reason to lose a
+  // battery somebody has just paid for. Nothing here can publish a rule: it writes PROPOSALS, the store
+  // dedupes them and never reopens one a human has decided, and accepting one is a separate,
+  // super-admin-gated act.
+  const mining = { ...disqualifierMining.summarize(mineAcc) };
+  try {
+    const parsedForMining = disqualifierMining.toParsed(mineAcc);
+    if (!parsedForMining.ready) {
+      // Said plainly rather than reported as a clean zero: no scenario carried a refusal list at all,
+      // which is a statement about the FEED, not about the sheet being in agreement.
+      mining.skipped = 'no_refusals_read';
+    } else {
+      const mined = await suggestionMiner.mineFromParsed(db, found.scope, parsedForMining);
+      mining.ok = mined.ok;
+      if (mined.ok) {
+        mining.saved = mined.saved;
+        mining.investorCount = mined.investorCount;
+        mining.suggestionCount = mined.suggestionCount;
+        mining.unmappedCount = mined.unmappedCount;
+      } else {
+        mining.error = mined.error;
+      }
+    }
+  } catch (e) {
+    mining.ok = false;
+    mining.error = msgOf(e);
+  }
+
   const rec = await agreementStore.recordRun(found.scope, {
     db,
     versionId: found.versionId,
@@ -3324,8 +3374,10 @@ async function runAgreementRoute(req, res) {
     // silent-green failure this engine keeps producing, and a caller cannot tell from a verdict alone.
     pppLayer,
     summary: run.summary,
-    // What this run ALSO answered, off the same battery: the per-scenario disqualifier questions.
+    // What this run ALSO answered, off the same battery: the per-scenario disqualifier questions, and
+    // the rule suggestions mined from Lender Price's own refusals (P2). Both ride the ONE paid battery.
     review,
+    mining,
   };
 
   if (!rec.ok) {

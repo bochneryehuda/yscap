@@ -4047,3 +4047,64 @@ still claims `DONE`, adding a new `K` row with no probe, deleting a probed row, 
 **WHAT THIS DOES NOT CHANGE.** Not one line of pricing, request-building or rule code moved; the only
 source added is the guard. What changed is that the page answering *"what is left?"* is now checked
 against the code that would answer it.
+
+**§2.67 — THE DAILY RUN GATHERED LENDER PRICE'S REFUSALS AND MINED NOTHING FROM THEM (2026-08-18).
+P2's auto-wiring; the last open item in the P workstream.**
+
+**MEASURED.** `suggestion-miner.mineFromParsed` — the thing that turns Lender Price's own refusal list
+into persisted rule suggestions a human reviews — had **exactly one caller**: the hand-fired
+`POST /suggestions/mine`. Meanwhile the agreement run asks Lender Price for its refusal list on EVERY
+scenario, and since §2.62 already normalizes it for the disqualifier review. So the miner's input was in
+hand **299 times a run, six times a day**, and thrown away every time. The suggestions could only ever
+exist if somebody remembered to press a button. §2.64 made that worse rather than better: the daily run
+now genuinely runs, so the data is gathered and discarded on a schedule.
+
+**TWO THINGS HAD TO BE RIGHT, AND BOTH ARE ABOUT THE JOIN — the same seam every defect in this
+workstream has lived in.**
+
+**(1) THE SHAPES DIFFER, AND THE SHORTCUT IS THE BUG.** The review reads `normalizeLpDisqualified`'s
+flat `{ready, declined[]}`; the analyser behind the miner reads `parseDisqualified`'s
+`{ready, lenders[].items[]}`. The tempting move is to hand the miner the RAW `legs.disqualified`
+instead — and that **silently bypasses the scope filter**, which is the thing applying the programLike
+family pattern. Its own comment records why that matters: an investor declines its own OTHER product
+lines on every DSCR scenario. Mining the raw feed would bury the queue under suggestions for products
+this sheet is not about, on every run, forever. So `ppe/disqualifier-mining.js` REGROUPS the scoped list.
+
+**(2) MINING PER SCENARIO WOULD HAVE MADE `occurrences` MEANINGLESS.** `rule-store` writes
+`occurrences = EXCLUDED.occurrences` — it OVERWRITES. Correct for one hand-fired capture; useless under
+a scheduler, where every suggestion would read `occurrences: 1` with the last scenario winning — and
+that number is exactly what a reviewer uses to decide which suggested rule matters most. So the run is
+MERGED first and mined ONCE: **measured at 299 on a live run of the real battery**, and one write pass
+instead of 299. The field's meaning is unchanged for the existing caller.
+
+**WHAT `occurrences` COUNTS, STATED EXACTLY** rather than flatteringly: distinct
+**scenario-and-program** observations, NOT scenarios. A reason refusing two programs in one scenario
+counts twice — the honest reading, since it cost us two products that time. The program has to stay in
+the dedupe key even though it inflates the count, because the analyser derives each suggestion's
+`programs` set from the items it is handed; dropping it would quietly under-report which products a
+rule blocks. The count is the cheaper thing to give up.
+
+**SAFE TO POINT AT A SCHEDULER, and that was verified rather than assumed:** the store dedupes on
+(scope, investor, dedupeKey) so six runs a day do not file six copies, and a **decided** suggestion is
+never reopened — both proven against a real Postgres by dismissing one and re-running. Nothing here can
+publish a rule: it writes PROPOSALS, and accepting one remains a separate super-admin act. Mining is an
+observer — best-effort, never throwing, and the agreement verdict is asserted unchanged with it wired in.
+
+**A FEED THAT NEVER ARRIVED SAYS SO** (`skipped: 'no_refusals_read'`) rather than reporting a clean
+zero: "no scenario carried a refusal list" and "nothing was refused" are different facts and only one is
+good news. Mining is also fed BEFORE the review's own readiness test — `rev.ready` asks whether a
+scenario could be reviewed against our sheet, which is a different question from whether Lender Price
+told us what it refused. Sharing one gate would mean a sheet with a gap stopped suggesting the very
+rules that would close it.
+
+**Mutation-proven five ways** (pure suite): counting a not-ready feed, reporting an empty run as ready,
+dropping the program from the dedupe key, removing the run's feed of the accumulator, and moving the
+feed behind the review's readiness gate — each red, control green.
+
+**TWO HONEST NOTES ON THE WORK ITSELF.** The dedupe-key mutation **survived the first cut of the suite**:
+the `seen` set is per-scenario, so the assertion meant to justify keeping the program in the key never
+exercised the only case that distinguishes the two designs — one scenario refusing one reason on two
+programs. A case that does was added, and the mutation then killed three assertions. And an early
+mutation run corrupted the module with NUL bytes via a `sed` pattern; the suite still passed against the
+damaged file, so the whole battery was re-run against a clean rewrite with Python-based edits. Neither
+affected shipped behaviour, and both are the reason to run mutations rather than trust a green suite.
