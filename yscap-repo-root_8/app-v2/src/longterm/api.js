@@ -347,6 +347,23 @@ export const ltApi = {
   ppeRateSheetCoverage: (id) => ltGet(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/coverage`)),
   ppeRunRateSheetAgreement: (id, body = {}) => ltPost(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/agreement/run`), body),
   ppePublishRateSheet: (id, body = {}) => ltPost(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/publish`), body),
+
+  // THE DISQUALIFIER REVIEW QUEUE (§2.58). The owner asked for the actual question to be laid out for
+  // a human on every scenario where Lender Price refuses a loan — so `run` asks it, `queue` shows it,
+  // and `decide` records the answer. NONE of them changes a price or publishes a rule: a decision here
+  // is a written conclusion, and putting a rule in force is still the super admin's separate act.
+  ppeRunDisqualifierReview: (id, body = {}) => ltPost(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/disqualifier-review/run`), body),
+  ppeDisqualifierReview: (params = {}) => {
+    const q = new URLSearchParams();
+    if (params.programId) q.set('programId', params.programId);
+    if (params.status) q.set('status', params.status);
+    if (params.dimension) q.set('dimension', params.dimension);
+    if (params.needsHumanOnly) q.set('needsHumanOnly', '1');
+    if (params.limit) q.set('limit', String(params.limit));
+    const qs = q.toString();
+    return ltGet(lt(`/ppe/disqualifier-review${qs ? `?${qs}` : ''}`));
+  },
+  ppeDecideDisqualifierReview: (id, body = {}) => ltPost(lt(`/ppe/disqualifier-review/${encodeURIComponent(id)}/decide`), body),
 };
 
 export default ltApi;

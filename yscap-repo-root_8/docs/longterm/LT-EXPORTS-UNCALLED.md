@@ -18,12 +18,11 @@ striking it here in the same commit.
 against the definition instead of retyping it, an operator command, a capability written ahead of its
 caller. A row is an invitation to say which — that is what the reason field is for.
 
-## Referenced nowhere at all (134)
+## Referenced nowhere at all (140)
 
 Not by production code and not by a test. Nothing asks for these, so nothing would notice if one were
 wrong.
 
-- `access.js :: ADMIN_FLOOR_ROLE`
 - `access.js :: effectiveStaffIdOf`
 - `access.js :: SCOPE_OWN`
 - `access.js :: scopeForRole`
@@ -84,6 +83,13 @@ wrong.
 - `ppe/disqualifier-reconciler.js :: ourVerdictFromQuote`
 - `ppe/disqualifier-reconciler.js :: PPP_DIMENSIONS`
 - `ppe/disqualifier-reconciler.js :: reconcileLayer`
+- `ppe/disqualifier-review-store.js :: itemKey`
+- `ppe/disqualifier-review-store.js :: rowToItem`
+- `ppe/disqualifier-review.js :: CLASSIFICATIONS`
+- `ppe/disqualifier-review.js :: inWords`
+- `ppe/disqualifier-review.js :: ourDeclinesByDimension`
+- `ppe/disqualifier-review.js :: pricedDimensions`
+- `ppe/disqualifier-review.js :: questionFor`
 - `ppe/disqualify-crosswalk.js :: featureLeaf`
 - `ppe/disqualify-crosswalk.js :: findState`
 - `ppe/disqualify-crosswalk.js :: inferOperator`
@@ -158,7 +164,7 @@ wrong.
 - `sync/loans.js :: readLoan`
 - `views.js :: defaultView`
 
-## Named by a test and by no production code (185)
+## Named by a test and by no production code (186)
 
 This is the §2.45 / §2.46 shape exactly — built, tested, and asked by nothing — and it is also the
 shape of a perfectly good exported table that a suite asserts against. The list is watched, not
@@ -283,6 +289,7 @@ banned.
 - `ppe/deephaven-ppp-matrix.js :: unsupportedWhenKeys` — names any condition key this engine cannot evaluate — the self-check behind the "we could not tell" outcome
 - `ppe/deephaven-ppp-matrix.js :: WHEN_HANDLERS`
 - `ppe/deephaven-ppp-matrix.js :: whenMatches` — evaluates one state rule condition; used inside the matcher, exported so each key can be asserted on its own
+- `ppe/disqualifier-review.js :: lpDeclines`
 - `ppe/divergence.js :: explainPriceDivergence`
 - `ppe/finding.js :: mergeOne`
 - `ppe/finding.js :: RATE_KINDS`

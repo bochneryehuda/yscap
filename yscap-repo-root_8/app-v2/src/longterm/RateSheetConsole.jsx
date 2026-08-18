@@ -31,6 +31,7 @@ import { parseBasePrices, parseAdjustments, points } from './ratesheetPaste.js';
 import { INK, MUTED, SLATE, DANGER, CAUTION, card, h2, sub, eyebrow, input, mono, label } from './ppeStyles.js';
 import AgreementRecord from './AgreementRecord.jsx';
 import PriceLimitCard from './PriceLimitCard.jsx';
+import DisqualifierReview from './DisqualifierReview.jsx';
 
 const row = { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 10 };
 const field = { flex: '1 1 180px', minWidth: 0 };
@@ -426,6 +427,9 @@ export default function RateSheetConsole() {
               </div>
             )}
           </div>
+
+          {/* ---- the owner's own question, laid out for a person (§2.58) ---- */}
+          <DisqualifierReview versionId={sheet.version.id} programId={sheet.version.programId} />
 
           {/* ---- the gate, said BEFORE Publish is pressed ---- */}
           <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: 'rgba(20,27,34,.03)', border: '1px solid rgba(20,27,34,.10)' }}>

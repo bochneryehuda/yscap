@@ -117,6 +117,8 @@ const ratesheetDiff = require('../ppe/ratesheet-diff');
 const suggestionMiner = require('../ppe/suggestion-miner');
 const pricingBreakdown = require('../ppe/pricing-breakdown');
 const lpNormalizeFull = require('../ppe/lp-normalize-full');
+const disqualifierReview = require('../ppe/disqualifier-review');
+const disqualifierReviewStore = require('../ppe/disqualifier-review-store');
 
 const SCOPE = 'company';
 
@@ -3022,6 +3024,210 @@ async function publishRateSheetRoute(req, res) {
   });
 }
 
+
+// === THE DISQUALIFIER REVIEW QUEUE (§2.58, owner-instructed 2026-08-18) =========================
+// The owner's instruction, in their own words: "look on the eligibility rule in Lender Price, go into
+// the disqualifier, and look for the actual disqualifier. You then look at the rate to see if you can
+// find where he's taking this disqualifier. You need a human to review these findings for every single
+// scenario." These three doors are those three steps and nothing more — the run ASKS the question, the
+// queue SHOWS it, and the decide door records what a person concluded.
+//
+// THEY DECIDE NOTHING. Recording "we should refuse this" writes no rule, moves no price and publishes
+// nothing: putting a rule in force is a super admin's separate act with its own door (§2.57). That is
+// why these carry `requirePpeAdmin` rather than the publish gate — refusing an administrator the right
+// to WRITE DOWN a conclusion would only push the conclusion somewhere PILOT cannot see.
+
+const MAX_REVIEW_SCENARIOS = 500;
+
+/**
+ * Run one battery and record what a human has to look at.
+ *
+ * REFUSED RATHER THAN RUN whenever the comparison could not be honest — no priceable program, no
+ * Lender Price scope, upstream not configured, an empty battery. Each of those would otherwise produce
+ * an EMPTY QUEUE, which is indistinguishable from a clean one: the exact failure the review module
+ * itself fails closed on, and it must not be reintroduced by its caller.
+ */
+async function runDisqualifierReviewRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+  const programId = found.row && found.row.program_id;
+  if (!programId) {
+    return res.status(422).json({ error: 'This rate sheet is not attached to a program, so there is nothing to review it against.', reason: 'no_program_row' });
+  }
+
+  const { program, lpScope, investorName, marginFor, reason: noProgram } = await loadProgram(found.scope, found.versionId);
+  if (!program) {
+    return res.status(422).json({ error: 'This rate sheet cannot be priced yet, so there is nothing to line up against Lender Price.', reason: noProgram });
+  }
+  if (!lpScope) {
+    return res.status(422).json({
+      error: 'This program has no Lender Price scope, so a run could not tell which of their programs to read the refusals from.',
+      reason: 'no_lp_scope',
+      remedy: 'Set the scope first with POST /api/lt/ppe/programs/:id/lp-scope, then run the review.',
+    });
+  }
+  const lpClient = require('../lenderprice/client');
+  if (typeof lpClient.configured === 'function' && !lpClient.configured()) {
+    return res.status(503).json({ error: 'Lender Price is not configured, so their refusals cannot be read yet.', reason: 'upstream_not_configured' });
+  }
+
+  const { values: settings } = await resolveSettingsSafe(found.scope);
+  const built = agreementScenarios.buildAgreementScenarios();
+  const all = Array.isArray(built && built.scenarios) ? built.scenarios : [];
+  if (!all.length) {
+    return res.status(500).json({ error: 'The scenario battery came back empty, so there is nothing to review and nothing will be recorded.', reason: 'empty_battery' });
+  }
+  const capped = all.length > MAX_REVIEW_SCENARIOS;
+  const battery = capped ? all.slice(0, MAX_REVIEW_SCENARIOS) : all;
+
+  // Both legs from `lp-agreement-legs`, for the reason the agreement route spells out at length: a
+  // hand-rolled leg reads the wrong shape and produces a confident, meaningless answer.
+  const pppDesc = investorName ? programRegistry.programFor(investorName) : null;
+  const oursLeg = lpAgreementLegs.buildOursLeg(program, settings, {
+    factsFromLp: true, pppDescriptor: pppDesc, onUnresolvedPpp: 'flag', marginHoldback: marginFor,
+  });
+  const lpLeg = lpAgreementLegs.buildLpLeg(lpClient, { withDisqualify: true });
+
+  const items = [];
+  const covered = [];             // ONLY the scenarios genuinely read — see markStaleFor's contract
+  const notReady = [];
+  const errors = [];
+  const concurrency = Math.min(Math.max(intIn(req.body && req.body.concurrency, 8) || 4, 1), 8);
+  let next = 0;
+  async function worker() {
+    for (;;) {
+      const i = next; next += 1;
+      if (i >= battery.length) return;
+      const sc = battery[i];
+      try {
+        const our = await oursLeg(sc);
+        const legs = (await lpLeg(sc)) || {};
+        const lpDisq = lpNormalizeFull.normalizeLpDisqualified(legs.disqualified || {}, lpScope);
+        const rev = disqualifierReview.reviewScenario({ scenario: sc, lp: lpDisq, ours: our, program });
+        if (!rev.ready) {
+          // NOT recorded as covered. Retiring this scenario's earlier questions on the strength of a
+          // feed that never arrived would read a vendor outage as "the disagreement went away".
+          notReady.push({ scenario: sc._label || null, reason: rev.notReadyReason });
+          continue;
+        }
+        covered.push(disqualifierReviewStore.scenarioKey(sc));
+        for (const it of rev.items) items.push(it);
+      } catch (e) {
+        errors.push({ scenario: (sc && sc._label) || null, error: msgOf(e) });
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+  // ONE CLOCK FOR THE WHOLE RUN, and it is not tidiness. `markStaleFor` retires a covered scenario's
+  // rows whose `last_seen_at` is OLDER than the moment it is given, so a SECOND `Date.now()` a few
+  // milliseconds later retires every question this run has just written — measured, not theorised:
+  // the first cut recorded 299 questions and immediately staled all 299, leaving a run that reported
+  // work done and a queue with nothing in it.
+  const runAt = Date.now();
+
+  let wrote;
+  try {
+    wrote = await disqualifierReviewStore.recordItems(db, found.scope, programId, items, { now: runAt });
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      error: 'The review ran but its questions could not be stored, so nothing is waiting for anybody to look at.',
+      reason: 'not_recorded', recordError: msgOf(e),
+    });
+  }
+  let staled = 0;
+  try {
+    const r = await disqualifierReviewStore.markStaleFor(db, found.scope, programId, covered, { now: runAt });
+    staled = r.staled;
+  } catch (_) { staled = 0; }
+
+  // BEST-EFFORT, and deliberately so: the questions are already stored, and answering 500 because the
+  // COUNT could not be read would tell somebody a paid run failed when it succeeded — and the obvious
+  // response to that is to press it again.
+  let summary = null;
+  try { summary = await disqualifierReviewStore.queueSummary(db, found.scope, programId); } catch (_) { summary = null; }
+  return res.json({
+    ok: true,
+    scope: found.scope,
+    versionId: found.versionId,
+    programId,
+    scenarios: battery.length,
+    // No silent caps, and no silent gaps: a run that could not read part of the battery says so.
+    truncated: capped ? all.length - battery.length : 0,
+    notReady: notReady.length,
+    notReadySample: notReady.slice(0, 5),
+    errors: errors.length,
+    errorSample: errors.slice(0, 5),
+    wrote: { inserted: wrote.inserted, refreshed: wrote.refreshed, reopened: wrote.reopened },
+    staled,
+    summary,
+    note: 'This records questions only. Deciding one writes down what a person concluded — it never changes a price or publishes a rule.',
+  });
+}
+
+/** The queue itself, plus the shape of the work waiting. */
+async function disqualifierReviewQueueRoute(req, res) {
+  const scope = readScope(req);
+  const q = req.query || {};
+  const programId = uuidOf(q.programId);
+  // THE CAP IS REPORTED, NEVER SILENT. The store's default is 100 and a battery routinely produces
+  // several hundred questions, so a door that returned 100 of 299 without saying so would show a
+  // reviewer a third of the queue as though it were the whole of it.
+  const limit = intIn(q.limit, 500) || 100;
+  const items = await disqualifierReviewStore.listQueue(db, scope, {
+    programId,
+    status: q.status ? String(q.status) : 'open',
+    dimension: q.dimension ? String(q.dimension).slice(0, 60) : null,
+    needsHumanOnly: q.needsHumanOnly === '1' || q.needsHumanOnly === 'true',
+    limit,
+  });
+  const summary = await disqualifierReviewStore.queueSummary(db, scope, programId);
+  return res.json({
+    scope,
+    programId: programId || null,
+    items,
+    limit,
+    // What is NOT on this page, counted rather than left to be inferred from a list length.
+    notShown: Math.max(0, (summary.open || 0) - items.length),
+    summary,
+    decisions: disqualifierReviewStore.DECISIONS.map((d) => ({ decision: d, means: disqualifierReviewStore.DECISION_WORDS[d] })),
+    runRoute: 'POST /api/lt/ppe/rate-sheets/:id/disqualifier-review/run',
+  });
+}
+
+/** Record what a person concluded. It writes a DECISION, never a rule. */
+async function decideDisqualifierReviewRoute(req, res) {
+  const scope = readScope(req);
+  const id = uuidOf(req.params.id);
+  if (!id) return res.status(400).json({ ok: false, error: 'That is not a review-question id.' });
+  const b = req.body || {};
+  // WHO decided it is read from the session, never the body — a decision naming somebody who did not
+  // make it is worse than one naming nobody, and the store refuses the second case outright.
+  const decidedBy = await actorLabel(req.actor && req.actor.id);
+  if (!decidedBy) {
+    return res.status(409).json({
+      ok: false,
+      error: 'We could not tell who is deciding this. Sign in again and try once more.',
+      code: 'decider_unknown',
+    });
+  }
+  const out = await disqualifierReviewStore.decide(db, scope, id, {
+    decision: String(b.decision || ''),
+    note: textOrNull(b.note, 2000),
+    decidedBy,
+  }, { now: Date.now() });
+  if (!out.ok) {
+    const status = out.code === 'not_found' ? 404 : 400;
+    return res.status(status).json({ ...out, decisions: disqualifierReviewStore.DECISIONS });
+  }
+  return res.json({
+    ok: true,
+    item: out.item,
+    note: 'Recorded. This is what a person concluded — it changes no price and publishes no rule; a super admin still has to put any rule in force.',
+  });
+}
+
 // ---------------------------------------------------------------------------
 
 router.get('/health', wrap(health, 'lt_ppe_health_error'));
@@ -3088,6 +3294,9 @@ router.get('/rate-sheets/:id/diff', requirePpeAdmin, wrap(rateSheetDiffRoute, 'l
 router.get('/rate-sheets/:id/agreement', requirePpeAdmin, wrap(agreementRoute, 'lt_ppe_agreement_read_error'));
 router.post('/rate-sheets/:id/agreement/run', requirePpeAdmin, wrap(runAgreementRoute, 'lt_ppe_agreement_run_error'));
 router.post('/rate-sheets/:id/publish', requirePpeAdmin, wrap(publishRateSheetRoute, 'lt_ppe_publish_error'));
+router.post('/rate-sheets/:id/disqualifier-review/run', requirePpeAdmin, wrap(runDisqualifierReviewRoute, 'lt_ppe_disq_review_run_error'));
+router.get('/disqualifier-review', requirePpeAdmin, wrap(disqualifierReviewQueueRoute, 'lt_ppe_disq_review_read_error'));
+router.post('/disqualifier-review/:id/decide', requirePpeAdmin, wrap(decideDisqualifierReviewRoute, 'lt_ppe_disq_review_decide_error'));
 
 module.exports = router;
 // The tick, as a function — the in-process driver's ONE way in. Exported here (and not moved into
@@ -3107,6 +3316,7 @@ module.exports.handlers = {
   createInvestorRoute, createProgramRoute, createRateSheetRoute, getRateSheetRoute,
   setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, rateSheetCoverageRoute, rateSheetDiffRoute, agreementRoute, runAgreementRoute,
   publishRateSheetRoute,
+  runDisqualifierReviewRoute, disqualifierReviewQueueRoute, decideDisqualifierReviewRoute,
 };
 module.exports._internals = {
   requirePpeAdmin, requirePpeSuperAdmin, intIn, readScope, loadProgram, resolveSettingsSafe, actorLabel,

@@ -50,6 +50,14 @@ and put every scenario in front of a person to review.
 So this page stops asking you and the work starts: the review queue that lays out, per scenario, the
 vendor's disqualifier beside our sheet's own treatment of it. Recorded as a build item.
 
+**BUILT THE SAME DAY (§2.58).** Every scenario Lender Price refuses is now lined up against our rate
+sheet and waits as a question in plain words — "they refuse this over the DSCR, our sheet says nothing
+about the DSCR at all: should we refuse it, price it, or deliberately allow it?" — with an answer box
+beside it. Answering one records what you concluded. **It changes no price and publishes no rule**: a
+recorded answer is a decision on paper, and putting a rule in force is still a super admin pressing
+Publish. An answer stays answered when the check runs again tomorrow, and only comes back if the
+situation behind it actually changes.
+
 ### 2c. Five "advanced" rules we can see but will not enforce on a guess
 
 Lender Price's advanced options imply five rules we are not certain about, so today we flag them for a

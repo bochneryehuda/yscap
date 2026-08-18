@@ -176,10 +176,14 @@ ok(typeof route === 'function' && typeof route.use === 'function', 'the module I
 // margin could only be changed by editing the database by hand.
 // 45 adds currentRateSheetRoute — "which published version prices this program right now", the read
 // behind the pricing screen's chooser and the first caller in src/ of the in-effect predicate.
+// 49 with the DISQUALIFIER REVIEW's three doors (§2.58, owner-instructed): the run that asks Lender
+// Price why it refused and lines it up against our sheet, the queue that shows the questions, and the
+// door that records what a person concluded. None of them publishes anything — that stays the super
+// admin's separate act — which is exactly why they are admin-gated rather than super-gated.
 // 46 with the PUBLISH door — the one route on this router that changes what a borrower is quoted. It
 // was deliberately absent while the authority was an open question; the owner answered it on
 // 2026-08-18 ("all in the super admin") and the guard below is now about its GATE, not its absence.
-ok(Object.keys(H).length === 46, `all 46 handlers are exported for testing (${Object.keys(H).length})`);
+ok(Object.keys(H).length === 49, `all 49 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
 for (const name of ['listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',

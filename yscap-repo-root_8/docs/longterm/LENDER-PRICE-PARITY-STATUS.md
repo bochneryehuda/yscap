@@ -26,6 +26,7 @@ actually blocked?" should be answerable in one place.
 | — | **Rotate the Lender Price login.** It was pasted into a chat, so it must be treated as compromised and changed in the vendor's portal. | Every live run keeps working, safely. Nothing is blocked while it waits, but it should not wait. | Part 4 |
 | ✅ #78 | **ANSWERED AND BUILT 2026-08-18.** *"Instead of offering the investor's raw pricing, like a 102, we're only gonna offer him a 101.75."* The holdback now comes off the offered price, on its own line. | Nothing — this is done. | §2.8, §2.15, §2.52 |
 | — | **There are two company margin boxes — which one wins?** "Correspondent margin" is the one the pricer has always used; "Margin (our markup)" is the one the per-investor work reads. Both are pre-filled at 0.250, so today they agree. A margin set on an INVESTOR, or by a scenario rule, already prices; a change to the COMPANY-level "Margin (our markup)" box deliberately changes nothing until you say. | Retiring one of the two boxes, so nobody can set a margin that does nothing. Nothing is mis-priced while it waits. | §2.55 |
+| ⏳ THE QUESTION IS NOW LAID OUT | **When the rate sheet and the eligibility rules disagree, which wins?** The owner answered with a PROCEDURE, not a rule, and it is built: every scenario Lender Price refuses is lined up against our sheet and waits as a question a person answers. The WINNER is still an open decision. | Nothing waits on it — but a recorded answer changes no price until somebody publishes a rule. | §2.58, §2.10 |
 | #81 | **The rate sheet prices five cells the eligibility matrix refuses. Which one governs?** If the matrix is right we are correctly stricter; if the sheet is right, these are 41 loans we refuse that the investor would do. | All 41 remaining disagreements — the whole eligibility axis, and with it the gate. | §2.10, §2.15 |
 | #69 | **Five "advanced" rules we deliberately left flagged rather than guessed** (vacant, foreign national, rural, first-time homebuyer, renovation). | Turning those five into real declines instead of warnings. | §0 (the flagged list) |
 | #57 | **Prepayment penalty: which types and terms does each investor allow, and how is each priced?** | The per-investor prepay library beyond Deephaven. | D30 |
@@ -3498,3 +3499,73 @@ switching an investor from watching to live and whether the three advisory check
 are about the RULE, not about who presses the button, and both are still open on
 `docs/longterm/OWNER-QUESTIONS-OPEN.md`. Nothing here retires a live rule either: that is §2.42's open
 question and publishing a renamed rule is still refused as a double charge.
+
+---
+
+**§2.58 — THE DISQUALIFIER REVIEW QUEUE: THE OWNER'S OWN PROCEDURE, MADE INTO A DOOR (2026-08-18).**
+
+**THE INSTRUCTION, NOT AN ANSWER.** Asked which wins when Lender Price's eligibility rules and our
+rate sheet disagree (§2.10 / question 2b), the owner did not name a winner. They described a
+procedure: *"You need to lay out the actual question for a human to review… look on the eligibility
+rule in Lender Price, go into the disqualifier, and look for the actual disqualifier. You then look at
+the rate to see if you can find where he's taking this disqualifier. You need a human to review these
+findings for every single scenario."* So this is not a rule engine. It is those three steps, performed
+per scenario, with the result laid out as a question and the answer kept.
+
+**WHAT WAS BUILT.**
+· `src/longterm/ppe/disqualifier-review.js` — PURE. For one scenario it takes Lender Price's own
+  refusal list and our quote, runs them through the SHARED `reconcileDisqualifiers` (never a second
+  copy of that reconciliation), and classifies each refusal seven ways: we refuse it too; we CHARGE for
+  it; we price that dimension but no rule of ours reached this loan; our sheet is SILENT on it; we
+  refuse for a different reason so ours never got that far; we cannot name what they refused it for;
+  and we could not work out our own answer. Each carries the sentence a person reads, built from the
+  item's own facts.
+· `db/581` + `src/longterm/ppe/disqualifier-review-store.js` — where the questions wait and, far more
+  importantly, where the ANSWERS stay.
+· Three doors on `/api/lt/ppe`, all `requirePpeAdmin`: the RUN, the QUEUE, and the DECIDE.
+· `app-v2/src/longterm/DisqualifierReview.jsx`, mounted on the rate-sheet console.
+
+**IT DECIDES NOTHING, AND THAT IS WHY IT IS ADMIN-GATED.** Recording "we should refuse this" writes no
+rule, moves no price and publishes nothing — putting a rule in force is still the super admin's
+separate, recorded act (§2.57). Refusing an administrator the right to WRITE DOWN a conclusion would
+only push the conclusion somewhere PILOT cannot see. Every surface says so in words: the route's own
+answer, the screen beside the buttons, and the migration's header.
+
+**FOUR REFUSALS THAT EXIST BECAUSE AN EMPTY QUEUE LOOKS EXACTLY LIKE A CLEAN ONE.** An unpriceable
+program, a program with no Lender Price scope, an upstream that is not configured, and an empty battery
+are each refused BEFORE anything is read — and a scenario whose refusal list never arrived is reported
+as UNREAD rather than counted as clean. The module already failed closed on all of this; the work here
+was making sure its caller could not undo that.
+
+**THE DECISION SURVIVES A RE-RUN — AND A CHANGED SITUATION REOPENS IT.** The daily check prices the
+same battery again tomorrow, so a review that lived only in the computation would re-ask every settled
+question forever (the failure the RTL side paid for twice: `ai_suggestions` re-raising a dismissal, and
+`finding_decisions` existing to stop it). Each row carries a `state_key` fingerprint of what was TRUE
+when the question was asked; a re-run that finds the same state refreshes it, a re-run that finds a
+different one reopens it and KEEPS the old answer in `prior_decision`. A question that stops coming up
+goes `stale`, never deleted — a disqualifier that disappeared because somebody fixed our sheet, because
+the vendor changed a rule, and because the battery stopped generating that scenario are three different
+things, and deleting the row erases the only record that could tell them apart.
+
+**A REAL DEFECT THE ROUTE TEST FOUND BEFORE ANY OF THIS SHIPPED.** The run called `Date.now()` twice —
+once for the write, once for the retire — and `markStaleFor` retires a covered scenario's rows OLDER
+than the moment it is given. Measured, not theorised: the first cut recorded **299 questions and
+immediately staled all 299**, so the run reported a full day's work and the queue was empty. One clock
+for the whole run. The queue door also capped silently at 100 of 299; it now COUNTS what is not on the
+page, and the screen says so.
+
+**HOW IT IS PROVED.** `scripts/test-lt-ppe-disqualifier-review.js` (44, pure — including the four
+documented refusals and the unplaceable-disqualifier case that a layers-only read silently drops),
+`scripts/test-lt-ppe-disqualifier-review-db.js` (35, real Postgres — the decision surviving, the
+changed situation reopening, the stale-not-deleted rule, and the database refusing what the module
+refuses), and `scripts/test-lt-ppe-disqualifier-review-route-db.js` (34, the three doors against a real
+Postgres with the vendor stubbed at its OWN contract). **Mutation-proven nine ways**: dropping the
+reopen condition, retiring decided rows, letting a re-run wipe an answer, destroying the prior answer,
+leaving BIGINT as the string node-postgres returns, the two-clock retire, counting an unread scenario as
+covered, taking the decider from the request body, and dropping the not-configured refusal — each killed
+assertions, and the unmutated control passed.
+
+**WHAT IT STILL DOES NOT ANSWER.** Question 2b remains OPEN. This lays the question out and keeps the
+answers; it does not decide which side wins, and no decision recorded here changes a price. Turning a
+run of recorded conclusions into an actual rule is the rule-authoring path (§2.51/§2.57) and is
+deliberately a separate, super-admin act.
