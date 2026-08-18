@@ -62,6 +62,36 @@ function _isFieldReaderPath(url) {
 // Configured = the app credentials + instance are present. The user login is only
 // required for the password grant.
 function configured() { return !!(cfg.clientId && cfg.clientSecret && cfg.instanceId); }
+
+/**
+ * STRIP ANY SECRET THAT MIGHT SLIP INTO A STRING LEAVING THIS MODULE.
+ *
+ * The token endpoint's own response body is put into a thrown message on every
+ * failed mint, and `ping()` turns that message into `reason` — which
+ * `routes/encompass-knowledge.js` returns in an HTTP response and which every
+ * caller logs. So whatever the identity server chose to say about our request
+ * travels, verbatim, onto a screen and into the logs.
+ *
+ * Most OAuth servers answer a bad grant with `{"error":"invalid_client"}` and
+ * nothing more. "Most" is not a property you can rely on for a credential, the
+ * request we sent it contains the client secret and the user password, and the
+ * Lender Price client in this repo has scrubbed for exactly this reason since it
+ * shipped. This is the same guard, on the side that had none.
+ *
+ * The literal secrets are removed first — that is the part that matters and it
+ * cannot false-negative — and the token-shaped patterns after, for the values we
+ * would not recognise by comparison.
+ */
+function scrub(s) {
+  let out = String(s == null ? '' : s);
+  if (cfg.clientSecret) out = out.split(cfg.clientSecret).join('<redacted>');
+  if (cfg.password) out = out.split(cfg.password).join('<redacted>');
+  out = out.replace(/(access_token"?\s*[:=]\s*"?)[A-Za-z0-9._\-]+/gi, '$1<redacted>');
+  out = out.replace(/(refresh_token"?\s*[:=]\s*"?)[A-Za-z0-9._\-]+/gi, '$1<redacted>');
+  out = out.replace(/(Bearer )[A-Za-z0-9._\-]+/g, '$1<redacted>');
+  out = out.replace(/((?:client_secret|password)=)[^&\s"]+/gi, '$1<redacted>');
+  return out;
+}
 function ensure() { if (!configured()) throw new Error('LT Encompass not configured — add LT_ENCOMPASS_CLIENT_ID / _SECRET / _INSTANCE_ID (or the shared ENCOMPASS_* vars)'); }
 
 const withTimeout = (ms) => { const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms); return { signal: ac.signal, done: () => clearTimeout(t) }; };
@@ -180,7 +210,7 @@ async function mintToken() {
       body: new URLSearchParams(params), signal: g.signal,
     });
     const text = await r.text();
-    if (!r.ok) throw new Error(`LT Encompass token ${r.status}: ${text.slice(0, 160)}`);
+    if (!r.ok) throw new Error(`LT Encompass token ${r.status}: ${scrub(text).slice(0, 160)}`);
     const j = JSON.parse(text);
     tokenCache = { token: j.access_token, exp: Date.now() + Math.max(0, (j.expires_in || 1800) - 60) * 1000 };
     return j.access_token;
@@ -235,8 +265,12 @@ async function tokenProbe(scope) {
       status: r.status,
       // What we were actually GRANTED, which is the whole question.
       granted: body && body.scope ? String(body.scope) : (r.ok ? '(not stated)' : null),
-      token: r.ok && body && body.access_token ? body.access_token : null,
-      error: r.ok ? null : text.slice(0, 200),
+      // THE TOKEN ITSELF IS NOT HANDED BACK. It used to be, and no caller has ever
+      // read it — the one diagnostic that calls this prints the granted SCOPE and
+      // the status. A live credential sitting in a returned object that nothing
+      // uses is the worst version of the field-nobody-reads shape this side keeps
+      // finding: harmless until somebody logs the whole result.
+      error: r.ok ? null : scrub(text).slice(0, 200),
     };
   } finally { g.done(); }
 }
@@ -387,5 +421,5 @@ module.exports = {
   getMilestoneSettings, getMilestoneSetting, getStandardFieldSchema, getCustomFieldSettings,
   getLoan, getLoanMilestones, getLoanMilestoneLogs,
   // exported for the read-only self-test
-  _internals: { _fetchGuarded, _isFieldReaderPath, assertReadOnlyPath, POST_ALLOWLIST, TOKEN_PATH, PIPELINE_SEARCH_PATH },
+  _internals: { _fetchGuarded, _isFieldReaderPath, assertReadOnlyPath, POST_ALLOWLIST, TOKEN_PATH, PIPELINE_SEARCH_PATH, scrub },
 };
