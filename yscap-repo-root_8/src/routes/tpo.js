@@ -1638,6 +1638,14 @@ router.post('/applications/:id/findings/:findingId/dispute', async (req, res, ne
 // Phase 6e — broker ↔ team messaging (the /api/tpo/chat/* surface). Mounted here so it inherits the
 // requireTpo wall + the firm session; its routes reuse the shared chat v3 infra, firm-scoped +
 // borrower-safe (src/routes/tpo-chat.js).
+// PILOT AI — the writing assistant on the broker's composers (owner-directed
+// 2026-08-18). ADVISORY text-in/text-out through the borrower-safe scrub, same
+// boundary as the borrower door — an external broker never gets a wider AI.
+router.post('/pilot-writer', async (req, res) => {
+  const out = await require('../lib/ai/pilot-writer').assist(req.body || {}, { scrub: scrubText });
+  res.json(out);
+});
+
 router.use(require('./tpo-chat'));
 
 module.exports = router;

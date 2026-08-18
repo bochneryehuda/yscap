@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { api } from '../lib/api.js';
 import { subscribeChat, getConnId } from '../lib/chatEvents.js';
 import DocPreview from './DocPreview.jsx';
+import PilotWriter from './PilotWriter.jsx';
 import { EmailInput } from './FormattedInputs.jsx';
 
 /* ChatThread — the conversation view (staff + borrower share it).
@@ -1109,7 +1110,13 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
                 !
               </button>
             )}
-            <input className="input" placeholder={recState === 'recording' ? 'Recording voice note…' : `Message ${conv.name}`}
+            {/* Pilot AI (owner-directed 2026-08-18): fix / rewrite / draft the
+                message — advisory; nothing lands until "Use this". The surface
+                picks the door, so a borrower/broker request rides the
+                borrower-safe scrub server-side. */}
+            <PilotWriter value={body} onReplace={(t) => setBody(t)}
+              surface={isStaff ? 'staff' : isTpo ? 'tpo' : 'borrower'} label="✦" />
+            <input className="input" spellCheck placeholder={recState === 'recording' ? 'Recording voice note…' : `Message ${conv.name}`}
               value={body} onChange={onBodyChange}
               onKeyDown={e => {
                 if (picker && items.length && (e.key === 'Tab' || e.key === 'Enter')) { e.preventDefault(); choosePick(items[0]); return; }

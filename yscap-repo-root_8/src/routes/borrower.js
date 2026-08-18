@@ -1494,6 +1494,15 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   res.json(await require('../lib/appraisal/borrower-safe-view').buildBorrowerSafeAppraisalView(db, own.rows[0].id));
 });
 
+// PILOT AI — the writing assistant on the borrower's composers (owner-directed
+// 2026-08-18). ADVISORY text-in/text-out; the OUTPUT rides through the
+// borrower-safe scrub, so a capital-partner name can never come back even when
+// the borrower typed one in.
+router.post('/pilot-writer', async (req, res) => {
+  const out = await require('../lib/ai/pilot-writer').assist(req.body || {}, { scrub: scrubText });
+  res.json(out);
+});
+
 // The file-overview slide-over (owner-directed 2026-08-18) — the deal at a
 // glance, borrower-safe (one builder for all three surfaces: lib/file-overview).
 router.get('/applications/:id/overview-card', async (req, res) => {

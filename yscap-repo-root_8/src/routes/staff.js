@@ -1109,6 +1109,15 @@ router.get('/my-tasks', async (req, res) => {
   res.json(r.rows);
 });
 
+// PILOT AI — the writing assistant on every composer (owner-directed
+// 2026-08-18). ADVISORY: returns text to the screen; the human replaces it into
+// the composer themselves. No file scope needed — nothing is read from or
+// written to any file; the request is only the text the person typed.
+router.post('/pilot-writer', async (req, res) => {
+  const out = await require('../lib/ai/pilot-writer').assist(req.body || {}, { staffId: req.actor.id });
+  res.json(out);
+});
+
 // THE SCHEDULED TASKS & REMINDERS QUEUE (owner-directed 2026-08-18 — the
 // per-file task-management build's cross-file half). Every reminders row
 // (kind 'task' or 'reminder') the signed-in staffer should see:

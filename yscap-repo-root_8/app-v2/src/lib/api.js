@@ -1199,6 +1199,12 @@ export const api = {
   staffReminders:      (appId) => req('GET', `/api/staff/applications/${appId}/reminders`),
   // The cross-file scheduled-tasks queue (task management, 2026-08-18).
   staffReminderTasks:  (q) => req('GET', `/api/staff/reminder-tasks${q ? `?${new URLSearchParams(q)}` : ''}`),
+  // PILOT AI writing assistant (2026-08-18): advisory text-in/text-out. The
+  // surface picks the door — an external user's requests ride the borrower-safe
+  // scrub server-side.
+  pilotWriter: (surface, body) => req('POST',
+    surface === 'borrower' ? '/api/borrower/pilot-writer'
+      : surface === 'tpo' ? '/api/tpo/pilot-writer' : '/api/staff/pilot-writer', body || {}),
   staffCreateReminder: (appId, b) => req('POST', `/api/staff/applications/${appId}/reminders`, b),
   staffUpdateReminder: (appId, rid, b) => req('PATCH', `/api/staff/applications/${appId}/reminders/${rid}`, b),
   staffDeleteReminder: (appId, rid) => req('DELETE', `/api/staff/applications/${appId}/reminders/${rid}`),
