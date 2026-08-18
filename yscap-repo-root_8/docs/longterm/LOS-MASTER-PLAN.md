@@ -1761,6 +1761,26 @@ sees it — and the claim sent me looking for a case that does not exist. It now
 happens.
 
 
+
+**q18. Is anything already in the logs?** (raised 2026-08-18 — needs a look, not a decision)
+
+Until this morning, a FAILED Encompass token mint threw the identity server's own response body
+into its error message, and that message reaches an HTTP response (`/encompass/status` → `reason`)
+and every log that catches it. The request being refused carries the client secret and, on the
+password grant, the user password. That is now scrubbed.
+
+**What I know:** the exposure existed on the live path. **What I do not know:** whether anything was
+ever actually written, because that depends on what ICE's token endpoint echoes back on a failure —
+which I have not observed, and cannot from here. Most OAuth servers return `{"error":
+"invalid_client"}` and nothing more.
+
+So this is not a "rotate now". It is: **if long-term Encompass token mints have failed in
+production, the logs around those failures are worth reading before deciding.** If a secret is in
+there, it is compromised and wants rotating; if the answers are the bare OAuth shape, nothing
+happened and the scrubber is simply the guard that should always have been there. I cannot answer
+that one from inside the repository.
+
+
 ## 12. The honest risks
 
 - **The eFolder write may not be confirmable from the outside.** If the request shapes cannot
