@@ -1135,6 +1135,13 @@ router.get('/reminder-tasks', async (req, res) => {
   const mineSql = `(r.assignee_staff_id = $1 OR (r.created_by = $1 AND r.assignee_staff_id IS NULL))`;
   const fileSql = seesAll(req) ? 'TRUE' : `(${VISIBLE_OFFICERS_SQL('a', '$1')})`;
   const scopeSql = scope === 'mine' ? mineSql : `(${mineSql} OR ${fileSql})`;
+  // A funded / on-hold / terminal / pre-processing file stays quiet OUTSIDE the
+  // file (owner-directed 2026-07-14, the same muting /my-tasks and the reminder
+  // dispatcher already apply — audit 2026-08-18 finding 5): its open reminders
+  // stay visible INSIDE the file and simply pause, so the OPEN queue drops
+  // them; the closed/all views still list them, flagged `paused`.
+  const mutedSql = status === 'open' ? `AND a.status NOT IN ${INACTIVE_FILE_STATUSES}` : '';
+  const LIMIT = 400;
   try {
     const r = await db.query(
       `SELECT r.id, r.application_id, r.kind, r.title, r.body, r.due_at, r.remind_at, r.status,
@@ -1142,17 +1149,54 @@ router.get('/reminder-tasks', async (req, res) => {
               r.created_by, cu.full_name AS created_by_name, r.created_at,
               a.ys_loan_number, a.property_address, a.status AS app_status,
               NULLIF(b.full_name,'') AS borrower_name,
-              (r.status='scheduled' AND r.due_at < now()) AS overdue
+              (r.status='scheduled' AND r.due_at < now()) AS overdue,
+              (a.status IN ${INACTIVE_FILE_STATUSES}) AS paused,
+              -- COALESCE: the scope expression compares NULL columns (processor_id
+              -- etc.), so an off-file row evaluates NULL, not false — the repo's
+              -- standing three-valued-logic trap.
+              COALESCE((${fileSql}), false) AS file_visible
          FROM reminders r
          JOIN applications a ON a.id = r.application_id
          JOIN borrowers b ON b.id = a.borrower_id
          LEFT JOIN staff_users au ON au.id = r.assignee_staff_id
          LEFT JOIN staff_users cu ON cu.id = r.created_by
-        WHERE a.deleted_at IS NULL AND ${statusSql} AND ${scopeSql}
+        WHERE a.deleted_at IS NULL AND ${statusSql} AND ${scopeSql} ${mutedSql}
         ORDER BY (r.status='scheduled' AND r.due_at < now()) DESC, r.due_at ASC
-        LIMIT 400`, [req.actor.id]);
-    res.json({ tasks: r.rows, scope, status });
+        LIMIT ${LIMIT + 1}`, [req.actor.id]);
+    // No silent caps: fetch one over the page and SAY when the list was cut.
+    const truncated = r.rows.length > LIMIT;
+    if (truncated) console.warn(`[reminder-tasks] list truncated at ${LIMIT} rows for staff ${req.actor.id} (scope=${scope}, status=${status})`);
+    res.json({ tasks: r.rows.slice(0, LIMIT), scope, status, truncated });
   } catch (e) { console.error('[reminder-tasks]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// Done / Dismiss / Reopen FROM THE QUEUE — reachable by the task's ASSIGNEE and
+// its CREATOR even when the file itself is outside their scope (audit
+// 2026-08-18 finding 1: the queue deliberately shows a task handed to you on
+// any file, but the per-file PATCH sits behind the /applications/:id scope
+// middleware, so the queue's own buttons 403'd — a dead end on your own task).
+// Defense-in-depth ownership: being handed the task IS the authorization to
+// finish it; everyone else still needs ordinary file visibility. Answers 404
+// (never 403) on a row you may not touch, so nothing about other files leaks.
+router.patch('/reminder-tasks/:rid', async (req, res) => {
+  try {
+    const fileSql = seesAll(req) ? 'TRUE' : `(${VISIBLE_OFFICERS_SQL('a', '$1')})`;
+    const own = await db.query(
+      `SELECT r.id, r.application_id,
+              (r.assignee_staff_id = $1 OR r.created_by = $1 OR ${fileSql}) AS may
+         FROM reminders r
+         JOIN applications a ON a.id = r.application_id
+        WHERE r.id = $2 AND a.deleted_at IS NULL`, [req.actor.id, req.params.rid]);
+    if (!own.rows[0] || !own.rows[0].may) return res.status(404).json({ error: 'not found' });
+    const row = await require('../lib/reminders').update(req.params.rid, req.body || {}, req.actor);
+    await audit(req, 'update_reminder', 'application', own.rows[0].application_id,
+      { reminderId: req.params.rid, status: (req.body || {}).status, viaQueue: true });
+    res.json({ ok: true, reminder: row });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.error('[reminder-tasks patch]', e && e.message);
+    res.status(500).json({ error: 'server error' });
+  }
 });
 
 router.get('/lead-capture', async (req, res) => {

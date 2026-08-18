@@ -8,8 +8,16 @@
  *      reach; an unrelated scoped officer sees nothing; open/closed filtering;
  *      the overdue flag.
  *   B. reassignment: PATCH assigneeStaffId hands a task over; null clears it;
- *      an inactive staffer is never adopted.
+ *      an inactive / external / nonexistent / garbage pick is REFUSED with a
+ *      plain 400 (audit 2026-08-18 findings 2–4 — never a silent no-op, never
+ *      an opaque 500), and a plain reminder can't be assigned at all.
  *   C. the per-file doors stay file-scoped: an unrelated officer's PATCH 403s.
+ *   D. the queue's OWN door (PATCH /reminder-tasks/:rid): the off-file ASSIGNEE
+ *      can finish their task (finding 1 — the per-file door 403s them), a
+ *      stranger gets 404, and the queue flags file_visible so the client never
+ *      renders a dead-end link.
+ *   E. an on-hold file's rows leave the OPEN queue and show `paused` elsewhere
+ *      (finding 5 — the same muting /my-tasks + the dispatcher apply).
  *
  * DB-gated: needs DATABASE_URL with migrations applied; skips cleanly otherwise.
  */
@@ -41,7 +49,7 @@ function call(server, method, path, token, body) {
   const server = app.listen(0);
   await new Promise((r) => server.once('listening', r));
   const sfx = crypto.randomBytes(4).toString('hex');
-  let lo1, lo2, stranger, inactive, borId, appId;
+  let lo1, lo2, stranger, inactive, broker, firmId, borId, appId;
   try {
     const mkStaff = async (name, role, active = true) => (await db.query(
       `INSERT INTO staff_users (email,full_name,role,is_active,mfa_enabled,password_hash,token_version)
@@ -50,6 +58,11 @@ function call(server, method, path, token, body) {
     lo2 = await mkStaff('lo2', 'loan_officer');
     stranger = await mkStaff('stranger', 'loan_officer');
     inactive = await mkStaff('inactive', 'processor', false);
+    // An ACTIVE but EXTERNAL (TPO broker) staff row — must never own an internal task.
+    firmId = (await db.query(`INSERT INTO tpo_firms (name,status) VALUES ($1,'active') RETURNING id`, [`TM Firm ${sfx}`])).rows[0].id;
+    broker = (await db.query(
+      `INSERT INTO staff_users (email,full_name,role,is_active,is_external,tpo_firm_id,mfa_enabled,password_hash,token_version)
+       VALUES ($1,'TM broker','tpo_officer',true,true,$2,false,'x',0) RETURNING id`, [`tm-broker-${sfx}@test.local`, firmId])).rows[0].id;
     const tok1 = C.signJwt({ sub: lo1, kind: 'staff', role: 'loan_officer', tv: 0 });
     const tok2 = C.signJwt({ sub: lo2, kind: 'staff', role: 'loan_officer', tv: 0 });
     const tokS = C.signJwt({ sub: stranger, kind: 'staff', role: 'loan_officer', tv: 0 });
@@ -101,17 +114,69 @@ function call(server, method, path, token, body) {
     const re2 = await call(server, 'PATCH', `/api/staff/applications/${appId}/reminders/${taskId}`, tok1, { assigneeStaffId: null });
     ok('B2 null clears the owner', re2.status === 200 && re2.body.reminder.assignee_staff_id === null);
     const re3 = await call(server, 'PATCH', `/api/staff/applications/${appId}/reminders/${taskId}`, tok1, { assigneeStaffId: inactive });
-    ok('B3 an INACTIVE staffer is never adopted as the owner',
-      re3.status === 200 && re3.body.reminder.assignee_staff_id === null);
+    ok('B3 an INACTIVE staffer is REFUSED with a plain 400 (never a silent no-op)',
+      re3.status === 400 && /assigned/i.test((re3.body && re3.body.error) || ''));
+    const check3 = await db.query(`SELECT assignee_staff_id FROM reminders WHERE id=$1`, [taskId]);
+    ok('B3b …and the row is untouched', check3.rows[0].assignee_staff_id === null);
+    const re4 = await call(server, 'PATCH', `/api/staff/applications/${appId}/reminders/${taskId}`, tok1, { assigneeStaffId: 'not-a-uuid' });
+    ok('B4 garbage in the assignee box answers 400, never an opaque 500', re4.status === 400);
+    const re5 = await call(server, 'PATCH', `/api/staff/applications/${appId}/reminders/${taskId}`, tok1, { assigneeStaffId: crypto.randomUUID() });
+    ok('B5 a NONEXISTENT staffer is refused, not silently ignored', re5.status === 400);
+    const re6 = await call(server, 'PATCH', `/api/staff/applications/${appId}/reminders/${taskId}`, tok1, { assigneeStaffId: broker });
+    ok('B6 an EXTERNAL (TPO) staff row is never handed an internal task via PATCH', re6.status === 400);
+    // …and never via CREATE either (finding 2: create's check lacked is_external).
+    let createBrokerErr = null;
+    try {
+      await reminders.create(appId, {
+        kind: 'task', title: 'Broker-assigned?', dueAt: new Date(Date.now() + 3600 * 1000).toISOString(),
+        recipients: [{ kind: 'self' }], assigneeStaffId: broker,
+      }, actor1);
+    } catch (e) { createBrokerErr = e; }
+    ok('B7 create() refuses an external assignee with a 400 of its own',
+      createBrokerErr && createBrokerErr.status === 400);
+    // A plain REMINDER has recipients, not an owner.
+    const re8 = await call(server, 'PATCH', `/api/staff/applications/${appId}/reminders/${remId}`, tok1, { assigneeStaffId: lo1 });
+    ok('B8 assigning a plain reminder is refused (only a task carries an owner)', re8.status === 400);
 
     // ---- C. the per-file doors stay file-scoped ---------------------------------------------
     const strangerPatch = await call(server, 'PATCH', `/api/staff/applications/${appId}/reminders/${taskId}`, tokS, { status: 'done' });
     ok('C1 an unrelated officer cannot touch the file\'s tasks', strangerPatch.status === 403);
+
+    // ---- D. the queue's OWN door: the off-file assignee can finish their task ---------------
+    await db.query(`UPDATE reminders SET assignee_staff_id=$1 WHERE id=$2`, [lo2, taskId]);
+    const perFile2 = await call(server, 'PATCH', `/api/staff/applications/${appId}/reminders/${taskId}`, tok2, { status: 'done' });
+    ok('D1 the per-file door still 403s the off-file assignee (the scope middleware)', perFile2.status === 403);
+    const q2 = await call(server, 'GET', `/api/staff/reminder-tasks?scope=mine`, tok2);
+    ok('D2 the queue flags the file as NOT openable for the off-file assignee',
+      q2.status === 200 && q2.body.tasks.some((t) => t.id === taskId && t.file_visible === false));
+    const qdone = await call(server, 'PATCH', `/api/staff/reminder-tasks/${taskId}`, tok2, { status: 'done' });
+    ok('D3 the queue door lets the ASSIGNEE finish their own task on an off-scope file',
+      qdone.status === 200 && qdone.body.reminder.status === 'done');
+    const qreopen = await call(server, 'PATCH', `/api/staff/reminder-tasks/${taskId}`, tok1, { status: 'scheduled' });
+    ok('D4 …and the CREATOR / on-file officer works through it too', qreopen.status === 200 && qreopen.body.reminder.status === 'scheduled');
+    const qstranger = await call(server, 'PATCH', `/api/staff/reminder-tasks/${taskId}`, tokS, { status: 'done' });
+    ok('D5 a stranger gets 404 from the queue door (no existence leak)', qstranger.status === 404);
+    const qgone = await call(server, 'PATCH', `/api/staff/reminder-tasks/${crypto.randomUUID()}`, tok1, { status: 'done' });
+    ok('D6 an unknown id answers 404', qgone.status === 404);
+
+    // ---- E. an on-hold file's rows pause out of the OPEN queue ------------------------------
+    await db.query(`UPDATE applications SET status='on_hold' WHERE id=$1`, [appId]);
+    const heldOpen = await call(server, 'GET', `/api/staff/reminder-tasks?scope=mine&status=open`, tok2);
+    ok('E1 an on-hold file\'s open task leaves the OPEN queue (owner muting rule)',
+      heldOpen.status === 200 && !heldOpen.body.tasks.some((t) => t.id === taskId));
+    const heldAll = await call(server, 'GET', `/api/staff/reminder-tasks?scope=mine&status=all`, tok2);
+    ok('E2 …but status=all still lists it, flagged paused',
+      heldAll.status === 200 && heldAll.body.tasks.some((t) => t.id === taskId && t.paused === true));
+    await db.query(`UPDATE applications SET status='underwriting' WHERE id=$1`, [appId]);
+    const backOpen = await call(server, 'GET', `/api/staff/reminder-tasks?scope=mine&status=open`, tok2);
+    ok('E3 coming off hold puts it straight back in the open queue',
+      backOpen.status === 200 && backOpen.body.tasks.some((t) => t.id === taskId && t.paused === false));
   } finally {
     try {
       if (appId) await db.query(`DELETE FROM applications WHERE id=$1`, [appId]);
       if (borId) await db.query(`DELETE FROM borrowers WHERE id=$1`, [borId]);
-      await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[lo1, lo2, stranger, inactive].filter(Boolean)]);
+      await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[lo1, lo2, stranger, inactive, broker].filter(Boolean)]);
+      if (firmId) await db.query(`DELETE FROM tpo_firms WHERE id=$1`, [firmId]);
     } catch (_) { /* best-effort cleanup */ }
     server.close();
   }

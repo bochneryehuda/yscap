@@ -1199,6 +1199,10 @@ export const api = {
   staffReminders:      (appId) => req('GET', `/api/staff/applications/${appId}/reminders`),
   // The cross-file scheduled-tasks queue (task management, 2026-08-18).
   staffReminderTasks:  (q) => req('GET', `/api/staff/reminder-tasks${q ? `?${new URLSearchParams(q)}` : ''}`),
+  // The queue's own Done/Dismiss door — reaches a task ASSIGNED to you even on a
+  // file outside your scope (the per-file PATCH below sits behind the file-scope
+  // middleware and 403s there).
+  staffReminderTaskUpdate: (rid, b) => req('PATCH', `/api/staff/reminder-tasks/${rid}`, b),
   // The Drafting desk (2026-08-18): AI drafts an email from the file, copy-paste only.
   staffDraftEmail:     (appId, b) => req('POST', `/api/staff/applications/${appId}/drafting`, b || {}),
   // PILOT AI writing assistant (2026-08-18): advisory text-in/text-out. The

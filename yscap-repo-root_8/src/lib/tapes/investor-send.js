@@ -216,14 +216,19 @@ async function sendTapeToInvestor(appId, db, { tape, to, note, actorId, actorNam
     '',
     ...figureLines,
     '',
-    replyTo ? `Reply to this email and your response threads straight into the loan file (${replyTo}).` : null,
+    // The "threads into the loan file" claim is only true of the PER-FILE inbox
+    // (pre.replyTo, which exists only when CHAT_REPLY_DOMAIN is configured) —
+    // never of the general Reply-To fallback, which lands in a shared mailbox
+    // (audit 2026-08-18 minor: the body over-claimed threading; same gate the
+    // compose modal already applies).
+    pre.replyTo ? `Reply to this email and your response threads straight into the loan file (${pre.replyTo}).` : null,
   ].filter((x) => x != null);
 
   const rendered = template.render({
     title: 'New file for review',
     intro: 'Please find attached a new file for your review.' + (noteText ? ` ${noteText}` : ''),
     meta: pre.figures.map((f) => ({ label: f.label, value: f.value })),
-    note: replyTo ? `Reply to this email and your response goes straight to the loan file's team inbox (${replyTo}).` : '',
+    note: pre.replyTo ? `Reply to this email and your response goes straight to the loan file's team inbox (${pre.replyTo}).` : '',
     replyable: !!replyTo,
   });
 

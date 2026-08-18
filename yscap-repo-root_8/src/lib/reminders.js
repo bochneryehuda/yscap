@@ -27,6 +27,24 @@ const docAcceptance = require('./document-acceptance');
 
 const KINDS = new Set(['reminder', 'task']);
 
+// A TASK'S ASSIGNEE IS VALIDATED, NEVER GUESSED AND NEVER SWALLOWED (audit
+// 2026-08-18 on the task-management build, findings 2–4). One rule for both
+// doors (create + update): the id must LOOK like an id (garbage used to reach
+// Postgres as a uuid cast and surface as an opaque 500), and the person must be
+// a real, ACTIVE, INTERNAL staffer — an external TPO broker must never be
+// handed an internal task (the standing is_external doctrine), and a
+// nonexistent/inactive pick must REFUSE rather than silently no-op (the
+// "returned 200 but didn't save" class). Throws {status:400}; returns the id.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+async function resolveAssignee(assigneeStaffId, client = db) {
+  const id = String(assigneeStaffId || '').trim();
+  if (!UUID_RE.test(id)) { const e = new Error('pick a real team member to assign this to'); e.status = 400; throw e; }
+  const sr = await client.query(
+    `SELECT id FROM staff_users WHERE id=$1 AND is_active=true AND is_external=false`, [id]);
+  if (!sr.rows[0]) { const e = new Error('that person can’t be assigned a task (not an active internal team member)'); e.status = 400; throw e; }
+  return sr.rows[0].id;
+}
+
 function niceWhen(due) {
   try {
     return new Date(due).toLocaleString('en-US', {
@@ -232,8 +250,7 @@ async function create(appId, input, actor, client = db) {
   if (!recipients.length) { const e = new Error('add at least one recipient'); e.status = 400; throw e; }
   let assignee = null;
   if (kind === 'task' && input.assigneeStaffId) {
-    const sr = await client.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true`, [input.assigneeStaffId]);
-    if (sr.rows[0]) assignee = sr.rows[0].id;
+    assignee = await resolveAssignee(input.assigneeStaffId, client);
   }
 
   const r = await client.query(
@@ -258,11 +275,15 @@ async function update(id, patch, actor, client = db) {
   if (patch.dueAt) { const d = new Date(patch.dueAt); if (!isNaN(d.getTime())) { add('due_at', d.toISOString()); add('fired_at', null); if (row.status === 'sent') add('status', 'scheduled'); } }
   if ('remindAt' in patch) { const d = patch.remindAt ? new Date(patch.remindAt) : null; add('remind_at', d && !isNaN(d.getTime()) ? d.toISOString() : null); add('reminded_at', null); }
   // Reassigning a TASK (task-management section, owner-directed 2026-08-18):
-  // a real active staffer takes it over; an explicit null hands it to nobody.
+  // a real active INTERNAL staffer takes it over; an explicit null hands it to
+  // nobody. Only a TASK carries an assignee — a plain reminder has recipients,
+  // not an owner, so an assignee patched onto one is refused rather than
+  // silently stored (audit 2026-08-18 minor). A bad pick REFUSES with a plain
+  // 400 (resolveAssignee) instead of the old silent no-op / uuid-cast 500.
   if ('assigneeStaffId' in patch) {
     if (patch.assigneeStaffId) {
-      const sr = await client.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true AND is_external=false`, [patch.assigneeStaffId]);
-      if (sr.rows[0]) add('assignee_staff_id', sr.rows[0].id);
+      if (row.kind !== 'task') { const e = new Error('only a task can be assigned to someone'); e.status = 400; throw e; }
+      add('assignee_staff_id', await resolveAssignee(patch.assigneeStaffId, client));
     } else add('assignee_staff_id', null);
   }
   if (patch.status === 'done') { add('status', 'done'); add('completed_at', new Date().toISOString()); add('completed_by', actor && actor.id || null); }
