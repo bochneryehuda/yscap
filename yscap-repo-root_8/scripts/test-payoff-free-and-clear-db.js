@@ -199,6 +199,26 @@ async function payoffItems(appId) {
     const tprRows = await require('../src/lib/tpr-export').selectTprDocuments(appId);
     ok('F7 the investor TPR package still never carries it',
       !tprRows.some((d) => String(d.id) === String(payoffDocId)));
+
+    // F8. A REDUNDANT OFF NEVER WIPES A REAL PAYOFF (re-audit 2026-08-18): the flag is
+    //     already off and a legitimate payoff amount is on file — a stray OFF (stale tab,
+    //     double-submit) must answer unchanged and leave the amount alone.
+    await db.query(`UPDATE applications SET payoff_amount=185000, payoff_lender='Old Lender LLC' WHERE id=$1`, [appId]);
+    const stray = await call(server, 'POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, tok, { on: false, confirm: true });
+    const a3 = (await db.query(`SELECT payoff_amount FROM applications WHERE id=$1`, [appId])).rows[0];
+    ok('F8 a stray OFF on an ordinary refinance leaves the entered payoff untouched',
+      stray.status === 200 && stray.body.unchanged === true && Number(a3.payoff_amount) === 185000);
+
+    // F9. A HUMAN ADDENDUM UNDER AN [auto]-PREFIXED NOTE SURVIVES a second ON (re-audit):
+    //     reopened row, auto note first + human line below → the contains-branch keeps it whole.
+    await db.query(`UPDATE checklist_items ci SET status='received', waived_by=NULL, waived_at=NULL, signed_off_by=NULL, signed_off_at=NULL,
+        notes='[auto] Waived — the property was confirmed FREE AND CLEAR (no existing loan to pay off). Turning the free-and-clear flag off reopens this condition.' || E'\n' || 'HUMAN ADDENDUM — called the county, lien released 8/12'
+       FROM checklist_templates t WHERE t.id=ci.template_id AND ci.application_id=$1 AND t.code='cond_payoff_external'`, [appId]);
+    await call(server, 'POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, tok, { on: true, confirm: true });
+    ext = (await payoffItems(appId)).find((i) => i.code === 'cond_payoff_external');
+    ok('F9 the second ON keeps the human addendum below the [auto] note',
+      !!ext && /HUMAN ADDENDUM/.test(ext.notes || ''));
+    await call(server, 'POST', `/api/staff/applications/${appId}/payoff/free-and-clear`, tok, { on: false, confirm: true });
   } finally {
     try {
       if (appId) await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, purchaseId].filter(Boolean)]);

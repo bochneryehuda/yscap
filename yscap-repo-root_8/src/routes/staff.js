@@ -13737,8 +13737,11 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
         `UPDATE checklist_items ci
             SET status='satisfied', is_required=false, signed_off_by=$2, signed_off_at=now(),
                 waived_by=$2, waived_at=now(),
-                notes = CASE WHEN ci.notes IS NULL OR ci.notes='' OR ci.notes LIKE '[auto]%' THEN $3
-                             WHEN ci.notes LIKE '%' || $3 || '%' THEN ci.notes
+                -- CONTAINS-the-auto-note FIRST (re-audit 2026-08-18): '[auto]%' would otherwise
+                -- wholesale-replace a note that STARTS [auto] but carries a human's addendum
+                -- below it (a reopened row someone annotated) — the exact note-loss class again.
+                notes = CASE WHEN ci.notes LIKE '%' || $3 || '%' THEN ci.notes
+                             WHEN ci.notes IS NULL OR ci.notes='' OR ci.notes LIKE '[auto]%' THEN $3
                              ELSE ci.notes || E'\n' || $3 END,
                 updated_at=now()
            FROM checklist_templates t
@@ -13754,7 +13757,11 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
       await db.query(
         `UPDATE applications
             SET property_free_and_clear=false, free_and_clear_by=NULL, free_and_clear_at=NULL,
-                payoff_amount=NULL, updated_at=now()
+                -- The $0 is cleared ONLY off a file the flag actually held (re-audit 2026-08-18):
+                -- a redundant OFF on an ordinary refinance (stale tab, double-submit, a caller
+                -- "re-posting to converge") must never wipe a legitimately entered payoff amount.
+                payoff_amount = CASE WHEN property_free_and_clear THEN NULL ELSE payoff_amount END,
+                updated_at=now()
           WHERE id=$1`, [appId]);
       // Un-waive ONLY the rows THIS FEATURE waived: still carrying its full [auto] note AND
       // still waived. Matching the FULL note text (never a phrase like "confirmed FREE AND

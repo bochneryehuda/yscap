@@ -5274,7 +5274,7 @@ export default function StaffApplication() {
        asks the server for everything richer. */
     'sec-payoff': line(
       payoffMissing.length
-        ? (payoffMissing.length === 1 ? '1 thing still needed' : `${payoffMissing.length} things still needed`)
+        ? (payoffMissing.length === 1 ? '1 detail to fill in' : `${payoffMissing.length} details to fill in`)
         : 'Payoff details are complete',
       ...openHere('sec-payoff')),
     'sec-pricing': line(
