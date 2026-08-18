@@ -92,6 +92,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 function isOpen(f) { return !!f && OPEN_FINDING_STATUSES.has(f.status); }
 
+// A SETTLED finding that has come back — the fix did not hold (`finding.mergeOne` sets the flag).
+//
+// ⛔ IT IS COUNTED SEPARATELY, AND ONLY WHERE IT IS NOT ALREADY OPEN. A regressed row keeps its settled
+// status (`fixed`/`verified`), so `isOpen` is false for it and NOTHING in this file used to see it: the
+// gate answered `eligible` with no reasons for an investor whose price fix had come apart. A human can
+// later triage it back to `open`, and then it must produce ONE reason, not two.
+function isRegressed(f) { return !!f && f.regressed === true && !isOpen(f); }
+
 /**
  * Build one investor's scoreboard.
  *   input:
@@ -117,6 +125,8 @@ function buildScoreboard(input = {}) {
   return {
     canaryAgreementRate: typeof input.canaryAgreementRate === 'number' ? input.canaryAgreementRate : null,
     openFindings: open.length,
+    // Fixes that did not hold (§2.74). The ledger already carried this and the scoreboard threw it away.
+    regressedFindings: findings.filter(isRegressed).length,
     oldestOpenFindingDays,
     consecutiveCleanDays: consecutiveCleanDays(input.dailyNewFindings),
     // How much the latest canary actually COMPARED (§10.5/§10.6). null when not supplied.
@@ -160,6 +170,19 @@ function eligibleForLive(scoreboard = {}, settings = {}) {
 
   if (scoreboard.openFindings > 0) {
     reasons.push(`${scoreboard.openFindings} open finding(s) must be resolved`);
+  }
+  // §2.74 HARD RULE, and no setting turns it off — for the same reason the incomparable gate has none.
+  // A disagreement somebody marked FIXED and which is reproducing again is not a matter of degree: it
+  // says the fix did not hold, which is precisely what "may this engine be trusted on its own?" asks.
+  // Neither of the other two terms can see it — the row is settled, so `openFindings` is 0, and its key
+  // was seen on an earlier day, so the clean-day streak counts the day it came back as CLEAN.
+  //
+  // THE REMEDY IS REAL, which is what makes this safe to block on: deciding the finding again (re-fix,
+  // verify, or dismiss it) CLEARS the flag — `finding-store.decideFinding` writes `regressed = false`
+  // beside the status. Blocking on a flag nothing could clear would be the §2.72 dead end all over
+  // again, so the two halves ship together and the test proves the clearing works.
+  if (scoreboard.regressedFindings > 0) {
+    reasons.push(`${scoreboard.regressedFindings} finding(s) marked fixed have come back — the fix did not hold; look at them again`);
   }
   if (requirePerfect) {
     if (scoreboard.canaryAgreementRate == null) {
@@ -223,6 +246,7 @@ function transition(current, action, opts = {}) {
 
 module.exports = {
   SETTING_CLEAN_WEEKS, settingsToGate,
+  _isRegressed: isRegressed,
   MODES, OPEN_FINDING_STATUSES, DAY_MS,
   buildScoreboard, consecutiveCleanDays, eligibleForLive, transition,
   _internals: { isOpen, TRANSITIONS },

@@ -97,13 +97,22 @@ async function persistRun(scope, incoming = [], opts = {}) {
 }
 
 // A human's decision on a finding (triage / fix / verify / dismiss). Validates the status.
+//
+// ⛔ A DECISION CLEARS THE REGRESSION FLAG, and that is not tidying — it is what gives the go-live gate's
+// regression term a remedy (§2.74). `regressed` means "this was settled and it came back"; the moment a
+// human looks at it again and records a decision, that sentence is answered. Leave it set and the gate
+// would refuse promotion forever with nothing anybody could do about it — the dead-end class this repo
+// has closed twice now. `finding.mergeOne` sets it again if the same finding comes back AGAIN, which is
+// the whole point; `recurrence` keeps the permanent count of how often it has been seen, so no history
+// is lost by clearing a flag that is about the LAST settlement.
 async function decideFinding(scope, findingKey, decision = {}, db) {
   if (!finding.OPEN_STATUSES.has(decision.status) && !finding.SETTLED_STATUSES.has(decision.status)) {
     throw new Error(`finding-store:bad_status ${decision.status}`);
   }
   const r = await db.query(
     `UPDATE lt_ppe_finding
-        SET status = $3, decided_by = $4, decision_reason = $5, decided_at = now(), updated_at = now()
+        SET status = $3, decided_by = $4, decision_reason = $5, regressed = false,
+            decided_at = now(), updated_at = now()
       WHERE scope = $1 AND finding_key = $2`,
     [scope, findingKey, decision.status, decision.decidedBy || null, decision.reason || null],
   );

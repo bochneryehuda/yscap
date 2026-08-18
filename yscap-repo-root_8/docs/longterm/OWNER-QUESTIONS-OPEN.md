@@ -139,6 +139,10 @@ it are still OUR assumption rather than your decision, and both are one word awa
 
 - **8 weeks** is the number in the box. We picked the most cautious of the numbers that were floating
   around; you have never said one.
+- **A fix that came apart now stops the switch-over.** If a disagreement was marked fixed and it turns
+  up again, the investor is held back until somebody looks at it again — because a fix that did not hold
+  is the clearest sign the engine is not settled yet. Nobody asked for that rule; it seemed obviously
+  right, and it is one word away from changing.
 - **How much testing counts as enough** before an investor may go live. There was no minimum at all — an
   investor could have been switched over on a single test — while putting a *rate sheet* live has always
   required about 200 tests agreeing with Lender Price. Switching an investor over is the bigger decision

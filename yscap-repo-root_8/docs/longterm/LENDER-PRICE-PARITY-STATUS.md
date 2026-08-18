@@ -4437,3 +4437,49 @@ fixture). They were re-pointed at what is now true and **strengthened**, never d
 also asserts that the old permissive numbers are refused, and names both reasons.
 
 144/144 suites.
+
+**§2.74 — A FIX THAT CAME UNDONE WAS INVISIBLE TO THE GO-LIVE GATE (2026-08-18).**
+
+**THE SIGNAL EXISTED AND THE GATE DID NOT READ IT.** `finding.mergeOne` flags a settled finding that
+reappears as **`regressed`** — *the fix did not hold*. That flag is not dead: the review queue bumps its
+severity and ranks it, and the console shows a **came back** pill. But **no gate reads it**, and
+`eligibleForLive` is the one place where it decides anything.
+
+**MEASURED**, on a price disagreement fixed on day 1 and reproducing on day 30:
+
+- `openFindings` **0** — the row keeps its settled status (`fixed`), which is correct and deliberate
+  (a human's decision is never silently reopened), so the *"no open findings"* term structurally cannot
+  see it;
+- a **30-day unbroken clean streak** — `dailySeries` counts a key as NEW only when it was never seen on
+  an EARLIER day, and this one was seen on day 1, so the day it **came back** reads as clean;
+- `eligibleForLive` → **`{eligible: true, reasons: []}`.**
+
+So an investor whose fix had come apart was promotable to live — our engine, not Lender Price, answering
+a borrower — and nothing anywhere said a word. Both existing terms are individually right; the defect is
+that neither of them is *about* this, and nothing else was. The agreement rate does catch it **in the
+run that reproduces it**, but the gate reads only the LATEST run and the owner's schedule fires six a
+day, so an intermittent regression is invisible by the afternoon.
+
+**THE FIX IS TWO HALVES AND THEY HAD TO SHIP TOGETHER.** The scoreboard counts regressed settled
+findings and the gate refuses with its own plain reason, with **no setting to turn it off** — the same
+treatment the incomparable gate has, because a fix that did not hold is not a matter of degree. Counted
+only where the row is **not already open**, so a regressed row a human triages back to open produces ONE
+refusal rather than two for one thing.
+
+**AND A DECISION CLEARS THE FLAG** (`finding-store.decideFinding` writes `regressed = false` beside the
+status). That is not tidying — it is the remedy, and without it this would be **the third dead end in
+three sections**: a gate refusing forever on a flag nothing can clear. Look at the finding again, record
+a decision, and the gate opens; if it comes back **again**, `mergeOne` flags it again, so the signal is
+not spent by being answered once. `recurrence` keeps the permanent count of how often it has been seen,
+so clearing a flag that describes *the last settlement* loses no history.
+
+`scripts/test-lt-ppe-regression-gate-db.js` (29 assertions, pure + a real Postgres half) pins the
+measurement itself — that the other two terms cannot see it — then the new term, the one-row-one-reason
+rule, a wontfix override never being mistaken for a regression (§2.72's overrides recur for ever), and
+the whole ledger cycle end to end: appear → fix → reproduce → the real column written → the gate refuses
+→ decide → the column cleared → the gate opens → come back a third time and it is flagged again. The
+regressed row is built by the REAL `mergeOne`, never hand-written. **Mutation-proven four ways**: the
+gate blind to it, the scoreboard not counting it, a reopened row double-counted, and a decision no
+longer clearing the flag.
+
+145/145 suites.
