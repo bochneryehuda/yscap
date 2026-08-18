@@ -1334,8 +1334,10 @@ function tapeGateMessage(gate) {
 }
 
 // Convenience for the term-sheet gate (WO-E): is the Encompass findings tab clear?
-async function isClear(appId, dbc) {
-  const c = await computeFindings(appId, dbc);
+// `opts` rides through to computeFindings — the SINGLE-FILE gate callers pass
+// {heal:true} (see issuanceGate); the bulk tape paths never do.
+async function isClear(appId, dbc, opts) {
+  const c = await computeFindings(appId, dbc, opts);
   // A file with no Encompass loan pulled is NOT "blocked" by Encompass — the gate
   // only blocks on an OPEN blocking mismatch against a loan we actually have.
   // At the GATE BOUNDARY `openBlocking` is the count of EVERY not-passing field
@@ -1354,9 +1356,22 @@ async function isClear(appId, dbc) {
 // FAILS OPEN (block:false) on any error: an Encompass reconcile problem must
 // never prevent a term sheet from being issued (Encompass is a cross-check, not
 // the authority). A caller applies its own admin-override policy on `block`.
-async function issuanceGate(appId, dbc) {
+//
+// THE GATE SELF-HEALS LIKE THE PANEL (owner-reported 2026-08-18: the term-sheet
+// gate said "7 fields don't match" while opening the Encompass Syncing panel
+// showed everything matching — and going back, the gate agreed). ROOT CAUSE:
+// the PANEL's routes pass {heal:true} to computeFindings, which does the
+// one-time read-by-number and PERSISTS the field values — so a stale stored
+// copy healed itself the moment somebody opened the panel, while the gate had
+// been judging the UNHEALED copy. The gate and the panel must judge the SAME
+// copy, so the gate's two callers — both SINGLE-FILE, user-initiated (the
+// e-sign panel read and the send route) — pass {heal:true} too. The BULK
+// paths (tapeGate → isClear with no opts, the bulk tape export) stay unhealed
+// per the standing rule: a loop over 1000 files must never fire per-file live
+// Encompass calls.
+async function issuanceGate(appId, dbc, opts) {
   try {
-    const g = await isClear(appId, dbc);
+    const g = await isClear(appId, dbc, opts);
     const keys = g.openBlockingKeys || [];
     // `openBlocking` == keys.length so every display/log site prints the true
     // number of fields that don't agree (never an under-count).

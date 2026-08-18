@@ -175,7 +175,10 @@ async function attachSignedArtifacts(db, envelopes) {
  */
 async function encompassSendBlock(applicationId) {
   try {
-    const g = await require('../../encompass/reconcile').issuanceGate(applicationId);
+    // {heal:true}: this is a SINGLE-FILE panel read, so the gate judges the
+    // same self-healed copy the Encompass Syncing panel shows — the two can no
+    // longer disagree about the same file (owner-reported 2026-08-18).
+    const g = await require('../../encompass/reconcile').issuanceGate(applicationId, undefined, { heal: true });
     return {
       block: !!g.block, hasLoan: !!g.hasLoan,
       openBlocking: g.openBlocking || 0,

@@ -145,6 +145,26 @@ function call(server, method, path, token, body) {
     ok('D4 one side holding a number the other lacks is a DISAGREEMENT, not a skip',
       (() => { const s = I.shapeEncompass({ 'CX.APIECE': '' }, { enabled: true, aPiece: 250000, bPiece: null });
         return s && s.agrees.aPiece === false && s.relevant === true; })());
+    // ZERO MEANS "NOTHING RECORDED" (owner-directed 2026-08-18: "If something
+    // is empty and something is a zero … it doesn't mean that it's not
+    // matching"). A $0 amount on EITHER side compares as nothing there — never
+    // a mismatch against a blank other side — while a REAL number against a
+    // blank stays the disagreement D4 pins.
+    ok('D4b Encompass "$0" against a blank PILOT side is NOT a mismatch (the owner\'s reported row)',
+      (() => { const s = I.shapeEncompass({ 'CX.BPIECE': '0' }, { enabled: true, aPiece: 300000, bPiece: null });
+        return s && s.agrees.bPiece === null; })());
+    ok('D4c a $0 on OUR side against a blank Encompass side is NOT a mismatch either',
+      (() => { const s = I.shapeEncompass({ 'CX.APIECE': '' }, { enabled: true, aPiece: 0, bPiece: null });
+        return s && s.agrees.aPiece === null; })());
+    ok('D4d "$0.00" spelled with cents normalizes the same way',
+      (() => { const s = I.shapeEncompass({ 'CX.BPIECE': '$0.00' }, { enabled: true, aPiece: 300000, bPiece: null });
+        return s && s.agrees.bPiece === null; })());
+    ok('D4e a copy carrying ONLY zeros is not "relevant" on a file with no split',
+      (() => { const s = I.shapeEncompass({ 'CX.APIECE': '0', 'CX.BPIECE': '0' }, { enabled: false, aPiece: null, bPiece: null });
+        return s && s.relevant === false; })());
+    ok('D4f a REAL Encompass number against a blank side is still a disagreement (D4 unmoved)',
+      (() => { const s = I.shapeEncompass({ 'CX.BPIECE': '25000' }, { enabled: true, aPiece: 300000, bPiece: null });
+        return s && s.agrees.bPiece === false; })());
 
     // At this point the file's recorded split is enabled, A=300,000, total=450,000 → B=150,000.
     await db.query(

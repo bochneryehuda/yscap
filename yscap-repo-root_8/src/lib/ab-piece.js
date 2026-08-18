@@ -141,23 +141,33 @@ function shapeEncompass(fieldValues, ours) {
 
   const structureRaw = has(ENC_FIELDS.structure) ? String(fv[ENC_FIELDS.structure] == null ? '' : fv[ENC_FIELDS.structure]) : null;
   const structureChecked = structureRaw == null ? null : parseEncChecked(structureRaw);
-  const aPiece = has(ENC_FIELDS.aPiece) ? parseEncMoney(fv[ENC_FIELDS.aPiece]) : null;
-  const bPiece = has(ENC_FIELDS.bPiece) ? parseEncMoney(fv[ENC_FIELDS.bPiece]) : null;
+  // A ZERO AMOUNT MEANS "NOTHING RECORDED", ON EITHER SIDE (owner-directed
+  // 2026-08-18: "If something is empty and something is a zero and Encompass
+  // is syncing, it doesn't mean that it's not matching"). A $0 A-piece or
+  // B-piece is not a piece — an Encompass copy carrying "0" against a blank
+  // PILOT side (or the reverse) must never read as a MISMATCH, so zeros
+  // normalize to null before the comparison. A genuine dollar amount on one
+  // side against nothing on the other stays the real disagreement it is.
+  const zeroNull = (n) => (n != null && Math.abs(n) < 0.005 ? null : n);
+  const aPiece = zeroNull(has(ENC_FIELDS.aPiece) ? parseEncMoney(fv[ENC_FIELDS.aPiece]) : null);
+  const bPiece = zeroNull(has(ENC_FIELDS.bPiece) ? parseEncMoney(fv[ENC_FIELDS.bPiece]) : null);
+  const ourA = zeroNull(ours && ours.aPiece != null ? Number(ours.aPiece) : null);
+  const ourB = zeroNull(ours && ours.bPiece != null ? Number(ours.bPiece) : null);
 
   // Per-fact agreement against PILOT's record. true/false only where BOTH
   // sides state something comparable; null where nothing can be compared.
-  // "One side has a number, the other has none" is a real DISAGREEMENT (that
-  // is exactly the state a not-yet-updated Encompass copy is in); "neither
-  // side has one" agrees trivially and is filtered by `relevant` below.
+  // "One side has a real number, the other has none" is a real DISAGREEMENT
+  // (that is exactly the state a not-yet-updated Encompass copy is in);
+  // "neither side has one" agrees trivially and is filtered by `relevant`.
   const near = (x, y) => Math.abs(x - y) < 0.005;
   const agrees = { structure: null, aPiece: null, bPiece: null };
   if (ours) {
     if (structureChecked !== null) agrees.structure = structureChecked === !!ours.enabled;
-    if (aPiece != null || ours.aPiece != null) {
-      agrees.aPiece = (aPiece != null && ours.aPiece != null) ? near(aPiece, ours.aPiece) : false;
+    if (aPiece != null || ourA != null) {
+      agrees.aPiece = (aPiece != null && ourA != null) ? near(aPiece, ourA) : false;
     }
-    if (bPiece != null || ours.bPiece != null) {
-      agrees.bPiece = (bPiece != null && ours.bPiece != null) ? near(bPiece, ours.bPiece) : false;
+    if (bPiece != null || ourB != null) {
+      agrees.bPiece = (bPiece != null && ourB != null) ? near(bPiece, ourB) : false;
     }
   }
   const stated = [agrees.structure, agrees.aPiece, agrees.bPiece].filter((x) => x !== null);
@@ -167,7 +177,7 @@ function shapeEncompass(fieldValues, ours) {
   // file with no split anywhere must not grow a "Encompass agrees: nothing"
   // row on every screen.
   const relevant = structureChecked === true || aPiece != null || bPiece != null
-    || !!(ours && (ours.enabled || ours.aPiece != null));
+    || !!(ours && (ours.enabled || ourA != null));
 
   return { structureChecked, structureRaw, aPiece, bPiece, agrees, overall, relevant };
 }
