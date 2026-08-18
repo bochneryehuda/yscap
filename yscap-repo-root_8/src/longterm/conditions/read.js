@@ -304,15 +304,47 @@ function describeCondition(r, documents, forClient, thread = []) {
  */
 const DONE_STATUSES = new Set(['received', 'reviewed', 'ready for uw', 'ready to ship']);
 
-function documentOutstanding(status) {
+/**
+ * WHICH WORDS MEAN "IN HAND" — the TENANT's, not ours.
+ *
+ * These are eFolder status words, which are tenant configuration: a buyer renames
+ * them or adds one, and a list written into this file would then quietly put a
+ * document that HAS arrived onto a chase list. The registry has carried
+ * `efolder.receivedStatuses` since it was written and nothing read it — the exact
+ * hard-coded vocabulary the settings rule exists to stop.
+ *
+ * The measured default stays as the FALLBACK: a caller with no settings in hand,
+ * and a settings load that failed, both read the four words observed across 20,569
+ * live documents rather than treating everything as outstanding.
+ *
+ * The OTHER half is deliberately NOT read. `efolder.outstandingStatuses` is not a
+ * second list — "still wanted" is everything that is not in hand, and a status we
+ * have never seen must count as outstanding, because a word nobody recognised is
+ * not evidence that a document arrived. Two lists could disagree, and the one that
+ * drifted would be the one that let a missing document look satisfied.
+ */
+function doneStatusesFrom(settings) {
+  const list = settings && settings['efolder.receivedStatuses'];
+  if (!Array.isArray(list)) return DONE_STATUSES;
+  const words = list.map((s) => String(s || '').trim().toLowerCase()).filter(Boolean);
+  // AN EMPTY LIST IS NOT A STATEMENT THAT NOTHING IS EVER DONE. A cleared box, or
+  // one holding only blanks, would otherwise report every document in the book as
+  // outstanding — so it reads as "nobody has configured this" and the measured
+  // words stand. ONE test, deliberately: a second `!list.length` guard above would
+  // make this one unfalsifiable, and a guard no mutation can reach is decoration.
+  return words.length ? new Set(words) : DONE_STATUSES;
+}
+
+function documentOutstanding(status, done = DONE_STATUSES) {
   const s = String(status || '').trim().toLowerCase();
   if (!s) return true;
-  return !DONE_STATUSES.has(s);
+  return !done.has(s);
 }
 
 async function documentsForLoan(loanId, opts = {}) {
   const forClient = audience.isClient(opts.audience || 'internal');
   const db = opts.db || lazy.db;
+  const done = doneStatusesFrom(opts.settings);
 
   const { rows } = await db.query(
     `SELECT d.id, d.encompass_document_id, d.title, d.title_with_index, d.status,
@@ -333,7 +365,7 @@ async function documentsForLoan(loanId, opts = {}) {
     encompassId: r.encompass_document_id,
     title: safeText(r.title_with_index || r.title, forClient),
     status: r.status,
-    outstanding: documentOutstanding(r.status),
+    outstanding: documentOutstanding(r.status, done),
     milestone: r.milestone_name,
     forBorrower: r.application_name ? safeText(r.application_name, forClient) : null,
     daysDue: r.days_due,
@@ -411,6 +443,7 @@ function faceOf(conditionsTotal, documentsTotal) {
  */
 async function outstandingForLoans(loanIds, opts = {}) {
   const db = opts.db || lazy.db;
+  const done = doneStatusesFrom(opts.settings);
   const out = new Map();
   if (!loanIds || !loanIds.length) return out;
 
@@ -449,7 +482,7 @@ async function outstandingForLoans(loanIds, opts = {}) {
   for (const r of docs.rows) {
     const row = at(r.loan_id);
     row.documentsTotal += r.n;
-    if (documentOutstanding(r.status)) row.documentsOutstanding += r.n;
+    if (documentOutstanding(r.status, done)) row.documentsOutstanding += r.n;
   }
   for (const r of stamps.rows) {
     const row = at(r.id);
@@ -498,5 +531,5 @@ module.exports = {
   documentsForLoan,
   outstandingForLoans,
   syncStamps,
-  _internals: { conditionRank, groupOf, documentOutstanding, faceOf, describeCondition, safeText, attachmentsForDocuments, withFiles, FILE_CAP, DONE_STATUSES },
+  _internals: { conditionRank, groupOf, documentOutstanding, doneStatusesFrom, faceOf, describeCondition, safeText, attachmentsForDocuments, withFiles, FILE_CAP, DONE_STATUSES },
 };

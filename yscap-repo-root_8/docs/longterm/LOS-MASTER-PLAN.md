@@ -288,6 +288,27 @@ the build on a column that is neither filled nor listed, and on an entry that ha
 columns are listed today; the file screen says the reason in the reader's own words where a dash used
 to sit. The flood determination and the entity record are the two the owner can unblock — §11.
 
+**A SETTING IS EITHER READ BY SOMETHING OR SAYS IT IS NOT (2026-08-18).** §7's promise to a buyer is
+that nothing about how WE do things is hard-coded. Forty-three of the 63 settings were declared ahead
+of the code that would read them, so the settings screen offered knobs that changed NOTHING and said
+so nowhere — worse than not offering them, because a silent knob is believed: somebody renames an
+eFolder status, saves, sees no error and assumes the system now knows. Each of those now carries the
+reason it is not in use, the screen prints it and refuses to let anybody type into it, and
+`scripts/test-lt-settings-wired-pure.js` fails the build on a setting that is neither read nor honest
+— in BOTH directions, because a stale "not in use" on one somebody has since wired is its own lie.
+Four reasons cover them: *the number is pinned to the measured field dictionary*, *the rule is settled
+in code where the census test can hold it*, *that part is not built*, and *the connection is
+configured where the credentials live*. Two settings are unused DELIBERATELY and say so — a condition
+is done when Encompass says so, never when its status word appears in a list we keep.
+
+**One of them was a real defect and was WIRED rather than excused.** `efolder.receivedStatuses` — the
+words that mean a document is in hand — was declared in the registry while `conditions/read.js` kept
+its own four-word list, the exact hard-coded tenant vocabulary the settings rule exists to stop. The
+day a buyer renames a status, every document in it goes onto a chase list it has already left. The
+file screen and the pipeline's own count now read the same configured words; an empty list falls back
+to the four measured across 20,569 live documents, and an unfamiliar word still counts as OUTSTANDING,
+because a word nobody recognised is not evidence that a document arrived.
+
 **A DEBT KNOWS WHICH RENTAL IT IS SECURED ON.** Encompass hangs the link on the debt
 (`vols[].reoProperty.entityId`) and it is resolved to our own row as the 1003 is mirrored, so a
 mortgage covered by a property's own rent can be read together with that rent. On a DSCR file that is

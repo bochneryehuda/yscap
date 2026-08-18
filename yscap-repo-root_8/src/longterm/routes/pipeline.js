@@ -69,7 +69,7 @@ router.get('/', async (req, res) => {
     // second copy of them (see conditions/read.js).
     if (cols.columns.some((c) => c.key === 'conditions')) {
       try {
-        const counts = await conditionRead.outstandingForLoans((out.loans || []).map((r) => r.id));
+        const counts = await conditionRead.outstandingForLoans((out.loans || []).map((r) => r.id), { settings });
         for (const row of out.loans || []) row.outstanding = counts.get(row.id) || null;
       } catch (e) {
         // A column that cannot be counted leaves its cells saying so; it never

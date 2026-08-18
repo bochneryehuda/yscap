@@ -71,7 +71,7 @@ router.get('/:loanId', async (req, res) => {
   try {
     const loan = await openable(req, res);
     if (!loan) return;
-    const center = await read.centerForLoan(loan.id, { audience: 'internal' });
+    const center = await read.centerForLoan(loan.id, { audience: 'internal', settings });
     res.json({ enabled: true, loanId: loan.id, loanNumber: loan.loan_number, ...center });
   } catch (e) {
     console.error('[lt-conditions] read failed:', (e && e.message) || e);
@@ -97,7 +97,7 @@ router.get('/:loanId/documents', async (req, res) => {
   try {
     const loan = await openable(req, res);
     if (!loan) return;
-    const out = await read.documentsForLoan(loan.id, { audience: 'internal' });
+    const out = await read.documentsForLoan(loan.id, { audience: 'internal', settings });
     res.json({ enabled: true, items: out.items, outstanding: out.outstanding, total: out.total });
   } catch (e) {
     console.error('[lt-conditions] documents read failed:', (e && e.message) || e);

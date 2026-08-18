@@ -492,6 +492,42 @@ async function main() {
 
     check((await read.outstandingForLoans([])).size === 0,
       'asking about no loans asks the database nothing');
+
+    // ── WHICH WORDS MEAN "WE HAVE IT" IS THE TENANT'S TO SAY ────────────────
+    // eFolder statuses are tenant configuration, and the registry has carried a
+    // setting for them since it was written while the code kept its own list.
+    console.log('\nthe words that mean a document arrived');
+
+    const RENAMED = { ...DOC_2, id: 'd-3', title: 'Insurance', status: 'In our hands' };
+    await sync.syncDocumentsForLoan(loanId, GUID, { client: stubClient(three, [DOC_1, DOC_2, RENAMED]) });
+
+    const plainDocs = await read.documentsForLoan(loanId, { audience: 'internal' });
+    const renamedRow = () => plainDocs.items.find((d) => d.title === 'Insurance');
+    check(renamedRow() && renamedRow().outstanding === true,
+      'a status nobody has told us about counts as OUTSTANDING — an unfamiliar word is not evidence that a document arrived, and the safe direction is to keep asking');
+
+    const configured = await read.documentsForLoan(loanId, {
+      audience: 'internal',
+      settings: { 'efolder.receivedStatuses': ['received', 'reviewed', 'In our hands'] },
+    });
+    const nowIn = configured.items.find((d) => d.title === 'Insurance');
+    check(nowIn && nowIn.outstanding === false,
+      'THE ONE THAT MATTERS: a company that renamed the status says so in its settings and the document reads as IN HAND — the words are theirs, and a list kept in our code would chase a document that had already arrived');
+    check(configured.items.find((d) => d.title === 'Bank statements').outstanding === true,
+      '…and a word left off their list is still outstanding, so configuring one status never quietly clears the rest');
+
+    const counted = await read.outstandingForLoans([loanId], {
+      settings: { 'efolder.receivedStatuses': ['received', 'reviewed', 'In our hands'] },
+    });
+    check(counted.get(loanId).documentsOutstanding
+      === (await read.outstandingForLoans([loanId])).get(loanId).documentsOutstanding - 1,
+      'and the pipeline column counts by the SAME words the file screen reads, so the list and the file can never disagree about one loan');
+
+    const blankList = await read.documentsForLoan(loanId, {
+      audience: 'internal', settings: { 'efolder.receivedStatuses': [] },
+    });
+    check(blankList.items.find((d) => d.title === 'Appraisal').outstanding === false,
+      'an EMPTY list falls back to the four words measured across 20,569 live documents — reading it as "no word means done" would report the whole book as outstanding on the day somebody clears the box');
   } finally {
     if (loanId) {
       // One DELETE: every mirror row cascades from the loan.
