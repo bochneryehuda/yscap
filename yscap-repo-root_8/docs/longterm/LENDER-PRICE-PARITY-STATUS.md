@@ -4483,3 +4483,60 @@ gate blind to it, the scoreboard not counting it, a reopened row double-counted,
 longer clearing the flag.
 
 145/145 suites.
+
+**§2.75 — THE PAID BATTERY HAD NO FREE PRE-FLIGHT: WE PAID LENDER PRICE TO DISCOVER OUR OWN SHEET
+PRICES NOTHING (2026-08-18).**
+
+**FOUR GUARDS, ALL POINTING THE OTHER WAY.** `runAgreementRoute` already refuses to spend before it
+starts — no program, no Lender Price scope, no vendor credentials, an empty battery. **Every one of them
+is about THEIR side or about the inputs. Nothing looked at ours.** So a sheet whose own leg declines or
+throws on every scenario still made the full ~299 paid vendor calls and came back a wall of eligibility
+disagreements that were **our own misconfiguration** — the exact outcome this route's settings comment
+already records from the day a mis-read margin *"filled the findings ledger with our own
+misconfiguration"*, arriving through another door and costing money on the way.
+
+**OUR SIDE IS PURE, SO THE WHOLE BATTERY IS FREE TO RUN AGAINST OURSELVES.** `program-audit.js` was
+built for this and `LT-UNREACHED.md` had named its home in as many words — *"the free pre-flight beside
+`GET …/coverage`"* — and nobody had built the pre-flight. `src/longterm/ppe/agreement-preflight.js` is
+it: our leg over the battery, no network, plus the investor descriptor's dead-rule profile.
+
+**THE LEG IS BUILT ONCE AND SHARED**, which is the one structural decision worth stating: the route now
+builds `oursLeg` above both, so **the thing that says "we can price this" IS the thing that prices it**.
+A pre-flight that built its own leg — same program, but re-deciding the facts conversion, the margin
+holdback, the prepayment descriptor and its unresolved policy — would be answering about a different
+engine than the one about to be measured. That is the second-copy class, and on a gate about money it is
+the expensive one.
+
+**IT REFUSES EXACTLY ONE THING, AND THAT RESTRAINT IS THE DESIGN.** A battery our engine priced **nothing**
+in is refused (422, `our_engine_priced_nothing`, with the counts that say where the sheet is refusing and
+`spentUpstreamCalls: 0`) — the same statement as *"empty battery"* or *"the vendor is not configured"*,
+not a judgement. Everything else is **reported and never gates**: how much of the battery declines and
+under which codes, scenarios our leg **threw** on (with an example naming the scenario and the error),
+scenarios that came back **eligible with no rungs** — the §2.61 refusal, which is its own bucket because
+counting it as priced would tell a caller there is something to measure when there is not — and decline
+codes that **never fired anywhere** in the battery, which is a rule nothing can reach. Picking a
+threshold (*"refuse if more than half decline"*) would be **inventing a business rule**: a sheet
+legitimately declines most of a deliberately hostile battery.
+
+**AND THE ADVISORY HALF RIDES ON THE ANSWER, not only on the refusal** — a report nobody is shown is a
+report that does not exist. A **free `GET /rate-sheets/:id/preflight`** answers the same question before
+anyone presses the paid button, reached from the same module (never a second implementation, or the door
+and the run would eventually disagree about one sheet), and the rate-sheet console now offers three
+buttons where it offered two, with the free ones first and the cost said out loud.
+
+`scripts/test-lt-ppe-agreement-preflight.js` (36 assertions) pins the one refusal, all the things that
+are **not** refusals (298 of 299 declining, a partly-throwing leg, an empty battery), the unpriced
+bucket, never-throws-never-guesses, the real canonical battery, and the call site. **Mutation-proven six
+ways**: the route not asking, the pre-flight moved after the money is spent, an unpriced quote counted
+as priced, a throwing leg swallowed as a decline, a failed dead-rule profile reading as clean, and the
+free door removed.
+
+**TWO DEFECTS IN MY OWN WORK, both caught by the battery rather than by reading.** `preflight(null)`
+threw — `= {}` defaults only an **undefined** argument, and `null` is exactly what a caller passes when
+it has nothing to say, in a module whose entire job is to never be the reason a paid run fails. And the
+first source guard used a **file-wide** `indexOf`, which finds the FREE DOOR's call first (it is defined
+earlier in the file), so the ordering check was comparing the wrong pair and passed however the paid
+route was arranged: moving the pre-flight to after the vendor calls was caught by only one of the two
+assertions meant to catch it. The guard now cuts out the paid route's own body by brace-matching.
+
+146/146 suites.

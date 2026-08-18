@@ -108,6 +108,7 @@ const agreementStore = require('../ppe/agreement-store');
 const ratesheetAgreement = require('../ppe/ratesheet-agreement');
 const agreementScenarios = require('../ppe/agreement-scenarios');
 const lpAgreementLegs = require('../ppe/lp-agreement-legs');
+const agreementPreflight = require('../ppe/agreement-preflight');
 const programRegistry = require('../ppe/program-registry');
 const agreementScenarioGenerator = require('../ppe/agreement-scenario-generator');
 const ratesheetCells = require('../ppe/ratesheet-cells');
@@ -3058,6 +3059,59 @@ async function rateSheetDiffRoute(req, res) {
  */
 const MAX_COVERAGE_SCENARIOS = 400;
 
+/**
+ * GET /rate-sheets/:id/preflight — WHAT THE PAID RUN WOULD FIND ON OUR SIDE, FOR NOTHING (§2.75).
+ *
+ * The agreement battery costs ~299 upstream calls. This answers the half of the question that needs no
+ * vendor at all — can our own sheet price this battery, where does it refuse, and does the investor's
+ * rule set contain a decline code that never fires (a dead rule)? Pressing the paid button when this
+ * says our engine prices nothing is buying a wall of disagreements about our own misconfiguration.
+ *
+ * It is the SAME check the paid route runs before it spends, reached from the same module — never a
+ * second implementation, or the door and the run would eventually answer differently about one sheet.
+ * A GET, because it changes nothing and makes no vendor call.
+ */
+async function rateSheetPreflightRoute(req, res) {
+  const found = await resolveVersion(req, res);
+  if (!found) return undefined;
+
+  const { program, investorName, marginFor, reason: noProgram } = await loadProgram(found.scope, found.versionId);
+  if (!program) {
+    return res.status(422).json({
+      error: 'This rate sheet cannot be priced yet, so there is nothing to pre-flight.',
+      reason: noProgram,
+    });
+  }
+  const { values: settings } = await resolveSettingsSafe(found.scope);
+  const pppDesc = investorName ? programRegistry.programFor(investorName) : null;
+
+  const built = agreementScenarios.buildAgreementScenarios();
+  const all = Array.isArray(built && built.scenarios) ? built.scenarios : [];
+  const battery = all.length > MAX_AGREEMENT_SCENARIOS ? all.slice(0, MAX_AGREEMENT_SCENARIOS) : all;
+
+  // The leg is built with the SAME options the paid run uses — including the unresolved-prepayment
+  // policy — because a pre-flight answering about a differently-configured engine is worse than none.
+  const oursLeg = lpAgreementLegs.buildOursLeg(program, settings, {
+    factsFromLp: true, pppDescriptor: pppDesc, onUnresolvedPpp: 'flag', marginHoldback: marginFor,
+  });
+  const out = agreementPreflight.preflight({
+    battery, ours: oursLeg, pppDescriptor: pppDesc, factsOf: lpAgreementLegs.lpScenarioToFacts,
+  });
+
+  return res.json({
+    ok: true,
+    scope: found.scope,
+    versionId: found.versionId,
+    // Whether the PAID run would start, said plainly — this door exists to be read before pressing it.
+    wouldRun: out.ok,
+    preflight: out,
+    scenarios: battery.length,
+    truncated: all.length > battery.length ? all.length - battery.length : 0,
+    pppLayer: pppDesc ? { asked: true, investor: investorName } : { asked: false, investor: investorName || null },
+    upstreamCalls: 0,
+  });
+}
+
 async function rateSheetCoverageRoute(req, res) {
   const found = await resolveVersion(req, res);
   if (!found) return undefined;
@@ -3277,6 +3331,41 @@ async function runAgreementRoute(req, res) {
     } catch (_) { reviewErrors += 1; }
   };
 
+  // THE FREE PRE-FLIGHT (§2.75) — OUR side of the harness, run over the whole battery for nothing,
+  // before a single vendor call.
+  //
+  // Every guard above this point is about THEIR side or about the inputs (no program, no scope, no
+  // credentials, an empty battery). Nothing looked at ours, so a sheet whose own leg declines or throws
+  // on every scenario still paid for the full battery and came back a wall of eligibility
+  // disagreements that were our own misconfiguration — the same outcome the settings comment in this
+  // file records, arriving through another door and costing money on the way.
+  //
+  // THE LEG IS BUILT ONCE AND SHARED. Handing the pre-flight its own leg would be answering about a
+  // different engine than the one about to be measured; this way the thing that says "we can price
+  // this" IS the thing that prices it.
+  const oursLeg = lpAgreementLegs.buildOursLeg(program, settings, {
+    factsFromLp: true, pppDescriptor: pppDesc, onUnresolvedPpp: 'flag', marginHoldback: marginFor,
+  });
+  const preflight = agreementPreflight.preflight({
+    battery,
+    ours: oursLeg,
+    pppDescriptor: pppDesc,
+    factsOf: lpAgreementLegs.lpScenarioToFacts,
+  });
+  if (!preflight.ok) {
+    // 422, not 500: nothing failed — we looked, and there is nothing to measure. Reported with the
+    // counts that say WHERE the sheet is refusing, because a refusal a reader cannot act on is a dead
+    // end (§2.72/§2.73).
+    return res.status(422).json({
+      error: 'This sheet cannot be measured against Lender Price yet, so no vendor calls were made.',
+      reason: preflight.reason,
+      detail: preflight.detail,
+      preflight,
+      scenarios: battery.length,
+      spentUpstreamCalls: 0,
+    });
+  }
+
   let run;
   try {
     run = await ratesheetAgreement.runRatesheetAgreement(
@@ -3312,7 +3401,7 @@ async function runAgreementRoute(req, res) {
         // see it. WHAT THE QUOTING PATH SHOULD DO — refuse, or quote and flag for a human — is the OPEN
         // OWNER QUESTION (docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.54) and is NOT settled by this
         // line; a measurement harness choosing to keep measuring is not an answer to it.
-        ours: lpAgreementLegs.buildOursLeg(program, settings, { factsFromLp: true, pppDescriptor: pppDesc, onUnresolvedPpp: 'flag', marginHoldback: marginFor }),
+        ours: oursLeg,
         lp: lpAgreementLegs.buildLpLeg(lpClient, { withDisqualify: true }),
       },
       {
@@ -3405,6 +3494,11 @@ async function runAgreementRoute(req, res) {
     versionId: found.versionId,
     scenarios: battery.length,
     truncated: capped ? all.length - battery.length : 0,
+    // The free pre-flight rides on the ANSWER too, not only on the refusal (§2.75). Its advisory half —
+    // how much of the battery our own sheet declines, which decline codes never fired at all (a dead
+    // rule), scenarios our leg threw on — never gates, and a report nobody is shown is a report that
+    // does not exist. This is the repo's no-silent-caps rule applied to a measurement of ourselves.
+    preflight,
     // WHETHER THE PREPAYMENT LAYER WAS ASKED, on every answer including the failed ones. A gate that
     // reports agreement while a whole layer of the investor's own rules went unasked is exactly the
     // silent-green failure this engine keeps producing, and a caller cannot tell from a verdict alone.
@@ -3805,6 +3899,7 @@ router.put('/rate-sheets/:id/base-prices', requirePpeAdmin, wrap(setBasePricesRo
 router.put('/rate-sheets/:id/adjustments', requirePpeAdmin, wrap(setAdjustmentsRoute, 'lt_ppe_adjustments_error'));
 router.put('/rate-sheets/:id/price-limit', requirePpeAdmin, wrap(setPriceLimitRoute, 'lt_ppe_price_limit_error'));
 router.get('/rate-sheets/:id/coverage', requirePpeAdmin, wrap(rateSheetCoverageRoute, 'lt_ppe_ratesheet_coverage_error'));
+router.get('/rate-sheets/:id/preflight', requirePpeAdmin, wrap(rateSheetPreflightRoute, 'lt_ppe_ratesheet_preflight_error'));
 router.get('/rate-sheets/:id/diff', requirePpeAdmin, wrap(rateSheetDiffRoute, 'lt_ppe_ratesheet_diff_error'));
 router.get('/rate-sheets/:id/agreement', requirePpeAdmin, wrap(agreementRoute, 'lt_ppe_agreement_read_error'));
 router.post('/rate-sheets/:id/agreement/run', requirePpeAdmin, wrap(runAgreementRoute, 'lt_ppe_agreement_run_error'));
@@ -3831,7 +3926,7 @@ module.exports.handlers = {
   currentRateSheetRoute,
   listSchedulesRoute, saveScheduleRoute, deleteScheduleRoute, canaryTickRoute, canaryDriverRoute,
   createInvestorRoute, createProgramRoute, createRateSheetRoute, getRateSheetRoute,
-  setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, rateSheetCoverageRoute, rateSheetDiffRoute, agreementRoute, runAgreementRoute,
+  setBasePricesRoute, setAdjustmentsRoute, setPriceLimitRoute, rateSheetCoverageRoute, rateSheetPreflightRoute, rateSheetDiffRoute, agreementRoute, runAgreementRoute,
   publishRateSheetRoute,
   runDisqualifierReviewRoute, disqualifierReviewQueueRoute, decideDisqualifierReviewRoute,
   compPlanRoute,

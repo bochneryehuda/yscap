@@ -198,6 +198,16 @@ export default function RateSheetConsole() {
     } finally { setBusy(false); }
   };
 
+  const [preflight, setPreflight] = useState(null);
+  const [preflightError, setPreflightError] = useState('');
+
+  const checkPreflight = async () => {
+    setBusy(true); setPreflightError(''); setPreflight(null); setNote('');
+    try { setPreflight(await ltApi.ppeRateSheetPreflight(sheet.version.id)); } catch (e) {
+      setPreflightError(e.message || 'The dry run could not run.');
+    } finally { setBusy(false); }
+  };
+
   const runAgreement = async () => {
     setBusy(true); setRunError(''); setRun(null); setNote('');
     try {
@@ -358,16 +368,50 @@ export default function RateSheetConsole() {
           <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: 'rgba(20,27,34,.03)', border: '1px solid rgba(20,27,34,.10)' }}>
             <div style={{ ...eyebrow, marginBottom: 6 }}>Check this sheet</div>
             <p style={{ margin: '0 0 10px', fontSize: 13, color: SLATE }}>
-              Two different questions. <strong>Its own cells</strong> asks whether any band on this sheet
-              is one no loan can ever land in — it is free, it runs here, and a transposed band is worth
-              fixing before anything is spent. <strong>Measure against Lender Price</strong> prices the
-              whole battery at the vendor and records the verdict; that is what opens the publish gate
-              without an override, and it costs a real battery every time it is pressed.
+              Three different questions, and the first two are free. <strong>Its own cells</strong> asks
+              whether any band on this sheet is one no loan can ever land in — a transposed band is worth
+              fixing before anything is spent. <strong>Dry-run the battery on our side</strong> puts the
+              whole canonical battery through our own engine with no vendor call, so you can see how much
+              of it we can actually price before paying to compare it. <strong>Measure against Lender
+              Price</strong> prices the whole battery at the vendor and records the verdict; that is what
+              opens the publish gate without an override, and it costs a real battery every time it is
+              pressed.
             </p>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
               <button className="btn ghost" disabled={busy} onClick={checkCoverage}>Check its own cells (free)</button>
+              <button className="btn ghost" disabled={busy} onClick={checkPreflight}>Dry-run the battery on our side (free)</button>
               <button className="btn ghost" disabled={busy} onClick={runAgreement}>Measure against Lender Price</button>
             </div>
+
+            {preflightError && <p style={{ margin: '10px 0 0', fontSize: 13, color: DANGER }}>{preflightError}</p>}
+            {preflight && (
+              <div style={{ marginTop: 10, fontSize: 13, color: SLATE }}>
+                <div style={{ color: preflight.wouldRun ? SLATE : DANGER }}>
+                  <strong>{preflight.wouldRun ? 'Ready to measure.' : 'Not ready — the paid run would be refused.'}</strong>
+                  {' '}Our own engine priced {preflight.preflight.ours.priced} of {preflight.scenarios} scenario
+                  {preflight.scenarios === 1 ? '' : 's'} ({preflight.preflight.ours.declined} declined
+                  {preflight.preflight.ours.unpriced > 0 && `, ${preflight.preflight.ours.unpriced} with no rungs`}
+                  {preflight.preflight.ours.threw > 0 && `, ${preflight.preflight.ours.threw} failed`}), with no vendor calls.
+                </div>
+                {preflight.preflight.ours.threw > 0 && preflight.preflight.ours.threwSamples.length > 0 && (
+                  <div style={{ marginTop: 6, color: DANGER }}>
+                    For example, “{preflight.preflight.ours.threwSamples[0].scenario}” failed:
+                    {' '}{preflight.preflight.ours.threwSamples[0].error}
+                  </div>
+                )}
+                {/* A decline code that never fires anywhere in the battery is a rule nothing can reach —
+                    an encoding mistake, or a battery that never exercises it. Shown, never gated on. */}
+                {preflight.preflight.deadRules.ran && Array.isArray(preflight.preflight.deadRules.neverFired)
+                  && preflight.preflight.deadRules.neverFired.length > 0 && (
+                  <div style={{ marginTop: 6, color: CAUTION }}>
+                    Never fired anywhere in the battery: {preflight.preflight.deadRules.neverFired.join(', ')}
+                  </div>
+                )}
+                {!preflight.preflight.deadRules.ran && (
+                  <div style={{ marginTop: 6 }}>{preflight.preflight.deadRules.why}</div>
+                )}
+              </div>
+            )}
 
             {coverageError && <p style={{ margin: '10px 0 0', fontSize: 13, color: DANGER }}>{coverageError}</p>}
             {coverage && (

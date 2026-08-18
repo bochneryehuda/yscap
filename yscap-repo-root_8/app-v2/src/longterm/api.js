@@ -371,6 +371,11 @@ export const ltApi = {
   // Neither takes a result from the caller: this one ASKS the server to measure, and there is still no
   // method anywhere that records a verdict somebody typed.
   ppeRateSheetCoverage: (id) => ltGet(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/coverage`)),
+  // THE SECOND FREE CHECK, and the one the paid run makes for itself before it spends (§2.75): what
+  // OUR OWN engine does with the whole canonical battery — how much it prices, where it refuses, and
+  // whether the investor's rule set holds a decline code that never fires. No vendor call, so it costs
+  // nothing to ask before pressing the paid button.
+  ppeRateSheetPreflight: (id) => ltGet(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/preflight`)),
   ppeRunRateSheetAgreement: (id, body = {}) => ltPost(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/agreement/run`), body),
   ppePublishRateSheet: (id, body = {}) => ltPost(lt(`/ppe/rate-sheets/${encodeURIComponent(id)}/publish`), body),
 

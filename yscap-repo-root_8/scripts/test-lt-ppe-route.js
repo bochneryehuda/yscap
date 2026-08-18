@@ -191,10 +191,15 @@ ok(typeof route === 'function' && typeof route.use === 'function', 'the module I
 // one open question: who may take an investor live. The owner answered it ("all in the super admin"),
 // so the write door is super-gated like the publish; the read is admin-gated like every other
 // governance surface here.
-ok(Object.keys(H).length === 52, `all 52 handlers are exported for testing (${Object.keys(H).length})`);
+// 53 with the FREE PRE-FLIGHT (§2.75) — what the paid battery would find on OUR side, for nothing.
+// Every guard the paid run had was about the vendor or the inputs; a sheet whose own leg priced nothing
+// still paid for ~299 calls. This door answers the free half before anyone presses the paid button, and
+// the paid route asks the same module for itself. It is a GET, admin-gated like every other read here:
+// it changes nothing and makes no vendor call.
+ok(Object.keys(H).length === 53, `all 53 handlers are exported for testing (${Object.keys(H).length})`);
 // A COUNT ALONE IS NOT ENOUGH: it stays satisfied if a handler is renamed, or if one is dropped in the
 // same commit another is added. Naming them is what makes the guard bite on either.
-for (const name of ['cutoverStateRoute', 'cutoverDecisionRoute',
+for (const name of ['rateSheetPreflightRoute', 'cutoverStateRoute', 'cutoverDecisionRoute',
   'listSuggestionsRoute', 'acceptSuggestionRoute', 'dismissSuggestionRoute',
   'listRulesRoute', 'mineSuggestionsRoute', 'ruleCoverageRoute',
   'getProgramLpScopeRoute', 'setProgramLpScopeRoute', 'parityCellsRoute', 'listProgramsRoute',
