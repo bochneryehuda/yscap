@@ -140,7 +140,7 @@ const CODE_CATEGORY = {
   // REO / experience
   rtl_p3_reo: C.REO,
   // Scope of Work / rehab budget / plans & permits
-  scope_of_work: C.SOW, rtl_p3_sow1: C.SOW, rtl_p1_budget: C.SOW, rtl_p1_plans: C.SOW,
+  scope_of_work: C.SOW, rtl_p3_sow1: C.SOW, rtl_p1_budget: C.SOW, rtl_p1_plans: C.SOW, draw_cond_plans_permits: C.SOW,
   // (rtl_cond_fraud is handled specially below — it holds BOTH background and
   //  criminal reports, split by the document's slot.)
 };

@@ -81,6 +81,8 @@ export const CODE_SUBJECT = {
   usps_address_verification: 'valuation',
   // the work
   scope_of_work: 'construction', rtl_p3_sow1: 'construction', rtl_p1_plans: 'construction',
+  // Plans & permits re-raised at the FIRST DRAW (db/576, owner-directed 2026-08-18).
+  draw_cond_plans_permits: 'construction',
   rtl_cond_feasibility: 'construction', draw_cond_signed_request: 'construction',
   // title
   title_commitment: 'title', rtl_cond_title: 'title',
