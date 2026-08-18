@@ -24,6 +24,7 @@ const roster = require('../people/roster');
 const ltFile = require('../file');
 const stages = require('../stages');
 const settingsStore = require('../settings/store');
+const conditionRead = require('../conditions/read');
 const db = require('../db');
 
 // GET /api/lt/pipeline — the viewer's long-term book.
@@ -34,7 +35,9 @@ router.get('/', async (req, res) => {
     // change it and nothing happened. The SCREEN renders what this resolves; the
     // QUERY is unchanged by it, deliberately (see pipeline-columns.js).
     const { settings } = await settingsStore.load().catch(() => ({ settings: {} }));
-    const cols = pipelineColumns.resolveColumns(settings['pipeline.columns']);
+    const cols = pipelineColumns.resolveColumns(settings['pipeline.columns'], {
+      conditionsEnabled: settings['conditions.enabled'] === true,
+    });
 
     const out = await pipeline.loadPipeline(req.actor, {
       stage: req.query.stage,
@@ -57,6 +60,24 @@ router.get('/', async (req, res) => {
       limit: req.query.limit,
       offset: req.query.offset,
     });
+
+    // The outstanding count, and ONLY when the column is actually being drawn —
+    // two more queries on every pipeline load for a column nobody is looking at is
+    // a cost with no reader. It is attached per row rather than joined into the
+    // pipeline query on purpose: the counts follow the Condition Center's OWN
+    // rules for what "outstanding" means, and a SQL predicate here would be a
+    // second copy of them (see conditions/read.js).
+    if (cols.columns.some((c) => c.key === 'conditions')) {
+      try {
+        const counts = await conditionRead.outstandingForLoans((out.loans || []).map((r) => r.id));
+        for (const row of out.loans || []) row.outstanding = counts.get(row.id) || null;
+      } catch (e) {
+        // A column that cannot be counted leaves its cells saying so; it never
+        // costs the pipeline the loans themselves.
+        console.error('[lt] pipeline condition counts failed:', (e && e.message) || e);
+      }
+    }
+
     res.json({ ...out, ...cols });
   } catch (e) {
     console.error('[lt] pipeline failed:', (e && e.message) || e);

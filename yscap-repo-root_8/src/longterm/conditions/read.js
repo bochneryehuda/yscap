@@ -363,9 +363,7 @@ async function centerForLoan(loanId, opts = {}) {
     syncStamps(loanId, opts),
   ]);
 
-  let face = 'empty';
-  if (conditions.total > 0) face = 'conditions';
-  else if (documents.total > 0) face = 'documents';
+  const face = faceOf(conditions.total, documents.total);
 
   return {
     face,
@@ -373,6 +371,93 @@ async function centerForLoan(loanId, opts = {}) {
     documents: { items: documents.items, outstanding: documents.outstanding, total: documents.total },
     sync: stamps,
   };
+}
+
+/**
+ * WHICH of the two feeds is this file's work — the ONE definition.
+ *
+ * A file with conditions shows them; a file with only an eFolder shows the needs
+ * list; a file with neither says so rather than rendering an empty list, which
+ * reads as "nothing is outstanding" and is a claim. The pipeline's Conditions
+ * column asks the same question about fifty loans at once, so it asks HERE — a
+ * second copy would let the list say one thing and the file say another about the
+ * same loan.
+ */
+function faceOf(conditionsTotal, documentsTotal) {
+  if (conditionsTotal > 0) return 'conditions';
+  if (documentsTotal > 0) return 'documents';
+  return 'empty';
+}
+
+/**
+ * How much is outstanding on each of these loans — for the pipeline's own column.
+ *
+ * WHY IT IS NOT `centerForLoan` IN A LOOP. A page of fifty loans would be a
+ * hundred queries returning every condition, every document and every file on
+ * every row, to print one number per line.
+ *
+ * WHY IT COUNTS IN JAVASCRIPT AND NOT IN SQL. "Outstanding" is a rule — a
+ * condition Encompass has not called done, a document whose status is not one of
+ * the finished words — and both live in this module as functions. Writing either
+ * as a SQL predicate would be a SECOND copy, and the day somebody adds a status
+ * word the list and the file would disagree about the same loan. So the query
+ * groups by the STATUS and returns at most a handful of rows per loan, and the
+ * existing functions do the deciding.
+ *
+ * NEVER READ IS NOT THE SAME AS NOTHING OUTSTANDING. A loan the sweep has not
+ * reached has no rows, which counts to zero — and a zero in that column is a
+ * claim that the file is clear. `read` says whether we have ever heard about this
+ * loan at all, and the screen shows that instead of a number.
+ */
+async function outstandingForLoans(loanIds, opts = {}) {
+  const db = opts.db || lazy.db;
+  const out = new Map();
+  if (!loanIds || !loanIds.length) return out;
+
+  const [conds, docs, stamps] = await Promise.all([
+    db.query(
+      `SELECT loan_id, status_open, count(*)::int AS n
+         FROM lt_conditions
+        WHERE loan_id = ANY($1::uuid[]) AND is_removed = false
+        GROUP BY loan_id, status_open`, [loanIds],
+    ),
+    db.query(
+      `SELECT loan_id, status, count(*)::int AS n
+         FROM lt_documents
+        WHERE loan_id = ANY($1::uuid[]) AND is_removed = false
+        GROUP BY loan_id, status`, [loanIds],
+    ),
+    db.query(
+      `SELECT id, conditions_synced_at, documents_synced_at
+         FROM lt_loans WHERE id = ANY($1::uuid[])`, [loanIds],
+    ),
+  ]);
+
+  const blank = () => ({
+    conditionsOpen: 0, conditionsTotal: 0, documentsOutstanding: 0, documentsTotal: 0,
+    face: 'empty', read: false,
+  });
+  const at = (id) => { if (!out.has(id)) out.set(id, blank()); return out.get(id); };
+
+  for (const r of conds.rows) {
+    const row = at(r.loan_id);
+    row.conditionsTotal += r.n;
+    // The SAME rule the centre ranks on: a NULL is OPEN, because "they did not
+    // tell us" is not evidence that the work is done.
+    if (conditionRank({ status_open: r.status_open }) === 1) row.conditionsOpen += r.n;
+  }
+  for (const r of docs.rows) {
+    const row = at(r.loan_id);
+    row.documentsTotal += r.n;
+    if (documentOutstanding(r.status)) row.documentsOutstanding += r.n;
+  }
+  for (const r of stamps.rows) {
+    const row = at(r.id);
+    row.read = !!(r.conditions_synced_at || r.documents_synced_at);
+  }
+  for (const row of out.values()) row.face = faceOf(row.conditionsTotal, row.documentsTotal);
+
+  return out;
 }
 
 /**
@@ -411,6 +496,7 @@ module.exports = {
   centerForLoan,
   conditionsForLoan,
   documentsForLoan,
+  outstandingForLoans,
   syncStamps,
-  _internals: { conditionRank, groupOf, documentOutstanding, describeCondition, safeText, attachmentsForDocuments, withFiles, FILE_CAP, DONE_STATUSES },
+  _internals: { conditionRank, groupOf, documentOutstanding, faceOf, describeCondition, safeText, attachmentsForDocuments, withFiles, FILE_CAP, DONE_STATUSES },
 };

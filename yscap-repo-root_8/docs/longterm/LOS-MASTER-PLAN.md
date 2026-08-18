@@ -285,13 +285,34 @@ LTV · Milestone · Days in milestone · Loan officer · Processor · Conditions
 The **Conditions column does real work on its own** — a red count of what is outstanding
 means a user triages urgency from the list without opening a file.
 
-**Two of those columns cannot be sourced yet, and they say so on the screen rather than
-rendering empty.** *Conditions* waits on the Condition Center (phase 5, deferred). *Expected
-closing* has no closing date on `lt_loans` at all — it is in the setting's own default, which is
-exactly how a column nobody can fill gets configured by accident, so the resolver drops it and
-names the reason. Everything else on this list is live, plus a **Stage**, an **At milestone** age
-and an **Updated** column the build added. When a closing date is mirrored, the column becomes
-one entry in `src/longterm/pipeline-columns.js` and nothing else.
+**ONE of those columns cannot be sourced yet, and it says so on the screen rather than
+rendering empty.** *Expected closing* has no closing date on `lt_loans` at all — it is in the
+setting's own default, which is exactly how a column nobody can fill gets configured by accident,
+so the resolver drops it and names the reason. Everything else on this list is live, plus a
+**Stage**, an **At milestone** age and an **Updated** column the build added. When a closing date
+is mirrored, the column becomes one entry in `src/longterm/pipeline-columns.js` and nothing else.
+
+**CONDITIONS IS NOW LIVE — behind the Condition Center's own switch (2026-08-17).** It waited on
+phase 5, which is built, so the count is sourced. Four things about it are deliberate:
+
+- **It is drawable only while `conditions.enabled` is ON**, asked of the settings at resolve time
+  rather than declared as a constant. The mirror is empty until the feature is on, so the column
+  would otherwise print a zero on every row — and a zero there reads as *this file is clear*,
+  which is a claim rather than a blank. The reason names the switch, so the answer is "turn it on"
+  and not "ask a developer". A strict `=== true`: a settings load that failed draws one column
+  fewer rather than a column of confident zeros.
+- **A loan the sweep has not reached says "not read yet"**, never 0 — the same distinction between
+  *we do not hold this* and *there is nothing* that runs through the whole long-term side.
+- **It counts whichever feed is this file's work**, using the centre's OWN `face` rule and its OWN
+  outstanding rules. Every Encompass condition in this tenant sits on a loan that is already sold
+  while a live file's work is its eFolder needs list, so a column that counted only conditions
+  would read zero down the whole working book. The cell says which one it counted.
+- **The counting happens in JavaScript, not in SQL.** "Outstanding" is a rule that lives in
+  `conditions/read.js`; a SQL predicate in the pipeline query would be a second copy, and the day
+  somebody adds a status word the list and the file would disagree about the same loan in front
+  of the person deciding what to work on. The query groups by status and returns a handful of rows
+  per loan; the existing functions decide. It is the ONE column whose field the pipeline query
+  does not select — the route attaches it, and only when the column is actually being drawn.
 
 **Saved views** are per-user rows in an `lt_pipeline_views` table, not a code change.
 

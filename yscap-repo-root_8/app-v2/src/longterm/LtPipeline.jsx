@@ -108,6 +108,45 @@ const FALLBACK_COLUMNS = [
 ];
 
 /**
+ * What is outstanding on this file — the plan's "a red count means a user triages
+ * urgency from the list without opening a file".
+ *
+ * FOUR ANSWERS, AND THEY ARE NOT THE SAME. A file with work shows the number in
+ * red. A file that has been read and has nothing left says "Clear" in words. A file
+ * PILOT holds nothing about yet says "not read yet" — because a 0 there would be a
+ * claim that the file is clear, which is exactly the confident blank this side
+ * keeps finding. And a file the sweep has read that genuinely carries neither a
+ * condition nor an eFolder document says "none", which is a different fact again.
+ *
+ * WHICH FEED IT COUNTED IS ON THE FACE OF IT. Every Encompass condition in this
+ * tenant sits on a loan that is already sold, while a live file's work is its
+ * eFolder needs list — so a column that counted only conditions would read zero
+ * down the whole working book. The server decides which feed this file's work is,
+ * with the same rule the file screen uses, and the cell says which one it counted
+ * rather than leaving "4" to mean either.
+ */
+function OutstandingCell({ counts }) {
+  const muted = { color: '#4B585C' };
+  if (!counts) return <span style={muted} title="PILOT could not count this file just now.">—</span>;
+  if (!counts.read) return <span style={muted} title="The Condition Center has not read this loan from Encompass yet, so there is nothing to count — which is not the same as nothing being outstanding.">not read yet</span>;
+
+  const conditions = counts.face === 'conditions';
+  const open = conditions ? counts.conditionsOpen : counts.documentsOutstanding;
+  const total = conditions ? counts.conditionsTotal : counts.documentsTotal;
+  const word = conditions ? 'condition' : 'document';
+
+  if (!total) return <span style={muted} title="This loan carries no conditions and no eFolder documents.">none</span>;
+  if (!open) return <span style={{ color: '#2C5E3F' }} title={`All ${total} ${word}${total === 1 ? '' : 's'} are done.`}>Clear</span>;
+  return (
+    <span style={{ color: '#8A2D2D', fontWeight: 700 }}
+      title={`${open} of ${total} ${word}${total === 1 ? '' : 's'} still outstanding.`}>
+      {open}
+      <span style={{ ...muted, fontWeight: 400, fontSize: 11 }}> {conditions ? 'cond' : 'docs'}</span>
+    </span>
+  );
+}
+
+/**
  * One cell, drawn from what the COLUMN says it is.
  *
  * The screen no longer knows which columns exist — the server sends them, in order,
@@ -134,6 +173,7 @@ function Cell({ col, row, stageLabel }) {
     case 'milestone_days': return <MilestoneAge row={row} />;
     case 'lock': return <LockCell row={row} />;
     case 'day': return <span>{day(raw)}</span>;
+    case 'outstanding': return <OutstandingCell counts={raw} />;
     case 'contact': {
       // THE ROLE IS THE COLUMN'S `field`, so a third contact column (an underwriter,
       // a closer) needs one catalog entry on the server and nothing here.

@@ -383,7 +383,7 @@ const SETTINGS = [
     default: [
       'loan_number', 'borrower', 'property', 'program', 'loan_amount', 'note_rate',
       'dscr', 'ltv', 'stage', 'milestone', 'days_in_stage', 'loan_officer',
-      'processor', 'lock_status', 'expected_closing',
+      'processor', 'conditions', 'lock_status', 'expected_closing',
     ],
     description: 'Which columns the long-term pipeline shows, in order.' },
   { key: 'pipeline.inactiveFolders', group: 'Pipeline', label: 'Loan folders that mean the deal is over',

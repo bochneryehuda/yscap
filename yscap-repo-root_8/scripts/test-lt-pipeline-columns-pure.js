@@ -74,6 +74,25 @@ check(cols.DEFAULT_ORDER.includes('expected_closing')
   && !keysOf(cols.resolveColumns(null)).includes('expected_closing'),
 'the DEFAULT itself names a column we cannot source, and the same rule drops it — the default is not a special case');
 
+// ── A column behind a SWITCH ────────────────────────────────────────────────
+console.log('\na column whose data only exists when a feature is on');
+
+const condOff = cols.resolveColumns(['loan_number', 'conditions']);
+check(!keysOf(condOff).includes('conditions') && condOff.unavailable.some((u) => u.key === 'conditions'),
+  'with the Condition Center switched off the count column is dropped and named — the mirror is empty until it is on, and a zero in that column reads as "this file is clear", which is a claim rather than a blank');
+check(/switched off/i.test((condOff.unavailable.find((u) => u.key === 'conditions') || {}).why || ''),
+  '…and the reason names the switch, so the answer is "turn it on" rather than "ask a developer"');
+const condOn = cols.resolveColumns(['loan_number', 'conditions'], { conditionsEnabled: true });
+check(keysOf(condOn).join(',') === 'loan_number,conditions' && !condOn.unavailable.length,
+  'and with it ON the column is drawn in the position it was configured in');
+for (const bad of [undefined, null, false, 0, 'true', 1]) {
+  if (keysOf(cols.resolveColumns(['conditions'], { conditionsEnabled: bad })).includes('conditions')) {
+    check(false, `a conditionsEnabled of ${JSON.stringify(bad)} should NOT draw the column`);
+  }
+}
+check(true,
+  'only a real `true` draws it — a settings load that failed, an older caller passing nothing, or the string "true" all read as OFF, which costs one column rather than printing confident zeros');
+
 const unknown = cols.resolveColumns(['loan_number', 'nonsense']);
 check(unknown.unknown.join(',') === 'nonsense' && !keysOf(unknown).includes('nonsense'),
   'THE ONE THAT MATTERS: a key nobody declared is NAMED, not ignored — a typo that silently disappears looks exactly like a setting that did not save');
@@ -108,8 +127,10 @@ check(!/require\(/.test(strip(read('src/longterm/pipeline-columns.js'))),
   'and the catalog is pure: no database, no settings, nothing that can fail');
 
 const routeSrc = strip(read('src/longterm/routes/pipeline.js'));
-check(/resolveColumns\(settings\['pipeline\.columns'\]\)/.test(routeSrc),
+check(/resolveColumns\(settings\['pipeline\.columns'\]/.test(routeSrc),
   'the LIST route is the one place the setting is read');
+check(/conditionsEnabled: settings\['conditions\.enabled'\] === true/.test(routeSrc),
+  '…and it tells the catalog whether the Condition Center is ON, because the column it fills is empty until it is — a strict `=== true`, so a settings load that failed draws one column fewer rather than a column of confident zeros');
 check(/res\.json\(\{ \.\.\.out, \.\.\.cols \}\)/.test(routeSrc),
   '…and it travels to the SCREEN, beside the rows it describes');
 
@@ -123,9 +144,18 @@ const sql = qA.sql;
 const selects = (name) => new RegExp(`(^|[\\s,(.])${name}\\b`, 'm').test(sql.split('FROM lt_loans')[0]);
 for (const [key, def] of Object.entries(cols.COLUMNS)) {
   if (def.available === false) continue;
-  const r = cols.resolveColumns([key]);
+  // Every switch ON, so a column that is only drawable behind one is still checked
+  // here — resolving it with the switch off returns the DEFAULT set instead, and
+  // the loop would quietly test `loan_number` while reporting this key's name.
+  const r = cols.resolveColumns([key], { conditionsEnabled: true });
   const c = r.columns[0];
-  if (c.kind === 'contact') {
+  if (c.key !== key) { check(false, `${key}: could not be resolved on its own — the loop would have tested a different column under this name`); continue; }
+  if (def.source === 'route') {
+    // Its field is attached to the rows by the ROUTE rather than selected by the
+    // query, so the phantom-field question is asked of the route instead.
+    check(new RegExp(`row\\.${c.field}\\s*=`).test(strip(read('src/longterm/routes/pipeline.js'))),
+      `${key}: the route really attaches \`${c.field}\` to each row — the query does not select it, so nothing else could`);
+  } else if (c.kind === 'contact') {
     check(contacts.DEFAULT_ROLES.includes(c.field),
       `${key}: its field names a real loan-team ROLE (${c.field}) — a role nobody mirrors would read empty on every loan`);
   } else {
@@ -146,6 +176,20 @@ const ui = read('app-v2/src/longterm/LtPipeline.jsx');
 const uiCode = strip(ui);
 check(/columns\.map\(/.test(uiCode) && /<Cell col=\{c\} row=\{l\}/.test(uiCode),
   'the table body is drawn by mapping the columns — there is no hard-coded row of cells left');
+
+// The outstanding cell has FOUR answers and they are not the same fact.
+check(/case 'outstanding'/.test(uiCode) && /function OutstandingCell/.test(uiCode),
+  'the outstanding count has a cell of its own, drawn from the kind the server sent');
+check(/counts\.read/.test(uiCode) && /not read yet/.test(uiCode),
+  'THE ONE THAT MATTERS: a loan PILOT has not read says so instead of showing a number — a 0 there is a claim that the file is clear');
+check(/none/.test(uiCode) && /Clear/.test(uiCode),
+  '…and "we read it and it carries nothing" and "we read it and everything is done" are said differently, because they are different facts');
+check(/counts\.face === 'conditions'/.test(uiCode),
+  'and the cell counts whichever feed the SERVER says is this file\u2019s work — every condition in this tenant sits on an already-sold loan, so a column that counted only conditions would read zero down the whole working book');
+
+const routeCode = strip(read('src/longterm/routes/pipeline.js'));
+check(/cols\.columns\.some\(\(c\) => c\.key === 'conditions'\)/.test(routeCode),
+  'the counts are fetched ONLY when the column is actually being drawn — two more queries on every pipeline load for a column nobody is looking at is a cost with no reader');
 check(!/<th style=\{th\}>Loan #<\/th>/.test(uiCode),
   '…and the hard-coded headings are gone');
 check(/i === 0 \?/.test(uiCode) && /<ProductStamp/.test(uiCode),

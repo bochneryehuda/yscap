@@ -436,6 +436,62 @@ async function main() {
     const zeroDue = await sync._internals.dueLoans(db, 50, 0);
     check(zeroDue.some((r) => r.id === loanId),
       'asking for a refresh age of ZERO re-reads a loan that was just read — which is what pressing the button by hand means');
+
+    // ── What the PIPELINE's own column counts ───────────────────────────────
+    // The plan's "a red count of what is outstanding means a user triages from
+    // the list without opening a file". It must agree with the file screen,
+    // which is why it asks the same module the same way.
+    console.log('\nthe pipeline\'s outstanding count');
+
+    // Put the loan back in a known state: c-A open, c-B done, c-N NOT STATED, and
+    // d-1 in, d-2 needed. The unstated one is deliberate — Encompass leaving the
+    // flag empty is the case where a count can quietly go wrong in the safe-looking
+    // direction, and "they did not tell us" is not evidence that the work is done.
+    const COND_UNSTATED = { id: 'c-N', title: 'Not stated', priorTo: 'Docs', createdDate: '2026-06-05T09:00:00Z' };
+    const three = [COND_A, COND_B, COND_UNSTATED];
+    await sync.syncConditionsForLoan(loanId, GUID, { client: stubClient(three, [DOC_1, DOC_2]) });
+    await sync.syncDocumentsForLoan(loanId, GUID, { client: stubClient(three, [DOC_1, DOC_2]) });
+
+    const openFlag = await db.query(
+      `SELECT status_open FROM lt_conditions WHERE loan_id = $1::uuid AND encompass_condition_id = 'c-N'`, [loanId]);
+    check(openFlag.rows[0].status_open === null,
+      'the condition Encompass said nothing about is stored as NOT STATED, never as a guess');
+
+    const counts = await read.outstandingForLoans([loanId]);
+    const mine = counts.get(loanId);
+    check(!!mine, 'the loan is counted');
+    check(mine.conditionsTotal === 3 && mine.conditionsOpen === 2,
+      'two of the three conditions are still outstanding — the unstated one counts as OPEN, the SAME rule the file screen ranks on, because burying an unknown is exactly how it gets missed');
+    check(mine.documentsTotal === 2 && mine.documentsOutstanding === 1,
+      '…and one of the two eFolder documents is still wanted');
+    check(mine.read === true, 'and the loan is marked as one PILOT has actually read');
+
+    // The list and the file must never disagree about the same loan.
+    const centreNow = await read.centerForLoan(loanId, { audience: 'internal' });
+    check(centreNow.conditions.open === mine.conditionsOpen
+      && centreNow.documents.outstanding === mine.documentsOutstanding
+      && centreNow.face === mine.face,
+      'THE ONE THAT MATTERS: the pipeline column and the file screen give the same numbers and the same face for the same loan — two rules would eventually disagree in front of somebody deciding what to work on');
+
+    // A loan nobody has read is NOT a loan with nothing outstanding.
+    const { rows: fresh } = await db.query(
+      `INSERT INTO lt_loans (id, encompass_loan_guid, loan_number, created_at, updated_at)
+       VALUES (gen_random_uuid(), $1, 'TEST-COND-2', now(), now())
+       ON CONFLICT (encompass_loan_guid) DO UPDATE SET updated_at = now() RETURNING id`,
+      [`${GUID}-unread`],
+    );
+    try {
+      const unread = (await read.outstandingForLoans([fresh[0].id])).get(fresh[0].id);
+      check(!!unread && unread.read === false && unread.conditionsTotal === 0,
+        'a loan the sweep has never reached says so — a zero there would be a claim that the file is clear, which is exactly the confident blank this side keeps finding');
+      check(unread.face === 'empty',
+        '…and its face is empty rather than either feed, so the cell says "not read yet" instead of counting nothing');
+    } finally {
+      await db.query('DELETE FROM lt_loans WHERE id = $1::uuid', [fresh[0].id]).catch(() => {});
+    }
+
+    check((await read.outstandingForLoans([])).size === 0,
+      'asking about no loans asks the database nothing');
   } finally {
     if (loanId) {
       // One DELETE: every mirror row cascades from the loan.
