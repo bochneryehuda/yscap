@@ -285,8 +285,16 @@ function composeRecipients({ investorEmails = [], coordinatorEmails = [], office
  */
 const AGREED_STATUSES = ['accepted', 'resolved'];
 
-function deliveryBlockers({ finding = null, investorContacts = [], noteBuyer = null, mode = null, wireForm = null } = {}) {
+function deliveryBlockers({ finding = null, investorContacts = [], noteBuyer = null, mode = null, wireForm = null, plansPermits = null } = {}) {
   const out = [];
+  // PLANS & PERMITS BEFORE THE FIRST DRAW (owner-directed 2026-08-18): on a ground-up file
+  // the first-draw plans condition must be SIGNED OFF before a draw goes to the investor.
+  // `plansPermits` is {applies, itemId, satisfied} from sitewire/plans-permits.status —
+  // only supplied by the DB callers; null skips (back-compat / pure tests), and a file on
+  // which the condition was never raised (itemId null — predates the rule) never blocks.
+  if (plansPermits && plansPermits.applies && plansPermits.itemId && !plansPermits.satisfied) {
+    out.push('The plans & permits have not been signed off for the draw phase yet — the "Plans & permits — confirmed before the first draw" condition on the file must be signed off by the draw coordinator before this draw goes to the investor.');
+  }
   if (!finding) {
     out.push('The inspection findings have not been delivered to the borrower yet.');
     return out;

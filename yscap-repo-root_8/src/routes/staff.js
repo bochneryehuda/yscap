@@ -8833,8 +8833,10 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // may be waived — a required condition must actually be satisfied.
   if (b.waived === true) {
     const cur = await db.query(
-      `SELECT ci.is_required, ci.tool_key, t.code AS template_code
-         FROM checklist_items ci LEFT JOIN checklist_templates t ON t.id = ci.template_id
+      `SELECT ci.is_required, ci.tool_key, t.code AS template_code, a.loan_type
+         FROM checklist_items ci
+         LEFT JOIN checklist_templates t ON t.id = ci.template_id
+         LEFT JOIN applications a ON a.id = ci.application_id
         WHERE ci.id=$1`, [req.params.itemId]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
     // The appraisal credit-card condition may ALSO be waived by the loan officer
@@ -8852,7 +8854,16 @@ router.patch('/checklist/:itemId', async (req, res) => {
     // without fulfilling it is exactly what the override exists for, so it does not
     // have to be made optional first (that detour edited the file's requirements to
     // clear one item — the override records the decision instead).
-    if (!ovr.requested && !isApprCard && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
+    // PLANS & PERMITS ON A PURCHASE ARE WAIVABLE DIRECTLY (owner-directed 2026-08-18: "At
+    // the plans and permits condition, if it's a purchase, then you should be able to click
+    // 'Waive this condition' for now"). Most investors don't require them before closing on
+    // a PURCHASE — the enforcement returns before the FIRST DRAW (sitewire/plans-permits.js
+    // re-populates the condition, pre-filled, and the draw coordinator signs off again). On
+    // a REFINANCE the carve-out never applies: the plans are required before closing, so the
+    // ordinary required-condition rules stand. Same authority as any waive (sign_off_conditions).
+    const isPlansOnPurchase = cur.rows[0].template_code === 'rtl_p1_plans'
+      && require('../lib/payoff').refiKind(cur.rows[0].loan_type) === require('../lib/payoff').KIND.PURCHASE;
+    if (!ovr.requested && !isApprCard && !isPlansOnPurchase && cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
     // THE APPRAISAL REVIEW CANNOT BE WAIVED AROUND ITS GATE (owner-directed 2026-07-30;
     // pre-merge audit F3). "Make it optional, then waive" would clear appraisal_review_cleared
     // with open fatal findings / an unconfirmed As-Is and NO recorded override — exactly the

@@ -110,6 +110,15 @@ async function createRequest(appId, entries, opts = {}) {
       ? 'A draw is already open in Sitewire for this file. Finish or cancel it first (or pass allowParallel to proceed deliberately).'
       : 'A draw is already in progress on this property — your team is on it.');
   }
+  // PLANS & PERMITS BEFORE THE FIRST DRAW (owner-directed 2026-08-18): a ground-up file's
+  // FIRST draw cannot be composed until the draw coordinator has signed the plans &
+  // permits off again (sitewire/plans-permits.js — which also RAISES the condition,
+  // pre-filled with the closing-time document, so the refusal always points at a real
+  // row). Files already past their first draw are never touched.
+  {
+    const plansRefusal = await require('../sitewire/plans-permits').firstDrawGate(appId, { actorId: opts.staffId || null });
+    if (plansRefusal) throw err(422, plansRefusal);
+  }
   if (!Array.isArray(entries) || !entries.length) throw err(400, 'Pick at least one line and amount.');
   // A deliberate staff parallel run must never silently kill the LIVE Sitewire-intake
   // coordinator task (submitItem supersedes same-type items — audit-4 #8): finish or

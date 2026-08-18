@@ -333,6 +333,26 @@ async function gatherAttachments(appId, drawId, mode) {
     }
   } catch (_) { /* an older database has no draw_attachments — never block the delivery */ }
 
+  // --- 7. ground-up plans & permits ------------------------------------------------------
+  // Owner-directed 2026-08-18: "either way, it should be included as part of the investor
+  // draw delivery." The approved plans + building permits — what the construction the
+  // investor is funding is AUTHORIZED to build — from the closing condition AND the
+  // first-draw condition, ACCEPTED only (db/424: a document nobody vouched for never goes
+  // to an investor), deduped by content hash inside acceptedPlansForInvestor so the
+  // pre-filled first-draw COPY never ships beside its identical original. Placed AFTER the
+  // supporting documents so it never displaces the inspector's report or ours in the
+  // priority order the attachment plan walks. Ground-up files only; a rehab file reports
+  // nothing at all here (never a false "missing").
+  try {
+    const plans = await require('./plans-permits').acceptedPlansForInvestor(appId);
+    for (const p of plans) {
+      const key = `plans_${p.id}`;
+      const buf = await readDoc(p);
+      if (!buf) { miss(key, 'Plans & permits', 'unreadable', 'the stored copy could not be read', p.filename); continue; }
+      items.push({ key, what: 'Plans & permits', filename: p.filename || 'plans-permits.pdf', contentType: p.content_type || 'application/octet-stream', buf });
+    }
+  } catch (_) { /* plans are evidence about the project — never block the delivery itself */ }
+
   // THE FITTING USED TO HAPPEN HERE AND NO LONGER DOES — see the header. What is returned is the
   // ordered candidate list; lib/attachments/plan.js decides what can be carried, compressing before
   // it drops anything and never letting a small file displace an important one.
@@ -467,7 +487,11 @@ async function deliveryPreview(appId, drawId) {
     borrowerEmails: [app.borrower_email, app.co_borrower_email],
   });
 
-  const blockers = ID.deliveryBlockers({ finding, investorContacts: contacts, noteBuyer: app.note_buyer, mode, wireForm });
+  // PLANS & PERMITS BEFORE THE FIRST DRAW (owner-directed 2026-08-18): read once here,
+  // carried on the preview so the send's re-check judges the SAME state it showed.
+  let plansPermits = null;
+  try { plansPermits = await require('./plans-permits').status(appId); } catch (_) {}
+  const blockers = ID.deliveryBlockers({ finding, investorContacts: contacts, noteBuyer: app.note_buyer, mode, wireForm, plansPermits });
 
   // THE BADGE IS STILL NEVER A BLOCKER. It is deliberately kept OUT of `blockers`, so `can_send`
   // is untouched and the send is never refused over it; the screen shows it beside the button and
@@ -498,6 +522,8 @@ async function deliveryPreview(appId, drawId) {
     money,
     contacts,
     wire_form: wireForm,
+    // carried so the send's re-check judges the SAME plans-&-permits state it showed
+    plans_permits: plansPermits,
     to: rcpt.to, cc: rcpt.cc,
     blockers,
     // `can_send` reads ONLY the blockers. The sold warning below is advisory by the owner's own
@@ -557,6 +583,7 @@ async function sendInvestorDelivery(appId, drawId, {
   const blockers = ID.deliveryBlockers({
     finding: pre.finding_status ? { status: pre.finding_status } : null,
     investorContacts: pre.contacts, noteBuyer: pre.note_buyer, mode: useMode, wireForm: pre.wire_form,
+    plansPermits: pre.plans_permits || null,
   });
   if (blockers.length) { const e = new Error(blockers[0]); e.status = 422; e.blockers = blockers; throw e; }
 

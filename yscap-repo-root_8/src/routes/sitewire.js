@@ -947,6 +947,11 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
       const result = await orchestrator.pushFile(appId, {});
       // Property is live in Sitewire now — welcome the borrower (once), best-effort, never blocks.
       require('../sitewire/draw-setup-notify').sendDrawSetupWelcome(appId).catch(() => {});
+      // PLANS & PERMITS BEFORE THE FIRST DRAW (owner-directed 2026-08-18): raise the
+      // first-draw plans condition NOW, at draw setup, so the coordinator sees it —
+      // pre-filled with the closing-time document — before any draw is composed.
+      // Ground-up files only; best-effort, never blocks the Start.
+      require('../sitewire/plans-permits').ensureDrawPlansCondition(appId, { actorId: req.actor && req.actor.id }).catch(() => {});
       return res.json({ ok: true, started: true, result });
     } catch (e) {
       await enqueueSitewirePush(appId, 'push_file').catch(() => {});

@@ -779,6 +779,11 @@ async function reconcileOne(appId) {
   // Sitewire call — AFTER the draws loop so the mirror rows the draw match needs exist.
   // Best-effort: never fails the reconcile.
   try { await require('./property-doc-ingest').ingestForProperty(appId, prop); } catch (_) {}
+  // PLANS & PERMITS BEFORE THE FIRST DRAW (owner-directed 2026-08-18): a draw arriving
+  // THROUGH Sitewire cannot be refused — on a ground-up file with no release yet, raise
+  // the first-draw plans condition (pre-filled from closing) + cue the desk ONCE (the
+  // create is the notify key). Best-effort: never fails the reconcile.
+  try { await require('./plans-permits').ensureOnFirstSitewireDraw(appId, draws.length, addrText); } catch (_) {}
   return { draws: n };
 }
 

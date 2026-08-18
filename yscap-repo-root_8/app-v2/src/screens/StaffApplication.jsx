@@ -3909,6 +3909,20 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   )}
                 </div>
               )}
+              {/* PLANS & PERMITS ON A PURCHASE (owner-directed 2026-08-18): waivable directly
+                  "for now" — the enforcement returns before the FIRST DRAW (the condition
+                  re-populates, pre-filled with the closing-time document, and the draw
+                  coordinator signs off again). It's a required task, so the generic
+                  optional-only Waive never shows for it; on a REFINANCE this button never
+                  renders — plans are required before closing there. */}
+              {it.template_code === 'rtl_p1_plans' && app && !payoffApplies(app.loan_type)
+                && completer && !signed && it.status !== 'satisfied' && !it.waived_at && (
+                <button className="btn ghost small"
+                  title="Waive plans & permits for closing on this purchase — the condition comes back before the first construction draw for the draw coordinator to sign off"
+                  onClick={async () => { if (await askConfirm('Waive plans & permits for now? On this purchase they are not needed to close — the condition comes back before the FIRST construction draw, pre-filled with whatever was already uploaded, and the draw coordinator signs it off then.')) onPatch(it.id, { waived: true }); }}>
+                  Waive this condition
+                </button>
+              )}
               {['title_contact', 'insurance_contact'].includes(it.tool_key) && (
                 <StaffContactEntry appId={appId} toolKey={it.tool_key} current={contactFor(it.tool_key)}
                   onSaved={async () => { await loadContacts(); if (onChanged) await onChanged(); }} />

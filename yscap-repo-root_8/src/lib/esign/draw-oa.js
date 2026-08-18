@@ -365,5 +365,10 @@ module.exports = {
   drawOaConditionOf, wireEntityName, matchingBorrowerLlc, matchingFileEntity,
   autofillFromProfile, onAccepted, afterAcceptCommit, acceptedOaForInvestor,
   ensureWireEntityOnProfile,
+  // PUBLIC on purpose (2026-08-18): sitewire/plans-permits.js pre-fills the first-draw
+  // plans condition through this SAME copier — bytes copied never shared, dedupe by
+  // source/sha, lands 'received' awaiting review. One definition of "copy a document
+  // onto a condition"; never re-inline it.
+  copyDocumentToItem,
   _internals: { copyDocumentToItem },
 };
