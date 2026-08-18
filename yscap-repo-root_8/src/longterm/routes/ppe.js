@@ -1810,6 +1810,25 @@ async function loadCutoverPicture(scope, opts = {}) {
     seriesError = String((e && e.message) || e).slice(0, 200);
   }
 
+  // ⛔ AN EMPTY SERIES MUST SAY WHERE THE RUNS WENT (§2.83). A run is keyed (scope, investor, program)
+  // and matched by EQUALITY. The canary writes the RATE-SHEET VERSION ID as `program`; this screen asks
+  // with none and defaults to ''. Measured against the real table: the run lands, `listRuns('')` returns
+  // zero, and the gate answers "no canary run has proven 100% agreement" — a sentence that reads as "the
+  // canary never ran" when it ran and its work is filed one shelf over. So whenever THIS key has nothing,
+  // ask what keys DO have something and report it. Diagnostic only: it decides nothing, it changes no
+  // verdict, and it can never throw.
+  const emptyHere = !assembled || !assembled.series || !assembled.series.length;
+  const seriesKeys = emptyHere ? await runStore.listSeriesKeys(scope, { db, investor }) : [];
+  const elsewhere = seriesKeys.filter((k) => k.program !== program && k.runs > 0);
+  const seriesNote = elsewhere.length
+    ? `This view is reading the run series for program "${program || '(none)'}", which has no runs. `
+      + `${elsewhere.reduce((n, k) => n + k.runs, 0)} run(s) ARE recorded for this investor under `
+      + `${elsewhere.length} other key(s): ${elsewhere.map((k) => `"${k.program}" (${k.runs})`).join(', ')}. `
+      + 'The daily check keys a run on the rate-sheet version it priced; this screen asks without one. '
+      + 'Until that is settled, the gate below is reading an empty series and its reasons describe that, '
+      + 'not the investor.'
+    : null;
+
   if (assembled) {
     return {
       scoreboard: assembled.scoreboard,
@@ -1818,6 +1837,9 @@ async function loadCutoverPicture(scope, opts = {}) {
       gateSettings,
       seriesError: null,
       measured: assembled.scoreboard.canaryAgreementRate != null,
+      seriesKeys,
+      seriesKeyUsed: program,
+      seriesNote,
       nowMs,
     };
   }
@@ -1831,6 +1853,9 @@ async function loadCutoverPicture(scope, opts = {}) {
     gateSettings,
     seriesError,
     measured: false,
+    seriesKeys,
+    seriesKeyUsed: program,
+    seriesNote,
     nowMs,
   };
 }
@@ -1871,6 +1896,10 @@ async function scoreboardRoute(req, res) {
       // time. Reported as the NUMBER, so a real zero reads as "nothing was dropped"
       // rather than collapsing into the same null a failed read would produce.
       dropped: Number.isFinite(assembled.dropped) ? assembled.dropped : null,
+      // WHERE THE RUNS WENT, when this key has none (§2.83). Null on a healthy series.
+      seriesKeyUsed: picture.seriesKeyUsed,
+      seriesKeys: picture.seriesKeys,
+      seriesNote: picture.seriesNote,
     });
   }
 
@@ -1884,6 +1913,9 @@ async function scoreboardRoute(req, res) {
     gate: picture.gate,
     measured: false,
     seriesError,
+    seriesKeyUsed: picture.seriesKeyUsed,
+    seriesKeys: picture.seriesKeys,
+    seriesNote: picture.seriesNote,
     note: 'The canary run history could not be read, so the agreement rate is unknown and the gate cannot pass. That is a read failure, not a measurement.',
   });
 }

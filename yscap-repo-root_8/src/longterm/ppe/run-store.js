@@ -100,6 +100,47 @@ async function listRuns(scope, opts = {}) {
 }
 
 /**
+ * WHICH RUN SERIES EXIST FOR THIS INVESTOR, and how big each one is.
+ *
+ * ⛔ WHY THIS HAD TO EXIST (§2.83). A run is keyed `(scope, investor, program)` and `listRuns` matches
+ * `program` by EQUALITY. The canary writes `programLabel(program)` — which resolves to the RATE-SHEET
+ * VERSION ID — while the go-live screen asks `/ppe/scoreboard?investor=X` with no program at all, so the
+ * picture defaults it to `''`. The two never match. Measured against the real table: one run written
+ * under the canary's key, `listRuns(program: '')` returns ZERO, and the gate answers *"no canary run has
+ * proven 100% agreement"* — which reads as "the canary has never run" when it has run and its work is
+ * filed one shelf over.
+ *
+ * This does NOT decide which key is right — that is a business question about what a clean-day streak is
+ * measured against (see the module note in cutover.js and the owner question recorded with it). It makes
+ * the dead end LEGIBLE: a screen that finds nothing can now say what it did find elsewhere, instead of
+ * reporting an absence it manufactured.
+ *
+ * Returns [{ program, runs, firstDayMs, lastDayMs }] ordered by most-recent first. NEVER throws — an
+ * unreadable answer is an empty list, because this is a diagnostic and must not be able to break the
+ * picture it is explaining.
+ */
+async function listSeriesKeys(scope, opts = {}) {
+  const db = opts.db;
+  const investor = normLabel(opts.investor);
+  try {
+    const { rows } = await db.query(
+      `SELECT program, COUNT(*)::int AS runs, MIN(day_ms)::bigint AS first_day_ms, MAX(day_ms)::bigint AS last_day_ms
+         FROM lt_ppe_shadow_run
+        WHERE scope = $1 AND investor = $2
+        GROUP BY program
+        ORDER BY MAX(day_ms) DESC`,
+      [scope, investor],
+    );
+    return rows.map((r) => ({
+      program: r.program == null ? '' : String(r.program),
+      runs: Number(r.runs) || 0,
+      firstDayMs: num(r.first_day_ms),
+      lastDayMs: num(r.last_day_ms),
+    }));
+  } catch (_) { return []; }
+}
+
+/**
  * Load the persisted run series and DELEGATE to scoreboard.assemble — the ONE definition of the daily
  * agreement rate, the new-findings trend and the cutover-eligibility verdict. This bridge adds no
  * aggregation of its own, so assembleScoreboard(persisted) === scoreboard.assemble(the same runs).
@@ -115,4 +156,4 @@ async function assembleScoreboard(scope, opts = {}) {
   });
 }
 
-module.exports = { rowToRunRecord, persistRun, listRuns, assembleScoreboard };
+module.exports = { rowToRunRecord, persistRun, listRuns, listSeriesKeys, assembleScoreboard };

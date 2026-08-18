@@ -4964,3 +4964,69 @@ the two halves match, never that the pair is wrong. The owner's answer is what s
 now `above_2_5m_takes_the_2_5m_cap`. Worth recording as the limit of that whole guard family.
 
 152/152 suites, 31 database-backed.
+
+---
+
+### §2.83 — ⛔ THE GO-LIVE GATE READS AN EMPTY RUN SERIES: THE CANARY FILES ITS RUNS UNDER A DIFFERENT KEY (2026-08-18)
+
+**Measured against the real table before anything was changed.** A shadow run is keyed
+`(scope, investor, program)` and `run-store.listRuns` matches `program` by EQUALITY:
+
+```
+runs under the canary key   : 1
+runs under the screen key   : 0   <-- what the go-live gate reads
+gate verdict from the screen: {"eligible":false,"reasons":["no canary run has proven 100% agreement", …]}
+gate verdict on the real key: {"eligible":false,"reasons":["only 1 consecutive clean day(s), needs 56"]}
+```
+
+Both refuse, so nothing went live that should not have. That is the whole reason this sat unnoticed:
+**the gate failed closed, and failed closed for the wrong reason.** The two sentences send a reader to
+two different places. The first says nobody has ever checked. The second says the check is running and
+needs more clean days. The screen printed the first while the second was true.
+
+**Root cause, verified at `file:line`.** The canary persists with `program: programLabel(program)`
+(`src/longterm/routes/ppe.js:1404`); `programLabel` returns `program.code || program.name`
+(`:232`); and `loadProgram` sets `code` to the rate-sheet **version id** (`:281`) — so the canary files
+under a uuid. The go-live screen calls `/ppe/scoreboard?investor=X` with no program at all, and
+`loadCutoverPicture` defaults `const program = opts.program || '';` (`:1783`). The two keys never meet.
+
+This is the session's dominant defect class again, in its purest form: **both halves are individually
+correct.** The canary is right to key a run on the sheet it priced. The screen is right to ask for an
+investor without naming a version. The defect lives entirely in the JOIN, where nothing was watching.
+
+**What was built — and, deliberately, what was NOT.** `run-store.listSeriesKeys(scope, {db, investor})`
+groups `lt_ppe_shadow_run` by `program` and reports `{program, runs, firstDayMs, lastDayMs}`,
+most-recent first. `loadCutoverPicture` calls it **only when the requested key came back empty**, and
+attaches `seriesKeys` / `seriesKeyUsed` / `seriesNote` to both of its returns and to both branches of
+`scoreboardRoute`. A screen that finds nothing now says what it *did* find, under which key, and why the
+keys differ.
+
+It does **not** change which key is read, and it changes **no verdict** — asserted directly, because a
+diagnostic that moves the gate is a second definition of "eligible". `listSeriesKeys` also can never
+throw (`catch → []`): an explanation that breaks the thing it explains is worse than no explanation.
+
+**⛔ OWNER QUESTION — NOT GUESSED.** Which key is *correct* is a business rule, so it is asked, not
+decided here:
+
+> **Is a clean-day streak measured per INVESTOR, or per RATE-SHEET VERSION?**
+> Republishing a sheet mints a new version id. Keyed on the version, every republish starts a fresh
+> empty series and the clean-day streak resets to zero — so an investor could never accumulate the 56
+> clean days the gate wants while their sheet is being maintained. Keyed on the investor, a streak
+> survives a republish, which may be exactly wrong if the republished sheet is materially different.
+
+Until that is answered the gate reads the investor-level key and now says so out loud.
+
+`scripts/test-lt-ppe-series-key-visible.js` (39 assertions) drives the **real route handler against a
+real Postgres**: the two keys measured against the real table, the note naming the key the runs are
+under, the machine-readable key list, scope and investor isolation, ordering, and — the half that
+matters most — **no note on a healthy series** (a fabricated alarm is the equal-and-opposite failure)
+and **identical gate verdicts with and without the note**.
+
+**Mutation-proven five ways**: the diagnostic finding nothing (6 assertions bite), the note suppressed
+(1), the note fabricated on a healthy series (1), `listSeriesKeys` throwing instead of answering `[]`
+(6), and the BIGINT day columns left as pg strings (2). A sixth mutation — dropping `Number()` on
+`runs` — was a **no-op**, because `COUNT(*)::int` already arrives as a JS number; recorded here rather
+than quietly re-aimed, since a mutation that does not bite is either a test gap or a mutation that
+changes nothing, and telling the two apart is the entire value of the exercise.
+
+153/153 suites, 32 database-backed (this suite is the 32nd). All seven gates green.
