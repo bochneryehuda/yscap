@@ -536,6 +536,13 @@ const preFix = loadStripped();
   // Frozen: it pins today's engine to what the engine produced BEFORE the refusal
   // existed, so it can never degenerate into "whatever the code does now".
   //
+  // RE-FROZEN AGAIN, same day, for a SHAPE change and nothing else. Applying the holdback to the
+  // price (owner-directed 2026-08-18) gives every rung a `holdbackMilli` line of its own. Both
+  // engines were run over this whole fixture and compared with that ONE new key set aside:
+  // **all 768 quotes identical, and `holdbackMilli` is the only key the change adds.** The fixture
+  // configures no holdback, so the line reads 0 and no price moved — a record that gained a line is
+  // not a number that moved, and this comment is here so nobody re-freezes on that assumption twice.
+  //
   // RE-FROZEN 2026-08-18, and the reason is itself a measurement rather than a shrug.
   // The previous digest (f2d4aaa8…) was taken at af716477, BEFORE the sheet's own max-price rule
   // reached a priced quote (`price-limit.js`, A4). Both engines were run over this whole 768-scenario
@@ -546,7 +553,7 @@ const preFix = loadStripped();
   // touched a number. Re-generated from the A4 engine (1178f615) — the genuine pre-fix reference for
   // THIS change — and that engine's digest equals the live one, which is what proves the refusal inert.
   const FIXTURE_SCENARIOS = 768;
-  const FIXTURE_DIGEST_FROZEN = 'e31e71c9e2c0cff14a9bb4610bf8a32d660dcc0f84e2fbe7a2e68ce46affad70';
+  const FIXTURE_DIGEST_FROZEN = '6b3859365d695b187053715ac0898bd967afdf83d565b52e68ea1297a481144f';
   eq(FIXTURE_BATTERY.scenarios.length, FIXTURE_SCENARIOS, `(B) the fixture battery is ${FIXTURE_SCENARIOS} fully-specified scenarios`);
   eq(FIXTURE_BATTERY.truncated, false, '(B) and the generator did not truncate it');
   eq(FIXTURE_DIGEST, FIXTURE_DIGEST_FROZEN, '(B) every quote in it is byte-identical to the FROZEN pre-fix engine output');

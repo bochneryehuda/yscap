@@ -133,10 +133,18 @@ ok(threw(() => quoteProgram({ scenario: null, program, settings: {} })), 'a miss
   ok(withMargin.pricingBasis.marginMilli === 400 && withMargin.pricingBasis.marginSource === 'rule', 'resolved margin 400 wins over settings 250');
   ok(withMargin.ladder[1].finalPriceMilli === baseline.ladder[1].finalPriceMilli - 150, 'a 150-milli larger margin lowers the price by exactly 150');
 
-  // (c) holdback is CARRIED for the record but does NOT move the price (money rule pending owner).
+  // (c) holdback COMES OFF the price we offer. This assertion used to pin the opposite — the holdback
+  //     was recorded and deliberately not applied while the money rule was an open owner question.
+  //     The owner answered it on 2026-08-18 in their own words ("instead of offering the investor's
+  //     raw pricing, like a 102, we're only gonna offer him a 101.75"), so what is pinned here is the
+  //     answer. The full proof — inertness on the real sheet, cost-only direction, its own line, no
+  //     effect on eligibility — is scripts/test-lt-ppe-holdback-price.js.
   const withHold = quoteProgram({ scenario: scen, program, settings: S, marginHoldback: { marginMilli: 250, holdbackMilli: 250 } });
   ok(withHold.pricingBasis.holdbackMilli === 250, 'holdback carried into the reconstruction record');
-  ok(withHold.ladder[1].finalPriceMilli === baseline.ladder[1].finalPriceMilli, 'holdback does NOT change the price (not wired — money rule)');
+  ok(withHold.ladder[1].finalPriceMilli === baseline.ladder[1].finalPriceMilli - 250,
+    'holdback LOWERS the offered price by exactly its own amount (owner-directed 2026-08-18)');
+  ok(withHold.ladder[1].holdbackMilli === 250 && withHold.ladder[1].marginMilli === 250,
+    '…on its own line, never folded into the margin');
 
   // (d) a garbage resolved margin (negative / non-integer) is ignored → settings margin stands.
   const bad = quoteProgram({ scenario: scen, program, settings: S, marginHoldback: { marginMilli: -5 } });

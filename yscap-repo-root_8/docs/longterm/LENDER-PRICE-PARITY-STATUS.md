@@ -515,7 +515,7 @@ The blocker in §2.2 is cleared. With the owner-provided credentials:
 - **Login works, all three ways** — password grant (1h token + refresh token), the
   refresh-token grant (fresh token, no password re-send), and the `x-lp-diag-token`
   HTTP diag route. The durable pad (`getSession`) auto-manages fresh tokens. Full
-  record: `ppe-research/LP-LOGIN-PAD.md`. (Credentials to be rotated after the test,
+  record: `ppe-research/LP-LOGIN-PAD.md`. (Rotation was later WITHDRAWN by the owner on 2026-08-18 — see OWNER-QUESTIONS-OPEN.md;
   per the owner; they live only in a gitignored `.env` here, never in source.)
 - **The live LP Deephaven DSCR sheet was reconstructed** from a read-only 161-scenario
   battery: `ppe-research/LP-DEEPHAVEN-DSCR-LIVE-TABLES.md` (v12.7.25 — base ladder, the
@@ -2095,7 +2095,7 @@ And `ratesheet-agreement.js` — the harness that MEASURES the ≥200-scenario r
 no run could be recorded and the publish gate of §2.27 could be passed only by the recorded override.
 **That one is now wired (§2.31), which is why the count above moved and why the ledger's three rows for
 it are struck off.** The override still exists and is still the right thing while the Lender Price
-login awaits rotation; what changed is that it is no longer the ONLY way past the gate.
+login is not present in this environment's settings; what changed is that it is no longer the ONLY way past the gate. (Rotation is NOT the blocker — the owner withdrew that requirement on 2026-08-18 and authorized the login for live comparison at all times; what is missing is the value being present where the software reads it.)
 
 **THE ANALYSER'S OWN FIRST CUT WAS CONFIDENTLY WRONG, which is the lesson worth keeping.** It stripped
 block comments by SPAN, and these files carry route paths like `/api/lt/*` inside their headers: the
@@ -2129,7 +2129,7 @@ same line drawn for the canary tick.
 **IT REFUSES BEFORE IT SPENDS, four ways, and each refusal is the cheap answer to an expensive
 mistake.** No program or no base grid → 422 (`quote.quoteProgram` throws without one, so every scenario
 would come back an `engine_error` and the summary would read like a catastrophe). Upstream not
-configured → 503 (the state this sheet is in until the Lender Price login is rotated; a battery of
+configured → 503 (the state this sheet is in until the Lender Price login is present in this environment's settings — rotation is NOT required, the owner withdrew that on 2026-08-18; a battery of
 error verdicts costs money and says nothing about agreement). Another tenant's version → 404. And, new
 here, **no Lender Price scope → 422 `no_lp_scope`**: Lender Price answers a scenario with its WHOLE
 catalogue while our sheet prices ONE ladder, so an unscoped run reconciles ours against a merge of
@@ -2183,7 +2183,7 @@ stores is the harness's own result, never a request body. Both halves were prove
 suites pass against a real Postgres.
 
 **IT STILL CANNOT RUN.** The route refuses up front with `upstream_not_configured` until the owner
-rotates the Lender Price login in the vendor portal. That is the honest state: the machinery is
+puts the Lender Price login into this environment's settings. That is the honest state: the machinery is
 complete and proven against a stub, and not one live scenario has been compared through it.
 
 **§2.32 — WHAT ON THIS SHEET CAN NOTHING EVER REACH? (2026-08-17).** A rate sheet is loaded by a human
@@ -2228,7 +2228,7 @@ whole battery at the vendor and records the verdict, and the card says so before
 Three smaller promises ride with them, each mutation-proven: a finished run RE-READS the sheet (or the
 gate line above would go on saying "never measured" beside a run that just finished), a verdict that
 did not reach the ledger is shown as such rather than as a run that worked, and a 503 renders as the
-upstream speaking — the ordinary state until the login is rotated — never as the button being broken.
+upstream speaking — the ordinary state until the login is present in this environment's settings — never as the button being broken.
 There is still no control anywhere that records a run somebody typed, and the console's own test
 asserts it.
 
@@ -3114,3 +3114,88 @@ than trusted from the write's own 200, and asserts that **no route publishes a d
 `scripts/test-lt-ppe-rule-board-render.mjs` renders the board's presentational half through
 `renderToString` and asserts the LOADED text — stripped of SSR's `<!-- -->` markers — rather than the
 source. Every assertion in both was proven to fail by mutation, for the right reason.
+
+---
+
+**§2.52 — THE OWNER ANSWERED THE MONEY RULE, AND THE 0.25 HOLDBACK NOW COMES OFF THE PRICE
+(2026-08-18).** In the owner's own words:
+
+> "It's basically: instead of offering for the bar or the investors' raw pricing, like a 102, we're
+> only gonna offer him a 101.75."
+
+**WHY IT WAS NOT ALREADY WIRED, and why that was right.** The holdback has been resolved per investor,
+carried on every quote and reported in the reconstruction record since Layer 1 — and deliberately NOT
+applied, with the reason written at the line itself. Three readings of "what the holdback does to the
+borrower's price" produce three different quotes: it lowers the offered price, or it is kept out of our
+own spread and the quote does not move, or it is something else. Guessing between them would have moved
+every price on every program on an assumption. Task #78 and question 2a existed for exactly this.
+
+**WHAT IT IS NOW.** A cost on price, under this engine's existing cost-positive convention, applied in
+`pricing.priceRung` beside — and never inside — the margin: `base − adjustments − margin − holdback −
+comp + srp`. A 0.250 holdback on a 102.000 raw price is offered at 101.750, which is the owner's own
+arithmetic. It is not a fee the borrower pays at closing, it is not added to anything, and it can never
+make a loan ineligible: eligibility is decided before any of this runs.
+
+**IT IS ITS OWN LINE, AND THAT IS LOAD-BEARING RATHER THAN TIDY.** Margin and holdback are set
+INDEPENDENTLY per investor (an investor whose paper is volatile can carry a bigger holdback at the same
+margin), so a record that folded them could never answer "which knob moved this price?". The suite pins
+that directly: a folded 0.375 margin reaches the identical price, which is exactly why the price alone
+cannot tell the two apart and the two lines have to stay apart.
+
+**PROVEN, not asserted** — `scripts/test-lt-ppe-holdback-price.js` (23 assertions, offline):
+
+- **INERT WITHOUT ONE.** A whole stripped copy of the engine directory is built with ` - holdbackMilli`
+  physically removed from `pricing.js`, so `quote.js` there resolves the pre-change pricing through its
+  own relative require. Over the real 299-scenario Deephaven battery (256 of which price) **NOT ONE
+  RUNG moved by a milli-point.** Redirecting the stripped copy's requires back at the live directory
+  would have compared the live engine with itself; building the whole directory is what stops that.
+- **COST-ONLY.** Across 576 priced combinations (base × margin × holdback × adjustment) a holdback
+  never RAISED a price and always moved it by exactly its own amount — 480 lowered, 96 unchanged where
+  it is zero.
+- **NEVER A DECLINE.** A 1.000 holdback changed no scenario's eligibility across all 299.
+- **THE HONEST EDGE.** A holdback CAN push a price down into the sheet's floor; when it does the rung
+  reports `clamped` and still records the raw figure the arithmetic produced, rather than quietly
+  quoting a price the sheet does not allow.
+- **FOUR MUTATIONS, each red for the right reason**, control green either side: removing the
+  subtraction (10 assertions red), folding it into margin (6), making it RAISE the price (10), and
+  `quote.js` never passing it to the rung (2).
+
+**TWO OTHER SUITES MOVED WITH IT, and neither was bent to fit.** `test-lt-ppe-quote.js` carried an
+assertion pinning the deliberately-unwired behaviour ("holdback does NOT change the price"); it now
+pins the ANSWER, plus the two-lines rule. And `test-lt-ppe-missing-fact.js`'s frozen fixture digest was
+re-frozen after MEASURING why it moved: both engines were run over its whole 768-scenario fixture with
+the one new key set aside, **all 768 quotes identical, `holdbackMilli` the only key added** — a record
+that gained a line is not a number that moved, and the file says so where the digest is written.
+
+---
+
+**§2.53 — THE REST OF THE OWNER'S 2026-08-18 ANSWERS, RECORDED (2026-08-18).** Six long-standing
+questions were settled in one message. Full wording in `docs/longterm/OWNER-QUESTIONS-OPEN.md`; what
+each one closes:
+
+- **The Lender Price login.** Rotation is WITHDRAWN — *"I'm not going to rotate the password… I'm
+  giving you a written authorization to use it for live comparison at all times. Please don't warn me
+  again."* Every rotation warning has been removed from this document, `LT-UNREACHED.md` and
+  `PPE-MASTER-PLAN-AND-STATUS.md`, and replaced with the accurate blocker: the login is not present in
+  THIS environment's settings. That is a different sentence and it is the true one — nothing here can
+  reach Lender Price until the value exists where the software reads it. The one unchanged rule is
+  about STORAGE, not permission: a password lives in the settings, never in code we publish.
+- **The daily check runs on a SCHEDULE** — 7am, 9am, 10am, 11am, 12pm and 4pm Eastern, every day. That
+  answers §2.49's driver question: not the sync worker, not an in-process timer. The in-process driver
+  built there stays OFF; the cross-instance lease that stops two servers paying twice for one run holds
+  regardless of which driver fires it.
+- **Publishing a pricing rule, and switching an investor from watching to live, are SUPER-ADMIN
+  actions** — not a pricing admin, not an ordinary admin. That answers the authority half of §2.51.
+  It does NOT answer how many clean weeks an investor needs first, nor whether the three advisory
+  checks should block or warn; both stay open and are named as such.
+- **The loan officer compensation model** — the company minimum per loan is a **movable default, not a
+  floor**, and each officer can carry a different one; the officer's split applies to **origination
+  only**, and the **entire margin holdback is the company's**. Both open questions inside #51.
+- **Deephaven's prepayment penalties are complete** — the standard structure, the 5% Fixed promotion at
+  a better price, and our own softer custom carried as an additional margin holdback. All three are
+  already encoded (D31/D32/D33). Every OTHER investor is still owed, one at a time.
+- **The rate-sheet-versus-eligibility disagreement is no longer a question to the owner.** They told us
+  how to answer it: read Lender Price's own disqualifier for the scenario, find the disqualifier it
+  actually names, then locate where the rate sheet prices that same thing — and put every scenario in
+  front of a person. That converts §2's largest open question into a BUILD item (the per-scenario
+  disqualifier review queue) and it is recorded as one rather than left on the owner's page.

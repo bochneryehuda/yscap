@@ -259,7 +259,7 @@ surface or lock-desk UI yet. *(MEGA §8. Later increment.)*
     stored 0 in the column the gate reads). Both are pinned by mutation-proven assertions.
   - Test `test-lt-ppe-agreement-run-db.js` (real Postgres, stubbed LP client, sections A–F; every
     assertion proven to fail by mutating the guard it protects). **It still cannot RUN** — the route
-    refuses `upstream_not_configured` until the owner rotates the Lender Price login.
+    refuses `upstream_not_configured` until the Lender Price login is present in this environment's settings (the owner withdrew the rotation requirement on 2026-08-18 and authorized the login for live use).
 - **TO-BUILD:** **no promote-to-live HTTP route exists** — the gate is reachable only in code. Add the
   route + the human promote/rollback action (P10). The agreement gate above is the E3 half of the same
   question (may this SHEET be trusted); promote-to-live is the P10 half (may this PROGRAM go live).
@@ -386,7 +386,7 @@ owner wants to start.
   correct for the key shapes we have seen and **refuses the rest** — so it is safe and extends cleanly,
   but the full per-investor rule vocabulary can only be locked in from a live capture. **That capture
   needs the Lender Price credentials, which are currently COMPROMISED (pasted in chat) and must be
-  rotated first.** Owner action: rotate `LP_PASSWORD` / `LP_CLIENT_SECRET` / `LP_DIAG_TOKEN`, then a
+  present in this environment's settings first.** ROTATION IS NOT REQUIRED — the owner withdrew it in writing on 2026-08-18 and authorized the login for live comparison at all times. Owner action: set `LP_PASSWORD` / `LP_CLIENT_SECRET` / `LP_DIAG_TOKEN` in the settings, then a
   read-only disqualify capture (e.g. against the Deephaven sheet) feeds every real `adjType`/key into
   the crosswalk map. Until then the engine is built and safe; the map grows as real keys arrive.
 
@@ -679,7 +679,7 @@ the parity engine is built and pure-tested (39/39 suites).**
 Detection-only and safe to build next (LP still wins; nothing auto-applies): **P1 → P2 → P3 (a–f) → P9**.
 Rule-writing loop, gated on Part 4.1/4.4 + a human in the loop: **P6 → P5-store → P7 → P8** (P4's
 disqualify crosswalk is already built by P-DQ; widen it from a live capture once credentials are
-rotated). Supporting: **P10** (after P9). *(The db/567 housekeeping item that used to be named here was
+present in the settings). Supporting: **P10** (after P9). *(The db/567 housekeeping item that used to be named here was
 closed 2026-08-17 — see §2.2: it was measured and found already done.)*
 
 Progress is tracked against these numbers. Each step is one commit (or a tight set) with `[skip ci]`,
@@ -812,7 +812,7 @@ fields/Excel-grid→rule design; the disqualify-always workflow + troubleshooter
     min/max a hard floor or a replaceable default?).
 
 **Sequencing:** E2 (parser audit) and E8 (troubleshooter record) are backend and can proceed as the
-research lands; E1 (auto-disqualify wiring) needs the live upstream (credentials rotated); E3/E4/E5 (the
+research lands; E1 (auto-disqualify wiring) needs the live upstream (credentials present in the settings); E3/E4/E5 (the
 Excel-grid UI + import) are GATED by the ⛔ ≥200-scenario Lender Price agreement (E3 above); E6 is a
 scheduled job; E7 extends the scoreboard; E9 (comp model) is design-ready pending 2 owner answers. The
 three owner decisions in Part 4 still gate the money math + go-live.

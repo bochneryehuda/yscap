@@ -305,6 +305,12 @@ function quoteProgram(arg, opts) {
   // HOLDBACK is CARRIED for the reconstruction record only — it is NOT applied to price.
   // How holdback combines into the final borrower rate is a MONEY rule that needs the owner's
   // exact formula (never guessed) — see docs/longterm/PPE-MARGIN-HOLDBACK-PLAN.md §5 Layer 3.
+  // HOLDBACK — APPLIED to the price since 2026-08-18, on the owner's written direction ("instead of
+  // offering the investor's raw pricing, like a 102, we're only gonna offer him a 101.75"). It is a
+  // reduction in the price we OFFER, never a fee the borrower pays and never a reason a loan becomes
+  // ineligible — eligibility is decided before any of this runs and is untouched by it. `null` means
+  // no holdback is configured, and `priceRung` treats that as zero, so a program without one prices
+  // exactly as it always did.
   const holdbackMilli = mh && typeof mh.holdbackMilli === 'number' && Number.isInteger(mh.holdbackMilli) && mh.holdbackMilli >= 0
     ? mh.holdbackMilli : null;
   const marginSource = mhMargin != null ? (mh.marginSource || 'resolved') : 'settings';
@@ -338,6 +344,7 @@ function quoteProgram(arg, opts) {
   const common = {
     adjustments,
     marginMilli,
+    holdbackMilli: holdbackMilli == null ? 0 : holdbackMilli,
     roundingMode,
     roundingIncrementMilli,
     floorMilli,
@@ -368,7 +375,7 @@ function quoteProgram(arg, opts) {
     pricingBasis: {
       marginMilli,
       marginSource,
-      holdbackMilli, // carried for the reconstruction record; NOT applied to price (money rule pending owner)
+      holdbackMilli, // APPLIED to the price (owner-directed 2026-08-18) and reported here as its own component
       roundingMode,
       roundingIncrementMilli,
       floorMilli,
