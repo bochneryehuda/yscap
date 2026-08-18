@@ -127,6 +127,87 @@ const azure = require('../src/lib/ai/azure-openai');
       ok('E1 a file over its AI spending cap is refused with a plain reason',
         capped.ok === false && /spending cap/.test(capped.reason));
     } finally { meter.allowSpend = realAllow; }
+
+    // ---- F. DRAFTING 2.0 (owner-directed 2026-08-18 evening) -------------------------------
+    // F1/F2: DETAIL mode weaves the Condition Center's OWN figures into the
+    // prompt — the liquidity breakdown off the assets condition's stamped
+    // tool_payload (the same rows Max Cash to Close reads) and the
+    // registered-vs-verified experience gap from track-record-todo.
+    const assetsTpl = (await db.query(`SELECT id FROM checklist_templates WHERE code='rtl_p3_assets'`)).rows[0];
+    ok('F0 the rtl_p3_assets template exists (the detail layer keys on it)', !!assetsTpl);
+    await db.query(
+      `INSERT INTO checklist_items (scope,application_id,template_id,label,borrower_label,audience,item_kind,is_required,status,tool_payload)
+       VALUES ('application',$1,$2,'Assets & bank statements','Bank statements — proof of funds','borrower','document',true,'outstanding',$3)`,
+      [appId, assetsTpl.id, JSON.stringify({ liquidity: {
+        required: 100000, cashToClose: 61000, reserveRequirement: 30000,
+        reserveBasis: '3 months of payments', closingBuffer: 4000, closingBufferWaived: false,
+      } })]);
+    await db.query(
+      `UPDATE product_registrations SET inputs='{"expFlips":3,"expHolds":2,"expGround":0}'::jsonb
+        WHERE application_id=$1 AND is_current`, [appId]);
+    await db.query(
+      `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,is_required,status,tool_key)
+       VALUES ('application',$1,'Track record','Track record & experience','borrower','task',true,'outstanding','track_record')`, [appId]);
+    // NOTHING ARRIVES VERIFIED (db/485): the trigger resets is_verified on
+    // INSERT, so verify the line the way a reviewer does — a second UPDATE
+    // touching no material column.
+    const trId = (await db.query(
+      `INSERT INTO track_records (borrower_id,property_address,deal_type,sale_date)
+       VALUES ($1,'{"oneLine":"12 Verified Way"}'::jsonb,'flip', (now() - interval '6 months')::date) RETURNING id`, [borId])).rows[0].id;
+    await db.query(`UPDATE track_records SET is_verified=true, verification_status='verified', verified_at=now() WHERE id=$1`, [trId]);
+    sent = null;
+    const det = await D.draft(appId, { preset: 'outstanding_conditions', scope: 'open', detail: true });
+    ok('F1 DETAIL mode carries the liquidity breakdown — total, cash to close, reserves, buffer',
+      det.ok === true && !!sent
+      && /\$100,000/.test(sent.userContent) && /\$61,000/.test(sent.userContent)
+      && /\$30,000/.test(sent.userContent) && /\$4,000/.test(sent.userContent)
+      && /two \(2\) most recent months/i.test(sent.userContent));
+    ok('F1b …and the owner\'s "send a little extra" guidance rides in the task',
+      !!sent && /LITTLE MORE than the minimum/i.test(sent.userContent));
+    ok('F2 DETAIL mode states registered vs verified vs still-missing experience',
+      !!sent && /3 fix-and-flips, 2 fix-and-holds/.test(sent.userContent)
+      && /Verified on the track record so far: 1 fix-and-flip/.test(sent.userContent)
+      && /Still missing: 2 more flips, 2 more holds/.test(sent.userContent));
+    // F3: the owner chose OFF BY DEFAULT — without the toggle, no figures.
+    sent = null;
+    const plain = await D.draft(appId, { preset: 'outstanding_conditions', scope: 'open' });
+    ok('F3 without the detail toggle the draft stays concise (no breakdown, no gap)',
+      plain.ok === true && !!sent
+      && !/\$61,000/.test(sent.userContent) && !/Still missing: 2 more flips/.test(sent.userContent));
+    // F4: itemIds narrows the list to exactly the ticked conditions.
+    const pickId = (await db.query(
+      `SELECT id FROM checklist_items WHERE application_id=$1 AND borrower_label='Photo ID'`, [appId])).rows[0].id;
+    sent = null;
+    const pickedOut = await D.draft(appId, { preset: 'outstanding_conditions', scope: 'open', itemIds: [pickId] });
+    ok('F4 picking items narrows the draft to exactly those conditions',
+      pickedOut.ok === true && !!sent && /Photo ID/.test(sent.userContent)
+      && !/Bank statements — proof of funds/.test(sent.userContent));
+    ok('F4b a junk item id is refused in plain words',
+      /not a real condition/.test(D.requestProblem({ preset: 'outstanding_conditions', itemIds: ['nope'] })));
+    // F5: tone + length riders; junk refused.
+    sent = null;
+    await D.draft(appId, { preset: 'outstanding_conditions', scope: 'open', tone: 'firm', length: 'short' });
+    ok('F5 tone + length ride in the task', !!sent && /courteous but firm/.test(sent.userContent) && /Keep it SHORT/.test(sent.userContent));
+    ok('F5b a junk tone refuses', /tone/i.test(D.requestProblem({ preset: 'deal_overview', tone: 'sassy' })));
+    ok('F5c a junk length refuses', /length/i.test(D.requestProblem({ preset: 'deal_overview', length: 'epic' })));
+    // F6: sign-as rides as a fact, scrubbed.
+    sent = null;
+    await D.draft(appId, { preset: 'deal_overview', signAs: 'Chaim at BlueLake Desk' });
+    ok('F6 the sign-off name rides as a fact, partner-scrubbed',
+      !!sent && /Sign the email as: Chaim at/.test(sent.userContent) && !/blue\s*lake/i.test(sent.userContent));
+    // F7: revise — same grounding + the previous draft, scrubbed on the way IN.
+    sent = null;
+    const rev = await D.draft(appId, {
+      preset: 'outstanding_conditions', scope: 'open',
+      feedback: 'Make it shorter and lead with the bank statements.',
+      previousSubject: 'What we need', previousBody: 'Hi — BlueLake needs your bank statements.',
+    });
+    ok('F7 revise carries the feedback + the previous draft on the SAME file grounding',
+      rev.ok === true && !!sent && /Revise the email draft below/.test(sent.userContent)
+      && /THE CURRENT DRAFT/.test(sent.userContent) && /Items still needed:/.test(sent.userContent));
+    ok('F7b the pasted-back draft is scrubbed on the way IN', !!sent && !/blue\s*lake/i.test(sent.userContent));
+    ok('F7c feedback with no previous draft refuses',
+      /no previous draft/.test(D.requestProblem({ preset: 'deal_overview', feedback: 'shorter' })));
   } finally {
     azure.available = realAvailable; azure.complete = realComplete;
     try {
