@@ -82,37 +82,52 @@ const HTTP_TIMEOUT_MS = 15000;
 /**
  * HOW MANY ELEMENTIX SEATS THE COMPANY HOLDS — 'company' | 'officer'.
  *
- * The owner's answer (2026-08-07) is ONE COMPANY LOGIN, so the whole team reads
- * through a single approved connection. Two consequences follow from that and are
- * enforced elsewhere rather than restated here:
- *   - the 1,000 requests/hour ceiling really is shared by everybody, which is why
- *     src/elementix/client.js self-caps well under it;
- *   - Elementix can only ever see ONE account, so "which officer spent a credit?"
- *     has to be recorded on OUR side at the moment of the click — the vendor
- *     cannot tell us. See docs/ELEMENTIX-CRM-PLAN.md.
+ * WAS 'company' on the owner's 2026-08-07 answer (one shared login). The owner
+ * corrected that on 2026-08-18, asked directly, while directing the CRM work:
+ * EACH LOAN OFFICER HAS THEIR OWN ELEMENTIX LOGIN. So 'officer' is now the
+ * default, and that is what makes the CRM's attribution real rather than
+ * inferred — an officer's skip trace is signed by the token they approved as
+ * themselves, so "who traced this person?" is answered by our own OAuth record
+ * and never has to be asked of a vendor who cannot answer it. (The 40-tool MCP
+ * surface has no way to list the account's users or their unlock history; that
+ * is the whole reason attribution has to be established at the click.)
  *
- * `beginConnect` refuses a per-officer approval while this is 'company'.
+ * WHAT DOES NOT CHANGE: the 1,000 requests/hour ceiling is an ORGANIZATION
+ * limit, shared across every connected client and therefore across every
+ * officer's own login too — the vendor's own usage page says so. So
+ * src/elementix/client.js still self-caps well under it, and per-officer seats
+ * buy attribution, not extra throughput.
+ *
+ * SAFE TO FLIP because `accessToken(staffId)` already falls back to the
+ * company-wide row when an officer has not connected their own: an officer who
+ * never clicks Connect keeps working exactly as they do today, reading through
+ * the company connection. Nothing is stranded by the change.
+ *
+ * Env-overridable so it can be moved without a deploy if the account model
+ * changes again; an unrecognised value falls back to 'officer'.
  */
-const SEAT_MODEL = 'company';
+const SEAT_MODEL = process.env.ELEMENTIX_SEAT_MODEL === 'company' ? 'company' : 'officer';
 
 /**
  * Is this connection attempt allowed by the seat model? Returns a shaped refusal,
  * or null when it may proceed.
  *
- * A per-officer approval is REFUSED while the company holds a single seat, because
- * it is not a harmless extra row: `accessToken(staffId)` PREFERS an officer's own
+ * A per-officer approval is REFUSED under the 'company' model, because there it
+ * is not a harmless extra row: `accessToken(staffId)` PREFERS an officer's own
  * row over the company one, so approving one would quietly move that officer onto
  * a second authorization with no second seat behind it, and split the record of
- * who looked up what. To buy per-officer seats later, flip SEAT_MODEL — nothing
- * else has to change.
+ * who looked up what. Under 'officer' — the model since 2026-08-18 — that is
+ * exactly the intent, so nothing is refused.
  *
  * PURE on purpose: no network, no database. That is what lets it be tested for
  * real, which matters because the alternative — asserting it through
  * `beginConnect` — reaches live discovery and client registration at Elementix.
- * A unit test must never call the vendor.
+ * A unit test must never call the vendor. `model` is a parameter for the same
+ * reason: BOTH models can be asserted without a deploy-time constant standing in
+ * the way, and without any call reaching the wire.
  */
-function seatRefusal(staffId) {
-  if (SEAT_MODEL === 'company' && staffId) {
+function seatRefusal(staffId, model = SEAT_MODEL) {
+  if (model === 'company' && staffId) {
     return { ok: false, reason: 'officer_seat_not_enabled',
       detail: 'PILOT holds one company-wide Elementix login, so connect it company-wide rather than per officer.' };
   }

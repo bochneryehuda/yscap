@@ -27,6 +27,8 @@ process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || 'dev-only-ssn
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'dev-only-jwt-secret-for-tests';
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 
 // NO VENDOR CALLS. Learned the hard way: an assertion that drove `beginConnect`
 // down the company-wide path reached live discovery AND dynamic client
@@ -343,35 +345,52 @@ console.log('\n7. The paid tool cannot be called by accident');
   ok(`self-capped at ${b.maxPerHour}/hour against a shared 1,000/hour platform limit`);
 
   // ---------------------------------------------------------------------------
-  console.log('\n9. One company login (owner-directed 2026-08-07)');
+  console.log('\n9. Each officer has their own login (owner-directed 2026-08-18)');
   // ---------------------------------------------------------------------------
-  // The schema keeps the per-officer shape, but approving one while the company
-  // holds a single seat is NOT a harmless extra row: `accessToken(staffId)`
-  // prefers an officer's own row over the company one, so it would quietly move
-  // that officer onto a second authorization with no second seat behind it.
-  assert.strictEqual(O.SEAT_MODEL, 'company', 'one company-wide login, per the owner');
+  // SUPERSEDES the 2026-08-07 "one company login" answer. Asked directly while
+  // directing the CRM work, the owner confirmed every loan officer has their own
+  // Elementix login — which is what lets a skip trace be signed by the officer
+  // who made it, rather than attributed by guesswork. (The vendor's 40-tool MCP
+  // surface cannot name the account's users or list their unlocks, so if the
+  // attribution is not established at the click it cannot be established at all.)
+  assert.strictEqual(O.SEAT_MODEL, 'officer', 'per-officer logins, per the owner');
 
-  // Asserted against the PURE rule, not by driving beginConnect down the
-  // company-wide path. That is not squeamishness: CI proved that calling
-  // beginConnect({staffId:null}) reaches live discovery AND dynamic client
-  // registration at Elementix from the runner. A unit test must never call the
-  // vendor — so the rule is a pure function and this is what tests it.
-  const perOfficer = O.seatRefusal('00000000-0000-0000-0000-000000000001');
-  assert.ok(perOfficer && perOfficer.ok === false);
-  assert.strictEqual(perOfficer.reason, 'officer_seat_not_enabled');
-  assert.ok(/company/i.test(perOfficer.detail), 'and it says to connect company-wide instead');
+  // BOTH models are asserted through the PURE rule, never by driving
+  // beginConnect. That is not squeamishness: CI proved that calling beginConnect
+  // reaches live discovery AND dynamic client registration at Elementix from the
+  // runner. Under the 'officer' model NEITHER path refuses, so there is no
+  // longer any argument that returns before the first byte leaves the process —
+  // which is exactly why the old live call here had to go, and why `model` is a
+  // parameter.
+  assert.strictEqual(O.seatRefusal('00000000-0000-0000-0000-000000000001'), null,
+    'an officer connecting their own login is allowed — the point of the change');
   assert.strictEqual(O.seatRefusal(null), null,
-    'the company-wide path is NOT refused — it is the one the owner chose');
-  ok('a per-officer connection is refused while the company holds one seat');
+    'and the company-wide connection still works, for an officer who has not connected');
+  ok('per-officer and company-wide connections are both allowed');
 
-  // …and beginConnect really consults it, decided BEFORE any network or database
-  // work. Safe to call for real ONLY on the per-officer path, because that is the
-  // one that returns before the first byte leaves the process — which is also the
-  // property being asserted.
-  const wired = await oauth.beginConnect({ staffId: '00000000-0000-0000-0000-000000000001', actorId: null });
-  assert.strictEqual(wired.reason, 'officer_seat_not_enabled',
-    'beginConnect asks the seat rule, and asks it first');
-  ok('the refusal is wired into beginConnect and decided up front');
+  // The 'company' model is kept and still bites, because the env override can
+  // restore it and a rule nobody tests is a rule that quietly stops working.
+  const underCompany = O.seatRefusal('00000000-0000-0000-0000-000000000001', 'company');
+  assert.ok(underCompany && underCompany.ok === false);
+  assert.strictEqual(underCompany.reason, 'officer_seat_not_enabled');
+  assert.ok(/company/i.test(underCompany.detail), 'and it says to connect company-wide instead');
+  assert.strictEqual(O.seatRefusal(null, 'company'), null,
+    'the company-wide path is never refused under either model');
+  ok('the company seat model is retained and still refuses a per-officer connect');
+
+  // …and beginConnect really consults the rule, FIRST, before any network or
+  // database work. Asserted from the SOURCE rather than by calling it, because
+  // under 'officer' every argument now proceeds to the wire. A source check is
+  // the weaker instrument, so it asserts the ORDER — seatRefusal must appear
+  // before the first `await`, which is what "decided up front" actually means.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'elementix', 'oauth.js'), 'utf8');
+  const body = src.slice(src.indexOf('async function beginConnect'));
+  const seatAt = body.indexOf('seatRefusal(');
+  const awaitAt = body.indexOf('await ');
+  assert.ok(seatAt > 0, 'beginConnect consults the seat rule');
+  assert.ok(seatAt < awaitAt,
+    'and consults it BEFORE the first await — so a refusal never reaches the vendor');
+  ok('the seat rule is wired into beginConnect and decided before any network call');
 
   // ---------------------------------------------------------------------------
   console.log('\n10. The switches actually reach the API Health page');

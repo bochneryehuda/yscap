@@ -183,6 +183,12 @@
       }
     },
 
+    "get_person": {
+      "_note": "THE PROFILE HEADER. Takes ONLY `id` — no paging, no filters — and answers the roll-up the vendor's own person page leads with: mortgage/deed/satisfaction counts, current exposure, recent activity, first-lender dates and name aliases. One call, so an overview never has to be assembled by summing pages.",
+      "required": ["id"],
+      "params": { "id": { "type": "uuid" } }
+    },
+
     "get_person_entities": {
       "required": ["id"],
       "params": {
@@ -190,7 +196,8 @@
         "ids": { "type": "string[]" },
         "page": { "type": "int" }, "perPage": { "type": "int", "min": 1, "max": 5000 },
         "scope": { "enum": ["data", "count"] },
-        "sortBy": { "type": "string" }, "sortOrder": { "enum": ["asc", "desc"] }
+        "sortBy": { "enum": ["latestTransactionDate", "name", "primaryRegionName", "mortgageCount", "deedCount", "satisfactionCount", "currentOwnershipsCount"] },
+        "sortOrder": { "enum": ["asc", "desc"] }
       }
     },
 
@@ -213,7 +220,8 @@
         "mlsDomMin": { "type": "int" }, "mlsDomMax": { "type": "int" },
         "page": { "type": "int" }, "perPage": { "type": "int", "min": 1, "max": 5000 },
         "scope": { "enum": ["data", "count"] },
-        "sortBy": { "type": "string" }, "sortOrder": { "enum": ["asc", "desc"] }
+        "sortBy": { "enum": ["startDate", "endDate", "purchasePrice", "salePrice", "holdPeriod", "totalConsideration"] },
+        "sortOrder": { "enum": ["asc", "desc"] }
       }
     },
 
@@ -265,6 +273,91 @@
         "mlsPriceMin": { "type": "number" }, "mlsPriceMax": { "type": "number" },
         "mlsDomMin": { "type": "int" }, "mlsDomMax": { "type": "int" }
       }
+    },
+
+    "get_person_associated_people": {
+      "_note": "Co-borrowers and co-grantors — people on the same recorded transactions. `relationship` narrows to mortgage (strict co-borrowers) or deed; the default `all` sums both. Default page is 5, so perPage is not optional in practice.",
+      "required": ["id"],
+      "params": {
+        "id": { "type": "uuid" },
+        "relationship": { "enum": ["all", "mortgage", "deed"] },
+        "page": { "type": "int" }, "perPage": { "type": "int", "min": 1, "max": 5000 },
+        "scope": { "enum": ["data", "count"] }
+      }
+    },
+
+    "get_person_cross_state": {
+      "_note": "Person records in OTHER states carrying this exact name. EXACT-NAME ONLY — the vendor's own schema says so — so a row here is a CANDIDATE for the same human, never proof of one. That is why elementix_person_aliases holds it unconfirmed until a person says yes.",
+      "required": ["id"],
+      "params": {
+        "id": { "type": "uuid" },
+        "page": { "type": "int" }, "perPage": { "type": "int", "min": 1, "max": 5000 },
+        "scope": { "enum": ["data", "count"] },
+        "sortBy": { "enum": ["transactionCount", "mortgageCount", "deedCount", "satisfactionCount"] },
+        "sortOrder": { "enum": ["asc", "desc"] }
+      }
+    },
+
+    "get_person_lender_network": {
+      "_note": "The person's top lenders, with counts and volumes. Takes ONLY `id` — no paging.",
+      "required": ["id"],
+      "params": { "id": { "type": "uuid" } }
+    },
+
+    "list_transactions": {
+      "_note": "The whole recorded feed — mortgages, deeds, satisfactions AND preforeclosures (transactionType), defaulting to mortgage. THERE IS NO PERSON PARAMETER: it narrows to a person only by `grantor`/`grantee` NAME as a PARTIAL match, which is exactly the low-confidence route the person profile refuses to take. A person's foreclosures therefore come from get_person_mortgages with hasForeclosure, which is keyed on the person's own id.",
+      "required": [],
+      "params": {
+        "transactionType": { "enum": ["mortgage", "deed", "satisfaction", "preforeclosure"] },
+        "grantor": { "type": "string" }, "grantee": { "type": "string" },
+        "state": { "type": "string[]" }, "city": { "type": "string[]" }, "countyName": { "type": "string[]" },
+        "zipCode": { "type": "string[]" }, "region": { "type": "string[]" },
+        "propertyTypes": { "type": "string[]" }, "propertySubtypes": { "type": "string[]" },
+        "ids": { "type": "string[]" },
+        "dateStart": { "type": "string" }, "dateEnd": { "type": "string" },
+        "maturityStart": { "type": "string" }, "maturityEnd": { "type": "string" },
+        "mortgageDateStart": { "type": "string" }, "mortgageDateEnd": { "type": "string" },
+        "auctionDateStart": { "type": "string" }, "auctionDateEnd": { "type": "string" },
+        "foreclosureType": { "type": "string[]" },
+        "fundingType": { "enum": ["purchase", "refinance", "extension", "cash", "financed"] },
+        "isBusinessPurpose": { "type": "boolean" },
+        "hasForeclosure": { "type": "boolean" },
+        "lender": { "type": "string" }, "lenderType": { "type": "string[]" },
+        "includeLenderIds": { "type": "string[]" }, "excludeLenderIds": { "type": "string[]" },
+        "lienPositionSignal": { "type": "string[]" },
+        "loanStatus": { "enum": ["open", "closed"] },
+        "loanTermMin": { "type": "int" }, "loanTermMax": { "type": "int" },
+        "amountMin": { "type": "number" }, "amountMax": { "type": "number" },
+        "borrowerExperienceMin": { "type": "int" }, "borrowerExperienceMax": { "type": "int" },
+        "borrowerLoanCountMin": { "type": "int" }, "borrowerLoanCountMax": { "type": "int" },
+        "borrowerHasNegativeRemarks": { "type": "boolean" },
+        "bounds": { "type": "string" },
+        "mlsListingType": { "enum": ["sale", "rent"] },
+        "mlsStatus": { "enum": ["sold", "active", "pending", "contingent", "off_market"] },
+        "mlsPriceMin": { "type": "number" }, "mlsPriceMax": { "type": "number" },
+        "mlsDomMin": { "type": "int" }, "mlsDomMax": { "type": "int" },
+        "page": { "type": "int" }, "perPage": { "type": "int", "min": 1, "max": 5000 },
+        "scope": { "enum": ["data", "count"] },
+        "sortBy": { "type": "string" }, "sortOrder": { "enum": ["asc", "desc"] }
+      }
+    },
+
+    "get_filter_options": {
+      "_note": "The filter VOCABULARIES, so a filter offers real values instead of guesses. `type` is required; counties need a state, cities and zip-codes need a searchTerm of at least 2 characters, property-subtypes need a propertyType.",
+      "required": ["type"],
+      "params": {
+        "type": { "enum": ["states", "regions", "counties", "cities", "zip-codes", "property-types", "property-subtypes"] },
+        "state": { "type": "string" },
+        "county": { "type": "string" },
+        "searchTerm": { "type": "string", "minLength": 2 },
+        "propertyType": { "type": "string" }
+      }
+    },
+
+    "welcome": {
+      "_note": "Takes NO parameters at all — the empty params list is the contract, so a stray argument is refused here instead of by the vendor.",
+      "required": [],
+      "params": {}
     },
 
     "get_document": {

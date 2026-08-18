@@ -1,0 +1,451 @@
+'use strict';
+/**
+ * src/lib/elementix/crm.js — a skip trace becomes a lead in the officer's CRM.
+ *
+ * ── THE OWNER'S RULE (2026-08-18) ──────────────────────────────────────────
+ * "Every contact that a user unlocks should be added to this user as a lead in
+ * his CRM system, assigned to his login. He should get the name, and he should
+ * get all the contact information available."
+ *
+ * ── WHY THE UNLOCK HAS TO HAPPEN HERE ──────────────────────────────────────
+ * Elementix's 40-tool surface cannot tell us who unlocked whom: it has no user
+ * list and no unlock history, only "is THIS person unlocked?" one at a time. So
+ * an unlock performed on Elementix's own website is invisible to PILOT forever.
+ * The unlock therefore happens THROUGH PILOT — the officer presses Skip trace
+ * here — and that is what makes the attribution real: the credit is spent under
+ * that officer's own Elementix login (db/489's per-officer scope, switched on
+ * 2026-08-18) and recorded against their PILOT id in the same breath.
+ *
+ * ── THE MONEY ──────────────────────────────────────────────────────────────
+ * `submit_contact_enrichment` is the ONLY paid tool in PILOT and the owner's cap
+ * is 1,000 a month. Nothing here decides whether it may be spent: that is
+ * `elementix/client.js`, which demands a `paidActor` naming who asked, about
+ * whom, and why, counts the month in the database, and FAILS CLOSED when it
+ * cannot count. This module's job is to never ask unless a human clicked, and to
+ * check the FREE `get_contact_status` first so an already-unlocked person costs
+ * nothing at all.
+ */
+
+const db = require('../../db');
+const crmTools = require('./crm-tools');
+const lookups = require('./lookups');
+
+const str = (v) => String(v == null ? '' : v).trim();
+const clip = (v, n) => str(v).slice(0, n);
+const isUuid = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str(v));
+
+// ---------------------------------------------------------------------------
+// Reading the vendor's contact payload
+// ---------------------------------------------------------------------------
+
+/** Digits only, for comparing two spellings of one telephone number. */
+const phoneKey = (v) => str(v).replace(/\D+/g, '').replace(/^1(?=\d{10}$)/, '');
+
+/**
+ * Pull every phone, email and address out of a `get_contact_info` payload.
+ *
+ * PURE, and deliberately generous about SHAPE while strict about VALUE.
+ * `get_contact_info` is one of the tools whose response was never transcribed,
+ * and the owner's requirement is explicitly "all the phone numbers available and
+ * their names" — so this reads a spread of spellings and KEEPS the vendor's own
+ * labels rather than inventing its own vocabulary. What it will not do is invent
+ * a contact: a value that is not a plausible telephone number or email address
+ * is dropped, because a CRM that lists a junk number gets it dialled.
+ *
+ * Order is preserved (the vendor puts its best guess first, which is what the
+ * screenshot's "Top Phone Numbers" reflects) and duplicates are collapsed on the
+ * digits, keeping the richest labelled copy.
+ */
+function normalizeContact(raw) {
+  const out = { phones: [], emails: [], addresses: [] };
+  if (!raw || typeof raw !== 'object') return out;
+
+  // The payload may be the object itself, or wrapped once.
+  const roots = [raw];
+  for (const k of ['data', 'result', 'contact', 'contactInfo', 'contact_info', 'person']) {
+    const v = raw[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) roots.push(v);
+  }
+
+  const listAt = (keys) => {
+    for (const src of roots) {
+      for (const k of keys) {
+        if (Array.isArray(src[k])) return src[k];
+        // A single value where a list was expected is still one value.
+        if (typeof src[k] === 'string' && src[k].trim()) return [src[k]];
+      }
+    }
+    return [];
+  };
+
+  const seenPhone = new Set();
+  for (const row of listAt(['phones', 'phoneNumbers', 'phone_numbers', 'phone', 'telephones'])) {
+    const value = typeof row === 'string' ? row
+      : str(row && (row.number || row.phone || row.value || row.phoneNumber || row.phone_number));
+    const key = phoneKey(value);
+    // 10 digits (US) or 11 starting with a country code; anything shorter is not
+    // a number somebody can ring.
+    if (key.length < 10 || key.length > 15 || seenPhone.has(key)) continue;
+    seenPhone.add(key);
+    const meta = typeof row === 'object' && row ? row : {};
+    out.phones.push({
+      value,
+      key,
+      // The vendor's own words — "Mobile", "Fixed", a carrier, a status like
+      // "Deliverable". The screen prints these; it does not translate them.
+      label: str(meta.label || meta.name || meta.type || meta.phoneType || meta.line_type || meta.lineType) || null,
+      carrier: str(meta.carrier || meta.provider) || null,
+      status: str(meta.status || meta.deliverability) || null,
+      location: str(meta.location || meta.city || meta.region) || null,
+      lastSeen: str(meta.lastSeen || meta.last_seen || meta.lastSeenAt || meta.updatedAt) || null,
+    });
+  }
+
+  const seenEmail = new Set();
+  for (const row of listAt(['emails', 'emailAddresses', 'email_addresses', 'email'])) {
+    const value = typeof row === 'string' ? row
+      : str(row && (row.address || row.email || row.value || row.emailAddress));
+    const key = value.toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value) || seenEmail.has(key)) continue;
+    seenEmail.add(key);
+    const meta = typeof row === 'object' && row ? row : {};
+    out.emails.push({
+      value,
+      key,
+      label: str(meta.label || meta.name || meta.type) || null,
+      status: str(meta.status || meta.deliverability) || null,
+      lastSeen: str(meta.lastSeen || meta.last_seen || meta.updatedAt) || null,
+    });
+  }
+
+  for (const row of listAt(['addresses', 'mailingAddresses', 'mailing_addresses', 'address'])) {
+    const value = typeof row === 'string' ? row
+      : str(row && (row.formatted || row.oneLine || row.line || row.address || row.fullAddress));
+    if (!value) continue;
+    const meta = typeof row === 'object' && row ? row : {};
+    out.addresses.push({ value, label: str(meta.label || meta.type) || null });
+  }
+
+  return out;
+}
+
+/** The best telephone number and email to seed a CRM lead with. */
+function primaryContact(c) {
+  return {
+    phone: (c.phones[0] && c.phones[0].value) || null,
+    phoneAlt: (c.phones[1] && c.phones[1].value) || null,
+    email: (c.emails[0] && c.emails[0].value) || null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Reading the person's unlock state — FREE
+// ---------------------------------------------------------------------------
+
+/**
+ * Is this person already unlocked on the account? Costs nothing.
+ *
+ * Reuses `lookups.isUnlocked`, which already carries the several spellings the
+ * vendor's unpinned status shape can take and FAILS CLOSED. A second reader of
+ * the same undocumented shape is how two parts of PILOT come to disagree about
+ * whether we have paid for somebody.
+ */
+async function contactState(personId, opts = {}) {
+  if (!isUuid(personId)) return { ok: false, reason: 'bad_args', detail: 'That is not an Elementix person id.' };
+  const st = await crmTools.call('get_contact_status', { personId }, opts);
+  if (!st.ok) return st;
+  return { ok: true, unlocked: lookups.isUnlocked(st.data), raw: st.data };
+}
+
+// ---------------------------------------------------------------------------
+// The lead
+// ---------------------------------------------------------------------------
+
+/**
+ * Find or create the CRM lead for a person, owned by the officer who traced them.
+ *
+ * ONE LEAD PER (person, officer). Two officers may legitimately both work the
+ * same person — that is a real thing in a brokerage — so the uniqueness is on
+ * the pair, not on the person. Re-tracing somebody you already have updates the
+ * lead you already have instead of littering the board with copies.
+ *
+ * FILL-ONLY on every field a human can edit. An officer who has renamed the lead,
+ * moved it down the pipeline or corrected the phone number must not have that
+ * overwritten by a later refresh of the same vendor data.
+ */
+async function ensureLead({ personId, staffId, name, state, contact, client = db }) {
+  const found = await client.query(
+    `SELECT id FROM leads WHERE elementix_person_id = $1 AND officer_id = $2::uuid LIMIT 1`,
+    [personId, staffId]);
+  const p = primaryContact(contact || { phones: [], emails: [] });
+
+  if (found.rows[0]) {
+    const id = found.rows[0].id;
+    // COALESCE on the lead's side: only ever fills a blank.
+    await client.query(
+      `UPDATE leads
+          SET phone     = COALESCE(phone, $2),
+              phone_alt = COALESCE(phone_alt, $3),
+              email     = COALESCE(email, $4::citext),
+              updated_at = now()
+        WHERE id = $1`,
+      [id, p.phone, p.phoneAlt, p.email]);
+    return { id, created: false };
+  }
+
+  const parts = str(name).split(/\s+/).filter(Boolean);
+  const first = parts.length > 1 ? parts.slice(0, -1).join(' ') : (parts[0] || null);
+  const last = parts.length > 1 ? parts[parts.length - 1] : null;
+
+  const ins = await client.query(
+    `INSERT INTO leads (tool, name, first_name, last_name, email, phone, phone_alt,
+                        officer_id, source, lead_source, status,
+                        elementix_person_id, created_by_staff_id, last_activity_at)
+     VALUES ('elementix', $1, $2, $3, $4::citext, $5, $6, $7::uuid,
+             'elementix', 'elementix_skip_trace', 'new', $8, $7::uuid, now())
+     RETURNING id`,
+    [clip(name, 200) || 'Unnamed contact', first, last, p.email, p.phone, p.phoneAlt, staffId, personId]);
+
+  const id = ins.rows[0].id;
+  // The timeline entry is what makes the lead explicable a month later: where it
+  // came from, and that a credit was spent to get it.
+  await client.query(
+    `INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body)
+     VALUES ($1, $2::uuid, 'system', 'Added from Elementix',
+             $3)`,
+    [id, staffId,
+      `Skip traced in Elementix${state ? ` (${state})` : ''} and added to this CRM automatically.`]);
+  return { id, created: true };
+}
+
+/** Store what the skip trace bought. Upsert — a refresh replaces the details. */
+async function storeContact({ personId, contact, raw, staffId, source, client = db }) {
+  await client.query(
+    `INSERT INTO elementix_contacts (person_id, phones, emails, addresses, raw, unlocked_by, unlocked_at, source, refreshed_at)
+     VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb,$6::uuid,now(),$7,now())
+     ON CONFLICT (person_id) DO UPDATE
+        SET phones = EXCLUDED.phones, emails = EXCLUDED.emails, addresses = EXCLUDED.addresses,
+            raw = EXCLUDED.raw, refreshed_at = now(), updated_at = now(),
+            -- WHO bought it is written once and never rewritten: a later refresh
+            -- by somebody else did not pay for this, and overwriting would
+            -- silently reassign a credit in the record.
+            unlocked_by = COALESCE(elementix_contacts.unlocked_by, EXCLUDED.unlocked_by),
+            unlocked_at = COALESCE(elementix_contacts.unlocked_at, EXCLUDED.unlocked_at),
+            source      = COALESCE(elementix_contacts.source, EXCLUDED.source)`,
+    [personId, JSON.stringify(contact.phones), JSON.stringify(contact.emails),
+      JSON.stringify(contact.addresses), JSON.stringify(raw == null ? {} : raw).slice(0, 200000),
+      staffId || null, source || 'pilot_skip_trace']);
+}
+
+/** The person header row, so a lead can link to a profile that exists. */
+async function ensurePerson({ personId, name, state, client = db }) {
+  await client.query(
+    `INSERT INTO elementix_persons (person_id, display_name, primary_state, states)
+     VALUES ($1,$2,$3,CASE WHEN $3::text IS NULL OR $3 = '' THEN '{}'::text[] ELSE ARRAY[$3::text] END)
+     ON CONFLICT (person_id) DO UPDATE
+        SET display_name  = COALESCE(elementix_persons.display_name, EXCLUDED.display_name),
+            primary_state = COALESCE(elementix_persons.primary_state, EXCLUDED.primary_state),
+            states = CASE WHEN $3::text IS NULL OR $3 = '' OR $3 = ANY(elementix_persons.states)
+                          THEN elementix_persons.states
+                          ELSE elementix_persons.states || $3::text END,
+            updated_at = now()`,
+    [personId, clip(name, 300) || null, state || null]);
+}
+
+// ---------------------------------------------------------------------------
+// THE SKIP TRACE
+// ---------------------------------------------------------------------------
+
+/** How long the click itself waits for an enrichment job before handing off to
+ *  the sweep. Short on purpose — a person staring at a button is not a good
+ *  place to wait on a third party. */
+const POLL_ATTEMPTS = 4;
+const POLL_DELAY_MS = 1500;
+
+/**
+ * Skip trace a person and land them in the officer's CRM.
+ *
+ * Order matters and is the whole cost control:
+ *   1. FREE status check. Already unlocked → read the details, spend nothing.
+ *   2. Otherwise the PAID enrichment, which client.js gates on the actor and the
+ *      monthly cap.
+ *   3. The vendor calls it a JOB, so poll the free status a few times; if it has
+ *      not landed, record it pending and let the sweep finish it. The credit is
+ *      already spent by then, so giving up entirely would waste it.
+ *
+ * NEVER THROWS: every call below is shaped, and the database work is the only
+ * thing that could raise — which the route wraps.
+ */
+async function skipTrace({ personId, staffId, reason, name, state }) {
+  if (!isUuid(personId)) return { ok: false, reason: 'bad_args', detail: 'That is not an Elementix person id.' };
+  if (!staffId) return { ok: false, reason: 'no_actor', detail: 'A skip trace has to be made by a signed-in officer.' };
+  if (!str(reason)) {
+    return { ok: false, reason: 'no_reason',
+      detail: 'Say why you are looking this person up — it is a paid lookup and the reason is kept with it.' };
+  }
+
+  const opts = { staffId };
+  const state0 = await contactState(personId, opts);
+  if (!state0.ok) return state0;
+
+  let charged = false;
+  let source = 'already_unlocked';
+
+  if (!state0.unlocked) {
+    const paid = await crmTools.call('submit_contact_enrichment', { personId }, {
+      staffId,
+      paidActor: { staffId, personId, reason: str(reason) },
+    });
+    if (!paid.ok) return paid;
+    charged = true;
+    source = 'pilot_skip_trace';
+
+    // Wait briefly for the job. `get_contact_status` is free, so polling costs
+    // nothing but a slot of the shared hourly allowance.
+    let landed = false;
+    for (let i = 0; i < POLL_ATTEMPTS && !landed; i += 1) {
+      await new Promise((r) => setTimeout(r, POLL_DELAY_MS));
+      const st = await contactState(personId, opts);
+      if (st.ok && st.unlocked) landed = true;
+    }
+    if (!landed) {
+      await ensurePerson({ personId, name, state });
+      await recordSkipTrace({ personId, staffId, name, state, reason, charged, source, status: 'pending' });
+      return { ok: true, pending: true, charged,
+        detail: 'Elementix is still looking this person up. Their details will appear here shortly.' };
+    }
+  }
+
+  return finishSkipTrace({ personId, staffId, reason, name, state, charged, source });
+}
+
+/** Read the (now unlocked) details, store them, and make the lead. */
+async function finishSkipTrace({ personId, staffId, reason, name, state, charged, source }) {
+  const info = await crmTools.call('get_contact_info', { personId }, { staffId });
+  if (!info.ok) {
+    await recordSkipTrace({ personId, staffId, name, state, reason, charged, source,
+      status: 'pending', detail: info.detail });
+    return { ok: true, pending: true, charged,
+      detail: 'The lookup is paid for, but Elementix has not returned the details yet. PILOT will keep trying.' };
+  }
+
+  const contact = normalizeContact(info.data);
+  const personName = clip(name, 300) || nameFrom(info.data) || 'Unnamed contact';
+
+  await ensurePerson({ personId, name: personName, state });
+  await storeContact({ personId, contact, raw: info.data, staffId, source });
+  const lead = await ensureLead({ personId, staffId, name: personName, state, contact });
+  await recordSkipTrace({ personId, staffId, name: personName, state, reason, charged, source,
+    status: 'complete', leadId: lead.id });
+
+  if (lead.created) notifyOfficer({ staffId, leadId: lead.id, name: personName, contact }).catch(() => {});
+
+  return { ok: true, charged, leadId: lead.id, leadCreated: lead.created, contact,
+    counts: { phones: contact.phones.length, emails: contact.emails.length } };
+}
+
+/** A name out of the contact payload, when the caller did not supply one. */
+function nameFrom(d) {
+  if (!d || typeof d !== 'object') return null;
+  for (const src of [d, d.data, d.person, d.contact]) {
+    if (!src || typeof src !== 'object') continue;
+    for (const k of ['name', 'fullName', 'full_name', 'displayName', 'personName']) {
+      if (typeof src[k] === 'string' && src[k].trim()) return src[k].trim().slice(0, 300);
+    }
+  }
+  return null;
+}
+
+/**
+ * The outcome row. UPSERT on (person, officer) so re-tracing settles the row
+ * that already exists rather than adding a second — the unique index says the
+ * same thing, and doing it here means a re-trace after a pending one records the
+ * completion instead of raising.
+ */
+async function recordSkipTrace({ personId, staffId, name, state, reason, charged, source,
+  status = 'complete', leadId = null, detail = null, client = db }) {
+  await client.query(
+    `INSERT INTO elementix_skip_traces
+       (person_id, staff_id, lead_id, person_name, state, source, reason, charged, status, detail, completed_at)
+     VALUES ($1,$2::uuid,$3::uuid,$4,$5,$6,$7,$8,$9,$10, CASE WHEN $9 = 'complete' THEN now() END)
+     ON CONFLICT (person_id, staff_id) WHERE staff_id IS NOT NULL
+     DO UPDATE SET lead_id      = COALESCE(EXCLUDED.lead_id, elementix_skip_traces.lead_id),
+                   status       = EXCLUDED.status,
+                   detail       = EXCLUDED.detail,
+                   person_name  = COALESCE(EXCLUDED.person_name, elementix_skip_traces.person_name),
+                   completed_at = COALESCE(elementix_skip_traces.completed_at, EXCLUDED.completed_at),
+                   -- charged only ever goes FALSE->TRUE: a later free re-read
+                   -- must not erase that a credit was spent on this person.
+                   charged      = elementix_skip_traces.charged OR EXCLUDED.charged`,
+    [personId, staffId, leadId, clip(name, 300) || null, clip(state, 2) || null,
+      source, clip(reason, 300) || null, !!charged, status, clip(detail, 300) || null]);
+}
+
+/** Tell the officer it landed. In-app only — see STAFF_INAPP_TYPES in notify.js. */
+async function notifyOfficer({ staffId, leadId, name, contact }) {
+  const notify = require('../notify');
+  const n = contact ? contact.phones.length : 0;
+  await notify.notifyStaff(staffId, {
+    type: 'elementix_lead',
+    title: `${name} was added to your CRM`,
+    body: n
+      ? `You skip traced ${name} in Elementix. They are now a lead in your CRM with ${n} phone number${n === 1 ? '' : 's'}.`
+      : `You skip traced ${name} in Elementix. They are now a lead in your CRM.`,
+    link: `/internal/leads/${leadId}`,
+    ctaLabel: 'Open the lead',
+  });
+}
+
+/**
+ * Settle skip traces whose enrichment job had not finished when the officer
+ * clicked. Bounded, oldest first, and it never throws — it is called from a
+ * scheduled sweep.
+ *
+ * A row that has been pending for longer than `giveUpHours` is marked failed so
+ * it stops being retried forever; the credit is spent either way, and a row that
+ * retries for eternity hides a real vendor problem behind steady noise.
+ */
+async function drainPendingSkipTraces({ limit = 25, giveUpHours = 48 } = {}) {
+  const out = { checked: 0, completed: 0, failed: 0, stillPending: 0 };
+  let rows = [];
+  try {
+    ({ rows } = await db.query(
+      `SELECT person_id, staff_id, person_name, state, reason, charged, source, occurred_at
+         FROM elementix_skip_traces
+        WHERE status = 'pending'
+        ORDER BY occurred_at
+        LIMIT $1`, [Math.max(1, Math.min(200, limit))]));
+  } catch (_) { return out; }
+
+  for (const r of rows) {
+    out.checked += 1;
+    try {
+      const st = await contactState(r.person_id, { staffId: r.staff_id });
+      if (st.ok && st.unlocked) {
+        await finishSkipTrace({
+          personId: r.person_id, staffId: r.staff_id, reason: r.reason,
+          name: r.person_name, state: r.state, charged: r.charged, source: r.source });
+        out.completed += 1;
+        continue;
+      }
+      const ageH = (Date.now() - new Date(r.occurred_at).getTime()) / 3600000;
+      if (ageH > giveUpHours) {
+        await db.query(
+          `UPDATE elementix_skip_traces SET status='failed',
+                  detail='Elementix never returned the contact details for this lookup.'
+            WHERE person_id=$1 AND staff_id=$2::uuid`, [r.person_id, r.staff_id]);
+        out.failed += 1;
+      } else {
+        out.stillPending += 1;
+      }
+    } catch (_) { out.stillPending += 1; }
+  }
+  return out;
+}
+
+module.exports = {
+  normalizeContact, primaryContact, phoneKey,
+  contactState, skipTrace, finishSkipTrace, drainPendingSkipTraces,
+  ensureLead, ensurePerson, storeContact, recordSkipTrace,
+  _internals: { nameFrom, POLL_ATTEMPTS, POLL_DELAY_MS },
+};
