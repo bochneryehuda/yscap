@@ -236,7 +236,17 @@ const SETTINGS = [
       'Final Docs', 'Closed', 'Completion'],
     description: 'The workflow, in order.',
     evidence: 'GET /encompass/v3/settings/milestones — 19 active milestones.',
-    notWired: NW_SETTLED_RULE },
+    // NOT the shared "settled in code" reason, which is what this carried until the
+    // catalog started refreshing itself. The order is now read LIVE from the
+    // tenant's own milestone list on every catalog pass (`sync/milestone-catalog.js`
+    // writes `sequence` from the order Encompass returns, and the stepper draws
+    // that), so this list is only the shape PILOT shipped with. Wiring the setting
+    // would make it OVERRIDE the tenant's own answer, which is the wrong direction:
+    // a buyer who wants a different order changes it in Encompass, where the loans
+    // actually move through it, and the next refresh follows.
+    notWired: 'Not in use yet, and it is no longer the thing that decides. The order is read LIVE '
+      + 'from your own Encompass milestone list every time the catalog refreshes, so this is only '
+      + 'the list PILOT shipped with. Change the order in Encompass and PILOT follows it.' },
   { key: 'milestones.currentNameFieldId', group: 'Workflow', label: 'Current milestone field',
     type: 'fieldId', default: 'MS.STATUS',
     description: 'Where to read the current milestone from.',
