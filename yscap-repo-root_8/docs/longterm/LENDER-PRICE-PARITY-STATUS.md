@@ -6646,3 +6646,125 @@ agreement (4), the fact test removed so anything pairs (4), the once-only guard 
 cause not named (1) — with an unmutated control green either side.
 
 171/171 suites, 33 database-backed. All seven gates green.
+
+### §2.107 — ⛔ THE CONTAINER'S NAME IS NOT A STATEMENT ABOUT THE LOAN, AND ONE OF ITS REFUSALS IS NOT ABOUT THE BORROWER (2026-08-18, task #80)
+
+§2.106 left two comparable scenarios disagreeing and named this as the next item. Both hinge on one
+sentence Lender Price says and we never do: `"DSCR >=1.25%  only eligible on this program"`. Task #80
+asked how Lender Price picks which of the three Deephaven DSCR band programs prices a loan. **It does
+not pick by the name, and the name is not about the loan at all.**
+
+**WHAT WAS MEASURED.** Two live captures of ONE scenario — dscr **1.25**, fico 660, ltv 75%, $375,000,
+Deephaven Mortgage — one price-only, one disqualify-on. Every figure below is read out of the raw
+vendor payloads and pinned verbatim in `scripts/fixtures/lp-dscr-band-containers.json`.
+
+| container (`rateProgram.name`) | programName | outcome | band filter group | decline reasons |
+|---|---|---|---|---|
+| `DSCR < 1.00` | `DSCR < 1.00  -  30 Yr Fixed` | **PRICED — 28 rungs at 6.125%** | none | — |
+| `DSCR  1.00 - 1.24` | `DSCR  1.00-1.24   -  30 Yr Fixed` | declined | none | the LTV grid only |
+| `DSCR > = 1.25` | `DSCR  >= 1.25  - 30 Yr Fixed` | declined | `Filter - DSCR >= 1.25%` | `"DSCR >=1.25%  only eligible on this program"` + the LTV grid |
+
+Three findings follow, and they are the answer to #80.
+
+1. **THE NAME DOES NOT DESCRIBE THE LOAN.** A DSCR of 1.25 priced under the container named
+   `DSCR < 1.00`. The name is a label on a rate GRID (`rateGridName` is the same string), not a
+   statement about the borrower. `productName` is worse still — `"1.00  -  30 Yr Fixed"`, the program
+   name with its leading `DSCR` token stripped, which reads as a band that is not the loan's either.
+2. **THE BAND IS PRICED BY AN ADJUSTMENT ROW, NOT BY THE CONTAINER.** The one container that priced
+   carries the whole DSCR-ratio table and applied the band-CORRECT row —
+   `DSCR Ratio - DSCR >= 1.25 / CLTV >70.01 % <= 75.0 %` = **-0.25** (LP charge-positive; the sheet's
+   own `SHEET_DSCR_GE125 = 0.25` in premium-positive frame, per §2.103's eight-of-eight negation).
+   **That is exactly the model our sheet already has** — one program, the band as an additive
+   adjustment — so the vendor's three-way split is a configuration artifact, not a pricing partition,
+   and our shape is right. Exactly ONE container carries a band filter at all, and on this loan it
+   declined a DSCR of exactly 1.25.
+3. **THEREFORE THAT SENTENCE IS NOT A REFUSAL OF THE BORROWER.** It is one container saying somebody
+   else in this family owns this loan — and somebody else did, on the same request, at 6.125%. Scored
+   as a decline we failed to make, it reads as *"we would price a loan Lender Price refuses"*, which
+   is the dangerous direction and is false here; mined for rule suggestions it would have us adopt
+   LP's own product partitioning as an eligibility rule, which would make our engine decline loans
+   Deephaven genuinely prices. §2.90's `disqualification_split` detector had already reached that
+   conclusion for the COARSE axis on a hunch; this is the same conclusion measured, and applied to
+   the FINE reconciliation where the two remaining disagreements actually live.
+
+**WHAT WAS BUILT.**
+
+`src/longterm/ppe/lp-container-partition.js` — a **CLOSED, MEASURED list** of sentences that are
+statements about Lender Price's own program partition. One entry today, carrying where and when it was
+measured, which container said it, and which container priced the loan instead. **The match is exact
+(whitespace- and case-normalized), never a pattern.** A regex spun out of one sentence — `/only
+eligible on/` — is a guess about a vocabulary nobody has surveyed, and the cost of a false positive
+here is the expensive one: silently deleting a REAL refusal from the comparison. The list grows by
+measurement. The vendor's group name (`Filter - DSCR >= 1.25%`, against the real eligibility group
+`Eligibility - DSCR (>=1.00) Matrix - WHL/CORR (9.22.25)`) is recorded as CORROBORATION and reported
+back as `groupMatches`, but is deliberately not required to match — a normalizer that dropped the
+group would otherwise turn a known partition reason back into a false disagreement.
+
+`lp-normalize-full.js` now carries the vendor's `group` through normalization instead of dropping it;
+it is the one structural signal separating a real refusal from a partition statement, and it was
+being discarded one line after `client.js` parsed it.
+
+`disqualifier-reconciler.js` routes every authority reason — on BOTH the raw and the pre-normalized
+paths, because the pre-normalized path is the one a replayed run uses — through the classifier. A
+partition reason lands in its own `partition` bucket: **counted, reported verbatim, never silently
+dropped**, out of the layer the comparison scores, and **not counted toward `ineligibleAuthority`** —
+because a container refusing a container is not a refusal of the loan. `summary.partitionOnly` says
+so explicitly, so a caller reading `ineligibleAuthority: false` is never left guessing why.
+
+**AND A GUARD THAT MAKES THE FIRST FINDING NON-NEGOTIABLE.** A source sweep over `src/longterm/**`
+fails if any live line tests a program/grid-name field against a DSCR band literal. Nothing does
+today — the three modules that mention the split only EXPLAIN it in comments, which the sweep strips
+first — and on the one scenario measured, doing so would have been confidently wrong. The suite also
+pins that `/^dscr/i`, the family pattern the live runs actually use, still matches all three container
+names: **what a decline MEANS changed; which programs a run looks at did not.**
+
+**Mutation-proven six ways**, with an unmutated control green either side: the classifier never firing
+(11 named assertions — after adding a defensive read, because the first attempt CRASHED the test
+rather than failing it, the §2.106 lesson again), a loose substring match replacing the closed list
+(2), a partition reason counted toward `ineligibleAuthority` (2), the normalizer dropping the group
+again (1), the pre-normalized path skipping the filter (1), and a planted line deriving a band from a
+program name (1).
+
+**WHAT IT DOES TO THE TWO LIVE DISAGREEMENTS — measured against the STORED §2.106 run, not replayed.**
+Both surviving disagreements carried this one sentence and nothing else in `onlyAuthority`, with
+`summary.unknown === 0` on each. Removing exactly the rows the classifier recognises and asking
+`layerVerdict` — the SAME function, not a re-derivation — what is left:
+
+| stored row | before | partition row removed | left over | after |
+|---|---|---|---|---|
+| A | `disagree` | `"DSCR >=1.25%  only eligible on this program"` | 1 related pair, nothing else | **`indeterminate`** → incomparable, `decline_reasons_unpaired` |
+| B | `disagree` | the same sentence | 1 agreement (`fico`), nothing else | **`agree`** |
+
+So one becomes an honest "we cannot tell" (the §2.106 vocabulary gap, which is what it always was) and
+the other becomes a real agreement. **Neither remains a disagreement, and neither was ever a rate-sheet
+defect.**
+
+⛔ **A WHOLE-RUN AGREEMENT RATE IS DELIBERATELY NOT CLAIMED HERE.** A first attempt rebuilt every
+scenario's decline sets out of the stored report and re-ran the reconciler over all eight — and it
+answered `1 agree / 4 disagree / 3 indeterminate`, WORSE than the run it was replaying. The
+reconstruction is lossy: the stored report keeps the layers but not the top-level `unknown` rows, and
+our side's `facts` had to be inferred, both of which move `relateLayer` and `layerVerdict`. It was
+discarded rather than reported. **A reconstruction that cannot reproduce its own baseline is not a
+measurement** — the table above avoids it entirely by touching one field of two stored rows. The new
+whole-run number needs a live re-run, and that is the next item.
+
+**TWO EXISTING SUITES HAD TO CHANGE, AND THAT IS THE FINDING, NOT A COST.** §2.105's and §2.106's
+guards both used this exact sentence as their stand-in for "an ordinary Lender Price decline about
+`dscr`" — deliberately, because both files record that they picked a REAL captured text so the
+crosswalk would resolve it rather than land on `indeterminate` and pass for the wrong reason. Once it
+is recognised as a partition statement it is set aside, so their agreement cases lost their LP row and
+went red. The fixtures were swapped for another live-captured reason that resolves to `dscr`
+(`"DSCR >= 1.00, Minimum Loan Amount $75,000"`), each with a comment saying why the old one may not
+come back — **the classifier was not weakened to keep them green.** Both suites had been asserting
+that this sentence AGREES with a real refusal of ours, which is exactly the false agreement this
+section exists to prevent; running the classifier-never-fires mutation reproduces that old verdict
+(`declineOutcome: 'agree'`) on demand. The interaction is now pinned end to end where it lives, in
+`test-lt-ppe-decline-vocabulary.js` §G.
+
+**A NEW VARIANT OF THE RESTORE TRAP, worth recording.** §2.104 recorded that `git checkout --` on an
+UNTRACKED file silently restores nothing. This window added the mirror image: **`git checkout --` on a
+TRACKED file with UNSTAGED edits discards YOUR work too.** Two source changes were reverted to HEAD
+mid-mutation and had to be re-applied by hand. The remedy for both is the same one line: `git add` the
+new and modified files BEFORE running mutations, so `git checkout --` restores from the index.
+
+172/172 suites, 33 database-backed. All seven gates green.

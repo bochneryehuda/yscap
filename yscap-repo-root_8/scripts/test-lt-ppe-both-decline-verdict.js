@@ -80,7 +80,14 @@ const ourPriced = (rungs) => async () => ({
 // to a known dimension — a synthetic reason mostly resolves to nothing and the outcome is then
 // `indeterminate`, which would make every assertion below pass for the wrong reason.
 const OUR_DSCR_REASON = 'Minimum DSCR 0.75';
-const LP_DSCR_REASON = 'DSCR >=1.25%  only eligible on this program';
+// ⛔ NOT `"DSCR >=1.25%  only eligible on this program"`, which this suite used until §2.107. That
+// sentence resolves to `dscr` and so looked like an ordinary stand-in, but it was MEASURED to be a
+// statement about Lender Price's own program partition — a container saying a SIBLING container owns
+// the loan, while that sibling priced it on the same request — so it is now set aside rather than
+// scored (lp-container-partition.js). Using it here would teach the suite that a partition sentence
+// AGREES with a real refusal of ours, which is the exact false agreement §2.107 exists to prevent.
+// This is another real reason captured live 2026-08-18 that the crosswalk resolves to `dscr`.
+const LP_DSCR_REASON = 'DSCR >= 1.00, Minimum Loan Amount $75,000';
 const LP_FICO_REASON = 'DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%';
 const run = (ours, lp) => runOne(SC, ours, lp, OPTS);
 

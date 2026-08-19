@@ -226,7 +226,12 @@ function normalizeLpDisqualified(disq, opts = {}) {
       if (progRe && !progRe.test(String(item.program == null ? '' : item.program))) continue;
       declined.push({
         lender: lg.lender || null, investor: lg.investor || null, program: item.program || null,
-        reasons: (item.reasons || []).map((r) => ({ rule: r.rule || null, adjType: r.adjType || null })),
+        // `group` is the vendor's own name for the adjustment group the reason arrived under, and it
+        // is carried rather than dropped because it is the one STRUCTURAL signal separating a real
+        // eligibility refusal from a statement about Lender Price's own program partition — measured
+        // 2026-08-18, `Eligibility - DSCR (>=1.00) Matrix - WHL/CORR (9.22.25)` versus
+        // `Filter - DSCR >= 1.25%` (task #80, see ./lp-container-partition.js).
+        reasons: (item.reasons || []).map((r) => ({ rule: r.rule || null, adjType: r.adjType || null, group: r.group || null })),
       });
     }
   }

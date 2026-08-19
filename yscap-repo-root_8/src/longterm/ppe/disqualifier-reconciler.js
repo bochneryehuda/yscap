@@ -38,6 +38,7 @@
  */
 
 const { keyToPredicate } = require('./disqualify-crosswalk');
+const { classifyReason } = require('./lp-container-partition');
 const { dimensionOfRule, factsOfPredicate, factsForDimension } = require('./agreement-dimensions');
 
 // Layer 3 = prepayment-penalty dimensions; everything else is Layer 2 (eligibility).
@@ -93,19 +94,50 @@ function normalizeOurs(ours, opts) {
 
 // Normalize `authority` (an lp-normalize-full disqualified result) into per-layer reason rows, using
 // the crosswalk for the dimension. A reason the crosswalk REFUSES is unknown — never guessed.
+// ⛔ ONE OF THE AUTHORITY'S "DECLINES" IS NOT ABOUT THE BORROWER AT ALL. Lender Price splits one
+// Deephaven DSCR sheet across three CONTAINERS, and the container that does not own a loan refuses it
+// by saying so — "DSCR >=1.25%  only eligible on this program" — while a sibling container prices the
+// same loan on the same request. Scored as a reason we failed to state, it reads as "we would price a
+// loan Lender Price refuses", which is both the dangerous direction and false; mined for suggestions,
+// it would have us adopt LP's product partitioning as an eligibility rule. It is separated out here,
+// COUNTED and REPORTED (never silently dropped), and the closed measured list that recognises it lives
+// in ./lp-container-partition.js — task #80, evidence in scripts/fixtures/lp-dscr-band-containers.json.
+function partitionRow(r) {
+  const c = classifyReason({ rule: r.rule != null ? r.rule : r.reason, group: r.group });
+  if (!c.partition) return null;
+  return {
+    side: 'authority',
+    reason: (r.rule != null ? r.rule : r.reason) || null,
+    group: r.group || null,
+    // Recorded, not required: the group the vendor filed it under either corroborates the entry or
+    // silently differs from what was measured, and a reader should be able to tell which.
+    groupMatches: c.groupMatches,
+    declinedBy: c.entry.declinedBy,
+    pricedBy: c.entry.pricedBy,
+  };
+}
+
 function normalizeAuthority(authority, opts) {
   const layerOf = opts.layerOf || ((dim) => defaultLayerOf(dim));
   if (authority && (Array.isArray(authority.layer2) || Array.isArray(authority.layer3))) {
-    const layer2 = (authority.layer2 || []).map((r) => ({ ...r }));
-    const layer3 = (authority.layer3 || []).map((r) => ({ ...r }));
-    return { ready: authority.ready !== false, layer2, layer3, unknown: authority.unknown || [], ineligible: layer2.length + layer3.length > 0 };
+    // A caller that pre-normalized still goes through the partition filter — otherwise the one path
+    // that skips it is the one the harness actually uses on a replayed run.
+    const partition = [];
+    const keep = (rows) => (rows || []).filter((r) => { const p = partitionRow(r); if (p) { partition.push(p); return false; } return true; }).map((r) => ({ ...r }));
+    const layer2 = keep(authority.layer2);
+    const layer3 = keep(authority.layer3);
+    return { ready: authority.ready !== false, layer2, layer3, unknown: authority.unknown || [], partition, ineligible: layer2.length + layer3.length > 0 };
   }
   const ready = !!(authority && authority.ready);
   const declined = (authority && Array.isArray(authority.declined)) ? authority.declined : [];
-  const layer2 = []; const layer3 = []; const unknown = [];
+  const layer2 = []; const layer3 = []; const unknown = []; const partition = [];
   let count = 0;
   for (const prog of declined) {
     for (const r of (prog.reasons || [])) {
+      const p = partitionRow(r);
+      // NOT counted toward `ineligible`: a container saying another container owns the loan is not a
+      // refusal of the loan, and treating it as one is what made two live scenarios disagree.
+      if (p) { partition.push({ ...p, program: prog.program || null }); continue; }
       count += 1;
       const cross = keyToPredicate({ rule: r.rule, adjType: r.adjType });
       if (!cross.ok) { unknown.push({ side: 'authority', reason: r.rule || null, adjType: r.adjType || null, why: cross.why }); continue; }
@@ -114,7 +146,7 @@ function normalizeAuthority(authority, opts) {
       (layer === 'layer3' ? layer3 : layer2).push({ dimension: dim, reason: r.rule || null, adjType: r.adjType || null, confidence: cross.confidence });
     }
   }
-  return { ready, layer2, layer3, unknown, ineligible: count > 0 };
+  return { ready, layer2, layer3, unknown, partition, ineligible: count > 0 };
 }
 
 // Reconcile ONE layer's two reason lists by DIMENSION. A dimension both sides decline on = agreement;
@@ -205,6 +237,7 @@ function reconcileDisqualifiers(ours, authority, opts = {}) {
     layers[layer] = rep;
   }
 
+  const partition = lpN.partition || [];
   const unknown = [...ourN.unknown, ...lpN.unknown];
   if (!lpN.ready) unknown.push({ side: 'authority', reason: 'disqualify_feed_not_ready', why: 'authority_not_ready' });
 
@@ -226,10 +259,16 @@ function reconcileDisqualifiers(ours, authority, opts = {}) {
     layers,
     unknown,
     relatedOnly,
+    partition,
     summary: {
       agree,
       disagree,
       related,
+      partition: partition.length,
+      // TRUE when the authority's ONLY declines were container-partition statements — i.e. it did not
+      // refuse this borrower at all, it refused this CONTAINER. A caller reading `ineligibleAuthority`
+      // alone would see `false` and have no idea why; this says why.
+      partitionOnly: partition.length > 0 && !lpN.ineligible,
       unknown: unknown.length,
       ineligibleOurs: ourN.ineligible,
       ineligibleAuthority: lpN.ineligible,
@@ -243,5 +282,5 @@ module.exports = {
   ourVerdictFromQuote,
   defaultLayerOf,
   PPP_DIMENSIONS,
-  _internals: { normalizeOurs, normalizeAuthority, reconcileLayer, layerVerdict },
+  _internals: { normalizeOurs, normalizeAuthority, reconcileLayer, layerVerdict, partitionRow },
 };

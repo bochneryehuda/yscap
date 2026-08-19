@@ -1,0 +1,123 @@
+{
+  "_what": "Lender Price DEEPHAVEN DSCR BAND CONTAINERS, measured verbatim from two live captures of ONE scenario (task #80).",
+  "_measured": "2026-08-18",
+  "_captures": {
+    "priced": "a price-only searchRaw (results.qualifiedNonQMData)",
+    "declined": "a disqualify-on searchRaw (the disqualify tree)"
+  },
+  "_scenario": {
+    "dscr": 1.25,
+    "fico": 660,
+    "ltv": 0.75,
+    "cltv": 0.75,
+    "loanAmount": 375000
+  },
+  "_finding": [
+    "The loan DSCR is 1.25. The container that PRICED it is named \"DSCR < 1.00\" -- the container NAME does not describe the loan.",
+    "That priced container carries the whole DSCR-ratio adjustment table and applied the band-CORRECT row (DSCR >= 1.25, -0.25).",
+    "So the BAND is priced by an ADJUSTMENT ROW inside one grid, not by which container Lender Price picked.",
+    "Exactly one container carries a band FILTER group (\"Filter - DSCR >= 1.25%\"), and on this loan it DECLINED a DSCR of exactly 1.25.",
+    "productName is programName with the leading \"DSCR\" token stripped, which is why the product reads \"1.00  -  30 Yr Fixed\"."
+  ],
+  "containers": [
+    {
+      "rateProgramName": "DSCR < 1.00",
+      "rateProgramId": "608c67dbce8ad000019b08ff",
+      "programName": "DSCR < 1.00  -  30 Yr Fixed",
+      "productName": "1.00  -  30 Yr Fixed",
+      "rateGridName": "DSCR < 1.00  -  30 Yr Fixed",
+      "rateGridId": "608c68f0ce8ad00001aba324",
+      "companyName": "Deephaven Mortgage",
+      "capture": "priced",
+      "disqualified": false,
+      "leafCount": 28,
+      "groups": [
+        {
+          "name": "Adjustments - DHM DSCR - Corr (new) ( 12.7.25) - T0,1,2,B",
+          "type": "RATE",
+          "disqualifyAdjustments": [],
+          "dscrAdjustments": [
+            {
+              "key": "DSCR Ratio - DSCR >= 1.25 / CLTV >70.01 % <= 75.0 %",
+              "llpa": -0.25
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rateProgramName": "DSCR  1.00 - 1.24",
+      "rateProgramId": "608c67ebce8ad000019dc5e8",
+      "programName": "DSCR  1.00-1.24   -  30 Yr Fixed",
+      "productName": "1.00-1.24   -  30 Yr Fixed",
+      "rateGridName": "DSCR  1.00-1.24   -  30 Yr Fixed",
+      "rateGridId": "608c6909ce8ad00001ad2b33",
+      "companyName": "Deephaven Mortgage",
+      "capture": "dq",
+      "disqualified": true,
+      "leafCount": 28,
+      "groups": [
+        {
+          "name": "Adjustments - DHM DSCR - Corr (new) ( 12.7.25) - T0,1,2,B",
+          "type": "RATE",
+          "disqualifyAdjustments": [],
+          "dscrAdjustments": [
+            {
+              "key": "DSCR Ratio - DSCR >= 1.25 / CLTV >70.01 % <= 75.0 %",
+              "llpa": -0.25
+            }
+          ]
+        },
+        {
+          "name": "Eligibility - DSCR (>=1.00) Matrix - WHL/CORR (9.22.25)",
+          "type": "RATE",
+          "disqualifyAdjustments": [
+            "DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%"
+          ],
+          "dscrAdjustments": []
+        }
+      ]
+    },
+    {
+      "rateProgramName": "DSCR > = 1.25",
+      "rateProgramId": "608c67fcce8ad000019e8d4b",
+      "programName": "DSCR  >= 1.25  - 30 Yr Fixed",
+      "productName": "1.25  - 30 Yr Fixed",
+      "rateGridName": "DSCR  >= 1.25  - 30 Yr Fixed",
+      "rateGridId": "608c692dce8ad00001af6f88",
+      "companyName": "Deephaven Mortgage",
+      "capture": "dq",
+      "disqualified": true,
+      "leafCount": 28,
+      "groups": [
+        {
+          "name": "Adjustments - DHM DSCR - Corr (new) ( 12.7.25) - T0,1,2,B",
+          "type": "RATE",
+          "disqualifyAdjustments": [],
+          "dscrAdjustments": [
+            {
+              "key": "DSCR Ratio - DSCR >= 1.25 / CLTV >70.01 % <= 75.0 %",
+              "llpa": -0.25
+            }
+          ]
+        },
+        {
+          "name": "Filter - DSCR >= 1.25%",
+          "type": "RATE",
+          "disqualifyAdjustments": [
+            "DSCR >=1.25%  only eligible on this program"
+          ],
+          "dscrAdjustments": []
+        },
+        {
+          "name": "Eligibility - DSCR (>=1.00) Matrix - WHL/CORR (9.22.25)",
+          "type": "RATE",
+          "disqualifyAdjustments": [
+            "DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%"
+          ],
+          "dscrAdjustments": []
+        }
+      ]
+    }
+  ]
+}

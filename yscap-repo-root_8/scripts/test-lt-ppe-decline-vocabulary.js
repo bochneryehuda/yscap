@@ -85,9 +85,14 @@ ok(B.verdict === 'disagree', `B3 …and it is still a DISAGREEMENT — got ${B.v
 ok(B.relatedOnly === false, 'B4 …never reported as the vocabulary gap');
 
 // ---- C. AN EXACT MATCH IS STILL AN AGREEMENT ------------------------------------------------------
+// ⛔ NOT `"DSCR >=1.25%  only eligible on this program"`, which this case used until §2.107 — it
+// resolves to `dscr` and so read as an ordinary stand-in, but it was MEASURED to be a statement about
+// Lender Price's own program partition and is now set aside rather than scored. Pairing it with a real
+// refusal of ours would assert the false agreement §2.107 exists to prevent. Another live-captured
+// reason that resolves to `dscr`.
 const C = rec(
   ourDecline('dhvn_min_dscr', 'Minimum DSCR 0.75'),
-  lpDecline('DSCR >=1.25%  only eligible on this program', 'SimpleRateAdjustment'),
+  lpDecline('DSCR >= 1.00, Minimum Loan Amount $75,000', 'SimpleRateAdjustment'),
 );
 ok(C.layers.layer2.agreements.length === 1, `C1 a same-dimension pair still AGREES — got ${JSON.stringify(C.layers.layer2)}`);
 ok(rel(C).length === 0, 'C2 …and is not double-counted as related');
@@ -150,6 +155,19 @@ ok(E.layers.layer2.onlyOurs.length === 1,
     lpLeg('something the crosswalk cannot read at all', null), OPTS);
   ok(unreadable.incomparableReason === 'decline_reasons_unreadable',
     `F3 …while a genuinely unreadable reason keeps its own name — got ${unreadable.incomparableReason}`);
+
+  // ---- G. A CONTAINER-PARTITION SENTENCE IS NOT A REFUSAL, END TO END (§2.107) ---------------------
+  // The reason this case belongs HERE rather than only in the reconciler's own suite: this is the exact
+  // sentence the two surviving live disagreements carried, and it resolves cleanly to `dscr`, so at
+  // every layer it LOOKS like an ordinary refusal. It is measured to be Lender Price refusing a
+  // CONTAINER — a sibling container priced the same loan on the same request — so it may never pair
+  // with a real refusal of ours and call the result an agreement.
+  const partition = await runOne(SC,
+    oursLeg('dhvn_min_dscr', 'Minimum DSCR 0.75'),
+    lpLeg('DSCR >=1.25%  only eligible on this program', 'SimpleRateAdjustment'), OPTS);
+  ok(partition.agree !== true, 'G1 a partition sentence never agrees with a real decline of ours');
+  ok(partition.declineOutcome !== 'agree',
+    `G2 …and the reconciliation does not call it an agreement — got ${partition.declineOutcome}`);
 
   console.log(`${fails.length ? 'FAIL' : 'PASS'} — decline vocabulary guard: ${pass} passed, ${fails.length} failed`);
   for (const f of fails) console.log('  ✗', f);
