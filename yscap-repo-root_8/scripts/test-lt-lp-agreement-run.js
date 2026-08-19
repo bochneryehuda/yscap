@@ -46,6 +46,7 @@ const client = require('../src/longterm/lenderprice/client');
 const legs = require('../src/longterm/ppe/lp-agreement-legs');
 const { runRatesheetAgreement } = require('../src/longterm/ppe/ratesheet-agreement');
 const { buildReplayLpLeg, replayCoverage, describeCoverage, requestKey } = require('../src/longterm/ppe/lp-replay');
+const prov = require('../src/longterm/ppe/agreement-provenance');
 const { rateSheetToProgram } = require('../src/longterm/ppe/ratesheet');
 const { gridToRateSheet } = require('../src/longterm/ppe/deephaven-grid');
 const { buildDeephavenGrid } = require('../src/longterm/ppe/deephaven-dscr-sheet');
@@ -116,9 +117,18 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   console.log(`Sheet-under-test: ${builtin ? `built-in Deephaven DSCR (v12.7.25 confirmed subset)${withPrepay ? ' + PREPAY/max-price block' : ''}` : sheetPath}`);
 
   // 3) scenarios
+  // ⛔ WHAT THIS RUN MEASURED IS PART OF THE ANSWER (§2.121). Four things can narrow the population
+  // behind `agreementRate`, and each used to be announced on the console and nowhere else — so the
+  // persisted report read as a battery-wide figure. The record below is stamped BY THE CODE THAT MAKES
+  // each cut, so the chain from battery to scenarios-that-ran reconciles or the guard says so.
+  let provenance = prov.begin({ name: 'canonical agreement battery', offered: defaultScenarios().length });
   const scPath = arg('--scenarios', process.env.LT_SCENARIOS);
   let scenarios = scPath ? readJson(scPath) : defaultScenarios();
   console.log(`Scenarios: ${scenarios.length}${scPath ? ` (from ${scPath})` : ' (canonical agreement battery)'}`);
+  if (scPath) {
+    provenance.battery = { name: scPath, offered: scenarios.length };
+    prov.narrowed(provenance, 'scenarios_file', provenance.battery.offered, scenarios.length, scPath);
+  }
 
   // 4) the two legs + the run
   const s = settings.resolveAll().values;
@@ -221,11 +231,15 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
       scenarios = scenarios.filter((sc) => {
         try { return !!requestKey(sc); } catch (_) { return false; }
       });
+      // (this filter and the one below are ONE recorded narrowing — `beforePartial` is taken after it,
+      // so a scenario dropped here is still inside the from→to the record states)
       // EVERY name the coverage could not answer for — a list that misses one leaves that scenario in
       // the run to throw part-way through, which is the failure --replay-partial exists to avoid.
       const answerable = new Set(cov.missingPrice
         .concat(cov.evicted, cov.ambiguousScenarios, cov.unbuildable));
+      const beforePartial = scenarios.length;
       scenarios = scenarios.filter((sc, i) => !answerable.has((sc && sc._label) || `#${i}`));
+      prov.narrowed(provenance, 'replay_partial', beforePartial, scenarios.length, replayDir);
       console.log(`  RUNNING PARTIAL: ${scenarios.length} scenario(s) this capture can answer for. The rest are`
         + ' NOT in this run and the report is about these scenarios only.');
     }
@@ -266,11 +280,24 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
       // the module, so the wording is tested rather than typed here.
       const blocked = probeBlocker(sel);
       if (blocked) die(8, `\n${blocked}`);
+      prov.narrowed(provenance, 'priced_probe', scenarios.length, sel.probe.length,
+        'our own sheet prices these; the battery\'s ineligible probes are not in this run');
       scenarios = sel.probe;
       console.log(`  RUNNING PRICED-ONLY: ${scenarios.length} scenario(s). The battery's ineligible probes are `
         + 'NOT in this run, so it measures the priced side only — the decline side is not being checked.');
     }
   }
+
+  // Everything that decides what the numbers MEAN, settled before the first comparison and stamped once.
+  provenance = prov.finish(provenance, {
+    runAt: new Date().toISOString(),
+    lpSource: replayDir ? 'replay' : 'live',
+    replayDir: replayDir || null,
+    scope: { ...filter, unscoped: flag('--unscoped') || undefined },
+    disqualify: flag('--no-disqualify') ? 'skipped' : 'asked',
+    sheet: { builtin, path: sheetPath || null, investor: investorName || null },
+    ppp: { asked: !!(ppp && ppp.asked), descriptor: !!(ppp && ppp.descriptor), reason: (ppp && ppp.reason) || null },
+  });
 
   let done = 0;
   const onResult = () => { done += 1; if (done % 25 === 0 || done === scenarios.length) process.stdout.write(`  …${done}/${scenarios.length}\n`); };
@@ -407,8 +434,20 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   }
   console.log(`  GATE MET      ${summary.gateMet ? 'YES' : 'NO'}`);
 
+  // ⛔ WHAT THESE NUMBERS ARE ABOUT (§2.121) — printed beside the verdict, and PERSISTED, because the
+  // console line is gone the moment the terminal scrolls and the file is what somebody reads later.
+  console.log('\n--- what this run measured ---');
+  for (const line of prov.describeProvenance(provenance)) console.log(`  ${line}`);
+  for (const w of prov.provenanceWarnings(provenance)) console.log(`  ⚠ ${w}`);
+
   const out = arg('--out');
-  if (out) { fs.writeFileSync(out, JSON.stringify({ summary, results }, null, 2)); console.log(`\n  full report → ${out}`); }
+  if (out) {
+    // Attached to the SUMMARY, not beside it: a consumer that reads `summary` alone — which is what a
+    // scoreboard or a gate does — must not be able to get the agreement rate without its population.
+    summary.provenance = provenance;
+    fs.writeFileSync(out, JSON.stringify({ summary, provenance, results }, null, 2));
+    console.log(`\n  full report → ${out}`);
+  }
   // ⛔ WAIT FOR THE RAW CAPTURES BEFORE EXITING. The sink writes off the event loop so pricing is never
   // blocked by a 173 MB gzip, which means a script that exits the moment its last scenario returns can
   // exit before the bytes it just PAID Lender Price for have landed. This is the caller the contract

@@ -8027,3 +8027,70 @@ precise failure that flag exists to avoid.
 **Proven:** section L of `scripts/test-lt-ppe-lp-replay.js`, 14 assertions, 4 mutations (M12–M15) each
 verified to have applied. End to end, a partial replay over a directory with one payload deleted names
 the eviction, drops that scenario, and says the report is about the survivors only.
+
+---
+
+## §2.121 — the report said what it found and never what it looked at
+
+### The state before
+
+`scripts/test-lt-lp-agreement-run.js --out report.json` persists the run's verdict, and its headline is
+`total` and `agreementRate`. Measured on a real report file, the summary carried **neither**
+`provenance`, `narrowed`, `battery`, `source`, `replay`, `scope` **nor** `probe` — while **four**
+separate things can narrow the population behind those two numbers:
+
+| | what it does | announced |
+|---|---|---|
+| `--scenarios <file>` | replaces the 305-scenario battery outright | console only |
+| `--priced-probe N` | cuts to the N our own sheet prices (§2.115) | console only |
+| `--replay-partial` | cuts to what a capture can answer for (§2.120) | console only |
+| `--filter-*` | decides what *"Lender Price said"* even means (§2.100) | console only |
+
+So the moment the terminal scrolled, the only durable artifact read `total: 12, agreementRate: 91%`
+with nothing recording that 293 scenarios were deliberately excluded, or that the run never called
+Lender Price at all. Same class as §2.110 and §2.135, one layer out: **an artifact confident about a
+population it never measured.**
+
+### The scope is the dangerous field, not the counts
+
+§2.100 already measured what an unscoped run does — our one-investor sheet compared against every
+lender in the market, producing *"a confident 0.00% that means nothing"*. The runner refuses to run
+unscoped, so that case is closed at the door. What was not closed: **two reports taken under DIFFERENT
+scopes are not comparable either**, and neither file said which scope produced it.
+
+### What was built
+
+`src/longterm/ppe/agreement-provenance.js` — pure, no IO, no clock (the caller supplies `runAt`, because
+a module that reads the clock cannot be asserted against a fixed expectation). It records the battery
+the run was OFFERED, every narrowing **stamped by the code that made it** with the count before and
+after, the LP source (live or replayed, and from where), the scope, and whether the refusal tree was
+asked for. It is attached to the **summary**, not beside it, so a consumer reading `summary` alone —
+which is what a scoreboard or a gate does — cannot get the agreement rate without its population.
+
+Two properties do the real work:
+
+- **`coversWholeBattery`** — false is impossible to miss: it prints beside the verdict and persists.
+- **`reconciles`** — the battery, minus every recorded drop, must equal what ran. A narrowing that
+  forgot to record itself shows up as a gap rather than as a smaller number nobody questions. That is
+  the guard against the *next* flag being added without a stamp.
+
+### The bug inside the fix, caught by writing the file and reading it back
+
+`--filter-program-like` is a **RegExp**, and `JSON.stringify(/^dscr/i)` is `{}`. So the console printed
+the scope correctly — `String` coerces a RegExp — while the persisted report, the thing anybody actually
+reads later, recorded an **empty scope**. A report claiming an agreement rate with no scope beside it is
+precisely the defect this section is about, reappearing inside its own fix. Every scope value is now
+coerced once, in the module, and a test asserts it survives a JSON round trip. (Note the test records
+that this mutation fails **three** assertions and not four: the console-line assertion still passes,
+which is exactly why the bug survived inspection.)
+
+### Proven
+
+`scripts/test-lt-ppe-agreement-provenance.js` — 43 assertions, 7 mutations (M1–M7), each
+checksum-verified to have applied. Section J is a source guard over the runner itself, because a pure
+test of the recorder proves nothing about whether the CLI calls it — and the defect was precisely that
+the CLI announced these on the console and recorded them nowhere. It also counts the sites that narrow
+the scenario list against the sites that stamp one, so a fifth flag added later without a stamp is
+visible at build time as well as at runtime.
+
+186/186 LT PPE suites, 34 database-backed. All seven gates green.
