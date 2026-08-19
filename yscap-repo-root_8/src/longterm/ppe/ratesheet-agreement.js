@@ -534,7 +534,16 @@ async function runOne(scenario, ours, lp, opts) {
       // `incomparableByReason` in the summary names it, so it is stated and never silent.
       agree = false;
       incomparable = true;
-      incomparableReason = unpaired ? 'decline_reasons_unpaired' : 'decline_reasons_unreadable';
+      // ⛔ THREE KINDS OF "CANNOT TELL", NOT TWO (§2.114). `unpaired` is the vocabulary gap (§2.101);
+      // `multi_axis` is a refusal of OURS about several facts at once — a grid cell with no single
+      // axis, which is what a grid cell IS — and `unreadable` is what is left: a reason nobody could
+      // read. Reporting the second as the third sent a reader hunting a parsing bug that does not
+      // exist, and on the live run of 2026-08-19 it was the ONLY thing still holding 2 of 8 scenarios
+      // incomparable. `unpaired` is tested first because a scenario carrying both is more usefully
+      // described by the pairing gap, which is the one with a fix behind it.
+      const multiAxis = !unpaired && !!(declineReconcile && (declineReconcile.unknown || []).some((u) => u && u.why === 'multi_axis'));
+      incomparableReason = unpaired ? 'decline_reasons_unpaired'
+        : (multiAxis ? 'decline_reasons_multi_axis' : 'decline_reasons_unreadable');
     } else {
       // ⛔ THE VERDICT IS THIS RECONCILIATION'S, IN BOTH DIRECTIONS. It used to be able only to push
       // `agree` further false: the coarse axes had already set it false (see the both-decline note

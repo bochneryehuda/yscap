@@ -56,6 +56,7 @@ function adjustmentToRule(a) {
 // name a GROUP, not a fact, and become null (unknown) on the way to a rule. See ineligibilityToRule.
 const NON_DIMENSIONS = new Set(['eligibility', 'fico_cltv_dscr', 'other', 'grid']);
 
+
 function ineligibilityToRule(a) {
   if (!a || typeof a !== 'object') throw new Error('ratesheet:bad_ineligibility');
   const leaves = [];

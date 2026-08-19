@@ -83,6 +83,32 @@ function dimensionOfRule(rule) {
   return soleLeafFact(rule.when);
 }
 
+// ⛔ THE AXES OF A RULE THAT CONSTRAINS SEVERAL — the honest answer where `dimensionOfRule` has to
+// return null (§2.114). Every real eligibility rule on this sheet is COMPOUND (a DSCR band × FICO band
+// × purpose gate around one cap), so `dimensionOfRule` answers null for it by design: a group name is
+// not a fact, and carrying one would score a real both-decline as a DISAGREEMENT against a Lender Price
+// reason that can never crosswalk to it. But null then reaches the reconciler as `no_dimension`, which
+// it reports as `decline_reasons_unreadable` — "we could not parse this". MEASURED on the live run of
+// 2026-08-19, that was the ONLY thing still holding 2 of 8 scenarios incomparable, and it sends a
+// reader hunting a parsing bug that does not exist. The truth is that the refusal is about several axes
+// at once and the reconciler pairs one.
+//
+// READ FROM THE COMPILED PREDICATE, never from prose and never from a name: the facts the rule's own
+// `when` actually tests. A placeholder→axes lookup table was built first and then REMOVED — every
+// placeholder this sheet emits (`fico_cltv_dscr`) sits on a predicate that already names those exact
+// facts, so the table could not bite on a single rule and would have been a second definition waiting
+// to drift from the first. Deriving from the predicate also covers the shape that declares no
+// placeholder at all (the tier N/A rules), which the table could never have reached.
+//
+// Returns null — never a one-element list — when the rule has a single axis, because that case already
+// has a real `dimension` and a second answer for it is how two consumers drift.
+function axesOfRule(rule) {
+  if (!rule || typeof rule !== 'object') return null;
+  if (dimensionOfRule(rule) != null) return null;
+  const facts = Array.from(factsOfPredicate(rule.when));
+  return facts.length > 1 ? facts : null;
+}
+
 // dimension of one of OUR priced adjustments (a pricing.js reconstruction-record adjustment entry).
 function dimensionOfOurAdjustment(adj) {
   if (!adj || typeof adj !== 'object') return null;
@@ -108,6 +134,7 @@ module.exports = {
   factsOfPredicate,
   soleLeafFact,
   dimensionOfRule,
+  axesOfRule,
   dimensionOfOurAdjustment,
   dimensionOfLpReason,
 };

@@ -7339,4 +7339,105 @@ reason dedupe removed (1), `lpPriced` never true (3), the sharp counter never co
 no longer saying it (3). Section D pins the verdict as **UNCHANGED**, so a future flip has to be a
 deliberate act with the owner's answer behind it rather than a side effect.
 
+### Measured live, 2026-08-19, the same eight scenarios
+
+```
+⚠ vendor split  8 scenario(s) Lender Price PRICED under one program while refusing under another
+                8 of those are scored as "Lender Price declined" — see §2.113, OPEN owner question
+decline repeats 432 identical per-rung rows folded away (§2.113)
+```
+
+**Eight of eight.** The open question does not govern an edge case — it governs the entire battery, and
+every "agreement" in it. And 432 phantom refusal rows (54 per scenario) were being counted as separate
+refusals across the run.
+
+The headline is unchanged — `comparable 6, agreed 6, disagreed 0, agreement 100.00%` — which is the
+point: this section reports the choice, it does not make it.
+
 178/178 suites, 33 database-backed. All seven gates green.
+
+---
+
+## §2.114 — our own grid cell reported as a reason nobody could read (2026-08-19)
+
+After §2.111 the live battery came back **6 of 8 comparable**, and the two that remained were
+`decline_reasons_unreadable` — a name that says the crosswalk failed to parse a sentence. It had not.
+Both were **our own** declines:
+
+```
+"Not eligible: FICO 640–660 × CLTV 75.5%–80.5% × DSCR any"
+"Not eligible: T1 FICO 640–679, purchase/rate-term, DSCR < 1.00"
+```
+
+A rate-sheet N/A cell and a tier cut — refusals about **several facts at once**. The reconciler pairs
+one axis per decline, so a rule with no single axis lands in `unknown` under `why: 'no_dimension'`, and
+the runner renders that as "unreadable". **A grid cell doing exactly what a grid cell does was being
+reported as a parsing failure**, sending a reader hunting a bug that does not exist.
+
+### The null dimension is correct and was not touched
+
+`ratesheet.ineligibilityToRule` deliberately nulls the placeholder group names (`fico_cltv_dscr`,
+`eligibility`, `other`, `grid`) — none of them names a FACT, no Lender Price reason can crosswalk to
+one, and carrying one would score a real both-decline as a **disagreement**, strictly worse than an
+unknown. That decision stands and the suite pins it. **What was missing was not a dimension; it was the
+truth about why there isn't one.**
+
+`agreement-dimensions.axesOfRule` reads the facts the rule's **compiled predicate** actually tests —
+from structure, never from prose and never from a name — and returns null for a rule that already has a
+single `dimension`, so the sheet's 182 single-axis rules are untouched.
+
+**A placeholder→axes lookup table was built first and then removed.** Every placeholder this sheet
+emits sits on a predicate that already names those exact facts, so the table could not bite on a single
+rule — it would have been a second definition waiting to drift — and it could never have reached the
+tier rules, which declare no placeholder at all. Reading the predicate covers both shapes with one
+answer. (CLAUDE.md: if a guard is redundant today, say so rather than shipping it.)
+
+### No verdict moves, on purpose
+
+`unknown` already makes a layer INDETERMINATE and `multi_axis` still does; the scenario is still
+incomparable and still not an agreement. This is §2.107's rule applied to our own side: **two different
+pieces of news must not be merged into one name.** Pairing a multi-axis refusal against a Lender Price
+reason on one of its axes is a further step with its own false-agreement risk and is deliberately not
+taken here.
+
+There are now three kinds of "cannot tell", not two — `decline_reasons_unpaired` (the vocabulary gap,
+§2.101), `decline_reasons_multi_axis` (a refusal of ours about several facts), and
+`decline_reasons_unreadable` (what is left). A scenario carrying both a pairing gap and a multi-axis
+refusal is **not** reported as a pure pairing gap: `relatedOnly` is false while anything is still
+unreadable beneath it, and claiming otherwise would promise a fix that would not finish the job.
+
+### Measured live, 2026-08-19
+
+```
+comparable    6  (incomparable 2, errors 0)
+              why: {"decline_reasons_multi_axis":2}
+```
+
+`decline_reasons_unreadable` is **gone from this battery**. The two scenarios are still incomparable —
+nothing was made to agree — but the run now says why, truthfully.
+
+### Three assertions in this suite were wrong, and the code was right
+
+Written before they were run, corrected after — each is worth keeping as a note:
+
+- **The axes are the predicate's, not the sentence's.** The cell's prose reads "… × DSCR any", which
+  *looks* like three axes; "any" means there is no DSCR band, so the predicate constrains two. Asserting
+  three would have been asserting the prose over the structure — the exact thing this module refuses to
+  do.
+- **"The verdict did not move" is proven by comparison, not by naming a value.** The first cut asserted
+  `indeterminate`; the real answer in that fixture is `disagree` (Lender Price's row stands alone once
+  ours goes to `unknown`). Naming a value would have pinned an unrelated part of the reconciler and said
+  nothing about this change. It now reconciles the same inputs twice — once with readable axes, once
+  with no rule behind the reason — and requires the two verdicts to match.
+- **A scenario carrying both gaps is not a pure pairing gap.** `relatedOnly` is false while anything is
+  still in `unknown`, so `multi_axis` is the more complete description. The assertion had it backwards.
+
+### What it is measured by
+
+`scripts/test-lt-ppe-multi-axis-decline.js` — 21 assertions against the REAL compiled Deephaven sheet,
+**mutation-proven five ways**: `axesOfRule` always null — the exact pre-fix state (**8 named
+failures**), a single-axis rule also given axes (1 — the drift guard), the reconciler no longer
+distinguishing the two (4), the scenario reason forced back to `unreadable` (2), and the placeholder
+carried as a dimension again (10 — the §2.101 decision undone).
+
+179/179 suites, 33 database-backed. All seven gates green.

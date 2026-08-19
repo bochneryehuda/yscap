@@ -39,7 +39,7 @@
 
 const { keyToPredicate } = require('./disqualify-crosswalk');
 const { classifyReason } = require('./lp-container-partition');
-const { dimensionOfRule, factsOfPredicate, factsForDimension } = require('./agreement-dimensions');
+const { dimensionOfRule, axesOfRule, factsOfPredicate, factsForDimension } = require('./agreement-dimensions');
 
 // Layer 3 = prepayment-penalty dimensions; everything else is Layer 2 (eligibility).
 const PPP_DIMENSIONS = new Set(['prepay', 'ppp', 'prepayment', 'prepayment_penalty', 'prepay_penalty']);
@@ -69,6 +69,10 @@ function ourVerdictFromQuote(ours, program, opts = {}) {
       reason: d.reason || 'ineligible',
       dimension: dimensionOf(d),
       facts: rule ? [...factsOfPredicate(rule.when)] : [],
+      // The AXES a compound rule constrains, when it has no single one (§2.114). Carried so a decline
+      // our own sheet wrote can be reported as what it is — a refusal about several facts at once —
+      // instead of as one nobody could read.
+      axes: rule ? axesOfRule(rule) : null,
     };
   });
 }
@@ -85,7 +89,16 @@ function normalizeOurs(ours, opts) {
   }
   const layer2 = []; const layer3 = []; const unknown = [];
   for (const r of rows) {
-    if (r.dimension == null) { unknown.push({ side: 'ours', reason: r.reason, why: 'no_dimension' }); continue; }
+    if (r.dimension == null) {
+      // ⛔ TWO DIFFERENT PIECES OF NEWS, AND MERGING THEM SENT PEOPLE HUNTING A BUG THAT IS NOT THERE
+      // (§2.114). "The reason names no fact we recognise" and "the reason names SEVERAL facts and the
+      // reconciler pairs one" are not the same thing: the first is a gap in the crosswalk, the second
+      // is a grid cell doing exactly what a grid cell does. Both stay INDETERMINATE — no verdict moves
+      // — but the second now says so, and carries the axes it is about.
+      const axes = Array.isArray(r.axes) && r.axes.length > 1 ? r.axes : null;
+      unknown.push({ side: 'ours', reason: r.reason, why: axes ? 'multi_axis' : 'no_dimension', axes });
+      continue;
+    }
     const layer = r._forced || layerOf(r.dimension, { side: 'ours' });
     (layer === 'layer3' ? layer3 : layer2).push({ dimension: r.dimension, reason: r.reason, code: r.code || null, facts: r.facts || [] });
   }
