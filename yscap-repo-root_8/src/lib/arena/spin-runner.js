@@ -784,6 +784,11 @@ async function rosterFor(spin) {
 async function launchDue(now = new Date()) {
   const out = [];
   try {
+    // The autopilot switch: with it OFF (the default, owner-directed
+    // 2026-08-19) nothing opens itself — the plan's times are a schedule the
+    // admin fires by hand from the control room.
+    const cfg = await settings.load().then((c) => c.settings || {}).catch(() => ({}));
+    if (cfg.autoLaunchEnabled !== true) return out;
     const r = await db.query(
       `SELECT p.id FROM arena_spins p JOIN arena_sessions s ON s.id = p.session_id
         WHERE p.state = 'draft' AND p.launch_at IS NOT NULL AND p.launch_at <= $1

@@ -83,30 +83,20 @@ router.get('/settings', settings.requireSuperAdmin, async (req, res) => {
     // Truthful about a settings row we could not read: the OFF above would then
     // be a fail-closed default rather than the owner's recorded choice.
     readable: s.readable,
-    // Whether THIS person may change the host list — a host may not appoint or
-    // remove hosts; the panel hides the picker off this rather than guessing.
-    canEditHosts: settings.isSuperAdmin(req.actor),
+    // A host holds everything here now, the host list included
+    // (owner-directed 2026-08-19: "full access to everything").
+    canEditHosts: await settings.runsArena(req.actor),
     defaults: settings.DEFAULTS,
   });
 });
 
 router.put('/settings', settings.requireSuperAdmin, async (req, res) => {
   const { enabled } = req.body || {};
-  let incoming = (req.body || {}).settings;
-  // A named HOST edits how the Arena behaves — but the MASTER SWITCH and the
-  // host list itself stay with real super admins (the documented host scope;
-  // the 2026-08-19 audit found a host could switch the whole Arena off for
-  // the company, or appoint/remove hosts). The switch is REFUSED plainly; the
-  // hosts key is DROPPED rather than refused, because the settings screen
-  // sends the whole object back on every Save and refusing would dead-end a
-  // host's ordinary edits.
-  if (!settings.isSuperAdmin(req.actor)) {
-    if (enabled !== undefined) return bad(res, 'Only a super admin can switch the whole Arena on or off.', 403);
-    if (incoming && typeof incoming === 'object' && 'hosts' in incoming) {
-      incoming = { ...incoming };
-      delete incoming.hosts;
-    }
-  }
+  const incoming = (req.body || {}).settings;
+  // A named HOST holds EVERYTHING here — the master switch and the host list
+  // included (owner-directed 2026-08-19, in their own words: "Give Ezra those
+  // too, full access to everything"; this deliberately widens the earlier
+  // audit-scoped carve-outs). Only the OWNER can change this scope back.
   if (enabled !== undefined && typeof enabled !== 'boolean') return bad(res, 'The on/off switch has to be true or false.');
   const before = await settings.load({ fresh: true });
   const after = await settings.save({ enabled, settings: incoming }, req.actor.id);

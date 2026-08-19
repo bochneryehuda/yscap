@@ -153,8 +153,17 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
               entry_opens_at = now() - interval '1 minute',
               entry_deadline_at = now() + interval '2 hours'
         WHERE id = $1`, [ebId]);
+    // AUTOPILOT IS OFF BY DEFAULT (owner-directed 2026-08-19: "stop all the
+    // automatic stuff from populating by itself") — a due spin WAITS.
+    const settingsLib = require(R + '/src/lib/arena/settings');
+    await settingsLib.save({ settings: { autoLaunchEnabled: false } }, null);
+    const heldBack = await runner.launchDue(new Date());
+    eq(heldBack.filter((x) => String(x.id) === String(ebId)).length, 0,
+      'with autopilot OFF (the default), a due spin does NOT open itself');
+    await settingsLib.save({ settings: { autoLaunchEnabled: true } }, null);
     const launched = await runner.launchDue(new Date());
-    eq(launched.length, 1, 'the sweep opens a spin whose launch time has come, with nobody at a keyboard');
+    eq(launched.length, 1, 'with autopilot ON, the sweep opens a spin whose launch time has come, with nobody at a keyboard');
+    await settingsLib.save({ settings: { autoLaunchEnabled: false } }, null);
     eq((await db.query(`SELECT state FROM arena_spins WHERE id = $1`, [ebId])).rows[0].state, 'open',
       'and it really is open');
 

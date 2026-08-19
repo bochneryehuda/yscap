@@ -96,12 +96,24 @@ const DEFAULTS = Object.freeze({
 
   // THE HOSTS — named people who run the Arena with a super admin's powers
   // (owner-directed 2026-08-19: "give Ezra access to the entire super admin of
-  // the control room … the same access as the super admin when it comes to
-  // this"). Staff ids as strings. Scoped to the ARENA only: a host gets the
-  // control room, the plan, the challenges and these settings — never any
-  // other super-admin power in PILOT, and never the global on/off switch on
-  // the company Settings screen (seesSwitch stays role-based).
+  // the control room … the same access as the super admin", then, widening it
+  // in their own words: "Give Ezra those too, full access to everything").
+  // Staff ids as strings. A host now holds EVERYTHING inside the Arena —
+  // including its master switch and this list itself — but never any other
+  // super-admin power elsewhere in PILOT (seesSwitch on the company Settings
+  // screen stays role-based; hosts flip the switch from the Arena's own
+  // settings panel).
   hosts: [],
+
+  // THE AUTOPILOT SWITCH (owner-directed 2026-08-19: "stop all the automatic
+  // stuff from populating by itself. Only manual spins should be populating,
+  // only manual challenges. Stop the automatic triggers."). OFF by default:
+  // a spin's launch time and a challenge's opens-at time are then a PLAN the
+  // admin fires by hand (Open it now / Start now) — nothing appears on the
+  // team's screens on its own. Deadlines still CLOSE things on time (the
+  // 11:38 door-shut is the owner's own rule, and closing is not populating),
+  // and the deadline alarms keep their own emailReminders switch.
+  autoLaunchEnabled: false,
 });
 
 const SETTING_KEYS = Object.keys(DEFAULTS);
