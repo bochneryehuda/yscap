@@ -233,6 +233,17 @@ function census() {
     }
     modules.read += 1;
     const names = exportedNames(text);
+    // §2.126d — DOES ITS OWN MODULE USE IT? The ledger has always WARNED readers that "referenced
+    // nowhere" is not "untested": a helper its own module calls on every request lands in the list
+    // looking abandoned, and `capture.scrubSecrets` — the credential scrub — is one of them. That
+    // warning asks every reader to hold a distinction the file could simply compute, and a caveat a
+    // reader must remember is a caveat a reader forgets. It is computed here instead.
+    //
+    // The export block is CUT OFF FIRST, so a name's appearance in its own export list is not counted
+    // as a use — otherwise every row would read as used and the column would say nothing.
+    const clean = stripLineComments(text);
+    const blockAt = clean.search(/module\.exports\s*=\s*\{/);
+    const body = blockAt < 0 ? clean : clean.slice(0, blockAt);
     for (const n of names) {
       if (SEAM_NAMES.has(n)) continue;
       const re = wordRe(n);
@@ -244,7 +255,15 @@ function census() {
       if (calledInSrc) continue;
       let inTests = false;
       for (const g of scriptFiles) { if (re.test(scriptText.get(g))) { inTests = true; break; } }
-      rows.push({ file: path.relative(LT, f).split(path.sep).join('/'), name: n, bucket: inTests ? 'tested' : 'unreferenced' });
+      // One occurrence in the body is the definition itself; two or more means something in the
+      // module reaches for it. Zero happens for a name defined inside the export block.
+      const own = (body.match(new RegExp(`\\b${n.replace(/[$]/g, '\\$')}\\b`, 'g')) || []).length;
+      rows.push({
+        file: path.relative(LT, f).split(path.sep).join('/'),
+        name: n,
+        bucket: inTests ? 'tested' : 'unreferenced',
+        usedInModule: own > 1,
+      });
     }
   }
   rows.sort((a, b) => (a.file.localeCompare(b.file)) || a.name.localeCompare(b.name));
@@ -264,7 +283,10 @@ const KEY = (r) => `${r.file} :: ${r.name}`;
 function readLedgerFrom(text) {
   const out = new Map();
   for (const line of String(text || '').split('\n')) {
-    const m = line.match(/^\s*-\s+`([^`]+?)\s*::\s*([^`]+?)`\s*(?:—\s*(.*))?$/);
+    // §2.126d — the optional `_(its own module uses it)_` marker sits between the name and any
+    // authored reason. It is GENERATED, so it must be skipped on the way back in; a reader regex that
+    // did not know about it silently matched nothing and every authored reason in the file was lost.
+    const m = line.match(/^\s*-\s+`([^`]+?)\s*::\s*([^`]+?)`\s*(?:_\([^)]*\)_)?\s*(?:—\s*(.*))?$/);
     if (!m) continue;
     out.set(`${m[1].trim()} :: ${m[2].trim()}`, (m[3] || '').trim());
   }
@@ -281,9 +303,15 @@ function renderLedger(rows, previousReasons) {
   const reasons = previousReasons || new Map();
   const un = rows.filter((r) => r.bucket === 'unreferenced');
   const te = rows.filter((r) => r.bucket === 'tested');
+  // §2.126d — the internal-use fact is rendered ON THE ROW, ahead of any authored reason. The two
+  // readings need opposite next steps: a name its own module calls on every request is live and only
+  // LOOKS abandoned (a mutation is the only thing that can judge it), while a name nothing anywhere
+  // reaches for is the sharp case — §2.126b's `partitionReadable` was one. The header used to warn
+  // readers to hold that distinction themselves, which is a caveat a reader forgets.
   const line = (r) => {
     const why = reasons.get(KEY(r));
-    return `- \`${r.file} :: ${r.name}\`${why ? ` — ${why}` : ''}`;
+    const used = r.usedInModule ? ' _(its own module uses it)_' : '';
+    return `- \`${r.file} :: ${r.name}\`${used}${why ? ` — ${why}` : ''}`;
   };
   return `# Long-Term exports that nothing in the product calls
 
@@ -310,6 +338,14 @@ file.** The checker counts references from OTHER files, so a helper its own modu
 request lands in the first list looking abandoned. \`capture.scrubSecrets\` — the credential scrub — is
 in it, and it runs on every captured payload. What actually matters is whether the BEHAVIOUR is
 pinned, and this file cannot answer that; only a mutation can.
+
+**So the file now says it per row (§2.126d), instead of asking you to remember it.** A row marked
+_(its own module uses it)_ is reached on the module's own path and only LOOKS abandoned — judge it with
+a mutation, never with this list. A row WITHOUT that mark is the sharp case: nothing anywhere reaches
+for it, inside the module or out. **${rows.filter((r) => !r.usedInModule).length} of ${rows.length}**
+rows are in that state today, and \`ppe/run-store.js :: partitionReadable\` was one of them — the guard
+§2.126b found built, tested, and wired to nothing while the go-live gate promoted investors off runs it
+said could not be read.
 
 **So the 23 rows recorded on 2026-08-19 were each measured, not labelled.** Every one was mutated on
 its own and its suite re-run. **None was a missing wire**: each is either internal to its module and

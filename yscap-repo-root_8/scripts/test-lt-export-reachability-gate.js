@@ -176,6 +176,51 @@ const ROW = (file, name, bucket = 'tested') => ({ file, name, bucket });
     'G28 …and the two counts reconcile, so a module cannot go missing between them');
 }
 
+// ---- 9) §2.126d — THE ROW SAYS WHETHER ITS OWN MODULE USES IT -----------------------------------
+//
+// The header used to WARN that "referenced nowhere" is not "untested": a helper its module calls on
+// every request lands in the list looking abandoned (`capture.scrubSecrets`, the credential scrub, is
+// one). A caveat every reader must hold is a caveat a reader forgets, and the distinction decides the
+// next step — a mutation for the live ones, a hunt for the sharp ones. §2.126b's `partitionReadable`
+// was a sharp one.
+{
+  const rows = check.census();
+  const withMark = rows.filter((r) => r.usedInModule);
+  const sharp = rows.filter((r) => !r.usedInModule);
+  ok(withMark.length > 0 && sharp.length > 0,
+    `G31 the census splits the rows both ways (${withMark.length} used internally, ${sharp.length} used nowhere)`);
+
+  // G32/G33 — TWO NAMED ROWS, not a shape. A "does the marker appear anywhere" test passes on the
+  // header prose, which names the marker to explain it; and a "some row lacks it" test passes even
+  // when the fact is computed over the whole file, because a name defined inside the export block
+  // still scores one. Both mutations were run and both slipped through, so the guard is pinned to two
+  // rows whose answers are opposite and known:
+  //
+  //   capture.scrubSecrets   — the credential scrub, called by its own module on every payload. This
+  //                            is the header's own worked example of a row that only LOOKS abandoned.
+  //   run-store.partitionReadable — §2.126b's guard: nothing anywhere reaches for it, inside or out.
+  const rendered = check.renderLedger(rows, new Map());
+  const rowLine = (needle) => rendered.split('\n').find((l) => l.startsWith('- `') && l.includes(needle));
+  const scrub = rowLine('capture.js :: scrubSecrets');
+  const dark = rowLine('run-store.js :: partitionReadable');
+  ok(scrub && /_\(its own module uses it\)_/.test(scrub),
+    'G32 a helper its own module calls on every request IS marked, on its own row');
+  ok(dark && !/_\(its own module uses it\)_/.test(dark),
+    'G33 …and a name nothing anywhere reaches for is NOT — which is the whole distinction');
+
+  // G34 — THE ROUND TRIP. The marker sits between the name and any authored reason, so a reader that
+  // did not know about it would match nothing and every authored reason in the file would be lost on
+  // the next --update. That is not hypothetical: it happened while building this, and the checker
+  // reported 221 rows as newly dark because it could no longer read its own ledger.
+  const one = rows[0];
+  const authored = new Map([[`${one.file} :: ${one.name}`, 'a reason somebody wrote']]);
+  const back = check.readLedgerFrom(check.renderLedger(rows, authored));
+  ok(back.get(`${one.file} :: ${one.name}`) === 'a reason somebody wrote',
+    'G34 an authored reason survives the marker on a render → read round trip');
+  ok(back.size === rows.length,
+    `G35 …and every row is read back, marker or not (${back.size} of ${rows.length})`);
+}
+
 // ---- 8) §2.126c — THE PARSER IS CHECKED AGAINST WHAT THE MODULES ACTUALLY EXPORT ----------------
 //
 // Every guard above tests the reader on FIXTURES, and a fixture only proves the shapes somebody

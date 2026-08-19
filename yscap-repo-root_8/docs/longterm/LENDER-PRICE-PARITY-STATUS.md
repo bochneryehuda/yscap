@@ -8998,3 +8998,68 @@ pattern and is refused.
 
 **Full suite:** 191/191 LT PPE suites, all 34 database-backed proven against a real Postgres, all seven
 gates green.
+
+---
+
+### §2.126d — the first sweep the widened guard made possible, and the one live comment it caught out
+
+§2.126c gave the dark-capability checker its sight back — 56 modules it had never been able to read.
+This is the first look at what they were hiding, plus the fix that stops the next reader having to do
+this by hand.
+
+**The sweep, measured.**
+
+| what | measured |
+| --- | --- |
+| ledger rows after the parser fix | 272 |
+| …from modules that were invisible until today | **42** |
+| …used **nowhere at all** — not by production, not by a test, not even inside their own module | **51** |
+| of the "referenced nowhere" bucket | 18 of 91 |
+| of the "named only by a test" bucket | 33 of 181 |
+
+**Built: the ledger states the distinction instead of warning about it.** The file has always carried
+a caveat — *"REFERENCED NOWHERE IS NOT THE SAME QUESTION AS UNTESTED: a helper its own module calls on
+every request lands in the list looking abandoned"* — with `capture.scrubSecrets`, the credential
+scrub, as its worked example. That asked every reader to hold a distinction the file could simply
+compute, and a caveat a reader must remember is a caveat a reader forgets. Each row now carries
+_(its own module uses it)_ or does not, computed from the module body **with the export block cut off**
+(left in, every name scores once and the column would say "used" about all 272). The two readings need
+opposite next steps: a marked row is live and only looks abandoned — judge it with a mutation, never
+with this list; an unmarked row is the sharp case, and §2.126b's `partitionReadable` was one.
+
+**The one real defect the sweep found: `lenderprice/client.js :: enrichZip`.**
+
+* Its section heading read **"zip → county / limits / AMI"**. The body fetches ONE endpoint,
+  `mortgageLimitByZip`, and returns `{ zip, mortgageLimit }`. It resolves no county and no area median
+  income, and never did — two of the three things it advertised.
+* **Nothing calls it.** Zero references in `src/`, zero in `scripts/`. The mortgage limit is never
+  fetched and no quote has ever carried one.
+* Why it matters: *"do we enrich the ZIP?"* is a question somebody audits, this is the function they
+  find, and the comment answered it wrongly. **The county is fine** — it comes from `./zip-county.js`,
+  an offline Census ZCTA table wired into `search-model` and `ppe/lp-agreement-legs` and used on every
+  priced scenario, depending on no vendor call at all. That was checked before anything was claimed.
+* The heading is corrected to say exactly what the function does and that nothing calls it.
+
+**Left in place, not deleted, and not wired — OPEN OWNER QUESTION.** Whether a conforming loan limit
+belongs anywhere near a non-QM DSCR quote is a lending question, not a code question. Wiring it would
+also spend a live vendor request per quote. Both directions are the owner's call.
+
+Two more rows were traced to their answer rather than labelled: `run-store.partitionReadable` (§2.126b
+wired the readability DECISION through `agreement-provenance.recordIsReadable`; this remains the
+store's own convenience wrapper, driven by its suite) and `lp-container-partition.isContainerPartitionReason`
+(a boolean wrapper over `classifyReason`, which IS the definition and IS called by
+`disqualifier-reconciler` and `disqualify-crosswalk` on the live path — nothing dark behind it).
+
+**Evidence.** `scripts/test-lt-export-reachability-gate.js` section 9 (G31–G35; suite 32 → 37
+assertions). Six mutations run (Y1–Y4, Y2b, Y3b); all now caught.
+
+**Two mutations proved nothing first time round, and both are recorded.** Y3 (stop rendering the
+marker) passed because the guard asked whether the marker appeared *anywhere* — and the header prose
+names the marker in order to explain it. Y2 (count internal use over the whole file, export block
+included) passed because a name defined inside the export block still scores one, so "some row lacks
+the mark" stayed true. The guard is now pinned to two NAMED rows with opposite known answers —
+`capture.scrubSecrets` marked, `run-store.partitionReadable` unmarked — and both mutations are caught.
+In both cases the test was restructured; neither time was the code loosened.
+
+**Full suite:** 191/191 LT PPE suites, all 34 database-backed proven against a real Postgres, all seven
+gates green.

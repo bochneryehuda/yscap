@@ -451,9 +451,22 @@ async function apiGet(path, { retryOn401 = true } = {}) {
   return { ok: true, data: r.json != null ? r.json : r.text };
 }
 
-// ---- enrichment (blueprint step 3): zip → county / limits / AMI ------------
-// These are the confirmed lookup endpoints seen in the login HAR. companyId/userId come
-// from the session. All read-only.
+// ---- enrichment (blueprint step 3): the CONFORMING MORTGAGE LIMIT for a ZIP ------------
+//
+// ⛔ THE HEADING HERE USED TO READ "zip → county / limits / AMI" AND TWO OF THE THREE WERE NEVER TRUE
+// (§2.126d). The body fetches ONE endpoint — `mortgageLimitByZip` — and returns `{ zip, mortgageLimit }`.
+// It resolves no county and no area median income, and it never did. That matters because "do we
+// enrich the ZIP?" is a real question somebody audits, this is the function they find, and the comment
+// answered it wrongly. The COUNTY comes from `./zip-county.js` — an offline Census ZCTA table, wired
+// into `search-model` and `ppe/lp-agreement-legs` and used on every priced scenario. Nothing about the
+// county depends on this function or on the vendor being reachable.
+//
+// ⛔ AND NOTHING CALLS THIS. Measured 2026-08-19: zero references in `src/`, zero in `scripts/` — not
+// production, not a test. So the mortgage limit is never fetched, and no quote has ever carried one.
+// It is left in place rather than deleted because whether a conforming loan limit belongs in a
+// non-QM DSCR quote is a LENDING question, not a code question, and this file does not get to answer
+// it (see docs/longterm/LENDER-PRICE-PARITY-STATUS.md §2.126d — open owner question). Read-only, and
+// a live vendor call, so wiring it would also spend a request per quote.
 async function enrichZip(zip, { loanAmount = 0, units = 1 } = {}) {
   const s = await getSession();
   if (!s.ok) return { ok: false, ...s };
