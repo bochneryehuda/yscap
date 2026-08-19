@@ -7727,3 +7727,75 @@ property rather than being deleted — its C1 now names `magnitude`, and two new
 conversion is reachable from exactly the four adjustment sites.
 
 182/182 suites, 33 database-backed. All seven gates green.
+
+---
+
+## §2.118 — the free door nobody tested, and the census the console could not see
+
+Two things closed together, and the second is why the first was worth doing now.
+
+### The door had no test
+
+`GET /rate-sheets/:id/preflight` is what a rate-sheet writer presses BEFORE spending ~299 vendor calls.
+`check-lt-ppe-route-tests.js` — the gate that asks which LT PPE doors a suite actually invokes — had
+been naming it as untested, and it was the last one on that list. It now has one, and the gate reports
+**every door invoked by a suite, 0 recorded as exceptions.**
+
+### The console had the same blind spot the CLI had
+
+§2.115 built the priced census for the hand-run paid CLI; `docs/longterm/LT-UNREACHED.md` then recorded
+what would wire the module — *"the agreement RUN ROUTE adopting it beside the free pre-flight it already
+calls, since the console has the same blind spot the CLI had"*. It does now. The pre-flight returns a
+`pricedCensus`: which scenarios our own sheet prices, **broken down by the battery's own axes**, plus the
+scenarios the battery itself labels ineligible that our sheet prices anyway — the finding that surfaced
+§2.116. A bare total hides the case that matters: a sheet refusing the whole of one axis reads exactly
+like one refusing a scattering.
+
+**It REPORTS; it does not NARROW.** The ≥200-scenario rule is the owner's, and a route that quietly
+measured 24 scenarios and recorded a verdict would be answering a different question than the gate asks.
+Narrowing stays a deliberate flag on the CLI (`--priced-probe`). The ledger row is struck, and the
+reachability check caught it the moment the wiring landed — *"a ledger that overstates what is unwired is
+one nobody trusts"* — which is that guard working in the direction that is easy to forget.
+
+### The two halves of one response must agree
+
+The pre-flight is a REFUSAL test; the census answers what a paid run can TEACH us. They share ONE verdict
+definition (`classifyOursQuote`, §2.115), so a response whose two halves disagreed would mean the
+definition had been forked. Section C asserts the reconciliation on the same response, in both
+directions — same priced count, the pre-flight's single unpriceable bucket equal to the census's two, and
+its declines equal to the census's declines plus its errors (the pre-flight folds an unreadable answer in
+with the declines; the census calls it an error, and that difference is stated rather than smoothed over).
+
+### The anti-vacuous half, which took a real declining sheet
+
+A census that reports the same thing on a healthy sheet and on one that prices nothing is worth less than
+none. The suite therefore builds a SECOND sheet carrying a program-level eligibility rule no loan can
+satisfy — written straight into `lt_ppe_rule`, the table the engine is handed — and proves the two
+answers genuinely differ: **305 priced against 0**, every scenario in the DECLINED bucket rather than
+lost, and the reason reported in the rule's own words.
+
+### It can never break the door
+
+`pricedCensus` is best-effort: the door's job is the refusal test, so a census that cannot be built is
+reported ABSENT with its reason and never a silent blank. Proven by making the probe THROW and
+re-requiring the route on top of it — reading the `try/catch` would prove only that a `try/catch` is
+written there.
+
+**And a missing census had to read as failed assertions, not a stack trace.** The first mutation
+(dropping `pricedCensus` from the response) killed the suite half-way with a TypeError, which prints like
+a suite that passed and stopped. The sections now guard on the census being present and report each
+dependent claim as *"unmeasurable: there is no census"*, so the same mutation yields **six named failures
+and no crash**.
+
+### What it is measured by
+
+`scripts/test-lt-ppe-preflight-route-db.js` — 29 assertions, real HTTP handlers against a real Postgres,
+with the Lender Price client stubbed **so that touching it is detectable** (this door is free, and "it
+did not call upstream" is asserted rather than assumed). **Mutation-proven three ways**: the census
+dropped from the response, its try/catch removed, and the candidate set no longer excluding the
+scenarios the battery expects to be refused.
+
+183/183 suites, 34 database-backed. Six gates green; `check-lt-export-reachability` is advisory and
+reports a pre-existing drift (23 dark exports with no recorded reason, and one recorded row that is no
+longer dark) — its own item, not slipped in beside this one. The one row THIS work made stale
+(`client.mapPrepay`, now driven by the §2.117 suite) is struck here.

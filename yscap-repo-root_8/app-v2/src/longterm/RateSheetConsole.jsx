@@ -410,6 +410,36 @@ export default function RateSheetConsole() {
                 {!preflight.preflight.deadRules.ran && (
                   <div style={{ marginTop: 6 }}>{preflight.preflight.deadRules.why}</div>
                 )}
+                {/* WHICH scenarios our sheet prices, by the battery's own axes (§2.115). A total alone
+                    hides the case that matters: a sheet refusing the whole of one axis reads the same
+                    as one refusing a scattering. */}
+                {preflight.pricedCensus && (
+                  <div style={{ marginTop: 8 }}>
+                    <div>
+                      A paid run could get a PRICED comparison out of {preflight.pricedCensus.candidates} of
+                      {' '}{preflight.pricedCensus.scenarios} scenario{preflight.pricedCensus.scenarios === 1 ? '' : 's'}.
+                    </div>
+                    <div style={{ marginTop: 4 }}>
+                      {Object.entries(preflight.pricedCensus.byGroup)
+                        .map(([g, v]) => `${g} ${v.priced}/${v.total}`).join(' · ')}
+                    </div>
+                    {/* Either the battery's label is wrong or this sheet is missing a rule — the question
+                        that surfaced §2.116. Never dropped in silence. */}
+                    {preflight.pricedCensus.pricedLabelledIneligible.length > 0 && (
+                      <div style={{ marginTop: 6, color: CAUTION }}>
+                        Priced anyway, though the battery expects them to be refused:
+                        {' '}{preflight.pricedCensus.pricedLabelledIneligible.map((f) => f.label).join(', ')}
+                        {' '}— either the label is wrong or this sheet is missing a rule.
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* Absent, with the reason — never a silent blank that reads as "nothing to report". */}
+                {!preflight.pricedCensus && preflight.censusError && (
+                  <div style={{ marginTop: 6, color: CAUTION }}>
+                    The priced-by-axis census could not be built: {preflight.censusError}
+                  </div>
+                )}
               </div>
             )}
 

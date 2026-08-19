@@ -183,11 +183,26 @@ recorded as §2.51 in `LENDER-PRICE-PARITY-STATUS.md` and is not answered there.
 (the read and draft doors call it), so it does not belong on this ledger; what is missing is a decision,
 not a caller.
 
+## The one the priced probe closed — now wired
+
+**STRUCK OFF 2026-08-19: `agreement-priced-probe.js` IS WIRED NOW.** Its row said what would wire it —
+*"the agreement RUN ROUTE adopting it beside the free pre-flight it already calls, since the console has
+the same blind spot the CLI had"* — and `GET /rate-sheets/:id/preflight` now does exactly that, returning
+a `pricedCensus`: which scenarios our own sheet prices, broken down by the battery's own axes, plus the
+scenarios the battery itself labels ineligible that our sheet prices anyway (the finding that surfaced
+§2.116). The check caught the row the moment the wiring landed and refused to let it stand — *"a ledger
+that overstates what is unwired is one nobody trusts"* — which is the guard working in the direction
+that is easy to forget.
+
+Note what was NOT done, because it would have been the wrong shape: the census REPORTS on the paid run's
+door, it does not NARROW the battery there. The ≥200-scenario rule is the owner's, and a route that
+quietly measured 24 scenarios and recorded a verdict would be answering a different question than the one
+the gate asks. Narrowing stays a deliberate flag on the hand-run CLI (`--priced-probe`).
+
 ## The ledger
 
 | Module | Why it is not wired yet | What would wire it |
 | --- | --- | --- |
-| `src/longterm/ppe/agreement-priced-probe.js` | **Deliberately unwired, and it IS run.** It is the pre-pass behind `scripts/test-lt-lp-agreement-run.js --priced-probe N`, the hand-run paid-battery CLI, and it exists because every live run so far reported `agreedPriced 0` — the probe file those runs use contains only loans our own sheet declines, so the only agreement available was a both-decline (§2.115). It is PURE and offline (`quoteProgram` never touches the network), so it costs nothing to run before the first paid call. It does not decide anything on its own: the verdict comes from the ONE classifier `agreement-preflight.classifyOursQuote`, which IS in the boot graph. | The agreement RUN ROUTE (`POST /api/lt/ppe/rate-sheets/:id/agreement/run`) adopting it beside the free pre-flight it already calls — the console has the same blind spot the CLI had, and would gain the same census plus a spread probe for free. |
 | `src/longterm/ppe/program-audit-command.js` | **Deliberately unwired, and it IS run.** It is the body of the offline operator command `scripts/lt-ppe-program-audit.js`, which starts it as its own process — so nothing the server boots requires it, by design. It lives here rather than in `scripts/` because Long-Term back-end code may live nowhere else, and the launcher imports nothing so no RTL file gains a Long-Term dependency. | Nothing should. If the audit is ever wanted *inside* the product (a scheduled run, an admin screen), that surface would require it — and this row comes off then. |
 | `src/longterm/ppe/canary-cron-command.js` | **Deliberately unwired, and it IS run — on a schedule.** It is the body of the scheduled daily Lender Price check the owner asked for on 2026-08-18 (7am, 9am, 10am, 11am, 12pm and 4pm Eastern), started as its own process by the Render cron service `ys-capital-lt-canary` through the launcher `scripts/lt-ppe-canary-cron.js`. Nothing the SERVER boots requires it, by design — that is what a scheduled job is. It lives here rather than in `scripts/` because Long-Term back-end code may live nowhere else, and the launcher imports nothing, so no RTL file gains a Long-Term dependency (the `program-audit-command.js` pattern, same reason). | Nothing in `src/` should. If the daily check is ever wanted INSIDE the product — an admin pressing "run it now" from a screen — that surface would require it, and this row comes off then. **Its own suite DOES run it** (`test-lt-ppe-canary-cron-command.js`, spawning it exactly as the launcher does), because "nothing boots it" was being read as "nothing tests it" — and the two defects §2.65 found both lived in this file, unexecuted. |
 | `src/longterm/ppe/disqualify-reconcile.js` | The SCENARIO-level reconciler, and the only thing that judges whether a disagreement is worth raising with Lender Price. | **NOT a duplicate of `disqualifier-reconciler.js`, and this row used to say it was.** Measured: `reconcileScenario(our, lp)` classifies one scenario end to end — `both_eligible` / the disagreement outcomes — crosswalks Lender Price's own decline strings to dimensions, and sets **`ticketWorthy`**, which is the owner's own instruction (*"if anything is not matching Lender Price, tell me and we open a ticket"*). `disqualifier-reconciler.reconcileDisqualifiers(ours, authority)` answers a DIFFERENT question at a different granularity — a per-LAYER itemisation of two verdicts it is handed — and it is the one the agreement run calls. Neither covers the other. **Retiring this file would delete the only implementation of the ticket judgement**, so the earlier "keep or retire" framing was wrong and is withdrawn. It is unwired because the live-Lender-Price classification path it belongs to cannot run until the vendor login is present in this environment's settings. |

@@ -109,6 +109,7 @@ const ratesheetAgreement = require('../ppe/ratesheet-agreement');
 const agreementScenarios = require('../ppe/agreement-scenarios');
 const lpAgreementLegs = require('../ppe/lp-agreement-legs');
 const agreementPreflight = require('../ppe/agreement-preflight');
+const pricedProbe = require('../ppe/agreement-priced-probe');
 const programRegistry = require('../ppe/program-registry');
 const agreementScenarioGenerator = require('../ppe/agreement-scenario-generator');
 const ratesheetCells = require('../ppe/ratesheet-cells');
@@ -3132,6 +3133,49 @@ async function rateSheetPreflightRoute(req, res) {
     battery, ours: oursLeg, pppDescriptor: pppDesc, factsOf: lpAgreementLegs.lpScenarioToFacts,
   });
 
+  // ---- THE PRICED CENSUS (§2.115/§2.117) ----------------------------------------------------------
+  // The pre-flight above answers "can our sheet price this battery AT ALL" — a refusal test. This
+  // answers the question that decides what a PAID run can teach us: WHICH scenarios it prices, broken
+  // down by the battery's own axes. Every live run so far reported `agreedPriced 0`, and the cause was
+  // that the scenarios being paid for sat outside the frontier our sheet quotes; a total of "262 of
+  // 305 price" hides that just as effectively as no number at all when the 43 it refuses are the whole
+  // of one axis.
+  //
+  // It also carries the finding that surfaced §2.116: a scenario the battery ITSELF labels ineligible
+  // that our sheet prices anyway. That is either a wrong label or a missing rule, and it is named here
+  // rather than left for somebody to notice.
+  //
+  // TWO PASSES OVER THE SAME BATTERY, deliberately. The VERDICT has one definition
+  // (`agreement-preflight.classifyOursQuote`, which both read), so they cannot disagree; what differs
+  // is the bucketing and the report. Measured: the second pass is ~40 ms of pure CPU on the 305-scenario
+  // battery and makes no vendor call, which is not worth restructuring two reports to share.
+  //
+  // BEST-EFFORT: this door's job is the refusal test above, so a census that cannot be built is
+  // reported as absent and never breaks the answer.
+  let pricedCensus = null;
+  let censusError = null;
+  try {
+    const sel = await pricedProbe.selectPricedProbe(battery, oursLeg);
+    pricedCensus = {
+      scenarios: sel.scenarios,
+      priced: sel.pricedTotal,
+      // What a paid run could actually get a PRICED comparison out of — the priced set minus the
+      // scenarios the battery itself expects to be refused.
+      candidates: sel.candidates,
+      declined: sel.declined,
+      incomplete: sel.incomplete,
+      noRungs: sel.noRungs,
+      errors: sel.errors,
+      byGroup: sel.byGroup,
+      declineReasons: sel.declineReasons,
+      // Named, never silently dropped — see §2.116.
+      pricedLabelledIneligible: sel.pricedLabelledIneligible,
+      lines: pricedProbe.describeProbe(sel),
+    };
+  } catch (e) {
+    censusError = String((e && e.message) || e).slice(0, 160);
+  }
+
   return res.json({
     ok: true,
     scope: found.scope,
@@ -3139,6 +3183,9 @@ async function rateSheetPreflightRoute(req, res) {
     // Whether the PAID run would start, said plainly — this door exists to be read before pressing it.
     wouldRun: out.ok,
     preflight: out,
+    // WHICH scenarios our sheet prices, by axis. Absent (with the reason) rather than silently empty.
+    pricedCensus,
+    ...(censusError ? { censusError } : {}),
     scenarios: battery.length,
     truncated: all.length > battery.length ? all.length - battery.length : 0,
     pppLayer: { asked: ppp.asked, investor: ppp.investor, ...(ppp.asked ? {} : { reason: ppp.reason, note: ppp.note }) },

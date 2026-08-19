@@ -18,7 +18,7 @@ striking it here in the same commit.
 against the definition instead of retyping it, an operator command, a capability written ahead of its
 caller. A row is an invitation to say which — that is what the reason field is for.
 
-## Referenced nowhere at all (145)
+## Referenced nowhere at all (144)
 
 Not by production code and not by a test. Nothing asks for these, so nothing would notice if one were
 wrong.
@@ -44,7 +44,6 @@ wrong.
 - `lenderprice/client.js :: enrichZip`
 - `lenderprice/client.js :: fetchDefaultSearch`
 - `lenderprice/client.js :: fetchSmoRegistry`
-- `lenderprice/client.js :: mapPrepay`
 - `lenderprice/client.js :: mapPropertyType`
 - `lenderprice/client.js :: reauthenticate`
 - `lenderprice/client.js :: requireLiveFoundation`
