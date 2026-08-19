@@ -244,5 +244,13 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
 
   const out = arg('--out');
   if (out) { fs.writeFileSync(out, JSON.stringify({ summary, results }, null, 2)); console.log(`\n  full report → ${out}`); }
+  // ⛔ WAIT FOR THE RAW CAPTURES BEFORE EXITING. The sink writes off the event loop so pricing is never
+  // blocked by a 173 MB gzip, which means a script that exits the moment its last scenario returns can
+  // exit before the bytes it just PAID Lender Price for have landed. This is the caller the contract
+  // was written for. It is inert (and instant) when LP_CAPTURE_DIR is unset, and it never throws.
+  const flushed = await client.capture.flush({ timeoutMs: 120000 });
+  if (flushed && flushed.waited) {
+    console.log(`  raw captures  ${flushed.waited} written${flushed.timedOut ? ' — TIMED OUT waiting, some may be missing' : ''}`);
+  }
   process.exit(summary.gateMet ? 0 : 1);
 })().catch((e) => die(4, `agreement run failed: ${e && e.stack || e}`));

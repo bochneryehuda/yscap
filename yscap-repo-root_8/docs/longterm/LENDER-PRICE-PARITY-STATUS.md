@@ -6829,3 +6829,86 @@ Deephaven program over the REAL battery rather than a hand-written fixture, so t
 rot into a story about a sheet nobody prices.
 
 173/173 suites, 33 database-backed. All seven gates green.
+
+### §2.109 — SAVE WHAT THE VENDOR ACTUALLY SENT, COMPRESSED (owner-directed standing ask, 2026-08-19)
+
+The owner's standing instruction on the mirror: *"Save all the data that is coming back, compress the
+data somewhere in the logs."* Until now every paid Lender Price call returned a payload we parsed and
+then **threw away**, so every later question about it cost another paid call — and this window is three
+consecutive proofs of that cost:
+
+- **Task #80** ("how does Lender Price pick the DSCR band program?") was answered out of files somebody
+  happened to have saved by hand into a scratch directory. Without them it was a fresh paid battery.
+- **§2.107's re-measurement** could not be done from the stored REPORT, because a report keeps
+  CONCLUSIONS and not EVIDENCE — the reconstruction was lossy and had to be discarded, and the answer
+  cost a live re-run.
+- **§2.108's defect** was found only by re-running the whole battery through the real engine to see
+  what our own side actually says.
+
+`src/longterm/lenderprice/capture.js` is the sink: a gzipped, content-addressed copy of every raw
+priced payload and every disqualify tree, with a one-line index entry per sighting. Run the battery
+once, then ask it questions offline as many times as you like.
+
+**⛔ IT NEVER CAPTURES A CREDENTIAL, AND THAT IS ENFORCED TWICE.** The auth/token exchange — the one
+call whose body carries the password and the client secret — is not a capturable KIND at all, so it
+cannot be reached even by a caller who wants to; and a scrub of credential-shaped keys runs anyway on
+what IS capturable. **Either guard alone is one step from a leak**: an allowlist alone is one vendor
+change away (a token echoed inside a pricing response), a scrub alone is one forgotten key name away.
+The client-side wiring is pinned by a source assertion that it hands the sink `'price'` and
+`'disqualify'` and nothing else, ever.
+
+**IT MAY NEVER FAIL, SLOW OR CHANGE A RUN.** A full disk, an unwritable path, a circular payload — each
+is a NAMED skip, never a throw. This is a bystander to pricing, permanently.
+
+**AND THE EXPENSIVE HALF IS OFF THE EVENT LOOP — a correction made before this shipped.** The first cut
+called `zlib.gzipSync` inline. On a 173 MB disqualify tree that blocks the whole process for SECONDS,
+every other request on the box included — so the module's own "never slow a run" header would have been
+a claim I already knew to be false. Compression and the disk write now go to `zlib.gzip` +
+`fs.promises` (threadpool); `capture()` does only the cheap decisions inline and hands back a handle.
+The one remaining synchronous step, `JSON.stringify`, is stated rather than hidden: it cannot be split
+without a streaming serializer, it is the same serialization the caller's own parse already paid, and
+it is roughly an order of magnitude cheaper than the gzip it replaced. The guard is STRUCTURAL — the
+suite asserts this module never calls the synchronous compressor at all — because a wall-clock
+threshold on a shared box is a flaky test that eventually gets deleted, taking the guard with it.
+
+**WHICH MAKES `flush()` PART OF THE CONTRACT.** Moving the write off the loop means a process that
+exits the moment its last scenario returns can exit before the bytes it just PAID for have landed. The
+paid agreement runner awaits `client.capture.flush()` before `process.exit`, and the suite pins both
+that it does and that the flush comes FIRST. A long-running server never needs it.
+
+**BOUNDED, AND THE INDEX OUTLIVES THE BYTES.** `LP_CAPTURE_MAX_MB` (default 2 GB) caps the directory
+and evicts oldest-first — one Deephaven disqualify tree is **173 MB raw**, and this environment's
+writable space is a fixed per-session allowance, so a sink that can fill a disk is a sink that takes
+the system down. An evicted row is still reported from the index as `present: false`: *"we captured
+this and it has aged out"* is a different fact from *"we never had it"*, and somebody hunting for
+evidence has to be able to tell them apart.
+
+**CONTENT-ADDRESSED, SO A RETRY COSTS NOTHING.** The name is the sha256 of the raw bytes, so a retry,
+a re-poll and a re-run of the same scenario resolve to ONE file. The index still records every
+sighting — the same bytes at two moments is itself a fact — but the payload is stored once. The write
+is renamed into place, so a crash mid-write can never leave a truncated file sitting under a name that
+CLAIMS to be the sha256 of its contents.
+
+**OFF UNLESS A DIRECTORY IS NAMED** (`LP_CAPTURE_DIR`). Deliberate: writing hundreds of megabytes into
+a live container is not something to start doing because a module was imported, and this is the shape
+that lets the paid battery switch it on for itself while production stays untouched. **Nothing is
+capturing yet** — the switch is built and proven, and naming a directory is what starts it.
+
+A capture is findable by **what it was about**, not only by its hash: an allowlisted subset of the
+scenario's deal-shape facts rides in the index beside it. An allowlist rather than the whole scenario
+object, because a scenario is a request body's raw material and can pick up whatever a caller put on
+it — an allowlist is the only shape that cannot start capturing something new by accident.
+
+`scripts/test-lt-ppe-raw-capture.js` — 62 assertions, **mutation-proven eight ways**: `'token'` added
+to the capturable kinds (2 assertions), the scrub removed (5), the eviction dropped (3), the
+directory-required guard bypassed (5), the client made to hand it a credential-bearing kind (2), the
+blocking `gzipSync` restored (1), `flush()` made to wait for nothing (10), and the runner's flush
+removed (2).
+
+**TWO OF ITS OWN ASSERTIONS WERE PROVEN WORTHLESS AND FIXED.** The eviction section first passed
+VACUOUSLY — its filler compressed away, so the budget was never reached and E1/E5 asserted nothing;
+the payloads are now hashed hex, deterministic and genuinely incompressible. And the flush mutation
+first CRASHED the suite rather than failing it (a crash is not proof — the §2.106 rule), so the
+index-reading assertions read defensively and the same mutation now produces ten named failures.
+
+174/174 suites, 33 database-backed. All seven gates green.

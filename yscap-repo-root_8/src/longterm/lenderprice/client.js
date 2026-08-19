@@ -42,6 +42,11 @@ const { buildSearch, validateScenario, smoRegistryFromList, _internals: searchMo
 const disqStore = require('./disqualify-store');
 const sharedMapPurpose = searchModelInternals.mapPurpose;
 
+// The RAW-PAYLOAD SINK. Inert unless LP_CAPTURE_DIR names a directory, and structurally unable to
+// capture the token exchange (see capture.js). Every call below is best-effort by contract — a
+// capture failure may never change what a caller gets back.
+const rawCapture = require('./capture');
+
 const AUTH_BASE = (process.env.LP_AUTH_BASE || 'https://auth.digitallending.com').replace(/\/+$/, '');
 const API_BASE = (process.env.LP_API_BASE || 'https://api.digitallending.com').replace(/\/+$/, '');
 const ORIGIN = (process.env.LP_ORIGIN || 'https://yscapgroup.digitallending.com').replace(/\/+$/, '');
@@ -863,6 +868,22 @@ function validatedScenario(scenario) {
 // default, and byte-identical to every search this connector has ever sent — or `'mirror'`, which
 // forces none of the five profile-identity fields and lets the scenario decide. An unknown name falls
 // back to `'dscr'`, so a typo narrows rather than widens what we search.
+// The scenario facts worth keeping BESIDE a captured payload, so a capture can be found later by what
+// it was about rather than only by its hash. Deliberately a NAMED SUBSET and not the whole scenario:
+// a scenario object is a request body's raw material and can pick up whatever a caller put on it, and
+// an allowlist is the only shape that cannot start capturing something new by accident. Nothing here
+// identifies a borrower — these are deal shape facts.
+const CAPTURE_SCENARIO_KEYS = Object.freeze([
+  '_label', '_group', 'purpose', 'state', 'zip', 'county', 'fico', 'loan', 'value', 'dscr',
+  'term', 'prepayTerm', 'units', 'propertyType', 'occupancy', 'citizenship', 'loanType',
+]);
+function captureScenarioMeta(scenario) {
+  const out = {};
+  if (!scenario || typeof scenario !== 'object') return out;
+  for (const k of CAPTURE_SCENARIO_KEYS) if (scenario[k] !== undefined) out[k] = scenario[k];
+  return out;
+}
+
 async function price(scenario, opts = {}) {
   const v = validatedScenario(scenario);
   if (!v.ok) return v;
@@ -880,6 +901,7 @@ async function price(scenario, opts = {}) {
   // response assigned, so a later status poll re-posts it with only cachedDisqualified flipped +
   // that requestId, hitting the SAME computation.
   const searchKey = storeKickoff(f.url, r.request, requestIdOf(r.raw));
+  rawCapture.capture('price', r.raw, { searchKey, scenario: captureScenarioMeta(scenario), requestId: requestIdOf(r.raw) });
   return { ok: true, raw: r.raw, request: r.request, searchKey, provenance: foundationProvenance(f), recovered: !!r.recovered };
 }
 
@@ -970,6 +992,7 @@ async function pollDisqualified(scenario) {
   const r = await postSearchRaw(f.url, f.session, body, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
   if (!r.ok) return { ...r, request: body };
   if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, request: body };
+  rawCapture.capture('disqualify', r.raw, { scenario: captureScenarioMeta(scenario), via: 'priceDisqualified' });
   return { ok: true, ready: true, raw: r.raw, request: body };
 }
 
@@ -1017,6 +1040,7 @@ async function pollDisqualifiedByKey(searchKey) {
   // Durable L2 (best-effort): persist the materialized result so ANOTHER instance (or this one after
   // a restart) serves it from cache instead of re-downloading the large tree.
   disqStore.saveResult(searchKey, parsed, entry.rawSummary).catch(() => {});
+  rawCapture.capture('disqualify', r.raw, { searchKey, via: 'pollDisqualified' });
   return { ok: true, ready: true, searchKey, parsed, rawSummary: entry.rawSummary, raw: r.raw };
 }
 // Test/introspection helper — is a searchKey currently stored (kicked off, not expired)?
@@ -1711,6 +1735,9 @@ module.exports = {
   hasStoredSearch, searchKeyFor, parse, parseFull, parseDisqualified, summarizeRaw, pricingReadiness,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
   loginSelfTest,
+  // The raw-payload sink, re-exported so a caller that ends a run — every CLI here — can await
+  // `client.capture.flush()` without reaching past the client for it.
+  capture: rawCapture,
   _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, foundationReadiness, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery,
     renewalPlan, mergeRefreshed, sessionFromTokenBody, refreshSession, authDiagnostics, resetTokenState, reauthenticate, errText, classifyUpstreamError, fetchPpeUserId, invalidatePpeUser,
     refreshBackoffMs, expireRefreshBackoff, REFRESH_GRANT_BACKOFF_MS, REFRESH_GRANT_BACKOFF_MAX_MS },

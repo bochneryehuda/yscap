@@ -33,6 +33,8 @@ content type, and form fields as the browser.
 | `LP_DEFAULTSEARCH_PATH` | | `/rest/v1/lp-ppe-integration/pricing/defaultSearch/{companyId}/{userId}` | Live default-search model to clone. Falls back to the captured `search-base.json` if unavailable. |
 | `LP_SMO_PATH` | | `/rest/v1/lp-ppe-integration/pricing/smo/{companyId}` | Live special-mortgage-option registry (current `{id,name}`). Falls back to captured ids. |
 | `LP_FOUNDATION_TTL_MS` | | `1800000` | How long the fetched default-search + SMO registry are cached (30 min). |
+| `LP_CAPTURE_DIR` | | (unset — **off**) | Directory for the RAW-PAYLOAD SINK (`capture.js`). Unset means nothing is captured at all. Naming a directory turns it on: every priced payload and every disqualify tree is written there gzipped and content-addressed, with an `index.jsonl` line per sighting, so a battery can be asked questions offline instead of re-paying Lender Price. **The auth/token exchange is structurally uncapturable** and credential-shaped keys are scrubbed from what is; see the header of `capture.js`. Point it at a disk you are happy to fill — one Deephaven disqualify tree is 173 MB raw. |
+| `LP_CAPTURE_MAX_MB` | | `2048` | Directory budget for the sink. Over budget, the OLDEST payloads are evicted; the index keeps its row and reports the bytes as gone. Ignored when `LP_CAPTURE_DIR` is unset. |
 
 ## How the searchRaw body is built (the 500 fix)
 
