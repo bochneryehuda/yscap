@@ -86,8 +86,12 @@ const OUR_DSCR_REASON = 'Minimum DSCR 0.75';
 // the loan, while that sibling priced it on the same request — so it is now set aside rather than
 // scored (lp-container-partition.js). Using it here would teach the suite that a partition sentence
 // AGREES with a real refusal of ours, which is the exact false agreement §2.107 exists to prevent.
-// This is another real reason captured live 2026-08-18 that the crosswalk resolves to `dscr`.
-const LP_DSCR_REASON = 'DSCR >= 1.00, Minimum Loan Amount $75,000';
+// ⛔ AND NOT `"DSCR >= 1.00, Minimum Loan Amount $75,000"`, which this suite used from §2.107 until
+// §2.111. That sentence's leading DSCR clause is a CONDITION — the rule APPLIES at DSCR 1.00 and up
+// and REFUSES on the loan amount — so the clause reader classifies it as `loan_amount`, and pairing it
+// with a DSCR refusal of ours would be exactly the cross-axis false agreement this file exists to
+// prevent. This is a live-captured reason whose refusal genuinely is about DSCR.
+const LP_DSCR_REASON = 'Minimum DSCR .75%';
 const LP_FICO_REASON = 'DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%';
 const run = (ours, lp) => runOne(SC, ours, lp, OPTS);
 

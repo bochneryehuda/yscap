@@ -22,6 +22,20 @@
  * come from the compiled rule, the dimension from the vendor's `adjType`, through the shared
  * `factsForDimension` so the cash-out alias is honoured once.
  *
+ * ⛔ §2.111 MOVED BOTH OF THE LIVE PAIRS ABOVE OUT OF `related` AND INTO `agreements`, AND THAT IS AN
+ * IMPROVEMENT, NOT A WEAKENING. `related` was the honest answer to a question we could not read: the
+ * vendor's `adjType` names the fact Lender Price FILES a rule under, and on a COMPOUND sentence that is
+ * the first clause's fact rather than the fact the rule refuses on. The clause reader
+ * (`lp-decline-sentence.js`) now reads the sentence as a sentence — conditions, then the one
+ * requirement whose violation declines — so `"DSCR >= 1.00, Minimum Loan Amount $75,000"` classifies as
+ * `loan_amount` (which is what it refuses on) instead of `dscr` (which is merely when it applies). Both
+ * sides then name the SAME dimension and pair through the ORDINARY agreement path — no new pairing
+ * rule, no loosened threshold, nothing about `related` relaxed. The pairing bar is unchanged; what
+ * changed is that the vendor's side finally states the right dimension.
+ *
+ * The `related` mechanism is NOT retired and is still exactly as strict — see section R, where our
+ * loan-amount rule and a genuine LP DSCR refusal still cannot be scored as agreeing.
+ *
  * ⛔ RELATED IS NOT AGREEMENT, and that is the load-bearing decision. Nearly every Deephaven rule tests
  * `dscr`, so treating a gate-fact overlap as agreement would merge genuinely different refusals and
  * manufacture a pass. It makes the layer INDETERMINATE — the honest "we cannot tell" — and the scenario
@@ -54,22 +68,55 @@ const A1 = rec(
   ourDecline('dhvn_min_loan_ge1', 'Minimum Loan Amount $75,000 (DSCR >= 1.00x)'),
   lpDecline('DSCR >= 1.00, Minimum Loan Amount $75,000', 'SimpleRateAdjustment'),
 );
-ok(rel(A1).length === 1, `A1 the min-loan pair is RELATED — got ${JSON.stringify(rel(A1))}`);
+const a1 = A1.layers.layer2.agreements;
+ok(a1.length === 1, `A1 the min-loan pair AGREES since §2.111 — got ${JSON.stringify(A1.layers.layer2)}`);
+ok((a1[0] || {}).dimension === 'loan_amount',
+  `A2 …on LOAN AMOUNT, the fact the sentence actually refuses on — got ${(a1[0] || {}).dimension}`);
 ok(A1.layers.layer2.onlyOurs.length === 0 && A1.layers.layer2.onlyAuthority.length === 0,
-  'A2 …and neither side is left standing alone (it is no longer a disagreement)');
-ok(A1.verdict === 'indeterminate', `A3 …the verdict is the honest "cannot tell" — got ${A1.verdict}`);
-ok(A1.relatedOnly === true, 'A4 …and the cause is named as the vocabulary gap');
-ok((rel(A1)[0] || {}).via === 'dscr',
-  `A5 …recording WHICH fact paired them, so nobody has to guess — got ${(rel(A1)[0] || {}).via}`);
-ok((rel(A1)[0] || {}).ourDimension === 'loan_amount' && (rel(A1)[0] || {}).lpDimension === 'dscr',
-  'A6 …with BOTH headings kept, because the mismatch is the finding');
+  'A3 …with neither side left standing alone');
+ok(A1.verdict === 'agree', `A4 …and the verdict is a real agreement — got ${A1.verdict}`);
+ok(rel(A1).length === 0 && A1.relatedOnly === false,
+  'A5 …not filed as the vocabulary gap, because there is no longer a gap to report');
+// ⛔ THE PAIRING BAR DID NOT MOVE. This agrees through the ORDINARY same-dimension path — the one that
+// has always defined agreement here — and the ONLY thing §2.111 changed is which dimension the vendor's
+// sentence resolves to. Read off the crosswalk directly so a regression there is named as such rather
+// than surfacing as a mysterious verdict change.
+const { keyToPredicate } = require('../src/longterm/ppe/disqualify-crosswalk');
+const xw1 = keyToPredicate({ rule: 'DSCR >= 1.00, Minimum Loan Amount $75,000', adjType: 'DscrRateAdjustment' });
+ok(xw1.ok && xw1.fact === 'loan_amount',
+  `A6 the sentence itself classifies as loan_amount — got ${xw1.ok ? xw1.fact : 'REFUSED ' + xw1.why}`);
+// Lender Price FILES this sentence under DSCR — its first clause — while it REFUSES on the loan
+// amount. That disagreement IS the §2.111 finding, and it is reported rather than hidden, because a
+// classifier that silently overruled the vendor's own label would give a reader no way to see it.
+ok(xw1.adjTypeAgrees === false,
+  `A7 …and the vendor's own adjType does NOT corroborate it — got ${xw1.adjTypeAgrees}`);
 
 const A2 = rec(
   ourDecline('dhvn_ltv_t1_640_purchase_ge1', 'Max LTV/CLTV 70%: T1 FICO 640–679, purchase/rate-term, DSCR >= 1.00'),
   lpDecline('DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%', 'FicoRateAdjustment'),
 );
-ok(rel(A2).length === 1, `A7 the max-LTV pair is RELATED — got ${JSON.stringify(rel(A2))}`);
-ok(A2.verdict === 'indeterminate' && A2.relatedOnly === true, 'A8 …same verdict, same named cause');
+const a2 = A2.layers.layer2.agreements;
+ok(a2.length === 1 && (a2[0] || {}).dimension === 'ltv',
+  `A8 the max-LTV pair AGREES on LTV — got ${JSON.stringify(A2.layers.layer2)}`);
+ok(A2.verdict === 'agree' && A2.relatedOnly === false, 'A9 …a real agreement, not the vocabulary gap');
+
+// ---- R. THE `related` MECHANISM IS UNCHANGED AND STILL AS STRICT ---------------------------------
+// ⛔ THE SECTION THAT KEEPS §2.111 HONEST. Reading a sentence better must not become "anything both
+// sides said pairs up". Our min-loan rule TESTS `dscr` as a gate, and this is a genuine LP refusal ON
+// dscr — the exact shape the §2.101 comment warns about, because nearly every Deephaven rule tests
+// `dscr` and pairing on a gate fact would merge two different refusals into a manufactured pass. It is
+// still `related`, still INDETERMINATE, still never an agreement.
+const R = rec(
+  ourDecline('dhvn_min_loan_ge1', 'Minimum Loan Amount $75,000 (DSCR >= 1.00x)'),
+  lpDecline('Minimum DSCR .75%', 'DscrRateAdjustment'),
+);
+ok(rel(R).length === 1, `R1 a gate-fact overlap is still only RELATED — got ${JSON.stringify(R.layers.layer2)}`);
+ok(R.layers.layer2.agreements.length === 0, 'R2 …and is NEVER promoted to an agreement');
+ok(R.verdict === 'indeterminate' && R.relatedOnly === true, `R3 …the honest "cannot tell" — got ${R.verdict}`);
+ok((rel(R)[0] || {}).via === 'dscr',
+  `R4 …recording WHICH fact paired them, so nobody has to guess — got ${(rel(R)[0] || {}).via}`);
+ok((rel(R)[0] || {}).ourDimension === 'loan_amount' && (rel(R)[0] || {}).lpDimension === 'dscr',
+  'R5 …with BOTH headings kept, because the mismatch is the finding');
 
 // ---- B. A GENUINE DISAGREEMENT IS STILL A DISAGREEMENT --------------------------------------------
 // The rule that decides this must not become "anything both sides said pairs up". Our min-DSCR rule
@@ -88,11 +135,14 @@ ok(B.relatedOnly === false, 'B4 …never reported as the vocabulary gap');
 // ⛔ NOT `"DSCR >=1.25%  only eligible on this program"`, which this case used until §2.107 — it
 // resolves to `dscr` and so read as an ordinary stand-in, but it was MEASURED to be a statement about
 // Lender Price's own program partition and is now set aside rather than scored. Pairing it with a real
-// refusal of ours would assert the false agreement §2.107 exists to prevent. Another live-captured
-// reason that resolves to `dscr`.
+// refusal of ours would assert the false agreement §2.107 exists to prevent.
+// ⛔ AND NOT `"DSCR >= 1.00, Minimum Loan Amount $75,000"`, which this case used until §2.111 — that
+// sentence's DSCR clause is a CONDITION and it refuses on the loan amount, so since the clause reader
+// it classifies as `loan_amount` (see section A). This is a live-captured reason whose refusal really
+// is about DSCR, so it is a genuine same-dimension stand-in rather than one by accident of parsing.
 const C = rec(
   ourDecline('dhvn_min_dscr', 'Minimum DSCR 0.75'),
-  lpDecline('DSCR >= 1.00, Minimum Loan Amount $75,000', 'SimpleRateAdjustment'),
+  lpDecline('Minimum DSCR .75%', 'DscrRateAdjustment'),
 );
 ok(C.layers.layer2.agreements.length === 1, `C1 a same-dimension pair still AGREES — got ${JSON.stringify(C.layers.layer2)}`);
 ok(rel(C).length === 0, 'C2 …and is not double-counted as related');
@@ -105,7 +155,8 @@ const D = reconcileDisqualifiers(
     { code: 'dhvn_min_loan_ge1', reason: 'Minimum Loan Amount $75,000 (DSCR >= 1.00x)' },
     { code: 'dhvn_state_only', reason: 'made up', dimension: 'state' },
   ] },
-  { ready: true, declined: [{ reasons: [{ rule: 'DSCR >= 1.00, Minimum Loan Amount $75,000', adjType: 'SimpleRateAdjustment' }] }] },
+  // A genuine DSCR refusal: our min-loan rule TESTS dscr as a gate, so it relates without agreeing.
+  { ready: true, declined: [{ reasons: [{ rule: 'Minimum DSCR .75%', adjType: 'DscrRateAdjustment' }] }] },
   { program },
 );
 ok(rel(D).length === 1, 'D1 the relatable pair still relates');
@@ -124,7 +175,7 @@ const E = reconcileDisqualifiers(
     { code: 'dhvn_min_loan_ge1', reason: 'min loan ge1' },
     { code: 'dhvn_max_ltv_lt100', reason: 'max ltv lt1' },
   ] },
-  { ready: true, declined: [{ reasons: [{ rule: 'DSCR >= 1.00, Minimum Loan Amount $75,000', adjType: 'SimpleRateAdjustment' }] }] },
+  { ready: true, declined: [{ reasons: [{ rule: 'Minimum DSCR .75%', adjType: 'DscrRateAdjustment' }] }] },
   { program },
 );
 ok(rel(E).length === 1,
@@ -143,9 +194,12 @@ ok(E.layers.layer2.onlyOurs.length === 1,
   });
   const oursLeg = (code, reason) => async () => ({ eligible: false, ladder: [], declines: [{ code, reason, source: 'base' }] });
 
+  // A gate-fact overlap end to end: our loan-amount rule tests dscr, and this is a real DSCR refusal.
+  // (It was `"DSCR >= 1.00, Minimum Loan Amount $75,000"` until §2.111, which reads that sentence as
+  // the loan-amount refusal it is — so it now AGREES here and could no longer demonstrate the gap.)
   const unpaired = await runOne(SC,
     oursLeg('dhvn_min_loan_ge1', 'Minimum Loan Amount $75,000 (DSCR >= 1.00x)'),
-    lpLeg('DSCR >= 1.00, Minimum Loan Amount $75,000', 'SimpleRateAdjustment'), OPTS);
+    lpLeg('Minimum DSCR .75%', 'DscrRateAdjustment'), OPTS);
   ok(unpaired.incomparableReason === 'decline_reasons_unpaired',
     `F1 the scenario is named for the vocabulary gap, not for unreadable reasons — got ${unpaired.incomparableReason}`);
   ok(unpaired.agree === false, 'F2 …and is NOT scored as an agreement (related is not proof)');

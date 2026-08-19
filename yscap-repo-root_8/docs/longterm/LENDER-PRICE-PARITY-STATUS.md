@@ -7018,3 +7018,121 @@ had in hand, now appear in the artifact that exists to show them.
 longer describes a battery it did not look at.
 
 175/175 suites, 33 database-backed. All seven gates green.
+
+---
+
+## §2.111 — seven of seven live decline sentences crosswalked to a rule nobody wrote (2026-08-19)
+
+**Every distinct decline sentence the 2026-08-19 live run returned produced a wrong predicate.** Not
+some. All seven.
+
+| Lender Price sentence (live) | old predicate | what it means |
+|---|---|---|
+| `DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Max LTV/CLTV 70%` | `fico lte 1` | **dead** — fires for no loan |
+| `DSCR < 1.00 -.75, Purchase RT, Loan Amount =< $1.5 MM, Maximum LTV 75%` | `dscr lte 1000` | over-broad |
+| `DSCR >=1.00, Loan Amount <=$1.5MM: Min FICO 640` | `dscr lte 1000` | over-broad |
+| `Minimum DSCR .75%` | `dscr lt 75000` | **declines every DSCR loan in existence** |
+| `DSCR >= 1.00, Minimum Loan Amount $75,000` | `dscr gte 1000` | **declines the good half of the book** |
+| `DSCR < 1.00 -.75, Loan Amount =< $2.0 MM, Minimum FICO 680` | `dscr lte 1000` | over-broad |
+| `DSCR < 1.00, Minimum Loan Amount $200,000` | `dscr lt 1000` | over-broad |
+
+### The root cause is one sentence read as though it were one clause
+
+`disqualify-crosswalk.keyToPredicate` had two helpers: `inferOperator` scanned the WHOLE string for the
+first operator it recognised, and `firstNumber` took the first number, wherever each happened to sit.
+Lender Price's Deephaven sentences are **compound** — a list of conditions followed by one requirement
+— so **the operator and the threshold routinely came from different clauses.** Line 1 above is the
+purest form: `lte` came from `Loan Amount <= $1.5 MM`, the number came from `DSCR >= 1.00`, and the
+FACT came from the vendor's `adjType`. Three parts of one predicate, sourced from three different
+places, and nothing checked that they belonged together.
+
+Two smaller defects rode along and each is fatal on its own. `firstNumber`'s regex requires a leading
+DIGIT, so `.75` matched the `75` and `Minimum DSCR .75%` became **DSCR < 75.0** — a rule that refuses
+every loan ever written. And the vendor's `$1.5 MM` read as **one dollar fifty**.
+
+**THESE ARE NOT DIAGNOSTICS.** `disqualify-analysis` and `parity-review` put `cross.predicate` straight
+into a suggested overlay rule's `when` — the thing a human is asked to adopt. The suggestion engine's
+entire value is that somebody can trust it, and it was wrong on 7 of 7 measured inputs.
+
+### The grammar, taken from the seven sentences and deliberately closed
+
+```
+sentence := clause ( ("," | ":") clause )*
+```
+
+Every clause but the last is a **CONDITION** — stated as the loan SATISFIES it, so its operator is kept
+exactly as written (`DSCR >= 1.00` means the rule applies at DSCR 1.00 and up, NOT decline there) — and
+the last is the **CONSTRAINT**, a requirement whose VIOLATION declines, so its operator is flipped to
+the failing side (`Maximum LTV 75%` → decline when ltv > 75%). The predicate is the conjunction, which
+is exactly what the sentence says. `src/longterm/ppe/lp-decline-sentence.js` is that reader.
+
+**AND IT REFUSES RATHER THAN APPROXIMATES.** If ANY clause falls outside the grammar the whole sentence
+is refused and surfaced for a human. There is no safe partial read: dropping a CONDITION widens the
+rule (it fires on loans the vendor never refused) and dropping the CONSTRAINT widens it further, so
+**both directions of omission decline good loans**. A refusal costs a human a look; a partial read
+costs a borrower a loan.
+
+**The grammar is CLOSED, which means every token must be accounted for.** Reading a fact word, an
+operator and a number and shrugging at the rest is not a grammar — it is a search, and it says yes to
+prose that means the opposite of what it decodes to. The measured case:
+`"DSCR >=1.25%  only eligible on this program"` yields a tidy `dscr gte 1250` — *decline at DSCR 1.25
+and up*, the best loans on the sheet — when the sentence is Lender Price saying a SIBLING container
+owns the loan and that container prices it on the same request (§2.107). Every recognised token is
+struck out; whatever is left over refuses the clause.
+
+### Two defects were introduced by this fix and caught before it shipped
+
+**The comma.** Splitting on every comma cut `Minimum Loan Amount $75,000` into `$75` + `000`. The
+obvious correction — split only where BOTH sides are non-digits — left
+`DSCR >= 1.00, Minimum Loan Amount $75,000` **whole**, because that comma has a digit on its left. So
+the fix's own first cut reintroduced the exact first-clause defect the module exists to remove. A comma
+is a thousands separator only when it has a digit on **both** sides.
+
+**The residue guard.** Without it the partition sentence decodes cleanly, and the §2.107 finding is
+undone by the module written after it.
+
+### §2.107's gap is closed at the same door
+
+The reconciler already set container-partition sentences aside — but `disqualify-analysis` and
+`parity-review` reach `keyToPredicate` DIRECTLY, so the suggestion engine would have authored *"decline
+every loan with a 1.25-or-better DSCR"* from one. It is now refused inside `keyToPredicate`, on the
+same closed measured list the reconciler uses, so no consumer can miss it.
+
+### What it did to the eligibility comparison — and why this is not a weakened bar
+
+The vendor's `adjType` names the fact Lender Price FILES a rule under, which on a compound sentence is
+usually a CONDITION's fact. So both live pairs that §2.101 could only record as `related` now name the
+same dimension on both sides and pair through the **ordinary same-dimension agreement path**:
+
+| ours | Lender Price | before | after |
+|---|---|---|---|
+| `loan_amount` "Minimum Loan Amount $75,000 (DSCR >= 1.00x)" | "DSCR >= 1.00, Minimum Loan Amount $75,000" | `related` → indeterminate | **agree on `loan_amount`** |
+| `ltv` "Max LTV/CLTV 70%: T1 FICO 640–679, purchase/rate-term, DSCR >= 1.00" | "DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%" | `related` → indeterminate | **agree on `ltv`** |
+
+**No pairing rule was loosened.** `related` is untouched and just as strict — a gate-fact overlap (our
+loan-amount rule tests `dscr`; Lender Price genuinely refuses on `dscr`) is still only `related`, still
+INDETERMINATE, still never an agreement, pinned by its own section in the vocabulary suite. What
+changed is that the vendor's side finally states the dimension its sentence actually refuses on.
+`adjTypeAgrees` is reported beside every reading so the disagreement between the vendor's label and its
+own sentence is visible rather than silently overruled.
+
+**Three existing suites were re-pointed, and in each case at the FIXTURE, never the rule.** They had
+used `"DSCR >= 1.00, Minimum Loan Amount $75,000"` as a stand-in for an LP `dscr` decline — which it
+had appeared to be only because of the defect. Each now uses `"Minimum DSCR .75%"`, a live-captured
+sentence whose refusal genuinely is about DSCR, with a comment saying why the old one moved.
+
+### What it is measured by
+
+`scripts/test-lt-ppe-lp-decline-sentence.js` — 50 assertions, **mutation-proven eight ways**: the naive
+comma split (11 named failures), the residue guard removed (2), the constraint never flipped (24), the
+leading decimal lost (3), the MM multiplier dropped (7), the crosswalk ignoring the clause reader (3),
+the partition refusal removed (2), and the LTV/CLTV shorthand collapsed to one ratio (2).
+
+Section A pins all seven live sentences to expected values **read off the sentences by hand** — a
+fixture generated from the implementation proves only that it agrees with itself. Section C states the
+root cause as an invariant rather than as examples: every leaf's number must be readable from its OWN
+clause. Section I is a source assertion that both suggestion modules still author a rule from
+`cross.predicate`, because that — not the crosswalk being wrong in the abstract — is why the reading
+has to be right.
+
+176/176 suites, 33 database-backed. All seven gates green.

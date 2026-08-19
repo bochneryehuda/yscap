@@ -23,7 +23,14 @@ console.log('LT PPE disqualify crosswalk — offline\n');
 {
   const fico = keyToPredicate({ rule: 'FICO - below 660', adjType: 'FicoRateAdjustment' });
   ok(fico.ok && fico.fact === 'fico' && J(fico.predicate) === J({ fact: 'fico', op: 'lt', value: 660 }), 'FICO - below 660 → fico < 660');
-  ok(fico.confidence === 'strong' && fico.matchedBy === 'adjType', 'FICO mapped strong by adjType');
+  // ⛔ `matchedBy` IS 'sentence', NOT 'adjType', SINCE §2.111 — and the change is the point, not a
+  // cosmetic one. The clause reader now accounts for every token in the sentence before anything else
+  // runs, so the classification comes from what the sentence SAYS, and the vendor's own label is
+  // reported separately as corroboration. It has to be separate: §2.111 measured that on a compound
+  // sentence the adjType names a CONDITION's fact rather than the fact the rule refuses on, so a
+  // `matchedBy: 'adjType'` here would be claiming the wrong thing did the work.
+  ok(fico.confidence === 'strong' && fico.matchedBy === 'sentence', `FICO mapped strong, by the sentence — got ${fico.matchedBy}`);
+  ok(fico.adjTypeAgrees === true, `…and the vendor's own adjType corroborates it — got ${fico.adjTypeAgrees}`);
 
   const cltv = keyToPredicate({ rule: 'Max LTV exceeded / CLTV > 80.0 %', adjType: 'CapAdjustment' });
   ok(cltv.ok && cltv.fact === 'cltv' && J(cltv.predicate) === J({ fact: 'cltv', op: 'gt', value: 80000 }), 'CapAdjustment CLTV > 80.0% → cltv > 80000 (milli-percent)');

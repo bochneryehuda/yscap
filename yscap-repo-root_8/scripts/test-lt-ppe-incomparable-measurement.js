@@ -80,7 +80,10 @@ const ourPriced = (rungs) => async () => ({
 // A REAL captured sentence the crosswalk resolves to `dscr`, so the pair reconciles and the row is
 // SCORABLE. Using a synthetic one here would make the "comparable" control incomparable too, and the
 // contrast this suite is built on would vanish.
-const LP_READABLE = 'DSCR >= 1.00, Minimum Loan Amount $75,000';
+// (It was `"DSCR >= 1.00, Minimum Loan Amount $75,000"` until §2.111, which reads that sentence's
+// leading DSCR clause as the CONDITION it is and classifies it on the loan amount it refuses on — so
+// against a `dscr` decline of ours it stopped reconciling and the control row stopped being scorable.)
+const LP_READABLE = 'Minimum DSCR .75%';
 // ...and a sentence that resolves to NOTHING, which is how a row becomes `decline_reasons_unreadable`.
 // This is the state the live run hit on 2 of 8 scenarios.
 const LP_UNREADABLE = 'Zqx unreadable vendor sentence 12345';

@@ -44,6 +44,9 @@ const ADJTYPE_FACT = {
   CltvRateAdjustment: 'cltv',
 };
 
+const { decodeSentence } = require('./lp-decline-sentence');
+const { classifyReason } = require('./lp-container-partition');
+
 const STATE_CODES = new Set([
   'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY',
   'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND',
@@ -131,6 +134,50 @@ function keyToPredicate(input) {
 
   const dim = adjType && Object.prototype.hasOwnProperty.call(ADJTYPE_FACT, adjType) ? ADJTYPE_FACT[adjType] : null;
 
+  // ⛔ SOME OF THE VENDOR'S "DECLINES" ARE NOT ABOUT THE BORROWER AT ALL, AND THIS IS THE ONE DOOR THEY
+  // ALL COME THROUGH. Lender Price splits one Deephaven DSCR sheet across three CONTAINERS, and the
+  // container that does not own a loan refuses it by saying so — "DSCR >=1.25%  only eligible on this
+  // program" — while a sibling container PRICES the same loan on the same request (§2.107). The
+  // reconciler already sets those aside, but `disqualify-analysis` and `parity-review` do not: they
+  // reach this function directly, and the sentence maps cleanly to `dscr gte 1250`, i.e. a suggested
+  // overlay rule that declines every loan with a 1.25-or-better DSCR — the best loans on the sheet,
+  // refused for a reason that was never about them. Refused HERE so no consumer can miss it, on the
+  // same closed measured list the reconciler uses.
+  if (classifyReason({ rule: reasonText, group: adj.group }).partition) {
+    return { ok: false, needsHumanCrosswalk: false, isContainerPartition: true, reasonText, why: 'container_partition' };
+  }
+
+  // 0) READ THE SENTENCE AS A SENTENCE, FIRST (§2.111). Lender Price's Deephaven decline texts are
+  // COMPOUND — a list of conditions followed by one requirement — and the code below reads a whole
+  // sentence as a single constraint, taking the first operator it finds and the first number it finds
+  // wherever each happens to sit. On all SEVEN distinct decline sentences the 2026-08-19 live run
+  // returned, that produced a predicate nobody wrote: `fico lte 1` (fires for no loan),
+  // `dscr gte 1000` (declines the good half of the book), `dscr lt 75000` (declines every loan, from
+  // ".75" read as 75). These predicates are not diagnostics — disqualify-analysis and parity-review put
+  // them straight into a suggested overlay rule's `when`. The clause reader accounts for every token in
+  // every clause or refuses the sentence outright, so what survives here is read, not guessed.
+  const sentence = decodeSentence(reasonText);
+  if (sentence.ok) {
+    return {
+      ok: true,
+      fact: sentence.fact,
+      facts: sentence.facts,
+      predicate: sentence.predicate,
+      // A fully-accounted sentence is STRONGER evidence than the adjType ever was: the adjType names
+      // the fact Lender Price FILES the rule under, which the live sentences show is routinely a
+      // CONDITION's fact rather than the one the rule refuses on.
+      confidence: 'strong',
+      matchedBy: 'sentence',
+      // WHETHER THE VENDOR'S OWN LABEL AGREES WITH WHAT THE SENTENCE SAYS IT REFUSES ON. Carried rather
+      // than assumed, because §2.111 measured that it routinely does NOT: `adjType` names the fact
+      // Lender Price FILES the rule under, which on a compound sentence is usually a CONDITION's fact
+      // ("DSCR >= 1.00, Minimum Loan Amount $75,000" is filed under DSCR and refuses on loan amount).
+      // null when there is no adjType, or none we map.
+      adjTypeAgrees: dim == null ? null : (dim === sentence.fact || (dim === 'ltv_cap' && (sentence.fact === 'ltv' || sentence.fact === 'cltv'))),
+      reasonText,
+    };
+  }
+
   // 1) Classified by adjType — the strong path.
   if (dim === 'fico') {
     const leaf = thresholdLeaf('fico', reasonText, 1);
@@ -174,7 +221,13 @@ function keyToPredicate(input) {
   if (/\bltv\b/i.test(reasonText)) { const l = thresholdLeaf('ltv', reasonText, 1000); if (l) return { ok: true, fact: 'ltv', predicate: l, confidence: 'possible', matchedBy: 'text', reasonText }; }
 
   // 3) Not recognized — REFUSE and surface for a human to add to the map. Never guessed.
-  return { ok: false, needsHumanCrosswalk: true, reasonText, why: adjType ? `unmapped_adjType:${adjType}` : 'unrecognized_text' };
+  // The clause reader's own refusal reason is carried through when it is more specific than
+  // "unrecognized" — a human triaging the unmapped pile needs to know it was a sentence we could ALMOST
+  // read and which clause stopped us, not merely that nothing matched.
+  const why = sentence.why && sentence.why !== 'unrecognized_clause'
+    ? `sentence:${sentence.why}`
+    : (adjType ? `unmapped_adjType:${adjType}` : 'unrecognized_text');
+  return { ok: false, needsHumanCrosswalk: true, reasonText, why, badClause: sentence.badClause || null };
 }
 
 module.exports = {
