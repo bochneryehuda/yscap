@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**834 objects**, and a database rebuilt from the Prisma
+**836 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 588 numbered migrations in `db/` (highest `db/591`) remain the only thing that builds this database.
+rebuild a database from them.** The 591 numbered migrations in `db/` (highest `db/594`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,16 +20,16 @@ the live database.
 | | |
 |---|---|
 | Tables | 369 |
-| Columns | 5918 |
+| Columns | 5921 |
 | Triggers | 35 |
 | Functions | 138 |
 | CHECK constraints | 303 |
 | Generated columns | 12 |
-| Partial indexes | 346 |
+| Partial indexes | 348 |
 | Primary keys | 369 |
 | Foreign keys | 772 |
 | Unique constraints | 47 |
-| Indexes (all kinds) | 1254 |
+| Indexes (all kinds) | 1256 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -227,7 +227,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (346)
+## Partial indexes (348)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -236,8 +236,10 @@ the live database.
 - **arena_messages_pinned_idx** on `arena_messages`
 - **arena_prizes_slug_idx** on `arena_prizes`
 - **arena_sessions_one_live_idx** on `arena_sessions`
+- **arena_sessions_setup_day_open_uk** on `arena_sessions`
 - **arena_spins_deadline_idx** on `arena_spins`
 - **arena_spins_launch_idx** on `arena_spins`
+- **arena_spins_session_template_uk** on `arena_spins`
 - **arena_tickets_one_per_entry_idx** on `arena_tickets`
 - **borrower_assistants_borrower_idx** on `borrower_assistants`
 - **borrower_assistants_email_uk** on `borrower_assistants`
@@ -1730,7 +1732,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 369 primary keys and 1254 indexes is
+Every one of the 369 primary keys and 1256 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
