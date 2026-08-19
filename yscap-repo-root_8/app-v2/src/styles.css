@@ -2640,6 +2640,96 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 @media(max-width:1200px){.lead-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   .lead-timeline-panel{grid-column:1 / -1;order:3}}
 @media(max-width:820px){.lead-grid{grid-template-columns:1fr}.lead-timeline-panel{order:0}}
+/* The Elementix record is a full-width row of its own under the three columns.
+   `order:4` keeps it last even at =<1200px, where the timeline takes order:3. */
+.lead-grid > .lead-elx{grid-column:1 / -1;order:4;min-width:0}
+
+/* ═══ THE ELEMENTIX RECORD ═══════════════════════════════════════════════════
+   The section is now full width on both surfaces, so its own furniture is here
+   rather than inline: a fixed set of stat tiles that steps down in whole
+   columns, a table that scrolls INSIDE its own region with its header and its
+   subject column pinned, and a drill-in panel. Text colours are explicit darks
+   -- every `--ink*` token in this palette is a LIGHT paper colour. */
+
+/* Six tiles, stepping 6 -> 3 -> 2. Never `auto-fit`: the set is a fixed six and
+   auto-fit leaves a ragged last row at the in-between widths. */
+/* Visually hidden, still announced. A header cell with no visible label still
+   owes a screen reader a name -- an unnamed column is announced as nothing. */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.elx-stats{display:grid;gap:10px;grid-template-columns:repeat(6,minmax(0,1fr));margin-bottom:10px}
+@media(max-width:1439px){.elx-stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:1023px){.elx-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.elx-tile{border:1px solid #E4DECF;border-radius:10px;padding:10px 12px;background:#FFFFFF;min-width:0}
+.elx-tile .k{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#4B585C;font-weight:600}
+.elx-tile .v{font-size:20px;font-weight:650;color:#141B22;margin-top:2px;font-variant-numeric:tabular-nums;
+  overflow-wrap:anywhere}
+.elx-tile .s{font-size:12px;color:#4B585C;margin-top:1px}
+.elx-tile.warn{border-color:#D9A441;background:#FDF6E7}
+
+/* The identity header. Facts on the left, actions on the right, never wrapping
+   the actions under a half-line of facts. */
+.elx-head{display:grid;gap:14px;grid-template-columns:minmax(0,1fr) auto;align-items:start;
+  padding-bottom:12px;margin-bottom:12px;border-bottom:1px solid #E4DECF}
+@media(max-width:767px){.elx-head{grid-template-columns:minmax(0,1fr)}}
+.elx-head .who{font-family:var(--serif);font-size:24px;line-height:1.15;color:#141B22;margin:0}
+.elx-head .facts{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:6px;font-size:13.5;color:#4B585C}
+.elx-head .facts b{color:#141B22;font-weight:600}
+.elx-head .acts{display:flex;gap:8px;flex-wrap:wrap}
+.elx-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid #E4DECF;border-radius:20px;
+  padding:1px 9px;font-size:11.5px;color:#4B585C;background:#FFFFFF;white-space:nowrap}
+
+/* THE TABLE. Its own scroll region (focusable, so a keyboard can reach it),
+   a pinned header, and a pinned subject column -- which is what makes an
+   eleven-column money table readable: the address stays put while the money
+   scrolls. `contain:paint` keeps the sticky cells from painting outside. */
+.elx-tw{overflow:auto;max-width:100%;max-height:70vh;border:1px solid #E4DECF;border-radius:10px;
+  background:#FFFFFF;contain:paint}
+.elx-tw:focus-visible{outline:2px solid #2F7F86;outline-offset:2px}
+.elx-t{width:100%;border-collapse:separate;border-spacing:0;font-size:13.5px}
+.elx-t th,.elx-t td{padding:9px 11px;border-bottom:1px solid #E4DECF;background:#FFFFFF}
+.elx-t thead th{position:sticky;top:0;z-index:3;white-space:nowrap;text-align:left;
+  background:#FBF9F4;border-bottom:1px solid #E4DECF}
+.elx-t thead th.n{text-align:right}
+.elx-t td.n{text-align:right;font-variant-numeric:tabular-nums}
+.elx-t th.sub,.elx-t td.sub{position:sticky;left:0;z-index:2;border-right:1px solid #E4DECF}
+.elx-t thead th.sub{z-index:4}
+.elx-t tbody tr:hover td{background:#FBF9F4}
+.elx-t tbody tr.on td{background:#FCF8F1}
+.elx-t td{color:#141B22;white-space:nowrap}
+.elx-t td.sub{white-space:normal;font-weight:600;min-width:200px}
+.elx-open{background:none;border:0;padding:0;margin:0;font:inherit;color:#1F6F76;font-weight:600;
+  text-align:left;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.elx-open:hover{color:#145257}
+
+/* The drill-in. A definition list, because it is ONE record's fields -- a
+   two-column table here announces as data under meaningless column headers. */
+.elx-rec{border:1px solid #AE8746;background:#FCF8F1;border-radius:12px;padding:14px 16px;margin-bottom:12px}
+.elx-rec h4{margin:0;font-family:var(--serif);font-size:18px;color:#141B22;line-height:1.2}
+.elx-dl{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 18px;margin:12px 0 0}
+@media(max-width:1100px){.elx-dl{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:820px){.elx-dl{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:480px){.elx-dl{grid-template-columns:minmax(0,1fr)}}
+.elx-dl > .p{min-width:0}
+.elx-dl dt{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:#4B585C;font-weight:600}
+.elx-dl dd{margin:1px 0 0;font-size:14px;color:#141B22;overflow-wrap:anywhere}
+.elx-rec .grp{margin-top:14px;padding-top:12px;border-top:1px solid #E4DECF}
+.elx-rec .grp-h{font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:#856529;font-weight:700}
+
+/* The tab strip, at full width. */
+.elx-tabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #E4DECF;padding-bottom:8px;margin-bottom:12px}
+.elx-tab{border:1px solid #E4DECF;background:#FFFFFF;color:#141B22;border-radius:20px;padding:5px 12px;
+  font-size:13.5px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;min-height:32px}
+.elx-tab[aria-selected="true"]{border-color:#AE8746;background:#FCF8F1;color:#856529;font-weight:650}
+.elx-tab .b{font-size:11.5px;color:#4B585C;font-variant-numeric:tabular-nums}
+.elx-tab[aria-selected="true"] .b{color:#856529}
+
+@media(max-width:720px){
+  /* iOS Safari zooms the whole page on focus of any control under 16px. */
+  .elx-tab{font-size:16px;min-height:44px}
+  .elx-tw{max-height:none}
+  .elx-t td.sub,.elx-t th.sub{position:static}
+}
 
 /* ---- Activity composer + timeline ---- */
 .lead-composer{margin-bottom:14px}

@@ -60,9 +60,9 @@ const COLUMNS = [
   { key: 'leads', label: 'Leads', kind: 'num',
     title: 'Every lead this officer owns, at any stage.' },
   { key: 'elementixLeads', label: 'From Elementix', kind: 'num',
-    title: 'Of those, the ones that came from an Elementix skip trace.' },
+    title: 'Of those, the ones an Elementix contact has been brought in for SO FAR. The import works through the history a batch at a time, so this climbs on its own — it is not Elementix\u2019s all-time unlock count.' },
   { key: 'contactsUnlocked', label: 'Unlocked', kind: 'num',
-    title: 'Contacts this officer has unlocked in Elementix, all time.' },
+    title: 'Elementix contacts recorded against this officer IN PILOT so far \u2014 not their all-time history in Elementix, which is larger while the import is still running. The Elementix page shows both side by side.' },
   { key: 'creditsThisMonth', label: 'Credits this month', kind: 'num',
     title: 'Paid Elementix lookups charged to this officer this calendar month.' },
   { key: 'lastActivityAt', label: 'Last activity', kind: 'date',
@@ -94,6 +94,7 @@ export default function StaffCrmDesk() {
   const officerId = params.get('officer') || '';
 
   const [data, setData] = useState(null);
+  const [backfill, setBackfill] = useState(null);
   const [err, setErr] = useState('');
   const [sort, setSort] = useState({ key: 'leads', dir: 'desc' });
 
@@ -102,6 +103,10 @@ export default function StaffCrmDesk() {
     api.elxCrmDesk()
       .then(setData)
       .catch((e) => setErr((e && e.data && e.data.error) || e.message || 'The company CRM could not be loaded.'));
+    // Best-effort, and deliberately separate: an unreadable import progress must
+    // never take the company's lead book off the screen. No note is shown at all
+    // rather than a made-up one.
+    api.elxBackfill().then(setBackfill).catch(() => {});
   }, [maySee]);
 
   const column = useMemo(() => COLUMNS.find((c) => c.key === sort.key) || COLUMNS[0], [sort.key]);
@@ -193,6 +198,24 @@ export default function StaffCrmDesk() {
           <div className="notice warn" role="status" style={{ color: INK }}>
             The Elementix columns (contacts unlocked, credits {monthLabel}) could not be read, so they
             show “—”. They are <strong>not</strong> zero — nothing was measured.
+          </div>
+        )}
+
+        {/* THE ONE SENTENCE THAT RECONCILES THIS SCREEN WITH THE ELEMENTIX PAGE.
+            Those two columns count what has been brought in SO FAR; the Elementix
+            page counts everything those logins ever unlocked over there. Both are
+            right, and the difference is the import still running \u2014 which reads as
+            a contradiction unless the screen says so out loud. */}
+        {backfill && (backfill.pending > 0 || backfill.skipped > 0) && (
+          <div style={{
+            border: `1px solid ${LINE}`, background: '#FBF9F4', borderRadius: 10,
+            padding: '10px 12px', color: INK, fontSize: 14, marginBottom: 12,
+          }}>
+            <strong>The Elementix history is still coming in.</strong>{' '}
+            {fmtNum(backfill.done)} of {fmtNum(backfill.total)} contacts are in the CRM so far;{' '}
+            {fmtNum((backfill.pending || 0) + (backfill.skipped || 0))} still to come, so
+            “From Elementix” and “Unlocked” below will keep climbing on their own.
+            {backfill.skipped > 0 && ` ${fmtNum(backfill.skipped)} of them are waiting for somebody to say which officer that Elementix login belongs to.`}
           </div>
         )}
 

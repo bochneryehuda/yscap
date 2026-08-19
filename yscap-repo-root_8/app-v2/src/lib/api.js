@@ -1655,6 +1655,11 @@ export const api = {
   elxDecideAlias:      (personId, aliasId, confirm) => req('POST', `/api/elementix/people/${personId}/aliases/${aliasId}`, { confirm }),
   elxLink:             (b) => req('POST', '/api/elementix/link', b || {}),
   elxFor:              (kind, recordId) => req('GET', `/api/elementix/for/${kind}/${recordId}`),
+  // THE PROPERTY BEHIND A ROW. The GET is the cache and is safe anywhere; the
+  // POST spends three to five of the organisation's shared hourly requests, so
+  // it is only ever wired to a button somebody presses.
+  elxAddress:          (addressId, personId) => req('GET', `/api/elementix/addresses/${addressId}?personId=${encodeURIComponent(personId || '')}`),
+  elxAddressRead:      (addressId, personId, force) => req('POST', `/api/elementix/addresses/${addressId}/read`, { personId, force: !!force }),
   elxBackfill:         () => req('GET', '/api/elementix/backfill'),
   elxBackfillList:     () => req('POST', '/api/elementix/backfill/list', {}),
   elxBackfillWork:     (limit) => req('POST', '/api/elementix/backfill/work', { limit }),
