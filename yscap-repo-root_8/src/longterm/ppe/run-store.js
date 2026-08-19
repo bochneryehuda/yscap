@@ -18,6 +18,7 @@
  * imports.
  */
 
+const provenance = require('./agreement-provenance');
 const scoreboard = require('./scoreboard');
 
 function isFiniteNum(n) { return typeof n === 'number' && Number.isFinite(n); }
@@ -33,12 +34,32 @@ function normLabel(v) { return v == null ? '' : String(v); }
 // DB row -> the scoreboard runRecord contract { dayMs, agreementRate, findingKeys, summary }.
 // (investor/program are scoping columns, not part of the scoreboard contract — they are query filters.)
 function rowToRunRecord(row) {
+  const summary = row.summary == null ? null : row.summary;
   return {
     dayMs: num(row.day_ms),
     agreementRate: row.agreement_rate == null ? null : num(row.agreement_rate),
     findingKeys: Array.isArray(row.finding_keys) ? row.finding_keys.filter((k) => typeof k === 'string' && k) : [],
-    summary: row.summary == null ? null : row.summary,
+    summary,
+    // CAN THIS ROW'S NUMBERS BE READ AT ALL (2.122a)? Until 2026-08-19 the canary's own leg handed our
+    // engine the RAW Lender Price scenario, so it read none of the deal's derived facts and declined
+    // every scenario -- every agreement rate it recorded is a number, not a measurement. A stamp cannot
+    // go back in time, so the ABSENCE of one is the signal, and it is answered HERE, at the one place a
+    // stored run becomes an object, so a scoreboard, a gate and a screen cannot each decide it
+    // differently.
+    readable: provenance.runIsReadable(summary),
+    provenance: (summary && summary.provenance) || null,
   };
+}
+
+/**
+ * Split a series into the runs whose numbers can be read and the ones that cannot. PURE.
+ * A caller that averages `runs` without asking this is averaging pre-2.122 noise into a trend.
+ */
+function partitionReadable(runs) {
+  const list = Array.isArray(runs) ? runs : [];
+  const readable = list.filter((r) => r && r.readable === true);
+  const unreadable = list.filter((r) => !r || r.readable !== true);
+  return { readable, unreadable, allReadable: unreadable.length === 0 };
 }
 
 /**
@@ -156,4 +177,5 @@ async function assembleScoreboard(scope, opts = {}) {
   });
 }
 
-module.exports = { rowToRunRecord, persistRun, listRuns, listSeriesKeys, assembleScoreboard };
+module.exports = {
+  partitionReadable, rowToRunRecord, persistRun, listRuns, listSeriesKeys, assembleScoreboard };

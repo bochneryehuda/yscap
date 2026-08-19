@@ -8220,3 +8220,46 @@ sites are indented differently and a shape guard that depends on formatting goes
 reason.
 
 **187/187 LT PPE suites, 34 database-backed. All seven gates green.**
+
+### §2.122a — and every canary run recorded before that fix is a number, not a measurement
+
+§2.122 fixed the leg. It does not fix the **series**, and the series is what the go-live gate reads to
+decide whether OUR engine becomes the answer a borrower is quoted.
+
+Every agreement rate recorded by the previous leg was produced with our engine reading none of the
+deal's derived facts — it declined 305 of 305 and named a rule that had nothing to do with them — and
+**nothing on the row said so.** A scoreboard averaging that series, or a clean-day streak counting over
+it, would be working with numbers that were never measurements.
+
+**A stamp cannot go back in time, so the ABSENCE of one is the signal.** `agreement-provenance` gained
+`LEG_VERSION` (`2026-08-19/2.122`), `finish()` stamps it, and `runIsReadable(summary)` is the ONE
+definition of whether a stored run's numbers can be read at all — a scoreboard, a gate and a screen
+must not each decide that differently. Same shape as §2.120's pre-widening capture: **recognised, not
+rescued.**
+
+`run-store.rowToRunRecord` answers it on every row it hands out, so no caller has to remember to ask,
+and `partitionReadable(runs)` splits a series into what may be read and what may not. The canary stamps
+its own record before persisting it, carrying the battery it ran, the scope, and whether the investor's
+prepayment layer was asked.
+
+**Bump `LEG_VERSION` only when a change alters what the legs MEASURE.** It is not a build number: a
+stamp that moved for an unrelated edit would retire a shelf of valid runs and teach everyone to ignore
+it.
+
+**Deliberately NOT a gating change.** `eligibleForLive` already demands 100% agreement, and the broken
+leg produced far less than that against a Lender Price that prices most of the battery — so it blocked
+promotion rather than falsely allowing it. What it did do was fill the findings ledger with 305
+misattributed declines and put meaningless rates in a trend. Recording that honestly is this item;
+whether an unreadable run should also *block* is the same owner question already open under §2.121a.
+
+**Proven:** section G of `scripts/test-lt-ppe-canary-ours-leg.js` (15 assertions; 47 in the file), plus
+a **real Postgres** round trip in `scripts/test-lt-ppe-run-store-db.js` — a pure test proves the rule,
+only a database proves the stamp comes back through a jsonb column. Mutations M6–M9.
+
+**A contract guard that had to move, and was not loosened.** `test-lt-ppe-run-store-db.js` deep-equals
+the whole `runRecord` contract on every round trip, and it went red the moment the record gained
+`readable` and `provenance` — correctly, since the contract genuinely changed. It now compares against
+the contract as it stands and **adds** an assertion that a row carrying no provenance is reported
+unreadable rather than quietly averaged.
+
+**187/187 LT PPE suites, 34 database-backed. All seven gates green.**

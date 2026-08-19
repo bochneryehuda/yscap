@@ -1430,6 +1430,30 @@ async function runBattery(scope, scenarios, opts = {}) {
     } } };
   }
 
+  // ⛔ WHAT THIS CANARY MEASURED, ON ITS OWN ROW (§2.122a). The run series is what the go-live gate
+  // reads to decide whether OUR engine may become the answer a borrower is quoted, and until now the
+  // row carried an agreement rate and nothing about how it was produced. That mattered the moment
+  // §2.122 landed: every rate recorded by the previous leg was measured with our engine reading none of
+  // the deal's derived facts, and no reader could tell those rows from these. The stamp cannot go back
+  // in time, so its ABSENCE is the signal — `runIsReadable` treats an unstamped row as unreadable
+  // rather than averaging it.
+  try {
+    if (run.runRecord && run.runRecord.summary && typeof run.runRecord.summary === 'object') {
+      run.runRecord.summary.provenance = agreementProvenance.finish(
+        agreementProvenance.begin({ name: 'canary battery', offered: scenarios.length }),
+        {
+          runAt: new Date(nowMs).toISOString(),
+          lpSource: 'live',
+          scope: lpScope,
+          disqualify: 'asked',
+          sheet: { builtin: false, investor: investorName || investor || null,
+            versionId: opts.rateSheetVersionId || null },
+          ppp: { asked: !!canaryPpp.asked, descriptor: !!canaryPpp.descriptor, reason: canaryPpp.reason || null },
+        },
+      );
+    }
+  } catch (_) { /* a run that could not be described is still a run */ }
+
   let runPersisted = null;
   let runPersistError = null;
   try {

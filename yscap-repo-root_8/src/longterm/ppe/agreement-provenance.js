@@ -31,6 +31,24 @@
  */
 
 /** The four ways a run can be narrowed, and the plain-language name of each. */
+/**
+ * THE VERSION OF THE *OURS* LEG WIRING, and it exists because of §2.122.
+ *
+ * Until 2026-08-19 the canary handed our engine the RAW Lender Price scenario, so it read none of the
+ * deal's derived facts and declined 305 of 305 — filing confident refusals that named a rule
+ * (`dhvn_min_dscr`) which had nothing to do with them. Every agreement rate recorded by that leg is
+ * meaningless, and NOTHING on the row said so: a reader, a scoreboard, or the go-live gate computing a
+ * clean-day streak over that series would be averaging numbers that were never measurements.
+ *
+ * A stamp cannot go back in time, and that is exactly why the ABSENCE of one is the signal: a run
+ * carrying no `legVersion` was recorded before the leg was fixed, and is reported as unreadable rather
+ * than averaged. Same shape as §2.120's pre-widening capture — recognised, not rescued.
+ *
+ * Bump this ONLY when a change alters what the legs MEASURE. It is not a build number: a stamp that
+ * moved for an unrelated edit would retire a shelf of valid runs and teach everyone to ignore it.
+ */
+const LEG_VERSION = '2026-08-19/2.122';
+
 const NARROWERS = Object.freeze({
   scenarios_file: 'a scenario file replaced the battery',
   priced_probe: 'the priced probe (our own sheet prices these)',
@@ -139,6 +157,7 @@ function finish(prov, facts = {}) {
   if (facts.disqualify) out.disqualify = facts.disqualify === 'skipped' ? 'skipped' : 'asked';
   if (facts.sheet) out.sheet = facts.sheet;
   if (facts.ppp) out.ppp = facts.ppp;
+  out.legVersion = LEG_VERSION;
   out.coversWholeBattery = coversWholeBattery(out);
   out.reconciles = reconciles(out);
   return out;
@@ -207,6 +226,13 @@ function provenanceWarnings(prov) {
       + `${prov.ppp.reason ? ` (${prov.ppp.reason})` : ''}, so a whole layer of their own rules went`
       + ' unmeasured and a scenario that layer would refuse can be counted here as agreement (§2.116).');
   }
+  // §2.122 — a run whose leg predates the fix is not a weak measurement, it is not a measurement.
+  if (!prov.legVersion) {
+    out.push('This run was recorded BEFORE the leg that converts a Lender Price scenario into engine'
+      + ' facts was fixed (§2.122): our engine read none of the deal\'s derived facts, declined every'
+      + ' scenario, and named a rule that had nothing to do with them. Its agreement rate is not a'
+      + ' measurement and must not be averaged into a series or counted toward a clean-day streak.');
+  }
   if (prov.lpSource === 'replay') {
     out.push('This is a REPLAY of stored vendor answers, not a fresh measurement — it says what Lender'
       + ' Price answered when the capture was taken, which may no longer be what it would answer today.');
@@ -214,8 +240,23 @@ function provenanceWarnings(prov) {
   return out;
 }
 
+/**
+ * Can this stored run's numbers be read at all? PURE, and the ONE definition — a scoreboard, a gate and
+ * a screen must not each decide this differently.
+ *
+ * `null`/absent provenance means the row predates §2.121a's recording OR §2.122's fix; either way the
+ * honest answer is that its agreement rate cannot be read, because nothing on the row says which leg
+ * produced it.
+ */
+function runIsReadable(summary) {
+  try {
+    const p = summary && summary.provenance;
+    return !!(p && typeof p === 'object' && p.legVersion === LEG_VERSION);
+  } catch (_) { return false; }
+}
+
 module.exports = {
-  begin, narrowed, finish, describeProvenance, provenanceWarnings,
-  coversWholeBattery, reconciles, NARROWERS,
+  begin, narrowed, finish, describeProvenance, provenanceWarnings, runIsReadable,
+  coversWholeBattery, reconciles, NARROWERS, LEG_VERSION,
   _internals: { scopeValue, scopeToRecord },
 };

@@ -90,7 +90,14 @@ async function main() {
     // (JSONB reorders keys), so it is compared order-insensitively.
     ok(loaded.every((r, i) => r.dayMs === series()[i].dayMs && r.agreementRate === series()[i].agreementRate && eq(r.findingKeys, series()[i].findingKeys)),
       'listRuns round-trips dayMs / agreementRate / findingKeys exactly');
-    ok(eqDeep(loaded, series()), 'listRuns round-trips the full runRecord contract (summary deep-equal, key-order-insensitive)');
+    // The contract gained TWO DERIVED fields in §2.122a — `readable` and `provenance`, both computed
+    // from the summary rather than stored — so the comparison is made against the record contract as it
+    // now stands, not loosened. `readable` is FALSE on every row here: these fixtures carry no
+    // provenance, which is exactly what a run recorded before the fix looks like, and the guard says so.
+    const contract = series().map((r) => ({ ...r, readable: false, provenance: null }));
+    ok(eqDeep(loaded, contract), 'listRuns round-trips the full runRecord contract (summary deep-equal, key-order-insensitive)');
+    ok(loaded.every((r) => r.readable === false),
+      '…and a run carrying no provenance is reported UNREADABLE, not quietly averaged (2.122a)');
 
     // THE CORE PROOF: assembleScoreboard(persisted) === scoreboard.assemble(the same runs in memory)
     const fromDb = await runStore.assembleScoreboard(scope, { db, ...ASSEMBLE_OPTS });
@@ -125,6 +132,42 @@ async function main() {
     ok(windowed.length === 2 && windowed[0].dayMs === D + 1 * DAY, 'sinceMs bounds the window (inclusive)');
 
     // FAIL-CLOSED: a run with no finite dayMs is not storable in a time series
+    // ---- READABILITY SURVIVES THE DATABASE (2.122a) ----------------------------------------------
+    // The go-live gate reads this series to decide whether OUR engine becomes the answer a borrower is
+    // quoted. Every rate written before 2.122 was produced by a leg that handed our engine the raw
+    // Lender Price scenario -- a number, not a measurement -- and nothing on the row said so. A pure
+    // test proves the rule; only a database proves the stamp comes back through a jsonb column.
+    {
+      const prov = require('../src/longterm/ppe/agreement-provenance');
+      const stamped = prov.finish(prov.begin({ name: 'canary battery', offered: 305 }),
+        { runAt: '2026-08-19T00:00:00.000Z', scope: { investor: 'Deephaven' }, ppp: { asked: true } });
+      await runStore.persistRun(scope, {
+        dayMs: 9000000, agreementRate: 1, findingKeys: [], summary: { total: 305, provenance: stamped },
+      }, { db, investor: 'RS', program: 'P' });
+      await runStore.persistRun(scope, {
+        dayMs: 9100000, agreementRate: 1, findingKeys: [], summary: { total: 305 },
+      }, { db, investor: 'RS', program: 'P' });
+
+      const back = await runStore.listRuns(scope, { db, investor: 'RS', program: 'P' });
+      ok(back.length === 2, 'both runs came back from the series');
+      const fresh = back.find((r) => r.dayMs === 9000000);
+      const legacy = back.find((r) => r.dayMs === 9100000);
+      ok(!!fresh && fresh.readable === true,
+        'a run stamped with the current leg version reads as readable after a round trip through Postgres');
+      ok(!!fresh && fresh.provenance && fresh.provenance.legVersion === prov.LEG_VERSION,
+        '...carrying the stamp itself, out of the jsonb column');
+      ok(!!fresh && fresh.provenance.ppp && fresh.provenance.ppp.asked === true,
+        '...and whether the investor prepayment layer was asked on that run');
+      ok(!!legacy && legacy.readable === false,
+        'a run recorded before the fix is UNREADABLE -- its agreement rate is not a measurement (2.122)');
+      ok(!!legacy && legacy.agreementRate === 1,
+        '...even though its stored rate is a perfect 1, which is exactly why it must not be averaged in');
+      const part = runStore.partitionReadable(back);
+      ok(part.readable.length === 1 && part.unreadable.length === 1 && part.allReadable === false,
+        'and the series splits into what may be read and what may not');
+      await db.query('DELETE FROM lt_ppe_shadow_run WHERE scope = $1 AND investor = $2', [scope, 'RS']);
+    }
+
     const noDay = await runStore.persistRun(scope, { dayMs: null, agreementRate: 1 }, { db });
     ok(noDay.persisted === false && noDay.reason === 'no_day_ms', 'a run with no dayMs fails closed (not persisted)');
     ok((await runStore.listRuns(scope, { db })).length === 3, 'the no-dayMs run wrote no row');

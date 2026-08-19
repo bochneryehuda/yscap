@@ -197,6 +197,62 @@ console.log('LT PPE — the canary’s OURS leg (§2.122) — offline\n');
     'F7 …while the THEIRS leg is still the Lender Price one (§2.106)');
 }
 
+// ---- G. AND EVERY RUN RECORDED BEFORE THE FIX IS RECOGNISABLE AS UNREADABLE (§2.122a) ------------
+// The canary's run series is what the go-live gate reads to decide whether OUR engine becomes the
+// answer a borrower is quoted. Every rate in it recorded by the leg above is a number, not a
+// measurement — and nothing on the row said so, so a clean-day streak or an agreement trend would have
+// averaged them in. A stamp cannot go back in time, so its ABSENCE is the signal.
+{
+  const prov = require('../src/longterm/ppe/agreement-provenance');
+  const runStore = require('../src/longterm/ppe/run-store');
+
+  const stamped = prov.finish(prov.begin({ name: 'canary battery', offered: 305 }),
+    { runAt: 'x', scope: { investor: 'Deephaven' }, ppp: { asked: true } });
+  ok(stamped.legVersion === prov.LEG_VERSION,
+    `G1 a run recorded now carries the leg version (${prov.LEG_VERSION})`);
+  ok(prov.provenanceWarnings(stamped).length === 0, 'G2 …and warns about nothing');
+
+  const preFix = { ...stamped };
+  delete preFix.legVersion;
+  const w = prov.provenanceWarnings(preFix);
+  ok(w.some((x) => /recorded BEFORE the leg/.test(x)),
+    'G3 a run without the stamp is named as predating the fix');
+  ok(w.some((x) => /not a measurement/.test(x) && /must not be averaged/.test(x)),
+    'G4 …in words that say what must NOT be done with its number, which is the whole point');
+  ok(w.some((x) => /clean-day streak/.test(x)),
+    'G5 …naming the go-live streak specifically, because that is what reads this series');
+
+  // ONE definition of readability, answered where a stored row becomes an object.
+  ok(prov.runIsReadable({ provenance: stamped }) === true, 'G6 a stamped summary reads as readable');
+  ok(prov.runIsReadable({ total: 305 }) === false, 'G7 …and a pre-§2.121a summary does not');
+  ok(prov.runIsReadable(null) === false, 'G8 …nor does a missing one');
+  ok(prov.runIsReadable({ provenance: { legVersion: 'something-else' } }) === false,
+    'G9 …nor a stamp from a different leg version');
+
+  const recs = [
+    { day_ms: 1, agreement_rate: 1, finding_keys: [], summary: { provenance: stamped } },
+    { day_ms: 2, agreement_rate: 1, finding_keys: [], summary: { total: 305 } },
+  ].map(runStore.rowToRunRecord);
+  ok(recs[0].readable === true && recs[1].readable === false,
+    'G10 the store answers it on every row it hands out, so no caller has to remember to ask');
+  const part = runStore.partitionReadable(recs);
+  ok(part.readable.length === 1 && part.unreadable.length === 1 && part.allReadable === false,
+    'G11 …and a series can be split into what may be read and what may not');
+  ok(runStore.partitionReadable(null).allReadable === true,
+    'G12 an empty series is trivially all-readable — an absence is not a poisoned run');
+
+  // The canary route must actually stamp it, or none of the above ever fires in production.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'routes', 'ppe.js'), 'utf8');
+  ok(/run\.runRecord\.summary\.provenance = agreementProvenance\.finish\(/.test(src),
+    'G13 the canary stamps its own run record');
+  const stampIdx = src.indexOf('run.runRecord.summary.provenance = agreementProvenance.finish(');
+  const persistIdx = src.indexOf('runPersisted = await runStore.persistRun(scope, run.runRecord');
+  ok(stampIdx > 0 && persistIdx > 0 && stampIdx < persistIdx,
+    'G14 …BEFORE it is persisted, or the row would carry nothing');
+  ok(/ppp: \{ asked: !!canaryPpp\.asked/.test(src),
+    'G15 …including whether the investor’s prepayment layer was asked on that run');
+}
+
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);
 
@@ -208,4 +264,9 @@ process.exit(failures ? 1 : 0);
  *   M4  buildOursLeg: ignore `factsFromLp` (price the raw form) → B/C/D/E fail together — the leg
  *                                                                 stops pricing entirely
  *   M5  buildOursLeg: call marginHoldback with the scenario     → E2/E3 fail
+ *   M6  provenance: drop the missing-legVersion warning         → G3/G4/G5 fail (a pre-fix run reads
+ *                                                                 as a clean measurement)
+ *   M7  runIsReadable: return true when there is no provenance  → G7/G8/G10/G11 fail
+ *   M8  runIsReadable: ignore the version and accept any stamp  → G9 fails
+ *   M9  route: stamp the canary run AFTER persistRun            → G14 fails (the row carries nothing)
  * ------------------------------------------------------------------------------------------- */
