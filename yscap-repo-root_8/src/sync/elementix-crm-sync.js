@@ -39,15 +39,20 @@
 
 const cfg = require('../config');
 const client = require('../elementix/client');
+const flags = require('../lib/flags');
 
 const envSec = (k, dflt) => {
   const n = parseInt(process.env[k] || '', 10);
   return Number.isFinite(n) && n > 0 ? n : dflt;
 };
-const on = (k) => {
-  const v = String(process.env[k] || '').trim().toLowerCase();
-  return v === '1' || v === 'true';
-};
+
+/* THE AUTO-IMPORT IS READ AT CALL TIME, NOT AT BOOT — the same rule every other
+   integration switch here follows. Read once in `start()`, a flip on the API
+   Health page would do nothing until the next deploy: the timers were never
+   armed, so there was nothing to turn back on. Now the timers always run and
+   each pass asks the switch, which means an owner can stop the import the moment
+   it is doing something they did not want, and start it again with one click. */
+const autoImportOn = () => flags.enabled('ELEMENTIX_CRM_SYNC_ENABLED', cfg.elementix.crmSync);
 
 /* The LIST is cheap (a handful of calls) but there is no point asking often —
    an unlock made a few hours ago is not urgent, and the office's hourly
@@ -111,6 +116,7 @@ async function runAs() {
 
 async function listOnce() {
   if (listing) return null;
+  if (!autoImportOn()) return null;
   listing = true;
   try {
     const backfill = require('../lib/elementix/backfill');
@@ -140,6 +146,7 @@ async function listOnce() {
 
 async function workOnce() {
   if (working) return null;
+  if (!autoImportOn()) return null;
   working = true;
   try {
     const backfill = require('../lib/elementix/backfill');
@@ -198,21 +205,20 @@ function start() {
   setTimeout(settleOnce, 20000);
   setInterval(settleOnce, SETTLE_INTERVAL_MS);
 
-  if (!on('ELEMENTIX_CRM_SYNC_ENABLED')) {
-    console.log('[elementix-crm] bulk import off (set ELEMENTIX_CRM_SYNC_ENABLED=1 to bring every unlocked contact in automatically). Paid lookups made in PILOT are still settled every %dm.',
-      Math.round(SETTLE_INTERVAL_MS / 60000));
-    return;
-  }
-  console.log('[elementix-crm] on — listing every %dh, importing %d at a time every %dm. No credit can be spent by this loop.',
+  console.log('[elementix-crm] auto-import %s — listing every %dh, importing %d at a time every %dm. No credit can be spent by this loop; stop it any time on the API Health page.',
+    autoImportOn() ? 'ON' : 'off (switch it on from the API Health page)',
     Math.round(LIST_INTERVAL_MS / 3600000), WORK_BATCH, Math.round(WORK_INTERVAL_MS / 60000));
 
-  // Staggered so a deploy does not fire everything at once, and so the first
-  // work pass has a queue to work.
+  /* ARMED WHETHER OR NOT THE SWITCH IS ON, because the switch is read inside
+     each pass. A pass with the switch off returns immediately and costs a
+     function call — the price of being able to start the import from a screen
+     instead of a deploy. Staggered so a deploy does not fire everything at once,
+     and so the first work pass has a queue to work. */
   setTimeout(listOnce, 45000);
   setTimeout(workOnce, 90000);
   setInterval(listOnce, LIST_INTERVAL_MS);
   setInterval(workOnce, WORK_INTERVAL_MS);
 }
 
-module.exports = { start, listOnce, workOnce, settleOnce,
+module.exports = { start, listOnce, workOnce, settleOnce, autoImportOn,
   _internals: { runAs, LIST_INTERVAL_MS, WORK_INTERVAL_MS, WORK_BATCH, SETTLE_INTERVAL_MS, SETTLE_BATCH } };

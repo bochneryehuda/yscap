@@ -321,7 +321,55 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
     ok(ghost.rowCount === 0, 'and no phantom record was created by asking');
 
     // -----------------------------------------------------------------------
-    console.log('\n10. Every call named the officer who made it');
+    console.log('\n10. The expensive doors refuse a person nobody has seen');
+    // -----------------------------------------------------------------------
+    // "Add them to my leads" cannot spend a credit, so a locked person costs
+    // nothing DIRECTLY — but it records the trace as pending, and the settle
+    // pass then polls that person every couple of minutes for 48 hours out of
+    // an allowance the whole organisation shares.
+    const LOCKED = '0badf00d-dead-4bee-8fee-000000000002';
+    await db.query(`DELETE FROM elementix_skip_traces WHERE person_id = $1`, [LOCKED]);
+    await db.query(`DELETE FROM elementix_persons WHERE person_id = $1`, [LOCKED]);
+    r = await call(server, 'POST', `/api/elementix/people/${LOCKED}/lead`, T, {});
+    ok(r.status === 409 && /look/i.test(r.body.error),
+      'adding a lead for somebody nobody has unlocked is refused, and says which button does it');
+    const seeded = await db.query(
+      `SELECT count(*)::int n FROM elementix_skip_traces WHERE person_id = $1`, [LOCKED]);
+    ok(seeded.rows[0].n === 0, 'and nothing was queued for the settle pass to poll for two days');
+
+    // Building a profile is the most expensive button here — up to forty calls.
+    r = await call(server, 'POST', `/api/elementix/people/${LOCKED}/profile/build`, T, {});
+    ok(r.status === 404, 'and a profile is not built for an id PILOT has never seen');
+    const phantom = await db.query(`SELECT 1 FROM elementix_persons WHERE person_id = $1`, [LOCKED]);
+    ok(phantom.rowCount === 0, 'no nameless phantom person was created by asking');
+
+    // The real flow still works: attach first, then build.
+    r = await call(server, 'POST', '/api/elementix/link', T, { kind: 'lead', recordId: leadId, personId: LOCKED, name: 'Attached First', state: 'NJ', replace: true });
+    ok(r.status === 200, 'attaching a person from a search result works as before');
+    r = await call(server, 'POST', `/api/elementix/people/${LOCKED}/profile/build`, T, {});
+    ok(r.status === 200, '…and the profile builds once they are attached — the real order of events');
+    await call(server, 'POST', '/api/elementix/link', T, { kind: 'lead', recordId: leadId, personId: PID, replace: true });
+
+    // -----------------------------------------------------------------------
+    console.log('\n11. Every spend is attributable afterwards');
+    // -----------------------------------------------------------------------
+    // The audit write sits inside a catch that must never break the action, so
+    // nothing would say if it silently stopped landing — and "every spend is
+    // attributable" is a stated safety property of this whole plane.
+    const trail = await db.query(
+      `SELECT action, actor_id, entity_type, entity_id, detail
+         FROM audit_log
+        WHERE entity_type = 'elementix' AND actor_id = $1::uuid
+        ORDER BY created_at`, [officer]);
+    const acts = trail.rows.map((x) => x.action);
+    ok(acts.includes('elementix_skip_trace'), 'the paid lookup is on the file’s audit trail');
+    ok(acts.includes('elementix_link_set'), 'so is attaching a person to a record');
+    const spend = trail.rows.find((x) => x.action === 'elementix_skip_trace');
+    ok(spend && spend.entity_id && spend.detail && typeof spend.detail.why === 'string' && spend.detail.why.length > 3,
+      'and the spend records who, about whom, and the reason they typed');
+
+    // -----------------------------------------------------------------------
+    console.log('\n12. Every call named the officer who made it');
     // -----------------------------------------------------------------------
     ok(seen.length > 0 && seen.every((c) => !!c.staffId),
       `${seen.length} vendor calls, every one carrying the officer behind it`);

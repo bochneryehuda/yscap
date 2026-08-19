@@ -400,10 +400,39 @@ router.post('/people/:personId/skip-trace', async (req, res) => {
   res.json(out);
 });
 
-/** No money: make a lead from a person whose contact we already hold. */
+/**
+ * No money: make a lead from a person whose contact we already hold.
+ *
+ * IT HAS TO CHECK THAT WE ACTUALLY HOLD THEM. `finishSkipTrace` cannot spend a
+ * credit, so calling it on a LOCKED person costs nothing directly — but it reads
+ * the contact, gets nothing back, and records the trace as PENDING. The settle
+ * pass then polls that person every couple of minutes for 48 hours, spending
+ * free calls out of the allowance the whole organisation shares, on somebody who
+ * was never unlocked and never will be by this door. One mistyped id is cheap;
+ * a screen looping on this is not.
+ *
+ * Asked in the same order as everywhere else on this plane: our own database
+ * first (detail we hold is proof we already paid), the vendor second. A person
+ * nobody has unlocked is told so, and pointed at the door that can do it.
+ */
 router.post('/people/:personId/lead', async (req, res) => {
   const personId = str(req.params.personId);
   if (!isUuid(personId)) return res.status(400).json({ error: 'That is not a person from a search result.' });
+
+  const held = await db.query(
+    `SELECT CASE WHEN jsonb_typeof(phones) = 'array' THEN jsonb_array_length(phones) ELSE 0 END
+          + CASE WHEN jsonb_typeof(emails) = 'array' THEN jsonb_array_length(emails) ELSE 0 END AS n
+       FROM elementix_contacts WHERE person_id = $1`, [personId]);
+  const ours = !!(held.rows[0] && held.rows[0].n > 0);
+  if (!ours) {
+    const st = await crm.contactState(personId, { staffId: req.actor.id });
+    if (st.ok !== true) return refuse(res, st, 502);
+    if (!st.unlocked) {
+      return res.status(409).json({ reason: 'not_unlocked',
+        error: 'Nobody here has looked this person up yet, so there are no details to add. Use “look them up” instead — that one spends a credit.' });
+    }
+  }
+
   const out = await crm.finishSkipTrace({
     personId, staffId: req.actor.id,
     reason: str(req.body && req.body.reason) || 'Added from Elementix',
@@ -430,6 +459,21 @@ router.get('/people/:personId/profile', async (req, res) => {
 router.post('/people/:personId/profile/build', async (req, res) => {
   const personId = str(req.params.personId);
   const body = req.body || {};
+  /* A PROFILE IS BUILT FOR SOMEBODY WE HAVE SEEN, NEVER FOR A TYPED ID.
+     This is the most expensive button on the plane — up to forty outbound calls
+     across eight paged sections — and it used to accept any well-formed UUID,
+     create a nameless header row for it, and spend the whole budget out of an
+     allowance the entire organisation shares. Every real caller attaches the
+     person first (the finder and the profile screen both link, which is what
+     writes the row), so requiring it costs nothing legitimate and closes the
+     hole. Same rule as joining two records: a judgement about a person who
+     exists, never a way to invent one. */
+  const known = await db.query(
+    `SELECT 1 FROM elementix_persons WHERE person_id = $1`, [personId]);
+  if (!known.rowCount) {
+    return res.status(404).json({ reason: 'not_found',
+      error: 'PILOT has no record of that Elementix person. Search for them and attach them first.' });
+  }
   const out = await profile.buildProfile(personId, {
     staffId: req.actor.id,
     force: body.force === true,

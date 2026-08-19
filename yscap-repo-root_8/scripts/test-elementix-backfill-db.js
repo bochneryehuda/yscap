@@ -80,6 +80,7 @@ const backfill = require('../src/lib/elementix/backfill');
 const crm = require('../src/lib/elementix/crm');
 const fs = require('fs');
 const path = require('path');
+const flags = require('../src/lib/flags');
 
 let passed = 0;
 const ok = (m) => { passed += 1; console.log(`  ✓ ${m}`); };
@@ -308,26 +309,57 @@ async function main() {
   ok('the settle pass reads two functions of crm.js, and neither can buy a contact');
 
   const sync = require('../src/sync/elementix-crm-sync');
-  delete process.env.ELEMENTIX_CRM_SYNC_ENABLED;
-  sync.start();
   assert.ok(typeof sync.listOnce === 'function' && typeof sync.workOnce === 'function'
     && typeof sync.settleOnce === 'function');
-  // THE BULK IMPORT IS BEHIND THE SWITCH; SETTLING A PAID LOOKUP IS NOT — and
-  // the difference is what the schedule does, so the schedule is what is read.
-  // A pending trace means a member of staff pressed the button here and a credit
-  // was already spent: leaving it unsettled wastes money and drops a lead
-  // somebody asked for. Creating leads out of work done in Elementix's own
-  // screens is the thing an owner switches on deliberately.
-  const gate = fsrc.indexOf("ELEMENTIX_CRM_SYNC_ENABLED')) {");
-  assert.ok(gate > -1, 'the bulk-import switch is still read in start()');
-  const beforeGate = fsrc.slice(0, gate);
-  const afterGate = fsrc.slice(gate);
-  assert.ok(/setInterval\(settleOnce/.test(beforeGate),
-    'the settle pass must be scheduled BEFORE the bulk-import switch can return');
-  assert.ok(!/setInterval\(listOnce|setInterval\(workOnce/.test(beforeGate)
-    && /setInterval\(listOnce/.test(afterGate) && /setInterval\(workOnce/.test(afterGate),
-    'the bulk passes must stay BEHIND the switch');
-  ok('paid lookups are settled whether or not the bulk import is switched on — and the bulk import stays off');
+
+  /* THE AUTO-IMPORT IS ON, AND IT IS A LIVE SWITCH (owner-directed 2026-08-19:
+     "set up auto pull leads"). Two separate things are asserted, because the
+     second is what makes the first safe to hand over: it is ON by default, and
+     the switch is read at CALL TIME so an owner can stop it from the API Health
+     page without waiting for a deploy. Read once at boot — which is how it
+     started life — a flip would have done nothing, because the timers were
+     never armed and there was nothing to turn back on. */
+  const cfg = require('../src/config');
+  assert.strictEqual(cfg.elementix.crmSync, true, 'the auto-import ships ON');
+  const SW = require('../src/lib/integrations/switches');
+  const entry = SW.SWITCHES.find((x) => x.key === 'ELEMENTIX_CRM_SYNC_ENABLED');
+  assert.ok(entry, 'and it is a switch on the API Health page, not only an env var');
+  assert.strictEqual(entry.dangerous, false,
+    'not marked dangerous — it cannot spend a credit and never writes to Elementix');
+
+  assert.strictEqual(sync.autoImportOn(), true, 'on with no override');
+  await flags.setFlag('ELEMENTIX_CRM_SYNC_ENABLED', false, admin);
+  assert.strictEqual(sync.autoImportOn(), false, 'an owner turning it off is honoured at once');
+  assert.strictEqual(await sync.listOnce(), null, '…and the listing pass stands down');
+  assert.strictEqual(await sync.workOnce(), null, '…as does the import pass');
+  await db.query(`DELETE FROM integration_flags WHERE key = 'ELEMENTIX_CRM_SYNC_ENABLED'`);
+  await flags.refresh();
+  assert.strictEqual(sync.autoImportOn(), true, 'and turning it back on takes effect with no deploy');
+  ok('the auto-import is ON, and can be stopped and restarted from a screen rather than a deploy');
+  /* THE BULK IMPORT OBEYS THE SWITCH; SETTLING A PAID LOOKUP DOES NOT. A pending
+     trace means a member of staff pressed the button HERE and a credit was
+     already spent, so leaving it unsettled wastes money that is gone and drops a
+     lead somebody asked for — it is the second half of a click, not an import.
+     Creating leads out of work done in Elementix's own screens is the different
+     thing, and that is what the switch governs.
+     Read from the FUNCTION BODIES rather than from the schedule: the schedule
+     used to carry the rule (the bulk timers sat after an early return) and no
+     longer does, so an assertion about the schedule would now be testing an
+     arrangement instead of the rule. */
+  const bodyOf = (fn) => {
+    const at = fsrc.indexOf(`async function ${fn}(`);
+    assert.ok(at > -1, `${fn} must exist`);
+    const rest = fsrc.slice(at + 10);
+    const end = rest.search(/\n(?:async function |function |module\.exports)/);
+    return end === -1 ? rest : rest.slice(0, end);
+  };
+  for (const fn of ['listOnce', 'workOnce']) {
+    assert.ok(/autoImportOn\(\)/.test(bodyOf(fn)),
+      `${fn} imports leads in bulk and must stand down when the switch is off`);
+  }
+  assert.ok(!/autoImportOn\(\)/.test(bodyOf('settleOnce')),
+    'settleOnce finishes a paid lookup somebody already started and must never be gated by the import switch');
+  ok('paid lookups are settled whether or not the bulk import is switched on');
 
   // -------------------------------------------------------------------------
   console.log('\n8. A contact PILOT itself traced is not handed to the shared login');
