@@ -113,21 +113,25 @@ async function tick(now = new Date()) {
   const out = { opened: [], closed: [], errors: [] };
   try {
     const open = await db.query(
-      `UPDATE arena_challenges
+      `UPDATE arena_challenges c
           SET state = 'live', updated_at = now()
-        WHERE state = 'scheduled' AND opens_at IS NOT NULL AND opens_at <= $1
-          AND (closes_at IS NULL OR closes_at > $1)
-        RETURNING *`, [now]);
+        FROM arena_sessions s
+        WHERE s.id = c.session_id AND s.state = 'live' AND s.paused_at IS NULL
+          AND c.state = 'scheduled' AND c.opens_at IS NOT NULL AND c.opens_at <= $1
+          AND (c.closes_at IS NULL OR c.closes_at > $1)
+        RETURNING c.*`, [now]);
     out.opened = open.rows;
     for (const c of open.rows) broadcast('arena:challenge-open', publicChallenge(c));
   } catch (e) { out.errors.push(`open: ${e.message}`); }
 
   try {
     const shut = await db.query(
-      `UPDATE arena_challenges
+      `UPDATE arena_challenges c
           SET state = 'closed', updated_at = now()
-        WHERE state = 'live' AND closes_at IS NOT NULL AND closes_at <= $1
-        RETURNING id, session_id, title`, [now]);
+        FROM arena_sessions s
+        WHERE s.id = c.session_id AND s.paused_at IS NULL
+          AND c.state = 'live' AND c.closes_at IS NOT NULL AND c.closes_at <= $1
+        RETURNING c.id, c.session_id, c.title`, [now]);
     out.closed = shut.rows;
     for (const c of shut.rows) broadcast('arena:challenge-close', { challengeId: c.id, sessionId: c.session_id });
   } catch (e) { out.errors.push(`close: ${e.message}`); }

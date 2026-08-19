@@ -777,7 +777,7 @@ async function launchDue(now = new Date()) {
     const r = await db.query(
       `SELECT p.id FROM arena_spins p JOIN arena_sessions s ON s.id = p.session_id
         WHERE p.state = 'draft' AND p.launch_at IS NOT NULL AND p.launch_at <= $1
-          AND s.state = 'live'`, [now]);
+          AND s.state = 'live' AND s.paused_at IS NULL`, [now]);
     for (const row of r.rows) {
       try { out.push(await openSpin(row.id)); }
       catch (e) { console.warn(`[arena] spin ${row.id} could not launch itself: ${e.message}`); }

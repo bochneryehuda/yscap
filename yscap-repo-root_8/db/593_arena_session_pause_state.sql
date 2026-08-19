@@ -1,0 +1,51 @@
+-- ============================================================================
+-- db/593 — arena session pause state
+--
+-- WHAT THIS CHANGES, AND WHY. Running Elementix Day live (2026-08-19) the
+-- owner asked for the standard controls a session is expected to have — pause
+-- it, resume it — beside start and close. Pause is a COLUMN, not a fourth
+-- state value: db/585 re-asserts the three-value state CHECK on every boot, so
+-- widening it would make 585's replay fail whenever a paused row exists at
+-- boot (the db/529 skip-the-rest-of-the-file trap). A paused session KEEPS
+-- state='live' — it still holds the one-live slot (you resume the same day,
+-- never start a second one beside it) and stays on the board — while
+-- paused_at freezes the clockwork: the sweep launches nothing, sends no
+-- deadline alarms, shuts no doors, and opens no challenges until it is
+-- resumed.
+--
+-- IDEMPOTENT. `migrate-boot` replays EVERY file in db/ on EVERY boot, in
+-- filename order. That is not a safety net, it is the contract: a statement
+-- that throws on its second run breaks every future deploy, and migrate-boot
+-- logs the failure and CONTINUES, so it breaks quietly. The four shapes the
+-- hygiene gate enforces:
+--
+--   CREATE TABLE IF NOT EXISTS t (...);
+--   CREATE INDEX IF NOT EXISTS t_col_idx ON t (col);
+--   ALTER TABLE t ADD COLUMN IF NOT EXISTS c text;
+--   ALTER TABLE t DROP CONSTRAINT IF EXISTS t_chk;   -- always drop first,
+--   ALTER TABLE t ADD CONSTRAINT t_chk CHECK (...);  -- then re-add
+--
+-- RE-ASSERTING A CHECK. If this file widens a CHECK constraint that an earlier
+-- migration also asserts, name EVERY value the earlier files added, not just
+-- the new one — the older file replays too, and a narrower re-assert would roll
+-- this one back the moment a row uses the new value.
+--
+-- BACKFILL: none — NULL means "not paused", which is true of every existing
+-- row.
+--
+-- PRODUCT SEPARATION. RTL and Long-Term do not share tables. If this touches
+-- `lt_*`, it is Long-Term's and must not reach into RTL's; if it touches RTL's,
+-- the reverse. `check-product-separation.js` is the gate.
+-- ============================================================================
+
+ALTER TABLE arena_sessions ADD COLUMN IF NOT EXISTS paused_at timestamptz;
+
+
+-- ── after this lands ────────────────────────────────────────────────────────
+-- The schema map (docs/schema/) describes the database these migrations build,
+-- so this file makes it stale. CI refreshes it on this pull request by itself;
+-- if you would rather do it by hand, with DATABASE_URL pointing at a database
+-- built from these migrations:
+--
+--   npm run schema:snapshot     # refresh the inventory from the database
+--   npm run schema:restamp      # re-stamp the map header (no database needed)

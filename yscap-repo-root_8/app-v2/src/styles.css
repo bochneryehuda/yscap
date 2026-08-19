@@ -5229,6 +5229,14 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena-status.s-approved, .arena-status.s-live { color: var(--a-good); }
 .arena-status.s-pending, .arena-status.s-draft { color: #A8760F; }
 .arena-status.s-rejected, .arena-status.s-closed { color: var(--a-bad); }
+.arena-status.s-paused { color: #8A6215; }
+
+/* The day's plan — one row per pre-filled spin, times editable in place. */
+.arena-plan { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 10px; }
+.arena-planrow { border: 1px solid var(--line, #E4DFD3); border-radius: 10px; padding: 10px 12px; background: #FFFFFF; }
+.arena-planrow > div:first-child { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.arena-plantimes { margin-top: 8px; align-items: end; }
+.arena-plantimes .arena-decide { grid-column: 1 / -1; }
 
 .arena-kindpick { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
 .arena-chip {

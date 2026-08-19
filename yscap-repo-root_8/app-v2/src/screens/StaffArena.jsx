@@ -258,6 +258,16 @@ export default function StaffArena() {
           </div>
           <h1 className="arena-title">{session.name}</h1>
           {session.subtitle && <p className="arena-sub">{session.subtitle}</p>}
+          {isSuper && !tv && tab !== 'control' && (
+            <p style={{ margin: '6px 0 0' }}>
+              <button className="btn small" onClick={() => setTabParam('control')}>Open the control room</button>
+            </p>
+          )}
+          {session.paused_at && (
+            <p className="arena-sub" style={{ color: '#8A6215', fontWeight: 700 }}>
+              Paused — back in a moment. Check-in reopens when it resumes.
+            </p>
+          )}
         </div>
         <div className="arena-head-actions">
           <button className="btn ghost small" onClick={() => setTv(!tv)}>
