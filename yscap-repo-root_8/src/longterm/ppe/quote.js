@@ -40,6 +40,7 @@
  */
 
 const { evaluateRules } = require('./rules');
+const quoteVerdict = require('./quote-verdict');
 const purpose = require('./purpose');
 const pricing = require('./pricing');
 const { resolveDoubleCharges } = require('./adjustment-overlap');
@@ -439,6 +440,11 @@ module.exports = {
   priceLimitNotice: priceLimitLib.priceLimitNotice,
   selectRungs,
   quoteProgram,
+  // §2.124 — re-exported so every existing caller of `quote` keeps working; the definition lives
+  // in `quote-verdict.js` so a PURE consumer can ask without requiring the pricing engine.
+  couldNotPrice: quoteVerdict.couldNotPrice,
+  pricedAnswer: quoteVerdict.pricedAnswer,
+  verdictOf: quoteVerdict.verdictOf,
   RUNG_SELECTION_FACTS,
   PRICING_BASIS_FACTS,
   activeBasisFacts,

@@ -1,4 +1,5 @@
 'use strict';
+const quoteVerdict = require('./quote-verdict');
 /**
  * LT PPE — the SIX difference detectors (Part 3 P3). PURE: no DB, no network. Compares OUR quote (from
  * quote.quoteProgram) against the RICH Lender Price shape (from lp-normalize-full.normalizeLpFull /
@@ -85,8 +86,35 @@ function detectDifferences(input, opts) {
   const lpDeclinedThis = !!(lpDisq && Array.isArray(lpDisq.declined) && lpDisq.declined.length);
   const lpEligible = lp.eligible != null ? !!lp.eligible : lpRungs.length > 0;
 
+  // ⛔ A SIDE THAT PRODUCED NO ANSWER IS NOT AGREEMENT — IT IS NOT COMPARABLE (§2.124, and the same
+  // §10.6 rule `parity.compareScenario` has enforced since it was written).
+  //
+  // Suppressing the false "our engine priced it" finding above was only half the fix: with no
+  // difference recorded, `finalize` returns `verdict:'agree'` — so a scenario our engine explicitly
+  // REFUSED to price would be counted as the two engines agreeing, on the same board, feeding the
+  // same agreement rate. Trading a confidently wrong disagreement for a confidently wrong agreement
+  // is not a fix. It abstains instead, with the engine's OWN reason, so the scenario is visible as
+  // unmeasured rather than folded into either column.
+  if (quoteVerdict.couldNotPrice(ours)) {
+    return {
+      verdict: 'incomparable',
+      incomparable: true,
+      reason: (ours && (ours.reason || ours.summary)) || 'our engine produced no result to compare',
+      differences: [],
+      summary: { total: 0, byCategory: {}, worstSeverity: null },
+    };
+  }
+
   // --- Axis 1: eligibility vs disqualification -------------------------------
-  if (ours.eligible && lpDeclinedThis) {
+  // ⛔ `ours.eligible` ALONE IS NOT "we priced it" (§2.124). A quote whose price-bearing facts could
+  // not be read comes back `eligible:true, priced:false, incomplete:true` — deliberately, because
+  // refusing to price is not a decline and inventing one would fabricate a refusal we never made. So
+  // this test used to report, at HIGH severity, "Lender Price declined this program; our engine
+  // priced it" about a scenario our engine explicitly refused to price. That sentence lands in the
+  // findings ledger and in the agreement rate the go-live gate reads. Measured on a scenario Lender
+  // Price ITSELF accepts (an LP scenario carrying no `dscr`). `pricedAnswer` is the ONE reading and
+  // it answers false for an undetermined quote.
+  if (quoteVerdict.pricedAnswer(ours) && lpDeclinedThis) {
     const reasons = [];
     for (const d of lpDisq.declined) for (const r of (d.reasons || [])) reasons.push(r);
     if (lpRungs.length) {

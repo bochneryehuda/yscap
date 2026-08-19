@@ -3364,13 +3364,19 @@ async function rateSheetCoverageRoute(req, res) {
   // reported rather than swallowed — bounded, with the full count beside the sample.
   const quotes = new Array(scenarios.length);
   const errors = [];
-  let eligible = 0; let ineligible = 0; let priced = 0;
+  let eligible = 0; let ineligible = 0; let priced = 0; let undetermined = 0;
   for (let i = 0; i < scenarios.length; i += 1) {
     try {
       const q = quote.quoteProgram({ scenario: scenarios[i], program, settings, marginHoldback: marginFor(scenarios[i]) });
       quotes[i] = q;
       priced += 1;
-      if (q.eligible) eligible += 1; else ineligible += 1;
+      // A quote the engine could NOT price is neither eligible nor ineligible (§2.124) — it is
+      // undetermined, and counting it in either column reports a census of scenarios nobody
+      // measured. It is counted on its own so the total still reconciles and the gap is visible.
+      const verdict = quote.verdictOf(q);
+      if (verdict === 'priced') eligible += 1;
+      else if (verdict === 'declined') ineligible += 1;
+      else undetermined += 1;
     } catch (e) {
       quotes[i] = null;
       errors.push({ scenario: scenarios[i]._label || `#${i}`, error: msgOf(e) });
@@ -3412,6 +3418,9 @@ async function rateSheetCoverageRoute(req, res) {
       priced,
       eligible,
       ineligible,
+      // §2.124 — priced === eligible + ineligible + undetermined, always. A census that folded the
+      // undetermined into either column would report scenarios nobody measured as measured.
+      undetermined,
       errorCount: errors.length,
       errors: errors.slice(0, 20),
     },

@@ -1,3 +1,4 @@
+const quoteVerdict = require('./quote-verdict');
 'use strict';
 /**
  * LT PPE — the PRICING BREAKDOWN read-model (the "mother interface", owner-directed
@@ -252,7 +253,10 @@ function buildPricingBreakdown(input = {}) {
   const prefer = input.source === 'lp' || input.source === 'ours' ? input.source : null;
 
   // --- eligibility: our engine is the authority on decline reasons ------------
-  const eligible = quote ? quote.eligible !== false : null;
+  // A quote that could not be priced is NOT eligible-as-far-as-we-know (§2.124) — it is undetermined,
+  // and rendering it as eligible tells a reader we would do a loan we never assessed.
+  const verdict = quote ? quoteVerdict.verdictOf(quote) : null;
+  const eligible = verdict == null ? null : (verdict === 'undetermined' ? null : verdict === 'priced');
   const reasons = [];
   if (quote && quote.eligible === false && Array.isArray(quote.declines)) {
     for (const d of quote.declines) {

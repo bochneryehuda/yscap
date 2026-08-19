@@ -8472,3 +8472,89 @@ dropping the missing-fields refusal (1), and re-introducing an effect (5, S10 am
 
 **188/188 LT PPE suites, 34 database-backed. All seven gates green.** (No new suite — §2.123a
 extends `test-lt-ppe-shadow-reachable.mjs`, which grew 56 assertions to 65.)
+
+---
+
+### §2.124 — a quote answers in THREE states, and its consumers were reading two
+
+**Found while proving §2.123, and the first thing to record is that my own first measurement of it
+was WRONG.** A probe script reported "the engine says ELIGIBLE with an empty ladder" on a scenario
+missing a fact. It does not. `incompleteQuote` (§2.108) deliberately omits the `ladder` key
+entirely, and the script read `(q.ladder || []).length` — so the zero was the script's own fallback,
+not the engine's answer. **The engine fails closed exactly as designed.** Measuring the real return
+value is what turned a phantom into the actual defect, which is a different and narrower one.
+
+**The real defect.** `quoteProgram` answers in THREE states:
+
+| state | shape |
+|---|---|
+| priced | `eligible:true` + a `ladder` |
+| declined | `eligible:false` + `declines[]` |
+| **incomplete** | `eligible:<unchanged>`, `priced:false`, `incomplete:true`, a reason, **no `ladder` key** |
+
+The third carries `eligible` UNCHANGED, and `incompleteQuote`'s own header says why: *"refusing to
+price is not a decline"* — inventing one would fabricate a refusal we never made. That is right. The
+consequence is a trap: **a consumer reading `q.eligible` ALONE reads "I could not tell" as a
+confident "yes".**
+
+**Measured, and reachable through the live door.** An LP scenario carrying no `dscr` is **ACCEPTED
+by Lender Price's own validator**, so a caller can send one. Against the built-in Deephaven sheet
+our engine answers `eligible:true, priced:false, incomplete:true,
+reason:'missing_price_bearing_fact'`. Four consumers then read it:
+
+* **`parity-detectors`** reported, at **HIGH severity**: *"Lender Price declined this program; our
+  engine priced it."* Our engine did not price it — it explicitly refused. That sentence lands in
+  the findings ledger and in the agreement rate the go-live gate reads.
+* **`pricing-breakdown`** rendered it as **eligible** — telling a reader we would do a loan we never
+  assessed.
+* **`lp-agreement-legs`**' prepayment layer gate was `eligible !== true`, so an incomplete quote was
+  handed to the PPP matrix, which can append a state-law decline as **the** reason on a quote with
+  no ladder behind it — a fabricated refusal.
+* the **coverage census** counted it as eligible.
+
+Several other consumers were already correct and were left alone — `parity.normalizeOurQuote`
+(`priced === false` → null → incomparable, the §10.6 rule), `agreement-preflight`, and
+`disqualifier-review`, which already tests `incomplete === true` on the very next line.
+
+**THE HALF-FIX WOULD HAVE BEEN ITS OWN DEFECT, and this is the part worth remembering.** Suppressing
+the false "our engine priced it" finding leaves `finalize` with no differences, so it returns
+**`verdict:'agree'`** — a confidently wrong AGREEMENT in place of a confidently wrong disagreement,
+on the same board, feeding the same rate. Trading one for the other is not a fix. `detectDifferences`
+now **abstains** (`verdict:'incomparable'`, carrying the engine's own reason), mirroring the §10.6
+guard `parity.compareScenario` has always had. Mutation **P2** — suppress but do not abstain — fails
+two assertions, which is the one that had to bite.
+
+**The fix is ONE definition, in its OWN module.** `src/longterm/ppe/quote-verdict.js` exports
+`verdictOf` (`priced` | `declined` | `undetermined`), `pricedAnswer` and `couldNotPrice`. It is its
+own file because `parity-detectors.js` is PURE — no requires at all — and making it depend on the
+pricing engine to ask one question would drag `quote.js` into every consumer that only reads an
+answer. A second copy of the predicate is what this codebase refuses, so the predicate moved rather
+than being duplicated; `quote.js` re-exports the SAME functions, so every existing caller is
+unchanged. All three fail toward `undetermined` on anything unrecognisable — an unreadable quote is
+never scored either way.
+
+The coverage census now reports `undetermined` as its own column, so `priced === eligible +
+ineligible + undetermined` always reconciles and the gap is visible rather than folded in.
+
+**Mutations — and one of them is recorded as proving nothing, because that is what it did.**
+
+| mutation | failing assertions |
+|---|---|
+| P1b restore the original defect in full (abstain removed AND the flag read again) | 5 |
+| P2 suppress the finding but do NOT abstain (the half-fix) | 2 |
+| P3 an unrecognised quote reads as priced | 1 |
+| P4 `couldNotPrice` ignores the `incomplete` stamp | 1 |
+| P5 the breakdown renders undetermined as eligible | 1 |
+| P6 the prepayment layer is asked about an unpriced quote | 2 |
+| **P1 revert ONLY the Axis-1 line, abstain intact** | **0 — behaviourally equivalent** |
+
+P1 is honest belt-and-braces, not a biting guard: the abstain returns before Axis 1 is reached, so
+reverting that one line changes nothing. **The abstain is the load-bearing guard**; the Axis-1
+reading is defence in depth and is written down as such rather than implied to bite.
+
+**The guard.** Section D of `scripts/test-lt-ppe-quote-verdict.js` asserts each of the three
+repaired consumers asks the shared reading, that the definition module has no requires (which is
+what lets the pure detectors ask it at all), and that `quote` re-exports the same function objects
+rather than a second copy.
+
+**189/189 LT PPE suites, 34 database-backed. All seven gates green.**

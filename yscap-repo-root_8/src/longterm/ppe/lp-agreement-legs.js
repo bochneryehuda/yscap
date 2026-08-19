@@ -26,6 +26,7 @@
  * this module only PLUMBS it. LT-only. No RTL imports.
  */
 const { quoteProgram } = require('./quote');
+const quoteVerdict = require('./quote-verdict');
 const lpNormalize = require('./lp-normalize');
 const { advancedFactsFromScenario } = require('./advanced-facts');
 // ZIP → state derivation (committed offline table; PURE, no network). Needed so a realistic zip-only
@@ -321,7 +322,12 @@ function buildOursLeg(program, settings, opts) {
     if (!desc) return quote;
     // A quote the sheet ALREADY declined stays as it is: it is ineligible either way, and appending a
     // second reason would double-count the scenario in the by-dimension tallies.
-    if (!quote || quote.eligible !== true) return quote;
+    // A quote the sheet ALREADY declined stays as it is — and so does one it could NOT PRICE (§2.124).
+    // An incomplete quote carries `eligible:true` on purpose (refusing to price is not a decline), so
+    // testing `eligible` alone would hand the prepayment layer a quote with no ladder behind it and
+    // let it append a state-law decline as THE reason — a fabricated refusal on a loan we never
+    // assessed. `pricedAnswer` is the ONE reading and answers false for an undetermined quote.
+    if (!quoteVerdict.pricedAnswer(quote)) return quote;
     const pppInput = desc.pppInputFromFacts(facts);
     const dq = desc.pppDisqualifier(pppInput);
     if (dq) return declineForPpp(quote, dq);
