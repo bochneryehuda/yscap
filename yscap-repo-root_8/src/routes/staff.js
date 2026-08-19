@@ -16443,6 +16443,39 @@ router.get('/leads', async (req, res) => {
     const params = [];
     const conds = [];
     if (!seesAll(req)) { params.push(req.actor.id); conds.push(visibleLeadSql('l', `$${params.length}`)); }
+
+    // ── ONE OFFICER'S BOOK — the admin CRM desk (owner-directed 2026-08-19:
+    // "make admin can see everybody all crm … switch view and jump from one
+    // officer full crm screen from each and everybody"). ONE endpoint, not two:
+    // the desk shows the SAME leads screen every officer already uses, narrowed
+    // to whose book is being read.
+    //
+    // ANDed onto the scope, NEVER in place of it — that is the whole reason this
+    // is a filter and not a second route. For an admin (`see_all_files`, so no
+    // scope clause at all) it narrows the company down to one officer. For a
+    // plain loan officer the scope clause is still there, so `officer_id =
+    // <somebody else>` AND `(officer_id = me OR officer_id IS NULL)` can never
+    // both hold: they get an EMPTY list, not another officer's desk. A filter
+    // can only ever shrink the floor.
+    //
+    // IT SITS ABOVE THE SCOPE SNAPSHOT, unlike the three origin filters below,
+    // and that placement is load-bearing: `scopeWhere` is what the FACET COUNTS
+    // are taken over. Whose desk this is belongs to the scope; which origin
+    // group is selected does not. Below this line the "From Elementix" tile on
+    // an officer's page counted the WHOLE COMPANY's Elementix leads and printed
+    // the company's number under that officer's name — caught in the browser,
+    // not in review.
+    //
+    // Validated as a uuid before it reaches Postgres: `leads.officer_id` is uuid,
+    // so a malformed value would raise 22P02 and this whole list would answer
+    // 500 — an empty screen that reads as "you have no leads".
+    const officerId = typeof req.query.officerId === 'string' ? req.query.officerId.trim() : '';
+    if (officerId) {
+      if (!UUID_RE.test(officerId)) return res.status(400).json({ error: 'invalid officerId' });
+      params.push(officerId);
+      conds.push(`l.officer_id=$${params.length}`);
+    }
+
     const scopeWhere = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const scopeParams = params.slice();
 
@@ -16469,30 +16502,6 @@ router.get('/leads', async (req, res) => {
     eq('l.source', req.query.source);
     eq('l.tool', req.query.tool);
     eq('COALESCE(l.lead_source, l.source)', req.query.leadSource);
-
-    // ── ONE OFFICER'S BOOK — the admin CRM desk (owner-directed 2026-08-19:
-    // "make admin can see everybody all crm … switch view and jump from one
-    // officer full crm screen from each and everybody"). ONE endpoint, not two:
-    // the desk shows the SAME leads screen every officer already uses, narrowed
-    // to whose book is being read.
-    //
-    // ANDed onto the scope exactly like the three filters above, NEVER in place
-    // of it — that is the whole reason this is a filter and not a second route.
-    // For an admin (`see_all_files`, so no scope clause at all) it narrows the
-    // company down to one officer. For a plain loan officer the scope clause is
-    // still there, so `officer_id = <somebody else>` AND `(officer_id = me OR
-    // officer_id IS NULL)` can never both hold: they get an EMPTY list, not
-    // another officer's desk. A filter can only ever shrink the floor.
-    //
-    // Validated as a uuid before it reaches Postgres: `leads.officer_id` is uuid,
-    // so a malformed value would raise 22P02 and this whole list would answer
-    // 500 — an empty screen that reads as "you have no leads".
-    const officerId = typeof req.query.officerId === 'string' ? req.query.officerId.trim() : '';
-    if (officerId) {
-      if (!UUID_RE.test(officerId)) return res.status(400).json({ error: 'invalid officerId' });
-      params.push(officerId);
-      conds.push(`l.officer_id=$${params.length}`);
-    }
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 
     const r = await db.query(

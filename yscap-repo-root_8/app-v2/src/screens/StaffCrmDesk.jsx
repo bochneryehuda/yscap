@@ -50,10 +50,10 @@ const MUTED = '#4B585C';      // secondary text on white
 const GOLD_TEXT = '#856529';  // gold AS TEXT on a light surface
 const LINE = '#E4DED2';
 
-/* Every column is sortable, so each one states how it is read AND how it sorts.
-   `pick` is the one definition of a cell's value — the table body, the sort and
-   the switcher's dropdown all go through it, so a column can never be sorted on
-   one number and displayed as another. */
+/* Every column is sortable, so each one carries the field it reads AND the kind
+   of thing that field is — the header, the cell and `compare()` below all take
+   the value from the SAME `key`, so a column can never be sorted on one number
+   and displayed as another. `title` is what the header explains on hover. */
 const COLUMNS = [
   { key: 'name', label: 'Loan officer', kind: 'text',
     title: 'Every active internal member of staff, including the ones with nothing yet.' },
@@ -61,11 +61,11 @@ const COLUMNS = [
     title: 'Every lead this officer owns, at any stage.' },
   { key: 'elementixLeads', label: 'From Elementix', kind: 'num',
     title: 'Of those, the ones that came from an Elementix skip trace.' },
-  { key: 'contactsUnlocked', label: 'Contacts unlocked', kind: 'num',
+  { key: 'contactsUnlocked', label: 'Unlocked', kind: 'num',
     title: 'Contacts this officer has unlocked in Elementix, all time.' },
   { key: 'creditsThisMonth', label: 'Credits this month', kind: 'num',
     title: 'Paid Elementix lookups charged to this officer this calendar month.' },
-  { key: 'lastActivityAt', label: 'Last lead activity', kind: 'date',
+  { key: 'lastActivityAt', label: 'Last activity', kind: 'date',
     title: 'The most recent activity on any lead they own.' },
 ];
 
@@ -228,7 +228,6 @@ export default function StaffCrmDesk() {
                       </th>
                     );
                   })}
-                  <th style={{ color: MUTED }} />
                 </tr>
               </thead>
               <tbody>
@@ -248,7 +247,6 @@ export default function StaffCrmDesk() {
                   <td className="num" style={{ color: INK, fontWeight: 700 }}>{fmtNum(company.contactsUnlocked)}</td>
                   <td className="num" style={{ color: INK, fontWeight: 700 }}>{fmtNum(company.creditsThisMonth)}</td>
                   <td style={{ color: MUTED, whiteSpace: 'nowrap' }}>{fmtWhen(company.lastActivityAt)}</td>
-                  <td />
                 </tr>
                 <tr style={{ background: '#FBF9F4' }}>
                   <td style={{ color: INK, whiteSpace: 'nowrap' }}>
@@ -260,33 +258,43 @@ export default function StaffCrmDesk() {
                   <td className="num" style={{ color: MUTED }}>—</td>
                   <td className="num" style={{ color: MUTED }}>—</td>
                   <td style={{ color: MUTED, whiteSpace: 'nowrap' }}>{fmtWhen(unassigned.lastActivityAt)}</td>
-                  <td />
                 </tr>
 
                 {ordered.length === 0 && (
-                  <tr><td colSpan={COLUMNS.length + 1} style={{ color: MUTED }}>
+                  <tr><td colSpan={COLUMNS.length} style={{ color: MUTED }}>
                     No active internal staff on the roster.
                   </td></tr>
                 )}
                 {ordered.map((o) => (
                   <tr key={o.id} className="lead-row" style={{ cursor: 'pointer' }}
                     onClick={() => open(o.id)}>
-                    <td style={{ color: INK, fontWeight: 600, whiteSpace: 'nowrap' }}>
-                      {o.name}
-                      <div style={{ color: MUTED, fontSize: 12.5, fontWeight: 400, marginTop: 3 }}>{o.email}</div>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {/* THE NAME IS THE WAY IN — a real button, not a styled
+                          div, so the whole table can be walked and opened from
+                          the keyboard. The row's own click is a convenience on
+                          top of it, never the only way through. Putting it here
+                          instead of in a column of its own is what keeps every
+                          number on screen at desktop width. */}
+                      <button type="button" title={`Open ${o.name}’s CRM`}
+                        onClick={(e) => { e.stopPropagation(); open(o.id); }}
+                        style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer',
+                          font: 'inherit', fontWeight: 700, color: INK, textDecoration: 'underline' }}>
+                        {o.name} →
+                      </button>
+                      {/* CAPPED, NOT WRAPPED. One long address in this column
+                          pushes every number off the panel — on a phone that
+                          leaves an admin looking at a list of names with no
+                          figures beside them. The full address stays reachable
+                          on hover. */}
+                      <div title={o.email || ''}
+                        style={{ color: MUTED, fontSize: 12.5, fontWeight: 400, marginTop: 3,
+                          maxWidth: 190, overflow: 'hidden', textOverflow: 'ellipsis' }}>{o.email}</div>
                     </td>
                     <td className="num" style={{ color: INK }}>{fmtNum(o.leads)}</td>
                     <td className="num" style={{ color: INK }}>{fmtNum(o.elementixLeads)}</td>
                     <td className="num" style={{ color: INK }}>{fmtNum(o.contactsUnlocked)}</td>
                     <td className="num" style={{ color: INK }}>{fmtNum(o.creditsThisMonth)}</td>
                     <td style={{ color: MUTED, whiteSpace: 'nowrap' }}>{fmtWhen(o.lastActivityAt)}</td>
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      <button type="button" className="btn btn-line btn-sm"
-                        style={{ fontSize: 16, color: INK }}
-                        onClick={(e) => { e.stopPropagation(); open(o.id); }}>
-                        Open CRM →
-                      </button>
-                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -295,7 +303,10 @@ export default function StaffCrmDesk() {
         </div>
 
         <div style={{ color: MUTED, fontSize: 13.5 }}>
-          Credits are counted for {monthLabel}. “—” means the figure could not be read — it does not mean zero.
+          <strong style={{ color: INK }}>Unlocked</strong> is contacts unlocked in Elementix, all time;
+          {' '}<strong style={{ color: INK }}>Credits this month</strong> is what was spent on paid lookups in {monthLabel}.
+          {' '}“—” means the figure could not be read — it does not mean zero.
+          {' '}On a narrow screen the table scrolls sideways — swipe it to reach the rest of the columns.
         </div>
       </div>
     </>

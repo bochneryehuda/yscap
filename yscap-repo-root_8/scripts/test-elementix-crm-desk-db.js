@@ -227,6 +227,30 @@ function call(server, method, p, token, body) {
     ok(got.length === 2 && got.every((n) => n.includes('Elx')),
       'it stacks with the source filter instead of replacing it');
 
+    /* THE COUNTS BESIDE THE PICKER BELONG TO THE OFFICER BEING READ, NOT TO THE
+       COMPANY. Caught in a real browser, not in review: the "From Elementix"
+       tile on Ada's page printed 6 — every Elementix lead in the database —
+       under her name, because the facet counts were taken over the SCOPE
+       snapshot and the officer filter sat below it. A tile that shows the
+       company's number under one person's name is a wrong number, not a
+       cosmetic one. (The ORIGIN filters stay out of the snapshot on purpose:
+       selecting a group must not collapse the list of groups you can pick.) */
+    r = await call(server, 'GET', `/api/staff/leads?officerId=${offA}&counts=1`, TA);
+    const facetsA = (r.body && r.body.facets) || [];
+    const elxA = facetsA.filter((f) => f.source === 'elementix').reduce((n, f) => n + Number(f.count), 0);
+    const allA = facetsA.reduce((n, f) => n + Number(f.count), 0);
+    ok(elxA === 2 && allA === 3,
+      `the per-origin counts are that officer's, not the company's (2 of 3, got ${elxA} of ${allA})`);
+
+    r = await call(server, 'GET', '/api/staff/leads?counts=1', TA);
+    const allCompany = ((r.body && r.body.facets) || []).reduce((n, f) => n + Number(f.count), 0);
+    ok(allCompany > allA, 'while unfiltered the same admin still counts the whole company');
+
+    r = await call(server, 'GET', `/api/staff/leads?officerId=${offA}&source=elementix&counts=1`, TA);
+    const stillA = ((r.body && r.body.facets) || []).reduce((n, f) => n + Number(f.count), 0);
+    ok(stillA === 3,
+      `choosing an origin does NOT collapse the counts — they stay the officer's whole desk (3, got ${stillA})`);
+
     r = await call(server, 'GET', '/api/staff/leads?officerId=not-a-uuid', TA);
     ok(r.status === 400, 'a malformed officer id is refused, never handed to Postgres to throw on');
     r = await call(server, 'GET', `/api/staff/leads?officerId=${encodeURIComponent("' OR 1=1 --")}`, TA);
