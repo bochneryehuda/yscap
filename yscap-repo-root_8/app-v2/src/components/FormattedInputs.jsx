@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { moneyStr } from '../lib/money.js';
+import { dayInputValue } from '../lib/dates.js';
 
 /* Money input: shows a $ prefix and comma-grouped digits while storing a plain
    numeric string in the form (so the backend still gets a number). */
@@ -67,6 +68,38 @@ export function ZipInput({ value, onChange, placeholder, ...rest }) {
     <input className="input" inputMode="numeric" autoComplete="off" value={formatZip(value)}
       placeholder={placeholder || '12345'}
       onChange={(e) => onChange(formatZip(e.target.value))} {...rest} />
+  );
+}
+
+/* Draft-commit <input type="date"> — a date box that DOESN'T fight the typist.
+   A save-on-every-onChange date input is broken by construction: while you TYPE
+   the year the browser fires change with each intermediate value (0002 → 0020 →
+   0202 → 2026), so a field wired straight to a PATCH fires a burst of racing
+   saves — and the reload each save triggers rewrites the controlled input
+   mid-typing, yanking the typed date back out ("you type the date, and it
+   doesn't get saved"). First fixed for the loan file's closing date
+   (owner-reported: "you can't even type in dates"); the lead CRM's follow-up
+   date had the same bug, so the pattern now lives HERE — one definition. Holds
+   a local draft, commits on blur/Enter only, and only a real complete date (or
+   a deliberate clear) — never a mid-type intermediate. onCommit receives
+   'YYYY-MM-DD' or null (cleared). Wire every directly-saving date box through
+   this; a date inside a draft form with its own Save button doesn't need it. */
+export function DateCommitInput({ value, onCommit, className = 'input', ...rest }) {
+  const [draft, setDraft] = useState(dayInputValue(value));
+  useEffect(() => { setDraft(dayInputValue(value)); }, [value]);
+  const commit = () => {
+    const cur = dayInputValue(value);
+    if (draft === cur) return;                                   // unchanged
+    if (draft && !/^\d{4}-\d{2}-\d{2}$/.test(draft)) return;      // incomplete → ignore
+    if (draft && Number(draft.slice(0, 4)) < 1900) return;        // mid-type year → ignore
+    onCommit(draft || null);
+  };
+  return (
+    <input className={className} type="date" value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+      {...rest} />
   );
 }
 
