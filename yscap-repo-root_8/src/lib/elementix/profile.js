@@ -413,6 +413,51 @@ async function ensurePersonRow(personId, { name, state } = {}, client = db) {
    future section that genuinely is filtered by state. */
 const SECTION_STATE = '';
 
+/**
+ * FIT A SECTION'S PAYLOAD UNDER THE jsonb CEILING BY DROPPING ROWS, NOT THE LOT.
+ *
+ * `crmTools.vendorJsonb` refuses to slice a serialized document (a truncated one
+ * is not valid JSON and Postgres rejects the whole write), so over its ceiling it
+ * REPLACES the payload with a marker. That is right for the raw copy it was
+ * written for and exactly wrong here: `payload.rows` IS what the tab renders, so
+ * the biggest portfolios — the ones worth reading — would store a marker, and
+ * `readProfile` would then compute `rowCount: 0` from the missing array and draw
+ * an EMPTY TAB with no error anywhere. A person with 400 mortgages would read as
+ * a person with none. Measured: a real mortgage row serialises to well over a
+ * kilobyte, so the 400,000-character ceiling lands somewhere around 350 rows —
+ * under the 1,000 a section can hold.
+ *
+ * So the rows are trimmed until the document fits and the payload SAYS how many
+ * were left out. Nothing is silently capped: `readProfile` turns `rowsDropped`
+ * into `truncated`, which the screen already renders as "showing the first N —
+ * there are more in Elementix than we pulled".
+ *
+ * Halving rather than dropping one at a time: a row is not a fixed size, and
+ * walking down from 1,000 one row per serialise is 650 serialisations of a
+ * 400 KB string on the write path.
+ */
+function fitSectionPayload(payload) {
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.rows)) return payload;
+  const MAX = crmTools._internals.JSONB_MAX;
+  const fits = (v) => { try { return JSON.stringify(v).length <= MAX; } catch (_) { return false; } };
+  if (fits(payload)) return payload;
+
+  let lo = 0;
+  let hi = payload.rows.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits({ ...payload, rows: payload.rows.slice(0, mid) })) lo = mid; else hi = mid - 1;
+  }
+  const kept = payload.rows.slice(0, lo);
+  return {
+    ...payload,
+    rows: kept,
+    // The count the vendor reported is DELIBERATELY left alone: it is still the
+    // truth about how many exist, and it is what makes "N of M" honest.
+    rowsDropped: payload.rows.length - kept.length,
+  };
+}
+
 async function writeSection(personId, section, out, client = db) {
   await client.query(
     `INSERT INTO elementix_person_sections
@@ -424,7 +469,7 @@ async function writeSection(personId, section, out, client = db) {
             calls_spent = EXCLUDED.calls_spent, last_error = EXCLUDED.last_error,
             unverified = EXCLUDED.unverified`,
     [personId, section.key, SECTION_STATE,
-      out.payload === undefined || out.payload === null ? null : crmTools.vendorJsonb(out.payload),
+      out.payload === undefined || out.payload === null ? null : crmTools.vendorJsonb(fitSectionPayload(out.payload)),
       out.rowCount == null ? null : out.rowCount,
       !!out.truncated, out.calls || 0, out.error || null, !!out.unverified]);
 }
@@ -710,6 +755,10 @@ async function readProfile(personId, opts = {}) {
       if (r.last_error) { anyErr = true; continue; }
       anyOk = true;
       if (r.truncated) truncated = true;
+      // Rows the STORE could not hold are as truncated as rows the vendor never
+      // sent — from the reader's side they are the same sentence, and leaving it
+      // unsaid is the silent cap this module refuses everywhere else.
+      if (num(payload.rowsDropped) > 0) { truncated = true; src.rowsDropped = num(payload.rowsDropped); }
       if (r.unverified) unverified = true;
       if (src.total != null) total = (total || 0) + src.total;
       for (const row of (Array.isArray(payload.rows) ? payload.rows : [])) {
@@ -805,5 +854,5 @@ module.exports = {
   buildProfile, readProfile,
   familyOf, canonicalOf, openAliasCandidates, decideAlias, syncCrossStateCandidates,
   overviewFacts,
-  _internals: { rowsFrom, objectFrom, looksFull, stripHeavy, rowKey, perPageFor, num, ensurePersonRow, PAGE_SIZE, MAX_PAGES, CALL_BUDGET, FRESH_HOURS, SECTION_STATE },
+  _internals: { rowsFrom, objectFrom, looksFull, stripHeavy, rowKey, perPageFor, num, ensurePersonRow, fitSectionPayload, PAGE_SIZE, MAX_PAGES, CALL_BUDGET, FRESH_HOURS, SECTION_STATE },
 };
