@@ -1772,6 +1772,11 @@ function SettingsPanel() {
         <Toggle label="Bell alert when a challenge lands" v={s.settings.challengeAlerts} on={(v) => set('challengeAlerts', v)} />
         <Toggle label="Joke slices on the prize wheel (Elementix calls)" v={s.settings.jokePrizes} on={(v) => set('jokePrizes', v)} />
         <Toggle label="Big-screen (TV) mode available" v={s.settings.tvModeEnabled} on={(v) => set('tvModeEnabled', v)} />
+        <Toggle
+          label="Autopilot — spins and challenges open THEMSELVES at their set times (off = only what you start by hand goes out)"
+          v={s.settings.autoLaunchEnabled === true}
+          on={(v) => set('autoLaunchEnabled', v)}
+        />
       </div>
       {s.canEditHosts !== false && <HostsPicker hosts={s.settings.hosts || []} onChange={(ids) => set('hosts', ids)} />}
       <button className="btn" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save settings'}</button>

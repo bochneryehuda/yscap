@@ -111,7 +111,17 @@ async function planDay(sessionId, spinId, opts = {}) {
  */
 async function tick(now = new Date()) {
   const out = { opened: [], closed: [], errors: [] };
+  // The autopilot switch (owner-directed 2026-08-19): with it OFF, a scheduled
+  // challenge WAITS for a human's "Start now" instead of landing on everyone's
+  // screen by itself. Closing stays automatic either way — a window that ended
+  // has ended, and shutting a door is not populating anything.
+  let autoOpen = false;
   try {
+    const cfg = await require('./settings').load();
+    autoOpen = cfg.settings && cfg.settings.autoLaunchEnabled === true;
+  } catch (_) { autoOpen = false; }
+  try {
+    if (!autoOpen) throw Object.assign(new Error('skip'), { autopilotOff: true });
     const open = await db.query(
       `UPDATE arena_challenges c
           SET state = 'live', updated_at = now()
@@ -122,7 +132,7 @@ async function tick(now = new Date()) {
         RETURNING c.*`, [now]);
     out.opened = open.rows;
     for (const c of open.rows) broadcast('arena:challenge-open', publicChallenge(c));
-  } catch (e) { out.errors.push(`open: ${e.message}`); }
+  } catch (e) { if (!e.autopilotOff) out.errors.push(`open: ${e.message}`); }
 
   try {
     const shut = await db.query(
