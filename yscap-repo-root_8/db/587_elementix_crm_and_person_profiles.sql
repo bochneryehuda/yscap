@@ -1,5 +1,5 @@
 -- ============================================================================
--- 585 — ELEMENTIX FOR THE CRM: per-officer connections, skip-trace capture,
+-- 587 — ELEMENTIX FOR THE CRM: per-officer connections, skip-trace capture,
 --       and the cached "mega profile" every lead and borrower can carry.
 --
 -- ── WHAT CHANGED, AND WHY IT NEEDED A SECOND ELEMENTIX SHAPE ────────────────

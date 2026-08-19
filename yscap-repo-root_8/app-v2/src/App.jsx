@@ -100,6 +100,12 @@ import StaffTapes from './screens/StaffTapes.jsx';
 import StaffAuditLog from './screens/StaffAuditLog.jsx';
 import EsignDashboard from './screens/EsignDashboard.jsx';
 import StaffNotificationCenter from './screens/StaffNotificationCenter.jsx';
+// THE ARENA — the live staff game board. The ROUTE always exists; what decides
+// whether anybody can use it is the server's master switch, which answers 404
+// to every /api/arena call while it is off, so the screen simply says there is
+// nothing here. Gating the route itself in the browser would put a second copy
+// of that rule somewhere it could drift.
+import StaffArena from './screens/StaffArena.jsx';
 // TPO (broker) portal — the third front door (kind='tpo', firm-scoped).
 import TpoLayout from './components/TpoLayout.jsx';
 import TpoLogin from './screens/TpoLogin.jsx';
@@ -341,6 +347,7 @@ export default function App() {
           <Route path="/internal/dashboards" element={<StaffPrivate><StaffDashboards /></StaffPrivate>} />
         <Route path="/internal/dashboards/:id" element={<StaffPrivate><StaffDashboard /></StaffPrivate>} />
         <Route path="/internal/notifications" element={<StaffPrivate><StaffNotificationCenter /></StaffPrivate>} />
+        <Route path="/internal/arena" element={<StaffPrivate><StaffArena /></StaffPrivate>} />
 
           {/* legacy /staff/* deep links (old emails, bookmarks) → /internal/* */}
           <Route path="/staff" element={<LegacyStaffRedirect />} />

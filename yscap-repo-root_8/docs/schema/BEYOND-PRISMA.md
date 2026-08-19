@@ -5,7 +5,7 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**805 objects**, and a database rebuilt from the Prisma
+**819 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 349 |
-| Columns | 5687 |
+| Tables | 360 |
+| Columns | 5806 |
 | Triggers | 35 |
 | Functions | 138 |
-| CHECK constraints | 284 |
+| CHECK constraints | 297 |
 | Generated columns | 12 |
-| Partial indexes | 336 |
-| Primary keys | 349 |
-| Foreign keys | 719 |
+| Partial indexes | 337 |
+| Primary keys | 360 |
+| Foreign keys | 757 |
 | Unique constraints | 47 |
-| Indexes (all kinds) | 1200 |
+| Indexes (all kinds) | 1230 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -227,8 +227,18 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (336)
+## Partial indexes (337)
 
+- **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
+- **arena_challenges_due_idx** on `arena_challenges`
+- **arena_challenges_live_idx** on `arena_challenges`
+- **arena_draws_winner_idx** on `arena_draws`
+- **arena_messages_pinned_idx** on `arena_messages`
+- **arena_prizes_slug_idx** on `arena_prizes`
+- **arena_sessions_one_live_idx** on `arena_sessions`
+- **arena_spins_deadline_idx** on `arena_spins`
+- **arena_spins_launch_idx** on `arena_spins`
+- **arena_tickets_one_per_entry_idx** on `arena_tickets`
 - **borrower_assistants_borrower_idx** on `borrower_assistants`
 - **borrower_assistants_email_uk** on `borrower_assistants`
 - **borrowers_email_owner_uk** on `borrowers`
@@ -271,7 +281,6 @@ the live database.
 - **idx_audit_detail_application** on `audit_log`
 - **idx_audit_impersonator** on `audit_log`
 - **idx_borrower_dedup_open** on `borrower_dedup_candidates`
-- **idx_borrowers_elx_person** on `borrowers`
 - **idx_borrowers_name_review** on `borrowers`
 - **idx_borrowers_name_unchecked** on `borrowers`
 - **idx_borrowers_portal_invited** on `borrowers`
@@ -336,14 +345,8 @@ the live database.
 - **idx_ds_inbox_envelope** on `docusign_event_inbox`
 - **idx_ds_inbox_unprocessed** on `docusign_event_inbox`
 - **idx_elx_addr_proposed** on `elementix_address_links`
-- **idx_elx_alias_open** on `elementix_person_aliases`
-- **idx_elx_backfill_pending** on `elementix_backfill_queue`
 - **idx_elx_cache_usable** on `elementix_lookup_cache`
 - **idx_elx_calls_paid** on `elementix_calls`
-- **idx_elx_contacts_by_email** on `elementix_contacts`
-- **idx_elx_persons_primary** on `elementix_persons`
-- **idx_elx_skip_pending** on `elementix_skip_traces`
-- **idx_elx_users_staff** on `elementix_users`
 - **idx_email_msgs_app** on `email_messages`
 - **idx_email_msgs_omitted** on `email_messages`
 - **idx_email_msgs_omitted_app** on `email_messages`
@@ -379,7 +382,6 @@ the live database.
 - **idx_label_examples_untrained** on `label_examples`
 - **idx_ldp_page_unique** on `logical_document_pages`
 - **idx_lead_tasks_open** on `lead_tasks`
-- **idx_leads_elx_person** on `leads`
 - **idx_leads_follow_up** on `leads`
 - **idx_leads_rr_rotation** on `leads`
 - **idx_leads_session_officer** on `leads`
@@ -524,7 +526,6 @@ the live database.
 - **uq_draw_media_tp_src** on `draw_media`
 - **uq_elementix_oauth_company** on `elementix_oauth`
 - **uq_elementix_oauth_staff** on `elementix_oauth`
-- **uq_elx_skip_person_staff** on `elementix_skip_traces`
 - **uq_email_msgs_inbound_app** on `email_messages`
 - **uq_email_msgs_notification** on `email_messages`
 - **uq_email_tokens_login_hash** on `email_tokens`
@@ -566,7 +567,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (284)
+## CHECK constraints (297)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -587,6 +588,25 @@ the live database.
 - **appraisal_payment_intents_performed_by_check** on `appraisal_payment_intents`
 - **appraisal_payment_intents_vendor_check** on `appraisal_payment_intents`
 - **appraisals_subject_units_basis_ck** on `appraisals`
+- **arena_challenge_entries_status_chk** on `arena_challenge_entries`
+- **arena_challenges_award_chk** on `arena_challenges`
+- **arena_challenges_numbers_chk** on `arena_challenges`
+- **arena_challenges_proof_chk** on `arena_challenges`
+- **arena_challenges_state_chk** on `arena_challenges`
+- **arena_checkins_status_chk** on `arena_checkins`
+- **arena_claims_status_chk** on `arena_claims`
+- **arena_draws_state_chk** on `arena_draws`
+- **arena_draws_stop_mode_chk** on `arena_draws`
+- **arena_entries_amounts_chk** on `arena_entries`
+- **arena_entries_kind_chk** on `arena_entries`
+- **arena_entries_status_chk** on `arena_entries`
+- **arena_messages_kind_chk** on `arena_messages`
+- **arena_prizes_kind_chk** on `arena_prizes`
+- **arena_sessions_state_chk** on `arena_sessions`
+- **arena_settings_singleton** on `arena_settings`
+- **arena_spins_state_chk** on `arena_spins`
+- **arena_suggestions_status_chk** on `arena_suggestions`
+- **arena_tickets_source_chk** on `arena_tickets`
 - **asset_ledger_entries_amount_chk** on `asset_ledger_entries`
 - **asset_ledger_entries_kind_chk** on `asset_ledger_entries`
 - **asset_ledger_entries_override_key_chk** on `asset_ledger_entries`
@@ -699,13 +719,7 @@ the live database.
 - **draw_wire_instructions_name_kind_check** on `draw_wire_instructions`
 - **elementix_address_links_confidence_check** on `elementix_address_links`
 - **elementix_address_links_state_check** on `elementix_address_links`
-- **elementix_backfill_queue_status_check** on `elementix_backfill_queue`
-- **elementix_contacts_source_check** on `elementix_contacts`
 - **elementix_lookup_cache_status_check** on `elementix_lookup_cache`
-- **elementix_person_aliases_origin_check** on `elementix_person_aliases`
-- **elementix_person_sections_section_check** on `elementix_person_sections`
-- **elementix_skip_traces_source_check** on `elementix_skip_traces`
-- **elementix_skip_traces_status_check** on `elementix_skip_traces`
 - **email_messages_direction_check** on `email_messages`
 - **email_tokens_kind_check** on `email_tokens`
 - **email_tokens_owner_chk** on `email_tokens`
@@ -853,7 +867,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (719)
+## Foreign keys (757)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -932,6 +946,57 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **appraiser_contacts** → `appraisers` — `FOREIGN KEY (appraiser_id) REFERENCES appraisers(id) ON DELETE CASCADE`
 - **appraiser_contacts** → `appraisals` — `FOREIGN KEY (last_appraisal_id) REFERENCES appraisals(id) ON DELETE SET NULL`
 - **appraiser_licenses** → `appraisers` — `FOREIGN KEY (appraiser_id) REFERENCES appraisers(id) ON DELETE CASCADE`
+- **arena_awards** → `arena_entries` — `FOREIGN KEY (entry_id) REFERENCES arena_entries(id) ON DELETE SET NULL`
+- **arena_awards** → `arena_sessions` — `FOREIGN KEY (session_id) REFERENCES arena_sessions(id) ON DELETE CASCADE`
+- **arena_awards** → `arena_spins` — `FOREIGN KEY (spin_id) REFERENCES arena_spins(id) ON DELETE CASCADE`
+- **arena_awards** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **arena_challenge_entries** → `arena_challenges` — `FOREIGN KEY (challenge_id) REFERENCES arena_challenges(id) ON DELETE CASCADE`
+- **arena_challenge_entries** → `staff_users` — `FOREIGN KEY (decided_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_challenge_entries** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **arena_challenges** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_challenges** → `arena_sessions` — `FOREIGN KEY (session_id) REFERENCES arena_sessions(id) ON DELETE CASCADE`
+- **arena_challenges** → `arena_spins` — `FOREIGN KEY (spin_id) REFERENCES arena_spins(id) ON DELETE SET NULL`
+- **arena_checkins** → `staff_users` — `FOREIGN KEY (decided_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_checkins** → `arena_spins` — `FOREIGN KEY (spin_id) REFERENCES arena_spins(id) ON DELETE CASCADE`
+- **arena_checkins** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **arena_claims** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
+- **arena_claims** → `staff_users` — `FOREIGN KEY (decided_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_claims** → `arena_qualifiers` — `FOREIGN KEY (qualifier_id) REFERENCES arena_qualifiers(id) ON DELETE CASCADE`
+- **arena_claims** → `arena_spins` — `FOREIGN KEY (spin_id) REFERENCES arena_spins(id) ON DELETE CASCADE`
+- **arena_claims** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **arena_draws** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_draws** → `arena_spins` — `FOREIGN KEY (spin_id) REFERENCES arena_spins(id) ON DELETE CASCADE`
+- **arena_draws** → `staff_users` — `FOREIGN KEY (stop_holder_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_draws** → `arena_entries` — `FOREIGN KEY (winner_entry_id) REFERENCES arena_entries(id) ON DELETE SET NULL`
+- **arena_draws** → `staff_users` — `FOREIGN KEY (winner_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_entries** → `staff_users` — `FOREIGN KEY (decided_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_entries** → `arena_spins` — `FOREIGN KEY (spin_id) REFERENCES arena_spins(id) ON DELETE CASCADE`
+- **arena_entries** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **arena_messages** → `staff_users` — `FOREIGN KEY (deleted_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_messages** → `arena_sessions` — `FOREIGN KEY (session_id) REFERENCES arena_sessions(id) ON DELETE CASCADE`
+- **arena_messages** → `arena_spins` — `FOREIGN KEY (spin_id) REFERENCES arena_spins(id) ON DELETE SET NULL`
+- **arena_messages** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_notices** → `arena_spins` — `FOREIGN KEY (spin_id) REFERENCES arena_spins(id) ON DELETE CASCADE`
+- **arena_prizes** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_qualifiers** → `arena_spins` — `FOREIGN KEY (spin_id) REFERENCES arena_spins(id) ON DELETE CASCADE`
+- **arena_session_members** → `staff_users` — `FOREIGN KEY (added_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_session_members** → `arena_sessions` — `FOREIGN KEY (session_id) REFERENCES arena_sessions(id) ON DELETE CASCADE`
+- **arena_session_members** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **arena_sessions** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_settings** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_spins** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_spins** → `arena_sessions` — `FOREIGN KEY (session_id) REFERENCES arena_sessions(id) ON DELETE CASCADE`
+- **arena_suggestion_votes** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
+- **arena_suggestion_votes** → `arena_suggestions` — `FOREIGN KEY (suggestion_id) REFERENCES arena_suggestions(id) ON DELETE CASCADE`
+- **arena_suggestions** → `staff_users` — `FOREIGN KEY (decided_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_suggestions** → `arena_sessions` — `FOREIGN KEY (session_id) REFERENCES arena_sessions(id) ON DELETE CASCADE`
+- **arena_suggestions** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_tickets** → `arena_challenges` — `FOREIGN KEY (challenge_id) REFERENCES arena_challenges(id) ON DELETE SET NULL`
+- **arena_tickets** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **arena_tickets** → `arena_challenge_entries` — `FOREIGN KEY (entry_id) REFERENCES arena_challenge_entries(id) ON DELETE SET NULL`
+- **arena_tickets** → `arena_sessions` — `FOREIGN KEY (session_id) REFERENCES arena_sessions(id) ON DELETE CASCADE`
+- **arena_tickets** → `arena_spins` — `FOREIGN KEY (spin_id) REFERENCES arena_spins(id) ON DELETE CASCADE`
+- **arena_tickets** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
 - **asset_ledger_entries** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
 - **asset_ledger_entries** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **borrower_assistants** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
@@ -1140,24 +1205,11 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **draw_wire_instructions** → `checklist_items` — `FOREIGN KEY (operating_agreement_item_id) REFERENCES checklist_items(id) ON DELETE SET NULL`
 - **elementix_address_links** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id)`
 - **elementix_address_links** → `track_records` — `FOREIGN KEY (track_record_id) REFERENCES track_records(id) ON DELETE CASCADE`
-- **elementix_backfill_queue** → `leads` — `FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL`
 - **elementix_calls** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
-- **elementix_contacts** → `elementix_persons` — `FOREIGN KEY (person_id) REFERENCES elementix_persons(person_id) ON DELETE CASCADE`
-- **elementix_contacts** → `staff_users` — `FOREIGN KEY (unlocked_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **elementix_oauth** → `staff_users` — `FOREIGN KEY (connected_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **elementix_oauth_pending** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
 - **elementix_oauth_pending** → `staff_users` — `FOREIGN KEY (started_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **elementix_oauth** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE CASCADE`
-- **elementix_person_aliases** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
-- **elementix_person_aliases** → `staff_users` — `FOREIGN KEY (rejected_by) REFERENCES staff_users(id) ON DELETE SET NULL`
-- **elementix_person_sections** → `elementix_persons` — `FOREIGN KEY (person_id) REFERENCES elementix_persons(person_id) ON DELETE CASCADE`
-- **elementix_persons** → `elementix_persons` — `FOREIGN KEY (primary_person_id) REFERENCES elementix_persons(person_id) ON DELETE SET NULL`
-- **elementix_persons** → `staff_users` — `FOREIGN KEY (refreshed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
-- **elementix_skip_traces** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
-- **elementix_skip_traces** → `leads` — `FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL`
-- **elementix_skip_traces** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
-- **elementix_users** → `staff_users` — `FOREIGN KEY (linked_by) REFERENCES staff_users(id) ON DELETE SET NULL`
-- **elementix_users** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **email_messages** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
 - **email_opens** → `notifications` — `FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE`
 - **email_tokens** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
@@ -1648,7 +1700,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 349 primary keys and 1200 indexes is
+Every one of the 360 primary keys and 1230 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
