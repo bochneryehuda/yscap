@@ -235,6 +235,23 @@ async function ensureLead({ personId, staffId, name, state, contact, client = db
     return { id, created: false };
   }
 
+  /* ALREADY A CLIENT? A person we hold as a BORROWER is not a prospect, and the
+     history import carries a thousand of them at once — so a lead that is really
+     an existing client has to SAY so rather than sit in the pipeline looking new.
+     Matched on the Elementix person id and nothing else: that is an exact
+     identity the vendor issued, never a name that merely looks alike, and this
+     repo does not merge look-alike records without a human (see the track-record
+     findings rule). Nothing is skipped and nothing is merged — the lead is still
+     made, and the officer is told where the person already lives. */
+  let borrower = null;
+  try {
+    const b = await client.query(
+      `SELECT id, NULLIF(full_name, '') AS name FROM borrowers
+         WHERE elementix_person_id = $1 ORDER BY created_at LIMIT 1`,
+      [personId]);
+    borrower = b.rows[0] || null;
+  } catch (_) { borrower = null; }   // a lead is never lost over this
+
   const parts = str(name).split(/\s+/).filter(Boolean);
   const first = parts.length > 1 ? parts.slice(0, -1).join(' ') : (parts[0] || null);
   const last = parts.length > 1 ? parts[parts.length - 1] : null;
@@ -256,8 +273,9 @@ async function ensureLead({ personId, staffId, name, state, contact, client = db
      VALUES ($1, $2::uuid, 'system', 'Added from Elementix',
              $3)`,
     [id, staffId,
-      `Skip traced in Elementix${state ? ` (${state})` : ''} and added to this CRM automatically.`]);
-  return { id, created: true };
+      `Skip traced in Elementix${state ? ` (${state})` : ''} and added to this CRM automatically.`
+      + (borrower ? ` They are already a borrower in PILOT${borrower.name ? ` (${borrower.name})` : ''} — this lead is the Elementix record of the same person, not a new client.` : '')]);
+  return { id, created: true, borrowerId: borrower ? borrower.id : null };
 }
 
 /** Store what the skip trace bought. Upsert — a refresh replaces the details. */
@@ -476,7 +494,7 @@ async function finishSkipTrace({ personId, staffId, reason, name, state, charged
   await recordSkipTrace({ personId, staffId, name: personName, state, reason, charged, source,
     status: 'complete', leadId: lead.id });
 
-  if (lead.created) notifyOfficer({ staffId, leadId: lead.id, name: personName, contact }).catch(() => {});
+  if (lead.created) notifyOfficer({ staffId, leadId: lead.id, name: personName, contact, borrowerId: lead.borrowerId }).catch(() => {});
 
   return { ok: true, charged, leadId: lead.id, leadCreated: lead.created, contact,
     counts: { phones: contact.phones.length, emails: contact.emails.length } };
@@ -520,7 +538,7 @@ async function recordSkipTrace({ personId, staffId, name, state, reason, charged
 }
 
 /** Tell the officer it landed. In-app only — see STAFF_INAPP_TYPES in notify.js. */
-async function notifyOfficer({ staffId, leadId, name, contact }) {
+async function notifyOfficer({ staffId, leadId, name, contact, borrowerId = null }) {
   const notify = require('../notify');
   const n = contact ? contact.phones.length : 0;
   await notify.notifyStaff(staffId, {
@@ -530,11 +548,15 @@ async function notifyOfficer({ staffId, leadId, name, contact }) {
        automatic import of a contact somebody unlocked in Elementix's own
        screens, so it says "you looked them up in Elementix" — true either way —
        rather than naming a button they may never have pressed. */
-    body: n
+    /* AN EXISTING CLIENT IS SAID OUT LOUD. Telling an officer somebody "is now a
+       lead" about a person PILOT already holds as a borrower is how a CRM starts
+       being distrusted — and the history import carries a thousand of them. */
+    body: (n
       ? `You looked ${name} up in Elementix. They are now a lead in your CRM with ${n} phone number${n === 1 ? '' : 's'}.`
-      : `You looked ${name} up in Elementix. They are now a lead in your CRM.`,
-    link: `/internal/leads/${leadId}`,
-    ctaLabel: 'Open the lead',
+      : `You looked ${name} up in Elementix. They are now a lead in your CRM.`)
+      + (borrowerId ? ' They are already a borrower in PILOT — this is the Elementix record of the same person, not a new client.' : ''),
+    link: borrowerId ? `/internal/borrowers/${borrowerId}` : `/internal/leads/${leadId}`,
+    ctaLabel: borrowerId ? 'Open their borrower profile' : 'Open the lead',
   });
 }
 

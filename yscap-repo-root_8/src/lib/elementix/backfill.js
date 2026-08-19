@@ -320,8 +320,17 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
        FROM elementix_backfill_queue q
        LEFT JOIN elementix_users u ON u.email = q.unlocked_by_email
       WHERE q.status = 'pending' AND q.attempts < $2
-      ORDER BY q.listed_at
-      LIMIT $1`, [Math.max(1, Math.min(Number(limit) || WORK_BATCH, 200)), MAX_ATTEMPTS]);
+      /* A CONTACT SOMEBODY UNLOCKED THIS MORNING GOES FIRST. Oldest-first alone
+         is right for draining a backlog and wrong on the day the import is
+         switched on: a thousand rows from March sit in front of the lookup an
+         officer just did, so the one notification that is actually news arrives
+         hours late — twenty rows every five minutes is four and a half hours of
+         queue. Fresh unlocks jump; within each group it is still oldest-first,
+         so nothing starves and the backlog still drains in order. */
+      ORDER BY (q.unlocked_at IS NOT NULL AND q.unlocked_at >= now() - make_interval(hours => $3)) DESC,
+               q.listed_at
+      LIMIT $1`,
+    [Math.max(1, Math.min(Number(limit) || WORK_BATCH, 200)), MAX_ATTEMPTS, NOTIFY_UNLOCKED_WITHIN_HOURS]);
 
   const out = { ok: true, worked: 0, leads: 0, notified: 0, alreadyOurs: 0, noOfficer: 0, failed: 0, remaining: 0 };
 

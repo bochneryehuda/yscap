@@ -424,6 +424,31 @@ async function main() {
   await flags.refresh();
   ok('a dry run bills nothing, and reaches the CRM as a refusal rather than an empty success');
 
+  /* AN EXISTING CLIENT IS NOT A NEW LEAD — and this is the shape the history
+     import will hit a thousand times. The lead is still made (nothing is lost,
+     nothing is merged), but it says whose record it really is and the officer is
+     sent to the borrower rather than the lead. Matched on the Elementix person
+     id alone: an exact identity the vendor issued, never a look-alike name. */
+  {
+    // Clear anything a previous run of this suite left on the same person id —
+    // a second borrower carrying it would make the ORDER BY pick the old one.
+    await db.query(`UPDATE borrowers SET elementix_person_id = NULL WHERE elementix_person_id = $1`, [PID_B]);
+    const bId = (await db.query(
+      `INSERT INTO borrowers (first_name, last_name, email, elementix_person_id)
+       VALUES ('Already','Aclient',$1::citext,$2) RETURNING id`,
+      [`elx.dup.${Date.now()}@yscapgroup.test`, PID_B])).rows[0].id;
+    await db.query(`DELETE FROM leads WHERE elementix_person_id = $1`, [PID_B]);
+    const lead = await crm.ensureLead({ personId: PID_B, staffId: officer1, name: 'Already Aclient',
+      state: 'NJ', contact: { phones: [], emails: [], addresses: [] } });
+    assert.strictEqual(lead.created, true, 'the lead is still made — nothing is lost and nothing is merged');
+    assert.strictEqual(lead.borrowerId, bId, 'and it knows the person is already a borrower');
+    const note = (await db.query(
+      `SELECT body FROM lead_activities WHERE lead_id = $1 ORDER BY created_at LIMIT 1`, [lead.id])).rows[0];
+    assert.ok(/already a borrower/i.test(note.body),
+      'the timeline says so, so nobody works it as a new client');
+    ok('a person we already hold as a borrower is flagged, never quietly duplicated');
+  }
+
   paidListsAgree(ok);
 
   console.log(`\n✓ ${passed} checks passed — the CRM skip-trace path is sound.\n`);
