@@ -78,10 +78,26 @@ const db = require('../src/db');
 const ltDb = require('../src/longterm/db');
 const auth = require('../src/auth');
 const store = require('../src/longterm/ppe/store');
-const quoteMod = require('../src/longterm/ppe/quote');
+const legsMod = require('../src/longterm/ppe/lp-agreement-legs');
 
 const SCOPE = 'company';
-const SCENARIO = { fico: 800, ltv: 70000, dscr: 1100, loan_amount: 400000, lock_days: 30 };
+// ⛔ THE TWO DOORS TAKE OPPOSITE SHAPES, AND THIS SUITE IS WHERE THAT WAS FINALLY VISIBLE (§2.123).
+//
+// There used to be ONE `SCENARIO` here — `{ fico, ltv: 70000, dscr: 1100, loan_amount, lock_days }`,
+// ENGINE FACTS in milli — and it was posted to BOTH `/quote` and `/breakdown`. Facts are right for
+// `/breakdown`; `/quote` hands the very same object to `lp.price()`, which takes a LENDER PRICE
+// scenario (`value` / `loan` / `dscr` as a RATIO). So the one suite that exercises the shadow
+// guarantee end to end had been feeding Lender Price a fact-shaped scenario the whole time — and it
+// passed, because the Lender Price leg here is a STUB that accepts anything. A stub cannot refuse
+// what the real vendor's own validator refuses (`dscr` 1100 is outside its 0–2 range), which is
+// exactly how a door came to be wired with two vocabularies and a green suite.
+//
+// Two constants now, each labelled with the door it belongs to. Never post one to the other.
+const LP_SCENARIO = {
+  purpose: 'Purchase', value: 500000, loan: 350000, fico: 800, dscr: 1.1,
+  state: 'NY', zip: '11211', countyFps: '36047', prepayMonths: 60,
+};
+const FACTS_SCENARIO = { fico: 800, ltv: 70000, dscr: 1100, loan_amount: 400000, lock_days: 30 };
 
 /** The ledger is written FIRE-AND-FORGET, so the row can land just after the response. */
 async function waitForFinding(investor, tries = 40) {
@@ -136,7 +152,7 @@ async function waitForFinding(investor, tries = 40) {
     console.log('\n1) the shadow branch — the block no test had ever executed');
     lp.rungs = [{ rate: 7.125, price: 90.000 }]; // far outside any tolerance, on purpose
     const diff = await call('POST', '/api/lt/ppe/quote', tok,
-      { scenario: SCENARIO, investor: INV_DIFF, rateSheetVersionId: version.id });
+      { scenario: LP_SCENARIO, investor: INV_DIFF, rateSheetVersionId: version.id });
 
     ok(diff.status === 200, `A1 a quote with a program answers 200 (${diff.status}: ${JSON.stringify(diff.json).slice(0, 200)})`);
     ok(diff.json && diff.json.mode === 'shadow' && diff.json.authoritative === 'lp',
@@ -177,7 +193,7 @@ async function waitForFinding(investor, tries = 40) {
       'B0 our own price was read back off the finding, so the agreement case below is built from it');
     lp.rungs = [{ rate: 7.125, price: (priceFinding ? priceFinding.ourPriceMilli : 0) / 1000 }];
     const agree = await call('POST', '/api/lt/ppe/quote', tok,
-      { scenario: SCENARIO, investor: INV_AGREE, rateSheetVersionId: version.id });
+      { scenario: LP_SCENARIO, investor: INV_AGREE, rateSheetVersionId: version.id });
     ok(agree.status === 200 && agree.json.shadow && agree.json.shadow.agreed === true,
       `B1 Lender Price quoting OUR price is reported as agreement (${agree.json && agree.json.shadow && JSON.stringify(agree.json.shadow.findings)})`);
     await new Promise((r) => setTimeout(r, 300)); // give a would-be write time to land
@@ -187,14 +203,20 @@ async function waitForFinding(investor, tries = 40) {
     // ── 3) a shadow failure never breaks the business answer ───────────────
     console.log('\n3) the guarantee the whole surface is built on');
     {
-      const realQuote = quoteMod.quoteProgram;
-      quoteMod.quoteProgram = () => { throw new Error('our engine fell over (test)'); };
+      // OUR ENGINE IS PATCHED AT THE LEG, NOT AT `quote.quoteProgram` (§2.123). This route used to
+      // call `quote.quoteProgram` directly, so swapping that export simulated the failure. It now
+      // prices through the ONE shared `buildOursLeg`, which destructures `quoteProgram` at module
+      // load — a load-time binding a later property swap cannot reach, so the old patch silently
+      // stopped simulating anything and the engine kept working. The leg IS our engine's entry
+      // point at this door, so patching it is the faithful simulation now.
+      const realLeg = legsMod.buildOursLeg;
+      legsMod.buildOursLeg = () => () => { throw new Error('our engine fell over (test)'); };
       let res;
       try {
         res = await call('POST', '/api/lt/ppe/quote', tok,
-          { scenario: SCENARIO, investor: INV_ENGINE, rateSheetVersionId: version.id });
+          { scenario: LP_SCENARIO, investor: INV_ENGINE, rateSheetVersionId: version.id });
       } finally {
-        quoteMod.quoteProgram = realQuote;
+        legsMod.buildOursLeg = realLeg;
       }
       ok(res.status === 200, `C1 OUR engine throwing still answers 200 (${res.status}) — a shadow failure may never break the quote`);
       ok(res.json && res.json.answer && res.json.answer.searchKey === 'stub-key',
@@ -212,7 +234,7 @@ async function waitForFinding(investor, tries = 40) {
       let res;
       try {
         res = await call('POST', '/api/lt/ppe/quote', tok,
-          { scenario: SCENARIO, investor: `${stamp}-lpdown`, rateSheetVersionId: version.id });
+          { scenario: LP_SCENARIO, investor: `${stamp}-lpdown`, rateSheetVersionId: version.id });
       } finally {
         lp.throwWith = null;
       }
@@ -253,7 +275,7 @@ async function waitForFinding(investor, tries = 40) {
       // `DSCR.* 30 Yr Fixed` matches `DSCR 30 Yr Fixed`; `DSCR .* 30 Yr Fixed` does not.
       lp.rungs = [{ rate: 7.125, price: 90.000 }];
       const scoped = await call('POST', '/api/lt/ppe/quote', tok,
-        { scenario: SCENARIO, investor: `${stamp}-scoped`, rateSheetVersionId: version.id });
+        { scenario: LP_SCENARIO, investor: `${stamp}-scoped`, rateSheetVersionId: version.id });
       ok(scoped.status === 200 && scoped.json.shadow && scoped.json.shadow.agreed === false
         && (scoped.json.shadow.findings || []).some((f) => f.kind === 'price_mismatch'),
         'D6 a quote against the SCOPED program still compares against the matching Lender Price program');
@@ -262,12 +284,12 @@ async function waitForFinding(investor, tries = 40) {
     // ── 6) POST /breakdown with a program ──────────────────────────────────
     console.log('\n5) POST /breakdown — a handler no suite had invoked at all');
     {
-      const none = await call('POST', '/api/lt/ppe/breakdown', tok, { scenario: SCENARIO });
+      const none = await call('POST', '/api/lt/ppe/breakdown', tok, { scenario: FACTS_SCENARIO });
       ok(none.status === 422 && /rate-sheet version/.test((none.json && none.json.error) || ''),
         `E1 with no rate sheet it REFUSES with the reason — there is nothing to break down (${none.status})`);
 
       const view = await call('POST', '/api/lt/ppe/breakdown', tok,
-        { scenario: SCENARIO, investor: INV_AGREE, rateSheetVersionId: version.id });
+        { scenario: FACTS_SCENARIO, investor: INV_AGREE, rateSheetVersionId: version.id });
       ok(view.status === 200 && view.json && view.json.breakdown && typeof view.json.breakdown === 'object',
         `E2 with one, it answers a breakdown built from the priced sheet (${view.status})`);
       ok(view.json.disqualifyPending === false,

@@ -113,6 +113,7 @@ const agreementPreflight = require('../ppe/agreement-preflight');
 const pricedProbe = require('../ppe/agreement-priced-probe');
 const programRegistry = require('../ppe/program-registry');
 const agreementScenarioGenerator = require('../ppe/agreement-scenario-generator');
+const searchModel = require('../lenderprice/search-model');
 const ratesheetCells = require('../ppe/ratesheet-cells');
 const ratesheetDiff = require('../ppe/ratesheet-diff');
 const suggestionMiner = require('../ppe/suggestion-miner');
@@ -943,6 +944,44 @@ async function quoteRoute(req, res) {
   if (!scenario || typeof scenario !== 'object' || Array.isArray(scenario)) {
     return res.status(400).json({ error: 'Send a `scenario` object describing the deal.' });
   }
+
+  // THIS DOOR TAKES A LENDER PRICE SCENARIO, AND IT SAYS SO BEFORE IT PRICES ANYTHING (§2.123).
+  //
+  // The two pricing doors take OPPOSITE vocabularies under the SAME parameter name, and nothing
+  // used to say which was which:
+  //   · POST /quote      — a LENDER PRICE scenario (`value`, `loan`, `dscr` as a ratio, `zip`,
+  //                        `propertyType` in the vendor's own words). It must be: the line below
+  //                        posts this very object to `lp.price()`, and Lender Price is the
+  //                        authoritative answer in shadow mode.
+  //   · POST /breakdown  — ENGINE FACTS (`loan_amount`, `ltv` and `dscr` in milli, `occupancy` in
+  //                        the engine's words). It must be: it never calls Lender Price with the
+  //                        body scenario, and its only caller — the pricing-transparency screen —
+  //                        types facts into it, hints and all ("milli-% (72500 = 72.5%)").
+  //
+  // MEASURED, and this is why the check is here rather than left to be discovered downstream: the
+  // shadow-compare control on that screen hands `/quote` the transparency form's FACTS. Lender Price
+  // refuses them — `dscr` 1200 (milli) is out of its 0–2 range, `occupancy` "investment" is not one
+  // of its two words — so in shadow mode, where Lender Price is called FIRST and is authoritative,
+  // every press of that control has failed at the vendor and NOTHING has ever been compared. The
+  // component was built to give the findings ledger its first automatic producer; it has produced
+  // nothing, and read as though the board were simply quiet.
+  //
+  // ONE DEFINITION OF THE CONTRACT: `search-model.validateScenario` is Lender Price's own validator,
+  // the same one `client.price` runs. Calling it at the door does not add a second opinion — it moves
+  // the SAME opinion to where the caller can act on it, and it costs no vendor call (validation is
+  // local and runs before any HTTP). What is new is the sentence that says WHICH door this is, since
+  // the vendor's message alone ("Field \"dscr\" must be at most 2") reads like a typo rather than
+  // like a request sent to the wrong door.
+  const lpShape = searchModel.validateScenario(scenario);
+  if (!lpShape.ok) {
+    return res.status(422).json({
+      error: lpShape.message || 'Lender Price cannot read that scenario.',
+      reason: lpShape.error || 'lp_scenario_invalid',
+      field: lpShape.field || null,
+      // The door's own contract, in the words a caller needs to fix the request.
+      contract: 'POST /quote takes a LENDER PRICE scenario (value, loan, dscr as a ratio, zip or state+countyFps, propertyType) because Lender Price answers it. Engine facts (loan_amount, ltv/dscr in milli) belong to POST /breakdown, which prices our sheet and calls no vendor.',
+    });
+  }
   const investor = b.investor ? String(b.investor) : null;
 
   const { values: settings } = await resolveSettingsSafe(scope);
@@ -1004,7 +1043,36 @@ async function quoteRoute(req, res) {
     {
       mode: () => cutoverMode,
       priceLp: (sc) => lp.price(sc),
-      ourQuote: (sc) => quote.quoteProgram({ scenario: sc, program, settings, marginHoldback: marginFor(sc) }),
+      // ⛔ THE SAME WRONG-SHAPE DEFECT AS THE CANARY (§2.122), ON THE LIVE QUOTE PATH (§2.123).
+      // This line was `(sc) => quote.quoteProgram({ scenario: sc, ... })` — the LENDER PRICE
+      // SCENARIO handed straight to an engine that reads FACTS. `sc` is `req.body.scenario`, the
+      // very same object the line above posts to `lp.price()`, and Lender Price takes nothing but
+      // an LP scenario (`value` / `loan` / `dscr` as a ratio). Our rules read `loan_amount`, `ltv`,
+      // `cltv` — thirty derived facts `lpScenarioToFacts` computes and a raw LP scenario does not
+      // carry. MEASURED on the canonical 305-scenario battery against the built-in Deephaven sheet:
+      // the raw form priced 0 of 305 and the converted form prices 262, and each of those 305
+      // declines confidently named ONE sheet rule (`dhvn_min_dscr`, "Minimum DSCR 0.75") while
+      // eight facts it needed were unreadable — a refusal with a reason that was never measured.
+      //
+      // WHAT IT COST, ON EACH SIDE OF THE CUTOVER. In SHADOW the answer is Lender Price's, so the
+      // cost was the COMPARISON: our leg declined everything, so every quote scored as our engine
+      // refusing a loan Lender Price was pricing, and that verdict is written to the findings ledger
+      // and the parity-cell series. In LIVE `priceWithShadow` returns `ourQuote(scenario)` AS THE
+      // ANSWER (facade.js) — so a caller would be told a loan is ineligible, citing a DSCR floor,
+      // on a deal that prices. LT is a visibility-only build and `cutoverMode` defaults to SHADOW
+      // (only an explicit ledger LIVE moves it), so this was latent, not a live misquote — but it
+      // sat on the one path that a promotion turns into the answer.
+      //
+      // ONE DEFINITION, NOT A SECOND CONVERSION HERE: `buildOursLeg` is what the agreement run and
+      // the canary already price through. No `pppDescriptor` is passed, and that is deliberate and
+      // recorded rather than forgotten — see §2.123 in LENDER-PRICE-PARITY-STATUS.md and the open
+      // owner question it carries. Adding the investor's prepayment layer here would CHANGE WHAT A
+      // QUOTE SAYS, and the policy for a state whose rule we cannot resolve ('flag' vs 'decline')
+      // is an open owner question (§2.54). This fix changes the SHAPE, not the rule set.
+      ourQuote: lpAgreementLegs.buildOursLeg(program, settings, {
+        factsFromLp: true,
+        marginHoldback: marginFor,
+      }),
       // THE CAPTURE, READ PROPERLY — §2.8. `lp.price()` returns the RAW envelope
       // ({ ok, raw, request, searchKey }), NOT the parse() shape, and the façade had
       // been normalizing that envelope as if it were one: no `.programs`, so ZERO
@@ -1104,6 +1172,19 @@ async function quoteRoute(req, res) {
 // (or a `searchKey` we poll) for LP's decline panel, and `lpRaw` to build the breakdown
 // from LP's own sheet instead of our reconstruction (`source:'lp'`). None of it is needed
 // for the core view, and a failure to fetch it never fails the breakdown.
+//
+// THIS DOOR TAKES ENGINE FACTS, AND THAT IS THE OPPOSITE OF `/quote` (§2.123). Same parameter
+// name, opposite vocabulary — which is exactly why it is written down here instead of left to be
+// inferred from a variable called `scenario`:
+//   · here      — `loan_amount`, `ltv` and `dscr` in MILLI, `occupancy` in the engine's words. The
+//                 body goes straight to `quote.quoteProgram` and `marginFor`, both of which read
+//                 facts, and the only caller (LtPricingBreakdown) types facts into it — its own
+//                 field hints say "milli-% (72500 = 72.5%)" and "milli (1200 = 1.20)".
+//   · /quote    — a LENDER PRICE scenario (`value`, `loan`, `dscr` as a ratio, `zip`), because that
+//                 route posts the same object to `lp.price()` and Lender Price is authoritative.
+// This route makes NO Lender Price call with the body scenario — Lender Price's side arrives
+// pre-parsed (`lpRaw` / `disqualified` / `searchKey`) — so nothing here needs the vendor's
+// vocabulary and converting would only invent a deal the caller did not describe.
 //
 // A READ: like /quote it is open to any staff member and it does NOT write to the findings
 // ledger (buildPricingBreakdown is pure and nothing here calls recordFinding).

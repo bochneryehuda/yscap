@@ -8263,3 +8263,148 @@ the contract as it stands and **adds** an assertion that a row carrying no prove
 unreadable rather than quietly averaged.
 
 **187/187 LT PPE suites, 34 database-backed. All seven gates green.**
+
+---
+
+### §2.123 — the two pricing doors take OPPOSITE scenario shapes, and the live one hands ONE object to both engines
+
+**The same defect class as §2.122, on the door a promotion turns into the answer.** The canary's
+`ours` leg was handed a raw Lender Price scenario and priced 0 of 305. That fix was applied to the
+canary; the identical wiring was still standing on `POST /quote`.
+
+**What was measured, not inferred.**
+
+`POST /quote` took `req.body.scenario` and gave the SAME object to two engines that read two
+different vocabularies:
+
+```js
+priceLp:  (sc) => lp.price(sc),                                    // needs an LP scenario
+ourQuote: (sc) => quote.quoteProgram({ scenario: sc, program, ... }) // needs engine facts
+```
+
+Against the built-in Deephaven sheet, over the canonical 305-scenario battery:
+
+| the object handed to `quoteProgram` | priced | declined | with an unreadable fact | declines naming a rule |
+|---|---|---|---|---|
+| the RAW Lender Price scenario | **0 of 305** | 305 | **305 of 305** | 305 of 305 |
+| the SAME deals converted to facts | **262 of 305** | 43 | 0 of 305 | — |
+
+Every one of those 305 raw declines named ONE sheet rule (`dhvn_min_dscr`, "Minimum DSCR 0.75")
+while eight facts it needed were unreadable — a refusal with a reason that was never measured. It is
+the §2.122 signature exactly: a confidently wrong verdict, not a blank one, which is why nothing
+noticed.
+
+**And the vocabularies are not interchangeable in either direction — also measured.** A battery
+scenario passes `search-model.validateScenario` (`ok:true`); the SAME deal as engine facts is
+refused (`missing_county_fips`). A milli `dscr` inside an otherwise valid LP scenario is refused on
+the `dscr` field — Lender Price's range is 0–2 and the engine's unit is milli, so it fails CLOSED
+rather than pricing a phantom deal at the vendor's expense.
+
+**The two doors mean OPPOSITE things by `scenario`, and nothing said so.**
+
+* `POST /quote` — a LENDER PRICE scenario (`value`, `loan`, `dscr` as a ratio, `zip`,
+  `propertyType` in the vendor's own words). It must be: the route posts this very object to
+  `lp.price()`, and Lender Price is the authoritative answer in shadow mode.
+* `POST /breakdown` — ENGINE FACTS (`loan_amount`, `ltv` and `dscr` in MILLI, `occupancy` in the
+  engine's words). It must be: it never calls Lender Price with the body scenario, and its only
+  caller — the pricing-transparency screen — types facts into it, hints and all
+  ("milli-% (72500 = 72.5%)", "milli (1200 = 1.20)").
+
+So `/breakdown` was already correct. The defect was `/quote`, and it was wrong on BOTH readings of
+its own contract.
+
+**What it cost, on each side of the cutover.**
+
+In SHADOW the answer is Lender Price's, so the cost was the COMPARISON: our leg declined
+everything, so every quote scored as our engine refusing a loan Lender Price was pricing — and that
+verdict is written to the findings ledger and the parity-cell series. In LIVE
+`facade.priceWithShadow` returns `ourQuote(scenario)` AS THE ANSWER, so a caller would be told a
+loan is ineligible, citing a DSCR floor, on a deal that prices. **LT is a visibility-only build with
+no borrower traffic and `cutoverMode` defaults to SHADOW (only an explicit ledger LIVE moves it), so
+this was a latent misquote path, not a live incident** — but it sat on the one path a promotion
+turns into the answer.
+
+**A third consequence, measured while proving the first two: the shadow comparison has never run
+from the screen.** `LtShadowCompare` — the control built specifically to give the findings ledger
+its first automatic producer — reuses the transparency form's body, which is engine facts. In
+shadow mode Lender Price is called FIRST and is authoritative, so every press of that control has
+died at the vendor's validator, and the ledger it exists to feed has received nothing. The component
+reads as quiet rather than broken, which is the state its own header warns about.
+
+**The fix — the shape, not the rule set.**
+
+1. `/quote`'s `ourQuote` is now `lpAgreementLegs.buildOursLeg(program, settings, { factsFromLp:
+   true, marginHoldback: marginFor })` — the ONE shared definition the agreement run, the
+   pre-flight, the review sweep and the canary already price through. `marginFor` receives facts
+   too, which it has always been documented to take.
+2. `/quote` states its contract AT THE DOOR and enforces it with Lender Price's OWN validator
+   (`search-model.validateScenario`, the same one `client.price` runs — the same opinion moved to
+   where the caller can act on it, at no vendor cost since validation is local). A refused scenario
+   answers 422 naming the field, Lender Price's message, and the door that DOES take engine facts.
+   This is the only thing that catches the wrong shape in LIVE mode, where `ourQuote` runs FIRST and
+   Lender Price is never asked.
+3. `/breakdown` states its contract in its header and keeps its direct `quoteProgram` call, which is
+   correct for facts and only for facts.
+4. **No `pppDescriptor` is passed at either door, and that is recorded rather than forgotten.**
+   Adding the investor's prepayment layer would CHANGE WHAT A QUOTE SAYS, and the policy for a state
+   whose rule we cannot resolve ('flag' vs 'decline') is an open owner question (§2.54 / §2.121a).
+   This fix changes the SHAPE, not the rule set.
+
+**The guard that makes a fourth instance unmergeable.** `scripts/test-lt-ppe-scenario-shape.js`
+scans the route file PER FUNCTION and asserts no function hands ONE identifier to both
+`lp.price()` and `quote.quoteProgram({ scenario: … })` — the exact signature found at §2.106,
+§2.122 and now §2.123. It reads the explicit form, the `{ scenario }` shorthand and an indexed
+argument, and it PLANTS the defect in a throwaway string and requires the scan to catch it, because
+a guard nobody has watched fail is a guard nobody knows the shape of.
+
+The first draft of that guard scanned the whole FILE and reported `/breakdown`'s own `scenario`
+(engine facts, correct) as colliding with `/quote`'s `scenario` (an LP scenario, also correct)
+purely because two unrelated locals share a common noun. A guard that fires on a name collision it
+cannot distinguish from the real thing trains a reader to ignore it, so it is scoped to the function
+body where an actual variable lives.
+
+**The coverage/profiler sweep is NOT this defect, and that was proven rather than assumed.**
+`agreement-scenario-generator` documents that it emits engine facts in the engine's integer units,
+and Lender Price refuses 261 of the 261 scenarios it generates — so pricing them directly is
+correct. Section F pins that, so nobody "fixes" it into a conversion later.
+
+**What the suites had been proving.** The route suite's quote test posted `{ fico: 760 }` — a bag so
+minimal that an LP scenario and a bag of engine facts look identical, which is exactly how a door's
+two engines came to be fed opposite shapes with a green suite. It now posts a real Lender Price
+scenario, and asserts the new refusal on a fact-shaped body.
+
+Two existing guards moved with the change and were updated to assert what is now TRUE rather than
+loosened: `test-lt-ppe-margin-carried-db.js` J1 (direct `quoteProgram` sites 3 → 2) and J3
+(`buildOursLeg` legs 4 → 5).
+
+**The suite that exercises the shadow guarantee end to end was itself the proof.**
+`scripts/test-lt-ppe-quote-shadow-db.js` carried ONE constant —
+`{ fico: 800, ltv: 70000, dscr: 1100, loan_amount: 400000, lock_days: 30 }`, ENGINE FACTS in milli —
+and posted it to BOTH `/quote` and `/breakdown`. Facts are right for `/breakdown`; `/quote` hands
+the same object to Lender Price, whose validator refuses a milli `dscr` outright. It passed because
+that suite's Lender Price leg is a STUB, and a stub cannot refuse what the real vendor refuses. It
+now carries two constants, each labelled with the door it belongs to.
+
+Two of its assertions then failed for a DIFFERENT and more interesting reason, and the fix is worth
+recording because the class recurs: section C simulated "our engine fell over" by swapping
+`quote.quoteProgram` on the module object. That reached the engine only while the route called it
+DIRECTLY. `buildOursLeg` destructures `quoteProgram` at module load — a load-time binding a later
+property swap cannot reach — so after the fix the patch silently stopped simulating anything and the
+engine kept working, which read as "the shadow failure was not reported". The GUARANTEE never moved;
+the test's mechanism did. It now patches `buildOursLeg`, which is our engine's entry point at this
+door. Both directions were observed: with the old patch those two assertions FAIL, with the new one
+they pass — so the simulation is doing real work rather than passing by not firing.
+
+**Six mutations of the production code were each proven to fail the new suite**: reverting the
+`/quote` leg (4 assertions), dropping `factsFromLp` (2), removing the door-contract validator (1),
+making `lpScenarioToFacts` the identity (3), planting the one-object-to-both-engines defect (2), and
+stripping the `/breakdown` contract header (1).
+
+**Practical consequence to convey.** The shadow-compare control on the pricing-transparency screen
+still sends the form's engine facts to a door that now says plainly it takes a Lender Price
+scenario, so it will answer 422 with a message naming what to send instead of failing at the vendor
+with a DSCR-range error that reads like a typo. Giving that control the fields Lender Price needs is
+the next item; nothing in the findings ledger or the parity-cell series recorded before this fix
+was a measurement of our engine.
+
+**188/188 LT PPE suites, 34 database-backed. All seven gates green.**

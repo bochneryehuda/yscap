@@ -359,9 +359,25 @@ ok(I.intIn(undefined, 8) === null && I.intIn('', 8) === null, 'intIn reads absen
   r = await call(H.quoteRoute, { body: {} });
   ok(r.code === 400, 'quote: refuses a request with no scenario');
 
+  // A REAL LENDER PRICE SCENARIO, and that is the point of the change (§2.123). This used to be
+  // `{ fico: 760 }` — a bag so minimal that an LP scenario and a bag of engine facts look identical,
+  // which is exactly how the door's two engines came to be fed opposite shapes without any suite
+  // noticing. `/quote` posts this object to Lender Price, so it must be a Lender Price scenario, and
+  // the route now says so at the door with Lender Price's own validator.
+  const LP_SCENARIO = {
+    purpose: 'Purchase', value: 500000, loan: 250000, fico: 760, dscr: 1.25,
+    state: 'NY', zip: '11211', countyFps: '36047', prepayMonths: 60,
+  };
+
+  r = await call(H.quoteRoute, { body: { scenario: { fico: 760, ltv: 72500, loan_amount: 400000 } } });
+  ok(r.code === 422 && r.body.reason,
+    'quote: refuses a bag of ENGINE FACTS — this door takes a Lender Price scenario (§2.123)');
+  ok(r.code === 422 && /POST \/breakdown/.test(String(r.body.contract || '')),
+    'quote: …and names the door that DOES take engine facts, so the caller is never left guessing');
+
   lpStub.calls = [];
   dbStub.queries = [];
-  r = await call(H.quoteRoute, { body: { scenario: { fico: 760 } } });
+  r = await call(H.quoteRoute, { body: { scenario: LP_SCENARIO } });
   // LP's answer is passed through UNTOUCHED — the vendor envelope, which is what a caller of /quote
   // has always received. Asserted on the envelope's own shape rather than on object identity, because
   // the stub now builds a fresh one per call exactly as the real client does.

@@ -327,15 +327,15 @@ const SETTINGS = { 'pricing.correspondent_margin_milli': 250, 'pricing.rounding_
     // scenarios declined) and carries the margin resolver as one of its arguments. So one call site
     // left this count and reappeared in the one below. If this number drops again, find where the
     // pricing went before changing it.
-    ok(quoteCalls.length === 3, `J1 the route makes ${quoteCalls.length} direct quoteProgram calls`);
+    ok(quoteCalls.length === 2, `J1 the route makes ${quoteCalls.length} direct quoteProgram calls — /breakdown and the coverage profiler, both of which are handed ENGINE FACTS by their own callers (§2.123). /quote used to be the third and is now a buildOursLeg leg.`);
     ok(quoteCalls.every((c) => /marginHoldback:/.test(c)), 'J2 …and EVERY one of them carries the per-investor margin');
     // Indentation differs between the two call sites, so the window is taken by offset rather than by
     // a closing-brace pattern — a shape guard that depends on how a call happens to be formatted is the
     // kind that goes green for the wrong reason.
     const legOffsets = [];
     for (let i = routeCode.indexOf('buildOursLeg('); i !== -1; i = routeCode.indexOf('buildOursLeg(', i + 1)) legOffsets.push(i);
-    ok(legOffsets.length === 4,
-      `J3 …plus ${legOffsets.length} legs built from buildOursLeg — the agreement run, the pre-flight, the review sweep, and (since §2.122) the canary`);
+    ok(legOffsets.length === 5,
+      `J3 …plus ${legOffsets.length} legs built from buildOursLeg — the agreement run, the pre-flight, the review sweep, the canary (§2.122) and the live /quote shadow (§2.123)`);
     ok(legOffsets.every((i) => /marginHoldback: marginFor/.test(routeCode.slice(i, i + 700))),
       'J3b …and every one of THOSE carries the per-investor margin too, so nothing prices at a margin nobody confirmed');
     ok(legOffsets.every((i) => /factsFromLp: true/.test(routeCode.slice(i, i + 700))),
