@@ -508,6 +508,13 @@ async function runSearch({ borrowerId, staffId, states }, client) {
     skips.push(...(deep.skips || []));
   }
   const deepRan = !!(deep && deep.searched);
+  if (!str(b.elementix_person_id)) {
+    /* The nudge that turns a thin search into the deep one: the person-id pull
+       only exists once a human links the profile, and an officer staring at
+       three results should be told the full history is one link away. */
+    skips.push({ reason: 'no_linked_profile',
+      why: 'This borrower has no Elementix profile linked yet. Link one on their profile\'s Elementix section and search again — a linked search reads their WHOLE recorded history (every property, mortgage and company) in one pass.' });
+  }
 
   if (!entityNames.length && !(deep && (deep.entitiesAdded || deep.entitiesMatched))) {
     skips.push({ reason: 'no_entities',
