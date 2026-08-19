@@ -82,7 +82,7 @@ export default function ArenaControlRoom({ board, onChanged }) {
       )}
       {panel === 'challenges' && (
         session
-          ? <ChallengeDay session={session} onChanged={onChanged} />
+          ? <ChallengeDay session={session} autoLaunch={!!(board && board.settings && board.settings.autoLaunchEnabled)} onChanged={onChanged} />
           : <p className="muted">Start a session first.</p>
       )}
       {panel === 'spin' && (
@@ -380,7 +380,7 @@ function ReadyMade({ session, onChanged }) {
  * other challenge that you have for the schedule and skip that one that is
  * going to populate. I can enter new ones to populate."
  */
-function ChallengeDay({ session, onChanged }) {
+function ChallengeDay({ session, autoLaunch, onChanged }) {
   const [board, setBoard] = useState(null);
   const [lib, setLib] = useState(null);
   const [busy, setBusy] = useState('');
@@ -419,6 +419,14 @@ function ChallengeDay({ session, onChanged }) {
         These land on everybody’s screen through the afternoon — never on the dot, and never more than two at
         once. Change any of them, skip one, or start one right now.
       </p>
+
+      <PlanDay session={session} autoLaunch={autoLaunch} onPlanned={load} />
+      {!autoLaunch && (
+        <p className="muted small">
+          <strong>Autopilot is off</strong> — nothing below starts by itself. Each challenge waits
+          for you to press <strong>Start now</strong>.
+        </p>
+      )}
 
       {!!live.length && (
         <>
@@ -527,6 +535,73 @@ function HandOutChances({ session }) {
       </div>
       <button className="btn small" disabled={busy || !who || !reason.trim() || !Math.trunc(Number(count))} onClick={give}>
         {busy ? 'Working…' : 'Give them'}
+      </button>
+      {note && <p className="arena-good small">{note}</p>}
+    </div>
+  );
+}
+
+/** ONE press lays out the whole Mega Spin afternoon (owner-directed
+ *  2026-08-19: "Set up the mega spin challenges manually now, I'll start them
+ *  myself"). Every challenge lands as SCHEDULED — with the autopilot off,
+ *  scheduled means WAITING for your Start now, so nothing reaches the team
+ *  until you fire each one. Replaces anything still scheduled; never anything
+ *  already seen (live, closed, skipped). */
+function PlanDay({ session, autoLaunch, onPlanned }) {
+  const z = (n) => String(n).padStart(2, '0');
+  const localNow = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`;
+  };
+  const localSix = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}T18:00`;
+  };
+  const [from, setFrom] = useState(localNow);
+  const [to, setTo] = useState(localSix);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const run = async () => {
+    const sure = await askConfirm(
+      'Lay out the Mega Spin challenges between these times? They are created as WAITING — '
+      + (autoLaunch
+        ? 'autopilot is ON, so each one WILL open itself at its set time.'
+        : 'nothing goes to the team until you press Start now on each one.')
+      + ' Anything still waiting from an earlier plan is replaced; anything already seen stays.',
+      { confirmLabel: 'Lay out the day' },
+    );
+    if (!sure) return;
+    setBusy(true); setNote('');
+    try {
+      const r = await arena.planChallenges(session.id, {
+        from: new Date(from).toISOString(),
+        to: new Date(to).toISOString(),
+      });
+      setNote(`${r.created} challenge${r.created === 1 ? '' : 's'} laid out, waiting on you.`
+        + (r.cleared ? ` ${r.cleared} old waiting one${r.cleared === 1 ? '' : 's'} replaced.` : ''));
+      onPlanned();
+    } catch (e) { showMessage((e && e.message) || 'That did not work.', { tone: 'error' }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="arena-daysetup">
+      <h4>Lay out the Mega Spin challenges</h4>
+      <p className="muted small">
+        Fills the list below with the whole Mega Spin mix — dials, call blocks, referral pushes,
+        the fun ones — spread between the two times. {autoLaunch
+          ? 'Autopilot is ON, so they will open themselves on schedule.'
+          : 'They all WAIT: you fire each one with Start now, whenever the floor is ready.'}
+      </p>
+      <div className="arena-form">
+        <label>From
+          <input className="input" type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)} />
+        </label>
+        <label>Until
+          <input className="input" type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)} />
+        </label>
+      </div>
+      <button className="btn small" disabled={busy || !from || !to} onClick={run}>
+        {busy ? 'Laying it out…' : 'Lay out the challenges'}
       </button>
       {note && <p className="arena-good small">{note}</p>}
     </div>
