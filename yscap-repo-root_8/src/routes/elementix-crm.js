@@ -207,7 +207,23 @@ router.post('/connections/:staffId/refresh-identity', requirePermission('manage_
 // ---------------------------------------------------------------------------
 
 router.get('/backfill', requirePermission('manage_team'), async (req, res) => {
-  res.json(await backfill.progress());
+  const progress = await backfill.progress();
+  /* IS IT RUNNING BY ITSELF, AND HOW FAST? Without this the screen shows "still
+     to do: 800" and reads as stuck — an owner who has just switched the
+     automatic import on needs to see it working, not infer it. The cadence comes
+     from the sync module rather than being restated here, so the number on the
+     screen is the number the timer actually uses. */
+  let auto = null;
+  try {
+    const sync = require('../sync/elementix-crm-sync');
+    const i = sync._internals;
+    auto = {
+      on: sync.autoImportOn(),
+      perPass: i.WORK_BATCH,
+      everyMinutes: Math.max(1, Math.round(i.WORK_INTERVAL_MS / 60000)),
+    };
+  } catch (_) { auto = null; }
+  res.json({ ...progress, auto });
 });
 
 router.post('/backfill/list', requirePermission('manage_team'), async (req, res) => {

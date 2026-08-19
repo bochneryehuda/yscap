@@ -119,9 +119,12 @@ deactivated staffer would file every contact into a pipeline nobody reads.
 
 `src/sync/elementix-crm-sync.js`:
 
-* **LIST + WORK** (the bulk import) are behind `ELEMENTIX_CRM_SYNC_ENABLED`, **off by default**.
-  They create leads in people's pipelines out of work done in Elementix's own screens, which is a
-  thing an owner switches on deliberately once the roster of logins has been mapped.
+* **LIST + WORK** (the bulk import) are behind `ELEMENTIX_CRM_SYNC_ENABLED`, which is **ON**
+  (owner-directed 2026-08-19: *"set up auto pull leads"*). It is a real switch on the API Health
+  page, **read at CALL time** by each pass rather than once at boot — read at boot, a flip did
+  nothing until the next deploy, because the timers were never armed and there was nothing to turn
+  back on. The timers always run now and the switch decides what happens, so an owner can stop the
+  import the moment it does something they did not want and start it again with one click.
 * **SETTLE** is **not** behind that switch. `crm.skipTrace` waits about six seconds for the vendor's
   enrichment job; a slower job is recorded `pending` **and the credit is already spent**. Without
   something to come back and finish it, the contact never arrives, no lead is made, nobody is
@@ -132,6 +135,19 @@ deactivated staffer would file every contact into a pipeline nobody reads.
 Neither loop can spend a credit: `submit_contact_enrichment` is unreachable from `backfill.js`, and
 the two `crm.js` functions the settle pass reaches cannot get to it either. Both facts are asserted
 from the source in `scripts/test-elementix-backfill-db.js`.
+
+**The officer is told about a NEW unlock and not about the backlog.** The owner's requirement is a
+notification per contact, and the same import carries the whole history back to the beginning —
+about a thousand on the first pass. Notifying on those would put hundreds of notices in one
+officer's list in an afternoon about people they looked up months ago, burying the one that is
+actually news. The test is the **vendor's own `unlockedAt`** (default: within 7 days,
+`ELEMENTIX_NOTIFY_WITHIN_HOURS`), not "did this pass create the row", so it holds whenever the
+import runs. No unlock date notifies nobody, and neither does one in the future.
+
+**One unworkable row can never stall the queue.** Rows are taken oldest-first and a row that THROWS
+was never stamped, so it returned at the head of the next batch and the import stopped dead behind
+it. Only the vendor's failure had been handled; anything the database refused went straight up. All
+failures now land in one place — attempts up, reason recorded, retired after three tries.
 
 ## 7. The profile
 
@@ -155,7 +171,21 @@ Things that were measured rather than assumed, and that a rewrite must not undo:
 
 **A section we never read, or that failed, is never rendered as a confident zero.** `status` is one
 of `ok | partial | error | skipped | not_loaded | unavailable`, and only `ok`/`partial` earn a
-number on the tab.
+number on the tab; the rest get a quiet dot.
+
+**Opening a lead shows the profile rather than an empty one.** A skip trace attaches the person and
+stores their contact — it does not read their records — so the first open used to draw every tab
+blank. A person nobody has read is now read on open, and deliberately only the **overview**: one
+call per state, carrying every headline figure. The deep tabs are up to forty calls out of a shared
+allowance and browsing a list of leads must not spend that, so they fill on **Pull in everything**.
+It cannot loop — the server stamps the person as read whether the build succeeded or failed — and
+the overview says in words what is not in it yet.
+
+**Every way to reach them is on the section.** A `leads` row holds two numbers; a skip trace
+routinely buys five. All of them render with the vendor's own label, carrier, location,
+deliverability and confidence, in the vendor's order (best guess first), as `tel:`/`mailto:` links.
+The summary, company and LinkedIn are derived on read from the payload we already hold rather than
+stored a second time.
 
 ## 8. Compliance refusals built into the door
 

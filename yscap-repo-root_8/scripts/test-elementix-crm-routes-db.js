@@ -366,7 +366,24 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
     await call(server, 'POST', '/api/elementix/link', T, { kind: 'lead', recordId: leadId, personId: PID, replace: true });
 
     // -----------------------------------------------------------------------
-    console.log('\n11. Every way to reach them, not the two a lead has room for');
+    console.log('\n11. The desk says the import is running by itself');
+    // -----------------------------------------------------------------------
+    // "Still to do: 800" with nothing else on the screen reads as stuck. An
+    // owner who has just switched the automatic import on needs to SEE it
+    // working, and the cadence has to be the timer's own rather than a number
+    // retyped on the screen.
+    r = await call(server, 'GET', '/api/elementix/backfill', TA);
+    ok(r.status === 200 && r.body.auto && r.body.auto.on === true,
+      'the desk is told the automatic import is on');
+    const syncMod = require(R + '/src/sync/elementix-crm-sync');
+    ok(r.body.auto.perPass === syncMod._internals.WORK_BATCH
+       && r.body.auto.everyMinutes === Math.max(1, Math.round(syncMod._internals.WORK_INTERVAL_MS / 60000)),
+      '…with the cadence the timer actually uses, not a number typed onto the screen');
+    r = await call(server, 'GET', '/api/elementix/backfill', T);
+    ok(r.status === 403, 'and the import desk stays behind manage_team');
+
+    // -----------------------------------------------------------------------
+    console.log('\n12. Every way to reach them, not the two a lead has room for');
     // -----------------------------------------------------------------------
     // The owner asked twice for "all the phone numbers and their names, all
     // details". A `leads` row has `phone` and `phone_alt` — TWO — and a skip
@@ -402,7 +419,7 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
       'with who looked them up and when, which is the CRM question a month later');
 
     // -----------------------------------------------------------------------
-    console.log('\n12. Every spend is attributable afterwards');
+    console.log('\n13. Every spend is attributable afterwards');
     // -----------------------------------------------------------------------
     // The audit write sits inside a catch that must never break the action, so
     // nothing would say if it silently stopped landing — and "every spend is
@@ -420,7 +437,7 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
       'and the spend records who, about whom, and the reason they typed');
 
     // -----------------------------------------------------------------------
-    console.log('\n13. Every call named the officer who made it');
+    console.log('\n14. Every call named the officer who made it');
     // -----------------------------------------------------------------------
     ok(seen.length > 0 && seen.every((c) => !!c.staffId),
       `${seen.length} vendor calls, every one carrying the officer behind it`);

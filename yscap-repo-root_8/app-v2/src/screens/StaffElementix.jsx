@@ -211,6 +211,8 @@ export default function StaffElementix() {
           </div>
           <div className="panel-b">
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+              {/* SAY THAT IT IS RUNNING. "Still to do: 800" with nothing else on
+                  the screen reads as stuck; it is draining on a timer. */}
               <Stat label="Found" value={n(bf.total)} />
               <Stat label="Brought in" value={n(bf.done)} />
               <Stat label="Still to do" value={n(bf.pending)} />
@@ -223,6 +225,13 @@ export default function StaffElementix() {
               whose login unlocked it. None of this spends a credit: these were all paid for already.
               {bf.skipped > 0 && ' The ones waiting need somebody to say whose login that was, above.'}
               {bf.failed > 0 && ' The ones it wouldn’t read were tried three times and left alone rather than guessed at.'}
+              {bf.auto && bf.auto.on && bf.pending > 0 && (
+                <> PILOT is bringing these in by itself — about {bf.auto.perPass} every {bf.auto.everyMinutes} minutes,
+                  so roughly {Math.max(1, Math.round((bf.pending / Math.max(1, bf.auto.perPass)) * bf.auto.everyMinutes / 60))} hour(s)
+                  left. Nothing here costs money: every one of them was already looked up.</>
+              )}
+              {bf.auto && bf.auto.on && bf.pending === 0 && ' PILOT is watching for new ones by itself.'}
+              {bf.auto && !bf.auto.on && ' The automatic import is switched off — turn it on from the API Health page, or use the button above.'}
             </p>
           </div>
         </div>
