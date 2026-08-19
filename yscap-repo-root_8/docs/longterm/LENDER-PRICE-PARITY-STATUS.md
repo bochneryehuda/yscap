@@ -7136,3 +7136,102 @@ clause. Section I is a source assertion that both suggestion modules still autho
 has to be right.
 
 176/176 suites, 33 database-backed. All seven gates green.
+
+---
+
+## §2.112 — the capture sink was wired to two doors the paid run never opens (2026-08-19)
+
+**§2.109 built the raw-payload sink for the owner's standing instruction — *"save all the data that is
+coming back, compress the data somewhere in the logs"* — and closed with "nothing is capturing yet;
+naming a directory is what starts it."** A directory was named on the live run of 2026-08-19. It wrote:
+
+```
+8 price payloads, 14.0 MB raw -> 0.69 MB gzipped        0 disqualify payloads
+```
+
+**Zero.** The disqualify tree is the BIGGER payload — §2.109 measured one at 173 MB — and it is the one
+carrying the decline reasons this entire workstream is about.
+
+### Root cause: three doors, and the sink was on the two nobody uses
+
+`client.js` has three disqualify functions. `pollDisqualified` and `pollDisqualifiedByKey` are the
+poll-only doors for a caller that already holds a search key; **`priceDisqualified` is the one the paid
+agreement run goes through** (`lp-agreement-legs.js`: `client.priceDisqualified(scenario, …)`). The
+sink was wired to the first two. `priceDisqualified` had no capture call on **any** of its three
+payload-bearing returns — the immediate tree, the polled tree, or the timed-out partial.
+
+And the capture inside `pollDisqualified` was labelled `via: 'priceDisqualified'` — naming a function
+it is not in. A third mislabel (`pollDisqualifiedByKey` claiming `pollDisqualified`) was found by the
+new guard, not by reading. An index that blames the wrong door is worse than no label: it is a
+confident wrong answer about where a payload came from.
+
+### Why §2.109's own suite passed — the lesson worth keeping
+
+It asserted that `client.js` hands the sink the string `'disqualify'`, and pinned the number of call
+sites at exactly three. **Both were true and both were useless.** There were three calls; the file
+mentioned the right kind the right number of times; and no decline tree was captured on any paid run.
+
+> **A guard that asks "does this file mention X, N times" cannot tell a live wire from a dead one.**
+
+That is the same shape as §2.110 (a report describing a battery it did not look at) and §2.111 (a
+predicate assembled from three unrelated parts of one sentence) — a check that is internally consistent
+and measures the wrong population.
+
+### The guard is keyed on the FUNCTION, not the file
+
+`scripts/test-lt-ppe-capture-wiring.js` splits `client.js` into its top-level functions and asserts a
+structural invariant over each:
+
+1. **a function that RETURNS a payload of a capturable kind must CAPTURE that kind** — this fails the
+   moment a fourth disqualify path is added without wiring, which is the whole class;
+2. **every `via:` label must name the function it is written in** — the mislabel is now impossible;
+3. the paid runner still awaits the flush **before the exit that ends a successful run** (compared
+   against the LAST `process.exit(`, not the first — the runner exits early on several `die()` paths
+   long before anything is priced, so the naive comparison asks about argument validation and answers
+   about the flush);
+4. the credential rule is unchanged: `CAPTURE_KINDS` is a closed list and no call site hands the sink a
+   computed kind.
+
+23 assertions, mutation-proven: the true pre-fix state (**4 named failures**), only one of three
+returns capturing (1), a `via` label naming the wrong function (1), and the kind becoming a variable
+(2).
+
+### Measured live, not asserted
+
+A two-scenario confirmation run, capture on:
+
+| | raw | gzipped | ratio |
+|---|---|---|---|
+| price ×2 | 3.60 MB | 179 KB | |
+| **disqualify ×2** | **331.8 MB** | **8.34 MB** | |
+| total | **335.4 MB** | **8.51 MB** | **39.4×** |
+
+Both decline trees carry `via: 'priceDisqualified'`, `ready: true`. **And the run printed
+`raw captures 2 written`** — meaning two writes were still in flight when the process wanted to exit.
+§2.109's `flush()` earned its keep on the very first run that ever captured a decline tree: without it
+those 332 MB would have been paid for and lost at the exit.
+
+### The eligibility comparison, re-measured on the same eight scenarios
+
+The same live battery, run after §2.110 and §2.111 landed:
+
+| | comparable | agreed | disagreed | agreement | incomparable |
+|---|---|---|---|---|---|
+| §2.106 baseline | 3 of 8 | 1 | **2** | 33.33% | 5 |
+| §2.107 (earlier 2026-08-19) | 2 of 8 | 2 | 0 | 100.00% | 6 |
+| **§2.111 (this run)** | **6 of 8** | **6** | **0** | **100.00%** | **2** |
+
+**Comparable went from 2 of 8 to 6 of 8.** The four `decline_reasons_unpaired` scenarios — the ones
+where Lender Price and our sheet were enforcing the same rule under different headings — now pair and
+agree. The two that remain are `decline_reasons_unreadable`, a different piece of news.
+
+The run also printed §2.110's coverage line for the first time on live data:
+
+```
+by category   {"coupon_missing_ours":224}
+measured over 8 scenarios (6 scorable, 2 not) — from the unscorable: 56 coarse, 0 LLPA rows, 0 bounds probes
+```
+
+224, not 56. The whole battery, and the report says which part of it could not be scored.
+
+177/177 suites, 33 database-backed. All seven gates green.

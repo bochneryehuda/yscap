@@ -901,7 +901,7 @@ async function price(scenario, opts = {}) {
   // response assigned, so a later status poll re-posts it with only cachedDisqualified flipped +
   // that requestId, hitting the SAME computation.
   const searchKey = storeKickoff(f.url, r.request, requestIdOf(r.raw));
-  rawCapture.capture('price', r.raw, { searchKey, scenario: captureScenarioMeta(scenario), requestId: requestIdOf(r.raw) });
+  rawCapture.capture('price', r.raw, { searchKey, scenario: captureScenarioMeta(scenario), requestId: requestIdOf(r.raw), via: 'price' });
   return { ok: true, raw: r.raw, request: r.request, searchKey, provenance: foundationProvenance(f), recovered: !!r.recovered };
 }
 
@@ -944,6 +944,12 @@ async function priceDisqualified(scenario, opts = {}) {
   const pollBody = applyPollDelta(kickBody, rid);
   storeKickoff(f.url, kickBody, rid); // also make it pollable by searchKey afterwards
   if (hasDisqualifyData(first.raw)) {
+    // ⛔ CAPTURE HERE, AND AT EVERY OTHER RETURN BELOW THAT CARRIES A PAYLOAD (§2.112). This is the
+    // ONLY disqualify function the paid agreement run calls — `pollDisqualified` and
+    // `pollDisqualifiedByKey` are the poll-only doors for a caller that already has a search key — so
+    // wiring the sink to those two alone captured the price ladder and silently threw away the decline
+    // tree, which is the bigger payload and the one this whole workstream is about.
+    rawCapture.capture('disqualify', first.raw, { scenario: captureScenarioMeta(scenario), via: 'priceDisqualified', ready: true, polls: 0 });
     return { ok: true, ready: true, polls: 0, qualified: first.raw, disqualified: first.raw, request: kickBody, provenance: foundationProvenance(f) };
   }
 
@@ -960,9 +966,14 @@ async function priceDisqualified(scenario, opts = {}) {
     if (p.empty) continue;    // still computing (empty body) — keep polling
     last = p.raw;
     if (hasDisqualifyData(p.raw)) {
+      rawCapture.capture('disqualify', p.raw, { scenario: captureScenarioMeta(scenario), via: 'priceDisqualified', ready: true, polls });
       return { ok: true, ready: true, polls, qualified: first.raw, disqualified: p.raw, request: pollBody };
     }
   }
+  // The window closed with no tree. Whatever DID come back was still paid for, and a run that keeps
+  // timing out is exactly the case somebody will want the bytes for later — captured with `ready:false`
+  // in the meta so a reader can never mistake a partial for a finished tree.
+  if (last) rawCapture.capture('disqualify', last, { scenario: captureScenarioMeta(scenario), via: 'priceDisqualified', ready: false, polls });
   return {
     ok: true, ready: false, polls,
     qualified: first.raw,
@@ -992,7 +1003,7 @@ async function pollDisqualified(scenario) {
   const r = await postSearchRaw(f.url, f.session, body, { timeoutMs: DISQUALIFY_TIMEOUT_MS });
   if (!r.ok) return { ...r, request: body };
   if (r.empty || !hasDisqualifyData(r.raw)) return { ok: true, ready: false, request: body };
-  rawCapture.capture('disqualify', r.raw, { scenario: captureScenarioMeta(scenario), via: 'priceDisqualified' });
+  rawCapture.capture('disqualify', r.raw, { scenario: captureScenarioMeta(scenario), via: 'pollDisqualified' });
   return { ok: true, ready: true, raw: r.raw, request: body };
 }
 
@@ -1040,7 +1051,7 @@ async function pollDisqualifiedByKey(searchKey) {
   // Durable L2 (best-effort): persist the materialized result so ANOTHER instance (or this one after
   // a restart) serves it from cache instead of re-downloading the large tree.
   disqStore.saveResult(searchKey, parsed, entry.rawSummary).catch(() => {});
-  rawCapture.capture('disqualify', r.raw, { searchKey, via: 'pollDisqualified' });
+  rawCapture.capture('disqualify', r.raw, { searchKey, via: 'pollDisqualifiedByKey' });
   return { ok: true, ready: true, searchKey, parsed, rawSummary: entry.rawSummary, raw: r.raw };
 }
 // Test/introspection helper — is a searchKey currently stored (kicked off, not expired)?

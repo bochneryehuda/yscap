@@ -232,7 +232,14 @@ await withDir(path.join(ROOT, 'g'), async () => {
 const clientSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'lenderprice', 'client.js'), 'utf8');
 ok(/require\(['"]\.\/capture['"]\)/.test(clientSrc), 'F1 the client requires the sink');
 const calls = clientSrc.match(/rawCapture\.capture\(/g) || [];
-ok(calls.length === 3, `F2 …and calls it at the three raw-payload sites — got ${calls.length}`);
+// ⛔ THIS ASSERTION USED TO PIN THE COUNT AT THREE, AND THE COUNT IS WHAT HID §2.112. There WERE three
+// calls — one on `price` and two on the poll-only disqualify doors — while `priceDisqualified`, the
+// only disqualify door the paid agreement run calls, had none. So the file mentioned the right kind
+// the right number of times and captured no decline tree on any paid run. A count cannot tell a live
+// wire from a dead one. WHERE the calls have to be is now a structural invariant keyed on the
+// FUNCTION, in scripts/test-lt-ppe-capture-wiring.js; what stays here is what this suite is about —
+// that the client is wired to the sink at all, and hands it only closed-list literal kinds.
+ok(calls.length >= 3, `F2 …and calls it at the raw-payload sites — got ${calls.length}`);
 ok(/rawCapture\.capture\('price'/.test(clientSrc) && /rawCapture\.capture\('disqualify'/.test(clientSrc),
   'F3 …for the priced payload and the disqualify tree');
 ok(!/rawCapture\.capture\((?!'price'|'disqualify')/.test(clientSrc),
