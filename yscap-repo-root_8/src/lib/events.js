@@ -25,6 +25,7 @@
  *   conversation:updated {conversationId}               — rename / members / archive
  *   track_record:updated {borrowerId}                   — a borrower's track record changed
  *   notify               {title, body, link}            — in-app toast (urgent re-ping)
+ *   arena:*              {…}                            — the live game board (see lib/arena/)
  */
 const db = require('../db');
 const { scrubText } = require('./borrower-safe');
@@ -223,6 +224,36 @@ async function publishTrackRecordUpdate(borrowerId, actor = null) {
   } catch (_) { /* the borrower still got it; a staff-fanout miss is non-fatal */ }
 }
 
+/**
+ * Fan-out to EVERY internal staff connection — the live game board (the Arena).
+ *
+ * Why this is its own function rather than a conversation fan-out: the Arena is
+ * a room, not a thread. Everybody internal watching the same wheel must receive
+ * the identical frame at the identical moment, and there is no membership list
+ * to resolve — the SPIN decides who may act, and lib/arena/settings.js decides
+ * who may see the screen at all.
+ *
+ * EXTERNAL CONNECTIONS ARE EXCLUDED BY CONSTRUCTION. A broker (`kind:'tpo'`) is
+ * a staff_users row and a borrower is not staff at all; neither is ever inside
+ * this game, so the filter is `kind === 'staff'` and nothing else. That also
+ * means no borrower-safe scrub is needed here — no external connection can
+ * receive one of these frames — but a payload must still never carry anything
+ * an internal staffer could not already see, which the Arena routes enforce by
+ * sending only ids and labels the board already shows.
+ *
+ * Returns how many connections were written to, so a caller can log what
+ * actually happened rather than what it hoped.
+ */
+function publishToStaff(event, data) {
+  let n = 0;
+  for (const c of conns.values()) {
+    if (c.kind !== 'staff') continue;
+    write(c, event, data);
+    n++;
+  }
+  return n;
+}
+
 /** Direct fan-out to one user's connections (badges, urgent pings). */
 function publishToUser(kind, id, event, data) {
   const key = keyOf(kind, id);
@@ -243,7 +274,7 @@ setInterval(() => {
 
 module.exports = {
   addClient, setOpenConversation,
-  publishToConversation, publishToUser, publishTrackRecordUpdate,
+  publishToConversation, publishToUser, publishToStaff, publishTrackRecordUpdate,
   disconnectUser,
   isOnline, onlineKeys, keyOf,
 };

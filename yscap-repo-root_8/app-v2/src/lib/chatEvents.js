@@ -7,11 +7,17 @@
    and rebuild with a FRESH token (the sliding session may have rotated it) and
    emit a synthetic 'reconnect' so views refetch anything they missed. */
 import { getToken } from './api.js';
+// The Arena's frame names come FROM the Arena, rather than being copied here.
+// EventSource only delivers events it has a named listener for, so this list is
+// what decides whether the live board works at all — and a copy of a list is a
+// copy that goes stale the first time somebody adds a frame.
+import { ARENA_EVENTS } from './arena.js';
 
 const EVENT_NAMES = [
   'hello', 'message:new', 'message:edited', 'message:deleted', 'reaction:update',
   'receipt:read', 'receipt:delivered', 'typing', 'presence:diff',
   'unread:update', 'conversation:updated', 'track_record:updated', 'notify',
+  ...ARENA_EVENTS,
 ];
 
 let es = null;
