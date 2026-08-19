@@ -274,24 +274,41 @@ async function storeContact({ personId, contact, raw, staffId, source, client = 
             unlocked_by = COALESCE(elementix_contacts.unlocked_by, EXCLUDED.unlocked_by),
             unlocked_at = COALESCE(elementix_contacts.unlocked_at, EXCLUDED.unlocked_at),
             source      = COALESCE(elementix_contacts.source, EXCLUDED.source)`,
-    [personId, JSON.stringify(contact.phones), JSON.stringify(contact.emails),
-      JSON.stringify(contact.addresses), JSON.stringify(raw == null ? {} : raw).slice(0, 200000),
+    [personId, crmTools.vendorJsonb(contact.phones), crmTools.vendorJsonb(contact.emails),
+      crmTools.vendorJsonb(contact.addresses), crmTools.vendorJsonb(raw, 200000),
       staffId || null, source || 'pilot_skip_trace']);
 }
 
-/** The person header row, so a lead can link to a profile that exists. */
-async function ensurePerson({ personId, name, state, client = db }) {
+/**
+ * THE PERSON HEADER ROW — the ONE writer of `elementix_persons`, so a lead has a
+ * profile to link to.
+ *
+ * Every module in this plane calls THIS. There used to be a second copy in
+ * profile.js and the two disagreed about exactly one thing — whose name wins —
+ * so which spelling a person ended up with depended on whether a lead or a
+ * profile build touched them last. That is the shape a bug hides in.
+ *
+ * The rule, stated once: a name we already hold STAYS, because it is usually the
+ * one an officer picked off a search result and saw on their lead. The single
+ * exception is `authoritative: true`, which the profile build passes because it
+ * is holding the vendor's OWN canonical record of the person rather than a row
+ * off a search hit — and that genuinely is a better name than a fuzzy match.
+ * A blank name never overwrites anything, either way.
+ */
+async function ensurePerson({ personId, name, state, authoritative = false, client = db }) {
   await client.query(
     `INSERT INTO elementix_persons (person_id, display_name, primary_state, states)
      VALUES ($1,$2,$3,CASE WHEN $3::text IS NULL OR $3 = '' THEN '{}'::text[] ELSE ARRAY[$3::text] END)
      ON CONFLICT (person_id) DO UPDATE
-        SET display_name  = COALESCE(elementix_persons.display_name, EXCLUDED.display_name),
+        SET display_name  = CASE WHEN $4::boolean
+                                 THEN COALESCE(EXCLUDED.display_name, elementix_persons.display_name)
+                                 ELSE COALESCE(elementix_persons.display_name, EXCLUDED.display_name) END,
             primary_state = COALESCE(elementix_persons.primary_state, EXCLUDED.primary_state),
             states = CASE WHEN $3::text IS NULL OR $3 = '' OR $3 = ANY(elementix_persons.states)
                           THEN elementix_persons.states
                           ELSE elementix_persons.states || $3::text END,
             updated_at = now()`,
-    [personId, clip(name, 300) || null, state || null]);
+    [personId, clip(name, 300) || null, state || null, authoritative === true]);
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +320,12 @@ async function ensurePerson({ personId, name, state, client = db }) {
  *  place to wait on a third party. */
 const POLL_ATTEMPTS = 4;
 const POLL_DELAY_MS = 1500;
+
+/* How long a paid enrichment job is presumed to still be running. Past this a
+   pending trace is stale and a fresh attempt is allowed, so a job that died at
+   the vendor cannot make a person permanently un-traceable. Matches the sweep's
+   own give-up window. */
+const PENDING_HOLD_HOURS = 48;
 
 /**
  * Skip trace a person and land them in the officer's CRM.
@@ -327,6 +350,49 @@ async function skipTrace({ personId, staffId, reason, name, state }) {
   }
 
   const opts = { staffId };
+
+  /* WE ALREADY OWN THIS PERSON'S DETAILS — DO NOT BUY THEM AGAIN.
+     Asked first, and from OUR OWN database, because the vendor's status call is
+     a network round trip that can fail, and `lookups.isUnlocked` fails CLOSED
+     (an unreadable answer reads as "not unlocked"). Failing closed is right for
+     showing a phone number and exactly backwards for spending money: a hiccup in
+     the status call would re-buy a contact sitting in our own table. */
+  const held = await db.query(
+    `SELECT person_id FROM elementix_contacts
+      WHERE person_id = $1 AND (jsonb_array_length(phones) > 0 OR jsonb_array_length(emails) > 0)`,
+    [personId]);
+  if (held.rows.length) {
+    return finishSkipTrace({ personId, staffId, reason, name, state, charged: false, source: 'already_unlocked' });
+  }
+
+  /* SOMEBODY'S ENRICHMENT IS STILL RUNNING — DO NOT START A SECOND ONE.
+     The vendor calls this a JOB: the click waits a few seconds, then hands off
+     to the sweep, and the person is still locked when the officer looks. Without
+     this, the same officer clicking again at thirty seconds spends a second
+     credit, and a SECOND officer tracing the same person spends a third — which
+     the (person, staff) unique index cannot prevent, because it dedupes the ROW
+     and not the SPEND, and the two-officer case is not even the same row.
+     A pending trace is only honoured while it could still be running: past
+     `giveUpHours` it is stale, and refusing forever on a job that died would
+     make the person permanently un-traceable. */
+  const pending = await db.query(
+    `SELECT staff_id FROM elementix_skip_traces
+      WHERE person_id = $1 AND status = 'pending' AND charged = true
+        AND occurred_at > now() - ($2 || ' hours')::interval
+      LIMIT 1`, [personId, String(PENDING_HOLD_HOURS)]);
+  if (pending.rows.length) {
+    // Their own lead is still made — they asked for this person, and the
+    // details will land on it when the job settles.
+    // `charged: false` because THIS officer is not the one who paid — the trace
+    // that is running already carries the spend. finishSkipTrace records their
+    // own row as pending on its own when the details are not back yet.
+    const out = await finishSkipTrace({ personId, staffId, reason, name, state, charged: false, source: 'pilot_skip_trace' });
+    return { ...out, ok: true, pending: true, alreadyRunning: true,
+      detail: pending.rows[0].staff_id === staffId
+        ? 'You already asked for this person — Elementix is still looking. Nothing extra was charged.'
+        : 'Somebody here is already looking this person up, so nothing extra was charged. The details will appear on your lead when they arrive.' };
+  }
+
   const state0 = await contactState(personId, opts);
   if (!state0.ok) return state0;
 
@@ -367,8 +433,17 @@ async function finishSkipTrace({ personId, staffId, reason, name, state, charged
   if (!info.ok) {
     await recordSkipTrace({ personId, staffId, name, state, reason, charged, source,
       status: 'pending', detail: info.detail });
+    /* SAY WHAT ACTUALLY HAPPENED, WHICH IS NOT THE SAME SENTENCE BOTH WAYS.
+       This function is reached from the PAID path and from the FREE one (a
+       person Elementix already had unlocked, where `charged` is false), and
+       telling an officer "the lookup is paid for" about a lookup that cost
+       nothing is a plain untruth on the screen where they decide whether to
+       spend again. The promise to keep checking is kept by
+       `drainPendingSkipTraces`, which the sync runs on a timer. */
     return { ok: true, pending: true, charged,
-      detail: 'The lookup is paid for, but Elementix has not returned the details yet. PILOT will keep trying.' };
+      detail: charged
+        ? 'The lookup is paid for, but Elementix has not sent the details back yet. PILOT will keep checking and the lead will appear on its own.'
+        : 'Elementix has this person unlocked but did not send their details back just now. Nothing was charged. PILOT will keep checking and the lead will appear on its own.' };
   }
 
   const contact = normalizeContact(info.data);
@@ -489,5 +564,5 @@ module.exports = {
   normalizeContact, primaryContact, phoneKey,
   contactState, skipTrace, finishSkipTrace, drainPendingSkipTraces,
   ensureLead, ensurePerson, storeContact, recordSkipTrace,
-  _internals: { nameFrom, POLL_ATTEMPTS, POLL_DELAY_MS },
+  _internals: { nameFrom, POLL_ATTEMPTS, POLL_DELAY_MS, PENDING_HOLD_HOURS },
 };

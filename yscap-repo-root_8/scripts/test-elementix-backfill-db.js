@@ -77,6 +77,9 @@ crmTools.call = async (tool, args, opts) => {
 };
 
 const backfill = require('../src/lib/elementix/backfill');
+const crm = require('../src/lib/elementix/crm');
+const fs = require('fs');
+const path = require('path');
 
 let passed = 0;
 const ok = (m) => { passed += 1; console.log(`  ✓ ${m}`); };
@@ -273,8 +276,6 @@ async function main() {
   // not buy anything; only reading the source proves no BRANCH of it could. An
   // unattended timer that can reach the paid tool is the one thing about this
   // feature that could cost the owner real money while nobody is watching.
-  const fs = require('fs');
-  const path = require('path');
   for (const f of ['../src/lib/elementix/backfill.js', '../src/sync/elementix-crm-sync.js']) {
     const src = fs.readFileSync(path.join(__dirname, f), 'utf8');
     // Strip comments first: this file's own header EXPLAINS that it never calls
@@ -286,12 +287,132 @@ async function main() {
   }
   ok('neither the importer nor the timer that runs it can reach the paid tool, on any branch');
 
+  const fsrc = fs.readFileSync(path.join(__dirname, '../src/sync/elementix-crm-sync.js'), 'utf8');
+  // The SETTLE pass runs even with the bulk import switched off, so it has to be
+  // proven not to reach the paid tool through the module it now requires. It
+  // touches exactly two functions in crm.js — read those two and nothing else,
+  // because crm.js as a whole DOES buy contacts and a whole-file grep would
+  // either fail here or, worse, be "fixed" by weakening it.
+  const crmSrc = fs.readFileSync(path.join(__dirname, '../src/lib/elementix/crm.js'), 'utf8');
+  for (const fn of ['drainPendingSkipTraces', 'finishSkipTrace']) {
+    const at = crmSrc.indexOf(`async function ${fn}(`);
+    assert.ok(at > -1, `${fn} must exist`);
+    // To the next top-level declaration, which is where the function ends.
+    const rest = crmSrc.slice(at + 10);
+    const end = rest.search(/\n(?:async function |function |module\.exports)/);
+    const body = (end === -1 ? rest : rest.slice(0, end))
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    assert.ok(!/submit_contact_enrichment/.test(body),
+      `${fn} is reached by the unattended settle pass and must not be able to buy a contact`);
+  }
+  ok('the settle pass reads two functions of crm.js, and neither can buy a contact');
+
   const sync = require('../src/sync/elementix-crm-sync');
   delete process.env.ELEMENTIX_CRM_SYNC_ENABLED;
   sync.start();
-  assert.ok(typeof sync.listOnce === 'function' && typeof sync.workOnce === 'function');
-  ok('and the loop is off unless it is deliberately switched on');
+  assert.ok(typeof sync.listOnce === 'function' && typeof sync.workOnce === 'function'
+    && typeof sync.settleOnce === 'function');
+  // THE BULK IMPORT IS BEHIND THE SWITCH; SETTLING A PAID LOOKUP IS NOT — and
+  // the difference is what the schedule does, so the schedule is what is read.
+  // A pending trace means a member of staff pressed the button here and a credit
+  // was already spent: leaving it unsettled wastes money and drops a lead
+  // somebody asked for. Creating leads out of work done in Elementix's own
+  // screens is the thing an owner switches on deliberately.
+  const gate = fsrc.indexOf("ELEMENTIX_CRM_SYNC_ENABLED')) {");
+  assert.ok(gate > -1, 'the bulk-import switch is still read in start()');
+  const beforeGate = fsrc.slice(0, gate);
+  const afterGate = fsrc.slice(gate);
+  assert.ok(/setInterval\(settleOnce/.test(beforeGate),
+    'the settle pass must be scheduled BEFORE the bulk-import switch can return');
+  assert.ok(!/setInterval\(listOnce|setInterval\(workOnce/.test(beforeGate)
+    && /setInterval\(listOnce/.test(afterGate) && /setInterval\(workOnce/.test(afterGate),
+    'the bulk passes must stay BEHIND the switch');
+  ok('paid lookups are settled whether or not the bulk import is switched on — and the bulk import stays off');
 
+  // -------------------------------------------------------------------------
+  console.log('\n8. A contact PILOT itself traced is not handed to the shared login');
+  // -------------------------------------------------------------------------
+  // THE SHARED-SEAT TRAP. Every unlock PILOT makes goes out on the ONE company
+  // connection, so Elementix stamps it with that login's email — and mapping
+  // that email to an officer, which is exactly right for a real Elementix seat,
+  // would hand every trace made in PILOT to that one person. The officer who
+  // clicked already has the lead; a second one would appear in somebody else's
+  // pipeline, with a notification telling them a contact is theirs.
+  await wipe();
+  const shared = await mk(`Shared Seat ${sfx}`, `shared.${sfx}@yscapgroup.test`);
+  const clicker = await mk(`Clicking Officer ${sfx}`, `clicker.${sfx}@yscapgroup.test`);
+  // PILOT's own record of the click: the contact, the lead and the trace.
+  await crm.ensurePerson({ personId: P(1), name: 'MOTY BRISK', state: 'NJ' });
+  await crm.storeContact({ personId: P(1), contact: { phones: [], emails: [], addresses: [] },
+    raw: {}, staffId: clicker, source: 'pilot_skip_trace' });
+  const own = await crm.ensureLead({ personId: P(1), staffId: clicker, name: 'MOTY BRISK', state: 'NJ',
+    contact: { phones: [], emails: [], addresses: [] } });
+  await crm.recordSkipTrace({ personId: P(1), staffId: clicker, name: 'MOTY BRISK', state: 'NJ',
+    reason: 'Calling about 41 Arlington Ave', charged: true, source: 'pilot_skip_trace',
+    leadId: own.id, status: 'complete' });
+  // ...and the vendor hands it back down the history under the SHARED login.
+  await db.query(
+    `INSERT INTO elementix_users (email, staff_id, linked_by, linked_at)
+     VALUES ($1,$2,$3,now()) ON CONFLICT (email) DO UPDATE SET staff_id = EXCLUDED.staff_id`,
+    [`shared.${sfx}@yscapgroup.test`, shared, admin]);
+  await db.query(
+    `INSERT INTO elementix_backfill_queue (person_id, person_name, person_state, unlocked_by_email, unlocked_at, status)
+     VALUES ($1,'MOTY BRISK','NJ',$2,now(),'pending')
+     ON CONFLICT (person_id) DO UPDATE SET status='pending', attempts=0, unlocked_by_email=EXCLUDED.unlocked_by_email`,
+    [P(1), `shared.${sfx}@yscapgroup.test`]);
+
+  const reimport = await backfill.workBatch({ staffId: admin, limit: 5 });
+  assert.strictEqual(reimport.alreadyOurs, 1, 'the import recognised its own trace');
+  const leads = await db.query(
+    `SELECT officer_id FROM leads WHERE elementix_person_id = $1`, [P(1)]);
+  assert.strictEqual(leads.rowCount, 1, 'exactly one lead — no copy in the shared login\'s pipeline');
+  assert.strictEqual(leads.rows[0].officer_id, clicker, 'and it belongs to the officer who clicked');
+  ok('a trace made in PILOT is not duplicated into the shared login\'s pipeline');
+
+  const tr = await db.query(
+    `SELECT staff_id, reason, charged, source FROM elementix_skip_traces WHERE person_id = $1`, [P(1)]);
+  assert.strictEqual(tr.rowCount, 1);
+  assert.strictEqual(tr.rows[0].staff_id, clicker);
+  assert.strictEqual(tr.rows[0].reason, 'Calling about 41 Arlington Ave',
+    'the reason the officer typed is not overwritten by "Imported from Elementix history"');
+  assert.strictEqual(tr.rows[0].charged, true, 'and the record that a credit was spent survives');
+  ok('the reason typed at the click, and the spend, are left exactly as they were');
+
+  // A PENDING trace is charged and belongs to the settle pass. The import must
+  // not rewrite it either — "complete" is not what makes the history ours.
+  await db.query(`DELETE FROM elementix_skip_traces WHERE person_id = $1`, [P(1)]);
+  await db.query(`DELETE FROM elementix_contacts WHERE person_id = $1`, [P(1)]);
+  await crm.recordSkipTrace({ personId: P(1), staffId: clicker, name: 'MOTY BRISK', state: 'NJ',
+    reason: 'Waiting on the vendor', charged: true, source: 'pilot_skip_trace', status: 'pending' });
+  await db.query(`UPDATE elementix_backfill_queue SET status='pending', attempts=0 WHERE person_id=$1`, [P(1)]);
+  const rerun = await backfill.workBatch({ staffId: admin, limit: 5 });
+  assert.strictEqual(rerun.alreadyOurs, 1);
+  const pend = await db.query(
+    `SELECT staff_id, reason, charged, status FROM elementix_skip_traces WHERE person_id = $1`, [P(1)]);
+  assert.strictEqual(pend.rowCount, 1);
+  assert.strictEqual(pend.rows[0].staff_id, clicker);
+  assert.strictEqual(pend.rows[0].reason, 'Waiting on the vendor');
+  assert.strictEqual(pend.rows[0].charged, true);
+  assert.strictEqual(pend.rows[0].status, 'pending', 'the settle pass still owns it');
+  ok('a charged trace still running is left for the settle pass, not overwritten as an import');
+
+  // -------------------------------------------------------------------------
+  console.log('\n9. A login is never auto-matched to somebody who has left');
+  // -------------------------------------------------------------------------
+  const gone = await mk(`Departed Officer ${sfx}`, `gone.${sfx}@yscapgroup.test`);
+  await db.query(`UPDATE staff_users SET is_active = false WHERE id = $1`, [gone]);
+  await db.query(
+    `INSERT INTO elementix_users (email, unlock_count) VALUES ($1, 3)
+     ON CONFLICT (email) DO UPDATE SET staff_id = NULL, linked_by = NULL, ignored = false`,
+    [`gone.${sfx}@yscapgroup.test`]);
+  await backfill.matchUsers();
+  const g = await db.query(`SELECT staff_id FROM elementix_users WHERE email = $1`,
+    [`gone.${sfx}@yscapgroup.test`]);
+  assert.strictEqual(g.rows[0].staff_id, null,
+    'a deactivated staffer would file every contact into a pipeline nobody reads');
+  ok('an Elementix login whose email belongs to a deactivated staffer stays unmatched');
+
+  await db.query(`DELETE FROM elementix_users WHERE email LIKE $1`, [`%.${sfx}@yscapgroup.test`]);
   await wipe();
   console.log(`\n${passed} checks passed.\n`);
 }

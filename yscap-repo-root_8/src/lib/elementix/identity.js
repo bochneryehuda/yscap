@@ -110,10 +110,21 @@ function identityFrom(payload) {
  * label could not be read. Returns what it learned either way.
  *
  * `staffId` null asks about the COMPANY-WIDE connection; a staff id asks about
- * that officer's own (client.js picks the token, so this really is that seat).
+ * that officer's own.
+ *
+ * THE CALL GOES OUT ON THE SEAT BEING ASKED ABOUT, and is BILLED to the human
+ * who asked. Those are two different people whenever an admin refreshes the
+ * COMPANY label: passing the admin's id as the seat would send the question down
+ * the admin's own connection (if they have one), and Elementix would answer with
+ * the admin's name — which this function then writes onto the company row as its
+ * label. `tokenSeat` is what keeps them apart; `staffId` stays the ledger's
+ * answer to "who used the allowance".
  */
 async function recordIdentity(staffId = null, opts = {}) {
-  const res = await crm.call('welcome', {}, { staffId: staffId || opts.actingStaffId || null });
+  const res = await crm.call('welcome', {}, {
+    staffId: staffId || opts.actingStaffId || null,
+    tokenSeat: staffId || null,
+  });
   if (!res || res.ok !== true) {
     return { ok: false, reason: (res && res.reason) || 'welcome_failed',
       detail: (res && res.detail) || 'Elementix did not answer the welcome check.' };
@@ -133,7 +144,7 @@ async function recordIdentity(staffId = null, opts = {}) {
           AND staff_id IS NOT DISTINCT FROM $2::uuid`,
       [String(url || '').replace(/\/+$/, ''), staffId || null,
         clip(id.user, 200), clip(id.email, 200), clip(id.org, 200),
-        JSON.stringify(res.data == null ? {} : res.data).slice(0, 20000)]);
+        crm.vendorJsonb(res.data, 20000)]);
   } catch (_) {
     /* A label we could not store is a label; the connection is unaffected. */
   }

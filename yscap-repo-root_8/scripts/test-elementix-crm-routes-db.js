@@ -44,13 +44,19 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
   // the live connector really answers with (captured 2026-08-18).
   const crmTools = require(R + '/src/lib/elementix/crm-tools');
   let unlocked = new Set();
+  let searchLimit = null;        // what the vendor says it was willing to send
+  let statusDown = false;        // the vendor cannot be asked at all
   const seen = [];
   crmTools.call = async (tool, args, opts) => {
     seen.push({ tool, args, staffId: opts && opts.staffId });
     switch (tool) {
       case 'search':
-        return { ok: true, data: { results: [{ id: PID, name: 'MOTY BRISK', state: 'NJ', entityType: 'PERSON', _url: 'https://app.elementix.com/person/x' }] } };
+        return { ok: true, data: {
+          results: [{ id: PID, name: 'MOTY BRISK', state: 'NJ', entityType: 'PERSON', _url: 'https://app.elementix.com/person/x' }],
+          ...(searchLimit == null ? {} : { resultLimit: searchLimit }),
+        } };
       case 'get_contact_status':
+        if (statusDown) return { ok: false, reason: 'unavailable', detail: 'Elementix could not be reached.' };
         return { ok: true, data: { unlocked: unlocked.has(args.personId) } };
       case 'submit_contact_enrichment':
         if (!opts || !opts.paidActor) return { ok: false, reason: 'paid_tool_refused', detail: 'no actor' };
@@ -239,10 +245,88 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
     ok(r.status === 404, 'a lead id is not a borrower id');
 
     // -----------------------------------------------------------------------
-    console.log('\n7. Every call named the officer who made it');
+    console.log('\n7. A record belongs to somebody, and it is not everybody');
+    // -----------------------------------------------------------------------
+    // Being signed in as internal staff opens the DOOR of this desk; it is not
+    // permission to reach into any lead or borrower in the company by typing an
+    // id. Without a per-record check, one officer could overwrite the Elementix
+    // person another officer attached to their own lead, and anybody could read
+    // a borrower's whole merged profile — every property, loan and company.
+    r = await call(server, 'GET', `/api/elementix/for/lead/${leadId}`, T2);
+    ok(r.status === 403, 'another officer cannot read the Elementix profile hanging off somebody else\'s lead');
+    r = await call(server, 'POST', '/api/elementix/link', T2, { kind: 'lead', recordId: leadId, personId: PID2, replace: true });
+    ok(r.status === 403, 'and cannot overwrite the person attached to it');
+    const stillMine = await db.query(`SELECT elementix_person_id FROM leads WHERE id = $1`, [leadId]);
+    ok(stillMine.rows[0].elementix_person_id === PID, 'the refusal wrote nothing');
+
+    r = await call(server, 'GET', `/api/elementix/for/lead/${leadId}`, TA);
+    ok(r.status === 200, 'an admin, who already sees every file, still sees it');
+
+    const bMine = (await db.query(
+      `INSERT INTO borrowers (first_name, last_name, email, primary_officer_id)
+       VALUES ('Elx','Borrower',$1::citext,$2) RETURNING id`, [mail('elxb'), officer])).rows[0].id;
+    r = await call(server, 'GET', `/api/elementix/for/borrower/${bMine}`, T);
+    ok(r.status === 200 && r.body.linked === false, 'the officer who owns the borrower reaches their record');
+    r = await call(server, 'GET', `/api/elementix/for/borrower/${bMine}`, T2);
+    ok(r.status === 403, 'an officer with no relationship to that borrower is refused');
+    r = await call(server, 'GET', '/api/elementix/for/borrower/11111111-1111-4111-8111-111111111111', T);
+    ok(r.status === 404, 'and a record that does not exist says so, rather than "not yours"');
+
+    // -----------------------------------------------------------------------
+    console.log('\n8. Does the next click cost money?');
+    // -----------------------------------------------------------------------
+    // The screen must not have to work this out from the shape of the row it
+    // gets back — it asks, and the answer is a plain boolean.
+    r = await call(server, 'GET', `/api/elementix/people/${PID}/contact`, T);
+    ok(r.status === 200 && r.body.free === true && r.body.freeReason === 'already_stored',
+      'a person whose details we already hold is free, answered from our own database');
+    ok(r.body.stored && r.body.stored.person_id === PID,
+      'and the stored row names the person it is about');
+    const askedBefore = seen.filter((c) => c.tool === 'get_contact_status').length;
+    await call(server, 'GET', `/api/elementix/people/${PID}/contact`, T);
+    ok(seen.filter((c) => c.tool === 'get_contact_status').length === askedBefore,
+      'and Elementix is not asked at all — a contact we own is proof we already paid');
+
+    statusDown = true;
+    r = await call(server, 'GET', `/api/elementix/people/${PID2}/contact`, T);
+    statusDown = false;
+    ok(r.status === 200 && r.body.statusKnown === false && r.body.free === false
+       && r.body.statusProblem && /reach/i.test(r.body.statusProblem.detail),
+      'a vendor that cannot be asked is SAID so, never answered as a confident "nobody has unlocked them"');
+
+    searchLimit = 1;
+    r = await call(server, 'GET', '/api/elementix/search?q=Moty%20Brisk', T);
+    ok(r.status === 200 && r.body.truncated === true && r.body.resultLimit === 1,
+      'a full page is reported as a cut-off list, from the vendor\'s OWN stated limit');
+    searchLimit = 20;
+    r = await call(server, 'GET', '/api/elementix/search?q=Moty%20Brisk', T);
+    ok(r.status === 200 && r.body.truncated === false, 'and a short page is not');
+    searchLimit = null;
+    r = await call(server, 'GET', '/api/elementix/search?q=Moty%20Brisk', T);
+    ok(r.status === 200 && r.body.truncated === false && r.body.resultLimit === null,
+      'with no stated limit nothing is claimed either way — never a hand-typed 20');
+
+    // -----------------------------------------------------------------------
+    console.log('\n9. Two records that exist, or nothing happens');
+    // -----------------------------------------------------------------------
+    // A sentinel no other suite uses — the profile suite already owns the 9999…
+    // range, and a person another test legitimately created would make this
+    // guard PASS its gate for the wrong reason.
+    const GHOST = '0badf00d-dead-4bee-8fee-000000000001';
+    await db.query(`DELETE FROM elementix_person_aliases WHERE alias_person_id = $1`, [GHOST]);
+    await db.query(`DELETE FROM elementix_persons WHERE person_id = $1`, [GHOST]);
+    r = await call(server, 'POST', `/api/elementix/people/${PID}/aliases/${GHOST}`, T, { confirm: true });
+    ok(r.status === 404, 'a person PILOT has never seen cannot be joined onto a real one');
+    const ghost = await db.query(`SELECT 1 FROM elementix_persons WHERE person_id = $1`, [GHOST]);
+    ok(ghost.rowCount === 0, 'and no phantom record was created by asking');
+
+    // -----------------------------------------------------------------------
+    console.log('\n10. Every call named the officer who made it');
     // -----------------------------------------------------------------------
     ok(seen.length > 0 && seen.every((c) => !!c.staffId),
       `${seen.length} vendor calls, every one carrying the officer behind it`);
+
+    await db.query(`DELETE FROM borrowers WHERE id = $1`, [bMine]);
 
     await db.query(`DELETE FROM leads WHERE elementix_person_id = ANY($1)`, [[PID, PID2]]);
     console.log(`\n${pass} checks passed, ${fail} failed.\n`);

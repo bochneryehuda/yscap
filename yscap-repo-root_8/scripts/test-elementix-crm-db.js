@@ -263,6 +263,151 @@ async function main() {
   crmTools.call = realCall;
   ok('a refused spend (money cap) leaves nothing behind — no lead, no record');
 
+  // -------------------------------------------------------------------------
+  console.log('\n6. A message about money says what actually happened');
+  // -------------------------------------------------------------------------
+  // finishSkipTrace is reached from the PAID path AND from the FREE one (a
+  // person Elementix already had unlocked). It used to say "the lookup is paid
+  // for" both ways — a plain untruth on the very screen where somebody decides
+  // whether to spend again.
+  const PID_D = '44444444-4444-4444-8444-444444444444';
+  await db.query(`DELETE FROM elementix_skip_traces WHERE person_id=$1`, [PID_D]);
+  await db.query(`DELETE FROM leads WHERE elementix_person_id=$1`, [PID_D]);
+  await db.query(`DELETE FROM elementix_contacts WHERE person_id=$1`, [PID_D]);
+  await db.query(`DELETE FROM elementix_persons WHERE person_id=$1`, [PID_D]);
+
+  failNext = { tool: 'get_contact_info', result: { ok: false, reason: 'unavailable', detail: 'not yet' } };
+  const freePending = await crm.finishSkipTrace({
+    personId: PID_D, staffId: officer1, reason: 'Adding a lead', name: 'Free Path', state: 'NJ',
+    charged: false, source: 'already_unlocked' });
+  assert.strictEqual(freePending.pending, true);
+  assert.strictEqual(freePending.charged, false);
+  assert.ok(!/paid for/i.test(freePending.detail),
+    'the free path must never claim the lookup was paid for');
+  assert.ok(/nothing was charged/i.test(freePending.detail));
+  ok('a free lookup that has not landed says nothing was charged');
+
+  failNext = { tool: 'get_contact_info', result: { ok: false, reason: 'unavailable', detail: 'not yet' } };
+  const paidPending = await crm.finishSkipTrace({
+    personId: PID_D, staffId: officer1, reason: 'Calling them', name: 'Free Path', state: 'NJ',
+    charged: true, source: 'pilot_skip_trace' });
+  assert.ok(/paid for/i.test(paidPending.detail), 'and the paid path still says the credit is spent');
+  ok('a paid lookup that has not landed still says so');
+
+  // -------------------------------------------------------------------------
+  console.log('\n7. A vendor payload that Postgres would refuse');
+  // -------------------------------------------------------------------------
+  // A NUL byte is refused by jsonb (22P05) and the nul-strip middleware never
+  // sees this — a vendor answer arrives over fetch, not through express.json.
+  // Before the guard, the write raised AFTER the credit was spent.
+  const NUL = String.fromCharCode(0);
+  await crm.ensurePerson({ personId: PID_D, name: 'Free Path', state: 'NJ' });  // the contact row's FK
+  await crm.storeContact({
+    personId: PID_D,
+    contact: { phones: [{ value: `732-555-01${NUL}01`, label: `Mobile${NUL}` }], emails: [], addresses: [] },
+    raw: { note: `a payload with a ${NUL} in it`, nested: { deep: [`${NUL}x`] } },
+    staffId: officer1, source: 'pilot_skip_trace',
+  });
+  const held = await db.query(`SELECT phones, raw FROM elementix_contacts WHERE person_id=$1`, [PID_D]);
+  assert.strictEqual(held.rowCount, 1, 'the write landed instead of raising 22P05');
+  assert.ok(!JSON.stringify(held.rows[0].phones).includes('\\u0000'));
+  ok('a NUL byte anywhere in a vendor payload is stripped, and the row is stored');
+
+  // ...and something far too big is REPLACED by a marker, never half-written:
+  // slicing serialized JSON produces a document Postgres rejects outright.
+  const huge = { blob: 'x'.repeat(600000) };
+  await crm.storeContact({ personId: PID_D, contact: { phones: [], emails: [], addresses: [] },
+    raw: huge, staffId: officer1, source: 'pilot_skip_trace' });
+  const big = await db.query(`SELECT raw FROM elementix_contacts WHERE person_id=$1`, [PID_D]);
+  assert.strictEqual(big.rows[0].raw._dropped, 'too_large', 'an over-large payload says so in the row');
+  ok('an over-large vendor payload is replaced by a marker that says why, not truncated into junk');
+
+  // -------------------------------------------------------------------------
+  console.log('\n8. One writer of the person header');
+  // -------------------------------------------------------------------------
+  // Two copies of this upsert disagreed about whose name wins, so a person's
+  // displayed name depended on which module touched them last.
+  await db.query(`DELETE FROM elementix_persons WHERE person_id=$1`, [PID_D]);
+  await crm.ensurePerson({ personId: PID_D, name: 'Picked Off A Search', state: 'NJ' });
+  await crm.ensurePerson({ personId: PID_D, name: 'A Later Guess', state: 'NJ' });
+  let nm = await db.query(`SELECT display_name FROM elementix_persons WHERE person_id=$1`, [PID_D]);
+  assert.strictEqual(nm.rows[0].display_name, 'Picked Off A Search',
+    'an ordinary write never overwrites a name somebody already saw on their lead');
+  const profile = require('../src/lib/elementix/profile');
+  await profile._internals.ensurePersonRow(PID_D, { name: 'The Vendor Record', state: 'NJ' });
+  nm = await db.query(`SELECT display_name FROM elementix_persons WHERE person_id=$1`, [PID_D]);
+  assert.strictEqual(nm.rows[0].display_name, 'The Vendor Record',
+    'the profile build, which holds the vendor\'s own record, does replace it');
+  ok('one writer, and only the vendor\'s own record may replace a stored name');
+
+  await db.query(`DELETE FROM elementix_skip_traces WHERE person_id=$1`, [PID_D]);
+  await db.query(`DELETE FROM leads WHERE elementix_person_id=$1`, [PID_D]);
+  await db.query(`DELETE FROM elementix_contacts WHERE person_id=$1`, [PID_D]);
+  await db.query(`DELETE FROM elementix_persons WHERE person_id=$1`, [PID_D]);
+
+  // -------------------------------------------------------------------------
+  console.log('\n9. A spend is only recorded when a call is genuinely about to go out');
+  // -------------------------------------------------------------------------
+  // The REAL client, not the stub. `recordPaid` writes a row against the owner's
+  // 1,000 a month, and it used to run BEFORE the "can this call go out at all?"
+  // gates — so with Elementix switched off, rate-limited or in dry run, a paid
+  // row was written and the call then returned "switched off". Nothing bought;
+  // the cap shrank anyway. The REFUSALS about the caller still come first (a
+  // paid call with no actor is refused whatever the environment says); only the
+  // ledger write moved.
+  const realElx = require('../src/elementix/client');
+  const flags = require('../src/lib/flags');
+  const fullActor = { paidActor: { staffId: officer1, personId: PID_A, reason: 'proving the ledger is not written' } };
+  const countPaid = async () => (await db.query(
+    `SELECT count(*)::int n FROM elementix_calls WHERE paid AND staff_id = $1::uuid`, [officer1])).rows[0].n;
+
+  // A refusal about the CALLER still wins over anything about the environment.
+  const bareCall = await realElx.callTool('submit_contact_enrichment', {}, {});
+  assert.strictEqual(bareCall.reason, 'paid_tool_refused',
+    'a paid call with no actor is refused before the environment is even read');
+
+  const paidBefore = await countPaid();
+  const off = await realElx.callTool('submit_contact_enrichment', {}, fullActor);
+  assert.notStrictEqual(off.ok, true, 'the call did not go out');
+  assert.ok(['not_configured', 'disabled', 'rate_limited'].includes(off.reason), `unexpected reason: ${off.reason}`);
+  assert.strictEqual(await countPaid(), paidBefore,
+    'and nothing was billed for a call that never left the building');
+  ok('a call that cannot go out bills nothing — the cap is not shrunk by a switch being off');
+
+  // The DRY RUN is the same class, and it is the one that used to look like a
+  // success: it must also bill nothing, and must not read as an answer.
+  await flags.setFlag('ELEMENTIX_ENABLED', true, officer1);
+  await flags.setFlag('ELEMENTIX_DRYRUN', true, officer1);
+  const dry = await realElx.callTool('submit_contact_enrichment', {}, fullActor);
+  assert.strictEqual(await countPaid(), paidBefore, 'a dry run bills nothing either');
+  assert.strictEqual(dry.dryRun, true, 'and the transport marks it as a dry run rather than a real answer');
+
+  /* THE CRM PLANE TURNS THAT MARK INTO A REFUSAL, and that conversion is the
+     half that matters on this plane: the transport's `{ok:true, dryRun:true,
+     data:null}` reads to `rowsOf` as "nobody by that name", caches a profile
+     section as a confident empty for a day, and — because `crm.skipTrace`
+     treats an ok from the paid tool as proof the unlock happened — tells an
+     officer their contact is on its way while nothing was sent. A fresh copy of
+     the module is required here because this suite has stubbed the one it holds. */
+  const cacheKey = require.resolve('../src/lib/elementix/crm-tools');
+  const stubbed = require.cache[cacheKey];
+  delete require.cache[cacheKey];
+  const realTools = require('../src/lib/elementix/crm-tools');
+  const viaPlane = await realTools.call('get_contact_status', { personId: PID_A }, { staffId: officer1 });
+  require.cache[cacheKey] = stubbed;
+  assert.strictEqual(viaPlane.ok, false, 'a dry run is a refusal on the CRM plane, never an empty success');
+  assert.strictEqual(viaPlane.reason, 'dry_run');
+  assert.ok(/dry-run/i.test(viaPlane.detail), 'and it says so in words somebody can act on');
+
+  /* PUT THE SWITCHES BACK AS THEY WERE — REMOVED, not set to false. `flags`
+     falls back to the env default when there is no row, and a row saying
+     `false` is a different state from "no opinion": a later suite reading the
+     env default would silently get this suite's opinion instead. */
+  await db.query(`DELETE FROM integration_flags WHERE key = ANY($1)`,
+    [['ELEMENTIX_ENABLED', 'ELEMENTIX_DRYRUN']]);
+  await flags.refresh();
+  ok('a dry run bills nothing, and reaches the CRM as a refusal rather than an empty success');
+
   console.log(`\n✓ ${passed} checks passed — the CRM skip-trace path is sound.\n`);
   await db.pool.end?.().catch?.(() => {});
   process.exit(0);

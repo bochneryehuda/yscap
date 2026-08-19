@@ -44,6 +44,8 @@
 const router = require('../lib/safe-router')();
 const db = require('../db');
 const { requireAuth, requireStaff, requirePermission } = require('../auth');
+const { keyedRateLimit } = require('../lib/rate-limit');
+const { can, visibleBorrowerSql, visibleLeadSql } = require('../lib/permissions');
 const oauth = require('../elementix/oauth');
 const client = require('../elementix/client');
 const crmTools = require('../lib/elementix/crm-tools');
@@ -56,6 +58,30 @@ const str = (v) => String(v == null ? '' : v).trim();
 const isUuid = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str(v));
 
 router.use(requireAuth, requireStaff);
+
+/* THROTTLED PER OFFICER, which most staff routers are not, because one click
+   here can turn into forty outbound calls: "Refresh data" on a profile walks
+   eight sections, each of them paged. Those calls come out of an allowance the
+   WHOLE ORGANISATION shares — Elementix's own ceiling is 1,000 an hour across
+   every connected client — so a held-down button, or a screen stuck in a reload
+   loop, does not merely slow PILOT down: it takes the underwriting desk's
+   track-record lookups down with it.
+   KEYED ON THE PERSON, NOT THE IP. The office is behind one address, so a
+   per-IP bucket would be shared by everybody in it and the busiest afternoon
+   would look like abuse. Generous enough that ordinary use never notices; the
+   monthly money cap and the per-hour self cap in elementix/client.js are the
+   other two layers, and they are the ones that actually protect the vendor
+   allowance. Mounted AFTER requireAuth, because that is what puts req.actor
+   there for the key.
+   120 A MINUTE is roughly four times the busiest real minute anybody has here
+   (a search, a status check and a profile open are one request each, and the
+   tabs are drawn from what is already loaded), and orders of magnitude below a
+   screen stuck in a loop. The number is deliberately loose: this layer exists
+   to stop a runaway, not to ration an officer's work. */
+router.use(keyedRateLimit({
+  bucket: 'elementix-crm', windowMs: 60000, max: 120,
+  keyOf: (req) => (req.actor && req.actor.id) || '',
+}));
 
 /** No outside company spends our credits or reads our CRM. */
 router.use(async (req, res, next) => {
@@ -85,6 +111,7 @@ function refuse(res, out, fallbackStatus = 400) {
   const map = {
     no_actor: 403, not_allowed: 403, paid_tool_refused: 403,
     bad_args: 400, no_reason: 400,
+    not_found: 404,
     paid_cap_reached: 429, rate_limited: 429,
     not_connected: 409, disabled: 503, unavailable: 503,
   };
@@ -269,18 +296,73 @@ router.get('/search', async (req, res) => {
     r.hasContact = !!(k && k.has_contact);
     r.leadCount = k ? k.leads : 0;
   }
-  res.json({ results: rows, truncated: rows.length >= 20 });
+  /* HOW MANY THE VENDOR WAS WILLING TO SEND — read off its own answer, never
+     hand-typed. The search envelope states `resultLimit` (20 today), and a
+     number transcribed into our code is a number that goes stale silently the
+     day they change it: a full page would stop reading as "there are more" and
+     an officer would be told these are all the matches when they are not. With
+     no stated limit we claim NOTHING rather than guess. */
+  const cap = Number((out.data && (out.data.resultLimit || out.data.result_limit)) || 0);
+  const capped = Number.isFinite(cap) && cap > 0 ? cap : null;
+  res.json({
+    results: rows,
+    resultLimit: capped,
+    total: crmTools.totalOf(out.data),
+    truncated: capped != null && rows.length >= capped,
+  });
 });
 
-/** FREE. Is this person already unlocked on the account? */
+/**
+ * FREE. The question this answers is not "is it unlocked" — it is WILL THE NEXT
+ * CLICK COST MONEY, and the screen must not have to work that out from the shape
+ * of the row it gets back.
+ *
+ * OUR OWN DATABASE IS ASKED FIRST AND IS DECISIVE, the same order `crm.skipTrace`
+ * uses and for the same reason: contact detail we already hold is proof we have
+ * already paid, it needs no network round trip, and it cannot be wrong. The
+ * vendor is asked only when we hold nothing.
+ *
+ * A VENDOR THAT CANNOT BE ASKED IS SAID OUT LOUD (`statusKnown:false`) rather
+ * than answered as a confident "not unlocked" — an unreadable status is not
+ * evidence that nobody has unlocked them, and rendering it as one would put a
+ * "this spends a credit" warning on a person we already own.
+ */
 router.get('/people/:personId/contact', async (req, res) => {
   const personId = str(req.params.personId);
   if (!isUuid(personId)) return res.status(400).json({ error: 'That is not a person from a search result.' });
-  const state = await crm.contactState(personId, { staffId: req.actor.id });
+
   const held = await db.query(
-    `SELECT phones, emails, addresses, unlocked_by, unlocked_at, source, refreshed_at
+    `SELECT person_id, phones, emails, addresses, unlocked_by, unlocked_by_email,
+            unlocked_at, vendor_unlocked_at, source, refreshed_at,
+            jsonb_array_length(COALESCE(phones,'[]'::jsonb)) AS phone_count,
+            jsonb_array_length(COALESCE(emails,'[]'::jsonb)) AS email_count
        FROM elementix_contacts WHERE person_id = $1`, [personId]);
-  res.json({ ...state, stored: held.rows[0] || null });
+  const stored = held.rows[0] || null;
+  const haveDetail = !!(stored && (stored.phone_count > 0 || stored.email_count > 0));
+
+  // Already ours: answer without spending a slot of the shared hourly allowance.
+  if (haveDetail) {
+    return res.json({
+      ok: true, unlocked: true, statusKnown: true,
+      free: true, freeReason: 'already_stored', stored,
+    });
+  }
+
+  const state = await crm.contactState(personId, { staffId: req.actor.id });
+  if (state.ok !== true) {
+    return res.json({
+      ok: true, unlocked: null, statusKnown: false,
+      free: false, freeReason: null,
+      statusProblem: { reason: state.reason || 'unavailable', detail: state.detail || 'Elementix could not be reached.' },
+      stored,
+    });
+  }
+  res.json({
+    ...state, statusKnown: true,
+    free: !!state.unlocked,
+    freeReason: state.unlocked ? 'unlocked_at_elementix' : null,
+    stored,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -379,6 +461,48 @@ router.post('/people/:personId/aliases/:aliasId', async (req, res) => {
 const LINKABLE = { lead: 'leads', borrower: 'borrowers' };
 
 /**
+ * MAY THIS STAFFER TOUCH THIS RECORD?
+ *
+ * Being signed in as internal staff is what gets you through the door of this
+ * router; it is NOT permission to reach into any lead or any borrower in the
+ * company by typing its id. Without this, one officer could overwrite the
+ * Elementix person another officer had attached to their own lead, and anybody
+ * could read the whole merged profile — every property, every mortgage, every
+ * company — of a borrower they have no business with.
+ *
+ * The rules are the ones the rest of PILOT already applies, reached through the
+ * SHARED fragments in lib/permissions rather than re-typed here: a lead is yours
+ * or unassigned (`visibleLeadSql`), a borrower is one you own or have a file
+ * with (`visibleBorrowerSql`), and `see_all_files` reaches everything.
+ *
+ * It answers `{ found, allowed }` so a refusal can tell "no such record" from
+ * "not yours" — 404 and 403 are different sentences to whoever is reading them.
+ * A read error is NOT allowed: an unreadable scope is not evidence of access.
+ */
+async function recordScope(req, kind, recordId) {
+  const table = LINKABLE[kind];
+  if (!table) return { found: false, allowed: false };
+  try {
+    if (can(req.actor, 'see_all_files')) {
+      const r = await db.query(`SELECT 1 FROM ${table} WHERE id = $1`, [recordId]);
+      return { found: !!r.rowCount, allowed: !!r.rowCount };
+    }
+    const scope = kind === 'lead' ? visibleLeadSql('t', '$2') : visibleBorrowerSql('t', '$2');
+    const r = await db.query(
+      `SELECT (${scope}) AS allowed FROM ${table} t WHERE t.id = $1`, [recordId, req.actor.id]);
+    if (!r.rowCount) return { found: false, allowed: false };
+    return { found: true, allowed: r.rows[0].allowed === true };
+  } catch (_) { return { found: false, allowed: false, unreadable: true }; }
+}
+
+/** The one refusal both linking routes give, so they cannot word it differently. */
+function refuseScope(res, scope) {
+  if (scope.unreadable) return res.status(503).json({ error: 'PILOT could not check who that record belongs to. Try again in a moment.' });
+  if (!scope.found) return res.status(404).json({ error: 'That record could not be found.' });
+  return res.status(403).json({ error: 'That belongs to another officer.' });
+}
+
+/**
  * Attach an Elementix person to a CRM lead or a borrower profile.
  *
  * FILL-ONLY BY DEFAULT: a link somebody already made is not replaced by a later
@@ -394,6 +518,9 @@ router.post('/link', async (req, res) => {
   if (!table) return res.status(400).json({ error: 'A person is attached to a lead or to a borrower.' });
   if (!isUuid(recordId)) return res.status(400).json({ error: 'That record could not be found.' });
   if (personId && !isUuid(personId)) return res.status(400).json({ error: 'That is not a person from a search result.' });
+
+  const scope = await recordScope(req, kind, recordId);
+  if (!scope.allowed) return refuseScope(res, scope);
 
   if (!personId) {
     const r = await db.query(`UPDATE ${table} SET elementix_person_id = NULL WHERE id = $1 RETURNING id`, [recordId]);
@@ -418,6 +545,8 @@ router.get('/for/:kind/:recordId', async (req, res) => {
   const recordId = str(req.params.recordId);
   if (!table) return res.status(400).json({ error: 'A person is attached to a lead or to a borrower.' });
   if (!isUuid(recordId)) return res.status(400).json({ error: 'That record could not be found.' });
+  const scope = await recordScope(req, str(req.params.kind), recordId);
+  if (!scope.allowed) return refuseScope(res, scope);
   const r = await db.query(`SELECT elementix_person_id FROM ${table} WHERE id = $1`, [recordId]);
   if (!r.rowCount) return res.status(404).json({ error: 'That record could not be found.' });
   const personId = r.rows[0].elementix_person_id;

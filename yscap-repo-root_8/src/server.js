@@ -536,6 +536,8 @@ app.use('/api/dashboards', require('./routes/dashboards'));
 // a lending decision. Two doors, two closed tool lists — the FCRA separation is structural
 // rather than a convention. Staff-only and INTERNAL-only (a TPO broker is a staff_users row
 // too, and must never spend our credits); the router applies all of that itself.
+// Rate-limited PER OFFICER inside the router itself (see the note there) — the
+// throttle has to be keyed on the person, not the office's IP address.
 app.use('/api/elementix', require('./routes/elementix-crm'));
 // Document-underwriting desk: read + understand each uploaded document (Azure Document
 // Intelligence + Azure OpenAI), raise per-document and cross-document findings, and let an

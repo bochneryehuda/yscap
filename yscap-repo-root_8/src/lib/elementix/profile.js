@@ -43,6 +43,7 @@
 
 const db = require('../../db');
 const crmTools = require('./crm-tools');
+const crm = require('./crm');
 const CONTRACTS = require('./request-contracts.json');
 
 const str = (v) => String(v == null ? '' : v).trim();
@@ -331,6 +332,26 @@ async function decideAlias({ personId, aliasPersonId, staffId, confirm }, client
   if (head === aliasPersonId) {
     return { ok: false, reason: 'bad_args', detail: 'That is the same record — there is nothing to link it to.' };
   }
+  /* THE OTHER RECORD HAS TO BE ONE WE HAVE ACTUALLY SEEN.
+     A well-formed UUID was enough to get this far, and everything below then
+     WROTE: an alias row, and — through ensurePersonRow — a brand-new header row
+     for a person who may not exist in Elementix at all. One mistyped id left a
+     nameless phantom person permanently attached to a real one, offered on the
+     screen forever, with no way to tell it from a real record.
+     Two things count as "seen": a candidate PILOT itself put in front of
+     somebody (the cross-state rows the profile build writes), or a person we
+     already hold a header for. A confirmation is a judgement about two records
+     that exist, never a way to invent the second one. */
+  const known = await client.query(
+    `SELECT EXISTS (SELECT 1 FROM elementix_person_aliases
+                     WHERE person_id = $1 AND alias_person_id = $2) AS offered,
+            EXISTS (SELECT 1 FROM elementix_persons WHERE person_id = $2) AS held`,
+    [head, aliasPersonId]);
+  const k = known.rows[0] || {};
+  if (!k.offered && !k.held) {
+    return { ok: false, reason: 'not_found',
+      detail: 'PILOT has no record of that Elementix person, so there is nothing to join. Refresh the profile and pick one of the records it offers.' };
+  }
   // The columns are chosen from a boolean, never from anything a caller typed.
   const col = confirm ? 'confirmed' : 'rejected';
   const other = confirm ? 'rejected' : 'confirmed';
@@ -364,19 +385,24 @@ async function decideAlias({ personId, aliasPersonId, staffId, confirm }, client
 // BUILDING
 // ---------------------------------------------------------------------------
 
-/** Make sure the person row exists so a section can hang off it (FK). */
+/**
+ * Make sure the person row exists so a section can hang off it (FK).
+ *
+ * DELEGATES to `crm.ensurePerson` — the one writer of that table. This used to
+ * be a second copy of the same upsert whose only difference was that a fresh
+ * name overwrote a stored one, so a person's displayed name depended on which
+ * module wrote last. `authoritative: true` keeps that behaviour where it is
+ * actually earned: the profile build holds the vendor's own record of the
+ * person, not a row off a search hit.
+ */
 async function ensurePersonRow(personId, { name, state } = {}, client = db) {
-  await client.query(
-    `INSERT INTO elementix_persons (person_id, display_name, primary_state, states)
-     VALUES ($1,$2,$3,CASE WHEN $3::text IS NULL OR $3 = '' THEN '{}'::text[] ELSE ARRAY[$3::text] END)
-     ON CONFLICT (person_id) DO UPDATE
-        SET display_name  = COALESCE(EXCLUDED.display_name, elementix_persons.display_name),
-            primary_state = COALESCE(elementix_persons.primary_state, EXCLUDED.primary_state),
-            states = CASE WHEN $3::text IS NULL OR $3 = '' OR $3 = ANY(elementix_persons.states)
-                          THEN elementix_persons.states
-                          ELSE elementix_persons.states || $3::text END,
-            updated_at = now()`,
-    [personId, (name ? str(name).slice(0, 300) : null), (state ? str(state).toUpperCase().slice(0, 2) : null)]);
+  await crm.ensurePerson({
+    personId,
+    name: name ? str(name).slice(0, 300) : null,
+    state: state ? str(state).toUpperCase().slice(0, 2) : null,
+    authoritative: true,
+    client,
+  });
 }
 
 /* The section row's `state` is deliberately ALWAYS ''. The person id already IS
@@ -398,7 +424,7 @@ async function writeSection(personId, section, out, client = db) {
             calls_spent = EXCLUDED.calls_spent, last_error = EXCLUDED.last_error,
             unverified = EXCLUDED.unverified`,
     [personId, section.key, SECTION_STATE,
-      out.payload === undefined || out.payload === null ? null : JSON.stringify(out.payload),
+      out.payload === undefined || out.payload === null ? null : crmTools.vendorJsonb(out.payload),
       out.rowCount == null ? null : out.rowCount,
       !!out.truncated, out.calls || 0, out.error || null, !!out.unverified]);
 }
@@ -772,5 +798,5 @@ module.exports = {
   buildProfile, readProfile,
   familyOf, canonicalOf, openAliasCandidates, decideAlias, syncCrossStateCandidates,
   overviewFacts,
-  _internals: { rowsFrom, objectFrom, looksFull, stripHeavy, rowKey, perPageFor, num, PAGE_SIZE, MAX_PAGES, CALL_BUDGET, FRESH_HOURS, SECTION_STATE },
+  _internals: { rowsFrom, objectFrom, looksFull, stripHeavy, rowKey, perPageFor, num, ensurePersonRow, PAGE_SIZE, MAX_PAGES, CALL_BUDGET, FRESH_HOURS, SECTION_STATE },
 };

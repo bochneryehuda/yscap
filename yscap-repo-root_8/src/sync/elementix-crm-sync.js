@@ -59,9 +59,20 @@ const LIST_INTERVAL_MS = envSec('ELEMENTIX_CRM_LIST_SEC', 6 * 3600) * 1000;
 const WORK_INTERVAL_MS = envSec('ELEMENTIX_CRM_WORK_SEC', 300) * 1000;
 const WORK_BATCH = envSec('ELEMENTIX_CRM_WORK_BATCH', 20);
 
+/* THE SETTLE PASS — the second half of a click somebody already made.
+   `crm.skipTrace` waits about six seconds for the vendor's enrichment job; a
+   job that takes longer is recorded `pending` AND THE CREDIT IS ALREADY SPENT.
+   Without something to come back and finish it, that officer's contact never
+   arrives, no lead is made, nobody is notified, and the money is gone — so this
+   is the pass that makes the screen's "PILOT will keep checking" true.
+   Frequent and tiny: one FREE status check per pending row. */
+const SETTLE_INTERVAL_MS = envSec('ELEMENTIX_CRM_SETTLE_SEC', 120) * 1000;
+const SETTLE_BATCH = envSec('ELEMENTIX_CRM_SETTLE_BATCH', 25);
+
 let started = false;
 let listing = false;
 let working = false;
+let settling = false;
 
 /**
  * Who the passes run AS. Every CRM-plane call needs a staff id — it is how the
@@ -136,8 +147,8 @@ async function workOnce() {
     if (!staffId) return null;
     const out = await backfill.workBatch({ staffId, limit: WORK_BATCH });
     if (out && out.worked) {
-      console.log('[elementix-crm] brought in %d contact(s), %d became leads, %d waiting on a login, %d left',
-        out.worked, out.leads, out.noOfficer, out.remaining);
+      console.log('[elementix-crm] brought in %d contact(s), %d became leads, %d already ours, %d waiting on a login, %d left',
+        out.worked, out.leads, out.alreadyOurs || 0, out.noOfficer, out.remaining);
     }
     return out;
   } catch (e) {
@@ -146,14 +157,52 @@ async function workOnce() {
   } finally { working = false; }
 }
 
+/**
+ * Finish the paid lookups that were still running when the officer's click gave
+ * up waiting. FREE — `drainPendingSkipTraces` only ever asks `get_contact_status`
+ * and `get_contact_info`, both of which are free for a person already unlocked;
+ * it cannot reach the paid tool. It gives up on a job older than 48 hours and
+ * marks the row failed, so the queue drains rather than growing forever.
+ */
+async function settleOnce() {
+  if (settling) return null;
+  settling = true;
+  try {
+    const crm = require('../lib/elementix/crm');
+    const out = await crm.drainPendingSkipTraces({ limit: SETTLE_BATCH });
+    // Quiet when there is nothing pending, which is the normal state.
+    if (out && (out.completed || out.failed)) {
+      console.log('[elementix-crm] settled %d lookup(s), gave up on %d, %d still running',
+        out.completed, out.failed, out.stillPending);
+    }
+    return out;
+  } catch (e) {
+    console.warn('[elementix-crm] settle pass failed:', e.message);
+    return null;
+  } finally { settling = false; }
+}
+
 function start() {
   if (started) return;
-  if (!on('ELEMENTIX_CRM_SYNC_ENABLED')) {
-    console.log('[elementix-crm] off (set ELEMENTIX_CRM_SYNC_ENABLED=1 to bring unlocked contacts in automatically)');
-    return;
-  }
   if (!client.enabled()) { console.log('[elementix-crm] Elementix itself is off — nothing to sync'); return; }
   started = true;
+
+  /* THE SETTLE PASS IS NOT BEHIND THE SWITCH, ON PURPOSE. The switch guards the
+     BULK IMPORT, which creates leads in people's pipelines from work done in
+     Elementix's own screens — that is the thing an owner should turn on
+     deliberately. A pending skip trace is the opposite: a member of staff
+     pressed the button in PILOT, PILOT spent a credit, and the vendor's job
+     outlived the six seconds the click waited. Leaving that unsettled wastes
+     money that is already spent and silently drops a lead somebody asked for,
+     so it runs wherever Elementix runs. */
+  setTimeout(settleOnce, 20000);
+  setInterval(settleOnce, SETTLE_INTERVAL_MS);
+
+  if (!on('ELEMENTIX_CRM_SYNC_ENABLED')) {
+    console.log('[elementix-crm] bulk import off (set ELEMENTIX_CRM_SYNC_ENABLED=1 to bring every unlocked contact in automatically). Paid lookups made in PILOT are still settled every %dm.',
+      Math.round(SETTLE_INTERVAL_MS / 60000));
+    return;
+  }
   console.log('[elementix-crm] on — listing every %dh, importing %d at a time every %dm. No credit can be spent by this loop.',
     Math.round(LIST_INTERVAL_MS / 3600000), WORK_BATCH, Math.round(WORK_INTERVAL_MS / 60000));
 
@@ -165,4 +214,5 @@ function start() {
   setInterval(workOnce, WORK_INTERVAL_MS);
 }
 
-module.exports = { start, listOnce, workOnce, _internals: { runAs, LIST_INTERVAL_MS, WORK_INTERVAL_MS, WORK_BATCH } };
+module.exports = { start, listOnce, workOnce, settleOnce,
+  _internals: { runAs, LIST_INTERVAL_MS, WORK_INTERVAL_MS, WORK_BATCH, SETTLE_INTERVAL_MS, SETTLE_BATCH } };

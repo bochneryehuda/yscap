@@ -177,6 +177,12 @@ async function matchUsers(client = db) {
        FROM staff_users s
       WHERE s.email = u.email
         AND s.is_external = false
+        -- AND ACTIVE. Auto-linking a login to somebody who has left files every
+        -- contact they ever unlocked into a pipeline nobody reads, and no
+        -- notification reaches anyone. Left unmatched, the login shows on the
+        -- admin screen as "whose login is this?" — which is the true state and
+        -- an answerable question. A human may still link one deliberately.
+        AND s.is_active = true
         AND u.linked_by IS NULL
         AND u.ignored = false
         AND u.staff_id IS DISTINCT FROM s.id
@@ -211,6 +217,47 @@ async function linkUser({ email: addr, staffId, actorId, ignore }, client = db) 
 // ---------------------------------------------------------------------------
 
 /**
+ * WHO REALLY ASKED FOR THIS PERSON — PILOT'S OWN RECORD BEATS THE VENDOR'S.
+ *
+ * Elementix stamps every unlock with the EMAIL OF THE LOGIN THAT MADE IT, and
+ * under the shared super-admin connection that is ONE login for the whole
+ * company. So a contact an officer skip traced from inside PILOT comes back down
+ * the history list wearing the shared login's email — and mapping that email to
+ * an officer, as the roster does for a real Elementix seat, would hand every
+ * PILOT-originated unlock to that one person: a second lead in the wrong
+ * pipeline, beside the correct one the officer already has, and a notification
+ * telling somebody a contact is theirs when it is not.
+ *
+ * PILOT knows better, because PILOT was there: a trace made here recorded the
+ * signed-in officer at the moment of the click. The vendor's email identifies a
+ * SEAT; our own row identifies a PERSON, and where they disagree the person
+ * wins. Returns null for a contact unlocked in Elementix's own screens, which is
+ * the case the roster mapping exists for and where the email IS the only answer.
+ */
+async function pilotOwnerOf(personId, client = db) {
+  try {
+    const { rows } = await client.query(
+      `SELECT c.unlocked_by AS staff_id, t.staff_id AS trace_staff_id, t.status AS trace_status
+         FROM (SELECT $1::text AS pid) k
+         LEFT JOIN elementix_contacts c
+                ON c.person_id = k.pid AND c.source = 'pilot_skip_trace' AND c.unlocked_by IS NOT NULL
+         LEFT JOIN LATERAL (
+                SELECT staff_id, status FROM elementix_skip_traces
+                 WHERE person_id = k.pid AND source = 'pilot_skip_trace' AND staff_id IS NOT NULL
+                 ORDER BY (status = 'complete') DESC, occurred_at
+                 LIMIT 1) t ON true`, [personId]);
+    const r = rows[0] || {};
+    const id = r.staff_id || r.trace_staff_id || null;
+    return id ? { staffId: id, traced: r.trace_status === 'complete' } : null;
+  } catch (_) {
+    /* Unreadable: fall back to the vendor's email rather than losing the row.
+       The cost of being wrong here is a lead in the wrong pipeline, not a lost
+       contact — and a lead is something a human can move. */
+    return null;
+  }
+}
+
+/**
  * Work a batch of the queue.
  *
  * FREE THROUGHOUT. Every person here is already unlocked, so `get_contact_info`
@@ -230,7 +277,7 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
       ORDER BY q.listed_at
       LIMIT $1`, [Math.max(1, Math.min(Number(limit) || WORK_BATCH, 200)), MAX_ATTEMPTS]);
 
-  const out = { ok: true, worked: 0, leads: 0, noOfficer: 0, failed: 0, remaining: 0 };
+  const out = { ok: true, worked: 0, leads: 0, alreadyOurs: 0, noOfficer: 0, failed: 0, remaining: 0 };
 
   for (const r of rows) {
     const personId = r.person_id;
@@ -248,11 +295,15 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
     }
 
     const contact = crm.normalizeContact(res.data);
+    // Whose contact is this? PILOT's own record of the click first (see
+    // pilotOwnerOf), the vendor's login email second.
+    const mine = await pilotOwnerOf(personId, client);
+    const officerId = (mine && mine.staffId) || r.officer_id || null;
     // The vendor's own record of who unlocked it, kept whether or not we could
     // match it to somebody on the roster.
     await crm.storeContact({
       personId, contact, raw: res.data,
-      staffId: r.officer_id || null,
+      staffId: officerId,
       source: 'imported', client,
     });
     await client.query(
@@ -263,20 +314,38 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
         WHERE person_id = $1`, [personId, r.unlocked_by_email, r.unlocked_at]);
 
     let leadId = null;
-    if (r.officer_id) {
+    if (mine) {
+      /* PILOT ASKED FOR THIS ONE ITSELF, so its own history is the record and
+         this pass must not rewrite it. `ensureLead` is safe and worth running —
+         it is keyed on (person, officer), so it returns the lead the officer
+         already has, or gives them the one an earlier failed attempt never
+         made. `recordSkipTrace` is NOT: it upserts on the same key and would
+         overwrite the reason the officer typed with "Imported from Elementix
+         history" and the charge with false, quietly erasing what was bought and
+         why. That is true whether the earlier trace COMPLETED or is still
+         pending — a pending one is charged and belongs to the settle pass, and a
+         failed one still holds the officer's own words. So: refresh the detail,
+         make sure the lead exists, leave the history alone. */
       const lead = await crm.ensureLead({
-        personId, staffId: r.officer_id, name: r.person_name, state: r.person_state, contact, client,
+        personId, staffId: mine.staffId, name: r.person_name, state: r.person_state, contact, client,
+      });
+      leadId = lead && lead.id ? lead.id : null;
+      if (lead && lead.created) out.leads += 1;
+      out.alreadyOurs += 1;
+    } else if (officerId) {
+      const lead = await crm.ensureLead({
+        personId, staffId: officerId, name: r.person_name, state: r.person_state, contact, client,
       });
       leadId = lead && lead.id ? lead.id : null;
       if (leadId) out.leads += 1;
       await crm.recordSkipTrace({
-        personId, staffId: r.officer_id, name: r.person_name, state: r.person_state,
+        personId, staffId: officerId, name: r.person_name, state: r.person_state,
         reason: 'Imported from Elementix history', charged: false, source: 'imported',
         leadId, status: 'complete', client,
       });
       await client.query(
         `UPDATE elementix_skip_traces SET unlocked_by_email = COALESCE(unlocked_by_email, $2)
-          WHERE person_id = $1 AND staff_id = $3`, [personId, r.unlocked_by_email, r.officer_id]);
+          WHERE person_id = $1 AND staff_id = $3`, [personId, r.unlocked_by_email, officerId]);
     } else {
       // The contact is still imported and still searchable — it just has no
       // pipeline to go into until somebody says whose login that was.
@@ -290,7 +359,7 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
                             THEN 'Imported, but no PILOT officer is linked to ' || COALESCE($4, 'that Elementix login') || ' yet.'
                             ELSE NULL END
         WHERE person_id = $1`,
-      [personId, r.officer_id ? 'done' : 'skipped', leadId, r.unlocked_by_email]);
+      [personId, officerId ? 'done' : 'skipped', leadId, r.unlocked_by_email]);
     out.worked += 1;
   }
 
@@ -351,5 +420,5 @@ async function releaseSkipped({ email: addr, client = db } = {}) {
 
 module.exports = {
   listUnlocked, workBatch, progress, linkUser, matchUsers, releaseSkipped,
-  _internals: { LIST_PAGE, MAX_PAGES, WORK_BATCH, MAX_ATTEMPTS, email },
+  _internals: { LIST_PAGE, MAX_PAGES, WORK_BATCH, MAX_ATTEMPTS, email, pilotOwnerOf },
 };

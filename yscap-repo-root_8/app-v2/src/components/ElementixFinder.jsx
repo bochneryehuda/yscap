@@ -30,6 +30,7 @@ export default function ElementixFinder({ onAdded, onClose }) {
   const [q, setQ] = useState('');
   const [state, setState] = useState('');
   const [hits, setHits] = useState(null);
+  const [truncated, setTruncated] = useState(false);
   const [picked, setPicked] = useState(null);
   const [status, setStatus] = useState(null);
   const [reason, setReason] = useState('');
@@ -47,6 +48,7 @@ export default function ElementixFinder({ onAdded, onClose }) {
     try {
       const r = await api.elxSearch(q.trim(), state.trim().toUpperCase());
       setHits(r.results || []);
+      setTruncated(!!r.truncated);
     } catch (e) { setErr(e.message); } finally { setBusy(''); }
   };
 
@@ -59,7 +61,12 @@ export default function ElementixFinder({ onAdded, onClose }) {
     catch (e) { setErr(e.message); } finally { setBusy(''); }
   };
 
-  const alreadyUnlocked = !!(status && (status.unlocked || (status.stored && status.stored.person_id)));
+  /* THE SERVER DECIDES WHETHER THIS COSTS MONEY, not this screen. It asks our own
+     store first (detail we hold is proof we already paid) and the vendor second,
+     and it says plainly when it could not ask at all — which is neither "free"
+     nor a reason to warn about a credit we may not spend. */
+  const alreadyUnlocked = !!(status && status.free);
+  const statusUnknown = !!(status && status.statusKnown === false);
 
   const add = async () => {
     if (!picked) return;
@@ -67,7 +74,9 @@ export default function ElementixFinder({ onAdded, onClose }) {
     if (!alreadyUnlocked) {
       if (reason.trim().length < 4) { setErr('Say in a few words why you are looking this person up — it is kept with the credit that gets spent.'); return; }
       const yes = await askConfirm(
-        `Look up ${picked.name || 'this person'}'s contact details? Nobody here has unlocked them yet, so this spends one of the month's credits.`,
+        statusUnknown
+          ? `Look up ${picked.name || 'this person'}'s contact details? PILOT could not reach Elementix to check whether anybody here has already unlocked them, so this may spend one of the month's credits.`
+          : `Look up ${picked.name || 'this person'}'s contact details? Nobody here has unlocked them yet, so this spends one of the month's credits.`,
         { confirmLabel: 'Look them up' });
       if (!yes) return;
     }
@@ -90,7 +99,7 @@ export default function ElementixFinder({ onAdded, onClose }) {
         <span style={{ flex: 1 }} />
         {usage && (
           <span style={{ color: MUTED, fontSize: 12.5 }}>
-            {usage.paidCount == null ? '' : `${usage.paidCount} of ${usage.paidCap} lookups used this month`}
+            {usage.ok ? `${usage.paidThisMonth} of ${usage.paidCap} lookups used this month` : ''}
           </span>
         )}
         {onClose && <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>}
@@ -129,6 +138,7 @@ export default function ElementixFinder({ onAdded, onClose }) {
           <div style={{ marginTop: 14 }}>
             <div style={{ color: MUTED, fontSize: 13, marginBottom: 6 }}>
               Pick the right person — Elementix keeps a separate record per state.
+              {truncated ? ' Elementix sent back as many as it will in one go, so there may be more — add the state, or type more of the name.' : ''}
             </div>
             {hits.map((h) => {
               const on = picked && picked.personId === h.personId;
@@ -161,7 +171,9 @@ export default function ElementixFinder({ onAdded, onClose }) {
                 <div style={{ color: INK, fontSize: 14, marginBottom: 8 }}>
                   {alreadyUnlocked
                     ? <>Somebody here has already looked <strong>{picked.name}</strong> up, so adding them to your leads is <strong>free</strong>.</>
-                    : <>Nobody here has looked <strong>{picked.name}</strong> up yet, so this will use <strong>one of the month’s credits</strong>.</>}
+                    : statusUnknown
+                      ? <>PILOT could not reach Elementix to check whether anyone has looked <strong>{picked.name}</strong> up. Going ahead may use one of the month’s credits — or may cost nothing, if they turn out to be unlocked already.</>
+                      : <>Nobody here has looked <strong>{picked.name}</strong> up yet, so this will use <strong>one of the month’s credits</strong>.</>}
                 </div>
                 {!alreadyUnlocked && (
                   <div style={{ marginBottom: 8 }}>

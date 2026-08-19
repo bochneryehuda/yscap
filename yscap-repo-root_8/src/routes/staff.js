@@ -62,7 +62,7 @@ const { raiseEntityIssue } = require('../lib/raise-issue');
 const uspsVerify = require('../lib/usps-verify');
 const { componentsOf: uspsComponentsOf } = require('../lib/address-usps-verify');
 
-const { can, visibleOfficersSql } = require('../lib/permissions');
+const { can, visibleOfficersSql, visibleBorrowerSql, visibleLeadSql } = require('../lib/permissions');
 // Every staff persona reaches the console; per-file scoping + capability gates
 // (below) decide what each can see and do.
 // draw_coordinator + closer are here so they can reach their OWN personal
@@ -286,14 +286,10 @@ function scopeClause(req, alias = 'a') {
 // many-to-many relationship the ClickUp sync records from EVERY card in EVERY
 // status; `primary_officer_id` stays the single CRM owner. Both are honored, plus
 // the visible_officer_ids delegation, plus any file the staffer can already see.
-const VISIBLE_BORROWER_SQL = (alias, p) =>
-  `(${alias}.primary_officer_id=${p}` +
-  ` OR ${alias}.primary_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
-  ` OR EXISTS (SELECT 1 FROM borrower_officers bo WHERE bo.borrower_id=${alias}.id` +
-  ` AND (bo.staff_id=${p} OR bo.staff_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})))` +
-  ` OR EXISTS (SELECT 1 FROM applications a2` +
-  ` WHERE (a2.borrower_id=${alias}.id OR a2.co_borrower_id=${alias}.id) AND a2.deleted_at IS NULL` +
-  ` AND ${VISIBLE_OFFICERS_SQL('a2', p)}))`;
+// The body moved to lib/permissions.js (visibleBorrowerSql) so a second door can
+// ask the same question without re-inlining it. This stays as the name every
+// query in this file already uses, exactly as VISIBLE_OFFICERS_SQL does.
+const VISIBLE_BORROWER_SQL = visibleBorrowerSql;
 
 // An APPLICATION-LESS review row (a borrower-level DOB, a non-materialized task,
 // or an Encompass row that never linked to a file — db/328) hangs on a BORROWER,
@@ -16596,7 +16592,7 @@ router.patch('/leads/:id', async (req, res) => {
   // unassigned or already theirs — the same scope GET /leads applies — so one
   // officer can't reassign or alter another officer's lead by its id.
   if (!seesAll(req)) {
-    const own = await db.query(`SELECT 1 FROM leads WHERE id=$1 AND (officer_id=$2 OR officer_id IS NULL)`, [req.params.id, req.actor.id]);
+    const own = await db.query(`SELECT 1 FROM leads l WHERE l.id=$1 AND ${visibleLeadSql('l', '$2')}`, [req.params.id, req.actor.id]);
     if (!own.rows[0]) return res.status(403).json({ error: 'forbidden' });
   }
   // Snapshot the current status (for stage-change logging) + names (so a
@@ -16676,7 +16672,7 @@ router.get('/leads/:id', async (req, res) => {
 // non-privileged officer only touches their own or an unassigned lead.
 async function leadInScope(req, leadId) {
   if (seesAll(req)) return true;
-  const r = await db.query(`SELECT 1 FROM leads WHERE id=$1 AND (officer_id=$2 OR officer_id IS NULL)`, [leadId, req.actor.id]);
+  const r = await db.query(`SELECT 1 FROM leads l WHERE l.id=$1 AND ${visibleLeadSql('l', '$2')}`, [leadId, req.actor.id]);
   return !!r.rows[0];
 }
 router.get('/leads/:id/notes', async (req, res) => {

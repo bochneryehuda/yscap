@@ -97,7 +97,10 @@ export default function StaffElementix() {
 
   const users = roster.users || [];
   const bf = roster.backfill;
-  const officers = team.filter((m) => !m.is_external);
+  // GET /api/staff/team already returns internal, active staff only (it filters
+  // is_active AND is_external server-side), so the filter that used to sit here
+  // matched everything and quietly implied the opposite.
+  const officers = team;
 
   return (
     <div className="stack">
@@ -113,8 +116,14 @@ export default function StaffElementix() {
           </p>
           {usage && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <Stat label="Lookups this hour" value={`${n(usage.hourCount)} of ${n(usage.hourCap)}`} />
-              <Stat label="Paid unlocks this month" value={`${n(usage.paidCount)} of ${n(usage.paidCap)}`} />
+              {/* The field names are the ledger's own (`callsLastHour` / `paidThisMonth`)
+                  — inventing friendlier ones here rendered "— of 400" on a working
+                  connection. `usage.ok` is false when the count could not be read,
+                  and that reads as "unknown", never as a confident zero. */}
+              <Stat label="Lookups this hour"
+                value={usage.ok ? `${n(usage.callsLastHour)} of ${n(usage.hourCap)}` : `unknown of ${n(usage.hourCap)}`} />
+              <Stat label="Paid unlocks this month"
+                value={usage.ok ? `${n(usage.paidThisMonth)} of ${n(usage.paidCap)}` : `unknown of ${n(usage.paidCap)}`} />
               <Stat label="Shared office ceiling" value={`${n(usage.platformCeilingPerHour)} an hour`} />
               <Stat label="Connection" value={usage.enabled ? (usage.dryrun ? 'On (test mode)' : 'On') : 'Off'} />
             </div>

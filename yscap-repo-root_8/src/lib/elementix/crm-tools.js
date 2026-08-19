@@ -29,6 +29,7 @@
 
 const client = require('../../elementix/client');
 const lookups = require('./lookups');
+const fields = require('../fields');
 
 const { contractProblem, isUuid, stateCode } = lookups._internals;
 
@@ -122,6 +123,43 @@ const UNVERIFIED_SHAPE = new Set(['welcome', 'list_transactions', 'get_filter_op
  */
 const FORBIDDEN_ARGS = new Set(['gender', 'hasHispanicName']);
 
+/**
+ * A VENDOR PAYLOAD ON ITS WAY INTO A `jsonb` COLUMN. Everything this plane
+ * stores from Elementix goes through here.
+ *
+ * TWO THINGS GO WRONG WITHOUT IT, and both fail AFTER the money is spent:
+ *
+ *  · A NUL BYTE. Postgres refuses U+0000 anywhere in jsonb (22P05). The
+ *    `nul-strip` middleware scrubs REQUEST bodies, and it never sees this — a
+ *    vendor response arrives over `fetch`, not through express.json. So the
+ *    strip is `fields.jsonbText`, which removes NULs from the OBJECT (keys and
+ *    values, at any depth) and never from the serialized string: the obvious
+ *    `JSON.stringify(x).replace(/\u0000/g,'')` eats a backslash out of text that
+ *    merely SPELLS the escape and produces malformed JSON.
+ *
+ *  · SIZE. A lender-network row carries an 8–12 KB base64 logo, and a big
+ *    profile section can run to megabytes. Capping by SLICING THE SERIALIZED
+ *    STRING — which is what this code used to do — produces a truncated
+ *    document Postgres rejects outright (22P02), so an over-large payload took
+ *    the whole write down instead of being trimmed. A payload over the ceiling
+ *    is therefore REPLACED by a shaped marker that says so in the row itself,
+ *    rather than half-written or silently dropped.
+ *
+ * Never throws: a payload that cannot be serialized at all (a cycle) becomes the
+ * same marker. Returns a STRING ready to bind to a `$n::jsonb` placeholder.
+ */
+const JSONB_MAX = 400000;
+function vendorJsonb(v, max = JSONB_MAX) {
+  let out;
+  try { out = fields.jsonbText(v == null ? {} : v); }
+  catch (_) { return JSON.stringify({ _dropped: 'unserializable', _note: 'Elementix sent something PILOT could not store.' }); }
+  if (out.length <= max) return out;
+  return JSON.stringify({
+    _dropped: 'too_large', _bytes: out.length, _limit: max,
+    _note: 'Elementix sent more than PILOT stores for one record. The counts and the rows on screen are unaffected; only this raw copy was left out.',
+  });
+}
+
 const str = (v) => String(v == null ? '' : v).trim();
 
 /**
@@ -162,6 +200,20 @@ async function call(tool, args = {}, opts = {}) {
   if (problem) return { ok: false, reason: 'bad_args', detail: problem };
 
   const out = await client.callTool(name, args || {}, opts);
+
+  /* A DRY RUN IS NOT AN ANSWER — the same rule lookups.js adopted after the
+     owner was told "the county does not publish online" about a search that
+     never left the building. The client answers a dry run `{ok:true,
+     data:null}`, and on THIS plane that is worse than a wrong county: `rowsOf`
+     reads it as "nobody by that name", a profile section caches as a confident
+     empty for a day, and — because `crm.skipTrace` treats an ok from the paid
+     tool as proof the unlock happened — an officer is told their contact is on
+     its way while nothing was sent. A dry run is a refusal with a reason. */
+  if (out && out.ok === true && out.dryRun) {
+    return { ok: false, reason: 'dry_run',
+      detail: 'Dry-run mode is ON, so this was logged but never sent to Elementix. Turn dry-run off on the API Health page.' };
+  }
+
   // Marked on SUCCESS too, not only on failure. A refusal is already legible
   // (`ok:false` plus a reason); the subtler danger is a success we PARSE to
   // zero rows because the vendor wrapped them in an envelope we have never
@@ -201,4 +253,5 @@ function totalOf(d) {
   return null;
 }
 
-module.exports = { call, rowsOf, totalOf, TOOLS, PAID, UNVERIFIED_SHAPE, FORBIDDEN_ARGS, _internals: { isUuid, stateCode } };
+module.exports = { call, rowsOf, totalOf, vendorJsonb, TOOLS, PAID, UNVERIFIED_SHAPE, FORBIDDEN_ARGS,
+  _internals: { isUuid, stateCode, JSONB_MAX } };

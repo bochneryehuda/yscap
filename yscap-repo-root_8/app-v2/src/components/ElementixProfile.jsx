@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
-import { askConfirm, showMessage } from '../lib/dialog.js';
+import { askConfirm } from '../lib/dialog.js';
 
 /**
  * THE ELEMENTIX PROFILE — one person, every state, on a lead or a borrower.
@@ -385,13 +385,27 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
 
   const linkTo = async (hit) => {
     setErr(''); setBusy('link');
+    /* TWO STEPS, AND THE FIRST ONE STICKS. Attaching the person is one request
+       and reading their profile is another, so Elementix being slow or the
+       hourly allowance running out fails the SECOND while the FIRST has already
+       landed on the server. Reporting only the error left this screen still
+       showing "nobody is attached yet" over a record that WAS attached — so the
+       next thing anybody does is search and attach again. */
+    let attached = false;
     try {
       await api.elxLink({ kind, recordId, personId: hit.personId, name: hit.name, state: hit.state, replace: true });
+      attached = true;
       const built = await api.elxProfileBuild(hit.personId, {});
       setState({ loading: false, linked: true, personId: hit.personId, profile: built.profile });
       setHits(null);
       flash(`Linked to ${hit.name || 'that record'} and read their profile.`);
-    } catch (e) { setErr(e.message); } finally { setBusy(''); }
+    } catch (e) {
+      setErr(e.message);
+      if (attached) {
+        setState({ loading: false, linked: true, personId: hit.personId, profile: null });
+        setHits(null);
+      }
+    } finally { setBusy(''); }
   };
 
   const refresh = async (force) => {
@@ -498,7 +512,31 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
 
   // ---- Linked: the profile ----------------------------------------------
   const p = state.profile;
-  if (!p) return <div className="panel pad" style={{ color: MUTED }}>That Elementix record could not be read.</div>;
+  /* ATTACHED, NOT READ YET. A bare sentence here was a dead end: it did not say
+     what went wrong and offered no way forward, on the one screen where the
+     record IS attached and one press would fix it. */
+  if (!p) {
+    return (
+      <div className="panel">
+        <div className="panel-h" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <h3>Elementix</h3>
+          <span style={{ flex: 1 }} />
+          <button className="btn primary btn-sm" disabled={!!busy} onClick={() => refresh(true)}>
+            {busy === 'refresh' ? 'Reading…' : 'Read their profile'}
+          </button>
+          <button className="btn btn-ghost btn-sm" disabled={!!busy} onClick={unlink}>Unlink</button>
+        </div>
+        <div className="panel-b">
+          {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
+          {msg && <div className="notice ok" style={{ marginBottom: 10 }}>{msg}</div>}
+          <p style={{ color: MUTED, fontSize: 14, margin: 0 }}>
+            This person is attached to the file, but their Elementix record has not been read yet.
+            Press <strong>Read their profile</strong> to pull it in.
+          </p>
+        </div>
+      </div>
+    );
+  }
   const s = p.summary || {};
   const c = s.counts || {};
   const sections = p.sections || {};
@@ -565,7 +603,15 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', borderBottom: `1px solid ${LINE}`, paddingBottom: 8, marginBottom: 12 }}>
           {TABS.map((t) => {
             const sec = sections[t.key];
-            const n = sec && (sec.total != null ? sec.total : sec.rowCount);
+            /* A NUMBER ON A TAB IS A CLAIM, SO IT IS ONLY MADE ABOUT A SECTION WE
+               ACTUALLY READ. `rowCount` is 0 for a section that was never asked
+               for and for one whose call failed, so badging it prints a confident
+               "0" — "Elementix has nothing on this person" — about a question
+               nobody put. Those get a quiet dot instead, and the notice under the
+               tabs says which it was. */
+            const read = !!sec && (sec.status === 'ok' || sec.status === 'partial');
+            const n = read ? (sec.total != null ? sec.total : sec.rowCount) : null;
+            const unread = !!sec && !read && sec.status !== 'unavailable';
             const on = tab === t.key;
             return (
               <button key={t.key} onClick={() => { setTab(t.key); setFilter(''); }}
@@ -575,8 +621,14 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
                   fontSize: 13.5, fontWeight: on ? 650 : 500, cursor: 'pointer',
                 }}>
                 {t.label}
-                {t.key !== 'overview' && sec && sec.status !== 'unavailable' && n != null
-                  ? <span style={{ opacity: 0.75, marginLeft: 6 }}>{n.toLocaleString('en-US')}</span> : null}
+                {t.key !== 'overview' && n != null
+                  ? <span style={{ opacity: 0.75, marginLeft: 6 }}>{n.toLocaleString('en-US')}</span>
+                  : t.key !== 'overview' && unread
+                    ? <span style={{ opacity: 0.55, marginLeft: 6 }}
+                        title={sec.status === 'error' ? 'This part did not come back — open it to try again'
+                          : sec.status === 'skipped' ? 'This part was left for the next refresh'
+                            : 'Not read yet'}>·</span>
+                    : null}
               </button>
             );
           })}
