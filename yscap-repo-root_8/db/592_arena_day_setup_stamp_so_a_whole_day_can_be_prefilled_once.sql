@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/591 — arena day setup stamp, so a whole day can be pre-filled once
+-- db/592 — arena day setup stamp, so a whole day can be pre-filled once
 --
 -- WHAT THIS CHANGES, AND WHY. The owner opened the Arena's Sessions list, found
 -- it empty, and asked to have the two events they described ALREADY THERE —

@@ -117,7 +117,7 @@ router.put('/spins/:id/roster', requireSuper, async (req, res) => {
  * and never mails anybody — the owner asked to be able to read it and adjust it
  * first ("so I have more control").
  *
- * Safe to press twice: db/591's unique indexes decide, not a read here, so a
+ * Safe to press twice: db/592's unique indexes decide, not a read here, so a
  * second press reports what was already there and changes nothing.
  *
  * `day` is the room's own calendar day and `offsetMinutes` how far the room is
@@ -178,7 +178,7 @@ router.post('/sessions/:id/templates/:key', requireSuper, async (req, res) => {
   try {
     // Through the ONE idempotent builder — the same code the one-press day
     // setup uses. The old inline version had the exact defect db/401 documents:
-    // createSpin committed, the separate template_key stamp then hit db/591's
+    // createSpin committed, the separate template_key stamp then hit db/592's
     // unique index, the raw Postgres string went to the screen, and a complete
     // ORPHAN spin was left on the board — one more per press (measured: four
     // presses left four Early Birds, three of them unstamped). ensureSpin
