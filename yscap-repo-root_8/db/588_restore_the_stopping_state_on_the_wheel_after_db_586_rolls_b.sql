@@ -1,0 +1,73 @@
+-- ============================================================================
+-- db/588 — restore the stopping state on the wheel after db/586 rolls back
+--
+-- WHAT THIS FIXES, AND IT IS THE STOP BUTTON.
+--
+-- A held wheel passes through the state `stopping` for the second and a half it
+-- coasts after somebody presses the button. That state was added by db/586,
+-- which WIDENS a CHECK db/585 had already declared without it.
+--
+-- Every migration replays on every boot in filename order, and each file runs
+-- as one transaction. From the moment a single `adjustment` ticket row exists —
+-- which db/587 introduced, so the first time anybody declines a challenge and
+-- it is reconciled — db/586's own narrower re-add of `arena_tickets_source_chk`
+-- fails, and THE WHOLE FILE ROLLS BACK. That takes the widening at its line 101
+-- with it. db/585 has already run by then and left the narrow list standing,
+-- and nothing afterwards puts it back.
+--
+-- The consequence, reproduced on a real database rather than reasoned about:
+-- pressing the stop button answers a 500 and the wheel never comes to rest.
+-- The most visible thing in the game, broken by the next deploy after the first
+-- declined challenge, on the one day it has to work.
+--
+-- WHY THIS FILE AND NOT AN EDIT. db/585 and db/586 are applied migrations and
+-- are never edited. The repo's own answer to this shape (db/374, db/375) is a
+-- file numbered LAST that re-asserts the converged state, and one that CANNOT
+-- itself fail: there is no data-dependent statement here, so it cannot roll
+-- back and take its own re-assertion with it.
+--
+-- THE ONE CASUALTY, AND WHY ONLY ONE. db/586 declares eight CHECK constraints.
+-- A rollback leaves whatever the previous successful run committed, so seven of
+-- them keep db/586's version — it is the only file that declares them. This one
+-- is different, and it is different for exactly one reason: db/585 declares it
+-- too, narrower, and runs first. That is the shape to watch for anywhere else:
+-- a constraint two files declare, where the later file can roll back.
+--
+-- IDEMPOTENT. `migrate-boot` replays EVERY file in db/ on EVERY boot, in
+-- filename order. That is not a safety net, it is the contract: a statement
+-- that throws on its second run breaks every future deploy, and migrate-boot
+-- logs the failure and CONTINUES, so it breaks quietly. The four shapes the
+-- hygiene gate enforces:
+--
+--   CREATE TABLE IF NOT EXISTS t (...);
+--   CREATE INDEX IF NOT EXISTS t_col_idx ON t (col);
+--   ALTER TABLE t ADD COLUMN IF NOT EXISTS c text;
+--   ALTER TABLE t DROP CONSTRAINT IF EXISTS t_chk;   -- always drop first,
+--   ALTER TABLE t ADD CONSTRAINT t_chk CHECK (...);  -- then re-add
+--
+-- RE-ASSERTING A CHECK. Both earlier files assert this name, so the list below
+-- names EVERY value either of them allows plus the one that goes missing —
+-- `stopping`. A narrower re-assert here would simply move the bug.
+--
+-- BACKFILL. None, and none is possible: `stopping` is a state a wheel occupies
+-- for about a second and a half while it coasts, so no stored row is waiting to
+-- be repaired. What is repaired is the ability to enter it at all.
+--
+-- PRODUCT SEPARATION. RTL and Long-Term do not share tables. If this touches
+-- `lt_*`, it is Long-Term's and must not reach into RTL's; if it touches RTL's,
+-- the reverse. `check-product-separation.js` is the gate.
+-- ============================================================================
+
+ALTER TABLE arena_draws DROP CONSTRAINT IF EXISTS arena_draws_state_chk;
+ALTER TABLE arena_draws ADD CONSTRAINT arena_draws_state_chk
+  CHECK (state IN ('committed', 'spinning', 'stopping', 'revealed', 'void'));
+
+
+-- ── after this lands ────────────────────────────────────────────────────────
+-- The schema map (docs/schema/) describes the database these migrations build,
+-- so this file makes it stale. CI refreshes it on this pull request by itself;
+-- if you would rather do it by hand, with DATABASE_URL pointing at a database
+-- built from these migrations:
+--
+--   npm run schema:snapshot     # refresh the inventory from the database
+--   npm run schema:restamp      # re-stamp the map header (no database needed)

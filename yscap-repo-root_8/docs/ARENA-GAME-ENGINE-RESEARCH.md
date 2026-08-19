@@ -468,6 +468,91 @@ at the end of it, may open somebody else's.
 
 ---
 
+## 10c. The A-to-Z audit — what a fresh read found
+
+The whole Arena was re-read end to end after it merged: every route and its
+gate, the fairness engine, the ledger, the sweep, the AI helper, the front end,
+and the migrations replayed twice against a real database. Four things were
+wrong, one of them badly. Each was REPRODUCED before it was touched.
+
+**THE STOP BUTTON WOULD HAVE BROKEN ON THE DAY, and the audit is the only reason
+it did not.** A held wheel passes through the state `stopping` for the second and
+a half it coasts after somebody presses. db/585 declared the wheel's state list
+WITHOUT that value and db/586 widened it — and every migration replays on every
+boot, each file as one transaction. From the moment a single `adjustment` ticket
+row exists — which db/587 introduced, so the first time anybody declines a
+challenge and it is reconciled — db/586's own narrower re-add of the ticket
+source list fails, THE WHOLE FILE ROLLS BACK, and the widening goes with it.
+db/585 has already run and left the narrow list standing, and nothing put it
+back. Pressing the button then answered a 500 and the wheel never came to rest.
+
+It was found by running the suite rather than by reading: the play suite went
+from 91 green to 7 red on a database that had simply been booted a few more
+times. **The earlier check that said this was safe measured the wrong thing** —
+it confirmed the TICKET constraint stayed wide, which db/587 re-asserts, and
+never asked what else that rollback took with it. db/588 re-asserts the wheel's
+state list, numbered last and carrying no data-dependent statement so it cannot
+roll back and take its own repair with it.
+
+**The shape to watch for anywhere in this repo: a CHECK that TWO files declare,
+where the later one can roll back.** Seven of db/586's other constraints are
+fine for one reason only — no earlier file declares them, so a rollback leaves
+db/586's own committed version standing. The regression guard replays db/585,
+586 and 588 in order against a row that makes 586 fail, then puts a real wheel
+into `stopping`.
+
+**The off switch did not silence the announcements.** The switch promises the
+Arena is "indistinguishable from a feature that was never built", and a wheel
+already turning when somebody flips it off is still SETTLED a minute later by
+the sweep — which is right, since leaving a draw stuck mid-spin is worse. But it
+was also ANNOUNCED: reproduced against a real database, a decided spin with the
+Arena off still wrote every person a "you won" / "the result is in"
+notification. The moment somebody reaches for that switch is exactly when they
+least want a company-wide message going out. `announce.js` now asks one shared
+question first, and fails towards silence if the switch cannot be read.
+Settling and announcing are two different acts and only the second is stopped.
+
+**The round-up was the loudest thing in the building.** Counted rather than
+guessed, on a six-spin day with the default three deadline offsets, one person
+on the roster stood to receive: one "the day has started", six "a spin has
+opened", up to eighteen deadline alarms, six "spin N landed on X", and one
+end-of-day round-up. The result is the one Arena message nobody can act on — the
+room watched the wheel land, the screen threw a full-page takeover, and the
+winner already had their own message — so `arena_result` joined the challenge
+bell in `notify.js`'s `STAFF_INAPP_TYPES`, which is the repo's one definition of
+"in-app only". The bell still rings and the row is still written; only the email
+is dropped. Everything actionable still emails.
+
+**The busiest minute of the day was the expensive one.** Every arena frame asked
+each open screen to refresh, and the board is nine queries. At half past ten
+forty people check in inside two minutes, each check-in is a frame to every open
+screen, and an immediate refetch on each turns one person's click into forty
+board loads — sixteen hundred loads in a burst, on the same instance serving the
+loan portal. Refreshes are now coalesced to one a second per screen with a
+trailing call (the frame worth reacting to is usually the last in a burst). The
+wheel is untouched: spinning, stopping and the landing come straight off the
+stream and paint immediately.
+
+**What the audit checked and found sound**, so the next person does not re-tread
+it: the two routers sit behind `requireAuth` + `requireStaff` and the master
+switch, and answer 404 rather than 403 when the game is off; a TPO broker's live
+connection registers as `kind:'tpo'` and `publishToStaff` skips it, so nothing
+from the game reaches an outside brokerage; the pipeline-sourced wheels select
+the loan number, the amount and the borrower's name and NEVER the note buyer;
+the random pick uses rejection sampling with no modulo bias and throws rather
+than quietly returning zero; the stop button is checked against its holder and
+claimed once by the database; a held draw stays checkable because a spin's
+config is frozen from its first draw; the ticket ledger serialises on the entry
+row and the streak on a per-person advisory lock; and the migrations converge
+over two consecutive boots with an `adjustment` row present — db/586's narrower
+re-add is recognised as superseded and skipped, and every index and column it
+declares after that line survives. The AI helper's pace and daily cap are held
+IN MEMORY, so with more than one web process they are per-process and a restart
+resets them; that is named in the code as a deliberate trade for a helper's
+throttle, and it is worth knowing rather than discovering.
+
+---
+
 ## 11. Sources
 
 **Wheels and fairness** — wheelofnames.com + FAQ · pickerwheel.com ·

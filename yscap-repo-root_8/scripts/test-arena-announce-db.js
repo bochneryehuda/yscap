@@ -177,6 +177,18 @@ const eq = (a, b, m) => ok(a === b, `${m} (got ${JSON.stringify(a)}, wanted ${JS
     ok(sentTo(`ann-Winona-${sfx}@t.local`).some((m) => /You won/.test(m.subject || '')),
       'while winning DOES reach them by email — that one is worth the interruption');
 
+    // THE ROUND-UP IS THE OTHER HALF OF THE SAME RULE, and it is the one that
+    // was loud. "Spin 3 landed on Ada" is the one Arena message nobody can act
+    // on: the room watched it land, the screen threw a full-page takeover, and
+    // the winner already had their own message. Counted, not guessed — on a
+    // six-spin day it was six emails to every person on the roster on top of six
+    // spin-open notices and up to eighteen deadline alarms. The bell still
+    // rings; only the inbox is spared.
+    ok(!sentTo(`ann-Otto-${sfx}@t.local`).some((m) => /Winona won/.test(m.subject || '')),
+      'the round-up never becomes an email — the room already watched it happen');
+    eq((await notesFor([other1], 'arena_result')).length, 1,
+      'but the in-app bell still rings, so nobody who was away misses the day');
+
     // ---- F. THE OFF SWITCHES -----------------------------------------------
     await settings.save({ settings: { emailResults: false } }, boss);
     const spin2 = (await db.query(
@@ -191,6 +203,47 @@ const eq = (a, b, m) => ok(a === b, `${m} (got ${JSON.stringify(a)}, wanted ${JS
       `INSERT INTO arena_challenges (session_id, title, prompt, state)
        VALUES ($1,'Another','Do a thing.','live') RETURNING *`, [sessionId])).rows[0];
     eq((await announce.challengeLanded(ch2)).sent, 0, 'and challenge alerts have their own off switch');
+
+    // ---- G. THE MASTER SWITCH SILENCES ALL OF IT ---------------------------
+    // The switch promises the Arena is indistinguishable from a feature that
+    // was never built. A wheel already turning when somebody flips it off is
+    // still SETTLED a minute later — leaving a draw stuck mid-spin would be
+    // worse — but announcing it is a different act, and the company must not be
+    // emailed about a game that, by that promise, does not exist. The moment
+    // somebody reaches for that switch is exactly when they least want a
+    // company-wide message going out.
+    //
+    // Reproduced against this database BEFORE it was fixed: with the Arena off,
+    // a decided spin still wrote every person a notification.
+    await settings.save({ settings: { emailResults: true, challengeAlerts: true } }, boss);
+    await db.query(`UPDATE arena_settings SET enabled = false WHERE id = true`);
+    settings.invalidate();
+
+    const beforeOff = Number((await db.query(
+      `SELECT count(*)::int AS n FROM notifications WHERE staff_id = ANY($1::uuid[])`, [made])).rows[0].n);
+    const spin3 = (await db.query(
+      `INSERT INTO arena_spins (session_id, seq, title, state) VALUES ($1,3,'While it is off','decided') RETURNING *`,
+      [sessionId])).rows[0];
+    const quiet = await announce.spinDecided(spin3, { ...out, prizeLabel: 'Something' });
+    eq(quiet.sent, 0, 'with the whole game switched off, a decided spin announces nothing');
+    ok(/switched off/.test(quiet.skipped || ''), 'and says the game is off, rather than failing silently');
+    const afterOff = Number((await db.query(
+      `SELECT count(*)::int AS n FROM notifications WHERE staff_id = ANY($1::uuid[])`, [made])).rows[0].n);
+    eq(afterOff, beforeOff,
+      'not one notification row is written either — the in-app bell is as silent as the inbox');
+
+    const wrapOff = await announce.sessionClosed(sessionId);
+    eq(wrapOff.sent, 0, 'the end-of-day round-up is silent too');
+    const ch3 = (await db.query(
+      `INSERT INTO arena_challenges (session_id, title, prompt, state)
+       VALUES ($1,'While off','Do a thing.','live') RETURNING *`, [sessionId])).rows[0];
+    eq((await announce.challengeLanded(ch3)).sent, 0, 'and so is the challenge bell');
+
+    // And the settling itself is NOT what was silenced — only the announcement.
+    // A draw must still come to rest with the game off, or the room is left
+    // watching a wheel that never stops.
+    ok(typeof require(R + '/src/lib/arena/spin-runner').settleDue === 'function',
+      'settling a finished wheel is a separate act and is deliberately left alone');
   } catch (e) {
     fail++;
     console.log('  FAIL: threw -', e && e.stack ? e.stack : e);

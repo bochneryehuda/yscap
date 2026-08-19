@@ -450,9 +450,21 @@ const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_
   // every one is the fastest way to make the team filter the whole game into a
   // folder. Stated HERE, at the one definition of "in-app only", rather than as
   // an inAppOnly flag at the call site, so any future sender of this type
-  // inherits it. The Arena's other types (a spin opening, a deadline, a result)
-  // deliberately DO email — they are the handful of moments worth an interruption.
-  'arena_challenge']);
+  // inherits it.
+  'arena_challenge',
+  // The Arena's ROUND-UP — "spin 3 landed on Ada". It is the one Arena message
+  // nobody can act on: the room watched the wheel land, the winner got their own
+  // message (arena_you_won, which still emails), and the screen throws a
+  // full-page takeover the moment it happens. Counted rather than guessed: on a
+  // six-spin day this alone was six emails to every person on the roster, on top
+  // of six "a spin has opened" and up to eighteen deadline alarms — and the
+  // owner's standing instruction about this exact class is "stop the bombardment
+  // with stuff that is not important". The bell still rings and the row is still
+  // written; only the email is dropped. The Arena's ACTIONABLE types are
+  // untouched and still email: a spin opening (check in), a deadline running
+  // down (you are about to miss it), winning something, the day starting, and
+  // the end-of-day round-up.
+  'arena_result']);
 
 // Escape hatch (used by the Notification Center's Send-now action) — bypasses
 // the LO gate for this single call so a hand-reviewed draft actually goes out.
