@@ -5249,6 +5249,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena-mon-who li { display: flex; justify-content: space-between; gap: 10px; color: #141B22; }
 .arena-people-flat { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 12px; max-height: 260px; overflow-y: auto; }
 .arena-people-flat label { display: flex; align-items: center; gap: 8px; color: #141B22; }
+.arena-stage-notes { margin: 8px 0 0; padding: 10px 14px; border-left: 3px solid var(--gold, #AE8746); background: #FFFFFF; border-radius: 0 10px 10px 0; color: #141B22; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 720px; }
 
 .arena-kindpick { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
 .arena-chip {

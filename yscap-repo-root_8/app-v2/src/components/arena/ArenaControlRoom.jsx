@@ -1030,6 +1030,8 @@ const fmtWhen = (iso) => (iso ? new Date(iso).toLocaleString('en-US', { hour: 'n
 function PlanRow({ spin, sessionLive, onChanged }) {
   const [launch, setLaunch] = useState(toLocalInput(spin.launch_at));
   const [deadline, setDeadline] = useState(toLocalInput(spin.entry_deadline_at));
+  const [title, setTitle] = useState(spin.title || '');
+  const [sub, setSub] = useState(spin.subtitle || '');
   const [busy, setBusy] = useState(false);
   const done = ['decided', 'cancelled'].includes(spin.state);
   const running = spin.state === 'spinning';
@@ -1038,10 +1040,12 @@ function PlanRow({ spin, sessionLive, onChanged }) {
     setBusy(true);
     try {
       await arena.updateSpin(spin.id, {
+        title: title.trim() || null,
+        subtitle: sub.trim() || null,
         launchAt: launch ? fromLocalInput(launch) : null,
         entryDeadlineAt: deadline ? fromLocalInput(deadline) : null,
       });
-      showMessage('The times are saved.', { title: 'Saved', tone: 'info' });
+      showMessage('Saved — the stage shows the new wording.', { title: 'Saved', tone: 'info' });
       onChanged();
     } catch (e) { showMessage((e && e.message) || 'That did not save.', { tone: 'error' }); }
     finally { setBusy(false); }
@@ -1088,6 +1092,12 @@ function PlanRow({ spin, sessionLive, onChanged }) {
       )}
       {!done && !running && (
         <div className="arena-form arena-plantimes">
+          <label>What it is called
+            <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
+          </label>
+          <label>A line underneath
+            <input className="input" value={sub} onChange={(e) => setSub(e.target.value)} />
+          </label>
           <label>Opens itself at
             <input className="input" type="datetime-local" value={launch} onChange={(e) => setLaunch(e.target.value)} />
           </label>
@@ -1095,7 +1105,7 @@ function PlanRow({ spin, sessionLive, onChanged }) {
             <input className="input" type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} />
           </label>
           <div className="arena-decide">
-            <button className="btn ghost small" disabled={busy} onClick={saveTimes}>Save the times</button>
+            <button className="btn ghost small" disabled={busy} onClick={saveTimes}>Save the wording and times</button>
             {spin.state === 'draft' && <button className="btn small" disabled={busy} onClick={openNow}>Open it now</button>}
             <button className="btn ghost small" disabled={busy} onClick={cancel}>Call it off</button>
           </div>
@@ -1305,16 +1315,25 @@ function ArenaOutbox() {
 function SessionSettings({ session, onSaved }) {
   const [name, setName] = useState(session.name || '');
   const [subtitle, setSubtitle] = useState(session.subtitle || '');
+  const [notes, setNotes] = useState((session.settings && session.settings.boardNotes) || '');
   const [busy, setBusy] = useState(false);
   return (
     <div className="arena-form" style={{ marginTop: 8 }}>
       <label>Name<input className="input" value={name} onChange={(e) => setName(e.target.value)} /></label>
       <label>A line underneath<input className="input" value={subtitle} onChange={(e) => setSubtitle(e.target.value)} /></label>
+      <label style={{ gridColumn: '1 / -1' }}>A message on the stage — instructions, encouragement, anything
+        <textarea className="input" rows={4} value={notes} maxLength={4000}
+          placeholder={'Welcome to Elementix Day!\nClock in by 11:38 to be on the wheel. Every dial counts.'}
+          onChange={(e) => setNotes(e.target.value)} />
+      </label>
+      <p className="muted small" style={{ gridColumn: '1 / -1', margin: 0 }}>
+        The message shows on everybody's stage the moment you save — and clears if you empty it.
+      </p>
       <button className="btn small" disabled={busy || !name.trim()} onClick={async () => {
         setBusy(true);
         try {
-          await arena.updateSession(session.id, { name: name.trim(), subtitle: subtitle.trim() || null });
-          showMessage('The session is updated.', { title: 'Saved', tone: 'info' });
+          await arena.updateSession(session.id, { name: name.trim(), subtitle: subtitle.trim() || null, boardNotes: notes });
+          showMessage('The session is updated — the stage shows it now.', { title: 'Saved', tone: 'info' });
           onSaved();
         } catch (e) { showMessage((e && e.message) || 'That did not save.', { tone: 'error' }); }
         finally { setBusy(false); }
