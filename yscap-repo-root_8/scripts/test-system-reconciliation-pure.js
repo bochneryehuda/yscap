@@ -37,11 +37,13 @@ assert.strictEqual(r.findings.length, 0, 'the one matching field agrees; the res
 ok('a field absent on either side is skipped (not a spurious finding)');
 
 // --- Encompass registry: read-only + correct field extraction ---
-const encLoan = { fields: { '1109': { value: '450000' }, '3': { value: '0.1099' }, '136': { value: 400000 }, '1041': { value: 'SFR' } } };
+// property type reads ONLY CX.PROPERTYTYPE (owner-directed 2026-08-18); the '1041'
+// cell deliberately holds a DIFFERENT category so this suite fails if 1041 is ever read again
+const encLoan = { fields: { '1109': { value: '450000' }, '3': { value: '0.1099' }, '136': { value: 400000 }, '1041': { value: 'Condominium' }, 'CX.PROPERTYTYPE': { value: 'SFR' } } };
 const extracted = encMap.extractFields(encLoan);
 assert.strictEqual(extracted.loan_amount, 450000, 'field 1109 → loan_amount (numeric)');
 assert.strictEqual(extracted.note_rate, 0.1099, 'field 3 → note_rate');
-assert.strictEqual(extracted.property_type, 'SFR');
+assert.strictEqual(extracted.property_type, 'SFR', 'CX.PROPERTYTYPE wins; the 1041 decoy is unread');
 ok('the Encompass registry extracts canonical field IDs into portal keys');
 
 // --- Encompass reconciliation: loan amount differs → mismatch ---

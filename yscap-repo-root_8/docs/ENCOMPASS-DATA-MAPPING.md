@@ -100,7 +100,7 @@ Every 3A row has a co-borrower twin (`4004`/`4006`/`1244`/`66`/`1416`/`FR0204`�
 | PILOT `applications` col | Encompass field | Type | Notes |
 |---|---|---|---|
 | `property_address` | `11`/`12`/`14`/`15` | text | Read for cross-check; PILOT-authoritative |
-| `property_type` | `1041` Subject Property Type | enum | `enumKey: 'property_type'` |
+| `property_type` | `CX.PROPERTYTYPE` (custom; std `1041` deliberately unread — owner-directed 2026-08-18) | enum | `enumKey: 'property_type'` |
 | `units` | `16` Number of Units | number | |
 | `purchase_price` | `136` Purchase Price | currency | Cross-check only — PILOT-frozen |
 | `as_is_value` | `356` Appraised Value | currency | Never overwrites PILOT `as_is_value` (intake) |
