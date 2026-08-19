@@ -852,7 +852,20 @@ export default function LtPpe() {
                       disagreed on {row.daysWithDisagreement} of {row.daysMeasured} measured day{row.daysMeasured === 1 ? '' : 's'}
                     </Pill>
                     {row.trend && <Pill tone={TREND_TONE[row.trend.direction] || 'flat'}>{row.trend.direction}</Pill>}
+                    {/* §2.126a — the direction pill above is simply absent when the days cannot be
+                        compared with one another, and an absent pill says nothing. This says it. */}
+                    {!row.trend && row.trendReason && <Pill tone="warn">no direction</Pill>}
                   </div>
+                  {!row.trend && row.trendReason && (
+                    <div style={{ fontSize: 12, color: SLATE, marginTop: 6 }}>
+                      No direction is shown because {row.trendReason}. The day-by-day numbers are still below —
+                      it is the summing-up across them that would mean nothing.
+                      {row.daysWithDisagreementCurrentLeg > 0 && (
+                        <> Of those days, {row.daysWithDisagreementCurrentLeg} {row.daysWithDisagreementCurrentLeg === 1 ? 'was' : 'were'} measured
+                        by the engine we run today.</>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
                   <Figure

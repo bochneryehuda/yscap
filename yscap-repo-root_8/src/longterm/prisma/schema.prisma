@@ -1217,6 +1217,12 @@ model LtPpeParityCell {
   cellLabel      String   @map("cell_label")
   kind           String
 
+  /// The engine-wiring stamp (agreement-provenance.LEG_VERSION) that measured this day cell —
+  /// db/583, §2.126a. A trend is a statement about a SEQUENCE, and a sequence is only a measurement
+  /// when the same instrument took every reading. NULL means the row predates the stamp; a window
+  /// mixing values is reported as not comparable and its trend is refused rather than stated.
+  legVersion     String?  @map("leg_version")
+
   total          Int      @default(0)
   agreed         Int      @default(0)
   disagreed      Int      @default(0)

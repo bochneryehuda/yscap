@@ -279,5 +279,31 @@ ok(/to="\/internal\/lt\/ppe"/.test(layout), 'ROUTE-3 …and the long-term nav li
     'STAMP-5 the screen never compares engine-wiring stamps itself — the server already answered');
 }
 
+// ---------------------------------------------------------------------------
+// 11) §2.126a — a MISSING direction must say why, not just go quiet
+// ---------------------------------------------------------------------------
+{
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  // The direction pill was already conditional, so when the server refuses to state one the row simply
+  // loses a pill — and an absent pill reads as "nothing notable", which is the opposite of the truth.
+  // TWO SEPARATE RENDERS, asserted separately — the badge is what a reader SCANS, the sentence is what
+  // they read once it catches them. A guard matching only the shared condition cannot tell which of the
+  // two exists, and would pass with the badge deleted (measured: it did).
+  ok(/row\.trendReason && <Pill[^>]*>\s*no direction/.test(code),
+    'TREND-1 a refused direction is BADGED — an absent pill reads as "nothing notable"');
+  ok(/!row\.trend && row\.trendReason && \(/.test(code),
+    'TREND-1a …and the explanation block is rendered beside it');
+  ok(/No direction is shown because/.test(code), 'TREND-2 …and says why, in the server\'s own words');
+  ok(/day-by-day numbers are still below/.test(code),
+    'TREND-3 …and points at the readings, which are NOT withheld — only the summing-up is');
+  ok(/daysWithDisagreementCurrentLeg/.test(code),
+    'TREND-4 …and says how much of it the engine we run today actually saw');
+
+  // The screen must not work out comparability for itself — parity-cell-store owns that answer, the
+  // same way finding.js owns the findings one. Two definitions would drift on the next stamp.
+  ok(!/comparability\s*[=!]==/.test(code), 'TREND-5 the screen never re-decides comparability itself');
+}
+
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
 process.exit(failures ? 1 : 0);

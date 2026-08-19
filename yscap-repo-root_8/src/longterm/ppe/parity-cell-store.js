@@ -23,6 +23,7 @@
  */
 
 const scoreboard = require('./scoreboard');
+const provenance = require('./agreement-provenance');
 
 // A 500-scenario run across seven axes can produce well over a thousand cells. Bounded so one canary
 // cannot write an unbounded batch — and the overflow is REPORTED, never silently dropped, because a
@@ -68,6 +69,10 @@ function rowsFromMatrix(matrix, opts = {}) {
         priceSamples: int(pd.samples),
         worstAbsMilli: isFiniteNum(pd.worstAbsMilli) ? Math.round(pd.worstAbsMilli) : null,
         meanMilli: isFiniteNum(pd.meanMilli) ? pd.meanMilli : null,
+        // WHICH ENGINE WIRING TOOK THIS READING (§2.126a). Read from the constant, never from `opts`:
+        // a stamp a caller can forget is a stamp that quietly reads as "taken before the fix", and the
+        // reader below refuses a trend on exactly that basis.
+        legVersion: provenance.LEG_VERSION,
       });
     }
   }
@@ -99,8 +104,8 @@ async function persistCells(scope, matrix, opts = {}) {
       `INSERT INTO lt_ppe_parity_cell
          (scope, investor, program, program_id, day_ms, dimension, cell_key, cell_label, kind,
           total, agreed, disagreed, errors, incomparable, overlay, agreement_rate,
-          price_scenarios, price_samples, worst_abs_milli, mean_milli)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+          price_scenarios, price_samples, worst_abs_milli, mean_milli, leg_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
        ON CONFLICT (scope, investor, program, day_ms, dimension, cell_key) DO UPDATE SET
          program_id      = COALESCE(EXCLUDED.program_id, lt_ppe_parity_cell.program_id),
          cell_label      = EXCLUDED.cell_label,
@@ -116,10 +121,11 @@ async function persistCells(scope, matrix, opts = {}) {
          price_samples   = EXCLUDED.price_samples,
          worst_abs_milli = EXCLUDED.worst_abs_milli,
          mean_milli      = EXCLUDED.mean_milli,
+         leg_version     = EXCLUDED.leg_version,
          updated_at      = now()`,
       [scope, investor, program, programId, dayMs, r.dimension, r.cellKey, r.cellLabel, r.kind,
         r.total, r.agreed, r.disagreed, r.errors, r.incomparable, r.overlay, r.agreementRate,
-        r.priceScenarios, r.priceSamples, r.worstAbsMilli, r.meanMilli],
+        r.priceScenarios, r.priceSamples, r.worstAbsMilli, r.meanMilli, r.legVersion || null],
     );
   }
   return { persisted: true, rows: rows.length, truncated };
@@ -145,6 +151,61 @@ function rowToCell(row) {
     priceSamples: int(row.price_samples),
     worstAbsMilli: num(row.worst_abs_milli),
     meanMilli: num(row.mean_milli),
+    legVersion: row.leg_version == null ? null : row.leg_version,
+  };
+}
+
+/**
+ * §2.126a — CAN THESE DAYS BE COMPARED WITH ONE ANOTHER?
+ *
+ * A trend, a "twelve days off" count and a "persistently worst" ranking are all statements about a
+ * SEQUENCE, and a sequence is only a measurement when the same instrument took every reading in it.
+ * This module already refuses the other way that fails — a missing row is NOT MEASURED, never
+ * MEASURED BADLY — and had no rule for the day the engine underneath changed.
+ *
+ * Three answers, and the caller is told which:
+ *   current      every measured day was read by today's engine        → a trend means something
+ *   older        every measured day shares ONE older stamp            → a real trend, about an engine
+ *                                                                       we no longer run
+ *   unstamped    every measured day predates the stamp                → the state of the whole live
+ *                                                                       series today; reader unknown
+ *   mixed        the window contains more than one stamp              → not a sequence at all
+ *   none         nothing in the window was measured at all
+ *
+ * ONLY `current` yields a trend. The other four are refusals, and each carries its own sentence.
+ *
+ * A stamp of NULL is its own value here, not an absence: every row written before db/583 has one, and
+ * a window of them is internally consistent while describing an engine nobody can identify.
+ */
+function comparabilityOf(cells) {
+  const stamps = [];
+  for (const c of (Array.isArray(cells) ? cells : [])) {
+    if (!c || !isFiniteNum(c.agreementRate)) continue; // an unmeasured day reads nothing, so it says nothing
+    const v = c.legVersion == null ? null : String(c.legVersion);
+    if (!stamps.some((x) => x === v)) stamps.push(v);
+  }
+  if (stamps.length === 0) return { comparability: 'none', legVersions: [], reason: 'no day in this window was measured' };
+  if (stamps.length > 1) {
+    return {
+      comparability: 'mixed',
+      legVersions: stamps,
+      reason: 'the engine that took these readings changed inside this window, so the days cannot be compared with one another',
+    };
+  }
+  if (stamps[0] === provenance.LEG_VERSION) return { comparability: 'current', legVersions: stamps, reason: null };
+  // `unstamped` is its own answer, not a flavour of `older`, because it is the state EVERY row in the
+  // live series is in today: written before db/583, so what read it is unknown rather than known-old.
+  if (stamps[0] == null) {
+    return {
+      comparability: 'unstamped',
+      legVersions: stamps,
+      reason: 'every day here was measured before the engine wiring was stamped, so what read them is unknown',
+    };
+  }
+  return {
+    comparability: 'older',
+    legVersions: stamps,
+    reason: `every day here was measured by an engine wiring that has since changed (${stamps[0]})`,
   };
 }
 
@@ -232,6 +293,10 @@ function cellHistory(cells, opts = {}) {
   const latest = measured.length ? measured[measured.length - 1] : null;
   const withDisagreement = measured.filter((c) => c.disagreed > 0).length;
   const worst = measured.reduce((w, c) => (isFiniteNum(c.worstAbsMilli) && (w == null || c.worstAbsMilli > w) ? c.worstAbsMilli : w), null);
+  // §2.126a — see comparabilityOf. `current` counts what TODAY'S engine actually saw, which is the
+  // only half of `daysWithDisagreement` that describes the engine we run now.
+  const cmp = comparabilityOf(list);
+  const current = measured.filter((c) => c.legVersion === provenance.LEG_VERSION);
   return {
     dimension: list.length ? list[0].dimension : null,
     cellKey: list.length ? list[0].cellKey : null,
@@ -245,7 +310,37 @@ function cellHistory(cells, opts = {}) {
     latestAgreementRate: latest ? latest.agreementRate : null,
     latestDayMs: latest ? latest.dayMs : null,
     worstAbsMilli: worst,
-    trend: scoreboard.trend(days, { window: opts.trendWindow }),
+    // §2.126a. `daysWithDisagreement` above is an honest count of DAYS, but it spans whatever engines
+    // read them; this is the same count restricted to today's. On a window that crosses the leg fix
+    // the two differ, and the difference is precisely the part of "this band has been off for twelve
+    // days" that was never measured by the engine we run.
+    daysMeasuredCurrentLeg: current.length,
+    daysWithDisagreementCurrentLeg: current.filter((c) => c.disagreed > 0).length,
+    comparability: cmp.comparability,
+    legVersions: cmp.legVersions,
+    // ⛔ THE TREND IS MOVED, NOT LABELLED (the §2.124 lesson), and the two cases are different.
+    //
+    // `mixed` is not a sequence at all: a direction computed across two instruments describes the
+    // REPAIR of the instrument. Measured on a real Postgres — a twelve-day window whose only change
+    // was the leg fix reported `improving, delta 0.20`. There is no honest direction to give, so
+    // neither key carries one.
+    //
+    // `older` / `unstamped` DO hold a real sequence — one instrument throughout — but it is not the
+    // engine we run now. Its direction is still computed and still returned, under a DIFFERENT KEY, so
+    // that no screen reading `trend` can ever show a stale direction as the current one and nothing is
+    // destroyed. Leaving the word `improving` under `trend` with a caveat beside it is precisely the
+    // half-fix §2.124 records: the caveat is read second, or not at all.
+    //
+    // `none` delegates as it always did — `scoreboard.trend` answers `unknown` for a window nobody
+    // measured, which is the one definition of direction in this codebase and is already the right
+    // answer. Absence of readings is not the same problem as readings that must not be compared.
+    trend: (cmp.comparability === 'current' || cmp.comparability === 'none')
+      ? scoreboard.trend(days, { window: opts.trendWindow })
+      : null,
+    trendOfOlderReadings: (cmp.comparability === 'older' || cmp.comparability === 'unstamped')
+      ? scoreboard.trend(days, { window: opts.trendWindow })
+      : null,
+    trendReason: (cmp.comparability === 'current' || cmp.comparability === 'none') ? null : cmp.reason,
   };
 }
 
@@ -266,7 +361,17 @@ function persistentlyWorst(cells, opts = {}) {
   }
   const out = [];
   for (const list of byCell.values()) out.push(cellHistory(list, opts));
-  out.sort((a, b) => (b.daysWithDisagreement - a.daysWithDisagreement)
+  // §2.126a — WHAT TODAY'S ENGINE SAW COMES FIRST. The old first key was `daysWithDisagreement`, which
+  // counts days read by whatever engine happened to be running; on a window crossing the leg fix that
+  // put bands at the top of a "persistently worst" list purely because the OLD leg declined everything
+  // there. Ranking on the current-leg count first means the list is ordered by measurements the engine
+  // we actually run made, and the old count is kept as the tie-break so nothing is thrown away.
+  //
+  // ON A SERIES WITH NO STAMPS AT ALL — which is every series that exists today — every entry scores 0
+  // on the first key, so the order falls through to exactly what it always was. The change costs
+  // nothing until there is something real to rank on.
+  out.sort((a, b) => (b.daysWithDisagreementCurrentLeg - a.daysWithDisagreementCurrentLeg)
+    || (b.daysWithDisagreement - a.daysWithDisagreement)
     || ((a.latestAgreementRate == null ? 1 : a.latestAgreementRate) - (b.latestAgreementRate == null ? 1 : b.latestAgreementRate))
     || ((b.worstAbsMilli || 0) - (a.worstAbsMilli || 0)));
   const lim = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 10;
@@ -275,5 +380,6 @@ function persistentlyWorst(cells, opts = {}) {
 
 module.exports = {
   persistCells, listCells, listSeries, cellHistory, persistentlyWorst, rowsFromMatrix, rowToCell,
+  comparabilityOf, LEG_VERSION: provenance.LEG_VERSION,
   MAX_CELLS_PER_RUN, MAX_SERIES,
 };

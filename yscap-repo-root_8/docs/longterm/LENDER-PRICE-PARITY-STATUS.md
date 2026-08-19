@@ -8770,3 +8770,74 @@ could see them — and in both cases the TEST was restructured rather than the c
 
 **Full suite:** 190/190 LT PPE suites, all 34 database-backed suites proven against a real Postgres, all
 seven gates green.
+
+---
+
+### §2.126a — a trend across two instruments measures the instrument, not the band
+
+**What the board does.** `lt_ppe_parity_cell` (db/575) keeps one row per band per day, and the point of
+keeping it is the sentence a reader builds from the series: *this band has been off for twelve days*,
+*this one is improving*, *these are the persistently worst cells*. Each of those is a statement about a
+SEQUENCE — and a sequence is only a measurement when the same instrument took every reading in it.
+
+That module's own header is already scrupulous about the other way this fails: **a missing row means NOT
+MEASURED, never MEASURED BADLY**, so gaps are reported as gaps and never zero-filled. It had no rule at
+all for the day the engine underneath changed.
+
+**What was measured before building (real Postgres, 2026-08-19).**
+
+| what | measured |
+| --- | --- |
+| columns on `lt_ppe_parity_cell` | 23 — none naming an engine, leg or version |
+| keys on a cell record | 16 — likewise none |
+| a 12-day window whose ONLY change was the leg fix | `trend = { direction: 'improving', delta: 0.20 }` |
+| …its `daysWithDisagreement` | 6 — every one read by the leg that declined everything |
+| …anything on the history saying the engine changed | nothing |
+| `persistentlyWorst` top entry | that same band, ranked first, direction *improving* |
+
+So the "improving" is the repair of the instrument showing up as progress, and six of the days behind
+*"off for six days"* were never a measurement of the band at all.
+
+**Built.**
+
+* **db/583** adds `lt_ppe_parity_cell.leg_version`. Written by `rowsFromMatrix` from
+  `agreement-provenance.LEG_VERSION` — read from the constant, never from `opts`, for the same reason as
+  db/582.
+* **`comparabilityOf`** gives one window one of five answers: `current` (every reading taken by today's
+  engine), `older` (one older stamp throughout), `unstamped` (predates the stamp — the state of the
+  whole live series today), `mixed` (more than one stamp), `none` (nothing measured). An *unmeasured*
+  day carries no reading, so it can never make a window mixed.
+* **The direction is MOVED, not labelled**, and the two cases differ:
+  * `mixed` is not a sequence at all. Neither `trend` nor `trendOfOlderReadings` carries a direction —
+    there is no honest one to give.
+  * `older` / `unstamped` DO hold a real sequence, taken by one instrument that is not the one we run.
+    Its direction is still computed and still returned, under `trendOfOlderReadings`, so no screen
+    reading `trend` can show a stale direction as the current one and nothing is destroyed.
+  * `none` delegates to `scoreboard.trend` exactly as before — `unknown` is already the right answer for
+    a window nobody measured, and absence of readings is a different problem from readings that must not
+    be compared.
+* **`daysWithDisagreementCurrentLeg`** sits beside the honest total, so *"off for twelve days"* can be
+  read against the part today's engine actually saw.
+* **`persistentlyWorst` ranks on the current-leg count first**, then falls back to the old key. On a
+  series with no stamps — which is every series that exists today — every entry scores zero on the new
+  key and the order falls through to exactly what it always was, so the change costs nothing until there
+  is something real to rank on.
+* **The screen says it.** `LtPpe.jsx` already rendered the direction pill conditionally, so a refusal
+  simply removed a pill — and an absent pill reads as *nothing notable*. It now shows a **no direction**
+  badge, the reason in the server's own words, a pointer to the day-by-day numbers (which are NOT
+  withheld — only the summing-up is), and how much of the window today's engine saw.
+
+**What is NOT claimed.** No row is backfilled. Every existing row reads as *"measured before the engine
+wiring was stamped, so what read them is unknown"*, and its direction moves to the stale key rather than
+being deleted. Recognised, not rescued — the third board in the set, after §2.122a's runs and §2.126's
+findings.
+
+**Evidence.** `scripts/test-lt-ppe-parity-cell-store.js` section F (F1–F24b, suite now 172 assertions);
+`scripts/test-lt-ppe-store-roundtrip-db.js` A3a proves the column round-trips through a real Postgres;
+`scripts/test-lt-ppe-screen-pure.mjs` section 11. Thirteen mutations run (V1–V13); every one is caught.
+Two reported 0 failures first time round — the ranking's tie-break was unobservable, and the screen guard
+could not tell the badge from the paragraph — and in both cases the TEST was restructured, never the code
+loosened.
+
+**Full suite:** 190/190 LT PPE suites, all 34 database-backed proven against a real Postgres, all seven
+gates green.

@@ -151,7 +151,7 @@ async function main() {
     // The whole reason this rule exists: a run whose scenarios happened to include no loans in a band
     // writes nothing for it. Zero-filling that gap would report a band nobody priced as one that
     // failed completely, and the trend would show a collapse that never happened.
-    const cell = (dayMs, rate, dis) => ({ dayMs, dimension: 'fico', cellKey: '-Infinity:700', cellLabel: '< 700', agreementRate: rate, disagreed: dis, total: 5, worstAbsMilli: null });
+    const cell = (dayMs, rate, dis) => ({ dayMs, dimension: 'fico', cellKey: '-Infinity:700', cellLabel: '< 700', agreementRate: rate, disagreed: dis, total: 5, worstAbsMilli: null, legVersion: S.LEG_VERSION });
     const sparse = [cell(1 * DAY, 1, 0), cell(5 * DAY, 1, 0)]; // days 2,3,4 not measured at all
     const h = S.cellHistory(sparse, { windowDays: 5 });
     eq(h.daysMeasured, 2, 'C1 only the days actually measured are counted');
@@ -177,7 +177,7 @@ async function main() {
   // D. THE DIRECTION IS THE ONE TREND DEFINITION
   // =========================================================================
   {
-    const c = (d, rate) => ({ dayMs: d * DAY, dimension: 'fico', cellKey: 'k', cellLabel: 'k', agreementRate: rate, disagreed: rate < 1 ? 1 : 0 });
+    const c = (d, rate) => ({ dayMs: d * DAY, dimension: 'fico', cellKey: 'k', cellLabel: 'k', agreementRate: rate, disagreed: rate < 1 ? 1 : 0, legVersion: S.LEG_VERSION });
     const improving = S.cellHistory([c(1, 0.2), c(2, 0.3), c(3, 0.9), c(4, 0.95)]);
     eq(improving.trend.direction, 'improving', 'D1 a recovering band reads as improving');
     const worsening = S.cellHistory([c(1, 0.99), c(2, 0.98), c(3, 0.4), c(4, 0.3)]);
@@ -194,7 +194,7 @@ async function main() {
   // E. RANKING WITHOUT THRESHOLDS
   // =========================================================================
   {
-    const mk = (dim, key, day, rate, dis, worst) => ({ dayMs: day * DAY, dimension: dim, cellKey: key, cellLabel: key, agreementRate: rate, disagreed: dis, worstAbsMilli: worst });
+    const mk = (dim, key, day, rate, dis, worst) => ({ dayMs: day * DAY, dimension: dim, cellKey: key, cellLabel: key, agreementRate: rate, disagreed: dis, worstAbsMilli: worst, legVersion: S.LEG_VERSION });
     const cells = [
       // a band off on all three days — the one worth a human's morning
       mk('fico', 'lo', 1, 0.2, 4, 1250), mk('fico', 'lo', 2, 0.3, 3, 1000), mk('fico', 'lo', 3, 0.25, 4, 1500),
@@ -373,6 +373,121 @@ async function main() {
       const bytes = fs.readFileSync(path.join(__dirname, '..', f));
       eq(bytes.indexOf(0), -1, `F14 ${f} carries no NUL byte`);
     }
+  }
+
+  // =========================================================================
+  // F. §2.126a — A SEQUENCE IS ONLY A MEASUREMENT WHEN ONE INSTRUMENT TOOK EVERY READING
+  //
+  // This module's own headline rule is that a MISSING row means "not measured", never "measured
+  // badly". It had no rule at all for the day the engine underneath changed. Measured on a real
+  // Postgres, 2026-08-19: a twelve-day window whose ONLY change was the leg fix (§2.122 gave our
+  // engine the deal's real facts; §2.124 taught it that a quote answers in three states) reported
+  //     trend = { direction: 'improving', delta: 0.20 }
+  // which describes the repair of the instrument, not the behaviour of the band. Every column on the
+  // table — 23 of them — and every key on a cell record was checked first; none named an engine.
+  // =========================================================================
+  {
+    const OLD = '2026-08-19/2.122';
+    const day = (d, rate, leg) => ({
+      dayMs: d * DAY, dimension: 'fico', cellKey: '700:760', cellLabel: '700-760',
+      agreementRate: rate, disagreed: rate < 1 ? 3 : 0, worstAbsMilli: rate < 1 ? 120 : null,
+      ...(leg === undefined ? {} : { legVersion: leg }),
+    });
+
+    // F1-F5 — the five answers, one place.
+    eq(S.comparabilityOf([day(1, 1, S.LEG_VERSION), day(2, 1, S.LEG_VERSION)]).comparability, 'current',
+      'F1 every reading taken by today\'s engine');
+    eq(S.comparabilityOf([day(1, 1, OLD), day(2, 1, OLD)]).comparability, 'older',
+      'F2 every reading taken by one engine that has since changed');
+    eq(S.comparabilityOf([day(1, 1), day(2, 1)]).comparability, 'unstamped',
+      'F3 every reading taken before the stamp existed — the state of the whole live series today');
+    eq(S.comparabilityOf([day(1, 0.4, OLD), day(2, 1, S.LEG_VERSION)]).comparability, 'mixed',
+      'F4 the instrument changed inside the window — not a sequence at all');
+    eq(S.comparabilityOf([]).comparability, 'none', 'F5 nothing measured is its own answer');
+    // An UNMEASURED day carries no reading, so it cannot make a window mixed.
+    eq(S.comparabilityOf([day(1, 1, S.LEG_VERSION), { ...day(2, null), agreementRate: null }]).comparability,
+      'current', 'F6 a day with no rate says nothing about which engine read it');
+
+    // F7-F11 — the defect, reproduced exactly as it was measured.
+    const crossing = [];
+    for (let i = 1; i <= 12; i++) crossing.push(day(i, i <= 6 ? 0.4 : 1, i <= 6 ? OLD : S.LEG_VERSION));
+    const h = S.cellHistory(crossing, { windowDays: 12 });
+    eq(h.comparability, 'mixed', 'F7 a window crossing the leg fix is reported as mixed');
+    eq(h.trend, null, 'F8 …and NO direction is stated — "improving" there describes the repair, not the band');
+    eq(h.trendOfOlderReadings, null, 'F9 …nor is one smuggled in under the other key: mixed is not a sequence');
+    ok(/changed inside this window/.test(h.trendReason || ''), 'F10 …and the reason says so in plain words');
+    eq(h.daysWithDisagreement, 6, 'F11 the honest count of days it was seen off is kept');
+    eq(h.daysWithDisagreementCurrentLeg, 0,
+      'F12 …beside the part today\'s engine actually saw, which is the half that describes the engine we run');
+    deep(h.legVersions.slice().sort(), [OLD, S.LEG_VERSION].sort(), 'F13 both wirings are named');
+
+    // F14-F16 — an older window holds a REAL sequence. It is preserved, just not under `trend`.
+    const allOld = [];
+    for (let i = 1; i <= 4; i++) allOld.push(day(i, 0.2 + i * 0.2, OLD));
+    const ho = S.cellHistory(allOld, {});
+    eq(ho.trend, null, 'F14 an older window states no CURRENT direction');
+    ok(ho.trendOfOlderReadings && ho.trendOfOlderReadings.direction === 'improving',
+      'F15 …but the real direction of those readings is kept, under its own key — nothing is destroyed');
+    ok(/has since changed/.test(ho.trendReason || ''), 'F16 …and the reader is told which engine took them');
+
+    // F17 — an unstamped window (every row that exists today) is the same shape with its own sentence.
+    const allNone = [];
+    for (let i = 1; i <= 4; i++) allNone.push(day(i, 0.2 + i * 0.2));
+    const hn = S.cellHistory(allNone, {});
+    eq(hn.trend, null, 'F17 an unstamped window states no current direction either');
+    ok(/what read them is unknown/.test(hn.trendReason || ''),
+      'F18 …and says the reader is UNKNOWN, not that it was wrong');
+
+    // F19-F21 — the ranking. The old first key counted days read by whatever engine was running.
+    const mk2 = (key, d, rate, leg) => ({ ...day(d, rate, leg), cellKey: key, cellLabel: key });
+    const cells = [
+      // `oldOnly` looked terrible, but only under the leg that declined everything
+      mk2('oldOnly', 1, 0.1, OLD), mk2('oldOnly', 2, 0.1, OLD), mk2('oldOnly', 3, 0.1, OLD),
+      // `realNow` is off under the engine we actually run
+      mk2('realNow', 4, 0.3, S.LEG_VERSION), mk2('realNow', 5, 0.3, S.LEG_VERSION),
+    ];
+    const ranked = S.persistentlyWorst(cells, { windowDays: 5 });
+    eq(ranked[0].cellKey, 'realNow',
+      'F19 what TODAY\'S engine saw ranks first — three bad days under a corrected leg are not evidence');
+    eq(ranked[1].cellKey, 'oldOnly', 'F20 …and the old readings are ranked below, never thrown away');
+    eq(ranked[1].daysWithDisagreement, 3, 'F21 …with their honest day count intact');
+
+    // F22 — AND IT COSTS NOTHING ON A SERIES WITH NO STAMPS, which is every series that exists today:
+    // every entry scores 0 on the new first key, so the order falls through to exactly what it was.
+    const legacy = [
+      mk2('lo', 1, 0.2), mk2('lo', 2, 0.3), mk2('lo', 3, 0.25),
+      mk2('mid', 1, 0.5), mk2('mid', 2, 1), mk2('mid', 3, 1),
+      mk2('clean', 1, 1), mk2('clean', 2, 1),
+    ];
+    deep(S.persistentlyWorst(legacy, { windowDays: 3 }).map((x) => x.cellKey), ['lo', 'mid', 'clean'],
+      'F22 an unstamped series ranks exactly as it always did — the change is free until there is something to rank on');
+
+    // F24 — THE TIE-BREAK IS LOAD-BEARING, and nothing could see it until this case existed. The new
+    // first key is what today's engine saw; on a series with no stamps at all every cell scores 0
+    // there, and the honest total day-count is what must decide next. Both cells below end on the same
+    // latest rate and the same (absent) worst gap, so ONLY that count can order them — and `oneBadDay`
+    // is listed first, so an implementation that dropped the tie-break would leave it first.
+    const raw = (key, d, rate, dis) => ({
+      dayMs: d * DAY, dimension: 'fico', cellKey: key, cellLabel: key,
+      agreementRate: rate, disagreed: dis, worstAbsMilli: null,
+    });
+    const tie = [
+      raw('oneBadDay', 1, 1, 0), raw('oneBadDay', 2, 1, 0), raw('oneBadDay', 3, 0.5, 1),
+      raw('offEveryDay', 1, 0.5, 1), raw('offEveryDay', 2, 0.5, 1), raw('offEveryDay', 3, 0.5, 1),
+    ];
+    const tieRanked = S.persistentlyWorst(tie, { windowDays: 3 });
+    eq(tieRanked[0].cellKey, 'offEveryDay',
+      'F24 with nothing stamped, the cell off on every day still ranks above the one bad afternoon');
+    eq(tieRanked[0].daysWithDisagreementCurrentLeg, tieRanked[1].daysWithDisagreementCurrentLeg,
+      'F24a …and it is NOT the new key deciding it — both scored zero there');
+    eq(tieRanked[0].latestAgreementRate, tieRanked[1].latestAgreementRate,
+      'F24b …nor the latest rate, which is identical: only the honest day count can order these two');
+
+    // F23 — the WRITER stamps, and from the constant. A stamp a caller can pass is one a caller can
+    // forget, and a forgotten stamp reads as "taken before the fix".
+    const built = S.rowsFromMatrix({ dimensions: [{ dimension: 'fico', kind: 'band', cells: [{ key: 'k', label: 'k', total: 1, agreed: 1, agreementRate: 1 }] }] },
+      { legVersion: 'forged/9.99' });
+    eq(built.rows[0].legVersion, S.LEG_VERSION, 'F23 every row written carries today\'s stamp, and an opts value does not win');
   }
 
   console.log(`ok - lt ppe parity cell series (${n} assertions)`);

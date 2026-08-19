@@ -131,6 +131,10 @@ const twoCellMatrix = () => ({
     // and a mapper that forgot one would surface as a screen doing arithmetic on "1700000000000".
     const c = cells[0];
     ok(typeof c.dayMs === 'number' && c.dayMs === DAY, 'A3 BIGINT day_ms is coerced to a number, not a string');
+    // §2.126a — the engine-wiring stamp survives the round-trip. A trend across this series is only a
+    // measurement when one instrument took every reading, and the reader decides that from this value.
+    ok(c.legVersion === require('../src/longterm/ppe/agreement-provenance').LEG_VERSION,
+      'A3a the engine wiring that took the reading is written and read back (db/583)');
     ok(typeof c.agreementRate === 'number' && c.agreementRate === 0.9, 'A4 NUMERIC agreementRate is coerced to a number');
     ok(typeof c.meanMilli === 'number' && c.meanMilli === 120.5, 'A5 NUMERIC meanMilli keeps its fraction through the round-trip');
     ok(c.worstAbsMilli === 1250 && c.total === 10 && c.agreed === 9 && c.disagreed === 1
