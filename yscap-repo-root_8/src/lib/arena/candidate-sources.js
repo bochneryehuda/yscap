@@ -355,6 +355,46 @@ const SOURCES = [
         .map((label, i) => ({ key: `custom:${i}`, label, weight: 1, meta: { custom: true } }));
     },
   },
+  {
+    // The SECOND typed list, for a manual two-wheel spin (owner-directed
+    // 2026-08-19: "put in what should be in the spin, either offices or the
+    // things"). Its own config key, because both wheels of one spin share one
+    // config and a single customList would put the SAME slices on both.
+    key: 'custom_list_2',
+    scope: 'prizes',
+    label: 'A second list I type right now',
+    hint: 'The other wheel of a manual double — usually what the winner gets.',
+    async build(ctx) {
+      const raw = ctx.config.customList2;
+      const lines = Array.isArray(raw) ? raw : String(raw || '').split('\n');
+      return lines
+        .map((s) => String(s).trim())
+        .filter(Boolean)
+        .map((label, i) => ({ key: `custom2:${i}`, label, weight: 1, meta: { custom: true } }));
+    },
+  },
+  {
+    // HAND-PICKED PEOPLE — the manual people wheel. Unlike typing names into a
+    // custom list, these are REAL staff rows, so the winner is a real
+    // winner_staff_id: they get the you-won notification, the award lands on
+    // the payroll CSV, and remove-the-winner works. The picked ids ride in the
+    // spin's own config; deactivated or external rows are dropped at build
+    // time rather than trusted from the stored list.
+    key: 'picked_people',
+    scope: 'people',
+    label: 'Exactly the people I pick',
+    hint: 'Tick who is on the wheel — no check-in needed, nothing else to set up.',
+    async build(ctx) {
+      const raw = Array.isArray(ctx.config.pickedStaffIds) ? ctx.config.pickedStaffIds : [];
+      const ids = raw.map(String).filter(Boolean);
+      if (!ids.length) return [];
+      const r = await db().query(
+        `SELECT id, full_name, email, role, title FROM staff_users
+          WHERE id = ANY($1::uuid[]) AND is_active = true AND is_external IS NOT TRUE
+          ORDER BY full_name`, [ids]);
+      return shapePeople(r.rows, ctx);
+    },
+  },
 
   // ---- loan files (the CRM-connected spins) -------------------------------
   // These read the RTL loan pipeline. `applications` only -- no Long-Term table

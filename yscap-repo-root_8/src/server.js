@@ -898,6 +898,10 @@ if (require.main === module) {
         // because it reads arena_* tables db/585 creates.
         try { require('./lib/arena/sweep').start(); }
         catch (e) { console.error('[boot] arena sweep failed to start:', e.message); }
+        // Heal any spin the short-lived broken revive left with no wheels
+        // (2026-08-19) — exact, idempotent, bounded; see spin-runner.
+        try { require('./lib/arena/spin-runner').healDrawlessSpinsOnce(); }
+        catch (e) { console.error('[boot] arena drawless heal failed:', e.message); }
         // PREVIOUS AND FUTURE (owner-directed 2026-08-16): the appraisal became a
         // first-class order on the Orders desk (db/564), so every file that already
         // has a vendor appraisal order needs its desk row projecting — otherwise the
