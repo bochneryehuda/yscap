@@ -32,6 +32,10 @@ function call(server, method, p, token, body) {
 }
 
 const PID = '66666666-6666-4666-8666-666666666666';
+/* A property on PID's own mortgage, and one that is on nobody's — the two sides
+   of the drill-in's scope check. */
+const ADDR = '88888888-8888-4888-8888-888888888888';
+const STRANGER_ADDR = '99999999-9999-4999-8999-999999999999';
 const PID2 = '77777777-7777-4777-8777-777777777777';
 
 (async () => {
@@ -73,6 +77,20 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
         return { ok: true, data: { data: [{ id: 'e1', name: 'JC SWB EQUITIES ONE LLC' }] } };
       case 'get_person_cross_state':
         return { ok: true, data: { data: [{ id: PID2, name: 'MOTY BRISK', state: 'FL' }] } };
+      /* A mortgage carrying a REAL address uuid, because the property drill-in
+         is reached through one — and the scope gate is only meaningful if the
+         address is genuinely on this person's own rows. */
+      case 'get_person_mortgages':
+        return { ok: true, data: { data: [{ id: 'm1', recordingDate: '2021-03-02', mortgageAmount: '380000.00',
+          lenderName: 'Roc Capital', propertyAddresses: [{ id: ADDR, addressFull: '14 MAPLE ST, TEANECK, NJ 07666' }] }] } };
+      case 'get_address':
+        return { ok: true, data: { address: { id: args.id, addressFull: '14 MAPLE ST, TEANECK, NJ 07666',
+          city: 'Teaneck', countyName: 'Bergen', state: 'NJ', zipCode: '07666' } } };
+      case 'get_address_ownership':
+        return { ok: true, data: { data: [{ id: 'o1', startDate: '2021-03-02', endDate: null,
+          totalConsideration: '475000.00', entity_grantees: [{ id: 'e1', name: 'MAPLE HOLDINGS LLC' }] }] } };
+      case 'get_address_transactions':
+        return { ok: true, data: { data: [{ id: 't1', type: 'satisfaction', recordingDate: '2022-01-19' }] } };
       default:
         return { ok: true, data: { data: [{ id: `${tool}-1` }] } };
     }
@@ -107,6 +125,14 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
     await db.query(`DELETE FROM elementix_person_aliases WHERE person_id = ANY($1) OR alias_person_id = ANY($1)`, [[PID, PID2]]);
     await db.query(`UPDATE elementix_persons SET primary_person_id = NULL WHERE person_id = ANY($1)`, [[PID, PID2]]);
     await db.query(`DELETE FROM elementix_persons WHERE person_id = ANY($1)`, [[PID, PID2]]);
+    /* THE PROPERTY CACHE TOO. Without this the suite passes once and then fails
+       on its second run against the same database: the address is already read,
+       so the first assertion ("it says it has not been read") is false and the
+       deliberate read spends nothing because it is inside the freshness window.
+       A fixture that only works on a virgin database is a fixture that will be
+       "fixed" by deleting the assertion. */
+    await db.query(`DELETE FROM elementix_address_sections WHERE address_id = ANY($1)`, [[ADDR, STRANGER_ADDR]]);
+    await db.query(`DELETE FROM elementix_addresses WHERE address_id = ANY($1)`, [[ADDR, STRANGER_ADDR]]);
 
     const officer = await mkStaff('Elx Officer', 'loan_officer');
     const officer2 = await mkStaff('Elx Officer Two', 'loan_officer');
@@ -494,6 +520,56 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
     const spend = trail.rows.find((x) => x.action === 'elementix_skip_trace');
     ok(spend && spend.entity_id && spend.detail && typeof spend.detail.why === 'string' && spend.detail.why.length > 3,
       'and the spend records who, about whom, and the reason they typed');
+
+    // -----------------------------------------------------------------------
+    console.log('\n15. Opening a property — and the two halves of its gate');
+    // -----------------------------------------------------------------------
+    /* A PROPERTY IS REACHED THROUGH A PERSON, so its gate has two halves and
+       both matter. Without the first, a typed uuid opens any property on the
+       plane. Without the second, an officer who can see ONE lead could read any
+       property in the country by pasting its id and naming their own person —
+       and every one of those reads spends the organisation's shared hourly
+       allowance, which is the resource this whole plane is built to protect. */
+    r = await call(server, 'GET', `/api/elementix/addresses/${ADDR}?personId=${PID}`, T);
+    ok(r.status === 200 && r.body.everRead === false,
+      'the officer who owns the person can open the property, and it says it has not been read');
+
+    /* A THIRD OFFICER, MADE HERE ON PURPOSE. By this point in the file T2 owns
+       a lead on PID (section 6 gave them one), so they legitimately CAN see that
+       person — using them for this assertion would have proven nothing while
+       looking like it proved everything. The refusal needs somebody with no
+       relationship to PID at all. */
+    const officer3 = await mkStaff('Elx Officer Three', 'loan_officer');
+    const T3 = tok(officer3);
+    r = await call(server, 'GET', `/api/elementix/addresses/${ADDR}?personId=${PID}`, T3);
+    ok(r.status === 404, 'an officer with no relationship to that person cannot open its property');
+
+    r = await call(server, 'GET', `/api/elementix/addresses/${STRANGER_ADDR}?personId=${PID}`, T);
+    ok(r.status === 404,
+      'and naming a person you CAN see does not open a property that is not on their record');
+
+    r = await call(server, 'GET', `/api/elementix/addresses/not-a-uuid?personId=${PID}`, T);
+    ok(r.status === 400, 'a typed id that is not one is refused outright');
+
+    const beforeAddr = seen.length;
+    r = await call(server, 'POST', `/api/elementix/addresses/${ADDR}/read`, T3, { personId: PID });
+    ok(r.status === 404, 'the expensive door refuses the same way the cheap one does');
+    ok(seen.length === beforeAddr, '…and spent nothing doing it');
+
+    r = await call(server, 'POST', `/api/elementix/addresses/${ADDR}/read`, T, { personId: PID });
+    ok(r.status === 200 && r.body.ok === true, 'the officer who owns the person can read the property');
+    ok(r.body.sections.ownership.rows.length === 1 && r.body.sections.transactions.rows.length === 1,
+      'and gets who owns it and what is recorded on it');
+    ok(r.body.address && r.body.address.countyName === 'Bergen', 'with where it actually is');
+    const addrTools = seen.slice(beforeAddr).map((c) => c.tool);
+    ok(!addrTools.includes('submit_contact_enrichment'), 'reading a property never buys a contact');
+    ok(addrTools.filter((t) => t.startsWith('get_address')).length >= 3,
+      'it asked the three drill-in tools and nothing else expensive');
+
+    const addrAudit = await db.query(
+      `SELECT detail FROM audit_log WHERE action = 'elementix_address_read' ORDER BY created_at DESC LIMIT 1`);
+    ok(addrAudit.rows.length === 1 && addrAudit.rows[0].detail && addrAudit.rows[0].detail.addressId === ADDR,
+      'and the read is on the record afterwards, against the property it was for');
 
     // -----------------------------------------------------------------------
     console.log('\n14. Every call named the officer who made it');

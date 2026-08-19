@@ -67,6 +67,9 @@ const MUTED = '#4B585C';
 const LINE = '#E4DECF';
 const GOLD_INK = '#856529';
 
+/* Elementix keys everything by uuid. Anything else is not one of its ids. */
+const isUuidish = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v || ''));
+
 /* The tabs, in the order the owner listed them. `key` matches the server's own
    section key, so a section added there appears here by adding one row. */
 const TABS = [
@@ -186,6 +189,86 @@ function ExtLink({ href, children }) {
   );
 }
 
+/* One section of the property's own record, stated honestly. A section that
+   FAILED and a section with nothing in it are different answers, and only one
+   of them may be drawn as an empty list. */
+function PropSection({ sec, children }) {
+  if (!sec) return null;
+  if (sec.status === 'error') {
+    return (
+      <div style={{ fontSize: 13.5, color: INK, background: '#FDF6E7', border: '1px solid #D9A441',
+        borderRadius: 8, padding: '7px 10px', marginTop: 8 }}>
+        {sec.label}: Elementix would not answer — {sec.detail || 'no reason given'}. That is not the same
+        as there being none.
+      </div>
+    );
+  }
+  if (sec.status === 'not_loaded') return null;
+  if (!sec.rows.length) {
+    return <div style={{ fontSize: 13.5, color: MUTED, marginTop: 8 }}>{sec.label}: Elementix has none on record.</div>;
+  }
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 12.5, color: MUTED, marginBottom: 4 }}>
+        {sec.label} — {sec.rowCount == null ? '—' : sec.rowCount.toLocaleString('en-US')}
+        {sec.truncated ? ' (showing the first of them — there are more in Elementix than we pulled)' : ''}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** The property as Elementix holds it: who owns it, and everything recorded. */
+function PropertyRecord({ prop }) {
+  const secs = (prop && prop.sections) || {};
+  const own = secs.ownership;
+  const tx = secs.transactions;
+  return (
+    <div>
+      <PropSection sec={own}>
+        <div style={{ display: 'grid', gap: 4, fontSize: 13.5, color: INK }}>
+          {(own && own.rows ? own.rows : []).slice(0, 12).map((r, i) => {
+            const current = !r.endDate && !r.end_date;
+            const who = names(r.grantees) || (Array.isArray(r.entity_grantees) ? r.entity_grantees.map((e) => e && e.name).filter(Boolean).join(', ') : '')
+              || (Array.isArray(r.people) ? r.people.map((e) => e && e.name).filter(Boolean).join(', ') : '') || 'owner not named';
+            return (
+              <div key={r.id || i}>
+                <strong>{who}</strong>
+                <span style={{ color: MUTED }}> · </span>{day(r.startDate || r.start_date)}
+                <span style={{ color: MUTED }}>{current ? ' → still owns it' : ` → ${day(r.endDate || r.end_date)}`}</span>
+                {num(r.totalConsideration ?? r.total_consideration) !== null && (
+                  <><span style={{ color: MUTED }}> · </span>{money(r.totalConsideration ?? r.total_consideration)}</>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </PropSection>
+
+      <PropSection sec={tx}>
+        <div style={{ display: 'grid', gap: 4, fontSize: 13.5, color: INK }}>
+          {(tx && tx.rows ? tx.rows : []).slice(0, 20).map((r, i) => (
+            <div key={r.id || i}>
+              <span style={{ color: GOLD_INK, fontWeight: 650 }}>{pretty(r.type || r.documentType)}</span>
+              <span style={{ color: MUTED }}> · </span>{day(r.recordingDate || r.recording_date)}
+              {num(r.amount) !== null && (<><span style={{ color: MUTED }}> · </span>{money(r.amount)}</>)}
+              {(names(r.partiesGrantee) || names(r.partiesGrantor)) && (
+                <><span style={{ color: MUTED }}> · </span>{names(r.partiesGrantee) || names(r.partiesGrantor)}</>
+              )}
+            </div>
+          ))}
+        </div>
+      </PropSection>
+
+      {prop.address && prop.address.refreshedAt && (
+        <div style={{ marginTop: 8, fontSize: 12.5, color: MUTED }}>
+          Read from Elementix {day(prop.address.refreshedAt)}.
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * THE RECORD BEHIND A ROW — the property, the loan on it, and the company it
  * sits in, drawn from rows already in the cache.
@@ -197,7 +280,43 @@ function ExtLink({ href, children }) {
  * the WRONG deed's purchase price beside a real loan amount would be a number
  * somebody acts on.
  */
-function RecordDetail({ detail, onClose, onOpenTab }) {
+function RecordDetail({ detail, onClose, onOpenTab, personId }) {
+  /* EVERY HOOK BEFORE THE EARLY RETURN. A hook after a conditional return
+     changes the hook order between renders, which React cannot recover from —
+     the repo has a guard that fails the build for exactly this. */
+  const addressId = detail ? detail.addressId : null;
+  const [prop, setProp] = useState(null);
+  const [propBusy, setPropBusy] = useState(false);
+  const [propErr, setPropErr] = useState('');
+
+  /* THE CACHE, ON OPEN. This route cannot reach Elementix, so opening a record
+     is still free — it only asks whether this property has ever been read. */
+  useEffect(() => {
+    setProp(null); setPropErr('');
+    /* AN ELEMENTIX ID IS A UUID. Asking about anything else is a round trip the
+       server is certain to refuse, and the refusal lands in the console as a 400
+       on a screen where nothing is wrong — so the question is not asked. */
+    if (!isUuidish(addressId) || !isUuidish(personId)) return undefined;
+    let live = true;
+    api.elxAddress(addressId, personId).then((r) => { if (live) setProp(r); }).catch(() => {});
+    return () => { live = false; };
+  }, [addressId, personId]);
+
+  const readProperty = async () => {
+    if (!isUuidish(addressId) || !isUuidish(personId)) return;
+    /* MONEY IS NOT SPENT HERE — none of the three tools behind this button is
+       the paid one — but the office's shared hourly allowance is, so it says
+       what it is about to do and waits to be told to. */
+    const yes = await askConfirm(
+      'Read this property from Elementix? It pulls everyone who has ever owned it and every document recorded against it — including the ones belonging to people we have never looked up. It uses a few of the hour’s lookups and costs no credits.',
+      { confirmLabel: 'Read the property' });
+    if (!yes) return;
+    setPropBusy(true); setPropErr('');
+    try { setProp(await api.elxAddressRead(addressId, personId, false)); }
+    catch (e) { setPropErr(e.message); }
+    finally { setPropBusy(false); }
+  };
+
   if (!detail) return null;
   const { place, mortgage, deed, ownership, lender, entities } = detail;
   const held = holdPeriod(ownership && (ownership.startDate || ownership.purchaseDate),
@@ -318,13 +437,37 @@ function RecordDetail({ detail, onClose, onOpenTab }) {
         </div>
       )}
 
+      {/* THE PROPERTY'S OWN RECORD — the half that is NOT already in the cache.
+          Who owns it today, everyone who owned it before, and every instrument
+          ever recorded against it, including the ones belonging to people we
+          have never looked up. That is a real vendor read, so it is a button. */}
+      {isUuidish(addressId) && isUuidish(personId) && (
+        <div className="grp">
+          <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+            <div className="grp-h" style={{ flex: '1 1 auto' }}>The property’s own record</div>
+            <button className="btn btn-ghost btn-sm" disabled={propBusy} onClick={readProperty}>
+              {propBusy ? 'Reading…' : (prop && prop.everRead) ? 'Read it again' : 'Read this property from Elementix'}
+            </button>
+          </div>
+          {propErr && <div role="alert" className="notice err" style={{ marginTop: 8 }}>{propErr}</div>}
+          {!prop || !prop.everRead ? (
+            <div style={{ color: MUTED, fontSize: 13.5, marginTop: 6 }}>
+              Not looked up yet — which is not the same as this property having no history.
+              Everything above came from records already pulled in for <strong style={{ color: INK }}>this person</strong>;
+              reading the property adds everyone else’s.
+            </div>
+          ) : (
+            <PropertyRecord prop={prop} />
+          )}
+        </div>
+      )}
+
       {/* SAY WHAT THIS IS AND IS NOT. Everything above came out of records
           already pulled in for this person — so it is the property as it appears
           in THEIR file, not the property's whole history, and a reader must not
           mistake one for the other. */}
       <div style={{ marginTop: 12, fontSize: 12.5, color: MUTED }}>
         Built from the records already pulled in for this person — no new lookup, nothing spent.
-        Anything Elementix holds about this property under somebody else is not shown here.
       </div>
     </div>
   );
@@ -442,7 +585,7 @@ function FilterField({ label, basis, children }) {
  * round trip in this component — narrowing a list must never cost one of the
  * organisation's shared hourly calls.
  */
-function TabRows({ section, label, profile, onOpenTab }) {
+function TabRows({ section, label, profile, onOpenTab, personId }) {
   const rows = useMemo(() => section.rows || [], [section.rows]);
   /* WHICH ROW IS OPEN, by its own id rather than by index: the list re-orders
      under a sort and re-filters under a search, and an index would then be
@@ -595,7 +738,7 @@ function TabRows({ section, label, profile, onOpenTab }) {
           off-screen and scrolling to read it would scroll the row away. Above,
           it is always fully visible and the list keeps its place underneath. */}
       {openRecord && (
-        <RecordDetail detail={openRecord} onClose={() => setOpenId(null)} onOpenTab={onOpenTab} />
+        <RecordDetail detail={openRecord} onClose={() => setOpenId(null)} onOpenTab={onOpenTab} personId={personId} />
       )}
 
       {view.emptyReason === 'no-match' ? (
@@ -1324,7 +1467,7 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
             /* KEYED ON THE TAB — a tab change REMOUNTS this, which is what clears
                the filters and the sort. Carrying a filter from one tab to the
                next hides rows nobody asked to hide. */
-            ? <TabRows key={tab} section={current} label={tabLabel} profile={p} onOpenTab={setTab} />
+            ? <TabRows key={tab} section={current} label={tabLabel} profile={p} onOpenTab={setTab} personId={state.personId} />
             : current && (current.status === 'ok' || current.status === 'partial')
               ? <div style={{ color: MUTED, fontSize: 14 }}>Elementix has nothing on record here.</div>
               : null}
