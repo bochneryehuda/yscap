@@ -1655,6 +1655,10 @@ export const api = {
   elxDecideAlias:      (personId, aliasId, confirm) => req('POST', `/api/elementix/people/${personId}/aliases/${aliasId}`, { confirm }),
   elxLink:             (b) => req('POST', '/api/elementix/link', b || {}),
   elxFor:              (kind, recordId) => req('GET', `/api/elementix/for/${kind}/${recordId}`),
+  // The lead's phone book (own numbers + every Elementix number, each with its
+  // working/not-working mark) and the mark writer. A mark never removes a number.
+  elxLeadPhones:       (leadId) => req('GET', `/api/elementix/leads/${leadId}/phones`),
+  elxMarkLeadPhone:    (leadId, b) => req('POST', `/api/elementix/leads/${leadId}/phones/mark`, b || {}),
   // THE PROPERTY BEHIND A ROW. The GET is the cache and is safe anywhere; the
   // POST spends three to five of the organisation's shared hourly requests, so
   // it is only ever wired to a button somebody presses.

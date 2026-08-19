@@ -38,6 +38,77 @@ const ActIcon = ({ kind }) => {
 const fmtWhen = (d) => { try { return new Date(d).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch { return d; } };
 const fmtDay = (d) => { try { return new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); } catch { return d; } };
 
+/* Verdict chips for a phone number — explicit dark-on-tint colors per the hard
+   rule (never a --ink* token for text). Shared by the phone book and the
+   activity timeline so "working" looks the same everywhere. */
+const CHIP_OK = { background: '#E8F3EA', color: '#1D5E33', border: '1px solid #BFDCC6', borderRadius: 999, padding: '1px 8px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' };
+const CHIP_BAD = { background: '#FBEDEC', color: '#8A2E2A', border: '1px solid #EAC5C2', borderRadius: 999, padding: '1px 8px', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' };
+
+/* The lead's phone book (owner-directed 2026-08-19): every number we hold —
+   the lead's own plus ALL the numbers the Elementix unlock brought in — each
+   with the officer's verdict. Marking a number not working NEVER removes it:
+   it stays listed wearing its mark, struck through, because "this number is
+   dead" is exactly what the next officer needs to see before redialing it. */
+function PhoneBook({ phones, onMark }) {
+  const [busy, setBusy] = useState('');
+  const list = (phones && phones.phones) || [];
+  if (list.length === 0) return null;
+  const srcLabel = (p) => {
+    const parts = [];
+    if (p.sources.includes('lead')) parts.push('Lead');
+    if (p.sources.includes('lead_alt')) parts.push('Alt');
+    if (p.sources.includes('elementix')) parts.push(['Elementix', p.label, p.carrier].filter(Boolean).join(' · '));
+    return parts.join(' · ');
+  };
+  const mark = async (p, body) => {
+    if (busy) return;
+    setBusy(p.key);
+    try { await onMark(p.key, body); } finally { setBusy(''); }
+  };
+  return (
+    <div className="field">
+      <span>Phone numbers</span>
+      <ul style={{ listStyle: 'none', margin: '4px 0 0', padding: 0, display: 'grid', gap: 8 }}>
+        {list.map((p) => {
+          const m = p.mark || {};
+          const dead = m.status === 'not_working';
+          const markedBy = m.markedByName ? `Marked by ${m.markedByName}` : undefined;
+          return (
+            <li key={p.key} style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+              <a href={`tel:${p.key}`} style={{ color: '#141B22', fontWeight: 600, textDecoration: dead ? 'line-through' : 'none' }}>{p.display}</a>
+              <span className="muted small">{srcLabel(p)}</span>
+              {m.status === 'working' && <span style={CHIP_OK} title={markedBy}>{m.rightPerson ? 'working · right person' : 'working'}</span>}
+              {dead && <span style={CHIP_BAD} title={markedBy}>not working</span>}
+              {!m.status && m.rightPerson === true && <span style={CHIP_OK} title={markedBy}>right person</span>}
+              <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+                {m.status !== 'working' && (
+                  <button className="btn btn-ghost btn-sm" disabled={busy === p.key} title="This line works — even if nobody answered"
+                    onClick={() => mark(p, { status: 'working' })}>✓ Works</button>
+                )}
+                {!dead && (
+                  <button className="btn btn-ghost btn-sm" disabled={busy === p.key} title="Dead / wrong number — it stays on the list, marked"
+                    onClick={() => mark(p, { status: 'not_working' })}>✗ Not working</button>
+                )}
+                {m.rightPerson !== true && (
+                  <button className="btn btn-ghost btn-sm" disabled={busy === p.key} title="This number reaches the person this lead is about"
+                    onClick={() => mark(p, { status: m.status ? undefined : 'working', rightPerson: true })}>Right person</button>
+                )}
+                {(m.status || m.rightPerson != null) && (
+                  <button className="btn btn-ghost btn-sm" disabled={busy === p.key} title="Clear the mark (the number stays)"
+                    onClick={() => mark(p, { status: 'clear', rightPerson: 'clear' })}>Clear</button>
+                )}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="muted small" style={{ marginTop: 4, color: '#4B585C' }}>
+        A number marked not working stays on the list — it is never removed.
+      </div>
+    </div>
+  );
+}
+
 // Read a File into raw base64 (no data: prefix), matching the upload contract.
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -59,6 +130,7 @@ export default function StaffLeadDetail() {
   const [acts, setActs] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [docs, setDocs] = useState([]);
+  const [phones, setPhones] = useState(null);   // the phone book: own + Elementix numbers, with marks
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [form, setForm] = useState(null);       // editable contact/deal form
@@ -72,6 +144,11 @@ export default function StaffLeadDetail() {
     api.staffLeadActivities(id).then(setActs).catch(() => {});
     api.staffLeadTasks(id).then(setTasks).catch(() => {});
     api.staffLeadDocuments(id).then(setDocs).catch(() => {});
+    api.elxLeadPhones(id).then(setPhones).catch(() => {});
+  };
+  const markPhone = async (phoneKey, body) => {
+    try { await api.elxMarkLeadPhone(id, { phone: phoneKey, ...body }); reloadFeeds(); }
+    catch (e) { setErr(e.message); }
   };
   useEffect(() => { reloadLead(); reloadFeeds(); api.staffTeam().then(setTeam).catch(() => {}); /* eslint-disable-next-line */ }, [id]);
 
@@ -214,6 +291,7 @@ export default function StaffLeadDetail() {
                 <DateCommitInput value={lead.next_follow_up}
                   onCommit={v => patchLead({ nextFollowUp: v }, v ? 'Follow-up set' : 'Follow-up cleared')} />
               </label>
+              <PhoneBook phones={phones} onMark={markPhone} />
               <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                 {lead.email && <a className="btn btn-ghost btn-sm" href={`mailto:${lead.email}`}>Email</a>}
                 {lead.phone && <a className="btn btn-ghost btn-sm" href={`tel:${lead.phone}`}>Call</a>}
@@ -228,7 +306,7 @@ export default function StaffLeadDetail() {
         <div className="panel lead-timeline-panel">
           <div className="panel-h"><h3>Activity</h3><span className="pill mut">{acts.length}</span></div>
           <div className="panel-b">
-            <ActivityComposer leadId={id} onLogged={() => { reloadFeeds(); reloadLead(); }} onErr={setErr} />
+            <ActivityComposer leadId={id} phones={phones} onLogged={() => { reloadFeeds(); reloadLead(); }} onErr={setErr} />
             {acts.length === 0
               ? <div className="muted small" style={{ marginTop: 14 }}>No activity yet. Log your first call, email, or note above.</div>
               : (
@@ -240,6 +318,11 @@ export default function StaffLeadDetail() {
                         <div className="lda-top">
                           <span className="lda-subj">{a.subject || labelForType(a.activity_type)}</span>
                           {a.direction && <span className="lda-dir">{a.direction === 'inbound' ? 'inbound' : 'outbound'}</span>}
+                          {a.meta && a.meta.phone_display && a.activity_type !== 'system' &&
+                            <span className="lda-dir" title="The number this used">{a.meta.phone_display}</span>}
+                          {a.meta && a.meta.mark_status === 'working' &&
+                            <span style={CHIP_OK}>{a.meta.right_person ? 'number works · right person' : 'number works'}</span>}
+                          {a.meta && a.meta.mark_status === 'not_working' && <span style={CHIP_BAD}>marked not working</span>}
                           <span className="lda-when">{fmtWhen(a.occurred_at)}</span>
                         </div>
                         {a.body && <div className="lda-text">{a.body}</div>}
@@ -385,22 +468,56 @@ function labelForType(t) {
 }
 
 // ---- Activity composer -----------------------------------------------------
-function ActivityComposer({ leadId, onLogged, onErr }) {
+function ActivityComposer({ leadId, phones, onLogged, onErr }) {
   const [type, setType] = useState('note');
   const [body, setBody] = useState('');
   const [direction, setDirection] = useState('outbound');
   const [busy, setBusy] = useState(false);
+  // Which number the call/text used — offered from the lead's whole phone book
+  // (own numbers + every Elementix number), plus the officer's verdict on it.
+  // The verdict is independent of the outcome: an unanswered call can still
+  // prove "this number works and reaches the right person" (owner-directed
+  // 2026-08-19). A number marked not working stays pickable, labeled — it is
+  // never removed from the list.
+  const phoneList = (phones && phones.phones) || [];
+  const needsPhone = type === 'call' || type === 'sms';
+  const [phoneSel, setPhoneSel] = useState('');
+  const [verdict, setVerdict] = useState('');
+  useEffect(() => {
+    if (!needsPhone || phoneList.length === 0) return;
+    if (phoneSel && phoneList.some(p => p.key === phoneSel)) return;
+    const first = phoneList.find(p => !(p.mark && p.mark.status === 'not_working')) || phoneList[0];
+    setPhoneSel(first ? first.key : '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsPhone, phones]);
   const showDir = type === 'call' || type === 'email' || type === 'sms';
   async function log() {
     const text = body.trim();
     if (!text || busy) return;
     setBusy(true);
     try {
-      await api.staffAddLeadActivity(leadId, { type, body: text, direction: showDir ? direction : undefined });
-      setBody(''); onLogged();
+      const extra = {};
+      if (needsPhone && phoneSel) {
+        extra.phone = phoneSel;
+        if (type === 'call' && verdict) {
+          if (verdict === 'working' || verdict === 'working_right') extra.markWorking = true;
+          if (verdict === 'not_working') extra.markWorking = false;
+          if (verdict === 'working_right') extra.rightPerson = true;
+        }
+      }
+      await api.staffAddLeadActivity(leadId, { type, body: text, direction: showDir ? direction : undefined, ...extra });
+      setBody(''); setVerdict(''); onLogged();
     } catch (e) { onErr(e.message); }
     setBusy(false);
   }
+  const optLabel = (p) => {
+    const src = p.sources.includes('elementix') && !p.sources.includes('lead') && !p.sources.includes('lead_alt')
+      ? ` — Elementix${p.label ? ' ' + p.label : ''}` : '';
+    const m = p.mark || {};
+    const state = m.status === 'not_working' ? ' — marked not working'
+      : m.status === 'working' ? (m.rightPerson ? ' — working · right person' : ' — working') : '';
+    return `${p.display}${src}${state}`;
+  };
   return (
     <div className="lead-composer">
       <div className="lda-typerow">
@@ -416,6 +533,24 @@ function ActivityComposer({ leadId, onLogged, onErr }) {
           </select>
         )}
       </div>
+      {needsPhone && phoneList.length > 0 && (
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap', margin: '6px 0' }}>
+          <select className="input" style={{ maxWidth: 280 }} value={phoneSel} onChange={e => setPhoneSel(e.target.value)}
+            title="Which number this was — saved on the log entry">
+            <option value="">Number — not recorded</option>
+            {phoneList.map(p => <option key={p.key} value={p.key}>{optLabel(p)}</option>)}
+          </select>
+          {type === 'call' && phoneSel && (
+            <select className="input" style={{ maxWidth: 280 }} value={verdict} onChange={e => setVerdict(e.target.value)}
+              title="Your verdict on this number — saved even if nobody answered">
+              <option value="">Number verdict — none</option>
+              <option value="working">Number works</option>
+              <option value="working_right">Works — right person confirmed</option>
+              <option value="not_working">Not working — mark it (stays on the list)</option>
+            </select>
+          )}
+        </div>
+      )}
       <textarea className="input" rows={2} placeholder={type === 'note' ? 'Add a note…' : `Log this ${labelForType(type).toLowerCase()}…`}
         value={body} onChange={e => setBody(e.target.value)}
         onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) log(); }} />
