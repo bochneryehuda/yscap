@@ -978,4 +978,47 @@ router.get('/for/:kind/:recordId', async (req, res) => {
     profile: view.ok ? { ...view, aliasCandidates: candidates } : null });
 });
 
+// ---------------------------------------------------------------------------
+// THE LEAD'S PHONE BOOK — the call-log picker and the working / not-working
+// marks (owner-directed 2026-08-19). lib/elementix/lead-phones.js is the one
+// definition of the union (the lead's own numbers + everything the unlock
+// holds, deduped by the plane's shared phoneKey) and of the mark upsert; the
+// lead activity route in routes/staff.js delegates to the SAME functions, so
+// the picker, the panel and a verdict riding a call log can never disagree.
+// Mounted HERE, not on /api/staff/leads, because the union reads the stored
+// contact and only this router (+ lib/elementix) may — which also means these
+// routes inherit the internal-only door, the external-staff refusal and the
+// per-officer throttle for free. A mark NEVER removes a number.
+// ---------------------------------------------------------------------------
+const leadPhones = require('../lib/elementix/lead-phones');
+
+router.get('/leads/:leadId/phones', async (req, res) => {
+  const leadId = str(req.params.leadId);
+  if (!isUuid(leadId)) return res.status(400).json({ error: 'That record could not be found.' });
+  const scope = await recordScope(req, 'lead', leadId);
+  if (!scope.allowed) return refuseScope(res, scope);
+  const out = await leadPhones.leadPhonesFor(leadId);
+  if (!out.found) return res.status(404).json({ error: 'That record could not be found.' });
+  res.json(out);
+});
+
+router.post('/leads/:leadId/phones/mark', async (req, res) => {
+  const b = req.body || {};
+  const leadId = str(req.params.leadId);
+  if (!isUuid(leadId)) return res.status(400).json({ error: 'That record could not be found.' });
+  const scope = await recordScope(req, 'lead', leadId);
+  if (!scope.allowed) return refuseScope(res, scope);
+  const out = await leadPhones.markLeadPhone({
+    leadId, phone: b.phone, status: b.status, rightPerson: b.rightPerson, staffId: req.actor.id,
+  });
+  if (!out.ok) {
+    if (out.reason === 'unknown_number') return res.status(400).json({ error: "That number is not one of this lead's phone numbers." });
+    if (out.reason === 'not_found') return res.status(404).json({ error: 'That record could not be found.' });
+    return res.status(400).json({ error: 'A mark is working, not working, or clear.' });
+  }
+  await audit(req, 'elementix_lead_phone_mark',
+    { leadId, phoneKey: out.key, status: out.mark.status, rightPerson: out.mark.rightPerson }, leadId);
+  res.json(out);
+});
+
 module.exports = router;
