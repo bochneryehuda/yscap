@@ -2640,6 +2640,9 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 @media(max-width:1200px){.lead-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   .lead-timeline-panel{grid-column:1 / -1;order:3}}
 @media(max-width:820px){.lead-grid{grid-template-columns:1fr}.lead-timeline-panel{order:0}}
+/* The Elementix record is a full-width row of its own under the three columns.
+   `order:4` keeps it last even at =<1200px, where the timeline takes order:3. */
+.lead-grid > .lead-elx{grid-column:1 / -1;order:4;min-width:0}
 
 /* ---- Activity composer + timeline ---- */
 .lead-composer{margin-bottom:14px}
