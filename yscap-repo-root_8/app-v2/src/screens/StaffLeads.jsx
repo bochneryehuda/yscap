@@ -110,10 +110,28 @@ function originFromKey(key) {
   return originOf({ source: p.tool ? 'marketing_site' : p.source, tool: p.tool, lead_source: p.leadSource });
 }
 
-export default function StaffLeads() {
+/* ── ONE SCREEN, TWO PLACES IT IS MOUNTED ───────────────────────────────────
+   `/internal/leads` mounts this with NO props — every default below is exactly
+   what this desk has always done. The admin CRM desk (`/internal/crm`) mounts
+   the SAME component with `officerId` set, which narrows it to one officer's
+   book. There is deliberately no second copy of the board: two lead boards
+   would drift, and the one that drifted would be the one an admin was reading
+   somebody's numbers off.
+
+   `officerId`   whose book to show. Absent → today's behaviour (the caller's
+                 own scope). Present → the SERVER's `officerId` filter, which is
+                 ANDed onto the same visibility scope, so it can only ever
+                 narrow; a loan officer cannot use it to read anybody else.
+   `officerName` who that is, for the heading. Display only. */
+export default function StaffLeads({ officerId = null, officerName = null }) {
   const { actor, can } = useAuth();
   const nav = useNavigate();
   const seesAll = can ? can('see_all_files') : false;
+  // Reading somebody else's book is a different job from working your own: the
+  // two buttons that create a lead OWNED BY WHOEVER CLICKS THEM are hidden, so
+  // an admin looking at another officer's desk cannot quietly add a lead to
+  // their own. "+ Add lead" stays — it carries an officer picker.
+  const viewingOther = !!officerId && !!(actor && officerId !== actor.id);
   const [rows, setRows] = useState(null);
   const [team, setTeam] = useState([]);
   const [err, setErr] = useState('');
@@ -133,7 +151,7 @@ export default function StaffLeads() {
      "you have 4 Elementix leads" on a desk that holds 400 — and the officer
      whose leads are past row 500 would never see them at all. `counts:1` asks
      for the per-origin totals in the same breath, inside the same scope. */
-  const load = () => api.staffLeads({ ...originParams(originF), counts: 1 })
+  const load = () => api.staffLeads({ ...originParams(originF), ...(officerId ? { officerId } : {}), counts: 1 })
     .then((d) => {
       // A server that has not been redeployed yet still answers with the bare
       // array it always did — read both shapes rather than render nothing.
@@ -145,7 +163,7 @@ export default function StaffLeads() {
   // server, so a new choice is a new request, not a re-filter of what we hold.
   // (`load` is re-created every render and is deliberately NOT a dependency;
   // adding it would refetch on every keystroke in the search box.)
-  useEffect(() => { load(); }, [originF]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [originF, officerId]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { api.staffTeam().then(setTeam).catch(() => {}); }, []);
   // A lead action fires from a card/row anywhere down the board — its result
   // goes to the fixed toast so it never shoves the board (see FlashToast.jsx).
@@ -225,20 +243,28 @@ export default function StaffLeads() {
     <>
       <div className="page-head">
         <div>
-          <h1>Leads</h1>
-          <div className="sub">Your lead desk — capture, qualify, and work every opportunity to a live file.</div>
+          {/* WHOSE DESK THIS IS. The heading names the officer when this screen
+              is opened from the admin CRM desk, so a page of somebody else's
+              leads can never be mistaken for your own — with dark text on the
+              white canvas per the standing rule. */}
+          <h1 style={{ color: '#141B22' }}>{officerName || 'Leads'}</h1>
+          <div className="sub" style={{ color: '#4B585C' }}>
+            {officerId
+              ? `Every lead ${officerName ? officerName + ' owns' : 'this officer owns'} — the same board they see. The shared unassigned desk is not counted here.`
+              : 'Your lead desk — capture, qualify, and work every opportunity to a live file.'}
+          </div>
         </div>
         <div className="page-head-actions">
           <div className="seg" role="tablist">
             <button className={`tab ${view === 'board' ? 'on' : ''}`} onClick={() => setView('board')}>Board</button>
             <button className={`tab ${view === 'list' ? 'on' : ''}`} onClick={() => setView('list')}>List</button>
           </div>
-          <button className="btn btn-line btn-sm" onClick={() => setInviteOpen(true)}
-            title="Invite anyone by email to the borrower portal — they're auto-assigned to you and opened as a lead">Invite to portal ✉</button>
-          <button className="btn btn-line btn-sm" onClick={() => setElxOpen((v) => !v)}
+          {!viewingOther && <button className="btn btn-line btn-sm" onClick={() => setInviteOpen(true)}
+            title="Invite anyone by email to the borrower portal — they're auto-assigned to you and opened as a lead">Invite to portal ✉</button>}
+          {!viewingOther && <button className="btn btn-line btn-sm" onClick={() => setElxOpen((v) => !v)}
             title="Search Elementix by name and pull somebody in as a lead — with every phone number and email on record. Free if a colleague has already looked them up.">
             {elxOpen ? 'Close Elementix' : 'Add from Elementix'}
-          </button>
+          </button>}
           <button className="btn btn-gold btn-sm" onClick={() => setAddOpen(true)}>+ Add lead</button>
         </div>
       </div>
@@ -270,7 +296,7 @@ export default function StaffLeads() {
             onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), setOriginF(originF === ELEMENTIX_KEY ? '' : ELEMENTIX_KEY))}>
             <div className="v">{elxCount}</div>
             <div className="k">From Elementix</div>
-            <div className="d">{seesAll ? 'Every officer’s' : 'Yours + the shared desk'}</div>
+            <div className="d">{officerId ? 'This officer’s' : (seesAll ? 'Every officer’s' : 'Yours + the shared desk')}</div>
           </div>
         </div>
 
@@ -291,12 +317,14 @@ export default function StaffLeads() {
             <option value="">All stages</option>
             {STAGES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select>
-          <select className="input flt-sm" style={{ width: 160 }} value={ownerF} onChange={e => setOwnerF(e.target.value)}>
+          {/* Every row already belongs to the one officer being read, so an owner
+              picker here would offer choices that can only return nothing. */}
+          {!officerId && <select className="input flt-sm" style={{ width: 160 }} value={ownerF} onChange={e => setOwnerF(e.target.value)}>
             <option value="">All owners</option>
             <option value="me">My leads</option>
             <option value="unassigned">Unassigned</option>
             {seesAll && officers.map(o => <option key={o.id} value={o.id}>{o.full_name}</option>)}
-          </select>
+          </select>}
           {(origins.length > 1 || originF) && (
             <select className="input flt-sm" style={{ width: 190 }} value={originF}
               aria-label="Where the lead came from"
@@ -341,7 +369,7 @@ export default function StaffLeads() {
           : <LeadList leads={shown} onOpen={(l) => nav(`/internal/leads/${l.id}`)} actor={actor} />}
       </div>
 
-      {addOpen && <AddLeadModal officers={officers} seesAll={seesAll}
+      {addOpen && <AddLeadModal officers={officers} seesAll={seesAll} defaultOfficerId={officerId || ''}
         onClose={() => setAddOpen(false)}
         onCreated={(leadId) => { setAddOpen(false); nav(`/internal/leads/${leadId}`); }} onErr={setErr} />}
 
@@ -472,8 +500,10 @@ function LeadList({ leads, onOpen, actor }) {
 }
 
 // ---- Add-lead modal --------------------------------------------------------
-function AddLeadModal({ officers, seesAll, onClose, onCreated, onErr }) {
-  const [f, setF] = useState({ firstName: '', lastName: '', company: '', email: '', phone: '', leadSource: 'referral', referralPartner: '', program: '', loanAmount: '', officerId: '' });
+function AddLeadModal({ officers, seesAll, defaultOfficerId = '', onClose, onCreated, onErr }) {
+  // Opened from the admin CRM desk, the new lead starts on the officer whose
+  // book is on screen — never silently on whoever is holding the mouse.
+  const [f, setF] = useState({ firstName: '', lastName: '', company: '', email: '', phone: '', leadSource: 'referral', referralPartner: '', program: '', loanAmount: '', officerId: defaultOfficerId || '' });
   const [busy, setBusy] = useState(false);
   const [autoState, setAutoState] = useState('');   // '', 'saving', 'saved'
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));

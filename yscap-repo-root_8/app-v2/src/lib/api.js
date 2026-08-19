@@ -1241,6 +1241,12 @@ export const api = {
   // array it has always been; WITH it the answer is {rows, facets}. Filtering
   // has to happen there and not here: the list is capped at 500 rows, so a
   // browser-side filter would count a page, not a desk.
+  //
+  // {officerId} narrows it to ONE officer's book — what the admin CRM desk
+  // (/internal/crm) mounts the leads screen with. It is ANDed onto the same
+  // visibility scope every other caller gets, so it can only ever SHRINK what
+  // the person asking could already see: a loan officer who sends somebody
+  // else's id gets an empty list, never their desk.
   staffLeads:       (params) => req('GET', '/api/staff/leads' + qs(params)),
   staffLeadsBulkArchive: (filters) => req('POST', '/api/staff/leads/bulk-archive', filters),
   staffCreateLead:  (b) => req('POST', '/api/staff/leads', b),
@@ -1650,6 +1656,12 @@ export const api = {
   elxBackfillList:     () => req('POST', '/api/elementix/backfill/list', {}),
   elxBackfillWork:     (limit) => req('POST', '/api/elementix/backfill/work', { limit }),
   elxLinkUser:         (b) => req('POST', '/api/elementix/backfill/users/link', b || {}),
+  /* THE ADMIN CRM DESK — the whole company's lead book, one row per officer
+     (manage_team). Read-only: it spends nothing and calls no vendor. Every
+     ACTIVE INTERNAL officer comes back, including the ones at zero, plus a
+     company total and the unassigned desk. A figure that could not be read is
+     null (rendered "—"), never 0. */
+  elxCrmDesk:          () => req('GET', '/api/elementix/crm-desk'),
 
   // ---- Dashboards (the KPI screen + the build-your-own section) ----
   dashboards:          () => req('GET', '/api/dashboards'),
