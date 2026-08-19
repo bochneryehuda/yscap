@@ -44,7 +44,16 @@ const has = (arr, re, what) => ok((arr || []).some((r) => re.test(String(r))), `
 
 const DAY = Date.parse('2026-08-18T00:00:00Z');
 const NOW = Date.parse('2026-08-18T12:00:00Z');
-const runOf = (summary) => [{ dayMs: DAY, agreementRate: summary.agreementRate == null ? null : summary.agreementRate, summary, newFindings: 0 }];
+// §2.126b — the stamp rides on every fixture run, because the board now sets aside runs it cannot read
+// and each of these stands for a run today's engine took. The unreadable cases live in
+// scripts/test-lt-ppe-gate-reads-only-readable-runs.js.
+const LEG = require('../src/longterm/ppe/agreement-provenance').LEG_VERSION;
+const runOf = (summary) => [{
+  dayMs: DAY,
+  agreementRate: summary.agreementRate == null ? null : summary.agreementRate,
+  summary: { ...summary, provenance: { legVersion: LEG } },
+  newFindings: 0,
+}];
 
 // ---------------------------------------------------------------------------
 // A - THE PARTITION, PROVEN ON A REAL RUN. A hand-built summary would only prove the arithmetic I typed;

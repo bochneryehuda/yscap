@@ -5,6 +5,14 @@
  */
 
 const assert = require('assert');
+
+// §2.126b — THE BOARD NOW SETS ASIDE RUNS IT CANNOT READ, so a fixture standing for "a run today's
+// engine took" must carry the stamp a real one carries. Everything here is such a run; the cases about
+// UNREADABLE runs live in scripts/test-lt-ppe-gate-reads-only-readable-runs.js.
+const LEG = require('../src/longterm/ppe/agreement-provenance').LEG_VERSION;
+const measured = (runs) => (Array.isArray(runs) ? runs : [])
+  .map((r) => ({ ...r, summary: { ...(r && r.summary ? r.summary : {}), provenance: { legVersion: LEG } } }));
+
 const S = require('../src/longterm/ppe/scoreboard');
 const cutover = require('../src/longterm/ppe/cutover');
 
@@ -97,7 +105,7 @@ eq(S.latestAgreementRate([{ dayMs: d(0), agreementRate: null }, { dayMs: d(2), a
   const cleanRuns = [];
   for (let i = 0; i < 14; i += 1) cleanRuns.push({ dayMs: d(i), agreementRate: 1, findingKeys: [] });
   const GATE = { minCleanDays: 14, requireCanaryPerfect: true, minCanaryScenarios: 0 };
-  const clean = S.assemble(cleanRuns, [], { nowMs: NOW, settings: GATE });
+  const clean = S.assemble(measured(cleanRuns), [], { nowMs: NOW, settings: GATE });
   near(clean.scoreboard.canaryAgreementRate, 1, 'assemble: canary rate carried through');
   eq(clean.scoreboard.openFindings, 0, 'assemble: no open findings');
   eq(clean.scoreboard.consecutiveCleanDays, 14, 'assemble: 14 consecutive clean days');
@@ -108,14 +116,14 @@ eq(S.latestAgreementRate([{ dayMs: d(0), agreementRate: null }, { dayMs: d(2), a
   eq(direct.eligible, clean.eligible.eligible, 'assemble: eligibility matches cutover.eligibleForLive exactly');
 
   // An open finding blocks, whatever the canary says.
-  const blocked = S.assemble(cleanRuns, [{ status: 'open', firstSeenMs: d(3) }], { nowMs: NOW, settings: GATE });
+  const blocked = S.assemble(measured(cleanRuns), [{ status: 'open', firstSeenMs: d(3) }], { nowMs: NOW, settings: GATE });
   eq(blocked.eligible.eligible, false, 'assemble: an open finding blocks promotion');
   ok(blocked.scoreboard.oldestOpenFindingDays >= 3, 'assemble: oldest-open-finding age measured from the ledger');
 
   // A recent disagreement breaks the clean streak -> not eligible.
   const dirty = cleanRuns.slice();
   dirty[0] = { dayMs: d(0), agreementRate: 0.9, findingKeys: ['z'] }; // today has a new finding
-  const notClean = S.assemble(dirty, [], { nowMs: NOW, settings: { minCleanDays: 14 } });
+  const notClean = S.assemble(measured(dirty), [], { nowMs: NOW, settings: { minCleanDays: 14 } });
   eq(notClean.scoreboard.consecutiveCleanDays, 0, 'assemble: a new finding today zeroes the streak');
   eq(notClean.eligible.eligible, false, 'assemble: broken streak -> not eligible');
   eq(notClean.trend.direction, 'worsening', 'assemble: trend surfaces the dip');
@@ -125,7 +133,7 @@ eq(S.latestAgreementRate([{ dayMs: d(0), agreementRate: null }, { dayMs: d(2), a
   for (let i = 0; i < 14; i += 1) {
     incRuns.push({ dayMs: d(i), agreementRate: 1, findingKeys: [], summary: { comparable: 300, incomparable: i === 0 ? 2 : 0 } });
   }
-  const inc = S.assemble(incRuns, [], { nowMs: NOW, settings: { minCleanDays: 14 } });
+  const inc = S.assemble(measured(incRuns), [], { nowMs: NOW, settings: { minCleanDays: 14 } });
   eq(inc.scoreboard.canaryScenarioCount, 300, 'assemble: latest run comparable count reaches the scoreboard');
   eq(inc.scoreboard.canaryIncomparable, 2, 'assemble: latest run incomparable count reaches the scoreboard');
   eq(inc.eligible.eligible, false, 'assemble: an incomparable scenario blocks promotion end to end');
@@ -133,7 +141,7 @@ eq(S.latestAgreementRate([{ dayMs: d(0), agreementRate: null }, { dayMs: d(2), a
   // §10.5 coverage floor threaded end to end.
   const thinRuns = [];
   for (let i = 0; i < 14; i += 1) thinRuns.push({ dayMs: d(i), agreementRate: 1, findingKeys: [], summary: { comparable: 8, incomparable: 0 } });
-  const thin = S.assemble(thinRuns, [], { nowMs: NOW, settings: { minCleanDays: 14, minCanaryScenarios: 200 } });
+  const thin = S.assemble(measured(thinRuns), [], { nowMs: NOW, settings: { minCleanDays: 14, minCanaryScenarios: 200 } });
   eq(thin.eligible.eligible, false, 'assemble: a thin canary (8 scenarios) fails the coverage floor');
 }
 

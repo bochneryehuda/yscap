@@ -940,8 +940,14 @@ export default function LtPpe() {
           {board && board.scoreboard ? (
             <>
               <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', marginBottom: 12 }}>
+                {/* §2.126b — "not measured yet" is the WRONG half of the truth when checks have run and
+                    none of them can be read. Same null, opposite action: one says go and run one, the
+                    other says the ones you have were taken by an engine that has since changed. */}
                 <Figure label="Agreement" value={rate(board.scoreboard.canaryAgreementRate)}
-                  hint={board.scoreboard.canaryAgreementRate == null ? 'not measured yet' : undefined} />
+                  hint={board.scoreboard.canaryAgreementRate != null ? undefined
+                    : (board.scoreboard.canaryRunsUnreadable > 0
+                      ? `${board.scoreboard.canaryRunsUnreadable} check(s) ran, none readable`
+                      : 'not measured yet')} />
                 <Figure label="Still open" value={board.scoreboard.openFindings} />
                 <Figure label="Oldest open" value={board.scoreboard.oldestOpenFindingDays == null ? '—' : `${board.scoreboard.oldestOpenFindingDays}d`} />
                 <Figure label="Clean days" value={board.scoreboard.consecutiveCleanDays} hint="in a row" />

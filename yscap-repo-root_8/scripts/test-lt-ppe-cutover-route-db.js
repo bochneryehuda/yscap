@@ -89,7 +89,11 @@ const REQ = (over = {}) => Object.assign({ params: {}, body: {}, query: {}, acto
           findingKeys: [],
           // `comparable` and `incomparable` are what the gate actually reads (§10.5/§10.6): a battery
           // that compared nothing is never proof of agreement, whatever its rate says.
-          summary: { total: 300, comparable: 300, agreed: 300, disagreed: 0, incomparable: 0 },
+          // §2.126b — stamped, because the board now sets aside runs it cannot read and this stands
+          // for a run today's engine took. The unreadable case is proven in
+          // scripts/test-lt-ppe-gate-reads-only-readable-runs.js.
+          summary: { total: 300, comparable: 300, agreed: 300, disagreed: 0, incomparable: 0,
+            provenance: { legVersion: require('../src/longterm/ppe/agreement-provenance').LEG_VERSION } },
         },
         { db: ltDb, investor: INVESTOR, program: '' },
       );

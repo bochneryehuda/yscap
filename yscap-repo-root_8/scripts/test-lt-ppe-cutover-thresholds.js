@@ -145,7 +145,10 @@ const DEF = ppeSettings.getDefinition(KEY);
     findingKeys: [],
     // 210 scenarios ran; 8 could not be compared and 2 were reasoned overrides (§2.72), so 200 were
     // actually measured against Lender Price.
-    summary: { scenarios: 210, agreed: 200, disagreed: 0, overlay: 2, incomparable: 8, comparable: 200, errors: 0, agreementRate: 1 },
+    // §2.126b — a stamped summary, because the board sets aside runs it cannot read and this fixture
+    // stands for a run today's engine took.
+    summary: { scenarios: 210, agreed: 200, disagreed: 0, overlay: 2, incomparable: 8, comparable: 200, errors: 0, agreementRate: 1,
+      provenance: { legVersion: require('../src/longterm/ppe/agreement-provenance').LEG_VERSION } },
   }];
   const out = scoreboard.assemble(runs, [], { nowMs: 0, settings: cutover.settingsToGate({}) });
   eq(out.scoreboard.canaryScenarioCount, 200,

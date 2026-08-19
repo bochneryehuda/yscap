@@ -8841,3 +8841,76 @@ loosened.
 
 **Full suite:** 190/190 LT PPE suites, all 34 database-backed proven against a real Postgres, all seven
 gates green.
+
+---
+
+### §2.126b — the go-live gate read sixty runs the codebase already knew it could not read
+
+**The one decision this system exists to support** is *may this investor's pricing go live?* —
+`cutover.eligibleForLive`, fed by `scoreboard.assemble` over the stored canary runs.
+
+§2.122a built the reader for those runs. The canary's own leg used to hand our engine the RAW Lender
+Price scenario, so it saw none of the deal's derived facts and declined all 305 — every agreement rate
+it recorded is a number, not a measurement. `runIsReadable` and `partitionReadable` were written to say
+so, and `run-store.rowToRunRecord` has been stamping `readable` on every record it builds ever since.
+
+**`partitionReadable` was called by nothing in production.** Grep: three call sites, all of them tests.
+
+**What was measured (2026-08-19).** Sixty perfect days, none stamped:
+
+| what | measured |
+| --- | --- |
+| `runStore.partitionReadable(runs)` | readable **0**, unreadable **60**, allReadable **false** |
+| `scoreboard.assemble(runs).scoreboard` | agreementRate **1**, compared **305**, cleanDays **60** |
+| `cutover.eligibleForLive(...)` | **`{ eligible: true, reasons: [] }`** |
+| anything on the board naming readability | nothing |
+
+Take this investor live, nothing standing in the way — off sixty runs this system itself classifies as
+unreadable. That is a different failure from the two either side of it: §2.126 and §2.126a were missing
+measurements; **this was a guard that was built, tested, and wired to nothing**. Today's `LEG_VERSION`
+bump to `2026-08-19/2.124` widens it — the runs recorded between the two leg fixes are unreadable too.
+
+**Built.**
+
+* **`agreement-provenance.recordIsReadable`** — the one adapter from a run RECORD to the existing
+  predicate. It lives beside `runIsReadable` because `scoreboard.assemble` cannot require `run-store`
+  (that module requires the scoreboard, closing a cycle), and `run-store.partitionReadable` now goes
+  through it too, so the store and the board can never report different series.
+* **`scoreboard.assemble` sets the unreadable runs aside FIRST.** Every measure it derives — the latest
+  agreement rate, the daily series, the coverage buckets — comes from the readable runs alone. Nothing
+  new blocks: dropping them makes each measure null-or-smaller, which fails closed by itself.
+* **⛔ An unreadable day BREAKS the clean-day streak; it is not skipped.**
+  `cutover.consecutiveCleanDays` walks the entries it is GIVEN, so a caller that merely dropped such a
+  day would JOIN the clean stretches either side into one longer run — the wrong direction, and
+  invisible on every screen. Days are passed through carrying `readable: false`, and only an explicit
+  `false` breaks the run, so every caller that knows nothing about readability behaves exactly as before.
+  This holds for a day carrying BOTH kinds of run, which is a real case: the daily check fires six times
+  a day, so the day an engine change lands genuinely has readable and unreadable runs on it.
+* **The refusal names the remedy.** *"No canary run has proven 100% agreement"* is TRUE of sixty
+  unreadable runs and sends the reader off to run a sixty-first. It now reads: *"no canary run that can
+  be READ has proven 100% agreement — 60 stored run(s) were recorded by an engine wiring that has since
+  changed; run the check again to start a series that counts"*. With genuinely no runs, the old sentence
+  is unchanged.
+* **The screen stops asserting the wrong half.** The empty Agreement figure was hinted *"not measured
+  yet"*; it now says *"60 check(s) ran, none readable"* when that is what happened.
+
+**Cost, stated plainly.** Every investor is now blocked from promotion until the daily check runs once
+under today's engine. That is the honest position — the previous answer was *eligible* on evidence
+nobody could read — and the remedy is a single run, not a fix.
+
+**Evidence.** New `scripts/test-lt-ppe-gate-reads-only-readable-runs.js` (35 assertions, sections A–E);
+`scripts/test-lt-ppe-run-store-db.js` proves the stamp through a real Postgres jsonb round trip;
+`scripts/test-lt-ppe-screen-pure.mjs` section 12. Nine mutations run (W1–W8b); eight are caught.
+
+**One mutation proved nothing, and it is recorded rather than counted.** W8 rewrote the screen's hint so
+the new branch became dead code — the guard still passed, because a source-scan guard proves a string is
+PRESENT, not that it is REACHABLE. Rewritten as W8b (delete the branch outright) it is caught. The limit
+is real and belongs on the record: `test-lt-ppe-screen-pure.mjs` cannot see reachability, and a claim
+that it can would be this workstream's own defect.
+
+Seven suites had to be corrected rather than the code loosened: their run fixtures carried no stamp, so
+after this change the board correctly refused to read them. Each now stamps the runs that stand for real
+measurements, and each carries a pointer to the file where the UNREADABLE cases are proven.
+
+**Full suite:** 191/191 LT PPE suites, all 34 database-backed proven against a real Postgres, all seven
+gates green.

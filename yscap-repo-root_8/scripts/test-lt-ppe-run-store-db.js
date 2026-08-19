@@ -55,9 +55,9 @@ const DAY = scoreboard.DAY_MS;
 const NOW = D + 3 * DAY;
 function series() {
   return [
-    { dayMs: D + 0 * DAY, agreementRate: 0.90, findingKeys: ['f:a', 'f:b'], summary: { comparable: 20, incomparable: 0, agreementRate: 0.90, disagreed: 2, errors: 0 } },
-    { dayMs: D + 1 * DAY, agreementRate: 0.95, findingKeys: ['f:a'],        summary: { comparable: 20, incomparable: 1, agreementRate: 0.95, disagreed: 1, errors: 0 } },
-    { dayMs: D + 2 * DAY, agreementRate: 1.00, findingKeys: [],             summary: { comparable: 21, incomparable: 0, agreementRate: 1.00, disagreed: 0, errors: 0 } },
+    { dayMs: D + 0 * DAY, agreementRate: 0.90, findingKeys: ['f:a', 'f:b'], summary: { comparable: 20, incomparable: 0, agreementRate: 0.90, disagreed: 2, errors: 0, provenance: { legVersion: require('../src/longterm/ppe/agreement-provenance').LEG_VERSION } } },
+    { dayMs: D + 1 * DAY, agreementRate: 0.95, findingKeys: ['f:a'],        summary: { comparable: 20, incomparable: 1, agreementRate: 0.95, disagreed: 1, errors: 0, provenance: { legVersion: require('../src/longterm/ppe/agreement-provenance').LEG_VERSION } } },
+    { dayMs: D + 2 * DAY, agreementRate: 1.00, findingKeys: [],             summary: { comparable: 21, incomparable: 0, agreementRate: 1.00, disagreed: 0, errors: 0, provenance: { legVersion: require('../src/longterm/ppe/agreement-provenance').LEG_VERSION } } },
   ];
 }
 const ASSEMBLE_OPTS = { findings: [], settings: {}, nowMs: NOW, trendWindow: 7 };
@@ -92,12 +92,16 @@ async function main() {
       'listRuns round-trips dayMs / agreementRate / findingKeys exactly');
     // The contract gained TWO DERIVED fields in §2.122a — `readable` and `provenance`, both computed
     // from the summary rather than stored — so the comparison is made against the record contract as it
-    // now stands, not loosened. `readable` is FALSE on every row here: these fixtures carry no
-    // provenance, which is exactly what a run recorded before the fix looks like, and the guard says so.
-    const contract = series().map((r) => ({ ...r, readable: false, provenance: null }));
+    // now stands, not loosened. These fixtures ARE stamped (§2.126b: the go-live board sets aside runs
+    // it cannot read, so a fixture standing for a real measured run has to carry what a real one
+    // carries); the UNREADABLE case is proven on its own rows further down, and end to end through the
+    // gate in scripts/test-lt-ppe-gate-reads-only-readable-runs.js.
+    const contract = series().map((r) => ({
+      ...r, readable: true, provenance: r.summary.provenance,
+    }));
     ok(eqDeep(loaded, contract), 'listRuns round-trips the full runRecord contract (summary deep-equal, key-order-insensitive)');
-    ok(loaded.every((r) => r.readable === false),
-      '…and a run carrying no provenance is reported UNREADABLE, not quietly averaged (2.122a)');
+    ok(loaded.every((r) => r.readable === true),
+      '…and a stamped run is reported READABLE, out of the jsonb column and through the pg driver (2.122a)');
 
     // THE CORE PROOF: assembleScoreboard(persisted) === scoreboard.assemble(the same runs in memory)
     const fromDb = await runStore.assembleScoreboard(scope, { db, ...ASSEMBLE_OPTS });

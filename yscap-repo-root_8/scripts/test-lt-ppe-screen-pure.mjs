@@ -305,5 +305,19 @@ ok(/to="\/internal\/lt\/ppe"/.test(layout), 'ROUTE-3 …and the long-term nav li
   ok(!/comparability\s*[=!]==/.test(code), 'TREND-5 the screen never re-decides comparability itself');
 }
 
+// ---------------------------------------------------------------------------
+// 12) §2.126b — "not measured yet" vs "measured, and unreadable"
+// ---------------------------------------------------------------------------
+{
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  // The same empty Agreement figure covers two situations needing opposite actions: nobody has run the
+  // check, or sixty checks ran and none of them can be read. The old hint asserted the first.
+  ok(/canaryRunsUnreadable > 0/.test(code),
+    'GATE-1 the empty agreement figure distinguishes "never measured" from "measured, unreadable"');
+  ok(/none readable/.test(code), 'GATE-2 …and says so in words');
+  ok(/not measured yet/.test(code), 'GATE-3 …while the genuinely-unmeasured case keeps its own wording');
+}
+
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
 process.exit(failures ? 1 : 0);

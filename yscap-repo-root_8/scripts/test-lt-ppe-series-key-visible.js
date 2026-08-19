@@ -86,8 +86,8 @@ async function main() {
 
     // ---- B: the key mismatch is REAL, and listSeriesKeys can see across it ----------------------
     console.log('\n-- B: the two keys, measured against the real table --');
-    await runStore.persistRun(scope, { dayMs: D, agreementRate: 1, findingKeys: [], summary: { comparable: 250, incomparable: 0, errors: 0, overlay: 0, agreementRate: 1 } }, { db, investor: INV, program: CANARY_KEY });
-    await runStore.persistRun(scope, { dayMs: D + DAY, agreementRate: 1, findingKeys: [], summary: { comparable: 250, incomparable: 0, errors: 0, overlay: 0, agreementRate: 1 } }, { db, investor: INV, program: CANARY_KEY });
+    await runStore.persistRun(scope, { dayMs: D, agreementRate: 1, findingKeys: [], summary: { comparable: 250, incomparable: 0, errors: 0, overlay: 0, agreementRate: 1, provenance: { legVersion: require('../src/longterm/ppe/agreement-provenance').LEG_VERSION } } }, { db, investor: INV, program: CANARY_KEY });
+    await runStore.persistRun(scope, { dayMs: D + DAY, agreementRate: 1, findingKeys: [], summary: { comparable: 250, incomparable: 0, errors: 0, overlay: 0, agreementRate: 1, provenance: { legVersion: require('../src/longterm/ppe/agreement-provenance').LEG_VERSION } } }, { db, investor: INV, program: CANARY_KEY });
 
     const underCanary = await runStore.listRuns(scope, { db, investor: INV, program: CANARY_KEY });
     const underScreen = await runStore.listRuns(scope, { db, investor: INV, program: SCREEN_KEY });
@@ -131,7 +131,7 @@ async function main() {
     const SCOPE = ppe._internals.SCOPE;
     // Re-file the same series under the ROUTE's scope so the handler reads them.
     await db.query('DELETE FROM lt_ppe_shadow_run WHERE scope = $1 AND investor = $2', [SCOPE, INV]);
-    await runStore.persistRun(SCOPE, { dayMs: D, agreementRate: 1, findingKeys: [], summary: { comparable: 250, incomparable: 0, errors: 0, overlay: 0, agreementRate: 1 } }, { db, investor: INV, program: CANARY_KEY });
+    await runStore.persistRun(SCOPE, { dayMs: D, agreementRate: 1, findingKeys: [], summary: { comparable: 250, incomparable: 0, errors: 0, overlay: 0, agreementRate: 1, provenance: { legVersion: require('../src/longterm/ppe/agreement-provenance').LEG_VERSION } } }, { db, investor: INV, program: CANARY_KEY });
 
     async function scoreboard(query) {
       let body = null, status = 200;

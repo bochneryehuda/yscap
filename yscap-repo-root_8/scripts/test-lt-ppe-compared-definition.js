@@ -32,6 +32,14 @@ const canary = require(path.join(PPE, 'canary'));
 const scoreboard = require(path.join(PPE, 'scoreboard'));
 const cutover = require(path.join(PPE, 'cutover'));
 
+// §2.126b — THE BOARD NOW SETS ASIDE RUNS IT CANNOT READ, so a fixture standing for "a run today's
+// engine took" must carry the stamp a real one carries. The cases about UNREADABLE runs live in
+// scripts/test-lt-ppe-gate-reads-only-readable-runs.js.
+const LEG = require('../src/longterm/ppe/agreement-provenance').LEG_VERSION;
+const measured = (runs) => (Array.isArray(runs) ? runs : [])
+  .map((r) => ({ ...r, summary: { ...(r && r.summary ? r.summary : {}), provenance: { legVersion: LEG } } }));
+
+
 let pass = 0;
 const failures = [];
 function ok(cond, what) { if (cond) { pass += 1; return; } failures.push(what); }
@@ -69,13 +77,13 @@ const eq = (a, b, what) => ok(a === b, `${what} (got ${JSON.stringify(a)}, want 
     eq(verdict.compared, 6, 'B3 the canary\'s verdict says six were compared');
 
     const board = scoreboard.assemble(
-      [{ dayMs: 0, agreementRate: r.summary.agreementRate, findingKeys: [], summary: r.summary }], [], { nowMs: 0 },
+      measured([{ dayMs: 0, agreementRate: r.summary.agreementRate, findingKeys: [], summary: r.summary }]), [], { nowMs: 0 },
     );
     eq(board.scoreboard.canaryScenarioCount, verdict.compared,
       'B4 AND THE GO-LIVE GATE READS THE SAME NUMBER - it used to be handed the raw 10 as proof');
 
     // "not measured" and "measured nothing" must stay different answers.
-    const none = scoreboard.assemble([{ dayMs: 0, agreementRate: null, findingKeys: [] }], [], { nowMs: 0 });
+    const none = scoreboard.assemble(measured([{ dayMs: 0, agreementRate: null, findingKeys: [] }]), [], { nowMs: 0 });
     eq(none.scoreboard.canaryScenarioCount, null,
       'B5 a run with no summary at all reports null coverage, never 0 - one is "nobody measured", the other is "measured nothing"');
 

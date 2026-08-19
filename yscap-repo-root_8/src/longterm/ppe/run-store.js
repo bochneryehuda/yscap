@@ -57,8 +57,11 @@ function rowToRunRecord(row) {
  */
 function partitionReadable(runs) {
   const list = Array.isArray(runs) ? runs : [];
-  const readable = list.filter((r) => r && r.readable === true);
-  const unreadable = list.filter((r) => !r || r.readable !== true);
+  // §2.126b — through `provenance.recordIsReadable`, not off the flag directly. `scoreboard.assemble`
+  // asks the same question of records this store never built, and one of the two had to give: two
+  // filters written the same way today are two filters that drift on the next stamp.
+  const readable = list.filter((r) => provenance.recordIsReadable(r));
+  const unreadable = list.filter((r) => !provenance.recordIsReadable(r));
   return { readable, unreadable, allReadable: unreadable.length === 0 };
 }
 

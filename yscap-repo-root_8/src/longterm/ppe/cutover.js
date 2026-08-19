@@ -163,6 +163,12 @@ function buildScoreboard(input = {}) {
     canaryOverlay: num(input.canaryOverlay),
     canaryErrors: num(input.canaryErrors),
     canaryUnaccounted: num(input.canaryUnaccounted),
+    // §2.126b — how many stored runs the board could and could NOT read. These gate nothing on their
+    // own: dropping the unreadable ones already makes every measure above null-or-smaller, which fails
+    // closed by itself. What they buy is the WORDING — "no canary run has proven 100% agreement" is
+    // true of sixty unreadable runs and sends a reader to run a sixty-first.
+    canaryRunsReadable: num(input.canaryRunsReadable),
+    canaryRunsUnreadable: num(input.canaryRunsUnreadable),
   };
 }
 
@@ -175,6 +181,12 @@ function consecutiveCleanDays(daily) {
   const sorted = daily.slice().sort((a, b) => (b.dayMs || 0) - (a.dayMs || 0));
   let streak = 0;
   for (const d of sorted) {
+    // §2.126b — A DAY WHOSE EVIDENCE CANNOT BE READ IS NOT A CLEAN DAY. It breaks the run rather than
+    // being skipped: this function walks the entries it is GIVEN, so a caller that simply omitted such
+    // a day would join the stretches either side of it into one longer streak — the wrong direction,
+    // and invisible on every screen. Only an EXPLICIT `false` breaks it, so a caller that knows nothing
+    // about readability (every caller before this) behaves exactly as it did.
+    if (d && d.readable === false) break;
     if ((d.count || 0) === 0) streak += 1; else break;
   }
   return streak;
@@ -267,7 +279,14 @@ function eligibleForLive(scoreboard = {}, settings = {}) {
   }
   if (requirePerfect) {
     if (scoreboard.canaryAgreementRate == null) {
-      reasons.push('no canary run has proven 100% agreement');
+      // §2.126b — SAY WHY THERE IS NO RATE. There are two completely different situations behind a null
+      // here, and they need opposite actions: nobody has ever run the check, or the checks all ran and
+      // none of them can be read. The old sentence covered both and pointed at the first, so an
+      // investor sitting on sixty unreadable runs was told to go and run one.
+      const unread = num(scoreboard.canaryRunsUnreadable) || 0;
+      reasons.push(unread > 0
+        ? `no canary run that can be READ has proven 100% agreement — ${unread} stored run(s) were recorded by an engine wiring that has since changed; run the check again to start a series that counts`
+        : 'no canary run has proven 100% agreement');
     } else if (scoreboard.canaryAgreementRate < 1) {
       const pct = Math.round(scoreboard.canaryAgreementRate * 1000) / 10;
       reasons.push(`canary agreement is ${pct}%, must be 100%`);

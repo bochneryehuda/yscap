@@ -25,6 +25,7 @@
 
 const cutover = require('./cutover');
 const parity = require('./parity');
+const provenance = require('./agreement-provenance');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -133,9 +134,34 @@ function trend(days = [], opts = {}) {
  */
 function assemble(runs = [], findings = [], opts = {}) {
   const nowMs = isFiniteNum(opts.nowMs) ? opts.nowMs : null;
-  const { days, dropped } = dailySeries(runs);
-  const canaryAgreementRate = latestAgreementRate(runs);
-  const latestSummary = latestRunSummary(runs);
+
+  // ⛔ THE RUNS THAT CANNOT BE READ ARE SET ASIDE FIRST (§2.126b), and this is the whole point of the
+  // function. §2.122a built the reader — `runIsReadable`, `partitionReadable` — because the canary's
+  // own leg used to hand our engine the RAW Lender Price scenario, so every agreement rate it recorded
+  // is a number and not a measurement. NOTHING IN PRODUCTION EVER CALLED IT. Measured, 2026-08-19:
+  // sixty runs that this codebase itself classifies as unreadable produced `agreementRate 1`,
+  // `compared 305`, `cleanDays 60` and the verdict `{ eligible: true, reasons: [] }` — take this
+  // investor live, nothing standing in the way. The recognition existed and never reached the one
+  // decision it was built for.
+  const all = Array.isArray(runs) ? runs : [];
+  const readableRuns = all.filter((r) => provenance.recordIsReadable(r));
+  const unreadableRuns = all.filter((r) => !provenance.recordIsReadable(r));
+
+  const { days, dropped } = dailySeries(readableRuns);
+  const canaryAgreementRate = latestAgreementRate(readableRuns);
+  const latestSummary = latestRunSummary(readableRuns);
+
+  // ⛔ AND AN UNREADABLE DAY BREAKS THE STREAK — it is not simply absent. `consecutiveCleanDays` walks
+  // the entries it is GIVEN, so dropping a day silently joins the stretches either side of it into one
+  // longer clean run: exactly the wrong direction, and invisible. A day whose evidence cannot be read
+  // is not evidence of a clean day, so it is passed through carrying `readable: false`.
+  const unreadableDayMs = new Set();
+  for (const r of unreadableRuns) if (r && isFiniteNum(r.dayMs)) unreadableDayMs.add(dayBucket(r.dayMs));
+  const dailyNew = days.map((d) => ({
+    dayMs: d.dayMs, count: d.newFindings, readable: !unreadableDayMs.has(d.dayMs),
+  }));
+  const covered = new Set(days.map((d) => d.dayMs));
+  for (const dm of unreadableDayMs) if (!covered.has(dm)) dailyNew.push({ dayMs: dm, count: 0, readable: false });
   const buckets = parity.bucketsOf(latestSummary);
   const scoreboard = cutover.buildScoreboard({
     canaryAgreementRate,
@@ -162,7 +188,11 @@ function assemble(runs = [], findings = [], opts = {}) {
     canaryErrors: buckets.compared == null ? null : buckets.errors,
     canaryUnaccounted: buckets.unaccounted,
     findings: Array.isArray(findings) ? findings : [],
-    dailyNewFindings: days.map((d) => ({ dayMs: d.dayMs, count: d.newFindings })),
+    dailyNewFindings: dailyNew,
+    // §2.126b — the census, so a refusal can name the remedy. "No canary run has proven 100%
+    // agreement" is TRUE of sixty unreadable runs and points at the one action that cannot help.
+    canaryRunsReadable: readableRuns.length,
+    canaryRunsUnreadable: unreadableRuns.length,
     nowMs,
   });
   const eligible = cutover.eligibleForLive(scoreboard, opts.settings || {});
@@ -173,6 +203,10 @@ function assemble(runs = [], findings = [], opts = {}) {
     trend: trend(days, { window: opts.trendWindow }),
     latestAgreementRate: canaryAgreementRate,
     dropped,
+    // Every number above is derived from `readableRuns` alone. These say how much was set aside, so a
+    // reader can tell "nobody has measured this investor" from "everything measured is unreadable".
+    runsReadable: readableRuns.length,
+    runsUnreadable: unreadableRuns.length,
   };
 }
 

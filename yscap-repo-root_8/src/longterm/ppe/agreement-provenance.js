@@ -263,8 +263,24 @@ function runIsReadable(summary) {
   } catch (_) { return false; }
 }
 
+/**
+ * The same question, asked of a RUN RECORD rather than its summary (§2.126b).
+ *
+ * WHY IT EXISTS. `run-store.rowToRunRecord` already answers this once, at the one place a stored run
+ * becomes an object, and stamps `readable` on the record. But `scoreboard.assemble` is also handed
+ * hand-built records (a canary in flight, a test), and it may not require `run-store` — that module
+ * requires the scoreboard, so the dependency would close a cycle. This is the adapter, in the module
+ * that owns the predicate: use the flag when the record carries one, otherwise ask the predicate. Two
+ * callers, one answer, no second definition to drift.
+ */
+function recordIsReadable(run) {
+  if (!run || typeof run !== 'object') return false;
+  if (typeof run.readable === 'boolean') return run.readable;
+  return runIsReadable(run.summary);
+}
+
 module.exports = {
-  begin, narrowed, finish, describeProvenance, provenanceWarnings, runIsReadable,
+  begin, narrowed, finish, describeProvenance, provenanceWarnings, runIsReadable, recordIsReadable,
   coversWholeBattery, reconciles, NARROWERS, LEG_VERSION,
   _internals: { scopeValue, scopeToRecord },
 };
