@@ -338,10 +338,22 @@ const PENDING_HOLD_HOURS = 48;
  *      not landed, record it pending and let the sweep finish it. The credit is
  *      already spent by then, so giving up entirely would waste it.
  *
- * NEVER THROWS: every call below is shaped, and the database work is the only
- * thing that could raise — which the route wraps.
+ * NEVER THROWS, AND THAT IS ENFORCED HERE RATHER THAN ASSUMED. The vendor calls
+ * are shaped; the DATABASE work is not, and by the time it runs the credit may
+ * already be spent — a raise there escaped as a bare 500 with no skip-trace row
+ * written at all, so the sweep that exists to finish the lookup had nothing to
+ * find. A refusal that names what happened is recoverable; a 500 is not.
  */
-async function skipTrace({ personId, staffId, reason, name, state }) {
+async function skipTrace(args) {
+  try {
+    return await skipTraceInner(args);
+  } catch (e) {
+    return { ok: false, reason: 'error',
+      detail: `PILOT could not file this lookup: ${e && e.message ? e.message : 'unknown error'}` };
+  }
+}
+
+async function skipTraceInner({ personId, staffId, reason, name, state }) {
   if (!isUuid(personId)) return { ok: false, reason: 'bad_args', detail: 'That is not an Elementix person id.' };
   if (!staffId) return { ok: false, reason: 'no_actor', detail: 'A skip trace has to be made by a signed-in officer.' };
   if (!str(reason)) {
@@ -359,7 +371,16 @@ async function skipTrace({ personId, staffId, reason, name, state }) {
      the status call would re-buy a contact sitting in our own table. */
   const held = await db.query(
     `SELECT person_id FROM elementix_contacts
-      WHERE person_id = $1 AND (jsonb_array_length(phones) > 0 OR jsonb_array_length(emails) > 0)`,
+      WHERE person_id = $1
+          /* COUNTED BY SHAPE. jsonb_array_length RAISES 22023 on a value that is
+             not an array, and vendorJsonb legitimately stores a marker OBJECT when
+             the vendor's payload was too large — so the unguarded form throws on the
+             one query that decides whether to spend a credit, out of a function that
+             promises never to throw. The two free routes already guard it; this is
+             the same predicate. (No backticks in here: this comment lives inside a
+             JS template literal, and one would end the string.) */
+          AND ((CASE WHEN jsonb_typeof(phones) = 'array' THEN jsonb_array_length(phones) ELSE 0 END)
+             + (CASE WHEN jsonb_typeof(emails) = 'array' THEN jsonb_array_length(emails) ELSE 0 END)) > 0`,
     [personId]);
   if (held.rows.length) {
     return finishSkipTrace({ personId, staffId, reason, name, state, charged: false, source: 'already_unlocked' });
@@ -538,8 +559,26 @@ async function drainPendingSkipTraces({ limit = 25, giveUpHours = 48 } = {}) {
         LIMIT $1`, [Math.max(1, Math.min(200, limit))]));
   } catch (_) { return out; }
 
+  /* THE AGE-OUT IS COMPUTED OUTSIDE THE TRY, and it is checked in the failure
+     path too. A row whose settle THROWS — a deactivated officer the lead's
+     foreign key refuses, a name the column will not take, any constraint at all —
+     took the `continue` branch before it could ever be aged out, so it stayed
+     pending, stayed the oldest, was in every following batch, and re-issued a
+     real vendor call every two minutes for ever: thirty calls an hour, per bad
+     row, out of the allowance the whole company shares. One unworkable row must
+     never stall the queue, exactly as in the import. */
+  const retire = async (r, detail) => {
+    try {
+      await db.query(
+        `UPDATE elementix_skip_traces SET status='failed', detail=$3
+          WHERE person_id=$1 AND staff_id=$2::uuid`, [r.person_id, r.staff_id, clip(detail, 500)]);
+    } catch (_) { /* best effort: a failed stamp must not itself poison the sweep */ }
+  };
+
   for (const r of rows) {
     out.checked += 1;
+    const ageH = (Date.now() - new Date(r.occurred_at).getTime()) / 3600000;
+    const tooOld = !Number.isFinite(ageH) || ageH > giveUpHours;
     try {
       const st = await contactState(r.person_id, { staffId: r.staff_id });
       if (st.ok && st.unlocked) {
@@ -549,17 +588,28 @@ async function drainPendingSkipTraces({ limit = 25, giveUpHours = 48 } = {}) {
         out.completed += 1;
         continue;
       }
-      const ageH = (Date.now() - new Date(r.occurred_at).getTime()) / 3600000;
-      if (ageH > giveUpHours) {
-        await db.query(
-          `UPDATE elementix_skip_traces SET status='failed',
-                  detail='Elementix never returned the contact details for this lookup.'
-            WHERE person_id=$1 AND staff_id=$2::uuid`, [r.person_id, r.staff_id]);
+      if (tooOld) {
+        await retire(r, 'Elementix never returned the contact details for this lookup.');
         out.failed += 1;
       } else {
         out.stillPending += 1;
       }
-    } catch (_) { out.stillPending += 1; }
+    } catch (e) {
+      /* SAY WHY ON THE ROW. Without this the only record is a counter, and the
+         row that is quietly burning the rate limit is invisible. */
+      if (tooOld) {
+        await retire(r, `PILOT could not file this lookup: ${e && e.message ? e.message : 'unknown error'}`);
+        out.failed += 1;
+      } else {
+        try {
+          await db.query(
+            `UPDATE elementix_skip_traces SET detail=$3
+              WHERE person_id=$1 AND staff_id=$2::uuid`,
+            [r.person_id, r.staff_id, clip(`PILOT could not file this lookup: ${e && e.message ? e.message : 'unknown error'}`, 500)]);
+        } catch (_) { /* best effort */ }
+        out.stillPending += 1;
+      }
+    }
   }
   return out;
 }

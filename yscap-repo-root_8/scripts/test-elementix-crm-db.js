@@ -66,6 +66,22 @@ async function staff(name, email) {
   return r.rows[0].id;
 }
 
+/* THE PAID LIST IS MAINTAINED TWICE ON PURPOSE — the transport's own copy is the
+   one that gates the money, and the CRM door keeps a second so a widened door
+   cannot quietly widen the spend. Defence in depth is only defence while the two
+   agree, and nothing but this made them. */
+function paidListsAgree(ok) {
+  const client = require('../src/elementix/client');
+  const crmTools = require('../src/lib/elementix/crm-tools');
+  const a = [...(client.PAID_TOOLS || [])].sort();
+  const b = [...(crmTools.PAID || [])].sort();
+  assert.deepStrictEqual(b, a,
+    'the CRM door and the transport must name the same paid tools, or one of them is wrong about the money');
+  assert.deepStrictEqual(a, ['submit_contact_enrichment'],
+    'exactly one tool spends, and it is the contact enrichment');
+  ok('the two copies of the paid-tool list still agree');
+}
+
 async function main() {
   console.log('\nELEMENTIX CRM — skip trace to lead (real Postgres, stubbed vendor)\n');
 
@@ -407,6 +423,8 @@ async function main() {
     [['ELEMENTIX_ENABLED', 'ELEMENTIX_DRYRUN']]);
   await flags.refresh();
   ok('a dry run bills nothing, and reaches the CRM as a refusal rather than an empty success');
+
+  paidListsAgree(ok);
 
   console.log(`\n✓ ${passed} checks passed — the CRM skip-trace path is sound.\n`);
   await db.pool.end?.().catch?.(() => {});

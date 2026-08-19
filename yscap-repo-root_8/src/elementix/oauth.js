@@ -32,6 +32,12 @@
 
 const crypto = require('crypto');
 const cfg = require('../config');
+/* Every vendor payload that reaches a jsonb column goes through this: a NUL
+   byte is refused by jsonb (22P05), and one in the authorization server's own
+   discovery document would break beginConnect AND store() — and store() is
+   called from refresh(), so it would break token renewal for every lookup. It
+   strips from the OBJECT, never the serialized string. */
+const { jsonbText } = require('../lib/fields');
 
 /**
  * The database is required LAZILY, so the pure rules in this file — the cipher,
@@ -527,7 +533,7 @@ async function beginConnect({ staffId = null, actorId = null } = {}) {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12, now() + ($13 || ' seconds')::interval)`,
     [state, pkce.verifier, staffId, d.resourceUrl, d.issuer, d.tokenEndpoint,
      reg.clientId, reg.clientSecret ? encrypt(reg.clientSecret) : null,
-     JSON.stringify({ ...d, raw: undefined }), uri, scope, actorId, String(PENDING_TTL_SEC)]
+     jsonbText({ ...d, raw: undefined }), uri, scope, actorId, String(PENDING_TTL_SEC)]
   );
 
   const auth = new URL(d.authorizationEndpoint);
@@ -648,7 +654,7 @@ async function store({ staffId, resourceUrl, authServer, tokenEndpoint, clientId
        connected_at = COALESCE(elementix_oauth.connected_at, EXCLUDED.connected_at),
        last_refresh_at = now(), last_error = NULL, last_error_at = NULL, updated_at = now()`,
     [staffId, resourceUrl, authServer, tokenEndpoint, clientId, clientSecretEnc,
-     JSON.stringify(discovery || {}), encrypt(token.access_token),
+     jsonbText(discovery || {}), encrypt(token.access_token),
      token.refresh_token ? encrypt(token.refresh_token) : null,
      token.token_type || 'Bearer', token.scope || null, expiresAt, connectedBy]
   );

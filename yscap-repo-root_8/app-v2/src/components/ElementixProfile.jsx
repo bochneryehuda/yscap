@@ -517,13 +517,17 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
       await api.elxLink({ kind, recordId, personId: hit.personId, name: hit.name, state: hit.state, replace: true });
       attached = true;
       const built = await api.elxProfileBuild(hit.personId, {});
-      setState({ loading: false, linked: true, personId: hit.personId, profile: built.profile });
+      /* MERGE, NEVER REPLACE. The state shape carries `contact` — the phone
+         numbers and emails — and writing a fresh object dropped it, so the
+         "How to reach them" panel vanished the instant somebody pressed
+         "This is them" and did not come back until the page was reloaded. */
+      setState((s) => ({ ...s, loading: false, linked: true, personId: hit.personId, profile: built.profile }));
       setHits(null);
       flash(`Linked to ${hit.name || 'that record'} and read their profile.`);
     } catch (e) {
       setErr(e.message);
       if (attached) {
-        setState({ loading: false, linked: true, personId: hit.personId, profile: null });
+        setState((s) => ({ ...s, loading: false, linked: true, personId: hit.personId, profile: null }));
         setHits(null);
       }
     } finally { setBusy(''); }
@@ -742,7 +746,10 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
             return (
               <button key={t.key} onClick={() => { setTab(t.key); setFilter(''); }}
                 style={{
-                  border: `1px solid ${on ? '#AE8746' : LINE}`, background: on ? '#AE8746' : '#FFFFFF',
+                  // GOLD AS A BACKGROUND FOR WHITE TEXT is #AE8746 at 3.31:1 — the single
+                  // worst pair the repo's own contrast guard names. --gold-ink (#856529)
+                  // reads 5.40:1 and is the same brand gold, darkened just enough.
+                  border: `1px solid ${on ? '#856529' : LINE}`, background: on ? '#856529' : '#FFFFFF',
                   color: on ? '#FFFFFF' : INK, borderRadius: 20, padding: '5px 12px',
                   fontSize: 13.5, fontWeight: on ? 650 : 500, cursor: 'pointer',
                 }}>

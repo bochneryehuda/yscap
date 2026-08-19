@@ -291,11 +291,12 @@ async function main() {
   const fsrc = fs.readFileSync(path.join(__dirname, '../src/sync/elementix-crm-sync.js'), 'utf8');
   // The SETTLE pass runs even with the bulk import switched off, so it has to be
   // proven not to reach the paid tool through the module it now requires. It
-  // touches exactly two functions in crm.js — read those two and nothing else,
-  // because crm.js as a whole DOES buy contacts and a whole-file grep would
-  // either fail here or, worse, be "fixed" by weakening it.
+  // touches exactly THREE functions in crm.js — the sweep, the finisher it calls,
+  // and contactState, which the sweep asks about every row — so read those three
+  // and nothing else, because crm.js as a whole DOES buy contacts and a
+  // whole-file grep would either fail here or, worse, be "fixed" by weakening it.
   const crmSrc = fs.readFileSync(path.join(__dirname, '../src/lib/elementix/crm.js'), 'utf8');
-  for (const fn of ['drainPendingSkipTraces', 'finishSkipTrace']) {
+  for (const fn of ['drainPendingSkipTraces', 'finishSkipTrace', 'contactState']) {
     const at = crmSrc.indexOf(`async function ${fn}(`);
     assert.ok(at > -1, `${fn} must exist`);
     // To the next top-level declaration, which is where the function ends.
@@ -306,7 +307,7 @@ async function main() {
     assert.ok(!/submit_contact_enrichment/.test(body),
       `${fn} is reached by the unattended settle pass and must not be able to buy a contact`);
   }
-  ok('the settle pass reads two functions of crm.js, and neither can buy a contact');
+  ok('the settle pass reads three functions of crm.js, and none of them can buy a contact');
 
   const sync = require('../src/sync/elementix-crm-sync');
   assert.ok(typeof sync.listOnce === 'function' && typeof sync.workOnce === 'function'

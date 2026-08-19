@@ -286,7 +286,11 @@ async function callTool(name, args = {}, opts = {}) {
      guard throttle on its own refusals. A PAID call is already recorded by
      recordPaid, so it is not recorded twice here. */
   const wentOut = !['disabled', 'not_configured', 'rate_limited', 'paid_tool_refused',
-    'paid_cap_reached', 'paid_cap_unknown', 'no_tool'].includes(out && out.reason);
+    'paid_cap_reached', 'paid_cap_unknown', 'no_tool', 'dry_run',
+    // The OAuth gate refuses BEFORE the wire too. Counting those made a
+    // disconnected Elementix throttle the underwriting desk on calls nobody made.
+    'not_connected', 'reapproval_needed', 'refresh_failed', 'store_unreadable',
+  ].includes(out && out.reason);
   if (wentOut && !PAID_TOOLS.has(String(name || ''))) recordCall(String(name || ''), opts, out).catch(() => {});
   return out;
 }
@@ -353,16 +357,25 @@ async function callToolInner(name, args, opts) {
   if (over) return { ok: false, reason: 'rate_limited', detail: over };
 
   if (dryrun()) {
+    /* A DRY RUN IS A REFUSAL, NOT AN ANSWER. `{ok:true, data:null}` reads as
+       "nobody by that name" to every caller that counts rows, and would tell an
+       officer their contact is on its way while nothing was sent. `dryRun` is
+       kept on the shape so a caller can tell this refusal from a real one. */
     console.log('[elementix] DRY-RUN tools/call', toolName, JSON.stringify(args).slice(0, 400));
-    return { ok: true, dryRun: true, data: null };
+    return { ok: false, reason: 'dry_run', dryRun: true, data: null,
+      detail: 'Elementix is in dry-run mode, so nothing was sent.' };
   }
 
-  // Nothing above this line can still refuse, so a spend recorded here is a
-  // spend that is genuinely about to happen.
-  if (paidActorToRecord) await recordPaid(toolName, paidActorToRecord);
-
+  /* THE TOKEN IS RESOLVED BEFORE THE SPEND IS RECORDED, because resolving it is
+     still a REFUSAL: an expired connection with no refresh token answers
+     `not_connected`, and recording the spend above it burned a credit out of the
+     month's allowance on a call that never happened — on every retry, all
+     weekend, until the cap refused real work. Everything below this line reaches
+     the wire, so the ledger write still cannot miss a spend. */
   const auth = await oauth.accessToken(tokenSeat(opts));
   if (!auth.ok) return { ok: false, reason: auth.reason, detail: auth.detail };
+
+  if (paidActorToRecord) await recordPaid(toolName, paidActorToRecord);
 
   const attempt = async (token, tokenType) => {
     const s = await ensureSession(token, tokenType);

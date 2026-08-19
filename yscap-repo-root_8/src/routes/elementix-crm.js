@@ -114,6 +114,11 @@ function refuse(res, out, fallbackStatus = 400) {
     not_found: 404,
     paid_cap_reached: 429, rate_limited: 429,
     not_connected: 409, disabled: 503, unavailable: 503,
+    /* OUR OWN STATE IS NOT AN ELEMENTIX OUTAGE. Both of these fell through to a
+       502, which the request log records as [api-fail] and vendor-health reads as
+       the vendor being down — for a switch on our own API Health page, and for
+       our own ledger being unreadable (the money cap failing CLOSED). */
+    paid_cap_unknown: 429, dry_run: 503,
   };
   const status = map[out && out.reason] || fallbackStatus;
   return res.status(status).json({ error: (out && out.detail) || 'That could not be done.', reason: out && out.reason });
@@ -143,7 +148,17 @@ router.get('/me', async (req, res) => {
     // A company-wide connection means an officer can still READ, but their skip
     // traces cannot be signed by their own Elementix seat.
     companyConnected: !!(company && company.connected),
-    status: mine,
+    /* NAMED FIELDS, NOT THE WHOLE STATUS OBJECT. `oauth.status()` carries the MCP
+       resource URL and, once connected, the OAuth client id and authorization
+       server — the API Health page's material, and that page is behind
+       platform_setup while this route is open to every internal officer. No
+       secret was ever in it; the connection's identity does not belong here
+       either. */
+    status: mine ? {
+      configured: !!mine.configured, connected: !!mine.connected,
+      expiresAt: mine.expiresAt || null, lastError: mine.lastError || null,
+      detail: mine.detail || null,
+    } : null,
   });
 });
 
@@ -359,8 +374,25 @@ router.get('/people/:personId/contact', async (req, res) => {
             CASE WHEN jsonb_typeof(phones) = 'array' THEN jsonb_array_length(phones) ELSE 0 END AS phone_count,
             CASE WHEN jsonb_typeof(emails) = 'array' THEN jsonb_array_length(emails) ELSE 0 END AS email_count
        FROM elementix_contacts WHERE person_id = $1`, [personId]);
-  const stored = held.rows[0] || null;
-  const haveDetail = !!(stored && (stored.phone_count > 0 || stored.email_count > 0));
+  const row = held.rows[0] || null;
+  const haveDetail = !!(row && (row.phone_count > 0 || row.email_count > 0));
+
+  /* THIS ROUTE ANSWERS ONE QUESTION — "will the next click cost money" — AND IT
+     ANSWERS ONLY THAT. It is deliberately unscoped, because an officer has to be
+     able to ask the price of a person they have not attached to anything yet;
+     which is exactly why it may not carry the contact DETAIL. Returning the
+     stored row whole handed any internal officer the phone numbers and emails of
+     a borrower the scoped doors answer 403 for, two hops from a name (search →
+     contact), and left no audit row behind. The COUNTS are the price; the
+     numbers themselves are what the scoped doors are for. */
+  const stored = row && {
+    person_id: row.person_id,
+    phoneCount: row.phone_count,
+    emailCount: row.email_count,
+    unlockedAt: row.vendor_unlocked_at || row.unlocked_at,
+    source: row.source,
+    refreshedAt: row.refreshed_at,
+  };
 
   // Already ours: answer without spending a slot of the shared hourly allowance.
   if (haveDetail) {
@@ -465,8 +497,55 @@ router.post('/people/:personId/lead', async (req, res) => {
 // THE PROFILE
 // ---------------------------------------------------------------------------
 
+/* WHOSE PERSON IS THIS? — one predicate, used by every profile door.
+ *
+ * "Seen" is not enough on its own: a person attached to somebody else's borrower
+ * has been seen by PILOT and has nothing to do with the officer asking. So the
+ * link has to be one THIS officer can already see, through the SAME shared
+ * fragments `/link` and `/for` use — never a second copy of a scope.
+ *
+ * The bare header row stays a legitimate way in, and deliberately so: that is
+ * the finder's own flow (search, then attach), where nobody has linked anything
+ * yet. What it can never be is a way to read a profile that belongs to another
+ * officer's client, or to spend forty of the organisation's calls building one.
+ */
+async function seenByActor(req, personId) {
+  if (!isUuid(personId)) return { seen: false, bad: true };
+  const all = can(req.actor, 'see_all_files');
+  /* A HEADER ROW IS NOT A RELATIONSHIP. Accepting "PILOT has heard of this
+     person" let every internal officer read any profile on the plane, because a
+     header row is written for everybody we ever look up. What makes a person
+     YOURS is a lead or a borrower you can already see — or your own paid lookup,
+     which is the one case that can briefly exist before either. The screen links
+     BEFORE it builds (ElementixProfile.linkTo), so the ordinary flow is covered. */
+  const sql = all
+    ? `SELECT EXISTS (SELECT 1 FROM leads     WHERE elementix_person_id = $1)
+            OR EXISTS (SELECT 1 FROM borrowers WHERE elementix_person_id = $1)
+            OR EXISTS (SELECT 1 FROM elementix_skip_traces WHERE person_id = $1) AS seen`
+    : `SELECT EXISTS (SELECT 1 FROM leads t     WHERE t.elementix_person_id = $1 AND (${visibleLeadSql('t', '$2')}))
+            OR EXISTS (SELECT 1 FROM borrowers t WHERE t.elementix_person_id = $1 AND (${visibleBorrowerSql('t', '$2')}))
+            OR EXISTS (SELECT 1 FROM elementix_skip_traces WHERE person_id = $1 AND staff_id = $2::uuid) AS seen`;
+  try {
+    const r = await db.query(sql, all ? [personId] : [personId, req.actor.id]);
+    return { seen: r.rows[0] && r.rows[0].seen === true };
+  } catch (_) {
+    // An unreadable scope is not evidence of access.
+    return { seen: false, unreadable: true };
+  }
+}
+
+function refuseSeen(res, v) {
+  if (v.bad) return res.status(400).json({ error: 'That is not a person from a search result.' });
+  if (v.unreadable) return res.status(503).json({ error: 'PILOT could not check who that record belongs to. Try again in a moment.' });
+  return res.status(404).json({ reason: 'not_found',
+    error: 'PILOT has no record of that Elementix person on anything you can see. Search for them and attach them first.' });
+}
+
 router.get('/people/:personId/profile', async (req, res) => {
-  const out = await profile.readProfile(str(req.params.personId));
+  const personId = str(req.params.personId);
+  const v = await seenByActor(req, personId);
+  if (!v.seen) return refuseSeen(res, v);
+  const out = await profile.readProfile(personId);
   if (!out || out.ok !== true) return refuse(res, out);
   const candidates = await profile.openAliasCandidates(out.personId);
   res.json({ ...out, aliasCandidates: candidates });
@@ -490,15 +569,8 @@ router.post('/people/:personId/profile/build', async (req, res) => {
      so a link can outlive its header row. Accepting both means the button never
      dead-ends on a record somebody is looking straight at, while a typed id
      still gets nowhere. */
-  const known = await db.query(
-    `SELECT EXISTS (SELECT 1 FROM elementix_persons WHERE person_id = $1)
-         OR EXISTS (SELECT 1 FROM leads WHERE elementix_person_id = $1)
-         OR EXISTS (SELECT 1 FROM borrowers WHERE elementix_person_id = $1) AS seen`,
-    [personId]);
-  if (!known.rows[0] || known.rows[0].seen !== true) {
-    return res.status(404).json({ reason: 'not_found',
-      error: 'PILOT has no record of that Elementix person. Search for them and attach them first.' });
-  }
+  const v = await seenByActor(req, personId);
+  if (!v.seen) return refuseSeen(res, v);
   const out = await profile.buildProfile(personId, {
     staffId: req.actor.id,
     force: body.force === true,
@@ -517,9 +589,20 @@ router.get('/people/:personId/aliases', async (req, res) => {
 });
 
 router.post('/people/:personId/aliases/:aliasId', async (req, res) => {
+  /* MERGING TWO RECORDS IS THE MOST EXPENSIVE JUDGEMENT ON THIS PLANE — it joins
+     a stranger's properties and loans onto somebody's profile — so it is scoped
+     exactly like reading one. `decideAlias` already refuses an id PILOT has never
+     seen and demands a signed-in human; this adds "and it has to be yours". */
+  const personId = str(req.params.personId);
+  const aliasId = str(req.params.aliasId);
+  if (!isUuid(personId) || !isUuid(aliasId)) {
+    return res.status(400).json({ error: 'That is not a person from a search result.' });
+  }
+  const v = await seenByActor(req, personId);
+  if (!v.seen) return refuseSeen(res, v);
   const out = await profile.decideAlias({
-    personId: str(req.params.personId),
-    aliasPersonId: str(req.params.aliasId),
+    personId,
+    aliasPersonId: aliasId,
     staffId: req.actor.id,
     confirm: (req.body || {}).confirm === true,
   });

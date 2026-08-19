@@ -57,6 +57,12 @@ const email = (v) => {
 const LIST_PAGE = 250;
 const MAX_PAGES = 40;          // 10,000 people; the account holds 1,041
 const WORK_BATCH = 25;
+
+/* REFUSALS THAT ARE ABOUT THE SYSTEM, NEVER ABOUT THE PERSON. Kept as one named
+   set so the import and any future queue answer the same way, and so adding a
+   reason to the transport does not silently start retiring rows. */
+const GLOBAL_REFUSALS = new Set(['rate_limited', 'disabled', 'not_configured', 'dry_run',
+  'not_connected', 'reapproval_needed', 'refresh_failed', 'store_unreadable']);
 const MAX_ATTEMPTS = 3;
 
 /* HOW RECENT AN UNLOCK HAS TO BE BEFORE IT IS WORTH TELLING SOMEBODY.
@@ -155,6 +161,17 @@ async function listUnlocked({ staffId, maxPages = MAX_PAGES, perPage = LIST_PAGE
     }
 
     if (!res.data || res.data.nextPage == null) break;
+
+    /* THE CEILING IS NOT A COMPLETION. Forty pages of 250 is 10,000 people
+       against an account that holds 1,041 — but that is an assumption about the
+       vendor's data, not a fact about the code, and a listing that stops at its
+       own ceiling while the vendor is still offering pages must never report
+       itself complete. Same shape as the refusal above: keep everything queued,
+       and say where it stopped. */
+    if (page >= maxPages) {
+      refusal = { reason: 'page_cap', page,
+        detail: `PILOT read ${maxPages} pages and Elementix still had more. Everything read so far is queued; run the history again to continue.` };
+    }
   }
 
   for (const [addr, u] of users) await recordUser(addr, u, client);
@@ -275,10 +292,14 @@ async function pilotOwnerOf(personId, client = db) {
     const id = r.staff_id || r.trace_staff_id || null;
     return id ? { staffId: id, traced: r.trace_status === 'complete' } : null;
   } catch (_) {
-    /* Unreadable: fall back to the vendor's email rather than losing the row.
-       The cost of being wrong here is a lead in the wrong pipeline, not a lost
-       contact — and a lead is something a human can move. */
-    return null;
+    /* UNREADABLE IS NOT "PILOT DID NOT TRACE THIS". Answering null here sends the
+       row down the vendor-email branch, which calls recordSkipTrace — and that
+       upsert would overwrite the reason an officer typed and the record that a
+       credit was spent, on a row we simply could not read. So say "unknown":
+       the lead is still made from the vendor's email (the contact is never lost,
+       and a lead in the wrong pipeline is something a human can move), but the
+       history is left exactly as it is. */
+    return { unknown: true };
   }
 }
 
@@ -328,6 +349,20 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
     const personId = r.person_id;
     const res = await crmTools.call('get_contact_info', { personId }, { staffId });
     if (!res || res.ok !== true) {
+      /* A REFUSAL ABOUT THE SYSTEM IS NOT A FAILURE OF THIS ROW. Rate-limited,
+         switched off, dry run, not connected — none of those say anything about
+         this person, and stamping them spends one of the row's three lives for a
+         reason it had no part in. The work pass runs 20 rows every five minutes
+         against a shared hourly cap, so tripping the limiter is the ORDINARY
+         state of the first drain, not an edge case: without this, one episode
+         retires a whole batch of the owner's paid-for history, permanently, with
+         nothing at the desk able to bring it back. Stop the pass instead and
+         leave the rows exactly as they were — the next pass picks them up. */
+      if (GLOBAL_REFUSALS.has(res && res.reason)) {
+        out.stoppedEarly = (res && res.reason) || 'refused';
+        out.stoppedDetail = (res && res.detail) || 'Elementix stopped answering.';
+        break;
+      }
       await recordRowFailure(personId, (res && res.detail) || 'Elementix did not answer.');
       continue;
     }
@@ -337,6 +372,7 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
     // Whose contact is this? PILOT's own record of the click first (see
     // pilotOwnerOf), the vendor's login email second.
     const mine = await pilotOwnerOf(personId, client);
+    const historyUnreadable = !!(mine && mine.unknown);
     const officerId = (mine && mine.staffId) || r.officer_id || null;
     /* The header row the contact hangs off (a foreign key). `listUnlocked`
        writes it when it queues the row, and this does NOT lean on that: a queue
@@ -382,7 +418,7 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
         personId, staffId: officerId, name: r.person_name, state: r.person_state, contact, client,
       });
       leadId = lead && lead.id ? lead.id : null;
-      if (leadId) out.leads += 1;
+      if (lead && lead.created) out.leads += 1;
       /* THE OWNER'S "plus a notification to that officer" — for a FRESH unlock
          only. Best-effort and never awaited into the import's success: a
          notification that fails must not fail the import, and the lead is the
@@ -392,14 +428,21 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
         crm.notifyOfficer({ staffId: officerId, leadId, name: r.person_name, contact })
           .catch(() => { /* the lead landed; the notice is a courtesy */ });
       }
-      await crm.recordSkipTrace({
-        personId, staffId: officerId, name: r.person_name, state: r.person_state,
-        reason: 'Imported from Elementix history', charged: false, source: 'imported',
-        leadId, status: 'complete', client,
-      });
-      await client.query(
-        `UPDATE elementix_skip_traces SET unlocked_by_email = COALESCE(unlocked_by_email, $2)
-          WHERE person_id = $1 AND staff_id = $3`, [personId, r.unlocked_by_email, officerId]);
+      /* HISTORY IS ONLY WRITTEN WHEN WE COULD READ IT. This upsert overwrites the
+         status and the detail, so running it on a row whose PILOT history we
+         merely failed to read could erase what an officer typed and what a
+         credit bought. The lead above is made either way — the contact is never
+         lost — but a record we cannot see is a record we do not touch. */
+      if (!historyUnreadable) {
+        await crm.recordSkipTrace({
+          personId, staffId: officerId, name: r.person_name, state: r.person_state,
+          reason: 'Imported from Elementix history', charged: false, source: 'imported',
+          leadId, status: 'complete', client,
+        });
+        await client.query(
+          `UPDATE elementix_skip_traces SET unlocked_by_email = COALESCE(unlocked_by_email, $2)
+            WHERE person_id = $1 AND staff_id = $3`, [personId, r.unlocked_by_email, officerId]);
+      }
     } else {
       // The contact is still imported and still searchable — it just has no
       // pipeline to go into until somebody says whose login that was.

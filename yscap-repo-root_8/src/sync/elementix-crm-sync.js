@@ -30,11 +30,13 @@
  * carries on. And it is quiet — a pass with nothing to do writes nothing and
  * says nothing.
  *
- * OFF BY DEFAULT. `ELEMENTIX_CRM_SYNC_ENABLED=1` turns it on, which is
- * deliberate for a job that creates leads in people's pipelines: the owner
- * should switch it on once the roster of Elementix logins has been mapped to
- * officers, or the first pass will park everything as "waiting on whose login
- * that was" and tell nobody.
+ * ON BY DEFAULT (owner-directed 2026-08-19, "set up auto pull leads").
+ * `ELEMENTIX_CRM_SYNC_ENABLED=0` turns the bulk import off, and it is a real
+ * switch on the API Health page read at CALL time — so it can be stopped and
+ * started without a deploy. Until the roster of Elementix logins is mapped to
+ * officers the import still runs: it imports every contact and parks the ones
+ * whose login nobody has claimed, which the Elementix screen shows and offers a
+ * dropdown for.
  */
 
 const cfg = require('../config');
@@ -116,6 +118,7 @@ async function runAs() {
 
 async function listOnce() {
   if (listing) return null;
+  if (!client.enabled()) return null;   // Elementix itself, read at CALL time — see start()
   if (!autoImportOn()) return null;
   listing = true;
   try {
@@ -146,6 +149,7 @@ async function listOnce() {
 
 async function workOnce() {
   if (working) return null;
+  if (!client.enabled()) return null;   // Elementix itself, read at CALL time — see start()
   if (!autoImportOn()) return null;
   working = true;
   try {
@@ -173,6 +177,14 @@ async function workOnce() {
  */
 async function settleOnce() {
   if (settling) return null;
+  /* THE MASTER SWITCH, READ AT CALL TIME — and read HERE rather than at boot.
+     start() used to return before arming a single timer when Elementix was off,
+     which is the exact trap the import switch was moved to call time to escape:
+     turning Elementix ON from the API Health page started nothing until the next
+     deploy, and every paid lookup whose vendor job outlived the click sat
+     unsettled with the credit already spent. The timers are armed unconditionally
+     now; a pass with Elementix off costs one function call. */
+  if (!client.enabled()) return null;
   settling = true;
   try {
     const crm = require('../lib/elementix/crm');
@@ -191,7 +203,6 @@ async function settleOnce() {
 
 function start() {
   if (started) return;
-  if (!client.enabled()) { console.log('[elementix-crm] Elementix itself is off — nothing to sync'); return; }
   started = true;
 
   /* THE SETTLE PASS IS NOT BEHIND THE SWITCH, ON PURPOSE. The switch guards the
@@ -205,7 +216,8 @@ function start() {
   setTimeout(settleOnce, 20000);
   setInterval(settleOnce, SETTLE_INTERVAL_MS);
 
-  console.log('[elementix-crm] auto-import %s — listing every %dh, importing %d at a time every %dm. No credit can be spent by this loop; stop it any time on the API Health page.',
+  console.log('[elementix-crm] Elementix %s, auto-import %s — listing every %dh, importing %d at a time every %dm. No credit can be spent by this loop; stop it any time on the API Health page.',
+    client.enabled() ? 'on' : 'OFF (nothing runs until it is switched on — no deploy needed)',
     autoImportOn() ? 'ON' : 'off (switch it on from the API Health page)',
     Math.round(LIST_INTERVAL_MS / 3600000), WORK_BATCH, Math.round(WORK_INTERVAL_MS / 60000));
 

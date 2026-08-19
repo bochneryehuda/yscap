@@ -16434,13 +16434,49 @@ router.post('/applications/:id/messages', async (req, res) => {
 const LEAD_STATUSES = ['new', 'contacted', 'qualified', 'quoted', 'working', 'nurturing', 'converted', 'lost', 'archived'];
 router.get('/leads', async (req, res) => {
   try {
-    const where = seesAll(req) ? '' : 'WHERE (l.officer_id=$1 OR l.officer_id IS NULL)';
-    const params = seesAll(req) ? [] : [req.actor.id];
+    // ── THE SCOPE IS THE FLOOR, AND EVERY FILTER SITS INSIDE IT ──────────────
+    // `visibleLeadSql` is the ONE definition of what a loan officer may see
+    // (src/lib/permissions.js — the same expression PATCH /leads/:id and the
+    // Elementix desk ask). The filters below are ANDed onto it, so a filter can
+    // only ever NARROW what this officer could already see. It is never a
+    // second WHERE clause and never replaces the scope.
+    const params = [];
+    const conds = [];
+    if (!seesAll(req)) { params.push(req.actor.id); conds.push(visibleLeadSql('l', `$${params.length}`)); }
+    const scopeWhere = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+    const scopeParams = params.slice();
+
+    // ── WHERE THE LEAD CAME FROM — FILTERED HERE, NOT IN THE BROWSER ─────────
+    // This list is capped at 500 rows, so a browser-side filter over one page
+    // answers "you have 4 Elementix leads" on a desk that holds 400. The three
+    // columns are the ones the row already carries — no second vocabulary is
+    // invented for this screen:
+    //   source       WHICH SYSTEM opened the lead — 'elementix' (an officer's
+    //                skip trace), 'marketing_site' (every public form),
+    //                'manual' (typed on the leads desk), 'portal_invite'
+    //   tool         WHICH public form, inside the generic 'marketing_site'
+    //                bucket that on its own says nothing
+    //   lead_source  the channel a human picked on a hand-typed lead
+    // `leadSource` matches COALESCE(lead_source, source) — deliberately the
+    // SAME expression POST /leads/bulk-archive matches on — so the rows an
+    // admin filtered to and the rows the archive button then sweeps can never
+    // be two different sets.
+    const eq = (sql, v) => {
+      if (typeof v !== 'string' || v === '') return;
+      params.push(v.slice(0, 60));
+      conds.push(`${sql}=$${params.length}`);
+    };
+    eq('l.source', req.query.source);
+    eq('l.tool', req.query.tool);
+    eq('COALESCE(l.lead_source, l.source)', req.query.leadSource);
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+
     const r = await db.query(
       `SELECT l.id,l.tool,l.name,l.first_name,l.last_name,l.company,l.email,l.phone,l.phone_alt,
               l.subject,l.message,l.status,l.officer_id,l.created_at,l.updated_at,l.next_follow_up,
               l.application_id,l.borrower_id,l.loan_amount,l.program,l.property_type,l.property_address,
-              l.lead_source,l.referral_partner,l.tags,l.estimated_close,l.lost_reason,l.last_activity_at,
+              l.source,l.lead_source,l.referral_partner,l.tags,l.estimated_close,l.lost_reason,l.last_activity_at,
+              l.elementix_person_id,
               s.full_name AS officer_name,
               (SELECT count(*)::int FROM lead_activities la WHERE la.lead_id=l.id) AS activity_count,
               (SELECT count(*)::int FROM lead_tasks lt WHERE lt.lead_id=l.id AND lt.done=false) AS open_tasks,
@@ -16450,6 +16486,21 @@ router.get('/leads', async (req, res) => {
          ${where}
         ORDER BY (l.status='new') DESC, COALESCE(l.next_follow_up,'9999-12-31') ASC,
                  l.last_activity_at DESC NULLS LAST, l.created_at DESC LIMIT 500`, params);
+
+    // ── THE COUNTS BEHIND THE PICKER (opt-in: ?counts=1) ─────────────────────
+    // Opt-in so the bare array this endpoint has always answered with is
+    // unchanged for every caller that does not ask (the legacy portal client
+    // still reads it). Counted inside the SAME scope and deliberately WITHOUT
+    // the filters above: a facet count that shrank to the thing you just
+    // selected would tell an officer their desk holds 12 leads in total. One
+    // grouped read of a table already narrowed to what this person may see.
+    if (req.query.counts) {
+      const f = await db.query(
+        `SELECT l.source, l.tool, COALESCE(l.lead_source, l.source) AS lead_source, count(*)::int AS count
+           FROM leads l ${scopeWhere}
+          GROUP BY 1,2,3`, scopeParams);
+      return res.json({ rows: r.rows, facets: f.rows });
+    }
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

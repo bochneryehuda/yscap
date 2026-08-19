@@ -1314,9 +1314,11 @@ if (require.main === module) {
     // It never notifies a borrower — completion cues the DESK.
     try { require('./trinity/poller').start(); } catch (e) { console.warn('trinity poller not started:', e.message); }
     // Elementix CRM: bring every newly-unlocked contact in as a lead for the
-    // officer whose login unlocked it, and drain the historical backlog. Off
-    // unless ELEMENTIX_CRM_SYNC_ENABLED=1. It cannot spend a credit — every
-    // person it reads was already unlocked and paid for.
+    // officer whose login unlocked it, and drain the historical backlog. ON by
+    // owner direction; ELEMENTIX_CRM_SYNC_ENABLED=0 turns it off, and the switch
+    // is read at CALL time so the API Health page can stop it without a deploy.
+    // It cannot spend a credit — every person it reads was already unlocked and
+    // paid for.
     try { require('./sync/elementix-crm-sync').start(); } catch (e) { console.warn('elementix crm sync not started:', e.message); }
     // Class Valuation callback-inbox drain. The receiver drains on delivery, so this
     // is only the BACKSTOP: a delivery whose processing failed would otherwise wait

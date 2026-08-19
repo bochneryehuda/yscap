@@ -99,7 +99,12 @@ export default function ElementixFinder({ onAdded, onClose }) {
         <span style={{ flex: 1 }} />
         {usage && (
           <span style={{ color: MUTED, fontSize: 12.5 }}>
-            {usage.ok ? `${usage.paidThisMonth} of ${usage.paidCap} lookups used this month` : ''}
+            {/* UNKNOWN IS AN ANSWER; BLANK IS NOT. This is the screen where money is
+                actually spent, so an unreadable ledger has to say so rather than look
+                like a figure that has not loaded. */}
+            {usage.ok
+              ? `${usage.paidThisMonth} of ${usage.paidCap} lookups used this month`
+              : `unknown of ${usage.paidCap != null ? usage.paidCap : '—'} lookups used this month`}
           </span>
         )}
         {onClose && <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>}
@@ -156,7 +161,9 @@ export default function ElementixFinder({ onAdded, onClose }) {
                       {h.leadCount ? ` · already a lead for ${h.leadCount} officer(s)` : ''}
                     </div>
                   </div>
-                  {on && <span style={{ color: '#AE8746', fontWeight: 650, fontSize: 13 }}>Selected</span>}
+                  {/* gold as TEXT on a light surface is --gold-ink, never the brand gold:
+                      #AE8746 on #FCF8F1 is 3.12:1, #856529 is 5.10:1. */}
+                  {on && <span style={{ color: '#856529', fontWeight: 650, fontSize: 13 }}>Selected</span>}
                 </div>
               );
             })}

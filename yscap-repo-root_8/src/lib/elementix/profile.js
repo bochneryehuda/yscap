@@ -735,17 +735,24 @@ async function readProfile(personId, opts = {}) {
   // across the confirmed family — not from counting the rows we happened to
   // fetch, which is a page of them.
   const byState = [];
-  const counts = { mortgages: 0, deeds: 0, satisfactions: 0, properties: 0, propertiesCurrent: 0, foreclosures: 0 };
-  let exposure = 0;
+  /* NULL UNTIL A SOURCE ACTUALLY SAYS A NUMBER. Starting at 0 makes a figure the
+     vendor never sent render as a confident "Mortgages 0 · Owed today $0" at the
+     very top of the screen — about a real investor, above the per-state cards
+     that correctly say "—". That is the confident zero this whole plane is
+     written to refuse, and it is the same failure as the seventy lenders that
+     read as none until the row key was measured. `count()` and `money()` on the
+     screen already render null as a dash. */
+  const counts = { mortgages: null, deeds: null, satisfactions: null, properties: null, propertiesCurrent: null, foreclosures: null };
+  let exposure = null;
   let complete = true;
   for (const src of sections.overview.sources) {
     const facts = overviewFacts(src.object, src.stats);
     if (!facts) { complete = false; byState.push({ personId: src.personId, state: src.state, name: src.name, facts: null }); continue; }
     byState.push({ personId: src.personId, state: facts.state || src.state, name: facts.name || src.name, facts });
     for (const k of Object.keys(counts)) {
-      if (facts[k] == null) complete = false; else counts[k] += facts[k];
+      if (facts[k] == null) complete = false; else counts[k] = (counts[k] || 0) + facts[k];
     }
-    if (facts.exposure == null) complete = false; else exposure += facts.exposure;
+    if (facts.exposure == null) complete = false; else exposure = (exposure || 0) + facts.exposure;
   }
   const overviewRead = sections.overview.sources.some((s) => !s.error);
   const entityTotal = sections.entities.total != null ? sections.entities.total

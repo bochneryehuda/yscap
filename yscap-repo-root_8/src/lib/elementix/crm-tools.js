@@ -215,7 +215,7 @@ async function call(tool, args = {}, opts = {}) {
      empty for a day, and — because `crm.skipTrace` treats an ok from the paid
      tool as proof the unlock happened — an officer is told their contact is on
      its way while nothing was sent. A dry run is a refusal with a reason. */
-  if (out && out.ok === true && out.dryRun) {
+  if (out && out.dryRun) {   // the transport already refuses; this keeps the door's own wording
     return { ok: false, reason: 'dry_run',
       detail: 'Dry-run mode is ON, so this was logged but never sent to Elementix. Turn dry-run off on the API Health page.' };
   }

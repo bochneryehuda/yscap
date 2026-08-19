@@ -192,9 +192,18 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
     ok(aud.rows.length === 1 && aud.rows[0].detail.why === 'Calling about a bridge loan',
       'the reason is on the record beside the spend');
 
+    /* THE PRICE, NEVER THE NUMBERS. This route is deliberately unscoped — an
+       officer must be able to ask what the next click costs about somebody they
+       have not attached to anything yet — so it may only ever answer the COUNT.
+       Returning the stored row whole handed any internal officer the phone
+       numbers of another officer's borrower, two hops from a name, with no audit
+       row behind it. The numbers come from the scoped door, asserted below. */
     r = await call(server, 'GET', `/api/elementix/people/${PID}/contact`, T);
-    ok(r.status === 200 && r.body.stored && Array.isArray(r.body.stored.phones) && r.body.stored.phones.length === 1,
-      'the phone number we paid for is held and readable');
+    ok(r.status === 200 && r.body.free === true && r.body.stored && r.body.stored.phoneCount === 1,
+      'the cost check says the next click is free, and says how much we hold');
+    ok(r.body.stored.phones === undefined && r.body.stored.emails === undefined
+       && !JSON.stringify(r.body).includes('9736680701'),
+      'and it never carries the contact detail itself — that is what the scoped door is for');
 
     // A second officer gets their OWN lead, and buys nothing.
     const before = seen.filter((c) => c.tool === 'submit_contact_enrichment').length;
@@ -273,6 +282,41 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
     ok(r.status === 403, 'an officer with no relationship to that borrower is refused');
     r = await call(server, 'GET', '/api/elementix/for/borrower/11111111-1111-4111-8111-111111111111', T);
     ok(r.status === 404, 'and a record that does not exist says so, rather than "not yours"');
+
+    /* THE PROFILE DOORS ARE SCOPED TOO — and this is the pair that was open.
+       `/for` refusing means nothing while `/people/:id/profile` will hand the
+       same merged record to anybody, and `/profile/build` is the most expensive
+       button on the plane: forty calls out of the allowance the whole company
+       shares, fired at a person the caller has no relationship with. "Seen"
+       therefore has to mean "seen BY YOU", through the same shared fragments. */
+    /* A person only THIS officer has a relationship with. PID will not do — the
+       second officer looked that one up themselves earlier and has their own
+       lead on them, which is a real relationship and must keep working. */
+    const PID_MINE = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    await db.query(`DELETE FROM leads WHERE elementix_person_id = $1`, [PID_MINE]);
+    await db.query(`DELETE FROM elementix_persons WHERE person_id = $1`, [PID_MINE]);
+    await db.query(
+      `INSERT INTO elementix_persons (person_id, display_name, primary_state)
+       VALUES ($1,'Mine Only','NJ') ON CONFLICT (person_id) DO NOTHING`, [PID_MINE]);
+    await db.query(
+      `INSERT INTO leads (tool, name, officer_id, source, status, elementix_person_id)
+       VALUES ('elementix','Mine Only',$1::uuid,'elementix','new',$2)`, [officer, PID_MINE]);
+
+    r = await call(server, 'GET', `/api/elementix/people/${PID_MINE}/profile`, T);
+    ok(r.status === 200, 'the officer whose lead carries the person reads their profile');
+    r = await call(server, 'GET', `/api/elementix/people/${PID_MINE}/profile`, T2);
+    ok(r.status === 404, 'an officer with no relationship to that record cannot read the profile');
+    const callsBefore = Number((await db.query(
+      `SELECT count(*)::int AS n FROM elementix_calls WHERE staff_id = $1`, [officer2])).rows[0].n);
+    r = await call(server, 'POST', `/api/elementix/people/${PID_MINE}/profile/build`, T2, { force: true });
+    ok(r.status === 404, 'and cannot spend the company\'s allowance building it');
+    const callsAfter = Number((await db.query(
+      `SELECT count(*)::int AS n FROM elementix_calls WHERE staff_id = $1`, [officer2])).rows[0].n);
+    ok(callsAfter === callsBefore, 'the refusal made no vendor call at all');
+    r = await call(server, 'GET', `/api/elementix/people/${PID}/profile`, T2);
+    ok(r.status === 200, 'but an officer who looked the person up themselves still reads theirs');
+    r = await call(server, 'GET', `/api/elementix/people/${PID_MINE}/profile`, TA);
+    ok(r.status === 200, 'an admin who sees every file still reads it');
 
     // -----------------------------------------------------------------------
     console.log('\n8. Does the next click cost money?');
