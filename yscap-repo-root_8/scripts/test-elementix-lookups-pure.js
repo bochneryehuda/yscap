@@ -348,6 +348,39 @@ console.log('\n6. A person is matched by their EXACT name, never a near one');
     'a vendor "nextPage" is REPORTED — a short answer must never pass as a complete one');
 }
 
+  /* THE WALL IS NOW A MACHINE CHECK, NOT A CONVENTION. The FCRA line this plane
+     is built on — contact detail may never appear in a lending decision — was
+     enforced by nothing but discipline: `lookups.js` refuses the paid tool, but
+     nothing stopped an underwriting module reading the stored numbers straight
+     out of the table. A sweep is the only thing that can say that about code
+     written next year. */
+  {
+    const fs = require('fs');
+    const path = require('path');
+    const root = path.join(__dirname, '..', 'src');
+    // The CRM plane and its one door are allowed to read the contact tables.
+    const ALLOWED = [
+      path.join('lib', 'elementix'),
+      path.join('routes', 'elementix-crm.js'),
+    ];
+    const offenders = [];
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { walk(full); continue; }
+        if (!e.name.endsWith('.js')) continue;
+        const rel = path.relative(root, full);
+        if (ALLOWED.some((a) => rel.startsWith(a))) continue;
+        const body = fs.readFileSync(full, 'utf8')
+          .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+        if (/elementix_contacts|elementix_skip_traces|contactFor\s*\(/.test(body)) offenders.push(rel);
+      }
+    };
+    walk(root);
+    ok(offenders.length === 0,
+      `only the CRM plane may read a stored contact — found: ${offenders.join(', ') || 'nothing'}`);
+  }
+
   console.log(fail ? `\n${fail} FAILURE(S)` : '\nOK  no skip trace is reachable, a phone number is shown only when already paid for, and nothing is guessed');
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('ERROR', e); process.exit(1); });

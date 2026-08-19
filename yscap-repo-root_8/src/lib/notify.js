@@ -45,6 +45,8 @@ const DELIVERY_DRAFTED = 'drafted';
 // can classify it before reading the title. Keyed by notification `type`;
 // borrower-safe (no capital-partner names). A caller may override via opts.kicker.
 const KICKER_OF = {
+  // A person an officer skip traced in Elementix, landed in their own CRM.
+  elementix_lead: 'New lead',
   status_change: 'Status update', closing_date: 'Closing date',
   // Kickers name the CATEGORY; the colored status pill (badge) carries the
   // action/outcome — so the two read as complementary, not redundant.
@@ -444,7 +446,13 @@ async function _mark(id, status) {
 // These types are ONLY ever suppressed for STAFF — the borrower-facing versions
 // (condition_added / doc_requested / doc_rejected) go through notifyBorrower,
 // which has its own BORROWER_MAJOR_EMAIL policy and is untouched by this set.
+// `elementix_lead` is in-app ONLY, deliberately: it fires the instant an officer
+// presses Skip trace, so it is a receipt for something they are watching happen
+// on their own screen. Emailing a confirmation of your own click is the
+// bombardment the 2026-07-20 rule exists to stop. The IMPORTED backfill is
+// silent for a stronger reason — see elementix/crm.js.
 const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added', 'draw_docs_pulled',
+  'elementix_lead',
   // The Arena's challenge bell. About twenty of these land across one sales
   // afternoon, and the people they are for are on the phone all day — emailing
   // every one is the fastest way to make the team filter the whole game into a
@@ -619,6 +627,9 @@ async function notifyStaff(staffId, opts) {
 
 // Map a notification `type` onto a user-facing preference category.
 const CATEGORY_OF = {
+  // CRM, not a loan file. 'other' is also what an unlisted type would default
+  // to, but it is stated so the decision is on the record rather than inherited.
+  elementix_lead: 'other',
   message: 'messages',
   status_change: 'status_updates', closing_date: 'status_updates',
   doc_rejected: 'documents', doc_accepted: 'documents', doc_uploaded: 'documents',

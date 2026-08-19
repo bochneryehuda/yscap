@@ -235,6 +235,31 @@ async function ensureSession(token, tokenType) {
 }
 
 /**
+ * WHOSE SEAT THE CALL GOES OUT ON — which is not always whose name is on it.
+ *
+ * `opts.staffId` answers "who is spending the allowance", and it is what the
+ * call ledger records; it is REQUIRED, because a call with no person behind it
+ * has no business on this plane. Normally that same person's connection is the
+ * one to use, so the two are the same.
+ *
+ * `opts.tokenSeat` separates them for the one case where they genuinely differ:
+ * an admin asking Elementix "who does the COMPANY connection belong to?". The
+ * question is about the company seat, so it must go out on the company token —
+ * but the person asking is the admin, and the ledger should say so. Without the
+ * split, an admin who has also connected their OWN Elementix login would ask
+ * that question down their own connection and get their own name back, which
+ * then gets written onto the company row as its label.
+ *
+ * `null` is a MEANINGFUL value here (the company connection), so the presence of
+ * the key decides, never its truthiness.
+ */
+function tokenSeat(opts) {
+  return (opts && Object.prototype.hasOwnProperty.call(opts, 'tokenSeat'))
+    ? (opts.tokenSeat || null)
+    : ((opts && opts.staffId) || null);
+}
+
+/**
  * Call a tool. NEVER THROWS — always returns a shaped result, so a lookup that
  * fails degrades to a message on the screen instead of a 500.
  *
@@ -261,7 +286,11 @@ async function callTool(name, args = {}, opts = {}) {
      guard throttle on its own refusals. A PAID call is already recorded by
      recordPaid, so it is not recorded twice here. */
   const wentOut = !['disabled', 'not_configured', 'rate_limited', 'paid_tool_refused',
-    'paid_cap_reached', 'paid_cap_unknown', 'no_tool'].includes(out && out.reason);
+    'paid_cap_reached', 'paid_cap_unknown', 'no_tool', 'dry_run',
+    // The OAuth gate refuses BEFORE the wire too. Counting those made a
+    // disconnected Elementix throttle the underwriting desk on calls nobody made.
+    'not_connected', 'reapproval_needed', 'refresh_failed', 'store_unreadable',
+  ].includes(out && out.reason);
   if (wentOut && !PAID_TOOLS.has(String(name || ''))) recordCall(String(name || ''), opts, out).catch(() => {});
   return out;
 }
@@ -270,11 +299,23 @@ async function callToolInner(name, args, opts) {
   const toolName = String(name || '');
   if (!toolName) return { ok: false, reason: 'no_tool' };
 
-  // The paid refusal comes FIRST, before anything about the environment is read.
+  // The paid REFUSAL comes FIRST, before anything about the environment is read.
   // It is a rule about what the CALLER asked for, so it must not depend on a
   // switch, a URL or a stored token: no configuration state can ever be arranged
-  // such that a sweep spends credits, and a caller that forgot `allowPaid` is
+  // such that a sweep spends credits, and a caller that forgot `paidActor` is
   // told exactly that rather than "not configured".
+  //
+  // THE LEDGER WRITE IS A DIFFERENT THING AND IT MOVED (audit 2026-08-19). The
+  // refusals below cost nothing and belong here; `recordPaid` does not, because
+  // it writes a row against the owner's 1,000-a-month. It used to run here, and
+  // that was harmless only while `submit_contact_enrichment` was FORBIDDEN on
+  // the one plane that existed. The CRM plane made this branch reachable, and
+  // the ordering became a real bug: with Elementix switched off, rate-limited or
+  // in dry run, a paid row was written and THEN the call returned "switched
+  // off" — nothing bought, the cap shrunk anyway. So the checks stay first and
+  // the WRITE moved down to just after the go/no-go gates, still BEFORE the
+  // wire, so a crash mid-call can never lose a spend.
+  let paidActorToRecord = null;
   if (PAID_TOOLS.has(toolName)) {
     /* `allowPaid: true` was a BOOLEAN, and a boolean cannot answer the two
        questions a spend has to answer later: who asked, and for whom. It was
@@ -303,7 +344,7 @@ async function callToolInner(name, args, opts) {
       return { ok: false, reason: 'paid_cap_reached',
         detail: `The ${cap} contact look-ups for this month are used up (${spent.n}). It resets next month.` };
     }
-    await recordPaid(toolName, actor);
+    paidActorToRecord = actor;
   }
 
   if (!available()) return { ok: false, reason: 'not_configured', detail: 'ELEMENTIX_URL is not set.' };
@@ -316,12 +357,25 @@ async function callToolInner(name, args, opts) {
   if (over) return { ok: false, reason: 'rate_limited', detail: over };
 
   if (dryrun()) {
+    /* A DRY RUN IS A REFUSAL, NOT AN ANSWER. `{ok:true, data:null}` reads as
+       "nobody by that name" to every caller that counts rows, and would tell an
+       officer their contact is on its way while nothing was sent. `dryRun` is
+       kept on the shape so a caller can tell this refusal from a real one. */
     console.log('[elementix] DRY-RUN tools/call', toolName, JSON.stringify(args).slice(0, 400));
-    return { ok: true, dryRun: true, data: null };
+    return { ok: false, reason: 'dry_run', dryRun: true, data: null,
+      detail: 'Elementix is in dry-run mode, so nothing was sent.' };
   }
 
-  const auth = await oauth.accessToken(opts.staffId || null);
+  /* THE TOKEN IS RESOLVED BEFORE THE SPEND IS RECORDED, because resolving it is
+     still a REFUSAL: an expired connection with no refresh token answers
+     `not_connected`, and recording the spend above it burned a credit out of the
+     month's allowance on a call that never happened — on every retry, all
+     weekend, until the cap refused real work. Everything below this line reaches
+     the wire, so the ledger write still cannot miss a spend. */
+  const auth = await oauth.accessToken(tokenSeat(opts));
   if (!auth.ok) return { ok: false, reason: auth.reason, detail: auth.detail };
+
+  if (paidActorToRecord) await recordPaid(toolName, paidActorToRecord);
 
   const attempt = async (token, tokenType) => {
     const s = await ensureSession(token, tokenType);
@@ -348,7 +402,7 @@ async function callToolInner(name, args, opts) {
     /* forceRefresh, because the rejection IS the evidence the held token is
        bad — without it this "retry with a freshly refreshed token" handed back
        the same cached token and the retry proved nothing. */
-    const again = await oauth.accessToken(opts.staffId || null, { forceRefresh: true });
+    const again = await oauth.accessToken(tokenSeat(opts), { forceRefresh: true });
     if (!again.ok) return { ok: false, reason: again.reason, detail: again.detail };
     out = await attempt(again.token, again.tokenType);
   }
@@ -414,7 +468,7 @@ async function listTools(opts = {}) {
   // waits its turn like everything else rather than jumping the queue.
   const overList = overBudget();
   if (overList) return { ok: false, reason: 'rate_limited', detail: overList };
-  const auth = await oauth.accessToken(opts.staffId || null);
+  const auth = await oauth.accessToken(tokenSeat(opts));
   if (!auth.ok) return { ok: false, reason: auth.reason, detail: auth.detail };
   const s = await ensureSession(auth.token, auth.tokenType);
   if (!s.ok) return { ok: false, reason: s.reason || 'transport', detail: s.detail };

@@ -6,6 +6,7 @@ import { fmtDay } from '../lib/dates.js';
 import { useFlash } from '../components/FlashToast.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { askConfirm } from '../lib/dialog.js';
+import ElementixFinder from '../components/ElementixFinder.jsx';
 import {
   STAGES, STAGE_LABEL, STAGE_PILL, BOARD_STAGES, OPEN_STAGES, SOURCES, PROGRAMS,
   TOOL_LABEL, leadName, initials, money, dueSoon, todayStr,
@@ -17,21 +18,120 @@ import {
    full lead workspace (timeline, tasks, files, convert). Admins/underwriters see
    every lead; a loan officer sees theirs plus the shared (unassigned) desk. */
 
-// The EFFECTIVE source for filtering/labels: the generic 'marketing_site'
-// bucket (every public form lands there; the db/101 boot backfill stamps
-// lead_source with it) is useless as a filter — fall through to the TOOL so
-// "Newsletter / updates subscription" vs "Loan application" stay distinct.
-// This also keeps the bulk-archive (#153) keyed to ONE tool, never a sweep of
-// every public lead at once (audit-caught 2026-07-17).
-const effSource = (l) => {
-  const src = l.lead_source || l.source;
-  return (src && src !== 'marketing_site') ? src : (l.tool || src);
-};
+/* ── WHERE A LEAD CAME FROM — ONE DEFINITION, FOUR READERS ──────────────────
+   The badge on every row, the picker, the count beside each choice and the
+   bulk archive all ask THIS function. Two copies of "what an Elementix lead
+   is" would drift, and the one that drifted would be the one an officer
+   filtered by.
 
-export default function StaffLeads() {
+   It reads the columns the lead ALREADY carries — no second source vocabulary
+   is invented for this screen:
+     source       WHICH SYSTEM opened the lead: 'elementix' (an officer skip
+                  traced somebody and it became a workable lead), 'manual'
+                  (typed on this desk), 'portal_invite', 'marketing_site'
+     tool         WHICH public form — because EVERY public form lands in the
+                  generic 'marketing_site' bucket, so that bucket on its own
+                  says nothing, and #153's bulk archive must stay keyed to ONE
+                  form instead of sweeping the whole public desk at once
+     lead_source  the channel a human picked on a hand-typed lead ('referral',
+                  'website', …), read as COALESCE(lead_source, source) — the
+                  same expression the server counts and archives on
+
+   `key` is what the picker holds; `originParams(key)` turns it back into the
+   SERVER's filter, so the group on screen and the rows that come back are
+   defined in exactly one place. It works on a lead row and on a facet row
+   alike, because both carry those same three columns.
+
+   An origin this desk has no name for is labelled with what the column
+   actually says and nothing more — never guessed into the nearest bucket. */
+
+const ELEMENTIX_KEY = 'source:elementix';
+const CHANNEL_LABEL = { manual: 'Added by hand', 'call-in': 'Call-in', 'repeat client': 'Repeat client' };
+const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+function originOf(r) {
+  const source = String((r && r.source) || '').trim();
+  const tool = String((r && r.tool) || '').trim();
+  const chan = String((r && r.lead_source) || source || '').trim();
+
+  if (source === 'elementix') {
+    // No `archive` key: an Elementix lead cost a credit to create, and the bulk
+    // archive matches COALESCE(lead_source, source) — 'elementix_skip_trace'
+    // here — so a one-click sweep of this group would either miss or overreach.
+    return { key: ELEMENTIX_KEY, label: 'Elementix', pill: 'info', elementix: true,
+      title: 'Skip traced in Elementix by an officer, and opened here as a lead.' };
+  }
+  if (source === 'portal_invite') {
+    return { key: 'source:portal_invite', label: 'Portal invite', pill: 'mut',
+      title: 'Invited to the borrower portal from this desk.' };
+  }
+  if (source === 'manual') {
+    return { key: `chan:${chan}`, label: CHANNEL_LABEL[chan] || cap(chan), pill: 'mut',
+      archive: { source: chan },
+      title: chan && chan !== 'manual'
+        ? `Typed in by hand, recorded as “${chan}”.`
+        : 'Typed in on this desk by hand.' };
+  }
+  if (source === 'marketing_site') {
+    return tool
+      ? { key: `tool:${tool}`, label: TOOL_LABEL[tool] || tool, pill: 'mut', archive: { tool },
+        title: `Came in from the public ${TOOL_LABEL[tool] || tool} form.` }
+      : { key: 'source:marketing_site', label: 'Marketing site', pill: 'mut',
+        title: 'Came in from the public site; the form it used was not recorded.' };
+  }
+  if (!source) {
+    // The column is NOT NULL in the database, so a blank one means this row did
+    // not carry it (an older server answering a newer screen). Say that, rather
+    // than sorting it into a bucket it may not belong in. `key: null` keeps it
+    // out of the picker: there is nothing exact to ask the server for.
+    return { key: null, label: 'Source not recorded', pill: 'mut',
+      title: 'This lead did not come back with where it came from.' };
+  }
+  return { key: `source:${source}`, label: source, pill: 'mut',
+    title: `Recorded on the lead as “${source}” — this desk has no name for that source yet.` };
+}
+
+/** The picker's key → the server's own filter. The one place a group becomes a query. */
+function originParams(key) {
+  if (!key) return {};
+  const i = key.indexOf(':');
+  const kind = key.slice(0, i), value = key.slice(i + 1);
+  if (kind === 'tool') return { tool: value };
+  if (kind === 'chan') return { source: 'manual', leadSource: value };
+  return { source: value };
+}
+
+/* The group a key NAMES, when the desk holds no row of it to read the name off.
+   It goes back through `originOf` rather than keeping a second table of labels
+   — the round trip is what makes an empty group and a full one describe
+   themselves identically. */
+function originFromKey(key) {
+  const p = originParams(key);
+  return originOf({ source: p.tool ? 'marketing_site' : p.source, tool: p.tool, lead_source: p.leadSource });
+}
+
+/* ── ONE SCREEN, TWO PLACES IT IS MOUNTED ───────────────────────────────────
+   `/internal/leads` mounts this with NO props — every default below is exactly
+   what this desk has always done. The admin CRM desk (`/internal/crm`) mounts
+   the SAME component with `officerId` set, which narrows it to one officer's
+   book. There is deliberately no second copy of the board: two lead boards
+   would drift, and the one that drifted would be the one an admin was reading
+   somebody's numbers off.
+
+   `officerId`   whose book to show. Absent → today's behaviour (the caller's
+                 own scope). Present → the SERVER's `officerId` filter, which is
+                 ANDed onto the same visibility scope, so it can only ever
+                 narrow; a loan officer cannot use it to read anybody else.
+   `officerName` who that is, for the heading. Display only. */
+export default function StaffLeads({ officerId = null, officerName = null }) {
   const { actor, can } = useAuth();
   const nav = useNavigate();
   const seesAll = can ? can('see_all_files') : false;
+  // Reading somebody else's book is a different job from working your own: the
+  // two buttons that create a lead OWNED BY WHOEVER CLICKS THEM are hidden, so
+  // an admin looking at another officer's desk cannot quietly add a lead to
+  // their own. "+ Add lead" stays — it carries an officer picker.
+  const viewingOther = !!officerId && !!(actor && officerId !== actor.id);
   const [rows, setRows] = useState(null);
   const [team, setTeam] = useState([]);
   const [err, setErr] = useState('');
@@ -39,18 +139,71 @@ export default function StaffLeads() {
   const [q, setQ] = useState('');
   const [stageF, setStageF] = useState('');
   const [ownerF, setOwnerF] = useState('');
-  const [sourceF, setSourceF] = useState('');
+  const [originF, setOriginF] = useState('');     // where the lead came from — filtered ON THE SERVER
+  const [facets, setFacets] = useState([]);       // how many leads each origin holds, inside this officer's scope
   const [scope, setScope] = useState('open');     // open | all
   const [addOpen, setAddOpen] = useState(false);
+  const [elxOpen, setElxOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
 
-  const load = () => api.staffLeads().then(setRows).catch(e => setErr(e.message));
-  useEffect(() => { load(); api.staffTeam().then(setTeam).catch(() => {}); }, []);
+  /* THE ORIGIN FILTER IS THE SERVER'S, NOT THE BROWSER'S. This list comes back
+     capped at 500 rows, so filtering the page we happen to hold would answer
+     "you have 4 Elementix leads" on a desk that holds 400 — and the officer
+     whose leads are past row 500 would never see them at all. `counts:1` asks
+     for the per-origin totals in the same breath, inside the same scope. */
+  const load = () => api.staffLeads({ ...originParams(originF), ...(officerId ? { officerId } : {}), counts: 1 })
+    .then((d) => {
+      // A server that has not been redeployed yet still answers with the bare
+      // array it always did — read both shapes rather than render nothing.
+      setRows(Array.isArray(d) ? d : ((d && d.rows) || []));
+      setFacets((!Array.isArray(d) && d && Array.isArray(d.facets)) ? d.facets : []);
+    })
+    .catch(e => setErr(e.message));
+  // Re-fetch when the chosen origin changes — that filter is answered by the
+  // server, so a new choice is a new request, not a re-filter of what we hold.
+  // (`load` is re-created every render and is deliberately NOT a dependency;
+  // adding it would refetch on every keystroke in the search box.)
+  useEffect(() => { load(); }, [originF, officerId]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { api.staffTeam().then(setTeam).catch(() => {}); }, []);
   // A lead action fires from a card/row anywhere down the board — its result
   // goes to the fixed toast so it never shoves the board (see FlashToast.jsx).
   const { flash, toast } = useFlash();
 
   const officers = useMemo(() => team.filter(m => ['loan_officer', 'admin', 'super_admin', 'processor'].includes(m.role)), [team]);
+
+  /* The picker's choices, built from the server's counts through the SAME
+     `originOf` the badges use — so a group can never be labelled one way on a
+     row and another way in the list you filter by. The counts are deliberately
+     taken UNFILTERED (the server counts before it filters), so choosing one
+     group does not collapse the list of groups you can choose next. */
+  const origins = useMemo(() => {
+    const by = new Map();
+    for (const f of facets) {
+      const o = originOf(f);
+      if (!o.key) continue;
+      const cur = by.get(o.key);
+      if (cur) cur.count += (Number(f.count) || 0);
+      else by.set(o.key, { ...o, count: Number(f.count) || 0 });
+    }
+    // Elementix is ALWAYS offered, at zero as much as at four hundred: "none
+    // yet" is an answer an officer is entitled to get from the picker rather
+    // than from a choice that quietly is not there.
+    if (!by.has(ELEMENTIX_KEY)) by.set(ELEMENTIX_KEY, { ...originFromKey(ELEMENTIX_KEY), count: 0 });
+    // And whatever is selected stays on screen even if its count drops to zero,
+    // so the picker never shows a blank while a filter is still applied.
+    if (originF && !by.has(originF)) by.set(originF, { ...originFromKey(originF), count: 0 });
+    const all = [...by.values()];
+    const elx = all.filter(o => o.key === ELEMENTIX_KEY);
+    const rest = all.filter(o => o.key !== ELEMENTIX_KEY)
+      .sort((a, b) => (b.count - a.count) || String(a.label).localeCompare(String(b.label)));
+    return [...elx, ...rest];   // Elementix pinned first — it is the group this desk was asked to make findable
+  }, [facets, originF]);
+
+  const origin = useMemo(() => origins.find(o => o.key === originF) || null, [origins, originF]);
+  const elxCount = useMemo(() => {
+    const e = origins.find(o => o.key === ELEMENTIX_KEY);
+    return e ? e.count : 0;
+  }, [origins]);
 
   const shown = useMemo(() => {
     if (!rows) return [];
@@ -61,14 +214,15 @@ export default function StaffLeads() {
       if (ownerF === 'me' && !(actor && l.officer_id === actor.id)) return false;
       if (ownerF === 'unassigned' && l.officer_id) return false;
       if (ownerF && ownerF !== 'me' && ownerF !== 'unassigned' && l.officer_id !== ownerF) return false;
-      if (sourceF && effSource(l) !== sourceF) return false;
+      // No source test here on purpose: the origin filter is applied by the
+      // server, over the whole desk, not over the page this browser holds.
       if (term) {
         const hay = [leadName(l), l.company, l.email, l.phone, l.referral_partner].filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(term)) return false;
       }
       return true;
     });
-  }, [rows, q, stageF, ownerF, sourceF, scope, actor]);
+  }, [rows, q, stageF, ownerF, scope, actor]);
 
   if (err) return <div role="alert" className="notice err">{err}</div>;
   if (rows == null) return <div className="panel pad muted">Loading leads…</div>;
@@ -80,8 +234,6 @@ export default function StaffLeads() {
   const wonCount = cnt(l => l.status === 'converted');
   const pipelineValue = rows.filter(l => OPEN_STAGES.includes(l.status)).reduce((s, l) => s + (Number(l.loan_amount) || 0), 0);
 
-  const sources = [...new Set(rows.map(effSource).filter(Boolean))];
-
   async function quickStage(l, status) {
     try { await api.staffUpdateLead(l.id, { status }); await load(); flash(`Moved to ${STAGE_LABEL[status]}`); }
     catch (e) { setErr(e.message); }
@@ -91,16 +243,28 @@ export default function StaffLeads() {
     <>
       <div className="page-head">
         <div>
-          <h1>Leads</h1>
-          <div className="sub">Your lead desk — capture, qualify, and work every opportunity to a live file.</div>
+          {/* WHOSE DESK THIS IS. The heading names the officer when this screen
+              is opened from the admin CRM desk, so a page of somebody else's
+              leads can never be mistaken for your own — with dark text on the
+              white canvas per the standing rule. */}
+          <h1 style={{ color: '#141B22' }}>{officerName || 'Leads'}</h1>
+          <div className="sub" style={{ color: '#4B585C' }}>
+            {officerId
+              ? `Every lead ${officerName ? officerName + ' owns' : 'this officer owns'} — the same board they see. The shared unassigned desk is not counted here.`
+              : 'Your lead desk — capture, qualify, and work every opportunity to a live file.'}
+          </div>
         </div>
         <div className="page-head-actions">
           <div className="seg" role="tablist">
             <button className={`tab ${view === 'board' ? 'on' : ''}`} onClick={() => setView('board')}>Board</button>
             <button className={`tab ${view === 'list' ? 'on' : ''}`} onClick={() => setView('list')}>List</button>
           </div>
-          <button className="btn btn-line btn-sm" onClick={() => setInviteOpen(true)}
-            title="Invite anyone by email to the borrower portal — they're auto-assigned to you and opened as a lead">Invite to portal ✉</button>
+          {!viewingOther && <button className="btn btn-line btn-sm" onClick={() => setInviteOpen(true)}
+            title="Invite anyone by email to the borrower portal — they're auto-assigned to you and opened as a lead">Invite to portal ✉</button>}
+          {!viewingOther && <button className="btn btn-line btn-sm" onClick={() => setElxOpen((v) => !v)}
+            title="Search Elementix by name and pull somebody in as a lead — with every phone number and email on record. Free if a colleague has already looked them up.">
+            {elxOpen ? 'Close Elementix' : 'Add from Elementix'}
+          </button>}
           <button className="btn btn-gold btn-sm" onClick={() => setAddOpen(true)}>+ Add lead</button>
         </div>
       </div>
@@ -108,12 +272,42 @@ export default function StaffLeads() {
       {toast}
 
       <div className="stack">
+        {elxOpen && (
+          <ElementixFinder
+            onAdded={() => { load(); }}
+            onClose={() => setElxOpen(false)}
+          />
+        )}
         <div className="kpi-grid">
           <div className="kpi"><div className="v">{newCount}</div><div className="k">New</div><div className="d">Awaiting first touch</div></div>
           <div className="kpi"><div className="v">{workingCount}</div><div className="k">Working</div><div className="d">Contacted → in progress</div></div>
           <div className="kpi"><div className="v">{dueCount}</div><div className="k">Follow-up due</div><div className="d">On/past their date</div></div>
           <div className="kpi"><div className="v">{money(pipelineValue) || '$0'}</div><div className="k">Open pipeline</div><div className="d">Est. loan value</div></div>
+          {/* HOW MANY OF THESE CAME OUT OF ELEMENTIX — the whole point of the
+              skip trace is that those contacts become workable leads, so the
+              officer can see the size of that group and jump straight to it.
+              The number is the SERVER's count over this officer's whole desk,
+              not a count of the page below it. */}
+          <div className="kpi" role="button" tabIndex={0}
+            style={{ cursor: 'pointer', outline: originF === ELEMENTIX_KEY ? '2px solid #141B22' : undefined }}
+            aria-pressed={originF === ELEMENTIX_KEY}
+            title="Show only the leads that came from an Elementix skip trace"
+            onClick={() => setOriginF(originF === ELEMENTIX_KEY ? '' : ELEMENTIX_KEY)}
+            onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), setOriginF(originF === ELEMENTIX_KEY ? '' : ELEMENTIX_KEY))}>
+            <div className="v">{elxCount}</div>
+            <div className="k">From Elementix</div>
+            <div className="d">{officerId ? 'This officer’s' : (seesAll ? 'Every officer’s' : 'Yours + the shared desk')}</div>
+          </div>
         </div>
+
+        {/* The four figures above read the rows this filter returned — say so,
+            rather than let "New: 3" quietly change meaning when a group is on. */}
+        {origin && (
+          <div className="muted small" style={{ marginTop: -6 }}>
+            Showing <strong>{origin.label}</strong> leads only — the figures above cover that group.
+            {' '}<button className="btn ghost small" onClick={() => setOriginF('')}>Show every source</button>
+          </div>
+        )}
 
         {/* Filters */}
         <div className="row lead-filters" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -123,16 +317,24 @@ export default function StaffLeads() {
             <option value="">All stages</option>
             {STAGES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select>
-          <select className="input flt-sm" style={{ width: 160 }} value={ownerF} onChange={e => setOwnerF(e.target.value)}>
+          {/* Every row already belongs to the one officer being read, so an owner
+              picker here would offer choices that can only return nothing. */}
+          {!officerId && <select className="input flt-sm" style={{ width: 160 }} value={ownerF} onChange={e => setOwnerF(e.target.value)}>
             <option value="">All owners</option>
             <option value="me">My leads</option>
             <option value="unassigned">Unassigned</option>
             {seesAll && officers.map(o => <option key={o.id} value={o.id}>{o.full_name}</option>)}
-          </select>
-          {sources.length > 1 && (
-            <select className="input flt-sm" style={{ width: 150 }} value={sourceF} onChange={e => setSourceF(e.target.value)}>
+          </select>}
+          {(origins.length > 1 || originF) && (
+            <select className="input flt-sm" style={{ width: 190 }} value={originF}
+              aria-label="Where the lead came from"
+              onChange={e => setOriginF(e.target.value)}>
               <option value="">All sources</option>
-              {sources.map(s => <option key={s} value={s}>{TOOL_LABEL[s] || s}</option>)}
+              {origins.map(o => (
+                <option key={o.key} value={o.key}>
+                  {(o.key === ELEMENTIX_KEY ? 'From Elementix' : o.label) + ` (${o.count})`}
+                </option>
+              ))}
             </select>
           )}
           <label className="row small" style={{ gap: 6, alignItems: 'center', cursor: 'pointer' }}>
@@ -141,18 +343,24 @@ export default function StaffLeads() {
           </label>
           <span className="muted small">{shown.length} shown</span>
           {/* #153: one-click cleanup of a spam wave — archive every open lead
-              from the selected source (admin only; the source filter must be
-              chosen so it can never sweep the whole desk). */}
-          {sourceF && ['admin', 'super_admin'].includes(actor?.role) && (
+              from the selected source (admin only; a source must be chosen so
+              it can never sweep the whole desk).
+
+              The button appears ONLY for a group the archive endpoint can
+              address exactly — `origin.archive` comes from the same definition
+              the filter does, so what you are looking at and what gets archived
+              are the same rows. A group it cannot address exactly (Elementix,
+              portal invites) gets no button rather than a button that archives
+              the wrong set, or none, while reporting success. Elementix leads
+              cost a credit each; they are not one-click disposable. */}
+          {origin && origin.archive && ['admin', 'super_admin'].includes(actor?.role) && (
             <button className="btn ghost small" onClick={async () => {
-              const label = TOOL_LABEL[sourceF] || sourceF;
-              if (!(await askConfirm(`Archive ALL open "${label}" leads? Converted leads are never touched.`))) return;
+              if (!(await askConfirm(`Archive ALL open "${origin.label}" leads? Converted leads are never touched.`))) return;
               try {
-                const key = TOOL_LABEL[sourceF] ? { tool: sourceF } : { source: sourceF };
-                const r = await api.staffLeadsBulkArchive(key);
-                await load(); flash(`Archived ${r.archived} ${label} lead${r.archived === 1 ? '' : 's'}.`);
+                const r = await api.staffLeadsBulkArchive(origin.archive);
+                await load(); flash(`Archived ${r.archived} ${origin.label} lead${r.archived === 1 ? '' : 's'}.`);
               } catch (e2) { setErr(e2.message || 'Bulk archive failed'); }
-            }}>Archive all “{TOOL_LABEL[sourceF] || sourceF}”</button>
+            }}>Archive all “{origin.label}”</button>
           )}
         </div>
 
@@ -161,7 +369,7 @@ export default function StaffLeads() {
           : <LeadList leads={shown} onOpen={(l) => nav(`/internal/leads/${l.id}`)} actor={actor} />}
       </div>
 
-      {addOpen && <AddLeadModal officers={officers} seesAll={seesAll}
+      {addOpen && <AddLeadModal officers={officers} seesAll={seesAll} defaultOfficerId={officerId || ''}
         onClose={() => setAddOpen(false)}
         onCreated={(leadId) => { setAddOpen(false); nav(`/internal/leads/${leadId}`); }} onErr={setErr} />}
 
@@ -200,6 +408,7 @@ function LeadBoard({ leads, onOpen, onStage, actor }) {
 
 function LeadCard({ l, onOpen, onStage, actor }) {
   const mine = l.officer_id && actor && l.officer_id === actor.id;
+  const o = originOf(l);
   return (
     <div className="lead-card" role="button" tabIndex={0}
       onClick={() => onOpen(l)} onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onOpen(l))}>
@@ -210,7 +419,15 @@ function LeadCard({ l, onOpen, onStage, actor }) {
       {l.company && <div className="lead-card-sub">{l.company}</div>}
       <div className="lead-card-meta">
         {l.program && <span className="tagm">{l.program}</span>}
-        {effSource(l) && <span className="tagm mut">{TOOL_LABEL[effSource(l)] || effSource(l)}</span>}
+        <span className={o.elementix ? 'tagm' : 'tagm mut'} title={o.title}>{o.label}</span>
+        {/* This lead is tied to a person in Elementix, so opening it shows the
+            whole profile — companies, properties, mortgages, deeds. Say so on
+            the card; the card already opens the lead. */}
+        {l.elementix_person_id && (
+          <span className="tagm" title="Opening this lead shows their Elementix profile — companies, properties, mortgages, deeds.">
+            Profile on file
+          </span>
+        )}
       </div>
       <div className="lead-card-foot">
         <span className="lead-card-owner">
@@ -240,13 +457,30 @@ function LeadList({ leads, onOpen, actor }) {
           <tbody>
             {leads.map(l => {
               const mine = l.officer_id && actor && l.officer_id === actor.id;
+              const o = originOf(l);
               return (
                 <tr key={l.id} className="lead-row" onClick={() => onOpen(l)}>
                   <td className="cell-deal">
                     <span className="who"><span className="mono">{initials(leadName(l))}</span><span className="lead">{leadName(l)}</span></span>
                     {l.company && <div className="mut">{l.company}</div>}
                   </td>
-                  <td className="mut">{TOOL_LABEL[effSource(l)] || effSource(l) || '—'}</td>
+                  {/* WHERE THIS LEAD CAME FROM, and — when it came from a skip
+                      trace — the way through to the person behind it. The lead
+                      page carries the full Elementix profile, so the link goes
+                      there; `stopPropagation` only stops the row's own click
+                      firing twice for the same destination. */}
+                  <td>
+                    <span className={`pill ${o.pill}`} title={o.title}>{o.label}</span>
+                    {l.elementix_person_id && (
+                      <div style={{ marginTop: 4 }}>
+                        <Link to={`/internal/leads/${l.id}`} onClick={e => e.stopPropagation()}
+                          style={{ color: '#141B22', fontWeight: 600, fontSize: 12, textDecoration: 'underline' }}
+                          title="Their Elementix profile — companies, properties, mortgages, deeds — is on this lead">
+                          Elementix profile →
+                        </Link>
+                      </div>
+                    )}
+                  </td>
                   <td><span className={`pill ${STAGE_PILL[l.status] || 'mut'}`}>{STAGE_LABEL[l.status] || l.status}</span></td>
                   <td>{l.officer_name
                     ? <span className="off"><span className="mono">{initials(l.officer_name)}</span>{mine ? 'You' : l.officer_name}</span>
@@ -266,8 +500,10 @@ function LeadList({ leads, onOpen, actor }) {
 }
 
 // ---- Add-lead modal --------------------------------------------------------
-function AddLeadModal({ officers, seesAll, onClose, onCreated, onErr }) {
-  const [f, setF] = useState({ firstName: '', lastName: '', company: '', email: '', phone: '', leadSource: 'referral', referralPartner: '', program: '', loanAmount: '', officerId: '' });
+function AddLeadModal({ officers, seesAll, defaultOfficerId = '', onClose, onCreated, onErr }) {
+  // Opened from the admin CRM desk, the new lead starts on the officer whose
+  // book is on screen — never silently on whoever is holding the mouse.
+  const [f, setF] = useState({ firstName: '', lastName: '', company: '', email: '', phone: '', leadSource: 'referral', referralPartner: '', program: '', loanAmount: '', officerId: defaultOfficerId || '' });
   const [busy, setBusy] = useState(false);
   const [autoState, setAutoState] = useState('');   // '', 'saving', 'saved'
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));

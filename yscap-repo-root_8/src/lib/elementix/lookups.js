@@ -233,7 +233,7 @@ async function call(tool, args, opts = {}) {
      "the county does not publish online" about a search that never left the
      building (owner-reported 2026-08-09). For RESEARCH purposes a dry run is
      a refusal with a reason, like disabled or rate-limited. */
-  if (out && out.ok && out.dryRun) {
+  if (out && out.dryRun) {   // the transport already refuses; this keeps the door's own wording
     return bad('dry_run',
       'Dry-run mode is ON, so the lookup was logged but never sent. Turn dry-run OFF on the API Health page to really search.');
   }

@@ -16,7 +16,6 @@
     "Trimmed to the fields the readers touch, plus the ones that previously misled.",
     "Nothing is renamed; keys are exactly as the vendor sent them."
   ],
-
   "match_entity": {
     "_note": "SINGULAR `match` OBJECT — not an array, and not under any key rowsOf looked for. The name is `originalName`/`normalizedName`, never `name`.",
     "status": "exact",
@@ -26,10 +25,16 @@
       "normalizedName": "MW TRADING LLC",
       "state": "NJ"
     },
-    "differs": { "alias": false, "successor": false, "fiduciary": false },
-    "normalized": { "name": "MW TRADING LLC", "state": "NJ" }
+    "differs": {
+      "alias": false,
+      "successor": false,
+      "fiduciary": false
+    },
+    "normalized": {
+      "name": "MW TRADING LLC",
+      "state": "NJ"
+    }
   },
-
   "get_entity_deeds": {
     "_note": "Envelope is {data, nextPage}. A ROW HAS NO `address` FIELD — it has `addresses[{id,addressFull}]`. The price is `totalConsideration` (never `consideration`) and the date is `recordingDate` (never `recordedDate`). `isGrantee`/`isGrantor` are computed SERVER-SIDE against the entity that was queried.",
     "data": [
@@ -40,19 +45,46 @@
         "countyDocumentId": "2026053871",
         "isCashPurchase": false,
         "totalConsideration": 569000,
-        "grantors": ["MW TRADING LLC"],
-        "grantees": ["LITTLE DERFEL LLC"],
-        "entityGrantorIds": ["172d65f6-b674-58a6-b0ef-ffc23a761ccb"],
-        "entityGranteeIds": ["a84853ae-149c-5973-aaf9-2acae47f2287"],
+        "grantors": [
+          "MW TRADING LLC"
+        ],
+        "grantees": [
+          "LITTLE DERFEL LLC"
+        ],
+        "entityGrantorIds": [
+          "172d65f6-b674-58a6-b0ef-ffc23a761ccb"
+        ],
+        "entityGranteeIds": [
+          "a84853ae-149c-5973-aaf9-2acae47f2287"
+        ],
         "isGrantor": true,
         "isGrantee": false,
         "mlsSalePrice": 569000,
         "mlsSaleStatus": "off_market",
         "mlsRentPrice": null,
         "mlsRentStatus": null,
-        "addresses": [{ "id": "9618d8b6-be56-51b9-89b5-3bccb73171a0", "addressFull": "30 RUSSELL ST, TOMS RIVER, NJ 08753" }],
-        "grantorEntities": [{ "id": "172d65f6-b674-58a6-b0ef-ffc23a761ccb", "name": "MW TRADING LLC", "type": "COMPANY", "state": "NJ" }],
-        "granteeEntities": [{ "id": "a84853ae-149c-5973-aaf9-2acae47f2287", "name": "LITTLE DERFEL LLC", "type": "COMPANY", "state": "NJ" }]
+        "addresses": [
+          {
+            "id": "9618d8b6-be56-51b9-89b5-3bccb73171a0",
+            "addressFull": "30 RUSSELL ST, TOMS RIVER, NJ 08753"
+          }
+        ],
+        "grantorEntities": [
+          {
+            "id": "172d65f6-b674-58a6-b0ef-ffc23a761ccb",
+            "name": "MW TRADING LLC",
+            "type": "COMPANY",
+            "state": "NJ"
+          }
+        ],
+        "granteeEntities": [
+          {
+            "id": "a84853ae-149c-5973-aaf9-2acae47f2287",
+            "name": "LITTLE DERFEL LLC",
+            "type": "COMPANY",
+            "state": "NJ"
+          }
+        ]
       },
       {
         "_note": "dataSource 'external' — the SAME transaction can appear again as 'elementix' with a different id. De-duplicate or one flip counts twice.",
@@ -60,26 +92,58 @@
         "dataSource": "external",
         "recordingDate": "2026-05-18",
         "totalConsideration": 475000,
-        "grantors": ["TRAVIS TRAN", "HATRAN JILLIAN"],
-        "grantees": ["MW TRADING LLC"],
-        "entityGrantorIds": ["4d3ccce2-d2f8-5b91-966f-d8579beccf47", "9ba06f30-4869-5a95-ad0b-a34f3f78f33b"],
-        "entityGranteeIds": ["172d65f6-b674-58a6-b0ef-ffc23a761ccb"],
+        "grantors": [
+          "TRAVIS TRAN",
+          "HATRAN JILLIAN"
+        ],
+        "grantees": [
+          "MW TRADING LLC"
+        ],
+        "entityGrantorIds": [
+          "4d3ccce2-d2f8-5b91-966f-d8579beccf47",
+          "9ba06f30-4869-5a95-ad0b-a34f3f78f33b"
+        ],
+        "entityGranteeIds": [
+          "172d65f6-b674-58a6-b0ef-ffc23a761ccb"
+        ],
         "isGrantor": false,
         "isGrantee": true,
         "addresses": [
-          { "id": "2b61a95d-0fb5-5a8a-974f-f32c827cc038", "addressFull": "25 WOODBROOK DR, MATAWAN, NJ 07747" },
-          { "id": "2b61a95d-0fb5-5a8a-974f-f32c827cc038", "addressFull": "25 WOODBROOK DR, MATAWAN, NJ 07747" }
+          {
+            "id": "2b61a95d-0fb5-5a8a-974f-f32c827cc038",
+            "addressFull": "25 WOODBROOK DR, MATAWAN, NJ 07747"
+          },
+          {
+            "id": "2b61a95d-0fb5-5a8a-974f-f32c827cc038",
+            "addressFull": "25 WOODBROOK DR, MATAWAN, NJ 07747"
+          }
         ],
         "grantorEntities": [
-          { "id": "4d3ccce2-d2f8-5b91-966f-d8579beccf47", "name": "TRAVIS TRAN", "type": "PERSON", "state": "NJ" },
-          { "id": "9ba06f30-4869-5a95-ad0b-a34f3f78f33b", "name": "HATRAN JILLIAN", "type": "PERSON", "state": "NJ" }
+          {
+            "id": "4d3ccce2-d2f8-5b91-966f-d8579beccf47",
+            "name": "TRAVIS TRAN",
+            "type": "PERSON",
+            "state": "NJ"
+          },
+          {
+            "id": "9ba06f30-4869-5a95-ad0b-a34f3f78f33b",
+            "name": "HATRAN JILLIAN",
+            "type": "PERSON",
+            "state": "NJ"
+          }
         ],
-        "granteeEntities": [{ "id": "172d65f6-b674-58a6-b0ef-ffc23a761ccb", "name": "MW TRADING LLC", "type": "COMPANY", "state": "NJ" }]
+        "granteeEntities": [
+          {
+            "id": "172d65f6-b674-58a6-b0ef-ffc23a761ccb",
+            "name": "MW TRADING LLC",
+            "type": "COMPANY",
+            "state": "NJ"
+          }
+        ]
       }
     ],
     "nextPage": 2
   },
-
   "get_entity_mortgages": {
     "_note": "The amount is `mortgageAmount`, the parties are `borrowerNames` (not `borrowers`), and the term is `loanTermMonths`. `deedConsideration` is a STRING here while `totalConsideration` is a NUMBER on a deed. `loanPurpose:'refinance'` does NOT by itself mean an exit — a 10-month bridge can carry it.",
     "data": [
@@ -87,11 +151,15 @@
         "id": "b0923560-6d32-413a-83f3-a259a8ae3da4",
         "recordingDate": "2026-05-18",
         "mortgageAmount": 466250,
-        "borrowerNames": ["MW TRADING LLC"],
+        "borrowerNames": [
+          "MW TRADING LLC"
+        ],
         "satisfactionDate": null,
         "loanTermMonths": 10,
         "maturityDate": "2027-03-01",
-        "entityBorrowerIds": ["172d65f6-b674-58a6-b0ef-ffc23a761ccb"],
+        "entityBorrowerIds": [
+          "172d65f6-b674-58a6-b0ef-ffc23a761ccb"
+        ],
         "satisfactionId": null,
         "loanStatus": null,
         "deedId": "121de51e-4813-5ea9-8aed-356bfdb4a7f9",
@@ -104,21 +172,38 @@
         "lenderType": "Private Money",
         "dataSource": "elementix",
         "addresses": [
-          { "id": "2b61a95d-0fb5-5a8a-974f-f32c827cc038", "addressFull": "25 WOODBROOK DR, MATAWAN, NJ 07747" },
-          { "id": "2b61a95d-0fb5-5a8a-974f-f32c827cc038", "addressFull": "25 WOODBROOK DR, MATAWAN, NJ 07747" }
+          {
+            "id": "2b61a95d-0fb5-5a8a-974f-f32c827cc038",
+            "addressFull": "25 WOODBROOK DR, MATAWAN, NJ 07747"
+          },
+          {
+            "id": "2b61a95d-0fb5-5a8a-974f-f32c827cc038",
+            "addressFull": "25 WOODBROOK DR, MATAWAN, NJ 07747"
+          }
         ],
-        "borrowerEntities": [{ "id": "172d65f6-b674-58a6-b0ef-ffc23a761ccb", "name": "MW TRADING LLC", "type": "COMPANY", "state": "NJ" }]
+        "borrowerEntities": [
+          {
+            "id": "172d65f6-b674-58a6-b0ef-ffc23a761ccb",
+            "name": "MW TRADING LLC",
+            "type": "COMPANY",
+            "state": "NJ"
+          }
+        ]
       },
       {
         "_note": "Our own loan. `lenderName` 'YS Capital Group' — the short-term-loan test can read our own book directly.",
         "id": "c593fa9e-34e5-4956-b272-ef313a099e3f",
         "recordingDate": "2026-05-07",
         "mortgageAmount": 273750,
-        "borrowerNames": ["MW TRADING LLC"],
+        "borrowerNames": [
+          "MW TRADING LLC"
+        ],
         "satisfactionDate": null,
         "loanTermMonths": 13,
         "maturityDate": "2027-06-01",
-        "entityBorrowerIds": ["172d65f6-b674-58a6-b0ef-ffc23a761ccb"],
+        "entityBorrowerIds": [
+          "172d65f6-b674-58a6-b0ef-ffc23a761ccb"
+        ],
         "loanStatus": null,
         "deedId": "eb517a95-e3e9-5414-846d-6c31963302d6",
         "isRefinance": false,
@@ -128,13 +213,232 @@
         "lenderName": "YS Capital Group",
         "lenderType": "Private Money",
         "dataSource": "elementix",
-        "addresses": [{ "id": "6b047d21-9dec-5191-a14e-33f7c932f3bf", "addressFull": "160 WESTBROOK DR, TOMS RIVER, NJ 08757" }],
-        "borrowerEntities": [{ "id": "172d65f6-b674-58a6-b0ef-ffc23a761ccb", "name": "MW TRADING LLC", "type": "COMPANY", "state": "NJ" }]
+        "addresses": [
+          {
+            "id": "6b047d21-9dec-5191-a14e-33f7c932f3bf",
+            "addressFull": "160 WESTBROOK DR, TOMS RIVER, NJ 08757"
+          }
+        ],
+        "borrowerEntities": [
+          {
+            "id": "172d65f6-b674-58a6-b0ef-ffc23a761ccb",
+            "name": "MW TRADING LLC",
+            "type": "COMPANY",
+            "state": "NJ"
+          }
+        ]
       }
     ],
     "nextPage": 2
   },
-
+  "get_person": {
+    "_note": "CAPTURED LIVE 2026-08-18 (person MOTY BRISK / NJ, the owner's own screenshot). Envelope is a SINGULAR OBJECT under the key `person` — NOT a list, so lookups.rowsOf answers [] for it and the profile reads it directly. This one call carries the whole header: the counts the person page leads with (mortgageCount 349, deedCount 602, ownershipRecordCount 829, preforeclosureCount 3 — every one of them matching the screenshot) and currentExposure, WHICH IS A DECIMAL STRING, not a number.",
+    "person": {
+      "id": "8f247c5b-ff6c-5908-b171-eaf48462466e",
+      "name": "MOTY BRISK",
+      "state": "NJ",
+      "regionId": "1798bd1e-9235-577e-9168-2e992de9d02b",
+      "mortgageCount": 349,
+      "deedCount": 602,
+      "satisfactionCount": 0,
+      "ownershipCount": 222,
+      "ownershipRecordCount": 829,
+      "preforeclosureCount": 3,
+      "aliasCount": 2,
+      "linkedMortgageCount3Mo": 5,
+      "linkedMortgageCount6Mo": 6,
+      "linkedMortgageCount12Mo": 24,
+      "currentExposure": "197839792.86",
+      "firstBankDate": "2016-02-10",
+      "firstCreditUnionDate": null,
+      "firstMortgageBankerDate": "2021-08-17",
+      "firstPrivateMoneyDate": "2015-06-08",
+      "firstAgencyDate": "2019-01-15",
+      "firstInsuranceCompanyDate": null,
+      "firstDebtFundDate": "2025-03-17",
+      "firstServicerDate": null,
+      "firstGovernmentLenderDate": null,
+      "firstAnyLenderDate": "2015-06-08",
+      "nameCommonnessScore": 0
+    }
+  },
+  "get_person_entities": {
+    "_note": "CAPTURED LIVE 2026-08-18. Envelope {data, nextPage} — and THERE IS NO TOTAL ON THE DATA CALL. `nextPage` present is the only signal that more exist, so \"showing the first N of M\" needs the separate scope:count call below.",
+    "data": [
+      {
+        "id": "e7086151-e97a-5a12-928b-40f2989b13f7",
+        "name": "JC SWB EQUITIES ONE LLC",
+        "state": "NJ",
+        "entityType": "COMPANY",
+        "primaryRegionName": "New York City, NY-NJ-CT",
+        "latestTransactionDate": "2026-07-20",
+        "mortgageCount": 11,
+        "deedCount": 16,
+        "satisfactionCount": 2,
+        "currentOwnershipsCount": 10,
+        "sosOfficer": false,
+        "sosTitle": null,
+        "elementixSigner": true,
+        "elementixSignerCount": 10,
+        "researchLinked": false,
+        "researchTitle": null,
+        "isPrincipal": true,
+        "_url": "https://app.elementix.com/entity/e7086151-e97a-5a12-928b-40f2989b13f7"
+      }
+    ],
+    "nextPage": 2
+  },
+  "get_person_entities_count": {
+    "_note": "CAPTURED LIVE 2026-08-18 with scope:\"count\". {totalCount} — 295, matching the owner's screenshot. This is the ONLY way to size the entities tab, because get_person carries no entity count and the data call carries no total.",
+    "totalCount": 295
+  },
+  "get_person_deeds": {
+    "_note": "CAPTURED LIVE 2026-08-18. THE ADDRESS TRAP: on the PERSON deed tool `addresses` is an array of PLAIN STRINGS, while on the ENTITY deed tool (get_entity_deeds, above) the SAME field name is an array of {id, addressFull} OBJECTS. The person tool additionally carries `property_addresses` in SNAKE_CASE — and the person MORTGAGE tool spells the same idea `propertyAddresses` in camelCase and has no `addresses` key at all. One reader has to handle all of it; assuming any one spelling renders a blank column or [object Object].",
+    "data": [
+      {
+        "id": "65b1b298-b0ab-4e99-a116-571b20df8708",
+        "recordingDate": "2026-07-01",
+        "totalConsideration": 850000,
+        "isCashPurchase": false,
+        "grantors": [
+          "BWS INVESTMENT GROUP THREE LLC"
+        ],
+        "grantees": [
+          "MARCOS BORJAS"
+        ],
+        "addresses": [
+          "41 ARLINGTON AVE, JERSEY, NJ 07305"
+        ],
+        "property_addresses": [
+          {
+            "id": "33d62e89-7e67-561a-b577-923912249852",
+            "address_full": "41 ARLINGTON AVE, JERSEY, NJ 07305"
+          }
+        ],
+        "city": "JERSEY",
+        "zipCode": "07305",
+        "countyName": "Hudson County",
+        "countyState": "NJ",
+        "propertyUseCategory": "Residential",
+        "propertyUseSubcategory": "Single Family Residential",
+        "isBusinessPurpose": true,
+        "mlsSalePrice": 850000,
+        "mlsSaleStatus": "sold",
+        "entity_grantors": [
+          {
+            "id": "e657a716-1d5f-5fd0-bbdc-a99466e484b5",
+            "name": "BWS INVESTMENT GROUP THREE LLC",
+            "type": "COMPANY",
+            "state": "NJ"
+          }
+        ],
+        "other_people": [
+          {
+            "id": "58839405-d073-503a-9498-430aeac69260",
+            "name": "CHRISTOPHER STEAD",
+            "state": "NJ"
+          }
+        ],
+        "_url": "https://app.elementix.com/documents/deed/65b1b298-b0ab-4e99-a116-571b20df8708"
+      }
+    ],
+    "nextPage": 2
+  },
+  "get_person_mortgages": {
+    "_note": "CAPTURED LIVE 2026-08-18. `mortgageAmount` is a DECIMAL STRING, not a number. There is NO `addresses` key here at all — the property is under `propertyAddresses` [{id, addressFull}], camelCase, where the deed tool used snake_case. `loanStatus` can be null even on a live loan, so an absent status is not evidence the loan is closed.",
+    "data": [
+      {
+        "id": "7bbe98b5-e4f6-4048-83a1-9b558a206b12",
+        "recordingDate": "2026-07-06",
+        "mortgageAmount": "539000.00",
+        "lenderName": "Alpha Funding",
+        "lenderId": "7630ab61-3deb-5fc7-af3c-b17067e6ad41",
+        "lenderAliasName": "ALPHA FUNDING CAPITAL",
+        "lenderType": "Private Money",
+        "borrowerNames": [
+          "JUNIPER DRAGON INVESTMENTS LLC"
+        ],
+        "satisfactionDate": null,
+        "loanTermMonths": 11,
+        "maturityDate": "2027-06-01",
+        "loanStatus": null,
+        "isRefinance": true,
+        "isExtension": false,
+        "loanPurpose": "refinance",
+        "preforeclosureId": null,
+        "preforeclosures": [],
+        "city": "RUTHERFORD",
+        "zipCode": "07070",
+        "countyName": "Bergen County",
+        "countyState": "NJ",
+        "propertyUseCategory": "Residential",
+        "isBusinessPurpose": true,
+        "propertyAddresses": [
+          {
+            "id": "6ca802ea-ad19-5660-862c-998fa074dca1",
+            "addressFull": "140 FRANCISCO AVE, RUTHERFORD, NJ 07070"
+          }
+        ],
+        "entityBorrowers": [
+          {
+            "id": "63fdc0de-2dec-5046-9563-1524e3758044",
+            "name": "JUNIPER DRAGON INVESTMENTS LLC",
+            "type": "COMPANY",
+            "state": "NJ"
+          }
+        ],
+        "_url": "https://app.elementix.com/documents/mortgage/7bbe98b5-e4f6-4048-83a1-9b558a206b12"
+      }
+    ],
+    "nextPage": 2
+  },
+  "get_person_associated_people": {
+    "_note": "CAPTURED LIVE 2026-08-18. Envelope {data, nextPage}. Counts are SHARED counts with the queried person, not that person's own totals.",
+    "data": [
+      {
+        "id": "137e3646-a376-5203-bc3b-9977a9270641",
+        "name": "HIRSCH EISSENBERG",
+        "sharedMortgageCount": 217,
+        "sharedDeedCount": 334,
+        "sharedTotalCount": 551,
+        "_url": "https://app.elementix.com/person/137e3646-a376-5203-bc3b-9977a9270641"
+      }
+    ],
+    "nextPage": 2
+  },
+  "get_person_cross_state": {
+    "_note": "CAPTURED LIVE 2026-08-18. Envelope {data} with NO nextPage when the last page is reached. MOTY BRISK is three separate person records — NJ, FL, PA — which is the whole reason the profile merges across ids rather than filtering one id by state. EXACT-NAME matches only, so every row is a CANDIDATE and stays unconfirmed in elementix_person_aliases.",
+    "data": [
+      {
+        "id": "3bf763c0-8887-5e9e-a0b9-ce934e1d1da1",
+        "name": "MOTY BRISK",
+        "state": "FL",
+        "deedCount": 2,
+        "mortgageCount": 1,
+        "satisfactionCount": 0,
+        "transactionCount": 3,
+        "_url": "https://app.elementix.com/person/3bf763c0-8887-5e9e-a0b9-ce934e1d1da1"
+      }
+    ]
+  },
+  "get_person_lender_network": {
+    "_note": "CAPTURED LIVE 2026-08-18. THE ROWS ARE UNDER `lenderConnections`, a key lookups.rowsOf does not know — it would answer [] and the tab would render a confident zero for a person with seventy lenders. This is why every profile section declares its own rows key. Unpaged: the tool takes no page parameter and returned all seventy.",
+    "person": {
+      "id": "8f247c5b-ff6c-5908-b171-eaf48462466e",
+      "name": "MOTY BRISK"
+    },
+    "lenderConnections": [
+      {
+        "id": "f69dca0e-4ab3-5e30-89c6-8ee6c14c4a13",
+        "name": "CoreVest Finance",
+        "domainName": "corevestfinance.com",
+        "lenderType": "Private Money",
+        "totalVolume": 284072090,
+        "mortgageCount": 39,
+        "_url": "https://app.elementix.com/lender/f69dca0e-4ab3-5e30-89c6-8ee6c14c4a13"
+      }
+    ]
+  },
   "search_entity": {
     "_note": "search {query:'MW Trading LLC', entityFilter:'entity'} — captured live 2026-08-09. Envelope is {results, resultLimit:20}, NOT paginated. THE SAME NAME IS TWO ENTITIES IN TWO STATES (NJ and CA) — this is why match_entity requires a state, and why the no-state fallback must answer 'ambiguous' with the states named rather than pick. 'MW TRADING GROUP LLC' rides along in the same response: a near name is a DIFFERENT company and the exact-name filter must drop it. `highlightedName` carries HTML <mark> tags — never display it raw.",
     "results": [
@@ -189,7 +493,6 @@
     ],
     "resultLimit": 20
   },
-
   "search_entity_state_filtered": {
     "_note": "The SAME query with state:'NJ' — captured live 2026-08-09 immediately after the one above. Exactly the one NJ company comes back (the CA twin and the FL near-name are both gone), which is what makes a per-state pull deterministic.",
     "results": [
@@ -212,29 +515,52 @@
     ],
     "resultLimit": 20
   },
-
   "_state_required": {
     "_note": "PROVEN LIVE 2026-08-09 (the owner's own failed search): match_entity AND match_person called without `state` are refused whole — 'MCP error -32602: Input validation error … path: [state] … expected string, received undefined' — and the refused call still spends a slot of the shared hourly allowance. Entities and persons are keyed (name, state). The request contracts live in src/lib/elementix/request-contracts.json.",
-    "required_by": ["match_entity", "match_person"],
+    "required_by": [
+      "match_entity",
+      "match_person"
+    ],
     "no_state_alternative": "search with entityFilter 'entity'/'person' (state optional there)"
   },
-
   "_documented_not_captured": {
     "_note": "Recorded in docs/research/elementix/04-connector-verification.md §14 from a live call by the verification research pass, but NOT re-captured here by hand. A reader for one of these must be proven against a fresh capture before it is trusted.",
     "get_address_ownership_row_keys": [
-      "id", "startDate", "endDate", "totalConsideration (STRING here)", "deedId", "grantees[]",
-      "documentCount", "isNonArmsLengthTransfer", "people[]", "entity_grantees[] (snake_case — the only one in the API)"
+      "id",
+      "startDate",
+      "endDate",
+      "totalConsideration (STRING here)",
+      "deedId",
+      "grantees[]",
+      "documentCount",
+      "isNonArmsLengthTransfer",
+      "people[]",
+      "entity_grantees[] (snake_case — the only one in the API)"
     ],
     "get_address_transactions_row_keys": [
-      "id", "type", "recordingDate", "amount", "partiesGrantor[]", "partiesGrantee[]",
-      "entityGrantors[]", "entityGrantees[]", "isRefinance", "loanPurpose", "people[]"
+      "id",
+      "type",
+      "recordingDate",
+      "amount",
+      "partiesGrantor[]",
+      "partiesGrantee[]",
+      "entityGrantors[]",
+      "entityGrantees[]",
+      "isRefinance",
+      "loanPurpose",
+      "people[]"
     ],
     "get_lender_satisfactions_row_keys": [
-      "id", "recordingDate", "originalMortgageDate", "originalMortgageAmount (STRING)",
-      "addresses[] (array of STRINGS, not objects)", "addressDetails[{id,addressFull}]", "borrower[]", "entityBorrowers[]"
+      "id",
+      "recordingDate",
+      "originalMortgageDate",
+      "originalMortgageAmount (STRING)",
+      "addresses[] (array of STRINGS, not objects)",
+      "addressDetails[{id,addressFull}]",
+      "borrower[]",
+      "entityBorrowers[]"
     ]
   },
-
   "_paging": {
     "_note": "PROVEN 2026-08-09: `get_entity_deeds` was called with {limit: 2} and returned FIVE rows. The page-size parameter is `perPage`; `limit` is ignored silently, and the default page is 5. A 29-property portfolio read through `limit` reads as five and nothing anywhere says so.",
     "wrong": "limit",
@@ -242,10 +568,67 @@
     "default_page_size": 5,
     "next_page_key": "nextPage"
   },
-
   "_param_names": {
     "_note": "PROVEN 2026-08-09: get_entity_deeds({entityId}) was REJECTED — 'Invalid arguments ... path: [id] ... expected string, received undefined'. The entity/address/person tools take `id`.",
-    "wrong": ["entityId", "addressId", "personId"],
+    "wrong": [
+      "entityId",
+      "addressId",
+      "personId"
+    ],
     "right": "id"
+  },
+  "list_people_unlocked": {
+    "_note": "list_people {unlockStatus:'unlocked', perPage:2, sortBy:'unlockedAt'} - captured live 2026-08-19, VALUES REDACTED (these are real people and real staff email addresses; the SHAPE is what a fixture is for). ENVELOPE IS {data, nextPage} - not {results}, not {rows} - and it carries NO total and NO resultLimit, so a caller cannot size the set before paging it. THE TWO FIELDS THE WHOLE BACKFILL RESTS ON ARE HERE ON EVERY ROW: `unlockedBy` (an EMAIL) and `unlockedAt`. Neither appears in the tool's published description, which is what the first reading of the catalogue concluded made the history unreadable. Measured over the full account the same day: 1,041 unlocked contacts, 13 distinct unlockedBy emails, not one row missing it. `topLenders[]._logoDataUri` is 8-12KB of base64 PER LENDER PER ROW - profile.stripHeavy removes it before storing or a single person's cache runs to megabytes. `nextPage` was 2 on a FULL page of 2, consistent with _paging: it means 'the page was full', never 'there is more'.",
+    "data": [
+      {
+        "_url": "https://app.elementix.com/person/<uuid>",
+        "averageLoanSize": 280110,
+        "entities": [
+          {
+            "id": "<uuid>",
+            "name": "<redacted>",
+            "state": "NJ"
+          }
+        ],
+        "firstLoanDate": "2015-02-11",
+        "id": "<uuid>",
+        "isAttorneyOrTitleAgent": null,
+        "isLikelySupportStaff": null,
+        "linkedMortgageCount12Mo": 5,
+        "linkedMortgageCount3Mo": 3,
+        "linkedMortgageCount6Mo": 3,
+        "loanCount": 5,
+        "longTermLoanPct": 0,
+        "mailingAddress": "<redacted>",
+        "mailingAddressId": "<uuid>",
+        "mortgageCount": 10,
+        "mostFrequentMortgageCity": "<redacted>",
+        "mostFrequentMortgageCounty": "<redacted>",
+        "name": "<redacted>",
+        "ownershipCount": 6,
+        "personState": "<redacted>",
+        "preforeclosureCount": 0,
+        "previousExits3y": 1,
+        "primaryState": "<redacted>",
+        "rank": 1,
+        "regionId": "<uuid>",
+        "regionName": "<redacted>",
+        "shortTermLoanPct": 40,
+        "topLenders": [
+          {
+            "id": "<uuid>",
+            "name": "<redacted>",
+            "domainName": "<redacted>",
+            "totalVolume": 0,
+            "_logoDataUri": "data:image/png;base64,<8-12KB per row — stripHeavy drops this before storing>"
+          }
+        ],
+        "totalVolume": 1400550,
+        "unlockedAt": "2026-08-18T20:11:06.615Z",
+        "unlockedBy": "<redacted-email>",
+        "yearsActive": 11
+      }
+    ],
+    "nextPage": 2
   }
 }

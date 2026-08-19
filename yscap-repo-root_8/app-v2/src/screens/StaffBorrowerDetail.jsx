@@ -8,6 +8,7 @@ import LlcManager from '../components/LlcManager.jsx';
 import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { passwordProblem } from '../lib/password.js';
 import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt, PortalAccessRow } from '../components/BorrowerProfilePanel.jsx';
+import ElementixProfile from '../components/ElementixProfile.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
@@ -49,7 +50,7 @@ const statusPill = (s) => {
   return <span className={`pill ${cls}`}>{(s || '—').replace(/_/g, ' ')}</span>;
 };
 
-const TABS = ['Overview', 'Files', 'Entities', 'Track record', 'Credit', 'Conditions', 'Tasks', 'Documents', 'Duplicates', 'Activity', 'Notes'];
+const TABS = ['Overview', 'Files', 'Entities', 'Track record', 'Elementix', 'Credit', 'Conditions', 'Tasks', 'Documents', 'Duplicates', 'Activity', 'Notes'];
 
 export default function StaffBorrowerDetail() {
   const { id } = useParams();
@@ -80,6 +81,10 @@ export default function StaffBorrowerDetail() {
       {tab === 'Files' && <Files id={id} />}
       {tab === 'Entities' && <Entities id={id} />}
       {tab === 'Track record' && <TrackRecord id={id} onOpenEntities={() => setTab('Entities')} />}
+      {/* The owner asked for the Elementix profile on every borrower as well as
+          every CRM contact. It is the SAME component the lead screen mounts, so
+          the two can never drift into showing different things about one person. */}
+      {tab === 'Elementix' && <ElementixProfile kind="borrower" recordId={id} personName={name} personState={(b.current_address && b.current_address.state) || ''} />}
       {tab === 'Credit' && <Credit id={id} />}
       {tab === 'Conditions' && <Conditions id={id} />}
       {tab === 'Tasks' && <Tasks id={id} />}

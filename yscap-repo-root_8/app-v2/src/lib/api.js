@@ -1233,7 +1233,21 @@ export const api = {
   staffPurgeApp:    (appId, reason) => req('DELETE', `/api/staff/applications/${appId}`, { reason }),
   staffArchivedApps:() => req('GET', '/api/staff/archived-applications'),
   staffNotifs:      () => req('GET', '/api/staff/notifications'),
-  staffLeads:       () => req('GET', '/api/staff/leads'),
+  // The leads desk. `params` are the SERVER-SIDE filters on where a lead came
+  // from — {source} (which system opened it: elementix / marketing_site /
+  // manual / portal_invite), {tool} (which public form) and {leadSource} (the
+  // channel typed on a hand-entered lead) — plus {counts:1}, which asks for the
+  // per-origin totals beside the rows. WITHOUT counts the answer is the bare
+  // array it has always been; WITH it the answer is {rows, facets}. Filtering
+  // has to happen there and not here: the list is capped at 500 rows, so a
+  // browser-side filter would count a page, not a desk.
+  //
+  // {officerId} narrows it to ONE officer's book — what the admin CRM desk
+  // (/internal/crm) mounts the leads screen with. It is ANDed onto the same
+  // visibility scope every other caller gets, so it can only ever SHRINK what
+  // the person asking could already see: a loan officer who sends somebody
+  // else's id gets an empty list, never their desk.
+  staffLeads:       (params) => req('GET', '/api/staff/leads' + qs(params)),
   staffLeadsBulkArchive: (filters) => req('POST', '/api/staff/leads/bulk-archive', filters),
   staffCreateLead:  (b) => req('POST', '/api/staff/leads', b),
   staffLead:        (id) => req('GET', `/api/staff/leads/${id}`),
@@ -1617,6 +1631,37 @@ export const api = {
   valuationConfirmSubject: (id, corrections) => req('POST', `/api/research/valuations/${id}/confirm-subject`, { corrections }),
   valuationDuplicate:  (id) => req('POST', `/api/research/valuations/${id}/duplicate`, {}),
   valuationDelete:     (id) => req('DELETE', `/api/research/valuations/${id}`),
+
+  // ---- Elementix CRM (the second Elementix plane — see src/routes/elementix-crm.js) ----
+  // Underwriting's Elementix calls live behind /api/underwriting; NOTHING here
+  // may be reused there. Contact detail bought on this plane must never reach a
+  // lending decision.
+  elxMe:               () => req('GET', '/api/elementix/me'),
+  elxConnect:          () => req('GET', '/api/elementix/connect'),
+  elxDisconnect:       () => req('POST', '/api/elementix/disconnect', {}),
+  elxConnections:      () => req('GET', '/api/elementix/connections'),
+  elxRefreshIdentity:  (staffId) => req('POST', `/api/elementix/connections/${staffId}/refresh-identity`, {}),
+  elxUsage:            () => req('GET', '/api/elementix/usage'),
+  elxSearch:           (q, state) => req('GET', `/api/elementix/search?q=${encodeURIComponent(q || '')}${state ? `&state=${encodeURIComponent(state)}` : ''}`),
+  elxContact:          (personId) => req('GET', `/api/elementix/people/${personId}/contact`),
+  elxSkipTrace:        (personId, b) => req('POST', `/api/elementix/people/${personId}/skip-trace`, b || {}),
+  elxAddLead:          (personId, b) => req('POST', `/api/elementix/people/${personId}/lead`, b || {}),
+  elxProfile:          (personId) => req('GET', `/api/elementix/people/${personId}/profile`),
+  elxProfileBuild:     (personId, b) => req('POST', `/api/elementix/people/${personId}/profile/build`, b || {}),
+  elxAliases:          (personId) => req('GET', `/api/elementix/people/${personId}/aliases`),
+  elxDecideAlias:      (personId, aliasId, confirm) => req('POST', `/api/elementix/people/${personId}/aliases/${aliasId}`, { confirm }),
+  elxLink:             (b) => req('POST', '/api/elementix/link', b || {}),
+  elxFor:              (kind, recordId) => req('GET', `/api/elementix/for/${kind}/${recordId}`),
+  elxBackfill:         () => req('GET', '/api/elementix/backfill'),
+  elxBackfillList:     () => req('POST', '/api/elementix/backfill/list', {}),
+  elxBackfillWork:     (limit) => req('POST', '/api/elementix/backfill/work', { limit }),
+  elxLinkUser:         (b) => req('POST', '/api/elementix/backfill/users/link', b || {}),
+  /* THE ADMIN CRM DESK — the whole company's lead book, one row per officer
+     (manage_team). Read-only: it spends nothing and calls no vendor. Every
+     ACTIVE INTERNAL officer comes back, including the ones at zero, plus a
+     company total and the unassigned desk. A figure that could not be read is
+     null (rendered "—"), never 0. */
+  elxCrmDesk:          () => req('GET', '/api/elementix/crm-desk'),
 
   // ---- Dashboards (the KPI screen + the build-your-own section) ----
   dashboards:          () => req('GET', '/api/dashboards'),

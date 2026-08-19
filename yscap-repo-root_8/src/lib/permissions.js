@@ -203,6 +203,36 @@ const visibleOfficersSql = (alias, p) =>
   ` OR EXISTS (SELECT 1 FROM workflow_items wi` +
   ` WHERE wi.application_id=${alias}.id AND wi.to_staff_id=${p} AND wi.status IN ('open','in_progress')))`;
 
+// Which BORROWERS an internal staffer may see. MOVED HERE from routes/staff.js so
+// a second door can ask the question without re-inlining it — the standing rule
+// is "never re-inline a borrower scope", and a scope that can only be reached by
+// requiring a 19,000-line route module gets re-inlined eventually. staff.js's
+// VISIBLE_BORROWER_SQL is now an alias of this, exactly as VISIBLE_OFFICERS_SQL
+// is an alias of visibleOfficersSql, so there is still one definition.
+//
+// A borrower belongs to EVERY officer they have done business with, not just one
+// (owner-directed 2026-07-26): `borrower_officers` (db/327) is the many-to-many
+// the ClickUp sync records from EVERY card in EVERY status, `primary_officer_id`
+// stays the single CRM owner, both are honored, plus the visible_officer_ids
+// delegation, plus any file the staffer can already see.
+// Requires the borrowers alias to expose id + primary_officer_id.
+const visibleBorrowerSql = (alias, p) =>
+  `(${alias}.primary_officer_id=${p}` +
+  ` OR ${alias}.primary_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
+  ` OR EXISTS (SELECT 1 FROM borrower_officers bo WHERE bo.borrower_id=${alias}.id` +
+  ` AND (bo.staff_id=${p} OR bo.staff_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})))` +
+  ` OR EXISTS (SELECT 1 FROM applications a2` +
+  ` WHERE (a2.borrower_id=${alias}.id OR a2.co_borrower_id=${alias}.id) AND a2.deleted_at IS NULL` +
+  ` AND ${visibleOfficersSql('a2', p)}))`;
+
+// Which LEADS a non-privileged officer may touch: their own, or one nobody has
+// been given yet. The horizontal scope only — a `see_all_files` caller drops the
+// clause entirely, the same shape as visibleOfficersSql. Written down once here
+// because it now has three callers (the leads desk's PATCH, its notes, and the
+// Elementix CRM's person link), and three copies of an ownership rule is how one
+// of them quietly stops matching the other two.
+const visibleLeadSql = (alias, p) => `(${alias}.officer_id=${p} OR ${alias}.officer_id IS NULL)`;
+
 // ============================================================================
 // TPO PORTAL (owner-directed 2026-08-04; db/472 + db/473; design
 // docs/TPO-PORTAL-BLUEPRINT.md). A TPO user is an EXTERNAL staff_users row
@@ -252,7 +282,7 @@ const tpoBorrowerScopeSql = (alias, p) =>
 module.exports = {
   ROLES, ROLE_KEYS, ROLE_LABEL, CAPABILITIES, CAP_KEYS, ROLE_DEFAULTS,
   defaultsFor, effectivePermissions, can, sanitizeOverrides, assigneeExistsSql,
-  visibleOfficersSql,
+  visibleOfficersSql, visibleBorrowerSql, visibleLeadSql,
   // TPO portal
   TPO_ROLES, TPO_ROLE_KEYS, TPO_ROLE_LABEL, isTpoActor,
   tpoFirmScopeSql, tpoBorrowerScopeSql,
