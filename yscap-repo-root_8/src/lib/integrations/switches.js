@@ -105,6 +105,12 @@ const SWITCHES = [
   // is a switch a human can see and stop rather than something buried in env.
   // Read at CALL time by each pass, so flipping it takes effect immediately.
   { key: 'ELEMENTIX_CRM_SYNC_ENABLED', integration: 'elementix', label: 'Bring newly unlocked Elementix contacts in as leads, automatically', dangerous: false, envDefault: () => cfg.elementix.crmSync },
+  // The history back-fill (owner-directed 2026-08-19): land already-cached
+  // Elementix profiles on their linked borrowers — entities + unverified
+  // track-record lines. Cache-only, so it can never spend a credit or a slot
+  // of the hourly allowance; a switch so a human can stop the sweep the moment
+  // it does something they did not want. Read at CALL time by the pass.
+  { key: 'ELEMENTIX_HISTORY_IMPORT_ENABLED', integration: 'elementix', label: 'Build borrower track records + entities from their Elementix profiles, automatically', dangerous: false, envDefault: () => process.env.ELEMENTIX_HISTORY_IMPORT_ENABLED !== '0' },
 
   // DocLab (Private Lender Law) — loan-document drafting. Same three-stage shape as
   // the AMC and Class: master turns on reading (the token, the template catalogue, a
