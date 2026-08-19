@@ -218,10 +218,6 @@ export default function StaffLeadDetail() {
           </div>
 
           <SubmittedDeal lead={lead} />
-          {/* The same Elementix section the borrower profile carries — one
-              component, so a lead and the borrower it becomes never show two
-              different pictures of the same person. */}
-          <ElementixProfile kind="lead" recordId={id} personName={lead.name || ''} personState={(lead.property_address && lead.property_address.state) || ''} />
         </div>
 
         {/* ---- Center: activity timeline ---- */}
@@ -257,6 +253,22 @@ export default function StaffLeadDetail() {
           <TasksPanel leadId={id} tasks={tasks} officers={officers} actor={actor}
             onChange={() => { reloadFeeds(); }} onErr={setErr} />
           <AttachmentsPanel leadId={id} docs={docs} onChange={() => { reloadFeeds(); reloadLead(); }} onErr={setErr} />
+        </div>
+
+        {/* ---- Full width, underneath all three columns: the Elementix record ----
+            IT USED TO SIT IN THE LEFT TRACK, which `.lead-grid` caps at 340px —
+            about 294px of usable width once the panel's own padding is taken off.
+            A mortgages row is nine nowrap columns of dates, money and lender
+            names, so it was permanently scrolling sideways inside a strip while
+            roughly a thousand pixels sat empty beside it, and because the only
+            media queries RELAX that cap it got WIDER as the window got narrower.
+            It is its own row now, so it has the whole content width at every
+            desktop size, and `min-width:0` lets the table scroll inside it
+            rather than pushing the grid out. The same component is mounted on
+            the borrower profile, where it has always been full width — this is
+            what makes the two agree. */}
+        <div className="lead-elx">
+          <ElementixProfile kind="lead" recordId={id} personName={lead.name || ''} personState={(lead.property_address && lead.property_address.state) || ''} />
         </div>
       </div>
 

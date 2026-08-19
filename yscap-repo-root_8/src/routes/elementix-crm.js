@@ -52,6 +52,7 @@ const crmTools = require('../lib/elementix/crm-tools');
 const crm = require('../lib/elementix/crm');
 const identity = require('../lib/elementix/identity');
 const profile = require('../lib/elementix/profile');
+const elxAddress = require('../lib/elementix/address');
 const backfill = require('../lib/elementix/backfill');
 
 const str = (v) => String(v == null ? '' : v).trim();
@@ -681,6 +682,83 @@ function refuseSeen(res, v) {
   return res.status(404).json({ reason: 'not_found',
     error: 'PILOT has no record of that Elementix person on anything you can see. Search for them and attach them first.' });
 }
+
+/**
+ * MAY THIS OFFICER OPEN THIS PROPERTY?
+ *
+ * A property is reached THROUGH a person, so the answer is the person's: the
+ * caller names the person whose record the row came from, that person goes
+ * through the ordinary `seenByActor` gate, and then the address must actually
+ * appear in that person's own cached rows. Both halves matter. Without the
+ * first, a typed uuid opens any property on the plane; without the second, an
+ * officer who can see ONE person could read any property in the country by
+ * pasting its id and naming their own lead — and every one of those reads spends
+ * the organisation's shared hourly allowance.
+ *
+ * FAILS CLOSED: an unreadable profile is not evidence of access.
+ */
+async function addressSeenByActor(req, addressId, personId) {
+  if (!isUuid(addressId)) return { seen: false, bad: true };
+  const v = await seenByActor(req, personId);
+  if (!v.seen) return v;
+  try {
+    const prof = await profile.readProfile(personId);
+    if (!prof || prof.ok !== true) return { seen: false, unreadable: true };
+    const want = String(addressId).toLowerCase();
+    const hit = (row) => {
+      if (!row || typeof row !== 'object') return false;
+      if (String(row.addressId || row.address_id || '').toLowerCase() === want) return true;
+      for (const b of [row.propertyAddresses, row.property_addresses, row.addresses]) {
+        if (Array.isArray(b) && b.some((a) => a && String(a.id || '').toLowerCase() === want)) return true;
+      }
+      const ids = Array.isArray(row.addressesIds) ? row.addressesIds : [];
+      return ids.some((x) => String(x || '').toLowerCase() === want);
+    };
+    for (const sec of Object.values(prof.sections || {})) {
+      if ((sec.rows || []).some(hit)) return { seen: true };
+    }
+    return { seen: false, notOnPerson: true };
+  } catch (_) {
+    return { seen: false, unreadable: true };
+  }
+}
+
+function refuseAddress(res, v) {
+  if (v.bad) return res.status(400).json({ error: 'That is not a property from an Elementix record.' });
+  if (v.unreadable) return res.status(503).json({ error: 'PILOT could not check who that record belongs to. Try again in a moment.' });
+  if (v.notOnPerson) {
+    return res.status(404).json({ reason: 'not_found',
+      error: 'That property is not on this person’s record in PILOT. Open it from one of their own rows.' });
+  }
+  return refuseSeen(res, v);
+}
+
+/* THE CACHE. Never calls Elementix, so it is safe on render and on every open. */
+router.get('/addresses/:addressId', async (req, res) => {
+  const addressId = str(req.params.addressId);
+  const personId = str(req.query.personId);
+  const v = await addressSeenByActor(req, addressId, personId);
+  if (!v.seen) return refuseAddress(res, v);
+  const out = await elxAddress.readAddress(addressId);
+  if (!out || out.ok !== true) return refuse(res, out);
+  res.json(out);
+});
+
+/* THE DELIBERATE READ. Three to five requests out of the organisation's shared
+   1,000 an hour, so it is a button and never a side effect. Free of charge:
+   none of the three tools it can reach is the paid one. */
+router.post('/addresses/:addressId/read', async (req, res) => {
+  const addressId = str(req.params.addressId);
+  const body = req.body || {};
+  const personId = str(body.personId);
+  const v = await addressSeenByActor(req, addressId, personId);
+  if (!v.seen) return refuseAddress(res, v);
+  const out = await elxAddress.buildAddress(addressId, { staffId: req.actor.id, force: body.force === true });
+  if (!out || out.ok !== true) return refuse(res, out);
+  await audit(req, 'elementix_address_read', {
+    addressId, personId, calls: out.callsSpent || 0, cached: !!out.cached });
+  res.json(out);
+});
 
 router.get('/people/:personId/profile', async (req, res) => {
   const personId = str(req.params.personId);

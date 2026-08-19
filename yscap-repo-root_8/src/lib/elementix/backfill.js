@@ -494,16 +494,48 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
   return out;
 }
 
-/** Where the import has got to, in plain numbers. */
+/**
+ * Where the import has got to, in plain numbers — TOTALS AND PER LOGIN.
+ *
+ * THE PER-LOGIN BREAKDOWN IS NOT DECORATION. `elementix_users.unlock_count` is
+ * the VENDOR'S ALL-TIME history for that login — everything that seat ever
+ * unlocked in Elementix's own screens — while the CRM only ever shows what this
+ * import has actually brought in so far. Both numbers are right and they answer
+ * different questions, so a table printing the big one ALONE reads as a
+ * contradiction against the CRM desk ("Elementix says 159, the CRM says 12") and
+ * sends somebody hunting for a bug that is not there. So every login carries its
+ * own `done` / `pending` / `skipped` / `failed` beside its unlock count, and the
+ * screen states the arithmetic instead of leaving it to be inferred.
+ *
+ * It comes off the SAME statement as the login row rather than a second read, so
+ * a queue that drains between two queries can never make a row disagree with its
+ * own counts.
+ */
 async function progress(client = db) {
   const q = await client.query(
     `SELECT status, count(*)::int AS n FROM elementix_backfill_queue GROUP BY status`);
   const byStatus = Object.fromEntries(q.rows.map((r) => [r.status, r.n]));
   const users = await client.query(
     `SELECT u.email, u.staff_id, u.ignored, u.unlock_count, u.first_unlock_at, u.last_unlock_at,
-            s.full_name AS officer_name, s.is_active AS officer_active
+            s.full_name AS officer_name, s.is_active AS officer_active,
+            COALESCE(b.queued, 0)  AS queued,
+            COALESCE(b.done, 0)    AS done,
+            COALESCE(b.pending, 0) AS pending,
+            COALESCE(b.skipped, 0) AS skipped,
+            COALESCE(b.failed, 0)  AS failed
        FROM elementix_users u
        LEFT JOIN staff_users s ON s.id = u.staff_id
+       LEFT JOIN (
+         SELECT unlocked_by_email AS email,
+                count(*)::int                                        AS queued,
+                count(*) FILTER (WHERE status = 'done')::int          AS done,
+                count(*) FILTER (WHERE status = 'pending')::int       AS pending,
+                count(*) FILTER (WHERE status = 'skipped')::int       AS skipped,
+                count(*) FILTER (WHERE status = 'failed')::int        AS failed
+           FROM elementix_backfill_queue
+          WHERE unlocked_by_email IS NOT NULL
+          GROUP BY unlocked_by_email
+       ) b ON b.email = u.email
       ORDER BY u.unlock_count DESC, u.email`);
   const total = Object.values(byStatus).reduce((a, b) => a + b, 0);
   return {
@@ -519,6 +551,14 @@ async function progress(client = db) {
       lastAt: r.last_unlock_at,
       ignored: r.ignored,
       officer: r.staff_id ? { id: r.staff_id, name: r.officer_name, active: r.officer_active } : null,
+      // What THIS login's contacts have done inside PILOT. `queued` can sit under
+      // `unlocks` while a listing is still paging, which is a real thing to be
+      // able to see rather than a discrepancy to hide.
+      queued: Number(r.queued),
+      done: Number(r.done),
+      pending: Number(r.pending),
+      skipped: Number(r.skipped),
+      failed: Number(r.failed),
     })),
   };
 }

@@ -107,6 +107,67 @@ export function addressOf(row) {
 
 export const names = (v) => (Array.isArray(v) ? v.filter(Boolean).map(txt).join(', ') : txt(v));
 
+/**
+ * THE ADDRESS UUID ON A ROW — what makes "open this property" possible.
+ *
+ * Every person tool spells the same thing differently, which is why this is one
+ * reader and not three tests written at three call sites: a mortgage carries
+ * `propertyAddresses[{id, addressFull}]` in camelCase, a deed carries
+ * `property_addresses[{id, address_full}]` in SNAKE_CASE, and an ownership row
+ * carries a bare `addressId`. A cell that guessed one spelling would render a
+ * dead link on two thirds of the rows and nothing anywhere would say why.
+ * Returns null rather than a guess.
+ */
+export function addressIdOf(row) {
+  if (!row || typeof row !== 'object') return null;
+  const direct = txt(row.addressId || row.address_id);
+  if (direct) return direct;
+  for (const b of [row.propertyAddresses, row.property_addresses, row.addresses]) {
+    if (!Array.isArray(b)) continue;
+    for (const a of b) {
+      if (a && typeof a === 'object' && txt(a.id)) return txt(a.id);
+    }
+  }
+  if (Array.isArray(row.addressesIds) && row.addressesIds.length) return txt(row.addressesIds[0]) || null;
+  return null;
+}
+
+/**
+ * THE COMPANY THE DEAL WAS DONE IN — the person↔LLC link, which is the whole
+ * reason Elementix is worth paying for. Again three spellings for one idea:
+ * `entityBorrowers` on a mortgage, `entity_grantors`/`entity_grantees` on a
+ * deed, `entityGrantees` on an ownership row.
+ */
+export function entityOf(row) {
+  if (!row || typeof row !== 'object') return [];
+  for (const k of ['entityBorrowers', 'entityGrantees', 'entity_grantees', 'entityGrantors', 'entity_grantors']) {
+    const b = row[k];
+    if (Array.isArray(b) && b.length) {
+      return b.filter((e) => e && typeof e === 'object' && txt(e.name))
+        .map((e) => ({ id: txt(e.id) || null, name: txt(e.name), state: txt(e.state) || null }));
+    }
+  }
+  return [];
+}
+
+/** The vendor's own deep link for this record, when it sent one. */
+export function urlOf(row) {
+  const u = txt(row && (row._url || row._elementixUrl));
+  return /^https?:\/\//i.test(u) ? u : null;
+}
+
+/** A yes / no / "the row does not say" — never a confident No for a missing flag. */
+export const flag = (v, yes, no) => (v === true ? yes : v === false ? no : '—');
+
+/** Title Case for a vendor enum like `SINGLE_FAMILY` or `purchase money`. */
+export function pretty(v) {
+  const s = txt(v).replace(/[_-]+/g, ' ').trim();
+  if (!s) return '—';
+  return s.split(/\s+/).map((w) => (w.length > 3 && w === w.toUpperCase()
+    ? w[0] + w.slice(1).toLowerCase()
+    : (w[0] || '').toUpperCase() + w.slice(1))).join(' ');
+}
+
 /** The state Elementix's own record for this row came from (the row pill). */
 export function stateOf(row) {
   if (!row || typeof row !== 'object') return '';
@@ -168,56 +229,82 @@ export const PAYOFF_LABELS = {
    dash as a value. A column with no `kind` is text and sorts on what it shows. */
 export const COLUMNS = {
   entities: [
-    { h: 'Entity', w: '34%', get: (r) => txt(r.name), strong: true },
+    { h: 'Entity', w: '26%', get: (r) => txt(r.name), strong: true },
     { h: 'State', get: (r) => txt(r.state) },
-    { h: 'Type', get: (r) => txt(r.entityType || r.type) },
+    { h: 'Type', get: (r) => pretty(r.entityType || r.type) },
+    { h: 'Their role', get: (r) => (r.isPrincipal === true ? 'Principal' : txt(r.sosTitle) || txt(r.researchTitle) || (r.elementixSigner ? 'Signed for it' : '—')) },
     { h: 'Mortgages', get: (r) => count(r.mortgageCount), n: true, kind: 'num', raw: (r) => num(r.mortgageCount) },
     { h: 'Deeds', get: (r) => count(r.deedCount), n: true, kind: 'num', raw: (r) => num(r.deedCount) },
+    { h: 'Payoffs', get: (r) => count(r.satisfactionCount), n: true, kind: 'num', raw: (r) => num(r.satisfactionCount) },
     { h: 'Owns now', get: (r) => count(r.currentOwnershipsCount), n: true, kind: 'num', raw: (r) => num(r.currentOwnershipsCount) },
     { h: 'Last seen', get: (r) => day(r.latestTransactionDate), kind: 'date', raw: (r) => ymd(r.latestTransactionDate) },
   ],
   properties: [
-    { h: 'Property', w: '44%', get: (r) => addressOf(r), strong: true },
+    { h: 'Property', w: '26%', get: (r) => addressOf(r), strong: true, subject: true },
+    /* THE COMPANY IT SITS IN. An investor holds almost nothing in their own
+       name, so without this column the portfolio reads as a list of addresses
+       with no owner — and the person→LLC link is the thing Elementix is bought
+       for. */
+    { h: 'Held in', w: '16%', get: (r) => (entityOf(r).map((e) => e.name).join(', ') || '—') },
     { h: 'Bought', get: (r) => day(r.startDate || r.purchaseDate), kind: 'date', raw: (r) => ymd(r.startDate || r.purchaseDate) },
+    { h: 'Paid', get: (r) => money(r.totalConsideration ?? r.purchasePrice), n: true, kind: 'money', raw: (r) => num(r.totalConsideration ?? r.purchasePrice) },
     { h: 'Sold', get: (r) => day(r.endDate || r.saleDate), kind: 'date', raw: (r) => ymd(r.endDate || r.saleDate) },
-    { h: 'Paid', get: (r) => money(r.purchasePrice ?? r.totalConsideration), n: true, kind: 'money', raw: (r) => num(r.purchasePrice ?? r.totalConsideration) },
-    { h: 'Sold for', get: (r) => money(r.salePrice), n: true, kind: 'money', raw: (r) => num(r.salePrice) },
+    /* `soldConsideration`, NOT `salePrice`. There is no `salePrice` on an
+       ownership row — `purchasePrice`/`salePrice` are values of the tool's
+       `sortBy` parameter, not fields on the row — so this column rendered a
+       dash on every property ever shown. The old spelling is kept as a
+       fallback rather than deleted: it costs nothing and a vendor that starts
+       sending it will simply work. */
+    { h: 'Sold for', get: (r) => money(r.soldConsideration ?? r.salePrice), n: true, kind: 'money', raw: (r) => num(r.soldConsideration ?? r.salePrice) },
+    { h: 'Kind', get: (r) => pretty(r.propertyUseCategory) },
+    { h: 'County', get: (r) => (txt(r.countyName) ? `${txt(r.countyName)}${txt(r.state) ? ', ' + txt(r.state) : ''}` : txt(r.city) || '—') },
   ],
   mortgages: [
-    { h: 'Property', w: '32%', get: (r) => addressOf(r), strong: true },
+    { h: 'Property', w: '24%', get: (r) => addressOf(r), strong: true, subject: true },
+    { h: 'Held in', w: '14%', get: (r) => (entityOf(r).map((e) => e.name).join(', ') || names(r.borrowerNames) || '—') },
     { h: 'Recorded', get: (r) => day(r.recordingDate), kind: 'date', raw: (r) => ymd(r.recordingDate) },
     { h: 'Amount', get: (r) => money(r.mortgageAmount), n: true, kind: 'money', raw: (r) => num(r.mortgageAmount) },
-    { h: 'Lender', get: (r) => txt(r.lenderName || r.lenderAliasName) },
-    { h: 'Kind', get: (r) => txt(r.lenderType) },
+    /* WHAT THEY PAID FOR IT, on the same row as what they borrowed on it —
+       `deedConsideration` rides along on every mortgage, so the loan-to-price
+       an officer is really asking about is answerable with no second call and
+       no second tab. */
+    { h: 'Price paid', get: (r) => money(r.deedConsideration), n: true, kind: 'money', raw: (r) => num(r.deedConsideration) },
+    { h: 'Lender', w: '14%', get: (r) => txt(r.lenderName || r.lenderAliasName) },
+    { h: 'Kind', get: (r) => pretty(r.lenderType) },
+    { h: 'Purpose', get: (r) => (r.isRefinance === true ? 'Refinance' : r.isExtension === true ? 'Extension' : pretty(r.loanPurpose)) },
     { h: 'Term', get: (r) => (num(r.loanTermMonths) === null ? '—' : `${r.loanTermMonths} mo`), kind: 'num', raw: (r) => num(r.loanTermMonths) },
     { h: 'Matures', get: (r) => day(r.maturityDate), kind: 'date', raw: (r) => ymd(r.maturityDate) },
     { h: 'Paid off', get: (r) => payoffLabel(r), kind: 'payoff', raw: (r) => payoffStatus(r) },
   ],
   deeds: [
-    { h: 'Property', w: '32%', get: (r) => addressOf(r), strong: true },
+    { h: 'Property', w: '24%', get: (r) => addressOf(r), strong: true, subject: true },
     { h: 'Recorded', get: (r) => day(r.recordingDate), kind: 'date', raw: (r) => ymd(r.recordingDate) },
     { h: 'Price', get: (r) => money(r.totalConsideration), n: true, kind: 'money', raw: (r) => num(r.totalConsideration) },
-    { h: 'From', get: (r) => names(r.grantors) },
-    { h: 'To', get: (r) => names(r.grantees) },
-    { h: 'Cash', get: (r) => (r.isCashPurchase === true ? 'Cash' : r.isCashPurchase === false ? 'Financed' : '—') },
+    { h: 'From', w: '16%', get: (r) => names(r.grantors) },
+    { h: 'To', w: '16%', get: (r) => names(r.grantees) },
+    { h: 'Cash', get: (r) => flag(r.isCashPurchase, 'Cash', 'Financed') },
+    { h: 'Business', get: (r) => flag(r.isBusinessPurpose, 'Business', 'Personal') },
+    { h: 'County', get: (r) => (txt(r.countyName) ? `${txt(r.countyName)}${txt(r.countyState) ? ', ' + txt(r.countyState) : ''}` : txt(r.city) || '—') },
   ],
   associated_people: [
-    { h: 'Person', w: '40%', get: (r) => txt(r.name), strong: true },
+    { h: 'Person', w: '40%', get: (r) => txt(r.name), strong: true, subject: true },
     { h: 'Shared mortgages', get: (r) => count(r.sharedMortgageCount), n: true, kind: 'num', raw: (r) => num(r.sharedMortgageCount) },
     { h: 'Shared deeds', get: (r) => count(r.sharedDeedCount), n: true, kind: 'num', raw: (r) => num(r.sharedDeedCount) },
     { h: 'Together on', get: (r) => count(r.sharedTotalCount), n: true, kind: 'num', raw: (r) => num(r.sharedTotalCount) },
   ],
   lender_network: [
-    { h: 'Lender', w: '38%', get: (r) => txt(r.name), strong: true },
-    { h: 'Kind', get: (r) => txt(r.lenderType) },
+    { h: 'Lender', w: '34%', get: (r) => txt(r.name), strong: true, subject: true },
+    { h: 'Kind', get: (r) => pretty(r.lenderType) },
     { h: 'Loans', get: (r) => count(r.mortgageCount), n: true, kind: 'num', raw: (r) => num(r.mortgageCount) },
     { h: 'Total lent', get: (r) => money(r.totalVolume), n: true, kind: 'money', raw: (r) => num(r.totalVolume) },
+    { h: 'Website', get: (r) => txt(r.domainName) || '—' },
   ],
   cross_state: [
-    { h: 'Name', w: '38%', get: (r) => txt(r.name), strong: true },
+    { h: 'Name', w: '34%', get: (r) => txt(r.name), strong: true, subject: true },
     { h: 'State', get: (r) => txt(r.state) },
     { h: 'Mortgages', get: (r) => count(r.mortgageCount), n: true, kind: 'num', raw: (r) => num(r.mortgageCount) },
     { h: 'Deeds', get: (r) => count(r.deedCount), n: true, kind: 'num', raw: (r) => num(r.deedCount) },
+    { h: 'Payoffs', get: (r) => count(r.satisfactionCount), n: true, kind: 'num', raw: (r) => num(r.satisfactionCount) },
     { h: 'Records', get: (r) => count(r.transactionCount), n: true, kind: 'num', raw: (r) => num(r.transactionCount) },
   ],
 };
@@ -471,4 +558,174 @@ export function viewSummary(view, labels) {
     unknownNotes.push(`${n(u.count)} more carry no ${u.column} figure, so this range cannot judge them — they are not counted either way.`);
   }
   return { main, truncatedNote, unknownNotes };
+}
+
+
+// ---------------------------------------------------------------------------
+// THE DRILL-IN — one record, and everything the cache already knows about it
+//
+// THE WHOLE POINT IS THAT THIS COSTS NOTHING. Elementix allows 1,000 requests
+// an hour across the WHOLE organisation, so a screen that fetched on every
+// click would spend the office's allowance on browsing. But the rows we already
+// hold carry the ids that join them to each other: a mortgage carries `deedId`
+// and `satisfactionId`, a deed carries `mortgageId`, and every one of them
+// carries the property's own address uuid. So "click a mortgage and you get the
+// property, click the property and you get the lender" is a LOCAL join over
+// rows already paid for — no call, no spinner, no waiting.
+//
+// PURE, and never inventive: a link it cannot resolve is simply absent. It must
+// never present the WRONG deed beside a mortgage — a fabricated purchase price
+// next to a real loan amount is a number somebody would act on.
+// ---------------------------------------------------------------------------
+
+/** Every row of a section of the cached profile, or []. */
+export function rowsOfSection(profile, key) {
+  const sec = profile && profile.sections && profile.sections[key];
+  return (sec && Array.isArray(sec.rows)) ? sec.rows : [];
+}
+
+const idEq = (a, b) => !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
+
+/** Find one row of a section by its own `id`. */
+export function findById(profile, key, id) {
+  if (!id) return null;
+  return rowsOfSection(profile, key).find((r) => r && idEq(r.id, id)) || null;
+}
+
+/** Every row of a section that is about a given address uuid. */
+export function rowsAtAddress(profile, key, addressId) {
+  if (!addressId) return [];
+  return rowsOfSection(profile, key).filter((r) => {
+    if (addressIdOf(r) && idEq(addressIdOf(r), addressId)) return true;
+    const ids = Array.isArray(r && r.addressesIds) ? r.addressesIds : [];
+    if (ids.some((x) => idEq(x, addressId))) return true;
+    for (const b of [r && r.propertyAddresses, r && r.property_addresses]) {
+      if (Array.isArray(b) && b.some((a) => a && idEq(a.id, addressId))) return true;
+    }
+    return false;
+  });
+}
+
+const nameKey = (v) => txt(v).toLowerCase().replace(/[^a-z0-9]+/g, '');
+export function lenderNamesAgree(directoryName, recordedName, aliasName) {
+  const a = nameKey(directoryName);
+  if (!a) return false;
+  for (const other of [recordedName, aliasName]) {
+    const b = nameKey(other);
+    if (!b) continue;
+    if (a === b || a.includes(b) || b.includes(a)) return true;
+  }
+  // Neither side named a lender at all: nothing to contradict, so the id stands.
+  return !nameKey(recordedName) && !nameKey(aliasName);
+}
+
+/** Where a row says the property is, in as much detail as it carries. */
+export function placeOf(row) {
+  const line = addressOf(row);
+  const bits = [];
+  if (txt(row && row.city)) bits.push(txt(row.city));
+  const county = txt(row && row.countyName);
+  if (county) bits.push(/county/i.test(county) ? county : `${county} County`);
+  const st = txt(row && (row.state || row.countyState));
+  if (st) bits.push(st);
+  const zip = txt(row && row.zipCode);
+  if (zip) bits.push(zip);
+  return { line: line || null, area: bits.length ? bits.join(', ') : null,
+    lat: num(row && row.latitude), lng: num(row && row.longitude) };
+}
+
+/**
+ * THE RECORD BEHIND A ROW.
+ *
+ * `kind` is the section the row was clicked in. The return shape is deliberately
+ * flat and display-ready: the component draws it, it does not re-derive it.
+ */
+export function recordDetail(row, kind, profile) {
+  if (!row || typeof row !== 'object') return null;
+  const addressId = addressIdOf(row);
+  const place = placeOf(row);
+
+  // The three sibling records, resolved LOCALLY. `mortgage`/`deed` are the
+  // row itself when the row is one of them.
+  const mortgage = kind === 'mortgages' || kind === 'foreclosures' ? row
+    : (kind === 'deeds' ? findById(profile, 'mortgages', row.mortgageId) : null);
+  const deed = kind === 'deeds' ? row
+    : findById(profile, 'deeds', row.deedId || (mortgage && mortgage.deedId));
+
+  // The ownership record tells us the hold period and who holds it NOW, which
+  // neither the mortgage nor the deed carries.
+  const ownership = kind === 'properties' ? row
+    : rowsAtAddress(profile, 'properties', addressId)[0] || null;
+
+  /* THE LENDER ROLL-UP IS ONLY SHOWN WHEN THE TWO SIDES AGREE ABOUT WHO IT IS.
+     The join is by id, which should be exact — but if the cached lender network
+     and the mortgage row ever disagree about the name, printing "39 loans from
+     CoreVest" under a mortgage recorded by Alpha Funding is a sentence somebody
+     would repeat to a borrower. Containment is allowed because both names come
+     from the SAME vendor for the SAME loan (a county records "Roc Capital"
+     where the directory says "Roc Capital / Roc360"); this is a sanity check on
+     our own join, never an identity matcher. Disagreement REFUSES rather than
+     picks a side. */
+  const lenderId = txt((mortgage && mortgage.lenderId) || '');
+  const lenderRow = lenderId ? findById(profile, 'lender_network', lenderId) : null;
+  const lender = lenderRow && lenderNamesAgree(lenderRow.name,
+    (mortgage && mortgage.lenderName) || '', (mortgage && mortgage.lenderAliasName) || '') ? lenderRow : null;
+
+  // Everything else recorded at this address, so the drill-in is the property's
+  // story rather than one row of it. The row itself is never listed twice.
+  const alsoMortgages = rowsAtAddress(profile, 'mortgages', addressId)
+    .filter((r) => !(mortgage && idEq(r.id, mortgage.id)));
+  const alsoDeeds = rowsAtAddress(profile, 'deeds', addressId)
+    .filter((r) => !(deed && idEq(r.id, deed.id)));
+
+  const entities = entityOf(row).length ? entityOf(row)
+    : (entityOf(mortgage || {}).length ? entityOf(mortgage) : entityOf(ownership || {}));
+
+  /* A LENDER ROW AND A COMPANY ROW ARE SUBJECTS TOO. Opening one used to draw
+     an almost empty card, because neither has an address and neither is a
+     mortgage — and "click on the lender, it comes up" is half the owner's
+     request. Both resolve the same way and just as cheaply: every mortgage we
+     hold names its `lenderId`, and every mortgage, deed and ownership row names
+     the companies on it, so their loans are a filter over rows already paid for.
+     `loansFrom`/`heldHere` are empty for every other kind, which is what keeps
+     the panel honest rather than padded. */
+  const loansFrom = kind === 'lender_network'
+    ? rowsOfSection(profile, 'mortgages').filter((m) => idEq(m && m.lenderId, row.id))
+    : [];
+  const heldHere = kind === 'entities'
+    ? ['mortgages', 'deeds', 'properties'].flatMap((k) => rowsOfSection(profile, k)
+      .filter((r) => entityOf(r).some((e) => idEq(e.id, row.id)))
+      .map((r) => ({ section: k, row: r })))
+    : [];
+
+  return {
+    kind,
+    addressId,
+    place,
+    entities,
+    row, mortgage, deed, ownership, lender,
+    loansFrom, heldHere,
+    alsoMortgages, alsoDeeds,
+    url: urlOf(row),
+    // The vendor's own ids, so a recorded instrument can be looked up at the
+    // county by the number that is actually on it.
+    countyDocumentId: txt((mortgage && mortgage.countyDocumentId) || (deed && deed.countyDocumentId)) || null,
+    preforeclosureId: txt(mortgage && mortgage.preforeclosureId) || null,
+    assignmentId: txt(mortgage && mortgage.assignmentId) || null,
+    satisfactionId: txt(mortgage && mortgage.satisfactionId) || null,
+  };
+}
+
+/** How long they held it, in plain words, or null when the dates cannot say. */
+export function holdPeriod(startDate, endDate) {
+  const a = ymd(startDate); const b = ymd(endDate);
+  if (!a) return null;
+  const end = b || null;
+  if (!end) return null;
+  const ms = Date.parse(`${end}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`);
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const months = ms / (1000 * 60 * 60 * 24 * 30.4375);
+  if (months < 1) return `${Math.max(1, Math.round(ms / 86400000))} days`;
+  if (months < 24) return `${months.toFixed(1).replace(/\.0$/, '')} months`;
+  return `${(months / 12).toFixed(1).replace(/\.0$/, '')} years`;
 }

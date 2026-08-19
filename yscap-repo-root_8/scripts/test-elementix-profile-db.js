@@ -386,6 +386,59 @@ async function main() {
   assert.deepStrictEqual([...idKeys], [true], 'the person tools take `id`, never `personId`');
   ok(`${calls.length} requests, every one preflighted against the vendor's own schema`);
 
+  // -------------------------------------------------------------------------
+  console.log('\n10. A BIG portfolio is trimmed to fit, never blanked');
+  // -------------------------------------------------------------------------
+  /* THE BUG THIS PROVES GONE. `crmTools.vendorJsonb` refuses to slice a
+     serialized document -- a truncated one is not valid JSON -- so over its
+     400,000-character ceiling it REPLACES the payload with a marker. Right for
+     the raw copy it was written for; catastrophic for a section, whose `rows`
+     ARE what the tab renders: the biggest portfolios would store a marker,
+     `readProfile` would compute rowCount 0 from the missing array, and a person
+     with hundreds of mortgages would draw an EMPTY TAB with no error anywhere.
+     Nothing throws, nothing logs, and it happens only to the records worth
+     reading. */
+  {
+    const MAX = crmTools._internals.JSONB_MAX;
+    const fat = (i) => ({ id: `fat-${i}`, recordingDate: '2026-01-01', mortgageAmount: '500000.00',
+      lenderName: 'A Lender With A Long Name LLC', filler: 'x'.repeat(1200) });
+    const rows = Array.from({ length: 900 }, (_, i) => fat(i));
+    const payload = { rows, total: 900 };
+    assert.ok(JSON.stringify(payload).length > MAX, 'the fixture really is over the ceiling');
+
+    const fitted = profile._internals.fitSectionPayload(payload);
+    assert.ok(Array.isArray(fitted.rows) && fitted.rows.length > 0,
+      'the rows survive — the tab is not blanked');
+    assert.ok(JSON.stringify(fitted).length <= MAX, '…and what is stored fits');
+    assert.strictEqual(fitted.rows.length + fitted.rowsDropped, 900,
+      'every row is accounted for: kept plus dropped is what came in');
+    assert.strictEqual(fitted.total, 900, 'and the vendor’s own total is left alone, so "N of M" stays honest');
+    assert.strictEqual(fitted.rows[0].id, 'fat-0', 'the rows kept are the first ones, in order');
+    ok(`a ${JSON.stringify(payload).length.toLocaleString('en-US')}-character section keeps ${fitted.rows.length} rows and reports ${fitted.rowsDropped} dropped`);
+
+    // A payload that already fits is returned UNTOUCHED — no rowsDropped key to
+    // make an ordinary section look truncated.
+    const small = { rows: [{ id: 'a' }], total: 1 };
+    const same = profile._internals.fitSectionPayload(small);
+    assert.strictEqual(same, small, 'a payload under the ceiling is the very same object');
+    assert.ok(!('rowsDropped' in same), '…and gains nothing that would make it read as trimmed');
+    ok('a section that fits is stored exactly as it was');
+
+    // And the reader turns a trim into the sentence the screen already knows how
+    // to print, rather than leaving a silent cap.
+    const pid = PID_NJ;
+    await db.query(
+      `INSERT INTO elementix_person_sections (person_id, section, state, payload, row_count, truncated, fetched_at)
+       VALUES ($1,'mortgages','',$2::jsonb,$3,false,now())
+       ON CONFLICT (person_id, section, state) DO UPDATE SET payload = EXCLUDED.payload,
+         row_count = EXCLUDED.row_count, truncated = EXCLUDED.truncated`,
+      [pid, JSON.stringify({ rows: [{ id: 'k1' }], total: 900, rowsDropped: 899 }), 1]);
+    const read = await profile.readProfile(pid);
+    assert.strictEqual(read.sections.mortgages.truncated, true,
+      'rows the STORE could not hold read as truncated, exactly like rows the vendor never sent');
+    ok('a trimmed section tells the screen it is partial instead of looking complete');
+  }
+
   await wipe();
   console.log(`\n${passed} checks passed.\n`);
 }
