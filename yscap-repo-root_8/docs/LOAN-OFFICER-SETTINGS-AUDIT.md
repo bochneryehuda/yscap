@@ -34,7 +34,7 @@ them TWO independent control systems, both live today:
 tables `lo_notification_prefs` / `lo_notification_rules` / `lo_notification_file_overrides` /
 `lo_notification_drafts`, db/226–228):
 
-- A catalog of ~85 notification types in 14 categories. Per type: send automatically / hold as a **draft** for
+- A catalog of 94 notification types in 14 categories. Per type: send automatically / hold as a **draft** for
   my review / off entirely — with bulk "everything automatic / everything manual / everything off" buttons.
 - Per FILE override (on the file screen, assigned officer only): pin one type — or the whole file — to a mode,
   with one-click presets: *Follow my defaults / VIP (everything automatic) / Quiet (park as drafts) / Silence*.
@@ -45,12 +45,13 @@ tables `lo_notification_prefs` / `lo_notification_rules` / `lo_notification_file
   window (0–60 seconds).
 - A **Compose** action (write an ad-hoc notification through the same machinery) and an **Analytics** tab
   (30 days of sent/opened/discarded, per type).
-- Hard floor: security / account / DocuSign notifications are FORCED — no setting can turn them off.
+- Hard floor: security / account / DocuSign notifications — and the approval/exception traffic (escalations,
+  exception requests and decisions) — are FORCED: no setting can turn them off.
 
 **What I myself receive** (the self gate — `src/lib/lo-self-gate.js`; tables `lo_self_notification_prefs` /
 `lo_self_delivery_rules` / `lo_muted_files` / `lo_starred_files` / `lo_batched_emails`, db/368–369):
 
-- Per type: email + in-app / in-app only / off, and instant / hourly / daily / weekly.
+- Per type: both / email / in-app only / off, and instant / hourly / daily / weekly.
 - Master modes: instant / batched (bundle every 15–240 min) / digest-only / no-email (in-app only).
 - Vacation dates (hold my email until I'm back — or drop it), weekend hold, quiet hours, work days, timezone.
 - Mute a file (silence one deal, optionally until a date), star a file (it breaks through every filter).
@@ -75,8 +76,9 @@ Phase-1 catalog below — the dashboards module even names it "this repo's patte
 ### 1c. Personal surfaces that already exist (scattered, worth knowing)
 
 - **Personal dashboards** (db/422): every staffer can build their own dashboard of cards, share it with a
-  person / a role / everyone, and editing a shared one forks a personal copy. Real per-user customization —
-  but there's no "make this my home screen" setting.
+  person / a role / everyone, and a company dashboard offers "Make it mine" (a personal fork) instead of
+  letting one person's edit change everyone's view. Real per-user customization — but there's no "make this
+  my home screen" setting.
 - **Custom chat status**: an officer can set an emoji + "In a closing until 4pm" status with an expiry
   (`staff_users.status_emoji/status_text/status_expires_at`).
 - **Per-conversation chat mute** (`conversation_members.muted_until`).
@@ -115,8 +117,10 @@ A non-exhaustive list of one-size-fits-all behaviors today (each is a candidate 
 - Pipeline default view, file-screen layout, landing page after login: same for everyone.
 - Email wording: one shared catalog; no personal templates, snippets, or signature.
 - Vendors: title/insurance contacts are typed per file; no officer "favorites" that pre-fill.
-- Delegation: `visible_officer_ids` (see a colleague's files) exists but only an admin can set it; there is
-  no self-service vacation coverage — the vacation setting only holds the officer's own email.
+- Delegation: `visible_officer_ids` (standing access to a colleague's whole book) exists but only an admin
+  can set it; there is no self-service vacation coverage — the vacation setting only holds the officer's own
+  email. (Per-FILE assistants are different: anyone on a file can already add one — what's missing is the
+  durable, automatic layer.)
 - Term Sheet Studio: nothing remembers an officer's habits (program, term, reserve style) between files.
 
 ---
@@ -194,7 +198,7 @@ level. Porting the consumer-POS ideas into RTL already puts PILOT past the segme
 | Doc request templates / quick packs | Floify quick packs + business rules | Company checklist engine (owner-governed) | S67 (personal quick-adds only — auto-attach stays company-owned) |
 | Partner / referral co-branding | SimpleNexus co-branded apps, Floify partner permissions incl. self-serve pre-approval letters | TPO portal (company-level); nothing per-officer | S59 (+ later co-branded links) |
 | Pricing personalization | Saved scenarios (LoanPASS), rate alerts (Optimal Blue); margins stay admin | Per-file admin zone w/ approval; no personal layer | S43, S65, S66, S44 (your call) |
-| Delegation / co-pilot / assistants | Blend loan teams, Floify co-pilot + auto-approve delegation, Maxwell sender delegation | Borrower-view impersonation exists; delegation admin-only | S18, S53–S56 |
+| Delegation / co-pilot / assistants | Blend loan teams, Floify co-pilot + auto-approve delegation, Maxwell sender delegation | Borrower-view impersonation exists; per-file assistants self-serve; STANDING delegation admin-only | S18, S53–S56 |
 | Working hours / OOO / scheduling | **Nobody in LOS/POS**; Gmail/Outlook + CRMs only (Shape booking link) | Vacation silences own email only | S6, S7, S52–S54 — white space |
 | Views following the user across devices | Standard in web SaaS (server-side prefs) | Browser-local only | S34 |
 | Saved replies / snippets | HubSpot snippets, Gmail templates | None | S61 |
@@ -202,9 +206,10 @@ level. Porting the consumer-POS ideas into RTL already puts PILOT past the segme
 
 ### What the best settings systems teach (we should build to these)
 
-1. Store personal settings as a **sparse override on company defaults** — never a copy (company → officer →
-   file, each level only holding what it changed; the draw-settings ladder already does this and even reports
-   which level answered).
+1. Store personal settings as a **sparse override on company defaults** — never a copy, each level only
+   holding what it changed. The draw settings already work exactly this way (their ladder is company →
+   capital provider → project, and it reports which level answered); the officer tier slots in as one more
+   level of the same pattern: company → officer → file.
 2. **Every personal capability is permission-gated** — an admin can restrict any officer's tab (the Shape /
    Aidium model: build / customize-ours / locked per team).
 3. **Some notifications are not preferences** — security/compliance events sit outside the system (PILOT
@@ -214,7 +219,7 @@ level. Porting the consumer-POS ideas into RTL already puts PILOT past the segme
 5. **Route to one best channel instead of blasting all** — PILOT's presence-aware rule is already the Slack
    pattern; push (S33) must join that ladder, not bypass it.
 6. **Ship "preference profiles"** — a new officer starts from a sane role-based bundle (HubSpot's model), not
-   85 unset toggles; PILOT's learning mode is a great first-day default to bundle in.
+   94 unset toggles; PILOT's learning mode is a great first-day default to bundle in.
 7. **Let a good personal view be promoted** to a team default (LendingWise/Linear pattern) instead of everyone
    rebuilding it (S37).
 8. **A new event type must earn a notification** — interrupt only for action-required (the discipline PILOT's
@@ -253,7 +258,8 @@ copy.
 
 - **S2 — My photo** *(Medium)*
   My headshot on borrower emails' officer block, the borrower portal's "Your loan officer" card, my marketing
-  bar, the team page, and chat. **Today:** no photo exists anywhere in the system — avatars are initials.
+  bar, the team page, and chat. **Today:** no officer photo exists anywhere in the system — avatars are
+  initials.
   **How:** one new profile field + an upload (through the normal document plumbing), then added to the
   officer block surfaces one by one.
 
@@ -358,7 +364,10 @@ touches inside fixed company templates.
 - **S21 — CC borrower on the attorney closing-prep order** *(Small; your call on whether it's wanted)*
   Extends the exact S19/S20 pattern to the third order kind. **Today:** the pattern's key map simply has no
   entry for attorney orders, so the borrower can never be defaulted in. **How:** one more key + one map
-  entry. (Appraisal orders are deliberately excluded — that thread is with the AMC.)
+  entry. (Appraisal orders are deliberately excluded — that thread is with the AMC.) **One caution before
+  saying yes:** the closing chain was deliberately built borrower-free — lender↔counsel correspondence must
+  never reach the borrower — and a borrower CC'd on the opening order email can end up on the attorney's
+  reply-all chain. That's why this one is a decision, not a default.
 
 - **S22 — My borrowers' weekly "what's still needed" reminder** *(Small–Medium)*
   On/off for my book, which day it goes, and how often (the current rhythm is every ~6 days for everyone).
@@ -466,8 +475,9 @@ approvals and gates are untouched (see guardrails).
 
 - **S42 — My default team** *(Small–Medium)*
   My processor and my assistant(s) auto-proposed on every file I open. **Today:** processor starts blank on
-  every file; assistants are admin-added per file. **How:** bag keys; the create route proposes them (the
-  form shows them, I can change them; admin still owns changing the PRIMARY afterwards, as today).
+  every file, and while anyone on a file can already add an assistant to THAT file, there's no default —
+  it's a hand-step on every single deal. **How:** bag keys; the create route proposes them (the form shows
+  them, I can change them; an admin still owns changing the PRIMARY afterwards, as today).
 
 - **S43 — My studio starting points** *(Medium)*
   Which program card I start on, and my usual choices for the non-price toggles (accrual label, minimum-
@@ -509,7 +519,8 @@ approvals and gates are untouched (see guardrails).
 - **S50 — My order follow-up timing** *(Small)*
   How many business days before PILOT chases title (3), insurance (2), attorney (5), appraisal (10) on my
   files. **Today:** fixed per kind, per-file override only. **How:** per-officer defaults inside admin
-  bounds — the resolution ladder (company → officer → file) the draw settings already model.
+  bounds — the same sparse-override ladder the draw settings already model (theirs runs company → capital
+  provider → project; ours adds the officer tier: company → officer → file).
 
 - **S51 — Order follow-ups: auto vs draft** *(Medium)*
   Whether my order chases fire on their own or park in my Drafts first — the same automatic/manual choice
@@ -535,10 +546,12 @@ approvals and gates are untouched (see guardrails).
   While vacation mode is on, action-needed items on my files also notify my coverage person instead of only
   piling up. **How:** one check in the staff fan-out when the file's officer is away and has coverage.
 
-- **S55 — My assistants** *(Medium — admin approves)*
-  See and request my assistant list from my own settings instead of asking an admin per file. **Today:**
-  admin-only, file by file. **How:** a request flow writing the existing assignee rows on approval; "my
-  default assistants" then feeds S42.
+- **S55 — My standing assistant list** *(Medium)*
+  A durable "these are my assistants" list on my own settings, which then lands on my files automatically
+  (feeding S42) — instead of adding the same person file by file forever. **Today:** per-file assistant
+  adding already works (anyone on a file can do it); what doesn't exist is the standing list or anything
+  automatic. **How:** a per-officer list writing the existing assignee rows at file creation; whether adding
+  someone to the STANDING list needs a one-time admin sign-off is your call (see 5d).
 
 - **S56 — My default hand-off targets** *(Small–Medium)*
   My usual closer / draw coordinator proposed when I submit a hand-off. **Today:** hand-offs route by role;
@@ -590,7 +603,7 @@ approvals and gates are untouched (see guardrails).
   admins can always see them and they live in the file's record (a regulated file keeps no secrets); they're
   simply not pushed at teammates. **How:** a small notes table + a card on the overview.
 
-### Group K — Two more the industry survey surfaced
+### Group K — Three more the industry survey surfaced
 
 - **S65 — My saved deal scenarios** *(Medium)*
   Save a named starting scenario in the Term Sheet Studio — "my typical NJ flip", "12-mo ground-up w/ full
@@ -645,19 +658,20 @@ These are your own standing rules; the settings program must be built so no sett
 - Teach the settings bag richer types (numbers, choice lists, short text) + the matching rows on "My
   settings" — today it renders on/off switches only. Every Small entry above then ships as pure config.
 - Group the "My settings" screen by the catalog's groups so it stays readable as it grows.
-- Adopt the **resolution ladder** pattern the draw settings already use (company → officer → file, reporting
-  WHICH level answered) for every behavioral setting — it's how "why did this file behave differently?"
-  stays answerable.
+- Adopt the **resolution ladder** pattern the draw settings already use (theirs: company → capital provider →
+  project, reporting WHICH level answered; ours: company → officer → file) for every behavioral setting —
+  it's how "why did this file behave differently?" stays answerable.
 
 ### 5c. Suggested build order
 
-**Phase 1 — quick wins, all Small, mostly settings-bag keys (a couple of weeks of work in total):**
-S17 (BCC me — the clearest mis-scoped switch in the system), S26, S36, S35, S41, S42, S49, S29, S31, S27/S28
-(digest schedule fix), S11, S12, S16+S34 (views follow me), S46, S66, S21 (if you want it), S32.
+**Phase 1 — quick wins, all Small or Small–Medium, mostly settings-bag keys (a couple of weeks of work in
+total):**
+S17 (BCC me — the clearest mis-scoped switch in the system), S18, S26, S36, S35, S41, S42, S49, S29, S31,
+S27/S28 (digest schedule fix), S11, S12, S16+S34 (views follow me), S46, S66, S21 (if you want it), S32.
 
 **Phase 2 — the identity + vendors + views package (the visible "wow" release):**
-S1–S6 + S8 (profile, photo, signature, scheduling link, live roster), S9, S47, S48, S50, S37, S38, S39, S40,
-S22, S23, S25, S45, S53, S56, S60, S64, S65, S67.
+S1–S7 + S8 (profile, photo, signature, scheduling link, one-timezone unification, live roster), S9, S43,
+S47, S48, S50, S37, S38, S39, S40, S22, S23, S25, S45, S53, S56, S60, S64, S65, S67.
 
 **Phase 3 — the bigger builds and the policy calls:**
 S10 (landing pages), S13, S15, S24 (template slots), S30, S33 (push), S44 (pricing defaults — your
@@ -667,7 +681,9 @@ decision), S51, S52 + S54 (real vacation + alert redirect), S55, S57, S58, S59, 
 
 - **S44** — personal pricing defaults (touches the every-deviation-approves rhythm; the numbers stay frozen).
 - **S21** — whether borrowers should ever be CC'd on attorney closing-prep orders.
-- **S55/S53** — how much team/coverage self-service you want vs. admin-only control.
+- **S53/S55** — coverage (standing access to a colleague's whole book) is admin-only today, and per-file
+  assistants are already self-serve; the decision is whether a STANDING grant — a coverage delegate (S53) or
+  a standing assistant list (S55) — needs a one-time admin sign-off or is fully self-serve.
 - **S58** — how far borrower-facing repeat-business touches may go (marketing compliance).
 - **S15/S24/S25** — whether officers may add personal paragraphs to borrower-facing emails at all (the
   industry-standard compliance answer is yes-within-slots; the wording around the slot stays company-fixed).
