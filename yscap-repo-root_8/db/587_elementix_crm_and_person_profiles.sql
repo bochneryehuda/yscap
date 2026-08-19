@@ -1,6 +1,14 @@
 -- ============================================================================
--- 587 — ELEMENTIX FOR THE CRM: per-officer connections, skip-trace capture,
+-- 587 — ELEMENTIX FOR THE CRM: the connection, skip-trace capture,
 --       and the cached "mega profile" every lead and borrower can carry.
+--
+-- READ db/588 BEFORE THIS FILE'S REASONING. This header was written when the
+-- design was one Elementix login PER OFFICER and the vendor was believed unable
+-- to say who unlocked whom. Both turned out to be wrong: the owner directed ONE
+-- shared connection ("everybody should never need to auth again on their own"),
+-- and the vendor stamps every unlock with the email of the login that made it,
+-- which is what makes the history import possible at all. The TABLES here are
+-- unchanged and correct; the paragraphs about seats are history.
 --
 -- ── WHAT CHANGED, AND WHY IT NEEDED A SECOND ELEMENTIX SHAPE ────────────────
 -- Elementix arrived in PILOT as an UNDERWRITING tool: prove a borrower's track

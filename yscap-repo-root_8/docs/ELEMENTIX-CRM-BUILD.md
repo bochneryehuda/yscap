@@ -123,8 +123,10 @@ deactivated staffer would file every contact into a pipeline nobody reads.
   (owner-directed 2026-08-19: *"set up auto pull leads"*). It is a real switch on the API Health
   page, **read at CALL time** by each pass rather than once at boot — read at boot, a flip did
   nothing until the next deploy, because the timers were never armed and there was nothing to turn
-  back on. The timers always run now and the switch decides what happens, so an owner can stop the
-  import the moment it does something they did not want and start it again with one click.
+  back on. The timers always run now — including when Elementix's own master switch is off, which
+  used to make `start()` return before arming a single one of them — and each pass asks both
+  switches at CALL time, so an owner can stop the import the moment it does something they did not
+  want, start it again with one click, and turn Elementix itself on without a deploy.
 * **SETTLE** is **not** behind that switch. `crm.skipTrace` waits about six seconds for the vendor's
   enrichment job; a slower job is recorded `pending` **and the credit is already spent**. Without
   something to come back and finish it, the contact never arrives, no lead is made, nobody is
@@ -178,8 +180,10 @@ stores their contact — it does not read their records — so the first open us
 blank. A person nobody has read is now read on open, and deliberately only the **overview**: one
 call per state, carrying every headline figure. The deep tabs are up to forty calls out of a shared
 allowance and browsing a list of leads must not spend that, so they fill on **Pull in everything**.
-It cannot loop — the server stamps the person as read whether the build succeeded or failed — and
-the overview says in words what is not in it yet.
+It cannot loop away: the screen's auto-build is gated on the overview having LOADED, so a build that
+errors or runs out of budget is retried once the next time somebody opens that record — not
+repeatedly on the same view. The person row is stamped as read either way, and the overview says in
+words what is not in it yet.
 
 **Every way to reach them is on the section.** A `leads` row holds two numbers; a skip trace
 routinely buys five. All of them render with the vendor's own label, carrier, location,
