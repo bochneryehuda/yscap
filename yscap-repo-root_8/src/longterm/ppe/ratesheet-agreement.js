@@ -402,6 +402,26 @@ async function runOne(scenario, ours, lp, opts) {
   // The FINE axes (per-dimension LLPA reconciliation + cap/floor probe) — only when BOTH priced this
   // scenario. When either side declines, the eligibility axis in `coarse` is what decides agreement.
   const ourEligible = !!(our && our.eligible);
+  // ⛔ THE VERDICT IS UNCHANGED, AND THE CHOICE INSIDE IT IS NOW SAID OUT LOUD (§2.113). This one
+  // expression decides that a loan Lender Price returned a PRICE for is nonetheless "not eligible",
+  // because a program in the same scope refused it. On the Deephaven DSCR sheet that is the NORMAL
+  // state of every loan — §2.107 measured the vendor splitting one sheet across three band containers
+  // where exactly one prices and the other two refuse — so `lpEligible` is false on essentially every
+  // scenario, `agreedPriced` has been 0 in every report this harness has ever produced, and the
+  // battery has never once observed Lender Price APPROVING a loan.
+  //
+  // WHETHER THAT IS RIGHT IS A BUSINESS QUESTION AND IT IS OPEN. Two live measurements disagree:
+  //   • 2026-08-17 — on four of six ineligible probes "the DSCR-matching container declined while a
+  //     mismatched container leaked a price", concluding: do NOT read a Deephaven price as eligibility.
+  //   • 2026-08-19 (§2.107) — the container NAME does not describe the loan's band (a DSCR 1.25 loan
+  //     priced under `DSCR < 1.00`), and the band is priced by an ADJUSTMENT ROW inside the grid, so
+  //     the three-way split is a configuration artifact rather than a pricing partition.
+  // Under the first reading the price is a leak; under the second it is a real offer and our sheet
+  // refusing it is a disagreement in the expensive direction — a loan the investor would fund that we
+  // turn away. Flipping this on a guess would either manufacture a false disagreement on every
+  // scenario or keep hiding a real one, so it is NOT flipped here: it is REPORTED (`lpPriced`,
+  // `lpPricedBy`, `lpRefusedBy`, and `lpPricedWhileRefused` in the summary) and put to the owner.
+  const lpPriced = lpRungs.length > 0;
   const lpEligible = lpNorm.eligible && !lpDeclined;
   const rungReconciles = [];
   const bounds = [];
@@ -551,6 +571,15 @@ async function runOne(scenario, ours, lp, opts) {
     ourEligible,
     lpEligible,
     lpDeclined,
+    // WHAT LENDER PRICE ACTUALLY DID, beside the verdict we drew from it. `lpPriced` is the fact the
+    // verdict above sets aside; the two program lists say which containers took which side, so a reader
+    // can see a scenario priced by one and refused by two without reopening the payload.
+    lpPriced,
+    lpPricedBy: (lpNorm.programs || []).filter((p) => (p.rungs || []).length).map((p) => p.program || null),
+    lpRefusedBy: Array.from(new Set(((lpDisq.declined) || []).map((d) => d.program || null))),
+    // The vendor repeats each refusal once per rung; §2.113 collapses them. Carried so a run can never
+    // quietly stop reporting how much it folded away.
+    lpDeclineDuplicatesCollapsed: isNum(lpDisq.duplicatesCollapsed) ? lpDisq.duplicatesCollapsed : null,
     // ⛔ WHETHER LENDER PRICE'S REFUSALS WERE OBSERVED AT ALL (§2.93). Carried per scenario because
     // the gate below is a claim about the whole battery, and a claim nobody can trace to the runs
     // that support it is the shape this file keeps having to unpick.
@@ -724,6 +753,15 @@ function summarize(results) {
   // ran — comparable or not. That is only honest if the report also says how much of each number came
   // from scenarios that could not be scored, so a reader can weigh it. Counted in the same loops as the
   // tallies themselves, so the two can never drift apart.
+  // ⛔ THE POPULATION THE OPEN §2.113 QUESTION GOVERNS. A scenario where Lender Price returned a price
+  // under one in-scope program AND refused under another is the case the verdict rule silently decides;
+  // counting them is what turns "an open question" into a number somebody can weigh. `lpPricedNotCounted`
+  // is the sharp one: LP priced it and the run scored LP as ineligible anyway.
+  const vendorSplit = {
+    lpPricedWhileRefused: 0,   // priced by one in-scope program, refused by another
+    lpPricedNotCounted: 0,     // ... and scored as NOT eligible because of it
+    declineDuplicatesCollapsed: 0, // per-rung repeats folded away by the normalizer (§2.113)
+  };
   const measurement = {
     scenarios: 0,       // scenarios whose measurements were tallied (errors excluded — they measured nothing)
     comparable: 0,      // ... of which could be scored
@@ -789,6 +827,11 @@ function summarize(results) {
     // describing a battery it did not look at. `measurement` below names the population out loud.
     measurement.scenarios += 1;
     if (r.incomparable) measurement.incomparable += 1; else measurement.comparable += 1;
+    if (isNum(r.lpDeclineDuplicatesCollapsed)) vendorSplit.declineDuplicatesCollapsed += r.lpDeclineDuplicatesCollapsed;
+    if (r.lpPriced && (r.lpRefusedBy || []).length) {
+      vendorSplit.lpPricedWhileRefused += 1;
+      if (!r.lpEligible) vendorSplit.lpPricedNotCounted += 1;
+    }
     // The largest per-dimension LLPA delta anywhere — computed per scenario and, until now, dropped.
     // "We disagree on 41 scenarios" reads very differently at 1 milli than at 5,000.
     if (isNum(r.worstDeltaMilli) && Math.abs(r.worstDeltaMilli) > Math.abs(worstDeltaMilli)) worstDeltaMilli = r.worstDeltaMilli;
@@ -873,6 +916,7 @@ function summarize(results) {
     agreementRate: comparable ? agreed / comparable : null,
     byCategory,
     measurement,
+    vendorSplit,
     byDimension,
     byDimensionStatus,
     byStatus,

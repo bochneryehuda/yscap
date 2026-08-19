@@ -7235,3 +7235,108 @@ measured over 8 scenarios (6 scorable, 2 not) — from the unscorable: 56 coarse
 224, not 56. The whole battery, and the report says which part of it could not be scored.
 
 177/177 suites, 33 database-backed. All seven gates green.
+
+---
+
+## §2.113 — Lender Price prices a loan and refuses it at the same time (2026-08-19)
+
+**OPEN OWNER QUESTION inside. The verdict is deliberately NOT changed by this section.**
+
+§2.112 turned the raw sink on and the first live decline trees landed. Replayed offline — free, on the
+vendor's own bytes — for `fico=660 cltv=75 dscr=1.25`, scoped to Deephaven Mortgage `^dscr`:
+
+```
+PRICED    "DSCR < 1.00  -  30 Yr Fixed"           28 rungs,  lpNorm.eligible = true
+REFUSED   "DSCR  1.00-1.24   -  30 Yr Fixed"   +  "DSCR  >= 1.25  - 30 Yr Fixed"
+          ...in 56 rows describing those 2 containers
+```
+
+Two findings. Only one of them is settled, and they are treated differently for that reason.
+
+### 1. The per-rung repetition is a plain defect, and it changed an answer
+
+Each refusal arrived **exactly 28 times — once per coupon on the ladder** — and inside a single row the
+same sentence appeared two and three times over. 56 rows, 2 real refusals.
+
+Twenty-eight copies of one refusal is not twenty-eight refusals, and every consumer counted them as
+such: the per-layer agreement / onlyOurs / onlyAuthority tallies, the container-partition count (§2.107
+printed the same sentence seven times over and **this is why**), and — the one that actually moves a
+verdict — **§2.108's same-dimension check, which reads a second row on one axis as a SECOND RULE our
+sheet failed to state. Twenty-seven phantom `loan_amount` rules per scenario.**
+
+Collapsed on the **full identity** — the program AND every reason's rule/adjType/group — so only an
+exact repeat can ever be removed and a genuinely different second refusal on the same program survives,
+which is precisely what §2.108 exists to catch. A dedupe keyed on the program alone would have eaten it
+and silently undone §2.108; that mutation is in the suite. Nothing is silently dropped:
+`duplicatesCollapsed` and `rowsSeen` ride on the normalized result and the run prints the total.
+
+### 2. Whether a price is an OFFER is a business question, and it is not answered here
+
+`ratesheet-agreement.js` computes:
+
+```js
+const lpEligible = lpNorm.eligible && !lpDeclined;   // lpDeclined = ANY in-scope program refused
+```
+
+On this sheet a sibling container refusing is the **normal state of every loan** (§2.107: three band
+containers, one prices, two refuse by design). So `lpEligible` is false essentially always,
+**`agreedPriced` has been 0 in every report this harness has ever produced, and the battery has never
+once observed Lender Price APPROVING a loan.** Every "agreement" it has ever reported is a both-declined
+agreement — measured against a refusal Lender Price arguably never made.
+
+**Two live measurements disagree about whether that is right, and they are both in this repository:**
+
+| | reading | consequence |
+|---|---|---|
+| 2026-08-17 (recorded in the code) | on four of six ineligible probes "the DSCR-matching container declined while a mismatched container leaked a price" — *do not read a Deephaven price as eligibility* | the price is a **leak**; today's rule is correct |
+| 2026-08-19 (§2.107) | the container NAME does not describe the loan's band (a DSCR 1.25 loan priced under `DSCR < 1.00`), and the band is priced by an ADJUSTMENT ROW inside the grid — the three-way split is a configuration artifact, not a pricing partition | the price is a **real offer**, and our sheet refusing it is a disagreement in the **expensive direction** — a loan the investor would fund that we turn away |
+
+Flipping this on a guess would either manufacture a false disagreement on every scenario in the battery
+or keep hiding a real one. Which is true is a question about how the investor's product actually works,
+so **it is not decided here** — CLAUDE.md's rule: never guess a business rule.
+
+### What DID change: the choice stopped being silent
+
+Every scenario now reports what Lender Price actually did, beside the verdict drawn from it —
+`lpPriced`, `lpPricedBy` (which container quoted), `lpRefusedBy` (which refused),
+`lpDeclineDuplicatesCollapsed`. The summary counts the population the question governs:
+
+```
+vendorSplit.lpPricedWhileRefused   — priced by one in-scope program, refused by another
+vendorSplit.lpPricedNotCounted     — ...and scored as "Lender Price declined" because of it
+vendorSplit.declineDuplicatesCollapsed
+```
+
+and the paid run prints it **as a question**, not a number:
+
+```
+⚠ vendor split  N scenario(s) Lender Price PRICED under one program while refusing under another
+                N of those are scored as "Lender Price declined" — see §2.113, OPEN owner question
+```
+
+`agreedPriced: 0` has been sitting on every report for weeks as the visible symptom of a decision
+nobody knew had been taken. It is now legible.
+
+### THE QUESTION FOR THE OWNER
+
+> Lender Price splits the Deephaven DSCR sheet into three programs by rent-coverage band. On a real
+> loan it returns a price under ONE of them and refuses the other two. **Does a price under any one of
+> those three mean Deephaven would actually fund the loan?**
+>
+> - **If yes** — then whenever our sheet refuses a loan Lender Price priced, that is a real
+>   disagreement and we are turning away business the investor would buy. The comparison should treat
+>   it that way, and today's 100% agreement number is worth nothing.
+> - **If no** — a price from a container that does not own the loan's band is a display artifact and
+>   today's rule is right, but then the comparison can never observe an approval and the harness needs
+>   a different way to prove the priced side.
+
+### What it is measured by
+
+`scripts/test-lt-ppe-vendor-split.js` — 22 assertions over a committed slice of the live capture
+(`scripts/fixtures/lp-vendor-split-live.json`), **mutation-proven six ways**: the dedupe removed (3
+named failures), the dedupe keyed on the program alone (2 — the load-bearing case), the within-row
+reason dedupe removed (1), `lpPriced` never true (3), the sharp counter never counting (1), and the run
+no longer saying it (3). Section D pins the verdict as **UNCHANGED**, so a future flip has to be a
+deliberate act with the owner's answer behind it rather than a side effect.
+
+178/178 suites, 33 database-backed. All seven gates green.

@@ -204,6 +204,20 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   // WHICH POPULATION THE LINES ABOVE WERE MEASURED OVER (§2.110). They cover every scenario the battery
   // ran, scorable or not; this line says how much of that came from scenarios that could not be scored,
   // because "by category 224" over 8 scenarios and over 2 are very different readings of the same run.
+  // ⛔ THE OPEN QUESTION, ON THE FACE OF THE RUN (§2.113). A scenario Lender Price returned a PRICE for
+  // and the run scored as ineligible anyway is the one case whose verdict rests on an unsettled reading
+  // of the vendor. Printed here so nobody has to open the report to discover the headline was built on
+  // it — and printed as a QUESTION, because it is not settled.
+  const vs = summary.vendorSplit;
+  if (vs && vs.lpPricedWhileRefused) {
+    console.log(`  ⚠ vendor split  ${vs.lpPricedWhileRefused} scenario(s) Lender Price PRICED under one program while refusing under another`);
+    if (vs.lpPricedNotCounted) {
+      console.log(`                  ${vs.lpPricedNotCounted} of those are scored as "Lender Price declined" — see §2.113, OPEN owner question`);
+    }
+  }
+  if (vs && vs.declineDuplicatesCollapsed) {
+    console.log(`  decline repeats ${vs.declineDuplicatesCollapsed} identical per-rung rows folded away (§2.113)`);
+  }
   const m = summary.measurement;
   if (m && m.incomparable > 0) {
     const f = m.fromIncomparable || {};

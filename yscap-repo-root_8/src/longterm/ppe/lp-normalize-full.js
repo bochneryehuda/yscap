@@ -231,11 +231,57 @@ function normalizeLpDisqualified(disq, opts = {}) {
         // eligibility refusal from a statement about Lender Price's own program partition — measured
         // 2026-08-18, `Eligibility - DSCR (>=1.00) Matrix - WHL/CORR (9.22.25)` versus
         // `Filter - DSCR >= 1.25%` (task #80, see ./lp-container-partition.js).
-        reasons: (item.reasons || []).map((r) => ({ rule: r.rule || null, adjType: r.adjType || null, group: r.group || null })),
+        reasons: dedupeReasons((item.reasons || []).map((r) => ({ rule: r.rule || null, adjType: r.adjType || null, group: r.group || null }))),
       });
     }
   }
-  return { ready: true, declined };
+  // ⛔ THE VENDOR REPEATS EACH REFUSAL ONCE PER RUNG (§2.113). MEASURED on the captured live bytes of
+  // 2026-08-19: the scoped disqualify tree carried **56 rows describing 2 containers** — each program's
+  // identical refusal repeated exactly 28 times, once per coupon on the ladder — and inside a single
+  // row the same sentence appeared two and three times over. Twenty-eight copies of one refusal is not
+  // twenty-eight refusals, and until now every consumer counted them as such: the per-layer
+  // agreement/onlyOurs/onlyAuthority tallies, the container-partition count, and — the one that
+  // actually changes an answer — §2.108's same-dimension check, which reads a second row on one axis
+  // as a SECOND RULE our sheet failed to state. Twenty-seven phantom `loan_amount` rules per scenario.
+  //
+  // Collapsed on the FULL identity (program + every reason's rule/adjType/group), so this can only ever
+  // remove an exact repeat: a genuinely different second refusal on the same program differs in its
+  // reason tuple and survives, which is precisely what §2.108 exists to catch. Nothing is silently
+  // dropped — `duplicatesCollapsed` reports how many rows were folded away.
+  const byIdentity = new Map();
+  let duplicatesCollapsed = 0;
+  for (const row of declined) {
+    const key = declinedIdentity(row);
+    if (byIdentity.has(key)) { duplicatesCollapsed += 1; continue; }
+    byIdentity.set(key, row);
+  }
+  return { ready: true, declined: Array.from(byIdentity.values()), duplicatesCollapsed, rowsSeen: declined.length };
+}
+
+// The identity of a refusal: the program it is about and every reason it states. Reasons are compared
+// in the order the vendor sent them AFTER their own de-duplication, so two rows differing only by a
+// repeated sentence still collapse — which is the shape the live capture actually carries.
+function declinedIdentity(row) {
+  const r = row || {};
+  return JSON.stringify([
+    norm(r.program), norm(r.lender), norm(r.investor),
+    (r.reasons || []).map((x) => [norm(x.rule), norm(x.adjType), norm(x.group)]),
+  ]);
+}
+
+// Identical sentences INSIDE one row, which the live capture also carries (the same reason twice and
+// three times over on one container). Order is preserved: the first sighting keeps its position, so a
+// consumer that pairs by index (§2.108) sees the vendor's own ordering, not a re-sorted one.
+function dedupeReasons(list) {
+  const seen = new Set();
+  const out = [];
+  for (const r of (list || [])) {
+    const k = JSON.stringify([norm(r.rule), norm(r.adjType), norm(r.group)]);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(r);
+  }
+  return out;
 }
 
 module.exports = {

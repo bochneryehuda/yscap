@@ -1,0 +1,46 @@
+{
+ "_measured": "2026-08-19 live capture — scenario fico=660 cltv=75 dscr=1.25, Deephaven Mortgage, ^dscr scope.",
+ "_what": "Lender Price PRICED this loan under one container and REFUSED it under two others, and repeated each refusal once per rung. The rows below are the DISTINCT refusals; the counts say how many copies of each the vendor actually sent.",
+ "investor": "Deephaven Mortgage",
+ "itemsForInvestorAllPrograms": 563,
+ "itemsInDscrScope": 56,
+ "distinctInDscrScope": 2,
+ "duplicatesCollapsed": 54,
+ "pricedPrograms": [
+  {
+   "program": "DSCR < 1.00  -  30 Yr Fixed",
+   "rungs": 28
+  }
+ ],
+ "distinctDeclined": [
+  {
+   "lender": "Deephaven Mortgage",
+   "investor": "Deephaven Mortgage",
+   "program": "DSCR  1.00-1.24   -  30 Yr Fixed",
+   "reasons": [
+    {
+     "rule": "DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%",
+     "adjType": null,
+     "group": "Eligibility - DSCR (>=1.00) Matrix - WHL/CORR (9.22.25)"
+    }
+   ]
+  },
+  {
+   "lender": "Deephaven Mortgage",
+   "investor": "Deephaven Mortgage",
+   "program": "DSCR  >= 1.25  - 30 Yr Fixed",
+   "reasons": [
+    {
+     "rule": "DSCR >=1.25%  only eligible on this program",
+     "adjType": null,
+     "group": "Filter - DSCR >= 1.25%"
+    },
+    {
+     "rule": "DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%",
+     "adjType": null,
+     "group": "Eligibility - DSCR (>=1.00) Matrix - WHL/CORR (9.22.25)"
+    }
+   ]
+  }
+ ]
+}
