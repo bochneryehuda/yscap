@@ -58,6 +58,14 @@ assert.strictEqual(extracted.purchase_price, 400000);
 assert.strictEqual(extracted.property_type, 'SFR', 'CX.PROPERTYTYPE wins outright — the 1041 cell (holding a DIFFERENT value) is never consulted');
 ok('extractFields still reads the flat {fields:{id:{value}}} envelope');
 
+// ── 1041 ALONE resolves nothing (behavioral pin of the no-fallback ban) ─────
+// A flat envelope where the ONLY property-type cell is '1041' — the exact shape
+// the old altFieldId fallback fired on — must extract undefined, not the 1041 value.
+const only1041 = { fields: { '1109': { value: '450000' }, '1041': { value: 'Condominium' } } };
+assert.strictEqual(m.extractFields(only1041).property_type, undefined,
+  '1041 filled + CX blank → NO property type (the fallback is banned, not merely outranked)');
+ok('a 1041-only envelope resolves no property type — the ban is behavioral, not just structural');
+
 // ── flattenLoan: full loan (customFields[] + standard loanPath) → extract ───
 const rawLoan = {
   baseLoanAmount: '525450.0000',
@@ -345,7 +353,13 @@ assert.strictEqual(m.compareField('property_type', 'Multi 2-4', '2-4 Family').st
 assert.strictEqual(m.compareField('property_type', 'Multi 2–4', '2-4 Units').status, 'match', 'en-dash normalized');
 assert.strictEqual(m.compareField('property_type', 'SFR', '2-4 Family').status, 'mismatch');
 assert.strictEqual(m.compareField('property_type', 'Condo', 'Manufactured').status, 'incomparable', 'unmapped Encompass wording → not comparable, never a false block');
-ok('property_type value-maps our range category to Encompass wording (meaning, not strings)');
+// The tenant's LIVE CX.PROPERTYTYPE dropdown spellings (docs/longterm/research-exports/
+// 03-dropdown-options.csv — 318 filled loans) must all map, or real files read "no data":
+assert.strictEqual(m.compareField('property_type', 'Multi 5+', 'Multifamily (5+ Units)').status, 'match', 'live CX spelling maps');
+assert.strictEqual(m.compareField('property_type', 'Multi 2-4', '2-4 Unit Residential').status, 'match', 'live CX spelling maps');
+assert.strictEqual(m.compareField('property_type', 'Multi 5+', '5-10 Unit Residential').status, 'match', 'live CX spelling maps');
+assert.strictEqual(m.compareField('property_type', 'SFR', 'Multifamily (5+ Units)').status, 'mismatch', 'a mapped multi against our SFR is a real mismatch, not no-data');
+ok('property_type value-maps our range category to Encompass wording (meaning, not strings) — incl. every live CX dropdown spelling');
 
 // ── vesting_llc name compare is punctuation-insensitive ─────────────────────
 assert.strictEqual(m.compareField('vesting_llc', 'ABC Holdings LLC', 'ABC Holdings, LLC').status, 'match', 'comma-insensitive');
