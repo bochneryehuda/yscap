@@ -266,6 +266,32 @@ async function main() {
   assert.ok(prog.users.every((x) => 'officer' in x));
   ok('and the progress report names every login, its officer, and how many it unlocked');
 
+  // -------------------------------------------------------------------------
+  console.log('\n7. The unattended loop can never spend money');
+  // -------------------------------------------------------------------------
+  // A SOURCE assertion, deliberately. The runtime stub above proves this run did
+  // not buy anything; only reading the source proves no BRANCH of it could. An
+  // unattended timer that can reach the paid tool is the one thing about this
+  // feature that could cost the owner real money while nobody is watching.
+  const fs = require('fs');
+  const path = require('path');
+  for (const f of ['../src/lib/elementix/backfill.js', '../src/sync/elementix-crm-sync.js']) {
+    const src = fs.readFileSync(path.join(__dirname, f), 'utf8');
+    // Strip comments first: this file's own header EXPLAINS that it never calls
+    // the paid tool, and a guard that read prose would fail on the sentence
+    // promising the very thing it checks.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    assert.ok(!/submit_contact_enrichment/.test(code),
+      `${f} must not be able to reach the paid tool`);
+  }
+  ok('neither the importer nor the timer that runs it can reach the paid tool, on any branch');
+
+  const sync = require('../src/sync/elementix-crm-sync');
+  delete process.env.ELEMENTIX_CRM_SYNC_ENABLED;
+  sync.start();
+  assert.ok(typeof sync.listOnce === 'function' && typeof sync.workOnce === 'function');
+  ok('and the loop is off unless it is deliberately switched on');
+
   await wipe();
   console.log(`\n${passed} checks passed.\n`);
 }

@@ -1293,6 +1293,11 @@ if (require.main === module) {
     // this poll is the correctness machinery and the webhook only makes it prompt.
     // It never notifies a borrower — completion cues the DESK.
     try { require('./trinity/poller').start(); } catch (e) { console.warn('trinity poller not started:', e.message); }
+    // Elementix CRM: bring every newly-unlocked contact in as a lead for the
+    // officer whose login unlocked it, and drain the historical backlog. Off
+    // unless ELEMENTIX_CRM_SYNC_ENABLED=1. It cannot spend a credit — every
+    // person it reads was already unlocked and paid for.
+    try { require('./sync/elementix-crm-sync').start(); } catch (e) { console.warn('elementix crm sync not started:', e.message); }
     // Class Valuation callback-inbox drain. The receiver drains on delivery, so this
     // is only the BACKSTOP: a delivery whose processing failed would otherwise wait
     // for the next unrelated callback to sweep it up, and on a quiet file there may
