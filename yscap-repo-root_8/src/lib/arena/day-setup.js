@@ -29,7 +29,7 @@
  * A button gets pressed twice — an impatient hand, a double-submitting browser,
  * two admins at once. Reading "is this day already set up?" and then inserting
  * is the exact race db/401 had to close on the conditions engine: both readers
- * see nothing, both insert. So db/591 puts a UNIQUE index on the day and on
+ * see nothing, both insert. So db/592 puts a UNIQUE index on the day and on
  * (session, template), and this module ASKS THE DATABASE by attempting the
  * write and adopting what is already there when it is refused (23505). Pressing
  * it a second time reports what already existed and changes nothing.

@@ -736,7 +736,7 @@ is now neutral; the failure headline is opt-in.
 token, so the awards export dropped the admin onto raw JSON, signed out. It is
 now an authenticated fetch-based download.
 
-**ONE-PRESS DAY SETUP** (db/591 + day-setup.js + /setup-day): the whole
+**ONE-PRESS DAY SETUP** (db/592 + day-setup.js + /setup-day): the whole
 Elementix Day is built as a DRAFT with both plans inside, and it is safe to
 press twice — unique indexes decide idempotency, not a read. Start stays a
 human act. To answer the owner's direct question in print: nothing auto-starts
