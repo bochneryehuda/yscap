@@ -54,6 +54,7 @@ const GLOSSARY = {
   document_findings: 'Something the system noticed in a document that a person should look at.',
   amc_orders: 'An appraisal ordered through an appraisal management company, and where that order has got to.',
   messages: 'Messages inside the system — between the team, and with a borrower or a broker.',
+  arena_spins: 'One spin of the wheel on a company game day — what is being played for, who was in it, and who won.',
   finding_decisions: 'A human’s verdict on a finding, kept so it is never asked again.',
 };
 
