@@ -372,12 +372,86 @@ function RowTable({ section, filter }) {
   );
 }
 
+/**
+ * EVERY WAY TO REACH THEM — the owner's "all the contact information, all the
+ * phone numbers and their names, all details".
+ *
+ * The LEAD row carries two numbers (`phone`, `phone_alt`), because that is what
+ * a lead has always had. A skip trace routinely buys five, and the other three
+ * sat in the database with no screen to show them. They are all here, with the
+ * vendor's OWN words kept rather than translated: the label it gave the line
+ * ("Mobile", "Fixed"), the carrier, where it is, whether it thinks the address
+ * is deliverable, and how sure it is.
+ *
+ * ORDER IS THE VENDOR'S, which puts its best guess first — an officer ringing
+ * three numbers should start at the top — and the confidence score is printed
+ * so a weak one is visibly weak rather than just lower down.
+ */
+function ContactCard({ contact }) {
+  if (!contact) return null;
+  const phones = Array.isArray(contact.phones) ? contact.phones : [];
+  const emails = Array.isArray(contact.emails) ? contact.emails : [];
+  const addrs = Array.isArray(contact.addresses) ? contact.addresses : [];
+  const prof = contact.profile || {};
+  if (!phones.length && !emails.length && !addrs.length) return null;
+
+  const pct = (c) => (typeof c === 'number' && c > 0 && c <= 1 ? `${Math.round(c * 100)}%` : null);
+  const bits = (a) => a.filter(Boolean).join(' · ');
+
+  return (
+    <div style={{ border: `1px solid ${LINE}`, borderRadius: 12, padding: 14, marginBottom: 12, background: '#FFFFFF' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', marginBottom: 8 }}>
+        <strong style={{ color: INK, fontSize: 15 }}>How to reach them</strong>
+        <span style={{ color: MUTED, fontSize: 12.5 }}>
+          {phones.length} number{phones.length === 1 ? '' : 's'}
+          {emails.length ? ` · ${emails.length} email${emails.length === 1 ? '' : 's'}` : ''}
+          {contact.unlockedByEmail ? ` · looked up by ${contact.unlockedByEmail}` : ''}
+          {contact.unlockedAt ? ` · ${day(contact.unlockedAt)}` : ''}
+        </span>
+      </div>
+
+      {phones.map((p, i) => (
+        <div key={`${p.value}-${i}`} style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', padding: '5px 0', borderTop: i ? `1px solid ${LINE}` : 'none' }}>
+          <a href={`tel:${String(p.value).replace(/[^\d+]/g, '')}`} style={{ color: '#256168', fontWeight: 650, fontSize: 15, textDecoration: 'none' }}>{p.value}</a>
+          <span style={{ color: MUTED, fontSize: 13, flex: '1 1 160px' }}>
+            {bits([p.label, p.carrier, p.location, p.status])}
+          </span>
+          {pct(p.confidence) && (
+            <span style={{ color: MUTED, fontSize: 12.5 }}>{pct(p.confidence)} sure</span>
+          )}
+        </div>
+      ))}
+
+      {emails.map((e, i) => (
+        <div key={`${e.value}-${i}`} style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', padding: '5px 0', borderTop: `1px solid ${LINE}` }}>
+          <a href={`mailto:${e.value}`} style={{ color: '#256168', fontWeight: 600, fontSize: 14, textDecoration: 'none', wordBreak: 'break-all' }}>{e.value}</a>
+          <span style={{ color: MUTED, fontSize: 13 }}>{bits([e.label, e.status])}</span>
+        </div>
+      ))}
+
+      {addrs.map((a, i) => (
+        <div key={`${a.value}-${i}`} style={{ color: INK, fontSize: 14, padding: '5px 0', borderTop: `1px solid ${LINE}` }}>
+          {a.value}{a.label ? <span style={{ color: MUTED }}> · {a.label}</span> : null}
+        </div>
+      ))}
+
+      {(prof.summary || prof.company || prof.linkedin) && (
+        <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 6, paddingTop: 8, color: MUTED, fontSize: 13.5 }}>
+          {prof.company ? <div style={{ color: INK }}>{prof.company}{prof.companyDomain ? ` · ${prof.companyDomain}` : ''}</div> : null}
+          {prof.summary ? <div style={{ marginTop: 4 }}>{prof.summary}</div> : null}
+          {prof.linkedin ? <div style={{ marginTop: 4 }}><a href={prof.linkedin} target="_blank" rel="noreferrer" style={{ color: '#256168' }}>LinkedIn</a></div> : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The section
 // ---------------------------------------------------------------------------
 
 export default function ElementixProfile({ kind, recordId, personName, personState }) {
-  const [state, setState] = useState({ loading: true, linked: false, personId: null, profile: null });
+  const [state, setState] = useState({ loading: true, linked: false, personId: null, profile: null, contact: null });
   const [tab, setTab] = useState('overview');
   const [filter, setFilter] = useState('');
   const [busy, setBusy] = useState('');
@@ -405,7 +479,7 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
      succeeded or failed, so a second open never re-triggers it. */
   const load = () => api.elxFor(kind, recordId)
     .then((r) => {
-      setState({ loading: false, linked: !!r.linked, personId: r.personId, profile: r.profile });
+      setState({ loading: false, linked: !!r.linked, personId: r.personId, profile: r.profile, contact: r.contact || null });
       if (r.linked && r.personId && r.profile && r.profile.loaded === false) {
         return api.elxProfileBuild(r.personId, { sections: ['overview'] })
           .then((built) => setState((s) => ({ ...s, profile: built.profile })))
@@ -580,6 +654,7 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
         <div className="panel-b">
           {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
           {msg && <div className="notice ok" style={{ marginBottom: 10 }}>{msg}</div>}
+          <ContactCard contact={state.contact} />
           <p style={{ color: MUTED, fontSize: 14, margin: 0 }}>
             This person is attached to the file, but their Elementix record has not been read yet.
             Press <strong>Read their profile</strong> to pull it in.
@@ -694,7 +769,8 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
         <SectionNotice section={current} onRefresh={busy ? null : () => refresh(true)} />
 
         {tab === 'overview'
-          ? <OverviewTab profile={p} busy={busy} onRefresh={busy ? null : () => refresh(true)} />
+          ? <><ContactCard contact={state.contact} />
+              <OverviewTab profile={p} busy={busy} onRefresh={busy ? null : () => refresh(true)} /></>
           : current && current.status !== 'unavailable' && (current.rows || []).length
             ? <RowTable section={current} filter={filter} />
             : current && (current.status === 'ok' || current.status === 'partial')

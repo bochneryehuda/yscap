@@ -366,7 +366,43 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
     await call(server, 'POST', '/api/elementix/link', T, { kind: 'lead', recordId: leadId, personId: PID, replace: true });
 
     // -----------------------------------------------------------------------
-    console.log('\n11. Every spend is attributable afterwards');
+    console.log('\n11. Every way to reach them, not the two a lead has room for');
+    // -----------------------------------------------------------------------
+    // The owner asked twice for "all the phone numbers and their names, all
+    // details". A `leads` row has `phone` and `phone_alt` — TWO — and a skip
+    // trace routinely buys five, so the rest sat in the database with no screen
+    // showing them. The section mounted on the lead AND the borrower carries
+    // them now, with the vendor's own words kept rather than translated.
+    const many = crm.normalizeContact({ job: { result: {
+      phone: [
+        { type: 'MOBILE', value: '9736680701', carrier: 'NEW CINGULAR WIRELESS', location: 'SUCCASUNNA, NJ', confidence: 0.9 },
+        { type: 'FIXED', value: '9735641002', carrier: 'PEERLESS NETWORK', location: 'MILLBURN, NJ', confidence: 0.7 },
+        { type: 'MOBILE', value: '9175551234', carrier: 'VERIZON', confidence: 0.55 },
+        { type: 'FIXED', value: '7325559876', carrier: 'COMCAST', confidence: 0.4 },
+        { type: 'MOBILE', value: '8485550000', carrier: 'T-MOBILE', confidence: 0.35 } ],
+      email: [{ value: 'moty@example.com', result: 'deliverable' }, { value: 'm.b@adar-capital.com', result: 'risky' }],
+      summary: 'A real estate investor.', company_name: 'Adar Capital', company_domain: 'adar-capital.com',
+    } } });
+    ok(many.phones.length === 5, 'the reader keeps every number the vendor sent');
+    await crm.storeContact({ personId: PID, contact: many, staffId: officer, source: 'pilot_skip_trace',
+      raw: { job: { result: { summary: 'A real estate investor.', company_name: 'Adar Capital', company_domain: 'adar-capital.com' } } } });
+
+    r = await call(server, 'GET', `/api/elementix/for/lead/${leadId}`, T);
+    const got = r.body.contact;
+    ok(r.status === 200 && got && got.phones.length === 5,
+      'and the lead is handed all five, not the two its own columns hold');
+    ok(got.phones[0].label === 'MOBILE' && got.phones[0].carrier === 'NEW CINGULAR WIRELESS'
+       && got.phones[0].confidence === 0.9,
+      'each one keeps the vendor’s own label, carrier and confidence — an officer rings the likeliest first');
+    ok(got.emails.length === 2 && got.emails.some((e) => e.status === 'risky'),
+      'and the emails carry the vendor’s verdict, so a risky one does not look as good as a live one');
+    ok(got.profile && got.profile.company === 'Adar Capital',
+      'the company and summary are derived on read, so the screen and the reader can never drift');
+    ok(got.unlockedByEmail !== undefined && got.refreshedAt,
+      'with who looked them up and when, which is the CRM question a month later');
+
+    // -----------------------------------------------------------------------
+    console.log('\n12. Every spend is attributable afterwards');
     // -----------------------------------------------------------------------
     // The audit write sits inside a catch that must never break the action, so
     // nothing would say if it silently stopped landing — and "every spend is
@@ -384,7 +420,7 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
       'and the spend records who, about whom, and the reason they typed');
 
     // -----------------------------------------------------------------------
-    console.log('\n12. Every call named the officer who made it');
+    console.log('\n13. Every call named the officer who made it');
     // -----------------------------------------------------------------------
     ok(seen.length > 0 && seen.every((c) => !!c.staffId),
       `${seen.length} vendor calls, every one carrying the officer behind it`);

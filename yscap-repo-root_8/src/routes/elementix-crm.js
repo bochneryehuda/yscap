@@ -609,10 +609,42 @@ router.get('/for/:kind/:recordId', async (req, res) => {
   const r = await db.query(`SELECT elementix_person_id FROM ${table} WHERE id = $1`, [recordId]);
   if (!r.rowCount) return res.status(404).json({ error: 'That record could not be found.' });
   const personId = r.rows[0].elementix_person_id;
-  if (!personId) return res.json({ linked: false, personId: null, profile: null });
+  if (!personId) return res.json({ linked: false, personId: null, profile: null, contact: null });
+
+  /* THE CONTACT DETAILS RIDE ALONG. The owner asked for the lead to carry "all
+     the contact information — all phone numbers and their names, all details",
+     and every one of them IS stored: `normalizeContact` keeps each number with
+     the vendor's own label, carrier, location, deliverability and confidence
+     score, plus every email with its verdict and the person's mailing addresses.
+     The LEAD row itself has only `phone` and `phone_alt` — two — so a person
+     with five numbers had three sitting in the database that no screen showed.
+     Returned here because this section is mounted on the lead AND on the
+     borrower profile, which is exactly the pair the owner named. */
+  const held = (await db.query(
+    `SELECT phones, emails, addresses, raw, unlocked_by_email,
+            COALESCE(vendor_unlocked_at, unlocked_at) AS unlocked_at, source, refreshed_at
+       FROM elementix_contacts WHERE person_id = $1`, [personId])).rows[0] || null;
+  let contact = null;
+  if (held) {
+    /* The summary, the company and the LinkedIn page are DERIVED on read rather
+       than stored: `normalizeContact` already works them out of the vendor's own
+       payload, and re-reading it here keeps the screen and the reader in step
+       for free — a stored copy would be a second definition to keep current, and
+       a migration for three display fields we already hold the source of. */
+    let extra = null;
+    try { extra = crm.normalizeContact(held.raw).profile; } catch (_) { extra = null; }
+    contact = {
+      phones: held.phones, emails: held.emails, addresses: held.addresses,
+      profile: extra,
+      unlockedByEmail: held.unlocked_by_email, unlockedAt: held.unlocked_at,
+      source: held.source, refreshedAt: held.refreshed_at,
+    };
+  }
+
   const view = await profile.readProfile(personId);
   const candidates = view.ok ? await profile.openAliasCandidates(view.personId) : [];
-  res.json({ linked: true, personId, profile: view.ok ? { ...view, aliasCandidates: candidates } : null });
+  res.json({ linked: true, personId, contact,
+    profile: view.ok ? { ...view, aliasCandidates: candidates } : null });
 });
 
 module.exports = router;
