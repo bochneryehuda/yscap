@@ -8140,3 +8140,83 @@ jsonb column, `rowToRecord`, and into the gate. One mutation (M10, making the ca
 asked?** Today it does pass, with the caveat stated. §2.116 measured that without that layer a scenario
 the investor would refuse can be counted as agreement, so the case for refusing is real — but it would
 change which sheets may go live, and that is the owner's call, not this code's.
+
+---
+
+## §2.122 — the canary handed our engine the raw Lender Price scenario, and it declined all 305
+
+The most serious of this run, and found by asking a small question: does the CANARY record what it
+measured? It does not — but on the way to that, the leg itself turned out to be broken.
+
+### The defect
+
+§2.106 found the canary's **theirs** leg passing the raw vendor envelope where a ladder was wanted, and
+fixed it. The **ours** leg, built on the very next line of the same call, had the mirror image of that
+defect and was never looked at:
+
+```js
+ours:   (sc) => quote.quoteProgram({ scenario: sc, program, settings, marginHoldback: marginFor(sc) }),
+theirs: lpAgreementLegs.buildCanaryLpLeg(lp, { scope: lpScope }),
+```
+
+The battery is Lender-Price-shaped **by construction** — the `theirs` leg posts each scenario to
+`lp.price()`, which takes nothing else — so the same object cannot be right for both legs. An LP
+scenario carries `loan` / `value` / `dscr`; every rule predicate in the sheet reads `loan_amount`,
+`ltv`, `cltv` and seventeen more facts that `lpScenarioToFacts` **derives** and a raw scenario does not
+have.
+
+Measured on the canonical 305-scenario battery against the built-in Deephaven sheet:
+
+| leg | priced | declined |
+|---|---|---|
+| raw LP scenario (what the canary did) | **0** | 305 |
+| converted facts | 262 | 43 |
+| converted facts + the investor's prepayment layer | 260 | 45 |
+
+### The part that is worse than a blank refusal
+
+The first cut of the guard asserted those 305 declines carried no reason. **That was wrong**, and
+measuring it properly is what makes the finding sharp: every one of them named a real rule —
+`dhvn_min_dscr`, *"Minimum DSCR 0.75"* — while the same quote's own `unknownFacts` listed six facts it
+could not read (`ltv`, `units`, `interest_only`, `escrow_waiver`, `non_warrantable`,
+`short_term_rental`). So the canary was never silent: it filed **305 confident refusals citing a rule
+that had nothing to do with them**, and anyone reading that findings ledger would have gone and
+adjusted the DSCR floor. `unknownFacts` is the tell that was there the whole time — 305 of 305 before,
+**0 of 305** after.
+
+And the go-live gate reads that series.
+
+### Three mismatches in one expression
+
+1. **The scenario** — raw LP where engine facts were wanted (all 305).
+2. **The prepayment layer** — §2.116's fix reached the agreement run route and never this one. The
+   battery's own `NJ Individual PPP prohibited` scenario is PRICED without it and correctly declined
+   with it, citing `dhvn_ppp_prohibited_nj` and its matrix citation.
+3. **The margin** — `marginFor(facts)` is its own documented contract (`loadProgram`), and it was being
+   handed the raw scenario too.
+
+All three are fixed by routing through `buildOursLeg`, the **one definition** the agreement run route
+already used — not a second conversion here.
+
+### Why no test caught it
+
+Every canary suite passed before this fix and after it. §2.106 added `test-lt-ppe-canary-lp-leg-db.js`
+for the leg it fixed and left the other one uncovered — §2.111's class, *"tests that cannot fail on the
+doors that matter most"*, on the very door §2.106 had just been working behind.
+
+`scripts/test-lt-ppe-canary-ours-leg.js` is that missing half: 32 assertions, 5 mutations (M1–M5), each
+checksum-verified to have applied. Reverting the route to the pre-fix leg fails 5 source guards; making
+`buildOursLeg` ignore the fact conversion fails 8 behavioural ones.
+
+### A guard that had to move, and was not loosened
+
+`test-lt-ppe-margin-carried-db.js` J1 pinned **4** direct `quoteProgram` call sites in the route; this
+change converts one, so it is now **3**. That count is a canary for *"a new pricing path appeared
+without the margin"*, so the drop is accounted for rather than waved through: J3 now counts the
+`buildOursLeg` sites (4), J3b asserts every one carries `marginHoldback: marginFor`, and a new **J3c**
+asserts every one converts the facts — so the defect this section is about cannot reappear at any of
+them. The offsets are taken by position rather than by a closing-brace pattern, because the two call
+sites are indented differently and a shape guard that depends on formatting goes green for the wrong
+reason.
+
+**187/187 LT PPE suites, 34 database-backed. All seven gates green.**

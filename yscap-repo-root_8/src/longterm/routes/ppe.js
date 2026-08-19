@@ -1273,7 +1273,7 @@ async function canaryRoute(req, res) {
 async function runBattery(scope, scenarios, opts = {}) {
   const investor = opts.investor || null;
   const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
-  const { program, lpScope, marginFor, reason: noProgram } = await loadProgram(scope, opts.rateSheetVersionId);
+  const { program, lpScope, marginFor, investorName, reason: noProgram } = await loadProgram(scope, opts.rateSheetVersionId);
   if (!program) {
     // Same reasoning as /quote, and it matters more here: a canary with no
     // program would price N scenarios against a live upstream and record N
@@ -1306,6 +1306,11 @@ async function runBattery(scope, scenarios, opts = {}) {
   const { values: settings } = await resolveSettingsSafe(scope);
   const lp = require('../lenderprice/client');
 
+  // WHOSE prepayment layer, and was it asked — ONE definition, the same the agreement run route reads
+  // (program-registry.pppLayerFor). The sheet's own investor names it; the caller's `investor` label is
+  // the fallback for a sheet that names none, mirroring the CLI's `--investor`.
+  const canaryPpp = programRegistry.pppLayerFor(investorName || investor);
+
   // TWO ADJACENT CONTRACTS, AND THEY ARE NOT THE SAME ONE. The /quote route above
   // drives `facade.priceWithShadow`, whose injected engines are named
   // `priceLp` / `ourQuote`; the canary drives `shadow.runShadow` (through
@@ -1328,7 +1333,33 @@ async function runBattery(scope, scenarios, opts = {}) {
   const run = await canary.runCanary(
     scenarios,
     {
-      ours: (sc) => quote.quoteProgram({ scenario: sc, program, settings, marginHoldback: marginFor(sc) }),
+      // ⛔ AND THE *OURS* LEG HAD THE MIRROR-IMAGE OF THAT SAME DEFECT (§2.122). It was
+      // `(sc) => quote.quoteProgram({ scenario: sc, ... })` — the RAW LENDER PRICE SCENARIO handed
+      // straight to our engine. The battery is a list of LP scenarios by construction (the `theirs`
+      // leg one line below posts each one to `lp.price()`, which takes nothing else), and an LP
+      // scenario carries `loan`/`value`/`dscr` while every rule predicate here reads `loan_amount`,
+      // `ltv`, `cltv` — thirty derived facts `lpScenarioToFacts` computes and a raw scenario simply
+      // does not have. MEASURED on the canonical 305-scenario battery against the built-in Deephaven
+      // sheet: the raw form priced **0 of 305** where the converted form prices 262, and every one of
+      // those 305 declines carried an EMPTY reason list — a refusal with nothing to reconcile against
+      // Lender Price's own. So the canary could only ever record a both-declined agreement or a
+      // disagreement wherever Lender Price priced, and the go-live gate reads that series.
+      //
+      // The fix is the same ONE definition the agreement run route uses, not a second conversion here:
+      // `buildOursLeg` converts the facts, asks the investor's prepayment layer, and applies the
+      // margin — which `marginFor(facts)` has always been documented to take, and had been receiving
+      // the raw scenario too (measured: the same 0-of-305 shape).
+      ours: lpAgreementLegs.buildOursLeg(program, settings, {
+        factsFromLp: true,
+        marginHoldback: marginFor,
+        // The investor's own Layer 3, on the SAME terms the agreement run route asks it (§2.116):
+        // opt-in by construction (`pppLayerFor` answers no descriptor for an unregistered investor,
+        // and the leg with none is byte-for-byte what it was), and `'flag'` for an unanswerable state
+        // because a canary MEASURES rather than quotes — declining here would change what is being
+        // measured and blame the sheet for a question about state law.
+        pppDescriptor: canaryPpp.descriptor,
+        ...(canaryPpp.descriptor ? { onUnresolvedPpp: 'flag' } : {}),
+      }),
       theirs: lpAgreementLegs.buildCanaryLpLeg(lp, { scope: lpScope }),
     },
     {

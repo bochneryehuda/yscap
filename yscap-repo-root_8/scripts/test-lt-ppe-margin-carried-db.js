@@ -321,9 +321,25 @@ const SETTINGS = { 'pricing.correspondent_margin_milli': 250, 'pricing.rounding_
     const routeSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'routes', 'ppe.js'), 'utf8');
     const routeCode = routeSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
     const quoteCalls = routeCode.match(/quote\.quoteProgram\(\{[^}]*\}/g) || [];
-    ok(quoteCalls.length === 4, `J1 the route makes ${quoteCalls.length} direct quoteProgram calls`);
+    // WAS 4, IS 3 — and the drop is a STRENGTHENING, accounted for by J3 rather than waved through.
+    // §2.122 replaced the canary's direct `quoteProgram(raw scenario)` with `buildOursLeg`, which was
+    // fixing a much larger defect (the raw Lender Price scenario reached our engine, so 305 of 305
+    // scenarios declined) and carries the margin resolver as one of its arguments. So one call site
+    // left this count and reappeared in the one below. If this number drops again, find where the
+    // pricing went before changing it.
+    ok(quoteCalls.length === 3, `J1 the route makes ${quoteCalls.length} direct quoteProgram calls`);
     ok(quoteCalls.every((c) => /marginHoldback:/.test(c)), 'J2 …and EVERY one of them carries the per-investor margin');
-    ok(/buildOursLeg\([^)]*marginHoldback: marginFor/.test(routeCode), 'J3 the agreement leg carries it too — the fifth production pricing path');
+    // Indentation differs between the two call sites, so the window is taken by offset rather than by
+    // a closing-brace pattern — a shape guard that depends on how a call happens to be formatted is the
+    // kind that goes green for the wrong reason.
+    const legOffsets = [];
+    for (let i = routeCode.indexOf('buildOursLeg('); i !== -1; i = routeCode.indexOf('buildOursLeg(', i + 1)) legOffsets.push(i);
+    ok(legOffsets.length === 4,
+      `J3 …plus ${legOffsets.length} legs built from buildOursLeg — the agreement run, the pre-flight, the review sweep, and (since §2.122) the canary`);
+    ok(legOffsets.every((i) => /marginHoldback: marginFor/.test(routeCode.slice(i, i + 700))),
+      'J3b …and every one of THOSE carries the per-investor margin too, so nothing prices at a margin nobody confirmed');
+    ok(legOffsets.every((i) => /factsFromLp: true/.test(routeCode.slice(i, i + 700))),
+      'J3c …and every one converts the Lender Price scenario into engine facts (§2.122 — the raw form priced 0 of 305)');
     ok((routeCode.match(/prepareMarginHoldbackForInvestor\(/g) || []).length === 1,
       'J4 the margin is resolved ONCE, at the one place a program is loaded — not four times at four call sites');
   } finally {
