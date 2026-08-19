@@ -59,6 +59,31 @@ const MAX_PAGES = 40;          // 10,000 people; the account holds 1,041
 const WORK_BATCH = 25;
 const MAX_ATTEMPTS = 3;
 
+/* HOW RECENT AN UNLOCK HAS TO BE BEFORE IT IS WORTH TELLING SOMEBODY.
+   The owner's requirement is that a contact a user unlocks becomes a lead "plus
+   a notification to that officer" — and the SAME import also carries the whole
+   history back to the beginning, which on the first pass is about a thousand
+   contacts. Notifying on those would put hundreds of notices in one officer's
+   list in an afternoon, about people they looked up months ago: precisely the
+   bombardment the notification rules exist to stop, and it would bury the one
+   notice that is actually news.
+   So the test is the VENDOR'S OWN `unlockedAt`, not "did this pass create the
+   row": somebody unlocked in Elementix this morning is news, somebody unlocked
+   in March is history, and the same rule holds whenever the import happens to
+   run. A row with NO unlock date says nothing, so it notifies nobody — news is
+   never fabricated from a missing timestamp. */
+const NOTIFY_UNLOCKED_WITHIN_HOURS = Math.max(
+  1, parseInt(process.env.ELEMENTIX_NOTIFY_WITHIN_HOURS || '168', 10) || 168);
+
+function unlockIsNews(unlockedAt) {
+  if (!unlockedAt) return false;
+  const t = new Date(unlockedAt).getTime();
+  if (!Number.isFinite(t)) return false;
+  const ageH = (Date.now() - t) / 3600000;
+  // A date in the FUTURE is a clock problem, not news.
+  return ageH >= 0 && ageH <= NOTIFY_UNLOCKED_WITHIN_HOURS;
+}
+
 // ---------------------------------------------------------------------------
 // PHASE 1 — LIST: who has been unlocked, and by whom
 // ---------------------------------------------------------------------------
@@ -277,28 +302,48 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
       ORDER BY q.listed_at
       LIMIT $1`, [Math.max(1, Math.min(Number(limit) || WORK_BATCH, 200)), MAX_ATTEMPTS]);
 
-  const out = { ok: true, worked: 0, leads: 0, alreadyOurs: 0, noOfficer: 0, failed: 0, remaining: 0 };
+  const out = { ok: true, worked: 0, leads: 0, notified: 0, alreadyOurs: 0, noOfficer: 0, failed: 0, remaining: 0 };
 
-  for (const r of rows) {
-    const personId = r.person_id;
-    const res = await crmTools.call('get_contact_info', { personId }, { staffId });
-    if (!res || res.ok !== true) {
-      out.failed += 1;
+  /* ONE ROW CAN NEVER STALL THE QUEUE. Rows are taken oldest-first, and a row
+     that THROWS is never stamped — so it comes back at the head of the very next
+     batch, throws again, and the import stops dead behind it while the log says
+     only "import pass failed". That is a poison row, and the queue has 1,041 of
+     them behind it. Every failure — the vendor's, and anything the database
+     refuses — therefore lands here: attempts up, the reason recorded, and the
+     row retired after MAX_ATTEMPTS so the queue drains rather than grinding. */
+  const recordRowFailure = async (personId, detail) => {
+    out.failed += 1;
+    try {
       await client.query(
         `UPDATE elementix_backfill_queue
             SET attempts = attempts + 1, detail = $2,
                 status = CASE WHEN attempts + 1 >= $3 THEN 'failed' ELSE 'pending' END,
                 worked_at = now()
           WHERE person_id = $1`,
-        [personId, clip((res && res.detail) || 'Elementix did not answer.', 500), MAX_ATTEMPTS]);
+        [personId, clip(detail || 'Elementix did not answer.', 500), MAX_ATTEMPTS]);
+    } catch (_) { /* if even this cannot be written the next pass tries again */ }
+  };
+
+  for (const r of rows) {
+    const personId = r.person_id;
+    const res = await crmTools.call('get_contact_info', { personId }, { staffId });
+    if (!res || res.ok !== true) {
+      await recordRowFailure(personId, (res && res.detail) || 'Elementix did not answer.');
       continue;
     }
 
+    try {
     const contact = crm.normalizeContact(res.data);
     // Whose contact is this? PILOT's own record of the click first (see
     // pilotOwnerOf), the vendor's login email second.
     const mine = await pilotOwnerOf(personId, client);
     const officerId = (mine && mine.staffId) || r.officer_id || null;
+    /* The header row the contact hangs off (a foreign key). `listUnlocked`
+       writes it when it queues the row, and this does NOT lean on that: a queue
+       row whose person went missing — cleaned up, or seeded by some future
+       path — would otherwise fail the insert, and before the guard above that
+       took the whole batch with it. */
+    await crm.ensurePerson({ personId, name: r.person_name, state: r.person_state, client });
     // The vendor's own record of who unlocked it, kept whether or not we could
     // match it to somebody on the roster.
     await crm.storeContact({
@@ -338,6 +383,15 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
       });
       leadId = lead && lead.id ? lead.id : null;
       if (leadId) out.leads += 1;
+      /* THE OWNER'S "plus a notification to that officer" — for a FRESH unlock
+         only. Best-effort and never awaited into the import's success: a
+         notification that fails must not fail the import, and the lead is the
+         thing that matters. */
+      if (lead && lead.created && unlockIsNews(r.unlocked_at)) {
+        out.notified += 1;
+        crm.notifyOfficer({ staffId: officerId, leadId, name: r.person_name, contact })
+          .catch(() => { /* the lead landed; the notice is a courtesy */ });
+      }
       await crm.recordSkipTrace({
         personId, staffId: officerId, name: r.person_name, state: r.person_state,
         reason: 'Imported from Elementix history', charged: false, source: 'imported',
@@ -361,6 +415,11 @@ async function workBatch({ staffId, limit = WORK_BATCH, client = db } = {}) {
         WHERE person_id = $1`,
       [personId, officerId ? 'done' : 'skipped', leadId, r.unlocked_by_email]);
     out.worked += 1;
+    } catch (e) {
+      // Anything the database or a helper refused. Recorded against THIS row so
+      // the batch carries on and the queue keeps draining.
+      await recordRowFailure(personId, `PILOT could not file this contact: ${e && e.message}`);
+    }
   }
 
   const left = await client.query(
@@ -420,5 +479,5 @@ async function releaseSkipped({ email: addr, client = db } = {}) {
 
 module.exports = {
   listUnlocked, workBatch, progress, linkUser, matchUsers, releaseSkipped,
-  _internals: { LIST_PAGE, MAX_PAGES, WORK_BATCH, MAX_ATTEMPTS, email, pilotOwnerOf },
+  _internals: { LIST_PAGE, MAX_PAGES, WORK_BATCH, MAX_ATTEMPTS, email, pilotOwnerOf, unlockIsNews, NOTIFY_UNLOCKED_WITHIN_HOURS },
 };

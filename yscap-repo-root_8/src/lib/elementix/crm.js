@@ -505,9 +505,13 @@ async function notifyOfficer({ staffId, leadId, name, contact }) {
   await notify.notifyStaff(staffId, {
     type: 'elementix_lead',
     title: `${name} was added to your CRM`,
+    /* WORDED FOR BOTH DOORS. This fires from a skip trace made here AND from the
+       automatic import of a contact somebody unlocked in Elementix's own
+       screens, so it says "you looked them up in Elementix" — true either way —
+       rather than naming a button they may never have pressed. */
     body: n
-      ? `You skip traced ${name} in Elementix. They are now a lead in your CRM with ${n} phone number${n === 1 ? '' : 's'}.`
-      : `You skip traced ${name} in Elementix. They are now a lead in your CRM.`,
+      ? `You looked ${name} up in Elementix. They are now a lead in your CRM with ${n} phone number${n === 1 ? '' : 's'}.`
+      : `You looked ${name} up in Elementix. They are now a lead in your CRM.`,
     link: `/internal/leads/${leadId}`,
     ctaLabel: 'Open the lead',
   });
@@ -563,6 +567,6 @@ async function drainPendingSkipTraces({ limit = 25, giveUpHours = 48 } = {}) {
 module.exports = {
   normalizeContact, primaryContact, phoneKey,
   contactState, skipTrace, finishSkipTrace, drainPendingSkipTraces,
-  ensureLead, ensurePerson, storeContact, recordSkipTrace,
+  ensureLead, ensurePerson, storeContact, recordSkipTrace, notifyOfficer,
   _internals: { nameFrom, POLL_ATTEMPTS, POLL_DELAY_MS, PENDING_HOLD_HOURS },
 };

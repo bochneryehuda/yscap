@@ -429,7 +429,115 @@ async function main() {
   ok('a charged trace still running is left for the settle pass, not overwritten as an import');
 
   // -------------------------------------------------------------------------
-  console.log('\n9. A login is never auto-matched to somebody who has left');
+  console.log('\n9. The officer is told about a NEW unlock, and not about the backlog');
+  // -------------------------------------------------------------------------
+  /* The owner's requirement is a notification per contact. The SAME import also
+     carries the whole history back to the beginning — about a thousand contacts
+     on the first pass — so notifying on those would drop hundreds of notices
+     into one officer's list in an afternoon, about people they looked up months
+     ago, burying the one notice that is actually news. The test is the vendor's
+     own unlock date, so it holds whenever the import happens to run. */
+  const nowIso = new Date().toISOString();
+  const oldIso = new Date(Date.now() - 120 * 24 * 3600 * 1000).toISOString();
+  assert.strictEqual(backfill._internals.unlockIsNews(nowIso), true, 'unlocked just now is news');
+  assert.strictEqual(backfill._internals.unlockIsNews(oldIso), false, 'unlocked four months ago is history');
+  assert.strictEqual(backfill._internals.unlockIsNews(null), false,
+    'no unlock date states nothing — news is never invented from a missing timestamp');
+  assert.strictEqual(backfill._internals.unlockIsNews('not a date'), false, 'nor from junk');
+  assert.strictEqual(
+    backfill._internals.unlockIsNews(new Date(Date.now() + 86400000).toISOString()), false,
+    'a date in the future is a clock problem, not news');
+  ok('what counts as news is the vendor\'s own unlock date, and an absent one is never news');
+
+  // …and end to end: two contacts, one fresh and one from the backlog.
+  await wipe();
+  const freshOfficer = await mk(`Fresh Officer ${sfx}`, `fresh.${sfx}@yscapgroup.test`);
+  await db.query(
+    `INSERT INTO elementix_users (email, staff_id, linked_by, linked_at) VALUES ($1,$2,$3,now())
+     ON CONFLICT (email) DO UPDATE SET staff_id = EXCLUDED.staff_id`,
+    [`fresh.${sfx}@yscapgroup.test`, freshOfficer, admin]);
+  for (const [pid, when] of [[P(1), nowIso], [P(2), oldIso]]) {
+    await db.query(
+      `INSERT INTO elementix_backfill_queue (person_id, person_name, person_state, unlocked_by_email, unlocked_at, status)
+       VALUES ($1,'IMPORTED PERSON','NJ',$2,$3,'pending')
+       ON CONFLICT (person_id) DO UPDATE SET status='pending', attempts=0,
+             unlocked_by_email=EXCLUDED.unlocked_by_email, unlocked_at=EXCLUDED.unlocked_at`,
+      [pid, `fresh.${sfx}@yscapgroup.test`, when]);
+  }
+  const before = (await db.query(
+    `SELECT count(*)::int n FROM notifications WHERE staff_id = $1::uuid`, [freshOfficer])).rows[0].n;
+  const imported = await backfill.workBatch({ staffId: admin, limit: 5 });
+  assert.strictEqual(imported.leads, 2, 'both became leads');
+  assert.strictEqual(imported.notified, 1, 'and exactly one of them was worth telling somebody about');
+  // The notify is fire-and-forget by design, so give it a moment to land.
+  await new Promise((r) => setTimeout(r, 300));
+  const notices = await db.query(
+    `SELECT title, body, type FROM notifications WHERE staff_id = $1::uuid ORDER BY created_at DESC LIMIT 5`,
+    [freshOfficer]);
+  assert.strictEqual(notices.rowCount - before, 1, 'one notification, not two');
+  assert.strictEqual(notices.rows[0].type, 'elementix_lead');
+  assert.ok(/lead in your CRM/i.test(notices.rows[0].body));
+  assert.ok(!/skip traced/i.test(notices.rows[0].body),
+    'and it does not name a button this officer never pressed — they unlocked them in Elementix');
+  ok('a contact unlocked today notifies its officer; the historical backlog imports silently');
+
+  await db.query(`DELETE FROM notifications WHERE staff_id = $1::uuid`, [freshOfficer]);
+  await wipe();
+
+  // -------------------------------------------------------------------------
+  console.log('\n10. One unworkable row can never stall the import');
+  // -------------------------------------------------------------------------
+  /* Rows are taken oldest-first and a row that THROWS is never stamped, so it
+     comes back at the head of the very next batch, throws again, and the whole
+     import stops behind it while the log says only "import pass failed" — with a
+     thousand contacts queued behind it. The failure is made to happen at the
+     database layer rather than at the vendor, because the vendor's own failure
+     was always handled and this is the half that was not. */
+  await wipe();
+  await db.query(
+    `INSERT INTO elementix_users (email, staff_id, linked_by, linked_at) VALUES ($1,$2,$3,now())
+     ON CONFLICT (email) DO UPDATE SET staff_id = EXCLUDED.staff_id`,
+    [`poison.${sfx}@yscapgroup.test`, yosef, admin]);
+  for (const pid of [P(1), P(2), P(3)]) {
+    await db.query(
+      `INSERT INTO elementix_backfill_queue (person_id, person_name, person_state, unlocked_by_email, unlocked_at, status)
+       VALUES ($1,'QUEUED PERSON','NJ',$2,now(),'pending')
+       ON CONFLICT (person_id) DO UPDATE SET status='pending', attempts=0,
+             unlocked_by_email=EXCLUDED.unlocked_by_email`,
+      [pid, `poison.${sfx}@yscapgroup.test`]);
+  }
+  const realStore = crm.storeContact;
+  crm.storeContact = async (args) => {
+    if (args.personId === P(2)) throw new Error('a column this row cannot satisfy');
+    return realStore(args);
+  };
+  // Caught rather than awaited bare, so removing the guard fails a NAMED
+  // assertion instead of taking the suite down — a crashing test also "fails",
+  // and a crash is not proof of the thing being asserted.
+  const poisoned = await backfill.workBatch({ staffId: admin, limit: 5 })
+    .catch((e) => ({ threw: (e && e.message) || 'unknown' }));
+  crm.storeContact = realStore;
+
+  assert.ok(!poisoned.threw,
+    `the batch must not throw out — a row that throws is never stamped and stalls every row behind it (threw: ${poisoned.threw})`);
+  assert.strictEqual(poisoned.worked, 2, 'the two good rows were still worked');
+  assert.strictEqual(poisoned.failed, 1, 'and the bad one is counted as a failure, not as a crash');
+  const stamped = await db.query(
+    `SELECT status, attempts, detail FROM elementix_backfill_queue WHERE person_id = $1`, [P(2)]);
+  assert.strictEqual(stamped.rows[0].attempts, 1, 'the bad row was STAMPED, so it cannot sit at the head forever');
+  assert.ok(/could not file this contact/i.test(stamped.rows[0].detail || ''),
+    '…with the reason recorded, never a silent drop');
+  const good = await db.query(
+    `SELECT count(*)::int n FROM elementix_backfill_queue WHERE person_id = ANY($1) AND status <> 'pending'`,
+    [[P(1), P(3)]]);
+  assert.strictEqual(good.rows[0].n, 2, 'and the rows behind it went through');
+  ok('a row PILOT cannot file is recorded and retired — it never stalls the thousand behind it');
+
+  await db.query(`DELETE FROM elementix_users WHERE email = $1`, [`poison.${sfx}@yscapgroup.test`]);
+  await wipe();
+
+  // -------------------------------------------------------------------------
+  console.log('\n11. A login is never auto-matched to somebody who has left');
   // -------------------------------------------------------------------------
   const gone = await mk(`Departed Officer ${sfx}`, `gone.${sfx}@yscapgroup.test`);
   await db.query(`UPDATE staff_users SET is_active = false WHERE id = $1`, [gone]);
