@@ -399,6 +399,73 @@ every screen with a countdown — ten seconds, twenty seconds". It reads
 `challengeCountdownSeconds` end to end (default 10), so the room can be given
 longer on the day without a deploy.
 
+
+## 10b. Phase 4 — the five the owner picked
+
+Six ideas were put to the owner. They took five and turned one down ("don't do
+a live wall of the day for a TV in the office"), so there is no TV screen and
+there will not be one until they ask.
+
+**A full-screen takeover when a spin lands, with sound.** A card in the corner
+of the page is the wrong shape for the one moment of the day the whole room is
+supposed to look up. The chime is SYNTHESISED (`app-v2/src/lib/arenaSound.js`) —
+no audio file to ship, to download, or to 404 — and the browser's own rule that
+nothing may make a noise before the person has touched the page is HONOURED
+rather than worked around: somebody who has not clicked hears nothing on the
+first spin and every one after. The takeover always lets go (it dismisses
+itself, answers Escape, answers a click) because a full-screen panel that can
+trap somebody in front of the room is worse than no takeover at all, and it
+respects `prefers-reduced-motion`. The landing is celebrated ONCE per spin — a
+reconnecting stream replays frames, and a room that gets the same fanfare three
+times stops believing the fourth.
+
+**Streaks — three challenges in a row earns a bonus chance.** The rule is
+`src/lib/arena/streaks.js`, and the thing that makes it right is that it
+RECOMPUTES rather than increments. A bonus is not added when the third lands; it
+is derived from the whole run, every time a decision changes, so a challenge
+DECLINED an hour later takes back the bonus it paid for *and* every later bonus
+whose run depended on it. An increment could never manage the second half of
+that. A `pending` fulfilment does not break a run — a slow admin must never cost
+somebody their streak — and anything else resets it.
+
+**Fixing that exposed a real defect in the chances ledger, which is now fixed
+too.** Declining a fulfilment took the chances back by writing a negative row
+that carried no `entry_id`, so the question "what has this fulfilment already
+been paid?" could not see it. Two consequences, both reproduced against a real
+database before they were fixed: declining the SAME one twice took the chances
+back TWICE, and approving it again afterwards gave nothing back (the award
+insert is guarded by a unique index on `entry_id` and refused to re-add a row
+that was still there). Somebody declined by mistake finished the day a chance
+short with nothing on any screen to say why. `decide()` now reconciles the
+entry the way the streak does — what it should be worth now, against what it has
+been paid, with the difference written as one `adjustment` row (db/587) that
+carries the entry so the next read can see it. Approve, approve twice, decline,
+decline twice, decline then approve: five paths, one answer.
+
+**A "who's in the room" bar.** `GET /sessions/:id/room` keeps CHECKED IN and
+HERE NOW as two separate facts and never rolls them together. "Here now" is
+derived from the live event connections (`events.isOnline`) with a 45-second
+grace, which is honest by construction — there is no presence table to go stale
+— and a check-in still waiting on an admin reads as WAITING, not as in the draw.
+Telling the room four people are in when two are waiting on somebody is exactly
+the lie this had to avoid.
+
+**A rematch spin — the last two, head to head.** It reuses the existing `duel`
+game rather than inventing one, so there is no new fairness code: the same
+commit-reveal, the same sealed number. The suggestion always says HOW it got to
+its pair (who was eliminated last, who won what, who has the most chances) —
+a pair with no reason is a pair somebody will argue about — and the CHALLENGER
+holds the stop button, never the one who is ahead.
+
+**An end-of-day recap card each person can screenshot.** Private, per person,
+built from the day's own record. It leads with what they DID, never with a
+position, and the position is shown further down because the owner asked for it
+and this card is private (the live board's "never publish the bottom" rule is
+unchanged). Somebody who never played has NO position — they were not playing,
+and calling them last would be the one wrong number on the card. The id comes
+off the token, never the address bar; only a super admin, who reads the day out
+at the end of it, may open somebody else's.
+
 ---
 
 ## 11. Sources

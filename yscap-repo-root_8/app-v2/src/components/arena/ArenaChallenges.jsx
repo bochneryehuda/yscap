@@ -74,6 +74,8 @@ export default function ArenaChallenges({ sessionId, isSuper, onChanged }) {
   const live = board.live || [];
   const me = board.me || {};
 
+  const streak = me.streak || null;
+
   // Nothing live, and nothing earned yet — say nothing at all.
   if (!live.length && !me.tickets) return null;
 
@@ -96,6 +98,23 @@ export default function ArenaChallenges({ sessionId, isSuper, onChanged }) {
             {minimised ? '▲' : '▾'}
           </button>
         </header>
+
+        {/* THE STREAK. Shown only when they are actually ON one — a counter
+            reading "0 in a row" is a scoreboard for doing nothing, and the whole
+            point of a streak is that it exists to be protected. The nudge is the
+            server's own words, so the screen cannot invent a target. */}
+        {streak && streak.run > 0 && (
+          <div className={`arena-ch-streak${streak.nudge ? ' close' : ''}`}>
+            <span className="arena-ch-flame" aria-hidden="true">▲</span>
+            <strong>{streak.run} in a row</strong>
+            {streak.nudge && <em>{streak.nudge}</em>}
+            {streak.bonusTickets > 0 && (
+              <span className="arena-ch-bonus">
+                +{streak.bonusTickets} bonus {streak.bonusTickets === 1 ? 'chance' : 'chances'} so far
+              </span>
+            )}
+          </div>
+        )}
 
         {!minimised && (
           <>

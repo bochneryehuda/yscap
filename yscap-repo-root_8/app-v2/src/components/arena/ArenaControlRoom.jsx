@@ -42,6 +42,7 @@ export default function ArenaControlRoom({ board, onChanged }) {
     ['monitor', 'Live monitor'],
     ['ready', 'Ready to go'],
     ['spin', 'New spin'],
+    ['rematch', 'Rematch'],
     ['challenges', 'The day\u2019s challenges'],
     ['sessions', 'Sessions'],
     ['queue', 'Waiting on you'],
@@ -77,11 +78,156 @@ export default function ArenaControlRoom({ board, onChanged }) {
           ? <NewSpin catalog={catalog} session={session} onChanged={onChanged} />
           : <p className="muted">Start a session first, over in Sessions.</p>
       )}
+      {panel === 'rematch' && (
+        session
+          ? <Rematch session={session} onChanged={onChanged} />
+          : <p className="muted">Start a session first.</p>
+      )}
       {panel === 'sessions' && <Sessions sessions={sessions} onReload={() => { loadSessions(); onChanged(); }} />}
       {panel === 'queue' && (session ? <Queue board={board} onChanged={onChanged} /> : <p className="muted">No session running.</p>)}
       {panel === 'prizes' && <PrizeList />}
       {panel === 'settings' && <SettingsPanel />}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------- the rematch */
+
+/*
+ * THE LAST TWO, HEAD TO HEAD.
+ *
+ * The owner: "a rematch spin — the last two standing, head to head, one wheel."
+ * This is the half-past-five moment, so the whole panel is built for speed:
+ * PILOT proposes the pair and says how it worked it out, and the button both
+ * creates the duel AND opens it, because a duel that needs a second click is a
+ * duel the room has already stopped watching.
+ *
+ * THE SUGGESTION IS NEVER BINDING. Both names are ordinary pickers pre-filled
+ * with the proposal — the person running the day always knows better than the
+ * computer who the room wants to see, and the reason is printed so nobody has
+ * to argue about where the pair came from.
+ *
+ * THE CHALLENGER HOLDS THE STOP BUTTON, and it says so before anyone commits.
+ * Handing it to whoever is ahead would make the last spin of the day look like
+ * the house pressing its own button.
+ */
+function Rematch({ session, onChanged }) {
+  const [people, setPeople] = useState([]);
+  const [suggestion, setSuggestion] = useState(null);
+  const [a, setA] = useState('');
+  const [b, setB] = useState('');
+  const [holder, setHolder] = useState('');
+  const [prize, setPrize] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [made, setMade] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    arena.people(session.id)
+      .then((r) => { if (alive) setPeople(r.people || []); })
+      .catch(() => {});
+    arena.rematchSuggestion(session.id)
+      .then((r) => {
+        if (!alive) return;
+        setSuggestion(r);
+        // The suggestion orders the leader first, so the SECOND name is the
+        // challenger and holds the button by default.
+        if (r && r.pair && r.pair.length === 2) {
+          setA(String(r.pair[0].id));
+          setB(String(r.pair[1].id));
+          setHolder(String(r.pair[1].id));
+        }
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [session.id]);
+
+  const nameOf = (id) => (people.find((p) => String(p.id) === String(id)) || {}).full_name || '';
+  const bad = !a || !b || String(a) === String(b);
+
+  const go = async () => {
+    if (bad) return;
+    if (!await askConfirm(
+      `Put ${nameOf(a)} and ${nameOf(b)} head to head now? Everybody's screen will show it, and `
+      + `${nameOf(holder || b)} gets the stop button.`)) return;
+    setBusy(true);
+    try {
+      const r = await arena.rematch(session.id, {
+        staffIds: [a, b], stopHolderStaffId: holder || b, prizeLabel: prize.trim() || null,
+      });
+      setMade(r);
+      onChanged();
+    } catch (e) {
+      showMessage((e && e.message) || 'That rematch could not be set up.');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <section className="arena-card">
+      <h3>Rematch</h3>
+      <p className="muted small">
+        Two names, one wheel, one stop button. It opens the moment you press the button,
+        so everybody sees it at once.
+      </p>
+
+      {suggestion && (
+        <p className={`arena-rm-why${suggestion.pair && suggestion.pair.length === 2 ? ' good' : ''}`}>
+          {suggestion.pair && suggestion.pair.length === 2
+            ? <>Suggested: <strong>{suggestion.pair[0].name}</strong> v <strong>{suggestion.pair[1].name}</strong> — {suggestion.why}</>
+            : suggestion.why}
+        </p>
+      )}
+
+      <div className="arena-rm-grid">
+        <label>
+          <span>First up</span>
+          <select value={a} onChange={(e) => setA(e.target.value)}>
+            <option value="">Pick somebody</option>
+            {people.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+          </select>
+        </label>
+        <span className="arena-rm-v" aria-hidden="true">v</span>
+        <label>
+          <span>Against</span>
+          <select value={b} onChange={(e) => { setB(e.target.value); if (!holder) setHolder(e.target.value); }}>
+            <option value="">Pick somebody</option>
+            {people.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <label className="arena-rm-full">
+        <span>What they are playing for (optional)</span>
+        <input className="input" value={prize} onChange={(e) => setPrize(e.target.value)}
+          placeholder="Lunch on the company" maxLength={120} />
+      </label>
+
+      <label className="arena-rm-full">
+        <span>Who holds the stop button</span>
+        <select value={holder} onChange={(e) => setHolder(e.target.value)}>
+          {[a, b].filter(Boolean).map((id) => <option key={id} value={id}>{nameOf(id)}</option>)}
+        </select>
+        <em className="muted small">
+          Give it to the challenger. It really does stop the wheel, and where it lands is down to
+          when they press — nobody can aim it.
+        </em>
+      </label>
+
+      {a && b && String(a) === String(b) && (
+        <p className="arena-bad">Two different people, or it is not much of a duel.</p>
+      )}
+
+      <button className="btn primary" disabled={bad || busy} onClick={go}>
+        {busy ? 'Setting it up…' : 'Put them head to head'}
+      </button>
+
+      {made && (
+        <p className="arena-good">
+          {made.pair.map((p) => p.name).join(' v ')} are on the wheel. {made.stopHolderName} has the stop button.
+          {made.freezeError ? ` (${made.freezeError})` : ''}
+        </p>
+      )}
+    </section>
   );
 }
 

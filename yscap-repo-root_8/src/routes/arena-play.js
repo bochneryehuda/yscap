@@ -304,7 +304,10 @@ router.post('/challenge-entries/:id/decide', requireSuper, async (req, res) => {
     });
     if (!out.ok) return bad(res, out.reason);
     await audit(req, `arena_challenge_${out.entry.status}`, out.entry.spin_id, { tickets: out.tickets });
-    res.json({ ok: true, tickets: out.tickets });
+    // The streak rides back with the decision so the admin's own screen can say
+    // "that one also earned them a bonus chance" without a second round trip —
+    // and so the take-back is visible at the moment somebody declines one.
+    res.json({ ok: true, tickets: out.tickets, streak: out.streak || null });
   } catch (e) {
     return bad(res, e.message || 'That did not work.');
   }

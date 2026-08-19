@@ -38,6 +38,7 @@
 
 const db = require('../../db');
 const lib = require('./challenge-library');
+const streaks = require('./streaks');
 
 /** The count-in length, from settings. Never throws — falls back to ten. */
 async function countdownSeconds() {
@@ -227,11 +228,26 @@ async function fulfil({ challengeId, staffId, note, evidence, countValue }) {
 }
 
 /**
- * DECIDE. Approving awards the tickets, once and only once.
+ * DECIDE. Approving awards the tickets, once and only once — and CHANGING YOUR
+ * MIND puts the ledger back exactly where it should be.
  *
- * The ticket insert is guarded by a unique index on `entry_id`, so approving
- * the same fulfilment twice — a double click, a retried request, two admins —
- * writes one ticket row, not two.
+ * THE ENTRY'S TICKETS ARE RECONCILED, NOT ADDED AND SUBTRACTED. Work out what
+ * this fulfilment should be worth NOW (its challenge's award if it is approved,
+ * nothing if it is declined), read what it has actually been paid so far, and
+ * write the difference as ONE row. That is the same shape the streak bonus
+ * uses, for the same reason: every path — approve, approve again, decline,
+ * decline again, decline then approve — lands on the same answer, because the
+ * answer is recomputed rather than accumulated.
+ *
+ * The add-and-subtract shape it replaces got two of those five wrong. Its
+ * reversal row carried no `entry_id`, so "what has this entry been paid?" could
+ * not see it: declining twice took the chances back twice, and approving again
+ * afterwards gave nothing back, because the approve insert is guarded by a
+ * unique index on `entry_id` and refused to re-add a row that was still there.
+ * Somebody declined by mistake finished the day a chance short.
+ *
+ * NOTHING IS EDITED OR DELETED. A correction is a new row with the difference
+ * on it, so "why do I have seven chances?" still has a full answer.
  */
 async function decide({ entryId, status, byStaffId, reason }) {
   if (!['approved', 'rejected'].includes(status)) return { ok: false, reason: 'Approved or rejected.' };
@@ -252,30 +268,47 @@ async function decide({ entryId, status, byStaffId, reason }) {
         WHERE id = $1`,
       [entryId, status, byStaffId || null, status === 'rejected' ? (reason || null) : null, tickets]);
 
+    // THE AWARD ROW. Written on the first approval and never again: the unique
+    // index on `entry_id` is what makes a double click, a retried request or
+    // two admins pressing together add one row rather than two. It stays put
+    // through a later decline, which is corrected below rather than erased.
     if (status === 'approved' && tickets > 0) {
       await client.query(
         `INSERT INTO arena_tickets (session_id, spin_id, staff_id, challenge_id, entry_id, count, source, reason, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,'challenge',$7,$8)
          ON CONFLICT (entry_id) WHERE entry_id IS NOT NULL AND source = 'challenge' DO NOTHING`,
         [e.session_id, e.spin_id, e.staff_id, e.challenge_id, e.id, tickets, e.title, byStaffId || null]);
-    } else if (status === 'rejected') {
-      // Take back anything already given for this fulfilment, by adding the
-      // opposite rather than deleting — the ledger keeps its history.
-      const had = await client.query(
-        `SELECT COALESCE(sum(count), 0)::int AS n FROM arena_tickets WHERE entry_id = $1`, [entryId]);
-      const n = Number(had.rows[0].n) || 0;
-      if (n !== 0) {
-        await client.query(
-          `INSERT INTO arena_tickets (session_id, spin_id, staff_id, challenge_id, count, source, reason, created_by)
-           VALUES ($1,$2,$3,$4,$5,'reversal',$6,$7)`,
-          [e.session_id, e.spin_id, e.staff_id, e.challenge_id, -n, `Reversed: ${e.title}`, byStaffId || null]);
-      }
     }
+
+    // THE CORRECTION. What this fulfilment is worth now, against what it has
+    // actually been paid. The read counts EVERY row carrying this entry — the
+    // award and any earlier correction — which is precisely why a correction
+    // carries the entry: a row the next read cannot see is a row that gets
+    // applied twice.
+    const paid = await client.query(
+      `SELECT COALESCE(sum(count), 0)::int AS n FROM arena_tickets WHERE entry_id = $1`, [entryId]);
+    const delta = tickets - (Number(paid.rows[0].n) || 0);
+    if (delta !== 0) {
+      await client.query(
+        `INSERT INTO arena_tickets (session_id, spin_id, staff_id, challenge_id, entry_id, count, source, reason, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,'adjustment',$7,$8)`,
+        [e.session_id, e.spin_id, e.staff_id, e.challenge_id, e.id, delta,
+          delta < 0 ? `Taken back: ${e.title}` : `Put back: ${e.title}`, byStaffId || null]);
+    }
+    // THE STREAK, RECOMPUTED FROM THE FACTS — inside this same transaction, so
+    // the decision and the bonus that follows from it can never come apart.
+    // It is a recomputation rather than an increment precisely so that
+    // DECLINING one later takes back the bonus it paid for AND every later
+    // bonus whose run depended on it. See streaks.js.
+    const streak = await streaks.sync(client, {
+      sessionId: e.session_id, staffId: e.staff_id, byStaffId: byStaffId || null,
+    });
     await client.query('COMMIT');
     broadcast('arena:challenge-decided', {
       challengeId: e.challenge_id, sessionId: e.session_id, staffId: String(e.staff_id), status, tickets,
+      streakRun: streak.best !== undefined ? streak : null,
     });
-    return { ok: true, tickets, entry: { ...e, status } };
+    return { ok: true, tickets, streak, entry: { ...e, status } };
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) { /* gone already */ }
     throw err;
@@ -299,7 +332,15 @@ async function standingFor(sessionId, staffId) {
        JOIN arena_challenges c ON c.id = e.challenge_id
       WHERE c.session_id = $1 AND e.staff_id = $2 AND e.status = 'approved'`, [sessionId, staffId]);
   const n = lib.nominationsEarned(t.rows[0].tickets, used.rows[0].n);
-  return { ...n, prizeCapCents: lib.prizeCapFor(tiers.rows.map((r) => r.tier)), tiersWon: tiers.rows.map((r) => r.tier) };
+  return {
+    ...n,
+    prizeCapCents: lib.prizeCapFor(tiers.rows.map((r) => r.tier)),
+    tiersWon: tiers.rows.map((r) => r.tier),
+    // Where their run stands, and the one-line nudge that is the whole point of
+    // having a streak at all. Never throws — a broken read shows a zero run
+    // rather than taking the board down.
+    streak: await streaks.standingFor(sessionId, staffId),
+  };
 }
 
 /**

@@ -430,7 +430,7 @@ async function settleSpin(spin, draws) {
     award = a.rows[0] || null;
   }
   broadcast('arena:decided', {
-    spinId: spin.id, sessionId: spin.session_id,
+    spinId: spin.id, sessionId: spin.session_id, seq: spin.seq,
     winnerStaffId: staffId, winnerName: personLabel,
     prizeLabel, prizeKind, valueCents: prizeValue, reason,
   });
