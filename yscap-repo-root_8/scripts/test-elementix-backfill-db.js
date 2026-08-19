@@ -362,6 +362,29 @@ async function main() {
     'settleOnce finishes a paid lookup somebody already started and must never be gated by the import switch');
   ok('paid lookups are settled whether or not the bulk import is switched on');
 
+  /* AND ELEMENTIX'S OWN MASTER SWITCH IS ASKED AT CALL TIME TOO. start() used to
+     read it ONCE and return before arming a single timer — settle included — so
+     turning Elementix on from the API Health page started nothing until the next
+     deploy, and every paid lookup whose vendor job outlived the click sat
+     unsettled with the credit already spent. That is the exact trap the import
+     switch was moved to call time to escape, one line above it. */
+  for (const fn of ['listOnce', 'workOnce', 'settleOnce']) {
+    assert.ok(/client\.enabled\(\)/.test(bodyOf(fn)),
+      `${fn} must ask whether Elementix is on at CALL time, not rely on a boot-time read`);
+  }
+  const startBody = (() => {
+    const at = fsrc.indexOf('function start(');
+    const rest = fsrc.slice(at + 10);
+    const end = rest.search(/\n(?:async function |function |module\.exports)/);
+    return (end === -1 ? rest : rest.slice(0, end))
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  })();
+  assert.ok(!/if\s*\(!client\.enabled\(\)\)\s*\{[^}]*return/.test(startBody),
+    'start() must arm the timers whatever the master switch says — otherwise there is nothing to turn back on');
+  assert.ok(/setInterval\(settleOnce/.test(startBody) && /setInterval\(workOnce/.test(startBody),
+    'and all three timers are genuinely armed');
+  ok('turning Elementix on from a screen starts the loops — no deploy, settle pass included');
+
   // -------------------------------------------------------------------------
   console.log('\n8. A contact PILOT itself traced is not handed to the shared login');
   // -------------------------------------------------------------------------
