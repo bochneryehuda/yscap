@@ -147,6 +147,17 @@ export default function StaffElementix() {
             Matching is on the exact email address and nothing else: two of these differ by one letter,
             so a clever guess would put one officer’s leads in another’s pipeline.
           </p>
+          {/* A NUMBER NOBODY CAN RECONCILE IS A DEFECT EVEN WHEN IT IS RIGHT. These
+              two columns answer two different questions and the difference between
+              them is the import still running — say so here, rather than leaving an
+              admin to compare this page against the CRM desk and conclude one of
+              them is broken. */}
+          <p style={{ color: MUTED, fontSize: 14, marginTop: 0 }}>
+            <strong style={{ color: INK }}>Unlocked in Elementix</strong> is everything that login has ever
+            looked up over there, going back to the beginning. <strong style={{ color: INK }}>Brought into
+            PILOT</strong> is how many of those are already in the CRM as leads. The gap between them is simply
+            the import still working through the list — the CRM will keep catching up on its own.
+          </p>
           {!users.length && (
             <div style={{ color: MUTED, fontSize: 14 }}>
               Nothing read yet. Press <strong style={{ color: INK }}>Read the history from Elementix</strong> above — it costs no credits.
@@ -156,7 +167,7 @@ export default function StaffElementix() {
             <div style={{ overflowX: 'auto', border: `1px solid ${LINE}`, borderRadius: 10, background: '#FFFFFF' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5 }}>
                 <thead><tr>
-                  {['Elementix login', 'Contacts unlocked', 'First', 'Last', 'PILOT officer'].map((h) => (
+                  {['Elementix login', 'Unlocked in Elementix', 'Brought into PILOT', 'First', 'Last', 'PILOT officer'].map((h) => (
                     <th key={h} style={{ textAlign: 'left', padding: '9px 11px', color: MUTED, fontSize: 11, letterSpacing: '.05em', textTransform: 'uppercase', fontWeight: 700, borderBottom: `1px solid ${LINE}` }}>{h}</th>
                   ))}
                 </tr></thead>
@@ -165,6 +176,25 @@ export default function StaffElementix() {
                     <tr key={u.email} style={{ borderBottom: `1px solid ${LINE}` }}>
                       <td style={{ padding: '9px 11px', color: INK, fontWeight: 600 }}>{u.email}</td>
                       <td style={{ padding: '9px 11px', color: INK }}>{n(u.unlocks)}</td>
+                      {/* THE CELL THAT STOPS THE TWO SCREENS READING AS A CONTRADICTION.
+                          The number on its left is Elementix's ALL-TIME history for
+                          this login; the CRM only ever shows what has actually been
+                          brought in. Printing the first alone is what makes an owner
+                          compare "159" here against "12" on the CRM desk and go
+                          looking for a bug that is not there. */}
+                      <td style={{ padding: '9px 11px', color: INK }}>
+                        {u.done == null ? '—' : (
+                          <>
+                            <div style={{ fontWeight: 650 }}>{n(u.done)}</div>
+                            {(u.pending || u.skipped || u.failed) ? (
+                              <div style={{ color: MUTED, fontSize: 12 }}>
+                                {n((u.pending || 0) + (u.skipped || 0) + (u.failed || 0))} still to come
+                                {u.skipped ? ' — waiting on a login' : ''}
+                              </div>
+                            ) : (u.queued ? <div style={{ color: MUTED, fontSize: 12 }}>all in</div> : null)}
+                          </>
+                        )}
+                      </td>
                       <td style={{ padding: '9px 11px', color: MUTED }}>{day(u.firstAt)}</td>
                       <td style={{ padding: '9px 11px', color: MUTED }}>{day(u.lastAt)}</td>
                       <td style={{ padding: '9px 11px' }}>

@@ -271,6 +271,68 @@ async function main() {
   ok('and the progress report names every login, its officer, and how many it unlocked');
 
   // -------------------------------------------------------------------------
+  // 6b. EVERY LOGIN SAYS HOW MANY OF ITS CONTACTS ARE ACTUALLY IN PILOT.
+  //
+  // The owner read the two screens as contradicting each other: the Elementix
+  // page showed one login with 159 contacts unlocked while the CRM desk showed
+  // that officer holding 12 leads. Both were right — `unlock_count` is the
+  // VENDOR'S ALL-TIME history for that seat and the CRM only ever shows what
+  // this import has brought in — but the page printed the big number ALONE, so
+  // there was nothing on screen to reconcile them and it read as a bug.
+  //
+  // These assertions are what make the two numbers appear side by side, and
+  // they are written as an ARITHMETIC IDENTITY rather than as fixed figures: a
+  // login's queue rows must always account for themselves exactly, or the
+  // screen would print a gap nobody can explain, which is the whole defect.
+  // -------------------------------------------------------------------------
+  const mine = new Map(prog.users
+    .filter((u) => PEOPLE.some((x) => x.unlockedBy.toLowerCase() === String(u.email).toLowerCase()))
+    .map((u) => [String(u.email).toLowerCase(), u]));
+  assert.strictEqual(mine.size, 4, 'every login in this fixture is reported');
+  for (const u of mine.values()) {
+    for (const k of ['queued', 'done', 'pending', 'skipped', 'failed']) {
+      assert.strictEqual(typeof u[k], 'number', `a login carries its own ${k} count`);
+    }
+    assert.strictEqual(u.done + u.pending + u.skipped + u.failed, u.queued,
+      'a login\u2019s contacts always add up \u2014 an unexplained gap is exactly what read as a bug');
+  }
+  ok('every Elementix login reports how many of its contacts are in PILOT, and the four states add up');
+
+  // The login whose contact the vendor refused: brought in FEWER than it
+  // unlocked, and the row itself says so rather than leaving the difference to
+  // be discovered by comparing two screens.
+  const stuck = mine.get('josef@yscapgroup.com');
+  assert.strictEqual(stuck.failed, 1, 'the refused contact is counted against its own login');
+  assert.ok(stuck.done < stuck.queued,
+    'a login mid-import shows fewer brought in than it has \u2014 which is the number the CRM desk agrees with');
+
+  // A contact PARKED because nobody has said whose login it was is a different
+  // answer from "not done yet": one is waiting on a human, the other is on its
+  // way by itself. Reporting the first as merely pending promises an admin it
+  // will arrive on its own, and it never will.
+  await db.query(`UPDATE elementix_backfill_queue SET status = 'skipped' WHERE person_id = $1`, [P(4)]);
+  const prog2 = await backfill.progress();
+  const parked = prog2.users.find((u) => String(u.email).toLowerCase() === 'departed@yscapgroup.com');
+  assert.ok(parked, 'the unowned login is still reported');
+  assert.strictEqual(parked.skipped, 1, 'a contact waiting on somebody to name the officer is counted as waiting');
+  assert.strictEqual(parked.done, 0, 'and is never counted as brought in');
+  assert.strictEqual(parked.pending, 0, 'and never as merely on its way');
+  ok('a login nobody owns shows its contacts as waiting on a login, never as brought in and never as merely pending');
+
+  // The company totals are the sum of the parts, so the summary card and the
+  // per-login table can never tell an admin two different stories. Summed over
+  // EVERY login rather than the four in this fixture, so a queue row filed under
+  // a login the table does not list would fail here rather than quietly leave
+  // the columns short of the total.
+  const sum = (k) => prog2.users.reduce((a, u) => a + u[k], 0);
+  assert.strictEqual(sum('queued'), prog2.total, 'the per-login rows account for every queued contact');
+  assert.strictEqual(sum('done'), prog2.done, 'and for every one brought in');
+  assert.strictEqual(sum('pending'), prog2.pending, 'and for every one still on its way');
+  assert.strictEqual(sum('skipped'), prog2.skipped, 'and for every one waiting on a login');
+  assert.strictEqual(sum('failed'), prog2.failed, 'and for every one the vendor refused');
+  ok('the per-login rows sum to the company totals \u2014 the card and the table cannot disagree');
+
+  // -------------------------------------------------------------------------
   console.log('\n7. The unattended loop can never spend money');
   // -------------------------------------------------------------------------
   // A SOURCE assertion, deliberately. The runtime stub above proves this run did
