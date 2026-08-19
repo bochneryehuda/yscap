@@ -8086,7 +8086,7 @@ which is exactly why the bug survived inspection.)
 
 ### Proven
 
-`scripts/test-lt-ppe-agreement-provenance.js` — 43 assertions, 7 mutations (M1–M7), each
+`scripts/test-lt-ppe-agreement-provenance.js` — 61 assertions, 11 mutations (M1–M11), each
 checksum-verified to have applied. Section J is a source guard over the runner itself, because a pure
 test of the recorder proves nothing about whether the CLI calls it — and the defect was precisely that
 the CLI announced these on the console and recorded them nowhere. It also counts the sites that narrow
@@ -8094,3 +8094,49 @@ the scenario list against the sites that stamp one, so a fifth flag added later 
 visible at build time as well as at runtime.
 
 186/186 LT PPE suites, 34 database-backed. All seven gates green.
+
+### §2.121a — and the gating surface was the one that mattered
+
+The same defect, found by asking where else a verdict is stored, and this time on the surface that
+decides whether a rate sheet may go live.
+
+The agreement RUN ROUTE computes three honesty facts — the battery cap, the Lender Price scope, and
+whether the investor's own **prepayment layer was asked** — and put all three in the **HTTP response
+only**. `recordRun` persists `summary: run.summary`, the harness's summary alone. The response is read
+once by whoever pressed the button; the **row** is what `gateStatus` reads at publish time, what the
+scoreboard charts, and what a person reads three weeks later.
+
+So in the durable record, **a run that never asked the prepayment layer was indistinguishable from one
+that did** — which is precisely the silent-green failure this route's own comment warns about, closed
+for the reply and left open for the record. §2.116 already measured what such a run does: a scenario the
+battery flags INELIGIBLE for *"NJ Individual PPP prohibited"* comes back PRICED, and the run reports
+agreement on a loan the investor will not buy.
+
+Measured in the DB suite: the route's own fixture battery is capped **537 → 500**, and until now that
+37-scenario drop existed in the reply and nowhere else.
+
+**What changed.** The route builds the same provenance block and attaches it to the summary **before**
+`recordRun`, so it persists with no schema change and every existing reader keeps working. `gateDecision`
+reads it back and answers with **`caveats`** beside its verdict.
+
+**The caveats are not a verdict, deliberately.** Turning *"the prepayment layer went unasked"* into a
+REFUSAL would change which sheets may go live, and whether an unasked layer should block a publish is a
+business rule this code does not get to invent — it is raised with the owner and recorded as open below.
+What is **not** a judgement call is that a gate must never report a measurement as complete when its own
+record says otherwise. So it passes, and it says what it did not measure.
+
+A record written before this exists says **that**, rather than reading as a clean bill of health: *"this
+run predates the record carrying what it measured"* is the truth, and a silent absence would not be.
+
+**Proven:** sections K and L of `scripts/test-lt-ppe-agreement-provenance.js` (61 assertions total,
+M1–M11), plus section J of `scripts/test-lt-ppe-agreement-run-db.js` — a **real Postgres** round trip,
+because a source guard proves the code writes it and only a database proves it comes back through a
+jsonb column, `rowToRecord`, and into the gate. One mutation (M10, making the caveat read rethrow)
+**crashed** the suite, so section K was made crash-tolerant and re-run.
+
+### OPEN — for the owner
+
+**Should a passing agreement run still gate a publish when the investor's prepayment layer was never
+asked?** Today it does pass, with the caveat stated. §2.116 measured that without that layer a scenario
+the investor would refuse can be counted as agreement, so the case for refusing is real — but it would
+change which sheets may go live, and that is the owner's call, not this code's.

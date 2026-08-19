@@ -35,6 +35,7 @@ const NARROWERS = Object.freeze({
   scenarios_file: 'a scenario file replaced the battery',
   priced_probe: 'the priced probe (our own sheet prices these)',
   replay_partial: 'the capture could only answer for these',
+  battery_cap: 'the run-route battery cap',
 });
 
 function num(n) { return Number.isFinite(n) ? n : null; }
@@ -166,6 +167,10 @@ function describeProvenance(prov) {
   if (prov.disqualify === 'skipped') {
     lines.push('the refusal tree was NOT asked for — this run cannot say anything about eligibility');
   }
+  if (prov.ppp) {
+    lines.push(`prepayment layer ${prov.ppp.asked ? 'ASKED' : 'NOT asked'}`
+      + `${prov.ppp.reason ? ` (${prov.ppp.reason})` : ''}`);
+  }
   return lines;
 }
 
@@ -191,6 +196,16 @@ function provenanceWarnings(prov) {
   }
   if (prov.disqualify === 'skipped') {
     out.push('The refusal tree was not asked for, so the eligibility side of every scenario is unmeasured.');
+  }
+  // ⛔ THE PREPAYMENT LAYER, ON THE RECORD. §2.116 measured what a run without the investor's own Layer 3
+  // does: a scenario the battery flags INELIGIBLE for "NJ Individual PPP prohibited" comes back PRICED,
+  // and the run reports agreement on a loan the investor will not buy. The run ROUTE says so in its
+  // HTTP response — but the response is read once and the RECORD is what the publish gate reads weeks
+  // later, so without this a run that never asked is indistinguishable from one that did.
+  if (prov.ppp && prov.ppp.asked === false) {
+    out.push('The investor\'s prepayment layer was NOT asked on this run'
+      + `${prov.ppp.reason ? ` (${prov.ppp.reason})` : ''}, so a whole layer of their own rules went`
+      + ' unmeasured and a scenario that layer would refuse can be counted here as agreement (§2.116).');
   }
   if (prov.lpSource === 'replay') {
     out.push('This is a REPLAY of stored vendor answers, not a fresh measurement — it says what Lender'

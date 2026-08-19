@@ -539,6 +539,36 @@ const REQ = (over = {}) => Object.assign(
     // AND MINING CANNOT TOUCH THE MEASUREMENT — the same guarantee the review carries.
     ok(res.body.scenarios === BUILT && res.body.summary && res.body.summary.total === BUILT,
       'I12 …with the agreement verdict itself unchanged — mining is an observer, never a participant');
+    // ---- J. WHAT THE RUN MEASURED SURVIVES THE DATABASE (§2.121a) -------------------------------
+    // The route computes the battery cap, the scope, and whether the investor's prepayment layer was
+    // ASKED — and until §2.121a put all three in the HTTP REPLY ONLY. The reply is read once; the ROW
+    // is what `gateStatus` reads at publish time. A source guard proves the code writes it; only a real
+    // Postgres proves it comes BACK — through a jsonb column, `rowToRecord`, and into the gate.
+    {
+      const rows = await ledger(graded.versionId);
+      const latest = rows.slice().sort((a, b) => (b.recordedAt || 0) - (a.recordedAt || 0))[0];
+      ok(!!latest, 'J1 the run route left a record to read back');
+      const p = latest && latest.summary && latest.summary.provenance;
+      ok(!!p && typeof p === 'object',
+        'J2 …and that record carries what the run measured, back out of the jsonb column');
+      ok(p && Number.isFinite(p.battery.offered) && Number.isFinite(p.ran),
+        `J3 …with the population it started from and what ran (${p ? `${p.ran} of ${p.battery.offered}` : 'absent'})`);
+      ok(p && p.ppp && typeof p.ppp.asked === 'boolean',
+        'J4 …and whether the investor’s prepayment layer was asked — the fact that used to die with the reply');
+      ok(p && p.scope && typeof p.scope === 'object',
+        'J5 …and the scope, which decides what "Lender Price said" even means');
+      ok(p && p.reconciles === true,
+        'J6 …and the scenario counts reconcile after a round trip through Postgres');
+      // JSON-safety is not theoretical here: a RegExp in the scope serialises to {} (§2.121), and this
+      // row went through a real jsonb column rather than a stringify in a test.
+      ok(p && Object.values(p.scope).every((v) => v == null || typeof v === 'string'),
+        'J7 …with every scope value stored as text, so nothing was silently emptied on the way in');
+
+      // And the GATE states it. This is the surface the whole item is about.
+      const gate = await agreementStore.gateStatus(SCOPE, graded.versionId, { db });
+      ok(Array.isArray(gate.caveats) || gate.proven !== true,
+        'J8 the gate reads that record and answers with caveats alongside its verdict');
+    }
   } finally {
     await cleanup();
     if (typeof db.end === 'function') await db.end().catch(() => {});

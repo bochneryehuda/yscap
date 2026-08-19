@@ -28,6 +28,7 @@
  * LT-only. No RTL imports.
  */
 
+const provenance = require('./agreement-provenance');
 const KIND_RUN = 'run';
 const KIND_OVERRIDE = 'override';
 
@@ -117,6 +118,26 @@ function rowToRecord(row) {
  * publish anyway, so it answers `proven:false, reason:'overridden'`. The caller that already applied
  * it knows; a reader must still see that this sheet was never measured.
  */
+/**
+ * What the stored run says it did NOT measure — read off the row, never re-derived.
+ *
+ * A record written before §2.121a carries no provenance at all, and that is reported as its own
+ * caveat rather than as a clean pass: "this run predates the record carrying what it measured" is the
+ * truth, and a silent absence would read as "nothing to note".
+ */
+function provenanceCaveats(record) {
+  try {
+    const p = record && record.summary && record.summary.provenance;
+    if (!p) {
+      return ['This run predates the record carrying what it measured, so its coverage of the battery,'
+        + " its scope, and whether the investor's prepayment layer was asked cannot be read from it."];
+    }
+    return provenance.provenanceWarnings(p);
+  } catch (_) {
+    return ['This run\'s record of what it measured could not be read.'];
+  }
+}
+
 function gateDecision(records) {
   const list = Array.isArray(records) ? records : [];
   if (!list.length) {
@@ -205,12 +226,25 @@ function gateDecision(records) {
       run: latest,
     };
   }
+  // ⛔ A PASSING GATE STILL SAYS WHAT IT DID NOT MEASURE (§2.121a). The run route computes three
+  // honesty facts — the battery cap, the scope, and whether the investor's own prepayment layer was
+  // ASKED — and until §2.121a they lived only in the HTTP reply, which is read once. They now ride on
+  // the stored summary, so the gate can state them.
+  //
+  // THEY ARE CAVEATS, NOT A VERDICT, DELIBERATELY. Turning "the prepayment layer went unasked" into a
+  // REFUSAL would change which sheets may go live, and whether an unasked layer should block a publish
+  // is a business rule this code does not get to invent — it is raised with the owner and recorded as
+  // open. What is NOT a judgement call is that a gate must never report a measurement as complete when
+  // its own record says otherwise, so the caveats are attached and stated.
+  const caveats = provenanceCaveats(latest);
   return {
     proven: true,
     reason: null,
     // States COVERAGE as well as agreement: "all 295 comparable" was true of a run that quietly lost
     // four, so the sentence now accounts for the whole battery.
-    message: `Agreed with Lender Price on all ${latest.comparable} of ${latest.scenarios} scenarios, with none left uncompared.`,
+    message: `Agreed with Lender Price on all ${latest.comparable} of ${latest.scenarios} scenarios, with none left uncompared.`
+      + (caveats.length ? ` NOTE: ${caveats.join(' ')}` : ''),
+    caveats,
     run: latest,
   };
 }
@@ -314,7 +348,7 @@ async function gateStatus(scope, versionId, opts = {}) {
 }
 
 module.exports = {
-  incomparableOf,
+  incomparableOf, provenanceCaveats,
   gateDecision, gateStatus, recordRun, recordOverride, listForVersion, rowToRecord,
   MIN_COMPARABLE_SCENARIOS, KIND_RUN, KIND_OVERRIDE,
 };

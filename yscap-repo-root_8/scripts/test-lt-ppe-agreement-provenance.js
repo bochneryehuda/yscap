@@ -24,6 +24,11 @@ const prov = require('../src/longterm/ppe/agreement-provenance');
 let failures = 0;
 function ok(cond, label) { console.log(`${cond ? '  ok  ' : ' FAIL '} ${label}`); if (!cond) failures++; }
 
+// A mutation that THROWS kills the run, which prints a short stack and exits — indistinguishable from
+// a pass at a glance. Every call that is only ever supposed to return goes through this, so an
+// unexpected throw becomes a null the assertions report by name.
+function attemptSync(fn) { try { return fn(); } catch (e) { console.log(`  (threw: ${String(e && e.message || e).slice(0, 110)})`); return null; } }
+
 console.log('LT PPE — what an agreement run measured (§2.121) — offline\n');
 
 // ---- A. AN UNNARROWED RUN SAYS SO, AND WARNS ABOUT NOTHING ---------------------------------------
@@ -195,6 +200,90 @@ console.log('LT PPE — what an agreement run measured (§2.121) — offline\n')
     + ' (the +1 is the initial assignment, which is not a narrowing)');
 }
 
+// ---- K. THE GATING SURFACE, WHICH IS WHERE THIS ACTUALLY MATTERS (§2.121a) -----------------------
+// The run ROUTE computes three honesty facts — the battery cap, the scope, and whether the investor's
+// prepayment layer was ASKED — and until now put them in the HTTP RESPONSE ONLY. The response is read
+// once by whoever pressed the button; the stored ROW is what `gateStatus` reads at publish time. So in
+// the durable record a run that never asked the prepayment layer was indistinguishable from one that
+// did — exactly the silent-green failure the run route's own comment warns about, closed for the reply
+// and left open for the record.
+{
+  const store = require('../src/longterm/ppe/agreement-store');
+  const base = {
+    kind: 'run', gateMet: true, scenarios: 305, comparable: 305, agreed: 305, disagreed: 0,
+    errors: 0, recordedAt: 1000,
+  };
+  const withProv = (pp) => ({
+    ...base,
+    summary: {
+      total: 305,
+      incomparable: 0,
+      provenance: prov.finish(prov.begin({ name: 'canonical agreement battery', offered: 305 }), {
+        runAt: 'x', scope: { investor: 'Deephaven Mortgage' }, ppp: pp,
+      }),
+    },
+  });
+
+  const clean = attemptSync(() => store.gateDecision([withProv({ asked: true, descriptor: true })]));
+  ok(!!clean && clean.proven === true, 'K1 a complete run is still proven');
+  ok(!!clean && Array.isArray(clean.caveats) && clean.caveats.length === 0,
+    `K2 …and carries no caveats — got ${clean ? JSON.stringify(clean.caveats) : 'it threw'}`);
+  ok(!!clean && !/NOTE:/.test(clean.message), 'K3 …so its message is the plain one it always was');
+
+  const unasked = attemptSync(() => store.gateDecision([withProv({ asked: false, reason: 'no_registered_program' })]));
+  ok(!!unasked && unasked.proven === true,
+    'K4 an unasked prepayment layer does NOT flip the gate — whether it should is a business rule, and'
+    + ' this code does not get to invent one (raised with the owner, recorded open)');
+  ok(!!unasked && unasked.caveats.length === 1 && /prepayment layer was NOT asked/.test(unasked.caveats[0]),
+    'K5 …but it is stated, so a passing gate can never report a measurement as complete when its own record says otherwise');
+  ok(!!unasked && /§2.116/.test(unasked.caveats[0]),
+    'K6 …with the section that measured what an unasked layer actually does');
+  ok(!!unasked && /NOTE:/.test(unasked.message), 'K7 …and it rides on the gate message a human reads');
+
+  // A record written BEFORE this existed says so, rather than reading as "nothing to note".
+  const legacy = attemptSync(() => store.gateDecision([{ ...base, summary: { total: 305, incomparable: 0 } }]));
+  ok(!!legacy && legacy.proven === true, 'K8 a pre-§2.121a record still passes — this is not retroactive gating');
+  ok(!!legacy && legacy.caveats.length === 1 && /predates the record/.test(legacy.caveats[0]),
+    'K9 …and its silence is NAMED as silence, not read as a clean bill of health');
+
+  // A capped battery is a smaller measurement, and the gate says so.
+  let capped = prov.begin({ name: 'canonical agreement battery', offered: 305 });
+  capped = prov.narrowed(capped, 'battery_cap', 305, 200, 'MAX_AGREEMENT_SCENARIOS=200');
+  capped = prov.finish(capped, { runAt: 'x', scope: { investor: 'D' }, ppp: { asked: true } });
+  const cappedGate = attemptSync(() => store.gateDecision([{
+    ...base, scenarios: 200, comparable: 200, agreed: 200,
+    summary: { total: 200, incomparable: 0, provenance: capped },
+  }]));
+  ok(!!cappedGate && cappedGate.proven === true && cappedGate.caveats.some((c) => /NOT the battery/.test(c)),
+    'K10 a run the route capped is proven over what it ran and SAYS it did not cover the battery');
+  ok(prov.NARROWERS.battery_cap, 'K11 …and the cap is a named narrowing, not an anonymous shrink');
+
+  // An unreadable provenance must not take the gate down with it.
+  const broken = attemptSync(() => store.gateDecision([{ ...base, summary: { total: 305, incomparable: 0, provenance: 7 } }]));
+  ok(!!broken && broken.proven === true && broken.caveats.length >= 1,
+    'K12 an unreadable provenance is a caveat, never an exception that loses the verdict');
+}
+
+// ---- L. THE RUN ROUTE ACTUALLY BUILDS AND STORES IT -----------------------------------------------
+// A pure test of the recorder proves nothing about the route, and the whole defect was that the route
+// computed these and stored none of them.
+{
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'routes', 'ppe.js'), 'utf8');
+  ok(/require\('\.\.\/ppe\/agreement-provenance'\)/.test(src), 'L1 the run route requires the recorder');
+  ok(/agreementProvenance\.narrowed\(runProvenance, 'battery_cap'/.test(src),
+    'L2 …and stamps the battery cap where it makes it');
+  ok(/ppp: \{ asked: !!ppp\.asked/.test(src),
+    'L3 …and records whether the investor’s prepayment layer was asked');
+  ok(/run\.summary\.provenance = runProvenance;/.test(src),
+    'L4 …and attaches it to the summary BEFORE recordRun, which stores the summary verbatim');
+  const attachIdx = src.indexOf('run.summary.provenance = runProvenance;');
+  const recordIdx = src.indexOf('const rec = await agreementStore.recordRun(found.scope,');
+  ok(attachIdx > 0 && recordIdx > 0 && attachIdx < recordIdx,
+    'L5 …and it is attached BEFORE the row is written, or the record would carry nothing');
+  ok(/catch \(_\) \{ \/\* a record that could not be described is still a record \*\//.test(src),
+    'L6 …and a provenance that cannot be built never loses a battery somebody has just paid for');
+}
+
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);
 
@@ -210,4 +299,12 @@ process.exit(failures ? 1 : 0);
  *   M6  narrowed: fall back to a friendly label for an unknown `by` → I2 fails
  *   M7  runner: stop attaching provenance to `summary`              → J3 fails (a scoreboard gets the
  *                                                                     rate with no population)
+ *   M8  provenanceWarnings: drop the prepayment-layer branch        → K5/K6/K7 fail — a run that never
+ *                                                                     asked the investor's own Layer 3
+ *                                                                     reads as a complete measurement
+ *   M9  provenanceCaveats: return [] when there is no provenance     → K9 fails (silence reads as a
+ *                                                                     clean bill of health)
+ *   M10 provenanceCaveats: let the read throw instead of catching    → K12 fails (one bad row loses a
+ *                                                                     verdict)
+ *   M11 run route: attach provenance AFTER recordRun                 → L5 fails (the row stores nothing)
  * ------------------------------------------------------------------------------------------- */

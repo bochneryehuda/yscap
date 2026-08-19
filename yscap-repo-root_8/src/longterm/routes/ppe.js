@@ -105,6 +105,7 @@ const ruleStore = require('../ppe/rule-store');
 const ruleAuthoring = require('../ppe/rule-authoring');
 const ruleDraftStore = require('../ppe/rule-authoring-store');
 const agreementStore = require('../ppe/agreement-store');
+const agreementProvenance = require('../ppe/agreement-provenance');
 const ratesheetAgreement = require('../ppe/ratesheet-agreement');
 const agreementScenarios = require('../ppe/agreement-scenarios');
 const lpAgreementLegs = require('../ppe/lp-agreement-legs');
@@ -3374,6 +3375,21 @@ async function runAgreementRoute(req, res) {
   const capped = all.length > MAX_AGREEMENT_SCENARIOS;
   const battery = capped ? all.slice(0, MAX_AGREEMENT_SCENARIOS) : all;
 
+  // ⛔ WHAT THIS RUN MEASURED, ON THE RECORD AND NOT ONLY IN THE REPLY (§2.121a). The three honesty
+  // facts below — the battery cap, the scope, and whether the investor's prepayment layer was ASKED —
+  // were computed here and put in the HTTP RESPONSE ONLY. The response is read once by whoever pressed
+  // the button; the ROW is what `gateStatus` reads at publish time and what a person reads weeks later.
+  // So in the durable record a run that never asked the prepayment layer was indistinguishable from one
+  // that did — precisely the silent-green failure the comment above this route warns about, closed for
+  // the reply and open for the record. Built here, attached to the summary before it is stored.
+  let runProvenance = agreementProvenance.begin({
+    name: 'canonical agreement battery', offered: all.length,
+  });
+  if (capped) {
+    agreementProvenance.narrowed(runProvenance, 'battery_cap', all.length, battery.length,
+      `MAX_AGREEMENT_SCENARIOS=${MAX_AGREEMENT_SCENARIOS}`);
+  }
+
   // THE SAME BATTERY ANSWERS THE REVIEW QUESTION TOO (§2.58 + §2.62), at no extra vendor call: this run
   // already asks Lender Price for its refusal list on every scenario, which is exactly what the
   // disqualifier review reads. Without this the only way to fill that queue is a SECOND paid battery
@@ -3557,6 +3573,22 @@ async function runAgreementRoute(req, res) {
     mining.error = msgOf(e);
   }
 
+  // Stamped once the run's own facts are settled, and attached to the SUMMARY — which `recordRun`
+  // stores verbatim — so the record carries it without a schema change and every existing reader keeps
+  // working. Never allowed to fail the run: a provenance block that could not be built is news, but a
+  // battery somebody has just paid for is not thrown away over it.
+  try {
+    runProvenance = agreementProvenance.finish(runProvenance, {
+      runAt: new Date().toISOString(),
+      lpSource: 'live',
+      scope: lpScope,
+      disqualify: 'asked',
+      sheet: { builtin: false, investor: investorName || null, versionId: found.versionId },
+      ppp: { asked: !!ppp.asked, descriptor: !!pppDesc, reason: ppp.reason || null },
+    });
+    run.summary.provenance = runProvenance;
+  } catch (_) { /* a record that could not be described is still a record */ }
+
   const rec = await agreementStore.recordRun(found.scope, {
     db,
     versionId: found.versionId,
@@ -3585,6 +3617,9 @@ async function runAgreementRoute(req, res) {
     // the rule suggestions mined from Lender Price's own refusals (P2). Both ride the ONE paid battery.
     review,
     mining,
+    // The same block that was just persisted, echoed so the reply and the record cannot describe one
+    // run two ways.
+    provenance: runProvenance,
   };
 
   if (!rec.ok) {
