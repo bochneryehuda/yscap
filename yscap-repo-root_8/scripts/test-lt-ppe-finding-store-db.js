@@ -92,7 +92,58 @@ async function main() {
     f = await store.getFinding(scope, kFlip, db);
     ok(f.status === 'fixed', 'run 4: closeDisappeared never reopens/rewrites a settled finding');
 
-    await db.query('DELETE FROM lt_ppe_finding WHERE scope = $1', [scope]);
+    // ---- §2.126 — WHICH ENGINE WIRING MEASURED THE ROW -------------------------------------------
+    // The probe that started this measured, on a real Postgres, that a finding filed by a leg which has
+    // since been corrected was auto-closed `verified — no longer reproduced` and then, on reappearing,
+    // flagged `regressed`. Both are confident sentences about a measurement nobody made. Everything
+    // below is that same lifecycle, with the stamp in place.
+    const prov = require('../src/longterm/ppe/agreement-provenance');
+    // A FRESH LEDGER, because runs 1-4 above left both keys settled and this section is about what
+    // happens to rows that are still OPEN when the engine wiring underneath them changes.
+    const scope2 = `${scope}_leg`;
+    await db.query('DELETE FROM lt_ppe_finding WHERE scope = $1', [scope2]);
+
+    // run 5 — the stamp is on the row, and it round-trips.
+    const r5 = await store.persistRun(scope2, incomingRun(50, 80), { db, nowMs: 1700001000000 });
+    ok(r5.summary.new === 2, 'run 5: two fresh findings again');
+    const fresh = await store.getFinding(scope2, 'dhvn|dscr30|ltv=70|price_mismatch|7000', db);
+    ok(fresh.leg_version === prov.LEG_VERSION, 'run 5: the row records the engine wiring that measured it');
+    ok(store.rowToRecord(fresh).legVersion === prov.LEG_VERSION, 'run 5: and it round-trips back to a record');
+
+    // run 6 — age one row's stamp by hand, exactly as history did: it was written by the old leg.
+    const kOld = 'dhvn|dscr30|ltv=70|price_mismatch|7000';
+    const kNew = 'dhvn|dscr30|ltv=75|price_mismatch|7000';
+    await db.query('UPDATE lt_ppe_finding SET leg_version = $3 WHERE scope = $1 AND finding_key = $2',
+      [scope2, kOld, '2026-08-19/2.122']);
+    // …and one row with NO stamp at all — every row that existed before db/582 looks like this.
+    await db.query('UPDATE lt_ppe_finding SET leg_version = NULL WHERE scope = $1 AND finding_key = $2',
+      [scope2, kNew]);
+
+    const r6 = await store.persistRun(scope2, [], { db, nowMs: 1700001100000, closeDisappeared: true });
+    ok(r6.summary.disappeared === 0, 'run 6: neither row counts as "gone" — this run never looked for them');
+    ok(r6.summary.unreadable === 2, 'run 6: both are reported UNREADABLE instead');
+    ok(r6.closed.length === 0, 'run 6: and NOTHING is auto-closed');
+    ok((r6.unreadable || []).every((u) => typeof u.reason === 'string' && u.reason.length > 10),
+      'run 6: each one comes back with a plain-language reason');
+    ok(/unknown/.test((r6.unreadable.find((u) => u.key === kNew) || {}).reason || ''),
+      'run 6: the unstamped row says what measured it is UNKNOWN — not that it was wrong');
+    const stillOpen = await store.getFinding(scope2, kOld, db);
+    ok(stillOpen.status === 'open',
+      'run 6: it stays OPEN — it still blocks go-live, because a doubt must never loosen the gate');
+
+    // run 7 — the remedy. A human decides the row; that decision was made against TODAY'S engine, so
+    // the stamp moves and the row stops being unreadable. Without this the block would have no way out.
+    ok(await store.decideFinding(scope2, kOld, { status: 'triaged', reason: 'looked at it' }, db),
+      'run 7: a human decision lands');
+    const restamped = await store.getFinding(scope2, kOld, db);
+    ok(restamped.leg_version === prov.LEG_VERSION,
+      'run 7: deciding it writes today\'s engine-wiring stamp — that IS the remedy');
+
+    const r7 = await store.persistRun(scope2, [], { db, nowMs: 1700001200000, closeDisappeared: true });
+    ok(r7.closed.includes(kOld), 'run 7: now that it is readable, a run that does not reproduce it may close it');
+    ok(!r7.closed.includes(kNew), 'run 7: the still-unstamped row is still left alone');
+
+    await db.query('DELETE FROM lt_ppe_finding WHERE scope = ANY($1::text[])', [[scope, scope2]]);
   } catch (e) {
     console.error(e);
     failures++;

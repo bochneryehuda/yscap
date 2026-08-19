@@ -8682,3 +8682,91 @@ cells are reachable AND applied"* — the same overstatement, in the guard. A te
 false claim is its own defect.
 
 **189/189 LT PPE suites, 34 database-backed. All seven gates green.**
+
+---
+
+### §2.126 — the findings board judged every row, including the ones nobody could read
+
+**What the board does.** `lt_ppe_finding` is the durable list of every place our engine and Lender Price
+disagreed. It is the board a human works, and the go-live gate refuses to take an investor live while a
+row on it is open. On every later run the ledger makes three CONFIDENT statements about a stored row:
+
+* it recurred (bump the sighting count, keep the human's status),
+* it is gone, so close it — status `verified`, reason *"auto-resolved: no longer reproduced"*,
+* it came back after being fixed, so flag it `regressed` — the loudest reading in the ledger, and one of
+  the two things the go-live gate blocks on outright.
+
+Every one of those is a claim that **this run and the stored row measured the same thing**.
+
+**What was measured before building (probe against a real Postgres, 2026-08-19).**
+
+| what | measured |
+| --- | --- |
+| keys on a fresh finding record | 14 — none naming a leg, engine or version |
+| columns on `lt_ppe_finding` | 22 — likewise none |
+| a pre-fix row that stops reproducing | auto-closed `verified`, *"auto-resolved: no longer reproduced"* |
+| …and if it reappears | `regressed = true` |
+| run reports (`lt_ppe_shadow_run`) | DO carry `provenance.legVersion` (§2.122a) |
+
+So the run series learned to say which engine wiring produced it, and the ledger — the board that gates
+go-live and the one a person actually reads — never did. When the "ours" leg was corrected (§2.122 fed it
+the deal's real facts; §2.124 taught it that a quote answers in three states, not two), the ledger went on
+carrying, closing and accusing rows the OLD wiring produced exactly like rows the new one produced.
+
+**Why the two wrong sentences are worse than silence.** A run using a corrected leg never looked for the
+old leg's disagreement at all, so its silence proves nothing about that row — closing it `verified` writes
+a clean verdict on a question nobody asked. And `verified` is one of the two statuses that later earns a
+`regressed` accusation, so the false clean verdict grows a false alarm on top of itself: a fix that was
+never made, reported as having come undone, holding an investor's promotion shut.
+
+This is the same class as §2.110, §2.121, §2.122a, §2.124 and §2.125 — **a verdict stated with confidence
+about something that was never measured** — and here it had reached the one board a human is asked to
+trust.
+
+**Built.**
+
+* **db/582** adds `lt_ppe_finding.leg_version`. Every new row records `agreement-provenance.LEG_VERSION`,
+  the same stamp the run reports carry, so a finding and the run that produced it can be read together.
+  The stamp is read from the constant inside `recordsFromComparison`, never from a caller's `ctx` — a
+  stamp a caller can forget is a stamp that quietly reads as "recorded before the fix".
+* **`LEG_VERSION` bumped to `2026-08-19/2.124`.** §2.124 changed what the leg OUTPUTS (an unpriced quote
+  no longer collects a fabricated state-law decline), so runs and findings recorded between the two fixes
+  carry real facts read through a two-state lens. Retiring that shelf is the honest answer; averaging it
+  is not. The bump is deliberate and its cost is stated at the constant.
+* **`finding.mergeOne` abstains instead of accusing.** A settled row measured by an older wiring is
+  carried forward, is NOT flagged `regressed`, and IS marked `staleDecision` with a plain reason —
+  because suppressing a false accusation without saying so leaves a confident, wrong silence in its place
+  (the §2.124 lesson). An OPEN row that reproduced under today's wiring has genuinely been re-measured,
+  so there — and only there — the stamp moves forward.
+* **`finding.reconcile` stops handing unreadable rows to the auto-closer.** They come back in a separate
+  `unreadable` list with the reason; `finding-store.persistRun` returns it and closes nothing.
+* **The gate says it in words a reader can act on.** `cutover.buildScoreboard` counts
+  `unreadableOpenFindings` (a SUBSET of `openFindings`, deliberately — a doubt must never loosen a gate)
+  and `staleDecisions`; `eligibleForLive` folds the first into the open-findings sentence and gives the
+  second its own reason.
+* **The remedy is one action.** `finding-store.decideFinding` writes today's stamp beside the decision, so
+  a human looking at the row again clears it. No RUN can clear a stale decision — a run cannot re-make a
+  human's decision — and that asymmetry is the point, not an oversight. Blocking on a flag nothing could
+  clear is the §2.72 dead end, and it is not repeated here.
+* **The review queue and the screen say it too.** `review-queue.buildQueue` marks each item `unreadable`
+  with its reason and counts them in the roll-up; `LtPpe.jsx` draws a *cannot be read* badge, the reason,
+  and both remedies. The ordering and severity are deliberately UNTOUCHED: burying an unreadable row would
+  decide it matters less (it may be a real defect), promoting it would decide it matters more (it may be
+  nothing) — both are guesses dressed as measurements.
+
+**What is NOT claimed.** A stamp cannot go back in time. Every row that exists today was written before
+db/582, so its `leg_version` is NULL and it reads as *"recorded before the engine wiring was stamped, so
+what measured it is unknown"* — never backfilled, because filling it with today's value would turn an
+unknown into a false claim, which is the whole defect. Nothing here reclassifies the past; it makes the
+past **legible** and stops the machine making confident statements about it. Recognised, not rescued —
+the same shape as §2.120's pre-widening capture and §2.122a's unstamped runs.
+
+**Evidence.** `scripts/test-lt-ppe-finding-leg-stamp.js` (41 assertions, sections A–E, pure);
+`scripts/test-lt-ppe-finding-store-db.js` runs 5–7 against a real Postgres (the column, the not-closing,
+the decision re-stamp); `scripts/test-lt-ppe-review-queue.js` section STAMP-1…9;
+`scripts/test-lt-ppe-screen-pure.mjs` section 10. Thirteen mutations run (U1–U17); every one is caught.
+Two reported 0 failures first time round — the review-queue flag and the screen badge had nothing that
+could see them — and in both cases the TEST was restructured rather than the code loosened.
+
+**Full suite:** 190/190 LT PPE suites, all 34 database-backed suites proven against a real Postgres, all
+seven gates green.

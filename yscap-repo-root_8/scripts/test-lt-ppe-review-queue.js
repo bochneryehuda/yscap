@@ -121,4 +121,30 @@ eq(Q.ageDays(rec({ firstSeenMs: null }), NOW), null, 'unknown first-seen -> null
   eq(Q.buildQueue().items.length, 0, 'no args -> empty, never throws');
 }
 
+// ---- §2.126 — a queue item is a confident statement; some rows have not earned one ----
+{
+  const F = require('../src/longterm/ppe/finding');
+  const measured = rec({ key: 'measured', legVersion: F.LEG_VERSION });
+  const older = rec({ key: 'older', legVersion: '2026-08-19/2.122' });
+  const unstamped = rec({ key: 'unstamped' }); // every row written before db/582 looks like this
+
+  const q = Q.buildQueue([measured, older, unstamped], { nowMs: NOW });
+  const by = Object.fromEntries(q.items.map((i) => [i.key, i]));
+
+  eq(by.measured.unreadable, false, 'STAMP-1 a row today\'s engine measured reads normally');
+  eq(by.older.unreadable, true, 'STAMP-2 a row from an older engine wiring is flagged');
+  eq(by.unstamped.unreadable, true, 'STAMP-3 …and so is a row with no stamp at all');
+  eq(by.measured.unreadableReason, null, 'STAMP-4 a readable row carries no reason');
+  ok(typeof by.older.unreadableReason === 'string' && by.older.unreadableReason.length > 10,
+    'STAMP-5 an unreadable one says why, in plain words');
+  eq(q.summary.unreadable, 2, 'STAMP-6 the roll-up counts them — "N waiting" means little if half cannot be read');
+  eq(q.summary.open, 3, 'STAMP-7 …and they are still counted as open work, because a doubt must not shrink the queue');
+
+  // THE ORDERING IS DELIBERATELY UNTOUCHED. Pushing an unreadable row down would decide it matters less
+  // (it may be a real defect); pushing it up would decide it matters more (it may be nothing). Both are
+  // guesses dressed as measurements — the same class this whole thread is about.
+  eq(by.older.severity, by.measured.severity, 'STAMP-8 flagging a row does not silently re-rank it');
+  eq(by.older.score, by.measured.score, 'STAMP-9 …nor re-score it');
+}
+
 console.log(`ok - lt ppe review queue (${n} assertions)`);

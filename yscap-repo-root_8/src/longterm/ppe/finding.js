@@ -18,6 +18,7 @@
  */
 
 const overlay = require('./overlay');
+const provenance = require('./agreement-provenance');
 
 const OPEN = new Set(['open', 'triaged']);
 const SETTLED = new Set(['fixed', 'verified', 'wontfix']);
@@ -88,6 +89,14 @@ function recordsFromComparison(cmp = {}, ctx = {}) {
       lastSeenMs: now,
       recurrence: 1,
       regressed: false,
+      // WHICH ENGINE WIRING MEASURED THIS (§2.126). Not decoration: `mergeOne`/`reconcile` below make
+      // three CONFIDENT statements about a stored row — it recurred, it is gone so we auto-close it, it
+      // came back so the fix did not hold — and every one of them is a claim that this run and the
+      // stored row measured the SAME thing. Before this field there was nothing on the row to check
+      // that against, so a disagreement filed by a leg that has since been corrected was carried,
+      // closed and accused exactly like a real one. Read from the constant, never from `ctx`: a stamp a
+      // caller can forget to pass is a stamp that quietly reads as "recorded before the fix".
+      legVersion: provenance.LEG_VERSION,
     };
   });
 }
@@ -98,19 +107,62 @@ function recordsFromComparison(cmp = {}, ctx = {}) {
  * A settled finding (fixed/verified/wontfix) is CARRIED FORWARD, never reopened; a fixed/verified one
  * that reappears is marked `regressed` so a broken fix is visible.
  */
+function measuredByCurrentLeg(rec) {
+  return !!(rec && typeof rec === 'object' && rec.legVersion === provenance.LEG_VERSION);
+}
+
+/**
+ * The plain-language reason a stored row cannot be read (§2.126), or null when it can.
+ * ONE definition, because three surfaces say this sentence: the ledger, the go-live gate and the screen.
+ */
+function unreadableReason(rec) {
+  if (measuredByCurrentLeg(rec)) return null;
+  if (!rec || rec.legVersion == null) {
+    return 'recorded before the engine wiring was stamped, so what measured it is unknown';
+  }
+  return `recorded by an engine wiring that has since changed (${rec.legVersion}), so it cannot be compared with today's`;
+}
+
 function mergeOne(existing, incoming) {
   if (!existing) return { record: incoming, action: 'new' };
   const lastSeenMs = incoming.lastSeenMs != null ? incoming.lastSeenMs : existing.lastSeenMs;
   const recurrence = (existing.recurrence || 0) + 1;
   if (SETTLED.has(existing.status)) {
+    // ⛔ A SETTLED ROW MEASURED BY A WIRING THAT HAS SINCE CHANGED IS NOT ACCUSED OF REGRESSING (§2.126).
+    // `regressed` means one specific thing — "somebody fixed this and it has come back" — and the gate
+    // blocks promotion on it. That sentence needs the settlement and the sighting to be about the same
+    // measurement. When the settlement was recorded by an older leg it is not, and the loudest possible
+    // reading of the ledger would be asserted about a row nobody ever really measured.
+    //
+    // SUPPRESSING IT IS NOT ENOUGH, which is the §2.124 lesson: hiding a false disagreement without
+    // saying so leaves a confident, wrong AGREEMENT in its place. So the row is carried AND marked —
+    // `staleDecision` says the decision, not the finding, is what cannot be read. The remedy is one
+    // action: deciding it again writes today's stamp (finding-store.decideFinding) and clears it.
+    if (!measuredByCurrentLeg(existing)) {
+      return {
+        record: {
+          ...existing, lastSeenMs, recurrence, diff: incoming.diff,
+          staleDecision: true, staleDecisionReason: unreadableReason(existing),
+        },
+        action: 'carried_unreadable',
+      };
+    }
     const regressed = existing.status === 'fixed' || existing.status === 'verified';
     return {
       record: { ...existing, lastSeenMs, recurrence, regressed: regressed || !!existing.regressed, diff: incoming.diff },
       action: existing.status === 'wontfix' ? 'carried_wontfix' : 'carried_settled',
     };
   }
-  // open / triaged: keep the human's status, refresh the sighting + latest diff
-  return { record: { ...existing, lastSeenMs, recurrence, diff: incoming.diff }, action: 'recurred' };
+  // open / triaged: keep the human's status, refresh the sighting + latest diff.
+  //
+  // THE STAMP MOVES HERE, and only here. An OPEN row that reproduced under today's wiring has just been
+  // re-measured by it: whatever produced the original sighting, the disagreement is real now, so the row
+  // stops being unreadable. A SETTLED row above gets the opposite treatment for the opposite reason —
+  // there the doubt is about the human decision, and no run can re-make that.
+  return {
+    record: { ...existing, lastSeenMs, recurrence, diff: incoming.diff, legVersion: incoming.legVersion },
+    action: 'recurred',
+  };
 }
 
 /**
@@ -119,16 +171,24 @@ function mergeOne(existing, incoming) {
  *   incoming: [...] fresh records from recordsFromComparison across the run.
  *   opts: { nowMs, closeDisappeared=true } — a stored OPEN finding not seen this run is reported as
  *          disappeared (caller auto-closes it); a settled one that disappears is simply not re-touched.
- * Returns { records, summary:{ new, recurred, carried, regressed, disappeared } } — `records` is the
- * full merged set to persist (excluding disappeared, which are returned separately for closing).
+ * Returns { records, disappeared, unreadable, summary } — `records` is the full merged set to persist;
+ * `disappeared` is returned separately for closing; `unreadable` is the set the caller must NOT close.
+ *
+ * ⛔ ABSENCE IS ONLY EVIDENCE WHEN THE SAME THING LOOKED (§2.126). Auto-closing a disappeared finding
+ * writes the status `verified` with the reason "no longer reproduced" — a sentence claiming a run went
+ * looking for this disagreement and did not find it. A run using a corrected leg did not look for the
+ * old leg's disagreement at all, so its silence proves nothing about that row, and closing it stamps a
+ * clean verdict on a question nobody asked. Those rows come back in `unreadable` instead: still open,
+ * still blocking, and reported in language that says a human has to look.
  */
 function reconcile(existing = [], incoming = [], opts = {}) {
   const byKey = new Map();
   for (const e of existing) if (e && e.key) byKey.set(e.key, e);
   const seen = new Set();
   const records = [];
-  const summary = { new: 0, recurred: 0, carried: 0, regressed: 0, disappeared: 0 };
+  const summary = { new: 0, recurred: 0, carried: 0, regressed: 0, disappeared: 0, unreadable: 0, staleDecisions: 0 };
   const disappeared = [];
+  const unreadable = [];
 
   for (const inc of incoming) {
     if (!inc || !inc.key) continue;
@@ -137,20 +197,27 @@ function reconcile(existing = [], incoming = [], opts = {}) {
     if (action === 'new') summary.new += 1;
     else if (action === 'recurred') summary.recurred += 1;
     else summary.carried += 1;
+    if (action === 'carried_unreadable') summary.staleDecisions += 1;
     if (record.regressed) summary.regressed += 1;
     records.push(record);
   }
 
   for (const e of existing) {
     if (!e || !e.key || seen.has(e.key)) continue;
-    if (OPEN.has(e.status)) { disappeared.push(e); summary.disappeared += 1; }
-    // a settled finding that didn't recur is left untouched (already persisted)
+    if (!OPEN.has(e.status)) continue; // a settled finding that didn't recur is left untouched
+    if (!measuredByCurrentLeg(e)) {
+      unreadable.push({ ...e, unreadableReason: unreadableReason(e) });
+      summary.unreadable += 1;
+      continue;
+    }
+    disappeared.push(e); summary.disappeared += 1;
   }
 
-  return { records, disappeared, summary };
+  return { records, disappeared, unreadable, summary };
 }
 
 module.exports = {
   OPEN_STATUSES: OPEN, SETTLED_STATUSES: SETTLED, RATE_KINDS,
   findingKey, recordsFromComparison, mergeOne, reconcile,
+  measuredByCurrentLeg, unreadableReason, LEG_VERSION: provenance.LEG_VERSION,
 };

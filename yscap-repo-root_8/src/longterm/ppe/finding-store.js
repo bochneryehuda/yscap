@@ -10,6 +10,7 @@
  */
 
 const finding = require('./finding');
+const provenance = require('./agreement-provenance');
 
 function msToTs(ms) { return typeof ms === 'number' && Number.isFinite(ms) ? new Date(ms).toISOString() : null; }
 function tsToMs(t) { return t == null ? null : new Date(t).getTime(); }
@@ -29,6 +30,7 @@ function rowToRecord(row) {
     status: row.status,
     regressed: row.regressed,
     recurrence: row.recurrence,
+    legVersion: row.leg_version,
     firstSeenMs: tsToMs(row.first_seen_at),
     lastSeenMs: tsToMs(row.last_seen_at),
   };
@@ -41,12 +43,17 @@ async function upsertRecord(scope, rec, db) {
   await db.query(
     `INSERT INTO lt_ppe_finding
        (scope, finding_key, investor, program, program_id, scenario, scenario_facts, kind, diff,
-        our_payload, their_payload, status, regressed, recurrence, first_seen_at, last_seen_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12,$13,$14,$15,$16)
+        our_payload, their_payload, status, regressed, recurrence, first_seen_at, last_seen_at, leg_version)
+     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12,$13,$14,$15,$16,$17)
      ON CONFLICT (scope, finding_key) DO UPDATE SET
        status = EXCLUDED.status,
        regressed = EXCLUDED.regressed,
        recurrence = EXCLUDED.recurrence,
+       -- 2.126: the merged record decides this, not the incoming run. finding.mergeOne moves the stamp
+       -- forward on an OPEN row it re-measured and deliberately LEAVES IT ALONE on a settled row whose
+       -- decision is what cannot be read - writing today value here unconditionally would clear the
+       -- stale-decision flag the same run just raised.
+       leg_version = EXCLUDED.leg_version,
        last_seen_at = EXCLUDED.last_seen_at,
        diff = EXCLUDED.diff,
        scenario_facts = EXCLUDED.scenario_facts,
@@ -56,7 +63,7 @@ async function upsertRecord(scope, rec, db) {
     [scope, rec.key, rec.investor || null, rec.program || null, rec.programId || null,
       rec.scenario || null, j(rec.scenarioFacts), rec.kind, j(rec.diff || {}),
       j(rec.ourPayload), j(rec.theirPayload), rec.status, !!rec.regressed, rec.recurrence || 1,
-      msToTs(rec.firstSeenMs), msToTs(rec.lastSeenMs)],
+      msToTs(rec.firstSeenMs), msToTs(rec.lastSeenMs), rec.legVersion || null],
   );
 }
 
@@ -93,7 +100,15 @@ async function persistRun(scope, incoming = [], opts = {}) {
       if (r.rowCount) closed.push(d.key);
     }
   }
-  return { summary: recon.summary, closed };
+  // NOT CLOSED, ON PURPOSE (§2.126). `recon.unreadable` is the open rows this run did not reproduce and
+  // could not have: they were measured by an engine wiring that has since changed. They stay open (so
+  // the go-live gate still blocks) and are returned with the plain reason, so the caller can say a human
+  // has to look instead of writing "no longer reproduced" over a question nobody asked.
+  const unreadable = (recon.unreadable || []).map((u) => ({
+    key: u.key, investor: u.investor, program: u.program, scenario: u.scenario, kind: u.kind,
+    status: u.status, legVersion: u.legVersion || null, reason: u.unreadableReason,
+  }));
+  return { summary: recon.summary, closed, unreadable };
 }
 
 // A human's decision on a finding (triage / fix / verify / dismiss). Validates the status.
@@ -105,6 +120,12 @@ async function persistRun(scope, incoming = [], opts = {}) {
 // has closed twice now. `finding.mergeOne` sets it again if the same finding comes back AGAIN, which is
 // the whole point; `recurrence` keeps the permanent count of how often it has been seen, so no history
 // is lost by clearing a flag that is about the LAST settlement.
+//
+// ⛔ AND IT WRITES TODAY'S ENGINE-WIRING STAMP (§2.126), for exactly the same reason. A row measured by
+// an older leg is reported as unreadable and blocks promotion, and no RUN can clear that — a run cannot
+// re-make a human's decision. A human looking at the row again IS the remedy, and this line is what
+// makes it one: the decision they just recorded was made against today's engine, so the row is readable
+// from here on. Without it the block would have no way out, which is the §2.72 dead end again.
 async function decideFinding(scope, findingKey, decision = {}, db) {
   if (!finding.OPEN_STATUSES.has(decision.status) && !finding.SETTLED_STATUSES.has(decision.status)) {
     throw new Error(`finding-store:bad_status ${decision.status}`);
@@ -112,9 +133,11 @@ async function decideFinding(scope, findingKey, decision = {}, db) {
   const r = await db.query(
     `UPDATE lt_ppe_finding
         SET status = $3, decided_by = $4, decision_reason = $5, regressed = false,
+            leg_version = $6,
             decided_at = now(), updated_at = now()
       WHERE scope = $1 AND finding_key = $2`,
-    [scope, findingKey, decision.status, decision.decidedBy || null, decision.reason || null],
+    [scope, findingKey, decision.status, decision.decidedBy || null, decision.reason || null,
+      provenance.LEG_VERSION],
   );
   return r.rowCount > 0;
 }

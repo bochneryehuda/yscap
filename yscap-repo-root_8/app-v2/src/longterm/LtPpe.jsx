@@ -492,8 +492,19 @@ export default function LtPpe() {
                 <span style={{ fontSize: 13, color: INK, fontWeight: 600 }}>{it.kind}</span>
                 {it.regressed && <Pill tone="bad">came back</Pill>}
                 {it.recurrence > 1 && <Pill tone="flat">seen {it.recurrence}×</Pill>}
+                {/* §2.126 — this row was filed by an engine wiring that has since changed. Everything
+                    else on the line (how bad it is, how old it is, how often it has been seen) is stated
+                    with confidence, and none of it can be trusted for this row. */}
+                {it.unreadable && <Pill tone="warn">cannot be read</Pill>}
               </div>
               <div style={{ fontSize: 13, color: SLATE, wordBreak: 'break-word' }}>{it.scenario}</div>
+              {it.unreadable && (
+                <div style={{ fontSize: 12, color: SLATE, marginTop: 4 }}>
+                  This one was {it.unreadableReason || 'recorded by an engine wiring that has since changed'}.
+                  Run the comparison again to find out whether it is still a real difference, or decide it here —
+                  either way it stops holding this investor back.
+                </div>
+              )}
               {it.investor && <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>{it.investor}</div>}
               {/* WHY it disagreed, diagnosed when the comparison was made and stored on the row. It is
                   a HYPOTHESIS ranked by numeric proximity — Lender Price publishes no breakdown of its

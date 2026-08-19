@@ -256,5 +256,28 @@ ok(/to="\/internal\/lt\/ppe"/.test(layout), 'ROUTE-3 …and the long-term nav li
     'WHY-3 …worded as a hypothesis, because Lender Price publishes no breakdown of its own');
 }
 
+// ---------------------------------------------------------------------------
+// 10) §2.126 — a row nobody can read must SAY SO on the row
+// ---------------------------------------------------------------------------
+{
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  // Every other thing on a finding row is a confident statement — the severity pill, the age, the
+  // "seen 4×" count. A row filed by an engine wiring that has since been corrected earns none of them,
+  // and before this it looked exactly like a measured one.
+  ok(/it\.unreadable && <Pill/.test(code), 'STAMP-1 an unreadable finding is badged on the row');
+  ok(/cannot be read/.test(code), 'STAMP-2 …in words, not a colour');
+  ok(/it\.unreadableReason/.test(code), 'STAMP-3 …and the row says WHY it cannot be read');
+  ok(/Run the comparison again/.test(code) && /decide it here/.test(code),
+    'STAMP-4 …and names both remedies, so the badge is never a dead end');
+
+  // ⛔ THE SCREEN MUST NOT DECIDE THIS ITSELF. `finding.measuredByCurrentLeg` is the one definition of
+  // "measured by today's engine", and it is the same one the go-live gate and the ledger use. A version
+  // comparison written in JSX would be a second definition that drifts the first time the stamp moves —
+  // and the screen would then disagree with the gate about which rows count.
+  ok(!/legVersion\s*[=!]==/.test(code) && !/LEG_VERSION/.test(code),
+    'STAMP-5 the screen never compares engine-wiring stamps itself — the server already answered');
+}
+
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
 process.exit(failures ? 1 : 0);

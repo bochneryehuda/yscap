@@ -46,8 +46,16 @@
  *
  * Bump this ONLY when a change alters what the legs MEASURE. It is not a build number: a stamp that
  * moved for an unrelated edit would retire a shelf of valid runs and teach everyone to ignore it.
+ *
+ * BUMPED to 2.124 on 2026-08-19, and the cost is deliberate. §2.124 measured that our engine answers in
+ * THREE states — priced, declined, and "I could not price this" — and that the leg was reading two: an
+ * unpriced quote had a state-law prepayment decline appended to it (`lp-agreement-legs`), and the
+ * comparison then filed a HIGH-severity disagreement saying "our engine priced it" about a quote our
+ * engine had refused to price. Both are the leg's OUTPUT, so a run recorded between the §2.122 fix and
+ * this one carries real facts read through a two-state lens, and its disagreements cannot be told from
+ * real ones. Retiring that shelf is the honest answer; averaging it is not.
  */
-const LEG_VERSION = '2026-08-19/2.122';
+const LEG_VERSION = '2026-08-19/2.124';
 
 const NARROWERS = Object.freeze({
   scenarios_file: 'a scenario file replaced the battery',

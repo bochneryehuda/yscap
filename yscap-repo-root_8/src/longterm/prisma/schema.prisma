@@ -1461,6 +1461,11 @@ model LtPpeFinding {
   status         String    @default("open")
   regressed      Boolean   @default(false)
   recurrence     Int       @default(1)
+  // The engine-wiring stamp (agreement-provenance.LEG_VERSION) that MEASURED this
+  // finding — db/582, §2.126. NULL means the row predates the stamp and cannot be
+  // read: it is reported as needing a human, never auto-closed and never accused of
+  // regressing. Deliberately not backfilled — a stamp cannot go back in time.
+  legVersion     String?   @map("leg_version")
   firstSeenAt    DateTime? @map("first_seen_at") @db.Timestamptz(6)
   lastSeenAt     DateTime? @map("last_seen_at") @db.Timestamptz(6)
   decidedBy      String?   @map("decided_by") @db.Uuid

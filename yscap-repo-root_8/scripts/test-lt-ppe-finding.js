@@ -52,11 +52,11 @@ const NOW = 1_700_000_000_000;
 
 // ---- mergeOne ---------------------------------------------------------------
 (() => {
-  const inc = { key: 'k', status: 'open', firstSeenMs: NOW, lastSeenMs: NOW, recurrence: 1, diff: { deltaMilli: 60 } };
+  const inc = { key: 'k', legVersion: F.LEG_VERSION, status: 'open', firstSeenMs: NOW, lastSeenMs: NOW, recurrence: 1, diff: { deltaMilli: 60 } };
 
   eq(F.mergeOne(null, inc).action, 'new', 'no existing -> new');
 
-  const openExisting = { key: 'k', status: 'triaged', firstSeenMs: NOW - 3 * 86400000, lastSeenMs: NOW - 86400000, recurrence: 2, diff: { deltaMilli: 50 } };
+  const openExisting = { key: 'k', legVersion: F.LEG_VERSION, status: 'triaged', firstSeenMs: NOW - 3 * 86400000, lastSeenMs: NOW - 86400000, recurrence: 2, diff: { deltaMilli: 50 } };
   const r1 = F.mergeOne(openExisting, inc);
   eq(r1.action, 'recurred', 'open existing -> recurred');
   eq(r1.record.status, 'triaged', 'human status preserved');
@@ -64,13 +64,13 @@ const NOW = 1_700_000_000_000;
   eq(r1.record.lastSeenMs, NOW, 'lastSeen refreshed');
   eq(r1.record.diff.deltaMilli, 60, 'latest diff kept');
 
-  const fixed = { key: 'k', status: 'fixed', firstSeenMs: NOW, lastSeenMs: NOW, recurrence: 1 };
+  const fixed = { key: 'k', legVersion: F.LEG_VERSION, status: 'fixed', firstSeenMs: NOW, lastSeenMs: NOW, recurrence: 1 };
   const r2 = F.mergeOne(fixed, inc);
   eq(r2.action, 'carried_settled', 'fixed existing -> carried, not reopened');
   eq(r2.record.status, 'fixed', 'stays fixed (never re-opens itself)');
   eq(r2.record.regressed, true, 'a fixed finding that reappears is flagged regressed');
 
-  const wontfix = { key: 'k', status: 'wontfix', firstSeenMs: NOW, lastSeenMs: NOW, recurrence: 1 };
+  const wontfix = { key: 'k', legVersion: F.LEG_VERSION, status: 'wontfix', firstSeenMs: NOW, lastSeenMs: NOW, recurrence: 1 };
   const r3 = F.mergeOne(wontfix, inc);
   eq(r3.action, 'carried_wontfix', 'wontfix -> carried_wontfix');
   eq(r3.record.regressed, false, 'wontfix recurrence is expected, not a regression');
@@ -79,15 +79,15 @@ const NOW = 1_700_000_000_000;
 // ---- reconcile a whole run --------------------------------------------------
 (() => {
   const existing = [
-    { key: 'a', status: 'open', firstSeenMs: NOW - 5 * 86400000, lastSeenMs: NOW - 86400000, recurrence: 2 },
-    { key: 'b', status: 'fixed', firstSeenMs: NOW - 9 * 86400000, lastSeenMs: NOW - 9 * 86400000, recurrence: 1 },
-    { key: 'c', status: 'open', firstSeenMs: NOW - 2 * 86400000, lastSeenMs: NOW - 86400000, recurrence: 1 }, // will disappear
-    { key: 'd', status: 'wontfix', firstSeenMs: NOW - 20 * 86400000, lastSeenMs: NOW - 20 * 86400000, recurrence: 1 }, // settled + disappears -> untouched
+    { key: 'a', legVersion: F.LEG_VERSION, status: 'open', firstSeenMs: NOW - 5 * 86400000, lastSeenMs: NOW - 86400000, recurrence: 2 },
+    { key: 'b', legVersion: F.LEG_VERSION, status: 'fixed', firstSeenMs: NOW - 9 * 86400000, lastSeenMs: NOW - 9 * 86400000, recurrence: 1 },
+    { key: 'c', legVersion: F.LEG_VERSION, status: 'open', firstSeenMs: NOW - 2 * 86400000, lastSeenMs: NOW - 86400000, recurrence: 1 }, // will disappear
+    { key: 'd', legVersion: F.LEG_VERSION, status: 'wontfix', firstSeenMs: NOW - 20 * 86400000, lastSeenMs: NOW - 20 * 86400000, recurrence: 1 }, // settled + disappears -> untouched
   ];
   const incoming = [
-    { key: 'a', status: 'open', firstSeenMs: NOW, lastSeenMs: NOW, recurrence: 1, diff: {} }, // recurs
-    { key: 'b', status: 'open', firstSeenMs: NOW, lastSeenMs: NOW, recurrence: 1, diff: {} }, // regression of a fixed
-    { key: 'e', status: 'open', firstSeenMs: NOW, lastSeenMs: NOW, recurrence: 1, diff: {} }, // new
+    { key: 'a', legVersion: F.LEG_VERSION, status: 'open', firstSeenMs: NOW, lastSeenMs: NOW, recurrence: 1, diff: {} }, // recurs
+    { key: 'b', legVersion: F.LEG_VERSION, status: 'open', firstSeenMs: NOW, lastSeenMs: NOW, recurrence: 1, diff: {} }, // regression of a fixed
+    { key: 'e', legVersion: F.LEG_VERSION, status: 'open', firstSeenMs: NOW, lastSeenMs: NOW, recurrence: 1, diff: {} }, // new
   ];
   const { records, disappeared, summary } = F.reconcile(existing, incoming, { nowMs: NOW });
   eq(summary.new, 1, 'one new (e)');

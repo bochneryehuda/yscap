@@ -24,6 +24,7 @@
 // not Lender Price, answers a borrower.
 const ppeSettings = require('./settings');
 const agreementStore = require('./agreement-store');
+const finding = require('./finding');
 
 const MODES = { DRAFT: 'draft', SHADOW: 'shadow', LIVE: 'live', RETIRED: 'retired' };
 
@@ -100,6 +101,19 @@ function isOpen(f) { return !!f && OPEN_FINDING_STATUSES.has(f.status); }
 // later triage it back to `open`, and then it must produce ONE reason, not two.
 function isRegressed(f) { return !!f && f.regressed === true && !isOpen(f); }
 
+// A row whose ENGINE WIRING has since changed (§2.126) — `finding.measuredByCurrentLeg` owns the test,
+// and it is required here rather than re-expressed so the ledger, the gate and the screen can never
+// drift into two answers about the same row.
+function isUnreadable(f) { return !finding.measuredByCurrentLeg(f); }
+
+// A row somebody SETTLED under an engine wiring that has since changed. It is not a defect and not a
+// regression — it is a decision nobody can check, and it is counted on its own because neither of the
+// other two terms can see it: settled rows are not open, and `mergeOne` deliberately does not flag them
+// regressed (accusing a fix that was never made of coming undone is the §2.124 defect in a new costume).
+function isStaleDecision(f) {
+  return !!f && !isOpen(f) && f.staleDecision === true;
+}
+
 /**
  * Build one investor's scoreboard.
  *   input:
@@ -127,6 +141,12 @@ function buildScoreboard(input = {}) {
     openFindings: open.length,
     // Fixes that did not hold (§2.74). The ledger already carried this and the scoreboard threw it away.
     regressedFindings: findings.filter(isRegressed).length,
+    // §2.126. `openFindings` above counts these too, DELIBERATELY: they are open rows, they still block,
+    // and dropping them out of the total would silently loosen the gate on the strength of a doubt. What
+    // this number buys is the WORDING — "3 open finding(s) must be resolved" tells a reader to go fix
+    // three defects, when 3 of them may be rows an older engine wiring filed and nobody can read.
+    unreadableOpenFindings: open.filter(isUnreadable).length,
+    staleDecisions: findings.filter(isStaleDecision).length,
     oldestOpenFindingDays,
     consecutiveCleanDays: consecutiveCleanDays(input.dailyNewFindings),
     // How much the latest canary actually COMPARED (§10.5/§10.6) — comparable LESS the scenarios where
@@ -212,7 +232,25 @@ function eligibleForLive(scoreboard = {}, settings = {}) {
   const reasons = [];
 
   if (scoreboard.openFindings > 0) {
-    reasons.push(`${scoreboard.openFindings} open finding(s) must be resolved`);
+    // §2.126: say how many of them nobody can read, in the same sentence. A reader told to "resolve 3
+    // findings" goes looking for three defects; if two were filed by an engine wiring that has since
+    // been corrected, the work is to re-run and clear them, not to hunt a bug that may not exist.
+    const unreadable = num(scoreboard.unreadableOpenFindings) || 0;
+    reasons.push(unreadable > 0
+      ? `${scoreboard.openFindings} open finding(s) must be resolved — ${unreadable} of them ${unreadable === 1 ? 'was' : 'were'} recorded by an engine wiring that has since changed and cannot be read; re-run the check or decide them`
+      : `${scoreboard.openFindings} open finding(s) must be resolved`);
+  }
+  // §2.126 HARD RULE, same shape and same reason as the regression term below. A finding somebody marked
+  // fixed/verified/dismissed under an engine wiring that has since changed is a decision about a
+  // measurement we no longer trust, and NOTHING else here can see it: the row is settled so it is not
+  // open, and it is deliberately not flagged `regressed`. Left unsaid, an investor could go live on a
+  // ledger whose every row was settled against an engine that has since been corrected.
+  //
+  // THE REMEDY IS REAL, which is what makes it safe to block on: deciding the row again writes today's
+  // stamp (`finding-store.decideFinding`), and it clears. No run can clear it, because no run can re-make
+  // a human's decision — that asymmetry is the point, not an oversight.
+  if (num(scoreboard.staleDecisions) > 0) {
+    reasons.push(`${scoreboard.staleDecisions} finding(s) ${num(scoreboard.staleDecisions) === 1 ? 'was' : 'were'} settled under an engine wiring that has since changed — look at them again and record the decision`);
   }
   // §2.74 HARD RULE, and no setting turns it off — for the same reason the incomparable gate has none.
   // A disagreement somebody marked FIXED and which is reproducing again is not a matter of degree: it

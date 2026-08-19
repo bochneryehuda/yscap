@@ -1,4 +1,6 @@
 'use strict';
+
+const finding = require('./finding');
 /**
  * LT PPE — the findings REVIEW QUEUE (§10.4/§12): turn the durable findings ledger into a prioritized,
  * human-workable list. `finding.js` produces the records, `finding-store.js` persists them, and
@@ -119,6 +121,15 @@ function buildQueue(records = [], opts = {}) {
     severity: severityOf(r, opts),
     score: priorityScore(r, nowMs, opts),
     ageDays: ageDays(r, nowMs),
+    // §2.126 — WAS THIS MEASURED BY TODAY'S ENGINE? A queue item is a confident statement: this is a
+    // defect, this is how bad it is, this is how long it has been ignored. A row filed by an engine
+    // wiring that has since been corrected earns none of those, and nothing on the row said so.
+    //
+    // THE SCORE IS DELIBERATELY LEFT ALONE. Re-ranking it would be a second judgement — quietly deciding
+    // an unreadable row matters less (it may be a real defect) or more (it may be nothing). Both are
+    // guesses. Flagging it is the measurement; what to do about it is the reviewer's call.
+    unreadable: !finding.measuredByCurrentLeg(r),
+    unreadableReason: finding.unreadableReason(r),
   })).sort((a, b) =>
     b.score - a.score
     || (b.lastSeenMs || 0) - (a.lastSeenMs || 0)
@@ -138,6 +149,7 @@ function summarize(items, settled, nowMs) {
   const byInvestor = {};
   const byStatus = { open: 0, triaged: 0 };
   let regressed = 0;
+  let unreadable = 0;
   let oldestOpenDays = null;
 
   for (const it of items) {
@@ -147,6 +159,7 @@ function summarize(items, settled, nowMs) {
     byInvestor[inv] = (byInvestor[inv] || 0) + 1;
     if (it.status === 'open' || it.status === 'triaged') byStatus[it.status] += 1;
     if (it.regressed) regressed += 1;
+    if (it.unreadable) unreadable += 1;
     if (it.ageDays != null && (oldestOpenDays == null || it.ageDays > oldestOpenDays)) oldestOpenDays = it.ageDays;
   }
 
@@ -157,6 +170,10 @@ function summarize(items, settled, nowMs) {
     byKind,
     byInvestor,
     regressed,
+    // §2.126: how many of the open rows were filed by an engine wiring that has since changed. The
+    // reviewer's first question about a queue of N is "N what?" — and if half of them cannot be read,
+    // the work is to re-run the check, not to hunt N defects.
+    unreadable,
     settled: settled.length,
     oldestOpenDays,
     top: items.length ? { key: items[0].key, severity: items[0].severity, score: items[0].score } : null,
