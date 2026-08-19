@@ -221,8 +221,30 @@ async function freezeRoster(spinId, seq) {
     throw new Error(`Wheel ${seq - 1} has not finished yet, so wheel ${seq} cannot be set up.`);
   }
 
+  // TICKETS ARE THE ODDS, READ FROM THE LEDGER (owner's Mega Spin premise:
+  // "for every challenge you do you get another chance" — measured broken
+  // 2026-08-19: Ben with 9 chances and Ann with 1 froze as identical slices,
+  // because the 'tickets' weight branch read `config.weights`, an admin-typed
+  // map nothing ever populated). The ledger is summed HERE, at freeze time,
+  // into the ctx copy of that same map — never written back onto the stored
+  // spin — so `weightFor`'s existing branch does the rest and an admin-typed
+  // entry still wins over the ledger (an explicit number is a decision).
+  // Everyone starts from ONE slice and their chances stack on top (1 + sum),
+  // because being in the room already earns a place on this wheel and "more
+  // tickets, better odds — but everyone still has a chance" is the promise the
+  // screen makes. Negative sums (reversals past zero) floor at the base 1.
+  let ctxConfig = config;
+  if ((config.weightMode || 'equal') === 'tickets') {
+    const led = await db.query(
+      `SELECT staff_id, COALESCE(sum(count), 0)::int AS n
+         FROM arena_tickets WHERE session_id = $1 GROUP BY staff_id`, [spin.session_id]);
+    const weights = {};
+    for (const row of led.rows) weights[String(row.staff_id)] = 1 + Math.max(0, Number(row.n) || 0);
+    ctxConfig = { ...config, weights: { ...weights, ...(config.weights || {}) } };
+  }
+
   const built = await sources.buildPool(wheel.source, {
-    spin, session, config, weightMode: config.weightMode || 'equal', previousWinnerKey,
+    spin, session, config: ctxConfig, weightMode: config.weightMode || 'equal', previousWinnerKey,
   });
   const candidates = built.candidates || [];
   if (!candidates.length) {
@@ -460,6 +482,20 @@ async function settleSpin(spin, draws) {
   if (!spin) return null;
   const revealed = draws.filter((d) => d.state === 'revealed').sort((a, b) => a.seq - b.seq);
 
+  // A BUTTON LOTTERY IS NOT THE WINNER (owner's day, measured 5/5 wrong before
+  // this line). On the Early Bird, wheels 1 and 2 exist only to hand out the
+  // stop buttons — `stopHolders` names them as `fromWheel` sources — and wheel 3
+  // is "Which loan officer wins". Taking the FIRST revealed wheel with a staff
+  // id therefore awarded the prize to whoever won the BUTTON, while the room
+  // watched wheel 3 announce somebody else: the ledger, the payroll CSV, the
+  // winner email and the recap all named the wrong person, every single time.
+  // So any wheel that merely hands its winner a button is excluded from award
+  // candidacy. An ordinary spin has no stopHolders and is byte-identical.
+  const cfg = asConfig(spin);
+  const buttonWheels = new Set(
+    (Array.isArray(cfg.stopHolders) ? cfg.stopHolders : [])
+      .map((x) => Number(x && x.fromWheel)).filter((n) => n > 0));
+
   let staffId = null;
   let personLabel = null;
   let prizeLabel = null;
@@ -471,8 +507,9 @@ async function settleSpin(spin, draws) {
   for (const d of revealed) {
     const cand = (d.roster || [])[d.winner_index] || {};
     const meta = cand.meta || {};
-    if (!staffId && d.winner_staff_id) { staffId = d.winner_staff_id; personLabel = d.winner_label; }
-    if (!staffId && meta.officerStaffId) { staffId = meta.officerStaffId; personLabel = meta.officer || d.winner_label; }
+    const isButtonLottery = buttonWheels.has(Number(d.seq));
+    if (!isButtonLottery && !staffId && d.winner_staff_id) { staffId = d.winner_staff_id; personLabel = d.winner_label; }
+    if (!isButtonLottery && !staffId && meta.officerStaffId) { staffId = meta.officerStaffId; personLabel = meta.officer || d.winner_label; }
     // A JOKE COUNTS AS THE OUTCOME, and is recorded as its own kind with no
     // value. It has to be here, or a wheel that lands on one would settle with
     // no prize at all and the room would be told nothing happened — which is
@@ -740,7 +777,7 @@ async function launchDue(now = new Date()) {
     const r = await db.query(
       `SELECT p.id FROM arena_spins p JOIN arena_sessions s ON s.id = p.session_id
         WHERE p.state = 'draft' AND p.launch_at IS NOT NULL AND p.launch_at <= $1
-          AND s.state = 'live'`, [now]);
+          AND s.state = 'live' AND s.paused_at IS NULL`, [now]);
     for (const row of r.rows) {
       try { out.push(await openSpin(row.id)); }
       catch (e) { console.warn(`[arena] spin ${row.id} could not launch itself: ${e.message}`); }
@@ -749,6 +786,29 @@ async function launchDue(now = new Date()) {
     console.warn(`[arena] could not look for spins due to launch: ${(e && e.message) || e}`);
   }
   return out;
+}
+
+/** Bring a CANCELLED spin back as a draft — the undo for a mis-click on
+ *  "Call it off" (owner, live on Elementix Day 2026-08-19: "I canceled somehow
+ *  the two spins … I should be able to reactivate"). Only a spin that never
+ *  actually RAN can come back: a revealed wheel is history and history is not
+ *  edited. Unrevealed committed draws are removed — their seeds were never
+ *  published, so the commitment proves nothing was drawn — and the next open
+ *  freezes a fresh roster exactly as a brand-new spin would. */
+async function reviveSpin(spinId) {
+  const revealed = await db.query(
+    `SELECT count(*)::int AS n FROM arena_draws WHERE spin_id = $1 AND state = 'revealed'`, [spinId]);
+  if (revealed.rows[0].n > 0) throw new Error('That spin already ran a wheel — it cannot be brought back. Make a new spin instead.');
+  const r = await db.query(
+    `UPDATE arena_spins
+        SET state = 'draft', outcome_note = NULL, locked_at = NULL, updated_at = now()
+      WHERE id = $1 AND state = 'cancelled' RETURNING *`, [spinId]);
+  if (!r.rows[0]) throw new Error('Only a cancelled spin can be brought back.');
+  // Leftover committed draws would collide with the fresh freeze on the
+  // (spin, seq) unique index -- and they are pre-run bookkeeping, not results.
+  await db.query(`DELETE FROM arena_draws WHERE spin_id = $1 AND state <> 'revealed'`, [spinId]);
+  broadcast('arena:spin', { spinId, state: 'draft' });
+  return r.rows[0];
 }
 
 /** Abandon a spin. The draws stay exactly as they are -- a cancelled spin is
@@ -764,7 +824,7 @@ async function cancelSpin(spinId, reason) {
 
 module.exports = {
   setBroadcaster,
-  createSpin, openSpin, lockSpin, freezeRoster,
+  createSpin, openSpin, lockSpin, reviveSpin, freezeRoster,
   startSpin, revealDraw, settleSpin, settleDue,
   pressStop, pressStopInternal, rosterFor, launchDue,
   verify, cancelSpin,

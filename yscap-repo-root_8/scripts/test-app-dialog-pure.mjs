@@ -261,5 +261,21 @@ ok(app.indexOf('<AppDialogHost') < app.indexOf('<ErrorBoundary'),
 const dialogJsx = read('app-v2/src/components/AppDialog.jsx');
 ok(!/color:\s*['"]?var\(--ink/.test(dialogJsx), 'no --ink* token is used as a text colour');
 
+// ---------------------------------------------------------------------------
+// D. THE TITLE NEVER CLAIMS FAILURE BY DEFAULT (owner-reported 2026-08-19).
+// showMessage('Saved.') used to render under "PILOT can't do that yet" because
+// the alert title defaulted to the failure headline unless the caller
+// remembered tone:'info'. The rule is now: the failure headline appears ONLY on
+// an explicit tone:'error'. This reads the source because the component needs a
+// DOM to run; the expression is small enough to pin textually, and a rewrite
+// that reintroduces "anything not info is an error" fails here.
+{
+  const src = read('app-v2/src/components/AppDialog.jsx');
+  ok(/tone === 'error'/.test(src),
+    'the failure headline is opt-in: only an explicit tone:\'error\' produces it');
+  ok(!/tone !== 'info'/.test(src),
+    'the old backwards default ("anything not info is an error") is gone');
+}
+
 console.log(failures ? `\n${failures} failed` : '\nALL app-dialog assertions passed');
 process.exit(failures ? 1 : 0);

@@ -56,7 +56,16 @@ export default function AppDialogHost() {
   if (!req) return null;
   const isConfirm = req.kind === 'confirm';
   const isPrompt = req.kind === 'prompt';
-  const isError = !isPrompt && req.tone !== 'info';
+  // THE TITLE NEVER CLAIMS FAILURE UNLESS THE CALLER SAID SO (owner-reported
+  // 2026-08-19: saving the Arena roster showed "PILOT can't do that yet" over
+  // the body "Saved." — the save had WORKED, and the headline told the owner it
+  // had not). The old rule was backwards: every plain message defaulted to the
+  // failure headline unless the caller remembered tone:'info', so every success
+  // confirmation anyone ever writes is one forgotten option away from reading
+  // as a failure. A neutral default cannot lie in either direction — a refusal's
+  // own body text still says what was refused — and a caller that wants the
+  // failure headline states it: tone:'error'.
+  const isError = !isPrompt && !isConfirm && req.tone === 'error';
   const title = req.title
     || (isPrompt ? 'PILOT needs a note' : isConfirm ? 'Please confirm' : isError ? 'PILOT can’t do that yet' : 'PILOT');
 

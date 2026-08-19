@@ -117,11 +117,15 @@ const TEMPLATES = [
           durationMs: 9000,
           fullTurns: 7,
           suspenseMs: 1200,
-          // Every fifteen minutes from the moment it opens until the door
-          // shuts: 68 minutes of window, so 60/45/30/15 and the 8-minute
-          // warning. The owner asked for a nudge every fifteen minutes and a
-          // hurry-up at 11:30 — which is exactly the 8-minute one.
-          reminderOffsetsMinutes: [60, 45, 30, 15, 8],
+          // Every fifteen minutes from the moment it OPENS, counted back from
+          // the 11:38 door: 10:45, 11:00, 11:15 and the 11:30 hurry-up — which
+          // is offsets 53, 38, 23 and 8. The owner named the 11:00 one out
+          // loud ("an alarm by eleven o'clock that you still have 38 minutes"),
+          // and the first cut ([60,45,30,15,8]) missed it by counting from the
+          // wrong end — its alarms landed at 10:38/10:53/11:08/11:23, none of
+          // them on the clock times the owner said. The 10:30 opening already
+          // announces itself, so no offset-68 is needed.
+          reminderOffsetsMinutes: [53, 38, 23, 8],
           // The wording the person agrees to when they clock in. It is stored
           // with their check-in, so what they attested to is on the record
           // rather than being remembered differently later.
