@@ -79,6 +79,28 @@ async function getDraws(spinId) {
  * would exist with wheels that were never committed -- which is the one state
  * that would let a seed be chosen after the fact.
  */
+/**
+ * One committed seed per wheel — the fairness commitment, made before anything
+ * is knowable. ONE definition, used by createSpin AND reviveSpin: the 2026-08-19
+ * post-merge audit caught a revived spin whose deleted draws nothing re-created,
+ * so every wheel answered "This spin has no wheel 1" forever. The seed is
+ * STORED now and only PUBLISHED at reveal — it has to be stored, or nobody
+ * could reveal it; what makes the scheme work is that the fingerprint was
+ * published first and is unchangeable.
+ */
+async function commitDraws(client, spin, merged, createdBy) {
+  for (let i = 0; i < merged.wheels.length; i++) {
+    const w = merged.wheels[i];
+    const { serverSeed, commitHash } = fair.newCommitment();
+    await client.query(
+      `INSERT INTO arena_draws (spin_id, seq, title, pool, state, commit_hash, server_seed,
+                                nonce, duration_ms, created_by)
+       VALUES ($1,$2,$3,$4,'committed',$5,$6,$7,$8,$9)`,
+      [spin.id, i + 1, w.title || `Wheel ${i + 1}`, w.source, commitHash,
+        serverSeed, 1, Math.round(Number(merged.durationMs) || 7000), createdBy || null]);
+  }
+}
+
 async function createSpin({ sessionId, title, subtitle, kind, config, entryOpensAt, entryDeadlineAt, createdBy }) {
   const base = games.defaultsFor(kind) || games.defaultsFor('classic_raffle');
   const merged = { ...base, ...(config || {}) };
@@ -103,19 +125,7 @@ async function createSpin({ sessionId, title, subtitle, kind, config, entryOpens
     const spin = ins.rows[0];
 
     // One committed seed per wheel, right now, before anything is knowable.
-    for (let i = 0; i < merged.wheels.length; i++) {
-      const w = merged.wheels[i];
-      const { serverSeed, commitHash } = fair.newCommitment();
-      await client.query(
-        `INSERT INTO arena_draws (spin_id, seq, title, pool, state, commit_hash, server_seed,
-                                  nonce, duration_ms, created_by)
-         VALUES ($1,$2,$3,$4,'committed',$5,$6,$7,$8,$9)`,
-        [spin.id, i + 1, w.title || `Wheel ${i + 1}`, w.source, commitHash,
-          // The seed is STORED now and only PUBLISHED at reveal. It has to be
-          // stored, or nobody could reveal it; what makes the scheme work is
-          // that the fingerprint was published first and is unchangeable.
-          serverSeed, 1, Math.round(Number(merged.durationMs) || 7000), createdBy || null]);
-    }
+    await commitDraws(client, spin, merged, createdBy);
     await client.query('COMMIT');
     return spin;
   } catch (e) {
@@ -796,19 +806,35 @@ async function launchDue(now = new Date()) {
  *  published, so the commitment proves nothing was drawn — and the next open
  *  freezes a fresh roster exactly as a brand-new spin would. */
 async function reviveSpin(spinId) {
-  const revealed = await db.query(
-    `SELECT count(*)::int AS n FROM arena_draws WHERE spin_id = $1 AND state = 'revealed'`, [spinId]);
-  if (revealed.rows[0].n > 0) throw new Error('That spin already ran a wheel — it cannot be brought back. Make a new spin instead.');
-  const r = await db.query(
-    `UPDATE arena_spins
-        SET state = 'draft', outcome_note = NULL, locked_at = NULL, updated_at = now()
-      WHERE id = $1 AND state = 'cancelled' RETURNING *`, [spinId]);
-  if (!r.rows[0]) throw new Error('Only a cancelled spin can be brought back.');
-  // Leftover committed draws would collide with the fresh freeze on the
-  // (spin, seq) unique index -- and they are pre-run bookkeeping, not results.
-  await db.query(`DELETE FROM arena_draws WHERE spin_id = $1 AND state <> 'revealed'`, [spinId]);
-  broadcast('arena:spin', { spinId, state: 'draft' });
-  return r.rows[0];
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    const revealed = await client.query(
+      `SELECT count(*)::int AS n FROM arena_draws WHERE spin_id = $1 AND state = 'revealed'`, [spinId]);
+    if (revealed.rows[0].n > 0) throw new Error('That spin already ran a wheel — it cannot be brought back. Make a new spin instead.');
+    const r = await client.query(
+      `UPDATE arena_spins
+          SET state = 'draft', outcome_note = NULL, locked_at = NULL, updated_at = now()
+        WHERE id = $1 AND state = 'cancelled' RETURNING *`, [spinId]);
+    if (!r.rows[0]) throw new Error('Only a cancelled spin can be brought back.');
+    const spin = r.rows[0];
+    // The old commitments are pre-run bookkeeping, not results — and they would
+    // collide with the fresh set on the (spin, seq) unique index. Out with the
+    // old, then COMMIT FRESH SEEDS so the wheels can actually turn (the
+    // 2026-08-19 audit's finding: delete-without-recommit left a revived spin
+    // permanently answering "This spin has no wheel 1").
+    await client.query(`DELETE FROM arena_draws WHERE spin_id = $1 AND state <> 'revealed'`, [spinId]);
+    const merged = { ...(games.defaultsFor(spin.kind) || games.defaultsFor('classic_raffle')), ...(spin.config || {}) };
+    await commitDraws(client, spin, merged, null);
+    await client.query('COMMIT');
+    broadcast('arena:spin', { spinId, state: 'draft' });
+    return spin;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* gone */ }
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 /** Abandon a spin. The draws stay exactly as they are -- a cancelled spin is
