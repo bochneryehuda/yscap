@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { showMessage } from '../../lib/dialog.js';
+import { showMessage, askConfirm } from '../../lib/dialog.js';
 import { subscribeChat } from '../../lib/chatEvents.js';
 import { arena } from '../../lib/arena.js';
 
@@ -118,13 +118,17 @@ export default function ArenaChat({ sessionId, spinId, isSuper, compact = false 
               {['🎉', '🔥', '👏'].map((e) => (
                 <button
                   key={e} className="arena-react" title={`React ${e}`}
-                  onClick={() => { if (!m.pending) arena.react(m.id, e).catch(() => {}); }}
+                  onClick={() => { if (!m.pending) arena.react(m.id, e).catch((x) => showMessage((x && x.message) || 'The reaction did not go through.', { tone: 'error' })); }}
                 >{e}{(m.reaction_counts && m.reaction_counts[e]) ? ` ${m.reaction_counts[e]}` : ''}</button>
               ))}
               {isSuper && !m.pending && (
                 <>
-                  <button className="arena-react" title="Pin it" onClick={() => arena.moderate(m.id, 'pin').catch(() => {})}>📌</button>
-                  <button className="arena-react" title="Remove it" onClick={() => arena.moderate(m.id, 'delete').catch(() => {})}>✕</button>
+                  <button className="arena-react" title="Pin it" onClick={() => arena.moderate(m.id, 'pin').catch((x) => showMessage((x && x.message) || 'That did not pin.', { tone: 'error' }))}>📌</button>
+                  <button className="arena-react" title="Remove it" onClick={async () => {
+                    // Deleting somebody's message is destructive — ask first.
+                    if (!await askConfirm('Remove this message from the room?', { confirmLabel: 'Remove it' })) return;
+                    arena.moderate(m.id, 'delete').catch((x) => showMessage((x && x.message) || 'That did not remove.', { tone: 'error' }));
+                  }}>✕</button>
                 </>
               )}
             </span>
