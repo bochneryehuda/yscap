@@ -236,9 +236,38 @@ it, and both fail **after** the money is spent:
 * **size** — capping by slicing serialized JSON produces a truncated document Postgres rejects
   outright (22P02). An over-large payload is REPLACED by a marker that says so in the row.
 
+## 10a. The history lands on the borrower's own profile (2026-08-19)
+
+The owner, after comparing the two searches on one live file: the profile builder *"pulls in all
+the properties, all the mortgages, everything"* while the track-record search *"only populated one
+file from 10-20 properties"* — and the fix was not to tune the old search but to give the
+track record the profile builder's own pull, and then to make everything it reads land on the
+borrower's REAL profile: companies as entities, recorded deals as unverified track-record lines,
+automatically, on every build, every link, every search — and once over the back book.
+
+`src/lib/elementix/deep-history.js` is the one definition. What it holds to:
+
+* **Identity is the human's link, never a name.** It runs only for
+  `borrowers.elementix_person_id` plus aliases a human confirmed (`profile.familyOf`). The old
+  name-based person search is skipped when the linked pull ran.
+* **The same depth as the profile builder** — 250 a page, 4 pages, the same call budget; the pure
+  suite pins the constants to profile.js so they cannot drift.
+* **Everything imports, nothing is guessed, nothing imports as verified.** Deals go through the
+  track-record importer's own gates (`stageOne` → the importer's verbs): declines stay declined,
+  a verified line is never reopened automatically, a near match waits for a human, a new line
+  lands pending with the deal type the records state or left blank plus a note.
+* **A company needs a stated role** (principal / SOS officer / signer) and lands adoption-stamped
+  (`adopted_source='elementix'`, db/400) so its bank balances stay out of provable liquidity until
+  documented or verified.
+* **The FCRA line holds**: only the deeds/mortgages/entities sections are read — never
+  `elementix_contacts`, never the overview (it carries a mailing address) — asserted on the source.
+* **The back book** drains through `backfillOnce` in `elementix-crm-sync`: cache-only (zero vendor
+  calls), bounded, self-draining via the db/597 stamps, its own call-time switch
+  (`ELEMENTIX_HISTORY_IMPORT_ENABLED`), a row retired after three failed attempts.
+
 ## 11. Tests
 
-Eight suites, all in `npm test`:
+Ten suites, all in `npm test`:
 
 | suite | proves |
 |---|---|
@@ -250,6 +279,8 @@ Eight suites, all in `npm test`:
 | `test-elementix-profile-db` | the profile builder, the merge, and that every request preflighted |
 | `test-elementix-crm-routes-db` | who gets through the door, per-record scoping, what comes back |
 | `test-elementix-backfill-db` | the history import, the shared-seat trap, and that no loop can spend |
+| `test-elementix-deep-history-pure` | the FCRA line on the source, depth parity, stated roles, the person-keyed flag |
+| `test-elementix-deep-history-db` | the deep search + the automatic import, end to end against a real Postgres |
 
 Every guard added after the pre-merge audit was **mutation-proven**: the production rule was
 reverted on purpose and the suite was confirmed to go red, with the unmutated run green either side.
