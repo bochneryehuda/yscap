@@ -58,12 +58,16 @@ async function audit(req, action, entityType, entityId, detail) {
   }
 }
 
-/** Super-admin gate. 403 here, not 404: past this point the caller already
- *  knows the Arena exists (the guard let them through), so hiding it again
- *  would only be confusing. */
+/** Runs-the-Arena gate — a super admin OR a named host (settings.hosts;
+ *  owner-directed 2026-08-19: "give Ezra the same access as the super admin
+ *  when it comes to this"). 403 here, not 404: past this point the caller
+ *  already knows the Arena exists (the guard let them through), so hiding it
+ *  again would only be confusing. */
 function requireSuper(req, res, next) {
-  if (isSuper(req)) return next();
-  return bad(res, 'Only a super admin can do that.', 403);
+  settings.runsArena(req.actor).then((ok) => {
+    if (ok) return next();
+    return bad(res, 'Only a super admin or a named Arena host can do that.', 403);
+  }).catch(() => bad(res, 'Only a super admin or a named Arena host can do that.', 403));
 }
 
 // ===========================================================================
@@ -120,7 +124,7 @@ router.get('/visibility', async (req, res) => {
       `SELECT id, name, subtitle, theme FROM arena_sessions WHERE state = 'live' LIMIT 1`);
     live = r.rows[0] || null;
   }
-  res.json({ enabled: on, seesArena: v.seesArena, seesSwitch: v.seesSwitch, isSuperAdmin: isSuper(req), liveSession: live });
+  res.json({ enabled: on, seesArena: v.seesArena, seesSwitch: v.seesSwitch, isSuperAdmin: await settings.runsArena(req.actor), liveSession: live });
 });
 
 // ===========================================================================
@@ -454,7 +458,7 @@ router.get('/board', async (req, res) => {
   const sid = req.query.session
     ? (await db.query(`SELECT * FROM arena_sessions WHERE id = $1`, [req.query.session])).rows[0]
     : (await db.query(`SELECT * FROM arena_sessions WHERE state = 'live' ORDER BY opened_at DESC LIMIT 1`)).rows[0];
-  if (!sid) return res.json({ session: null, spins: [], awards: [], me: null });
+  if (!sid) return res.json({ session: null, spins: [], awards: [], me: null, isSuperAdmin: await settings.runsArena(req.actor) });
 
   const cfg = await settings.load();
   const spins = await db.query(
@@ -492,7 +496,7 @@ router.get('/board', async (req, res) => {
     iAmIn,
     serverNow: new Date().toISOString(),
     settings: cfg.settings,
-    isSuperAdmin: isSuper(req),
+    isSuperAdmin: await settings.runsArena(req.actor),
     spins: spins.rows.map((sp) => {
       const myCheckin = checkins.find((c) => c.spin_id === sp.id && String(c.staff_id) === me) || null;
       const spinDraws = draws.filter((d) => d.spin_id === sp.id);
