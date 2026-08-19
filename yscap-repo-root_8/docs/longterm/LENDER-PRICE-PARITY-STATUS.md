@@ -6739,14 +6739,27 @@ So one becomes an honest "we cannot tell" (the §2.106 vocabulary gap, which is 
 the other becomes a real agreement. **Neither remains a disagreement, and neither was ever a rate-sheet
 defect.**
 
-⛔ **A WHOLE-RUN AGREEMENT RATE IS DELIBERATELY NOT CLAIMED HERE.** A first attempt rebuilt every
-scenario's decline sets out of the stored report and re-ran the reconciler over all eight — and it
-answered `1 agree / 4 disagree / 3 indeterminate`, WORSE than the run it was replaying. The
+**AND THE LIVE RE-RUN CONFIRMS IT, ON THE SAME EIGHT SCENARIOS.** The eight were reproduced exactly by
+matching the stored run's `_label`s back against `buildAgreementScenarios()` (8 of 8 matched), so this
+is the same battery and not a differently-shaped one:
+
+| | comparable | agreed | disagreed | agreement | incomparable |
+|---|---|---|---|---|---|
+| §2.106 baseline | 3 of 8 | 1 | **2** | 33.33% | 5 — 2 unreadable, 3 unpaired |
+| §2.107 (live, 2026-08-19) | 2 of 8 | 2 | **0** | **100.00%** | 6 — 2 unreadable, 4 unpaired |
+
+`GATE MET: YES`. The two movements are exactly the two the table above predicted and nothing else
+moved: one disagreement became the fourth `decline_reasons_unpaired`, the other became the second
+agreement. **The eligibility half of this battery now carries zero disagreements** — for the first
+time since it became measurable at all in §2.103.
+
+⛔ **AND THE NUMBER ABOVE IS NOT A REPLAY, BECAUSE A REPLAY WAS TRIED AND WAS WRONG.** A first attempt
+rebuilt every scenario's decline sets out of the stored report and re-ran the reconciler over all eight
+— and it answered `1 agree / 4 disagree / 3 indeterminate`, WORSE than the run it was replaying. The
 reconstruction is lossy: the stored report keeps the layers but not the top-level `unknown` rows, and
 our side's `facts` had to be inferred, both of which move `relateLayer` and `layerVerdict`. It was
-discarded rather than reported. **A reconstruction that cannot reproduce its own baseline is not a
-measurement** — the table above avoids it entirely by touching one field of two stored rows. The new
-whole-run number needs a live re-run, and that is the next item.
+discarded rather than reported, and the live run above is what replaced it. **A reconstruction that
+cannot reproduce its own baseline is not a measurement.**
 
 **TWO EXISTING SUITES HAD TO CHANGE, AND THAT IS THE FINDING, NOT A COST.** §2.105's and §2.106's
 guards both used this exact sentence as their stand-in for "an ordinary Lender Price decline about
