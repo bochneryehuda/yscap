@@ -72,6 +72,12 @@ const TOOLS = new Set([
   // for somebody already unlocked; `submit_contact_enrichment` SPENDS A CREDIT
   // and is the only paid tool in PILOT.
   'get_contact_status', 'get_contact_info', 'submit_contact_enrichment',
+
+  // WHO UNLOCKED WHAT. `list_people` with unlockStatus:'unlocked' is the only
+  // way to enumerate the contacts this organisation has paid for, and every row
+  // names the person who did it. FREE. It is the whole historical backfill, and
+  // the reason the CRM does not need a separate OAuth seat per officer.
+  'list_people',
 ]);
 
 /** Tools that cost money. Mirrors client.PAID_TOOLS; kept here so this module

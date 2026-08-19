@@ -50,6 +50,7 @@ const crmTools = require('../lib/elementix/crm-tools');
 const crm = require('../lib/elementix/crm');
 const identity = require('../lib/elementix/identity');
 const profile = require('../lib/elementix/profile');
+const backfill = require('../lib/elementix/backfill');
 
 const str = (v) => String(v == null ? '' : v).trim();
 const isUuid = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str(v));
@@ -137,11 +138,22 @@ router.post('/disconnect', async (req, res) => {
 // ---------------------------------------------------------------------------
 
 router.get('/connections', requirePermission('manage_team'), async (req, res) => {
-  const [connections, missing] = await Promise.all([
+  const [connections, missing, history] = await Promise.all([
     identity.connections(),
     identity.officersNotConnected(),
+    // THE ACTUAL LIST OF OUR ELEMENTIX USERS. `connections` is who has approved
+    // an OAuth seat here — under the shared-login model, usually just the one
+    // company connection. `users` is who has actually DONE something over there,
+    // derived from the email on every unlocked contact, which is the list the
+    // owner asked for and the only one that reflects reality.
+    backfill.progress().catch(() => null),
   ]);
-  res.json({ connections, notConnected: missing });
+  res.json({
+    connections,
+    notConnected: missing,
+    users: history ? history.users : [],
+    backfill: history ? { total: history.total, pending: history.pending, done: history.done, skipped: history.skipped, failed: history.failed } : null,
+  });
 });
 
 /** Ask Elementix who a connection belongs to, and store the label. */
@@ -152,6 +164,50 @@ router.post('/connections/:staffId/refresh-identity', requirePermission('manage_
   const out = await identity.recordIdentity(staffId, { actingStaffId: req.actor.id });
   if (!out.ok) return refuse(res, out, 502);
   res.json(out);
+});
+
+// ---------------------------------------------------------------------------
+// THE HISTORY IMPORT
+//
+// The owner asked to go back to the beginning and give every officer the
+// contacts they had already skip traced. The vendor names the unlocker of every
+// contact by EMAIL, so this reads the whole history and hands each one to the
+// officer whose login did it. Nothing here spends a credit — every person in the
+// history is already unlocked.
+//
+// Gated on `manage_team` because what it really does is map Elementix logins to
+// members of staff, which is the same authority as the roster above.
+// ---------------------------------------------------------------------------
+
+router.get('/backfill', requirePermission('manage_team'), async (req, res) => {
+  res.json(await backfill.progress());
+});
+
+router.post('/backfill/list', requirePermission('manage_team'), async (req, res) => {
+  const out = await backfill.listUnlocked({ staffId: req.actor.id });
+  await audit(req, 'elementix_backfill_listed', {
+    people: out.peopleSeen, queued: out.newlyQueued, users: (out.users || []).length, partial: out.partial || null });
+  // A listing that stopped early is answered 200 WITH its own partial flag, not
+  // as an error: what it did read is real and is already queued, and the screen
+  // has to be able to say both things at once.
+  res.json(out);
+});
+
+router.post('/backfill/work', requirePermission('manage_team'), async (req, res) => {
+  const out = await backfill.workBatch({ staffId: req.actor.id, limit: (req.body || {}).limit });
+  if (!out || out.ok !== true) return refuse(res, out);
+  res.json(out);
+});
+
+router.post('/backfill/users/link', requirePermission('manage_team'), async (req, res) => {
+  const b = req.body || {};
+  const out = await backfill.linkUser({
+    email: b.email, staffId: b.staffId || null, ignore: b.ignore === true, actorId: req.actor.id });
+  if (!out || out.ok !== true) return refuse(res, out);
+  await audit(req, 'elementix_user_linked', { email: out.email, staffId: out.staffId, ignored: out.ignored });
+  // Contacts already imported for that login are waiting on exactly this answer.
+  const released = out.staffId ? await backfill.releaseSkipped({ email: out.email }) : { requeued: 0 };
+  res.json({ ...out, requeued: released.requeued });
 });
 
 // ---------------------------------------------------------------------------

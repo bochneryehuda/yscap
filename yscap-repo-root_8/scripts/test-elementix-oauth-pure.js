@@ -345,38 +345,40 @@ console.log('\n7. The paid tool cannot be called by accident');
   ok(`self-capped at ${b.maxPerHour}/hour against a shared 1,000/hour platform limit`);
 
   // ---------------------------------------------------------------------------
-  console.log('\n9. Each officer has their own login (owner-directed 2026-08-18)');
+  console.log('\n9. One shared login, and the vendor names who unlocked what (owner-directed 2026-08-18 evening)');
   // ---------------------------------------------------------------------------
-  // SUPERSEDES the 2026-08-07 "one company login" answer. Asked directly while
-  // directing the CRM work, the owner confirmed every loan officer has their own
-  // Elementix login — which is what lets a skip trace be signed by the officer
-  // who made it, rather than attributed by guesswork. (The vendor's 40-tool MCP
-  // surface cannot name the account's users or list their unlocks, so if the
-  // attribution is not established at the click it cannot be established at all.)
-  assert.strictEqual(O.SEAT_MODEL, 'officer', 'per-officer logins, per the owner');
+  // SUPERSEDES the same day's 'officer' flip, which was solving a real problem
+  // the hard way. The belief under it was that the vendor cannot say WHO
+  // unlocked a contact, so attribution had to be proven from our side by giving
+  // every officer their own seat. The owner said to dig deeper, and measuring
+  // the live account settled it: `get_contact_status` returns `unlockedBy` as an
+  // EMAIL (its published description claims only {isUnlocked, isJobCompleted}),
+  // and `list_people` with unlockStatus:'unlocked' carries that email on every
+  // row — 1,041 contacts, 13 users, none missing. So one super-admin connection
+  // is enough, which is also what the owner directed for the back office.
+  assert.strictEqual(O.SEAT_MODEL, 'company', 'one shared super-admin connection, per the owner');
 
   // BOTH models are asserted through the PURE rule, never by driving
   // beginConnect. That is not squeamishness: CI proved that calling beginConnect
   // reaches live discovery AND dynamic client registration at Elementix from the
-  // runner. Under the 'officer' model NEITHER path refuses, so there is no
-  // longer any argument that returns before the first byte leaves the process —
-  // which is exactly why the old live call here had to go, and why `model` is a
-  // parameter.
-  assert.strictEqual(O.seatRefusal('00000000-0000-0000-0000-000000000001'), null,
-    'an officer connecting their own login is allowed — the point of the change');
-  assert.strictEqual(O.seatRefusal(null), null,
-    'and the company-wide connection still works, for an officer who has not connected');
-  ok('per-officer and company-wide connections are both allowed');
-
-  // The 'company' model is kept and still bites, because the env override can
-  // restore it and a rule nobody tests is a rule that quietly stops working.
-  const underCompany = O.seatRefusal('00000000-0000-0000-0000-000000000001', 'company');
+  // runner — which is why `model` is a parameter.
+  const underCompany = O.seatRefusal('00000000-0000-0000-0000-000000000001');
   assert.ok(underCompany && underCompany.ok === false);
   assert.strictEqual(underCompany.reason, 'officer_seat_not_enabled');
   assert.ok(/company/i.test(underCompany.detail), 'and it says to connect company-wide instead');
-  assert.strictEqual(O.seatRefusal(null, 'company'), null,
-    'the company-wide path is never refused under either model');
-  ok('the company seat model is retained and still refuses a per-officer connect');
+  assert.strictEqual(O.seatRefusal(null), null,
+    'the company-wide connection — the one the whole firm uses — is never refused');
+  ok('the shared seat model is the default and refuses a stray per-officer connect');
+
+  // The 'officer' model is KEPT and still permits both paths, because the env
+  // override can restore it and a rule nobody tests is a rule that quietly stops
+  // working. It composes with the shared one: accessToken(staffId) prefers an
+  // officer's own row and falls back to the company one.
+  assert.strictEqual(O.seatRefusal('00000000-0000-0000-0000-000000000001', 'officer'), null,
+    'under the per-officer model an officer may still connect their own login');
+  assert.strictEqual(O.seatRefusal(null, 'officer'), null,
+    'and the company-wide path is never refused under either model');
+  ok('the per-officer seat model is retained and still allows both connections');
 
   // …and beginConnect really consults the rule, FIRST, before any network or
   // database work. Asserted from the SOURCE rather than by calling it, because

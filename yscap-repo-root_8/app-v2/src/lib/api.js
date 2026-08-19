@@ -1618,6 +1618,27 @@ export const api = {
   valuationDuplicate:  (id) => req('POST', `/api/research/valuations/${id}/duplicate`, {}),
   valuationDelete:     (id) => req('DELETE', `/api/research/valuations/${id}`),
 
+  // ---- Elementix CRM (the second Elementix plane — see src/routes/elementix-crm.js) ----
+  // Underwriting's Elementix calls live behind /api/underwriting; NOTHING here
+  // may be reused there. Contact detail bought on this plane must never reach a
+  // lending decision.
+  elxMe:               () => req('GET', '/api/elementix/me'),
+  elxConnect:          () => req('GET', '/api/elementix/connect'),
+  elxDisconnect:       () => req('POST', '/api/elementix/disconnect', {}),
+  elxConnections:      () => req('GET', '/api/elementix/connections'),
+  elxRefreshIdentity:  (staffId) => req('POST', `/api/elementix/connections/${staffId}/refresh-identity`, {}),
+  elxUsage:            () => req('GET', '/api/elementix/usage'),
+  elxSearch:           (q, state) => req('GET', `/api/elementix/search?q=${encodeURIComponent(q || '')}${state ? `&state=${encodeURIComponent(state)}` : ''}`),
+  elxContact:          (personId) => req('GET', `/api/elementix/people/${personId}/contact`),
+  elxSkipTrace:        (personId, b) => req('POST', `/api/elementix/people/${personId}/skip-trace`, b || {}),
+  elxAddLead:          (personId, b) => req('POST', `/api/elementix/people/${personId}/lead`, b || {}),
+  elxProfile:          (personId) => req('GET', `/api/elementix/people/${personId}/profile`),
+  elxProfileBuild:     (personId, b) => req('POST', `/api/elementix/people/${personId}/profile/build`, b || {}),
+  elxAliases:          (personId) => req('GET', `/api/elementix/people/${personId}/aliases`),
+  elxDecideAlias:      (personId, aliasId, confirm) => req('POST', `/api/elementix/people/${personId}/aliases/${aliasId}`, { confirm }),
+  elxLink:             (b) => req('POST', '/api/elementix/link', b || {}),
+  elxFor:              (kind, recordId) => req('GET', `/api/elementix/for/${kind}/${recordId}`),
+
   // ---- Dashboards (the KPI screen + the build-your-own section) ----
   dashboards:          () => req('GET', '/api/dashboards'),
   dashboardMeta:       () => req('GET', '/api/dashboards/meta'),

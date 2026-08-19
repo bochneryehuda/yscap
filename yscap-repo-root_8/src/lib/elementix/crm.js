@@ -60,11 +60,24 @@ function normalizeContact(raw) {
   const out = { phones: [], emails: [], addresses: [] };
   if (!raw || typeof raw !== 'object') return out;
 
-  // The payload may be the object itself, or wrapped once.
+  /* THE ENVELOPE IS TWO DEEP, AND MISSING THAT FOUND NOTHING AT ALL.
+     `get_contact_info` answers with the enrichment JOB, not with a contact:
+     {job:{id, status:'COMPLETED', createdAt, completedAt, result:{phone:[…],
+     email:[…], summary, company_name, company_domain, linkedin_url}, logs:[…]}}
+     — captured live 2026-08-18. A reader that looked only one level down read a
+     person with three phone numbers and three email addresses as having none,
+     silently, and the lead would have been created empty. Hence `job` and
+     `job.result` are walked explicitly, and the walk is BREADTH-FIRST over a
+     fixed key list rather than a blind recursion, so `logs` can never be
+     mistaken for data. */
+  const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
+  const NEST = ['data', 'result', 'job', 'contact', 'contactInfo', 'contact_info', 'person'];
   const roots = [raw];
-  for (const k of ['data', 'result', 'contact', 'contactInfo', 'contact_info', 'person']) {
-    const v = raw[k];
-    if (v && typeof v === 'object' && !Array.isArray(v)) roots.push(v);
+  for (let i = 0; i < roots.length && roots.length < 12; i += 1) {
+    for (const k of NEST) {
+      const v = obj(roots[i][k]);
+      if (v && !roots.includes(v)) roots.push(v);
+    }
   }
 
   const listAt = (keys) => {
@@ -95,8 +108,11 @@ function normalizeContact(raw) {
       // "Deliverable". The screen prints these; it does not translate them.
       label: str(meta.label || meta.name || meta.type || meta.phoneType || meta.line_type || meta.lineType) || null,
       carrier: str(meta.carrier || meta.provider) || null,
-      status: str(meta.status || meta.deliverability) || null,
+      status: str(meta.status || meta.deliverability || meta.result) || null,
       location: str(meta.location || meta.city || meta.region) || null,
+      // The vendor scores how sure it is (0.7, 0.85). Worth showing: an officer
+      // ringing three numbers should start with the one most likely to be theirs.
+      confidence: Number.isFinite(Number(meta.confidence)) ? Number(meta.confidence) : null,
       lastSeen: str(meta.lastSeen || meta.last_seen || meta.lastSeenAt || meta.updatedAt) || null,
     });
   }
@@ -113,7 +129,15 @@ function normalizeContact(raw) {
       value,
       key,
       label: str(meta.label || meta.name || meta.type) || null,
-      status: str(meta.status || meta.deliverability) || null,
+      /* `result` is the vendor's own verdict — "deliverable" or "risky" — and it
+         is the field that matters most on an email address. It is NOT called
+         status or deliverability, which is what this used to look for, so every
+         address came through unmarked and a risky one looked as good as a live
+         one. */
+      status: str(meta.result || meta.status || meta.deliverability) || null,
+      reason: str(meta.reason) || null,
+      provider: str(meta.provider) || null,
+      confidence: Number.isFinite(Number(meta.confidence)) ? Number(meta.confidence) : null,
       lastSeen: str(meta.lastSeen || meta.last_seen || meta.updatedAt) || null,
     });
   }
@@ -126,6 +150,20 @@ function normalizeContact(raw) {
     out.addresses.push({ value, label: str(meta.label || meta.type) || null });
   }
 
+  /* WHAT THE ENRICHMENT ALSO LEARNED. The job carries a written summary of who
+     the person is, their company and its domain — the owner asked for "all the
+     details", and this is the part a loan officer actually reads before they
+     dial. Nulls when absent; nothing here is inferred. */
+  const pick = (keys) => {
+    for (const src of roots) for (const k of keys) { const v = str(src[k]); if (v) return v; }
+    return null;
+  };
+  out.profile = {
+    summary: pick(['summary', 'description', 'bio']),
+    company: pick(['company_name', 'companyName', 'company']),
+    companyDomain: pick(['company_domain', 'companyDomain', 'domain']),
+    linkedin: pick(['linkedin_url', 'linkedinUrl', 'linkedin']),
+  };
   return out;
 }
 

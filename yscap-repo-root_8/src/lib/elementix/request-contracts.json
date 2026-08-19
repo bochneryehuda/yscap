@@ -342,6 +342,36 @@
       }
     },
 
+    "list_people": {
+      "_note": "THE TOOL THAT ANSWERS 'WHO UNLOCKED WHAT'. `unlockStatus:'unlocked'` narrows to the contacts THIS ORGANISATION has paid to unlock, and every row carries `unlockedBy` (an EMAIL) and `unlockedAt`. Measured live 2026-08-18: 1,041 rows, 13 distinct users, not one row missing the email. That is the whole historical backfill in two calls, and it is why no officer needs their own OAuth seat for us to know whose lead a contact is. `sortBy:'unlockedAt'` walks it in the order it happened. A row is LARGE (~6KB), so a page of 600 is several megabytes — page deliberately.",
+      "required": [],
+      "params": {
+        "unlockStatus": { "enum": ["all", "unlocked", "not_unlocked", "voided"] },
+        "personIds": { "type": "string[]" },
+        "state": { "type": "string[]" }, "city": { "type": "string[]" }, "countyName": { "type": "string[]" },
+        "zipCode": { "type": "string[]" }, "region": { "type": "string[]" },
+        "propertyTypes": { "type": "string[]" }, "propertySubtypes": { "type": "string[]" },
+        "lenderId": { "type": "string" }, "lenderType": { "type": "string[]" },
+        "includeTopLenderIds": { "type": "string[]" }, "excludeTopLenderIds": { "type": "string[]" },
+        "showRoles": { "type": "string[]" },
+        "months": { "enum": ["1", "2", "3", "6", "12", "24", "36", "48", "60"] },
+        "durationPreset": { "enum": ["all", "short", "long", "unknown", "custom"] },
+        "experienceMin": { "enum": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"] },
+        "experienceMax": { "enum": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"] },
+        "gender": { "enum": ["male", "female"] },
+        "hasHispanicName": { "type": "boolean" }, "hasNegativeRemarks": { "type": "boolean" },
+        "isBusinessPurpose": { "type": "boolean" },
+        "loansMin": { "type": "int" }, "loansMax": { "type": "int" },
+        "loanTermMin": { "type": "int" }, "loanTermMax": { "type": "int" },
+        "exitsMin": { "type": "int" }, "exitsMax": { "type": "int" },
+        "amountMin": { "type": "number" }, "amountMax": { "type": "number" },
+        "page": { "type": "int" }, "perPage": { "type": "int", "min": 1, "max": 5000 },
+        "scope": { "enum": ["data", "count"] },
+        "sortBy": { "enum": ["loanCount", "totalVolume", "previousExits3y", "unlockedAt"] },
+        "sortOrder": { "enum": ["asc", "desc"] }
+      }
+    },
+
     "get_filter_options": {
       "_note": "The filter VOCABULARIES, so a filter offers real values instead of guesses. `type` is required; counties need a state, cities and zip-codes need a searchTerm of at least 2 characters, property-subtypes need a propertyType.",
       "required": ["type"],

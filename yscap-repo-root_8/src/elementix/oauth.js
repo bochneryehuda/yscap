@@ -80,44 +80,60 @@ const REFRESH_SKEW_SEC = 120;
 const HTTP_TIMEOUT_MS = 15000;
 
 /**
- * HOW MANY ELEMENTIX SEATS THE COMPANY HOLDS — 'company' | 'officer'.
+ * HOW MANY ELEMENTIX SEATS PILOT CONNECTS WITH — 'company' | 'officer'.
  *
- * WAS 'company' on the owner's 2026-08-07 answer (one shared login). The owner
- * corrected that on 2026-08-18, asked directly, while directing the CRM work:
- * EACH LOAN OFFICER HAS THEIR OWN ELEMENTIX LOGIN. So 'officer' is now the
- * default, and that is what makes the CRM's attribution real rather than
- * inferred — an officer's skip trace is signed by the token they approved as
- * themselves, so "who traced this person?" is answered by our own OAuth record
- * and never has to be asked of a vendor who cannot answer it. (The 40-tool MCP
- * surface has no way to list the account's users or their unlock history; that
- * is the whole reason attribution has to be established at the click.)
+ * 'company' — ONE super-admin connection for the whole firm — and the reason is
+ * worth reading, because it was got wrong in between.
+ *
+ * On 2026-08-18 the owner said each officer has their own Elementix login, and
+ * this was flipped to 'officer' so that a skip trace would be signed by the
+ * token its officer approved. That was solving the right problem the hard way:
+ * the belief underneath it was that the vendor cannot say WHO unlocked a
+ * contact, so we had to prove it from our side. THE OWNER SAID THAT WAS WRONG —
+ * "dig in deeper, I'm 100% you can link who discovered the number by email link"
+ * — and they were right.
+ *
+ * Measured against the live account the same evening: `get_contact_status`
+ * returns `unlockedBy` as an EMAIL ADDRESS (its published description claims it
+ * returns only {isUnlocked, isJobCompleted}), and `list_people` with
+ * `unlockStatus:'unlocked'` returns that email on EVERY ROW — 1,041 contacts,
+ * 13 users, none missing. So the vendor answers "who did this" precisely, and
+ * per-officer seats buy nothing that is not already available.
+ *
+ * ATTRIBUTION NOW COMES FROM TWO PLACES, BOTH EXACT, NEITHER A GUESS:
+ *   · a trace made THROUGH PILOT is recorded against the officer who clicked, by
+ *     us, at the moment they clicked — that never needed a vendor to confirm it;
+ *   · a trace made in Elementix's own screens is read back from `unlockedBy` and
+ *     matched to `staff_users.email`.
+ * An email that matches nobody is REPORTED, never assigned to the nearest name.
+ *
+ * The owner also directed that the back-office work — verifying and building a
+ * borrower's track record, which is the UNDERWRITING plane in lookups.js — keeps
+ * using this one main connection and is not to be touched. It never used
+ * anything else, and nothing in the CRM work changes it.
  *
  * WHAT DOES NOT CHANGE: the 1,000 requests/hour ceiling is an ORGANIZATION
- * limit, shared across every connected client and therefore across every
- * officer's own login too — the vendor's own usage page says so. So
- * src/elementix/client.js still self-caps well under it, and per-officer seats
- * buy attribution, not extra throughput.
+ * limit, shared across every connected client — the vendor's own usage page says
+ * so — so more seats never bought more throughput either.
  *
- * SAFE TO FLIP because `accessToken(staffId)` already falls back to the
- * company-wide row when an officer has not connected their own: an officer who
- * never clicks Connect keeps working exactly as they do today, reading through
- * the company connection. Nothing is stranded by the change.
- *
- * Env-overridable so it can be moved without a deploy if the account model
- * changes again; an unrecognised value falls back to 'officer'.
+ * PER-OFFICER SEATS STILL WORK, and are one environment variable away
+ * (ELEMENTIX_SEAT_MODEL=officer). `accessToken(staffId)` prefers an officer's
+ * own row and falls back to the company one, so the two models compose; this is
+ * a decision about which is the DEFAULT, not about which is possible. An
+ * unrecognised value falls back to 'company'.
  */
-const SEAT_MODEL = process.env.ELEMENTIX_SEAT_MODEL === 'company' ? 'company' : 'officer';
+const SEAT_MODEL = process.env.ELEMENTIX_SEAT_MODEL === 'officer' ? 'officer' : 'company';
 
 /**
  * Is this connection attempt allowed by the seat model? Returns a shaped refusal,
  * or null when it may proceed.
  *
- * A per-officer approval is REFUSED under the 'company' model, because there it
- * is not a harmless extra row: `accessToken(staffId)` PREFERS an officer's own
- * row over the company one, so approving one would quietly move that officer onto
- * a second authorization with no second seat behind it, and split the record of
- * who looked up what. Under 'officer' — the model since 2026-08-18 — that is
- * exactly the intent, so nothing is refused.
+ * A per-officer approval is REFUSED under the 'company' model — the default —
+ * because there it is not a harmless extra row: `accessToken(staffId)` PREFERS
+ * an officer's own row over the company one, so approving one would quietly move
+ * that officer onto a second authorization with no second seat behind it, and
+ * split the record of who looked up what. Under 'officer' that is exactly the
+ * intent, so nothing is refused.
  *
  * PURE on purpose: no network, no database. That is what lets it be tested for
  * real, which matters because the alternative — asserting it through

@@ -1,0 +1,581 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { api } from '../lib/api.js';
+import { askConfirm, showMessage } from '../lib/dialog.js';
+
+/**
+ * THE ELEMENTIX PROFILE — one person, every state, on a lead or a borrower.
+ *
+ * The owner asked for "a mega profile, even better than Elementix": the
+ * overview, the entities, the properties, the mortgages, the deeds, the
+ * foreclosures, all states merged, searchable and filterable, with a Run a
+ * search button when nobody is linked yet and a Refresh data button when
+ * somebody is.
+ *
+ * ── TWO RULES THIS SCREEN EXISTS TO KEEP ────────────────────────────────────
+ *
+ * 1. AN EMPTY TAB MUST SAY WHY IT IS EMPTY. The server answers each section
+ *    with a status — read / refused / never asked for — because those are three
+ *    different facts and only one of them means "this person has none". A screen
+ *    that draws the same blank table for all three teaches people to trust a
+ *    number that was never fetched.
+ *
+ * 2. THE VENDOR'S FIELD NAMES ARE NOT CONSISTENT, so `addressOf` reads several
+ *    spellings. That is not defensive padding — it is measured: on 2026-08-18 a
+ *    PERSON deed row carried `addresses` as plain STRINGS while an ENTITY deed
+ *    row used the same key for {addressFull} OBJECTS, and a person MORTGAGE row
+ *    had no `addresses` key at all, spelling it `propertyAddresses`. Reading one
+ *    spelling renders a blank column or the words "[object Object]".
+ *
+ * ── COLOURS ─────────────────────────────────────────────────────────────────
+ * Every text colour here is an explicit dark hex. The `--ink*` tokens in this
+ * palette are LIGHT (paper), so `color: var(--ink)` renders white on white — the
+ * bug that made a whole card invisible once already.
+ */
+
+const INK = '#141B22';
+const MUTED = '#4B585C';
+const LINE = '#E4DECF';
+
+/* The tabs, in the order the owner listed them. `key` matches the server's own
+   section key, so a section added there appears here by adding one row. */
+const TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'entities', label: 'Entities' },
+  { key: 'properties', label: 'Properties' },
+  { key: 'mortgages', label: 'Mortgages' },
+  { key: 'deeds', label: 'Deeds' },
+  { key: 'foreclosures', label: 'Foreclosures' },
+  { key: 'associated_people', label: 'Associated people' },
+  { key: 'lender_network', label: 'Lenders' },
+  { key: 'cross_state', label: 'Other states' },
+  { key: 'transactions', label: 'All transactions' },
+];
+
+// ---------------------------------------------------------------------------
+// Readers — tolerant on purpose, and never inventive
+// ---------------------------------------------------------------------------
+
+const txt = (v) => (v === null || v === undefined ? '' : String(v));
+
+/** A number from a number OR a decimal string (the vendor sends both). */
+function num(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function money(v) {
+  const n = num(v);
+  if (n === null) return '—';
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
+function count(v) {
+  const n = num(v);
+  // "—" NOT "0". A count we never read is not a count of none.
+  return n === null ? '—' : n.toLocaleString('en-US');
+}
+
+function day(v) {
+  const s = txt(v).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : (s || '—');
+}
+
+/** One address out of a row, whichever way this particular tool spelled it. */
+function addressOf(row) {
+  if (!row || typeof row !== 'object') return '';
+  const buckets = [row.addresses, row.propertyAddresses, row.property_addresses];
+  for (const b of buckets) {
+    if (!Array.isArray(b) || !b.length) continue;
+    const first = b[0];
+    if (typeof first === 'string' && first.trim()) return first.trim();
+    if (first && typeof first === 'object') {
+      const s = txt(first.addressFull || first.address_full || first.address || first.full);
+      if (s) return s;
+    }
+  }
+  for (const k of ['addressFull', 'address_full', 'address', 'granteeAddress', 'borrowerAddress']) {
+    const s = txt(row[k]);
+    if (s) return s;
+  }
+  // Nothing spelled as an address — build one from the parts the row does carry
+  // rather than showing a dash next to a row that plainly knows where it is.
+  const parts = [txt(row.city), txt(row.countyState || row.state), txt(row.zipCode)].filter(Boolean);
+  return parts.join(', ');
+}
+
+const names = (v) => (Array.isArray(v) ? v.filter(Boolean).map(txt).join(', ') : txt(v));
+
+/* Every column is a function of the row, so an absent field is a dash rather
+   than a crash, and a tool that renames a field degrades one cell. */
+const COLUMNS = {
+  entities: [
+    { h: 'Entity', w: '34%', get: (r) => txt(r.name), strong: true },
+    { h: 'State', get: (r) => txt(r.state) },
+    { h: 'Type', get: (r) => txt(r.entityType || r.type) },
+    { h: 'Mortgages', get: (r) => count(r.mortgageCount), n: true },
+    { h: 'Deeds', get: (r) => count(r.deedCount), n: true },
+    { h: 'Owns now', get: (r) => count(r.currentOwnershipsCount), n: true },
+    { h: 'Last seen', get: (r) => day(r.latestTransactionDate) },
+  ],
+  properties: [
+    { h: 'Property', w: '44%', get: (r) => addressOf(r), strong: true },
+    { h: 'Bought', get: (r) => day(r.startDate || r.purchaseDate) },
+    { h: 'Sold', get: (r) => day(r.endDate || r.saleDate) },
+    { h: 'Paid', get: (r) => money(r.purchasePrice ?? r.totalConsideration), n: true },
+    { h: 'Sold for', get: (r) => money(r.salePrice), n: true },
+  ],
+  mortgages: [
+    { h: 'Property', w: '32%', get: (r) => addressOf(r), strong: true },
+    { h: 'Recorded', get: (r) => day(r.recordingDate) },
+    { h: 'Amount', get: (r) => money(r.mortgageAmount), n: true },
+    { h: 'Lender', get: (r) => txt(r.lenderName || r.lenderAliasName) },
+    { h: 'Kind', get: (r) => txt(r.lenderType) },
+    { h: 'Term', get: (r) => (num(r.loanTermMonths) === null ? '—' : `${r.loanTermMonths} mo`) },
+    { h: 'Matures', get: (r) => day(r.maturityDate) },
+    { h: 'Paid off', get: (r) => (r.satisfactionDate ? day(r.satisfactionDate) : 'Open') },
+  ],
+  deeds: [
+    { h: 'Property', w: '32%', get: (r) => addressOf(r), strong: true },
+    { h: 'Recorded', get: (r) => day(r.recordingDate) },
+    { h: 'Price', get: (r) => money(r.totalConsideration), n: true },
+    { h: 'From', get: (r) => names(r.grantors) },
+    { h: 'To', get: (r) => names(r.grantees) },
+    { h: 'Cash', get: (r) => (r.isCashPurchase === true ? 'Cash' : r.isCashPurchase === false ? 'Financed' : '—') },
+  ],
+  associated_people: [
+    { h: 'Person', w: '40%', get: (r) => txt(r.name), strong: true },
+    { h: 'Shared mortgages', get: (r) => count(r.sharedMortgageCount), n: true },
+    { h: 'Shared deeds', get: (r) => count(r.sharedDeedCount), n: true },
+    { h: 'Together on', get: (r) => count(r.sharedTotalCount), n: true },
+  ],
+  lender_network: [
+    { h: 'Lender', w: '38%', get: (r) => txt(r.name), strong: true },
+    { h: 'Kind', get: (r) => txt(r.lenderType) },
+    { h: 'Loans', get: (r) => count(r.mortgageCount), n: true },
+    { h: 'Total lent', get: (r) => money(r.totalVolume), n: true },
+  ],
+  cross_state: [
+    { h: 'Name', w: '38%', get: (r) => txt(r.name), strong: true },
+    { h: 'State', get: (r) => txt(r.state) },
+    { h: 'Mortgages', get: (r) => count(r.mortgageCount), n: true },
+    { h: 'Deeds', get: (r) => count(r.deedCount), n: true },
+    { h: 'Records', get: (r) => count(r.transactionCount), n: true },
+  ],
+};
+COLUMNS.foreclosures = COLUMNS.mortgages;
+
+/** A last resort for a shape we have no columns for: the row's own scalars. */
+function fallbackColumns(rows) {
+  const first = rows.find((r) => r && typeof r === 'object') || {};
+  const keys = Object.keys(first)
+    .filter((k) => !k.startsWith('_') && ['string', 'number', 'boolean'].includes(typeof first[k]))
+    .slice(0, 6);
+  return keys.map((k) => ({ h: k, get: (r) => txt(r[k]) }));
+}
+
+/** Everything on the row, flattened, so the search box searches what is shown
+ *  AND what is not — a person hunting for a street name should find it even
+ *  when the column showing it is off to the right. */
+function haystack(row) {
+  try { return JSON.stringify(row).toLowerCase(); } catch (_) { return ''; }
+}
+
+// ---------------------------------------------------------------------------
+// Pieces
+// ---------------------------------------------------------------------------
+
+function Tile({ label, value, wide }) {
+  return (
+    <div style={{
+      border: `1px solid ${LINE}`, borderRadius: 10, padding: '10px 12px',
+      background: '#FFFFFF', minWidth: wide ? 170 : 104, flex: wide ? '1 1 190px' : '0 0 auto',
+    }}>
+      <div style={{ fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase', color: MUTED, fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: wide ? 19 : 17, fontWeight: 650, color: INK, marginTop: 2 }}>{value}</div>
+    </div>
+  );
+}
+
+/** The one place a section's state becomes a sentence. */
+function SectionNotice({ section, onRefresh }) {
+  if (!section) return null;
+  const box = (tone, text, cta) => (
+    <div style={{
+      border: `1px solid ${tone === 'warn' ? '#D9A441' : LINE}`,
+      background: tone === 'warn' ? '#FDF6E7' : '#FAF8F3',
+      borderRadius: 10, padding: '10px 12px', color: INK, fontSize: 14, marginBottom: 10,
+    }}>
+      {text}{cta}
+    </div>
+  );
+  if (section.status === 'unavailable') return box('plain', section.detail);
+  if (section.status === 'not_loaded') {
+    return box('plain', 'This part has not been read from Elementix yet. ',
+      onRefresh ? <button className="btn btn-ghost btn-sm" style={{ marginLeft: 6 }} onClick={onRefresh}>Read it now</button> : null);
+  }
+  if (section.status === 'error') {
+    return box('warn', `We could not read this from Elementix — ${section.detail || 'no reason was given'}. This is NOT the same as this person having none. `,
+      onRefresh ? <button className="btn btn-ghost btn-sm" style={{ marginLeft: 6 }} onClick={onRefresh}>Try again</button> : null);
+  }
+  if (section.status === 'partial') {
+    return box('warn', 'One of this person’s state records could not be read, so what follows is incomplete.');
+  }
+  if (section.truncated) {
+    return box('warn', `Showing the first ${section.rowCount.toLocaleString('en-US')} — there are more in Elementix than we pulled.`);
+  }
+  if (section.unverified && !section.rowCount) {
+    return box('warn', 'Elementix answered, but we have not confirmed how this part comes back — so an empty list here is not proof there is nothing.');
+  }
+  return null;
+}
+
+function OverviewTab({ profile }) {
+  const byState = (profile.summary && profile.summary.byState) || [];
+  if (!byState.length) return null;
+  return (
+    <div>
+      {byState.map((b) => {
+        const f = b.facts;
+        return (
+          <div key={b.personId} style={{ border: `1px solid ${LINE}`, borderRadius: 12, padding: 14, marginBottom: 12, background: '#FFFFFF' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+              <strong style={{ color: INK, fontSize: 16 }}>{b.name || 'Unnamed record'}</strong>
+              <span style={{ color: MUTED, fontSize: 13 }}>{b.state || 'state unknown'}</span>
+            </div>
+            {!f ? (
+              <div style={{ color: MUTED, fontSize: 14, marginTop: 8 }}>This state’s record has not been read yet.</div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                  <Tile label="Mortgages" value={count(f.mortgages)} />
+                  <Tile label="Deeds" value={count(f.deeds)} />
+                  <Tile label="Properties" value={count(f.properties)} />
+                  <Tile label="Owns now" value={count(f.propertiesCurrent)} />
+                  <Tile label="Foreclosures" value={count(f.foreclosures)} />
+                  <Tile label="Owed today" value={money(f.exposure)} wide />
+                </div>
+                <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 12, fontSize: 13, color: MUTED }}>
+                  <span>New loans — last 3 months: <strong style={{ color: INK }}>{count(f.recentMortgages.m3)}</strong></span>
+                  <span>6 months: <strong style={{ color: INK }}>{count(f.recentMortgages.m6)}</strong></span>
+                  <span>12 months: <strong style={{ color: INK }}>{count(f.recentMortgages.m12)}</strong></span>
+                  {f.firstLenderDates.any && <span>Borrowing since <strong style={{ color: INK }}>{day(f.firstLenderDates.any)}</strong></span>}
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RowTable({ section, filter }) {
+  const rows = section.rows || [];
+  const q = filter.trim().toLowerCase();
+  const shown = useMemo(() => (q ? rows.filter((r) => haystack(r).includes(q)) : rows), [rows, q]);
+  const cols = COLUMNS[section.key] || fallbackColumns(rows);
+  if (!rows.length) return null;
+  return (
+    <>
+      {q && (
+        <div style={{ fontSize: 13, color: MUTED, marginBottom: 6 }}>
+          {shown.length.toLocaleString('en-US')} of {rows.length.toLocaleString('en-US')} match “{filter.trim()}”
+        </div>
+      )}
+      <div style={{ overflowX: 'auto', border: `1px solid ${LINE}`, borderRadius: 10, background: '#FFFFFF' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5 }}>
+          <thead>
+            <tr>
+              {cols.map((c) => (
+                <th key={c.h} style={{
+                  textAlign: c.n ? 'right' : 'left', padding: '9px 11px', color: MUTED,
+                  fontSize: 11, letterSpacing: '.05em', textTransform: 'uppercase', fontWeight: 700,
+                  borderBottom: `1px solid ${LINE}`, whiteSpace: 'nowrap', width: c.w || undefined,
+                }}>{c.h}</th>
+              ))}
+              <th style={{ borderBottom: `1px solid ${LINE}` }} />
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((r, i) => (
+              <tr key={(r && r.id) || i} style={{ borderBottom: `1px solid ${LINE}` }}>
+                {cols.map((c) => {
+                  const v = c.get(r) || '—';
+                  return (
+                    <td key={c.h} style={{
+                      padding: '9px 11px', color: INK, textAlign: c.n ? 'right' : 'left',
+                      fontWeight: c.strong ? 600 : 400, whiteSpace: c.strong ? 'normal' : 'nowrap',
+                    }}>{v}</td>
+                  );
+                })}
+                <td style={{ padding: '9px 11px', whiteSpace: 'nowrap' }}>
+                  {r && r._source && r._source.state
+                    ? <span style={{ fontSize: 11, color: MUTED, border: `1px solid ${LINE}`, borderRadius: 20, padding: '1px 7px' }}>{r._source.state}</span>
+                    : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!shown.length && q && <div style={{ color: MUTED, fontSize: 14, marginTop: 10 }}>Nothing here matches “{filter.trim()}”.</div>}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The section
+// ---------------------------------------------------------------------------
+
+export default function ElementixProfile({ kind, recordId, personName, personState }) {
+  const [state, setState] = useState({ loading: true, linked: false, personId: null, profile: null });
+  const [tab, setTab] = useState('overview');
+  const [filter, setFilter] = useState('');
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+  const [query, setQuery] = useState(personName || '');
+  const [qState, setQState] = useState(personState || '');
+  const [hits, setHits] = useState(null);
+
+  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 3200); };
+
+  const load = () => api.elxFor(kind, recordId)
+    .then((r) => setState({ loading: false, linked: !!r.linked, personId: r.personId, profile: r.profile }))
+    .catch((e) => { setErr(e.message); setState((s) => ({ ...s, loading: false })); });
+
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [kind, recordId]);
+  useEffect(() => { setQuery(personName || ''); }, [personName]);
+
+  const search = async () => {
+    setErr(''); setHits(null);
+    if (query.trim().length < 3) { setErr('Type at least three letters of the name.'); return; }
+    setBusy('search');
+    try {
+      const r = await api.elxSearch(query.trim(), qState.trim().toUpperCase());
+      setHits(r.results || []);
+      if (!r.results || !r.results.length) flash('Elementix has nobody by that name.');
+    } catch (e) { setErr(e.message); } finally { setBusy(''); }
+  };
+
+  const linkTo = async (hit) => {
+    setErr(''); setBusy('link');
+    try {
+      await api.elxLink({ kind, recordId, personId: hit.personId, name: hit.name, state: hit.state, replace: true });
+      const built = await api.elxProfileBuild(hit.personId, {});
+      setState({ loading: false, linked: true, personId: hit.personId, profile: built.profile });
+      setHits(null);
+      flash(`Linked to ${hit.name || 'that record'} and read their profile.`);
+    } catch (e) { setErr(e.message); } finally { setBusy(''); }
+  };
+
+  const refresh = async (force) => {
+    if (!state.personId) return;
+    setErr(''); setBusy('refresh');
+    try {
+      const built = await api.elxProfileBuild(state.personId, { force: !!force });
+      setState((s) => ({ ...s, profile: built.profile }));
+      const failed = (built.sections || []).filter((x) => x.status === 'error');
+      const short = (built.sections || []).filter((x) => x.status === 'skipped');
+      if (failed.length) flash(`Read what we could — ${failed.length} part(s) Elementix would not answer.`);
+      else if (short.length) flash('Read part of it — the hourly allowance ran out. Press Refresh again to carry on.');
+      else flash(`Refreshed. ${built.callsSpent} lookup(s) used.`);
+    } catch (e) { setErr(e.message); } finally { setBusy(''); }
+  };
+
+  const unlink = async () => {
+    const yes = await askConfirm('Take this Elementix record off this file? Nothing is deleted from Elementix — it just stops showing here.', { confirmLabel: 'Unlink' });
+    if (!yes) return;
+    setBusy('unlink');
+    try {
+      await api.elxLink({ kind, recordId, personId: null });
+      setState({ loading: false, linked: false, personId: null, profile: null });
+      flash('Unlinked.');
+    } catch (e) { setErr(e.message); } finally { setBusy(''); }
+  };
+
+  const decideAlias = async (aliasId, confirm, label) => {
+    if (confirm) {
+      const yes = await askConfirm(
+        `Treat ${label || 'that record'} as the SAME person? Their properties, loans and deeds will be added into this profile. Only say yes if you are sure — Elementix matched on the name alone.`,
+        { confirmLabel: 'Yes, same person' });
+      if (!yes) return;
+    }
+    setBusy('alias');
+    try {
+      await api.elxDecideAlias(state.personId, aliasId, confirm);
+      const built = await api.elxProfileBuild(state.personId, { force: false });
+      setState((s) => ({ ...s, profile: built.profile }));
+      flash(confirm ? 'Merged — this is now one profile.' : 'Noted — kept separate.');
+    } catch (e) { setErr(e.message); } finally { setBusy(''); }
+  };
+
+  if (state.loading) return <div className="panel pad" style={{ color: MUTED }}>Loading the Elementix profile…</div>;
+
+  // ---- Not linked: the "Run a search on this client" state --------------
+  if (!state.linked) {
+    return (
+      <div className="panel">
+        <div className="panel-h"><h3>Elementix</h3></div>
+        <div className="panel-b">
+          {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
+          {msg && <div className="notice ok" style={{ marginBottom: 10 }}>{msg}</div>}
+          <p style={{ color: MUTED, fontSize: 14, marginTop: 0 }}>
+            Nobody from Elementix is attached yet. Search their name to pull in everything on record —
+            the companies they own, every property, every loan, every deed.
+          </p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div style={{ flex: '1 1 240px' }}>
+              <label className="lbl" style={{ color: MUTED }}>Name</label>
+              <input className="input" style={{ fontSize: 16 }} value={query} onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') search(); }} placeholder="e.g. Moty Brisk" />
+            </div>
+            <div style={{ flex: '0 0 110px' }}>
+              <label className="lbl" style={{ color: MUTED }}>State</label>
+              <input className="input" style={{ fontSize: 16 }} value={qState} maxLength={2}
+                onChange={(e) => setQState(e.target.value.toUpperCase())} placeholder="NJ" />
+            </div>
+            <button className="btn primary" disabled={busy === 'search'} onClick={search}>
+              {busy === 'search' ? 'Searching…' : 'Run a search on this client'}
+            </button>
+          </div>
+
+          {hits && hits.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: 13, color: MUTED, marginBottom: 6 }}>
+                Pick the right person. Elementix keeps one record per state, so the same person can appear more than once —
+                link one, and you can join the others afterwards.
+              </div>
+              {hits.map((h) => (
+                <div key={h.personId} style={{
+                  display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                  border: `1px solid ${LINE}`, borderRadius: 10, padding: '10px 12px', marginBottom: 8, background: '#FFFFFF',
+                }}>
+                  <div style={{ flex: '1 1 200px' }}>
+                    <div style={{ color: INK, fontWeight: 600 }}>{h.name || 'Unnamed'}</div>
+                    <div style={{ color: MUTED, fontSize: 13 }}>
+                      {h.state || 'state unknown'}
+                      {h.hasContact ? ' · we already hold their contact details' : ''}
+                      {h.leadCount ? ` · ${h.leadCount} lead(s) already` : ''}
+                    </div>
+                  </div>
+                  <button className="btn primary btn-sm" disabled={busy === 'link'} onClick={() => linkTo(h)}>
+                    {busy === 'link' ? 'Linking…' : 'This is them'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Linked: the profile ----------------------------------------------
+  const p = state.profile;
+  if (!p) return <div className="panel pad" style={{ color: MUTED }}>That Elementix record could not be read.</div>;
+  const s = p.summary || {};
+  const c = s.counts || {};
+  const sections = p.sections || {};
+  const current = sections[tab];
+  const candidates = p.aliasCandidates || [];
+
+  return (
+    <div className="panel">
+      <div className="panel-h" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <h3>Elementix</h3>
+        <span style={{ color: MUTED, fontSize: 13 }}>
+          {(p.person && p.person.name) || 'Linked record'}
+          {s.states && s.states.length ? ` · ${s.states.join(', ')}` : ''}
+          {p.person && p.person.refreshedAt ? ` · read ${day(p.person.refreshedAt)}` : ''}
+        </span>
+        <span style={{ flex: 1 }} />
+        <button className="btn btn-ghost btn-sm" disabled={!!busy} onClick={() => refresh(true)}>
+          {busy === 'refresh' ? 'Refreshing…' : 'Refresh data'}
+        </button>
+        <button className="btn btn-ghost btn-sm" disabled={!!busy} onClick={unlink}>Unlink</button>
+      </div>
+      <div className="panel-b">
+        {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
+        {msg && <div className="notice ok" style={{ marginBottom: 10 }}>{msg}</div>}
+
+        {p.person && p.person.lastError && (
+          <div style={{ border: '1px solid #D9A441', background: '#FDF6E7', borderRadius: 10, padding: '10px 12px', color: INK, fontSize: 14, marginBottom: 12 }}>
+            The last read did not finish cleanly — {p.person.lastError}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+          <Tile label="Companies" value={count(c.entities)} />
+          <Tile label="Properties" value={count(c.properties)} />
+          <Tile label="Mortgages" value={count(c.mortgages)} />
+          <Tile label="Deeds" value={count(c.deeds)} />
+          <Tile label="Foreclosures" value={count(c.foreclosures)} />
+          <Tile label="Owed today" value={money(s.exposure)} wide />
+        </div>
+        {s.complete === false && (
+          <div style={{ color: MUTED, fontSize: 12.5, marginBottom: 10 }}>
+            Some of these totals are missing because part of this person’s record has not been read yet.
+          </div>
+        )}
+
+        {candidates.length > 0 && (
+          <div style={{ border: `1px solid ${LINE}`, background: '#FAF8F3', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
+            <div style={{ color: INK, fontWeight: 600, fontSize: 14 }}>Found in other states — is this the same person?</div>
+            <div style={{ color: MUTED, fontSize: 13, margin: '2px 0 8px' }}>
+              Elementix matched on the name only, so this is a question, not an answer. Say yes and their records join this profile.
+            </div>
+            {candidates.map((a) => (
+              <div key={a.personId} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
+                <span style={{ color: INK, fontWeight: 600 }}>{a.name || 'Unnamed'}</span>
+                <span style={{ color: MUTED, fontSize: 13 }}>{a.state || '—'}</span>
+                <span style={{ flex: 1 }} />
+                <button className="btn primary btn-sm" disabled={!!busy} onClick={() => decideAlias(a.personId, true, `${a.name || 'that record'} (${a.state || 'unknown state'})`)}>Same person</button>
+                <button className="btn btn-ghost btn-sm" disabled={!!busy} onClick={() => decideAlias(a.personId, false)}>Different person</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', borderBottom: `1px solid ${LINE}`, paddingBottom: 8, marginBottom: 12 }}>
+          {TABS.map((t) => {
+            const sec = sections[t.key];
+            const n = sec && (sec.total != null ? sec.total : sec.rowCount);
+            const on = tab === t.key;
+            return (
+              <button key={t.key} onClick={() => { setTab(t.key); setFilter(''); }}
+                style={{
+                  border: `1px solid ${on ? '#AE8746' : LINE}`, background: on ? '#AE8746' : '#FFFFFF',
+                  color: on ? '#FFFFFF' : INK, borderRadius: 20, padding: '5px 12px',
+                  fontSize: 13.5, fontWeight: on ? 650 : 500, cursor: 'pointer',
+                }}>
+                {t.label}
+                {t.key !== 'overview' && sec && sec.status !== 'unavailable' && n != null
+                  ? <span style={{ opacity: 0.75, marginLeft: 6 }}>{n.toLocaleString('en-US')}</span> : null}
+              </button>
+            );
+          })}
+        </div>
+
+        {tab !== 'overview' && current && (current.rows || []).length > 3 && (
+          <input className="input" style={{ marginBottom: 10, fontSize: 16 }} value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder={`Search these ${TABS.find((t) => t.key === tab).label.toLowerCase()} — an address, a company, a lender…`} />
+        )}
+
+        <SectionNotice section={current} onRefresh={busy ? null : () => refresh(true)} />
+
+        {tab === 'overview'
+          ? <OverviewTab profile={p} />
+          : current && current.status !== 'unavailable' && (current.rows || []).length
+            ? <RowTable section={current} filter={filter} />
+            : current && (current.status === 'ok' || current.status === 'partial')
+              ? <div style={{ color: MUTED, fontSize: 14 }}>Elementix has nothing on record here.</div>
+              : null}
+      </div>
+    </div>
+  );
+}
+
+export { addressOf, money, count, day, COLUMNS, TABS, fallbackColumns };

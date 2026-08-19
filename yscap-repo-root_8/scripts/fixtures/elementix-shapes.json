@@ -292,6 +292,106 @@
   "_note": "CAPTURED LIVE 2026-08-18 with scope:\"count\". {totalCount} — 295, matching the owner's screenshot. This is the ONLY way to size the entities tab, because get_person carries no entity count and the data call carries no total.",
   "totalCount": 295
  },
+ "get_person_deeds": {
+  "_note": "CAPTURED LIVE 2026-08-18. THE ADDRESS TRAP: on the PERSON deed tool `addresses` is an array of PLAIN STRINGS, while on the ENTITY deed tool (get_entity_deeds, above) the SAME field name is an array of {id, addressFull} OBJECTS. The person tool additionally carries `property_addresses` in SNAKE_CASE — and the person MORTGAGE tool spells the same idea `propertyAddresses` in camelCase and has no `addresses` key at all. One reader has to handle all of it; assuming any one spelling renders a blank column or [object Object].",
+  "data": [
+   {
+    "id": "65b1b298-b0ab-4e99-a116-571b20df8708",
+    "recordingDate": "2026-07-01",
+    "totalConsideration": 850000,
+    "isCashPurchase": false,
+    "grantors": [
+     "BWS INVESTMENT GROUP THREE LLC"
+    ],
+    "grantees": [
+     "MARCOS BORJAS"
+    ],
+    "addresses": [
+     "41 ARLINGTON AVE, JERSEY, NJ 07305"
+    ],
+    "property_addresses": [
+     {
+      "id": "33d62e89-7e67-561a-b577-923912249852",
+      "address_full": "41 ARLINGTON AVE, JERSEY, NJ 07305"
+     }
+    ],
+    "city": "JERSEY",
+    "zipCode": "07305",
+    "countyName": "Hudson County",
+    "countyState": "NJ",
+    "propertyUseCategory": "Residential",
+    "propertyUseSubcategory": "Single Family Residential",
+    "isBusinessPurpose": true,
+    "mlsSalePrice": 850000,
+    "mlsSaleStatus": "sold",
+    "entity_grantors": [
+     {
+      "id": "e657a716-1d5f-5fd0-bbdc-a99466e484b5",
+      "name": "BWS INVESTMENT GROUP THREE LLC",
+      "type": "COMPANY",
+      "state": "NJ"
+     }
+    ],
+    "other_people": [
+     {
+      "id": "58839405-d073-503a-9498-430aeac69260",
+      "name": "CHRISTOPHER STEAD",
+      "state": "NJ"
+     }
+    ],
+    "_url": "https://app.elementix.com/documents/deed/65b1b298-b0ab-4e99-a116-571b20df8708"
+   }
+  ],
+  "nextPage": 2
+ },
+ "get_person_mortgages": {
+  "_note": "CAPTURED LIVE 2026-08-18. `mortgageAmount` is a DECIMAL STRING, not a number. There is NO `addresses` key here at all — the property is under `propertyAddresses` [{id, addressFull}], camelCase, where the deed tool used snake_case. `loanStatus` can be null even on a live loan, so an absent status is not evidence the loan is closed.",
+  "data": [
+   {
+    "id": "7bbe98b5-e4f6-4048-83a1-9b558a206b12",
+    "recordingDate": "2026-07-06",
+    "mortgageAmount": "539000.00",
+    "lenderName": "Alpha Funding",
+    "lenderId": "7630ab61-3deb-5fc7-af3c-b17067e6ad41",
+    "lenderAliasName": "ALPHA FUNDING CAPITAL",
+    "lenderType": "Private Money",
+    "borrowerNames": [
+     "JUNIPER DRAGON INVESTMENTS LLC"
+    ],
+    "satisfactionDate": null,
+    "loanTermMonths": 11,
+    "maturityDate": "2027-06-01",
+    "loanStatus": null,
+    "isRefinance": true,
+    "isExtension": false,
+    "loanPurpose": "refinance",
+    "preforeclosureId": null,
+    "preforeclosures": [],
+    "city": "RUTHERFORD",
+    "zipCode": "07070",
+    "countyName": "Bergen County",
+    "countyState": "NJ",
+    "propertyUseCategory": "Residential",
+    "isBusinessPurpose": true,
+    "propertyAddresses": [
+     {
+      "id": "6ca802ea-ad19-5660-862c-998fa074dca1",
+      "addressFull": "140 FRANCISCO AVE, RUTHERFORD, NJ 07070"
+     }
+    ],
+    "entityBorrowers": [
+     {
+      "id": "63fdc0de-2dec-5046-9563-1524e3758044",
+      "name": "JUNIPER DRAGON INVESTMENTS LLC",
+      "type": "COMPANY",
+      "state": "NJ"
+     }
+    ],
+    "_url": "https://app.elementix.com/documents/mortgage/7bbe98b5-e4f6-4048-83a1-9b558a206b12"
+   }
+  ],
+  "nextPage": 2
+ },
  "get_person_associated_people": {
   "_note": "CAPTURED LIVE 2026-08-18. Envelope {data, nextPage}. Counts are SHARED counts with the queried person, not that person's own totals.",
   "data": [
