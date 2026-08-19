@@ -72,14 +72,24 @@ export default function ArenaTakeover({ result, onClose, holdMs = 9000 }) {
           }}
         />
       ))}
-      <div className="arena-tk-card" onClick={(e) => e.stopPropagation()}>
+      <div className={`arena-tk-card${result.joke ? ' joke' : ''}`} onClick={(e) => e.stopPropagation()}>
         <span className="arena-tk-eyebrow">
           {result.spinSeq ? `Spin ${result.spinSeq}` : 'The wheel has landed'}
         </span>
         <strong className="arena-tk-name">{result.winnerName || 'Nobody'}</strong>
         {result.prizeLabel && <span className="arena-tk-prize">{result.prizeLabel}</span>}
-        {worth && <span className="arena-tk-worth">{worth}</span>}
-        {result.mine && <span className="arena-tk-mine">That is you.</span>}
+        {/* A BOOBY PRIZE GETS ITS PUNCHLINE AND NEVER A PRICE. `worth` is
+            already blank on one (its value is zero by construction), but the
+            follow-through line is the whole joke and has to be on the screen the
+            room is looking at — the message that lands in an inbox afterwards is
+            not where a gag works. */}
+        {result.joke && result.jokeDetail && (
+          <span className="arena-tk-joke">{result.jokeDetail}</span>
+        )}
+        {!result.joke && worth && <span className="arena-tk-worth">{worth}</span>}
+        {result.mine && (
+          <span className="arena-tk-mine">{result.joke ? 'That is you. Sorry.' : 'That is you.'}</span>
+        )}
         <div className="arena-tk-actions">
           <button type="button" className="btn primary" onClick={close}>Back to it</button>
           <button

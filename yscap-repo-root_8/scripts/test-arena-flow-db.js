@@ -252,8 +252,21 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     await wait(2200);
     const afterW2 = (await db.query(`SELECT * FROM arena_draws WHERE spin_id = $1 AND seq = 2`, [spinId])).rows[0];
     eq(afterW2.state, 'revealed', 'wheel two reveals');
-    ok(['Marketing budget', 'Leave early Friday'].includes(afterW2.winner_label),
-      `the prize is one of the two approved entries (got "${afterW2.winner_label}")`);
+    // THE PRIZE WHEEL LANDS ON SOMETHING THAT WAS ON IT. The pool is the two
+    // approved entries PLUS whatever booby prizes were frozen onto the wheel
+    // before it was hashed (see `src/lib/arena/joke-prizes.js`), so the honest
+    // test is against the frozen roster itself rather than a hand-typed list —
+    // a joke IS a legitimate outcome of a prize wheel, and pinning only the two
+    // real entries would fail on a wheel that is behaving exactly as designed.
+    const w2Roster = (afterW2.roster || []).map((c) => c.label);
+    ok(w2Roster.includes(afterW2.winner_label),
+      `the prize is one of the slices frozen on wheel two (got "${afterW2.winner_label}")`);
+    const w2Won = (afterW2.roster || [])[afterW2.winner_index] || {};
+    const w2Joke = !!(w2Won.meta && w2Won.meta.joke === true);
+    if (!w2Joke) {
+      ok(['Marketing budget', 'Leave early Friday'].includes(afterW2.winner_label),
+        `a real prize is one of the two approved entries (got "${afterW2.winner_label}")`);
+    }
 
     // ---- J. THE RECORD -----------------------------------------------------
     const decided = (await db.query(`SELECT state, outcome_note FROM arena_spins WHERE id = $1`, [spinId])).rows[0];
@@ -264,6 +277,13 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     eq(awards.body.awards.length, 1, 'exactly one award was written');
     eq(String(awards.body.awards[0].staff_id), String(afterW1.winner_staff_id), 'to the person wheel one picked');
     eq(awards.body.awards[0].prize_label, afterW2.winner_label, 'of the prize wheel two picked');
+    // A BOOBY PRIZE IS RECORDED AS ONE, AND IT IS WORTH NOTHING. If a joke ever
+    // settled as an ordinary prize it would reach the payroll export as taxable
+    // wages, so the kind and the zero are asserted the moment one lands.
+    if (w2Joke) {
+      eq(awards.body.awards[0].prize_kind, 'joke', 'a booby prize is recorded as a joke, not as a prize');
+      eq(Number(awards.body.awards[0].value_cents), 0, 'and it is worth nothing on the payroll export');
+    }
 
     const csv = await call(server, 'GET', `/api/arena/sessions/${sessionId}/awards.csv`, boss);
     eq(csv.status, 200, 'the payroll export works (prizes at these values are taxable wages)');

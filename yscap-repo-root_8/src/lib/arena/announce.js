@@ -132,6 +132,11 @@ async function spinDecided(spin, outcome) {
 
   const prize = outcome.prizeLabel || spin.title;
   const worth = money(outcome.prizeValue);
+  // A BOOBY PRIZE IS DELIVERED AS THE JOKE IT IS. The ordinary wording would
+  // read "You won: A firm handshake. It is worth $0." — which lands as a system
+  // error rather than a gag, and it is somebody's inbox. So the follow-through
+  // line carries it, and nothing anywhere says what it is worth.
+  const joke = outcome.joke === true;
   let sent = 0;
 
   // ── the winner ──────────────────────────────────────────────────────────
@@ -139,12 +144,18 @@ async function spinDecided(spin, outcome) {
     try {
       await notify.notifyStaff(outcome.staffId, {
         type: 'arena_you_won',
-        title: `You won: ${prize}`,
-        body: [
-          `Spin ${spin.seq} — "${spin.title}" — just landed on you.`,
-          worth ? `It is worth ${worth}.` : '',
-          'Open the Arena to see the wheel and check the draw for yourself.',
-        ].filter(Boolean).join(' '),
+        title: joke ? `The wheel says: ${prize}` : `You won: ${prize}`,
+        body: joke
+          ? [
+            `Spin ${spin.seq} — "${spin.title}" — landed on you, and it landed on ${prize}.`,
+            outcome.jokeDetail || '',
+            'The whole room saw it, and anybody can check the wheel for themselves.',
+          ].filter(Boolean).join(' ')
+          : [
+            `Spin ${spin.seq} — "${spin.title}" — just landed on you.`,
+            worth ? `It is worth ${worth}.` : '',
+            'Open the Arena to see the wheel and check the draw for yourself.',
+          ].filter(Boolean).join(' '),
         link: '/internal/arena',
         ctaLabel: 'See it',
       });
@@ -164,7 +175,9 @@ async function spinDecided(spin, outcome) {
       if (outcome.staffId && String(id) === String(outcome.staffId)) continue;   // already told, personally
       await notify.notifyStaff(id, {
         type: 'arena_result',
-        title: `Spin ${spin.seq}: ${winner} won ${prize}`,
+        title: joke
+          ? `Spin ${spin.seq}: the wheel gave ${winner} ${prize}`
+          : `Spin ${spin.seq}: ${winner} won ${prize}`,
         body: outcome.reason
           ? `${outcome.reason}. Anybody can check the draw for themselves in the Arena.`
           : 'Anybody can check the draw for themselves in the Arena.',

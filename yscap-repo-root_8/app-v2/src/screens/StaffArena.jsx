@@ -183,6 +183,8 @@ export default function StaffArena() {
           winnerName: data.winnerName,
           prizeLabel: data.prizeLabel,
           valueCents: data.valueCents,
+          joke: !!data.joke,
+          jokeDetail: data.jokeDetail || null,
           mine: !!(data.winnerStaffId && meRef.current && String(data.winnerStaffId) === String(meRef.current)),
         });
       }

@@ -553,6 +553,129 @@ throttle, and it is worth knowing rather than discovering.
 
 ---
 
+## 10d. The booby prizes — a slice on the wheel, not a second roll
+
+The owner asked for a joke on the PRIZE wheel — never on the people wheel —
+that says, in effect, *"you have won the right to go and make another Elementix
+call"*. Sometimes one on a wheel, sometimes two. Not every spin, and not exactly
+every fourth: *"at least one out of four or one out of five should be something
+like this."*
+
+### The decision that mattered: a slice, not a second roll
+
+The obvious build is a second coin toss — draw the prize, then roll again to see
+whether the room is told a joke instead. It was rejected, and the reason is the
+whole point of this engine. **The commitment is published before the wheel
+turns**: the roster is frozen, hashed, and shown to the room, and anybody can
+recompute the winner afterwards from the revealed seed. A second roll happens
+after that fingerprint is taken, so the joke would be the one part of the
+evening nobody could check — on a wheel whose entire promise is that everything
+is checkable. It would also be a lie on screen: the wheel would visibly land on
+the marketing budget and the room would be told something else.
+
+So a joke is a REAL SLICE. `src/lib/arena/joke-prizes.js` injects it in
+`freezeRoster`, **before** the hash, so the fingerprint covers it, the wheel
+visibly lands on it, and `GET /api/arena/draws/:id/verify` proves it exactly as
+it proves a real prize. Prize wheels only — `built.scope === 'prizes'` — so a
+person can never be replaced by a punchline.
+
+### The library
+
+24 jokes across six families, so the same one is not heard twice in an hour:
+`work` (go make the call), `already` ("you already had it"), `specific` (a named
+Elementix action), `deadpan`, `meta` (about the wheel), and `job` (the day
+itself, fondly). Each carries a label for the wheel and a one-line follow-through
+for the takeover card. `pick()` prefers ones not yet used in the session.
+
+### The ladder — how often, and why it is not a fixed number
+
+A fixed 1-in-4 becomes predictable by the third spin, and the room stops
+watching. So the share of the wheel the jokes hold RESPONDS to what the last few
+prize wheels actually did:
+
+| what just happened            | share of the wheel |
+|-------------------------------|--------------------|
+| ordinary                      | 22%                |
+| a joke landed on the last spin| 8% — back right off |
+| three clean spins in a row    | 32% — lean in       |
+| four or more clean spins      | 45% — lean in hard  |
+| ceiling, whatever the maths   | 45%                 |
+
+`recentJokeOutcomes` reads only rosters that actually CARRIED a joke
+(`EXISTS ... (c -> 'meta' ->> 'joke') = 'true'`). That filter is load-bearing and
+was found by the control run of the new suite: without it the people wheel of a
+two-wheel spin counted as a clean prize spin, so "back off after one lands" never
+once fired on the real shape of an Elementix Day.
+
+**Measured, not hoped** — 50,000 simulated spins per wheel size, feeding each
+outcome back into the ladder:
+
+| wheel      | a joke lands  | back-to-back (as % of hits) | longest clean run |
+|------------|---------------|-----------------------------|-------------------|
+| 3 prizes   | 1 in 4.0      | 8.6%                        | 22                |
+| 6 prizes   | 1 in 4.0      | 8.7%                        | 21                |
+| 12 prizes  | 1 in 4.0      | 7.7%                        | 21                |
+
+That sits at the frequent edge of the owner's own band — they asked for *at
+least* one in four or one in five, and this delivers one in four. The longest
+clean run is a 50,000-spin tail event; a real day is ten to twenty spins.
+
+A wheel needs two real prizes before it carries a joke at all and four before it
+can carry two, so a booby prize can never turn a small wheel into a coin toss.
+
+### The whole-number lesson — and how it was caught
+
+The first working version put a fractional weight on the joke slice, and the
+AUTO draw refused the wheel outright:
+
+    pickWeighted: weight must be a non-negative whole number (got 0.5641…)
+
+`fair.pickWeighted` takes only non-negative whole numbers. The HELD draw path
+(`sliceAngles`/`sliceAt`) happens to tolerate fractions, so every test written
+FOR the jokes passed while every automatic prize spin in the product was broken.
+**It was caught by the pre-existing `test-arena-flow-db.js`, not by the new
+suite** — which is the argument for running the whole set rather than the one you
+just wrote.
+
+The fix is structural rather than a rounding call: the WHOLE wheel is scaled up
+onto an integer grid of at least 40 units before the share is worked out
+(`k = ceil(40 / W)`), then the joke's total is split across its slices with the
+remainder on the first. Multiplying every weight by the same whole number leaves
+the relative odds untouched to the last digit, and nothing anywhere shows a raw
+weight — the room is shown percentages — so the scale is invisible. Without it a
+small wheel lands badly: two prizes and one joke is 33%, half again more than the
+owner asked for. Measured after the fix, every wheel size from 2 to 33 prizes
+lands between 21.6% and 22.6%.
+
+### What a joke is worth, and what it can never become
+
+`settleSpin` records a joke as its own `prize_kind = 'joke'` with
+`value_cents = 0`, and the zero is FORCED rather than read from the library — no
+wording anybody adds later can become money owed. That matters because the awards
+export is a payroll document: prizes at these values are taxable wages, and a
+booby prize is not one. `spinDecided` says *"The wheel says: …"* rather than
+*"You won: …"*, and the full-screen takeover carries the follow-through line
+instead of announcing a prize that is not one.
+
+### Switches
+
+`jokePrizes` is on by default and can be turned off for a whole session in Arena
+settings, or per spin in the spin's own config (`config.jokePrizes`). `jokeShare`
+overrides the ladder with a fixed share, capped by the same 45% ceiling.
+
+### How it was proven
+
+`scripts/test-arena-joke-prizes-pure.js` (60) — the library, the ladder, the
+count rule, the whole-number guarantee at every wheel size, the share landing in
+band, and the never-on-people rule. `scripts/test-arena-joke-prizes-db.js` (17) —
+injection before the hash, verification still passing on a joke wheel, the
+settle recording kind and zero, and the two switches. The whole-number fix was
+mutation-proven: reverting the integer grid reproduces the exact
+`pickWeighted` refusal above and turns `test-arena-flow-db.js` red (61 passed,
+8 failed) with the unmutated control green on either side (90 passed, 0 failed).
+
+---
+
 ## 11. Sources
 
 **Wheels and fairness** — wheelofnames.com + FAQ · pickerwheel.com ·
