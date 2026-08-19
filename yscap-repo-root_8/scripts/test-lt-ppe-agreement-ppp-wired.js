@@ -119,7 +119,13 @@ const VALUES = settingsMod.resolveAll().values;
 
   ok(/buildOursLeg\([^)]*pppDescriptor/.test(noComments),
     'W11 the agreement run builds our leg WITH the prepayment descriptor');
-  ok(/programRegistry\.programFor\(/.test(noComments),
+  // §2.116 MOVED THE EVIDENCE, NOT THE PROPERTY. The route used to call `programRegistry.programFor`
+  // and write the "we did not ask" wording out by hand; a THIRD caller then needed both (the hand-run
+  // paid CLI, which had been skipping the layer entirely), so the descriptor AND the wording moved into
+  // `program-registry.pppLayerFor` — one definition, so one door cannot claim the layer was asked while
+  // another quietly skips it. The property W12 guards is unchanged and is now stronger: the route must
+  // resolve through the shared registry AND must no longer carry its own lookup beside it.
+  ok(/programRegistry\.pppLayerFor\(/.test(noComments) && !/programRegistry\.programFor\(investorName\)/.test(noComments),
     'W12 …resolved through the shared registry, never a second lookup');
   ok(/investorName/.test(noComments) && /sheet\.investor/.test(noComments),
     'W13 …from the sheet\'s OWN investor, so a run cannot reconcile against another investor\'s rules');
@@ -127,7 +133,15 @@ const VALUES = settingsMod.resolveAll().values;
   // THE HONEST HALF. A run that did not ask must say so on its own answer.
   ok(/pppLayer/.test(noComments) && /asked: false/.test(noComments),
     'W14 the answer reports WHETHER the layer was asked — a green gate must not hide "we did not look"');
-  ok(/no_registered_program/.test(noComments) && /investor_unknown/.test(noComments),
+  // W15 is now BEHAVIOURAL rather than a grep, which is the better test and only became available when
+  // the wording moved to one place: the two reasons are asked for, not looked for, and the route is
+  // pinned to surfacing whichever one it was given rather than to spelling either out itself. The route
+  // half COUNTS, and that is not fussiness — this file has TWO sites that report the layer (the run and
+  // the pre-flight), so a bare `.test()` stayed green when the run's own copy was mutated away and the
+  // pre-flight's satisfied the grep. Measured, not assumed: the mutation was run.
+  ok(reg.pppLayerFor('An Investor Nobody Registered').reason === 'no_registered_program'
+    && reg.pppLayerFor(null).reason === 'investor_unknown'
+    && (noComments.match(/reason: ppp\.reason/g) || []).length >= 2,
     'W15 …and distinguishes "this investor has no program" from "we could not read the investor"');
 
   // The two are different questions and a caller acts on them differently, which is why they are not

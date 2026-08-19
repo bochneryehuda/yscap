@@ -7519,6 +7519,13 @@ sheet-under-test is the RATE SHEET alone, and New Jersey's prepayment prohibitio
 prepayment matrix — the same layer boundary §2.99 recorded. Either the label is wrong or the sheet is
 missing a rule, and the report now puts that question in front of whoever runs it.
 
+**FOLLOWED UP IN §2.116, and it was neither of those two.** The answer was that the CLI taking these
+paid runs never handed our leg the investor's prepayment descriptor at all — the route has since #99,
+the CLI never did. Once asked, the NJ probe is declined by name and this finding does not appear. The
+262-of-305 figure above is the measurement as it stood BEFORE that fix; with the layer asked it is
+**260 of 305**, and the two scenarios that changed are precisely the ones a blind run was reporting as
+Lender Price disagreeing with our sheet.
+
 ### How it is used
 
 Two new flags on the runner, and the pre-pass costs nothing:
@@ -7551,3 +7558,100 @@ and what would wire it is the agreement RUN ROUTE adopting it beside the free pr
 calls, since the console has exactly the same blind spot.
 
 180/180 suites, 33 database-backed. All seven gates green.
+
+---
+
+## §2.116 — the paid runs asked the sheet, and never asked the investor
+
+Found while measuring §2.115, by comparing the two doors that run the same battery.
+
+The agreement harness prices a **rate sheet**. A state's prepayment-penalty law is not on any rate
+sheet — it lives in the **investor's Layer 3** (`deephaven-ppp-matrix`), and no rate sheet carries a
+borrower-type rule at all. So a leg built without the investor's descriptor is blind to that entire
+layer. Task #99 fixed exactly this for the agreement RUN ROUTE, which has handed `buildOursLeg` a
+`pppDescriptor` ever since, and whose own comment says what happens without one:
+
+> *without the descriptor the battery's own scenario flagged INELIGIBLE for "NJ Individual PPP
+> prohibited" comes back PRICED and the run reports agreement on a loan the investor will not fund*
+
+**`scripts/test-lt-lp-agreement-run.js` — the hand-run CLI every paid run on this branch has been taken
+with — never passed one.** So the two doors have been measuring different engines, and the live runs
+were the blind one.
+
+### Measured, offline, on the real grid and the real registry
+
+```
+WITHOUT the layer:  262 of 305 priced   — and `NJ Individual PPP prohibited` PRICES, on 28 rungs
+WITH the layer:     260 of 305 priced   — the NJ probe is DECLINED by the matrix, by name:
+    dhvn_ppp_prohibited_nj — "Prepayment penalty prohibited in NJ for individual borrower
+    … this loan must be No-PPP"  (citation: Deephaven Operational Prepayment Penalty Matrix, eff Mar 2026)
+```
+
+Two scenarios change verdict. On a live run each came back as **"we price it, Lender Price refuses
+it"** — a disagreement recorded against the SHEET that was really our own omission, and exactly the
+shape §2.115's probe report surfaced as *"the battery labels this ineligible and we price it anyway"*.
+
+### The fix, and the second copy it removed
+
+`program-registry.pppLayerFor(investorName)` is now the ONE answer to *"whose prepayment layer applies,
+and was it asked?"* — the descriptor, the `asked` flag, and **the wording of the gap**. Three callers
+need it (the run route, the pre-flight route, the CLI), and the route had the sentence written out by
+hand; a second copy is how one door claims the layer was asked while another quietly skips it.
+
+An unasked layer always carries a reason and a sentence somebody can act on, and the two gaps are
+**never one sentence**: *"no program is registered for X"* and *"this sheet's investor could not be
+read"* send a reader to different places. A blank or whitespace-only investor is the second kind — no
+name at all — while a junk-but-present value is honestly reported as unregistered, **by name**.
+
+The CLI now resolves the investor the same way the route does (`sheet.investor.name || .code`,
+defaulting to Deephaven for the built-in sheet, overridable with `--investor`), passes the descriptor
+with `onUnresolvedPpp: 'flag'` (an unanswerable state is surfaced, never guessed — §2.110), and prints
+the layer **either way**. It reports rather than refuses, matching the route: a green run must never be
+able to hide "we did not look", but nor should a missing registration stop a measurement.
+
+### One assertion here was wrong and the code was right
+
+`pppLayerFor(0)` was asserted to read as *"investor unknown"*. It does not, and should not: a junk but
+PRESENT value is a name we could not register, and saying so by name is the actionable answer. What
+genuinely deserves the other reason is a blank or whitespace-only investor — which the code now trims
+for, because `“   ”` in an error message is not a name either.
+
+### What it is measured by
+
+`scripts/test-lt-ppe-ppp-layer-asked.js` — 23 assertions, offline, against the REAL Deephaven grid and
+the REAL registry. **Mutation-proven five ways**: any investor handed a program, the two gaps collapsed
+into one constant sentence, the CLI's `pppDescriptor` removed (**the exact pre-fix state**), the route
+re-inlining its own lookup and wording, and `buildOursLeg` ignoring the descriptor entirely (which is
+what proves the option is load-bearing rather than decorative).
+
+A note on the mutation itself, because it nearly passed: the *first* attempt at collapsing the two
+sentences swapped the blank branch for the registered-investor wording — and the suite stayed green,
+because that sentence interpolates the investor and the two outputs still differed. **A collapse has to
+be a real collapse.** A mutation that leaves the outputs distinct proves nothing, and is the same class
+as a mutation that crashes.
+
+### The guard from #99 had to move with the property, and moving it made it stronger
+
+`test-lt-ppe-agreement-ppp-wired.js` (the suite that has guarded this wiring since #99) went red on two
+assertions — correctly, because the EVIDENCE moved even though the property did not. W12 was a grep for
+`programRegistry.programFor(` in the route, and W15 a grep for the two reason strings; both now live in
+`pppLayerFor`. Neither was deleted:
+
+- **W12 now asserts the stronger thing**: the route resolves through the shared registry **and** no
+  longer carries its own lookup beside it. Mutating the route back to the inline form fails it.
+- **W15 is now BEHAVIOURAL where it can be** — it ASKS the registry for the two reasons rather than
+  looking for their spelling — and its route half **counts**. That is not fussiness: this file has TWO
+  sites that report the layer (the run and the pre-flight), so a bare `.test()` stayed green when the
+  run's own copy was mutated away and the pre-flight's satisfied the grep. Measured, not assumed — the
+  mutation was applied, the suite passed, and the assertion was tightened until it failed.
+
+**When a refactor turns a guard red, move the guard to where the property now lives — never delete the
+assertion, and re-run the mutation afterwards to confirm it still bites in its new home.**
+
+### Recorded, not fixed
+
+The CLI also does not pass `marginHoldback`, which the route resolves per sheet. That is deliberately
+left alone here: the built-in grid's base ladder is already `lp_post_holdback` and `quote.js` refuses to
+subtract a holdback twice, so changing it without measuring would be touching money on a guess.
+
+181/181 suites, 33 database-backed. All seven gates green.

@@ -28,6 +28,9 @@
  *   --priced-probe N  narrow the run to N scenarios OUR OWN sheet prices (free, offline pre-pass),
  *                     spread round-robin across the battery's groups. Measures the PRICED side only.
  *   --probe-out F     write the selected probe scenarios to F (a --scenarios file for a later replay).
+ *   --investor NAME   whose PREPAYMENT layer applies (default: Deephaven for the built-in sheet, else the
+ *                     sheet's own investor). Without a registered program the layer is NOT asked, and the
+ *                     run says so — it is never skipped silently.
  *   --out         also write the full per-scenario report as JSON.
  *
  * Nothing about this WRITES a rate sheet anywhere or changes the live pricer. LT-only.
@@ -45,6 +48,7 @@ const { buildAgreementScenarios } = require('../src/longterm/ppe/agreement-scena
 const { selectPricedProbe, describeProbe, probeBlocker } = require('../src/longterm/ppe/agreement-priced-probe');
 const { buildSearch } = require('../src/longterm/lenderprice/search-model');
 const settings = require('../src/longterm/ppe/settings');
+const programRegistry = require('../src/longterm/ppe/program-registry');
 
 function arg(name, dflt) {
   const i = process.argv.indexOf(name);
@@ -84,13 +88,14 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   // so this is an axis that can now be CHECKED rather than ignored.
   const withPrepay = flag('--with-prepay');
   let program;
+  let sheetJson = null;   // kept so the sheet's own investor can name its prepayment layer, as the route does
   try {
     const grid = builtin
       ? (withPrepay ? require('../src/longterm/ppe/deephaven-dscr-prepay-maxprice').buildPrepayMaxPriceGrid() : buildDeephavenGrid())
       : null;
     program = builtin
       ? rateSheetToProgram(gridToRateSheet(grid), { code: 'DHVN_DSCR30', name: 'Deephaven DSCR 30yr', investorCode: 'DHVN' })
-      : rateSheetToProgram(readJson(sheetPath), { source: sheetPath });
+      : rateSheetToProgram((sheetJson = readJson(sheetPath)), { source: sheetPath });
   } catch (e) { die(3, `Could not build a program from ${builtin ? 'the built-in Deephaven sheet' : sheetPath}: ${e.message}`); }
   console.log(`Sheet-under-test: ${builtin ? `built-in Deephaven DSCR (v12.7.25 confirmed subset)${withPrepay ? ' + PREPAY/max-price block' : ''}` : sheetPath}`);
 
@@ -131,7 +136,41 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
       + '  --filter-investor "Deephaven Mortgage" --filter-program-like "^dscr"\n\n'
       + 'Pass --unscoped only if you deliberately want the whole-market comparison.');
   }
-  const ours = legs.buildOursLeg(program, s, { factsFromLp: true });
+  // ---- THE PREPAYMENT LAYER, ASKED — and said out loud either way (§2.116) -----------------------
+  // The harness prices a SHEET; a state's prepayment-penalty law lives in the INVESTOR's Layer 3
+  // (`deephaven-ppp-matrix`) and no rate sheet carries a borrower-type rule at all. The agreement RUN
+  // ROUTE has handed `buildOursLeg` that descriptor since #99. **THIS CLI NEVER DID** — so every paid
+  // run taken from this script has been structurally blind to that layer, in exactly the way #99 fixed
+  // for the route, and the two doors have been measuring different engines.
+  //
+  // Measured offline over the canonical 305 on the built-in Deephaven sheet: without the descriptor our
+  // leg prices 262, with it 260 — and one of the two it stops pricing is the battery's OWN
+  // `NJ Individual PPP prohibited` probe. On a live run that scenario came back "we price it, Lender
+  // Price refuses it": a disagreement reported as a sheet defect that was really our own omission.
+  //
+  // `--investor` names the investor whose layer applies. The built-in sheet is Deephaven's; a --sheet
+  // file states its own investor. An investor with no registered program is NOT a silent skip — it is
+  // printed as a warning, in the SAME words the route uses (program-registry.pppLayerFor).
+  // Same derivation the route uses (`sheet.investor.name || sheet.investor.code`), so a sheet resolves to
+  // the same investor whichever door measures it; `--investor` overrides for a sheet that names none.
+  const sheetInvestor = (sheetJson && sheetJson.investor
+    && (sheetJson.investor.name || sheetJson.investor.code)) || null;
+  const investorName = arg('--investor', builtin ? 'Deephaven' : sheetInvestor);
+  const ppp = programRegistry.pppLayerFor(investorName);
+  if (ppp.asked) {
+    console.log(`Prepayment layer: ASKED — ${ppp.investor} (${ppp.descriptor.programName})`);
+  } else {
+    console.log(`⚠ Prepayment layer: NOT ASKED — ${ppp.note}`);
+    console.log('  A scenario a state\'s prepayment law forbids will be PRICED by this run and will read as');
+    console.log('  a disagreement with Lender Price. Pass --investor <name> to ask it.');
+  }
+  const ours = legs.buildOursLeg(program, s, {
+    factsFromLp: true,
+    pppDescriptor: ppp.descriptor,
+    // `flag` is the route's own choice: an unresolved prepayment answer is surfaced, never guessed
+    // either way (§2.110 — "the matrix says allowed when it knows it could not tell").
+    onUnresolvedPpp: 'flag',
+  });
   const lp = legs.buildLpLeg(client, { withDisqualify: !flag('--no-disqualify') });
 
   // ---- THE PRICED PROBE: ask about loans our own sheet is willing to QUOTE (§2.115) ---------------

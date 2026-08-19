@@ -3115,7 +3115,9 @@ async function rateSheetPreflightRoute(req, res) {
     });
   }
   const { values: settings } = await resolveSettingsSafe(found.scope);
-  const pppDesc = investorName ? programRegistry.programFor(investorName) : null;
+  // ONE definition of "whose prepayment layer, and was it asked" — see program-registry.pppLayerFor.
+  const ppp = programRegistry.pppLayerFor(investorName);
+  const pppDesc = ppp.descriptor;
 
   const built = agreementScenarios.buildAgreementScenarios();
   const all = Array.isArray(built && built.scenarios) ? built.scenarios : [];
@@ -3139,7 +3141,7 @@ async function rateSheetPreflightRoute(req, res) {
     preflight: out,
     scenarios: battery.length,
     truncated: all.length > battery.length ? all.length - battery.length : 0,
-    pppLayer: pppDesc ? { asked: true, investor: investorName } : { asked: false, investor: investorName || null },
+    pppLayer: { asked: ppp.asked, investor: ppp.investor, ...(ppp.asked ? {} : { reason: ppp.reason, note: ppp.note }) },
     upstreamCalls: 0,
   });
 }
@@ -3306,17 +3308,13 @@ async function runAgreementRoute(req, res) {
   // silently did not ask is the failure this whole workstream keeps finding, so the response says
   // whether the layer was asked and, when it was not, why — a green gate must never be able to hide
   // "we did not look".
-  const pppDesc = investorName ? programRegistry.programFor(investorName) : null;
-  const pppLayer = pppDesc
-    ? { asked: true, investor: investorName }
-    : {
-      asked: false,
-      investor: investorName || null,
-      reason: investorName ? 'no_registered_program' : 'investor_unknown',
-      note: investorName
-        ? `No investor program is registered for “${investorName}”, so its prepayment-penalty rules were not part of this measurement.`
-        : 'This sheet\'s investor could not be read, so no prepayment-penalty rules were part of this measurement.',
-    };
+  // ONE definition of "whose prepayment layer, and was it asked" — the wording included, so this route,
+  // the pre-flight route and the hand-run paid CLI cannot describe the same gap three ways.
+  const ppp = programRegistry.pppLayerFor(investorName);
+  const pppDesc = ppp.descriptor;
+  const pppLayer = ppp.asked
+    ? { asked: true, investor: ppp.investor }
+    : { asked: false, investor: ppp.investor, reason: ppp.reason, note: ppp.note };
 
   const built = agreementScenarios.buildAgreementScenarios();
   const all = Array.isArray(built && built.scenarios) ? built.scenarios : [];
@@ -3712,7 +3710,7 @@ async function runDisqualifierReviewRoute(req, res) {
 
   // Both legs from `lp-agreement-legs`, for the reason the agreement route spells out at length: a
   // hand-rolled leg reads the wrong shape and produces a confident, meaningless answer.
-  const pppDesc = investorName ? programRegistry.programFor(investorName) : null;
+  const pppDesc = programRegistry.pppLayerFor(investorName).descriptor;
   const oursLeg = lpAgreementLegs.buildOursLeg(program, settings, {
     factsFromLp: true, pppDescriptor: pppDesc, onUnresolvedPpp: 'flag', marginHoldback: marginFor,
   });
