@@ -18,7 +18,23 @@ striking it here in the same commit.
 against the definition instead of retyping it, an operator command, a capability written ahead of its
 caller. A row is an invitation to say which — that is what the reason field is for.
 
-## Referenced nowhere at all (144)
+**⛔ AND "REFERENCED NOWHERE" IS NOT THE SAME QUESTION AS "UNTESTED", which is the trap in reading this
+file.** The checker counts references from OTHER files, so a helper its own module calls on every
+request lands in the first list looking abandoned. `capture.scrubSecrets` — the credential scrub — is
+in it, and it runs on every captured payload. What actually matters is whether the BEHAVIOUR is
+pinned, and this file cannot answer that; only a mutation can.
+
+**So the 23 rows recorded on 2026-08-19 were each measured, not labelled.** Every one was mutated on
+its own and its suite re-run. **None was a missing wire**: each is either internal to its module and
+proven THROUGH the door that calls it — which is the stronger test, since a scrub proven on the helper
+says nothing about whether the sink runs it (§2.112) — or driven directly by a suite. Where a mutation
+was run, the row records what it cost (*"MEASURED: making it always null fails 26 assertions"*). Those
+counts are a SNAPSHOT of that day; treat a stale one as a prompt to re-measure, never as a live gate.
+One mutation attempt in that pass silently failed to apply and reported a clean pass — **a mutation
+that does not apply proves nothing**, so the harness now verifies the file actually changed before it
+believes the result.
+
+## Referenced nowhere at all (149)
 
 Not by production code and not by a test. Nothing asks for these, so nothing would notice if one were
 wrong.
@@ -41,6 +57,8 @@ wrong.
 - `encompass/loan-anatomy.js :: HOUSING_EXPENSE`
 - `encompass/loan-anatomy.js :: LOAN_ROOT`
 - `file.js :: describeResidence`
+- `lenderprice/capture.js :: enforceBudget` — the eviction pass; called by `capture()` itself and proven THROUGH it (section E of the capture suite fills the directory past the budget) — a budget proven on the helper says nothing about whether the sink runs it
+- `lenderprice/capture.js :: scrubSecrets` — the credential scrub; called by `capture()` on both the payload and the index, and deliberately proven THROUGH the door (§2.112 — a scrub the sink does not call is the failure this exists to prevent)
 - `lenderprice/client.js :: enrichZip`
 - `lenderprice/client.js :: fetchDefaultSearch`
 - `lenderprice/client.js :: fetchSmoRegistry`
@@ -57,7 +75,7 @@ wrong.
 - `people/roster.js :: fetchRoster`
 - `pipeline-book.js :: BOOKS`
 - `ppe/adjustment-overlap.js :: collisionsIn` — the overlap primitive its own suite asserts through; the pricing path calls `resolveDoubleCharges`, which wraps it
-- `ppe/agreement-dimensions.js :: soleLeafFact`
+- `ppe/agreement-dimensions.js :: FACT_ALIASES` — the one-entry alias table `factsForDimension` reads; internal, and pinned through the dimension classifier the reconciler drives
 - `ppe/agreement-scenario-generator.js :: collectThresholds`
 - `ppe/agreement-scenario-generator.js :: falsifyLeaf`
 - `ppe/agreement-scenario-generator.js :: satisfyLeaf`
@@ -85,7 +103,6 @@ wrong.
 - `ppe/disqualifier-reconciler.js :: normalizeAuthority`
 - `ppe/disqualifier-reconciler.js :: ourVerdictFromQuote`
 - `ppe/disqualifier-reconciler.js :: PPP_DIMENSIONS`
-- `ppe/disqualifier-reconciler.js :: reconcileLayer`
 - `ppe/disqualifier-review-store.js :: itemKey`
 - `ppe/disqualifier-review-store.js :: rowToItem`
 - `ppe/disqualifier-review.js :: CLASSIFICATIONS`
@@ -95,7 +112,6 @@ wrong.
 - `ppe/disqualifier-review.js :: questionFor`
 - `ppe/disqualify-crosswalk.js :: featureLeaf`
 - `ppe/disqualify-crosswalk.js :: findState`
-- `ppe/disqualify-crosswalk.js :: inferOperator`
 - `ppe/disqualify-crosswalk.js :: thresholdLeaf`
 - `ppe/divergence.js :: explainSimple`
 - `ppe/facade.js :: DEEP_ONLY`
@@ -106,6 +122,12 @@ wrong.
 - `ppe/lp-agreement-legs.js :: declineForPpp` — turns a prepayment refusal into a leg decline; used inside `buildOursLeg`, exported for its own wording assertions
 - `ppe/lp-agreement-legs.js :: flagUnresolvedPpp` — the FLAG half of the unresolved-prepayment policy; used inside this module, exported so both policies can be asserted apart
 - `ppe/lp-agreement-legs.js :: normPurpose` — the loan-purpose normalizer this leg builds on; used inside the module
+- `ppe/lp-decline-sentence.js :: conditionOperator` — reads a CONDITION clause's operator verbatim; internal to `decodeClause`. MEASURED 2026-08-19: forcing it to `eq` fails the suite (F1)
+- `ppe/lp-decline-sentence.js :: constraintOperator` — flips the LAST clause's operator to the failing side — the subtlest rule in §2.111; internal. MEASURED: removing the flip fails the suite (H4, H5)
+- `ppe/lp-decline-sentence.js :: decodeClause` — the per-clause step `decodeSentence` composes. MEASURED: making it always refuse fails 27 assertions
+- `ppe/lp-decline-sentence.js :: factOfClause` — maps a clause's words to a fact key; internal. MEASURED: making it always null fails 26 assertions
+- `ppe/lp-decline-sentence.js :: PURPOSE_NOT_CASHOUT` — the `Purch./R&T` shorthand pattern; internal. MEASURED: widening it to admit cash-out fails 2 assertions
+- `ppe/lp-decline-sentence.js :: specialClause` — the clauses that are not fact/operator/number shaped; internal. MEASURED: making it always null fails 4 assertions
 - `ppe/lp-normalize-full.js :: programRe` — builds the program-family matcher from an LP scope; used by the scope filter in this module
 - `ppe/lp-scope.js :: EQUALITY_KEYS`
 - `ppe/overlay.js :: overlayReasonsOf`
@@ -153,7 +175,6 @@ wrong.
 - `ppe/rule-coverage.js :: halfOpenStandard`
 - `ppe/rule-coverage.js :: intersect`
 - `ppe/rule-coverage.js :: regionsMeet`
-- `ppe/rung-digest.js :: theirRungs`
 - `ppe/scoreboard.js :: latestRunSummary`
 - `ppe/settings-admin.js :: COMPANY_SCOPE` — the company slot name; used inside this module and asserted against the definition rather than retyped
 - `ppe/settings-admin.js :: layerName` — plain-English name for a settings layer, used in the refusals this module writes
@@ -168,7 +189,7 @@ wrong.
 - `sync/loans.js :: readLoan`
 - `views.js :: defaultView`
 
-## Named by a test and by no production code (193)
+## Named by a test and by no production code (211)
 
 This is the §2.45 / §2.46 shape exactly — built, tested, and asked by nothing — and it is also the
 shape of a perfectly good exported table that a suite asserts against. The list is watched, not
@@ -196,6 +217,14 @@ banned.
 - `encompass/terms.js :: amortizingMonths`
 - `file.js :: describeEmployment`
 - `file.js :: sumOrNull`
+- `lenderprice/capture.js :: CAPTURE_KINDS` — the closed kind list; the suite reads it to prove no call site can hand the sink a computed kind
+- `lenderprice/capture.js :: captureDir` — where the sink writes; read by the suite to inspect what was written
+- `lenderprice/capture.js :: looksSecretKey` — the key test the scrub is built on; the suite drives it directly AND through `capture()`
+- `lenderprice/capture.js :: readCapture` — reads one stored payload back — the suite's way of proving what landed on disk
+- `lenderprice/capture.js :: readIndex` — reads the index back — same reason
+- `lenderprice/citizenship.js :: FOREIGN_NATIONAL_TOKEN` — the canonical token; the vendor door uses the mapper, the suite pins the token itself so a rename is caught
+- `lenderprice/citizenship.js :: FOREIGN_NATIONAL_TOKENS` — every spelling the vendor has been seen to use; read by the suite as the closed list
+- `lenderprice/citizenship.js :: isForeignNationalToken` — the membership test behind the mapper; pinned directly because a foreign national priced as a citizen is a money defect (§2.x, task #149)
 - `lenderprice/client.js :: API_BASE`
 - `lenderprice/client.js :: applyPollDelta`
 - `lenderprice/client.js :: AUTH_BASE`
@@ -215,6 +244,7 @@ banned.
 - `lenderprice/client.js :: invalidatePpeUser`
 - `lenderprice/client.js :: invalidateSession`
 - `lenderprice/client.js :: loginSelfTest`
+- `lenderprice/client.js :: mapPrepay`
 - `lenderprice/client.js :: mergeRefreshed`
 - `lenderprice/client.js :: recordRecovery`
 - `lenderprice/client.js :: RECOVERY_MAX`
@@ -257,8 +287,10 @@ banned.
 - `ppe/advanced-facts.js :: getAdvancedFact`
 - `ppe/advanced-facts.js :: isAdvancedFact`
 - `ppe/advanced-facts.js :: lpPricedKeys`
+- `ppe/agreement-dimensions.js :: soleLeafFact`
 - `ppe/agreement-scenario-generator.js :: distinctFrom`
 - `ppe/agreement-store.js :: gateDecision`
+- `ppe/agreement-store.js :: incomparableOf` — reads a stored run's incomparable reason; the suite uses it to prove the reason survives the round trip
 - `ppe/canary-clock.js :: EASTERN_HOURS` — the owner's six scheduled hours; read inside this module's own tick decision, exported so the suite asserts the hours rather than retyping them
 - `ppe/canary-driver.js :: classifyTick` — the timing-hold vs cannot-ever-run split, asserted directly by the driver suite
 - `ppe/canary-driver.js :: driverEnabled` — the off-switch reader; the suite drives its whole truth table
@@ -298,13 +330,18 @@ banned.
 - `ppe/deephaven-ppp-matrix.js :: unsupportedWhenKeys` — names any condition key this engine cannot evaluate — the self-check behind the "we could not tell" outcome
 - `ppe/deephaven-ppp-matrix.js :: WHEN_HANDLERS`
 - `ppe/deephaven-ppp-matrix.js :: whenMatches` — evaluates one state rule condition; used inside the matcher, exported so each key can be asserted on its own
+- `ppe/disqualifier-reconciler.js :: layerVerdict` — one layer's verdict; the reconciler composes it and the suite addresses it directly to pin a single layer without building a whole run
+- `ppe/disqualifier-reconciler.js :: reconcileLayer`
 - `ppe/disqualifier-review.js :: lpDeclines`
 - `ppe/divergence.js :: diagnose` — the diagnosis itself. It went dark in §2.78 and that IS the fix: `attachDiagnosis` moved into this module and calls it as a bare local, so the one place it is used is the same file, and both live callers (the canary runner and the facade) reach it through `attachDiagnosis`. Its suite asserts it directly rather than through a whole comparison.
 - `ppe/divergence.js :: explainPriceDivergence`
 - `ppe/finding.js :: mergeOne`
 - `ppe/finding.js :: RATE_KINDS`
 - `ppe/lp-agreement-legs.js :: UNRESOLVED_PPP_POLICIES` — the two policies a caller must choose between; the route names one explicitly, and the suite asserts the set rather than retyping it
+- `ppe/lp-decline-sentence.js :: readNumber` — the number reader (leading decimals, MM/M/K); the suite drives it directly — 13 assertions
+- `ppe/lp-decline-sentence.js :: splitClauses` — the comma/colon split whose thousands-separator rule was a real defect (§2.111); driven directly — 8 assertions
 - `ppe/lp-normalize-full.js :: llpasOf`
+- `ppe/lp-normalize-full.js :: llpaSortKey` — the deterministic LLPA order (§2.x, the vendor returns them shuffled); the suite drives it directly
 - `ppe/lp-normalize-full.js :: rungOf`
 - `ppe/lp-scope.js :: MAX_LEN`
 - `ppe/lp-scope.js :: safePattern`
@@ -330,6 +367,7 @@ banned.
 - `ppe/ratesheet-agreement.js :: DIMENSION_ROWS_PER_SCENARIO`
 - `ppe/ratesheet-agreement.js :: DISAGREEMENT_SAMPLE`
 - `ppe/ratesheet-agreement.js :: disagreementRecord`
+- `ppe/ratesheet-agreement.js :: memoizeLeg` — the ask-each-question-once wrapper (§2.95); the suite drives it directly to count the calls it saved
 - `ppe/ratesheet-agreement.js :: programOf`
 - `ppe/ratesheet-agreement.js :: REASON_TEXT_MAX`
 - `ppe/ratesheet-agreement.js :: safeDigest`
@@ -342,6 +380,7 @@ banned.
 - `ppe/rules.js :: declaredAbsentFacts` — the facts whose ABSENCE a rule set itself gives a meaning to; used by the evaluator, exported so the carve-out can be asserted directly
 - `ppe/rules.js :: evalPredicate3` — the three-valued (true/false/unknown) predicate pass that runs beside the boolean one; exported so the Kleene truth table can be asserted node by node
 - `ppe/rules.js :: missingFactsOf` — which facts a rule needs and this scenario lacks; used by the evaluator, exported for its own assertions
+- `ppe/rung-digest.js :: theirRungs`
 - `ppe/scoreboard.js :: dailySeries`
 - `ppe/settings-admin.js :: checkKeyForTarget` — refuses a key at a slot it does not belong to; used inside the batch plan, exported so the whole refusal table can be asserted
 - `ppe/store.js :: investorCodeOfScope` — reads the investor code back out of a scope string; used by the settings layer here

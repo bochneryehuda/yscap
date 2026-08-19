@@ -7648,11 +7648,29 @@ assertions — correctly, because the EVIDENCE moved even though the property di
 **When a refactor turns a guard red, move the guard to where the property now lives — never delete the
 assertion, and re-run the mutation afterwards to confirm it still bites in its new home.**
 
-### Recorded, not fixed
+### Recorded, then MEASURED — and the answer is the opposite of what "not fixed" implies
 
-The CLI also does not pass `marginHoldback`, which the route resolves per sheet. That is deliberately
-left alone here: the built-in grid's base ladder is already `lp_post_holdback` and `quote.js` refuses to
-subtract a holdback twice, so changing it without measuring would be touching money on a guess.
+This section first read: *"The CLI also does not pass `marginHoldback`, which the route resolves per
+sheet. That is deliberately left alone here… changing it without measuring would be touching money on a
+guess."* Correct to defer it, and it reads as a gap still to close. **Measured offline 2026-08-19, it is
+not a gap at all:**
+
+```
+built-in Deephaven sheet, one battery scenario, our leg:
+  no marginHoldback  → eligible, 28 rungs
+  marginHoldback 250 → eligible, NO LADDER, reason `holdback_double_counted`
+  the sheet's own priceFrame: lp_post_holdback
+```
+
+The built-in grid's base ladder is already net of the holdback, so `quote.js`'s §2.125 guard refuses to
+subtract it a second time — **passing one would make our leg refuse every scenario on this sheet**, and
+the pre-flight would then correctly refuse the paid run. The CLI passing none is not an omission; it is
+the only thing that lets the built-in sheet price at all. The route's per-sheet `marginFor` reaches a
+DATABASE-loaded sheet, whose base prices may legitimately be stated pre-holdback — and where they are
+not, the same guard refuses loudly rather than quoting a price a quarter point light.
+
+So the two doors are NOT measuring different engines on this axis, and there is nothing to close. The
+CLI now says so where the leg is built, so nobody "fixes" it by adding the argument.
 
 181/181 suites, 33 database-backed. All seven gates green.
 
@@ -7799,3 +7817,60 @@ scenarios the battery expects to be refused.
 reports a pre-existing drift (23 dark exports with no recorded reason, and one recorded row that is no
 longer dark) — its own item, not slipped in beside this one. The one row THIS work made stale
 (`client.mapPrepay`, now driven by the §2.117 suite) is struck here.
+
+---
+
+## §2.119 — twenty-three exports recorded as dark, each measured rather than labelled
+
+`check-lt-export-reachability` had drifted: **23 exported names nothing calls, none of them recorded**,
+and one recorded row that had since gained a caller. It is advisory, which is exactly how a ledger
+rots — nothing fails, so nobody looks.
+
+### "Referenced nowhere" is not the same question as "untested"
+
+The checker counts references from OTHER files, so a helper its own module calls on every request lands
+in the list looking abandoned. **`capture.scrubSecrets` — the credential scrub — is one of them, and it
+runs on every captured payload.** Reading that row as a defect would be wrong; reading it as *"fine,
+it's internal"* would be lazy. The question that matters is whether the BEHAVIOUR is pinned, and this
+file cannot answer it. Only a mutation can.
+
+So each of the 23 was **mutated on its own and its suite re-run**. **None was a missing wire.** Every one
+is either internal and proven THROUGH the door that calls it — the stronger test, since a scrub proven
+on the helper says nothing about whether the sink runs it (§2.112) — or driven directly by a suite. The
+reasons now record what each mutation cost, e.g.:
+
+```
+lp-decline-sentence.js :: constraintOperator  → removing the flip fails the suite (H4, H5)
+lp-decline-sentence.js :: factOfClause        → always null fails 26 assertions
+lp-decline-sentence.js :: decodeClause        → always refusing fails 27 assertions
+lp-decline-sentence.js :: PURPOSE_NOT_CASHOUT → widened to admit cash-out fails 2 assertions
+```
+
+Those counts are a snapshot of the day; a stale one is a prompt to re-measure, never a live gate, and
+the ledger header now says so.
+
+### A mutation that does not apply proves nothing — and mine didn't, twice
+
+The first pass over the clause reader reported **zero failures on four mutations**, which reads as four
+uncovered internals. It was false: two `perl -0pi` edits died on a wide character and two Python
+index-splices found nothing to replace, so the suite ran **unmutated** and passed. A silent no-op edit
+is indistinguishable from a passing mutation, and it is the same family as the mutation that CRASHES —
+both look like proof and are not. The harness now compares the file's checksum before and after and
+refuses to believe a run whose file never changed. Re-run properly, all four bite.
+
+### Same pass: a "recorded, not fixed" that turned out not to be a gap
+
+§2.116's residual said the paid CLI does not pass `marginHoldback` and that changing it unmeasured
+would be touching money on a guess. Measured: with a holdback supplied our leg returns
+`holdback_double_counted` and **no ladder at all**, because the built-in grid is already
+`lp_post_holdback`. Passing one would make the CLI refuse the entire battery. The record is corrected in
+place and the CLI now says so where the leg is built, so nobody closes a gap that does not exist.
+
+### What it is measured by
+
+`scripts/check-lt-export-reachability.js` itself — now green, 360 rows recorded, nothing dark without a
+reason and nothing recorded that has a caller. The 23 measurements are the mutation runs above; the
+suites that caught them are the ones already in `npm test`.
+
+183/183 suites, 34 database-backed. All seven gates green — `check-lt-export-reachability` included,
+for the first time in this workstream.

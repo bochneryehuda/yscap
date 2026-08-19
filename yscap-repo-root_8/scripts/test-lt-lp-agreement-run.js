@@ -164,6 +164,14 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
     console.log('  A scenario a state\'s prepayment law forbids will be PRICED by this run and will read as');
     console.log('  a disagreement with Lender Price. Pass --investor <name> to ask it.');
   }
+  // ⛔ NO `marginHoldback` HERE, AND THAT IS NOT AN OMISSION — do not "fix" it by adding one.
+  // MEASURED 2026-08-19 on the built-in Deephaven sheet: with a holdback supplied our leg returns
+  // `holdback_double_counted` and NO LADDER on every scenario, because that grid's base ladder is
+  // already `lp_post_holdback` and `quote.js` refuses to subtract a holdback twice (§2.125). Passing
+  // one would make this run refuse the whole battery. The agreement RUN ROUTE does pass one, and
+  // correctly: it loads a sheet from the database, whose base prices may legitimately be stated
+  // pre-holdback. A `--sheet` file that IS pre-holdback needs its margin supplied — its own item, and
+  // it needs the owner's per-investor figure, not a guess. Parity doc §2.116.
   const ours = legs.buildOursLeg(program, s, {
     factsFromLp: true,
     pppDescriptor: ppp.descriptor,
