@@ -39,6 +39,15 @@
 const db = require('../../db');
 const lib = require('./challenge-library');
 
+/** The count-in length, from settings. Never throws — falls back to ten. */
+async function countdownSeconds() {
+  try {
+    const s = await require('./settings').load();
+    const n = Number(s.settings.challengeCountdownSeconds);
+    return Number.isFinite(n) && n >= 0 && n <= 60 ? Math.round(n) : 10;
+  } catch (_) { return 10; }
+}
+
 let broadcast = () => {};
 function setBroadcaster(fn) { if (typeof fn === 'function') broadcast = fn; }
 
@@ -353,6 +362,10 @@ async function boardFor(sessionId, staffId, { isSuperAdmin = false, now = new Da
     serverNow: now.toISOString(),
     tiers: lib.TIERS,
     ticketsPerNomination: lib.TICKETS_PER_NOMINATION,
+    // How long the room counts down before a landing challenge is revealed.
+    // Read from settings rather than decided in the browser, so every screen in
+    // the building counts the same number.
+    countdownSeconds: await countdownSeconds(),
   };
 }
 

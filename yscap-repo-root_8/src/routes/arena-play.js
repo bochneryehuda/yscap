@@ -336,6 +336,94 @@ router.post('/sessions/:id/tickets', requireSuper, async (req, res) => {
 });
 
 // ===========================================================================
+// THE LIVE MONITOR — one screen the super admin watches the whole day from
+// ===========================================================================
+
+/**
+ * Everything happening right now, in one call.
+ *
+ * The owner asked for "the winner live screen to monitor how it's being filled
+ * out, how the spins run, and who wins". The board already shows a player what
+ * a player needs; this is the other view — the one where you can see, at a
+ * glance, that eleven people have clocked in, four things are waiting on you,
+ * spin two is mid-air, and who has won what all day.
+ *
+ * ONE CALL, not six, because a person refreshing this every thirty seconds
+ * should not cost six round trips. Super admin only.
+ */
+router.get('/sessions/:id/monitor', requireSuper, async (req, res) => {
+  const sid = req.params.id;
+  const [session, spins, awards, tickets, chat] = await Promise.all([
+    db.query(`SELECT * FROM arena_sessions WHERE id = $1`, [sid]),
+    db.query(
+      `SELECT p.*,
+              (SELECT count(*) FROM arena_checkins c WHERE c.spin_id = p.id) AS checkins,
+              (SELECT count(*) FROM arena_checkins c WHERE c.spin_id = p.id AND c.status = 'pending') AS checkins_pending,
+              (SELECT count(*) FROM arena_entries  e WHERE e.spin_id = p.id) AS entries,
+              (SELECT count(*) FROM arena_entries  e WHERE e.spin_id = p.id AND e.status = 'pending') AS entries_pending,
+              (SELECT count(*) FROM arena_draws    d WHERE d.spin_id = p.id AND d.state = 'revealed') AS wheels_done,
+              (SELECT count(*) FROM arena_draws    d WHERE d.spin_id = p.id) AS wheels_total
+         FROM arena_spins p WHERE p.session_id = $1 ORDER BY p.seq DESC`, [sid]),
+    db.query(
+      `SELECT a.*, s.full_name, p.seq AS spin_seq, p.title AS spin_title
+         FROM arena_awards a JOIN staff_users s ON s.id = a.staff_id
+         JOIN arena_spins p ON p.id = a.spin_id
+        WHERE a.session_id = $1 ORDER BY a.awarded_at DESC`, [sid]),
+    db.query(
+      `SELECT s.id, s.full_name, COALESCE(sum(t.count), 0)::int AS tickets
+         FROM staff_users s LEFT JOIN arena_tickets t ON t.staff_id = s.id AND t.session_id = $1
+        WHERE s.id IN (SELECT staff_id FROM arena_session_members WHERE session_id = $1 AND removed_at IS NULL)
+           OR t.id IS NOT NULL
+        GROUP BY s.id, s.full_name ORDER BY tickets DESC, s.full_name`, [sid]),
+    db.query(`SELECT count(*)::int AS n FROM arena_messages WHERE session_id = $1 AND deleted_at IS NULL`, [sid]),
+  ]);
+  if (!session.rows[0]) return bad(res, 'That session does not exist.', 404);
+
+  const claims = await db.query(
+    `SELECT count(*)::int AS n FROM arena_claims c JOIN arena_spins p ON p.id = c.spin_id
+      WHERE p.session_id = $1 AND c.status = 'pending'`, [sid]);
+  const fulfilments = await db.query(
+    `SELECT count(*)::int AS n FROM arena_challenge_entries e
+       JOIN arena_challenges c ON c.id = e.challenge_id
+      WHERE c.session_id = $1 AND e.status = 'pending'`, [sid]);
+  const challenges = await db.query(
+    `SELECT state, count(*)::int AS n FROM arena_challenges WHERE session_id = $1 GROUP BY state`, [sid]);
+
+  const rows = spins.rows;
+  const waiting = rows.reduce((a, p) => a + Number(p.checkins_pending) + Number(p.entries_pending), 0)
+    + Number(claims.rows[0].n) + Number(fulfilments.rows[0].n);
+
+  res.json({
+    session: session.rows[0],
+    serverNow: new Date().toISOString(),
+    // The one number that decides whether the super admin needs to look.
+    waitingOnYou: waiting,
+    spins: rows.map((p) => ({
+      id: p.id, seq: p.seq, title: p.title, state: p.state,
+      entryDeadlineAt: p.entry_deadline_at, launchAt: p.launch_at, decidedAt: p.decided_at,
+      checkins: Number(p.checkins), checkinsPending: Number(p.checkins_pending),
+      entries: Number(p.entries), entriesPending: Number(p.entries_pending),
+      wheelsDone: Number(p.wheels_done), wheelsTotal: Number(p.wheels_total),
+      outcomeNote: p.outcome_note,
+    })),
+    awards: awards.rows,
+    // Everybody's standing. This screen is the ONE place a full list is
+    // reasonable, because it is the person running the day looking at it — the
+    // players' own board deliberately shows only the top few and their own
+    // position, so nobody is ever shown that they are last.
+    standings: tickets.rows,
+    challenges: Object.fromEntries(challenges.rows.map((c) => [c.state, c.n])),
+    pending: {
+      checkins: rows.reduce((a, p) => a + Number(p.checkins_pending), 0),
+      entries: rows.reduce((a, p) => a + Number(p.entries_pending), 0),
+      claims: Number(claims.rows[0].n),
+      fulfilments: Number(fulfilments.rows[0].n),
+    },
+    chatMessages: chat.rows[0].n,
+  });
+});
+
+// ===========================================================================
 // THE AI HELPER — always optional, never publishes
 // ===========================================================================
 

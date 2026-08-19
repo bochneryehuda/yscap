@@ -136,6 +136,7 @@ export const arena = {
   fulfil: (id, b) => api.post(`/api/arena/challenges/${id}/fulfil`, b),
   decideFulfilment: (id, status, reason) => api.post(`/api/arena/challenge-entries/${id}/decide`, { status, reason }),
   myTickets: (sessionId) => api.get(`/api/arena/sessions/${sessionId}/my-tickets`),
+  monitor: (sessionId) => api.get(`/api/arena/sessions/${sessionId}/monitor`),
   giveTickets: (sessionId, b) => api.post(`/api/arena/sessions/${sessionId}/tickets`, b),
 
   // The AI helper. Every one of these is optional: the screens work without it.

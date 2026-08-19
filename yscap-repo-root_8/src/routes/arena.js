@@ -212,6 +212,13 @@ router.post('/sessions/:id/state', requireSuper, async (req, res) => {
   await audit(req, `arena_session_${want}`, 'arena_session', req.params.id, {});
   events.publishToStaff('arena:session', { sessionId: req.params.id, state: want });
   if (want === 'live') await announceSessionLive(r.rows[0]).catch(() => {});
+  // Closing the day sends ONE round-up of everything that was won — the owner's
+  // "final nice notifications for everybody that is involved in the game".
+  if (want === 'closed') {
+    require('../lib/arena/announce').sessionClosed(r.rows[0])
+      .then((x) => { if (x && x.sent) console.log(`[arena] wrap-up sent to ${x.sent}`); })
+      .catch((e) => console.warn(`[arena] wrap-up failed: ${(e && e.message) || e}`));
+  }
   res.json({ session: r.rows[0] });
 });
 

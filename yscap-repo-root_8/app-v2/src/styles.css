@@ -5413,3 +5413,58 @@ ol.arena-ch-top li em { color: var(--a-gold); font-style: normal; font-variant-n
   .arena-confetti { display: none; }
   .arena * { transition: none !important; }
 }
+
+/* ── THE LIVE MONITOR — the screen the day is run from ─────────────────────
+   Its own look inside the Arena: one number that matters, then everything
+   else quiet underneath it. */
+.arena-monitor { display: flex; flex-direction: column; gap: 16px; }
+.arena-mon-hero {
+  display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  background: linear-gradient(135deg, #F4FBFB, #FFFDF6);
+  border: 2px solid var(--a-line); border-radius: 18px; padding: 18px 24px;
+}
+.arena-mon-hero strong { font-size: clamp(40px, 6vw, 72px); line-height: 1; font-variant-numeric: tabular-nums; color: var(--a-good); }
+.arena-mon-hero span { font-size: 17px; font-weight: 700; }
+.arena-mon-hero em { color: var(--a-muted); font-style: normal; font-size: 13.5px; flex-basis: 100%; }
+/* Loud only when something is actually waiting. A dashboard that is always
+   shouting is a dashboard people stop reading. */
+.arena-mon-hero.hot { border-color: var(--a-coral); animation: arena-alarm 1.6s infinite; }
+.arena-mon-hero.hot strong { color: var(--a-coral); }
+
+.arena-mon-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.arena-mon-stat {
+  background: #fff; border: 1.5px solid var(--a-line); border-radius: 14px; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.arena-mon-stat strong { font-size: 30px; line-height: 1; font-variant-numeric: tabular-nums; color: var(--a-teal); }
+.arena-mon-stat strong em { font-size: 17px; color: var(--a-muted); font-style: normal; }
+.arena-mon-stat span { color: var(--a-muted); font-size: 12.5px; font-weight: 600; }
+
+.arena-mon-spins { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-direction: column; gap: 8px; }
+.arena-mon-spins li {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  padding: 10px 12px; border: 1.5px solid var(--a-line); border-radius: 12px; background: #fff;
+}
+.arena-mon-spins li.s-spinning { border-color: var(--a-gold); box-shadow: 0 0 0 3px rgba(240, 185, 63, .18); }
+.arena-mon-spins li.s-open { border-color: var(--a-good); }
+.arena-mon-spins li strong { flex: 1; min-width: 140px; }
+.arena-mon-nums { display: inline-flex; gap: 9px; flex-wrap: wrap; }
+.arena-mon-nums em { font-style: normal; font-size: 12px; color: var(--a-muted); font-weight: 700; }
+.arena-mon-nums em.hot { color: #fff; background: var(--a-coral); border-radius: 999px; padding: 2px 9px; }
+.arena-mon-clock { font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 800; color: var(--a-muted); }
+.arena-mon-clock.hot { color: var(--a-coral); }
+.arena-mon-note { flex-basis: 100%; }
+
+.arena-mon-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; align-items: start; }
+.arena-mon-awards, .arena-mon-standings { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-direction: column; gap: 5px; max-height: 380px; overflow-y: auto; }
+.arena-mon-awards li, .arena-mon-standings li {
+  display: flex; gap: 9px; align-items: baseline; flex-wrap: wrap;
+  padding: 7px 0; border-bottom: 1px solid var(--a-line); font-size: 13.5px;
+}
+.arena-mon-awards li span { flex: 1; }
+.arena-mon-awards li em { color: var(--a-gold); font-style: normal; font-weight: 800; }
+.arena-mon-awards li time { color: var(--a-muted); font-size: 12px; }
+.arena-mon-standings li span { flex: 1; }
+.arena-mon-standings li em { font-style: normal; font-weight: 800; color: var(--a-teal); font-variant-numeric: tabular-nums; }
+.arena-mon-standings li.zero { opacity: .5; }
+.arena-mon-standings li.zero em { color: var(--a-muted); }

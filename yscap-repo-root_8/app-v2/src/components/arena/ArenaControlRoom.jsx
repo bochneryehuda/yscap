@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { showMessage, askConfirm } from '../../lib/dialog.js';
 import { arena, money } from '../../lib/arena.js';
 import { ArenaAiIdeas } from './ArenaAiHelp.jsx';
+import ArenaMonitor from './ArenaMonitor.jsx';
 
 /* THE CONTROL ROOM — everything a super admin runs the day from.
  *
@@ -21,7 +22,9 @@ import { ArenaAiIdeas } from './ArenaAiHelp.jsx';
  * it.
  */
 export default function ArenaControlRoom({ board, onChanged }) {
-  const [panel, setPanel] = useState('ready');
+  // The monitor first: during a live session it is the screen you actually
+  // want open, and it is the only one that tells you whether anything needs you.
+  const [panel, setPanel] = useState('monitor');
   const [catalog, setCatalog] = useState(null);
   const [sessions, setSessions] = useState([]);
   const session = board && board.session;
@@ -36,6 +39,7 @@ export default function ArenaControlRoom({ board, onChanged }) {
   }, [loadSessions]);
 
   const panels = [
+    ['monitor', 'Live monitor'],
     ['ready', 'Ready to go'],
     ['spin', 'New spin'],
     ['challenges', 'The day\u2019s challenges'],
@@ -53,6 +57,11 @@ export default function ArenaControlRoom({ board, onChanged }) {
         ))}
       </nav>
 
+      {panel === 'monitor' && (
+        session
+          ? <ArenaMonitor sessionId={session.id} />
+          : <p className="muted">Nothing running. Start a session under Sessions.</p>
+      )}
       {panel === 'ready' && (
         session
           ? <ReadyMade session={session} onChanged={onChanged} />

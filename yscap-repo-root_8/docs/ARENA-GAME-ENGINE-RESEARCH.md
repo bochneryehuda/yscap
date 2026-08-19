@@ -324,7 +324,10 @@ Nothing below is a claim about intent; each was run.
   the switch matrix and the whole catalog.
 - **`scripts/test-arena-flow-db.js`** — 89 assertions, real Postgres and real
   HTTP, the whole Elementix Day.
-- **`scripts/test-arena-play-db.js`** — 81 assertions covering Phase 2.
+- **`scripts/test-arena-play-db.js`** — 91 assertions covering Phase 2 and the
+  live monitor.
+- **`scripts/test-arena-announce-db.js`** — 40 assertions covering who is told
+  what, and by which channel.
 - **Browser** — Chromium drives the real SPA: the stage renders, the wheel
   turns, the free spin runs, the button appears for exactly one person, pressing
   it lands the wheel, the proof panel says every check passed, a loan officer
@@ -350,6 +353,51 @@ here because they made the tests better:
 3. The coast after a press put the wheel back to `spinning`, reopening it to a
    second press.
 4. Held draws were verified with the automatic maths and always failed.
+5. **The result was broadcast and nothing else.** Everything about a decided
+   spin reached the live stream and stopped there — which is complete for the
+   thirty people watching the wheel and completely silent for the person who won
+   while they were on a call. That is the thing the owner asked for by name
+   ("who won on each and every draw … the final nice notifications for everybody
+   by email"), and it was found by grepping for a notify call in the settle path
+   rather than by anyone hitting it.
+6. **The Arena's notifications were not in the Notification Center at all**, so
+   there was no way to turn any of them off. Seven entries and their own section
+   were added; none is forced, because a game must never be something you cannot
+   switch off.
+7. **"In-app only" was a comment, not a rule.** The challenge bell said in its
+   own file header that it must never become email, and nothing enforced it — the
+   claim held only because the machine the tests ran on had no mailer. It is now
+   `arena_challenge` in notify.js's `STAFF_INAPP_TYPES`, the one definition of
+   that rule, and the test stubs the provider and asserts on what it was handed.
+
+---
+
+## 10a. Phase 3 — the parts the audit found missing
+
+After the merge, every message the owner sent was re-read against the code. Five
+things had been described and not built; four of them are the defects above. The
+fifth is the screen:
+
+**The live monitor.** "To be set up with good notifications on the winner live
+screen to monitor how it's being filled out, how the spins run, and who wins."
+`GET /sessions/:id/monitor` answers the whole screen in ONE call — a person
+leaves this open on a second monitor all day, and six round trips a refresh is a
+cost with no benefit. It leads with a single number, *things waiting on you*,
+loud only when it is not zero, because that is the only thing on the page that
+ever needs somebody to act.
+
+It is also **the one place a full ranking is shown**, and that is a deliberate
+departure from the players' own board, which shows the top few and your own
+standing and never "you are 14th of 16" — the research on sales leaderboards is
+consistent that publishing the bottom makes the people on it stop trying. The
+person running the day genuinely needs to see who has not got going yet, so they
+can nudge them. Different audience, different rule, said out loud on the screen
+itself.
+
+**The count-in is a setting, not a constant.** The owner asked for "a pop-up on
+every screen with a countdown — ten seconds, twenty seconds". It reads
+`challengeCountdownSeconds` end to end (default 10), so the room can be given
+longer on the day without a deploy.
 
 ---
 

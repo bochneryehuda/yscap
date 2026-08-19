@@ -45,11 +45,16 @@ export default function ArenaChallenges({ sessionId, isSuper, onChanged }) {
   // window. Loud once, quiet after: that is what keeps it exciting rather than
   // exhausting for people who are on the phone all afternoon.
   const [dropping, setDropping] = useState(null);
-  const [count, setCount] = useState(3);
+  const [count, setCount] = useState(0);
+  // How long the room counts down is a SETTING (the owner asked for ten or
+  // twenty seconds), read from the board rather than hard-coded. Zero means no
+  // count-in at all -- the challenge simply appears.
+  const countFrom = Math.max(0, Math.min(60,
+    Number(board && board.countdownSeconds) >= 0 ? Number(board.countdownSeconds) : 10));
   useEffect(() => subscribeChat((event, data) => {
     if (event === 'arena:challenge-open' && data && data.id) {
       setDropping(data);
-      setCount(3);
+      setCount(countFrom);
     }
     if (event.startsWith('arena:challenge') || event === 'arena:tickets' || event === 'reconnect') load();
   }), [load]);
@@ -57,7 +62,10 @@ export default function ArenaChallenges({ sessionId, isSuper, onChanged }) {
   // The count-in. Ticks 3 → 2 → 1 → gone, then the card takes over.
   useEffect(() => {
     if (!dropping) return undefined;
-    if (count <= 0) { const t = setTimeout(() => setDropping(null), 2600); return () => clearTimeout(t); }
+    // At zero the challenge itself is shown for a few seconds, then the whole
+    // thing leaves by itself. Nobody has to dismiss it, and it never sits over
+    // somebody's work.
+    if (count <= 0) { const t = setTimeout(() => setDropping(null), 5000); return () => clearTimeout(t); }
     const t = setTimeout(() => setCount((c) => c - 1), 1000);
     return () => clearTimeout(t);
   }, [dropping, count]);
@@ -71,7 +79,7 @@ export default function ArenaChallenges({ sessionId, isSuper, onChanged }) {
 
   return (
     <>
-      {dropping && <ChallengeDrop challenge={dropping} count={count} />}
+      {dropping && <ChallengeDrop challenge={dropping} count={count} from={countFrom} />}
       <aside className={`arena-challenges${minimised ? ' min' : ''}`} aria-label="Challenges">
         <header className="arena-ch-head">
           <div>
@@ -203,12 +211,22 @@ export default function ArenaChallenges({ sessionId, isSuper, onChanged }) {
  * number grow, and every animation on it is switched off for anybody who asked
  * their computer for less motion.
  */
-function ChallengeDrop({ challenge, count }) {
+function ChallengeDrop({ challenge, count, from }) {
   return (
     <div className="arena-drop" role="status" aria-live="assertive">
       <span className="arena-drop-eyebrow">New challenge</span>
       {count > 0
-        ? <div className="arena-drop-count" key={count}>{count}</div>
+        ? (
+          <>
+            <div className="arena-drop-count" key={count}>{count}</div>
+            {/* A bar that drains as the count runs down, so ten seconds has
+                something to watch rather than a number changing once a second. */}
+            <div className="arena-drop-bar">
+              <i style={{ width: `${Math.max(0, Math.min(100, (count / Math.max(1, from)) * 100))}%`,
+                transition: 'width 1s linear' }} />
+            </div>
+          </>
+        )
         : (
           <>
             <h2 className="arena-drop-title">{challenge.title}</h2>
