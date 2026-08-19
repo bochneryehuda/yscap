@@ -48,6 +48,13 @@ const STATUS_LABEL = {
   not_ordered: 'Not requested', ordered: 'Requested', documents_in: 'Documents in',
   completed: 'Completed', cancelled: 'Cancelled',
 };
+/* Every blocker code this card can NAME. The server's `closing-prep.blockers()` is
+   the authority on which codes can arrive, and scripts/test-order-blocker-labels-pure.js
+   fails the build the moment that list gains a code with no wording here — because a
+   blocker the card cannot name used to render as an EMPTY "To send this, first:" box
+   over a disabled Send button: a dead end with no words (the 'usps' code shipped
+   exactly that way). Codes outside this list still render, through the fallback line. */
+const KNOWN_BLOCKERS = ['loan_number', 'not_registered', 'term_sheet', 'attorney', 'documents_unavailable', 'usps'];
 const STATUS_TONE = {
   not_ordered: { borderColor: GOLD, color: GOLD },
   ordered: { borderColor: TEAL, color: TEAL },
@@ -505,6 +512,16 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
                 not work. Same words the server answers with. */}
             {blockers.includes('attorney') && <li>Ask an admin to set up the closing attorney's group inbox — there is nowhere to send this yet. Adding an attorney contact to the file will not help: that contact is the borrower's own lawyer and is never copied on this email.</li>}
             {blockers.includes('documents_unavailable') && <li>We could not read this file's documents just now. Try again in a moment.</li>}
+            {/* THE USPS ADDRESS GATE — the same rule the title and insurance orders
+                have: nothing carrying the property address goes to an outside party
+                until the USPS-verified address is imported. Same words the server
+                answers with. */}
+            {blockers.includes('usps') && <li>Import the USPS-verified property address — open <b style={{ color: INK }}>USPS Address Verification</b> on this file's conditions list, verify the subject address, and click "Import verified address". The attorney drafts the closing documents off this address, so it goes out USPS-verified or not at all. If USPS cannot confirm the address, a super admin can accept it there as an exception.</li>}
+            {/* A blocker this screen has no wording for still SHOWS — an empty
+                "To send this, first:" box over a disabled button is a dead end. */}
+            {blockers.filter((b) => !KNOWN_BLOCKERS.includes(b)).map((b) => (
+              <li key={b}>Something on the server is holding this order (its code is "{b}") and this screen does not know how to explain it yet. Refresh the page — if this line is still here, the portal needs an update.</li>
+            ))}
           </ul>
         </div>
       )}
