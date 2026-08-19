@@ -96,7 +96,14 @@ router.put('/settings', settings.requireSuperAdmin, async (req, res) => {
   } else if (incoming !== undefined) {
     await audit(req, 'arena_settings_changed', 'arena', null, { keys: Object.keys(incoming || {}) });
   }
-  res.json({ enabled: after.enabled, settings: after.settings, updatedAt: after.updatedAt });
+  // The SAME shape the GET answers, because the panel replaces its whole state
+  // with this response — answering a narrower shape made `readable` vanish and
+  // the screen showed the red "settings could not be read" banner immediately
+  // after every successful save (found by the 2026-08-19 audit).
+  res.json({
+    enabled: after.enabled, settings: after.settings, updatedAt: after.updatedAt,
+    readable: after.readable !== false, defaults: settings.DEFAULTS,
+  });
 });
 
 /**
@@ -255,7 +262,24 @@ async function sessionPeople(sessionId) {
   return all.rows;
 }
 
-router.get('/sessions/:id/people', async (req, res) => {
+/**
+ * The whole internal roster, BEFORE a session exists — so an admin can pick who
+ * is playing on the CREATE form instead of creating first and trimming after
+ * (owner-directed 2026-08-19: "Before I click Create Session, I should be able
+ * to select who should be part of the session… by groups: back office or sales
+ * team"). Super-admin only: it lists every colleague's name, role and email.
+ */
+router.get('/roster', requireSuper, async (req, res) => {
+  const roster = await db.query(
+    `SELECT id, full_name, email, role, title FROM staff_users
+      WHERE is_active = true AND is_external IS NOT TRUE ORDER BY full_name`);
+  res.json({ everyone: roster.rows });
+});
+
+// Super-admin only for the same reason as /roster: this answers with every
+// colleague's email address, and the one screen that calls it is the control
+// room's people picker (found open to any staffer by the 2026-08-19 audit).
+router.get('/sessions/:id/people', requireSuper, async (req, res) => {
   const people = await sessionPeople(req.params.id);
   const picked = await db.query(
     `SELECT staff_id FROM arena_session_members WHERE session_id = $1 AND removed_at IS NULL`, [req.params.id]);
@@ -301,12 +325,22 @@ router.get('/sessions/:id/room', async (req, res) => {
   if (!s.rows[0]) return bad(res, 'That session does not exist.', 404);
 
   const people = await sessionPeople(sid);
-  // The spin the check-ins belong to: the newest one that is still taking them.
-  // A session with no open spin has nobody "checked in" yet, which is the truth
-  // rather than a stale count from the last spin of the morning.
+  // The spin the check-ins belong to: the live one whose DOOR SHUTS SOONEST —
+  // that is the one people are actually clocking into. "Newest first" was
+  // measured wrong on the shipped day (2026-08-19): the all-day Mega Spin is
+  // seq 2, so it always beat the Early Bird and the bar read "0 in the spin"
+  // all morning while four approved check-ins sat on the Early Bird. A future
+  // deadline sorts before a passed one, a passed one before none at all, and
+  // only then does newest-first break the tie. A session with no live spin has
+  // nobody "checked in" yet, which is the truth rather than a stale count.
   const spin = (await db.query(
     `SELECT id, seq, title, state FROM arena_spins
-      WHERE session_id = $1 AND state IN ('open','locked','spinning') ORDER BY seq DESC LIMIT 1`, [sid])).rows[0] || null;
+      WHERE session_id = $1 AND state IN ('open','locked','spinning')
+      ORDER BY (entry_deadline_at IS NULL) ASC,
+               (entry_deadline_at < now()) ASC,
+               CASE WHEN entry_deadline_at >= now() THEN entry_deadline_at END ASC,
+               seq DESC
+      LIMIT 1`, [sid])).rows[0] || null;
   const checkins = spin
     ? (await db.query(
       `SELECT staff_id, status FROM arena_checkins WHERE spin_id = $1`, [spin.id])).rows : [];
@@ -383,8 +417,14 @@ router.get('/board', async (req, res) => {
       WHERE a.session_id = $1 ORDER BY a.awarded_at DESC`, [sid.id])).rows;
 
   const me = String(req.actor.id);
+  // Whether THIS person may play — a session limited to a picked list refuses
+  // everyone else at check-in, so the button must not be shown to them (the
+  // 2026-08-19 audit found a guaranteed 400 dead end).
+  const roomPeople = await sessionPeople(sid.id);
+  const iAmIn = roomPeople.some((p) => String(p.id) === me);
   res.json({
     session: sid,
+    iAmIn,
     serverNow: new Date().toISOString(),
     settings: cfg.settings,
     isSuperAdmin: isSuper(req),
@@ -670,10 +710,19 @@ router.post('/spins/:id/checkin', async (req, res) => {
   if (!verdict.ok) return res.status(400).json({ error: verdict.reason, code: verdict.code });
 
   const status = config.autoApproveCheckins === false ? 'pending' : 'approved';
+  // What they agreed to when they pressed the button. A spin with an
+  // attestation configured ("I am here, inside the building…") records the
+  // EXACT WORDING the person attested to — the column existed since db/586 and
+  // nothing wrote it (found by the 2026-08-19 audit) — so what they agreed to
+  // is on the record rather than remembered differently later. NULL on an
+  // ordinary check-in and when the client did not confirm.
+  const attested = typeof config.attestation === 'string' && config.attestation.trim()
+      && (req.body || {}).attested === true
+    ? config.attestation.trim().slice(0, 500) : null;
   const r = await db.query(
-    `INSERT INTO arena_checkins (spin_id, staff_id, status, note)
-     VALUES ($1,$2,$3,$4) RETURNING *`,
-    [spin.id, req.actor.id, status, String((req.body || {}).note || '').slice(0, 280) || null]);
+    `INSERT INTO arena_checkins (spin_id, staff_id, status, note, attested)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [spin.id, req.actor.id, status, String((req.body || {}).note || '').slice(0, 280) || null, attested]);
   events.publishToStaff('arena:checkin', {
     spinId: spin.id, staffId: String(req.actor.id), status,
   });
@@ -707,21 +756,32 @@ router.post('/spins/:id/entries', async (req, res) => {
     `SELECT count(*)::int AS n FROM arena_entries WHERE spin_id = $1 AND staff_id = $2 AND status <> 'rejected'`,
     [spin.id, req.actor.id]);
 
+  // The earned economy needs the person's standing (chances, nominations,
+  // tier ceiling). Best-effort — an unreadable standing engages NO economy,
+  // which is the ordinary-spin behaviour, never a refusal.
+  let standing = null;
+  if (spin.kind === 'ticket_lottery') {
+    try { standing = await require('../lib/arena/challenges').standingFor(spin.session_id, req.actor.id); }
+    catch (_) { standing = null; }
+  }
+
   const verdict = rules.mayEnter(
     { kind: (req.body || {}).kind, label: (req.body || {}).label, value: (req.body || {}).value, valueCents: (req.body || {}).valueCents },
     {
       spin, settings: cfg.settings, now: new Date(),
       checkedIn: checked.rows.length > 0 && checked.rows[0].status !== 'rejected',
       existingCount: mine.rows[0].n,
+      standing,
     });
   if (!verdict.ok) return res.status(400).json({ error: verdict.reason, code: verdict.code });
 
   const r = await db.query(
-    `INSERT INTO arena_entries (spin_id, staff_id, kind, label, detail, value_cents, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    `INSERT INTO arena_entries (spin_id, staff_id, kind, label, detail, value_cents, status, unlocked_by_tickets)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
     [spin.id, req.actor.id, verdict.kind, verdict.label,
       String((req.body || {}).detail || '').slice(0, 500) || null,
-      verdict.valueCents, verdict.needsApproval ? 'pending' : 'approved']);
+      verdict.valueCents, verdict.needsApproval ? 'pending' : 'approved',
+      verdict.unlockedByTickets == null ? null : verdict.unlockedByTickets]);
   events.publishToStaff('arena:entry', { spinId: spin.id, entryId: r.rows[0].id, status: r.rows[0].status });
   res.status(201).json({ entry: r.rows[0] });
 });

@@ -221,8 +221,30 @@ async function freezeRoster(spinId, seq) {
     throw new Error(`Wheel ${seq - 1} has not finished yet, so wheel ${seq} cannot be set up.`);
   }
 
+  // TICKETS ARE THE ODDS, READ FROM THE LEDGER (owner's Mega Spin premise:
+  // "for every challenge you do you get another chance" — measured broken
+  // 2026-08-19: Ben with 9 chances and Ann with 1 froze as identical slices,
+  // because the 'tickets' weight branch read `config.weights`, an admin-typed
+  // map nothing ever populated). The ledger is summed HERE, at freeze time,
+  // into the ctx copy of that same map — never written back onto the stored
+  // spin — so `weightFor`'s existing branch does the rest and an admin-typed
+  // entry still wins over the ledger (an explicit number is a decision).
+  // Everyone starts from ONE slice and their chances stack on top (1 + sum),
+  // because being in the room already earns a place on this wheel and "more
+  // tickets, better odds — but everyone still has a chance" is the promise the
+  // screen makes. Negative sums (reversals past zero) floor at the base 1.
+  let ctxConfig = config;
+  if ((config.weightMode || 'equal') === 'tickets') {
+    const led = await db.query(
+      `SELECT staff_id, COALESCE(sum(count), 0)::int AS n
+         FROM arena_tickets WHERE session_id = $1 GROUP BY staff_id`, [spin.session_id]);
+    const weights = {};
+    for (const row of led.rows) weights[String(row.staff_id)] = 1 + Math.max(0, Number(row.n) || 0);
+    ctxConfig = { ...config, weights: { ...weights, ...(config.weights || {}) } };
+  }
+
   const built = await sources.buildPool(wheel.source, {
-    spin, session, config, weightMode: config.weightMode || 'equal', previousWinnerKey,
+    spin, session, config: ctxConfig, weightMode: config.weightMode || 'equal', previousWinnerKey,
   });
   const candidates = built.candidates || [];
   if (!candidates.length) {
@@ -460,6 +482,20 @@ async function settleSpin(spin, draws) {
   if (!spin) return null;
   const revealed = draws.filter((d) => d.state === 'revealed').sort((a, b) => a.seq - b.seq);
 
+  // A BUTTON LOTTERY IS NOT THE WINNER (owner's day, measured 5/5 wrong before
+  // this line). On the Early Bird, wheels 1 and 2 exist only to hand out the
+  // stop buttons — `stopHolders` names them as `fromWheel` sources — and wheel 3
+  // is "Which loan officer wins". Taking the FIRST revealed wheel with a staff
+  // id therefore awarded the prize to whoever won the BUTTON, while the room
+  // watched wheel 3 announce somebody else: the ledger, the payroll CSV, the
+  // winner email and the recap all named the wrong person, every single time.
+  // So any wheel that merely hands its winner a button is excluded from award
+  // candidacy. An ordinary spin has no stopHolders and is byte-identical.
+  const cfg = asConfig(spin);
+  const buttonWheels = new Set(
+    (Array.isArray(cfg.stopHolders) ? cfg.stopHolders : [])
+      .map((x) => Number(x && x.fromWheel)).filter((n) => n > 0));
+
   let staffId = null;
   let personLabel = null;
   let prizeLabel = null;
@@ -471,8 +507,9 @@ async function settleSpin(spin, draws) {
   for (const d of revealed) {
     const cand = (d.roster || [])[d.winner_index] || {};
     const meta = cand.meta || {};
-    if (!staffId && d.winner_staff_id) { staffId = d.winner_staff_id; personLabel = d.winner_label; }
-    if (!staffId && meta.officerStaffId) { staffId = meta.officerStaffId; personLabel = meta.officer || d.winner_label; }
+    const isButtonLottery = buttonWheels.has(Number(d.seq));
+    if (!isButtonLottery && !staffId && d.winner_staff_id) { staffId = d.winner_staff_id; personLabel = d.winner_label; }
+    if (!isButtonLottery && !staffId && meta.officerStaffId) { staffId = meta.officerStaffId; personLabel = meta.officer || d.winner_label; }
     // A JOKE COUNTS AS THE OUTCOME, and is recorded as its own kind with no
     // value. It has to be here, or a wheel that lands on one would settle with
     // no prize at all and the room would be told nothing happened — which is

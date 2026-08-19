@@ -198,6 +198,9 @@ async function downloadPost(path, body) {
   const m = /filename="([^"]+)"/.exec(cd);
   return { blob: await res.blob(), filename: m ? m[1] : 'document' };
 }
+// The authenticated-GET download, exported so feature clients (e.g. the Arena)
+// can fetch a file behind the login instead of pointing an <a href> at it.
+export const downloadAuthed = download;
 export function saveBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

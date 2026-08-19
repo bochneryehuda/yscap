@@ -26,17 +26,27 @@ export default function ArenaControlRoom({ board, onChanged }) {
   // want open, and it is the only one that tells you whether anything needs you.
   const [panel, setPanel] = useState('monitor');
   const [catalog, setCatalog] = useState(null);
+  const [catalogErr, setCatalogErr] = useState('');
   const [sessions, setSessions] = useState([]);
+  const [sessionsErr, setSessionsErr] = useState('');
   const session = board && board.session;
 
   const loadSessions = useCallback(async () => {
-    try { setSessions((await arena.sessions()).sessions || []); } catch { /* the panel still opens */ }
+    setSessionsErr('');
+    try { setSessions((await arena.sessions()).sessions || []); }
+    catch (e) { setSessionsErr((e && e.message) || 'The sessions could not be loaded.'); }
+  }, []);
+
+  const loadCatalog = useCallback(() => {
+    setCatalogErr('');
+    arena.catalog().then(setCatalog)
+      .catch((e) => setCatalogErr((e && e.message) || 'The games could not be loaded.'));
   }, []);
 
   useEffect(() => {
-    arena.catalog().then(setCatalog).catch(() => {});
+    loadCatalog();
     loadSessions();
-  }, [loadSessions]);
+  }, [loadCatalog, loadSessions]);
 
   const panels = [
     ['monitor', 'Live monitor'],
@@ -75,7 +85,7 @@ export default function ArenaControlRoom({ board, onChanged }) {
       )}
       {panel === 'spin' && (
         session
-          ? <NewSpin catalog={catalog} session={session} onChanged={onChanged} />
+          ? <NewSpin catalog={catalog} catalogErr={catalogErr} onRetryCatalog={loadCatalog} session={session} onChanged={onChanged} />
           : <p className="muted">Start a session first, over in Sessions.</p>
       )}
       {panel === 'rematch' && (
@@ -83,7 +93,14 @@ export default function ArenaControlRoom({ board, onChanged }) {
           ? <Rematch session={session} onChanged={onChanged} />
           : <p className="muted">Start a session first.</p>
       )}
-      {panel === 'sessions' && <Sessions sessions={sessions} onReload={() => { loadSessions(); onChanged(); }} />}
+      {panel === 'sessions' && (
+        <Sessions
+          sessions={sessions}
+          loadErr={sessionsErr}
+          onRetry={loadSessions}
+          onReload={() => { loadSessions(); onChanged(); }}
+        />
+      )}
       {panel === 'queue' && (session ? <Queue board={board} onChanged={onChanged} /> : <p className="muted">No session running.</p>)}
       {panel === 'prizes' && <PrizeList />}
       {panel === 'settings' && <SettingsPanel />}
@@ -120,12 +137,17 @@ function Rematch({ session, onChanged }) {
   const [prize, setPrize] = useState('');
   const [busy, setBusy] = useState(false);
   const [made, setMade] = useState(null);
+  const [err, setErr] = useState('');
+  const [sugErr, setSugErr] = useState('');
+  const [tryCount, setTryCount] = useState(0);
 
   useEffect(() => {
     let alive = true;
+    setErr('');
+    setSugErr('');
     arena.people(session.id)
       .then((r) => { if (alive) setPeople(r.people || []); })
-      .catch(() => {});
+      .catch((e) => { if (alive) setErr((e && e.message) || 'The team list could not be loaded.'); });
     arena.rematchSuggestion(session.id)
       .then((r) => {
         if (!alive) return;
@@ -138,9 +160,9 @@ function Rematch({ session, onChanged }) {
           setHolder(String(r.pair[1].id));
         }
       })
-      .catch(() => {});
+      .catch((e) => { if (alive) setSugErr((e && e.message) || 'The suggested pair could not be loaded.'); });
     return () => { alive = false; };
-  }, [session.id]);
+  }, [session.id, tryCount]);
 
   const nameOf = (id) => (people.find((p) => String(p.id) === String(id)) || {}).full_name || '';
   const bad = !a || !b || String(a) === String(b);
@@ -169,6 +191,13 @@ function Rematch({ session, onChanged }) {
         Two names, one wheel, one stop button. It opens the moment you press the button,
         so everybody sees it at once.
       </p>
+
+      {((err && !people.length) || (sugErr && !suggestion)) && (
+        <p className="arena-bad small">
+          {(err && !people.length) ? err : sugErr}{' '}
+          <button className="btn ghost small" onClick={() => setTryCount((n) => n + 1)}>Try again</button>
+        </p>
+      )}
 
       {suggestion && (
         <p className={`arena-rm-why${suggestion.pair && suggestion.pair.length === 2 ? ' good' : ''}`}>
@@ -222,10 +251,16 @@ function Rematch({ session, onChanged }) {
       </button>
 
       {made && (
-        <p className="arena-good">
-          {made.pair.map((p) => p.name).join(' v ')} are on the wheel. {made.stopHolderName} has the stop button.
-          {made.freezeError ? ` (${made.freezeError})` : ''}
-        </p>
+        <>
+          <p className="arena-good">
+            {(made.pair || []).map((p) => p.name).join(' v ')} are on the wheel. {made.stopHolderName} has the stop button.
+          </p>
+          {/* A wheel that could not be frozen is a FAILURE, not a footnote on
+              the success line — it means the duel is not actually ready. */}
+          {made.freezeError && (
+            <p className="arena-bad">The wheel could not be frozen: {made.freezeError} Fix that before you spin.</p>
+          )}
+        </>
       )}
     </section>
   );
@@ -249,21 +284,38 @@ function ReadyMade({ session, onChanged }) {
   const [busy, setBusy] = useState('');
   const [done, setDone] = useState(null);
 
-  useEffect(() => { arena.templates().then((r) => setList(r.templates || [])).catch(() => {}); }, []);
+  const [err, setErr] = useState('');
 
-  const load = async (key) => {
+  const loadTemplates = useCallback(() => {
+    setErr('');
+    arena.templates().then((r) => setList(r.templates || []))
+      .catch((e) => setErr((e && e.message) || 'The plans could not be loaded.'));
+  }, []);
+  useEffect(() => { loadTemplates(); }, [loadTemplates]);
+
+  const load = async (key, label) => {
+    const sure = await askConfirm(
+      `Load "${label}" into this session for ${day}? It arrives as a draft, and loading the Mega Spin `
+      + 'replaces any challenge plan already scheduled for the day.', { confirmLabel: 'Load it' });
+    if (!sure) return;
     setBusy(key); setDone(null);
     try {
       const r = await arena.loadTemplate(session.id, key, {
         day,
-        // getTimezoneOffset is minutes BEHIND UTC, which is the sign the server
-        // wants — so 10:30 here really is 10:30 there.
-        offsetMinutes: new Date().getTimezoneOffset(),
+        // THE SIGN MATTERS AND IT IS NEGATIVE. getTimezoneOffset() is minutes
+        // BEHIND UTC (+240 in New York); the server's `at()` wants minutes
+        // AHEAD of UTC (-240 there). Passing it un-negated shifted every time
+        // by TWICE the offset — the 10:30 Early Bird would have auto-launched
+        // at 2:30 in the morning. Same expression as DaySetup, on purpose.
+        offsetMinutes: -new Date().getTimezoneOffset(),
       });
+      if (r && r.alreadyThere) {
+        showMessage(r.message || 'That plan is already in this session.', { title: 'Already there', tone: 'info' });
+      }
       setDone(r);
       await onChanged();
     } catch (e) {
-      showMessage((e && e.message) || 'That could not be loaded.');
+      showMessage((e && e.message) || 'That could not be loaded.', { tone: 'error' });
     } finally { setBusy(''); }
   };
 
@@ -277,6 +329,9 @@ function ReadyMade({ session, onChanged }) {
       <label className="arena-fullfield" style={{ maxWidth: 220 }}>Which day
         <input className="input" type="date" value={day} onChange={(e) => setDay(e.target.value)} />
       </label>
+      {err && !list.length && (
+        <p className="arena-bad small">{err} <button className="btn ghost small" onClick={loadTemplates}>Try again</button></p>
+      )}
       <div className="arena-gamegrid">
         {list.map((t) => (
           <div key={t.key} className="arena-game" style={{ cursor: 'default' }}>
@@ -285,7 +340,7 @@ function ReadyMade({ session, onChanged }) {
             <ul className="muted small" style={{ margin: '6px 0 0 16px' }}>
               {(t.howItReads || []).map((line, i) => <li key={i}>{line}</li>)}
             </ul>
-            <button className="btn small" style={{ marginTop: 8 }} disabled={!!busy} onClick={() => load(t.key)}>
+            <button className="btn small" style={{ marginTop: 8 }} disabled={!!busy} onClick={() => load(t.key, t.label)}>
               {busy === t.key ? 'Loading…' : 'Load it'}
             </button>
           </div>
@@ -320,11 +375,14 @@ function ChallengeDay({ session, onChanged }) {
   const [lib, setLib] = useState(null);
   const [busy, setBusy] = useState('');
 
+  const [err, setErr] = useState('');
+
   const load = useCallback(async () => {
+    setErr('');
     try {
       setBoard(await arena.challenges(session.id));
       if (!lib) setLib(await arena.challengeLibrary());
-    } catch { /* the panel still opens */ }
+    } catch (e) { setErr((e && e.message) || 'The day could not be loaded.'); }
   }, [session.id, lib]);
   useEffect(() => { load(); }, [load]);
 
@@ -335,7 +393,11 @@ function ChallengeDay({ session, onChanged }) {
     finally { setBusy(''); }
   };
 
-  if (!board) return <p className="muted">Loading the day…</p>;
+  if (!board) {
+    return err
+      ? <p className="arena-bad small">{err} <button className="btn ghost small" onClick={load}>Try again</button></p>
+      : <p className="muted">Loading the day…</p>;
+  }
   const upcoming = board.upcoming || [];
   const live = board.live || [];
 
@@ -377,7 +439,11 @@ function ChallengeDay({ session, onChanged }) {
             <em className="muted small">{c.ticketsAwarded} chances · {c.awardMode === 'everyone' ? 'anybody' : `first ${c.slots}`}</em>
             <span className="arena-decide">
               <button className="btn ghost small" disabled={!!busy}
-                onClick={() => change(c.id, { state: 'live' }, c.id)}>Start now</button>
+                onClick={async () => {
+                  // A live challenge takes over every screen in the building.
+                  if (!await askConfirm(`Start "${c.title}" right now? It pops up on everyone's screen the moment you do.`, { confirmLabel: 'Start it now' })) return;
+                  change(c.id, { state: 'live' }, c.id);
+                }}>Start now</button>
               <button className="btn ghost small" disabled={!!busy}
                 onClick={() => change(c.id, { state: 'skipped' }, c.id)}>Skip</button>
             </span>
@@ -437,12 +503,21 @@ function AddChallenge({ session, lib, onAdded }) {
         <textarea className="input" rows={2} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
       </label>
       <button className="btn small" disabled={!title.trim() || !prompt.trim() || saving} onClick={async () => {
+        // Same warning as Start now: this takes over every screen right away.
+        if (!await askConfirm(`Put "${title.trim()}" out right now? It pops up on everyone's screen the moment you do.`, { confirmLabel: 'Put it out' })) return;
         setSaving(true);
         try {
-          await arena.addChallenge(session.id, { title: title.trim(), prompt: prompt.trim(), tier, proofType: proof, awardMode: award, startNow: true });
+          // A hand-added challenge gets a CLOSING TIME (20 minutes), or the
+          // sweep can never close it and it sits live on every screen until
+          // somebody remembers (found by the 2026-08-19 audit — the sweep only
+          // closes rows whose closes_at is set).
+          await arena.addChallenge(session.id, {
+            title: title.trim(), prompt: prompt.trim(), tier, proofType: proof, awardMode: award,
+            startNow: true, closesInMinutes: 20,
+          });
           setTitle(''); setPrompt('');
           await onAdded();
-        } catch (e) { showMessage((e && e.message) || 'That did not save.'); }
+        } catch (e) { showMessage((e && e.message) || 'That did not save.', { tone: 'error' }); }
         finally { setSaving(false); }
       }}>Put it out now</button>
     </details>
@@ -451,7 +526,7 @@ function AddChallenge({ session, lib, onAdded }) {
 
 /* ------------------------------------------------------------ new spin */
 
-function NewSpin({ catalog, session, onChanged }) {
+function NewSpin({ catalog, catalogErr, onRetryCatalog, session, onChanged }) {
   const [kind, setKind] = useState('elementix_double');
   const [title, setTitle] = useState('');
   const [subtitle, setSubtitle] = useState('');
@@ -473,7 +548,11 @@ function NewSpin({ catalog, session, onChanged }) {
     if (game) { setConfig({ ...game.defaults }); setTitle((t) => t || game.label); }
   }, [game]);
 
-  if (!catalog) return <p className="muted">Loading the games…</p>;
+  if (!catalog) {
+    return catalogErr
+      ? <p className="arena-bad small">{catalogErr} <button className="btn ghost small" onClick={onRetryCatalog}>Try again</button></p>
+      : <p className="muted">Loading the games…</p>;
+  }
   const families = catalog.families || [];
   const games = (catalog.games || []).filter((g) => g.family === family);
   const usesQualifiers = game && game.wheels.some((w) => w.source === 'qualifiers' || w.source === 'qualifier_claimants');
@@ -495,7 +574,7 @@ function NewSpin({ catalog, session, onChanged }) {
       });
       setTitle(''); setSubtitle(''); setQuals('');
       await onChanged();
-      showMessage('Spin created. Open it when you are ready for people to check in.');
+      showMessage('Spin created. Open it when you are ready for people to check in.', { title: 'Created', tone: 'info' });
     } catch (e) {
       showMessage((e && e.message) || 'That spin could not be created.');
     } finally {
@@ -660,15 +739,130 @@ function Toggle({ label, v, on }) {
 
 /* ------------------------------------------------------------- sessions */
 
-function Sessions({ sessions, onReload }) {
+/* Which colleagues belong to which quick-pick group. Client-side on purpose:
+   the roles arrive with the roster, and a chip is only a fast way of ticking
+   boxes the admin can still change one by one. */
+const ROSTER_GROUPS = [
+  { key: 'sales', label: 'Sales team', roles: ['loan_officer', 'account_executive'] },
+  { key: 'back', label: 'Back office', roles: ['processor', 'underwriter', 'closer', 'draw_coordinator', 'loan_coordinator', 'account_manager'] },
+  { key: 'admins', label: 'Admins', roles: ['admin', 'super_admin'] },
+];
+
+/** The reusable tick-who-plays list: group chips on top, people underneath. */
+function RosterPicker({ everyone, picked, onChange }) {
+  const all = everyone.map((p) => String(p.id));
+  const isAll = picked.length === all.length;
+  const setGroup = (roles) => onChange(everyone.filter((p) => roles.includes(p.role)).map((p) => String(p.id)));
+  const toggle = (id) => onChange(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]);
+  return (
+    <div className="arena-people">
+      <div className="arena-group-chips">
+        <button type="button" className={`btn ghost small${isAll ? ' on' : ''}`} onClick={() => onChange(all)}>Everyone</button>
+        {ROSTER_GROUPS.map((g) => (
+          <button key={g.key} type="button" className="btn ghost small" onClick={() => setGroup(g.roles)}>{g.label}</button>
+        ))}
+        <button type="button" className="btn ghost small" onClick={() => onChange([])}>Clear</button>
+      </div>
+      <p className="muted small">
+        {isAll
+          ? 'Everyone is in — the whole team, including anyone who joins later.'
+          : `${picked.length} of ${everyone.length} picked. Only these people can play.`}
+      </p>
+      <ul>
+        {everyone.map((p) => (
+          <li key={p.id}>
+            <label>
+              <input type="checkbox" checked={picked.includes(String(p.id))} onChange={() => toggle(String(p.id))} />
+              <span>{p.full_name}</span>
+              <em className="muted small">{p.role}</em>
+            </label>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/* "Everyone ticked" is sent as an EMPTY list on purpose: the server stores no
+   member rows then, which genuinely means "the whole team" — somebody hired
+   next week is in automatically. Sending the full list instead would PIN
+   today's names, and the new hire would be refused at check-in (the exact trap
+   the 2026-08-19 audit found). */
+const staffIdsToSend = (picked, everyone) =>
+  (picked.length === everyone.length ? [] : picked);
+
+/** ONE press builds the whole day, ready to Start. */
+function DaySetup({ onReload }) {
+  const [day, setDay] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const run = async () => {
+    setBusy(true);
+    try {
+      const r = await arena.setupDay({ day, offsetMinutes: -new Date().getTimezoneOffset() });
+      setResult(r);
+      onReload();
+    } catch (e) { showMessage((e && e.message) || 'The day could not be set up.', { tone: 'error' }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="arena-daysetup">
+      <h4>Set up Elementix Day in one press</h4>
+      <p className="muted small">
+        Builds the whole day as a draft — the Early Bird (clock in by 11:38, then the four wheels)
+        and the all-day Mega Spin (challenges from 12:30 until six) — with every setting pre-filled.
+        Nothing goes out to the team until you press <strong>Start the day</strong> on it below.
+      </p>
+      <div className="arena-form">
+        <label>Which day
+          <input className="input" type="date" value={day} onChange={(e) => setDay(e.target.value)} />
+        </label>
+      </div>
+      <button className="btn small" disabled={busy || !day} onClick={run}>
+        {busy ? 'Setting it up…' : 'Set up the whole day'}
+      </button>
+      {result && <p className="arena-good small">{result.summary}</p>}
+    </div>
+  );
+}
+
+function Sessions({ sessions, loadErr, onRetry, onReload }) {
   const [name, setName] = useState('');
   const [subtitle, setSubtitle] = useState('');
   const [picking, setPicking] = useState(null);
+  const [everyone, setEveryone] = useState(null);
+  const [rosterErr, setRosterErr] = useState('');
+  const [picked, setPicked] = useState([]);
+
+  useEffect(() => {
+    arena.roster()
+      .then((d) => { setEveryone(d.everyone || []); setPicked((d.everyone || []).map((p) => String(p.id))); })
+      .catch((e) => setRosterErr((e && e.message) || 'The team list could not be loaded.'));
+  }, []);
 
   const create = async () => {
     if (!name.trim()) return;
-    try { await arena.createSession({ name: name.trim(), subtitle: subtitle.trim() || null }); setName(''); setSubtitle(''); onReload(); }
-    catch (e) { showMessage((e && e.message) || 'That did not work.'); }
+    try {
+      await arena.createSession({
+        name: name.trim(), subtitle: subtitle.trim() || null,
+        staffIds: everyone ? staffIdsToSend(picked, everyone) : [],
+      });
+      setName(''); setSubtitle('');
+      onReload();
+      showMessage('The session is created as a draft. Press "Start it (go live)" when you are ready.', { title: 'Created', tone: 'info' });
+    } catch (e) { showMessage((e && e.message) || 'That did not work.', { tone: 'error' }); }
+  };
+
+  const goLive = async (sess) => {
+    const sure = await askConfirm(
+      `Start "${sess.name}" now? The moment it goes live, the whole team is told the day has begun `
+      + '— that message cannot be unsent.', { confirmLabel: 'Start it' });
+    if (!sure) return;
+    try { await arena.setSessionState(sess.id, 'live'); onReload(); }
+    catch (e) { showMessage((e && e.message) || 'That did not work.', { tone: 'error' }); }
   };
 
   return (
@@ -678,11 +872,21 @@ function Sessions({ sessions, onReload }) {
         A session is a day, like Elementix Day. It holds as many spins as you like, and everything that
         happened in it stays on the board until you close it.
       </p>
-      <div className="arena-form">
-        <label>Name<input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Elementix Day" /></label>
-        <label>A line underneath<input className="input" value={subtitle} onChange={(e) => setSubtitle(e.target.value)} placeholder="Dial day" /></label>
-      </div>
-      <button className="btn small" disabled={!name.trim()} onClick={create}>Create it</button>
+
+      <DaySetup onReload={onReload} />
+
+      <details className="arena-createown">
+        <summary>Or build a session of your own</summary>
+        <div className="arena-form">
+          <label>Name<input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Elementix Day" /></label>
+          <label>A line underneath<input className="input" value={subtitle} onChange={(e) => setSubtitle(e.target.value)} placeholder="Dial day" /></label>
+        </div>
+        <p className="muted small" style={{ marginTop: 8 }}><strong>Who is playing</strong> — pick before you create it:</p>
+        {rosterErr && <p className="arena-bad small">{rosterErr} <button className="btn ghost small" onClick={() => { setRosterErr(''); arena.roster().then((d) => { setEveryone(d.everyone || []); setPicked((d.everyone || []).map((p) => String(p.id))); }).catch((e) => setRosterErr((e && e.message) || 'Still not loading.')); }}>Try again</button></p>}
+        {!everyone && !rosterErr && <p className="muted small">Loading the team…</p>}
+        {everyone && <RosterPicker everyone={everyone} picked={picked} onChange={setPicked} />}
+        <button className="btn small" disabled={!name.trim()} onClick={create}>Create it</button>
+      </details>
 
       <ul className="arena-sessionlist">
         {sessions.map((s) => (
@@ -693,26 +897,34 @@ function Sessions({ sessions, onReload }) {
               <span className="muted small">{s.spin_count} spins · {s.award_count} prizes given</span>
             </div>
             <div className="arena-decide">
-              {s.state !== 'live' && (
-                <button className="btn ghost small" onClick={async () => {
-                  try { await arena.setSessionState(s.id, 'live'); onReload(); }
-                  catch (e) { showMessage((e && e.message) || 'That did not work.'); }
-                }}>Go live</button>
+              {s.state !== 'live' && s.state !== 'closed' && (
+                <button className="btn small" onClick={() => goLive(s)}>Start it (go live)</button>
               )}
               {s.state === 'live' && (
                 <button className="btn ghost small" onClick={async () => {
                   if (!await askConfirm(`Close "${s.name}"? The record stays; a new session starts fresh.`)) return;
                   try { await arena.setSessionState(s.id, 'closed'); onReload(); }
-                  catch (e) { showMessage((e && e.message) || 'That did not work.'); }
+                  catch (e) { showMessage((e && e.message) || 'That did not work.', { tone: 'error' }); }
                 }}>Close it</button>
               )}
               <button className="btn ghost small" onClick={() => setPicking(picking === s.id ? null : s.id)}>Who is in it</button>
-              <a className="btn ghost small" href={arena.awardsCsvUrl(s.id)}>Prizes given (CSV)</a>
+              {/* Fetched with the login, never a bare link — a plain href cannot
+                  carry the token and landed the admin on a raw JSON error page. */}
+              <button className="btn ghost small" onClick={async () => {
+                try { await arena.downloadAwardsCsv(s.id); }
+                catch (e) { showMessage((e && e.message) || 'The prize list could not be downloaded.', { tone: 'error' }); }
+              }}>Download the prize list (for payroll)</button>
             </div>
             {picking === s.id && <People sessionId={s.id} onSaved={onReload} />}
           </li>
         ))}
-        {!sessions.length && <li className="muted">No sessions yet.</li>}
+        {!sessions.length && (loadErr
+          ? (
+            <li>
+              <p className="arena-bad small">{loadErr} <button className="btn ghost small" onClick={onRetry}>Try again</button></p>
+            </li>
+          )
+          : <li className="muted">No sessions yet — set the day up above, or build your own.</li>)}
       </ul>
     </div>
   );
@@ -720,32 +932,29 @@ function Sessions({ sessions, onReload }) {
 
 function People({ sessionId, onSaved }) {
   const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
   const [picked, setPicked] = useState([]);
-  useEffect(() => {
+  const load = () => {
+    setErr('');
     arena.people(sessionId).then((d) => {
       setData(d);
       setPicked(d.limitedToPicked ? d.pickedIds : d.everyone.map((p) => String(p.id)));
-    }).catch(() => {});
-  }, [sessionId]);
+    }).catch((e) => setErr((e && e.message) || 'The list could not be loaded.'));
+  };
+  useEffect(load, [sessionId]);
+  if (err) return <p className="arena-bad small">{err} <button className="btn ghost small" onClick={load}>Try again</button></p>;
   if (!data) return <p className="muted small">Loading…</p>;
-  const toggle = (id) => setPicked((c) => (c.includes(id) ? c.filter((x) => x !== id) : [...c, id]));
   return (
-    <div className="arena-people">
-      <p className="muted small">Tick who is playing. Tick everybody and it simply means the whole team.</p>
-      <ul>
-        {data.everyone.map((p) => (
-          <li key={p.id}>
-            <label>
-              <input type="checkbox" checked={picked.includes(String(p.id))} onChange={() => toggle(String(p.id))} />
-              <span>{p.full_name}</span>
-              <em className="muted small">{p.role}</em>
-            </label>
-          </li>
-        ))}
-      </ul>
+    <div>
+      <RosterPicker everyone={data.everyone || []} picked={picked} onChange={setPicked} />
       <button className="btn small" onClick={async () => {
-        try { await arena.updateSession(sessionId, { staffIds: picked }); onSaved(); showMessage('Saved.'); }
-        catch (e) { showMessage((e && e.message) || 'That did not save.'); }
+        try {
+          // Everyone ticked is sent as an EMPTY list — see staffIdsToSend.
+          await arena.updateSession(sessionId, { staffIds: staffIdsToSend(picked, data.everyone || []) });
+          onSaved();
+          showMessage('The list is saved.', { title: 'Saved', tone: 'info' });
+        }
+        catch (e) { showMessage((e && e.message) || 'That did not save.', { tone: 'error' }); }
       }}>Save who is in</button>
     </div>
   );
@@ -803,7 +1012,12 @@ function PrizeList() {
   const [label, setLabel] = useState('');
   const [value, setValue] = useState('');
   const [kind, setKind] = useState('perk');
-  const load = useCallback(() => { arena.prizes().then((r) => setList(r.prizes || [])).catch(() => {}); }, []);
+  const [err, setErr] = useState('');
+  const load = useCallback(() => {
+    setErr('');
+    arena.prizes().then((r) => setList(r.prizes || []))
+      .catch((e) => setErr((e && e.message) || 'The prize list could not be loaded.'));
+  }, []);
   useEffect(load, [load]);
 
   return (
@@ -829,6 +1043,10 @@ function PrizeList() {
         catch (e) { showMessage((e && e.message) || 'That did not save.'); }
       }}>Add it</button>
 
+      {err && !list.length && (
+        <p className="arena-bad small">{err} <button className="btn ghost small" onClick={load}>Try again</button></p>
+      )}
+
       <ul className="arena-prizes">
         {list.map((p) => (
           <li key={p.id} className={p.is_active ? '' : 'out'}>
@@ -836,10 +1054,13 @@ function PrizeList() {
             <em>{p.value_cents ? money(p.value_cents) : 'no cash value'} · {p.kind}</em>
             <span className="arena-decide">
               <button className="btn ghost small" onClick={async () => {
-                await arena.updatePrize(p.id, { isActive: !p.is_active }); load();
+                try { await arena.updatePrize(p.id, { isActive: !p.is_active }); load(); }
+                catch (e) { showMessage((e && e.message) || 'That did not save.', { tone: 'error' }); }
               }}>{p.is_active ? 'Hide' : 'Use again'}</button>
               <button className="btn ghost small" onClick={async () => {
-                if (await askConfirm(`Delete "${p.label}" from the list?`)) { await arena.deletePrize(p.id); load(); }
+                if (!await askConfirm(`Delete "${p.label}" from the list?`)) return;
+                try { await arena.deletePrize(p.id); load(); }
+                catch (e) { showMessage((e && e.message) || 'That did not delete.', { tone: 'error' }); }
               }}>Delete</button>
             </span>
           </li>
@@ -853,13 +1074,23 @@ function PrizeList() {
 
 function SettingsPanel() {
   const [s, setS] = useState(null);
+  const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
-  useEffect(() => { arena.getSettings().then(setS).catch(() => {}); }, []);
-  if (!s) return <p className="muted">Loading…</p>;
+  const load = useCallback(() => {
+    setErr('');
+    arena.getSettings().then(setS)
+      .catch((e) => setErr((e && e.message) || 'The settings could not be loaded.'));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  if (!s) {
+    return err
+      ? <p className="arena-bad small">{err} <button className="btn ghost small" onClick={load}>Try again</button></p>
+      : <p className="muted">Loading…</p>;
+  }
   const set = (k, v) => setS((c) => ({ ...c, settings: { ...c.settings, [k]: v } }));
   const save = async () => {
     setSaving(true);
-    try { setS(await arena.saveSettings({ settings: s.settings })); showMessage('Saved.'); }
+    try { setS(await arena.saveSettings({ settings: s.settings })); showMessage('The settings are saved.', { title: 'Saved', tone: 'info' }); }
     catch (e) { showMessage((e && e.message) || 'That did not save.'); }
     finally { setSaving(false); }
   };

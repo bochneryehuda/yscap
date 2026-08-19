@@ -148,17 +148,50 @@ function mayEnter(entry, ctx = {}) {
   if (!Number.isInteger(cents)) return no('bad_value', 'That does not look like an amount of money.');
   if (cents < 0) return no('negative', 'An amount cannot be negative.');
 
-  const cap = capForKind(kind, settings, config);
+  // THE EARNED ECONOMY, where the spin runs on chances (the Mega Spin). Two
+  // promises the screens make were measured broken on 2026-08-19 and are
+  // enforced HERE so every door inherits them:
+  //   · "every five chances lets you put another thing on the wheel" — the
+  //     counter displayed but nothing ever consumed or checked a nomination;
+  //   · "the bigger the challenge, the more you may ask for — up to $2,000" —
+  //     the tier ceiling was displayed and never applied, so a tier-5 winner
+  //     was still refused above the base cap.
+  // ctx.standing is challenges.standingFor()'s answer (tickets, earned, used,
+  // prizeCapCents from tiers won). Only a ticket-economy spin engages it; an
+  // ordinary spin is byte-identical to before.
+  const economy = spin.kind === 'ticket_lottery' && ctx.standing && typeof ctx.standing === 'object'
+    ? ctx.standing : null;
+
+  let cap = capForKind(kind, settings, config);
+  if (economy) {
+    // A tier win RAISES the ceiling for that person, bounded by the day's own
+    // maximum. It never lowers the base cap — winning something must never make
+    // a person able to ask for less.
+    const dayMax = Number(config.maxPrizeCapCents) > 0 ? Math.floor(Number(config.maxPrizeCapCents)) : Infinity;
+    const unlocked = Math.min(dayMax, Math.max(0, Math.floor(Number(economy.prizeCapCents) || 0)));
+    cap = Math.max(cap, unlocked);
+  }
   if (cap > 0 && cents > cap) {
     return no('over_cap', kind === 'business'
       ? `Anything for the business has to be ${money(cap)} or less. You asked for ${money(cents)}.`
       : `Anything personal has to be ${money(cap)} or less. You asked for ${money(cents)}.`);
   }
 
-  const allowed = Number(config.entriesPerPerson) > 0
+  const configAllowed = Number(config.entriesPerPerson) > 0
     ? Math.floor(Number(config.entriesPerPerson))
     : (Number(settings.entriesPerPerson) > 0 ? Math.floor(Number(settings.entriesPerPerson)) : 1);
+  // On the earned economy: everyone gets ONE for being in, and every earned
+  // nomination buys one more — capped by the config ceiling as a sanity bound.
+  const allowed = economy
+    ? Math.min(configAllowed, 1 + Math.max(0, Math.floor(Number(economy.earned) || 0)))
+    : configAllowed;
   if (Number(ctx.existingCount) >= allowed) {
+    if (economy) {
+      const n = Math.max(0, Math.floor(Number(economy.ticketsToNext) || 0));
+      return no('too_many',
+        `You have used your ${allowed === 1 ? 'entry' : allowed + ' entries'} for this spin — `
+        + `finish ${n === 1 ? 'one more challenge chance' : 'challenges worth ' + n + ' more chances'} to unlock another.`);
+    }
     return no('too_many', allowed === 1
       ? 'You have already put something forward for this spin.'
       : `You can put forward ${allowed} things for this spin, and you have used them all.`);
@@ -169,6 +202,12 @@ function mayEnter(entry, ctx = {}) {
     kind,
     label,
     valueCents: cents,
+    // Any entry past the free first one on the earned economy was BOUGHT with
+    // chances; the route records the ticket count it was bought at so
+    // standingFor's `used` genuinely goes down. NULL on the free one and on
+    // every ordinary spin.
+    unlockedByTickets: economy && Number(ctx.existingCount) >= 1
+      ? Math.max(0, Math.floor(Number(economy.tickets) || 0)) : null,
     // Whether a super admin still has to say yes. The owner's rule is that they
     // do ("super admin accepts everything"), and it is the DEFAULT rather than
     // the only option.

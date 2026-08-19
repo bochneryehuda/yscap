@@ -5046,7 +5046,11 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 
 /* ── the stage ──────────────────────────────────────────────────────────── */
 .arena-stage { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr); gap: 22px; align-items: start; }
-@media (max-width: 980px) { .arena-stage { grid-template-columns: 1fr; } }
+/* minmax(0,1fr), never a bare 1fr — a bare track's automatic minimum is the
+   children's min-content, and one long chat word made the whole phone stage
+   654px wide inside a 390px screen with overflow-x:clip hiding the loss
+   (measured 2026-08-19: body.scrollWidth 676 -> 390 with this one change). */
+@media (max-width: 980px) { .arena-stage { grid-template-columns: minmax(0, 1fr); } }
 .arena-stage.tv { grid-template-columns: 1fr; justify-items: center; text-align: center; }
 .arena-wheelcol {
   display: flex; flex-direction: column; align-items: center; gap: 16px;
@@ -5161,7 +5165,9 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena-decide { display: inline-flex; gap: 6px; margin-left: auto; }
 
 .arena-quals li { border-bottom: 1px solid var(--a-line); padding-bottom: 10px; }
-.arena-qual-head { display: flex; justify-content: space-between; gap: 8px; }
+.arena-qual-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.arena-qual-head strong { min-width: 0; }
+.arena-qual-head em { flex: 0 0 auto; white-space: nowrap; }
 .arena-qual-head em { color: var(--a-teal-ink); font-style: normal; font-size: 12px; font-weight: 700; }
 .arena-claimform { display: flex; flex-direction: column; gap: 7px; margin-top: 7px; }
 .arena-claims li { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--a-muted); }
@@ -5184,7 +5190,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena-messages li.pending { opacity: .55; }
 .arena-messages li.failed { color: var(--a-bad); }
 .arena-msg-who { color: var(--a-violet); font-weight: 800; font-size: 12.5px; }
-.arena-msg-body { flex: 1 1 60%; }
+.arena-msg-body { flex: 1 1 60%; min-width: 0; overflow-wrap: anywhere; }
 .arena-msg-acts { display: inline-flex; gap: 2px; margin-left: auto; }
 .arena-msg-failed { color: var(--a-bad); font-size: 11.5px; }
 .arena-react { background: none; border: none; cursor: pointer; font-size: 13px; color: var(--a-muted); padding: 0 3px; transition: transform .12s; }
@@ -5355,8 +5361,21 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 }
 @keyframes arena-slidein { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
 .arena-challenges.min { max-height: 58px; overflow: hidden; }
-@media (max-width: 720px) { .arena-challenges { left: 10px; right: 10px; width: auto; } }
+/* The panel floats fixed, so the page must RESERVE its footprint — measured
+   2026-08-19: without the gutter it sat exactly on the chat box, the Send
+   button and the prize Accept buttons on desktop, and buried the entire tab
+   bar on a phone (491px of a 664px screen). Desktop reserves a right gutter;
+   the phone caps the panel and reserves the bottom. */
+@media (min-width: 981px) { .arena-stage { padding-right: 396px; } .arena-stage.tv { padding-right: 0; } }
+@media (max-width: 720px) {
+  .arena-challenges { left: 10px; right: 10px; width: auto; max-height: 42vh; }
+  .arena { padding-bottom: calc(42vh + 24px); }
+}
 .arena-ch-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+/* The leaderboard <ol> shares the class name with the flex header row; as a
+   flex it wrapped into two colliding columns with the count glued to the name
+   ("…Vandersteen III18"). A list is a list. */
+ol.arena-ch-top { display: block; }
 .arena-ch-head strong { display: block; font-size: 14px; }
 .arena-ch-tickets { color: var(--a-gold-ink); font-size: 12.5px; font-weight: 800; }
 .arena-ch-tickets em { color: var(--a-teal-ink); font-style: normal; }
@@ -5657,3 +5676,59 @@ ol.arena-ch-top li em { color: var(--a-gold-ink); font-style: normal; font-varia
 .arena-recap-lines > div:last-child { border-bottom: 0; }
 .arena-recap-lines dt { color: var(--a-muted); font-size: 13px; font-weight: 600; }
 .arena-recap-lines dd { margin: 0; color: var(--a-text); font-weight: 800; font-variant-numeric: tabular-nums; }
+
+
+/* ── contrast corrections (measured 2026-08-19) ───────────────────────────
+   White text sat on the BRIGHT accent gradients — the very colours the palette
+   comment reserves for "borders, dots, pills and gradients, where nobody has
+   to read them" — and every arena button, selected tab and status pill failed
+   4.5:1. The shapes and hues stay; only the stops under white text darken to
+   the -ink family. Solid-colour failures corrected alongside. */
+.arena {
+  --a-teal-hot-ink: #157F87;
+  --a-gold-hot-ink: #8A6215;
+  --a-good-ink: #16714C;
+  --a-coral-ink: #B23A30;
+  --a-violet-2-ink: #5B3CAF;
+}
+.arena .btn, .arena .btn.small, .arena .btn.primary {
+  background: linear-gradient(135deg, var(--a-teal-ink), var(--a-teal-hot-ink));
+}
+.arena .btn.ghost { background: none; }
+.arena-tab.on, .arena-subtab.on { background: linear-gradient(135deg, var(--a-teal-ink), var(--a-teal-hot-ink)); }
+.arena-pill.s-open { background: linear-gradient(135deg, var(--a-good-ink), #1F8B60); }
+.arena-pill.s-spinning { background: linear-gradient(135deg, #6E4C10, var(--a-gold-hot-ink)); }
+.arena-live { background: linear-gradient(135deg, var(--a-coral-ink), #A8501F); }
+.arena-seq, .arena-ai-label, .arena-ch-gone, .arena-freenote {
+  background: linear-gradient(135deg, #4E35A0, var(--a-violet-2-ink));
+}
+.arena-chip.on, .arena-vote.on { background: linear-gradient(135deg, #6E4C10, var(--a-gold-hot-ink)); }
+.arena-tk-mine { background: linear-gradient(135deg, var(--a-teal-ink), var(--a-teal-hot-ink)); }
+.arena .input::placeholder { color: #6B767C; }
+.arena-ch-tier.t1 { background: #476069; }
+.arena-ch-tier.t2 { background: var(--a-teal-ink); }
+.arena-ch-tier.t3 { background: var(--a-gold-ink); }
+.arena-ch-tier.t4 { background: #8A4E0C; }
+.arena-ch-top time.urgent, .arena-mon-nums em.hot { background: var(--a-coral-ink); }
+.arena-mon-clock.hot, .arena-ch-flame { color: var(--a-coral-ink); }
+.arena-status.s-pending, .arena-status.s-draft { color: #8A6215; }
+.arena-status.s-approved, .arena-status.s-live { color: #16714C; }
+.arena-ch-bonus { color: #16714C; }
+
+/* ── touch targets on a phone (all under 40px before) ──────────────────── */
+@media (max-width: 720px) {
+  .arena-react { min-width: 40px; min-height: 40px; font-size: 17px; padding: 0 6px; }
+  .arena-ch-min { min-width: 44px; min-height: 44px; font-size: 22px; }
+  .arena-vote { min-height: 40px; padding: 8px 12px; }
+  .arena-chip { min-height: 40px; }
+  .arena-tab, .arena-subtab { min-height: 44px; }
+  .arena-ch-admin summary, .arena-advanced summary { padding: 11px 0; }
+  .arena-roombar-head .linklike { min-height: 40px; padding: 0 8px; }
+}
+
+/* The wheel scales to the screen instead of forcing 448px onto a 390px phone.
+   The size is an inline style from ArenaWheel, hence the important. */
+@media (max-width: 720px) {
+  .arena-wheel-wrap { width: 100% !important; max-width: 360px; height: auto !important; }
+  .arena-wheel-wrap > svg { width: 100%; height: auto; }
+}
