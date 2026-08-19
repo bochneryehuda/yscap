@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 import { subscribeChat } from '../lib/chatEvents.js';
+import { arena as arenaApi } from '../lib/arena.js';
 import { Brand } from './Layout.jsx';
 // LONG-TERM — the product switch. This is the mount seam the owner authorized on
 // 2026-08-14 ("rtl-import app-v2/src/components/StaffLayout.jsx" in the ledger);
@@ -285,6 +286,12 @@ function GlobalSearch() {
 
 export default function StaffLayout({ children }) {
   const { signOut, role, can } = useAuth();
+  // THE ARENA. Its nav entry exists ONLY while the master switch is on, and
+  // `seesArena` is the server's answer -- never a role check here, or the rule
+  // "when it's off, nobody should even see it" would have two definitions and
+  // the browser's copy would be the one that goes stale. Declared here, above
+  // the effect that fills it, so the hooks read top to bottom.
+  const [arenaVis, setArenaVis] = useState(null);
   const nav = useNavigate();
   // The research desk's pages only appear in the sidebar while you are inside it,
   // so seven entries collapse to one without hiding where you can go from here.
@@ -407,6 +414,19 @@ export default function StaffLayout({ children }) {
     const t = setInterval(poll, 120000);
     return () => { alive = false; clearInterval(t); unsub(); };
   }, []);
+
+  // Ask once on load, and again whenever the switch is flipped -- the server
+  // broadcasts that to every open tab, so turning it off really does clear
+  // everybody's window rather than waiting for their next refresh.
+  useEffect(() => {
+    let alive = true;
+    const ask = () => { arenaApi.visibility().then((v) => { if (alive) setArenaVis(v); }).catch(() => {}); };
+    ask();
+    const unsub = subscribeChat((event) => {
+      if (event === 'arena:switch' || event === 'arena:session' || event === 'reconnect') ask();
+    });
+    return () => { alive = false; unsub(); };
+  }, []);
   const consoleLabel = (role === 'admin' || role === 'super_admin')
     ? 'Admin console' : `${ROLE_LABEL[role] || 'Internal'} console`;
   const canManageTeam = can('manage_team');
@@ -464,6 +484,14 @@ export default function StaffLayout({ children }) {
           </>
         ) : (<>
         <div className="sb-sec">Main</div>
+        {arenaVis && arenaVis.seesArena && (
+          <NavLink className="sb-link sb-arena" to="/internal/arena"
+            title="The Arena — the live game board. Check in, put your name in the spin, watch the wheel with everybody else.">
+            <NavIcon name="dashboards" />
+            {(arenaVis.liveSession && arenaVis.liveSession.name) || 'The Arena'}
+            {arenaVis.liveSession && <span className="sb-badge sb-badge-live">live</span>}
+          </NavLink>
+        )}
         <NavLink className="sb-link" to="/internal" end><NavIcon name="pipeline" />Pipeline</NavLink>
         <NavLink className="sb-link" to="/internal/tasks" title={taskCounts && taskCounts.overdue > 0 ? `${taskCounts.overdue} overdue` : undefined}>
           <NavIcon name="tasks" />My tasks

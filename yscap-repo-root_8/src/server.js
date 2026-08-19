@@ -592,6 +592,16 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   app.use('/api/admin/pipeline', requireAuth, requireStaff, require('./routes/admin-pipeline'));
   app.use('/api/admin', requireAuth, requireStaff, require('./routes/admin'));
 }
+// THE ARENA — the live staff game board (Elementix Day). Internal staff only:
+// requireAuth + requireStaff here, and the router's own master-switch guard
+// answers 404 to everyone while the game is switched off, so with the switch
+// off this is indistinguishable from a feature that was never built. A borrower
+// or a broker can never reach it at all. Nothing here touches a loan file
+// except to READ the RTL pipeline for the CRM-connected wheels.
+{
+  const { requireAuth, requireStaff } = require('./auth');
+  app.use('/api/arena', requireAuth, requireStaff, require('./routes/arena'));
+}
 // SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated
 // routers: EventSource can't send an Authorization header, so this route does
 // its own token verification from a query parameter.
@@ -871,6 +881,14 @@ if (require.main === module) {
         // a dashboard an admin has since edited is left exactly as they left it.
         require('./lib/dashboards/seed').seedDefaults()
           .catch((e) => console.error('[boot] dashboard seed failed:', e.message));
+        // THE ARENA's minute sweep: sends the "you still have N minutes" alarms
+        // before a spin's cutoff, shuts the door at the cutoff, and reveals any
+        // wheel whose animation finished while the process was restarting. It
+        // does nothing at all while the master switch is off, and its timer is
+        // unref'd so it can never hold up a deploy. Started AFTER ensureSchema
+        // because it reads arena_* tables db/585 creates.
+        try { require('./lib/arena/sweep').start(); }
+        catch (e) { console.error('[boot] arena sweep failed to start:', e.message); }
         // PREVIOUS AND FUTURE (owner-directed 2026-08-16): the appraisal became a
         // first-class order on the Orders desk (db/564), so every file that already
         // has a vendor appraisal order needs its desk row projecting — otherwise the
