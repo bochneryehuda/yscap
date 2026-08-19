@@ -4944,6 +4944,16 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
   --a-text: #141B22;
   --a-muted: #5C6A70;
   --a-gold: #C8912F;
+  /* THE SAME TWO ACCENTS, DARK ENOUGH TO READ AS TEXT. The bright pair above
+     are for borders, dots, pills and gradients, where nobody has to read them;
+     at 12–13px on white they measure 2.78:1 and 3.91:1, which is under the 4.5
+     a person needs, and this game is read across a sales floor rather than at
+     arm's length. Every `color:` in the Arena uses these; every background,
+     border and gradient keeps the bright ones, so nothing changes shape or
+     loses its colour — the words simply stop being pale. Measured on white:
+     5.47:1 and 7.21:1. */
+  --a-gold-ink: #8A6215;
+  --a-teal-ink: #186068;
   --a-gold-hot: #F0B93F;
   --a-teal: #1E8E96;
   --a-teal-hot: #24C3CE;
@@ -4985,9 +4995,9 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena .btn:active { transform: translateY(0); }
 .arena .btn:disabled { opacity: .5; cursor: default; transform: none; box-shadow: none; }
 .arena .btn.ghost { background: #fff; color: var(--a-text); border: 1.5px solid var(--a-line); box-shadow: none; }
-.arena .btn.ghost:hover { border-color: var(--a-teal); color: var(--a-teal); }
+.arena .btn.ghost:hover { border-color: var(--a-teal); color: var(--a-teal-ink); }
 .arena .btn.small { padding: 6px 12px; font-size: 12.5px; }
-.arena a { color: var(--a-teal); font-weight: 600; }
+.arena a { color: var(--a-teal-ink); font-weight: 600; }
 .arena .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; word-break: break-all; }
 
 /* ── the header ─────────────────────────────────────────────────────────── */
@@ -5028,7 +5038,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
   background: #fff; border: 1.5px solid var(--a-line); border-radius: 999px; color: var(--a-muted);
   padding: 8px 18px; font-size: 14px; font-weight: 700; cursor: pointer; transition: all .15s;
 }
-.arena-tab:hover, .arena-subtab:hover { border-color: var(--a-teal); color: var(--a-teal); }
+.arena-tab:hover, .arena-subtab:hover { border-color: var(--a-teal); color: var(--a-teal-ink); }
 .arena-tab.on, .arena-subtab.on {
   background: linear-gradient(135deg, var(--a-teal), var(--a-teal-hot)); color: #fff; border-color: transparent;
   box-shadow: 0 5px 16px rgba(30, 142, 150, .34);
@@ -5080,7 +5090,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 }
 .arena-deadline-at { color: var(--a-muted); font-size: 13px; }
 
-.arena-wheeltitle { font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--a-teal); margin: 0; font-weight: 800; }
+.arena-wheeltitle { font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--a-teal-ink); margin: 0; font-weight: 800; }
 .arena-wheel-wrap { position: relative; display: flex; flex-direction: column; align-items: center; }
 .arena-reduced-note { color: var(--a-muted); font-size: 12px; margin: 8px 0 0; text-align: center; max-width: 300px; }
 .arena-freenote {
@@ -5131,7 +5141,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
   background: #fff; border: 1.5px solid var(--a-line); color: var(--a-muted);
   border-radius: 999px; padding: 6px 14px; font-size: 12.5px; cursor: pointer; font-weight: 600; transition: all .15s;
 }
-.arena-chip:hover { border-color: var(--a-teal); color: var(--a-teal); }
+.arena-chip:hover { border-color: var(--a-teal); color: var(--a-teal-ink); }
 .arena-chip.on {
   background: linear-gradient(135deg, var(--a-gold), var(--a-gold-hot)); color: #fff;
   border-color: transparent; font-weight: 800; box-shadow: 0 4px 14px rgba(200, 145, 47, .34);
@@ -5146,13 +5156,13 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
   padding: 8px 0; border-bottom: 1px solid var(--a-line); font-size: 13.5px;
 }
 .arena-roster li:hover { background: #FAFBFB; }
-.arena-roster li em, .arena-prizes li em { margin-left: auto; color: var(--a-teal); font-style: normal; font-size: 12.5px; font-weight: 700; }
+.arena-roster li em, .arena-prizes li em { margin-left: auto; color: var(--a-teal-ink); font-style: normal; font-size: 12.5px; font-weight: 700; }
 .arena-roster li.out, .arena-prizes li.out { opacity: .45; }
 .arena-decide { display: inline-flex; gap: 6px; margin-left: auto; }
 
 .arena-quals li { border-bottom: 1px solid var(--a-line); padding-bottom: 10px; }
 .arena-qual-head { display: flex; justify-content: space-between; gap: 8px; }
-.arena-qual-head em { color: var(--a-teal); font-style: normal; font-size: 12px; font-weight: 700; }
+.arena-qual-head em { color: var(--a-teal-ink); font-style: normal; font-size: 12px; font-weight: 700; }
 .arena-claimform { display: flex; flex-direction: column; gap: 7px; margin-top: 7px; }
 .arena-claims li { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--a-muted); }
 
@@ -5178,7 +5188,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena-msg-acts { display: inline-flex; gap: 2px; margin-left: auto; }
 .arena-msg-failed { color: var(--a-bad); font-size: 11.5px; }
 .arena-react { background: none; border: none; cursor: pointer; font-size: 13px; color: var(--a-muted); padding: 0 3px; transition: transform .12s; }
-.arena-react:hover { color: var(--a-gold); transform: scale(1.25); }
+.arena-react:hover { color: var(--a-gold-ink); transform: scale(1.25); }
 .arena-pinned li { border-left: 4px solid var(--a-gold); padding-left: 10px; font-size: 13px; background: #FFFBF0; border-radius: 0 8px 8px 0; }
 .arena-say { display: flex; gap: 7px; margin-top: 10px; }
 .arena-say .input { flex: 1; }
@@ -5196,7 +5206,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena-hist-head time { color: var(--a-muted); font-size: 12.5px; }
 .arena-hist-draws li { display: flex; gap: 9px; align-items: baseline; flex-wrap: wrap; padding: 7px 0; border-bottom: 1px solid var(--a-line); }
 .arena-hist-k { font-size: 11.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--a-muted); font-weight: 700; }
-.arena-hist-draws strong { color: var(--a-gold); }
+.arena-hist-draws strong { color: var(--a-gold-ink); }
 
 /* ── forms ──────────────────────────────────────────────────────────────── */
 .arena-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 12px 0; }
@@ -5221,7 +5231,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena-datanote { color: #8A5F14; font-size: 12.5px; font-weight: 600; background: #FFF6E0; border-radius: 8px; padding: 7px 10px; }
 .arena-wheels { margin: 8px 0 0 18px; color: var(--a-muted); font-size: 12.5px; }
 .arena-advanced { margin: 12px 0; border: 1.5px solid var(--a-line); border-radius: 12px; padding: 10px 14px; background: #FCFCFA; }
-.arena-advanced summary { cursor: pointer; color: var(--a-teal); font-size: 13px; font-weight: 700; }
+.arena-advanced summary { cursor: pointer; color: var(--a-teal-ink); font-size: 13px; font-weight: 700; }
 .arena-people ul { list-style: none; padding: 0; margin: 10px 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 5px; }
 .arena-people label { display: flex; gap: 7px; align-items: center; font-size: 13px; }
 
@@ -5348,8 +5358,8 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 @media (max-width: 720px) { .arena-challenges { left: 10px; right: 10px; width: auto; } }
 .arena-ch-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .arena-ch-head strong { display: block; font-size: 14px; }
-.arena-ch-tickets { color: var(--a-gold); font-size: 12.5px; font-weight: 800; }
-.arena-ch-tickets em { color: var(--a-teal); font-style: normal; }
+.arena-ch-tickets { color: var(--a-gold-ink); font-size: 12.5px; font-weight: 800; }
+.arena-ch-tickets em { color: var(--a-teal-ink); font-style: normal; }
 .arena-ch-min { background: none; border: none; color: var(--a-muted); cursor: pointer; font-size: 15px; }
 .arena-ch { border-top: 1.5px solid var(--a-line); padding: 12px 0 8px; }
 .arena-ch.gone { opacity: .58; }
@@ -5367,13 +5377,13 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena-ch-tier.t1 { background: #7C9BA8; } .arena-ch-tier.t2 { background: var(--a-teal); }
 .arena-ch-tier.t3 { background: var(--a-gold); } .arena-ch-tier.t4 { background: #E08A3C; }
 .arena-ch-tier.t5 { background: linear-gradient(135deg, var(--a-coral), var(--a-violet)); animation: arena-breathe 1.3s infinite; }
-.arena-ch-standing { color: var(--a-teal); font-size: 12.5px; margin: 10px 0 0; font-weight: 700; }
-.arena-ch-admin summary { cursor: pointer; color: var(--a-teal); font-size: 12px; font-weight: 700; }
+.arena-ch-standing { color: var(--a-teal-ink); font-size: 12.5px; margin: 10px 0 0; font-weight: 700; }
+.arena-ch-admin summary { cursor: pointer; color: var(--a-teal-ink); font-size: 12px; font-weight: 700; }
 .arena-ch-admin ul { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 5px; }
 .arena-ch-admin li { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; font-size: 12.5px; }
 ol.arena-ch-top { list-style: none; padding: 0; margin: 10px 0 0; border-top: 1.5px solid var(--a-line); }
 ol.arena-ch-top li { display: flex; justify-content: space-between; padding: 4px 0; font-size: 12.5px; }
-ol.arena-ch-top li em { color: var(--a-gold); font-style: normal; font-variant-numeric: tabular-nums; font-weight: 800; }
+ol.arena-ch-top li em { color: var(--a-gold-ink); font-style: normal; font-variant-numeric: tabular-nums; font-weight: 800; }
 
 /* ── the AI helper ──────────────────────────────────────────────────────── */
 .arena-ai { margin: 8px 0; }
@@ -5398,7 +5408,7 @@ ol.arena-ch-top li em { color: var(--a-gold); font-style: normal; font-variant-n
 }
 .arena-ai-chip:hover { border-color: var(--a-violet); transform: translateY(-2px); box-shadow: 0 6px 18px rgba(108, 75, 196, .16); }
 .arena-ai-chip span { color: var(--a-muted); font-size: 11.5px; }
-.arena-ai-chip em { color: var(--a-gold); font-style: normal; font-size: 12.5px; font-weight: 800; }
+.arena-ai-chip em { color: var(--a-gold-ink); font-style: normal; font-size: 12.5px; font-weight: 800; }
 
 /* MOTION OFF. Not a nicety — a spinning wheel, a throbbing button and falling
    confetti are exactly what somebody with a vestibular disorder asked their
@@ -5413,3 +5423,227 @@ ol.arena-ch-top li em { color: var(--a-gold); font-style: normal; font-variant-n
   .arena-confetti { display: none; }
   .arena * { transition: none !important; }
 }
+
+/* ── THE LIVE MONITOR — the screen the day is run from ─────────────────────
+   Its own look inside the Arena: one number that matters, then everything
+   else quiet underneath it. */
+.arena-monitor { display: flex; flex-direction: column; gap: 16px; }
+.arena-mon-hero {
+  display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  background: linear-gradient(135deg, #F4FBFB, #FFFDF6);
+  border: 2px solid var(--a-line); border-radius: 18px; padding: 18px 24px;
+}
+.arena-mon-hero strong { font-size: clamp(40px, 6vw, 72px); line-height: 1; font-variant-numeric: tabular-nums; color: var(--a-good); }
+.arena-mon-hero span { font-size: 17px; font-weight: 700; }
+.arena-mon-hero em { color: var(--a-muted); font-style: normal; font-size: 13.5px; flex-basis: 100%; }
+/* Loud only when something is actually waiting. A dashboard that is always
+   shouting is a dashboard people stop reading. */
+.arena-mon-hero.hot { border-color: var(--a-coral); animation: arena-alarm 1.6s infinite; }
+.arena-mon-hero.hot strong { color: var(--a-coral); }
+
+.arena-mon-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.arena-mon-stat {
+  background: #fff; border: 1.5px solid var(--a-line); border-radius: 14px; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.arena-mon-stat strong { font-size: 30px; line-height: 1; font-variant-numeric: tabular-nums; color: var(--a-teal-ink); }
+.arena-mon-stat strong em { font-size: 17px; color: var(--a-muted); font-style: normal; }
+.arena-mon-stat span { color: var(--a-muted); font-size: 12.5px; font-weight: 600; }
+
+.arena-mon-spins { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-direction: column; gap: 8px; }
+.arena-mon-spins li {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  padding: 10px 12px; border: 1.5px solid var(--a-line); border-radius: 12px; background: #fff;
+}
+.arena-mon-spins li.s-spinning { border-color: var(--a-gold); box-shadow: 0 0 0 3px rgba(240, 185, 63, .18); }
+.arena-mon-spins li.s-open { border-color: var(--a-good); }
+.arena-mon-spins li strong { flex: 1; min-width: 140px; }
+.arena-mon-nums { display: inline-flex; gap: 9px; flex-wrap: wrap; }
+.arena-mon-nums em { font-style: normal; font-size: 12px; color: var(--a-muted); font-weight: 700; }
+.arena-mon-nums em.hot { color: #fff; background: var(--a-coral); border-radius: 999px; padding: 2px 9px; }
+.arena-mon-clock { font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 800; color: var(--a-muted); }
+.arena-mon-clock.hot { color: var(--a-coral); }
+.arena-mon-note { flex-basis: 100%; }
+
+.arena-mon-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; align-items: start; }
+.arena-mon-awards, .arena-mon-standings { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-direction: column; gap: 5px; max-height: 380px; overflow-y: auto; }
+.arena-mon-awards li, .arena-mon-standings li {
+  display: flex; gap: 9px; align-items: baseline; flex-wrap: wrap;
+  padding: 7px 0; border-bottom: 1px solid var(--a-line); font-size: 13.5px;
+}
+.arena-mon-awards li span { flex: 1; }
+.arena-mon-awards li em { color: var(--a-gold-ink); font-style: normal; font-weight: 800; }
+.arena-mon-awards li time { color: var(--a-muted); font-size: 12px; }
+.arena-mon-standings li span { flex: 1; }
+.arena-mon-standings li em { font-style: normal; font-weight: 800; color: var(--a-teal-ink); font-variant-numeric: tabular-nums; }
+.arena-mon-standings li.zero { opacity: .5; }
+.arena-mon-standings li.zero em { color: var(--a-muted); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE ARENA — phase 3: the landing takeover, the room bar, streaks, the
+   rematch and the recap card.
+
+   Every colour below is an explicit dark on the light Arena canvas or an
+   explicit light on the takeover's own dark ground — never an `--ink*` token,
+   which is a LIGHT paper colour in this palette and renders white on white.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ---- the landing takeover ------------------------------------------------
+   It covers everything, so it is above every other Arena layer and it is the
+   one thing here that takes pointer events (clicking it dismisses it). */
+.arena-takeover {
+  position: fixed; inset: 0; z-index: 900;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; overflow: hidden; cursor: pointer;
+  background:
+    radial-gradient(900px 600px at 50% 40%, rgba(36, 195, 206, .35), transparent 65%),
+    radial-gradient(700px 500px at 20% 90%, rgba(240, 185, 63, .28), transparent 60%),
+    rgba(16, 22, 28, .93);
+  animation: arena-tk-in .28s ease-out both;
+}
+.arena-takeover.calm { animation: none; }
+@keyframes arena-tk-in { from { opacity: 0; } to { opacity: 1; } }
+
+.arena-tk-card {
+  position: relative; z-index: 2; cursor: default;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  text-align: center; max-width: min(760px, 92vw);
+  padding: clamp(22px, 4vw, 46px) clamp(24px, 5vw, 56px);
+  border-radius: 26px;
+  background: rgba(255, 255, 255, .97);
+  border: 2px solid rgba(240, 185, 63, .75);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .45);
+  animation: arena-tk-pop .4s cubic-bezier(.2, 1.4, .4, 1) both;
+}
+.arena-takeover.calm .arena-tk-card { animation: none; }
+@keyframes arena-tk-pop { from { transform: scale(.86); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+.arena-tk-eyebrow {
+  font-size: 12px; letter-spacing: .16em; text-transform: uppercase;
+  font-weight: 800; color: var(--a-teal-ink);
+}
+.arena-tk-name {
+  font-family: var(--serif); font-size: clamp(34px, 7vw, 76px); line-height: 1.03;
+  color: #141B22;
+}
+.arena-tk-prize { font-size: clamp(17px, 2.6vw, 27px); font-weight: 700; color: #3A4550; }
+.arena-tk-worth {
+  font-size: clamp(15px, 2vw, 20px); font-weight: 800; color: var(--a-gold-ink);
+  font-variant-numeric: tabular-nums;
+}
+.arena-tk-mine {
+  margin-top: 2px; padding: 5px 14px; border-radius: 999px;
+  background: linear-gradient(135deg, #1E8E96, #24C3CE); color: #fff;
+  font-weight: 800; font-size: 14px; letter-spacing: .04em;
+}
+.arena-tk-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 10px; }
+.arena-tk-hint { font-size: 12px; color: #5C6A70; }
+
+.arena-tk-bit {
+  position: absolute; top: -8vh; border-radius: 2px; z-index: 1;
+  animation: arena-tk-fall 3.1s linear both;
+}
+@keyframes arena-tk-fall {
+  to { transform: translateY(118vh) rotate(760deg); opacity: .1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .arena-takeover, .arena-tk-card, .arena-tk-bit { animation: none !important; }
+  .arena-tk-bit { display: none; }
+}
+
+/* ---- who is in the room --------------------------------------------------
+   NOTE the name: `.arena-room` was already taken by the chat tab's container,
+   and a second meaning for one class is how two screens quietly restyle each
+   other. Everything here is `arena-roombar-*`. */
+.arena-roombar {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px; margin-bottom: 12px;
+  background: var(--a-panel); border: 1.5px solid var(--a-line); border-radius: 14px;
+}
+.arena-roombar-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; color: var(--a-muted); }
+.arena-roombar-head strong { display: inline-flex; align-items: center; gap: 7px; color: var(--a-text); font-size: 14px; }
+.arena-roombar-dot {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--a-good);
+  box-shadow: 0 0 0 4px rgba(31, 139, 96, .18);
+  animation: arena-roombar-pulse 2.4s ease-in-out infinite;
+}
+@keyframes arena-roombar-pulse { 50% { box-shadow: 0 0 0 8px rgba(31, 139, 96, .07); } }
+.arena-roombar-wait { color: var(--a-gold-ink); font-weight: 700; }
+.arena-roombar-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.arena-roombar-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--a-panel-2); border: 1px solid var(--a-line); color: var(--a-muted);
+}
+/* Here = full contrast. Away = receded but never hidden — they are still in the
+   draw, and greying them out entirely reads as "not playing". */
+.arena-roombar-chip.here { color: var(--a-text); background: #fff; border-color: rgba(30, 142, 150, .45); }
+.arena-roombar-chip.in { border-color: rgba(200, 145, 47, .55); }
+.arena-roombar-chip.in.here { background: linear-gradient(135deg, rgba(240, 185, 63, .18), rgba(36, 195, 206, .14)); }
+.arena-roombar-tick { color: var(--a-gold-ink); font-weight: 900; }
+.arena-roombar-chip.more { font-weight: 800; }
+
+/* ---- the streak ---------------------------------------------------------- */
+.arena-ch-streak {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 8px; padding: 7px 10px; border-radius: 10px;
+  background: linear-gradient(135deg, rgba(240, 185, 63, .16), rgba(226, 86, 74, .12));
+  border: 1px solid rgba(200, 145, 47, .45);
+  font-size: 13px; color: var(--a-text);
+}
+.arena-ch-streak strong { font-weight: 800; }
+.arena-ch-streak em { font-style: normal; color: #7A4B12; font-weight: 600; }
+.arena-ch-flame { color: var(--a-coral); font-weight: 900; }
+.arena-ch-streak.close { border-color: var(--a-coral); }
+.arena-ch-bonus { margin-left: auto; font-weight: 800; color: var(--a-good); }
+
+/* ---- the rematch --------------------------------------------------------- */
+.arena-rm-why { font-size: 13px; color: var(--a-muted); margin: 0 0 10px; }
+.arena-rm-why.good { color: var(--a-text); }
+.arena-rm-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: end; }
+.arena-rm-grid label, .arena-rm-full { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.arena-rm-grid label > span, .arena-rm-full > span { font-size: 12px; font-weight: 700; color: var(--a-muted); }
+.arena-rm-v {
+  font-family: var(--serif); font-size: 22px; color: var(--a-coral); font-weight: 800;
+  padding-bottom: 8px;
+}
+@media (max-width: 620px) {
+  .arena-rm-grid { grid-template-columns: 1fr; }
+  .arena-rm-v { display: none; }
+}
+
+/* ---- the recap card -----------------------------------------------------
+   Built to survive a phone screenshot dropped into a group chat: high
+   contrast, no thin type, nothing that depends on hover. */
+.arena-recap {
+  max-width: 620px; margin: 0 auto;
+  padding: 22px 24px; border-radius: 20px;
+  background: linear-gradient(160deg, #FFFFFF 0%, #FBF6EA 100%);
+  border: 2px solid var(--a-line);
+  box-shadow: var(--a-glow);
+}
+.arena-recap.compact { padding: 16px; box-shadow: none; }
+.arena-recap-top { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+.arena-recap-eyebrow {
+  font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+  font-weight: 800; color: var(--a-teal-ink);
+}
+.arena-recap-head { font-family: var(--serif); font-size: clamp(22px, 4vw, 32px); color: var(--a-text); line-height: 1.15; }
+.arena-recap-who { font-size: 13px; color: var(--a-muted); font-weight: 700; }
+.arena-recap-prizes { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.arena-recap-prizes li {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 9px 12px; border-radius: 12px;
+  background: linear-gradient(135deg, rgba(240, 185, 63, .18), rgba(36, 195, 206, .12));
+  border: 1px solid rgba(200, 145, 47, .4);
+}
+.arena-recap-prizes li strong { color: var(--a-text); }
+.arena-recap-prizes li em { font-style: normal; font-weight: 800; color: var(--a-gold-ink); }
+.arena-recap-lines { margin: 0; display: flex; flex-direction: column; gap: 0; }
+.arena-recap-lines > div {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  padding: 8px 0; border-bottom: 1px solid var(--a-line);
+}
+.arena-recap-lines > div:last-child { border-bottom: 0; }
+.arena-recap-lines dt { color: var(--a-muted); font-size: 13px; font-weight: 600; }
+.arena-recap-lines dd { margin: 0; color: var(--a-text); font-weight: 800; font-variant-numeric: tabular-nums; }

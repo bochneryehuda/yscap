@@ -32,6 +32,8 @@ const rules = require('../lib/arena/entry-rules');
 const games = require('../lib/arena/game-types');
 const psources = require('../lib/arena/candidate-sources');
 const runner = require('../lib/arena/spin-runner');
+const rematch = require('../lib/arena/rematch');
+const recap = require('../lib/arena/recap');
 
 // The runner has no opinion about transport; this is where it gets one.
 runner.setBroadcaster((event, data) => {
@@ -212,6 +214,13 @@ router.post('/sessions/:id/state', requireSuper, async (req, res) => {
   await audit(req, `arena_session_${want}`, 'arena_session', req.params.id, {});
   events.publishToStaff('arena:session', { sessionId: req.params.id, state: want });
   if (want === 'live') await announceSessionLive(r.rows[0]).catch(() => {});
+  // Closing the day sends ONE round-up of everything that was won — the owner's
+  // "final nice notifications for everybody that is involved in the game".
+  if (want === 'closed') {
+    require('../lib/arena/announce').sessionClosed(r.rows[0])
+      .then((x) => { if (x && x.sent) console.log(`[arena] wrap-up sent to ${x.sent}`); })
+      .catch((e) => console.warn(`[arena] wrap-up failed: ${(e && e.message) || e}`));
+  }
   res.json({ session: r.rows[0] });
 });
 
@@ -260,6 +269,77 @@ router.get('/sessions/:id/people', async (req, res) => {
     // the picker meant. Said explicitly so the screen does not have to infer it.
     limitedToPicked: picked.rows.length > 0,
     pickedIds: picked.rows.map((r) => String(r.staff_id)),
+  });
+});
+
+/**
+ * WHO IS IN THE ROOM — checked in, and here right now.
+ *
+ * The owner asked for "a 'who's in the room' bar showing who's checked in and
+ * online, live". Two different facts, deliberately kept apart on the bar
+ * because they mean different things:
+ *
+ *   CHECKED IN  is a CLAIM a person made about the day — "I am here, on time" —
+ *               approved by a super admin. It is what puts them on the wheel.
+ *   HERE NOW    is whether they have the Arena open on a screen this second.
+ *
+ * Somebody can be checked in and away from their desk (they are still in the
+ * draw), and somebody can be watching without having checked in (they are not).
+ * Showing one number for both would quietly tell the room a lie about who is
+ * in the spin.
+ *
+ * "HERE NOW" IS NOT A NEW HEARTBEAT AND NOT A NEW TABLE. The live stream this
+ * screen is already listening to holds an open connection per screen, and
+ * `events.isOnline` answers from exactly those connections — so it is honest
+ * by construction (an open Arena tab, nothing else) and costs one lookup. It is
+ * multi-tab safe and carries a 45-second grace, so a page refresh does not make
+ * somebody blink out of the room.
+ */
+router.get('/sessions/:id/room', async (req, res) => {
+  const sid = req.params.id;
+  const s = await db.query(`SELECT id FROM arena_sessions WHERE id = $1`, [sid]);
+  if (!s.rows[0]) return bad(res, 'That session does not exist.', 404);
+
+  const people = await sessionPeople(sid);
+  // The spin the check-ins belong to: the newest one that is still taking them.
+  // A session with no open spin has nobody "checked in" yet, which is the truth
+  // rather than a stale count from the last spin of the morning.
+  const spin = (await db.query(
+    `SELECT id, seq, title, state FROM arena_spins
+      WHERE session_id = $1 AND state IN ('open','locked','spinning') ORDER BY seq DESC LIMIT 1`, [sid])).rows[0] || null;
+  const checkins = spin
+    ? (await db.query(
+      `SELECT staff_id, status FROM arena_checkins WHERE spin_id = $1`, [spin.id])).rows : [];
+  const byId = new Map(checkins.map((c) => [String(c.staff_id), c.status]));
+
+  const rows = people.map((p) => {
+    const status = byId.get(String(p.id)) || null;
+    return {
+      id: String(p.id),
+      name: p.full_name,
+      role: p.role,
+      // 'approved' | 'pending' | 'rejected' | null (has not checked in)
+      checkin: status,
+      checkedIn: status === 'approved',
+      here: events.isOnline('staff', p.id),
+    };
+  });
+  // Here-and-in first, then here, then the rest — the bar reads left to right
+  // as "who is actually with us".
+  rows.sort((a, b) => (Number(b.checkedIn) - Number(a.checkedIn))
+    || (Number(b.here) - Number(a.here))
+    || String(a.name || '').localeCompare(String(b.name || '')));
+
+  res.json({
+    spin: spin ? { id: spin.id, seq: spin.seq, title: spin.title, state: spin.state } : null,
+    people: rows,
+    counts: {
+      total: rows.length,
+      here: rows.filter((r) => r.here).length,
+      checkedIn: rows.filter((r) => r.checkedIn).length,
+      waitingOnApproval: rows.filter((r) => r.checkin === 'pending').length,
+    },
+    serverNow: new Date().toISOString(),
   });
 });
 
@@ -382,6 +462,68 @@ router.post('/sessions/:id/spins', requireSuper, async (req, res) => {
   } catch (e) {
     return bad(res, e.message || 'That spin could not be created.');
   }
+});
+
+// ---------------------------------------------------------------- rematch
+
+/**
+ * WHO THE DAY SAYS THE LAST TWO ARE. A suggestion with its reasoning attached —
+ * the super admin can take it or type any other two names.
+ */
+router.get('/sessions/:id/rematch-suggestion', requireSuper, async (req, res) => {
+  res.json(await rematch.suggestPair(req.params.id));
+});
+
+/**
+ * THE REMATCH — one wheel, two names, the challenger on the stop button.
+ *
+ * It goes STRAIGHT to open, because the whole point is that it happens in the
+ * next thirty seconds while the room is still watching; a duel that has to be
+ * opened as a separate click is a duel the moment has already passed for. The
+ * wheel is frozen here too, so the two names and the fingerprint are published
+ * before anybody presses anything.
+ */
+router.post('/sessions/:id/rematch', requireSuper, async (req, res) => {
+  const b = req.body || {};
+  try {
+    const made = await rematch.create({
+      sessionId: req.params.id,
+      staffIds: b.staffIds,
+      title: b.title, subtitle: b.subtitle, prizeLabel: b.prizeLabel,
+      stopHolderStaffId: b.stopHolderStaffId,
+      durationMs: b.durationMs,
+      createdBy: req.actor.id,
+    });
+    await runner.openSpin(made.spin.id);
+    // Freeze now so the room sees the two names and the fingerprint before the
+    // button exists. A freeze that cannot find both people is a real error the
+    // admin must see, and the spin is already open, so it is reported rather
+    // than swallowed — pressing spin would raise the same thing anyway.
+    let frozen = null;
+    try { frozen = await runner.freezeRoster(made.spin.id, 1); } catch (e) { frozen = { error: e.message }; }
+    await audit(req, 'arena_rematch_created', 'arena_spin', made.spin.id, {
+      pair: made.pair.map((p) => p.name), stopHolder: made.stopHolderName,
+    });
+    events.publishToStaff('arena:spin', { spinId: made.spin.id, sessionId: req.params.id, state: 'open' });
+    res.status(201).json({ ...made, frozen: frozen && frozen.error ? null : frozen, freezeError: (frozen && frozen.error) || null });
+  } catch (e) {
+    return bad(res, e.message || 'That rematch could not be set up.');
+  }
+});
+
+// ----------------------------------------------------------------- recap
+
+/**
+ * ONE PERSON'S DAY — and only ever the person asking for it.
+ *
+ * A super admin may read somebody else's with `?staff=`, because they are the
+ * one who reads out the day at the end of it. Everybody else gets their own,
+ * whatever they put in the query — the id is taken from the token, not the URL.
+ */
+router.get('/sessions/:id/recap', async (req, res) => {
+  const asked = String((req.query && req.query.staff) || '').trim();
+  const who = asked && isSuper(req) ? asked : req.actor.id;
+  res.json(await recap.forPerson(req.params.id, who));
 });
 
 router.put('/spins/:id', requireSuper, async (req, res) => {

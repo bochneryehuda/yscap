@@ -4,7 +4,7 @@
 below touches Long-Term. Design that preceded this: `docs/ELEMENTIX-CRM-PLAN.md`; the measured
 behaviour of the connector: `docs/ELEMENTIX-RESEARCH.md` and `docs/research/elementix/*`.
 
-Migrations: `db/587_elementix_crm_and_person_profiles.sql`, `db/588_elementix_unlocked_by_email_attribution.sql`.
+Migrations: `db/588_elementix_crm_and_person_profiles.sql`, `db/589_elementix_unlocked_by_email_attribution.sql`.
 
 ---
 

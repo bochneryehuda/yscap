@@ -54,6 +54,15 @@ const DEFAULTS = Object.freeze({
   reminderOffsetsMinutes: [60, 30, 10],
   emailReminders: true,
   emailResults: true,
+  // The bell alert when a challenge lands. Separate from emailResults because
+  // it is a different volume of thing entirely -- around twenty in an
+  // afternoon, and never emailed.
+  challengeAlerts: true,
+  // How long the room counts down before a landing challenge is revealed. The
+  // owner asked for ten or twenty seconds; ten is the default because a sales
+  // floor will not stare at a screen for twenty, and it is a setting either
+  // way. Zero shows the challenge immediately with no count-in at all.
+  challengeCountdownSeconds: 10,
 
   // The live room.
   chatEnabled: true,

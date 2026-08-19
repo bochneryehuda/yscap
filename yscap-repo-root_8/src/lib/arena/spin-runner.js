@@ -430,10 +430,19 @@ async function settleSpin(spin, draws) {
     award = a.rows[0] || null;
   }
   broadcast('arena:decided', {
-    spinId: spin.id, sessionId: spin.session_id,
+    spinId: spin.id, sessionId: spin.session_id, seq: spin.seq,
     winnerStaffId: staffId, winnerName: personLabel,
     prizeLabel, prizeKind, valueCents: prizeValue, reason,
   });
+  // AND TELL THE PEOPLE WHO WERE NOT LOOKING. The broadcast above reaches the
+  // thirty people watching the wheel; somebody who won while they were on a
+  // call hears nothing from it. `announce` sends the winner their own message
+  // and the room the result, exactly once — it claims the send in the database
+  // first, so a replayed settle cannot send it twice. Fire-and-forget: a
+  // message that cannot go must never undo an award that is already written.
+  require('./announce').spinDecided(spin, { staffId, personLabel, prizeLabel, prizeValue, reason })
+    .then((r) => { if (r && r.sent) console.log(`[arena] spin ${spin.seq} result sent to ${r.sent}`); })
+    .catch((e) => console.warn(`[arena] result announcement failed: ${(e && e.message) || e}`));
   return { award, staffId, personLabel, prizeLabel, prizeValue, reason };
 }
 

@@ -1,7 +1,7 @@
 -- ============================================================================
--- db/588 — WHO UNLOCKED THIS CONTACT: the vendor tells us, by email.
+-- db/589 — WHO UNLOCKED THIS CONTACT: the vendor tells us, by email.
 --
--- WHAT THIS CHANGES, AND WHY. db/587 was built on the belief that Elementix
+-- WHAT THIS CHANGES, AND WHY. db/588 was built on the belief that Elementix
 -- cannot say who unlocked a contact, so attribution had to be established from
 -- our side by giving every officer their own OAuth seat. THE OWNER SAID THAT WAS
 -- WRONG ("dig in deeper, I'm 100% you can link who discovered the number by
@@ -35,7 +35,7 @@
 -- ---------------------------------------------------------------------------
 -- 1. THE VENDOR'S OWN ANSWER, kept verbatim.
 --
--- `unlocked_by` (db/587) is OUR staff id and stays the thing every screen reads.
+-- `unlocked_by` (db/588) is OUR staff id and stays the thing every screen reads.
 -- These two record what Elementix said, so the two can be compared — and so a
 -- contact unlocked by somebody who is not on our roster still says who.
 -- ---------------------------------------------------------------------------

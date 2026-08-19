@@ -324,7 +324,10 @@ Nothing below is a claim about intent; each was run.
   the switch matrix and the whole catalog.
 - **`scripts/test-arena-flow-db.js`** — 89 assertions, real Postgres and real
   HTTP, the whole Elementix Day.
-- **`scripts/test-arena-play-db.js`** — 81 assertions covering Phase 2.
+- **`scripts/test-arena-play-db.js`** — 91 assertions covering Phase 2 and the
+  live monitor.
+- **`scripts/test-arena-announce-db.js`** — 40 assertions covering who is told
+  what, and by which channel.
 - **Browser** — Chromium drives the real SPA: the stage renders, the wheel
   turns, the free spin runs, the button appears for exactly one person, pressing
   it lands the wheel, the proof panel says every check passed, a loan officer
@@ -350,6 +353,118 @@ here because they made the tests better:
 3. The coast after a press put the wheel back to `spinning`, reopening it to a
    second press.
 4. Held draws were verified with the automatic maths and always failed.
+5. **The result was broadcast and nothing else.** Everything about a decided
+   spin reached the live stream and stopped there — which is complete for the
+   thirty people watching the wheel and completely silent for the person who won
+   while they were on a call. That is the thing the owner asked for by name
+   ("who won on each and every draw … the final nice notifications for everybody
+   by email"), and it was found by grepping for a notify call in the settle path
+   rather than by anyone hitting it.
+6. **The Arena's notifications were not in the Notification Center at all**, so
+   there was no way to turn any of them off. Seven entries and their own section
+   were added; none is forced, because a game must never be something you cannot
+   switch off.
+7. **"In-app only" was a comment, not a rule.** The challenge bell said in its
+   own file header that it must never become email, and nothing enforced it — the
+   claim held only because the machine the tests ran on had no mailer. It is now
+   `arena_challenge` in notify.js's `STAFF_INAPP_TYPES`, the one definition of
+   that rule, and the test stubs the provider and asserts on what it was handed.
+
+---
+
+## 10a. Phase 3 — the parts the audit found missing
+
+After the merge, every message the owner sent was re-read against the code. Five
+things had been described and not built; four of them are the defects above. The
+fifth is the screen:
+
+**The live monitor.** "To be set up with good notifications on the winner live
+screen to monitor how it's being filled out, how the spins run, and who wins."
+`GET /sessions/:id/monitor` answers the whole screen in ONE call — a person
+leaves this open on a second monitor all day, and six round trips a refresh is a
+cost with no benefit. It leads with a single number, *things waiting on you*,
+loud only when it is not zero, because that is the only thing on the page that
+ever needs somebody to act.
+
+It is also **the one place a full ranking is shown**, and that is a deliberate
+departure from the players' own board, which shows the top few and your own
+standing and never "you are 14th of 16" — the research on sales leaderboards is
+consistent that publishing the bottom makes the people on it stop trying. The
+person running the day genuinely needs to see who has not got going yet, so they
+can nudge them. Different audience, different rule, said out loud on the screen
+itself.
+
+**The count-in is a setting, not a constant.** The owner asked for "a pop-up on
+every screen with a countdown — ten seconds, twenty seconds". It reads
+`challengeCountdownSeconds` end to end (default 10), so the room can be given
+longer on the day without a deploy.
+
+
+## 10b. Phase 4 — the five the owner picked
+
+Six ideas were put to the owner. They took five and turned one down ("don't do
+a live wall of the day for a TV in the office"), so there is no TV screen and
+there will not be one until they ask.
+
+**A full-screen takeover when a spin lands, with sound.** A card in the corner
+of the page is the wrong shape for the one moment of the day the whole room is
+supposed to look up. The chime is SYNTHESISED (`app-v2/src/lib/arenaSound.js`) —
+no audio file to ship, to download, or to 404 — and the browser's own rule that
+nothing may make a noise before the person has touched the page is HONOURED
+rather than worked around: somebody who has not clicked hears nothing on the
+first spin and every one after. The takeover always lets go (it dismisses
+itself, answers Escape, answers a click) because a full-screen panel that can
+trap somebody in front of the room is worse than no takeover at all, and it
+respects `prefers-reduced-motion`. The landing is celebrated ONCE per spin — a
+reconnecting stream replays frames, and a room that gets the same fanfare three
+times stops believing the fourth.
+
+**Streaks — three challenges in a row earns a bonus chance.** The rule is
+`src/lib/arena/streaks.js`, and the thing that makes it right is that it
+RECOMPUTES rather than increments. A bonus is not added when the third lands; it
+is derived from the whole run, every time a decision changes, so a challenge
+DECLINED an hour later takes back the bonus it paid for *and* every later bonus
+whose run depended on it. An increment could never manage the second half of
+that. A `pending` fulfilment does not break a run — a slow admin must never cost
+somebody their streak — and anything else resets it.
+
+**Fixing that exposed a real defect in the chances ledger, which is now fixed
+too.** Declining a fulfilment took the chances back by writing a negative row
+that carried no `entry_id`, so the question "what has this fulfilment already
+been paid?" could not see it. Two consequences, both reproduced against a real
+database before they were fixed: declining the SAME one twice took the chances
+back TWICE, and approving it again afterwards gave nothing back (the award
+insert is guarded by a unique index on `entry_id` and refused to re-add a row
+that was still there). Somebody declined by mistake finished the day a chance
+short with nothing on any screen to say why. `decide()` now reconciles the
+entry the way the streak does — what it should be worth now, against what it has
+been paid, with the difference written as one `adjustment` row (db/587) that
+carries the entry so the next read can see it. Approve, approve twice, decline,
+decline twice, decline then approve: five paths, one answer.
+
+**A "who's in the room" bar.** `GET /sessions/:id/room` keeps CHECKED IN and
+HERE NOW as two separate facts and never rolls them together. "Here now" is
+derived from the live event connections (`events.isOnline`) with a 45-second
+grace, which is honest by construction — there is no presence table to go stale
+— and a check-in still waiting on an admin reads as WAITING, not as in the draw.
+Telling the room four people are in when two are waiting on somebody is exactly
+the lie this had to avoid.
+
+**A rematch spin — the last two, head to head.** It reuses the existing `duel`
+game rather than inventing one, so there is no new fairness code: the same
+commit-reveal, the same sealed number. The suggestion always says HOW it got to
+its pair (who was eliminated last, who won what, who has the most chances) —
+a pair with no reason is a pair somebody will argue about — and the CHALLENGER
+holds the stop button, never the one who is ahead.
+
+**An end-of-day recap card each person can screenshot.** Private, per person,
+built from the day's own record. It leads with what they DID, never with a
+position, and the position is shown further down because the owner asked for it
+and this card is private (the live board's "never publish the bottom" rule is
+unchanged). Somebody who never played has NO position — they were not playing,
+and calling them last would be the one wrong number on the card. The id comes
+off the token, never the address bar; only a super admin, who reads the day out
+at the end of it, may open somebody else's.
 
 ---
 

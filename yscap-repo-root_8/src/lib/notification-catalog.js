@@ -314,6 +314,33 @@ const CATALOG = [
   { key: 'borrower_dedup',        label: 'Duplicate borrower email flagged',
     description: "Public intake found the email belongs to another borrower profile; flag for a human to reconcile.",
     category: 'system', audience: 'admin', forced: false, default_mode: 'automatic' },
+  // ─── The Arena (the staff game) ───────────────────────────────────────────
+  // Its own category, because these are not about a loan file and somebody who
+  // wants every file notification may still want the game to stay quiet — and
+  // the reverse. None are forced: a game must never be something you cannot
+  // turn off. The whole feature also disappears when the master switch is off,
+  // so with the game switched off these entries simply never fire.
+  { key: 'arena_session_live',  label: 'A game session has started',
+    description: "Sent to everyone in the session when a game day (like Elementix Day) goes live.",
+    category: 'arena', audience: 'staff', forced: false, default_mode: 'automatic' },
+  { key: 'arena_spin_open',     label: 'A spin has opened — check in',
+    description: "Sent when a spin opens for check-in, with the cutoff time. This is the one that tells you a spin has started without you.",
+    category: 'arena', audience: 'staff', forced: false, default_mode: 'automatic' },
+  { key: 'arena_deadline',      label: 'Time is running out on a spin',
+    description: "The countdown warnings before a spin's cutoff. Only sent to people who have NOT checked in yet — once you are in, it stops.",
+    category: 'arena', audience: 'staff', forced: false, default_mode: 'automatic' },
+  { key: 'arena_you_won',       label: 'You won something',
+    description: "Sent to you, personally, when a wheel lands on you. Worth leaving on.",
+    category: 'arena', audience: 'staff', forced: false, default_mode: 'automatic' },
+  { key: 'arena_result',        label: 'A spin was decided',
+    description: "The result of each spin — who won and what. Sent to everyone in the session except the winner, who gets their own message.",
+    category: 'arena', audience: 'staff', forced: false, default_mode: 'automatic' },
+  { key: 'arena_session_wrap',  label: 'End-of-day round-up',
+    description: "One message when a session closes, listing everything that was won all day.",
+    category: 'arena', audience: 'staff', forced: false, default_mode: 'automatic' },
+  { key: 'arena_challenge',     label: 'A new challenge has landed',
+    description: "The challenges that appear through the day. In-app only — these are never emailed, because around twenty of them land in an afternoon.",
+    category: 'arena', audience: 'staff', forced: false, default_mode: 'automatic' },
 ];
 
 // Map a raw notification `type` (what the notify chokepoint has in hand) to the
@@ -375,6 +402,7 @@ const CATEGORIES = [
   { id: 'digests',    label: 'Scheduled digests' },
   { id: 'security',   label: 'Security & account (always on)' },
   { id: 'system',     label: 'System & integrations' },
+  { id: 'arena',      label: 'The Arena (the staff game)' },
 ];
 
 module.exports = { CATALOG, CATEGORIES, keyForType, entryForKey, isForced };

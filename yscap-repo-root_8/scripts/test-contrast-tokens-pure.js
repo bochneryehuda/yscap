@@ -65,6 +65,15 @@ const portalCss = fs.readFileSync(path.join(ROOT, 'app-v2/src/styles.css'), 'utf
 // The portal's palette is the first :root block.
 const portalRoot = portalCss.slice(portalCss.indexOf(':root{'), portalCss.indexOf('*{box-sizing'));
 
+/* The Arena carries its OWN palette, declared on `.arena` rather than :root,
+   because the staff game is deliberately brighter than the rest of the portal.
+   Brighter is fine for a dot, a border or a gradient and NOT fine for words:
+   its gold reads 2.78:1 and its teal 3.91:1 as 12px text on white, which is why
+   the palette carries a second, darker pair used for every `color:` in the game.
+   Those two are text colours and belong under the same arithmetic as the rest. */
+const arenaStart = portalCss.indexOf('.arena {');
+const arenaBlock = arenaStart >= 0 ? portalCss.slice(arenaStart, arenaStart + 2400) : '';
+
 const suiteCss = fs.readFileSync(path.join(ROOT, 'web/v2/suite.css'), 'utf8');
 // The tools are forced to the LIGHT theme inside the portal (and stamp
 // data-theme="light" themselves), so THAT block is the one that renders.
@@ -90,6 +99,11 @@ const CASES = [
   ['portal', portalRoot, 'danger', [PAPER, WHITE, SOFT], 'error text'],
   ['portal', portalRoot, 'success', [PAPER, WHITE, SOFT], 'success text'],
   ['portal', portalRoot, 'warning', [PAPER, WHITE, SOFT], 'warning text'],
+  // --- the Arena's own palette (app-v2, declared on .arena) ---
+  ['arena', arenaBlock, 'a-gold-ink', [WHITE, SOFT], 'the game’s gold, wherever it is words'],
+  ['arena', arenaBlock, 'a-teal-ink', [WHITE, SOFT], 'the game’s teal, wherever it is words'],
+  ['arena', arenaBlock, 'a-text', [WHITE, SOFT], 'body text on the Arena’s cards'],
+  ['arena', arenaBlock, 'a-muted', [WHITE, SOFT], 'secondary text on the Arena’s cards'],
   // --- investor suite + tools (web/v2) ---
   ['tools', suiteLight, 'gold-ink', [TOOL_PAPER, WHITE], 'tool eyebrows, rank labels and totals'],
   ['tools', suiteLight, 'muted', [TOOL_PAPER, WHITE], 'secondary text'],

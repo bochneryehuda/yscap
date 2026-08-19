@@ -1,5 +1,5 @@
 -- ============================================================================
--- 587 — ELEMENTIX FOR THE CRM: the connection, skip-trace capture,
+-- 588 — ELEMENTIX FOR THE CRM: the connection, skip-trace capture,
 --       and the cached "mega profile" every lead and borrower can carry.
 --
 -- READ db/588 BEFORE THIS FILE'S REASONING. This header was written when the

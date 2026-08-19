@@ -30,6 +30,13 @@
  *     assertion had to be about THAT to be worth anything.
  *   - make the elapsed time come from the request instead of the database
  *                                           -> RED at "the landing is checkable afterwards"
+ *   - drop the waiting claims + challenge fulfilments out of the monitor's one
+ *     big number                            -> RED at "the one big number is what is
+ *     really waiting, counted from the rows themselves". The fixture deliberately
+ *     leaves ONE thing pending first: against an empty session that number is
+ *     nought whether it is counted right or not at all, and the first cut of this
+ *     mutation left the suite GREEN for exactly that reason.
+ *   - let anybody open the monitor          -> RED at "an ordinary player cannot open it"
  *
  * Self-skips without DATABASE_URL. Cleans up after itself.
  */
@@ -326,6 +333,50 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     eq(board.body.upcoming.length, 1, 'an ordinary person sees only the NEXT one coming');
     const bossBoard = await call(server, 'GET', `/api/arena/sessions/${sessionId}/challenges`, boss);
     ok(bossBoard.body.upcoming.length > 1, 'while a super admin sees the whole schedule ahead');
+
+    // ---- H2. THE MONITOR — the screen the person running the day watches ----
+    // It exists to answer ONE question before any other: is anything waiting on
+    // me? So the count is asserted against the real pending rows rather than
+    // against itself, and the whole screen is asserted to be ONE call — a person
+    // leaving this open all day must not cost six round trips a refresh.
+    // Leave something genuinely waiting first, or the big number is nought and a
+    // test of it proves nothing about how it is counted.
+    const waitingOne = planned.find((c) => c.id !== first.id);
+    await db.query(
+      `UPDATE arena_challenges SET state = 'live', award_mode = 'everyone', slots = 20,
+              tickets_awarded = 1, opens_at = now() - interval '1 minute',
+              closes_at = now() + interval '1 hour', proof_type = 'text', spin_id = $2
+        WHERE id = $1`, [waitingOne.id, megaId]);
+    eq((await call(server, 'POST', `/api/arena/challenges/${waitingOne.id}/fulfil`, players[4].tok,
+      { note: 'Sent in and waiting on the boss' })).status, 201, 'somebody sends one in');
+
+    const mon = await call(server, 'GET', `/api/arena/sessions/${sessionId}/monitor`, boss);
+    eq(mon.status, 200, 'the super admin can open the live monitor');
+    const pend = mon.body.pending || {};
+    ok(Number(pend.fulfilments) >= 1, 'the monitor sees the one that is waiting');
+    const reallyPending = (await db.query(
+      `SELECT (SELECT count(*) FROM arena_checkins c JOIN arena_spins p ON p.id = c.spin_id
+                WHERE p.session_id = $1 AND c.status = 'pending')
+            + (SELECT count(*) FROM arena_entries e JOIN arena_spins p ON p.id = e.spin_id
+                WHERE p.session_id = $1 AND e.status = 'pending')
+            + (SELECT count(*) FROM arena_claims cl JOIN arena_spins p ON p.id = cl.spin_id
+                WHERE p.session_id = $1 AND cl.status = 'pending')
+            + (SELECT count(*) FROM arena_challenge_entries ce JOIN arena_challenges ch ON ch.id = ce.challenge_id
+                WHERE ch.session_id = $1 AND ce.status = 'pending') AS n`, [sessionId])).rows[0].n;
+    eq(mon.body.waitingOnYou, Number(reallyPending),
+      'and the one big number is what is really waiting, counted from the rows themselves');
+    ok(Array.isArray(mon.body.spins) && mon.body.spins.length >= 2,
+      'every spin of the day is on it');
+    ok(mon.body.spins.every((x) => typeof x.wheelsDone === 'number' && typeof x.wheelsTotal === 'number'),
+      'each one saying how far through its wheels it is');
+    ok(Array.isArray(mon.body.awards), 'with what has been won');
+    ok(Array.isArray(mon.body.standings) && mon.body.standings.length >= players.length,
+      'and EVERYBODY on it — this is the one screen where a full list is right, '
+      + 'because it is the person who has to nudge the people at the bottom');
+    ok(typeof mon.body.serverNow === 'string', 'stamped with the server clock, so a countdown on it is honest');
+    // A player must never reach it: it names everybody's position.
+    eq((await call(server, 'GET', `/api/arena/sessions/${sessionId}/monitor`, players[0].tok)).status, 403,
+      'an ordinary player cannot open it');
 
     // ---- I. THE AI HELPER IS OPTIONAL --------------------------------------
     const ai = await call(server, 'GET', '/api/arena/ai/status', boss);
