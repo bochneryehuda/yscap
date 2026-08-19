@@ -362,6 +362,7 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
   const [query, setQuery] = useState(personName || '');
   const [qState, setQState] = useState(personState || '');
   const [hits, setHits] = useState(null);
+  const [hitsCut, setHitsCut] = useState(false);
 
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 3200); };
 
@@ -379,6 +380,7 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
     try {
       const r = await api.elxSearch(query.trim(), qState.trim().toUpperCase());
       setHits(r.results || []);
+      setHitsCut(!!r.truncated);
       if (!r.results || !r.results.length) flash('Elementix has nobody by that name.');
     } catch (e) { setErr(e.message); } finally { setBusy(''); }
   };
@@ -484,6 +486,10 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
               <div style={{ fontSize: 13, color: MUTED, marginBottom: 6 }}>
                 Pick the right person. Elementix keeps one record per state, so the same person can appear more than once —
                 link one, and you can join the others afterwards.
+                {/* NEVER A SILENT CAP: Elementix answers a search with as many as it
+                    will send and states its own limit, so a full page means there may
+                    be more — and the right person can be the one just off the end. */}
+                {hitsCut ? ' Elementix sent back as many as it will in one go, so there may be more — add the state, or type more of the name.' : ''}
               </div>
               {hits.map((h) => (
                 <div key={h.personId} style={{

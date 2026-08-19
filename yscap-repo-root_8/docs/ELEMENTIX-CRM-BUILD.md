@@ -80,8 +80,17 @@ a fixture is for).
    answers *"that lookup is already running"* — worded differently for the officer who started it
    and for a colleague.
 4. **The monthly cap, counted from the ledger**, and it fails CLOSED when the count cannot be read.
-   The "can this call go out at all?" gates (`available` / `enabled` / shared-hour ceiling / dry
-   run) sit **above** the paid block in `client.callTool`, so a refused call never records a spend.
+
+**The order inside `client.callTool` is itself load-bearing, and it is not "gates first".** The paid
+REFUSALS come first, before anything about the environment is read — a rule about what the CALLER
+asked for must not depend on a switch, a URL or a stored token, so no configuration state can be
+arranged such that a sweep spends credits, and a caller who forgot `paidActor` is told exactly that
+rather than "not configured". The LEDGER WRITE is a different thing and sits below the go/no-go
+gates (`available` / `enabled` / the shared-hour ceiling / dry run) and still above the wire: it used
+to run with the refusals, which was harmless only while the paid tool was forbidden on the one plane
+that existed, and became a real bug the moment the CRM plane made that branch reachable — with
+Elementix switched off, rate-limited or in dry run, a paid row was written and the call then returned
+"switched off". Nothing bought; the cap shrunk anyway.
 
 A **dry run is a refusal, not an answer** (`{ok:false, reason:'dry_run'}`). Answering `{ok:true,
 data:null}` would make `rowsOf` read "nobody by that name" and make `skipTrace` tell an officer
