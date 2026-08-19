@@ -177,6 +177,20 @@ async function fulfil({ challengeId, staffId, note, evidence, countValue }) {
     if (!ch) { await client.query('ROLLBACK'); return { ok: false, reason: 'That challenge does not exist.' }; }
     if (ch.state !== 'live') {
       await client.query('ROLLBACK');
+      // A challenge that closed because its places FILLED answers with the
+      // taken wording, not a flat "closed" — the person racing the last slot
+      // deserves to hear they were beaten to it, and the screen keys on
+      // `taken` (proven by test-arena-play-db's four-way race, which went red
+      // in CI when the auto-close first landed and said "closed" instead).
+      if (ch.state === 'closed' && ch.closed_reason === 'filled') {
+        const capN = ch.award_mode === 'everyone' ? null : Math.max(1, ch.slots);
+        return {
+          ok: false, taken: true,
+          reason: capN === 1
+            ? 'Somebody got this one first. It has gone.'
+            : `All ${capN} places on this one have gone.`,
+        };
+      }
       return { ok: false, reason: ch.state === 'closed' ? 'That one has closed.' : 'That one is not open yet.' };
     }
     if (ch.proof_type === 'upload' && !evidence) {
