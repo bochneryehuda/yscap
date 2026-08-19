@@ -51,8 +51,19 @@ assert(!statusMap.isTerminal('inactive / on hold'),
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'routes', 'staff.js'), 'utf8');
   const m = /const APP_STATUS = \[([^\]]*)\]/.exec(src);
   assert(!!m && /'on_hold'/.test(m[1]), 'on_hold is settable from PILOT (present in APP_STATUS)');
-  assert(/VISIBLE_BORROWER_SQL/.test(src) && /primary_officer_id=\$\{p\}/.test(src),
+  /* THE RULE IS ASKED OF THE RULE, NOT OF A FILE. This used to grep staff.js for
+     `primary_officer_id=${p}`, which broke the day the fragment moved to
+     lib/permissions so a second door (the Elementix CRM desk) could ask the same
+     question without re-inlining a scope — the rule was intact and the guard
+     still went red. Asserting the SHARED definition's own output survives the
+     next move too, and it is the thing the sentence is actually about. */
+  assert(/VISIBLE_BORROWER_SQL/.test(src), 'the staff console still scopes borrowers through the shared fragment');
+  const { visibleBorrowerSql } = require('../src/lib/permissions');
+  const borrowerScope = visibleBorrowerSql('b', '$1');
+  assert(/b\.primary_officer_id=\$1/.test(borrowerScope),
     'borrower visibility includes the profile\'s own owning officer, not only loan files');
+  assert(/borrower_officers/.test(borrowerScope),
+    '…and every officer they have done business with, not just the one who owns the profile');
 }
 {
   const { STATUS_LABEL, MAJOR_STATUSES } = require('../src/lib/status-notify');
