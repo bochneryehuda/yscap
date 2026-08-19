@@ -120,6 +120,7 @@ export const arena = {
   openSpin: (id) => api.post(`/api/arena/spins/${id}/open`, {}),
   lockSpin: (id) => api.post(`/api/arena/spins/${id}/lock`, {}),
   cancelSpin: (id, reason) => api.post(`/api/arena/spins/${id}/cancel`, { reason }),
+  reviveSpin: (id) => api.post(`/api/arena/spins/${id}/revive`, {}),
   turnWheel: (id, seq, clientSeed) => api.post(`/api/arena/spins/${id}/spin`, { seq, clientSeed }),
   freezeWheel: (id, seq) => api.post(`/api/arena/spins/${id}/freeze`, { seq }),
   preview: (id, seq) => api.get(`/api/arena/spins/${id}/preview?seq=${seq}`),

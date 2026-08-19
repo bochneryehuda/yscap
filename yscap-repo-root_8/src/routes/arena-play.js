@@ -188,6 +188,15 @@ router.post('/sessions/:id/templates/:key', requireSuper, async (req, res) => {
     const part = await daySetup.ensureSpin(session, req.params.key, { day, offsetMinutes, createdBy: req.actor.id });
     if (!part.ok) return bad(res, part.reason || 'That template could not be loaded.');
     if (!part.created) {
+      if (part.revived) {
+        await audit(req, 'arena_template_revived', part.spin.id, { template: req.params.key, day });
+        events.publishToStaff('arena:spin', { spinId: part.spin.id, sessionId: req.params.id, state: 'draft' });
+        return res.json({
+          spin: part.spin, revived: true,
+          message: `${part.label || 'That plan'} had been called off — it is back now as a draft, with its times restored.`,
+          challengesPlanned: 0,
+        });
+      }
       return res.json({
         spin: part.spin, alreadyThere: true,
         message: `${part.label || 'That plan'} is already in this session — nothing was added twice.`,
