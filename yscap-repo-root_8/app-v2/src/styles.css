@@ -5628,6 +5628,16 @@ ol.arena-ch-top li em { color: var(--a-gold-ink); font-style: normal; font-varia
 }
 .arena-tk-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 10px; }
 .arena-tk-hint { font-size: 12px; color: #5C6A70; }
+/* THE BOOBY PRIZE. Deliberately NOT red or grey — it is a joke, not an error
+   and not a consolation. Same card, same fanfare; the punchline just gets room
+   to breathe under the prize, and the gold rule turns teal so the room can tell
+   at a glance which kind of landing this was. */
+.arena-tk-card.joke { border-color: rgba(36, 195, 206, .75); }
+.arena-tk-joke {
+  max-width: 34ch; margin-top: 2px;
+  font-size: clamp(15px, 2vw, 19px); line-height: 1.4; font-weight: 600;
+  color: #3A4550;
+}
 
 .arena-tk-bit {
   position: absolute; top: -8vh; border-radius: 2px; z-index: 1;

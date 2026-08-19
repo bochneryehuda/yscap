@@ -50,6 +50,8 @@ const fair = require('./fair-draw');
 const sources = require('./candidate-sources');
 const games = require('./game-types');
 const templates = require('./templates');
+const jokes = require('./joke-prizes');
+const settings = require('./settings');
 
 /** Fired for the live channel. Injected by routes/arena.js so this module has
  *  no opinion about transport and can be tested without one. */
@@ -155,6 +157,47 @@ async function lockSpin(spinId) {
  * Idempotent: a wheel already frozen is returned untouched, because re-freezing
  * after people have seen the list is precisely the tamper this guards against.
  */
+/**
+ * Of the wheels that CARRIED a joke, did it land? Newest first.
+ *
+ * ONLY WHEELS THAT COULD HAVE LANDED ONE COUNT, and getting that wrong made the
+ * whole pacing rule dead on the shape the day actually runs in. Elementix Day
+ * spins TWO wheels — what you win, then who won it — and the people wheel never
+ * carries a joke. Reading every revealed draw therefore meant the newest one was
+ * almost always the people wheel, so "one just landed, back off" never once
+ * fired, and every people wheel counted as a clean spin and inflated the rate.
+ * Caught by the control run of its own test, not by reading.
+ *
+ * Read from what actually happened rather than from a counter, so a restart, a
+ * cancelled spin or an admin re-running a wheel cannot desynchronise it. Never
+ * throws: an unreadable history means the ordinary share, which is the safe
+ * middle rather than a surprise in either direction.
+ */
+async function recentJokeOutcomes(sessionId, limit = 5) {
+  try {
+    const r = await db.query(
+      `SELECT d.winner_key
+         FROM arena_draws d JOIN arena_spins p ON p.id = d.spin_id
+        WHERE p.session_id = $1 AND d.state = 'revealed' AND d.winner_key IS NOT NULL
+          AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(d.roster, '[]'::jsonb)) c
+                       WHERE (c -> 'meta' ->> 'joke') = 'true')
+        ORDER BY d.revealed_at DESC NULLS LAST, d.id DESC LIMIT $2`, [sessionId, limit]);
+    return r.rows.map((x) => !!jokes.jokeFor(x.winner_key));
+  } catch (_) { return []; }
+}
+
+/** Which jokes this session has already told — a punchline repeats badly. */
+async function jokesAlreadyTold(sessionId) {
+  try {
+    const r = await db.query(
+      `SELECT DISTINCT c ->> 'key' AS k
+         FROM arena_draws d JOIN arena_spins p ON p.id = d.spin_id,
+              LATERAL jsonb_array_elements(COALESCE(d.roster, '[]'::jsonb)) c
+        WHERE p.session_id = $1 AND (c -> 'meta' ->> 'joke') = 'true'`, [sessionId]);
+    return r.rows.map((x) => x.k).filter(Boolean);
+  } catch (_) { return []; }
+}
+
 async function freezeRoster(spinId, seq) {
   const spin = await getSpin(spinId);
   if (!spin) throw new Error('That spin does not exist.');
@@ -189,7 +232,33 @@ async function freezeRoster(spinId, seq) {
   if (total <= 0) {
     throw new Error(`Everyone on wheel ${seq} has zero tickets, so nobody could win. Give somebody a ticket first.`);
   }
-  const hash = fair.rosterHash(candidates);
+
+  // ── THE BOOBY PRIZES ────────────────────────────────────────────────────
+  // Put on the wheel HERE, before the hash, because that is what keeps the
+  // fairness story whole: they are in the published roster, inside the hash,
+  // and they take up real space. The alternative — letting the wheel land and
+  // then swapping the answer for a joke one time in four — is a rigged wheel,
+  // and no gag is worth the sentence "the draw is checkable by anybody".
+  //
+  // PRIZE WHEELS ONLY. The owner was explicit: "not on the officer but on the
+  // prize that you win". A joke on the people wheel would mean nobody wins,
+  // which is a different and much less funny thing.
+  // TWO SWITCHES, and the spin's own always wins: a super admin can turn them
+  // off for the whole day in the Arena's settings, or for one spin that is
+  // meant to be serious without touching the day.
+  let withJokes = candidates;
+  const arenaCfg = await settings.load().then((c) => c.settings || {}).catch(() => ({}));
+  const jokesOn = config.jokePrizes != null ? config.jokePrizes !== false : arenaCfg.jokePrizes !== false;
+  if (built.scope === 'prizes' && jokesOn) {
+    const pinned = [config.jokeShare, arenaCfg.jokeShare].find((x) => Number.isFinite(Number(x)));
+    withJokes = jokes.injectInto(candidates, {
+      recent: await recentJokeOutcomes(spin.session_id),
+      used: await jokesAlreadyTold(spin.session_id),
+      share: pinned == null ? null : Number(pinned),
+    });
+  }
+  const finalCandidates = withJokes;
+  const hash = fair.rosterHash(finalCandidates);
   // WHO HOLDS THE BUTTON. If this wheel's stop button belongs to the winner of
   // an earlier wheel (the Early Bird's shape), resolve that now -- at freeze
   // time, when the earlier wheel has already landed. Resolved once and stored,
@@ -204,12 +273,12 @@ async function freezeRoster(spinId, seq) {
     `UPDATE arena_draws SET roster = $2::jsonb, roster_hash = $3,
             stop_holder_staff_id = COALESCE(stop_holder_staff_id, $4)
       WHERE id = $1 AND roster IS NULL RETURNING *`,
-    [draw.id, JSON.stringify(candidates), hash, holder]);
+    [draw.id, JSON.stringify(finalCandidates), hash, holder]);
   // The WHERE guard means a racing second freeze changes nothing; read back
   // whichever version won rather than reporting the one we built.
   const frozen = upd.rows[0] || (await db.query(`SELECT * FROM arena_draws WHERE id = $1`, [draw.id])).rows[0];
   broadcast('arena:roster', {
-    spinId, seq, count: candidates.length, rosterHash: frozen.roster_hash,
+    spinId, seq, count: finalCandidates.length, rosterHash: frozen.roster_hash,
     stopHolderStaffId: frozen.stop_holder_staff_id ? String(frozen.stop_holder_staff_id) : null,
   });
   return frozen;
@@ -397,13 +466,24 @@ async function settleSpin(spin, draws) {
   let prizeKind = 'personal';
   let prizeValue = 0;
   let entryId = null;
+  let jokeDetail = null;
 
   for (const d of revealed) {
     const cand = (d.roster || [])[d.winner_index] || {};
     const meta = cand.meta || {};
     if (!staffId && d.winner_staff_id) { staffId = d.winner_staff_id; personLabel = d.winner_label; }
     if (!staffId && meta.officerStaffId) { staffId = meta.officerStaffId; personLabel = meta.officer || d.winner_label; }
-    if (!prizeLabel && (meta.entryId || meta.prizeId || meta.custom)) {
+    // A JOKE COUNTS AS THE OUTCOME, and is recorded as its own kind with no
+    // value. It has to be here, or a wheel that lands on one would settle with
+    // no prize at all and the room would be told nothing happened — which is
+    // the opposite of the point. `valueCents` is forced to zero rather than
+    // trusted, so no wording in the library can ever become money owed.
+    if (!prizeLabel && meta.joke === true) {
+      prizeLabel = d.winner_label;
+      prizeKind = 'joke';
+      prizeValue = 0;
+      jokeDetail = meta.detail || null;
+    } else if (!prizeLabel && (meta.entryId || meta.prizeId || meta.custom)) {
       prizeLabel = d.winner_label;
       prizeKind = meta.kind === 'business' ? 'business' : (meta.kind === 'perk' ? 'perk' : 'personal');
       prizeValue = Number(meta.valueCents) || 0;
@@ -432,7 +512,10 @@ async function settleSpin(spin, draws) {
   broadcast('arena:decided', {
     spinId: spin.id, sessionId: spin.session_id, seq: spin.seq,
     winnerStaffId: staffId, winnerName: personLabel,
+    // `joke` and its follow-through ride along so the full-screen takeover can
+    // deliver the punchline instead of announcing a prize that is not one.
     prizeLabel, prizeKind, valueCents: prizeValue, reason,
+    joke: prizeKind === 'joke', jokeDetail,
   });
   // AND TELL THE PEOPLE WHO WERE NOT LOOKING. The broadcast above reaches the
   // thirty people watching the wheel; somebody who won while they were on a
@@ -440,10 +523,13 @@ async function settleSpin(spin, draws) {
   // and the room the result, exactly once — it claims the send in the database
   // first, so a replayed settle cannot send it twice. Fire-and-forget: a
   // message that cannot go must never undo an award that is already written.
-  require('./announce').spinDecided(spin, { staffId, personLabel, prizeLabel, prizeValue, reason })
+  require('./announce').spinDecided(spin, {
+    staffId, personLabel, prizeLabel, prizeValue, reason,
+    joke: prizeKind === 'joke', jokeDetail,
+  })
     .then((r) => { if (r && r.sent) console.log(`[arena] spin ${spin.seq} result sent to ${r.sent}`); })
     .catch((e) => console.warn(`[arena] result announcement failed: ${(e && e.message) || e}`));
-  return { award, staffId, personLabel, prizeLabel, prizeValue, reason };
+  return { award, staffId, personLabel, prizeLabel, prizeKind, prizeValue, reason, jokeDetail };
 }
 
 /**

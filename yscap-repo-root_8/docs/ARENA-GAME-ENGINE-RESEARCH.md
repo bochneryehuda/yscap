@@ -468,6 +468,214 @@ at the end of it, may open somebody else's.
 
 ---
 
+## 10c. The A-to-Z audit — what a fresh read found
+
+The whole Arena was re-read end to end after it merged: every route and its
+gate, the fairness engine, the ledger, the sweep, the AI helper, the front end,
+and the migrations replayed twice against a real database. Four things were
+wrong, one of them badly. Each was REPRODUCED before it was touched.
+
+**THE STOP BUTTON WOULD HAVE BROKEN ON THE DAY, and the audit is the only reason
+it did not.** A held wheel passes through the state `stopping` for the second and
+a half it coasts after somebody presses. db/585 declared the wheel's state list
+WITHOUT that value and db/586 widened it — and every migration replays on every
+boot, each file as one transaction. From the moment a single `adjustment` ticket
+row exists — which db/587 introduced, so the first time anybody declines a
+challenge and it is reconciled — db/586's own narrower re-add of the ticket
+source list fails, THE WHOLE FILE ROLLS BACK, and the widening goes with it.
+db/585 has already run and left the narrow list standing, and nothing put it
+back. Pressing the button then answered a 500 and the wheel never came to rest.
+
+It was found by running the suite rather than by reading: the play suite went
+from 91 green to 7 red on a database that had simply been booted a few more
+times. **The earlier check that said this was safe measured the wrong thing** —
+it confirmed the TICKET constraint stayed wide, which db/587 re-asserts, and
+never asked what else that rollback took with it. db/588 re-asserts the wheel's
+state list, numbered last and carrying no data-dependent statement so it cannot
+roll back and take its own repair with it.
+
+**The shape to watch for anywhere in this repo: a CHECK that TWO files declare,
+where the later one can roll back.** Seven of db/586's other constraints are
+fine for one reason only — no earlier file declares them, so a rollback leaves
+db/586's own committed version standing. The regression guard replays db/585,
+586 and 588 in order against a row that makes 586 fail, then puts a real wheel
+into `stopping`.
+
+**The off switch did not silence the announcements.** The switch promises the
+Arena is "indistinguishable from a feature that was never built", and a wheel
+already turning when somebody flips it off is still SETTLED a minute later by
+the sweep — which is right, since leaving a draw stuck mid-spin is worse. But it
+was also ANNOUNCED: reproduced against a real database, a decided spin with the
+Arena off still wrote every person a "you won" / "the result is in"
+notification. The moment somebody reaches for that switch is exactly when they
+least want a company-wide message going out. `announce.js` now asks one shared
+question first, and fails towards silence if the switch cannot be read.
+Settling and announcing are two different acts and only the second is stopped.
+
+**The round-up was the loudest thing in the building.** Counted rather than
+guessed, on a six-spin day with the default three deadline offsets, one person
+on the roster stood to receive: one "the day has started", six "a spin has
+opened", up to eighteen deadline alarms, six "spin N landed on X", and one
+end-of-day round-up. The result is the one Arena message nobody can act on — the
+room watched the wheel land, the screen threw a full-page takeover, and the
+winner already had their own message — so `arena_result` joined the challenge
+bell in `notify.js`'s `STAFF_INAPP_TYPES`, which is the repo's one definition of
+"in-app only". The bell still rings and the row is still written; only the email
+is dropped. Everything actionable still emails.
+
+**The busiest minute of the day was the expensive one.** Every arena frame asked
+each open screen to refresh, and the board is nine queries. At half past ten
+forty people check in inside two minutes, each check-in is a frame to every open
+screen, and an immediate refetch on each turns one person's click into forty
+board loads — sixteen hundred loads in a burst, on the same instance serving the
+loan portal. Refreshes are now coalesced to one a second per screen with a
+trailing call (the frame worth reacting to is usually the last in a burst). The
+wheel is untouched: spinning, stopping and the landing come straight off the
+stream and paint immediately.
+
+**What the audit checked and found sound**, so the next person does not re-tread
+it: the two routers sit behind `requireAuth` + `requireStaff` and the master
+switch, and answer 404 rather than 403 when the game is off; a TPO broker's live
+connection registers as `kind:'tpo'` and `publishToStaff` skips it, so nothing
+from the game reaches an outside brokerage; the pipeline-sourced wheels select
+the loan number, the amount and the borrower's name and NEVER the note buyer;
+the random pick uses rejection sampling with no modulo bias and throws rather
+than quietly returning zero; the stop button is checked against its holder and
+claimed once by the database; a held draw stays checkable because a spin's
+config is frozen from its first draw; the ticket ledger serialises on the entry
+row and the streak on a per-person advisory lock; and the migrations converge
+over two consecutive boots with an `adjustment` row present — db/586's narrower
+re-add is recognised as superseded and skipped, and every index and column it
+declares after that line survives. The AI helper's pace and daily cap are held
+IN MEMORY, so with more than one web process they are per-process and a restart
+resets them; that is named in the code as a deliberate trade for a helper's
+throttle, and it is worth knowing rather than discovering.
+
+---
+
+## 10d. The booby prizes — a slice on the wheel, not a second roll
+
+The owner asked for a joke on the PRIZE wheel — never on the people wheel —
+that says, in effect, *"you have won the right to go and make another Elementix
+call"*. Sometimes one on a wheel, sometimes two. Not every spin, and not exactly
+every fourth: *"at least one out of four or one out of five should be something
+like this."*
+
+### The decision that mattered: a slice, not a second roll
+
+The obvious build is a second coin toss — draw the prize, then roll again to see
+whether the room is told a joke instead. It was rejected, and the reason is the
+whole point of this engine. **The commitment is published before the wheel
+turns**: the roster is frozen, hashed, and shown to the room, and anybody can
+recompute the winner afterwards from the revealed seed. A second roll happens
+after that fingerprint is taken, so the joke would be the one part of the
+evening nobody could check — on a wheel whose entire promise is that everything
+is checkable. It would also be a lie on screen: the wheel would visibly land on
+the marketing budget and the room would be told something else.
+
+So a joke is a REAL SLICE. `src/lib/arena/joke-prizes.js` injects it in
+`freezeRoster`, **before** the hash, so the fingerprint covers it, the wheel
+visibly lands on it, and `GET /api/arena/draws/:id/verify` proves it exactly as
+it proves a real prize. Prize wheels only — `built.scope === 'prizes'` — so a
+person can never be replaced by a punchline.
+
+### The library
+
+24 jokes across six families, so the same one is not heard twice in an hour:
+`work` (go make the call), `already` ("you already had it"), `specific` (a named
+Elementix action), `deadpan`, `meta` (about the wheel), and `job` (the day
+itself, fondly). Each carries a label for the wheel and a one-line follow-through
+for the takeover card. `pick()` prefers ones not yet used in the session.
+
+### The ladder — how often, and why it is not a fixed number
+
+A fixed 1-in-4 becomes predictable by the third spin, and the room stops
+watching. So the share of the wheel the jokes hold RESPONDS to what the last few
+prize wheels actually did:
+
+| what just happened            | share of the wheel |
+|-------------------------------|--------------------|
+| ordinary                      | 22%                |
+| a joke landed on the last spin| 8% — back right off |
+| three clean spins in a row    | 32% — lean in       |
+| four or more clean spins      | 45% — lean in hard  |
+| ceiling, whatever the maths   | 45%                 |
+
+`recentJokeOutcomes` reads only rosters that actually CARRIED a joke
+(`EXISTS ... (c -> 'meta' ->> 'joke') = 'true'`). That filter is load-bearing and
+was found by the control run of the new suite: without it the people wheel of a
+two-wheel spin counted as a clean prize spin, so "back off after one lands" never
+once fired on the real shape of an Elementix Day.
+
+**Measured, not hoped** — 50,000 simulated spins per wheel size, feeding each
+outcome back into the ladder:
+
+| wheel      | a joke lands  | back-to-back (as % of hits) | longest clean run |
+|------------|---------------|-----------------------------|-------------------|
+| 3 prizes   | 1 in 4.0      | 8.6%                        | 22                |
+| 6 prizes   | 1 in 4.0      | 8.7%                        | 21                |
+| 12 prizes  | 1 in 4.0      | 7.7%                        | 21                |
+
+That sits at the frequent edge of the owner's own band — they asked for *at
+least* one in four or one in five, and this delivers one in four. The longest
+clean run is a 50,000-spin tail event; a real day is ten to twenty spins.
+
+A wheel needs two real prizes before it carries a joke at all and four before it
+can carry two, so a booby prize can never turn a small wheel into a coin toss.
+
+### The whole-number lesson — and how it was caught
+
+The first working version put a fractional weight on the joke slice, and the
+AUTO draw refused the wheel outright:
+
+    pickWeighted: weight must be a non-negative whole number (got 0.5641…)
+
+`fair.pickWeighted` takes only non-negative whole numbers. The HELD draw path
+(`sliceAngles`/`sliceAt`) happens to tolerate fractions, so every test written
+FOR the jokes passed while every automatic prize spin in the product was broken.
+**It was caught by the pre-existing `test-arena-flow-db.js`, not by the new
+suite** — which is the argument for running the whole set rather than the one you
+just wrote.
+
+The fix is structural rather than a rounding call: the WHOLE wheel is scaled up
+onto an integer grid of at least 40 units before the share is worked out
+(`k = ceil(40 / W)`), then the joke's total is split across its slices with the
+remainder on the first. Multiplying every weight by the same whole number leaves
+the relative odds untouched to the last digit, and nothing anywhere shows a raw
+weight — the room is shown percentages — so the scale is invisible. Without it a
+small wheel lands badly: two prizes and one joke is 33%, half again more than the
+owner asked for. Measured after the fix, every wheel size from 2 to 33 prizes
+lands between 21.6% and 22.6%.
+
+### What a joke is worth, and what it can never become
+
+`settleSpin` records a joke as its own `prize_kind = 'joke'` with
+`value_cents = 0`, and the zero is FORCED rather than read from the library — no
+wording anybody adds later can become money owed. That matters because the awards
+export is a payroll document: prizes at these values are taxable wages, and a
+booby prize is not one. `spinDecided` says *"The wheel says: …"* rather than
+*"You won: …"*, and the full-screen takeover carries the follow-through line
+instead of announcing a prize that is not one.
+
+### Switches
+
+`jokePrizes` is on by default and can be turned off for a whole session in Arena
+settings, or per spin in the spin's own config (`config.jokePrizes`). `jokeShare`
+overrides the ladder with a fixed share, capped by the same 45% ceiling.
+
+### How it was proven
+
+`scripts/test-arena-joke-prizes-pure.js` (60) — the library, the ladder, the
+count rule, the whole-number guarantee at every wheel size, the share landing in
+band, and the never-on-people rule. `scripts/test-arena-joke-prizes-db.js` (17) —
+injection before the hash, verification still passing on a joke wheel, the
+settle recording kind and zero, and the two switches. The whole-number fix was
+mutation-proven: reverting the integer grid reproduces the exact
+`pickWeighted` refusal above and turns `test-arena-flow-db.js` red (61 passed,
+8 failed) with the unmutated control green on either side (90 passed, 0 failed).
+
+---
+
 ## 11. Sources
 
 **Wheels and fairness** — wheelofnames.com + FAQ · pickerwheel.com ·

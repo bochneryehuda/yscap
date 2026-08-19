@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/590 — elementix address profiles: the property behind a row
+-- db/591 — elementix address profiles: the property behind a row
 --
 -- WHAT THIS CHANGES, AND WHY. The Elementix profile could show a person's
 -- properties, loans and deeds, but a PROPERTY was a dead end: the owner asked

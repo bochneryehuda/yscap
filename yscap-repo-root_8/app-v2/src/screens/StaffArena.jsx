@@ -87,7 +87,38 @@ export default function StaffArena() {
       setLoading(false);
     }
   }, [sessionParam]);
-  reload.current = load;
+
+  // ONE REFRESH A SECOND, NOT ONE PER FRAME.
+  //
+  // Every arena event asks the open screens to refresh, and the board is nine
+  // queries. That is nothing when one thing happens — and it is the busiest
+  // minute of the day that breaks it: at half past ten forty people check in
+  // inside two minutes, each check-in is a frame to every open screen, and an
+  // immediate refetch on each one turns one person's click into forty board
+  // loads. Forty by forty is sixteen hundred loads, on the same instance that
+  // is serving the loan portal.
+  //
+  // So refreshes are COALESCED: at most one a second per screen, and always a
+  // TRAILING one, because the frame most worth reacting to is usually the last
+  // in a burst and a leading-edge-only throttle is exactly the one that drops
+  // it. The wheel itself never waits on this — spinning, stopping and the
+  // landing all come straight off the stream and paint immediately.
+  const reloadTimer = useRef(null);
+  const reloadAt = useRef(0);
+  const askReload = useCallback(() => {
+    const GAP = 1000;
+    if (reloadTimer.current) return;                       // one is already queued
+    const since = Date.now() - reloadAt.current;
+    if (since >= GAP) { reloadAt.current = Date.now(); load(); return; }
+    reloadTimer.current = setTimeout(() => {
+      reloadTimer.current = null;
+      reloadAt.current = Date.now();
+      load();
+    }, GAP - since);
+  }, [load]);
+  reload.current = askReload;
+
+  useEffect(() => () => { if (reloadTimer.current) clearTimeout(reloadTimer.current); }, []);
 
   useEffect(() => { load(); }, [load]);
 
@@ -152,6 +183,8 @@ export default function StaffArena() {
           winnerName: data.winnerName,
           prizeLabel: data.prizeLabel,
           valueCents: data.valueCents,
+          joke: !!data.joke,
+          jokeDetail: data.jokeDetail || null,
           mine: !!(data.winnerStaffId && meRef.current && String(data.winnerStaffId) === String(meRef.current)),
         });
       }

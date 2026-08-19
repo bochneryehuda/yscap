@@ -64,6 +64,18 @@ const DEFAULTS = Object.freeze({
   // way. Zero shows the challenge immediately with no count-in at all.
   challengeCountdownSeconds: 10,
 
+  // THE BOOBY PRIZES — the slices that "win" you another Elementix call rather
+  // than a prize. On by default because the owner asked for them by name; one
+  // switch here turns them off across the whole day, and a single spin that is
+  // meant to be serious can set `jokePrizes: false` in its own config. They
+  // only ever appear on a PRIZE wheel, never on the wheel that picks a person.
+  jokePrizes: true,
+  // How much of a prize wheel they take up, as a share. Left NULL so the pacing
+  // rule in joke-prizes.js does the work — about one in four and a half, easing
+  // off right after one lands and leaning in after a dry run. Set a number here
+  // only to pin it flat.
+  jokeShare: null,
+
   // The live room.
   chatEnabled: true,
   chatSlowModeSeconds: 2,
