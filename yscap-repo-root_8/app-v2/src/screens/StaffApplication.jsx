@@ -6,7 +6,7 @@ import { ENTITY_TYPES, describeEntity, titlesFor, subtypesFor, hasSubtypes } fro
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fileToBase64 } from '../lib/files.js';
 import { onFilesDropped } from '../lib/drop-files.js';
-import { fmtDay, dayInputValue } from '../lib/dates.js';
+import { fmtDay } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { moneyNum } from '../lib/money.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -40,7 +40,7 @@ import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
 import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
-import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
+import { PhoneInput, ZipInput , EmailInput, DateCommitInput } from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, requestAppDetailTab, subscribeAppDetailTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
@@ -78,29 +78,12 @@ import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import LoudHint from '../components/LoudHint.jsx';
 
-/* A closing-date <input type="date"> that DOESN'T fight the typist.
- * The old input saved on every onChange and reloaded the file — but a date
- * input fires change with each intermediate value while you type the year
- * (0002 → 0020 → 0202 → 2026), and the reload reset focus, so "you can't even
- * type in dates." This holds a local draft, saves only on blur/Enter, and only
- * when the value is a real complete date (or cleared) — never mid-type. */
-function ClosingDateField({ value, onSave }) {
-  const [draft, setDraft] = useState(dayInputValue(value));
-  useEffect(() => { setDraft(dayInputValue(value)); }, [value]);
-  const commit = () => {
-    const cur = dayInputValue(value);
-    if (draft === cur) return;                                   // unchanged
-    if (draft && !/^\d{4}-\d{2}-\d{2}$/.test(draft)) return;      // incomplete → ignore
-    if (draft && Number(draft.slice(0, 4)) < 1900) return;        // mid-type year → ignore
-    onSave(draft || null);
-  };
-  return (
-    <input className="input" type="date" value={draft}
-      onChange={e => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
-  );
-}
+/* The draft-commit closing-date input that used to live here ("you can't even
+   type in dates" — a date input fires change with each intermediate value while
+   you type the year, and saving per change + reloading wiped the typed date) is
+   now the shared DateCommitInput in components/FormattedInputs.jsx: the lead
+   CRM's follow-up date had the exact same bug, and a second private copy is how
+   the two would drift. Same semantics — commit on blur/Enter, never mid-type. */
 
 /* The inline DOB row that used to live here is gone — the shared
    shared BorrowerProfilePanel (components/BorrowerProfilePanel.jsx) now owns
@@ -5643,12 +5626,12 @@ export default function StaffApplication() {
           <div className="grid cols-2" style={{ gap: 16, marginTop: 14 }}>
             <div className="field" style={{ marginBottom: 0 }}>
               <label>Expected closing</label>
-              <ClosingDateField value={app.expected_closing} onSave={v => setClosing('expectedClosing', v)} />
+              <DateCommitInput value={app.expected_closing} onCommit={v => setClosing('expectedClosing', v)} />
               <div className="hint" style={{ marginTop: 6 }}>Setting an expected date notifies the borrower.</div>
             </div>
             <div className="field" style={{ marginBottom: 0 }}>
               <label>Actual closing</label>
-              <ClosingDateField value={app.actual_closing} onSave={v => setClosing('actualClosing', v)} />
+              <DateCommitInput value={app.actual_closing} onCommit={v => setClosing('actualClosing', v)} />
             </div>
           </div>
 
