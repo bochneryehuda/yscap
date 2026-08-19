@@ -483,19 +483,19 @@ function AddChallenge({ session, lib, onAdded }) {
         <label>What to call it<input className="input" value={title} onChange={(e) => setTitle(e.target.value)} /></label>
         <label>How hard
           <select className="input" value={tier} onChange={(e) => setTier(Number(e.target.value))}>
-            {(lib ? lib.tiers : []).map((t) => (
+            {((lib && lib.tiers) || []).map((t) => (
               <option key={t.tier} value={t.tier}>{t.label} — {t.tickets} chances</option>
             ))}
           </select>
         </label>
         <label>How they prove it
           <select className="input" value={proof} onChange={(e) => setProof(e.target.value)}>
-            {(lib ? lib.proofTypes : []).map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+            {((lib && lib.proofTypes) || []).map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
           </select>
         </label>
         <label>Who can win it
           <select className="input" value={award} onChange={(e) => setAward(e.target.value)}>
-            {(lib ? lib.awardModes : []).map((a) => <option key={a.key} value={a.key}>{a.label}</option>)}
+            {((lib && lib.awardModes) || []).map((a) => <option key={a.key} value={a.key}>{a.label}</option>)}
           </select>
         </label>
       </div>
@@ -555,7 +555,7 @@ function NewSpin({ catalog, catalogErr, onRetryCatalog, session, onChanged }) {
   }
   const families = catalog.families || [];
   const games = (catalog.games || []).filter((g) => g.family === family);
-  const usesQualifiers = game && game.wheels.some((w) => w.source === 'qualifiers' || w.source === 'qualifier_claimants');
+  const usesQualifiers = game && (game.wheels || []).some((w) => w.source === 'qualifiers' || w.source === 'qualifier_claimants');
 
   const set = (k, v) => setConfig((c) => ({ ...c, [k]: v }));
 
@@ -610,7 +610,7 @@ function NewSpin({ catalog, catalogErr, onRetryCatalog, session, onChanged }) {
           {game.dataNote && <p className="arena-datanote">{game.dataNote}</p>}
           <p className="muted small">Where this came from: {game.origin}</p>
           <ol className="arena-wheels">
-            {game.wheels.map((w, i) => (
+            {(game.wheels || []).map((w, i) => (
               <li key={i}><strong>Wheel {i + 1}: {w.title}</strong> <em className="muted">{w.sourceLabel}</em></li>
             ))}
           </ol>
@@ -678,7 +678,7 @@ function NewSpin({ catalog, catalogErr, onRetryCatalog, session, onChanged }) {
                 onChange={(e) => set('maxCandidates', Number(e.target.value))}
               />
             </label>
-            {(game && game.wheels.some((w) => w.source === 'closed_files_window')) && (
+            {(game && (game.wheels || []).some((w) => w.source === 'closed_files_window')) && (
               <label>How many days back
                 <input
                   className="input" type="number" min="1" max="365" value={config.windowDays || 7}
@@ -701,7 +701,7 @@ function NewSpin({ catalog, catalogErr, onRetryCatalog, session, onChanged }) {
               />
             </label>
           </div>
-          {(config.customList !== undefined || (game && game.wheels.some((w) => w.source === 'custom_list'))) && (
+          {(config.customList !== undefined || (game && (game.wheels || []).some((w) => w.source === 'custom_list'))) && (
             <label className="arena-fullfield">What goes on the wheel — one per line
               <textarea
                 className="input" rows={5} value={config.customList || ''}
@@ -1094,6 +1094,11 @@ function SettingsPanel() {
     catch (e) { showMessage((e && e.message) || 'That did not save.'); }
     finally { setSaving(false); }
   };
+  // A degraded read can answer without `settings`; the inputs below read
+  // straight off it, so refuse to render them rather than crash the panel.
+  if (!s.settings) {
+    return <p className="arena-bad small">The settings could not be read just now. <button className="btn ghost small" onClick={load}>Try again</button></p>;
+  }
   return (
     <div className="arena-card">
       <h3>How the Arena behaves</h3>

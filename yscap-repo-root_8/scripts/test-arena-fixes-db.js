@@ -38,9 +38,13 @@ const eq = (a, b, m) => ok(String(a) === String(b), `${m} (got ${JSON.stringify(
     const ann = await mk('Ann'); const ben = await mk('Ben'); const cal = await mk('Cal');
     const mkSession = async (name, state = 'live') => {
       // At most one LIVE session exists (db/585's own rule) — close the
-      // previous section's before opening the next.
+      // previous section's, and any leftover from an interrupted earlier run,
+      // before opening the next.
       if (sessions.length) {
         await db.query(`UPDATE arena_sessions SET state = 'closed' WHERE id = ANY($1::uuid[])`, [sessions]);
+      }
+      if (state === 'live') {
+        await db.query(`UPDATE arena_sessions SET state = 'closed' WHERE state = 'live'`);
       }
       const id = (await db.query(
         `INSERT INTO arena_sessions (name, state) VALUES ($1,$2) RETURNING id`, [`${name} ${sfx}`, state])).rows[0].id;

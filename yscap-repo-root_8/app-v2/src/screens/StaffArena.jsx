@@ -335,7 +335,9 @@ function Stage({ board, spin, now, isSuper, busy, onAct, onProof, tv, onReload, 
     || [...draws].reverse().find((d) => d.state === 'revealed')
     || draws.find((d) => d.roster) || draws[0] || null;
 
-  const roster = (active && active.roster) || [];
+  // Array.isArray, not truthiness — arena_draws.roster is jsonb, and a non-array
+  // value there would make .reduce throw past the || [] guard.
+  const roster = Array.isArray(active && active.roster) ? active.roster : [];
   const total = roster.reduce((a, c) => a + (Number(c.weight) || 0), 0);
   const angles = total > 0
     ? roster.map((c) => (360 * (Number(c.weight) || 0)) / total)
