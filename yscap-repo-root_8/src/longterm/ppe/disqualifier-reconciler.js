@@ -151,21 +151,62 @@ function normalizeAuthority(authority, opts) {
 
 // Reconcile ONE layer's two reason lists by DIMENSION. A dimension both sides decline on = agreement;
 // present on one side only = a disagreement in that direction.
+//
+// ⛔ A SECOND RULE ON THE SAME AXIS USED TO VANISH. This kept only the FIRST row per dimension on each
+// side (`if (!byDim.has(...)) set(...)`), so an engine that refuses on one axis for TWO reasons had one
+// of them silently deleted before anything compared, counted or reported it. MEASURED on the canonical
+// 305-scenario battery (2026-08-19): our own Deephaven program does exactly that on the `fico 600`
+// scenario — "Min FICO 640" AND "DSCR < 1.00: Min FICO 680", both `fico`, the second dropped — and
+// that scenario is one of the eight in the live probe set, so it was happening on real runs.
+//
+// THE SURPLUS IS REPORTED, NOT SCORED, and both halves of that are deliberate. Reported, because a rule
+// deleted in silence is the failure mode this whole comparison exists to prevent. NOT scored as a
+// disagreement, because it is not one: if we state two `fico` refusals and Lender Price states one,
+// both engines refuse on `fico` — the surplus is extra detail on our side, and Lender Price routinely
+// states one COMPOUND rule where our sheet states two narrow ones (§2.106). Counting it against us
+// would manufacture disagreements on files where nothing is wrong, which is the expensive direction.
+// So `sameDimensionExtra` rides alongside, counted and named, and `layerVerdict` never reads it.
+//
+// A dimension only ONE side names still yields one row PER RULE rather than one per dimension — that
+// is not a scoring change of the same kind, it is the honest count of how many refusals went unmatched.
 function reconcileLayer(ourRows, lpRows) {
-  const ourByDim = new Map();
-  for (const r of ourRows) { if (!ourByDim.has(r.dimension)) ourByDim.set(r.dimension, r); }
-  const lpByDim = new Map();
-  for (const r of lpRows) { if (!lpByDim.has(r.dimension)) lpByDim.set(r.dimension, r); }
+  const group = (rows) => {
+    const m = new Map();
+    for (const r of rows) { if (!m.has(r.dimension)) m.set(r.dimension, []); m.get(r.dimension).push(r); }
+    return m;
+  };
+  const ourByDim = group(ourRows);
+  const lpByDim = group(lpRows);
 
-  const agreements = []; const onlyOurs = []; const onlyAuthority = [];
-  for (const [dim, our] of ourByDim) {
-    if (lpByDim.has(dim)) agreements.push({ dimension: dim, ourReason: our.reason, lpReason: lpByDim.get(dim).reason });
-    else onlyOurs.push({ dimension: dim, reason: our.reason, facts: our.facts || [] });
+  const agreements = []; const onlyOurs = []; const onlyAuthority = []; const sameDimensionExtra = [];
+  for (const [dim, ours] of ourByDim) {
+    const lps = lpByDim.get(dim);
+    if (!lps) { for (const our of ours) onlyOurs.push({ dimension: dim, reason: our.reason, facts: our.facts || [] }); continue; }
+    // Pair positionally up to the shorter list. WHICH of two same-axis rules pairs with which is not
+    // knowable from either side's structure, and the agreement this records is about the AXIS, which is
+    // true whichever way they are paired.
+    // The bound is read off BOTH arrays in the loop condition rather than from a precomputed count, so
+    // this can never walk off either end and mint an agreement with an `undefined` side — a wrong
+    // count is a visible wrong count, never a crash or a half-built row.
+    for (let i = 0; i < ours.length && i < lps.length; i += 1) agreements.push({ dimension: dim, ourReason: ours[i].reason, lpReason: lps[i].reason });
+    const paired = Math.min(ours.length, lps.length);
+    if (ours.length > paired) {
+      sameDimensionExtra.push({
+        dimension: dim, side: 'ours', paired, extra: ours.length - paired,
+        reasons: ours.slice(paired).map((r) => r.reason),
+      });
+    }
+    if (lps.length > paired) {
+      sameDimensionExtra.push({
+        dimension: dim, side: 'authority', paired, extra: lps.length - paired,
+        reasons: lps.slice(paired).map((r) => r.reason),
+      });
+    }
   }
-  for (const [dim, lp] of lpByDim) {
-    if (!ourByDim.has(dim)) onlyAuthority.push({ dimension: dim, reason: lp.reason, adjType: lp.adjType || null });
+  for (const [dim, lps] of lpByDim) {
+    if (!ourByDim.has(dim)) for (const lp of lps) onlyAuthority.push({ dimension: dim, reason: lp.reason, adjType: lp.adjType || null });
   }
-  return { agreements, onlyOurs, onlyAuthority, related: [] };
+  return { agreements, onlyOurs, onlyAuthority, related: [], sameDimensionExtra };
 }
 
 // ⛔ THE TWO VOCABULARIES FILE THE SAME COMPOUND RULE UNDER DIFFERENT HEADINGS, and matching on one
@@ -238,6 +279,10 @@ function reconcileDisqualifiers(ours, authority, opts = {}) {
   }
 
   const partition = lpN.partition || [];
+  // Every surplus same-axis rule, carried up so a caller sees what the pairing could not consume.
+  // Reported, never scored — see reconcileLayer.
+  const sameDimensionExtra = Object.entries(layers)
+    .flatMap(([layer, l]) => ((l.sameDimensionExtra || []).map((e) => ({ layer, ...e }))));
   const unknown = [...ourN.unknown, ...lpN.unknown];
   if (!lpN.ready) unknown.push({ side: 'authority', reason: 'disqualify_feed_not_ready', why: 'authority_not_ready' });
 
@@ -260,11 +305,16 @@ function reconcileDisqualifiers(ours, authority, opts = {}) {
     unknown,
     relatedOnly,
     partition,
+    sameDimensionExtra,
     summary: {
       agree,
       disagree,
       related,
       partition: partition.length,
+      // How many refusals the pairing could not consume — the rules that used to be deleted in
+      // silence. A non-zero value is NOT a defect and NOT a disagreement; it is a count of extra
+      // narrow rules one side states on an axis the other covers with fewer.
+      sameDimensionExtra: sameDimensionExtra.reduce((n, e) => n + e.extra, 0),
       // TRUE when the authority's ONLY declines were container-partition statements — i.e. it did not
       // refuse this borrower at all, it refused this CONTAINER. A caller reading `ineligibleAuthority`
       // alone would see `false` and have no idea why; this says why.

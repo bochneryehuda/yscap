@@ -6781,3 +6781,51 @@ mid-mutation and had to be re-applied by hand. The remedy for both is the same o
 new and modified files BEFORE running mutations, so `git checkout --` restores from the index.
 
 172/172 suites, 33 database-backed. All seven gates green.
+
+### §2.108 — ⛔ A SECOND REFUSAL ON THE SAME AXIS WAS DELETED BEFORE ANYTHING COULD SEE IT (2026-08-19)
+
+**⛔ THE MECHANISM.** `reconcileLayer` built its per-dimension index on BOTH sides with
+`if (!byDim.has(r.dimension)) byDim.set(r.dimension, r)` — **first row wins, every other one is
+discarded**. So an engine that refuses on one axis for two reasons had one of them vanish before
+anything compared, counted or reported it: not the layer report, not `summary`, not the run's own JSON.
+Which of the two survived was decided by arrival order. This is the same defect class as everything
+else in this window — **a comparison answering confidently on evidence it silently threw away** — and
+it was recorded as known-but-unfixed in §2.106's tail.
+
+**IT IS NOT HYPOTHETICAL, AND THE MEASUREMENT IS WHAT MADE IT WORTH FIXING.** Running the REAL
+`buildOursLeg` over the canonical 305-scenario battery and stamping each decline's dimension from its
+own rule: our Deephaven program refuses **twice on `fico`** for the `fico 600` scenario —
+`"Min FICO 640"` **and** `"DSCR < 1.00: Min FICO 680"` — 1 of 305 scenarios, and **that scenario is one
+of the eight in the live probe set**, so a rule was being dropped on real runs, not in theory.
+
+**THE SURPLUS IS REPORTED, NOT SCORED — and both halves are the decision.**
+
+- **Reported**, because a rule deleted in silence is precisely what this comparison exists to prevent.
+  Every surplus row now rides in `sameDimensionExtra`, per layer and at the top level, carrying the
+  dimension, which side it came from, how many paired, and the leftover reasons **verbatim**.
+- **NOT scored as a disagreement**, because it is not one. If we state two `fico` refusals and Lender
+  Price states one, both engines refuse on `fico`; and Lender Price routinely states ONE COMPOUND rule
+  where our sheet states two narrow ones — that is §2.106's entire subject. Counting the surplus
+  against us would manufacture disagreements on files where nothing is wrong, which is the expensive
+  direction. `layerVerdict` never reads it.
+
+**ONE THING DID CHANGE IN THE COUNTS, deliberately.** A dimension only ONE side names now yields a row
+**per rule** rather than one per dimension, so two unmatched refusals of ours count as two. That is not
+a scoring change of the same kind — it is the honest count of how many refusals went unmatched, and it
+moves `summary.disagree`'s arithmetic without moving any verdict.
+
+**THE PAIRING IS STRUCTURALLY UNABLE TO OVER-READ.** The agreement loop takes its bound from BOTH
+arrays in the loop condition rather than from a precomputed count, so it can never walk off either end
+and mint an agreement with an `undefined` side. That was not tidiness: the over-pairing mutation
+originally CRASHED the suite instead of failing it, and a crash is not proof (the §2.106 rule). With
+the bound read inline the same mutation produces eight named failures.
+
+**Mutation-proven five ways**, with an unmutated control green either side: the original first-row-wins
+index restored (10 assertions), the surplus scored as a one-sided decline (8), the top-level carry-up
+dropped (6), `layerVerdict` allowed to read the surplus (5), and the surplus bound over-paired (8).
+
+`scripts/test-lt-ppe-same-dimension-declines.js` — 27 assertions, and section A drives the REAL
+Deephaven program over the REAL battery rather than a hand-written fixture, so the case it pins cannot
+rot into a story about a sheet nobody prices.
+
+173/173 suites, 33 database-backed. All seven gates green.
