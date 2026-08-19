@@ -261,18 +261,23 @@ function statedRole(row) {
 async function importEntities({ borrowerId, entityRows, client }) {
   const db = client || require('../../db');
   const entityLib = require('../track-record-entity');
-  const out = { added: 0, matched: 0, skipped: [], names: [] };
+  const out = { added: 0, matched: 0, noRole: 0, overCap: 0, skipped: [], names: [] };
   const rows = Array.isArray(entityRows) ? entityRows : [];
   const cap = MAX_ENTITIES();
 
-  for (let i = 0; i < rows.length; i += 1) {
-    const r = rows[i];
+  /* THE CAP COUNTS CREATIONS, NOT ROSTER POSITIONS (pre-merge audit 2026-08-19).
+     A positional cap re-skipped the SAME tail on every run while its message
+     promised "run again to add the rest" — a remedy that could never work —
+     and junk/no-role rows consumed positions real companies then lost. So:
+     rows are CLASSIFIED first (junk, person-rows and no-role rows never touch
+     the cap), a company already on the profile matches for FREE, and only a
+     CREATION spends the cap — which is what makes a second run genuinely add
+     the next batch. The roster is read once so a match costs no query. */
+  const existing = (await db.query(
+    `SELECT id, llc_name FROM llcs WHERE borrower_id=$1 AND llc_name IS NOT NULL`, [borrowerId])).rows;
+
+  for (const r of rows) {
     const name = str(r && r.name).slice(0, 160);
-    if (i >= cap) {
-      out.skipped.push({ name: name || '(unnamed)', reason: 'over_cap',
-        why: `Only the first ${cap} companies were added in this pass — run the import again to add the rest.` });
-      continue;
-    }
     if (!name) { out.skipped.push({ name: '(unnamed)', reason: 'no_name', why: 'The record does not name the company.' }); continue; }
     /* An "entity" row can itself be a PERSON (a recorded party). Never a company. */
     if (str(r.entityTypeValue).toUpperCase() === 'PERSON' || str(r.entityType).toUpperCase() === 'PERSON') {
@@ -280,11 +285,20 @@ async function importEntities({ borrowerId, entityRows, client }) {
       continue;
     }
     const role = statedRole(r);
-    if (!role) {
-      out.skipped.push({ name, reason: 'no_stated_role',
-        why: 'The records do not say this person is a principal, officer or signer of this company — it was not added to the profile.' });
+    if (!role) { out.noRole += 1; continue; }               // aggregated below — there can be hundreds
+    if (entityLib.junkEntityName(name)) {
+      out.skipped.push({ name, reason: 'junk_name', why: 'This is not a name that can be a company on a profile.' });
       continue;
     }
+    const pick = entityLib.pickEntity(name, existing);
+    if (pick.ambiguous) {
+      out.skipped.push({ name, reason: 'ambiguous',
+        why: 'More than one company with this name is already on the profile — a person has to say which.' });
+      continue;
+    }
+    if (pick.llcId) { out.matched += 1; out.names.push(name); continue; }   // already theirs — free
+    if (out.added >= cap) { out.overCap += 1; continue; }                    // aggregated below
+
     const p = await entityLib.promoteEntityName(borrowerId, name, { client: db, firstSeenOn: 'elementix' });
     if (!p.llcId) {
       out.skipped.push({ name, reason: p.reason || 'not_added',
@@ -296,20 +310,42 @@ async function importEntities({ borrowerId, entityRows, client }) {
     out.names.push(name);
     if (p.created) {
       out.added += 1;
+      existing.push({ id: p.llcId, llc_name: name });   // an intra-run twin now matches instead of re-creating
       const state = /^[A-Za-z]{2}$/.test(str(r.state)) ? str(r.state).toUpperCase() : null;
       /* The stamp only ever lands on a row THIS pass created and that nothing
          has stamped before — an entity a human put on the profile is theirs
-         and is never held back (the entity-adopt rule, kept). */
-      await db.query(
-        `UPDATE llcs
-            SET adopted_at = now(), adopted_source = 'elementix',
-                formation_state = COALESCE(formation_state, $2),
-                updated_at = now()
-          WHERE id = $1 AND adopted_at IS NULL`,
-        [p.llcId, state]).catch(() => {});
+         and is never held back (the entity-adopt rule, kept). A FAILED stamp
+         is said OUT LOUD, never swallowed: an unstamped elementix entity is a
+         liquidity-eligible name, which is exactly what the stamp exists to
+         prevent (pre-merge audit 2026-08-19). */
+      try {
+        await db.query(
+          `UPDATE llcs
+              SET adopted_at = now(), adopted_source = 'elementix',
+                  formation_state = COALESCE(formation_state, $2),
+                  updated_at = now()
+            WHERE id = $1 AND adopted_at IS NULL`,
+          [p.llcId, state]);
+      } catch (e) {
+        out.skipped.push({ name, reason: 'stamp_failed',
+          why: `The company was added but could NOT be marked as Elementix-imported (${(e && e.message) || 'error'}) — until somebody verifies it or its documents land, treat its bank balances with care.` });
+        console.warn('[elementix-history] adoption stamp failed for llc %s (%s): %s', p.llcId, name, (e && e.message) || e);
+      }
     } else {
       out.matched += 1;
     }
+  }
+
+  /* THE HELD-BACK ROWS ARE COUNTED, NEVER SILENT — one aggregate line each,
+     because a roster can carry hundreds and a skip row per company would bury
+     the search record (the other extreme of the same honesty rule). */
+  if (out.noRole) {
+    out.skipped.push({ name: `${out.noRole} compan${out.noRole === 1 ? 'y' : 'ies'}`, reason: 'no_stated_role',
+      why: `${out.noRole} compan${out.noRole === 1 ? 'y' : 'ies'} the records merely show this person BESIDE were not added — the records do not say they own or run them.` });
+  }
+  if (out.overCap) {
+    out.skipped.push({ name: `${out.overCap} compan${out.overCap === 1 ? 'y' : 'ies'}`, reason: 'over_cap',
+      why: `Only ${cap} new compan${cap === 1 ? 'y is' : 'ies are'} added per pass — ${out.overCap} more ${out.overCap === 1 ? 'is' : 'are'} waiting. Run the search or the profile refresh again and the next ${cap} will be added.` });
   }
   return out;
 }
@@ -392,7 +428,7 @@ async function runImport({ borrowerId, personId, research, staffId, searchId, en
   const importer = require('../track-record/importer');
   const out = {
     found: 0, staged: 0, imported: 0, merged: 0, leftForReview: 0,
-    entitiesAdded: 0, entitiesMatched: 0, skips: [],
+    entitiesAdded: 0, entitiesMatched: 0, entitiesNoRole: 0, entitiesOverCap: 0, skips: [],
     calls: research.calls || 0, searched: research.searched === true,
   };
 
@@ -409,10 +445,11 @@ async function runImport({ borrowerId, personId, research, staffId, searchId, en
   const ents = await importEntities({ borrowerId, entityRows: research.entityRows, client: db });
   out.entitiesAdded = ents.added;
   out.entitiesMatched = ents.matched;
-  for (const s of ents.skipped) {
-    if (s.reason === 'no_stated_role') continue; // ordinary, and there can be hundreds — the counts say it
-    out.skips.push({ entity: s.name, reason: s.reason, why: s.why });
-  }
+  out.entitiesNoRole = ents.noRole;
+  out.entitiesOverCap = ents.overCap;
+  // Every held-back class arrives as ONE aggregate row from importEntities —
+  // counted, never silent, never one row per company.
+  for (const s of ents.skipped) out.skips.push({ entity: s.name, reason: s.reason, why: s.why });
 
   // 2. THE NAMES a deed can match against: the borrower, plus EVERY company now
   //    on their profile (the ones just added included).
@@ -467,7 +504,8 @@ async function searchViaLinkedPerson({ borrowerId, personId, staffId, searchId, 
   } catch (e) {
     return {
       found: 0, staged: 0, imported: 0, merged: 0, leftForReview: 0,
-      entitiesAdded: 0, entitiesMatched: 0, calls: 0, searched: false, personId,
+      entitiesAdded: 0, entitiesMatched: 0, entitiesNoRole: 0, entitiesOverCap: 0,
+      calls: 0, searched: false, personId,
       skips: [{ entity: 'Elementix profile', reason: 'error',
         why: `The linked Elementix profile could not be read (${(e && e.message) || 'error'}) — the name-based search still ran.` }],
     };

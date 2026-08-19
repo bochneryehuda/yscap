@@ -806,8 +806,28 @@ router.post('/people/:personId/profile/build', async (req, res) => {
      through the track-record importer's own gates. Best-effort by contract: a
      failure here never fails the build that paid for the data. */
   let historyImport = null;
-  try { historyImport = await require('../lib/elementix/deep-history').importAfterBuild({ personId, staffId: req.actor.id }); }
-  catch (_) { historyImport = null; }
+  try {
+    const all = await require('../lib/elementix/deep-history').importAfterBuild({ personId, staffId: req.actor.id });
+    /* THE RESPONSE IS SCOPED EVEN THOUGH THE WRITE IS NOT (pre-merge audit
+       2026-08-19). The import itself correctly lands on EVERY linked borrower
+       — the data belongs on the borrower's own record whoever pressed Build —
+       but this route only needs the person to be visible through ONE
+       relationship, so echoing every linked borrower's id + import counts
+       would hand officer A a borrower id and activity that belongs to officer
+       B's book (`recordScope` would refuse to open that record). Same
+       discipline as `/people/:id/contact`: when a route must stay open,
+       narrow what it SAYS. Invisible borrowers fold into an anonymous
+       aggregate so the screen can still say the work happened. */
+    const visible = [];
+    const others = { count: 0, imported: 0, merged: 0, entitiesAdded: 0, leftForReview: 0 };
+    for (const e of (all || [])) {
+      const scope = await recordScope(req, 'borrower', e.borrowerId);
+      if (scope.allowed) { visible.push(e); continue; }
+      others.count += 1;
+      for (const k of ['imported', 'merged', 'entitiesAdded', 'leftForReview']) others[k] += Number(e[k]) || 0;
+    }
+    historyImport = { borrowers: visible, others: others.count ? others : null };
+  } catch (_) { historyImport = null; }
   const view = await profile.readProfile(personId);
   res.json({ ...out, profile: view.ok ? view : null, historyImport });
 });

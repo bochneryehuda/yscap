@@ -122,6 +122,20 @@ const stranger = importer.candidatesFrom(
 assert.strictEqual(stranger.candidates.length, 0, 'a stranger\'s deed is never staged');
 ok('a stranger\'s deed stays a stranger\'s — the flag widens nothing else');
 
+// The WHY printed for a no-dates candidate says what the records actually
+// show (second audit 2026-08-19): a transfer-only property names the
+// transfer, and a genuinely empty one never claims "a purchase but no sale".
+const whyTransfer = importer.dealTypeFromRecords({ raw: { relatedPartyTransfer: true } });
+assert.strictEqual(whyTransfer.dealType, null);
+assert.ok(/transfer between the borrower and their own company/i.test(whyTransfer.why),
+  'a transfer-only candidate\'s why names the transfer');
+const whyEmpty = importer.dealTypeFromRecords({});
+assert.strictEqual(whyEmpty.dealType, null);
+assert.ok(/no purchase or sale dates/i.test(whyEmpty.why), 'an empty candidate\'s why claims nothing');
+assert.ok(/purchase but no sale/.test(importer.dealTypeFromRecords({ purchase_date: '2024-01-01' }).why),
+  'a real purchase-only candidate still reads as before');
+ok('the no-deal-type WHY describes the records, never a purchase they don\'t show');
+
 // ---------------------------------------------------------------------------
 console.log('\n5. The auto-import options are internal-only, and honest');
 // ---------------------------------------------------------------------------
@@ -145,5 +159,31 @@ const syncSrc = stripComments(fs.readFileSync(path.join(__dirname, '../src/sync/
 assert.ok(syncSrc.includes('backfillOnce'), 'the sync loop carries the back-book sweep');
 assert.ok(syncSrc.includes('ELEMENTIX_HISTORY_IMPORT_ENABLED'), 'behind its own call-time switch');
 ok('build, link and the sweep are wired — asserted on the source');
+
+/* THE BUILD ROUTE'S RESPONSE IS SCOPED (pre-merge audit 2026-08-19): every
+   per-borrower import entry it echoes must have passed the same borrower scope
+   the record routes use — an officer must never receive another officer's
+   borrower id plus that borrower's import activity because they can see the
+   PERSON through their own lead. The fold-into-aggregate branch must exist. */
+{
+  const at = crmRouteSrc.indexOf('importAfterBuild');
+  const after = crmRouteSrc.slice(at, at + 2500);
+  assert.ok(/recordScope\(req, 'borrower'/.test(after),
+    'the build route scopes each echoed borrower through recordScope');
+  assert.ok(/others/.test(after), 'and folds invisible borrowers into an anonymous aggregate');
+}
+ok('the build route never echoes a borrower the actor may not see');
+
+/* THE SWEEP'S KILL SWITCH IS A REAL SWITCH — in the API Health catalog, so a
+   human can flip it at runtime (pre-merge audit 2026-08-19: it read the flag
+   but was absent from switches.js, so no UI or API could ever set it). */
+{
+  const switches = require('../src/lib/integrations/switches');
+  const all = switches.SWITCHES || switches.ALL || switches.list || null;
+  const has = (Array.isArray(all) ? all : []).some((s) => s && s.key === 'ELEMENTIX_HISTORY_IMPORT_ENABLED')
+    || (switches.BY_KEY && (switches.BY_KEY.has ? switches.BY_KEY.has('ELEMENTIX_HISTORY_IMPORT_ENABLED') : !!switches.BY_KEY.ELEMENTIX_HISTORY_IMPORT_ENABLED));
+  assert.ok(has, 'ELEMENTIX_HISTORY_IMPORT_ENABLED is in the runtime switch catalog');
+}
+ok('the history-import kill switch is flippable at runtime, like every other switch');
 
 console.log(`\ntest-elementix-deep-history-pure: all ${n} checks passed`);

@@ -85,6 +85,17 @@ const DEEDS_PAGE_1 = [
   // 7. NEAR match — a hyphenated (Queens-style) house number, one of the
   //    forced-review shapes. Must be left for a human, never auto-decided.
   D('dh1', '150-25 78th Rd, Flushing, NY 11367', '2021-03-03', 160000),
+  // 8. A SELF-TRANSFER — a $10 quit-claim from the person into their own LLC,
+  //    ONE deed, both sides theirs, NO vendor flags (real person rows carry
+  //    none — pre-merge audit 2026-08-19). Must never read as a bought-and-
+  //    sold flip: no figures, blank type, and the note says why.
+  D('di1', '3 Quitclaim Ct, Newark, NJ 07109', '2025-01-15', 10,
+    { grantors: ['MOSES WEIL TEST'], grantees: ['MW TRADING LLC'], isGrantee: undefined, isGrantor: undefined }),
+  // 9. A grantee that is an unspaced RESPACING of the borrower's own name —
+  //    the entity matcher calls it theirs, and the own-name guard must refuse
+  //    to mint a person-named "company" from it (audit, matcher asymmetry).
+  D('dj1', '4 Respace Rd, Newark, NJ 07110', '2024-05-05', 90000,
+    { grantees: ['MOSESWEIL TEST'], isGrantee: undefined, isGrantor: undefined }),
   ...FILLERS,
 ];
 const DEEDS_PAGE_2 = [D('dg1', '88 Gamma Blvd, Newark, NJ 07107', '2024-09-09', 400000)];
@@ -273,15 +284,45 @@ async function main() {
   assert.strictEqual(near78.length, 1, 'no second line was minted for it');
   ok('a near match waits for a human — auto-merging one is how a duplicate line is born');
 
-  // The whole book: 253 deed rows → 252 candidates (the buy+sell pair is one
-  // property) − the declined one − the two exact matches − the near match
-  // = 248 new lines, plus the three pre-existing ones.
+  // THE AUDIT'S REPRODUCTION — the $10 quit-claim into their own LLC.
+  const qc = lines.find((l) => (l.one_line || '').startsWith('3 Quitclaim Ct'));
+  assert.ok(qc, 'the transferred property is on the record (it IS theirs)');
+  assert.strictEqual(qc.deal_type, null, 'but a one-deed transfer is NEVER read as a flip');
+  assert.strictEqual(qc.purchase_price, null, 'the $10 consideration never became a purchase price');
+  assert.strictEqual(qc.sale_price, null, 'nor a sale price');
+  assert.ok(/set the deal type/i.test(qc.notes || ''), 'the line asks for the type');
+  assert.ok(/only recorded deed is a transfer/i.test(qc.notes || ''),
+    'and the WHY on the line names the transfer — never "a purchase but no sale" the records don\'t show');
+  const qcCand = (await db.query(
+    `SELECT internal_notes FROM track_record_candidates WHERE borrower_id=$1 AND property_address::text LIKE '%Quitclaim%'`, [bor])).rows[0];
+  assert.ok(/transfer between the borrower and their own company/i.test(qcCand.internal_notes || ''),
+    'and the candidate says why there are no figures');
+  ok('a self-transfer deed contributes identity, never economics — no phantom flip');
+
+  const respace = lines.find((l) => (l.one_line || '').startsWith('4 Respace Rd'));
+  assert.ok(respace, 'the respaced-own-name deed still imported (the deal is theirs)');
+  assert.strictEqual(respace.llc_id, null, 'with NO entity link');
+  assert.ok(!(await db.query(
+    `SELECT 1 FROM llcs WHERE borrower_id=$1 AND llc_name ILIKE '%MOSESWEIL%'`, [bor])).rows.length,
+  'and no person-named "company" was minted from the respaced spelling');
+  ok('the own-name guard refuses both matchers\' spellings of the borrower');
+
+  // The whole book: 255 deed rows → 254 candidates (the buy+sell pair is one
+  // property) − the declined one − the verified-line exact match − the near
+  // match − the unverified exact match (a fill, not a new line)
+  // = 250 new lines, plus the three pre-existing ones.
   const total = (await db.query(`SELECT count(*)::int AS n FROM track_records WHERE borrower_id=$1`, [bor])).rows[0].n;
-  assert.strictEqual(total, 3 + 248, `every pageful landed (got ${total})`);
-  assert.strictEqual(out.elementix.imported, 248);
+  assert.strictEqual(total, 3 + 250, `every pageful landed (got ${total})`);
+  assert.strictEqual(out.elementix.imported, 250);
   assert.strictEqual(out.elementix.merged, 1);
   assert.strictEqual(out.elementix.leftForReview, 2, 'the verified-line match AND the near match both wait');
-  ok(`248 new lines + 1 fill + 2 left for review — the full two-page pull (${total} lines on the record)`);
+  ok(`249 new lines + 1 fill + 2 left for review — the full two-page pull (${total} lines on the record)`);
+
+  // THE HELD-BACK COMPANY IS COUNTED, NEVER SILENT — one aggregate row.
+  const noRoleSkip = out.skips.find((s) => s.reason === 'no_stated_role');
+  assert.ok(noRoleSkip && /1 company/.test(noRoleSkip.why), 'the no-role company is reported as a counted aggregate');
+  assert.strictEqual(out.elementix.entitiesNoRole, 1, 'and counted on the result');
+  ok('a company held back for no stated role is one counted line, not silence');
 
   // -------------------------------------------------------------------------
   console.log('\n4. Running it AGAIN imports nothing twice');
@@ -295,6 +336,28 @@ async function main() {
   const covered = out2.skips.find((s) => s.reason === 'covered_by_linked_profile');
   assert.ok(covered, 'the imported companies are not re-searched one by one');
   ok('idempotent end to end, and the imported companies ride the profile pull instead of per-company searches');
+
+  // ── 4b. A FAILED deep pull is never recorded as a search that happened ────
+  // (second audit 2026-08-19: `searchedUnder` listed the profile whenever the
+  //  id EXISTED, even when the pull failed — and keying it on the run must not
+  //  turn "the pull failed" into "you gave us nothing to search".)
+  const liveStub = client.callTool;
+  client.callTool = async (tool, args, opts) => {
+    calls.push({ tool, args, opts });
+    if (/^get_person_(deeds|mortgages|entities)$/.test(tool)) return { ok: false, reason: 'error', detail: 'vendor 500' };
+    return liveStub(tool, args, opts);
+  };
+  const outFail = await importer.runSearch({ borrowerId: bor, staffId: officer, states: [] });
+  client.callTool = liveStub;
+  assert.ok(!outFail.searchedUnder.includes('their linked Elementix profile'),
+    'a failed pull is not listed as searched-under');
+  assert.strictEqual(outFail.nothingToSearch, false,
+    'and the file still plainly HAD identities to search under');
+  assert.ok(outFail.skips.some((s) => /Elementix profile/i.test(s.entity || '') || /Elementix profile/i.test(s.why || '')),
+    'the failure itself is reported in the skips');
+  const totalAfterFail = (await db.query(`SELECT count(*)::int AS n FROM track_records WHERE borrower_id=$1`, [bor])).rows[0].n;
+  assert.strictEqual(totalAfterFail, total, 'and a failed pull imported nothing');
+  ok('a failed deep pull is reported as a failure — never recorded as a search that ran');
 
   // -------------------------------------------------------------------------
   console.log('\n5. The cache door + the backfill sweep');
@@ -355,17 +418,70 @@ async function main() {
   assert.strictEqual(String(after[0].borrowerId), String(bor2));
   ok('a profile build lands on every linked borrower');
 
+  // -------------------------------------------------------------------------
+  console.log('\n6. The entity cap spends on CREATION — "run again" is really true');
+  // -------------------------------------------------------------------------
+  process.env.ELEMENTIX_IMPORT_MAX_ENTITIES = '1';
+  const three = [
+    { id: 'e0000000-0000-4000-8000-000000000021', name: 'CAP ONE LLC', state: 'NJ', isPrincipal: true },
+    { id: 'e0000000-0000-4000-8000-000000000022', name: 'CAP TWO LLC', state: 'NJ', isPrincipal: true },
+    { id: 'e0000000-0000-4000-8000-000000000023', name: 'CAP THREE LLC', state: 'NJ', isPrincipal: true },
+  ];
+  const cap1 = await deep.importEntities({ borrowerId: bor2, entityRows: three });
+  assert.strictEqual(cap1.added, 1, 'the first pass creates up to the cap');
+  assert.strictEqual(cap1.overCap, 2, 'and counts what is waiting');
+  assert.ok(cap1.skipped.some((s) => s.reason === 'over_cap' && /2 compan/.test(s.name) && /2 more are waiting/.test(s.why)),
+    'as ONE aggregate line, not one row per company');
+  assert.ok(cap1.skipped.some((s) => s.reason === 'over_cap' && /Only 1 new company is added/.test(s.why)),
+    'and the wording reads correctly at a cap of one');
+  const cap2 = await deep.importEntities({ borrowerId: bor2, entityRows: three });
+  assert.strictEqual(cap2.matched, 1, 'a company already on the profile matches for FREE');
+  assert.strictEqual(cap2.added, 1, 'so the second pass creates the NEXT one — the promise is true');
+  const cap3 = await deep.importEntities({ borrowerId: bor2, entityRows: three });
+  assert.strictEqual(cap3.added, 1, 'and the third finishes the roster');
+  assert.strictEqual(cap3.overCap, 0);
+  delete process.env.ELEMENTIX_IMPORT_MAX_ENTITIES;
+  ok('the cap counts creations, matches are free, and re-running genuinely adds the rest');
+
+  // -------------------------------------------------------------------------
+  console.log('\n7. A sweep import (no actor) records honest authorship');
+  // -------------------------------------------------------------------------
+  const PID3 = 'aaaaaaaa-1111-4111-8111-111111111111';
+  await db.query(`DELETE FROM borrowers WHERE email='deep4@test.local'`);
+  const bor4 = (await db.query(
+    `INSERT INTO borrowers (first_name, last_name, email, elementix_person_id)
+     VALUES ('System', 'Sweep Test', 'deep4@test.local', $1) RETURNING id`, [PID3])).rows[0].id;
+  await db.query(`INSERT INTO elementix_persons (person_id, display_name) VALUES ($1,'SYSTEM SWEEP TEST') ON CONFLICT DO NOTHING`, [PID3]);
+  await db.query(
+    `INSERT INTO elementix_person_sections (person_id, section, state, payload, row_count)
+     VALUES ($1,'deeds','',$2::jsonb,2)`,
+    [PID3, JSON.stringify({ rows: [
+      D('sw1', '6 Sweep St, Newark, NJ 07111', '2024-02-02', 120000, { grantees: ['SYSTEM SWEEP TEST'] }),
+      D('sw2', '6 Sweep St, Newark, NJ 07111', '2025-02-02', 180000,
+        { grantees: ['A BUYER'], grantors: ['SYSTEM SWEEP TEST'], isGrantee: false, isGrantor: true }),
+    ] })]);
+  const sys = await deep.importFromCache({ borrowerId: bor4, personId: PID3, staffId: null });
+  assert.strictEqual(sys.imported, 1);
+  const sysLine = (await db.query(
+    `SELECT entered_by_kind FROM track_records WHERE borrower_id=$1`, [bor4])).rows[0];
+  assert.strictEqual(sysLine.entered_by_kind, 'system', 'the line says a machine entered it');
+  const sysCand = (await db.query(
+    `SELECT decided_by, decided_by_kind FROM track_record_candidates WHERE borrower_id=$1`, [bor4])).rows[0];
+  assert.strictEqual(sysCand.decided_by, null);
+  assert.strictEqual(sysCand.decided_by_kind, null, 'no phantom "staff" decider on an unattended import');
+  ok('an unattended import never claims a person answered');
+
   // ── cleanup ───────────────────────────────────────────────────────────────
-  for (const id of [bor, bor2, bor3]) {
+  for (const id of [bor, bor2, bor3, bor4]) {
     await db.query(`DELETE FROM track_record_candidates WHERE borrower_id=$1`, [id]);
     await db.query(`DELETE FROM track_record_searches WHERE borrower_id=$1`, [id]);
     await db.query(`DELETE FROM track_records WHERE borrower_id=$1`, [id]);
     await db.query(`DELETE FROM llc_borrowers WHERE borrower_id=$1`, [id]);
     await db.query(`DELETE FROM llcs WHERE borrower_id=$1`, [id]);
   }
-  await db.query(`DELETE FROM borrowers WHERE email IN ('deep1@test.local','deep2@test.local','deep3@test.local')`);
-  await db.query(`DELETE FROM elementix_person_sections WHERE person_id IN ($1,$2)`, [PID, PID2]);
-  await db.query(`DELETE FROM elementix_persons WHERE person_id IN ($1,$2)`, [PID, PID2]);
+  await db.query(`DELETE FROM borrowers WHERE email IN ('deep1@test.local','deep2@test.local','deep3@test.local','deep4@test.local')`);
+  await db.query(`DELETE FROM elementix_person_sections WHERE person_id IN ($1,$2,$3)`, [PID, PID2, PID3]);
+  await db.query(`DELETE FROM elementix_persons WHERE person_id IN ($1,$2,$3)`, [PID, PID2, PID3]);
 
   console.log(`\ntest-elementix-deep-history-db: all ${n} checks passed`);
   process.exit(0);

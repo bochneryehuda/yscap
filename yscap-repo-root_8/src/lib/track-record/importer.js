@@ -130,6 +130,17 @@ function dealTypeFromRecords(c) {
     return { dealType: 'flip', derived: true,
       why: 'The records show it was bought and then sold, which is a flip.' };
   }
+  /* A candidate with NEITHER date is not "a purchase with no sale" — the
+     usual shape is a transfer-only property (a quit-claim between the
+     borrower and their own company, which contributes identity and no
+     economics), and the reason printed on the line must say that instead of
+     claiming a purchase the records never showed (second audit 2026-08-19). */
+  if (!bought && !sold) {
+    return { dealType: null, derived: false,
+      why: (c && c.raw && c.raw.relatedPartyTransfer)
+        ? 'the only recorded deed is a transfer between the borrower and their own company, which is neither a purchase nor a sale'
+        : 'the records carry no purchase or sale dates' };
+  }
   return { dealType: null, derived: false,
     why: sold
       ? 'The records show a sale but not a purchase, so they do not say what the plan was.'
@@ -299,6 +310,27 @@ function candidatesFrom(research, entityNames) {
       purchase_price: null, purchase_date: null, sale_price: null, sale_date: null,
       entity_name: null, raw: { deeds: [] },
     };
+    /* ONE DEED WHOSE BOTH SIDES ARE THE BORROWER'S OWN NAMES IS A TRANSFER,
+       NOT A PURCHASE AND NOT A SALE (pre-merge audit 2026-08-19, reproduced
+       live: a $10 quit-claim from the person into their own LLC read as
+       `bought` AND `sold`, `dealTypeFromRecords` read the pair of dates it
+       wrote as a bought-and-sold FLIP, and the auto-import landed a phantom
+       flip dated the transfer day with a $10 "price" — on the single most
+       ordinary deed shape a real-estate operator produces). One instrument is
+       never a bought-and-sold pair. The deed still counts as EVIDENCE — the
+       property is theirs, it groups the candidate, it names the entity — but
+       it contributes NO economics, so a transfer-only property stages with no
+       dates and imports with the deal type left blank for a human. A genuine
+       purchase or exit deed on the same property still writes its own figures
+       exactly as before. */
+    const selfTransfer = bought && sold;
+    if (selfTransfer) {
+      c.entity_name = c.entity_name || firstOurName(d.grantees, names) || firstOurName(d.grantors, names);
+      c.raw.relatedPartyTransfer = true;
+      c.raw.deeds.push(d);
+      if (!existing) byKey.set(addrKey, c);
+      continue;
+    }
     if (bought) {
       c.purchase_date = ymd(d.date) || c.purchase_date;
       c.purchase_price = (d.amount == null ? null : num(d.amount)) ?? c.purchase_price;
@@ -516,7 +548,11 @@ async function runSearch({ borrowerId, staffId, states }, client) {
       why: 'This borrower has no Elementix profile linked yet. Link one on their profile\'s Elementix section and search again — a linked search reads their WHOLE recorded history (every property, mortgage and company) in one pass.' });
   }
 
-  if (!entityNames.length && !(deep && (deep.entitiesAdded || deep.entitiesMatched))) {
+  /* Only when the deep pull did NOT run: with a linked profile the person-id
+     pull reads their company activity whether or not the profile carries any
+     llcs, and this note's "only their personal name was searched" would then
+     be untrue (pre-merge audit 2026-08-19). */
+  if (!entityNames.length && !deepRan) {
     skips.push({ reason: 'no_entities',
       why: 'This borrower has no companies on their profile — only their personal name was searched. Add the company they buy under for the full picture.' });
   }
@@ -685,11 +721,17 @@ async function runSearch({ borrowerId, staffId, states }, client) {
      erroring must say SO, in the headline, not in a skips list a screen has
      to go digging through. `searchedAny` is true only when a records list
      actually came back, so it cannot be faked by a run of failures. */
+  /* `searchedUnder` states what was ACTUALLY searched — the linked profile is
+     listed only when the deep pull genuinely ran (second audit 2026-08-19: a
+     failed pull must not be recorded as a search that happened). Whether the
+     file gave us anything to search under is a separate question, answered
+     from the file's own identities so a failed pull can never read as "you
+     gave us nothing to search". */
   const searchedUnder = [
-    ...(str(b.elementix_person_id) ? ['their linked Elementix profile'] : []),
+    ...(deepRan ? ['their linked Elementix profile'] : []),
     ...(b.name ? [b.name] : []), ...entityNames,
   ];
-  const nothingToSearch = searchedUnder.length === 0;
+  const nothingToSearch = !str(b.elementix_person_id) && !b.name && !entityNames.length;
   const vendorProblem = !searchedAny && !nothingToSearch
     ? (skips.find((s) => ['disabled', 'not_configured', 'dry_run'].includes(s.reason)) ? 'off'
       : skips.find((s) => s.reason === 'rate_limited') ? 'paused'
@@ -734,6 +776,7 @@ async function runSearch({ borrowerId, staffId, states }, client) {
       imported: deep.imported || 0, merged: deep.merged || 0,
       leftForReview: deep.leftForReview || 0,
       entitiesAdded: deep.entitiesAdded || 0, entitiesMatched: deep.entitiesMatched || 0,
+      entitiesNoRole: deep.entitiesNoRole || 0, entitiesOverCap: deep.entitiesOverCap || 0,
     } : null,
     /* One plain sentence, decided HERE so two screens cannot word it two ways. */
     summary: nothingToSearch
@@ -913,9 +956,16 @@ async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId, ba
       proposedLlcId || null, key,
       confidence === 'none' ? null : (hit ? hit.id : null), confidence,
       JSON.stringify(why),
-      dropped.length
-        ? `[auto] ${dropped.join(', ')} could not be stored as a real figure and was left blank — the raw record still holds what the vendor sent.`
-        : null,
+      [
+        dropped.length
+          ? `[auto] ${dropped.join(', ')} could not be stored as a real figure and was left blank — the raw record still holds what the vendor sent.`
+          : null,
+        /* The reviewer must see WHY a transfer-only property carries no
+           figures — and that the "sale" they might expect never happened. */
+        (candidate.raw && candidate.raw.relatedPartyTransfer)
+          ? '[auto] The evidence includes a recorded transfer between the borrower and their own company (a quit-claim into or out of an LLC). A transfer is NOT a purchase or a sale, so it filled in no figures.'
+          : null,
+      ].filter(Boolean).join(' ') || null,
       matchBasis ? JSON.stringify(matchBasis) : null]);
 
   return { staged: true, id: ins.rows[0].id };
@@ -1268,7 +1318,15 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
     try {
       const bn = (await db.query(
         `SELECT NULLIF(TRIM(COALESCE(full_name,'')),'') AS name FROM borrowers WHERE id=$1`, [c.borrower_id])).rows[0];
-      ownName = !!(bn && bn.name && namesMatchLoose(c.entity_name, bn.name));
+      /* BOTH matchers, deliberately: `candidatesFrom` decides "ours" with the
+         ENTITY matcher (promotionMatch — which reads an unspaced respacing
+         like "MosesWeil" as the same name) while the person-name matcher does
+         not, so refusing on the person matcher alone leaves a respaced vendor
+         spelling able to mint the person-named "company" this guard exists to
+         stop (pre-merge audit 2026-08-19). Either saying "that is the
+         borrower" refuses the promotion. */
+      ownName = !!(bn && bn.name && (namesMatchLoose(c.entity_name, bn.name)
+        || (() => { try { return entityLib.promotionMatch(c.entity_name, bn.name); } catch (_) { return false; } })()));
     } catch (_) { ownName = false; }
     if (!ownName) {
       const promoted = await entityLib.promoteEntityName(c.borrower_id, c.entity_name, { client: db, actorId: staffId });
@@ -1329,7 +1387,11 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
       WHERE id=$1 AND ${UNDECIDED_SQL}`,
     [c.id, row.id, borrowerActor ? null : (staffId || null),
       (str(note) + contradictionNote).trim().slice(0, 500) || null,
-      borrowerActor || null, borrowerActor ? 'borrower' : 'staff']);
+      /* An unattended import (the sweep — no staff id, no borrower) records NO
+         decider kind: writing 'staff' beside a NULL decided_by would make the
+         row claim a person answered when nobody did (pre-merge audit
+         2026-08-19). The line itself already says `entered_by_kind='system'`. */
+      borrowerActor || null, borrowerActor ? 'borrower' : (staffId ? 'staff' : null)]);
   if (!settled.rowCount) throw alreadyDecided();
 
   return {
