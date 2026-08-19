@@ -209,6 +209,147 @@ router.post('/connections/:staffId/refresh-identity', requirePermission('manage_
 });
 
 // ---------------------------------------------------------------------------
+// THE ADMIN CRM DESK — the whole company's lead book, one row per officer
+//
+// Owner-directed 2026-08-19: "make admin can see everybody all crm in admin crm
+// screen — set up to switch view and jump from one officer full crm screen from
+// each and everybody."
+//
+// READ-ONLY, and behind `manage_team` — the same authority as the roster above,
+// because this answers "what is every officer's book worth" rather than "what is
+// mine". It writes nothing, calls no vendor and spends nothing: every figure
+// comes out of tables PILOT already keeps.
+//
+// EVERY ACTIVE INTERNAL STAFF ROW APPEARS, INCLUDING THE ONES AT ZERO. A row
+// left out because it had nothing reads as "this person does not exist", which
+// is a different claim from "this person has no leads yet" — and on a screen an
+// admin uses to walk the team one by one, a missing person is a person nobody
+// checks. External (TPO) rows are excluded here for the same reason the door
+// above refuses them: a broker is another company's officer, not ours.
+//
+// ONE STATEMENT, NEVER ONE PER OFFICER. Four aggregates joined onto the roster,
+// plus the company and unassigned rows in the same breath. A per-officer loop
+// would be twenty round trips on a twenty-person team and would grow with the
+// team; this stays one no matter how many officers there are.
+//
+// A FIGURE THAT CANNOT BE READ COMES BACK NULL, NEVER 0. The Elementix halves
+// (contacts unlocked, credits spent) live in tables the leads desk does not
+// need, so if they cannot be read the roster is still answered — with those two
+// columns null and `elementixKnown:false` saying so out loud, which the screen
+// renders as "—". A confident zero here would read as "this officer has not
+// used Elementix all month", which is a claim we would not have measured.
+// ---------------------------------------------------------------------------
+
+/* The four aggregates, each in its own CTE so a table with nothing in it
+   contributes nothing rather than dropping officers out of the join. `leads`
+   carries the whole lead desk (`officer_id` is the CRM owner); the two
+   `elementix_*` tables carry the CRM plane's own work. */
+const CRM_DESK_SQL = (withElementix) => `
+  WITH officers AS (
+    SELECT id, full_name, email, role
+      FROM staff_users
+     WHERE is_active = true AND is_external = false
+  ),
+  lead_stats AS (
+    SELECT officer_id AS staff_id,
+           count(*)::int AS leads_total,
+           count(*) FILTER (WHERE source = 'elementix')::int AS leads_elementix,
+           max(last_activity_at) AS last_activity_at
+      FROM leads
+     WHERE officer_id IS NOT NULL
+     GROUP BY officer_id
+  )${withElementix ? `,
+  trace_stats AS (
+    SELECT staff_id, count(*)::int AS contacts_unlocked
+      FROM elementix_skip_traces
+     WHERE staff_id IS NOT NULL
+     GROUP BY staff_id
+  ),
+  call_stats AS (
+    SELECT staff_id, count(*)::int AS credits_month
+      FROM elementix_calls
+     WHERE paid = true AND staff_id IS NOT NULL
+       AND created_at >= date_trunc('month', now())
+     GROUP BY staff_id
+  )` : ''}
+  SELECT 'officer'::text AS kind, o.id::text AS staff_id,
+         o.full_name, o.email, o.role,
+         COALESCE(l.leads_total, 0) AS leads_total,
+         COALESCE(l.leads_elementix, 0) AS leads_elementix,
+         ${withElementix ? 'COALESCE(t.contacts_unlocked, 0)' : 'NULL::int'} AS contacts_unlocked,
+         ${withElementix ? 'COALESCE(c.credits_month, 0)' : 'NULL::int'} AS credits_month,
+         l.last_activity_at,
+         date_trunc('month', now()) AS month_start
+    FROM officers o
+    LEFT JOIN lead_stats l ON l.staff_id = o.id
+    ${withElementix ? `LEFT JOIN trace_stats t ON t.staff_id = o.id
+    LEFT JOIN call_stats  c ON c.staff_id = o.id` : ''}
+  UNION ALL
+  /* THE COMPANY ROW COVERS EVERY LEAD, not the sum of the rows above — a lead
+     owned by somebody who has since left, or by nobody at all, is still the
+     company's. The unassigned row below is what makes the arithmetic legible
+     instead of leaving an admin to wonder where the difference went. */
+  SELECT 'company', NULL, NULL, NULL, NULL,
+         (SELECT count(*)::int FROM leads),
+         (SELECT count(*)::int FROM leads WHERE source = 'elementix'),
+         ${withElementix ? '(SELECT count(*)::int FROM elementix_skip_traces)' : 'NULL::int'},
+         ${withElementix ? `(SELECT count(*)::int FROM elementix_calls
+            WHERE paid = true AND created_at >= date_trunc('month', now()))` : 'NULL::int'},
+         (SELECT max(last_activity_at) FROM leads),
+         date_trunc('month', now())
+  UNION ALL
+  SELECT 'unassigned', NULL, NULL, NULL, NULL,
+         (SELECT count(*)::int FROM leads WHERE officer_id IS NULL),
+         (SELECT count(*)::int FROM leads WHERE officer_id IS NULL AND source = 'elementix'),
+         NULL::int, NULL::int,
+         (SELECT max(last_activity_at) FROM leads WHERE officer_id IS NULL),
+         date_trunc('month', now())
+  ORDER BY 1, 3`;
+
+router.get('/crm-desk', requirePermission('manage_team'), async (req, res) => {
+  const shape = (r) => ({
+    id: r.staff_id || null,
+    name: r.full_name || null,
+    email: r.email || null,
+    role: r.role || null,
+    leads: r.leads_total == null ? null : Number(r.leads_total),
+    elementixLeads: r.leads_elementix == null ? null : Number(r.leads_elementix),
+    contactsUnlocked: r.contacts_unlocked == null ? null : Number(r.contacts_unlocked),
+    creditsThisMonth: r.credits_month == null ? null : Number(r.credits_month),
+    lastActivityAt: r.last_activity_at || null,
+  });
+
+  let rows = null;
+  let elementixKnown = true;
+  let unreadable = null;
+  try {
+    rows = (await db.query(CRM_DESK_SQL(true))).rows;
+  } catch (e) {
+    /* THE ROSTER STILL ANSWERS. The two Elementix columns are the ones that can
+       be missing (an instance whose CRM-plane migrations have not run yet), and
+       losing them must not take the whole company's lead book off the screen —
+       but they come back NULL and say why, never 0. */
+    unreadable = (db.describeError ? db.describeError(e) : e.message) || 'unreadable';
+    elementixKnown = false;
+    rows = (await db.query(CRM_DESK_SQL(false))).rows;
+  }
+
+  const officers = rows.filter((r) => r.kind === 'officer').map(shape);
+  const company = shape(rows.find((r) => r.kind === 'company') || {});
+  const unassigned = shape(rows.find((r) => r.kind === 'unassigned') || {});
+  res.json({
+    officers, company, unassigned,
+    // Which calendar month the credit figure covers, read off the SAME clock
+    // that counted it (`date_trunc('month', now())` in the statement above) —
+    // never recomputed here, or the column header could name a different month
+    // from the one the database actually counted.
+    monthStart: (rows[0] && rows[0].month_start) || null,
+    elementixKnown,
+    ...(unreadable ? { elementixProblem: unreadable } : {}),
+  });
+});
+
+// ---------------------------------------------------------------------------
 // THE HISTORY IMPORT
 //
 // The owner asked to go back to the beginning and give every officer the

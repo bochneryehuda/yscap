@@ -177,9 +177,23 @@ async function listUnlocked({ staffId, maxPages = MAX_PAGES, perPage = LIST_PAGE
   for (const [addr, u] of users) await recordUser(addr, u, client);
   const matched = await matchUsers(client);
 
+  /* A LOGIN MATCHED AUTOMATICALLY HAS TO RELEASE ITS PARKED CONTACTS TOO.
+     Contacts whose login belonged to nobody are imported and PARKED — the
+     contact is held, only the lead waits. Linking a login BY HAND releases them
+     (the route calls releaseSkipped straight after), but `matchUsers` links a
+     login on its own the moment an officer's email lines up — a new joiner, a
+     corrected address — and nothing released those. So an automatic match left
+     the contacts parked for ever, silently, which on a book of a thousand is a
+     whole officer's pipeline that never appears. Rehearsed at full size before
+     it was found: 1,041 imported, 260 parked behind one unmatched login.
+     Releasing here is safe by construction — the predicate only touches rows
+     whose login now HAS an officer, and re-reads nothing from Elementix. */
+  let released = 0;
+  try { released = (await releaseSkipped({ client })).requeued; } catch (_) { released = 0; }
+
   return {
     ok: !refusal, ...(refusal ? { partial: refusal } : {}),
-    pagesRead: pages, peopleSeen: seen, newlyQueued: queued,
+    pagesRead: pages, peopleSeen: seen, newlyQueued: queued, released,
     users: [...users.entries()].map(([e, u]) => ({ email: e, unlocks: u.count, first: u.first, last: u.last }))
       .sort((a, b) => b.unlocks - a.unlocks),
     matchedUsers: matched.matched, unmatchedUsers: matched.unmatched,

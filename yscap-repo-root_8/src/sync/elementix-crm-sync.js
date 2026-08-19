@@ -128,9 +128,9 @@ async function listOnce() {
     const out = await backfill.listUnlocked({ staffId });
     // Quiet when nothing moved: a log line every six hours saying "0 new" is how
     // a log stops being read.
-    if (out && out.newlyQueued) {
-      console.log('[elementix-crm] %d newly unlocked contact(s) queued (%d seen, %d login(s))',
-        out.newlyQueued, out.peopleSeen, (out.users || []).length);
+    if (out && (out.newlyQueued || out.released)) {
+      console.log('[elementix-crm] %d newly unlocked contact(s) queued, %d released by a login being matched (%d seen, %d login(s))',
+        out.newlyQueued, out.released || 0, out.peopleSeen, (out.users || []).length);
     }
     if (out && out.partial) {
       console.warn('[elementix-crm] the unlocked list stopped early on page %d: %s',

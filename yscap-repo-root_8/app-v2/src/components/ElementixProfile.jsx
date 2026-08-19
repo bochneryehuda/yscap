@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
 import { askConfirm } from '../lib/dialog.js';
+import {
+  addressOf, money, count, day, haystack,
+  COLUMNS, fallbackColumns,
+  NO_FILTERS, UNKNOWN_STATE, PAYOFF_LABELS,
+  facetsFor, applyRowView, viewSummary, nextSort, sortLabel,
+} from '../lib/elementixRows.js';
 
 /**
  * THE ELEMENTIX PROFILE — one person, every state, on a lead or a borrower.
@@ -11,13 +17,15 @@ import { askConfirm } from '../lib/dialog.js';
  * search button when nobody is linked yet and a Refresh data button when
  * somebody is.
  *
- * ── TWO RULES THIS SCREEN EXISTS TO KEEP ────────────────────────────────────
+ * ── FOUR RULES THIS SCREEN EXISTS TO KEEP ───────────────────────────────────
  *
  * 1. AN EMPTY TAB MUST SAY WHY IT IS EMPTY. The server answers each section
  *    with a status — read / refused / never asked for — because those are three
  *    different facts and only one of them means "this person has none". A screen
  *    that draws the same blank table for all three teaches people to trust a
- *    number that was never fetched.
+ *    number that was never fetched. The FILTERS inherit that rule: a filter that
+ *    matches nothing says so in words, and never leaves a blank table behind
+ *    that reads as "Elementix has none".
  *
  * 2. THE VENDOR'S FIELD NAMES ARE NOT CONSISTENT, so `addressOf` reads several
  *    spellings. That is not defensive padding — it is measured: on 2026-08-18 a
@@ -26,15 +34,37 @@ import { askConfirm } from '../lib/dialog.js';
  *    had no `addresses` key at all, spelling it `propertyAddresses`. Reading one
  *    spelling renders a blank column or the words "[object Object]".
  *
+ * 3. FILTERING A PARTIAL SET IS A DIFFERENT CLAIM FROM FILTERING A COMPLETE
+ *    ONE. Every tab states how many rows it is showing out of how many it HOLDS,
+ *    and a `truncated` section says beside its filters that what it holds is not
+ *    all Elementix has. "17 of 829 loans over $1m" is an answer; "17 of the
+ *    first 829 loans of an unknown number" is not, and they look identical
+ *    unless it is written down.
+ *
+ * 4. MONEY IS NEVER SPENT WITHOUT A TYPED REASON AND A CONFIRM. "Look them up"
+ *    asks the FREE cost check first (counts only — that route deliberately no
+ *    longer carries phone numbers), says in plain words which of the two things
+ *    is about to happen, and only then offers the paid one. Nothing here spends
+ *    on render, on a tab change, or on Refresh.
+ *
  * ── COLOURS ─────────────────────────────────────────────────────────────────
  * Every text colour here is an explicit dark hex. The `--ink*` tokens in this
  * palette are LIGHT (paper), so `color: var(--ink)` renders white on white — the
- * bug that made a whole card invisible once already.
+ * bug that made a whole card invisible once already. Gold as TEXT on a light
+ * surface is #856529, never the brand #AE8746 (3.3:1).
+ *
+ * ── WHERE THE ROWS LIVE ─────────────────────────────────────────────────────
+ * The readers, the COLUMNS and the whole filter/sort decision are in
+ * `../lib/elementixRows.js` — pure, no React — so `scripts/test-elementix-
+ * profile-filters-pure.js` can walk their truth table (the unknown third state,
+ * an empty result, both sort directions, a filter narrowing a truncated set).
+ * A rule that only exists inside a component is a rule nothing can test.
  */
 
 const INK = '#141B22';
 const MUTED = '#4B585C';
 const LINE = '#E4DECF';
+const GOLD_INK = '#856529';
 
 /* The tabs, in the order the owner listed them. `key` matches the server's own
    section key, so a section added there appears here by adding one row. */
@@ -51,134 +81,35 @@ const TABS = [
   { key: 'transactions', label: 'All transactions' },
 ];
 
-// ---------------------------------------------------------------------------
-// Readers — tolerant on purpose, and never inventive
-// ---------------------------------------------------------------------------
-
-const txt = (v) => (v === null || v === undefined ? '' : String(v));
-
-/** A number from a number OR a decimal string (the vendor sends both). */
-function num(v) {
-  if (v === null || v === undefined || v === '') return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function money(v) {
-  const n = num(v);
-  if (n === null) return '—';
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-}
-
-function count(v) {
-  const n = num(v);
-  // "—" NOT "0". A count we never read is not a count of none.
-  return n === null ? '—' : n.toLocaleString('en-US');
-}
-
-function day(v) {
-  const s = txt(v).slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : (s || '—');
-}
-
-/** One address out of a row, whichever way this particular tool spelled it. */
-function addressOf(row) {
-  if (!row || typeof row !== 'object') return '';
-  const buckets = [row.addresses, row.propertyAddresses, row.property_addresses];
-  for (const b of buckets) {
-    if (!Array.isArray(b) || !b.length) continue;
-    const first = b[0];
-    if (typeof first === 'string' && first.trim()) return first.trim();
-    if (first && typeof first === 'object') {
-      const s = txt(first.addressFull || first.address_full || first.address || first.full);
-      if (s) return s;
-    }
-  }
-  for (const k of ['addressFull', 'address_full', 'address', 'granteeAddress', 'borrowerAddress']) {
-    const s = txt(row[k]);
-    if (s) return s;
-  }
-  // Nothing spelled as an address — build one from the parts the row does carry
-  // rather than showing a dash next to a row that plainly knows where it is.
-  const parts = [txt(row.city), txt(row.countyState || row.state), txt(row.zipCode)].filter(Boolean);
-  return parts.join(', ');
-}
-
-const names = (v) => (Array.isArray(v) ? v.filter(Boolean).map(txt).join(', ') : txt(v));
-
-/* Every column is a function of the row, so an absent field is a dash rather
-   than a crash, and a tool that renames a field degrades one cell. */
-const COLUMNS = {
-  entities: [
-    { h: 'Entity', w: '34%', get: (r) => txt(r.name), strong: true },
-    { h: 'State', get: (r) => txt(r.state) },
-    { h: 'Type', get: (r) => txt(r.entityType || r.type) },
-    { h: 'Mortgages', get: (r) => count(r.mortgageCount), n: true },
-    { h: 'Deeds', get: (r) => count(r.deedCount), n: true },
-    { h: 'Owns now', get: (r) => count(r.currentOwnershipsCount), n: true },
-    { h: 'Last seen', get: (r) => day(r.latestTransactionDate) },
-  ],
-  properties: [
-    { h: 'Property', w: '44%', get: (r) => addressOf(r), strong: true },
-    { h: 'Bought', get: (r) => day(r.startDate || r.purchaseDate) },
-    { h: 'Sold', get: (r) => day(r.endDate || r.saleDate) },
-    { h: 'Paid', get: (r) => money(r.purchasePrice ?? r.totalConsideration), n: true },
-    { h: 'Sold for', get: (r) => money(r.salePrice), n: true },
-  ],
-  mortgages: [
-    { h: 'Property', w: '32%', get: (r) => addressOf(r), strong: true },
-    { h: 'Recorded', get: (r) => day(r.recordingDate) },
-    { h: 'Amount', get: (r) => money(r.mortgageAmount), n: true },
-    { h: 'Lender', get: (r) => txt(r.lenderName || r.lenderAliasName) },
-    { h: 'Kind', get: (r) => txt(r.lenderType) },
-    { h: 'Term', get: (r) => (num(r.loanTermMonths) === null ? '—' : `${r.loanTermMonths} mo`) },
-    { h: 'Matures', get: (r) => day(r.maturityDate) },
-    { h: 'Paid off', get: (r) => (r.satisfactionDate ? day(r.satisfactionDate) : 'Open') },
-  ],
-  deeds: [
-    { h: 'Property', w: '32%', get: (r) => addressOf(r), strong: true },
-    { h: 'Recorded', get: (r) => day(r.recordingDate) },
-    { h: 'Price', get: (r) => money(r.totalConsideration), n: true },
-    { h: 'From', get: (r) => names(r.grantors) },
-    { h: 'To', get: (r) => names(r.grantees) },
-    { h: 'Cash', get: (r) => (r.isCashPurchase === true ? 'Cash' : r.isCashPurchase === false ? 'Financed' : '—') },
-  ],
-  associated_people: [
-    { h: 'Person', w: '40%', get: (r) => txt(r.name), strong: true },
-    { h: 'Shared mortgages', get: (r) => count(r.sharedMortgageCount), n: true },
-    { h: 'Shared deeds', get: (r) => count(r.sharedDeedCount), n: true },
-    { h: 'Together on', get: (r) => count(r.sharedTotalCount), n: true },
-  ],
-  lender_network: [
-    { h: 'Lender', w: '38%', get: (r) => txt(r.name), strong: true },
-    { h: 'Kind', get: (r) => txt(r.lenderType) },
-    { h: 'Loans', get: (r) => count(r.mortgageCount), n: true },
-    { h: 'Total lent', get: (r) => money(r.totalVolume), n: true },
-  ],
-  cross_state: [
-    { h: 'Name', w: '38%', get: (r) => txt(r.name), strong: true },
-    { h: 'State', get: (r) => txt(r.state) },
-    { h: 'Mortgages', get: (r) => count(r.mortgageCount), n: true },
-    { h: 'Deeds', get: (r) => count(r.deedCount), n: true },
-    { h: 'Records', get: (r) => count(r.transactionCount), n: true },
-  ],
+/* EVERY CONTROL AT 16px. Anything smaller and iOS Safari zooms the whole page
+   on focus, which on a 390px phone leaves the table scrolled sideways under the
+   user's thumb with no way back. */
+const CTRL = {
+  width: '100%', boxSizing: 'border-box', minWidth: 0,
+  fontSize: 16, color: INK, background: '#FFFFFF',
 };
-COLUMNS.foreclosures = COLUMNS.mortgages;
 
-/** A last resort for a shape we have no columns for: the row's own scalars. */
-function fallbackColumns(rows) {
-  const first = rows.find((r) => r && typeof r === 'object') || {};
-  const keys = Object.keys(first)
-    .filter((k) => !k.startsWith('_') && ['string', 'number', 'boolean'].includes(typeof first[k]))
-    .slice(0, 6);
-  return keys.map((k) => ({ h: k, get: (r) => txt(r[k]) }));
-}
-
-/** Everything on the row, flattened, so the search box searches what is shown
- *  AND what is not — a person hunting for a street name should find it even
- *  when the column showing it is off to the right. */
-function haystack(row) {
-  try { return JSON.stringify(row).toLowerCase(); } catch (_) { return ''; }
+/**
+ * THE FREE COST CHECK — counts only, never the numbers.
+ *
+ * `/people/:id/contact` answers one question ("will the next click cost money")
+ * and deliberately carries `stored.phoneCount` / `stored.emailCount` INSTEAD of
+ * the phone numbers, because it is unscoped: it has to be askable about somebody
+ * nobody has attached to anything yet. The DETAIL comes back through the scoped
+ * door — `api.elxFor(kind, recordId)` — which is exactly what `afterLookup`
+ * re-reads when a lookup lands.
+ *
+ * The wrapper is named `elxContactStatus` where that rename has landed and
+ * `elxContact` where it has not; this component may not edit `lib/api.js`, so it
+ * asks for whichever exists and REFUSES LOUDLY if neither does rather than
+ * silently doing nothing on a button somebody pressed.
+ */
+function costCheck(personId) {
+  const fn = api.elxContactStatus || api.elxContact;
+  if (typeof fn !== 'function') {
+    return Promise.reject(new Error('This build has no Elementix cost check wired up, so PILOT cannot tell you whether this would spend a credit.'));
+  }
+  return fn(personId);
 }
 
 // ---------------------------------------------------------------------------
@@ -318,56 +249,232 @@ function OverviewTab({ profile, onRefresh, busy }) {
   );
 }
 
-function RowTable({ section, filter }) {
-  const rows = section.rows || [];
-  const q = filter.trim().toLowerCase();
-  const shown = useMemo(() => (q ? rows.filter((r) => haystack(r).includes(q)) : rows), [rows, q]);
-  const cols = COLUMNS[section.key] || fallbackColumns(rows);
+/** One labelled control in the filter row. It WRAPS — never a sideways scroll. */
+function FilterField({ label, basis, children }) {
+  return (
+    <label style={{ flex: `1 1 ${basis || 150}px`, minWidth: 0, display: 'block' }}>
+      <span style={{
+        display: 'block', fontSize: 11, letterSpacing: '.05em', textTransform: 'uppercase',
+        color: MUTED, fontWeight: 600, marginBottom: 3,
+      }}>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+/**
+ * ONE TAB'S ROWS — the filters, the sort, the count, and the table.
+ *
+ * The parent mounts this with `key={tab}`, so switching tabs RESETS the filters
+ * by remounting rather than by remembering to clear nine fields; a filter left
+ * on from another tab is the kind of thing that quietly hides rows.
+ *
+ * Everything here is client-side over rows already loaded. There is no server
+ * round trip in this component — narrowing a list must never cost one of the
+ * organisation's shared hourly calls.
+ */
+function TabRows({ section, label }) {
+  const rows = useMemo(() => section.rows || [], [section.rows]);
+  const cols = useMemo(() => COLUMNS[section.key] || fallbackColumns(rows), [section.key, rows]);
+  /* Stringified ONCE per row per load rather than once per keystroke: 800+ rows
+     re-serialised on every character typed is a visibly janky search box. */
+  const haystacks = useMemo(() => rows.map((r) => haystack(r)), [rows]);
+  const facets = useMemo(() => facetsFor(rows, cols), [rows, cols]);
+
+  const blank = useMemo(() => ({
+    ...NO_FILTERS,
+    dateCol: facets.dateCols[0] || '',
+    amountCol: facets.moneyCols[0] || '',
+  }), [facets]);
+
+  const [filters, setFilters] = useState(blank);
+  const [sort, setSort] = useState(null);
+  const set = (k, v) => setFilters((s) => ({ ...s, [k]: v }));
+
+  const view = useMemo(
+    () => applyRowView({ rows, cols, filters, sort, truncated: section.truncated, haystacks }),
+    [rows, cols, filters, sort, section.truncated, haystacks]);
+  const noun = String(label || 'rows').toLowerCase();
+  const summary = viewSummary(view, { noun });
+  const sorted = sortLabel(view.sort, cols);
+  const showBar = rows.length > 3;
+  const oneDate = facets.dateCols.length === 1 ? facets.dateCols[0] : null;
+  const oneMoney = facets.moneyCols.length === 1 ? facets.moneyCols[0] : null;
+
   if (!rows.length) return null;
+
   return (
     <>
-      {q && (
-        <div style={{ fontSize: 13, color: MUTED, marginBottom: 6 }}>
-          {shown.length.toLocaleString('en-US')} of {rows.length.toLocaleString('en-US')} match “{filter.trim()}”
+      {showBar && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-end', marginBottom: 8 }}>
+          <FilterField label="Search" basis={210}>
+            <input className="input" style={CTRL} value={filters.q}
+              onChange={(e) => set('q', e.target.value)}
+              placeholder="an address, a company, a lender…" />
+          </FilterField>
+
+          {/* THE STATE PILL ON EVERY ROW, MADE INTO A FILTER. Offered only when
+              there is something to choose between — a select with one option is
+              furniture, and "state not recorded" appears only when such rows
+              genuinely exist, so it is never a phantom option. */}
+          {(facets.states.length > 1 || (facets.states.length >= 1 && facets.stateless > 0)) && (
+            <FilterField label="State" basis={130}>
+              <select style={CTRL} value={filters.state} onChange={(e) => set('state', e.target.value)}>
+                <option value="">All states</option>
+                {facets.states.map((s) => <option key={s} value={s}>{s}</option>)}
+                {facets.stateless > 0 && (
+                  <option value={UNKNOWN_STATE}>State not recorded ({facets.stateless})</option>
+                )}
+              </select>
+            </FilterField>
+          )}
+
+          {facets.dateCols.length > 0 && (
+            <>
+              {!oneDate && (
+                <FilterField label="Date field" basis={150}>
+                  <select style={CTRL} value={filters.dateCol} onChange={(e) => set('dateCol', e.target.value)}>
+                    {facets.dateCols.map((h) => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </FilterField>
+              )}
+              <FilterField label={oneDate ? `${oneDate} from` : 'From'} basis={148}>
+                <input className="input" type="date" style={CTRL} value={filters.from}
+                  onChange={(e) => set('from', e.target.value)} />
+              </FilterField>
+              <FilterField label={oneDate ? `${oneDate} to` : 'To'} basis={148}>
+                <input className="input" type="date" style={CTRL} value={filters.to}
+                  onChange={(e) => set('to', e.target.value)} />
+              </FilterField>
+            </>
+          )}
+
+          {facets.moneyCols.length > 0 && (
+            <>
+              {!oneMoney && (
+                <FilterField label="Amount field" basis={150}>
+                  <select style={CTRL} value={filters.amountCol} onChange={(e) => set('amountCol', e.target.value)}>
+                    {facets.moneyCols.map((h) => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </FilterField>
+              )}
+              <FilterField label={oneMoney ? `${oneMoney} at least $` : 'At least $'} basis={132}>
+                <input className="input" style={CTRL} inputMode="decimal" value={filters.min}
+                  onChange={(e) => set('min', e.target.value)} placeholder="0" />
+              </FilterField>
+              <FilterField label={oneMoney ? `${oneMoney} at most $` : 'At most $'} basis={132}>
+                <input className="input" style={CTRL} inputMode="decimal" value={filters.max}
+                  onChange={(e) => set('max', e.target.value)} placeholder="no limit" />
+              </FilterField>
+            </>
+          )}
+
+          {/* PAID OFF IS A THREE-VALUED QUESTION. A recorded satisfaction says
+              paid; a row that carries the field and has it empty has no payoff
+              on record; a row that does not carry the field AT ALL cannot answer
+              and gets its own option rather than being quietly counted as open. */}
+          {facets.payoff && (
+            <FilterField label="Payoff" basis={186}>
+              <select style={CTRL} value={filters.payoff} onChange={(e) => set('payoff', e.target.value)}>
+                <option value="">Paid off or not — everything</option>
+                <option value="paid">{PAYOFF_LABELS.paid} ({facets.payoff.paid})</option>
+                <option value="open">{PAYOFF_LABELS.open} — no payoff recorded ({facets.payoff.open})</option>
+                <option value="unknown">{PAYOFF_LABELS.unknown} — cannot tell ({facets.payoff.unknown})</option>
+              </select>
+            </FilterField>
+          )}
         </div>
       )}
-      <div style={{ overflowX: 'auto', border: `1px solid ${LINE}`, borderRadius: 10, background: '#FFFFFF' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5 }}>
-          <thead>
-            <tr>
-              {cols.map((c) => (
-                <th key={c.h} style={{
-                  textAlign: c.n ? 'right' : 'left', padding: '9px 11px', color: MUTED,
-                  fontSize: 11, letterSpacing: '.05em', textTransform: 'uppercase', fontWeight: 700,
-                  borderBottom: `1px solid ${LINE}`, whiteSpace: 'nowrap', width: c.w || undefined,
-                }}>{c.h}</th>
-              ))}
-              <th style={{ borderBottom: `1px solid ${LINE}` }} />
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((r, i) => (
-              <tr key={(r && r.id) || i} style={{ borderBottom: `1px solid ${LINE}` }}>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'baseline', marginBottom: 6 }}>
+        <span style={{ fontSize: 13.5, color: INK, fontWeight: 600 }}>{summary.main}</span>
+        {sorted && <span style={{ fontSize: 13, color: MUTED }}>· sorted by {sorted}</span>}
+        <span style={{ flex: 1 }} />
+        {view.active && (
+          <button className="btn btn-ghost btn-sm" onClick={() => setFilters(blank)}>Clear filters</button>
+        )}
+        {view.sort && (
+          <button className="btn btn-ghost btn-sm" onClick={() => setSort(null)}>Clear sort</button>
+        )}
+      </div>
+
+      {summary.truncatedNote && (
+        <div style={{ fontSize: 13, color: INK, background: '#FDF6E7', border: '1px solid #D9A441',
+          borderRadius: 10, padding: '8px 11px', marginBottom: 8 }}>
+          {summary.truncatedNote}
+        </div>
+      )}
+      {summary.unknownNotes.map((t) => (
+        <div key={t} style={{ fontSize: 13, color: MUTED, marginBottom: 6 }}>{t}</div>
+      ))}
+
+      {view.emptyReason === 'no-match' ? (
+        /* NEVER A BLANK TABLE. An empty tab on this screen means "Elementix has
+           none"; an empty FILTER means the officer asked a narrow question. They
+           must not look the same. */
+        <div style={{ border: `1px solid ${LINE}`, background: '#FAF8F3', borderRadius: 10,
+          padding: '12px 14px', color: INK, fontSize: 14 }}>
+          Nothing matches these filters. All {view.held.toLocaleString('en-US')} {noun} we hold are still here.
+          {view.truncated ? ' (And what we hold is only part of what Elementix has.)' : ''}
+          <button className="btn btn-ghost btn-sm" style={{ marginLeft: 8 }} onClick={() => setFilters(blank)}>Clear filters</button>
+        </div>
+      ) : (
+        <div style={{ overflowX: 'auto', maxWidth: '100%', border: `1px solid ${LINE}`, borderRadius: 10, background: '#FFFFFF' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5 }}>
+            <thead>
+              <tr>
                 {cols.map((c) => {
-                  const v = c.get(r) || '—';
+                  const on = !!(view.sort && view.sort.h === c.h);
                   return (
-                    <td key={c.h} style={{
-                      padding: '9px 11px', color: INK, textAlign: c.n ? 'right' : 'left',
-                      fontWeight: c.strong ? 600 : 400, whiteSpace: c.strong ? 'normal' : 'nowrap',
-                    }}>{v}</td>
+                    <th key={c.h}
+                      aria-sort={on ? (view.sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+                      style={{
+                        textAlign: c.n ? 'right' : 'left', padding: '9px 11px',
+                        borderBottom: `1px solid ${LINE}`, whiteSpace: 'nowrap', width: c.w || undefined,
+                        background: on ? '#FAF6EC' : undefined,
+                      }}>
+                      <button type="button" onClick={() => setSort((s) => nextSort(s, c))}
+                        title={`Sort by ${c.h}`}
+                        style={{
+                          background: 'none', border: 0, padding: 0, margin: 0, font: 'inherit',
+                          fontSize: 11, letterSpacing: '.05em', textTransform: 'uppercase', fontWeight: 700,
+                          color: on ? GOLD_INK : MUTED, cursor: 'pointer',
+                          display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
+                        }}>
+                        {c.h}
+                        <span aria-hidden="true" style={{ opacity: on ? 1 : 0.45 }}>
+                          {on ? (view.sort.dir === 'asc' ? '▲' : '▼') : '↕'}
+                        </span>
+                      </button>
+                    </th>
                   );
                 })}
-                <td style={{ padding: '9px 11px', whiteSpace: 'nowrap' }}>
-                  {r && r._source && r._source.state
-                    ? <span style={{ fontSize: 11, color: MUTED, border: `1px solid ${LINE}`, borderRadius: 20, padding: '1px 7px' }}>{r._source.state}</span>
-                    : null}
-                </td>
+                <th style={{ borderBottom: `1px solid ${LINE}` }} />
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {!shown.length && q && <div style={{ color: MUTED, fontSize: 14, marginTop: 10 }}>Nothing here matches “{filter.trim()}”.</div>}
+            </thead>
+            <tbody>
+              {view.rows.map((r, i) => (
+                <tr key={(r && r.id) || i} style={{ borderBottom: `1px solid ${LINE}` }}>
+                  {cols.map((c) => {
+                    const v = c.get(r) || '—';
+                    return (
+                      <td key={c.h} style={{
+                        padding: '9px 11px', color: INK, textAlign: c.n ? 'right' : 'left',
+                        fontWeight: c.strong ? 600 : 400, whiteSpace: c.strong ? 'normal' : 'nowrap',
+                      }}>{v}</td>
+                    );
+                  })}
+                  <td style={{ padding: '9px 11px', whiteSpace: 'nowrap' }}>
+                    {r && r._source && r._source.state
+                      ? <span style={{ fontSize: 11, color: MUTED, border: `1px solid ${LINE}`, borderRadius: 20, padding: '1px 7px' }}>{r._source.state}</span>
+                      : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </>
   );
 }
@@ -446,6 +553,153 @@ function ContactCard({ contact }) {
   );
 }
 
+/**
+ * LOOK THEM UP — the only place on a PROFILE that can spend a credit.
+ *
+ * Until this existed the finder on the Leads screen was the single door that
+ * bought a phone number, so a borrower profile could show somebody's three
+ * hundred mortgages and give an officer no way to ring them. It behaves exactly
+ * as the finder does, in the same order and with the same refusals:
+ *
+ *   1. NOTHING HAPPENS UNTIL SOMEBODY PRESSES. No status check on render, on a
+ *      tab change or on Refresh — the free check still costs a slot of the
+ *      allowance the whole organisation shares.
+ *   2. THE FREE CHECK FIRST, and it decides which of the two things this is. The
+ *      SERVER decides, not this screen: it asks our own store (detail we hold is
+ *      proof we already paid) and the vendor second, and it says plainly when it
+ *      could not ask at all — which is neither "free" nor a reason to warn about
+ *      a credit we may not spend.
+ *   3. THE PAID ONE NEEDS A TYPED REASON (≥4 characters, the same floor the
+ *      route enforces) AND AN EXPLICIT CONFIRM. The free one needs neither,
+ *      because there is nothing to be careful with.
+ *   4. THE COUNTS COME FROM THE COST ROUTE; THE NUMBERS NEVER DO. That route
+ *      answers `stored.phoneCount` / `stored.emailCount` and deliberately no
+ *      longer carries the detail — the detail is re-read afterwards through the
+ *      scoped door, which is what `onDone` does.
+ */
+function LookupPanel({ personId, personName, personState, held, onDone }) {
+  const [open, setOpen] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [reason, setReason] = useState('');
+  const [usage, setUsage] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+
+  const who = personName || 'this person';
+  const free = !!(status && status.free);
+  const statusUnknown = !!(status && status.statusKnown === false);
+  const stored = (status && status.stored) || null;
+
+  const check = async () => {
+    setOpen(true); setErr(''); setStatus(null);
+    setBusy('status');
+    try {
+      setStatus(await costCheck(personId));
+      api.elxUsage().then(setUsage).catch(() => {});
+    } catch (e) { setErr(e.message); } finally { setBusy(''); }
+  };
+
+  const go = async () => {
+    setErr('');
+    if (!free) {
+      if (reason.trim().length < 4) {
+        setErr('Say in a few words why you are looking them up — it is kept with the credit that gets spent.');
+        return;
+      }
+      const yes = await askConfirm(
+        statusUnknown
+          ? `Look up ${who}'s contact details? PILOT could not reach Elementix to check whether anybody here has already unlocked them, so this may spend one of the month's credits.`
+          : `Look up ${who}'s contact details? Nobody here has unlocked them yet, so this spends one of the month's credits.`,
+        { confirmLabel: 'Look them up' });
+      if (!yes) return;
+    }
+    setBusy('go');
+    try {
+      const body = {
+        name: personName || null,
+        state: personState || null,
+        reason: reason.trim() || 'Looked up from their profile',
+      };
+      const out = free
+        ? await api.elxAddLead(personId, body)
+        : await api.elxSkipTrace(personId, body);
+      api.elxUsage().then(setUsage).catch(() => {});
+      await onDone(out);
+      setOpen(false); setStatus(null); setReason('');
+    } catch (e) { setErr(e.message); } finally { setBusy(''); }
+  };
+
+  const haveEmails = held && held.emails > 0;
+
+  return (
+    <div style={{ border: `1px solid ${LINE}`, background: '#FCF8F1', borderRadius: 12, padding: '11px 13px', marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ flex: '1 1 240px', color: INK, fontSize: 14 }}>
+          {haveEmails
+            ? `PILOT holds ${held.emails} email address${held.emails === 1 ? '' : 'es'} for ${who} — but no telephone number.`
+            : `PILOT has no way to contact ${who} — no telephone number, no email.`}
+        </span>
+        {usage && (
+          <span style={{ color: MUTED, fontSize: 12.5 }}>
+            {/* UNKNOWN IS AN ANSWER; BLANK IS NOT — this is a screen where money
+                can be spent, so an unreadable ledger says so. */}
+            {usage.ok
+              ? `${usage.paidThisMonth} of ${usage.paidCap} lookups used this month`
+              : `unknown of ${usage.paidCap != null ? usage.paidCap : '—'} lookups used this month`}
+          </span>
+        )}
+        {!open && (
+          <button className="btn primary btn-sm" onClick={check}>Look them up</button>
+        )}
+      </div>
+
+      {err && <div role="alert" className="notice err" style={{ marginTop: 10 }}>{err}</div>}
+
+      {open && busy === 'status' && (
+        <div style={{ color: MUTED, fontSize: 14, marginTop: 10 }}>Checking whether anybody has looked them up… (this is free)</div>
+      )}
+
+      {open && status && (
+        <div style={{ marginTop: 10, borderTop: `1px solid ${LINE}`, paddingTop: 10 }}>
+          <div style={{ color: INK, fontSize: 14, marginBottom: 8 }}>
+            {free
+              ? <>Somebody here has already looked <strong>{who}</strong> up, so bringing their details onto this file is <strong>free</strong>.</>
+              : statusUnknown
+                ? <>PILOT could not reach Elementix to check whether anyone has looked <strong>{who}</strong> up. Going ahead <strong>may</strong> use one of the month’s credits — or may cost nothing, if they turn out to be unlocked already.</>
+                : <>Nobody here has looked <strong>{who}</strong> up yet, so this will use <strong>one of the month’s credits</strong>.</>}
+            {stored && (stored.phoneCount > 0 || stored.emailCount > 0) ? (
+              <div style={{ color: MUTED, fontSize: 13, marginTop: 4 }}>
+                We already hold {stored.phoneCount} number{stored.phoneCount === 1 ? '' : 's'} and {stored.emailCount} email{stored.emailCount === 1 ? '' : 's'} for them.
+              </div>
+            ) : null}
+            <div style={{ color: MUTED, fontSize: 13, marginTop: 4 }}>
+              They are added to your leads at the same time — that is how PILOT keeps the details.
+            </div>
+          </div>
+
+          {!free && (
+            <div style={{ marginBottom: 8, maxWidth: 420 }}>
+              <FilterField label="Why are you looking them up?" basis={240}>
+                <input className="input" style={CTRL} value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="e.g. Calling about a bridge loan on 41 Arlington Ave" />
+              </FilterField>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn primary" disabled={busy === 'go'} onClick={go}>
+              {busy === 'go' ? 'Working…' : free ? 'Add their details' : 'Look them up — one credit'}
+            </button>
+            <button className="btn btn-ghost" disabled={busy === 'go'}
+              onClick={() => { setOpen(false); setStatus(null); setErr(''); }}>Not now</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The section
 // ---------------------------------------------------------------------------
@@ -453,7 +707,6 @@ function ContactCard({ contact }) {
 export default function ElementixProfile({ kind, recordId, personName, personState }) {
   const [state, setState] = useState({ loading: true, linked: false, personId: null, profile: null, contact: null });
   const [tab, setTab] = useState('overview');
-  const [filter, setFilter] = useState('');
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
@@ -476,7 +729,8 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
      organisation shares, and browsing a list of leads must not spend that. They
      fill on "Refresh data", which is the deliberate press.
      It cannot loop: the server stamps the person as read whether the build
-     succeeded or failed, so a second open never re-triggers it. */
+     succeeded or failed, so a second open never re-triggers it.
+     AND NOTHING HERE IS THE PAID DOOR — every call on this path is a read. */
   const load = () => api.elxFor(kind, recordId)
     .then((r) => {
       setState({ loading: false, linked: !!r.linked, personId: r.personId, profile: r.profile, contact: r.contact || null });
@@ -547,13 +801,36 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
     } catch (e) { setErr(e.message); } finally { setBusy(''); }
   };
 
+  /* WHAT HAPPENS AFTER A LOOKUP LANDS — and the reason it is a second request.
+     The cost route answers COUNTS; the DETAIL is only ever read back through the
+     scoped door, which checks this officer may see this record before it hands
+     over a telephone number. Re-reading it here puts the "How to reach them"
+     card on the screen with no page reload, and merges rather than replaces, so
+     the profile that is already loaded is not thrown away. */
+  const afterLookup = async (out) => {
+    try {
+      const r = await api.elxFor(kind, recordId);
+      setState((s) => ({ ...s, contact: r.contact || null }));
+    } catch (_) {
+      /* The details are stored on the server either way — a failed re-read is
+         not a failed lookup, and must not be reported as one. */
+    }
+    if (out && out.pending) {
+      flash(out.detail || 'Elementix is still looking them up — their details will appear on their own.');
+    } else if (out && out.charged) {
+      flash('Looked them up — one credit used.');
+    } else {
+      flash('Their details are on the file. Nothing was charged: they had already been looked up.');
+    }
+  };
+
   const unlink = async () => {
     const yes = await askConfirm('Take this Elementix record off this file? Nothing is deleted from Elementix — it just stops showing here.', { confirmLabel: 'Unlink' });
     if (!yes) return;
     setBusy('unlink');
     try {
       await api.elxLink({ kind, recordId, personId: null });
-      setState({ loading: false, linked: false, personId: null, profile: null });
+      setState({ loading: false, linked: false, personId: null, profile: null, contact: null });
       flash('Unlinked.');
     } catch (e) { setErr(e.message); } finally { setBusy(''); }
   };
@@ -573,6 +850,9 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
       flash(confirm ? 'Merged — this is now one profile.' : 'Noted — kept separate.');
     } catch (e) { setErr(e.message); } finally { setBusy(''); }
   };
+
+  const phonesHeld = ((state.contact && Array.isArray(state.contact.phones)) ? state.contact.phones : []).length;
+  const emailsHeld = ((state.contact && Array.isArray(state.contact.emails)) ? state.contact.emails : []).length;
 
   if (state.loading) return <div className="panel pad" style={{ color: MUTED }}>Loading the Elementix profile…</div>;
 
@@ -659,6 +939,10 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
           {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
           {msg && <div className="notice ok" style={{ marginBottom: 10 }}>{msg}</div>}
           <ContactCard contact={state.contact} />
+          {state.personId && !phonesHeld && (
+            <LookupPanel personId={state.personId} personName={personName} personState={personState}
+              held={{ phones: phonesHeld, emails: emailsHeld }} onDone={afterLookup} />
+          )}
           <p style={{ color: MUTED, fontSize: 14, margin: 0 }}>
             This person is attached to the file, but their Elementix record has not been read yet.
             Press <strong>Read their profile</strong> to pull it in.
@@ -672,6 +956,7 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
   const sections = p.sections || {};
   const current = sections[tab];
   const candidates = p.aliasCandidates || [];
+  const tabLabel = (TABS.find((t) => t.key === tab) || {}).label || 'rows';
 
   return (
     <div className="panel">
@@ -712,6 +997,18 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
           </div>
         )}
 
+        {/* THE WAY TO RING THEM, ON EVERY TAB. It sits above the tabs rather than
+            inside the overview because the moment somebody needs it is while they
+            are reading the person's three hundred mortgages. It disappears the
+            instant a telephone number is on the file — there is nothing left to
+            buy, and we never re-buy what we already hold. */}
+        {state.personId && !phonesHeld && (
+          <LookupPanel personId={state.personId}
+            personName={(p.person && p.person.name) || personName}
+            personState={(p.person && p.person.state) || personState}
+            held={{ phones: phonesHeld, emails: emailsHeld }} onDone={afterLookup} />
+        )}
+
         {candidates.length > 0 && (
           <div style={{ border: `1px solid ${LINE}`, background: '#FAF8F3', borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
             <div style={{ color: INK, fontWeight: 600, fontSize: 14 }}>Found in other states — is this the same person?</div>
@@ -744,12 +1041,12 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
             const unread = !!sec && !read && sec.status !== 'unavailable';
             const on = tab === t.key;
             return (
-              <button key={t.key} onClick={() => { setTab(t.key); setFilter(''); }}
+              <button key={t.key} onClick={() => setTab(t.key)}
                 style={{
                   // GOLD AS A BACKGROUND FOR WHITE TEXT is #AE8746 at 3.31:1 — the single
                   // worst pair the repo's own contrast guard names. --gold-ink (#856529)
                   // reads 5.40:1 and is the same brand gold, darkened just enough.
-                  border: `1px solid ${on ? '#856529' : LINE}`, background: on ? '#856529' : '#FFFFFF',
+                  border: `1px solid ${on ? GOLD_INK : LINE}`, background: on ? GOLD_INK : '#FFFFFF',
                   color: on ? '#FFFFFF' : INK, borderRadius: 20, padding: '5px 12px',
                   fontSize: 13.5, fontWeight: on ? 650 : 500, cursor: 'pointer',
                 }}>
@@ -767,19 +1064,16 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
           })}
         </div>
 
-        {tab !== 'overview' && current && (current.rows || []).length > 3 && (
-          <input className="input" style={{ marginBottom: 10, fontSize: 16 }} value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder={`Search these ${TABS.find((t) => t.key === tab).label.toLowerCase()} — an address, a company, a lender…`} />
-        )}
-
         <SectionNotice section={current} onRefresh={busy ? null : () => refresh(true)} />
 
         {tab === 'overview'
           ? <><ContactCard contact={state.contact} />
               <OverviewTab profile={p} busy={busy} onRefresh={busy ? null : () => refresh(true)} /></>
           : current && current.status !== 'unavailable' && (current.rows || []).length
-            ? <RowTable section={current} filter={filter} />
+            /* KEYED ON THE TAB — a tab change REMOUNTS this, which is what clears
+               the filters and the sort. Carrying a filter from one tab to the
+               next hides rows nobody asked to hide. */
+            ? <TabRows key={tab} section={current} label={tabLabel} />
             : current && (current.status === 'ok' || current.status === 'partial')
               ? <div style={{ color: MUTED, fontSize: 14 }}>Elementix has nothing on record here.</div>
               : null}

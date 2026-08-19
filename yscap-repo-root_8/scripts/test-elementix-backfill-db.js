@@ -386,6 +386,53 @@ async function main() {
   ok('turning Elementix on from a screen starts the loops — no deploy, settle pass included');
 
   // -------------------------------------------------------------------------
+  console.log('\n7b. A login matched AUTOMATICALLY releases its parked contacts too');
+  // -------------------------------------------------------------------------
+  /* Contacts whose Elementix login belongs to nobody are imported and PARKED —
+     the contact is held, only the lead waits. Linking the login BY HAND releases
+     them (the route calls releaseSkipped straight after). But `matchUsers` links
+     a login on its own the moment an officer's email lines up — a new joiner, a
+     corrected address — and nothing released those, so an automatic match left a
+     whole officer's pipeline parked for ever, silently.
+     FIXED IDENTIFIERS, CLEANED AT BOTH ENDS: this block adds a fifth queue row,
+     and a later assertion counts the queue — so a leftover from a crashed run
+     would fail the NEXT run on an assertion that has nothing to do with it. */
+  {
+    const ORPHAN_MAIL = 'orphan.login.fixture@yscapgroup.test';
+    const PID_ORPHAN = 'e0000000-0000-4000-8000-00000000beef';
+    const scrub = async () => {
+      await db.query(`DELETE FROM elementix_backfill_queue WHERE person_id = $1`, [PID_ORPHAN]);
+      await db.query(`DELETE FROM leads WHERE elementix_person_id = $1`, [PID_ORPHAN]);
+      await db.query(`DELETE FROM elementix_contacts WHERE person_id = $1`, [PID_ORPHAN]);
+      await db.query(`DELETE FROM elementix_persons WHERE person_id = $1`, [PID_ORPHAN]);
+      await db.query(`DELETE FROM elementix_users WHERE email = $1`, [ORPHAN_MAIL]);
+      await db.query(`DELETE FROM staff_users WHERE email = $1::citext`, [ORPHAN_MAIL]);
+    };
+    await scrub();
+    await db.query(
+      `INSERT INTO elementix_users (email, unlock_count, last_seen_at) VALUES ($1,1,now())`, [ORPHAN_MAIL]);
+    await db.query(
+      `INSERT INTO elementix_backfill_queue (person_id, person_name, person_state, unlocked_by_email, unlocked_at, status, detail)
+       VALUES ($1,'Parked Person','NJ',$2,now(),'skipped','waiting on whose login that was')`,
+      [PID_ORPHAN, ORPHAN_MAIL]);
+    // The officer whose email IS that login only exists now — exactly the case
+    // matchUsers is for, and the case the release never covered.
+    await db.query(
+      `INSERT INTO staff_users (email, full_name, role, is_active, is_external)
+       VALUES ($1::citext,'Late Joiner','loan_officer',true,false)`, [ORPHAN_MAIL]);
+
+    const listed = await backfill.listUnlocked({ staffId: admin });
+    assert.ok(listed.ok, 'the listing pass runs');
+    const after = (await db.query(
+      `SELECT status FROM elementix_backfill_queue WHERE person_id = $1`, [PID_ORPHAN])).rows[0];
+    assert.strictEqual(after.status, 'pending',
+      'the parked contact is back in the queue the moment its login is matched — nothing re-read from Elementix');
+    assert.ok((listed.released || 0) >= 1, 'and the pass says how many it released');
+    ok('a login matched automatically releases the contacts that were waiting on it');
+    await scrub();
+  }
+
+  // -------------------------------------------------------------------------
   console.log('\n8. A contact PILOT itself traced is not handed to the shared login');
   // -------------------------------------------------------------------------
   // THE SHARED-SEAT TRAP. Every unlock PILOT makes goes out on the ONE company
