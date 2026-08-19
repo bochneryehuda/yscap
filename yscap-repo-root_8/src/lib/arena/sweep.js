@@ -206,7 +206,12 @@ async function announceChallenge(c) {
   try {
     require('../events').publishToStaff('arena:challenge-open', require('./challenges').publicChallenge(c));
   } catch (_) { /* the board picks it up on its next read */ }
-  return 0;
+  // AND a bell notification, so somebody who was on a call still finds out —
+  // "get a notification whenever there is new stuff available for them to go in
+  // and fill it in". In-app only, never an email: about twenty of these land in
+  // an afternoon and emailing them all is how a game becomes a mail filter.
+  try { return (await require('./announce').challengeLanded(c)).sent || 0; }
+  catch (_) { return 0; }
 }
 
 /** Start the minute sweep. Idempotent; safe to call twice. */

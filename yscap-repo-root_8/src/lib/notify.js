@@ -444,7 +444,15 @@ async function _mark(id, status) {
 // These types are ONLY ever suppressed for STAFF — the borrower-facing versions
 // (condition_added / doc_requested / doc_rejected) go through notifyBorrower,
 // which has its own BORROWER_MAJOR_EMAIL policy and is untouched by this set.
-const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added', 'draw_docs_pulled']);
+const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added', 'draw_docs_pulled',
+  // The Arena's challenge bell. About twenty of these land across one sales
+  // afternoon, and the people they are for are on the phone all day — emailing
+  // every one is the fastest way to make the team filter the whole game into a
+  // folder. Stated HERE, at the one definition of "in-app only", rather than as
+  // an inAppOnly flag at the call site, so any future sender of this type
+  // inherits it. The Arena's other types (a spin opening, a deadline, a result)
+  // deliberately DO email — they are the handful of moments worth an interruption.
+  'arena_challenge']);
 
 // Escape hatch (used by the Notification Center's Send-now action) — bypasses
 // the LO gate for this single call so a hand-reviewed draft actually goes out.

@@ -10,6 +10,10 @@ import ArenaProof from '../components/arena/ArenaProof.jsx';
 import ArenaControlRoom from '../components/arena/ArenaControlRoom.jsx';
 import ArenaChallenges from '../components/arena/ArenaChallenges.jsx';
 import ArenaAiHelp, { ArenaAiIdeas } from '../components/arena/ArenaAiHelp.jsx';
+import ArenaTakeover from '../components/arena/ArenaTakeover.jsx';
+import ArenaRoomBar from '../components/arena/ArenaRoomBar.jsx';
+import ArenaRecap from '../components/arena/ArenaRecap.jsx';
+import { arm as armSound } from '../lib/arenaSound.js';
 
 /* THE ARENA — the screen everybody in the building has open during a session.
  *
@@ -60,9 +64,17 @@ export default function StaffArena() {
   // simply does not know yet, and only the stream does.
   const [liveSpin, setLiveSpin] = useState(null);
   const [me, setMe] = useState(null);
+  // The whole-screen moment when a SPIN is settled — the person AND the prize.
+  // Separate from `celebrating`, which is one WHEEL landing: a spin with two
+  // wheels lands twice and is decided once, and only the decision is the news.
+  const [takeover, setTakeover] = useState(null);
+  const seenDecided = useRef(new Set());
   const isSuper = role === 'super_admin';
   const sessionParam = params.get('session') || '';
   const reload = useRef(null);
+  // Read inside the stream subscription, which is set up once and must not be
+  // torn down and rebuilt every time `me` resolves — a resubscribe drops frames.
+  const meRef = useRef(null);
 
   const load = useCallback(async () => {
     try {
@@ -78,6 +90,11 @@ export default function StaffArena() {
   reload.current = load;
 
   useEffect(() => { load(); }, [load]);
+
+  // Open the audio path on this person's first click anywhere, so the first
+  // landing they are actually present for can be heard. Costs nothing and is
+  // silent for anybody who has switched the sound off.
+  useEffect(() => { armSound(); }, []);
 
   // The countdown clock. Local arithmetic on the server-corrected time — no
   // request, so a one-second tick costs nothing.
@@ -122,6 +139,23 @@ export default function StaffArena() {
       return;
     }
     if (event === 'arena:revealed' && data) setLiveSpin(null);
+    if (event === 'arena:decided' && data && data.spinId) {
+      // ONCE PER SPIN. A reconnect replays frames, and a second takeover for a
+      // result the room already cheered reads as a bug rather than a moment.
+      const key = String(data.spinId);
+      if (!seenDecided.current.has(key)) {
+        seenDecided.current.add(key);
+        setTakeover({
+          key,
+          spinId: data.spinId,
+          spinSeq: data.seq || null,
+          winnerName: data.winnerName,
+          prizeLabel: data.prizeLabel,
+          valueCents: data.valueCents,
+          mine: !!(data.winnerStaffId && meRef.current && String(data.winnerStaffId) === String(meRef.current)),
+        });
+      }
+    }
     if (reload.current) reload.current();
   }), []);
 
@@ -129,7 +163,7 @@ export default function StaffArena() {
   useEffect(() => {
     let alive = true;
     import('../lib/api.js').then(({ api }) => api.get('/auth/me'))
-      .then((r) => { if (alive) setMe(r && r.id ? String(r.id) : null); })
+      .then((r) => { if (alive) { setMe(r && r.id ? String(r.id) : null); meRef.current = r && r.id ? String(r.id) : null; } })
       .catch(() => {});
     return () => { alive = false; };
   }, []);
@@ -201,7 +235,7 @@ export default function StaffArena() {
 
       {!tv && (
         <nav className="arena-tabs" role="tablist">
-          {[['stage', 'The stage'], ['history', `Every spin (${history.length})`], ['room', 'The room']]
+          {[['stage', 'The stage'], ['history', `Every spin (${history.length})`], ['room', 'The room'], ['me', 'Your day']]
             .concat(isSuper ? [['control', 'Control room']] : [])
             .map(([k, label]) => (
               <button
@@ -216,6 +250,7 @@ export default function StaffArena() {
       )}
 
       {celebrating && <Celebration label={celebrating.label} />}
+      <ArenaTakeover result={takeover} onClose={() => setTakeover(null)} />
 
       {(tab === 'stage' || tv) && (
         <Stage
@@ -234,6 +269,10 @@ export default function StaffArena() {
           <ArenaChat sessionId={session.id} spinId={current && current.id} isSuper={isSuper} />
           <Suggestions sessionId={session.id} isSuper={isSuper} />
         </div>
+      )}
+
+      {tab === 'me' && !tv && (
+        <ArenaRecap sessionId={session.id} />
       )}
 
       {tab === 'control' && isSuper && !tv && (
@@ -283,6 +322,9 @@ function Stage({ board, spin, now, isSuper, busy, onAct, onProof, tv, onReload, 
   return (
     <div className={`arena-stage${tv ? ' tv' : ''}`}>
       <section className="arena-wheelcol">
+        {/* Who is actually with us. Above the wheel because it is the first
+            thing a person looks for when they open the Arena mid-morning. */}
+        <ArenaRoomBar sessionId={board && board.session && board.session.id} />
         <div className="arena-spinhead">
           <span className="arena-seq">Spin {spin.seq}</span>
           <h2>{spin.title}</h2>

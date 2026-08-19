@@ -55,6 +55,10 @@ const GLOSSARY = {
   amc_orders: 'An appraisal ordered through an appraisal management company, and where that order has got to.',
   messages: 'Messages inside the system — between the team, and with a borrower or a broker.',
   finding_decisions: 'A human’s verdict on a finding, kept so it is never asked again.',
+  arena_sessions: 'One sales day of the staff game — who is playing, and whether it has started.',
+  arena_spins: 'One draw in that day: the wheel, what is being won, and how the winner is picked.',
+  arena_challenges: 'A timed task the room is set during the day, and what winning it is worth.',
+  arena_tickets: 'The chances a person has earned in the game. A ledger — a mistake is reversed by adding the opposite, never by editing history.',
 };
 
 module.exports = { GLOSSARY };
