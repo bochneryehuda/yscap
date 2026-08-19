@@ -34,7 +34,12 @@ challenges.setBroadcaster((event, data) => {
 
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 function requireSuper(req, res, next) {
-  if (settings.isSuperAdmin(req.actor)) return next();
+  settings.runsArena(req.actor).then((ok) => {
+    if (ok) return next();
+    refuseSuper(res);
+  }).catch(() => refuseSuper(res));
+}
+function refuseSuper(res) {
   return bad(res, 'Only a super admin can do that.', 403);
 }
 async function audit(req, action, entityId, detail) {
@@ -231,7 +236,11 @@ router.get('/challenges/library', async (req, res) => {
 /** What is live, what is next, and where I stand. */
 router.get('/sessions/:id/challenges', async (req, res) => {
   res.json(await challenges.boardFor(req.params.id, req.actor.id, {
-    isSuperAdmin: settings.isSuperAdmin(req.actor),
+    // runsArena, not the bare role: a named HOST decides fulfilments, so they
+    // must SEE the note and the picture flag on each one (2026-08-19 audit —
+    // the role-only flag stripped entries to name+status for hosts while the
+    // screen still showed them the Approve buttons).
+    isSuperAdmin: await settings.runsArena(req.actor),
   }));
 });
 
@@ -309,7 +318,11 @@ router.put('/challenges/:id', requireSuper, async (req, res) => {
             award_mode = COALESCE($7, award_mode), slots = COALESCE($8, slots),
             tickets_awarded = COALESCE($9, tickets_awarded), prize_cap_cents = COALESCE($10, prize_cap_cents),
             opens_at = COALESCE($11, opens_at), closes_at = COALESCE($12, closes_at),
-            state = COALESCE($13, state), updated_at = now()
+            state = COALESCE($13, state),
+            closed_reason = CASE WHEN $13 = 'closed' THEN COALESCE(closed_reason, 'manual')
+                                 WHEN $13 = 'live' THEN NULL
+                                 ELSE closed_reason END,
+            updated_at = now()
       WHERE id = $1 RETURNING *`,
     [req.params.id,
       b.title ? String(b.title).trim() : null, b.prompt ? String(b.prompt).trim() : null,
@@ -432,7 +445,11 @@ router.get('/sessions/:id/monitor', requireSuper, async (req, res) => {
               (SELECT count(*) FROM arena_entries  e WHERE e.spin_id = p.id) AS entries,
               (SELECT count(*) FROM arena_entries  e WHERE e.spin_id = p.id AND e.status = 'pending') AS entries_pending,
               (SELECT count(*) FROM arena_draws    d WHERE d.spin_id = p.id AND d.state = 'revealed') AS wheels_done,
-              (SELECT count(*) FROM arena_draws    d WHERE d.spin_id = p.id) AS wheels_total
+              (SELECT count(*) FROM arena_draws    d WHERE d.spin_id = p.id) AS wheels_total,
+              (SELECT COALESCE(json_agg(json_build_object('name', su.full_name, 'status', c.status)
+                                        ORDER BY c.checked_in_at), '[]'::json)
+                 FROM arena_checkins c JOIN staff_users su ON su.id = c.staff_id
+                WHERE c.spin_id = p.id) AS checkin_people
          FROM arena_spins p WHERE p.session_id = $1 ORDER BY p.seq DESC`, [sid]),
     db.query(
       `SELECT a.*, s.full_name, p.seq AS spin_seq, p.title AS spin_title
@@ -472,6 +489,7 @@ router.get('/sessions/:id/monitor', requireSuper, async (req, res) => {
       id: p.id, seq: p.seq, title: p.title, state: p.state,
       entryDeadlineAt: p.entry_deadline_at, launchAt: p.launch_at, decidedAt: p.decided_at,
       checkins: Number(p.checkins), checkinsPending: Number(p.checkins_pending),
+      checkinPeople: p.checkin_people || [],
       entries: Number(p.entries), entriesPending: Number(p.entries_pending),
       wheelsDone: Number(p.wheels_done), wheelsTotal: Number(p.wheels_total),
       outcomeNote: p.outcome_note,

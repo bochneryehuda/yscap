@@ -58,12 +58,16 @@ async function audit(req, action, entityType, entityId, detail) {
   }
 }
 
-/** Super-admin gate. 403 here, not 404: past this point the caller already
- *  knows the Arena exists (the guard let them through), so hiding it again
- *  would only be confusing. */
+/** Runs-the-Arena gate — a super admin OR a named host (settings.hosts;
+ *  owner-directed 2026-08-19: "give Ezra the same access as the super admin
+ *  when it comes to this"). 403 here, not 404: past this point the caller
+ *  already knows the Arena exists (the guard let them through), so hiding it
+ *  again would only be confusing. */
 function requireSuper(req, res, next) {
-  if (isSuper(req)) return next();
-  return bad(res, 'Only a super admin can do that.', 403);
+  settings.runsArena(req.actor).then((ok) => {
+    if (ok) return next();
+    return bad(res, 'Only a super admin or a named Arena host can do that.', 403);
+  }).catch(() => bad(res, 'Only a super admin or a named Arena host can do that.', 403));
 }
 
 // ===========================================================================
@@ -79,12 +83,30 @@ router.get('/settings', settings.requireSuperAdmin, async (req, res) => {
     // Truthful about a settings row we could not read: the OFF above would then
     // be a fail-closed default rather than the owner's recorded choice.
     readable: s.readable,
+    // Whether THIS person may change the host list — a host may not appoint or
+    // remove hosts; the panel hides the picker off this rather than guessing.
+    canEditHosts: settings.isSuperAdmin(req.actor),
     defaults: settings.DEFAULTS,
   });
 });
 
 router.put('/settings', settings.requireSuperAdmin, async (req, res) => {
-  const { enabled, settings: incoming } = req.body || {};
+  const { enabled } = req.body || {};
+  let incoming = (req.body || {}).settings;
+  // A named HOST edits how the Arena behaves — but the MASTER SWITCH and the
+  // host list itself stay with real super admins (the documented host scope;
+  // the 2026-08-19 audit found a host could switch the whole Arena off for
+  // the company, or appoint/remove hosts). The switch is REFUSED plainly; the
+  // hosts key is DROPPED rather than refused, because the settings screen
+  // sends the whole object back on every Save and refusing would dead-end a
+  // host's ordinary edits.
+  if (!settings.isSuperAdmin(req.actor)) {
+    if (enabled !== undefined) return bad(res, 'Only a super admin can switch the whole Arena on or off.', 403);
+    if (incoming && typeof incoming === 'object' && 'hosts' in incoming) {
+      incoming = { ...incoming };
+      delete incoming.hosts;
+    }
+  }
   if (enabled !== undefined && typeof enabled !== 'boolean') return bad(res, 'The on/off switch has to be true or false.');
   const before = await settings.load({ fresh: true });
   const after = await settings.save({ enabled, settings: incoming }, req.actor.id);
@@ -120,7 +142,7 @@ router.get('/visibility', async (req, res) => {
       `SELECT id, name, subtitle, theme FROM arena_sessions WHERE state = 'live' LIMIT 1`);
     live = r.rows[0] || null;
   }
-  res.json({ enabled: on, seesArena: v.seesArena, seesSwitch: v.seesSwitch, isSuperAdmin: isSuper(req), liveSession: live });
+  res.json({ enabled: on, seesArena: v.seesArena, seesSwitch: v.seesSwitch, isSuperAdmin: await settings.runsArena(req.actor), liveSession: live });
 });
 
 // ===========================================================================
@@ -188,16 +210,29 @@ async function setMembers(sessionId, staffIds, byId) {
 }
 
 router.put('/sessions/:id', requireSuper, async (req, res) => {
-  const { name, subtitle, theme, startsAt, endsAt, staffIds } = req.body || {};
+  const body = req.body || {};
+  const { name, subtitle, theme, startsAt, endsAt, staffIds } = body;
+  // THE STAGE MESSAGE (owner-directed 2026-08-19: "I should be able to edit
+  // any words that are there with instructions and nice stuff"). Free text the
+  // admin writes on the dashboard and everybody reads on the stage, live.
+  // Sent as a KEY: present-and-empty CLEARS it; absent leaves it alone.
+  let notesSql = '';
+  const args = [req.params.id, name || null, subtitle || null, theme || null, startsAt || null, endsAt || null];
+  if ('boardNotes' in body) {
+    const notes = String(body.boardNotes || '').replace(/\u0000/g, '').slice(0, 4000);
+    args.push(JSON.stringify({ boardNotes: notes || null }));
+    notesSql = `, settings = COALESCE(settings, '{}'::jsonb) || $${args.length}::jsonb`;
+  }
   const r = await db.query(
     `UPDATE arena_sessions
         SET name = COALESCE($2, name), subtitle = COALESCE($3, subtitle), theme = COALESCE($4, theme),
-            starts_at = COALESCE($5, starts_at), ends_at = COALESCE($6, ends_at), updated_at = now()
-      WHERE id = $1 RETURNING *`,
-    [req.params.id, name || null, subtitle || null, theme || null, startsAt || null, endsAt || null]);
+            starts_at = COALESCE($5, starts_at), ends_at = COALESCE($6, ends_at), updated_at = now()${notesSql}
+      WHERE id = $1 RETURNING *`, args);
   if (!r.rows[0]) return bad(res, 'That session does not exist.', 404);
   if (Array.isArray(staffIds)) await setMembers(req.params.id, staffIds, req.actor.id);
   await audit(req, 'arena_session_updated', 'arena_session', req.params.id, {});
+  // Everyone's stage refreshes the moment the wording changes.
+  events.publishToStaff('arena:session', { sessionId: req.params.id, state: r.rows[0].state, updated: true });
   res.json({ session: r.rows[0] });
 });
 
@@ -299,6 +334,41 @@ async function sessionPeople(sessionId) {
  * to select who should be part of the session… by groups: back office or sales
  * team"). Super-admin only: it lists every colleague's name, role and email.
  */
+/**
+ * THE OUTBOX — every arena message PILOT has sent, who it went to and whether
+ * they have seen it (owner-directed 2026-08-19: "make sure the notifications
+ * are actually firing … a small admin center where I can see the notifications
+ * that have been firing, which messages are sent to whom"). Reads the same
+ * `notifications` rows the bell shows each person, filtered to the arena's own
+ * types, GROUPED like an email outbox: one row per blast (same type + title
+ * within a minute), expandable to every recipient. Super admin only — it lists
+ * colleagues' names and read states.
+ */
+router.get('/notifications', requireSuper, async (req, res) => {
+  const r = await db.query(
+    `SELECT n.id, n.type, n.title, n.body, n.created_at, n.read_at, s.full_name
+       FROM notifications n JOIN staff_users s ON s.id = n.staff_id
+      WHERE n.type LIKE 'arena%'
+      ORDER BY n.created_at DESC
+      LIMIT 600`);
+  // Group into blasts: the fan-out writes one row per person within the same
+  // moment, so (type, title, minute) is the message as the admin thinks of it.
+  const blasts = [];
+  const byKey = new Map();
+  for (const row of r.rows) {
+    const minute = String(row.created_at).slice(0, 16);
+    const key = `${row.type}|${row.title}|${minute}`;
+    let b = byKey.get(key);
+    if (!b) {
+      b = { key, type: row.type, title: row.title, body: row.body, sentAt: row.created_at, recipients: [] };
+      byKey.set(key, b);
+      blasts.push(b);
+    }
+    b.recipients.push({ name: row.full_name, readAt: row.read_at });
+  }
+  res.json({ blasts: blasts.slice(0, 120) });
+});
+
 router.get('/roster', requireSuper, async (req, res) => {
   const roster = await db.query(
     `SELECT id, full_name, email, role, title FROM staff_users
@@ -419,7 +489,7 @@ router.get('/board', async (req, res) => {
   const sid = req.query.session
     ? (await db.query(`SELECT * FROM arena_sessions WHERE id = $1`, [req.query.session])).rows[0]
     : (await db.query(`SELECT * FROM arena_sessions WHERE state = 'live' ORDER BY opened_at DESC LIMIT 1`)).rows[0];
-  if (!sid) return res.json({ session: null, spins: [], awards: [], me: null });
+  if (!sid) return res.json({ session: null, spins: [], awards: [], me: null, isSuperAdmin: await settings.runsArena(req.actor) });
 
   const cfg = await settings.load();
   const spins = await db.query(
@@ -457,7 +527,7 @@ router.get('/board', async (req, res) => {
     iAmIn,
     serverNow: new Date().toISOString(),
     settings: cfg.settings,
-    isSuperAdmin: isSuper(req),
+    isSuperAdmin: await settings.runsArena(req.actor),
     spins: spins.rows.map((sp) => {
       const myCheckin = checkins.find((c) => c.spin_id === sp.id && String(c.staff_id) === me) || null;
       const spinDraws = draws.filter((d) => d.spin_id === sp.id);
@@ -592,7 +662,9 @@ router.post('/sessions/:id/rematch', requireSuper, async (req, res) => {
  */
 router.get('/sessions/:id/recap', async (req, res) => {
   const asked = String((req.query && req.query.staff) || '').trim();
-  const who = asked && isSuper(req) ? asked : req.actor.id;
+  // runsArena, not the bare role: a HOST reading a winner's recap must get
+  // THAT person's, never their own mislabeled (2026-08-19 audit).
+  const who = asked && await settings.runsArena(req.actor) ? asked : req.actor.id;
   res.json(await recap.forPerson(req.params.id, who));
 });
 

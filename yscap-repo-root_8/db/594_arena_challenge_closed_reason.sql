@@ -1,0 +1,49 @@
+-- ============================================================================
+-- db/594 — arena challenge closed reason
+--
+-- WHAT THIS CHANGES, AND WHY. The owner's rule for a first-one-wins challenge
+-- (2026-08-19): "only then does that challenge get closed, because it's only
+-- one" — so a capped challenge now CLOSES ITSELF when its last place is
+-- claimed. That makes 'closed' ambiguous (filled? timed out? an admin pressed
+-- Close?), and the difference matters: rejecting a claim frees a place, and
+-- only a FILLED close may reopen itself — reopening an admin's deliberate
+-- close would overrule a human. closed_reason records which it was:
+-- 'filled' | 'time' | 'manual', NULL for anything closed before this existed
+-- (never reopened by the new rule, the safe reading).
+--
+-- IDEMPOTENT. `migrate-boot` replays EVERY file in db/ on EVERY boot, in
+-- filename order. That is not a safety net, it is the contract: a statement
+-- that throws on its second run breaks every future deploy, and migrate-boot
+-- logs the failure and CONTINUES, so it breaks quietly. The four shapes the
+-- hygiene gate enforces:
+--
+--   CREATE TABLE IF NOT EXISTS t (...);
+--   CREATE INDEX IF NOT EXISTS t_col_idx ON t (col);
+--   ALTER TABLE t ADD COLUMN IF NOT EXISTS c text;
+--   ALTER TABLE t DROP CONSTRAINT IF EXISTS t_chk;   -- always drop first,
+--   ALTER TABLE t ADD CONSTRAINT t_chk CHECK (...);  -- then re-add
+--
+-- RE-ASSERTING A CHECK. If this file widens a CHECK constraint that an earlier
+-- migration also asserts, name EVERY value the earlier files added, not just
+-- the new one — the older file replays too, and a narrower re-assert would roll
+-- this one back the moment a row uses the new value.
+--
+-- BACKFILL: none — NULL on an already-closed row means "closed before the
+-- reason existed", which the reopen rule deliberately never touches.
+--
+-- PRODUCT SEPARATION. RTL and Long-Term do not share tables. If this touches
+-- `lt_*`, it is Long-Term's and must not reach into RTL's; if it touches RTL's,
+-- the reverse. `check-product-separation.js` is the gate.
+-- ============================================================================
+
+ALTER TABLE arena_challenges ADD COLUMN IF NOT EXISTS closed_reason text;
+
+
+-- ── after this lands ────────────────────────────────────────────────────────
+-- The schema map (docs/schema/) describes the database these migrations build,
+-- so this file makes it stale. CI refreshes it on this pull request by itself;
+-- if you would rather do it by hand, with DATABASE_URL pointing at a database
+-- built from these migrations:
+--
+--   npm run schema:snapshot     # refresh the inventory from the database
+--   npm run schema:restamp      # re-stamp the map header (no database needed)

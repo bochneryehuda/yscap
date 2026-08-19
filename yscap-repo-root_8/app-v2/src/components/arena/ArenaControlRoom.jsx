@@ -50,6 +50,7 @@ export default function ArenaControlRoom({ board, onChanged }) {
 
   const panels = [
     ['monitor', 'Live monitor'],
+    ['quick', 'Quick spin'],
     ['ready', 'Ready to go'],
     ['spin', 'New spin'],
     ['rematch', 'Rematch'],
@@ -57,6 +58,7 @@ export default function ArenaControlRoom({ board, onChanged }) {
     ['sessions', 'Sessions'],
     ['queue', 'Waiting on you'],
     ['prizes', 'Prize list'],
+    ['mail', 'Messages sent'],
     ['settings', 'Settings'],
   ];
 
@@ -101,8 +103,14 @@ export default function ArenaControlRoom({ board, onChanged }) {
           onReload={() => { loadSessions(); onChanged(); }}
         />
       )}
+      {panel === 'quick' && (
+        session
+          ? <QuickSpin session={session} onChanged={onChanged} />
+          : <p className="muted">Start a session first, over in Sessions.</p>
+      )}
       {panel === 'queue' && (session ? <Queue board={board} onChanged={onChanged} /> : <p className="muted">No session running.</p>)}
       {panel === 'prizes' && <PrizeList />}
+      {panel === 'mail' && <ArenaOutbox />}
       {panel === 'settings' && <SettingsPanel />}
     </div>
   );
@@ -376,6 +384,7 @@ function ChallengeDay({ session, onChanged }) {
   const [board, setBoard] = useState(null);
   const [lib, setLib] = useState(null);
   const [busy, setBusy] = useState('');
+  const [editing, setEditing] = useState(null);
 
   const [err, setErr] = useState('');
 
@@ -421,8 +430,13 @@ function ChallengeDay({ session, onChanged }) {
                 <span><strong>{c.title}</strong> — {c.prompt}</span>
                 <span className="arena-decide">
                   <button className="btn ghost small" disabled={!!busy}
+                    onClick={() => setEditing(editing === c.id ? null : c.id)}>Edit</button>
+                  <button className="btn ghost small" disabled={!!busy}
                     onClick={() => change(c.id, { state: 'closed' }, c.id)}>Close it</button>
                 </span>
+                {editing === c.id && (
+                  <ChallengeEdit challenge={c} live onSaved={() => { setEditing(null); load(); }} />
+                )}
               </li>
             ))}
           </ul>
@@ -441,6 +455,8 @@ function ChallengeDay({ session, onChanged }) {
             <em className="muted small">{c.ticketsAwarded} chances · {c.awardMode === 'everyone' ? 'anybody' : `first ${c.slots}`}</em>
             <span className="arena-decide">
               <button className="btn ghost small" disabled={!!busy}
+                onClick={() => setEditing(editing === c.id ? null : c.id)}>Edit</button>
+              <button className="btn ghost small" disabled={!!busy}
                 onClick={async () => {
                   // A live challenge takes over every screen in the building.
                   if (!await askConfirm(`Start "${c.title}" right now? It pops up on everyone's screen the moment you do.`, { confirmLabel: 'Start it now' })) return;
@@ -449,6 +465,9 @@ function ChallengeDay({ session, onChanged }) {
               <button className="btn ghost small" disabled={!!busy}
                 onClick={() => change(c.id, { state: 'skipped' }, c.id)}>Skip</button>
             </span>
+            {editing === c.id && (
+              <ChallengeEdit challenge={c} onSaved={() => { setEditing(null); load(); }} />
+            )}
           </li>
         ))}
         {!upcoming.length && <li className="muted">Nothing scheduled. Load the Mega Spin under “Ready to go”, or add one below.</li>}
@@ -510,6 +529,71 @@ function HandOutChances({ session }) {
         {busy ? 'Working…' : 'Give them'}
       </button>
       {note && <p className="arena-good small">{note}</p>}
+    </div>
+  );
+}
+
+/** Edit a challenge's wording — name, one-line description, and the longer
+ *  instructions — LIVE ones included (owner, 2026-08-19: "even after it's
+ *  live, I should be able to edit the name … description and instructions").
+ *  A live edit lands on everyone's screen the moment it saves. */
+function ChallengeEdit({ challenge, live, onSaved }) {
+  const [title, setTitle] = useState(challenge.title || '');
+  const [prompt, setPrompt] = useState(challenge.prompt || '');
+  const [detail, setDetail] = useState(challenge.detail || '');
+  const [awardMode, setAwardMode] = useState(challenge.awardMode || 'everyone');
+  const [slots, setSlots] = useState(challenge.slots || 1);
+  const [tickets, setTickets] = useState(challenge.ticketsAwarded == null ? 1 : challenge.ticketsAwarded);
+  const [closes, setCloses] = useState(toLocalInput(challenge.closesAt));
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (live && !await askConfirm('This challenge is live — the new wording and rules land on everyone\u2019s screen the moment you save. Save it?', { confirmLabel: 'Save it' })) return;
+    setSaving(true);
+    try {
+      await arena.updateChallenge(challenge.id, {
+        title: title.trim() || null,
+        prompt: prompt.trim() || null,
+        detail: detail.trim() || null,
+        awardMode,
+        slots: awardMode === 'everyone' ? null : (awardMode === 'first' ? 1 : Math.max(1, Math.floor(Number(slots) || 1))),
+        ticketsAwarded: Math.max(0, Math.floor(Number(tickets) || 0)),
+        closesAt: closes ? fromLocalInput(closes) : null,
+      });
+      showMessage('The challenge is updated.', { title: 'Saved', tone: 'info' });
+      onSaved();
+    } catch (e) { showMessage((e && e.message) || 'That did not save.', { tone: 'error' }); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div className="arena-form" style={{ gridColumn: '1 / -1', marginTop: 8 }}>
+      <label>Name<input className="input" value={title} onChange={(e) => setTitle(e.target.value)} /></label>
+      <label>One line — what to do
+        <input className="input" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+      </label>
+      <label style={{ gridColumn: '1 / -1' }}>Instructions (the longer wording under it)
+        <textarea className="input" rows={3} value={detail} onChange={(e) => setDetail(e.target.value)} />
+      </label>
+      <label>Who can win it
+        <select className="input" value={awardMode} onChange={(e) => setAwardMode(e.target.value)}>
+          <option value="everyone">Anybody who does it</option>
+          <option value="first">Only the FIRST one — it closes itself when claimed</option>
+          <option value="first_n">The first few — it closes itself when they are gone</option>
+        </select>
+      </label>
+      {awardMode === 'first_n' && (
+        <label>How many places
+          <input className="input" type="number" min="1" max="20" value={slots} onChange={(e) => setSlots(e.target.value)} />
+        </label>
+      )}
+      <label>Chances it pays
+        <input className="input" type="number" min="0" max="10" value={tickets} onChange={(e) => setTickets(e.target.value)} />
+      </label>
+      <label>Closes on its own at
+        <input className="input" type="datetime-local" value={closes} onChange={(e) => setCloses(e.target.value)} />
+      </label>
+      <button className="btn small" disabled={saving || !title.trim() || !prompt.trim()} onClick={save}>
+        {saving ? 'Saving…' : 'Save the challenge'}
+      </button>
     </div>
   );
 }
@@ -605,6 +689,42 @@ function NewSpin({ catalog, catalogErr, onRetryCatalog, session, onChanged }) {
     if (game) { setConfig({ ...game.defaults }); setTitle((t) => t || game.label); }
   }, [game]);
 
+  // The helper's draft. Applied AFTER the reset above (its own effect, keyed on
+  // the draft), so switching the game to the suggested one cannot wipe what
+  // the draft filled in. Everything lands in the ordinary boxes for a human to
+  // read and change — the helper never creates anything by itself.
+  const [aiText, setAiText] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiNote, setAiNote] = useState('');
+  const [aiDraft, setAiDraft] = useState(null);
+  useEffect(() => {
+    if (!aiDraft) return;
+    if (aiDraft.title) setTitle(aiDraft.title);
+    if (aiDraft.subtitle) setSubtitle(aiDraft.subtitle);
+    if (Array.isArray(aiDraft.qualifiers) && aiDraft.qualifiers.length) setQuals(aiDraft.qualifiers.join('\n'));
+    setConfig((c) => {
+      const next = { ...(c || {}) };
+      if (Number.isFinite(Number(aiDraft.personalCapUsd)) && aiDraft.personalCapUsd != null) next.personalCapCents = Math.round(Number(aiDraft.personalCapUsd) * 100);
+      if (Number.isFinite(Number(aiDraft.businessCapUsd)) && aiDraft.businessCapUsd != null) next.businessCapCents = Math.round(Number(aiDraft.businessCapUsd) * 100);
+      return next;
+    });
+  }, [aiDraft]);
+  const draftIt = async () => {
+    setAiBusy(true); setAiNote('');
+    try {
+      const r = await arena.aiSpin(aiText.trim());
+      if (!r || !r.ok) { setAiNote((r && r.reason) || 'The helper is not switched on.'); return; }
+      const d = r.draft || {};
+      if (d.suggestedGameKey) {
+        const g = (catalog.games || []).find((x) => x.key === d.suggestedGameKey);
+        if (g) { setFamily(g.family); setKind(g.key); }
+      }
+      setAiDraft(d);
+      setAiNote(d.notes ? `Drafted. Worth checking: ${d.notes}` : 'Drafted — read it over, change anything, then create it.');
+    } catch (e) { setAiNote((e && e.message) || 'That did not work.'); }
+    finally { setAiBusy(false); }
+  };
+
   if (!catalog) {
     return catalogErr
       ? <p className="arena-bad small">{catalogErr} <button className="btn ghost small" onClick={onRetryCatalog}>Try again</button></p>
@@ -612,6 +732,21 @@ function NewSpin({ catalog, catalogErr, onRetryCatalog, session, onChanged }) {
   }
   const families = catalog.families || [];
   const games = (catalog.games || []).filter((g) => g.family === family);
+  const aiBox = (
+    <div className="arena-daysetup">
+      <h4>Describe it, and the helper drafts the form</h4>
+      <div className="arena-form">
+        <label style={{ gridColumn: '1 / -1' }}>What do you want this spin to be?
+          <input className="input" value={aiText} placeholder="A spin between everyone who booked a call today, winner picks lunch"
+            onChange={(e) => setAiText(e.target.value)} />
+        </label>
+      </div>
+      <button className="btn ghost small" disabled={aiBusy || aiText.trim().length < 8} onClick={draftIt}>
+        {aiBusy ? 'Drafting…' : 'Draft it for me'}
+      </button>
+      {aiNote && <p className="muted small">{aiNote}</p>}
+    </div>
+  );
   const usesQualifiers = game && (game.wheels || []).some((w) => w.source === 'qualifiers' || w.source === 'qualifier_claimants');
 
   const set = (k, v) => setConfig((c) => ({ ...c, [k]: v }));
@@ -642,6 +777,8 @@ function NewSpin({ catalog, catalogErr, onRetryCatalog, session, onChanged }) {
   return (
     <div className="arena-card">
       <h3>Set up the next spin</h3>
+
+      {aiBox}
 
       <div className="arena-famrow">
         {families.map((f) => (
@@ -893,6 +1030,8 @@ const fmtWhen = (iso) => (iso ? new Date(iso).toLocaleString('en-US', { hour: 'n
 function PlanRow({ spin, sessionLive, onChanged }) {
   const [launch, setLaunch] = useState(toLocalInput(spin.launch_at));
   const [deadline, setDeadline] = useState(toLocalInput(spin.entry_deadline_at));
+  const [title, setTitle] = useState(spin.title || '');
+  const [sub, setSub] = useState(spin.subtitle || '');
   const [busy, setBusy] = useState(false);
   const done = ['decided', 'cancelled'].includes(spin.state);
   const running = spin.state === 'spinning';
@@ -901,10 +1040,12 @@ function PlanRow({ spin, sessionLive, onChanged }) {
     setBusy(true);
     try {
       await arena.updateSpin(spin.id, {
+        title: title.trim() || null,
+        subtitle: sub.trim() || null,
         launchAt: launch ? fromLocalInput(launch) : null,
         entryDeadlineAt: deadline ? fromLocalInput(deadline) : null,
       });
-      showMessage('The times are saved.', { title: 'Saved', tone: 'info' });
+      showMessage('Saved — the stage shows the new wording.', { title: 'Saved', tone: 'info' });
       onChanged();
     } catch (e) { showMessage((e && e.message) || 'That did not save.', { tone: 'error' }); }
     finally { setBusy(false); }
@@ -951,6 +1092,12 @@ function PlanRow({ spin, sessionLive, onChanged }) {
       )}
       {!done && !running && (
         <div className="arena-form arena-plantimes">
+          <label>What it is called
+            <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
+          </label>
+          <label>A line underneath
+            <input className="input" value={sub} onChange={(e) => setSub(e.target.value)} />
+          </label>
           <label>Opens itself at
             <input className="input" type="datetime-local" value={launch} onChange={(e) => setLaunch(e.target.value)} />
           </label>
@@ -958,7 +1105,7 @@ function PlanRow({ spin, sessionLive, onChanged }) {
             <input className="input" type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} />
           </label>
           <div className="arena-decide">
-            <button className="btn ghost small" disabled={busy} onClick={saveTimes}>Save the times</button>
+            <button className="btn ghost small" disabled={busy} onClick={saveTimes}>Save the wording and times</button>
             {spin.state === 'draft' && <button className="btn small" disabled={busy} onClick={openNow}>Open it now</button>}
             <button className="btn ghost small" disabled={busy} onClick={cancel}>Call it off</button>
           </div>
@@ -1040,21 +1187,153 @@ function DaySetup({ onReload }) {
   );
 }
 
+/** THE MANUAL ONE (owner, live on Elementix Day: "I can just type in stuff
+ *  that should be on the wheel and click the spin button … or put in all the
+ *  names of officers"). One box, one button: type anything one-per-line, or
+ *  fill the box from the team list, and it makes + OPENS a plain wheel spin
+ *  everybody can watch on the stage. Nothing stored beyond the spin itself. */
+function QuickSpin({ session, onChanged }) {
+  const [text, setText] = useState('');
+  const [title, setTitle] = useState('Quick spin');
+  const [busy, setBusy] = useState(false);
+  const [everyone, setEveryone] = useState(null);
+  useEffect(() => {
+    arena.roster().then((d) => setEveryone(d.everyone || [])).catch(() => setEveryone([]));
+  }, []);
+  const fill = (roles) => {
+    const names = (everyone || [])
+      .filter((p) => !roles || roles.includes(p.role))
+      .map((p) => p.full_name);
+    setText(names.join('\n'));
+  };
+  const lines = text.split('\n').map((x) => x.trim()).filter(Boolean);
+  const go = async () => {
+    setBusy(true);
+    try {
+      const made = await arena.createSpin(session.id, {
+        title: title.trim() || 'Quick spin',
+        kind: 'quick_wheel',
+        config: { customList: text, durationMs: 5000 },
+      });
+      const spinId = made && made.spin && made.spin.id;
+      if (spinId) await arena.openSpin(spinId);
+      onChanged();
+      showMessage('It is on the stage — press "Spin the wheel" there when everybody is watching.', { title: 'Ready', tone: 'info' });
+      setText('');
+    } catch (e) { showMessage((e && e.message) || 'That did not work.', { tone: 'error' }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="arena-card">
+      <h3>Quick spin — type it, spin it</h3>
+      <p className="muted small">
+        One thing per line — names, prizes, anything. It goes straight onto a wheel on the stage,
+        where you press the spin button and everybody watches it land. Equal odds, provably fair,
+        nothing else to set up.
+      </p>
+      <div className="arena-group-chips">
+        <button type="button" className="btn ghost small" disabled={!everyone} onClick={() => fill(null)}>Put in the whole team</button>
+        <button type="button" className="btn ghost small" disabled={!everyone} onClick={() => fill(['loan_officer', 'account_executive'])}>All the officers</button>
+        <button type="button" className="btn ghost small" disabled={!everyone} onClick={() => fill(['processor', 'underwriter', 'closer', 'draw_coordinator', 'loan_coordinator', 'account_manager'])}>Back office</button>
+        <button type="button" className="btn ghost small" onClick={() => setText('')}>Clear</button>
+      </div>
+      <div className="arena-form">
+        <label>What this spin is called
+          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
+        </label>
+      </div>
+      <label className="arena-fullfield">On the wheel — one per line
+        <textarea className="input" rows={8} value={text} placeholder={'Moshe\nRivky\nYanky'} onChange={(e) => setText(e.target.value)} />
+      </label>
+      <p className="muted small">{lines.length ? `${lines.length} slice${lines.length === 1 ? '' : 's'} on the wheel.` : 'Nothing on the wheel yet.'}</p>
+      <button className="btn" disabled={busy || lines.length < 2} onClick={go}>
+        {busy ? 'Putting it up…' : 'Put it on the stage'}
+      </button>
+    </div>
+  );
+}
+
+/** THE OUTBOX — every arena message that went out, who got it, who has seen
+ *  it. Grouped like an email account: one line per blast, expandable to the
+ *  recipient list (owner-directed 2026-08-19). */
+function ArenaOutbox() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [openKey, setOpenKey] = useState(null);
+  const load = useCallback(() => {
+    setErr('');
+    arena.outbox().then(setData).catch((e) => setErr((e && e.message) || 'The outbox could not be loaded.'));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  if (err) return <p className="arena-bad small">{err} <button className="btn ghost small" onClick={load}>Try again</button></p>;
+  if (!data) return <p className="muted">Loading…</p>;
+  const blasts = data.blasts || [];
+  return (
+    <div className="arena-card">
+      <h3>Messages sent</h3>
+      <p className="muted small">
+        Every Arena message PILOT has sent — spin openings, deadline alarms, results, challenge alerts —
+        newest first. Open one to see exactly who it went to and who has seen it.
+        <button className="btn ghost small" style={{ marginLeft: 8 }} onClick={load}>Refresh</button>
+      </p>
+      <ul className="arena-outbox">
+        {blasts.map((b) => {
+          const seen = b.recipients.filter((r) => r.readAt).length;
+          return (
+            <li key={b.key}>
+              <button type="button" className="arena-outbox-row" onClick={() => setOpenKey(openKey === b.key ? null : b.key)}>
+                <strong>{b.title}</strong>
+                <span className="muted small">{b.body}</span>
+                <em className="muted small">
+                  {new Date(b.sentAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                  {' · '}{b.recipients.length} {b.recipients.length === 1 ? 'person' : 'people'} · {seen} seen it
+                </em>
+              </button>
+              {openKey === b.key && (
+                <ul className="arena-outbox-who">
+                  {b.recipients.map((r, i) => (
+                    <li key={i}>
+                      <span>{r.name}</span>
+                      <em className={`muted small${r.readAt ? '' : ' arena-unseen'}`}>
+                        {r.readAt ? `seen ${new Date(r.readAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}` : 'not seen yet'}
+                      </em>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+        {!blasts.length && <li className="muted">Nothing sent yet. Messages appear here the moment the Arena sends them.</li>}
+      </ul>
+    </div>
+  );
+}
+
 /** Rename the session or change the line under its name — the "settings of
  *  the session" the owner asked for (2026-08-19). */
 function SessionSettings({ session, onSaved }) {
   const [name, setName] = useState(session.name || '');
   const [subtitle, setSubtitle] = useState(session.subtitle || '');
+  const [notes, setNotes] = useState((session.settings && session.settings.boardNotes) || '');
   const [busy, setBusy] = useState(false);
   return (
     <div className="arena-form" style={{ marginTop: 8 }}>
       <label>Name<input className="input" value={name} onChange={(e) => setName(e.target.value)} /></label>
       <label>A line underneath<input className="input" value={subtitle} onChange={(e) => setSubtitle(e.target.value)} /></label>
+      <label style={{ gridColumn: '1 / -1' }}>A message on the stage — instructions, encouragement, anything
+        <textarea className="input" rows={4} value={notes} maxLength={4000}
+          placeholder={'Welcome to Elementix Day!\nClock in by 11:38 to be on the wheel. Every dial counts.'}
+          onChange={(e) => setNotes(e.target.value)} />
+      </label>
+      <p className="muted small" style={{ gridColumn: '1 / -1', margin: 0 }}>
+        The message shows on everybody's stage the moment you save — and clears if you empty it.
+      </p>
       <button className="btn small" disabled={busy || !name.trim()} onClick={async () => {
         setBusy(true);
         try {
-          await arena.updateSession(session.id, { name: name.trim(), subtitle: subtitle.trim() || null });
-          showMessage('The session is updated.', { title: 'Saved', tone: 'info' });
+          await arena.updateSession(session.id, { name: name.trim(), subtitle: subtitle.trim() || null, boardNotes: notes });
+          showMessage('The session is updated — the stage shows it now.', { title: 'Saved', tone: 'info' });
           onSaved();
         } catch (e) { showMessage((e && e.message) || 'That did not save.', { tone: 'error' }); }
         finally { setBusy(false); }
@@ -1333,6 +1612,46 @@ function PrizeList() {
 
 /* -------------------------------------------------------------- settings */
 
+/** Who runs the Arena beside the super admins — tick a person and they get
+ *  the whole control room (owner-directed 2026-08-19: "give Ezra the same
+ *  access as the super admin when it comes to this"). Arena only — no other
+ *  super-admin power anywhere else in PILOT. */
+function HostsPicker({ hosts, onChange }) {
+  const [everyone, setEveryone] = useState(null);
+  const [q, setQ] = useState('');
+  useEffect(() => {
+    arena.roster().then((d) => setEveryone(d.everyone || [])).catch(() => setEveryone([]));
+  }, []);
+  const ids = (hosts || []).map(String);
+  const toggle = (id) => onChange(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+  const needle = q.trim().toLowerCase();
+  const shown = (everyone || []).filter((p) => !needle || `${p.full_name}`.toLowerCase().includes(needle));
+  return (
+    <div className="arena-daysetup" style={{ marginTop: 12 }}>
+      <h4>Who runs the Arena</h4>
+      <p className="muted small">
+        Super admins always can. Tick anyone else who should have the WHOLE control room — start and
+        pause sessions, spin the wheels, decide challenges, hand out chances. This is the Arena only;
+        it gives no other admin power anywhere else. Save the settings below for it to take effect.
+      </p>
+      <input className="input" placeholder="Find a person…" value={q} onChange={(e) => setQ(e.target.value)} style={{ marginBottom: 6 }} />
+      <ul className="arena-people-flat">
+        {shown.map((p) => (
+          <li key={p.id}>
+            <label>
+              <input type="checkbox" checked={ids.includes(String(p.id))} onChange={() => toggle(String(p.id))} />
+              <span>{p.full_name}</span>
+              <em className="muted small">{ROLE_LABEL[p.role] || p.role}</em>
+            </label>
+          </li>
+        ))}
+        {!everyone && <li className="muted small">Loading the team…</li>}
+      </ul>
+      {!!ids.length && <p className="muted small">{ids.length} host{ids.length === 1 ? '' : 's'} beside the super admins.</p>}
+    </div>
+  );
+}
+
 function SettingsPanel() {
   const [s, setS] = useState(null);
   const [err, setErr] = useState('');
@@ -1429,6 +1748,7 @@ function SettingsPanel() {
         <Toggle label="Joke slices on the prize wheel (Elementix calls)" v={s.settings.jokePrizes} on={(v) => set('jokePrizes', v)} />
         <Toggle label="Big-screen (TV) mode available" v={s.settings.tvModeEnabled} on={(v) => set('tvModeEnabled', v)} />
       </div>
+      {s.canEditHosts !== false && <HostsPicker hosts={s.settings.hosts || []} onChange={(ids) => set('hosts', ids)} />}
       <button className="btn" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save settings'}</button>
       <p className="muted small">
         Turning the whole Arena on and off is on the Settings screen, not here — so it stays reachable
