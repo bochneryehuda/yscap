@@ -450,6 +450,28 @@ export default function RateSheetConsole() {
                   {coverage.rules.reachable} of {coverage.rules.total} cell{coverage.rules.total === 1 ? '' : 's'} reached
                   and applied, over {coverage.scenarios.generated} generated scenario{coverage.scenarios.generated === 1 ? '' : 's'}.
                 </div>
+                {/* THE SCENARIO CENSUS, WHICH THIS SCREEN HAS NEVER SHOWN (§2.124a).
+                    The server has always computed how the generated battery landed and the console
+                    printed only the cell coverage, so an operator could read "every cell reached" and
+                    never learn that the engine could not decide a single one of those scenarios.
+                    MEASURED on the real Deephaven sheet: of 261 generated scenarios, 0 price, 52
+                    decline and 209 are undecidable. That is NORMAL and is worded as normal — a
+                    targeting scenario is built to make ONE rule fire, so it carries that rule's facts
+                    and leaves the rest absent, and the engine correctly refuses to price it. It is
+                    shown because a number nobody can see is a number nobody can check, not because it
+                    is an alarm. */}
+                <div style={{ marginTop: 6 }}>
+                  Of those scenarios, <strong>{coverage.scenarios.eligible}</strong> priced,{' '}
+                  <strong>{coverage.scenarios.ineligible}</strong> were declined by the sheet, and{' '}
+                  <strong>{coverage.scenarios.undetermined}</strong> could not be decided either way.
+                </div>
+                {coverage.scenarios.undetermined > 0 && (
+                  <p style={{ margin: '4px 0 0', fontSize: 12, color: MUTED }}>
+                    Undecidable is expected here, not a fault: each generated scenario carries only the facts
+                    its own cell reads, so the engine refuses to price it rather than guess the rest. It is
+                    counted on its own so it is never mistaken for a priced or a declined loan.
+                  </p>
+                )}
                 {coverage.rules.unreachable.length > 0 && (
                   <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: DANGER }}>
                     {coverage.rules.unreachable.map((u) => (

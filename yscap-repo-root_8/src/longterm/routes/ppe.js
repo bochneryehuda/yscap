@@ -3364,12 +3364,16 @@ async function rateSheetCoverageRoute(req, res) {
   // reported rather than swallowed — bounded, with the full count beside the sample.
   const quotes = new Array(scenarios.length);
   const errors = [];
-  let eligible = 0; let ineligible = 0; let priced = 0; let undetermined = 0;
+  // `answered` is every scenario the engine returned SOMETHING for — it is the historic `priced`
+  // counter under a truer name, kept alongside it for the callers that already read `priced`. It is
+  // NOT "how many we could price": since §2.124 an answer can be `undetermined`, and
+  // answered === eligible + ineligible + undetermined, always.
+  let eligible = 0; let ineligible = 0; let answered = 0; let undetermined = 0;
   for (let i = 0; i < scenarios.length; i += 1) {
     try {
       const q = quote.quoteProgram({ scenario: scenarios[i], program, settings, marginHoldback: marginFor(scenarios[i]) });
       quotes[i] = q;
-      priced += 1;
+      answered += 1;
       // A quote the engine could NOT price is neither eligible nor ineligible (§2.124) — it is
       // undetermined, and counting it in either column reports a census of scenarios nobody
       // measured. It is counted on its own so the total still reconciles and the gap is visible.
@@ -3415,10 +3419,14 @@ async function rateSheetCoverageRoute(req, res) {
     rules: { total: (built.coverage && built.coverage.total) || 0, reachable, unreachable, disagreed },
     scenarios: {
       generated: scenarios.length,
-      priced,
+      // `priced` is the historic name and is KEPT so no existing reader breaks; `answered` is the
+      // same number said honestly. Both mean "the engine returned something", never "we could price
+      // it" — §2.124 added a third answer and this census now reports all three.
+      priced: answered,
+      answered,
       eligible,
       ineligible,
-      // §2.124 — priced === eligible + ineligible + undetermined, always. A census that folded the
+      // §2.124 — answered === eligible + ineligible + undetermined, always. A census that folded the
       // undetermined into either column would report scenarios nobody measured as measured.
       undetermined,
       errorCount: errors.length,
@@ -3429,7 +3437,16 @@ async function rateSheetCoverageRoute(req, res) {
     budget: MAX_COVERAGE_SCENARIOS,
     note: unreachable.length
       ? 'Each unreachable cell is a cell no loan can ever land in — usually a transposed band (a minimum above its maximum) or a rule another rule already excludes.'
-      : 'Every encoded cell on this sheet was reached by a generated scenario and applied by the pricer.',
+      // ⛔ "APPLIED BY THE PRICER" WAS AN OVERSTATEMENT (§2.124a). Reachability is read off the rule
+      // EVALUATION trace, which is built before any rung is priced — so a cell counts as reached the
+      // moment its predicate fires, whether or not the quote went on to produce a ladder. That is the
+      // right signal for a DEAD-CELL guard (a rule nothing can make fire is the defect this hunts),
+      // but it is not the pricer applying anything. MEASURED on the real Deephaven sheet: of the 261
+      // scenarios this generator produces, 0 price, 52 decline and 209 are UNDETERMINED — each
+      // targeting scenario carries the handful of facts its own rule reads and leaves the rest absent,
+      // so the engine correctly refuses to price it. Every cell was still reached. The note now says
+      // what was actually measured, and the census beside it says the rest.
+      : 'Every encoded cell on this sheet was reached — a generated scenario made its rule fire. That is the dead-cell check; whether those scenarios could also be PRICED is the census below, and a targeting scenario carries only the facts its own rule reads, so many are expected to be undecidable.',
   });
 }
 

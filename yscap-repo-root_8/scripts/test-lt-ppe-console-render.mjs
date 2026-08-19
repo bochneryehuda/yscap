@@ -169,6 +169,21 @@ function renderFirstPaint() {
     'R18 …and a verdict that did not reach the ledger is shown as such, never as a run that worked');
   ok(/coverage\.scenarios\.errorCount > 0/.test(stripped),
     'R19 a scenario our OWN engine cannot price is surfaced, not inferred from a coverage number');
+
+  // §2.124a — the census. The server has always computed how the generated battery landed and this
+  // screen printed only the cell coverage, so an operator could read "every cell reached" off a
+  // battery the engine could not decide a single scenario of. All three columns are shown, and the
+  // undetermined one is shown SEPARATELY because folding it into either of the others is the exact
+  // §2.124 defect one layer up.
+  ok(/coverage\.scenarios\.eligible/.test(stripped) && /coverage\.scenarios\.ineligible/.test(stripped),
+    'R20 the scenario census is on the screen — how many the sheet priced and how many it declined');
+  ok(/coverage\.scenarios\.undetermined/.test(stripped),
+    'R21 …including the ones the engine could not decide either way, counted on their own');
+  ok(/could not be decided either way/.test(src) || /could not be decided/i.test(src),
+    'R22 …named in plain words, so nobody has to know what "undetermined" means to read the number');
+  ok(/expected here, not a fault/.test(src),
+    'R23 …and worded as NORMAL, because it is: a targeting scenario carries only its own cell\'s facts, '
+    + 'so 209 of 261 are undecidable on the real sheet. A true number presented as an alarm is its own defect');
 }
 
 // ---- 4. the console is actually MOUNTED on the screen --------------------

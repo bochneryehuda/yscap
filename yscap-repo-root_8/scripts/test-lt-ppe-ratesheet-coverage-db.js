@@ -121,8 +121,36 @@ const REQ = (over = {}) => Object.assign(
       `A2 all three encoded cells are reachable AND applied (${res.body.rules.reachable} of ${res.body.rules.total})`);
     ok(res.body.rules.unreachable.length === 0 && res.body.rules.disagreed.length === 0,
       'A3 …with nothing reported against a healthy sheet');
-    ok(res.body.scenarios.generated > 0 && res.body.scenarios.priced === res.body.scenarios.generated,
-      `A4 every generated scenario was priced by our own engine (${res.body.scenarios.priced}/${res.body.scenarios.generated})`);
+    ok(res.body.scenarios.generated > 0 && res.body.scenarios.answered === res.body.scenarios.generated,
+      `A4 every generated scenario was ANSWERED by our own engine (${res.body.scenarios.answered}/${res.body.scenarios.generated})`);
+    // §2.124a — the census is three-valued and MUST reconcile. `answered` is not "priced": since
+    // §2.124 the engine has a third answer, and folding it into either of the other two would report
+    // scenarios nobody measured as measured. The arithmetic is the guard.
+    ok(res.body.scenarios.answered
+       === res.body.scenarios.eligible + res.body.scenarios.ineligible + res.body.scenarios.undetermined,
+      `A4a the census reconciles: ${res.body.scenarios.answered} answered = ${res.body.scenarios.eligible} priced `
+      + `+ ${res.body.scenarios.ineligible} declined + ${res.body.scenarios.undetermined} undetermined`);
+    ok(res.body.scenarios.priced === res.body.scenarios.answered,
+      'A4b …and the historic `priced` name still answers, so no existing reader breaks');
+    // A4c CORRECTED, and the correction is the finding. The first cut asserted a healthy sheet leaves
+    // NOTHING undetermined; it fails, and it SHOULD. A targeting scenario is built to make ONE rule
+    // fire, so it carries that rule's facts and leaves the rest absent — measured on the real
+    // Deephaven sheet, 209 of 261 come back `missing_price_bearing_fact`. So undetermined is the
+    // NORMAL state of this census, not an alarm. What must never happen is it being folded into
+    // `eligible` or `ineligible`, which is what §2.124 fixed and what A4a pins.
+    // A4c IS FIXTURE-SPECIFIC ON PURPOSE, and the first version of it could not bite. Asserting only
+    // that the arithmetic reconciles (A4a) is satisfied just as well by FOLDING the undetermined into
+    // `ineligible` — which is precisely the §2.124 defect — because the sum is unchanged. Proven: that
+    // mutation passed. On THIS fixture the engine can decide nothing, so the census must say exactly
+    // that, and a fold now shows up as a declined count that was never a decline.
+    ok(res.body.scenarios.undetermined === res.body.scenarios.answered
+       && res.body.scenarios.ineligible === 0 && res.body.scenarios.eligible === 0,
+      `A4c every scenario is reported as UNDETERMINED, never folded into declined (${res.body.scenarios.eligible} priced, `
+      + `${res.body.scenarios.ineligible} declined, ${res.body.scenarios.undetermined} undetermined) — a targeting `
+      + `scenario carries only its own rule's facts, so the engine refuses to price it rather than guess`);
+    ok(!/applied by the pricer/.test(res.body.note || ''),
+      'A4d …and the note no longer claims the PRICER applied every cell — reachability is read off the rule '
+      + 'evaluation trace, which is built before any rung is priced');
     ok(res.body.scenarios.errorCount === 0, 'A5 …and none of them threw — a sheet the engine cannot price is a defect too');
     ok(/every encoded cell/i.test(res.body.note || ''), 'A6 …and it says so in words');
 

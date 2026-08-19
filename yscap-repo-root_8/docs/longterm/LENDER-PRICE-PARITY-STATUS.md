@@ -8558,3 +8558,61 @@ what lets the pure detectors ask it at all), and that `quote` re-exports the sam
 rather than a second copy.
 
 **189/189 LT PPE suites, 34 database-backed. All seven gates green.**
+
+---
+
+### §2.124a — the coverage check's census was never shown, and its own wording claimed more than it measured
+
+**Found by refusing to ship the `undetermined` column §2.124 added without a reader.** The rate-sheet
+coverage endpoint has always computed how its generated battery landed — how many the sheet prices,
+how many it declines — and the console printed **only the cell coverage**. So an operator could read
+*"every encoded cell reached"* and never learn anything about the scenarios behind it.
+
+**What the census actually says, measured on the real Deephaven sheet.** Of the **261** scenarios the
+per-program generator produces: **0 price, 52 decline, 209 are UNDETERMINED**, every one of them
+`missing_price_bearing_fact`. Each targeting scenario carries roughly six keys — the facts its own
+rule reads — while the sheet's rules also read `dscr`, `loan_amount`, `state`, `units`,
+`escrow_waiver`, `interest_only`, `non_warrantable`, `short_term_rental`. The engine correctly
+refuses to price them rather than guess.
+
+**That is NORMAL, and saying so is half the fix.** A targeting scenario exists to make ONE rule fire,
+not to be a complete deal. The console shows all three columns and words the undetermined one as
+expected rather than as an alarm — *"a true number presented as an alarm is its own defect"* is the
+assertion that pins it. What must never happen is the undetermined being folded into `eligible` or
+`ineligible`, which is the §2.124 defect one layer up.
+
+**The wording claimed more than was measured.** The endpoint's note read *"Every encoded cell on this
+sheet was reached by a generated scenario **and applied by the pricer**."* Reachability is read off
+the rule EVALUATION trace, which is built before any rung is priced — so a cell counts as reached the
+moment its predicate fires, whether or not the quote went on to produce a ladder. That is the right
+signal for a dead-cell guard, and it is not the pricer applying anything: on the real sheet the pricer
+applied nothing at all on 209 of 261. The note now says what was actually measured, and points at the
+census for the rest.
+
+`priced` was likewise a misleading name — it counts every scenario the engine ANSWERED, including the
+undetermined ones. It is kept verbatim so no existing reader breaks, with `answered` beside it saying
+the same number honestly.
+
+**A test that could not bite, and the correction.** The first census assertion checked only that the
+arithmetic reconciles (`answered === eligible + ineligible + undetermined`). **That is satisfied just
+as well by FOLDING the undetermined into `ineligible`** — the exact defect it was written to catch —
+because the sum is unchanged. Proven: that mutation passed with zero failures. The assertion is now
+fixture-specific on purpose: on this sheet the engine can decide nothing, so the census must say
+exactly that, and a fold shows up as a declined count that was never a decline.
+
+An earlier assertion was wrong in the other direction and is recorded as such: it claimed *"a healthy
+sheet leaves NOTHING undetermined"*. It failed, and it should have — undetermined is the normal state
+of this battery.
+
+**Mutations.**
+
+| mutation | failing assertions |
+|---|---|
+| Q1 drop the census from the screen | 4 |
+| Q2 show the census but fold undetermined away | 1 |
+| Q3 word it as an alarm rather than as normal | 1 |
+| Q4 restore the overstated "applied by the pricer" note | 1 |
+| Q5 fold undetermined back into ineligible, arithmetic guard only | **0 — the guard could not bite** |
+| Q5b the same fold, against the corrected assertion | 1 |
+
+**189/189 LT PPE suites, 34 database-backed. All seven gates green.**
