@@ -89,6 +89,13 @@ const TOOLS = new Set([
      row shapes as the entity twins, with the one spelling difference
      `shapes.addressesOf` documents (propertyAddresses). */
   'get_person_deeds', 'get_person_mortgages',
+  /* The PERSON's company roster — every entity the records associate them with,
+     each row carrying the vendor's own role flags (isPrincipal / sosOfficer /
+     elementixSigner). FREE, and the input to the owner's 2026-08-19 rule that a
+     person's recorded companies land on their borrower profile. Same tool the
+     CRM profile's Entities tab reads; named here too because the track-record
+     search is the UNDERWRITING plane and may only call through this module. */
+  'get_person_entities',
   'get_document',
   'get_coverage',
   // Reads a person's UNLOCK STATE. Free, and the gate in front of any contact
@@ -391,6 +398,11 @@ async function personMortgages(personId, opts = {}) {
   return call('get_person_mortgages', { id: personId, ...pageArgs(opts) }, opts);
 }
 
+async function personEntities(personId, opts = {}) {
+  if (!isUuid(personId)) return bad('bad_args', 'That is not a person id from a search result.');
+  return call('get_person_entities', { id: personId, ...pageArgs(opts) }, opts);
+}
+
 /**
  * Find THE PERSON — with a name discipline stricter than the entity one,
  * because the failure mode is worse: an LLC name is distinctive, a person's
@@ -660,6 +672,11 @@ const stepCost = (r) => (r && typeof r.calls === 'number' ? r.calls
 function pageArgs(opts = {}) {
   const a = {};
   if (opts.countOnly) a.scope = 'count';
+  /* WHICH page. Absent means the vendor's first page, exactly as before — the
+     deep person-id pull (deep-history.js) is the one caller that walks pages,
+     so every existing single-page caller is byte-identical. */
+  const pg = Number(opts.page);
+  if (Number.isFinite(pg) && pg >= 1) a.page = Math.floor(pg);
   /* `perPage`, NOT `limit`. PROVEN 2026-08-09: `get_entity_deeds` called with
      {limit: 2} returned FIVE rows — the vendor ignores `limit` silently and its
      default page is 5. So a borrower with 29 properties read as 5, and nothing
@@ -667,7 +684,13 @@ function pageArgs(opts = {}) {
      looks complete. The page size is the one parameter where being wrong is
      invisible, which is why it gets its own comment. */
   const n = Number(opts.perPage != null ? opts.perPage : opts.limit);
-  if (Number.isFinite(n)) a.perPage = Math.min(Math.max(n, 1), 100);
+  /* The ceiling used to be 100 on the belief that was the vendor's page limit;
+     the transcribed contracts say the person/entity list tools take perPage up
+     to 5000. 1000 here is OUR ceiling, not theirs — the deep person-id pull
+     asks for 250 (the profile builder's own page), and nothing on this plane
+     has business asking for more than a thousand rows in one response. Every
+     existing caller passes 100 or less and is byte-identical. */
+  if (Number.isFinite(n)) a.perPage = Math.min(Math.max(n, 1), 1000);
   return a;
 }
 
@@ -790,6 +813,7 @@ module.exports = {
   entityPeople,
   personDeeds,
   personMortgages,
+  personEntities,
   researchPerson,
   coOccurringEntities,
   matchAddress,

@@ -240,6 +240,14 @@ function dedupeKeyFor(c) {
  */
 function candidatesFrom(research, entityNames) {
   const names = (entityNames || []).map((n) => str(n)).filter(Boolean);
+  /* ROWS PULLED OFF THE PERSON'S OWN LINKED ID (deep-history.js) may carry a
+     vendor `isGrantee:false` that answers a DIFFERENT question — "is the PERSON
+     the grantee" — while the deed was granted to one of their companies on the
+     profile. For those rows the strict name test is consulted even when the
+     vendor's person-flag is an explicit false. Entity-branch behavior is
+     byte-identical: there the vendor computed the flag against the very entity
+     that was queried, and overriding it is the York, PA false positive. */
+  const nameToo = !!(research && research.personKeyed === true);
   const isOurs = (partyList) => (Array.isArray(partyList) ? partyList : [partyList]).some((p) => {
     const nm = typeof p === 'string' ? p : (p && (p.name || p.partyName));
     if (!str(nm)) return false;
@@ -265,8 +273,8 @@ function candidatesFrom(research, entityNames) {
        name matching — that re-derivation is what produced the York, PA false
        positive the scoring ladder's A3 exists for. Fall back to the name test
        only when the vendor did not say; `null` must never read as `false`. */
-    const bought = d.isGrantee === true || (d.isGrantee == null && isOurs(d.grantees));
-    const sold = d.isGrantor === true || (d.isGrantor == null && isOurs(d.grantors));
+    const bought = d.isGrantee === true || ((d.isGrantee == null || nameToo) && isOurs(d.grantees));
+    const sold = d.isGrantor === true || ((d.isGrantor == null || nameToo) && isOurs(d.grantors));
     if (!bought && !sold) {
       skips.push({ address: addressLabel(addr), reason: 'not_our_party',
         why: 'Neither side of this deed is the borrower or one of their companies.' });
@@ -441,7 +449,8 @@ function firstOtherName(list, names) {
 async function runSearch({ borrowerId, staffId, states }, client) {
   const db = client || require('../../db');
   const b = (await db.query(
-    `SELECT id, NULLIF(TRIM(COALESCE(full_name,'')),'') AS name FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
+    `SELECT id, NULLIF(TRIM(COALESCE(full_name,'')),'') AS name, elementix_person_id
+       FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
   if (!b) { const e = new Error('borrower not found'); e.status = 404; throw e; }
 
   /* THE STATES ARE THE PERSON'S PICK (owner-directed 2026-08-09: "make a
@@ -462,7 +471,8 @@ async function runSearch({ borrowerId, staffId, states }, client) {
      `llcs` at all, and a search sent with an undefined filter quietly returns
      nothing rather than erroring. */
   const entities = (await db.query(
-    `SELECT id, llc_name, formation_state FROM llcs WHERE borrower_id=$1 AND llc_name IS NOT NULL`, [borrowerId])).rows;
+    `SELECT id, llc_name, formation_state, adopted_source
+       FROM llcs WHERE borrower_id=$1 AND llc_name IS NOT NULL`, [borrowerId])).rows;
   const entityNames = entities.map((e) => e.llc_name).filter(Boolean);
 
   const search = (await db.query(
@@ -472,18 +482,60 @@ async function runSearch({ borrowerId, staffId, states }, client) {
   let found = 0; let staged = 0; let apiCalls = 0;
   let searchedAny = false;
   const skips = [];
-  if (!entityNames.length) {
-    skips.push({ reason: 'no_entities',
-      why: 'This borrower has no companies on their profile — only their personal name was searched. Add the company they buy under for the full picture.' });
-  }
   if (stateList.length > STATE_CAP) {
     skips.push({ reason: 'too_many_states',
       why: `Only the first ${STATE_CAP} states were searched (${cappedStates.join(', ')}) — each state spends part of the office's shared hourly allowance. Run the rest in a second search.` });
   }
+
+  /* ═══ THE DEEP SEARCH — the profile builder's own pull, keyed on the LINKED
+     Elementix person (owner-directed 2026-08-19: "the track record builder
+     Elementix record search should do the same kind of deep search"). When a
+     human has attached this borrower to an Elementix person, that identity is
+     stronger than any name match: the person's whole recorded history (deeds,
+     mortgages, their company roster) is read by ID, fully paged, across the
+     confirmed cross-state family — and lands on the profile through the same
+     staging + import gates as everything else. Never throws; a failure is a
+     skip with a reason and the name-based search below still runs. */
+  let deep = null;
+  if (str(b.elementix_person_id)) {
+    deep = await require('../elementix/deep-history').searchViaLinkedPerson({
+      borrowerId, personId: str(b.elementix_person_id), staffId, searchId: search.id, db,
+    });
+    apiCalls += deep.calls || 0;
+    searchedAny = searchedAny || deep.searched === true;
+    found += deep.found || 0;
+    staged += deep.staged || 0;
+    skips.push(...(deep.skips || []));
+  }
+  const deepRan = !!(deep && deep.searched);
+
+  if (!entityNames.length && !(deep && (deep.entitiesAdded || deep.entitiesMatched))) {
+    skips.push({ reason: 'no_entities',
+      why: 'This borrower has no companies on their profile — only their personal name was searched. Add the company they buy under for the full picture.' });
+  }
+
   /* The names a PERSONAL-NAME deed can match against — the borrower plus their
      companies, so a deed granted to "Moses Weil" is theirs the same way one
-     granted to "MW Trading LLC" is. */
-  const allNames = [b.name, ...entityNames].filter(Boolean);
+     granted to "MW Trading LLC" is. RE-READ after the deep pull, because the
+     pull may have just added the person's recorded companies to the profile. */
+  const allEntityNames = deep
+    ? (await db.query(
+      `SELECT llc_name FROM llcs WHERE borrower_id=$1 AND llc_name IS NOT NULL`, [borrowerId]))
+      .rows.map((r) => r.llc_name).filter(Boolean)
+    : entityNames;
+  const allNames = [b.name, ...allEntityNames].filter(Boolean);
+
+  /* WHICH companies get their own one-by-one records search: when the linked
+     profile was read, the companies IT imported were already covered by the
+     person-level pull — searching each of them again could be hundreds of extra
+     calls out of the office's shared allowance for records already read. The
+     companies a human (or an earlier import) put on the profile keep their
+     searches exactly as before. */
+  const searchEnts = deepRan ? entities.filter((e) => e.adopted_source !== 'elementix') : entities;
+  if (deepRan && searchEnts.length !== entities.length) {
+    skips.push({ reason: 'covered_by_linked_profile',
+      why: `${entities.length - searchEnts.length} compan${entities.length - searchEnts.length === 1 ? 'y' : 'ies'} imported from Elementix were read through the linked profile above rather than searched one by one.` });
+  }
 
   /* NOTHING 500s THE WHOLE SEARCH. One unstorable row (a mis-keyed
      consideration bigger than numeric(14,2), a shape nobody predicted) used to
@@ -512,7 +564,7 @@ async function runSearch({ borrowerId, staffId, states }, client) {
     }
   };
 
-  for (const ent of entities) {
+  for (const ent of searchEnts) {
     /* WHICH STATES TO ASK ABOUT THIS COMPANY: the state it was registered in,
        PLUS every state the person picked — the records service keys entities
        by (name, state), so the same LLC name in another state is a DIFFERENT
@@ -569,7 +621,12 @@ async function runSearch({ borrowerId, staffId, states }, client) {
      stages still goes through the same scoring ladder and the same human
      review — a personal-name candidate has no proposed entity, so the line it
      becomes is owned personally unless the reviewer says otherwise. */
-  if (b.name) {
+  if (b.name && !deepRan) {
+    /* The NAME-based person search runs only when the linked-profile pull did
+       not: the deep pull reads the same person's records by ID — a strictly
+       better identity — so re-resolving them by name would re-spend the
+       allowance to re-find (or, worse, refuse as ambiguous) somebody we
+       already know exactly. */
     /* One pull per picked state — persons are keyed (name, state) too, so a
        state makes the exact matcher usable and splits "more than one Yehuda
        Bochner" into per-state questions a person can actually answer. No
@@ -621,7 +678,10 @@ async function runSearch({ borrowerId, staffId, states }, client) {
      erroring must say SO, in the headline, not in a skips list a screen has
      to go digging through. `searchedAny` is true only when a records list
      actually came back, so it cannot be faked by a run of failures. */
-  const searchedUnder = [...(b.name ? [b.name] : []), ...entityNames];
+  const searchedUnder = [
+    ...(str(b.elementix_person_id) ? ['their linked Elementix profile'] : []),
+    ...(b.name ? [b.name] : []), ...entityNames,
+  ];
   const nothingToSearch = searchedUnder.length === 0;
   const vendorProblem = !searchedAny && !nothingToSearch
     ? (skips.find((s) => ['disabled', 'not_configured', 'dry_run'].includes(s.reason)) ? 'off'
@@ -630,10 +690,21 @@ async function runSearch({ borrowerId, staffId, states }, client) {
           'initialize_failed', 'not_connected', 'reapproval_needed', 'store_unreadable',
           'no_response', 'unreadable_response', 'tool_error'].includes(s.reason)) ? 'failed' : null)
     : null;
-  const underText = (entityNames.length
-    ? `${b.name ? `${b.name} and ` : ''}${entityNames.length === 1 ? entityNames[0] : `${entityNames.length} companies`}`
-    : (b.name || 'nothing'))
+  const underText = (deepRan ? 'their linked Elementix profile'
+    + (b.name || entityNames.length ? ' and ' : '') : '')
+    + (entityNames.length
+      ? `${b.name ? `${b.name} and ` : ''}${entityNames.length === 1 ? entityNames[0] : `${entityNames.length} companies`}`
+      : (b.name || (deepRan ? '' : 'nothing')))
     + (cappedStates.length ? ` in ${cappedStates.join(', ')}` : '');
+  /* WHAT THE DEEP PULL DID lands in the headline too — an import a person
+     cannot see happened is an import they cannot trust. Empty when nothing was
+     imported, so every pre-existing sentence reads exactly as before. */
+  const deepClause = deep && (deep.imported || deep.merged || deep.leftForReview || deep.entitiesAdded)
+    ? ` From their Elementix profile: ${deep.imported} added straight onto the track record (unverified), `
+      + `${deep.merged} filled in lines already there, ${deep.leftForReview} left for a person to review`
+      + (deep.entitiesAdded ? `, and ${deep.entitiesAdded} compan${deep.entitiesAdded === 1 ? 'y' : 'ies'} added to their profile` : '')
+      + '.'
+    : '';
   /* A SEARCH THAT STOPPED AT A FORK IS NOT AN EMPTY COUNTY (audit 2026-08-09).
      With no state picked, a name held in more than one state is refused as
      ambiguous — correct — but the headline then read "found nothing … the
@@ -649,6 +720,14 @@ async function runSearch({ borrowerId, staffId, states }, client) {
     statesSearched: cappedStates,
     nothingToSearch,
     vendorProblem,
+    /* The deep pull's own outcome, for the screen and the audit line. Null when
+       no Elementix person is linked — the shape every earlier caller saw. */
+    elementix: deep ? {
+      personId: deep.personId || null,
+      imported: deep.imported || 0, merged: deep.merged || 0,
+      leftForReview: deep.leftForReview || 0,
+      entitiesAdded: deep.entitiesAdded || 0, entitiesMatched: deep.entitiesMatched || 0,
+    } : null,
     /* One plain sentence, decided HERE so two screens cannot word it two ways. */
     summary: nothingToSearch
       ? 'We could not search: this borrower has no name and no companies on their profile yet. Fill in the profile and run it again.'
@@ -661,8 +740,8 @@ async function runSearch({ borrowerId, staffId, states }, client) {
             : (stoppedAtFork
               ? 'The records hold this name in more than one state, and picking one would be a guess — so nothing was brought in. Pick the state(s) to search in the drop-down and run it again. Nothing here says the borrower has no history.'
               : (found === 0
-                ? `We searched the public records under ${underText} and found nothing. That usually means the county does not publish online, not that there is nothing to find.`
-                : `Found ${found} ${found === 1 ? 'property' : 'properties'} under ${underText}${staged === found ? '' : ` — ${staged} new`}.`))),
+                ? `We searched the public records under ${underText} and found nothing. That usually means the county does not publish online, not that there is nothing to find.${deepClause}`
+                : `Found ${found} ${found === 1 ? 'property' : 'properties'} under ${underText}${staged === found ? '' : ` — ${staged} new`}.${deepClause}`))),
   };
 }
 
@@ -779,8 +858,17 @@ async function stageOne(db, { borrowerId, searchId, candidate, proposedLlcId, ba
   if (hit) {
     let sqlSamePlace;
     try {
+      /* THE SQL COMPARER READS STRUCTURED OBJECTS ONLY (`jsonb_typeof(v) <>
+         'object' -> ''`, db/415/497) — and a vendor candidate's address is a
+         ONE-LINE STRING, so handing it over raw made the SQL side answer false
+         on every candidate ever staged and 'exact' was unreachable from this
+         path (measured 2026-08-19: a byte-identical address answered false as
+         a string and true as the parsed object). Parsed through the SAME
+         function the import later stores it with, so the comparer judges the
+         very shape the line would hold. */
       const r = await db.query('SELECT pilot_address_same_place($1::jsonb, $2::jsonb) AS same',
-        [JSON.stringify(hit.property_address || null), JSON.stringify(candidate.property_address || null)]);
+        [JSON.stringify(hit.property_address || null),
+          JSON.stringify(ADDR.parseToAddressObject(candidate.property_address) || null)]);
       sqlSamePlace = r.rows[0] ? r.rows[0].same === true : undefined;
     } catch (_) { sqlSamePlace = undefined; }   // unreachable → decideMatch fails closed
     const d = MATCH.decideMatch(hit, { addresses: [addressLabel(candidate.property_address)] },
@@ -970,7 +1058,7 @@ async function decideCandidate(candidateId, opts, client) {
   }
 }
 
-async function decideLocked(db, candidateId, { action, staffId, note, reasonCode, snoozeDays, dealType, confirmReopen, exit, rehab, resolutions }) {
+async function decideLocked(db, candidateId, { action, staffId, note, reasonCode, snoozeDays, dealType, confirmReopen, exit, rehab, resolutions, allowUnstatedDealType, enteredByKind }) {
   const c = (await db.query(
     `SELECT * FROM track_record_candidates WHERE id=$1 FOR UPDATE`, [candidateId])).rows[0];
   if (!c) { const e = new Error('not found'); e.status = 404; throw e; }
@@ -1005,7 +1093,15 @@ async function decideLocked(db, candidateId, { action, staffId, note, reasonCode
   }
 
   if (action === 'match_existing') return matchExisting(db, c, { staffId, note, confirmReopen, resolutions });
-  return importNew(db, c, { staffId, note, dealType, exit, rehab });
+  return importNew(db, c, {
+    staffId, note, dealType, exit, rehab,
+    /* The AUTOMATIC Elementix import's two options (deep-history.js). The HTTP
+       route never passes either — it builds its opts object key by key — so a
+       screen cannot reach them; and the kind is an allowlist, never trusted:
+       'system' names the unattended sweep, everything else stays 'staff'. */
+    allowUnstatedDealType: allowUnstatedDealType === true,
+    enteredByKind: enteredByKind === 'system' ? 'system' : 'staff',
+  });
 }
 
 /* THE UNDECIDED STATES. A settle may only ever move a candidate OUT of one of
@@ -1049,7 +1145,7 @@ async function settle(db, id, status, staffId, note) {
    own answer would make the audit trail say something untrue and would hide
    the line from the queue built to surface self-reported ones. It defaults to
    'staff' so every existing caller is unchanged. */
-async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staff', borrowerActor = null, exit = null, rehab = null }) {
+async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staff', borrowerActor = null, exit = null, rehab = null, allowUnstatedDealType = false }) {
   /* A DEAL TYPE IS REQUIRED TO IMPORT, because a line without one counts toward
      NOTHING and is filed under holds — see `dealTypeFromRecords`. The explicit
      answer wins; the candidate's own value is next; the records' reading is the
@@ -1074,12 +1170,23 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
   }
   const derived = dealTypeFromRecords(c);
   const effectiveDealType = typed || derived.dealType;
-  if (!effectiveDealType) {
+  if (!effectiveDealType && !allowUnstatedDealType) {
     const e = new Error('Say what kind of deal this was — a line with no deal type counts toward nothing.');
     e.status = 400; e.code = 'deal_type_needed';
     e.why = derived.why;
     throw e;
   }
+  /* THE AUTOMATIC ELEMENTIX IMPORT (owner-directed 2026-08-19: "all the
+     properties should be added on the track record automatically… not as
+     verified, of course") has no human at the screen to answer, and the
+     standing rule is that a deal type is NEVER guessed — so it imports with
+     the type LEFT BLANK and a note asking for it. A blank-type line counts
+     toward nothing (no exit rule can date it into the window) and db/485
+     keeps it pending, so nothing about the loan moves until a person answers.
+     Only the auto path may do this; every human door still refuses above. */
+  const unstatedNote = (!effectiveDealType && allowUnstatedDealType)
+    ? ` [auto] The records do not say whether this was a flip, a hold or a ground-up (${derived.why}) — set the deal type when reviewing this line; it counts toward nothing until then.`
+    : '';
   /* A HUMAN CONTRADICTING THE DEED PAIR IS RECORDED, NEVER SILENT. The records
      read bought-and-sold as a flip; a person may genuinely know better (built
      from the ground up and then sold IS ground-up, with the same two deeds) —
@@ -1140,9 +1247,27 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
   let llcId = c.proposed_llc_id || null;
   let entityCreated = false;
   if (!llcId && str(c.entity_name)) {
-    const promoted = await entityLib.promoteEntityName(c.borrower_id, c.entity_name, { client: db, actorId: staffId });
-    llcId = promoted.llcId || null;
-    entityCreated = promoted.created === true;
+    /* A DEAL BOUGHT IN THE BORROWER'S OWN NAME CARRIES THAT NAME HERE — the
+       staging fills entity_name from whichever OUR-side party matched, and the
+       borrower's personal name is one of them. Promoting it minted a "company"
+       named after the person (measured 2026-08-19: a personal-name deed put a
+       PERSON-named llcs row on the profile — with document slots nobody can
+       ever fill). Same rule stageOne already applies for the match basis:
+       never let the borrower's own name serve as the company. The line still
+       imports; it simply carries no entity link, which is what "owned
+       personally" looks like on the record. Judged best-effort: an unreadable
+       borrower name promotes exactly as before. */
+    let ownName = false;
+    try {
+      const bn = (await db.query(
+        `SELECT NULLIF(TRIM(COALESCE(full_name,'')),'') AS name FROM borrowers WHERE id=$1`, [c.borrower_id])).rows[0];
+      ownName = !!(bn && bn.name && namesMatchLoose(c.entity_name, bn.name));
+    } catch (_) { ownName = false; }
+    if (!ownName) {
+      const promoted = await entityLib.promoteEntityName(c.borrower_id, c.entity_name, { client: db, actorId: staffId });
+      llcId = promoted.llcId || null;
+      entityCreated = promoted.created === true;
+    }
   }
 
   const ins = await db.query(
@@ -1172,7 +1297,7 @@ async function importNew(db, c, { staffId, note, dealType, enteredByKind = 'staf
          silently deletable. */
       (enteredByKind === 'borrower'
         ? 'The borrower confirmed this one from the public records.'
-        : 'Brought on from the public records.') + contradictionNote,
+        : 'Brought on from the public records.') + contradictionNote + unstatedNote,
       enteredByKind,
       // The counterparty the deed named (audit M3) — what the related-party
       // control reads. Null when the records named nobody but the borrower.
@@ -1386,6 +1511,10 @@ module.exports = {
   loadQueue,
   decideCandidate,
   compareCandidate,
+  /* PUBLIC for the Elementix deep import (deep-history.js), which stages what
+     the linked profile carries through the SAME gate as a search — dedupe key,
+     durable declines, match banding, bounds. Never a second staging path. */
+  stageOne,
   candidatesFrom,
   dedupeKeyFor,
   dealTypeFromRecords,

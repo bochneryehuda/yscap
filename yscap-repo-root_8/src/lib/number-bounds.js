@@ -254,6 +254,10 @@ const COLUMN_KIND = Object.freeze({
        an undeclared column is a gap in the guard, not a judgement that the
        column is safe. */
     portal_invite_count: 'int',
+    /* db/597 — the Elementix history-import sweep's retry counter. Written only
+       by the sweep itself (never a request body), declared so the DB guard's
+       "every numeric column has a kind" parity holds. */
+    elementix_history_import_attempts: 'int',
     // …and the two that are neither money nor a percent, which is exactly why
     // the {precision, scale} kind had to exist.
     housing_payment: { precision: 12, scale: 2 },
