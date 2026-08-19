@@ -181,6 +181,15 @@ function renderFirstPaint() {
     'R21 …including the ones the engine could not decide either way, counted on their own');
   ok(/could not be decided either way/.test(src) || /could not be decided/i.test(src),
     'R22 …named in plain words, so nobody has to know what "undetermined" means to read the number');
+  // §2.125 — the screen must not print "reached and applied" either. Reachability is the rule firing;
+  // whether the cell moves a price is the smaller number beside it.
+  ok(/coverage\.rules\.pricedFired/.test(stripped) && /coverage\.rules\.firedUnpriced/.test(stripped),
+    'R24 the screen splits REACHED from SEEN TO MOVE A PRICE — they are two facts and were one number');
+  ok(!/reached\s*\n?\s*and applied/.test(src) && !/reached and applied/.test(src),
+    'R25 …and it no longer claims the cells were applied, which on the real sheet was true of 41 of 174');
+  ok(/still untested/.test(src),
+    'R26 …naming the untested ones as untested rather than as a defect in the cell');
+
   ok(/expected here, not a fault/.test(src),
     'R23 …and worded as NORMAL, because it is: a targeting scenario carries only its own cell\'s facts, '
     + 'so 209 of 261 are undecidable on the real sheet. A true number presented as an alarm is its own defect');

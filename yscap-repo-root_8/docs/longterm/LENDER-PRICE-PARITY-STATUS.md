@@ -8616,3 +8616,69 @@ of this battery.
 | Q5b the same fold, against the corrected assertion | 1 |
 
 **189/189 LT PPE suites, 34 database-backed. All seven gates green.**
+
+---
+
+### §2.125 — "reached" and "moves a price" were one number, and the disagreement blamed a run that never happened
+
+**Followed straight from §2.124a.** Having put the scenario census on screen, the obvious next
+question was whether the CELL number beside it means what it says. It did not.
+
+**Measured on the real Deephaven sheet** (192 encoded cells, 261 generated scenarios):
+
+| | |
+|---|---|
+| cells with no scenario targeting them | **0** |
+| cells reported **reachable** | **174** |
+| …of those, read off a quote the engine **REFUSED TO PRICE** | **133** |
+| …read off a quote that produced a real answer | **41** |
+| cells reported as reached-but-not-applied | **18** — of which **10** sit on quotes the pricer never ran on |
+
+So the endpoint said *"174 of 192 cells reached and applied by the pricer"* while for **133 of those
+174 the pricer never ran at all**.
+
+**Why the number is still right for its own job.** Reachability is read off the rule EVALUATION
+trace, which is built before any rung is priced — so a cell counts as reached the moment its
+predicate fires. That is exactly the right signal for the DEAD-CELL guard this endpoint exists to be:
+a rule nothing can make fire is the defect it hunts. What it is not is evidence that the cell moves a
+number, and those are two different facts a rate-sheet author needs separately.
+
+`reachable` keeps its name and meaning so every existing reader is unchanged. **`pricedFired`** (the
+rule fired AND its quote produced a ladder) and **`firedUnpriced`** sit beside it, and the console
+shows both — *"N of those were also seen to move a price; M fired on a scenario the engine could not
+price, so whether they change a number is still untested."*
+
+**The disagreement reason was a confidently wrong accusation.** Every reached-but-not-applied cell
+was reported as *"the generator satisfied this rule but **the pricer did not apply it**."* Ten of the
+eighteen are quotes the pricer was never asked about — the targeting scenario was missing a fact the
+sheet needs, so the engine refused to price rather than guess (§2.124a). Telling a rate-sheet author
+their pricer skipped a cell, when the pricer never ran, sends them to edit a rule that is fine. It is
+the same class as §2.122's `dhvn_min_dscr`, §2.123's *"our engine priced it"* and §2.124's HIGH-severity
+false disagreement: **a reason stated with confidence about something never measured.**
+
+There are three states and they are now three sentences: UNTESTED (could not be priced — *"not a
+defect in the cell"*), the pricer ran and skipped it, and the rule is absent from the trace. A quote
+that THREW keeps the phrase *"could not be priced"* a guard already pins **and** gains a `threw`
+marker, so it is never confused with a quote that refused.
+
+**A test that could not see the thing it was meant to protect.** The healthy fixture reports no
+disagreements at all, so nothing in the suite could ever inspect this wording — reverting it to the
+old single sentence failed **ZERO** assertions. The rule is now a pure exported function
+(`coverageCellReason`) with its truth table asserted directly, and the same mutation fails four.
+
+**Mutations.**
+
+| mutation | failing assertions |
+|---|---|
+| T1 count every fired cell as priced (the original conflation) | 1 |
+| T2 blame the pricer for a run that never happened — **against the inline version** | **0 — nothing could see it** |
+| T2b the same mutation, against the extracted rule | 4 |
+| T3 drop the THREW marker so the two unpriced states merge | 1 |
+| T4 the screen shows only the reached count again | 2 |
+| T5 collapse the two answered states onto one sentence | 2 |
+
+**Also corrected: a test label repeating the false claim.** Assertion A2 read *"all three encoded
+cells are reachable AND applied"* — the same overstatement, in the guard. A test label that repeats a
+false claim is its own defect.
+
+**189/189 LT PPE suites, 34 database-backed. All seven gates green.**

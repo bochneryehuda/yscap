@@ -118,7 +118,21 @@ const REQ = (over = {}) => Object.assign(
     let res = await call(H.rateSheetCoverageRoute, REQ({ params: { id: good.versionId } }));
     ok(res.statusCode === 200 && res.body.ok === true, 'A1 the sheet is checked');
     ok(res.body.rules.total === 3 && res.body.rules.reachable === 3,
-      `A2 all three encoded cells are reachable AND applied (${res.body.rules.reachable} of ${res.body.rules.total})`);
+      // The label used to say "reachable AND applied". It is the same overstatement §2.125 removed from
+      // the endpoint's own note, and a test label repeating a false claim is its own defect.
+      `A2 all three encoded cells are REACHED — a generated scenario made each one fire (${res.body.rules.reachable} of ${res.body.rules.total})`);
+    // §2.125 — REACHED and MOVES A PRICE are two different facts and were one number. `reachable` is
+    // read off the rule EVALUATION trace, built before any rung is priced, so a cell counts as reached
+    // the moment its predicate fires. MEASURED on the real Deephaven sheet: 174 of 192 cells reach,
+    // and 133 of those 174 were read off a quote the engine REFUSED to price. The split says which.
+    ok(res.body.rules.pricedFired + res.body.rules.firedUnpriced === res.body.rules.reachable,
+      `A2a the reachable count splits and reconciles: ${res.body.rules.reachable} reached `
+      + `= ${res.body.rules.pricedFired} seen to move a price + ${res.body.rules.firedUnpriced} reached but untested on price`);
+    ok(res.body.rules.firedUnpriced === res.body.rules.reachable && res.body.rules.pricedFired === 0,
+      'A2b on this fixture EVERY reached cell was read off a quote the engine could not price — so none of '
+      + 'them is yet known to move a number, and the report says so instead of calling them all applied');
+    ok(!/applied by the pricer/.test(res.body.note || ''),
+      'A2c …and the note does not claim the pricer applied them');
     ok(res.body.rules.unreachable.length === 0 && res.body.rules.disagreed.length === 0,
       'A3 …with nothing reported against a healthy sheet');
     ok(res.body.scenarios.generated > 0 && res.body.scenarios.answered === res.body.scenarios.generated,
@@ -252,10 +266,41 @@ const REQ = (over = {}) => Object.assign(
       'F3 …and no cell is called reachable on a sheet the engine cannot price');
     ok(/could not be priced/i.test((res.body.rules.disagreed[0] || {}).reason || ''),
       'F4 …the reason naming the pricing failure, not a phantom coverage gap');
+    // §2.125 — a THREW and an UNDETERMINED scenario both "could not be priced", and telling them apart
+    // is the point: one is the engine falling over on this sheet (a defect in the sheet), the other is
+    // it refusing on a fact the targeting scenario never carried (not a defect at all).
+    ok((res.body.rules.disagreed[0] || {}).threw === true && /THREW/.test((res.body.rules.disagreed[0] || {}).reason || ''),
+      'F5 …and it is marked as a THROW, so it is never confused with a scenario the engine declined to price');
   } finally {
     await cleanup();
     if (typeof db.end === 'function') await db.end().catch(() => {});
   }
+
+
+    // =========================================================================
+    // G. THE REASON A REACHED CELL DID NOT LAND — three states, never one (§2.125)
+    // =========================================================================
+    // The healthy fixture reports no disagreements at all, so nothing in this suite could ever see
+    // this wording — which is why reverting it to the old single sentence failed ZERO assertions when
+    // it was mutated. The rule is pure and is asserted directly.
+    console.log('\nG. why a reached cell did not land\n');
+    {
+      const reasonOf = route._internals.coverageCellReason;
+      ok(/UNTESTED/.test(reasonOf(true, false)) && /could not be priced/.test(reasonOf(true, false)),
+        'G1 a cell on a scenario the engine could NOT PRICE is reported as UNTESTED — the pricer was never asked, '
+        + 'so it cannot have skipped anything');
+      ok(!/pricer did not apply/.test(reasonOf(true, false)),
+        'G2 …and it never blames the pricer for a run that never happened — MEASURED: 10 of the 18 such cells on '
+        + 'the real Deephaven sheet are exactly this case');
+      ok(/not a defect in the cell/.test(reasonOf(true, false)),
+        'G3 …and says plainly that it is not a fault in the cell, so nobody edits a rule that is fine');
+      ok(/pricer did not apply/.test(reasonOf(true, true)),
+        'G4 a cell the pricer DID run on and skipped is still reported as the real disagreement it is');
+      ok(/not in the priced trace at all/.test(reasonOf(false, true)),
+        'G5 …and a rule absent from the trace is its own third state');
+      ok(reasonOf(true, false) !== reasonOf(true, true) && reasonOf(true, true) !== reasonOf(false, true),
+        'G6 the three states are three different sentences — collapsing any two is the conflation this closes');
+    }
 
   console.log(`\n${failures ? `${failures} FAILED` : 'ok - lt ppe rate-sheet coverage (all passed)'}`);
   process.exit(failures ? 1 : 0);

@@ -448,7 +448,18 @@ export default function RateSheetConsole() {
               <div style={{ marginTop: 10, fontSize: 13, color: SLATE }}>
                 <div>
                   {coverage.rules.reachable} of {coverage.rules.total} cell{coverage.rules.total === 1 ? '' : 's'} reached
-                  and applied, over {coverage.scenarios.generated} generated scenario{coverage.scenarios.generated === 1 ? '' : 's'}.
+                  — a generated scenario made each one fire — over {coverage.scenarios.generated} scenario
+                  {coverage.scenarios.generated === 1 ? '' : 's'}.
+                </div>
+                {/* §2.125 — REACHED and MOVES A PRICE are two different facts. Reachability is read off
+                    the rule evaluation, which happens before any rung is priced, so a cell counts as
+                    reached the moment its predicate fires. Measured on the real Deephaven sheet: 174 of
+                    192 cells reach, and 133 of those were read off a quote the engine refused to price.
+                    Showing only the first number reads as "the sheet works". */}
+                <div style={{ marginTop: 4 }}>
+                  <strong>{coverage.rules.pricedFired}</strong> of those were also seen to move a price;{' '}
+                  <strong>{coverage.rules.firedUnpriced}</strong> fired on a scenario the engine could not
+                  price, so whether they change a number is still untested.
                 </div>
                 {/* THE SCENARIO CENSUS, WHICH THIS SCREEN HAS NEVER SHOWN (§2.124a).
                     The server has always computed how the generated battery landed and the console

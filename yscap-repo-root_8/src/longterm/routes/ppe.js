@@ -3330,6 +3330,29 @@ async function rateSheetPreflightRoute(req, res) {
   });
 }
 
+/**
+ * WHY A REACHED-BUT-NOT-APPLIED CELL DID NOT LAND — the three states, told apart (§2.125). PURE.
+ *
+ * This lived inline and said "the pricer did not apply it" for every case. MEASURED on the real
+ * Deephaven sheet, 10 of the 18 such cells sit on quotes the pricer NEVER RAN ON: the targeting
+ * scenario was missing a fact the sheet needs, so the engine refused to price rather than guess.
+ * Telling a rate-sheet author their pricer skipped a cell, when the pricer was never asked, sends
+ * them to look at the wrong thing entirely — and it is the same confidently-wrong-reason class the
+ * §2.122 / §2.123 / §2.124 items keep finding.
+ *
+ *   answered=false → UNTESTED. Not a defect in the cell; the scenario could not be priced at all.
+ *   answered=true, in the trace → the pricer ran and did not apply it. A real disagreement.
+ *   answered=true, not in the trace → the rule is not in the priced trace at all.
+ */
+function coverageCellReason(hasTraceEntry, answered) {
+  if (!answered) {
+    return 'its scenario could not be priced (a fact the sheet needs was absent), so whether this cell is applied is UNTESTED — not a defect in the cell';
+  }
+  return hasTraceEntry
+    ? 'the generator satisfied this rule but the pricer did not apply it'
+    : 'the rule is not in the priced trace at all';
+}
+
 async function rateSheetCoverageRoute(req, res) {
   const found = await resolveVersion(req, res);
   if (!found) return undefined;
@@ -3389,7 +3412,23 @@ async function rateSheetCoverageRoute(req, res) {
 
   const unreachable = [];
   const disagreed = [];
+  // TWO DIFFERENT FACTS, AND THEY WERE ONE NUMBER (§2.125).
+  //
+  // `reachable` is read off the rule EVALUATION trace, which is built before any rung is priced. That
+  // is the right signal for the DEAD-CELL question this endpoint exists to answer — a cell nothing can
+  // make fire is the defect it hunts — but it is NOT the same as the cell moving a price.
+  //
+  // MEASURED on the real Deephaven sheet: 174 of 192 cells count as reached, and 133 of those 174 were
+  // read off a quote the engine REFUSED TO PRICE (a targeting scenario carries only its own rule's
+  // facts, §2.124a). So "174 reached" was true and "and applied by the pricer" was not, for more than
+  // three quarters of them.
+  //
+  // `reachable` keeps its meaning and its name, so every existing reader is unchanged; `pricedFired`
+  // is the stricter fact beside it — the rule fired AND the quote it fired on produced a ladder, which
+  // is the only way to know the cell actually changes a number.
   let reachable = 0;
+  let pricedFired = 0;
+  let firedUnpriced = 0;
   for (const r of (built.coverage && built.coverage.rules) || []) {
     if (!r.targeted || r.scenarioIndex == null) {
       unreachable.push({ code: r.code, kind: r.kind, dimension: r.dimension, reason: r.reason || 'no_scenario_targets_it' });
@@ -3397,17 +3436,30 @@ async function rateSheetCoverageRoute(req, res) {
     }
     const q = quotes[r.scenarioIndex];
     if (!q) {
-      disagreed.push({ code: r.code, kind: r.kind, reason: 'its scenario could not be priced' });
+      // BOTH FACTS, DELIBERATELY. "Could not be priced" is what a reader needs (guard F4 pins it) and
+      // "threw" is what tells it apart from the UNDETERMINED case below, which also could not be
+      // priced but did so by refusing rather than by falling over. Collapsing the two onto one phrase
+      // is the conflation §2.125 is about.
+      disagreed.push({ code: r.code, kind: r.kind, threw: true, reason: 'its scenario could not be priced — the engine THREW rather than producing any answer' });
       continue;
     }
     const t = (q.trace || []).find((x) => x.code === r.code);
-    if (t && t.matched && t.contribution) { reachable += 1; continue; }
+    const answered = quote.verdictOf(q) !== 'undetermined';
+    if (t && t.matched && t.contribution) {
+      reachable += 1;
+      if (answered) pricedFired += 1; else firedUnpriced += 1;
+      continue;
+    }
     disagreed.push({
       code: r.code,
       kind: r.kind,
-      // Stated as a disagreement between two readings of one predicate, never as "unreachable" — the
-      // fix is different, and so is who has to look at it.
-      reason: t ? 'the generator satisfied this rule but the pricer did not apply it' : 'the rule is not in the priced trace at all',
+      // ⛔ THE REASON MUST NOT BLAME A RUN THAT NEVER HAPPENED (§2.125). This said "the pricer did not
+      // apply it" for every case — and MEASURED, 10 of the 18 on the real sheet are quotes the pricer
+      // never ran on at all, because the scenario was missing a price-bearing fact. Telling a
+      // rate-sheet author their pricer skipped a cell, when the pricer was never asked, sends them to
+      // look at the wrong thing. The three states are told apart, and the untested one says so.
+      reason: coverageCellReason(!!t, answered),
+      untested: !answered,
     });
   }
 
@@ -3416,7 +3468,17 @@ async function rateSheetCoverageRoute(req, res) {
     scope: found.scope,
     versionId: found.versionId,
     status: found.row.status,
-    rules: { total: (built.coverage && built.coverage.total) || 0, reachable, unreachable, disagreed },
+    rules: {
+      total: (built.coverage && built.coverage.total) || 0,
+      // `reachable` is unchanged in meaning and name — the rule's predicate fired, which is the
+      // dead-cell answer. `pricedFired` / `firedUnpriced` split it by whether the quote it fired on
+      // actually produced a price (§2.125), so "reached" is never read as "moves a number".
+      reachable,
+      pricedFired,
+      firedUnpriced,
+      unreachable,
+      disagreed,
+    },
     scenarios: {
       generated: scenarios.length,
       // `priced` is the historic name and is KEPT so no existing reader breaks; `answered` is the
@@ -3446,7 +3508,7 @@ async function rateSheetCoverageRoute(req, res) {
       // targeting scenario carries the handful of facts its own rule reads and leaves the rest absent,
       // so the engine correctly refuses to price it. Every cell was still reached. The note now says
       // what was actually measured, and the census beside it says the rest.
-      : 'Every encoded cell on this sheet was reached — a generated scenario made its rule fire. That is the dead-cell check; whether those scenarios could also be PRICED is the census below, and a targeting scenario carries only the facts its own rule reads, so many are expected to be undecidable.',
+      : 'Every encoded cell on this sheet was reached — a generated scenario made its rule fire, which is the dead-cell check. How many of those cells were also seen to MOVE A PRICE is the smaller number beside it: a targeting scenario carries only the facts its own cell reads, so most quotes are undecidable and their cells are reached but untested on price.',
   });
 }
 
@@ -4210,5 +4272,5 @@ module.exports._internals = {
   resolveRateSheetVersion, rateSheetPick,
   MAX_CANARY_SCENARIOS, SCOPE, DECIDABLE, NOT_DECIDABLE, K, programLabel, resolveBattery, runBattery, msgOf,
   resolveVersion, numOrNull, textOrNull, MAX_SHEET_ROWS, MAX_AGREEMENT_SCENARIOS, MAX_COVERAGE_SCENARIOS,
-  DRAFT_STATUSES, DRAFT_NOT_LIVE, draftIdOf, optionalUuid,
+  DRAFT_STATUSES, DRAFT_NOT_LIVE, draftIdOf, optionalUuid, coverageCellReason,
 };
