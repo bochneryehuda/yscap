@@ -468,9 +468,18 @@ router.post('/people/:personId/profile/build', async (req, res) => {
      writes the row), so requiring it costs nothing legitimate and closes the
      hole. Same rule as joining two records: a judgement about a person who
      exists, never a way to invent one. */
+  /* "SEEN" MEANS EITHER: we hold a header row for them, OR they are attached to
+     a lead or a borrower. The link is every bit as good as the header — it is
+     what a human did — and `leads.elementix_person_id` carries no foreign key,
+     so a link can outlive its header row. Accepting both means the button never
+     dead-ends on a record somebody is looking straight at, while a typed id
+     still gets nowhere. */
   const known = await db.query(
-    `SELECT 1 FROM elementix_persons WHERE person_id = $1`, [personId]);
-  if (!known.rowCount) {
+    `SELECT EXISTS (SELECT 1 FROM elementix_persons WHERE person_id = $1)
+         OR EXISTS (SELECT 1 FROM leads WHERE elementix_person_id = $1)
+         OR EXISTS (SELECT 1 FROM borrowers WHERE elementix_person_id = $1) AS seen`,
+    [personId]);
+  if (!known.rows[0] || known.rows[0].seen !== true) {
     return res.status(404).json({ reason: 'not_found',
       error: 'PILOT has no record of that Elementix person. Search for them and attach them first.' });
   }

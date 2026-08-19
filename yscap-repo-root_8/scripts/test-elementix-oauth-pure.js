@@ -438,9 +438,17 @@ console.log('\n7. The paid tool cannot be called by accident');
   }
   assert.ok(entryKeys.has('elementix'), 'Elementix has its own entry on the API Health page');
   const elx = swList.filter((s) => s.integration === 'elementix').map((s) => s.key);
-  assert.deepStrictEqual(elx.sort(), ['ELEMENTIX_DRYRUN', 'ELEMENTIX_ENABLED']);
+  /* THE EXACT LIST, on purpose — a switch appearing here is a deliberate act.
+     `ELEMENTIX_CRM_SYNC_ENABLED` is the third, added 2026-08-19 when the owner
+     asked for the leads to pull in automatically: it governs the CRM import
+     bringing newly unlocked contacts in as leads. It is a SWITCH rather than an
+     env var precisely because it creates leads in officers' pipelines, so a
+     human needs to be able to see it and stop it without waiting for a deploy. */
+  assert.deepStrictEqual(elx.sort(),
+    ['ELEMENTIX_CRM_SYNC_ENABLED', 'ELEMENTIX_DRYRUN', 'ELEMENTIX_ENABLED']);
   assert.ok(swList.filter((s) => s.integration === 'elementix').every((s) => !s.dangerous),
-    'a read-only vendor has no dangerous switch — there is no write path to Elementix');
+    'a read-only vendor has no dangerous switch — there is no write path to Elementix, and the '
+    + 'CRM import cannot spend a credit either (every contact it brings in is already unlocked)');
   ok(`all ${swList.length} switches hang off a real integration entry, Elementix included`);
 
   // The other half of the network trap at the top of this file. `discover()`

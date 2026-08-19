@@ -100,6 +100,8 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
     console.log('\nELEMENTIX CRM DESK — real HTTP, real Postgres, stubbed vendor\n');
     await db.query(`DELETE FROM elementix_skip_traces WHERE person_id = ANY($1)`, [[PID, PID2]]);
     await db.query(`DELETE FROM elementix_contacts WHERE person_id = ANY($1)`, [[PID, PID2]]);
+    await db.query(`UPDATE leads SET elementix_person_id = NULL WHERE elementix_person_id = $1`,
+      ['0badf00d-dead-4bee-8fee-000000000002']);
     await db.query(`DELETE FROM leads WHERE elementix_person_id = ANY($1)`, [[PID, PID2]]);
     await db.query(`DELETE FROM elementix_person_sections WHERE person_id = ANY($1)`, [[PID, PID2]]);
     await db.query(`DELETE FROM elementix_person_aliases WHERE person_id = ANY($1) OR alias_person_id = ANY($1)`, [[PID, PID2]]);
@@ -328,7 +330,12 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
     // pass then polls that person every couple of minutes for 48 hours out of
     // an allowance the whole organisation shares.
     const LOCKED = '0badf00d-dead-4bee-8fee-000000000002';
+    // A LINK NOW COUNTS AS "PILOT has seen them", so the sentinel has to start
+    // genuinely unseen — including on a lead a previous run left pointing at it.
+    await db.query(`UPDATE leads SET elementix_person_id = NULL WHERE elementix_person_id = $1`, [LOCKED]);
+    await db.query(`UPDATE borrowers SET elementix_person_id = NULL WHERE elementix_person_id = $1`, [LOCKED]);
     await db.query(`DELETE FROM elementix_skip_traces WHERE person_id = $1`, [LOCKED]);
+    await db.query(`DELETE FROM elementix_person_sections WHERE person_id = $1`, [LOCKED]);
     await db.query(`DELETE FROM elementix_persons WHERE person_id = $1`, [LOCKED]);
     r = await call(server, 'POST', `/api/elementix/people/${LOCKED}/lead`, T, {});
     ok(r.status === 409 && /look/i.test(r.body.error),
@@ -348,6 +355,14 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
     ok(r.status === 200, 'attaching a person from a search result works as before');
     r = await call(server, 'POST', `/api/elementix/people/${LOCKED}/profile/build`, T, {});
     ok(r.status === 200, '…and the profile builds once they are attached — the real order of events');
+
+    // A LINK IS PROOF ON ITS OWN. `leads.elementix_person_id` carries no foreign
+    // key, so a link can outlive the header row it points at — and the button
+    // must not dead-end on a record somebody is looking straight at.
+    await db.query(`DELETE FROM elementix_person_sections WHERE person_id = $1`, [LOCKED]);
+    await db.query(`DELETE FROM elementix_persons WHERE person_id = $1`, [LOCKED]);
+    r = await call(server, 'POST', `/api/elementix/people/${LOCKED}/profile/build`, T, {});
+    ok(r.status === 200, 'a person attached to a lead can be read even with no header row of their own');
     await call(server, 'POST', '/api/elementix/link', T, { kind: 'lead', recordId: leadId, personId: PID, replace: true });
 
     // -----------------------------------------------------------------------

@@ -230,11 +230,35 @@ function SectionNotice({ section, onRefresh }) {
   return null;
 }
 
-function OverviewTab({ profile }) {
+function OverviewTab({ profile, onRefresh, busy }) {
   const byState = (profile.summary && profile.summary.byState) || [];
   if (!byState.length) return null;
+  /* WHAT IS READ AND WHAT IS NOT, SAID PLAINLY. Opening a lead reads the
+     overview only — one call per state — so the deep tabs are genuinely empty
+     until somebody asks. Leaving that unsaid is the confident-zero problem one
+     level up: the figures here would look like the whole picture. */
+  const deep = Object.entries(profile.sections || {})
+    .filter(([k, v]) => k !== 'overview' && v && v.status !== 'unavailable');
+  const unread = deep.filter(([, v]) => v.status === 'not_loaded').length;
   return (
     <div>
+      {unread > 0 && deep.length > 0 && (
+        <div style={{
+          border: `1px solid ${LINE}`, borderRadius: 12, padding: '10px 12px', marginBottom: 12,
+          background: '#FCF8F1', color: INK, fontSize: 14, display: 'flex', gap: 10,
+          alignItems: 'center', flexWrap: 'wrap',
+        }}>
+          <span style={{ flex: '1 1 260px' }}>
+            These are the headline figures. Their {unread === deep.length ? '' : 'remaining '}
+            properties, loans, deeds and companies have not been pulled in yet.
+          </span>
+          {onRefresh && (
+            <button className="btn primary btn-sm" disabled={!!busy} onClick={onRefresh}>
+              {busy === 'refresh' ? 'Reading…' : 'Pull in everything'}
+            </button>
+          )}
+        </div>
+      )}
       {byState.map((b) => {
         const f = b.facts;
         return (
@@ -366,8 +390,29 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
 
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 3200); };
 
+  /* OPENING A LEAD SHOWS THE PROFILE, NOT AN EMPTY ONE.
+     A skip trace attaches the person and stores their contact — it does not read
+     their records — so the first time anybody opened that lead this section drew
+     every tab blank and waited to be told to fetch. The owner asked for the
+     profile to BE there.
+     So a person nobody has read yet is read on open, and deliberately only the
+     OVERVIEW: that is ONE call per state and it carries every headline figure —
+     the mortgages, the deeds, the properties, the exposure. The deep tabs are up
+     to forty calls across eight paged sections, out of an allowance the whole
+     organisation shares, and browsing a list of leads must not spend that. They
+     fill on "Refresh data", which is the deliberate press.
+     It cannot loop: the server stamps the person as read whether the build
+     succeeded or failed, so a second open never re-triggers it. */
   const load = () => api.elxFor(kind, recordId)
-    .then((r) => setState({ loading: false, linked: !!r.linked, personId: r.personId, profile: r.profile }))
+    .then((r) => {
+      setState({ loading: false, linked: !!r.linked, personId: r.personId, profile: r.profile });
+      if (r.linked && r.personId && r.profile && r.profile.loaded === false) {
+        return api.elxProfileBuild(r.personId, { sections: ['overview'] })
+          .then((built) => setState((s) => ({ ...s, profile: built.profile })))
+          .catch(() => { /* the lead still opens; Refresh data is right there */ });
+      }
+      return null;
+    })
     .catch((e) => { setErr(e.message); setState((s) => ({ ...s, loading: false })); });
 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [kind, recordId]);
@@ -649,7 +694,7 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
         <SectionNotice section={current} onRefresh={busy ? null : () => refresh(true)} />
 
         {tab === 'overview'
-          ? <OverviewTab profile={p} />
+          ? <OverviewTab profile={p} busy={busy} onRefresh={busy ? null : () => refresh(true)} />
           : current && current.status !== 'unavailable' && (current.rows || []).length
             ? <RowTable section={current} filter={filter} />
             : current && (current.status === 'ok' || current.status === 'partial')
