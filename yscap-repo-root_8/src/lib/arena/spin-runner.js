@@ -837,6 +837,45 @@ async function reviveSpin(spinId) {
   }
 }
 
+/**
+ * PREVIOUS AND FUTURE for the revive fix: the first cut of reviveSpin (live
+ * 2026-08-19, ~15:15–16:30 UTC) deleted a cancelled spin's committed draws
+ * and re-created nothing, so a spin revived in that window sits in
+ * draft/open/locked with ZERO draws and every wheel answers "This spin has no
+ * wheel 1". No other path can produce that state — createSpin commits the
+ * draws in the same transaction it creates the spin — so healing is exact:
+ * find the drawless non-terminal spins, commit fresh seeds. Idempotent (a
+ * healed spin has draws and never matches again), bounded, never throws.
+ */
+async function healDrawlessSpinsOnce() {
+  try {
+    const r = await db.query(
+      `SELECT p.* FROM arena_spins p
+        WHERE p.state IN ('draft','open','locked')
+          AND NOT EXISTS (SELECT 1 FROM arena_draws d WHERE d.spin_id = p.id)
+        LIMIT 50`);
+    for (const spin of r.rows) {
+      const client = await db.getClient();
+      try {
+        await client.query('BEGIN');
+        const merged = { ...(games.defaultsFor(spin.kind) || games.defaultsFor('classic_raffle')), ...(spin.config || {}) };
+        await commitDraws(client, spin, merged, null);
+        await client.query('COMMIT');
+        console.log(`[arena] healed drawless spin ${spin.id} ("${spin.title}") — fresh seeds committed`);
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch (_) { /* gone */ }
+        console.warn(`[arena] could not heal drawless spin ${spin.id}: ${e.message}`);
+      } finally {
+        client.release();
+      }
+    }
+    return r.rows.length;
+  } catch (e) {
+    console.warn(`[arena] drawless-spin heal skipped: ${(e && e.message) || e}`);
+    return 0;
+  }
+}
+
 /** Abandon a spin. The draws stay exactly as they are -- a cancelled spin is
  *  part of the record, not something to erase. */
 async function cancelSpin(spinId, reason) {
@@ -850,7 +889,7 @@ async function cancelSpin(spinId, reason) {
 
 module.exports = {
   setBroadcaster,
-  createSpin, openSpin, lockSpin, reviveSpin, freezeRoster,
+  createSpin, openSpin, lockSpin, reviveSpin, healDrawlessSpinsOnce, freezeRoster,
   startSpin, revealDraw, settleSpin, settleDue,
   pressStop, pressStopInternal, rosterFor, launchDue,
   verify, cancelSpin,
