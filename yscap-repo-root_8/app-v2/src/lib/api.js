@@ -1638,6 +1638,10 @@ export const api = {
   elxDecideAlias:      (personId, aliasId, confirm) => req('POST', `/api/elementix/people/${personId}/aliases/${aliasId}`, { confirm }),
   elxLink:             (b) => req('POST', '/api/elementix/link', b || {}),
   elxFor:              (kind, recordId) => req('GET', `/api/elementix/for/${kind}/${recordId}`),
+  elxBackfill:         () => req('GET', '/api/elementix/backfill'),
+  elxBackfillList:     () => req('POST', '/api/elementix/backfill/list', {}),
+  elxBackfillWork:     (limit) => req('POST', '/api/elementix/backfill/work', { limit }),
+  elxLinkUser:         (b) => req('POST', '/api/elementix/backfill/users/link', b || {}),
 
   // ---- Dashboards (the KPI screen + the build-your-own section) ----
   dashboards:          () => req('GET', '/api/dashboards'),

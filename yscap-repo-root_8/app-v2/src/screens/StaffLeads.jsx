@@ -6,6 +6,7 @@ import { fmtDay } from '../lib/dates.js';
 import { useFlash } from '../components/FlashToast.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { askConfirm } from '../lib/dialog.js';
+import ElementixFinder from '../components/ElementixFinder.jsx';
 import {
   STAGES, STAGE_LABEL, STAGE_PILL, BOARD_STAGES, OPEN_STAGES, SOURCES, PROGRAMS,
   TOOL_LABEL, leadName, initials, money, dueSoon, todayStr,
@@ -42,6 +43,7 @@ export default function StaffLeads() {
   const [sourceF, setSourceF] = useState('');
   const [scope, setScope] = useState('open');     // open | all
   const [addOpen, setAddOpen] = useState(false);
+  const [elxOpen, setElxOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
 
   const load = () => api.staffLeads().then(setRows).catch(e => setErr(e.message));
@@ -101,6 +103,10 @@ export default function StaffLeads() {
           </div>
           <button className="btn btn-line btn-sm" onClick={() => setInviteOpen(true)}
             title="Invite anyone by email to the borrower portal — they're auto-assigned to you and opened as a lead">Invite to portal ✉</button>
+          <button className="btn btn-line btn-sm" onClick={() => setElxOpen((v) => !v)}
+            title="Search Elementix by name and pull somebody in as a lead — with every phone number and email on record. Free if a colleague has already looked them up.">
+            {elxOpen ? 'Close Elementix' : 'Add from Elementix'}
+          </button>
           <button className="btn btn-gold btn-sm" onClick={() => setAddOpen(true)}>+ Add lead</button>
         </div>
       </div>
@@ -108,6 +114,12 @@ export default function StaffLeads() {
       {toast}
 
       <div className="stack">
+        {elxOpen && (
+          <ElementixFinder
+            onAdded={() => { load(); }}
+            onClose={() => setElxOpen(false)}
+          />
+        )}
         <div className="kpi-grid">
           <div className="kpi"><div className="v">{newCount}</div><div className="k">New</div><div className="d">Awaiting first touch</div></div>
           <div className="kpi"><div className="v">{workingCount}</div><div className="k">Working</div><div className="d">Contacted → in progress</div></div>

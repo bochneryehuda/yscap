@@ -50,6 +50,7 @@ import StaffWorkflow from './screens/StaffWorkflow.jsx';
 import StaffApplication from './screens/StaffApplication.jsx';
 import StaffTeam from './screens/StaffTeam.jsx';
 import StaffTpoFirms from './screens/StaffTpoFirms.jsx';
+import StaffElementix from './screens/StaffElementix.jsx';
 import StaffConditionStudio from './screens/StaffConditionStudio.jsx';
 import StaffCompanyPricing from './screens/StaffCompanyPricing.jsx';
 import StaffApprovals from './screens/StaffApprovals.jsx';
@@ -266,6 +267,7 @@ export default function App() {
           <Route path="/internal/app/:id/draws" element={<StaffPrivate><StaffFileDraws /></StaffPrivate>} />
           <Route path="/internal/team" element={<StaffPrivate><StaffTeam /></StaffPrivate>} />
           <Route path="/internal/tpo-firms" element={<StaffPrivate><StaffTpoFirms /></StaffPrivate>} />
+          <Route path="/internal/elementix" element={<StaffPrivate><StaffElementix /></StaffPrivate>} />
           <Route path="/internal/conditions" element={<StaffPrivate><StaffConditionStudio /></StaffPrivate>} />
           <Route path="/internal/pricing" element={<StaffPrivate><StaffCompanyPricing /></StaffPrivate>} />
           {/* Approvals hub — every queue waiting on a decision, in one tabbed section
