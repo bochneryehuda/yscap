@@ -5238,6 +5238,16 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena-plantimes { margin-top: 8px; align-items: end; }
 .arena-plantimes .arena-decide { grid-column: 1 / -1; }
 
+/* The outbox — every arena message, grouped like mail. */
+.arena-outbox { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.arena-outbox-row { display: grid; gap: 2px; width: 100%; text-align: left; border: 1px solid var(--line, #E4DFD3); border-radius: 10px; padding: 10px 12px; background: #FFFFFF; cursor: pointer; color: #141B22; }
+.arena-outbox-row strong { color: #141B22; }
+.arena-outbox-who { list-style: none; margin: 4px 0 0; padding: 6px 12px; display: grid; gap: 3px; }
+.arena-outbox-who li { display: flex; justify-content: space-between; gap: 10px; color: #141B22; }
+.arena-unseen { color: #8A6215; }
+.arena-mon-who { list-style: none; margin: 6px 0 0; padding: 6px 10px; background: #FFFFFF; border: 1px solid var(--line, #E4DFD3); border-radius: 8px; display: grid; gap: 3px; grid-column: 1 / -1; }
+.arena-mon-who li { display: flex; justify-content: space-between; gap: 10px; color: #141B22; }
+
 .arena-kindpick { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
 .arena-chip {
   background: #fff; border: 1.5px solid var(--a-line); color: var(--a-muted);

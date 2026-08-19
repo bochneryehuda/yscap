@@ -50,6 +50,7 @@ export default function ArenaControlRoom({ board, onChanged }) {
 
   const panels = [
     ['monitor', 'Live monitor'],
+    ['quick', 'Quick spin'],
     ['ready', 'Ready to go'],
     ['spin', 'New spin'],
     ['rematch', 'Rematch'],
@@ -57,6 +58,7 @@ export default function ArenaControlRoom({ board, onChanged }) {
     ['sessions', 'Sessions'],
     ['queue', 'Waiting on you'],
     ['prizes', 'Prize list'],
+    ['mail', 'Messages sent'],
     ['settings', 'Settings'],
   ];
 
@@ -101,8 +103,14 @@ export default function ArenaControlRoom({ board, onChanged }) {
           onReload={() => { loadSessions(); onChanged(); }}
         />
       )}
+      {panel === 'quick' && (
+        session
+          ? <QuickSpin session={session} onChanged={onChanged} />
+          : <p className="muted">Start a session first, over in Sessions.</p>
+      )}
       {panel === 'queue' && (session ? <Queue board={board} onChanged={onChanged} /> : <p className="muted">No session running.</p>)}
       {panel === 'prizes' && <PrizeList />}
+      {panel === 'mail' && <ArenaOutbox />}
       {panel === 'settings' && <SettingsPanel />}
     </div>
   );
@@ -376,6 +384,7 @@ function ChallengeDay({ session, onChanged }) {
   const [board, setBoard] = useState(null);
   const [lib, setLib] = useState(null);
   const [busy, setBusy] = useState('');
+  const [editing, setEditing] = useState(null);
 
   const [err, setErr] = useState('');
 
@@ -421,8 +430,13 @@ function ChallengeDay({ session, onChanged }) {
                 <span><strong>{c.title}</strong> — {c.prompt}</span>
                 <span className="arena-decide">
                   <button className="btn ghost small" disabled={!!busy}
+                    onClick={() => setEditing(editing === c.id ? null : c.id)}>Edit</button>
+                  <button className="btn ghost small" disabled={!!busy}
                     onClick={() => change(c.id, { state: 'closed' }, c.id)}>Close it</button>
                 </span>
+                {editing === c.id && (
+                  <ChallengeEdit challenge={c} live onSaved={() => { setEditing(null); load(); }} />
+                )}
               </li>
             ))}
           </ul>
@@ -441,6 +455,8 @@ function ChallengeDay({ session, onChanged }) {
             <em className="muted small">{c.ticketsAwarded} chances · {c.awardMode === 'everyone' ? 'anybody' : `first ${c.slots}`}</em>
             <span className="arena-decide">
               <button className="btn ghost small" disabled={!!busy}
+                onClick={() => setEditing(editing === c.id ? null : c.id)}>Edit</button>
+              <button className="btn ghost small" disabled={!!busy}
                 onClick={async () => {
                   // A live challenge takes over every screen in the building.
                   if (!await askConfirm(`Start "${c.title}" right now? It pops up on everyone's screen the moment you do.`, { confirmLabel: 'Start it now' })) return;
@@ -449,6 +465,9 @@ function ChallengeDay({ session, onChanged }) {
               <button className="btn ghost small" disabled={!!busy}
                 onClick={() => change(c.id, { state: 'skipped' }, c.id)}>Skip</button>
             </span>
+            {editing === c.id && (
+              <ChallengeEdit challenge={c} onSaved={() => { setEditing(null); load(); }} />
+            )}
           </li>
         ))}
         {!upcoming.length && <li className="muted">Nothing scheduled. Load the Mega Spin under “Ready to go”, or add one below.</li>}
@@ -510,6 +529,71 @@ function HandOutChances({ session }) {
         {busy ? 'Working…' : 'Give them'}
       </button>
       {note && <p className="arena-good small">{note}</p>}
+    </div>
+  );
+}
+
+/** Edit a challenge's wording — name, one-line description, and the longer
+ *  instructions — LIVE ones included (owner, 2026-08-19: "even after it's
+ *  live, I should be able to edit the name … description and instructions").
+ *  A live edit lands on everyone's screen the moment it saves. */
+function ChallengeEdit({ challenge, live, onSaved }) {
+  const [title, setTitle] = useState(challenge.title || '');
+  const [prompt, setPrompt] = useState(challenge.prompt || '');
+  const [detail, setDetail] = useState(challenge.detail || '');
+  const [awardMode, setAwardMode] = useState(challenge.awardMode || 'everyone');
+  const [slots, setSlots] = useState(challenge.slots || 1);
+  const [tickets, setTickets] = useState(challenge.ticketsAwarded == null ? 1 : challenge.ticketsAwarded);
+  const [closes, setCloses] = useState(toLocalInput(challenge.closesAt));
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (live && !await askConfirm('This challenge is live — the new wording and rules land on everyone\u2019s screen the moment you save. Save it?', { confirmLabel: 'Save it' })) return;
+    setSaving(true);
+    try {
+      await arena.updateChallenge(challenge.id, {
+        title: title.trim() || null,
+        prompt: prompt.trim() || null,
+        detail: detail.trim() || null,
+        awardMode,
+        slots: awardMode === 'everyone' ? null : (awardMode === 'first' ? 1 : Math.max(1, Math.floor(Number(slots) || 1))),
+        ticketsAwarded: Math.max(0, Math.floor(Number(tickets) || 0)),
+        closesAt: closes ? fromLocalInput(closes) : null,
+      });
+      showMessage('The challenge is updated.', { title: 'Saved', tone: 'info' });
+      onSaved();
+    } catch (e) { showMessage((e && e.message) || 'That did not save.', { tone: 'error' }); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div className="arena-form" style={{ gridColumn: '1 / -1', marginTop: 8 }}>
+      <label>Name<input className="input" value={title} onChange={(e) => setTitle(e.target.value)} /></label>
+      <label>One line — what to do
+        <input className="input" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+      </label>
+      <label style={{ gridColumn: '1 / -1' }}>Instructions (the longer wording under it)
+        <textarea className="input" rows={3} value={detail} onChange={(e) => setDetail(e.target.value)} />
+      </label>
+      <label>Who can win it
+        <select className="input" value={awardMode} onChange={(e) => setAwardMode(e.target.value)}>
+          <option value="everyone">Anybody who does it</option>
+          <option value="first">Only the FIRST one — it closes itself when claimed</option>
+          <option value="first_n">The first few — it closes itself when they are gone</option>
+        </select>
+      </label>
+      {awardMode === 'first_n' && (
+        <label>How many places
+          <input className="input" type="number" min="1" max="20" value={slots} onChange={(e) => setSlots(e.target.value)} />
+        </label>
+      )}
+      <label>Chances it pays
+        <input className="input" type="number" min="0" max="10" value={tickets} onChange={(e) => setTickets(e.target.value)} />
+      </label>
+      <label>Closes on its own at
+        <input className="input" type="datetime-local" value={closes} onChange={(e) => setCloses(e.target.value)} />
+      </label>
+      <button className="btn small" disabled={saving || !title.trim() || !prompt.trim()} onClick={save}>
+        {saving ? 'Saving…' : 'Save the challenge'}
+      </button>
     </div>
   );
 }
@@ -1036,6 +1120,129 @@ function DaySetup({ onReload }) {
         {busy ? 'Setting it up…' : 'Set up the whole day'}
       </button>
       {result && <p className="arena-good small">{result.summary}</p>}
+    </div>
+  );
+}
+
+/** THE MANUAL ONE (owner, live on Elementix Day: "I can just type in stuff
+ *  that should be on the wheel and click the spin button … or put in all the
+ *  names of officers"). One box, one button: type anything one-per-line, or
+ *  fill the box from the team list, and it makes + OPENS a plain wheel spin
+ *  everybody can watch on the stage. Nothing stored beyond the spin itself. */
+function QuickSpin({ session, onChanged }) {
+  const [text, setText] = useState('');
+  const [title, setTitle] = useState('Quick spin');
+  const [busy, setBusy] = useState(false);
+  const [everyone, setEveryone] = useState(null);
+  useEffect(() => {
+    arena.roster().then((d) => setEveryone(d.everyone || [])).catch(() => setEveryone([]));
+  }, []);
+  const fill = (roles) => {
+    const names = (everyone || [])
+      .filter((p) => !roles || roles.includes(p.role))
+      .map((p) => p.full_name);
+    setText(names.join('\n'));
+  };
+  const lines = text.split('\n').map((x) => x.trim()).filter(Boolean);
+  const go = async () => {
+    setBusy(true);
+    try {
+      const made = await arena.createSpin(session.id, {
+        title: title.trim() || 'Quick spin',
+        kind: 'quick_wheel',
+        config: { customList: text, durationMs: 5000 },
+      });
+      const spinId = made && made.spin && made.spin.id;
+      if (spinId) await arena.openSpin(spinId);
+      onChanged();
+      showMessage('It is on the stage — press "Spin the wheel" there when everybody is watching.', { title: 'Ready', tone: 'info' });
+      setText('');
+    } catch (e) { showMessage((e && e.message) || 'That did not work.', { tone: 'error' }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="arena-card">
+      <h3>Quick spin — type it, spin it</h3>
+      <p className="muted small">
+        One thing per line — names, prizes, anything. It goes straight onto a wheel on the stage,
+        where you press the spin button and everybody watches it land. Equal odds, provably fair,
+        nothing else to set up.
+      </p>
+      <div className="arena-group-chips">
+        <button type="button" className="btn ghost small" disabled={!everyone} onClick={() => fill(null)}>Put in the whole team</button>
+        <button type="button" className="btn ghost small" disabled={!everyone} onClick={() => fill(['loan_officer', 'account_executive'])}>All the officers</button>
+        <button type="button" className="btn ghost small" disabled={!everyone} onClick={() => fill(['processor', 'underwriter', 'closer', 'draw_coordinator', 'loan_coordinator', 'account_manager'])}>Back office</button>
+        <button type="button" className="btn ghost small" onClick={() => setText('')}>Clear</button>
+      </div>
+      <div className="arena-form">
+        <label>What this spin is called
+          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
+        </label>
+      </div>
+      <label className="arena-fullfield">On the wheel — one per line
+        <textarea className="input" rows={8} value={text} placeholder={'Moshe\nRivky\nYanky'} onChange={(e) => setText(e.target.value)} />
+      </label>
+      <p className="muted small">{lines.length ? `${lines.length} slice${lines.length === 1 ? '' : 's'} on the wheel.` : 'Nothing on the wheel yet.'}</p>
+      <button className="btn" disabled={busy || lines.length < 2} onClick={go}>
+        {busy ? 'Putting it up…' : 'Put it on the stage'}
+      </button>
+    </div>
+  );
+}
+
+/** THE OUTBOX — every arena message that went out, who got it, who has seen
+ *  it. Grouped like an email account: one line per blast, expandable to the
+ *  recipient list (owner-directed 2026-08-19). */
+function ArenaOutbox() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [openKey, setOpenKey] = useState(null);
+  const load = useCallback(() => {
+    setErr('');
+    arena.outbox().then(setData).catch((e) => setErr((e && e.message) || 'The outbox could not be loaded.'));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  if (err) return <p className="arena-bad small">{err} <button className="btn ghost small" onClick={load}>Try again</button></p>;
+  if (!data) return <p className="muted">Loading…</p>;
+  const blasts = data.blasts || [];
+  return (
+    <div className="arena-card">
+      <h3>Messages sent</h3>
+      <p className="muted small">
+        Every Arena message PILOT has sent — spin openings, deadline alarms, results, challenge alerts —
+        newest first. Open one to see exactly who it went to and who has seen it.
+        <button className="btn ghost small" style={{ marginLeft: 8 }} onClick={load}>Refresh</button>
+      </p>
+      <ul className="arena-outbox">
+        {blasts.map((b) => {
+          const seen = b.recipients.filter((r) => r.readAt).length;
+          return (
+            <li key={b.key}>
+              <button type="button" className="arena-outbox-row" onClick={() => setOpenKey(openKey === b.key ? null : b.key)}>
+                <strong>{b.title}</strong>
+                <span className="muted small">{b.body}</span>
+                <em className="muted small">
+                  {new Date(b.sentAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                  {' · '}{b.recipients.length} {b.recipients.length === 1 ? 'person' : 'people'} · {seen} seen it
+                </em>
+              </button>
+              {openKey === b.key && (
+                <ul className="arena-outbox-who">
+                  {b.recipients.map((r, i) => (
+                    <li key={i}>
+                      <span>{r.name}</span>
+                      <em className={`muted small${r.readAt ? '' : ' arena-unseen'}`}>
+                        {r.readAt ? `seen ${new Date(r.readAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}` : 'not seen yet'}
+                      </em>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+        {!blasts.length && <li className="muted">Nothing sent yet. Messages appear here the moment the Arena sends them.</li>}
+      </ul>
     </div>
   );
 }

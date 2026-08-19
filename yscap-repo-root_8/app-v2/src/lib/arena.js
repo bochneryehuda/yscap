@@ -144,6 +144,7 @@ export const arena = {
   decideFulfilment: (id, status, reason) => api.post(`/api/arena/challenge-entries/${id}/decide`, { status, reason }),
   myTickets: (sessionId) => api.get(`/api/arena/sessions/${sessionId}/my-tickets`),
   monitor: (sessionId) => api.get(`/api/arena/sessions/${sessionId}/monitor`),
+  outbox: () => api.get('/api/arena/notifications'),
   room: (sessionId) => api.get(`/api/arena/sessions/${sessionId}/room`),
   recap: (sessionId, staffId) => api.get(`/api/arena/sessions/${sessionId}/recap${staffId ? `?staff=${encodeURIComponent(staffId)}` : ''}`),
   rematchSuggestion: (sessionId) => api.get(`/api/arena/sessions/${sessionId}/rematch-suggestion`),

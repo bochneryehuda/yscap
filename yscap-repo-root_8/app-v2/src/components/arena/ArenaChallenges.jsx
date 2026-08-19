@@ -316,7 +316,7 @@ function FulfilBox({ challenge, onClose, onDone }) {
         <label className="arena-fullfield">What did you do?
           <textarea
             className="input" rows={3} value={note} maxLength={2000}
-            placeholder="Say what happened and how we can see it."
+            placeholder="What it was — the client, the file, what happened — so we can check it."
             onChange={(e) => setNote(e.target.value)}
           />
         </label>

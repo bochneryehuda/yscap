@@ -299,6 +299,41 @@ async function sessionPeople(sessionId) {
  * to select who should be part of the session… by groups: back office or sales
  * team"). Super-admin only: it lists every colleague's name, role and email.
  */
+/**
+ * THE OUTBOX — every arena message PILOT has sent, who it went to and whether
+ * they have seen it (owner-directed 2026-08-19: "make sure the notifications
+ * are actually firing … a small admin center where I can see the notifications
+ * that have been firing, which messages are sent to whom"). Reads the same
+ * `notifications` rows the bell shows each person, filtered to the arena's own
+ * types, GROUPED like an email outbox: one row per blast (same type + title
+ * within a minute), expandable to every recipient. Super admin only — it lists
+ * colleagues' names and read states.
+ */
+router.get('/notifications', requireSuper, async (req, res) => {
+  const r = await db.query(
+    `SELECT n.id, n.type, n.title, n.body, n.created_at, n.read_at, s.full_name
+       FROM notifications n JOIN staff_users s ON s.id = n.staff_id
+      WHERE n.type LIKE 'arena%'
+      ORDER BY n.created_at DESC
+      LIMIT 600`);
+  // Group into blasts: the fan-out writes one row per person within the same
+  // moment, so (type, title, minute) is the message as the admin thinks of it.
+  const blasts = [];
+  const byKey = new Map();
+  for (const row of r.rows) {
+    const minute = String(row.created_at).slice(0, 16);
+    const key = `${row.type}|${row.title}|${minute}`;
+    let b = byKey.get(key);
+    if (!b) {
+      b = { key, type: row.type, title: row.title, body: row.body, sentAt: row.created_at, recipients: [] };
+      byKey.set(key, b);
+      blasts.push(b);
+    }
+    b.recipients.push({ name: row.full_name, readAt: row.read_at });
+  }
+  res.json({ blasts: blasts.slice(0, 120) });
+});
+
 router.get('/roster', requireSuper, async (req, res) => {
   const roster = await db.query(
     `SELECT id, full_name, email, role, title FROM staff_users
