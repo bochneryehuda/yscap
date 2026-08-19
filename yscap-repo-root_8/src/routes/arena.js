@@ -192,16 +192,29 @@ async function setMembers(sessionId, staffIds, byId) {
 }
 
 router.put('/sessions/:id', requireSuper, async (req, res) => {
-  const { name, subtitle, theme, startsAt, endsAt, staffIds } = req.body || {};
+  const body = req.body || {};
+  const { name, subtitle, theme, startsAt, endsAt, staffIds } = body;
+  // THE STAGE MESSAGE (owner-directed 2026-08-19: "I should be able to edit
+  // any words that are there with instructions and nice stuff"). Free text the
+  // admin writes on the dashboard and everybody reads on the stage, live.
+  // Sent as a KEY: present-and-empty CLEARS it; absent leaves it alone.
+  let notesSql = '';
+  const args = [req.params.id, name || null, subtitle || null, theme || null, startsAt || null, endsAt || null];
+  if ('boardNotes' in body) {
+    const notes = String(body.boardNotes || '').replace(/\u0000/g, '').slice(0, 4000);
+    args.push(JSON.stringify({ boardNotes: notes || null }));
+    notesSql = `, settings = COALESCE(settings, '{}'::jsonb) || $${args.length}::jsonb`;
+  }
   const r = await db.query(
     `UPDATE arena_sessions
         SET name = COALESCE($2, name), subtitle = COALESCE($3, subtitle), theme = COALESCE($4, theme),
-            starts_at = COALESCE($5, starts_at), ends_at = COALESCE($6, ends_at), updated_at = now()
-      WHERE id = $1 RETURNING *`,
-    [req.params.id, name || null, subtitle || null, theme || null, startsAt || null, endsAt || null]);
+            starts_at = COALESCE($5, starts_at), ends_at = COALESCE($6, ends_at), updated_at = now()${notesSql}
+      WHERE id = $1 RETURNING *`, args);
   if (!r.rows[0]) return bad(res, 'That session does not exist.', 404);
   if (Array.isArray(staffIds)) await setMembers(req.params.id, staffIds, req.actor.id);
   await audit(req, 'arena_session_updated', 'arena_session', req.params.id, {});
+  // Everyone's stage refreshes the moment the wording changes.
+  events.publishToStaff('arena:session', { sessionId: req.params.id, state: r.rows[0].state, updated: true });
   res.json({ session: r.rows[0] });
 });
 

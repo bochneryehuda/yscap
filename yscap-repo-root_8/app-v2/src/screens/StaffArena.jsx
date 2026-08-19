@@ -261,6 +261,9 @@ export default function StaffArena() {
           </div>
           <h1 className="arena-title">{session.name}</h1>
           {session.subtitle && <p className="arena-sub">{session.subtitle}</p>}
+          {!!(session.settings && session.settings.boardNotes) && (
+            <p className="arena-stage-notes">{session.settings.boardNotes}</p>
+          )}
           {isSuper && !tv && tab !== 'control' && (
             <p style={{ margin: '6px 0 0' }}>
               <button className="btn small" onClick={() => setTabParam('control')}>Open the control room</button>
