@@ -873,7 +873,31 @@ function validatedScenario(scenario) {
 // a scenario object is a request body's raw material and can pick up whatever a caller put on it, and
 // an allowlist is the only shape that cannot start capturing something new by accident. Nothing here
 // identifies a borrower — these are deal shape facts.
+// §2.120 WIDENING — MEASURED, not guessed. A capture exists so a past run can be re-read, and the only
+// way to tell WHICH scenario a stored payload answered is to rebuild the request from the facts the
+// capture kept. Fourteen facts below were REACHING THE VENDOR REQUEST AND NOT BEING RECORDED, so on the
+// real 305-scenario battery 277 distinct requests collapsed onto 244 recordable keys and SIX of those
+// keys hid more than one real request (one hid fifteen) — meaning a replay could not say which vendor
+// answer belonged to which scenario, for roughly a ninth of the battery. The set is derived by
+// PERTURBATION in `scripts/test-lt-ppe-capture-key-complete.js`, which fails the moment a scenario fact
+// starts reaching the request without being recorded here — so this list is checked against the
+// builder rather than remembered. Still a NAMED SUBSET and still an allowlist: every entry is a DEAL
+// SHAPE fact, and nothing here identifies a borrower.
 const CAPTURE_SCENARIO_KEYS = Object.freeze([
+  '_label', '_group', 'purpose', 'state', 'zip', 'county', 'fico', 'loan', 'value', 'dscr',
+  'term', 'prepayTerm', 'units', 'propertyType', 'occupancy', 'citizenship', 'loanType',
+  // measured 2026-08-19 as reaching the request:
+  'city', 'countyFps', 'cashoutAmount', 'prepayMonths', 'prepayStructure', 'io', 'escrowWaive',
+  'nonWarrantable', 'rentalTerm', 'rural_property', 'short_term_rental',
+  'first_time_investor', 'first_time_homebuyer', 'foreign_national',
+  // deal-shape facts the battery carries whose effect this base could not isolate; recorded so a
+  // capture is never silently missing one, and so the perturbation guard has something to check.
+  'borrowerType', 'declining_market', 'renovation',
+]);
+// The allowlist as it stood BEFORE the §2.120 widening. Exported for ONE purpose: so a reader of a
+// capture directory can tell "this capture predates the widening" from "this scenario was never
+// captured", which are completely different answers. It is never used to WRITE a capture.
+const CAPTURE_SCENARIO_KEYS_PRE_2120 = Object.freeze([
   '_label', '_group', 'purpose', 'state', 'zip', 'county', 'fico', 'loan', 'value', 'dscr',
   'term', 'prepayTerm', 'units', 'propertyType', 'occupancy', 'citizenship', 'loanType',
 ]);
@@ -1775,7 +1799,7 @@ module.exports = {
   // `num` and `magnitude` are exported here for ONE reason: §2.117 split them apart, and the suite that
   // proves the split has to drive the REAL functions. Comparing against a copy of the new logic written
   // inside the test would prove only that the test agrees with itself.
-  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, num, magnitude, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, foundationReadiness, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery,
+  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, num, magnitude, captureScenarioMeta, CAPTURE_SCENARIO_KEYS, CAPTURE_SCENARIO_KEYS_PRE_2120, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, foundationReadiness, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery,
     renewalPlan, mergeRefreshed, sessionFromTokenBody, refreshSession, authDiagnostics, resetTokenState, reauthenticate, errText, classifyUpstreamError, fetchPpeUserId, invalidatePpeUser,
     refreshBackoffMs, expireRefreshBackoff, REFRESH_GRANT_BACKOFF_MS, REFRESH_GRANT_BACKOFF_MAX_MS },
 };

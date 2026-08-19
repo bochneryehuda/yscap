@@ -7874,3 +7874,116 @@ suites that caught them are the ones already in `npm test`.
 
 183/183 suites, 34 database-backed. All seven gates green — `check-lt-export-reachability` included,
 for the first time in this workstream.
+
+---
+
+## §2.120 — the capture had no reader, and it was not recording enough to have one
+
+### The state before
+
+Every paid agreement run writes its raw Lender Price payloads to disk — the owner's own instruction,
+*"save all the data that is coming back, compress the data somewhere in the logs"*. It works: measured
+across the runs on this container, **335 MB of vendor JSON compressed to 8.5 MB**, price trees and
+refusal trees alike, content-addressed and indexed.
+
+**Nothing ever read it back.** A grep for `replay` across `src/longterm/ppe/*.js`,
+`src/longterm/lenderprice/*.js` and `scripts/test-lt-lp-*.js` returned no output. So the evidence
+behind §2.111, §2.113 and §2.114 existed only as numbers quoted in this document, a comparator fixed
+today could not be re-run against the answers Lender Price gave yesterday, and the whole archive died
+with the container that held it. A write-only capture is a cost with no return.
+
+### The reader — `src/longterm/ppe/lp-replay.js`
+
+`buildReplayLpLeg({ client, dir })` returns the SAME `async (scenario) => { full, disqualified }` the
+live leg returns, built out of a capture directory. So `runRatesheetAgreement` re-runs over a past run
+for nothing, and `--replay <dir>` on the paid CLI needs no login at all. Four rules, each from a way
+this goes wrong:
+
+1. **Replay through the LIVE parsers, never a stored result.** What is on disk is the raw vendor
+   envelope; it is handed to the caller's own `parseFull` / `parseDisqualified`. Replaying a stored
+   PARSED answer proves what the parser did on the day of capture and then agrees with itself forever
+   — the §2.107 lossy-replay mistake.
+2. **A scenario with no capture THROWS.** An empty ladder reads as "Lender Price offers nothing", which
+   is a verdict; inventing one out of a missing file is the most expensive thing this module could do.
+3. **A missing refusal tree is `ready:false`, not an empty one** — the same shape a live disqualify
+   timeout produces, which the harness already reads as "we never asked" (§2.147). An empty READY tree
+   would silently turn every such scenario into a both-priced comparison.
+4. **The join key is the REQUEST, not the label.** 32 of 305 battery scenarios build a byte-identical
+   request (§2.95), and a label is editable text.
+
+### The finding the fifth rule came from — and it is a defect in the CAPTURE, not the reader
+
+The obvious join key is the one already on every captured price row: `meta.searchKey`, the client's own
+request identity. **It cannot be used, and that was measured rather than reasoned:** the live body
+carries the LIVE foundation (company id, live default search, live special-mortgage-option ids) that a
+free offline replay does not have, so a rebuilt body hashes differently — **0 of 12 stored searchKeys
+reproduced** across the three real capture directories.
+
+So the key has to be rebuilt from the facts the capture records beside each payload
+(`client._internals.captureScenarioMeta`, a deliberate allowlist). Which gave that allowlist a
+correctness duty nobody had stated: **it must cover every scenario fact that reaches the request.**
+It did not. Measured over the real 305-scenario battery:
+
+| | before | after |
+|---|---|---|
+| distinct real requests | 277 | 277 |
+| distinct **recordable** keys | 244 | **277** |
+| recordable keys hiding more than one real request | **6** (one covering 15 scenarios) | **0** |
+
+Fourteen facts were reaching Lender Price and not being written down: `city`, `countyFps`,
+`cashoutAmount`, `prepayMonths`, `prepayStructure`, `io`, `escrowWaive`, `nonWarrantable`, `rentalTerm`,
+`rural_property`, `short_term_rental`, `first_time_investor`, `first_time_homebuyer`,
+`foreign_national`. For roughly a ninth of the battery the capture could not say which loan its own
+stored answer was about.
+
+`scripts/test-lt-ppe-capture-key-complete.js` is the guard, and it **derives** the set by perturbing
+every battery fact against thirteen different bases rather than remembering a list — a hand-kept list
+going stale is exactly how the fourteen got there. It is deliberately one-directional: perturbation can
+only prove that a fact reaches the request, so an allowlist entry it cannot exercise is REPORTED, never
+failed (an over-wide allowlist costs bytes; a narrow one loses evidence).
+
+**Rule 5, therefore: the vendor's `searchKey` is a COLLISION DETECTOR, not the key.** Each replay key
+carries the set of stored searchKeys filed under it; a key holding more than one means two different
+real requests share one projection, and the scenario is REFUSED by name rather than answered with an
+arbitrary one of the two.
+
+### What the widening costs, stated plainly
+
+A capture written **before** this change cannot be matched to a live scenario — its rows do not record
+the facts the live request names. Measured on all three real capture directories: their own stored rows
+still resolve **8/8, 2/2 and 8/8**, while the live battery scenarios of the very same labels resolve
+**0/8, 0/2 and 0/8**.
+
+A fallback that re-keyed on the old narrow projection was built in outline and **refused**: two
+different live scenarios can collapse onto one narrow key (the 6 keys above), so it would hand one
+loan's vendor answer to another, and it could only be made safe by knowing the whole scenario set in
+advance. Answering with the wrong evidence is the thing this module exists to prevent. So an old
+capture is **recognised and reported**, not rescued — `looksPreWidening` says so in the coverage
+description and in the error a run actually sees, because *"this capture cannot be matched to a live
+scenario"* and *"this scenario was never captured"* are different sentences and a bare zero is neither.
+
+### The bound on what this can prove today
+
+Every scenario in every capture on disk is one **our own sheet declines**, so no capture here can yet
+produce a both-priced comparison. The replay is the mechanism; the priced evidence is a later paid run,
+now selectable for free by §2.115's priced probe. Said out loud so the door is not mistaken for the
+answer.
+
+### Proven
+
+- `scripts/test-lt-ppe-lp-replay.js` — 69 assertions against a **real capture committed as a fixture**:
+  the two price payloads are UNTOUCHED vendor bytes (re-hashed to their own filenames in the test), and
+  the refusal tree is real vendor structure pruned to ≤2 childs/≤2 leafs per node, naming in its own
+  index row the 173,632,512 raw bytes it stands in for. 11 mutations, each verified to have APPLIED
+  before its result was believed.
+- `scripts/test-lt-ppe-capture-key-complete.js` — the derived completeness guard, 11 assertions. 4 mutations.
+- Two mutations initially **crashed** the suite (a crash prints a short stack and exits, which reads
+  exactly like a pass). The suite is now crash-tolerant — an unexpected throw becomes named failures —
+  and both mutations were re-run and bite properly. One further mutation (`M9`, keying on the full
+  scenario) is recorded as **behaviourally equivalent after the widening** rather than dressed up as a
+  stronger result than it is.
+- End to end: `node scripts/test-lt-lp-agreement-run.js --replay scripts/fixtures/lp-replay --scenarios <its own rows>`
+  runs the full agreement harness over real captured vendor answers, for free, with no login — and
+  correctly reports 1 scorable of 2 and refuses the eligibility verdict on the scenario whose refusal
+  tree was never captured.
+- 185/185 suites, 34 database-backed. All seven gates green.

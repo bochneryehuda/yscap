@@ -16,7 +16,7 @@
  * the environment, this runs the whole battery in one command:
  *
  *   node scripts/test-lt-lp-agreement-run.js --sheet <sheet.json> [--scenarios <scenarios.json>] \
- *        [--filter-investor DHVN] [--no-disqualify] [--out <report.json>]
+ *        [--filter-investor DHVN] [--no-disqualify] [--replay <dir>] [--out <report.json>]
  *
  *   --sheet       the sheet-under-test (a rateSheetToProgram INPUT, i.e. a ratesheet object). Or set
  *                 LT_SHEET_UNDER_TEST=<path>. This is your INDEPENDENT ANALYSIS candidate — never
@@ -25,6 +25,11 @@
  *                 battery (agreement-scenarios.buildAgreementScenarios) is used — every LLPA angle.
  *   --filter-*    narrow Lender Price to one program/investor/lender/product (the sheet's investor).
  *   --no-disqualify   skip the disqualify poll (rungs-only; faster, but does not check ineligibility).
+ *   --replay <dir>    REPLAY a past run from its own capture directory instead of calling Lender Price
+ *                     (§2.120). Costs nothing, needs no login, and goes through the LIVE parsers so a
+ *                     fix is provable against the vendor answers that run actually received. Refuses a
+ *                     capture that cannot answer for every scenario unless --replay-partial is given.
+ *   --replay-partial  with --replay, run only the scenarios the capture covers, and say so.
  *   --priced-probe N  narrow the run to N scenarios OUR OWN sheet prices (free, offline pre-pass),
  *                     spread round-robin across the battery's groups. Measures the PRICED side only.
  *   --probe-out F     write the selected probe scenarios to F (a --scenarios file for a later replay).
@@ -40,6 +45,7 @@ require('../src/config'); // load a bundled .env (LP_USERNAME/LP_PASSWORD/LP_CLI
 const client = require('../src/longterm/lenderprice/client');
 const legs = require('../src/longterm/ppe/lp-agreement-legs');
 const { runRatesheetAgreement } = require('../src/longterm/ppe/ratesheet-agreement');
+const { buildReplayLpLeg, replayCoverage, describeCoverage, requestKey } = require('../src/longterm/ppe/lp-replay');
 const { rateSheetToProgram } = require('../src/longterm/ppe/ratesheet');
 const { gridToRateSheet } = require('../src/longterm/ppe/deephaven-grid');
 const { buildDeephavenGrid } = require('../src/longterm/ppe/deephaven-dscr-sheet');
@@ -67,11 +73,21 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
 
 (async () => {
   // 1) readiness — the honest blocker. Without the login there is nothing to compare against.
-  const r = legs.readiness(client, process.env);
-  console.log(`Lender Price login: ${r.configured ? 'present' : 'MISSING'}`);
-  if (!r.configured) die(2, `\n${r.message}\n\nThis is the ONLY thing blocking the live agreement run. `
-    + 'The whole harness (comparators + orchestrator + adapters) is built and unit-tested offline; '
-    + 'it runs the moment those three values are set.');
+  //
+  // …UNLESS this is a REPLAY (§2.120). A replay reads a past run's own captured vendor payloads off
+  // disk and spends nothing, so demanding a live login would refuse the one mode that exists precisely
+  // for when the login is not available (or when the answer is already paid for). The replay leg is
+  // structurally unable to reach the network — see `ppe/lp-replay.js`.
+  const replayDir = arg('--replay');
+  if (!replayDir) {
+    const r = legs.readiness(client, process.env);
+    console.log(`Lender Price login: ${r.configured ? 'present' : 'MISSING'}`);
+    if (!r.configured) die(2, `\n${r.message}\n\nThis is the ONLY thing blocking the live agreement run. `
+      + 'The whole harness (comparators + orchestrator + adapters) is built and unit-tested offline; '
+      + 'it runs the moment those three values are set.');
+  } else {
+    console.log(`Lender Price login: NOT NEEDED — replaying ${replayDir} (no paid call will be made)`);
+  }
 
   // 2) the sheet-under-test → our program. Default: the built-in, LP-validated Deephaven DSCR sheet
   // (deephaven-dscr-sheet.js). Override with --sheet <path> to a rateSheetToProgram input JSON.
@@ -179,7 +195,41 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
     // either way (§2.110 — "the matrix says allowed when it knows it could not tell").
     onUnresolvedPpp: 'flag',
   });
-  const lp = legs.buildLpLeg(client, { withDisqualify: !flag('--no-disqualify') });
+  // THE LENDER PRICE LEG — live, or REPLAYED from a past run's own capture (§2.120).
+  //
+  // Every paid run writes the raw vendor payloads to disk (`lenderprice/capture.js`; measured, 335 MB
+  // of vendor JSON → 8.5 MB), and until §2.120 nothing ever read them back — so the evidence behind a
+  // finding lived only as a number quoted in a document, and died with the container. `--replay <dir>`
+  // rebuilds the SAME `{ full, disqualified }` leg out of that directory, through the LIVE parsers, so
+  // a fix to the crosswalk, the reconciler or the report is provable against the answers Lender Price
+  // actually gave — for nothing, as many times as you like.
+  let lp;
+  if (replayDir) {
+    const cov = replayCoverage({ dir: replayDir, scenarios });
+    console.log('\n--- replay coverage (free, offline: reading a past run) ---');
+    for (const line of describeCoverage(cov)) console.log(`  ${line}`);
+    // A replay that quietly measures a fraction of the battery and reports on the fraction as though it
+    // were the whole is the §2.110 defect in another costume. So a partial capture is REFUSED unless the
+    // caller says out loud that a partial run is what they want.
+    if (!cov.complete && !flag('--replay-partial')) {
+      die(9, '\nThis capture cannot answer for every scenario in the run.\n'
+        + `${describeCoverage(cov).map((l) => `  ${l}`).join('\n')}\n\n`
+        + 'Narrow the run (--scenarios / --priced-probe), or pass --replay-partial to measure only what\n'
+        + 'the capture covers — the report will then be about those scenarios and no others.');
+    }
+    if (!cov.complete) {
+      scenarios = scenarios.filter((sc) => {
+        try { return !!requestKey(sc); } catch (_) { return false; }
+      });
+      const answerable = new Set(cov.missingPrice.concat(cov.ambiguousScenarios, cov.unbuildable));
+      scenarios = scenarios.filter((sc, i) => !answerable.has((sc && sc._label) || `#${i}`));
+      console.log(`  RUNNING PARTIAL: ${scenarios.length} scenario(s) this capture can answer for. The rest are`
+        + ' NOT in this run and the report is about these scenarios only.');
+    }
+    lp = buildReplayLpLeg({ client, dir: replayDir, withDisqualify: !flag('--no-disqualify') });
+  } else {
+    lp = legs.buildLpLeg(client, { withDisqualify: !flag('--no-disqualify') });
+  }
 
   // ---- THE PRICED PROBE: ask about loans our own sheet is willing to QUOTE (§2.115) ---------------
   // Every paid run to date has reported `agreedPriced 0`. That is not the comparison failing: measured
