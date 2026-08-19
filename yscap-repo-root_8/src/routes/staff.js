@@ -16825,11 +16825,38 @@ router.post('/leads/:id/activities', async (req, res) => {
     // A logged activity may carry its own timestamp (e.g. "I called yesterday").
     let occurred = null;
     if (b.occurredAt && !Number.isNaN(Date.parse(b.occurredAt))) occurred = new Date(b.occurredAt).toISOString();
+    // A call/text may name WHICH of the lead's numbers was used (the phone
+    // picker — the lead's own numbers plus everything the Elementix unlock
+    // holds) and carry the officer's verdict on it: markWorking true/false
+    // and/or rightPerson true — the owner's rule that even an unanswered call
+    // can prove "this number works and reaches the right person". Membership
+    // and the mark upsert are the ONE definition in lib/elementix/lead-phones
+    // (this route may not read the stored contact itself — CRM-plane rule), so
+    // a junk number can't mint a mark row and never blocks a plain log: the
+    // number is only checked when one was actually sent.
+    let phoneMeta = null;
+    if (b.phone && (type === 'call' || type === 'sms')) {
+      const leadPhones = require('../lib/elementix/lead-phones');
+      const v = await leadPhones.validateLeadPhone(req.params.id, b.phone);
+      if (!v.ok) return res.status(400).json({ error: "That number is not one of this lead's phone numbers." });
+      phoneMeta = { phone_key: v.key, phone_display: v.display };
+      const markStatus = b.markWorking === true ? 'working' : b.markWorking === false ? 'not_working' : undefined;
+      if (markStatus !== undefined || b.rightPerson === true) {
+        await leadPhones.markLeadPhone({
+          leadId: req.params.id, phone: v.key, status: markStatus,
+          rightPerson: b.rightPerson === true ? true : undefined,
+          staffId: req.actor.id, recordActivity: false,   // the call row itself is the record
+        });
+        if (markStatus !== undefined) phoneMeta.mark_status = markStatus;
+        if (b.rightPerson === true) phoneMeta.right_person = true;
+      }
+    }
     const ins = await db.query(
-      `INSERT INTO lead_activities (lead_id, staff_id, activity_type, direction, subject, body, occurred_at)
-       VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::timestamptz, now()))
-       RETURNING id, activity_type, direction, subject, body, occurred_at, created_at`,
-      [req.params.id, req.actor.id, type, direction, subject || null, body.slice(0, 6000) || null, occurred]);
+      `INSERT INTO lead_activities (lead_id, staff_id, activity_type, direction, subject, body, occurred_at, meta)
+       VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::timestamptz, now()),$8::jsonb)
+       RETURNING id, activity_type, direction, subject, body, occurred_at, meta, created_at`,
+      [req.params.id, req.actor.id, type, direction, subject || null, body.slice(0, 6000) || null, occurred,
+        phoneMeta ? JSON.stringify(phoneMeta) : null]);
     // Logging real contact nudges a brand-new lead out of "new" and re-sorts it.
     await db.query(
       `UPDATE leads SET last_activity_at=now(), updated_at=now(),
