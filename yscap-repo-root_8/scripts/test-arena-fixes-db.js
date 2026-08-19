@@ -258,6 +258,38 @@ const eq = (a, b, m) => ok(String(a) === String(b), `${m} (got ${JSON.stringify(
       eq(two.parts.filter((p) => p.created).length, 0, 'and adds nothing');
     }
 
+    // ---- G. A CANCELLED SPIN COMES BACK AND ACTUALLY SPINS -----------------
+    // The 2026-08-19 post-merge audit's find: reviveSpin deleted the wheels'
+    // committed seeds and nothing re-created them, so a revived spin answered
+    // "This spin has no wheel 1" forever. The revive must re-commit fresh
+    // seeds — proven here by actually TURNING the wheel afterwards.
+    {
+      const sessId = await mkSession('revive proves the wheel turns', 'live');
+      const spin = await runner.createSpin({
+        sessionId: sessId, title: 'revive-me', kind: 'quick_wheel',
+        config: { customList: 'One\nTwo\nThree' },
+      });
+      await runner.cancelSpin(spin.id, 'mis-click');
+      const revived = await runner.reviveSpin(spin.id);
+      eq(revived.state, 'draft', 'a cancelled spin comes back as a draft');
+      const fresh = await db.query(
+        `SELECT state, commit_hash FROM arena_draws WHERE spin_id = $1 ORDER BY seq`, [spin.id]);
+      ok(fresh.rows.length >= 1 && fresh.rows.every((d) => d.state === 'committed' && d.commit_hash),
+        'with a FRESH committed seed on every wheel');
+      await runner.openSpin(spin.id);
+      await runner.lockSpin(spin.id);
+      const started = await runner.startSpin(spin.id, 1, 'revive-proof');
+      eq(started.state, 'spinning', 'and the wheel actually turns');
+      // Pin the guard directly: a cancelled spin with a REVEALED wheel is
+      // history and must refuse to come back (no timing dependence — the
+      // reveal is stamped in SQL rather than waited for).
+      await db.query(`UPDATE arena_draws SET state = 'revealed', revealed_at = now() WHERE spin_id = $1`, [spin.id]);
+      await db.query(`UPDATE arena_spins SET state = 'cancelled' WHERE id = $1`, [spin.id]);
+      let refusedRevealed = false;
+      try { await runner.reviveSpin(spin.id); } catch (e2) { refusedRevealed = /already ran/.test(e2.message); }
+      ok(refusedRevealed, 'a spin whose wheel has REVEALED can never be brought back');
+    }
+
     console.log(`arena fixes (db): ${pass} passed, ${fail} failed`);
     process.exitCode = fail ? 1 : 0;
   } catch (e) {

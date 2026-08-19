@@ -236,7 +236,11 @@ router.get('/challenges/library', async (req, res) => {
 /** What is live, what is next, and where I stand. */
 router.get('/sessions/:id/challenges', async (req, res) => {
   res.json(await challenges.boardFor(req.params.id, req.actor.id, {
-    isSuperAdmin: settings.isSuperAdmin(req.actor),
+    // runsArena, not the bare role: a named HOST decides fulfilments, so they
+    // must SEE the note and the picture flag on each one (2026-08-19 audit —
+    // the role-only flag stripped entries to name+status for hosts while the
+    // screen still showed them the Approve buttons).
+    isSuperAdmin: await settings.runsArena(req.actor),
   }));
 });
 

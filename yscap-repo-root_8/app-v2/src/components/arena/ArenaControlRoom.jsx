@@ -1748,7 +1748,7 @@ function SettingsPanel() {
         <Toggle label="Joke slices on the prize wheel (Elementix calls)" v={s.settings.jokePrizes} on={(v) => set('jokePrizes', v)} />
         <Toggle label="Big-screen (TV) mode available" v={s.settings.tvModeEnabled} on={(v) => set('tvModeEnabled', v)} />
       </div>
-      <HostsPicker hosts={s.settings.hosts || []} onChange={(ids) => set('hosts', ids)} />
+      {s.canEditHosts !== false && <HostsPicker hosts={s.settings.hosts || []} onChange={(ids) => set('hosts', ids)} />}
       <button className="btn" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save settings'}</button>
       <p className="muted small">
         Turning the whole Arena on and off is on the Settings screen, not here — so it stays reachable
