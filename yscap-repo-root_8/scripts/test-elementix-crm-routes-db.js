@@ -255,6 +255,21 @@ const PID2 = '77777777-7777-4777-8777-777777777777';
     r = await call(server, 'GET', '/api/elementix/for/borrower/' + leadId, T);
     ok(r.status === 404, 'a lead id is not a borrower id');
 
+    /* THE THROTTLE IS KEYED ON THE PERSON, AND IT FAILS OPEN WITH NO KEY.
+       `keyedRateLimit` lets a request through when its key resolves to nothing —
+       correct, because refusing a request it cannot identify would be worse —
+       which means the whole per-officer limit disappears the day somebody mounts
+       it above `requireAuth`, silently, with every behavioural test still green.
+       The order is the invariant, so the order is what is asserted. */
+    {
+      const src = require('fs').readFileSync(
+        require('path').join(__dirname, '../src/routes/elementix-crm.js'), 'utf8');
+      const auth = src.indexOf('router.use(requireAuth');
+      const limit = src.indexOf('router.use(keyedRateLimit');
+      ok(auth > -1 && limit > -1 && auth < limit,
+        'the per-officer throttle is mounted AFTER requireAuth — without an actor it would not throttle at all');
+    }
+
     // -----------------------------------------------------------------------
     console.log('\n7. A record belongs to somebody, and it is not everybody');
     // -----------------------------------------------------------------------
