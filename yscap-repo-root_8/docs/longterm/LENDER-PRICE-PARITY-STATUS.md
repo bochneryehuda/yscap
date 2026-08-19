@@ -8408,3 +8408,67 @@ the next item; nothing in the findings ledger or the parity-cell series recorded
 was a measurement of our engine.
 
 **188/188 LT PPE suites, 34 database-backed. All seven gates green.**
+
+---
+
+### §2.123a — the control that was supposed to feed the findings ledger has never been able to run
+
+**Measured while proving §2.123, and it is the half that fixing the door does not fix.**
+`LtShadowCompare` is the only surface anywhere that can put a difference on the pricing-engine
+board — its own header says so, and says why it exists: *"the findings ledger and the parity-cell
+series had NO automatic producer … an empty board was therefore indistinguishable from a clean
+one, which is the worst state a measurement surface can be in — it reports success by having never
+run."*
+
+It reused the pricing-transparency form's body, and that form is ENGINE FACTS: its own field hints
+read "milli-% (72500 = 72.5%)" and "milli (1200 = 1.20)". `/quote` posts what it is given to Lender
+Price. Measured against Lender Price's own validator: that body is refused for `location_required`
+with no ZIP, and — with a ZIP added, which is the best a person could do on that form — refused
+again for `invalid_occupancy` ("investment" is not one of its two words), and a milli `dscr` is
+refused for `out_of_range`. In shadow mode Lender Price is called FIRST and is authoritative, so
+**every press of that control has failed at the vendor and nothing has ever been compared.** The
+component built to close "an empty board reads as a clean one" was itself empty for that reason.
+
+**Why one form could never have served both doors.** The header argued against a second form on the
+grounds that two forms drift and the deal broken down must be the deal measured. That argument
+still holds and nothing here weakens it. What was wrong was the premise: `/breakdown` takes engine
+facts and `/quote` takes a Lender Price scenario, and no object is both (§2.123, measured). Lender
+Price prices from the property's VALUE and its LOCATION — figures the engine never asks for,
+because its rules read derived ratios — and there is no way to invent them from facts.
+
+**The fix.** The control carries the Lender Price fields it needs (value, loan, FICO, DSCR as a
+ratio, ZIP, purpose). The figures whose CONCEPT is shared are PRE-FILLED from the transparency form,
+so the deal measured is still the deal broken down and nobody re-types it. `ltv` and `dscr` are
+deliberately NOT carried across: they are milli on that form and would land as a nonsense ratio —
+the exact class of mistake this whole item is about. A box somebody has typed is never overwritten.
+
+**Three things about HOW it is built, each of which is a guarantee rather than a preference.**
+
+* **The pre-fill is a DERIVATION, not an effect.** This module deliberately holds no effect,
+  interval or timer, and guard S10 enforces that: with none, *"one press = one live Lender Price
+  call"* is a property of the module's SHAPE rather than something a reader must verify by following
+  what each effect does. Syncing the pre-fill into state would have been an effect. It is computed
+  on every render instead. The first cut used a `useEffect` and S10 caught it.
+* **The server is the authority on the shape, not this file.** `missingLpFields` reports which boxes
+  ON THIS CONTROL are empty, so nobody spends a press to be told a box is blank. It is not a second
+  copy of `validateScenario` — anything it lets through is still judged by Lender Price's own
+  validator at the door, and that refusal is what the screen shows.
+* **Numbers are sent as numbers.** A numeric string is not a number to a validator that checks
+  ranges.
+
+**What can and cannot be said about what is already in the ledger.** Every finding row and every
+parity cell produced through `/quote` before the §2.123 fix was measured with our leg declining
+everything, so none of them is a measurement of our engine. That population is expected to be very
+small — this control is the only automatic producer and it has never worked, so anything there
+arrived from a hand-run request. **That expectation is NOT a measurement**: it cannot be confirmed
+from here, only from the live ledger, and a row recorded before the fix carries no stamp saying so.
+A human should count `lt_ppe_finding` and the parity-cell series and discard anything predating
+`f976d6f3` rather than treat it as a comparison.
+
+**Six mutations of the control were each proven to fail the guard suite**: sending the
+transparency form's body again (2 assertions — the original defect), sending numbers as strings (2),
+carrying the milli ratios through the pre-fill (1), letting the pre-fill overwrite a typed box (1),
+dropping the missing-fields refusal (1), and re-introducing an effect (5, S10 among them).
+
+**188/188 LT PPE suites, 34 database-backed. All seven gates green.** (No new suite — §2.123a
+extends `test-lt-ppe-shadow-reachable.mjs`, which grew 56 assertions to 65.)

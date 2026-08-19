@@ -87,13 +87,14 @@ import React from 'react';
 import { renderToString } from 'react-dom/server';
 import LtShadowCompare, {
   ShadowCompareView, shadowOutcome, quoteRequest, skippedReason,
+  missingLpFields, prefillFromFacts, LP_FIELDS,
   ladderDifferences, deepDifferences, heldBack, COST_NOTICE, NEEDS_SHEET,
 } from ${JSON.stringify(SRC)};
 globalThis.__React = React;
 globalThis.__renderToString = renderToString;
 globalThis.__Panel = LtShadowCompare;
 globalThis.__View = ShadowCompareView;
-globalThis.__pure = { shadowOutcome, quoteRequest, skippedReason, ladderDifferences, deepDifferences, heldBack, COST_NOTICE, NEEDS_SHEET };
+globalThis.__pure = { shadowOutcome, quoteRequest, skippedReason, missingLpFields, prefillFromFacts, LP_FIELDS, ladderDifferences, deepDifferences, heldBack, COST_NOTICE, NEEDS_SHEET };
 `;
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lt-shadow-reach-'));
@@ -131,6 +132,7 @@ const Panel = globalThis.__Panel;
 const View = globalThis.__View;
 const {
   shadowOutcome, quoteRequest, skippedReason, ladderDifferences, deepDifferences, heldBack,
+  missingLpFields, prefillFromFacts, LP_FIELDS,
   COST_NOTICE, NEEDS_SHEET,
 } = globalThis.__pure;
 
@@ -190,7 +192,13 @@ const render = (el) => { try { return renderToString(el); } catch (e) { return `
 
 // ---- 3. a live vendor call is never spent to learn nothing --------------------------------------
 {
-  const refused = quoteRequest({ scenario: { fico: 720 } });
+  // A COMPLETE LENDER PRICE SCENARIO, and that shape is now the whole point (§2.123). This control
+  // used to send the transparency form's body — ENGINE FACTS — to a door that posts what it is given
+  // to Lender Price, so every press died at the vendor's own validator and the findings ledger this
+  // component exists to feed received nothing.
+  const LP_OK = { value: 500000, loan: 350000, fico: 720, dscr: 1.25, zip: '11211', purpose: 'Purchase' };
+
+  const refused = quoteRequest({ scenario: { fico: 720 } }, LP_OK);
   ok(refused.ok === false && refused.refusal === NEEDS_SHEET,
     'S12 with no rate-sheet version the call is REFUSED before it is made — /quote would answer with a '
     + 'live Lender Price call and `shadow: null`, spending a vendor call whose whole result is '
@@ -198,11 +206,45 @@ const render = (el) => { try { return renderToString(el); } catch (e) { return `
   ok(/vendor call spent to learn nothing/.test(NEEDS_SHEET) && /rate-sheet version/.test(NEEDS_SHEET),
     'S13 …and the refusal says what to do about it, not just that it was refused');
 
-  const sent = quoteRequest({ scenario: { fico: 720 }, investor: 'DH', rateSheetVersionId: 'v9', rate: 7.5, source: 'lp' });
-  ok(sent.ok === true, 'S14 with a version it goes');
+  const sent = quoteRequest({ scenario: { fico: 720 }, investor: 'DH', rateSheetVersionId: 'v9', rate: 7.5, source: 'lp' }, LP_OK);
+  ok(sent.ok === true, 'S14 with a version AND a complete Lender Price scenario it goes');
   ok(JSON.stringify(Object.keys(sent.body).sort()) === JSON.stringify(['investor', 'rateSheetVersionId', 'scenario']),
     'S15 …carrying ONLY the three keys /quote reads — `rate` and `source` belong to the breakdown\'s view '
     + 'and would be a second, half-honoured contract');
+
+  // ---- the shape guard (§2.123) -----------------------------------------------------------------
+  ok(sent.body.scenario.value === 500000 && sent.body.scenario.loan === 350000
+     && sent.body.scenario.dscr === 1.25 && sent.body.scenario.zip === '11211',
+    'S15a THE SCENARIO SENT IS THIS CONTROL\'S OWN LENDER PRICE ONE, not the transparency form\'s '
+    + 'engine facts — `/quote` posts it to Lender Price, which reads `value`/`loan`/a RATIO dscr');
+  ok(sent.body.scenario.ltv === undefined && sent.body.scenario.loan_amount === undefined,
+    'S15b …and no engine fact rides along, so the vendor is never handed a milli ratio it must refuse');
+  ok(typeof sent.body.scenario.value === 'number' && typeof sent.body.scenario.zip === 'string',
+    'S15c …with numbers as numbers — a numeric string is not a number to a validator that checks ranges');
+
+  const short = quoteRequest({ rateSheetVersionId: 'v9' }, { value: 500000, loan: 350000 });
+  ok(short.ok === false && /Property value|FICO|DSCR|ZIP|Purpose/.test(short.refusal),
+    'S15d an incomplete Lender Price scenario is refused BEFORE the press and the empty boxes are NAMED — '
+    + 'being told "Lender Price needs a location" after spending a call teaches nobody anything');
+
+  ok(missingLpFields({ value: 500000, loan: 350000, fico: 720, dscr: 1.25, zip: '11211', purpose: 'Purchase' }).length === 0
+     && missingLpFields({}).length === LP_FIELDS.length,
+    'S15e `missingLpFields` reports the boxes on THIS control, nothing more — the server runs Lender '
+    + 'Price\'s own validator and that refusal is what the screen shows');
+  ok(missingLpFields({ ...LP_OK, value: 'not a number' }).length === 1,
+    'S15f …and a box that cannot be a number counts as empty rather than being sent as NaN');
+
+  // The pre-fill carries the shared CONCEPTS only. `ltv`/`dscr` are milli on the transparency form and
+  // would land as an absurd ratio — the exact class of mistake §2.123 is about.
+  const pre = prefillFromFacts({ loan_amount: 400000, fico: 780, purpose: 'Refinance', ltv: 72500, dscr: 1200 },
+    { value: '', loan: '', fico: '', dscr: '', zip: '', purpose: '' });
+  ok(pre.loan === '400000' && pre.fico === '780' && pre.purpose === 'Refinance',
+    'S15g the shared figures are pre-filled from the transparency form, so the deal measured is the deal '
+    + 'broken down and nobody re-types it');
+  ok(pre.dscr === '' && pre.value === '',
+    'S15h …and the MILLI ratios are deliberately NOT carried — they would land as a nonsense ratio');
+  const typed = prefillFromFacts({ loan_amount: 400000 }, { loan: '250000' });
+  ok(typed.loan === '250000', 'S15i …and a box somebody has typed is never overwritten by the pre-fill');
 }
 
 // ---- 4. THE HONESTY RULE — every way a run can compare nothing, or half of it -------------------

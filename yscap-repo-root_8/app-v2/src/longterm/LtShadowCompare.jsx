@@ -85,6 +85,97 @@ export const NEEDS_SHEET = 'Enter a rate-sheet version first. Without one our en
   + 'so Lender Price would be called and nothing would be compared — a vendor call spent to learn nothing.';
 
 /**
+ * Why we refuse to spend a live call on an incomplete Lender Price scenario: the vendor would refuse
+ * it anyway, and being told "Lender Price needs a location" after spending a press teaches nobody
+ * anything a blank box could not have said first.
+ */
+export function needsLpFields(missing) {
+  return `Fill in what Lender Price needs before this can run: ${missing.join(', ')}. `
+    + 'Lender Price prices from the property\u2019s value and where it is \u2014 the breakdown above '
+    + 'works in the engine\u2019s own derived ratios, which Lender Price cannot read.';
+}
+
+/**
+ * THE LENDER PRICE SCENARIO — the fields this control asks for, and WHY it asks at all (§2.123).
+ *
+ * THE DEFECT THIS CLOSES. This control used to hand `/quote` the transparency form's body verbatim,
+ * and that form is ENGINE FACTS — `ltv` and `dscr` in MILLI, `loan_amount`, `occupancy` in the
+ * engine's words, with the screen's own hints saying so ("milli-% (72500 = 72.5%)"). `/quote` posts
+ * that object to Lender Price, whose vocabulary is `value` / `loan` / a RATIO dscr and whose `dscr`
+ * range is 0–2. So every press has died at the vendor's own validator with an out-of-range message
+ * that reads like a typo, and the findings ledger this component was built to feed has received
+ * NOTHING. It read as a quiet board, which is the state its own header warns about.
+ *
+ * WHY A SECOND SET OF FIELDS, when the header above argues against a second form. That argument was
+ * about the DEAL — two forms drift, and the deal broken down must be the deal measured. It still
+ * holds and nothing here weakens it: the shared figures are PRE-FILLED from the transparency form
+ * and are not re-typed. What was wrong was the premise that one form could serve both doors. It
+ * cannot: `/breakdown` takes engine facts and `/quote` takes a Lender Price scenario, and no object
+ * is both (measured — `validateScenario` accepts one and refuses the other). Lender Price needs the
+ * property's VALUE and its LOCATION, which the engine never asks for because its rules read derived
+ * ratios; those are the fields below, and there is no way to invent them from facts.
+ *
+ * THE SERVER IS THE AUTHORITY ON THE SHAPE, NOT THIS FILE. `search-model.validateScenario` is the
+ * one definition and `/quote` runs it at the door. `missingLpFields` below is NOT a second copy of
+ * it — it only reports which of the boxes ON THIS CONTROL are still empty, so a person is not sent
+ * to spend a press to be told a box is blank. Anything it lets through is still judged by Lender
+ * Price's own validator, and that refusal is what the screen shows.
+ */
+export const LP_FIELDS = [
+  { key: 'value', label: 'Property value', hint: 'dollars', numeric: true },
+  { key: 'loan', label: 'Loan amount', hint: 'dollars', numeric: true },
+  { key: 'fico', label: 'FICO', hint: '', numeric: true },
+  { key: 'dscr', label: 'DSCR', hint: 'a ratio (1.25), not milli', numeric: true },
+  { key: 'zip', label: 'ZIP', hint: '5 digits — state and county come from it', numeric: false },
+  { key: 'purpose', label: 'Purpose', hint: 'Purchase / Refinance', numeric: false },
+];
+
+/** The boxes on THIS control that are still empty. Never a judgement about Lender Price's contract. */
+export function missingLpFields(lp) {
+  const v = lp || {};
+  return LP_FIELDS.filter((f) => {
+    const raw = v[f.key];
+    if (raw === '' || raw == null) return true;
+    return f.numeric && !Number.isFinite(Number(raw));
+  }).map((f) => f.label);
+}
+
+/** The typed boxes as a Lender Price scenario. Numbers as numbers — a numeric string is not a number. */
+export function lpScenarioFrom(lp) {
+  const v = lp || {};
+  const out = {};
+  for (const f of LP_FIELDS) {
+    const raw = v[f.key];
+    if (raw === '' || raw == null) continue;
+    out[f.key] = f.numeric ? Number(raw) : String(raw).trim();
+  }
+  return out;
+}
+
+/**
+ * PRE-FILL from the transparency form, so the deal measured is the deal broken down.
+ *
+ * ONLY where the CONCEPT is the same on both sides — `loan_amount` IS the loan, `fico` IS the fico,
+ * `purpose` is the same word. `ltv` and `dscr` are deliberately NOT carried: they are milli on that
+ * form and would land as a nonsense ratio or an absurd value, which is the exact class of mistake
+ * this whole change is about. A field the person has already typed here is never overwritten.
+ */
+export function prefillFromFacts(facts, current) {
+  const f = facts || {};
+  const cur = current || {};
+  const next = { ...cur };
+  const take = (to, from) => {
+    if (next[to] !== '' && next[to] != null) return;
+    if (f[from] === '' || f[from] == null) return;
+    next[to] = String(f[from]);
+  };
+  take('loan', 'loan_amount');
+  take('fico', 'fico');
+  take('purpose', 'purpose');
+  return next;
+}
+
+/**
  * WHAT WE SEND, AND WHEN WE REFUSE TO SEND ANYTHING — pure, so the refusal is provable
  * without a browser.
  *
@@ -96,13 +187,20 @@ export const NEEDS_SHEET = 'Enter a rate-sheet version first. Without one our en
  * Only the three keys `/quote` reads are sent. The transparency form also holds `rate` and
  * `source`, which belong to the breakdown's view and mean nothing to a comparison; passing
  * them would be harmless today and would quietly become a second, half-honoured contract.
+ *
+ * THE SCENARIO IS THIS CONTROL'S OWN, NOT THE TRANSPARENCY FORM'S (§2.123). The form's scenario is
+ * engine facts and `/quote` posts what it is given to Lender Price, so sending the form's body was
+ * a live vendor call that could only ever be refused. `lp` is the Lender Price scenario typed on
+ * this control; a missing box is named BEFORE the press rather than after a wasted call.
  */
-export function quoteRequest(body) {
+export function quoteRequest(body, lp) {
   const b = body || {};
   if (!b.rateSheetVersionId) return { ok: false, refusal: NEEDS_SHEET };
+  const missing = missingLpFields(lp);
+  if (missing.length) return { ok: false, refusal: needsLpFields(missing) };
   return {
     ok: true,
-    body: { scenario: b.scenario, investor: b.investor, rateSheetVersionId: b.rateSheetVersionId },
+    body: { scenario: lpScenarioFrom(lp), investor: b.investor, rateSheetVersionId: b.rateSheetVersionId },
   };
 }
 
@@ -411,10 +509,29 @@ export default function LtShadowCompare({ buildBody }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // The Lender Price scenario THIS control sends. Deliberately its own state: the transparency
+  // form's body is engine facts and Lender Price cannot read one (§2.123).
+  const [lp, setLp] = useState(() => {
+    const seed = {};
+    for (const f of LP_FIELDS) seed[f.key] = '';
+    return seed;
+  });
+
+  // THE PRE-FILL IS A DERIVATION, NOT AN EFFECT — and that is a MONEY guarantee, not a style choice.
+  // This file deliberately holds no effect, interval or timer (guard S10): with none, "one press =
+  // one live Lender Price call" is a property of the module's SHAPE rather than something a reader
+  // has to verify by following what each effect does. Syncing the pre-fill into state would have
+  // been an effect, so it is computed on every render instead — a box somebody has typed always
+  // wins, and the shared figures follow the form above with no state to keep in step.
+  const facts = (typeof buildBody === 'function' && (buildBody() || {}).scenario) || null;
+  const lpEffective = prefillFromFacts(facts, lp);
+
+  const setField = (k) => (e) => setLp((cur) => ({ ...cur, [k]: e.target.value }));
+  const missing = missingLpFields(lpEffective);
 
   const run = useCallback(async () => {
     // REFUSED BEFORE THE CALL, not after — see `quoteRequest`.
-    const req = quoteRequest((typeof buildBody === 'function' && buildBody()) || {});
+    const req = quoteRequest((typeof buildBody === 'function' && buildBody()) || {}, lpEffective);
     if (!req.ok) {
       setResult(null);
       setError(req.refusal);
@@ -431,7 +548,7 @@ export default function LtShadowCompare({ buildBody }) {
       setError(e.message || 'That scenario could not be measured against Lender Price.');
       setResult(null);
     } finally { setBusy(false); }
-  }, [buildBody]);
+  }, [buildBody, lpEffective]);
 
   const outcome = shadowOutcome(result);
 
@@ -450,6 +567,36 @@ export default function LtShadowCompare({ buildBody }) {
       }}>
         {COST_NOTICE}
       </p>
+      <div style={{ margin: '0 0 14px' }}>
+        <div style={{ ...eyebrow, marginBottom: 6 }}>What Lender Price needs</div>
+        <p style={{ margin: '0 0 10px', fontSize: 12.5, color: MUTED, lineHeight: 1.5 }}>
+          Lender Price prices from the property’s value and where it is. The breakdown above works in the
+          engine’s own derived ratios (LTV and DSCR in milli), which Lender Price cannot read — so the deal
+          is stated here in its words. The figures both sides share are filled in from the form above.
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+          {LP_FIELDS.map((f) => (
+            <label key={f.key} style={{ display: 'block' }}>
+              <span style={{ ...eyebrow, display: 'block', marginBottom: 3 }}>{f.label}</span>
+              <input
+                className="input"
+                style={{ width: 130, fontSize: 16 }}
+                value={lpEffective[f.key]}
+                onChange={setField(f.key)}
+                inputMode={f.numeric ? 'decimal' : 'text'}
+              />
+              {f.hint ? (
+                <span style={{ display: 'block', marginTop: 3, fontSize: 11, color: MUTED }}>{f.hint}</span>
+              ) : null}
+            </label>
+          ))}
+        </div>
+        {missing.length ? (
+          <p style={{ margin: '10px 0 0', fontSize: 12.5, color: SLATE, lineHeight: 1.5 }}>
+            Still needed before this can run: <strong style={{ color: INK }}>{missing.join(', ')}</strong>.
+          </p>
+        ) : null}
+      </div>
       <button className="btn" type="button" disabled={busy} onClick={run} style={{ borderColor: GOLD }}>
         {busy ? 'Calling Lender Price…' : 'Run the comparison'}
       </button>
