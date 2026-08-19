@@ -91,17 +91,52 @@ async function claim(spinId, kind) {
  * @param {object} outcome  { staffId, personLabel, prizeLabel, prizeValue, reason }
  * @returns {{sent:number, skipped:string|null}} what actually happened
  */
+/**
+ * IS THE GAME EVEN ON? Every announcement asks this first.
+ *
+ * The master switch promises the Arena is "indistinguishable from a feature
+ * that was never built". A wheel that was already turning when somebody flips
+ * it off is still SETTLED a minute later by the sweep — which is right, because
+ * leaving a draw stuck mid-spin would be worse — but announcing it is not: the
+ * company would be emailed about a game that, by that promise, does not exist.
+ * And the moment somebody reaches for that switch is precisely the moment they
+ * least want a company-wide message going out.
+ *
+ * Settling and announcing are two different things, and only the second one is
+ * silenced. Reproduced against a real database before it was fixed: with the
+ * Arena off, a decided spin still wrote everybody a "you won" / "the result is
+ * in" notification.
+ *
+ * FAILS TOWARDS SILENCE. If the switch cannot be read we say nothing, because
+ * an unsent result is a disappointment and a result nobody expected is a
+ * problem — the same direction `claim()` fails in.
+ */
+async function announcementsAllowed() {
+  try {
+    const cfg = await settings.load();
+    if (!cfg.enabled) return { ok: false, cfg: null, reason: 'the Arena is switched off' };
+    return { ok: true, cfg, reason: null };
+  } catch (e) {
+    return { ok: false, cfg: null, reason: `settings unreadable: ${e.message}` };
+  }
+}
+
 async function spinDecided(spin, outcome) {
   if (!spin || !outcome) return { sent: 0, skipped: 'nothing to announce' };
-  let cfg;
-  try { cfg = await settings.load(); }
-  catch (e) { return { sent: 0, skipped: `settings unreadable: ${e.message}` }; }
+  const on = await announcementsAllowed();
+  if (!on.ok) return { sent: 0, skipped: on.reason };
+  const cfg = on.cfg;
   if (cfg.settings.emailResults === false) return { sent: 0, skipped: 'results notifications are switched off' };
 
   if (!(await claim(spin.id, 'result'))) return { sent: 0, skipped: 'already announced' };
 
   const prize = outcome.prizeLabel || spin.title;
   const worth = money(outcome.prizeValue);
+  // A BOOBY PRIZE IS DELIVERED AS THE JOKE IT IS. The ordinary wording would
+  // read "You won: A firm handshake. It is worth $0." — which lands as a system
+  // error rather than a gag, and it is somebody's inbox. So the follow-through
+  // line carries it, and nothing anywhere says what it is worth.
+  const joke = outcome.joke === true;
   let sent = 0;
 
   // ── the winner ──────────────────────────────────────────────────────────
@@ -109,12 +144,18 @@ async function spinDecided(spin, outcome) {
     try {
       await notify.notifyStaff(outcome.staffId, {
         type: 'arena_you_won',
-        title: `You won: ${prize}`,
-        body: [
-          `Spin ${spin.seq} — "${spin.title}" — just landed on you.`,
-          worth ? `It is worth ${worth}.` : '',
-          'Open the Arena to see the wheel and check the draw for yourself.',
-        ].filter(Boolean).join(' '),
+        title: joke ? `The wheel says: ${prize}` : `You won: ${prize}`,
+        body: joke
+          ? [
+            `Spin ${spin.seq} — "${spin.title}" — landed on you, and it landed on ${prize}.`,
+            outcome.jokeDetail || '',
+            'The whole room saw it, and anybody can check the wheel for themselves.',
+          ].filter(Boolean).join(' ')
+          : [
+            `Spin ${spin.seq} — "${spin.title}" — just landed on you.`,
+            worth ? `It is worth ${worth}.` : '',
+            'Open the Arena to see the wheel and check the draw for yourself.',
+          ].filter(Boolean).join(' '),
         link: '/internal/arena',
         ctaLabel: 'See it',
       });
@@ -134,7 +175,9 @@ async function spinDecided(spin, outcome) {
       if (outcome.staffId && String(id) === String(outcome.staffId)) continue;   // already told, personally
       await notify.notifyStaff(id, {
         type: 'arena_result',
-        title: `Spin ${spin.seq}: ${winner} won ${prize}`,
+        title: joke
+          ? `Spin ${spin.seq}: the wheel gave ${winner} ${prize}`
+          : `Spin ${spin.seq}: ${winner} won ${prize}`,
         body: outcome.reason
           ? `${outcome.reason}. Anybody can check the draw for themselves in the Arena.`
           : 'Anybody can check the draw for themselves in the Arena.',
@@ -158,9 +201,9 @@ async function spinDecided(spin, outcome) {
  */
 async function sessionClosed(session) {
   if (!session) return { sent: 0, skipped: 'nothing to announce' };
-  let cfg;
-  try { cfg = await settings.load(); }
-  catch (e) { return { sent: 0, skipped: `settings unreadable: ${e.message}` }; }
+  const on = await announcementsAllowed();
+  if (!on.ok) return { sent: 0, skipped: on.reason };
+  const cfg = on.cfg;
   if (cfg.settings.emailResults === false) return { sent: 0, skipped: 'results notifications are switched off' };
 
   // Claimed on the session's own row rather than a spin's, using a synthetic
@@ -235,9 +278,9 @@ async function sessionClosed(session) {
  */
 async function challengeLanded(challenge) {
   if (!challenge || !challenge.session_id) return { sent: 0, skipped: 'nothing to announce' };
-  let cfg;
-  try { cfg = await settings.load(); }
-  catch (e) { return { sent: 0, skipped: `settings unreadable: ${e.message}` }; }
+  const on = await announcementsAllowed();
+  if (!on.ok) return { sent: 0, skipped: on.reason };
+  const cfg = on.cfg;
   if (cfg.settings.challengeAlerts === false) return { sent: 0, skipped: 'challenge alerts are switched off' };
 
   let sent = 0;

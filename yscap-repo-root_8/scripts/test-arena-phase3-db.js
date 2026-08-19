@@ -301,6 +301,63 @@ function call(server, method, p, token, body) {
       eq((await call(server, 'GET', `/api/arena/sessions/${sessionId}/${p}`, boss)).status, 404,
         `with the switch off ${what} is gone too`);
     }
+
+    // ---- H. THE MIGRATIONS CONVERGE, AND THE STOP BUTTON SURVIVES THEM -----
+    // THE BUG THIS EXISTS FOR, which shipped and was caught by an audit rather
+    // than by a test: a held wheel passes through the state `stopping` for the
+    // second and a half it coasts. db/585 declared the state list WITHOUT it and
+    // db/586 widened it — and every file replays on every boot, each as one
+    // transaction. The moment one `adjustment` ticket row exists, db/586's own
+    // narrower re-add of the ticket source list fails, THE WHOLE FILE ROLLS BACK,
+    // and the widening at its line 101 goes with it. db/585 has already run and
+    // left the narrow list standing. Pressing the stop button then answers a 500
+    // and the wheel never comes to rest.
+    //
+    // So this replays the exact three files in order, against a row that makes
+    // db/586 fail, and then asks the only question that matters: can a wheel
+    // still enter `stopping`? db/590 is what makes the answer yes.
+    //
+    // THE SHAPE TO WATCH FOR ELSEWHERE: a constraint TWO files declare, where
+    // the later one can roll back. Seven of db/586's other CHECKs are fine for
+    // one reason only — no earlier file declares them, so a rollback leaves
+    // db/586's own committed version in place.
+    // Pinned by NUMBER, and it must be the only file with that number: two
+    // branches once held a `588_` each, and a helper that takes the first match
+    // silently replayed somebody else's migration and reported the wrong answer
+    // with total confidence.
+    const sqlOf = (n) => {
+      const dir = require('path').join(R, 'db');
+      const hits = require('fs').readdirSync(dir).filter((x) => x.startsWith(`${n}_`));
+      if (hits.length !== 1) throw new Error(`db/${n}: expected exactly one file, found ${hits.length}`);
+      return require('fs').readFileSync(require('path').join(dir, hits[0]), 'utf8');
+    };
+    const adj = await db.query(
+      `INSERT INTO arena_tickets (session_id, staff_id, count, source, reason)
+       VALUES ($1,$2,1,'adjustment','replay guard') RETURNING id`, [sessionId, ada.id]);
+    ok(!!adj.rows[0], 'an adjustment row can exist at all — the ledger allows the correction');
+
+    for (const n of ['585', '586', '590']) {
+      // db/586 is EXPECTED to fail here; that failure is the whole point.
+      try { await db.query(sqlOf(n)); } catch (_) { /* the rollback this guards */ }
+    }
+    const chk = (await db.query(
+      `SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conname = 'arena_draws_state_chk'`)).rows[0];
+    ok(chk && /stopping/.test(chk.d || ''),
+      'after the three files replay with an adjustment row present, a wheel may still enter "stopping"');
+
+    // Not the constraint text — the actual thing the stop button does.
+    const spinX = (await db.query(
+      `INSERT INTO arena_spins (session_id, seq, title, kind, state) VALUES ($1,99,'Replay','duel','spinning') RETURNING id`,
+      [sessionId])).rows[0].id;
+    const drawX = (await db.query(
+      `INSERT INTO arena_draws (spin_id, seq, title, state, commit_hash, server_seed, roster)
+       VALUES ($1,1,'Replay','spinning','x','y','[]'::jsonb) RETURNING id`, [spinX])).rows[0].id;
+    let pressed = true;
+    try {
+      await db.query(`UPDATE arena_draws SET state = 'stopping', stopped_at = now() WHERE id = $1`, [drawX]);
+    } catch (e) { pressed = false; }
+    ok(pressed, 'and a real wheel can actually be put into it — which is what pressing the button does');
+    await db.query(`DELETE FROM arena_tickets WHERE id = $1`, [adj.rows[0].id]);
   } catch (e) {
     fail++;
     console.log('  FAIL: threw -', e && e.stack ? e.stack : e);
@@ -315,7 +372,9 @@ function call(server, method, p, token, body) {
       if (switchWas) await db.query(`UPDATE arena_settings SET enabled = $1 WHERE id = true`, [switchWas.enabled]);
       require(R + '/src/lib/arena/sweep').stop();
       arenaSettings.invalidate();
-    } catch (e) { console.log('  (cleanup warning:', e.message, ')'); }
+  
+
+  } catch (e) { console.log('  (cleanup warning:', e.message, ')'); }
     server.close();
   }
 

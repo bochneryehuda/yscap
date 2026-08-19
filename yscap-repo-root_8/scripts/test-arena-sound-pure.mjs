@@ -144,5 +144,21 @@ ok(/seenDecided/.test(stage),
   'and a landing is celebrated ONCE per spin — a reconnecting stream replays frames, and a room '
   + 'that gets the same fanfare three times stops believing the fourth');
 
+// ---------------------------------------------------------------------------
+// E. THE BUSIEST MINUTE OF THE DAY IS CHEAP.
+//    Every arena frame asks the open screens to refresh, and the board is nine
+//    queries. At half past ten forty people check in inside two minutes — each
+//    one a frame to every open screen — so refreshing on each frame turns one
+//    person's click into forty board loads. The refresh is coalesced to one a
+//    second per screen, with a TRAILING call, because the frame worth reacting
+//    to is usually the last in a burst.
+// ---------------------------------------------------------------------------
+ok(/reload\.current = askReload/.test(stage),
+  'the stream asks for a COALESCED refresh, never the raw loader on every frame');
+ok(/setTimeout\(/.test(stage.slice(stage.indexOf('const askReload'), stage.indexOf('reload.current = askReload'))),
+  'and it keeps a trailing refresh, so the last frame in a burst is not the one that is dropped');
+ok(/arena:chat['"] \|\| event === ['"]arena:chat-react['"]\) return/.test(stage),
+  'a chat message never refetches the board at all — the chat panel owns those frames');
+
 console.log(failures ? `\n${failures} failed` : '\nALL arena-sound assertions passed');
 process.exit(failures ? 1 : 0);
