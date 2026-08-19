@@ -35,7 +35,11 @@ ok('the registry is read-only, PILOT-authoritative, and non-blocking by policy')
 assert.strictEqual(m.BY_KEY.loan_amount.encompassFieldId, '1109', 'canonical loan-amount id is 1109');
 assert.strictEqual(m.BY_KEY.note_rate.encompassFieldId, '3');
 assert.strictEqual(m.BY_KEY.purchase_price.encompassFieldId, '136');
-assert.strictEqual(m.BY_KEY.property_type.encompassFieldId, '1041');
+assert.strictEqual(m.BY_KEY.property_type.encompassFieldId, 'CX.PROPERTYTYPE',
+  'property type is the tenant custom field ONLY (owner-directed 2026-08-18: "use always CX.PROPERTYTYPE for this dont look on 1041")');
+assert.strictEqual(m.BY_KEY.property_type.altFieldId, undefined, 'no 1041 fallback — the standard field is deliberately unread');
+assert.strictEqual(m.BY_KEY.property_type.loanPath, undefined, 'no property.propertyType path either — that is field 1041\'s JSON home');
+assert.strictEqual(m.BY_KEY.property_type.skipBatch, true, 'custom id stays OUT of the by-number batch (the funded_date doctrine)');
 assert.strictEqual(m.BY_KEY.ys_loan_number.encompassFieldId, '364');
 assert.strictEqual(m.BY_KEY.as_is_value.encompassFieldId, 'CX.ASISVALUE', 'as-is corrected off std 356');
 assert.strictEqual(m.BY_KEY.arv.encompassFieldId, '356', 'ARV dollars is std 356 (propertyAppraisedValueAmount)');
@@ -46,13 +50,21 @@ assert.strictEqual(new Set(ids).size, ids.length, 'field ids are unique (no BY_F
 ok('field ids match the live-verified / owner-corrected map and are unique');
 
 // ── extractFields keeps the original flat-envelope contract ─────────────────
-const encLoan = { fields: { '1109': { value: '450000' }, '3': { value: '0.1099' }, '136': { value: 400000 }, '1041': { value: 'SFR' } } };
+const encLoan = { fields: { '1109': { value: '450000' }, '3': { value: '0.1099' }, '136': { value: 400000 }, '1041': { value: 'Condominium' }, 'CX.PROPERTYTYPE': { value: 'SFR' } } };
 const extracted = m.extractFields(encLoan);
 assert.strictEqual(extracted.loan_amount, 450000);
 assert.strictEqual(extracted.note_rate, 0.1099);
 assert.strictEqual(extracted.purchase_price, 400000);
-assert.strictEqual(extracted.property_type, 'SFR');
+assert.strictEqual(extracted.property_type, 'SFR', 'CX.PROPERTYTYPE wins outright — the 1041 cell (holding a DIFFERENT value) is never consulted');
 ok('extractFields still reads the flat {fields:{id:{value}}} envelope');
+
+// ── 1041 ALONE resolves nothing (behavioral pin of the no-fallback ban) ─────
+// A flat envelope where the ONLY property-type cell is '1041' — the exact shape
+// the old altFieldId fallback fired on — must extract undefined, not the 1041 value.
+const only1041 = { fields: { '1109': { value: '450000' }, '1041': { value: 'Condominium' } } };
+assert.strictEqual(m.extractFields(only1041).property_type, undefined,
+  '1041 filled + CX blank → NO property type (the fallback is banned, not merely outranked)');
+ok('a 1041-only envelope resolves no property type — the ban is behavioral, not just structural');
 
 // ── flattenLoan: full loan (customFields[] + standard loanPath) → extract ───
 const rawLoan = {
@@ -71,6 +83,7 @@ const rawLoan = {
     { fieldName: 'CX.DEALPROJECTTYPE', value: 'Fix and Flip', format: 'DROPDOWNLIST' },
     { fieldName: 'CX.ACCRUALTYPE', value: 'Drawn', format: 'DROPDOWNLIST' },
     { fieldName: 'CX.ACTAULLTC', value: '92.1034', format: 'DECIMAL_4' },
+    { fieldName: 'CX.PROPERTYTYPE', value: '2-4 Family', format: 'DROPDOWNLIST' },
   ],
 };
 const flat = m.flattenLoan(rawLoan);
@@ -85,7 +98,14 @@ assert.strictEqual(ex.max_total_loan, 525450);
 assert.strictEqual(ex.term_months, 12);
 assert.strictEqual(ex.maturity_date, '2027-06-22');
 assert.strictEqual(ex.note_rate, 8.0);
-assert.strictEqual(ex.property_type, '2-4 Family');
+assert.strictEqual(ex.property_type, '2-4 Family', 'property type comes from customFields[] CX.PROPERTYTYPE');
+{
+  // The standard path alone (no CX.PROPERTYTYPE custom field) resolves NOTHING —
+  // property.propertyType is field 1041's home and 1041 is deliberately unread.
+  const noCx = { ...rawLoan, customFields: rawLoan.customFields.filter((c) => c.fieldName !== 'CX.PROPERTYTYPE') };
+  assert.strictEqual(m.extractFields(noCx).property_type, undefined,
+    'a loan whose only property type is 1041/property.propertyType reads "no data" — never the standard field');
+}
 ok('flattenLoan + extractFields read a full loan (customFields[] + standard paths)');
 
 // ── Funded date: read from CX.FUNDEDDATE, NEVER field 1401 (the loan PROGRAM) ──
@@ -333,7 +353,13 @@ assert.strictEqual(m.compareField('property_type', 'Multi 2-4', '2-4 Family').st
 assert.strictEqual(m.compareField('property_type', 'Multi 2–4', '2-4 Units').status, 'match', 'en-dash normalized');
 assert.strictEqual(m.compareField('property_type', 'SFR', '2-4 Family').status, 'mismatch');
 assert.strictEqual(m.compareField('property_type', 'Condo', 'Manufactured').status, 'incomparable', 'unmapped Encompass wording → not comparable, never a false block');
-ok('property_type value-maps our range category to Encompass wording (meaning, not strings)');
+// The tenant's LIVE CX.PROPERTYTYPE dropdown spellings (docs/longterm/research-exports/
+// 03-dropdown-options.csv — 318 filled loans) must all map, or real files read "no data":
+assert.strictEqual(m.compareField('property_type', 'Multi 5+', 'Multifamily (5+ Units)').status, 'match', 'live CX spelling maps');
+assert.strictEqual(m.compareField('property_type', 'Multi 2-4', '2-4 Unit Residential').status, 'match', 'live CX spelling maps');
+assert.strictEqual(m.compareField('property_type', 'Multi 5+', '5-10 Unit Residential').status, 'match', 'live CX spelling maps');
+assert.strictEqual(m.compareField('property_type', 'SFR', 'Multifamily (5+ Units)').status, 'mismatch', 'a mapped multi against our SFR is a real mismatch, not no-data');
+ok('property_type value-maps our range category to Encompass wording (meaning, not strings) — incl. every live CX dropdown spelling');
 
 // ── vesting_llc name compare is punctuation-insensitive ─────────────────────
 assert.strictEqual(m.compareField('vesting_llc', 'ABC Holdings LLC', 'ABC Holdings, LLC').status, 'match', 'comma-insensitive');

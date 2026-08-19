@@ -70,7 +70,7 @@ These come straight off the V3 loan object (no custom fields). Illustrative valu
 | `as_is_value` | `356` "Appraised Value" (verified:true) | **`356`/`propertyAppraisedValueAmount` is the ARV**, not as-is. As-is value = **`CX.ASISVALUE`** | correct the semantics — 356 is after-repair here |
 | `purchase_price` | `136` | live shows `purchasePriceAmount` = *effective* price; original contract = `CX.ORIGINALCONTRACTPURCHASEP` | disambiguate effective vs. contract |
 
-The verified standard ids that hold up: `loan_amount` → `1109`/`baseLoanAmount`, `note_rate` → `requestedInterestRatePercent`, `ys_loan_number` → `364`/`loanNumber`. For `property_type` the shipped registry uses standard id **`1041`** (keep it); the tenant **also** carries a `CX.PROPERTYTYPE` custom field (e.g. `2-4 Family`) observed on flip files — prefer the standard `1041`, treat `CX.PROPERTYTYPE` as the tenant alternative/cross-check.
+The verified standard ids that hold up: `loan_amount` → `1109`/`baseLoanAmount`, `note_rate` → `requestedInterestRatePercent`, `ys_loan_number` → `364`/`loanNumber`. For `property_type` the shipped registry reads **ONLY the tenant custom field `CX.PROPERTYTYPE`** (owner-directed 2026-08-18: "use always CX.PROPERTYTYPE for this dont look on 1041") — standard field `1041` and its JSON home `property.propertyType` are DELIBERATELY unread: the two can disagree on this tenant and `CX.PROPERTYTYPE` is the copy the team maintains. Do not re-add `1041` as a source or a fallback; three test suites pin the ban.
 
 ---
 

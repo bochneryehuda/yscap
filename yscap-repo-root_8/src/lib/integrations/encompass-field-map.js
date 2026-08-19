@@ -85,7 +85,7 @@ const PA_DATE_FIELD_ID = (
 const REGISTRY = Object.freeze([
   // ── Identity / program / vesting ──────────────────────────────────────────
   pull({ key: 'ys_loan_number', encompassFieldId: '364', loanPath: 'loanNumber', type: 'text', category: 'program', compare: 'text', gate: GATE.BLOCK, our: 'column:ys_loan_number', note: 'Loan number — the natural key; MATCHED (must equal Encompass Loan.LoanNumber, field 364)' }),
-  pull({ key: 'property_type', encompassFieldId: '1041', loanPath: 'property.propertyType', altFieldId: 'CX.PROPERTYTYPE', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'propertyType', our: 'column:property_type', note: 'Subject property type (std 1041; CX.PROPERTYTYPE is the tenant cross-check). Our range-category (SFR / Multi 2-4 / Multi 5+ / Condo / Townhouse / Mixed Use) vs Encompass wording is lossy — value-mapped' }),
+  pull({ key: 'property_type', encompassFieldId: 'CX.PROPERTYTYPE', skipBatch: true, type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'propertyType', our: 'column:property_type', note: 'Subject property type — read ONLY from the tenant custom field CX.PROPERTYTYPE (owner-directed 2026-08-18: "use always CX.PROPERTYTYPE for this dont look on 1041"). Standard field 1041 and its JSON home property.propertyType are DELIBERATELY not read: the two can disagree on this tenant, CX.PROPERTYTYPE is the copy the team maintains, and the old primary-wins rule showed whichever happened to be filled under a fixed "1041" label. skipBatch per the custom-id doctrine (a fragile custom id in the by-number batch can blank the whole read — see funded_date); the value rides the customFields[] passthrough. Our range-category (SFR / Multi 2-4 / Multi 5+ / Condo / Townhouse / Mixed Use) vs the tenant wording is lossy — value-mapped; blank/unmapped reads "no data to compare". ADVISORY = never blocks CTC/funding; but the match-all sync gate counts every not-passing row (mismatch and no-data alike) against clear, so an unresolved row still holds the DocuSign send/tape until an admin override or a field exception — keep the live CX spellings mapped.' }),
   pull({ key: 'units', encompassFieldId: '16', loanPath: ['property.financedNumberOfUnits', 'property.numberOfUnits', 'property.financedUnits'], type: 'int', category: 'program', compare: 'int', verified: false, our: 'column:units', note: 'Number of units — EXACT match (owner-directed 2026-07-26). Encompass standard field 16 ("No. of Units"). loanPath candidates need live confirmation against the tenant loan JSON; if it reads blank the field shows "no data to compare" (staff must enter it in Encompass)' }),
   pull({ key: 'deal_type', encompassFieldId: 'CX.DEALPROJECTTYPE', type: 'enum', compare: 'enum', gate: GATE.ADVISORY, valueMap: 'dealType', our: 'derive from applications.program + loan_type (no deal_type column)', note: 'Deal/project type — value-mapped (§6). Advisory: our side is derived heuristically from program/loan_type, so a disagreement surfaces but never hard-blocks' }),
   // Exit plan is a REAL match (owner-directed 2026-07-26 — was reference-only): our
@@ -502,14 +502,15 @@ const VALUE_MAPS = Object.freeze({
     'managing member': 'officer', 'member': 'officer', 'manager': 'officer', 'entity': 'officer', 'llc': 'officer',
     'individual': 'individual', 'individuals': 'individual', 'person': 'individual', 'natural person': 'individual', 'borrower': 'individual',
   },
-  // std 1041 / CX.PROPERTYTYPE ↔ applications.property_type (range category:
+  // CX.PROPERTYTYPE (only — 1041 deliberately unread, owner-directed 2026-08-18)
+  // ↔ applications.property_type (range category:
   // SFR / Multi 2-4 / Multi 5+ / Condo / Townhouse / Mixed Use). Advisory-only —
   // our coarse category vs Encompass finer wording is lossy; unmapped values fall
   // through to "not comparable" (never a false block, never a false match).
   propertyType: {
     'sfr': 'sfr', 'single family': 'sfr', 'single family residence': 'sfr', 'singlefamily': 'sfr', 'sfr (1 unit)': 'sfr', '1 unit': 'sfr', 'detached': 'sfr',
-    'multi 2-4': 'multi_2_4', '2-4 family': 'multi_2_4', '2-4 units': 'multi_2_4', '2-4 unit': 'multi_2_4', 'two to four family': 'multi_2_4', 'duplex': 'multi_2_4', 'triplex': 'multi_2_4', 'fourplex': 'multi_2_4',
-    'multi 5+': 'multi_5plus', 'multi 5plus': 'multi_5plus', 'multifamily': 'multi_5plus', 'multi-family': 'multi_5plus', '5+ units': 'multi_5plus',
+    'multi 2-4': 'multi_2_4', '2-4 family': 'multi_2_4', '2-4 units': 'multi_2_4', '2-4 unit': 'multi_2_4', '2-4 unit residential': 'multi_2_4', 'two to four family': 'multi_2_4', 'duplex': 'multi_2_4', 'triplex': 'multi_2_4', 'fourplex': 'multi_2_4',
+    'multi 5+': 'multi_5plus', 'multi 5plus': 'multi_5plus', 'multifamily': 'multi_5plus', 'multi-family': 'multi_5plus', '5+ units': 'multi_5plus', 'multifamily (5+ units)': 'multi_5plus', '5-10 unit residential': 'multi_5plus',
     'condo': 'condo', 'condominium': 'condo',
     'townhouse': 'townhouse', 'townhome': 'townhouse', 'town home': 'townhouse', 'town house': 'townhouse',
     'mixed use': 'mixed_use', 'mixed-use': 'mixed_use',
