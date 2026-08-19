@@ -16690,7 +16690,18 @@ router.patch('/leads/:id', async (req, res) => {
   // A leads-desk officer pick is a MANUAL assignment (#29). Stamp assigned_via='manual' when an
   // officer is set, and clear it back to NULL when the officer is removed, so the split stays honest.
   if (b.officerId !== undefined) { col('officer_id', b.officerId || null); col('assigned_via', b.officerId ? 'manual' : null); }
-  if (b.nextFollowUp !== undefined) col('next_follow_up', b.nextFollowUp || null);
+  // The two lead DATES go through the system-wide typed-date chokepoint
+  // (normalizeTypedDate): a 2-digit year typed into a date input arrives as year
+  // 0026 and used to be stored VERBATIM — this was the one date write path with
+  // no guard, and the save-per-keystroke follow-up box fed it mid-type
+  // intermediates (0002-08-25) that then round-tripped as "the date didn't
+  // save". A typed "26" now resolves to 2026; an unresolvable value is refused
+  // with a plain 400 naming the field; a blank still clears.
+  if (b.nextFollowUp !== undefined) {
+    const d = b.nextFollowUp ? require('../lib/fields').normalizeTypedDate(b.nextFollowUp) : null;
+    if (b.nextFollowUp && !d) return res.status(400).json({ error: 'Next follow-up must be a real calendar date (year 1900–2100)' });
+    col('next_follow_up', d);
+  }
   if (b.firstName !== undefined) col('first_name', String(b.firstName).trim() || null);
   if (b.lastName !== undefined) col('last_name', String(b.lastName).trim() || null);
   if (b.company !== undefined) col('company', b.company || null);
@@ -16704,7 +16715,11 @@ router.patch('/leads/:id', async (req, res) => {
   if (b.loanAmount !== undefined) col('loan_amount', (b.loanAmount !== '' && Number.isFinite(Number(b.loanAmount))) ? Number(b.loanAmount) : null);
   if (b.leadSource !== undefined) col('lead_source', b.leadSource || null);
   if (b.referralPartner !== undefined) col('referral_partner', b.referralPartner || null);
-  if (b.estimatedClose !== undefined) col('estimated_close', b.estimatedClose || null);
+  if (b.estimatedClose !== undefined) {
+    const d = b.estimatedClose ? require('../lib/fields').normalizeTypedDate(b.estimatedClose) : null;
+    if (b.estimatedClose && !d) return res.status(400).json({ error: 'Target close must be a real calendar date (year 1900–2100)' });
+    col('estimated_close', d);
+  }
   if (b.lostReason !== undefined) col('lost_reason', b.lostReason || null);
   if (Array.isArray(b.tags)) col('tags', b.tags.map(t => String(t).trim()).filter(Boolean).slice(0, 20));
   // Keep the flat `name` in sync when structured names change (legacy consumers).

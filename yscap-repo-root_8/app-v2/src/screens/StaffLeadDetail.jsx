@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
-import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
+import { PhoneInput , EmailInput, DateCommitInput } from '../components/FormattedInputs.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import {
   STAGES, STAGE_LABEL, STAGE_PILL, SOURCES, PROGRAMS, TOOL_LABEL, ACTIVITY_TYPES,
@@ -206,9 +206,13 @@ export default function StaffLeadDetail() {
                       ? <div className="row" style={{ gap: 8, alignItems: 'center' }}><span className="off"><span className="mono">{initials(lead.officer_name)}</span>You</span><button className="btn btn-ghost btn-sm" onClick={() => patchLead({ officerId: null }, 'Released to the desk')}>Release</button></div>
                       : <div className="row" style={{ gap: 8, alignItems: 'center' }}><span className="off un"><span className="dot" />{lead.officer_name || 'Loan desk'}</span><button className="btn primary btn-sm" onClick={() => patchLead({ officerId: actor && actor.id }, 'Claimed — it’s yours')}>Claim to me</button></div>)}
               </label>
+              {/* Draft-commit (DateCommitInput): the old input PATCHed + reloaded on
+                  every onChange, and typing the year fires intermediate values
+                  (0002 → 0020 → 0202 → 2026) — the racing saves/reloads wiped the
+                  typed date ("you type the date, and it doesn't get saved"). */}
               <label className="field"><span>Next follow-up</span>
-                <input className="input" type="date" value={lead.next_follow_up ? String(lead.next_follow_up).slice(0, 10) : ''}
-                  onChange={e => patchLead({ nextFollowUp: e.target.value || null }, e.target.value ? 'Follow-up set' : 'Follow-up cleared')} />
+                <DateCommitInput value={lead.next_follow_up}
+                  onCommit={v => patchLead({ nextFollowUp: v }, v ? 'Follow-up set' : 'Follow-up cleared')} />
               </label>
               <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                 {lead.email && <a className="btn btn-ghost btn-sm" href={`mailto:${lead.email}`}>Email</a>}
