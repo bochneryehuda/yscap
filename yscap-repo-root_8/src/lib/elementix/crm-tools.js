@@ -147,6 +147,12 @@ const FORBIDDEN_ARGS = new Set(['gender', 'hasHispanicName']);
  *
  * Never throws: a payload that cannot be serialized at all (a cycle) becomes the
  * same marker. Returns a STRING ready to bind to a `$n::jsonb` placeholder.
+ *
+ * NOTE for a future caller: a null/undefined value serializes to `{}`, which is
+ * right for the OBJECT payloads this stores today (a vendor response, a profile
+ * section) and wrong for a column somebody reads with `jsonb_array_length`.
+ * Pass `[]` rather than nothing for an array column — `normalizeContact`
+ * guarantees its three arrays, which is why storeContact can bind them directly.
  */
 const JSONB_MAX = 400000;
 function vendorJsonb(v, max = JSONB_MAX) {

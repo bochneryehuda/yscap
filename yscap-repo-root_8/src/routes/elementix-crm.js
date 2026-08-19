@@ -334,8 +334,14 @@ router.get('/people/:personId/contact', async (req, res) => {
   const held = await db.query(
     `SELECT person_id, phones, emails, addresses, unlocked_by, unlocked_by_email,
             unlocked_at, vendor_unlocked_at, source, refreshed_at,
-            jsonb_array_length(COALESCE(phones,'[]'::jsonb)) AS phone_count,
-            jsonb_array_length(COALESCE(emails,'[]'::jsonb)) AS email_count
+            -- COUNTED BY SHAPE, NOT BY FAITH. jsonb_array_length RAISES on a
+            -- value that is not an array, and this endpoint is the one that
+            -- answers "will the next click cost money" — a 500 here leaves the
+            -- screen unable to tell free from paid. Anything that is not an
+            -- array holds no contact detail we can count, which is the honest
+            -- answer as well as the safe one.
+            CASE WHEN jsonb_typeof(phones) = 'array' THEN jsonb_array_length(phones) ELSE 0 END AS phone_count,
+            CASE WHEN jsonb_typeof(emails) = 'array' THEN jsonb_array_length(emails) ELSE 0 END AS email_count
        FROM elementix_contacts WHERE person_id = $1`, [personId]);
   const stored = held.rows[0] || null;
   const haveDetail = !!(stored && (stored.phone_count > 0 || stored.email_count > 0));
