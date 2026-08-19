@@ -1,5 +1,9 @@
 -- ============================================================================
--- db/588 — restore the stopping state on the wheel after db/586 rolls back
+-- db/590 — restore the stopping state on the wheel after db/586 rolls back
+--
+-- NUMBERED 590, NOT 588. Another branch took 588 for the Elementix CRM while
+-- this was in flight and merged first, so that number is already applied in
+-- production and is not ours to move. The rule is to renumber OURS.
 --
 -- WHAT THIS FIXES, AND IT IS THE STOP BUTTON.
 --

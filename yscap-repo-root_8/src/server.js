@@ -530,6 +530,15 @@ app.use('/api/research', require('./routes/research'));
 // files inside the compiler (src/lib/dashboards/compile.js), so a shared dashboard shares
 // the question and never the answer.
 app.use('/api/dashboards', require('./routes/dashboards'));
+// Elementix CRM desk: the OTHER Elementix plane. Underwriting proves a borrower's track
+// record from recorded deeds (src/lib/elementix/lookups.js); this is an officer looking
+// somebody up to telephone them, and the contact detail it buys may never be read back by
+// a lending decision. Two doors, two closed tool lists — the FCRA separation is structural
+// rather than a convention. Staff-only and INTERNAL-only (a TPO broker is a staff_users row
+// too, and must never spend our credits); the router applies all of that itself.
+// Rate-limited PER OFFICER inside the router itself (see the note there) — the
+// throttle has to be keyed on the person, not the office's IP address.
+app.use('/api/elementix', require('./routes/elementix-crm'));
 // Document-underwriting desk: read + understand each uploaded document (Azure Document
 // Intelligence + Azure OpenAI), raise per-document and cross-document findings, and let an
 // underwriter post conditions / request documents / clear them. Same auth + per-file scoping.
@@ -1304,6 +1313,13 @@ if (require.main === module) {
     // this poll is the correctness machinery and the webhook only makes it prompt.
     // It never notifies a borrower — completion cues the DESK.
     try { require('./trinity/poller').start(); } catch (e) { console.warn('trinity poller not started:', e.message); }
+    // Elementix CRM: bring every newly-unlocked contact in as a lead for the
+    // officer whose login unlocked it, and drain the historical backlog. ON by
+    // owner direction; ELEMENTIX_CRM_SYNC_ENABLED=0 turns it off, and the switch
+    // is read at CALL time so the API Health page can stop it without a deploy.
+    // It cannot spend a credit — every person it reads was already unlocked and
+    // paid for.
+    try { require('./sync/elementix-crm-sync').start(); } catch (e) { console.warn('elementix crm sync not started:', e.message); }
     // Class Valuation callback-inbox drain. The receiver drains on delivery, so this
     // is only the BACKSTOP: a delivery whose processing failed would otherwise wait
     // for the next unrelated callback to sweep it up, and on a quiet file there may

@@ -50,6 +50,7 @@ import StaffWorkflow from './screens/StaffWorkflow.jsx';
 import StaffApplication from './screens/StaffApplication.jsx';
 import StaffTeam from './screens/StaffTeam.jsx';
 import StaffTpoFirms from './screens/StaffTpoFirms.jsx';
+import StaffElementix from './screens/StaffElementix.jsx';
 import StaffConditionStudio from './screens/StaffConditionStudio.jsx';
 import StaffCompanyPricing from './screens/StaffCompanyPricing.jsx';
 import StaffApprovals from './screens/StaffApprovals.jsx';
@@ -62,6 +63,7 @@ import StaffInsightsDashboard from './screens/StaffInsightsDashboard.jsx';
 import StaffAiCenter from './screens/StaffAiCenter.jsx';
 import StaffArchived from './screens/StaffArchived.jsx';
 import StaffLeads from './screens/StaffLeads.jsx';
+import StaffCrmDesk from './screens/StaffCrmDesk.jsx';
 import StaffLeadDetail from './screens/StaffLeadDetail.jsx';
 import StaffBorrowers from './screens/StaffBorrowers.jsx';
 import StaffEmails from './screens/StaffEmails.jsx';
@@ -272,6 +274,7 @@ export default function App() {
           <Route path="/internal/app/:id/draws" element={<StaffPrivate><StaffFileDraws /></StaffPrivate>} />
           <Route path="/internal/team" element={<StaffPrivate><StaffTeam /></StaffPrivate>} />
           <Route path="/internal/tpo-firms" element={<StaffPrivate><StaffTpoFirms /></StaffPrivate>} />
+          <Route path="/internal/elementix" element={<StaffPrivate><StaffElementix /></StaffPrivate>} />
           <Route path="/internal/conditions" element={<StaffPrivate><StaffConditionStudio /></StaffPrivate>} />
           <Route path="/internal/pricing" element={<StaffPrivate><StaffCompanyPricing /></StaffPrivate>} />
           {/* Approvals hub — every queue waiting on a decision, in one tabbed section
@@ -298,6 +301,12 @@ export default function App() {
           <Route path="/internal/ai-silenced-codes" element={<Navigate to="/internal/ai?tab=silenced" replace />} />
           <Route path="/internal/insights" element={<Navigate to="/internal/ai?tab=overview" replace />} />
           <Route path="/internal/archived" element={<StaffPrivate><StaffArchived /></StaffPrivate>} />
+          {/* The ADMIN CRM desk (owner-directed 2026-08-19) — every officer's book
+              in one table, and a switcher that opens any one officer's FULL CRM
+              (the same StaffLeads screen, narrowed) without coming back here.
+              `?officer=<id>` keeps whose book it is in the URL, so a refresh, the
+              back button and a shared link all land in the same place. */}
+          <Route path="/internal/crm" element={<StaffPrivate><StaffCrmDesk /></StaffPrivate>} />
           <Route path="/internal/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
           <Route path="/internal/leads/:id" element={<StaffPrivate><StaffLeadDetail /></StaffPrivate>} />
           <Route path="/internal/emails" element={<StaffPrivate><StaffEmails /></StaffPrivate>} />

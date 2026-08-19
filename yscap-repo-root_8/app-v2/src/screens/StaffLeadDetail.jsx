@@ -7,6 +7,7 @@ import {
   STAGES, STAGE_LABEL, STAGE_PILL, SOURCES, PROGRAMS, TOOL_LABEL, ACTIVITY_TYPES,
   leadName, initials, money, addrLine,
 } from '../lib/leadCrm.js';
+import ElementixProfile from '../components/ElementixProfile.jsx';
 
 /* Lead workspace (owner-directed full CRM, 2026-07-14): everything a loan
    officer needs on one lead — contact + deal fields, the stage, ownership, a
@@ -217,6 +218,10 @@ export default function StaffLeadDetail() {
           </div>
 
           <SubmittedDeal lead={lead} />
+          {/* The same Elementix section the borrower profile carries — one
+              component, so a lead and the borrower it becomes never show two
+              different pictures of the same person. */}
+          <ElementixProfile kind="lead" recordId={id} personName={lead.name || ''} personState={(lead.property_address && lead.property_address.state) || ''} />
         </div>
 
         {/* ---- Center: activity timeline ---- */}

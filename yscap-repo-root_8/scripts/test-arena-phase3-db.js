@@ -315,23 +315,28 @@ function call(server, method, p, token, body) {
     //
     // So this replays the exact three files in order, against a row that makes
     // db/586 fail, and then asks the only question that matters: can a wheel
-    // still enter `stopping`? db/588 is what makes the answer yes.
+    // still enter `stopping`? db/590 is what makes the answer yes.
     //
     // THE SHAPE TO WATCH FOR ELSEWHERE: a constraint TWO files declare, where
     // the later one can roll back. Seven of db/586's other CHECKs are fine for
     // one reason only — no earlier file declares them, so a rollback leaves
     // db/586's own committed version in place.
+    // Pinned by NUMBER, and it must be the only file with that number: two
+    // branches once held a `588_` each, and a helper that takes the first match
+    // silently replayed somebody else's migration and reported the wrong answer
+    // with total confidence.
     const sqlOf = (n) => {
       const dir = require('path').join(R, 'db');
-      const f = require('fs').readdirSync(dir).find((x) => x.startsWith(`${n}_`));
-      return require('fs').readFileSync(require('path').join(dir, f), 'utf8');
+      const hits = require('fs').readdirSync(dir).filter((x) => x.startsWith(`${n}_`));
+      if (hits.length !== 1) throw new Error(`db/${n}: expected exactly one file, found ${hits.length}`);
+      return require('fs').readFileSync(require('path').join(dir, hits[0]), 'utf8');
     };
     const adj = await db.query(
       `INSERT INTO arena_tickets (session_id, staff_id, count, source, reason)
        VALUES ($1,$2,1,'adjustment','replay guard') RETURNING id`, [sessionId, ada.id]);
     ok(!!adj.rows[0], 'an adjustment row can exist at all — the ledger allows the correction');
 
-    for (const n of ['585', '586', '588']) {
+    for (const n of ['585', '586', '590']) {
       // db/586 is EXPECTED to fail here; that failure is the whole point.
       try { await db.query(sqlOf(n)); } catch (_) { /* the rollback this guards */ }
     }

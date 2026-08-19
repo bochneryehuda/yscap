@@ -32,6 +32,12 @@
 
 const crypto = require('crypto');
 const cfg = require('../config');
+/* Every vendor payload that reaches a jsonb column goes through this: a NUL
+   byte is refused by jsonb (22P05), and one in the authorization server's own
+   discovery document would break beginConnect AND store() — and store() is
+   called from refresh(), so it would break token renewal for every lookup. It
+   strips from the OBJECT, never the serialized string. */
+const { jsonbText } = require('../lib/fields');
 
 /**
  * The database is required LAZILY, so the pure rules in this file — the cipher,
@@ -80,39 +86,70 @@ const REFRESH_SKEW_SEC = 120;
 const HTTP_TIMEOUT_MS = 15000;
 
 /**
- * HOW MANY ELEMENTIX SEATS THE COMPANY HOLDS — 'company' | 'officer'.
+ * HOW MANY ELEMENTIX SEATS PILOT CONNECTS WITH — 'company' | 'officer'.
  *
- * The owner's answer (2026-08-07) is ONE COMPANY LOGIN, so the whole team reads
- * through a single approved connection. Two consequences follow from that and are
- * enforced elsewhere rather than restated here:
- *   - the 1,000 requests/hour ceiling really is shared by everybody, which is why
- *     src/elementix/client.js self-caps well under it;
- *   - Elementix can only ever see ONE account, so "which officer spent a credit?"
- *     has to be recorded on OUR side at the moment of the click — the vendor
- *     cannot tell us. See docs/ELEMENTIX-CRM-PLAN.md.
+ * 'company' — ONE super-admin connection for the whole firm — and the reason is
+ * worth reading, because it was got wrong in between.
  *
- * `beginConnect` refuses a per-officer approval while this is 'company'.
+ * On 2026-08-18 the owner said each officer has their own Elementix login, and
+ * this was flipped to 'officer' so that a skip trace would be signed by the
+ * token its officer approved. That was solving the right problem the hard way:
+ * the belief underneath it was that the vendor cannot say WHO unlocked a
+ * contact, so we had to prove it from our side. THE OWNER SAID THAT WAS WRONG —
+ * "dig in deeper, I'm 100% you can link who discovered the number by email link"
+ * — and they were right.
+ *
+ * Measured against the live account the same evening: `get_contact_status`
+ * returns `unlockedBy` as an EMAIL ADDRESS (its published description claims it
+ * returns only {isUnlocked, isJobCompleted}), and `list_people` with
+ * `unlockStatus:'unlocked'` returns that email on EVERY ROW — 1,041 contacts,
+ * 13 users, none missing. So the vendor answers "who did this" precisely, and
+ * per-officer seats buy nothing that is not already available.
+ *
+ * ATTRIBUTION NOW COMES FROM TWO PLACES, BOTH EXACT, NEITHER A GUESS:
+ *   · a trace made THROUGH PILOT is recorded against the officer who clicked, by
+ *     us, at the moment they clicked — that never needed a vendor to confirm it;
+ *   · a trace made in Elementix's own screens is read back from `unlockedBy` and
+ *     matched to `staff_users.email`.
+ * An email that matches nobody is REPORTED, never assigned to the nearest name.
+ *
+ * The owner also directed that the back-office work — verifying and building a
+ * borrower's track record, which is the UNDERWRITING plane in lookups.js — keeps
+ * using this one main connection and is not to be touched. It never used
+ * anything else, and nothing in the CRM work changes it.
+ *
+ * WHAT DOES NOT CHANGE: the 1,000 requests/hour ceiling is an ORGANIZATION
+ * limit, shared across every connected client — the vendor's own usage page says
+ * so — so more seats never bought more throughput either.
+ *
+ * PER-OFFICER SEATS STILL WORK, and are one environment variable away
+ * (ELEMENTIX_SEAT_MODEL=officer). `accessToken(staffId)` prefers an officer's
+ * own row and falls back to the company one, so the two models compose; this is
+ * a decision about which is the DEFAULT, not about which is possible. An
+ * unrecognised value falls back to 'company'.
  */
-const SEAT_MODEL = 'company';
+const SEAT_MODEL = process.env.ELEMENTIX_SEAT_MODEL === 'officer' ? 'officer' : 'company';
 
 /**
  * Is this connection attempt allowed by the seat model? Returns a shaped refusal,
  * or null when it may proceed.
  *
- * A per-officer approval is REFUSED while the company holds a single seat, because
- * it is not a harmless extra row: `accessToken(staffId)` PREFERS an officer's own
- * row over the company one, so approving one would quietly move that officer onto
- * a second authorization with no second seat behind it, and split the record of
- * who looked up what. To buy per-officer seats later, flip SEAT_MODEL — nothing
- * else has to change.
+ * A per-officer approval is REFUSED under the 'company' model — the default —
+ * because there it is not a harmless extra row: `accessToken(staffId)` PREFERS
+ * an officer's own row over the company one, so approving one would quietly move
+ * that officer onto a second authorization with no second seat behind it, and
+ * split the record of who looked up what. Under 'officer' that is exactly the
+ * intent, so nothing is refused.
  *
  * PURE on purpose: no network, no database. That is what lets it be tested for
  * real, which matters because the alternative — asserting it through
  * `beginConnect` — reaches live discovery and client registration at Elementix.
- * A unit test must never call the vendor.
+ * A unit test must never call the vendor. `model` is a parameter for the same
+ * reason: BOTH models can be asserted without a deploy-time constant standing in
+ * the way, and without any call reaching the wire.
  */
-function seatRefusal(staffId) {
-  if (SEAT_MODEL === 'company' && staffId) {
+function seatRefusal(staffId, model = SEAT_MODEL) {
+  if (model === 'company' && staffId) {
     return { ok: false, reason: 'officer_seat_not_enabled',
       detail: 'PILOT holds one company-wide Elementix login, so connect it company-wide rather than per officer.' };
   }
@@ -496,7 +533,7 @@ async function beginConnect({ staffId = null, actorId = null } = {}) {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12, now() + ($13 || ' seconds')::interval)`,
     [state, pkce.verifier, staffId, d.resourceUrl, d.issuer, d.tokenEndpoint,
      reg.clientId, reg.clientSecret ? encrypt(reg.clientSecret) : null,
-     JSON.stringify({ ...d, raw: undefined }), uri, scope, actorId, String(PENDING_TTL_SEC)]
+     jsonbText({ ...d, raw: undefined }), uri, scope, actorId, String(PENDING_TTL_SEC)]
   );
 
   const auth = new URL(d.authorizationEndpoint);
@@ -617,7 +654,7 @@ async function store({ staffId, resourceUrl, authServer, tokenEndpoint, clientId
        connected_at = COALESCE(elementix_oauth.connected_at, EXCLUDED.connected_at),
        last_refresh_at = now(), last_error = NULL, last_error_at = NULL, updated_at = now()`,
     [staffId, resourceUrl, authServer, tokenEndpoint, clientId, clientSecretEnc,
-     JSON.stringify(discovery || {}), encrypt(token.access_token),
+     jsonbText(discovery || {}), encrypt(token.access_token),
      token.refresh_token ? encrypt(token.refresh_token) : null,
      token.token_type || 'Bearer', token.scope || null, expiresAt, connectedBy]
   );

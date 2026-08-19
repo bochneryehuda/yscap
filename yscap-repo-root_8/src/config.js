@@ -574,6 +574,16 @@ module.exports = {
     // officer's session and every background job draw from the same bucket.
     maxPerHour:   parseInt(process.env.ELEMENTIX_MAX_PER_HOUR || '400', 10),
     maxPerSec:    parseInt(process.env.ELEMENTIX_MAX_PER_SEC || '3', 10),
+    // AUTO-PULL THE LEADS — ON by default (owner-directed 2026-08-19: "set up
+    // auto pull leads"). It shipped OFF because it creates leads in people's
+    // pipelines out of work done in Elementix's own screens, which is the
+    // owner's call to make and they have now made it.
+    // NOTHING HERE CAN SPEND A CREDIT: every person it imports is already
+    // unlocked, so the contact read is free — which is what makes an unattended
+    // loop acceptable at all. The worst case is calls against a rate limit.
+    // `=== '0'` so an explicit 0 turns it off; it is also a live switch on the
+    // API Health page, read at CALL time, so it can be stopped without a deploy.
+    crmSync:      process.env.ELEMENTIX_CRM_SYNC_ENABLED !== '0',
   },
 
   sitewireDocsEnabled:  process.env.SITEWIRE_DOCS_ENABLED === '1',   // master switch for the doc-push workaround (default off)

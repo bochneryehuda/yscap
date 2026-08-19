@@ -99,6 +99,12 @@ const SWITCHES = [
   // enrichment, which is a per-person human click and can never be turned on globally.
   { key: 'ELEMENTIX_ENABLED', integration: 'elementix', label: 'Elementix public-records lookups (reading)', dangerous: false, envDefault: () => cfg.elementix.enabled },
   { key: 'ELEMENTIX_DRYRUN', integration: 'elementix', label: 'Elementix dry-run (log the intended lookup, send nothing)', dangerous: false, envDefault: () => cfg.elementix.dryrun },
+  // The CRM auto-import. NOT dangerous — it cannot spend a credit (every person
+  // it brings in is already unlocked, so the read is free) and it never writes
+  // to Elementix. It DOES create leads in officers' pipelines, which is why it
+  // is a switch a human can see and stop rather than something buried in env.
+  // Read at CALL time by each pass, so flipping it takes effect immediately.
+  { key: 'ELEMENTIX_CRM_SYNC_ENABLED', integration: 'elementix', label: 'Bring newly unlocked Elementix contacts in as leads, automatically', dangerous: false, envDefault: () => cfg.elementix.crmSync },
 
   // DocLab (Private Lender Law) — loan-document drafting. Same three-stage shape as
   // the AMC and Class: master turns on reading (the token, the template catalogue, a
