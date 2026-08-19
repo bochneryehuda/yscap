@@ -6912,3 +6912,109 @@ first CRASHED the suite rather than failing it (a crash is not proof — the §2
 index-reading assertions read defensively and the same mutation now produces ten named failures.
 
 174/174 suites, 33 database-backed. All seven gates green.
+
+---
+
+## §2.110 — 168 of 224 measured differences were dropped by a `continue` (2026-08-19)
+
+**The live run of 2026-08-19 printed `by category {"coupon_missing_ours":56}`.** The battery was 8
+scenarios. Each carried 28 coarse differences. 8 × 28 = **224**. The report said 56.
+
+The missing 168 were not contested, not filtered, and not judged irrelevant. They were skipped by one
+statement in `summarize()`:
+
+```js
+if (r.incomparable) { incomparable += 1; …; continue; }
+```
+
+Below that `continue` lived **every descriptive tally in the report** — `byCategory` (what kind of
+difference), `byDimension` / `byStatus` (which LLPA families disagreed and how), `bounds` (cap/floor
+probes) and `worstDeltaMilli`. A scenario is `incomparable` when its DECLINE REASONS cannot be paired
+or read — a statement about the eligibility axis. It says nothing whatsoever about whether the run
+measured anything on the pricing axis. On the live run, 6 of 8 scenarios were incomparable
+(`decline_reasons_unpaired` ×4, `decline_reasons_unreadable` ×2), so three quarters of everything the
+vendor was paid to return never reached the number a human reads.
+
+**The comment sitting directly above the tally made the promise explicit** — "`byCategory` tallies
+EVERY coarse difference (the long-standing convention — an axis the caller ignored still shows, so a
+reader sees what was measured)" — and the code did not keep it. Worse, that same comment reasoned
+carefully about arithmetic it got backwards: it justified counting `coarseNotEvidence` in the narrow
+population so the two numbers would reconcile, warning that a wider counter "would say 224 beside a
+tally of 168". The real pair was 56 beside 224. **Past-me aligned the explanation with a number that
+was itself incomplete, and wrote a paragraph defending the alignment.** The reconciliation was true and
+the population was wrong, which is the harder kind of wrong to see: every internal check passed.
+
+**THE DEFECT CLASS, FOR THE FOURTH TIME IN THIS WORKSTREAM.** §2.107 (a partition sentence scored as a
+refusal), §2.108 (a second same-axis rule dropped before comparison), §2.109 (every raw payload
+discarded after parsing), and now this: **a comparison that answers confidently on evidence it silently
+threw away.** The other three threw evidence away at the point of judgement. This one threw it away
+*after* judging, in the report — which is arguably worse, because the owner's standing question is
+literally "find which scenarios are not pricing correctly," and this is the artifact that answers it.
+
+### The fix separates SCORING from MEASUREMENT
+
+Scoring stays exactly as narrow as it was, and that narrowness is now asserted rather than assumed. An
+incomparable scenario is still not `agreed`, still not `disagreed`, still counted under
+`incomparableByReason`, and `gateMet` still reads only `errors === 0 && disagreed === 0 &&
+comparable > 0 && declineFeedComplete`. **None of the widened tallies feeds the gate**, which is why
+widening them is safe at all; a suite section exists solely to forbid the alternative, because a
+battery nobody could score reporting agreement would be far worse than the number this fixes.
+
+Measurement now runs for every scenario the battery observed, and the report names its own population:
+
+```js
+measurement: {
+  scenarios: 8,        // scenarios whose measurements were tallied (errors excluded — they measured nothing)
+  comparable: 2,       // ... of which could be scored
+  incomparable: 6,     // ... of which could not, and would previously have been dropped whole
+  fromIncomparable: { coarseDifferences: 168, rungRows: 0, boundsProbed: 0 },
+}
+```
+
+**An errored scenario is the one population that must NOT grow.** A scenario that threw produced no
+observation at all, so folding it into `measurement.scenarios` would overstate the battery in the
+opposite direction. Its `continue` stays exactly where it is, and section G pins that it does.
+
+`scripts/test-lt-lp-agreement-run.js` prints the coverage line whenever anything was unscorable —
+`measured over 8 scenarios (2 scorable, 6 not) — from the unscorable: 168 coarse, 0 LLPA rows, 0 bounds
+probes`. A coverage counter nothing prints is a coverage counter nobody reads, so the suite pins the
+runner at the source (the paid runner cannot be executed from a pure suite).
+
+### What it is measured by
+
+`scripts/test-lt-ppe-incomparable-measurement.js` — 32 assertions, **mutation-proven five ways**: the
+`continue` restored (12 named failures), the coarse attribution dropped (3), unscorable rows scored
+anyway (4), `measurement` never exported (10), and the runner's print removed (3). Every assertion that
+reads the new block reads it defensively — `(sum.measurement || {})`, `(m.fromIncomparable || {})` —
+so the delete-the-export mutation FAILS the suite instead of crashing it. A crash is not proof; that
+rule was re-learned three separate times in §2.109 and is now applied up front.
+
+Section F exists because a counter hard-wired to the number section B expects would pass every
+assertion before it: a wider unscorable row is driven through and the attribution has to track 7
+instead of repeating 3.
+
+### Measured, not projected — the stored live run replayed through the fixed code
+
+The numbers above are not a projection. `scripts/test-lt-lp-agreement-run.js` stores every per-scenario
+result row, and `summarize()` consumes exactly those rows, so the 2026-08-19 run can be re-summarized
+offline with no reconstruction whatsoever. **This is the replay §2.107's was not**: there the report
+kept layers but not the top-level rows, our side's facts had to be inferred, and the reconstruction
+answered *worse* than the run it replayed — so it was discarded rather than reported. Here the input is
+the run's own output, and the proof that it is faithful is that every SCORED number comes back
+identical:
+
+| | stored 2026-08-19 | replayed through §2.110 |
+|---|---|---|
+| agreed / disagreed / incomparable | 2 / 0 / 6 | **2 / 0 / 6** |
+| `gateMet` | true | **true** |
+| `byCategory.coupon_missing_ours` | 56 | **224** |
+| `measurement` | *(did not exist)* | 8 tallied, 2 scorable, 6 not |
+| `fromIncomparable.coarseDifferences` | — | **168** |
+
+Not one scoring number moved. The only thing that changed is that 168 differences the run paid for, and
+had in hand, now appear in the artifact that exists to show them.
+
+**Nothing about the vendor changed and no gate moved.** What changed is that the run's own report no
+longer describes a battery it did not look at.
+
+175/175 suites, 33 database-backed. All seven gates green.

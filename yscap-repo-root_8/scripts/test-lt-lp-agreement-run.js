@@ -201,6 +201,15 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   if (summary.worstDeltaMilli) console.log(`  worst LLPA Δ  ${summary.worstDeltaMilli} milli`);
   console.log(`  agreement     ${summary.agreementRate == null ? 'n/a' : (summary.agreementRate * 100).toFixed(2) + '%'}`);
   if (Object.keys(summary.byCategory).length) console.log(`  by category   ${JSON.stringify(summary.byCategory)}`);
+  // WHICH POPULATION THE LINES ABOVE WERE MEASURED OVER (§2.110). They cover every scenario the battery
+  // ran, scorable or not; this line says how much of that came from scenarios that could not be scored,
+  // because "by category 224" over 8 scenarios and over 2 are very different readings of the same run.
+  const m = summary.measurement;
+  if (m && m.incomparable > 0) {
+    const f = m.fromIncomparable || {};
+    console.log(`  measured over ${m.scenarios} scenarios (${m.comparable} scorable, ${m.incomparable} not) `
+      + `— from the unscorable: ${f.coarseDifferences || 0} coarse, ${f.rungRows || 0} LLPA rows, ${f.boundsProbed || 0} bounds probes`);
+  }
   if (Object.keys(summary.byDimension).length) console.log(`  by dimension  ${JSON.stringify(summary.byDimension)}`);
   if (summary.byStatus && Object.keys(summary.byStatus).length) console.log(`  by status     ${JSON.stringify(summary.byStatus)}`);
   // the two piles a human needs kept apart: whole families we already know we must measure (task #62),

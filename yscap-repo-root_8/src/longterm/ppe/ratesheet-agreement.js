@@ -719,6 +719,17 @@ function summarize(results) {
     },
   };
   const incomparableByReason = {};
+  // WHICH POPULATION THE DESCRIPTIVE NUMBERS CAME FROM (§2.110). `byCategory`, `bounds`, `byDimension`
+  // and `worstDeltaMilli` are measurements, not scores, and they now cover EVERY scenario the battery
+  // ran — comparable or not. That is only honest if the report also says how much of each number came
+  // from scenarios that could not be scored, so a reader can weigh it. Counted in the same loops as the
+  // tallies themselves, so the two can never drift apart.
+  const measurement = {
+    scenarios: 0,       // scenarios whose measurements were tallied (errors excluded — they measured nothing)
+    comparable: 0,      // ... of which could be scored
+    incomparable: 0,    // ... of which could not, and would previously have been dropped whole
+    fromIncomparable: { coarseDifferences: 0, rungRows: 0, boundsProbed: 0 },
+  };
   for (const r of list) {
     if (!r) continue;
     if (r.lpDisqReady) declineFeedReady += 1;
@@ -743,28 +754,41 @@ function summarize(results) {
         declines.byLayer[layer].onlyAuthority += (l.onlyAuthority || []).length;
       }
     }
+    // SCORING is comparable-only, and stays that way. MEASUREMENT is not — see below.
     if (r.incomparable) {
       incomparable += 1;
       const why = r.incomparableReason || 'unstated';
       incomparableByReason[why] = (incomparableByReason[why] || 0) + 1;
-      continue;
-    }
-    // WHAT KIND of agreement it was. A both-decline is a REAL agreement (the owner asked for ineligible
-    // scenarios explicitly — "confirm the disqualifier matches"), but it is weaker evidence about the
-    // SHEET than a priced scenario whose every LLPA reconciled, and a headline built mostly of declines
-    // would read far stronger than it is. Reported separately so the composition of the number is
-    // visible instead of having to be assumed.
-    const priced = !!(r.ourEligible && r.lpEligible);
-    if (r.agree) {
-      agreed += 1;
-      if (priced) agreedPriced += 1; else agreedDeclined += 1;
     } else {
-      disagreed += 1;
-      if (disagreements.length < DISAGREEMENT_SAMPLE) {
-        disagreeing.push(r.scenario);
-        disagreements.push(disagreementRecord(r));
-      } else disagreementsOmitted += 1;
+      // WHAT KIND of agreement it was. A both-decline is a REAL agreement (the owner asked for
+      // ineligible scenarios explicitly — "confirm the disqualifier matches"), but it is weaker
+      // evidence about the SHEET than a priced scenario whose every LLPA reconciled, and a headline
+      // built mostly of declines would read far stronger than it is. Reported separately so the
+      // composition of the number is visible instead of having to be assumed.
+      const priced = !!(r.ourEligible && r.lpEligible);
+      if (r.agree) {
+        agreed += 1;
+        if (priced) agreedPriced += 1; else agreedDeclined += 1;
+      } else {
+        disagreed += 1;
+        if (disagreements.length < DISAGREEMENT_SAMPLE) {
+          disagreeing.push(r.scenario);
+          disagreements.push(disagreementRecord(r));
+        } else disagreementsOmitted += 1;
+      }
     }
+    // ---- EVERYTHING BELOW IS MEASUREMENT, AND IT RUNS FOR EVERY SCENARIO (§2.110) -----------------
+    // This used to sit behind `continue` on the incomparable branch, so a scenario whose decline
+    // reasons could not be paired contributed NOTHING to `byCategory`, `bounds`, `byDimension` or
+    // `worstDeltaMilli` — while the report presented those numbers as what the battery measured. On the
+    // live 2026-08-19 run that silently dropped 6 of 8 scenarios and 168 of 224 coarse differences: a
+    // reader chasing "which scenarios are not pricing correctly" saw 56 and had no way to learn the
+    // other 168 existed. Incomparable means UNSCORABLE, not unmeasured — the vendor was paid for these
+    // payloads either way. None of these tallies feeds `gateMet` (errors / disagreed / comparable /
+    // declineFeedComplete), so widening the population cannot move the gate; it only stops the report
+    // describing a battery it did not look at. `measurement` below names the population out loud.
+    measurement.scenarios += 1;
+    if (r.incomparable) measurement.incomparable += 1; else measurement.comparable += 1;
     // The largest per-dimension LLPA delta anywhere — computed per scenario and, until now, dropped.
     // "We disagree on 41 scenarios" reads very differently at 1 milli than at 5,000.
     if (isNum(r.worstDeltaMilli) && Math.abs(r.worstDeltaMilli) > Math.abs(worstDeltaMilli)) worstDeltaMilli = r.worstDeltaMilli;
@@ -774,6 +798,7 @@ function summarize(results) {
     }
     for (const b of (r.bounds || [])) {
       bounds.rungsProbed += 1;
+      if (r.incomparable) measurement.fromIncomparable.boundsProbed += 1;
       if (b.capStated) bounds.capStated += 1;
       if (b.floorStated) bounds.floorStated += 1;
       if (b.clamped) bounds.clamped += 1;
@@ -785,18 +810,21 @@ function summarize(results) {
     }
     for (const d of ((r.coarse && r.coarse.differences) || [])) {
       byCategory[d.category] = (byCategory[d.category] || 0) + 1;
-      // `byCategory` tallies EVERY coarse difference (the long-standing convention — an axis the caller
-      // ignored still shows, so a reader sees what was measured). On a both-decline NONE of them gated:
-      // our engine priced nothing because it declined, so "LP offers a coupon we do not price" is an
-      // artefact of the refusal. Counted HERE, in the same loop and under the same skips as the tally
-      // itself, so the two numbers reconcile EXACTLY — a counter taken from a different population
-      // would say 224 beside a tally of 168 and re-create the puzzle it exists to remove.
+      if (r.incomparable) measurement.fromIncomparable.coarseDifferences += 1;
+      // `byCategory` tallies EVERY coarse difference — and since §2.110 that phrase is finally true:
+      // it used to mean "every difference on a scenario we could score", which on the live run was 56
+      // of 224. On a both-decline NONE of them gated: our engine priced nothing because it declined, so
+      // "LP offers a coupon we do not price" is an artefact of the refusal. `coarseNotEvidence` is
+      // counted HERE, in the same loop and under the same skips as the tally itself, so the two numbers
+      // reconcile EXACTLY over whatever population the loop sees — a counter drawn from a different
+      // population re-creates the puzzle it exists to remove.
       if (r.bothDeclined) declines.coarseNotEvidence += 1;
     }
     for (const rec of (r.rungReconciles || [])) {
       for (const it of (rec.itemized || [])) {
         if (it.deltaMilli === 0) continue;
         byDimension[it.dimension] = (byDimension[it.dimension] || 0) + 1;
+        if (r.incomparable) measurement.fromIncomparable.rungRows += 1;
         // reconcileLlpas stamps every non-match row with a status: llpa_missing_ours (LP prices a
         // dimension we carry NO adjustment for — the four unencoded families), llpa_mismatch (a cell we
         // DO encode but the number is off — a real sheet bug), or llpa_extra_ours (we price something LP
@@ -844,6 +872,7 @@ function summarize(results) {
     comparable,
     agreementRate: comparable ? agreed / comparable : null,
     byCategory,
+    measurement,
     byDimension,
     byDimensionStatus,
     byStatus,
