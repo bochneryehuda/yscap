@@ -309,7 +309,9 @@ function ReadyMade({ session, onChanged }) {
         // at 2:30 in the morning. Same expression as DaySetup, on purpose.
         offsetMinutes: -new Date().getTimezoneOffset(),
       });
-      if (r && r.alreadyThere) {
+      if (r && r.revived) {
+        showMessage(r.message || 'That plan had been called off — it is back now as a draft.', { title: 'Brought back', tone: 'info' });
+      } else if (r && r.alreadyThere) {
         showMessage(r.message || 'That plan is already in this session.', { title: 'Already there', tone: 'info' });
       }
       setDone(r);
@@ -453,6 +455,61 @@ function ChallengeDay({ session, onChanged }) {
       </ul>
 
       <AddChallenge session={session} lib={lib} onAdded={load} />
+      <HandOutChances session={session} />
+    </div>
+  );
+}
+
+/** Give somebody extra chances by hand — or take them back — always with a
+ *  reason, because the reason shows up on their own list. The server route
+ *  existed from day one; this is its screen (owner: "all the admin settings
+ *  that you left"). */
+function HandOutChances({ session }) {
+  const [everyone, setEveryone] = useState(null);
+  const [who, setWho] = useState('');
+  const [count, setCount] = useState(1);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  useEffect(() => {
+    arena.roster().then((d) => setEveryone(d.everyone || [])).catch(() => setEveryone([]));
+  }, []);
+  const give = async () => {
+    setBusy(true); setNote('');
+    try {
+      const r = await arena.giveTickets(session.id, { staffId: who, count: Math.trunc(Number(count)), reason: reason.trim() });
+      const name = (everyone || []).find((p) => String(p.id) === who);
+      const total = r && r.standing && Number.isFinite(Number(r.standing.tickets)) ? ` They now have ${r.standing.tickets}.` : '';
+      setNote(`Done — ${name ? name.full_name : 'they'} ${Number(count) > 0 ? `got ${count}` : `lost ${Math.abs(count)}`} chance${Math.abs(count) === 1 ? '' : 's'}.${total}`);
+      setReason('');
+    } catch (e) { showMessage((e && e.message) || 'That did not work.', { tone: 'error' }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="arena-daysetup" style={{ marginTop: 14 }}>
+      <h4>Hand out chances by hand</h4>
+      <p className="muted small">
+        Extra chances go onto the person's wheel odds for the ticket spins. A negative number takes
+        chances back. The reason shows on their own list, so write it as you would say it to them.
+      </p>
+      <div className="arena-form">
+        <label>Who
+          <select className="input" value={who} onChange={(e) => setWho(e.target.value)}>
+            <option value="">Pick a person…</option>
+            {(everyone || []).map((p) => <option key={p.id} value={String(p.id)}>{p.full_name}</option>)}
+          </select>
+        </label>
+        <label>How many (negative takes back)
+          <input className="input" type="number" min="-20" max="20" value={count} onChange={(e) => setCount(e.target.value)} />
+        </label>
+        <label>Why
+          <input className="input" value={reason} placeholder="Closed the Rodriguez file" onChange={(e) => setReason(e.target.value)} />
+        </label>
+      </div>
+      <button className="btn small" disabled={busy || !who || !reason.trim() || !Math.trunc(Number(count))} onClick={give}>
+        {busy ? 'Working…' : 'Give them'}
+      </button>
+      {note && <p className="arena-good small">{note}</p>}
     </div>
   );
 }
@@ -881,6 +938,17 @@ function PlanRow({ spin, sessionLive, onChanged }) {
           {spin.entry_deadline_at ? ` · check-in closes ${fmtWhen(spin.entry_deadline_at)}` : ''}
         </span>
       </div>
+      {spin.state === 'cancelled' && (
+        <div className="arena-decide" style={{ marginTop: 6 }}>
+          <button className="btn small" disabled={busy} onClick={async () => {
+            if (!await askConfirm(`Bring "${spin.title}" back? It returns as a draft with its times kept — open it (or let it open itself) when ready.`, { confirmLabel: 'Bring it back' })) return;
+            setBusy(true);
+            try { await arena.reviveSpin(spin.id); onChanged(); }
+            catch (e) { showMessage((e && e.message) || 'That did not work.', { tone: 'error' }); }
+            finally { setBusy(false); }
+          }}>Bring it back</button>
+        </div>
+      )}
       {!done && !running && (
         <div className="arena-form arena-plantimes">
           <label>Opens itself at

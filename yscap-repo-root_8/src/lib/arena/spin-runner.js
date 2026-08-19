@@ -788,6 +788,29 @@ async function launchDue(now = new Date()) {
   return out;
 }
 
+/** Bring a CANCELLED spin back as a draft — the undo for a mis-click on
+ *  "Call it off" (owner, live on Elementix Day 2026-08-19: "I canceled somehow
+ *  the two spins … I should be able to reactivate"). Only a spin that never
+ *  actually RAN can come back: a revealed wheel is history and history is not
+ *  edited. Unrevealed committed draws are removed — their seeds were never
+ *  published, so the commitment proves nothing was drawn — and the next open
+ *  freezes a fresh roster exactly as a brand-new spin would. */
+async function reviveSpin(spinId) {
+  const revealed = await db.query(
+    `SELECT count(*)::int AS n FROM arena_draws WHERE spin_id = $1 AND state = 'revealed'`, [spinId]);
+  if (revealed.rows[0].n > 0) throw new Error('That spin already ran a wheel — it cannot be brought back. Make a new spin instead.');
+  const r = await db.query(
+    `UPDATE arena_spins
+        SET state = 'draft', outcome_note = NULL, locked_at = NULL, updated_at = now()
+      WHERE id = $1 AND state = 'cancelled' RETURNING *`, [spinId]);
+  if (!r.rows[0]) throw new Error('Only a cancelled spin can be brought back.');
+  // Leftover committed draws would collide with the fresh freeze on the
+  // (spin, seq) unique index -- and they are pre-run bookkeeping, not results.
+  await db.query(`DELETE FROM arena_draws WHERE spin_id = $1 AND state <> 'revealed'`, [spinId]);
+  broadcast('arena:spin', { spinId, state: 'draft' });
+  return r.rows[0];
+}
+
 /** Abandon a spin. The draws stay exactly as they are -- a cancelled spin is
  *  part of the record, not something to erase. */
 async function cancelSpin(spinId, reason) {
@@ -801,7 +824,7 @@ async function cancelSpin(spinId, reason) {
 
 module.exports = {
   setBroadcaster,
-  createSpin, openSpin, lockSpin, freezeRoster,
+  createSpin, openSpin, lockSpin, reviveSpin, freezeRoster,
   startSpin, revealDraw, settleSpin, settleDue,
   pressStop, pressStopInternal, rosterFor, launchDue,
   verify, cancelSpin,

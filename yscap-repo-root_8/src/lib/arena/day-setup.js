@@ -120,6 +120,24 @@ async function ensureSpin(session, key, { day, offsetMinutes, createdBy }) {
   const existing = await db.query(
     `SELECT * FROM arena_spins WHERE session_id = $1 AND template_key = $2 LIMIT 1`, [session.id, key]);
   if (existing.rows[0]) {
+    // A CANCELLED copy is not "already there" — it is the mis-click the owner
+    // hit live on Elementix Day ("it's coming up that it's already there, but
+    // the fact is that it's cancelled, so I can't access"). If it never ran a
+    // wheel, loading the plan again BRINGS IT BACK as a draft with its times
+    // restored; only a spin that genuinely ran stays a matter of record.
+    if (existing.rows[0].state === 'cancelled') {
+      try {
+        const revived = await runner.reviveSpin(existing.rows[0].id);
+        await db.query(
+          `UPDATE arena_spins SET launch_at = $2, entry_opens_at = $3, entry_deadline_at = $4, updated_at = now()
+            WHERE id = $1`,
+          [revived.id, built.launchAt || null, built.entryOpensAt || null, built.entryDeadlineAt || null]);
+        const fresh = await db.query(`SELECT * FROM arena_spins WHERE id = $1`, [revived.id]);
+        return { key, ok: true, created: false, revived: true, spin: fresh.rows[0], label: built.title };
+      } catch (e) {
+        return { key, ok: false, reason: e.message || 'The cancelled copy could not be brought back.' };
+      }
+    }
     return { key, ok: true, created: false, spin: existing.rows[0], label: built.title };
   }
 

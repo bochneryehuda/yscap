@@ -633,12 +633,13 @@ router.put('/spins/:id', requireSuper, async (req, res) => {
   res.json({ spin: r.rows[0] });
 });
 
-router.post('/spins/:id/:action(open|lock|cancel)', requireSuper, async (req, res) => {
+router.post('/spins/:id/:action(open|lock|cancel|revive)', requireSuper, async (req, res) => {
   try {
     const a = req.params.action;
     const spin = a === 'open' ? await runner.openSpin(req.params.id)
       : a === 'lock' ? await runner.lockSpin(req.params.id)
-        : await runner.cancelSpin(req.params.id, (req.body || {}).reason);
+        : a === 'revive' ? await runner.reviveSpin(req.params.id)
+          : await runner.cancelSpin(req.params.id, (req.body || {}).reason);
     await audit(req, `arena_spin_${a}`, 'arena_spin', req.params.id, {});
     if (a === 'open') await announceSpinOpen(spin).catch(() => {});
     res.json({ spin });
