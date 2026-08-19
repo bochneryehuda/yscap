@@ -156,18 +156,59 @@ function indexCaptures(dir, opts = {}) {
     const sc = r && r.meta && r.meta.scenario;
     const key = sc ? requestKey(sc, keyOpts) : null;
     if (!key) { unkeyable += 1; continue; }
-    const slot = byKey.get(key) || { price: null, disqualify: null, searchKeys: new Set(), labels: new Set() };
-    if (r.kind === 'price' || r.kind === 'disqualify') slot[r.kind] = r;
+    const slot = byKey.get(key)
+      || { price: null, disqualify: null, searchKeys: new Set(), labels: new Set(), evicted: new Set() };
+    if (r.kind === 'price' || r.kind === 'disqualify') {
+      // LAST WRITE WINS, but only among rows we can actually READ. A capture directory can hold two
+      // runs of one scenario and the later answer is the one that run saw — yet a later row whose bytes
+      // the budget has since evicted is not an answer at all, and an older surviving payload for the
+      // SAME REQUEST is a real vendor answer we still hold. So the newest PRESENT row wins, and the
+      // fact that a newer one was dropped is recorded rather than lost.
+      if (payloadPresent(dir, r, fs)) slot[r.kind] = r;
+      else slot.evicted.add(r.kind);
+    }
     if (r.meta && r.meta.searchKey) slot.searchKeys.add(r.meta.searchKey);
     if (sc && sc._label) slot.labels.add(sc._label);
     byKey.set(key, slot);
   }
   let ambiguous = 0;
+  let evictedKeys = 0;
   for (const slot of byKey.values()) {
     slot.ambiguous = slot.searchKeys.size > 1;
     if (slot.ambiguous) ambiguous += 1;
+    // A key whose PRICE bytes are gone with nothing surviving to fall back on. Counted apart from a
+    // key that merely lost a newer duplicate — one cannot answer, the other still can.
+    slot.priceEvicted = !slot.price && slot.evicted.has('price');
+    if (slot.priceEvicted) evictedKeys += 1;
   }
-  return { byKey, rows, malformed, unkeyable, ambiguous, preWidening: looksPreWidening(rows) };
+  return { byKey, rows, malformed, unkeyable, ambiguous, evictedKeys, preWidening: looksPreWidening(rows) };
+}
+
+/**
+ * Are the BYTES of this captured payload still on disk?
+ *
+ * ⛔ THE INDEX IS NOT THE EVIDENCE. `capture.js enforceBudget()` bounds a capture directory by
+ * unlinking payloads OLDEST FIRST once it passes `LP_CAPTURE_MAX_MB`, and it deliberately never
+ * touches `index.jsonl` — its own words: "the index is the record that a payload once existed, which
+ * stays true after the bytes are evicted." So on exactly the long paid runs worth replaying, the index
+ * carries rows whose payloads are gone. Counting index rows as coverage reports a capture as complete
+ * that cannot answer, and the run then dies part-way on a raw ENOENT. `capture.readIndex` already gets
+ * this right (`present: fs.existsSync(...)`); this is the reader doing the same.
+ *
+ * Cheapest available check, degrading rather than refusing: `existsSync`, then `statSync`, then an
+ * actual read. The fallbacks matter because `fs` is INJECTED — a caller (or a test) may hand in a
+ * partial object, and a presence test that silently answered "yes" for a stub would re-open exactly the
+ * hole this closes.
+ */
+function payloadPresent(dir, row, fs) {
+  if (!row || !row.file) return false;
+  const full = `${String(dir).replace(/\/+$/, '')}/${row.file}`;
+  try {
+    if (typeof fs.existsSync === 'function') return !!fs.existsSync(full);
+    if (typeof fs.statSync === 'function') { fs.statSync(full); return true; }
+    fs.readFileSync(full);
+    return true;
+  } catch (_) { return false; }
 }
 
 function readPayload(dir, row, { fs, zlib }) {
@@ -195,7 +236,7 @@ function buildReplayLpLeg(opts = {}) {
   }
   if (!dir) throw new Error('buildReplayLpLeg: a capture directory is required');
   const keyOpts = { buildSearch: opts.buildSearch || defaultBuildSearch(), project: opts.project || defaultProject() };
-  const { byKey, malformed, unkeyable, ambiguous, preWidening } = indexCaptures(dir, { fs, ...keyOpts });
+  const { byKey, malformed, unkeyable, ambiguous, evictedKeys, preWidening } = indexCaptures(dir, { fs, ...keyOpts });
 
   const leg = async function replay(scenario) {
     const label = (scenario && scenario._label) || 'unlabelled scenario';
@@ -203,6 +244,13 @@ function buildReplayLpLeg(opts = {}) {
     const slot = key == null ? null : byKey.get(key);
     // RULE 2 — a missing capture is a THROW, never an empty answer that reads as a verdict.
     if (!slot || !slot.price) {
+      // "We captured this and its bytes aged out of the budget" and "we never captured this" are
+      // different facts, and only one of them is fixed by re-running the battery. Say which.
+      if (slot && slot.priceEvicted) {
+        throw new Error(`replay: the captured price for “${label}” has been EVICTED from ${dir}`
+          + ' — the index still records it, but `capture.js enforceBudget()` removed the payload to stay'
+          + ' under LP_CAPTURE_MAX_MB. The answer is gone; only a fresh paid run can replace it.');
+      }
       throw new Error(`replay: no captured price for “${label}” in ${dir} — this run cannot answer for it`
         + (preWidening ? ' (this capture predates §2.120: its rows do not record every fact the request carries,'
           + ' so a live scenario cannot be matched to them — it is readable only from its own stored rows)' : ''));
@@ -227,6 +275,7 @@ function buildReplayLpLeg(opts = {}) {
   leg.unkeyableRows = unkeyable;
   leg.ambiguousKeys = ambiguous;
   leg.preWidening = preWidening;
+  leg.evictedKeys = evictedKeys;
   return leg;
 }
 
@@ -239,7 +288,7 @@ function replayCoverage(opts = {}) {
   const { dir, scenarios } = opts;
   const fs = opts.fs || require('fs');
   const keyOpts = { buildSearch: opts.buildSearch || defaultBuildSearch(), project: opts.project || defaultProject() };
-  const { byKey, malformed, unkeyable, ambiguous, preWidening } = indexCaptures(dir, { fs, ...keyOpts });
+  const { byKey, malformed, unkeyable, ambiguous, evictedKeys, preWidening } = indexCaptures(dir, { fs, ...keyOpts });
   const list = Array.isArray(scenarios) ? scenarios : [];
   const out = {
     scenarios: list.length,
@@ -247,12 +296,14 @@ function replayCoverage(opts = {}) {
     priced: 0,
     withDisqualify: 0,
     missingPrice: [],
+    evicted: [],
     missingDisqualify: [],
     ambiguousScenarios: [],
     unbuildable: [],
     malformedIndexLines: malformed,
     unkeyableRows: unkeyable,
     ambiguousKeys: ambiguous,
+    evictedKeys,
     preWidening,
   };
   for (let i = 0; i < list.length; i += 1) {
@@ -261,12 +312,16 @@ function replayCoverage(opts = {}) {
     const key = requestKey(sc, keyOpts);
     if (key == null) { out.unbuildable.push(label); continue; }
     const slot = byKey.get(key);
-    if (!slot || !slot.price) { out.missingPrice.push(label); continue; }
+    if (!slot || !slot.price) {
+      if (slot && slot.priceEvicted) out.evicted.push(label); else out.missingPrice.push(label);
+      continue;
+    }
     if (slot.ambiguous) { out.ambiguousScenarios.push(label); continue; }
     out.priced += 1;
     if (slot.disqualify) out.withDisqualify += 1; else out.missingDisqualify.push(label);
   }
-  out.complete = out.missingPrice.length === 0 && out.unbuildable.length === 0 && out.ambiguousScenarios.length === 0;
+  out.complete = out.missingPrice.length === 0 && out.evicted.length === 0
+    && out.unbuildable.length === 0 && out.ambiguousScenarios.length === 0;
   return out;
 }
 
@@ -278,6 +333,11 @@ function describeCoverage(cov) {
   if (cov.missingPrice.length) {
     lines.push(`NOT captured — a replay cannot answer for ${cov.missingPrice.length}: ${cov.missingPrice.slice(0, 6).join(', ')}`
       + (cov.missingPrice.length > 6 ? `, and ${cov.missingPrice.length - 6} more` : ''));
+  }
+  if (cov.evicted.length) {
+    lines.push(`captured but EVICTED — the payload aged out of the capture budget for ${cov.evicted.length}:`
+      + ` ${cov.evicted.slice(0, 6).join(', ')}${cov.evicted.length > 6 ? `, and ${cov.evicted.length - 6} more` : ''}`
+      + ' (the index still records them; only a fresh paid run can replace the answer)');
   }
   if (cov.missingDisqualify.length) {
     lines.push(`captured WITHOUT a refusal tree (${cov.missingDisqualify.length}) — those scenarios replay as`

@@ -7971,7 +7971,7 @@ answer.
 
 ### Proven
 
-- `scripts/test-lt-ppe-lp-replay.js` — 69 assertions against a **real capture committed as a fixture**:
+- `scripts/test-lt-ppe-lp-replay.js` — 83 assertions against a **real capture committed as a fixture**:
   the two price payloads are UNTOUCHED vendor bytes (re-hashed to their own filenames in the test), and
   the refusal tree is real vendor structure pruned to ≤2 childs/≤2 leafs per node, naming in its own
   index row the 173,632,512 raw bytes it stands in for. 11 mutations, each verified to have APPLIED
@@ -7987,3 +7987,43 @@ answer.
   correctly reports 1 scorable of 2 and refuses the eligibility verdict on the scenario whose refusal
   tree was never captured.
 - 185/185 suites, 34 database-backed. All seven gates green.
+
+### §2.120a — and the reader made the same mistake it was built to catch
+
+Found the same day, in the module above, before anything depended on it.
+
+`capture.js enforceBudget()` bounds a capture directory by unlinking payloads **oldest first** once it
+passes `LP_CAPTURE_MAX_MB` (default 2 GB), and it deliberately leaves `index.jsonl` alone — its own
+words: *"the index is the record that a payload once existed, which stays true after the bytes are
+evicted."* That is the right call for the sink.
+
+`replayCoverage` counted **index rows**. So on exactly the long paid runs worth replaying — the ones
+big enough to have hit their budget — it reported `2 of 2, complete: true` for a capture that could not
+answer, the runner's completeness gate passed on that number, and the run then died part-way on a raw
+`ENOENT`. Reproduced before it was fixed, against the real fixture.
+
+That is this workstream's recurring class exactly: **a report confident about a population it never
+measured.** `capture.readIndex` already gets it right (`present: fs.existsSync(...)`) — the reader
+simply did not ask.
+
+Four things changed, and the last two are the interesting ones:
+
+- **Coverage checks the bytes**, not the row.
+- **`evicted` is reported apart from `missingPrice`.** "We captured this and it aged out" and "we never
+  captured this" are different facts with different remedies, and the sink's own comment already made
+  that distinction; folding them would have thrown it away one layer up.
+- **Last write wins, among rows we can READ.** A directory can hold two runs of one scenario and the
+  later answer is the one that run saw — but a later row whose bytes are gone is not an answer at all,
+  and an older surviving payload for the *same request* is one we still hold. So the newest PRESENT row
+  wins and a recoverable answer is no longer thrown away.
+- **The presence check may never guess.** `fs` is injected, so a partial object must fall back to a real
+  read rather than assume the bytes are there — assuming would silently re-open the whole hole. Pinned
+  by a test that drives it with an `fs` carrying only `readFileSync`.
+
+Also fixed in the same pass: `--replay-partial` filtered the run by `missingPrice`, `ambiguous` and
+`unbuildable` and **not** `evicted`, so an evicted scenario stayed in the run and threw part-way — the
+precise failure that flag exists to avoid.
+
+**Proven:** section L of `scripts/test-lt-ppe-lp-replay.js`, 14 assertions, 4 mutations (M12–M15) each
+verified to have applied. End to end, a partial replay over a directory with one payload deleted names
+the eviction, drops that scenario, and says the report is about the survivors only.

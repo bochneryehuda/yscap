@@ -377,6 +377,94 @@ console.log('LT PPE — replay a paid run from its own capture (§2.120) — off
     'K7 a capture that DOES record the widened facts is not mislabelled as an old one');
 }
 
+// ---- L. AN EVICTED PAYLOAD IS NOT COVERAGE (§2.120a) ---------------------------------------------
+// FOUND IN THIS MODULE AFTER IT SHIPPED, and it is this workstream's recurring class: a report that is
+// confident about a population it never measured. `capture.js enforceBudget()` bounds a capture
+// directory by unlinking payloads OLDEST FIRST past LP_CAPTURE_MAX_MB and DELIBERATELY leaves
+// index.jsonl alone — its own comment: "the index is the record that a payload once existed, which
+// stays true after the bytes are evicted." Coverage counted INDEX ROWS, so on exactly the long paid
+// runs worth replaying it reported `2 of 2, complete: true` for a capture that could not answer, the
+// runner's completeness gate passed, and the run died part-way on a raw ENOENT.
+{
+  const goneFile = priceRows[0].file;
+  const goneLabel = priceRows[0].meta.scenario._label;
+  const evictedFs = {
+    existsSync: (pth) => (String(pth).endsWith(goneFile) ? false : fs.existsSync(pth)),
+    readFileSync: (pth, enc) => {
+      if (String(pth).endsWith(goneFile)) { const e = new Error('ENOENT: no such file'); e.code = 'ENOENT'; throw e; }
+      return fs.readFileSync(pth, enc);
+    },
+  };
+
+  const cov = attemptSync(() => replay.replayCoverage({ dir: DIR, scenarios, fs: evictedFs }));
+  ok(!!cov && cov.priced === 1, `L1 a payload whose bytes are gone is NOT counted as covered — priced ${cov ? cov.priced : '?'} of 2`);
+  ok(!!cov && cov.evicted.length === 1 && cov.evicted[0] === goneLabel,
+    'L2 …it is reported as EVICTED and named');
+  ok(!!cov && cov.missingPrice.length === 0,
+    'L3 …and kept SEPARATE from "never captured" — one is fixed by a fresh run, the other means we never asked');
+  ok(!!cov && cov.complete === false, 'L4 …so the capture is never reported as able to answer for the whole run');
+  const lines = cov ? replay.describeCoverage(cov).join('\n') : '';
+  ok(/EVICTED/.test(lines) && /capture budget/.test(lines),
+    'L5 …and the description names the BUDGET as the reason, not a corrupt directory');
+
+  // The leg must say the same thing, in the place a run actually meets it.
+  const leg = legOf({ client, dir: DIR, fs: evictedFs, zlib });
+  let threw = null;
+  try { if (leg) await leg(priceRows[0].meta.scenario); } catch (e) { threw = e; }
+  ok(threw instanceof Error && /EVICTED/.test(threw.message),
+    'L6 the leg names eviction rather than dying on a bare ENOENT');
+  ok(threw && /only a fresh paid run/.test(threw.message),
+    'L7 …and says what would fix it, since nothing on disk can');
+  ok(!!leg && leg.evictedKeys === 1, `L8 …and the leg reports how much of its capture is unreadable (${leg ? leg.evictedKeys : '?'})`);
+
+  // The surviving scenario is untouched — an eviction must not poison the rest of the directory.
+  const stillWorks = leg ? await attempt(() => leg(scenarios.find((x) => x._label === WITH_DQ))) : null;
+  ok(!!stillWorks && stillWorks.full.optionCount > 0,
+    'L9 …while every scenario whose bytes ARE present still replays normally');
+
+  // LAST WRITE WINS, AMONG ROWS WE CAN READ. A directory can hold two runs of one scenario; the later
+  // answer is the one that run saw, but a later row whose bytes the budget evicted is not an answer at
+  // all, and an older surviving payload for the SAME request is one we still hold.
+  const survivor = priceRows.find((r) => r.file !== goneFile);
+  const twoRuns = [
+    JSON.stringify({ ...survivor, at: '2026-08-01T00:00:00.000Z' }),
+    JSON.stringify({ ...survivor, at: '2026-08-02T00:00:00.000Z', file: goneFile, sha: 'evicted' }),
+  ].join('\n') + '\n';
+  const twoRunsFs = {
+    existsSync: evictedFs.existsSync,
+    readFileSync: (pth, enc) => (String(pth).endsWith('index.jsonl') ? twoRuns : evictedFs.readFileSync(pth, enc)),
+  };
+  const legTwo = legOf({ client, dir: DIR, fs: twoRunsFs, zlib });
+  const answered = legTwo ? await attempt(() => legTwo(survivor.meta.scenario)) : null;
+  ok(!!answered && answered.full.optionCount > 0,
+    'L10 a newer row that has been evicted falls back to the older payload we still hold, rather than refusing');
+  ok(!!legTwo && legTwo.evictedKeys === 0,
+    'L11 …and that key is NOT counted as unanswerable, because it was answered');
+
+  // A NOTHING-EVICTED directory must be byte-identical to before — the presence check may not become a
+  // new way to lose a capture.
+  const clean = replay.replayCoverage({ dir: DIR, scenarios });
+  ok(clean.priced === 2 && clean.evicted.length === 0 && clean.evictedKeys === 0 && clean.complete === true,
+    'L12 a directory with every payload present is unaffected by any of this');
+
+  // THE PRESENCE CHECK MUST NOT ANSWER "YES" FOR A STUB. `fs` is injected, so a partial object must
+  // degrade to a real read rather than assume the bytes are there — assuming would silently re-open
+  // exactly the hole this closes.
+  let reads = 0;
+  const noExists = {
+    readFileSync: (pth, enc) => {
+      if (String(pth).endsWith('index.jsonl')) return fs.readFileSync(pth, enc);
+      reads += 1;
+      if (String(pth).endsWith(goneFile)) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; }
+      return fs.readFileSync(pth, enc);
+    },
+  };
+  const degraded = attemptSync(() => replay.replayCoverage({ dir: DIR, scenarios, fs: noExists }));
+  ok(!!degraded && degraded.priced === 1 && degraded.evicted.length === 1,
+    'L13 an fs with no existsSync still detects the eviction — it falls back to a real read, never to a guess');
+  ok(reads > 0, 'L14 …which is what that fallback actually doing the work looks like');
+}
+
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);
 
@@ -407,4 +495,14 @@ process.exit(failures ? 1 : 0);
  *                                                                        with no reason)
  *   M11 looksPreWidening: always return true                           → K3/K7 fail (an old-capture
  *                                                                        warning on a modern one)
+ *   M12 payloadPresent: always return true (the pre-§2.120a state)     → L1/L2/L4/L8/L13 fail — the
+ *                                                                        capture reports itself
+ *                                                                        complete and the run dies
+ *                                                                        part-way on a raw ENOENT
+ *   M13 payloadPresent: `catch { return true }` on the read fallback    → L13 fails (a stub answers
+ *                                                                        "present" and the hole reopens)
+ *   M14 indexCaptures: take the newest row present or not               → L10 fails (a recoverable
+ *                                                                        answer is thrown away)
+ *   M15 coverage: fold `evicted` into `missingPrice`                    → L2/L3 fail (two different
+ *                                                                        facts reported as one)
  * ------------------------------------------------------------------------------------------- */

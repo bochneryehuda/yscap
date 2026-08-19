@@ -221,7 +221,10 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
       scenarios = scenarios.filter((sc) => {
         try { return !!requestKey(sc); } catch (_) { return false; }
       });
-      const answerable = new Set(cov.missingPrice.concat(cov.ambiguousScenarios, cov.unbuildable));
+      // EVERY name the coverage could not answer for — a list that misses one leaves that scenario in
+      // the run to throw part-way through, which is the failure --replay-partial exists to avoid.
+      const answerable = new Set(cov.missingPrice
+        .concat(cov.evicted, cov.ambiguousScenarios, cov.unbuildable));
       scenarios = scenarios.filter((sc, i) => !answerable.has((sc && sc._label) || `#${i}`));
       console.log(`  RUNNING PARTIAL: ${scenarios.length} scenario(s) this capture can answer for. The rest are`
         + ' NOT in this run and the report is about these scenarios only.');
