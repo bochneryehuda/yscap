@@ -50,8 +50,14 @@ const llcName = 'ABC Holdings LLC';
 const loan = {
   baseLoanAmount: '525450.0000', purchasePriceAmount: '450500.0000', propertyAppraisedValueAmount: '750000.0000',
   loanAmortizationTermMonths: 12, requestedInterestRatePercent: '8.0', maturityDate: '2027-06-22', loanNumber: 'YSCAP1',
-  property: { propertyType: 'Single Family', financedNumberOfUnits: 2 },
+  // property.propertyType is field 1041's JSON home and is DELIBERATELY unread
+  // (owner-directed 2026-08-18: "use always CX.PROPERTYTYPE for this dont look on
+  // 1041") — a full file's property type travels in the tenant custom field below.
+  // The path value is kept here, holding a DIFFERENT category, precisely so this
+  // suite fails if 1041's path ever starts being read again.
+  property: { propertyType: 'Condominium', financedNumberOfUnits: 2 },
   customFields: [
+    { fieldName: 'CX.PROPERTYTYPE', value: 'Single Family' },
     { fieldName: 'CX.MAXTOTALLOAN', value: '525450.0000' },
     { fieldName: 'CX.FINALINITIALLOAN', value: '405450.0000' },
     { fieldName: 'CX.REHABBUDGET', value: '120000.0000' },
