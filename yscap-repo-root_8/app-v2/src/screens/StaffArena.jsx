@@ -69,7 +69,10 @@ export default function StaffArena() {
   // wheels lands twice and is decided once, and only the decision is the news.
   const [takeover, setTakeover] = useState(null);
   const seenDecided = useRef(new Set());
-  const isSuper = role === 'super_admin';
+  // A named Arena HOST runs the room like a super admin (settings.hosts) —
+  // the server says so on the board; the role check covers the empty screen
+  // before any board has loaded.
+  const isSuper = role === 'super_admin' || !!(board && board.isSuperAdmin);
   const sessionParam = params.get('session') || '';
   const reload = useRef(null);
   // Read inside the stream subscription, which is set up once and must not be

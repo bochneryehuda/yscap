@@ -93,6 +93,15 @@ const DEFAULTS = Object.freeze({
   // Housekeeping.
   tvModeEnabled: true,
   boardName: 'The Arena',
+
+  // THE HOSTS — named people who run the Arena with a super admin's powers
+  // (owner-directed 2026-08-19: "give Ezra access to the entire super admin of
+  // the control room … the same access as the super admin when it comes to
+  // this"). Staff ids as strings. Scoped to the ARENA only: a host gets the
+  // control room, the plan, the challenges and these settings — never any
+  // other super-admin power in PILOT, and never the global on/off switch on
+  // the company Settings screen (seesSwitch stays role-based).
+  hosts: [],
 });
 
 const SETTING_KEYS = Object.keys(DEFAULTS);
@@ -156,6 +165,22 @@ async function isEnabled() {
 const isSuperAdmin = (actor) => !!actor && actor.kind === 'staff' && actor.role === 'super_admin';
 
 /**
+ * Does this person RUN the Arena — a real super admin, or a named host?
+ * Async because the host list lives in the settings row; the 5-second cache
+ * makes it as cheap as the enabled check. INTERNAL staff only, always — an
+ * external (TPO) staff row can never be a host whatever the list says.
+ */
+async function runsArena(actor) {
+  if (isSuperAdmin(actor)) return true;
+  if (!actor || actor.kind !== 'staff' || actor.is_external === true) return false;
+  try {
+    const s = await load();
+    const hosts = Array.isArray(s.settings.hosts) ? s.settings.hosts : [];
+    return hosts.includes(String(actor.id));
+  } catch (_) { return false; }
+}
+
+/**
  * What this person may see. THE one place that answers it -- the nav, the API
  * guard and the tests all call this, so "hidden" can never mean three different
  * things in three places.
@@ -197,10 +222,13 @@ function guard(req, res, next) {
   }).catch(() => res.status(404).json({ error: 'not found' }));
 }
 
-/** Only a super admin may touch the switch or the company-wide settings. */
+/** A super admin, or a named Arena host (settings.hosts). The global on/off
+ *  switch stays role-gated separately (seesSwitch in visibilityFor). */
 function requireSuperAdmin(req, res, next) {
-  if (isSuperAdmin(req.actor)) return next();
-  return res.status(404).json({ error: 'not found' });
+  runsArena(req.actor).then((ok) => {
+    if (ok) return next();
+    return res.status(404).json({ error: 'not found' });
+  }).catch(() => res.status(404).json({ error: 'not found' }));
 }
 
 /**
@@ -233,5 +261,5 @@ async function save({ enabled, settings }, staffId) {
 module.exports = {
   DEFAULTS, SETTING_KEYS,
   load, invalidate, isEnabled, save,
-  visibilityFor, guard, requireSuperAdmin, isSuperAdmin,
+  visibilityFor, guard, requireSuperAdmin, isSuperAdmin, runsArena,
 };

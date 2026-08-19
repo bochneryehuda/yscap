@@ -34,7 +34,12 @@ challenges.setBroadcaster((event, data) => {
 
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 function requireSuper(req, res, next) {
-  if (settings.isSuperAdmin(req.actor)) return next();
+  settings.runsArena(req.actor).then((ok) => {
+    if (ok) return next();
+    refuseSuper(res);
+  }).catch(() => refuseSuper(res));
+}
+function refuseSuper(res) {
   return bad(res, 'Only a super admin can do that.', 403);
 }
 async function audit(req, action, entityId, detail) {

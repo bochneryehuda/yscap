@@ -689,6 +689,42 @@ function NewSpin({ catalog, catalogErr, onRetryCatalog, session, onChanged }) {
     if (game) { setConfig({ ...game.defaults }); setTitle((t) => t || game.label); }
   }, [game]);
 
+  // The helper's draft. Applied AFTER the reset above (its own effect, keyed on
+  // the draft), so switching the game to the suggested one cannot wipe what
+  // the draft filled in. Everything lands in the ordinary boxes for a human to
+  // read and change — the helper never creates anything by itself.
+  const [aiText, setAiText] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiNote, setAiNote] = useState('');
+  const [aiDraft, setAiDraft] = useState(null);
+  useEffect(() => {
+    if (!aiDraft) return;
+    if (aiDraft.title) setTitle(aiDraft.title);
+    if (aiDraft.subtitle) setSubtitle(aiDraft.subtitle);
+    if (Array.isArray(aiDraft.qualifiers) && aiDraft.qualifiers.length) setQuals(aiDraft.qualifiers.join('\n'));
+    setConfig((c) => {
+      const next = { ...(c || {}) };
+      if (Number.isFinite(Number(aiDraft.personalCapUsd)) && aiDraft.personalCapUsd != null) next.personalCapCents = Math.round(Number(aiDraft.personalCapUsd) * 100);
+      if (Number.isFinite(Number(aiDraft.businessCapUsd)) && aiDraft.businessCapUsd != null) next.businessCapCents = Math.round(Number(aiDraft.businessCapUsd) * 100);
+      return next;
+    });
+  }, [aiDraft]);
+  const draftIt = async () => {
+    setAiBusy(true); setAiNote('');
+    try {
+      const r = await arena.aiSpin(aiText.trim());
+      if (!r || !r.ok) { setAiNote((r && r.reason) || 'The helper is not switched on.'); return; }
+      const d = r.draft || {};
+      if (d.suggestedGameKey) {
+        const g = (catalog.games || []).find((x) => x.key === d.suggestedGameKey);
+        if (g) { setFamily(g.family); setKind(g.key); }
+      }
+      setAiDraft(d);
+      setAiNote(d.notes ? `Drafted. Worth checking: ${d.notes}` : 'Drafted — read it over, change anything, then create it.');
+    } catch (e) { setAiNote((e && e.message) || 'That did not work.'); }
+    finally { setAiBusy(false); }
+  };
+
   if (!catalog) {
     return catalogErr
       ? <p className="arena-bad small">{catalogErr} <button className="btn ghost small" onClick={onRetryCatalog}>Try again</button></p>
@@ -696,6 +732,21 @@ function NewSpin({ catalog, catalogErr, onRetryCatalog, session, onChanged }) {
   }
   const families = catalog.families || [];
   const games = (catalog.games || []).filter((g) => g.family === family);
+  const aiBox = (
+    <div className="arena-daysetup">
+      <h4>Describe it, and the helper drafts the form</h4>
+      <div className="arena-form">
+        <label style={{ gridColumn: '1 / -1' }}>What do you want this spin to be?
+          <input className="input" value={aiText} placeholder="A spin between everyone who booked a call today, winner picks lunch"
+            onChange={(e) => setAiText(e.target.value)} />
+        </label>
+      </div>
+      <button className="btn ghost small" disabled={aiBusy || aiText.trim().length < 8} onClick={draftIt}>
+        {aiBusy ? 'Drafting…' : 'Draft it for me'}
+      </button>
+      {aiNote && <p className="muted small">{aiNote}</p>}
+    </div>
+  );
   const usesQualifiers = game && (game.wheels || []).some((w) => w.source === 'qualifiers' || w.source === 'qualifier_claimants');
 
   const set = (k, v) => setConfig((c) => ({ ...c, [k]: v }));
@@ -726,6 +777,8 @@ function NewSpin({ catalog, catalogErr, onRetryCatalog, session, onChanged }) {
   return (
     <div className="arena-card">
       <h3>Set up the next spin</h3>
+
+      {aiBox}
 
       <div className="arena-famrow">
         {families.map((f) => (
@@ -1540,6 +1593,46 @@ function PrizeList() {
 
 /* -------------------------------------------------------------- settings */
 
+/** Who runs the Arena beside the super admins — tick a person and they get
+ *  the whole control room (owner-directed 2026-08-19: "give Ezra the same
+ *  access as the super admin when it comes to this"). Arena only — no other
+ *  super-admin power anywhere else in PILOT. */
+function HostsPicker({ hosts, onChange }) {
+  const [everyone, setEveryone] = useState(null);
+  const [q, setQ] = useState('');
+  useEffect(() => {
+    arena.roster().then((d) => setEveryone(d.everyone || [])).catch(() => setEveryone([]));
+  }, []);
+  const ids = (hosts || []).map(String);
+  const toggle = (id) => onChange(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+  const needle = q.trim().toLowerCase();
+  const shown = (everyone || []).filter((p) => !needle || `${p.full_name}`.toLowerCase().includes(needle));
+  return (
+    <div className="arena-daysetup" style={{ marginTop: 12 }}>
+      <h4>Who runs the Arena</h4>
+      <p className="muted small">
+        Super admins always can. Tick anyone else who should have the WHOLE control room — start and
+        pause sessions, spin the wheels, decide challenges, hand out chances. This is the Arena only;
+        it gives no other admin power anywhere else. Save the settings below for it to take effect.
+      </p>
+      <input className="input" placeholder="Find a person…" value={q} onChange={(e) => setQ(e.target.value)} style={{ marginBottom: 6 }} />
+      <ul className="arena-people-flat">
+        {shown.map((p) => (
+          <li key={p.id}>
+            <label>
+              <input type="checkbox" checked={ids.includes(String(p.id))} onChange={() => toggle(String(p.id))} />
+              <span>{p.full_name}</span>
+              <em className="muted small">{ROLE_LABEL[p.role] || p.role}</em>
+            </label>
+          </li>
+        ))}
+        {!everyone && <li className="muted small">Loading the team…</li>}
+      </ul>
+      {!!ids.length && <p className="muted small">{ids.length} host{ids.length === 1 ? '' : 's'} beside the super admins.</p>}
+    </div>
+  );
+}
+
 function SettingsPanel() {
   const [s, setS] = useState(null);
   const [err, setErr] = useState('');
@@ -1636,6 +1729,7 @@ function SettingsPanel() {
         <Toggle label="Joke slices on the prize wheel (Elementix calls)" v={s.settings.jokePrizes} on={(v) => set('jokePrizes', v)} />
         <Toggle label="Big-screen (TV) mode available" v={s.settings.tvModeEnabled} on={(v) => set('tvModeEnabled', v)} />
       </div>
+      <HostsPicker hosts={s.settings.hosts || []} onChange={(ids) => set('hosts', ids)} />
       <button className="btn" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save settings'}</button>
       <p className="muted small">
         Turning the whole Arena on and off is on the Settings screen, not here — so it stays reachable
