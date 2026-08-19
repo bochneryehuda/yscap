@@ -94,7 +94,7 @@ async function tick(now = new Date()) {
     const r = await db.query(
       `SELECT p.*, s.name AS session_name
          FROM arena_spins p JOIN arena_sessions s ON s.id = p.session_id
-        WHERE p.state = 'open' AND p.entry_deadline_at IS NOT NULL AND s.state = 'live'`);
+        WHERE p.state = 'open' AND p.entry_deadline_at IS NOT NULL AND s.state = 'live' AND s.paused_at IS NULL`);
     open = r.rows;
   } catch (e) { out.errors.push(`spins: ${e.message}`); return out; }
 

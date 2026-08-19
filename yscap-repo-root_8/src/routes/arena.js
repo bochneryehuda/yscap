@@ -203,8 +203,35 @@ router.put('/sessions/:id', requireSuper, async (req, res) => {
 
 router.post('/sessions/:id/state', requireSuper, async (req, res) => {
   const want = String((req.body || {}).state || '');
-  if (!['draft', 'live', 'closed'].includes(want)) return bad(res, 'A session can be draft, live or closed.');
+  if (!['draft', 'live', 'closed', 'paused'].includes(want)) return bad(res, 'A session can be draft, live, paused or closed.');
+  const prior = (await db.query(`SELECT * FROM arena_sessions WHERE id = $1`, [req.params.id])).rows[0];
+  if (!prior) return bad(res, 'That session does not exist.', 404);
+
+  // PAUSE / RESUME. Pause is a stamp, not a state value (db/593): the session
+  // stays live on the board, but the clockwork stops — nothing launches
+  // itself, no alarms go out, no door shuts, no challenge opens — until it is
+  // resumed. Nothing is announced either way: a pause is the admin catching
+  // their breath, not news for the whole company.
+  if (want === 'paused') {
+    if (prior.state !== 'live') return bad(res, 'Only a live session can be paused.');
+    const r = await db.query(
+      `UPDATE arena_sessions SET paused_at = COALESCE(paused_at, now()), updated_at = now()
+        WHERE id = $1 RETURNING *`, [req.params.id]);
+    await audit(req, 'arena_session_paused', 'arena_session', req.params.id, {});
+    events.publishToStaff('arena:session', { sessionId: req.params.id, state: 'paused' });
+    return res.json({ session: r.rows[0] });
+  }
+
   if (want === 'live') {
+    if (prior.state === 'live' && prior.paused_at) {
+      // A RESUME, not a start: clear the stamp and say nothing — the team was
+      // already told the day began.
+      const r = await db.query(
+        `UPDATE arena_sessions SET paused_at = NULL, updated_at = now() WHERE id = $1 RETURNING *`, [req.params.id]);
+      await audit(req, 'arena_session_resumed', 'arena_session', req.params.id, {});
+      events.publishToStaff('arena:session', { sessionId: req.params.id, state: 'live' });
+      return res.json({ session: r.rows[0] });
+    }
     // Only one session can be live -- the database enforces it, and this turns
     // that constraint into a sentence a person can act on instead of a 500.
     const other = await db.query(`SELECT id, name FROM arena_sessions WHERE state = 'live' AND id <> $1`, [req.params.id]);
@@ -215,12 +242,15 @@ router.post('/sessions/:id/state', requireSuper, async (req, res) => {
         SET state = $2,
             opened_at = CASE WHEN $2 = 'live'   THEN COALESCE(opened_at, now()) ELSE opened_at END,
             closed_at = CASE WHEN $2 = 'closed' THEN now() ELSE NULL END,
+            paused_at = CASE WHEN $2 = 'live'   THEN NULL ELSE paused_at END,
             updated_at = now()
       WHERE id = $1 RETURNING *`, [req.params.id, want]);
   if (!r.rows[0]) return bad(res, 'That session does not exist.', 404);
   await audit(req, `arena_session_${want}`, 'arena_session', req.params.id, {});
   events.publishToStaff('arena:session', { sessionId: req.params.id, state: want });
-  if (want === 'live') await announceSessionLive(r.rows[0]).catch(() => {});
+  // Announced only when the day actually BEGINS. A session that was live
+  // before (paused, or briefly put back to draft) already told everybody.
+  if (want === 'live' && !prior.opened_at) await announceSessionLive(r.rows[0]).catch(() => {});
   // Closing the day sends ONE round-up of everything that was won — the owner's
   // "final nice notifications for everybody that is involved in the game".
   if (want === 'closed') {
@@ -570,18 +600,34 @@ router.put('/spins/:id', requireSuper, async (req, res) => {
   const cur = await runner.getSpin(req.params.id);
   if (!cur) return bad(res, 'That spin does not exist.', 404);
   if (['decided', 'spinning'].includes(cur.state)) return bad(res, 'That spin is already running or finished.');
-  const { title, subtitle, config, entryOpensAt, entryDeadlineAt } = req.body || {};
+  const body = req.body || {};
+  const { title, subtitle, config } = body;
   const merged = config ? { ...(cur.config || {}), ...config } : (cur.config || {});
   const problems = games.configProblems(merged);
   if (problems.length) return res.status(400).json({ error: problems.join(' '), problems });
+  // A time sent as a KEY is a decision (null clears it); a key not sent leaves
+  // the stored time alone. COALESCE alone could never CLEAR a deadline, which
+  // is exactly what "just open it, no cutoff" needs.
+  const tOf = (k, fallback) => {
+    if (!(k in body)) return { set: false, val: fallback };
+    const v = body[k];
+    if (v === null || v === '') return { set: true, val: null };
+    const d = new Date(v);
+    return Number.isFinite(d.getTime()) ? { set: true, val: d.toISOString() } : { set: false, val: fallback };
+  };
+  const la = tOf('launchAt', cur.launch_at);
+  const eo = tOf('entryOpensAt', cur.entry_opens_at);
+  const ed = tOf('entryDeadlineAt', cur.entry_deadline_at);
   const r = await db.query(
     `UPDATE arena_spins
         SET title = COALESCE($2, title), subtitle = COALESCE($3, subtitle), config = $4::jsonb,
-            entry_opens_at = COALESCE($5, entry_opens_at), entry_deadline_at = COALESCE($6, entry_deadline_at),
+            entry_opens_at = $5, entry_deadline_at = $6, launch_at = $7,
             updated_at = now()
       WHERE id = $1 RETURNING *`,
     [req.params.id, title || null, subtitle || null, JSON.stringify(merged),
-      entryOpensAt || null, entryDeadlineAt || null]);
+      eo.set ? eo.val : cur.entry_opens_at,
+      ed.set ? ed.val : cur.entry_deadline_at,
+      la.set ? la.val : cur.launch_at]);
   await audit(req, 'arena_spin_updated', 'arena_spin', req.params.id, {});
   events.publishToStaff('arena:spin', { spinId: req.params.id, state: r.rows[0].state });
   res.json({ spin: r.rows[0] });
@@ -698,6 +744,8 @@ router.get('/draws/:id/verify', async (req, res) => {
 router.post('/spins/:id/checkin', async (req, res) => {
   const spin = await runner.getSpin(req.params.id);
   if (!spin) return bad(res, 'That spin does not exist.', 404);
+  const paused = await db.query(`SELECT paused_at FROM arena_sessions WHERE id = $1`, [spin.session_id]);
+  if (paused.rows[0] && paused.rows[0].paused_at) return bad(res, 'The session is paused right now — check-in reopens when it resumes.');
   const config = spin.config || {};
   const people = await sessionPeople(spin.session_id);
   const isMember = people.some((p) => String(p.id) === String(req.actor.id));
