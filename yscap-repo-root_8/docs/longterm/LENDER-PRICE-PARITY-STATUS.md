@@ -7441,3 +7441,113 @@ distinguishing the two (4), the scenario reason forced back to `unreadable` (2),
 carried as a dimension again (10 — the §2.101 decision undone).
 
 179/179 suites, 33 database-backed. All seven gates green.
+
+---
+
+## §2.115 — every paid run has asked Lender Price about loans our own sheet refuses
+
+`agreedPriced` has been **0** on every live run this branch has taken. §2.112 removed the reason
+everybody assumed — we were scoring Lender Price as refusing loans it was actively offering — and the
+number stayed at 0. So the remaining question was not *"why does the comparison fail?"* but *"was a
+priced comparison ever available in that file at all?"*
+
+Measured offline, free, on 2026-08-19: **it was not.** Every scenario in the 8-scenario probe file the
+paid runs use sits outside the frontier our own sheet prices, so our leg declines all eight. The only
+agreement that file can produce is a **both-decline** — which is a real agreement, and the owner asked
+for ineligible scenarios by name, but it says almost nothing about the SHEET: no rate, no band and no
+LLPA is read on either side to produce it. Three paid runs bought three verdicts about the refusal side
+and none about the priced side.
+
+### What our sheet actually prices
+
+The same measurement over the canonical 305-scenario battery, against the built-in Deephaven grid with
+the prepay/max-price block:
+
+```
+our sheet prices 262 of 305 scenario(s) (declined 43, could not price 0)
+```
+
+So a priced comparison was always available — the battery is full of loans our sheet quotes. It was the
+PROBE FILE that had none. The top decline reasons are the sheet's own words, and they read as a sheet
+doing its job rather than a sheet that is broken:
+
+```
+  x   6 DSCR < 1.00: Min FICO 680
+  x   3 Not eligible: FICO 640–660 × CLTV 75.5%–80.5% × DSCR any
+  x   2 Max LTV/CLTV 70%: T1 FICO 640–679, purchase/rate-term, DSCR >= 1.00
+  x   2 DSCR < 1.00: Max LTV 75%
+  … 19 more reason(s), 19 scenario(s)
+```
+
+### The selector, and the four things a filter of this shape gets wrong
+
+`src/longterm/ppe/agreement-priced-probe.js` answers, **free and offline** (`quoteProgram` never touches
+the network), which scenarios our sheet is willing to quote — and it is written against the four ways
+this exact filter goes wrong:
+
+1. **A crash is not a decline.** A scenario the pricer THROWS on is evidence about the harness, not about
+   the sheet. It has its own bucket and its own message.
+2. **An eligible scenario we could not price is not a decline either.** `quote.js` refuses to price when a
+   price-bearing fact is missing (§2.61) and keeps `eligible: true` — the remedy is a FACT, not a rule,
+   and the two send a reader to two different places. Counting them together would make a battery of
+   under-specified scenarios read as a sheet that refuses everything.
+3. **A capped probe taken in order is one table, N times.** A cap of 12 off the head of the battery is
+   twelve FICO×CLTV cells and nothing else, so the paid run would price one table twelve times and never
+   touch the DSCR band, the purpose axis or the state adder. The cap goes **round-robin across the
+   battery's groups**; measured, a probe of 12 spans all twelve of them.
+4. **A cap that does not say what it cut reads as the whole sheet.** `pricedTotal` is always the uncapped
+   figure, `droppedForCap` names every scenario left out by label and group, and the printed census says
+   the probe was capped and by how much.
+
+### One definition, because the copy that drifted would be the one spending money
+
+`agreement-preflight.js` already had to answer the same question for the free pre-flight (§2.75, task
+#131), so the verdict now has exactly one home: **`agreement-preflight.classifyOursQuote`**. Each
+consumer only chooses how to BUCKET it — the pre-flight folds the two unpriceable outcomes into one
+(for its purpose, "there is no coupon to compare" is a single fact), the probe selector keeps them
+apart. The suite asserts the two **reconcile** on the same battery, and reads the classifier's outcome
+list **off its own source** so a new verdict added there cannot be silently absorbed into "the sheet
+declined it". Reverting the fold makes that section fail (M9).
+
+### The finding the probe made on its way past
+
+The battery marks ten scenarios `_ineligible` — they exist to prove the refusal side, and the loan is
+expected to be turned down. **Our sheet prices one of them: `NJ Individual PPP prohibited`.** That is
+not a probe candidate (handing it to a paid run buys a guaranteed disagreement), and it is not something
+to drop either, so it is excluded and **named**. The cause is scope, not a defect: the built-in
+sheet-under-test is the RATE SHEET alone, and New Jersey's prepayment prohibition lives in the separate
+prepayment matrix — the same layer boundary §2.99 recorded. Either the label is wrong or the sheet is
+missing a rule, and the report now puts that question in front of whoever runs it.
+
+### How it is used
+
+Two new flags on the runner, and the pre-pass costs nothing:
+
+```
+node scripts/test-lt-lp-agreement-run.js --filter-investor "Deephaven Mortgage" \
+     --filter-program-like "^dscr" --with-prepay --priced-probe 24 --probe-out probe.json
+```
+
+It **narrows what the run measures, and says so**: the battery's ineligible probes are not in a
+priced-only run, so the decline side is not being checked that time. That is a deliberate trade for one
+run, which is why it is a flag and not a new default. An empty probe is an honest blocker — nothing is
+sent to Lender Price, and the message distinguishes *"our sheet prices none of these"* from *"the only
+ones it prices are ones the battery says should be refused"*.
+
+### What it is measured by
+
+`scripts/test-lt-ppe-priced-probe.js` — 62 assertions, offline, the pricer injected. **Mutation-proven
+eleven ways**: a throw read as a decline, the incomplete branch dropped, an empty ladder sold as a price,
+the head-of-list cap, the capped figure reported as the whole sheet, a silent cap, a silently truncated
+reason list, an outcome with no bucket, the labelled-ineligible exclusion undone, and the finding
+dropped in silence, and the empty-probe blocker collapsed into one message for its two very different
+causes. A twelfth mutation was applied to `agreement-preflight.js` itself to prove the one-definition
+section bites when the two consumers drift.
+
+The CLI is deliberately thin: the flag parsing is the only thing in it that a test does not reach, and
+even the "why is there no probe" wording lives in the module so it is pinned rather than typed at the
+call site. `docs/longterm/LT-UNREACHED.md` carries the module's row — it is driven by the hand-run CLI,
+and what would wire it is the agreement RUN ROUTE adopting it beside the free pre-flight it already
+calls, since the console has exactly the same blind spot.
+
+180/180 suites, 33 database-backed. All seven gates green.

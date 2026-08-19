@@ -25,6 +25,9 @@
  *                 battery (agreement-scenarios.buildAgreementScenarios) is used — every LLPA angle.
  *   --filter-*    narrow Lender Price to one program/investor/lender/product (the sheet's investor).
  *   --no-disqualify   skip the disqualify poll (rungs-only; faster, but does not check ineligibility).
+ *   --priced-probe N  narrow the run to N scenarios OUR OWN sheet prices (free, offline pre-pass),
+ *                     spread round-robin across the battery's groups. Measures the PRICED side only.
+ *   --probe-out F     write the selected probe scenarios to F (a --scenarios file for a later replay).
  *   --out         also write the full per-scenario report as JSON.
  *
  * Nothing about this WRITES a rate sheet anywhere or changes the live pricer. LT-only.
@@ -39,6 +42,7 @@ const { gridToRateSheet } = require('../src/longterm/ppe/deephaven-grid');
 const { buildDeephavenGrid } = require('../src/longterm/ppe/deephaven-dscr-sheet');
 const { deephavenLpDimension } = require('../src/longterm/ppe/ratesheet-agreement-diff');
 const { buildAgreementScenarios } = require('../src/longterm/ppe/agreement-scenarios');
+const { selectPricedProbe, describeProbe, probeBlocker } = require('../src/longterm/ppe/agreement-priced-probe');
 const { buildSearch } = require('../src/longterm/lenderprice/search-model');
 const settings = require('../src/longterm/ppe/settings');
 
@@ -92,7 +96,7 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
 
   // 3) scenarios
   const scPath = arg('--scenarios', process.env.LT_SCENARIOS);
-  const scenarios = scPath ? readJson(scPath) : defaultScenarios();
+  let scenarios = scPath ? readJson(scPath) : defaultScenarios();
   console.log(`Scenarios: ${scenarios.length}${scPath ? ` (from ${scPath})` : ' (canonical agreement battery)'}`);
 
   // 4) the two legs + the run
@@ -129,6 +133,44 @@ function defaultScenarios() { return buildAgreementScenarios().scenarios; }
   }
   const ours = legs.buildOursLeg(program, s, { factsFromLp: true });
   const lp = legs.buildLpLeg(client, { withDisqualify: !flag('--no-disqualify') });
+
+  // ---- THE PRICED PROBE: ask about loans our own sheet is willing to QUOTE (§2.115) ---------------
+  // Every paid run to date has reported `agreedPriced 0`. That is not the comparison failing: measured
+  // offline, the 8-scenario probe file these runs use sits entirely outside the frontier our sheet
+  // prices, so our leg declines all eight and the only agreement available is a both-decline — no rate,
+  // no band and no LLPA is read on either side. `--priced-probe N` narrows the run to scenarios our own
+  // engine actually prices, chosen ROUND-ROBIN across the battery's groups so the probe spans the axes
+  // instead of being N cells of one table.
+  //
+  // It is FREE: our leg is pure (quoteProgram never touches the network), so this whole census costs
+  // nothing and is taken BEFORE the first paid call.
+  //
+  // ⛔ IT NARROWS WHAT THE RUN MEASURES, AND SAYS SO. The battery's ineligible probes exist because the
+  // owner asked for ineligible scenarios by name; a priced-only probe does not measure that side at all.
+  // That is a deliberate trade for one run, not a new default — which is why this is a flag.
+  {
+    const probeArg = arg('--priced-probe');
+    const probeOut = arg('--probe-out');
+    if (probeArg != null || probeOut) {
+      const limit = probeArg == null ? null : Number(probeArg);
+      if (probeArg != null && !Number.isFinite(limit)) die(7, `--priced-probe wants a number, got ${probeArg}`);
+      const sel = await selectPricedProbe(scenarios, ours, { limit });
+      console.log('\n--- priced probe (free, offline: our sheet only) ---');
+      for (const line of describeProbe(sel)) console.log(`  ${line}`);
+      if (probeOut) {
+        fs.writeFileSync(probeOut, JSON.stringify(sel.probe, null, 2));
+        console.log(`  probe written to ${probeOut} (${sel.probe.length} scenario(s))`);
+      }
+      // Nothing to compare is the honest blocker, not a run to be paid for: an empty probe would spend
+      // nothing and report a confident 0% on a battery that was never asked. WHICH nothing is decided in
+      // the module, so the wording is tested rather than typed here.
+      const blocked = probeBlocker(sel);
+      if (blocked) die(8, `\n${blocked}`);
+      scenarios = sel.probe;
+      console.log(`  RUNNING PRICED-ONLY: ${scenarios.length} scenario(s). The battery's ineligible probes are `
+        + 'NOT in this run, so it measures the priced side only — the decline side is not being checked.');
+    }
+  }
 
   let done = 0;
   const onResult = () => { done += 1; if (done % 25 === 0 || done === scenarios.length) process.stdout.write(`  …${done}/${scenarios.length}\n`); };

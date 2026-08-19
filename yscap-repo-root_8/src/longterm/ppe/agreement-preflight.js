@@ -38,6 +38,43 @@ function labelOf(s, i) {
   return `scenario ${i + 1}`;
 }
 
+/**
+ * ⛔ THE ONE DEFINITION OF "WHAT DID OUR SHEET DO WITH THIS SCENARIO" (§2.115).
+ *
+ * This pre-flight and the PRICED PROBE selector (agreement-priced-probe.js) both have to answer that
+ * question, and a second copy of it would drift — the one that drifted would be the one deciding which
+ * scenarios a PAID run is spent on. So the verdict is decided HERE, once, and each consumer only
+ * chooses how to BUCKET it (this module folds the two unpriceable outcomes together, because for its
+ * purpose "there is no coupon to compare" is one fact; the probe selector keeps them apart, because
+ * "supply the missing fact" and "the sheet publishes no rung" send a reader to two different places).
+ *
+ * Outcomes, in the order the shapes are decidable:
+ *   unreadable — not an object at all. NOT a decline: a pricer that answered nothing has said nothing
+ *                about the sheet. (This module folds it into `declined` to keep its counts exactly as
+ *                they have always been; that fold is pre-existing and deliberately left alone here.)
+ *   declined   — `eligible !== true`. A rule refused the loan.
+ *   incomplete — ELIGIBLE, but quote.js refused to price for want of a price-bearing fact (§2.61). The
+ *                remedy is a fact, not a rule. A PRICED quote carries no `priced` key at all, so this
+ *                must test `=== false` and never read `undefined` as false.
+ *   no_rungs   — eligible, priced, and the ladder came back empty.
+ *   priced     — eligible with rungs. The only outcome a price can be compared on.
+ * PURE.
+ */
+function classifyOursQuote(quote) {
+  if (!quote || typeof quote !== 'object') return { outcome: 'unreadable', why: 'the pricer returned nothing', rungs: 0 };
+  if (quote.eligible !== true) {
+    const list = Array.isArray(quote.declines) ? quote.declines : [];
+    const first = list.find((d) => d && (d.reason || d.code));
+    return { outcome: 'declined', why: first ? String(first.reason || first.code) : 'declined with no stated reason', rungs: 0 };
+  }
+  const rungs = Array.isArray(quote.ladder) ? quote.ladder.length : 0;
+  if (quote.priced === false || quote.incomplete === true) {
+    return { outcome: 'incomplete', why: quote.reason ? String(quote.reason) : 'the sheet declined to price it', rungs: 0 };
+  }
+  if (rungs === 0) return { outcome: 'no_rungs', why: 'eligible, but the sheet published no rung for what was asked', rungs: 0 };
+  return { outcome: 'priced', why: null, rungs };
+}
+
 function declineCodesOf(quote) {
   const list = Array.isArray(quote && quote.declines) ? quote.declines : [];
   const out = [];
@@ -90,20 +127,20 @@ function runOursOnly(battery, ours, opts) {
       }
       continue;
     }
-    if (!quote || quote.eligible !== true) {
+    // The verdict comes from the ONE classifier above; only the BUCKETING is this module's own.
+    const verdict = classifyOursQuote(quote);
+    if (verdict.outcome === 'declined' || verdict.outcome === 'unreadable') {
       out.declined += 1;
       for (const code of declineCodesOf(quote)) {
         out.declineCodeCounts[code] = (out.declineCodeCounts[code] || 0) + 1;
       }
       continue;
     }
-    // ELIGIBLE WITH NO RUNGS IS ITS OWN BUCKET, not a price. `quote.priced === false` is the engine
-    // REFUSING to price (a missing price-bearing fact, §2.61) and an empty ladder is the same thing by
-    // another route; either way there is no coupon for Lender Price to be compared against, so counting
-    // it as priced would be the pre-flight telling the caller there is something to measure when there
-    // is not.
-    const rungs = Array.isArray(quote.ladder) ? quote.ladder.length : 0;
-    if (quote.priced === false || rungs === 0) {
+    // ELIGIBLE WITH NO RUNGS IS ITS OWN BUCKET, not a price. `incomplete` is the engine REFUSING to
+    // price (a missing price-bearing fact, §2.61) and an empty ladder is the same thing by another
+    // route; either way there is no coupon for Lender Price to be compared against, so counting it as
+    // priced would be the pre-flight telling the caller there is something to measure when there is not.
+    if (verdict.outcome === 'incomplete' || verdict.outcome === 'no_rungs') {
       out.unpriced += 1;
       if (out.unpricedSamples.length < limit) out.unpricedSamples.push(labelOf(list[i], i));
       continue;
@@ -167,4 +204,4 @@ function preflight(input) {
   };
 }
 
-module.exports = { preflight, runOursOnly, _internals: { labelOf, declineCodesOf } };
+module.exports = { preflight, runOursOnly, classifyOursQuote, _internals: { labelOf, declineCodesOf } };
