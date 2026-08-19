@@ -1187,66 +1187,91 @@ function DaySetup({ onReload }) {
   );
 }
 
-/** THE MANUAL ONE (owner, live on Elementix Day: "I can just type in stuff
- *  that should be on the wheel and click the spin button … or put in all the
- *  names of officers"). One box, one button: type anything one-per-line, or
- *  fill the box from the team list, and it makes + OPENS a plain wheel spin
- *  everybody can watch on the stage. Nothing stored beyond the spin itself. */
+/** THE MANUAL ONE (owner-directed 2026-08-19, twice: "I can just type in
+ *  stuff that should be on the wheel and click the spin button", then "either
+ *  offices or the things … automatically import which offices we want and
+ *  type which things we want"). Three shapes, none of which follows the
+ *  standard session machinery — no check-in, no entries, no approvals:
+ *  THINGS (one typed list), PEOPLE (tick exactly who — the winner is a REAL
+ *  person: they are told, and the win lands on the day's record and the
+ *  payroll CSV), or BOTH (wheel one the people, wheel two the prizes — the
+ *  person who wins gets what wheel two lands on). */
 function QuickSpin({ session, onChanged }) {
-  const [text, setText] = useState('');
+  const [mode, setMode] = useState('people_prizes');
   const [title, setTitle] = useState('Quick spin');
+  const [things, setThings] = useState('');
   const [busy, setBusy] = useState(false);
   const [everyone, setEveryone] = useState(null);
+  const [picked, setPicked] = useState([]);
   useEffect(() => {
-    arena.roster().then((d) => setEveryone(d.everyone || [])).catch(() => setEveryone([]));
+    arena.roster()
+      .then((d) => { setEveryone(d.everyone || []); })
+      .catch(() => setEveryone([]));
   }, []);
-  const fill = (roles) => {
-    const names = (everyone || [])
-      .filter((p) => !roles || roles.includes(p.role))
-      .map((p) => p.full_name);
-    setText(names.join('\n'));
-  };
-  const lines = text.split('\n').map((x) => x.trim()).filter(Boolean);
+  const lines = things.split('\n').map((x) => x.trim()).filter(Boolean);
+  const needsPeople = mode !== 'things';
+  const needsThings = mode !== 'people';
+  const ready = (!needsPeople || picked.length >= (mode === 'people' ? 2 : 1))
+    && (!needsThings || lines.length >= (mode === 'things' ? 2 : 1));
   const go = async () => {
     setBusy(true);
     try {
-      const made = await arena.createSpin(session.id, {
-        title: title.trim() || 'Quick spin',
-        kind: 'quick_wheel',
-        config: { customList: text, durationMs: 5000 },
-      });
+      const kind = mode === 'things' ? 'quick_wheel' : mode === 'people' ? 'quick_pick' : 'quick_double';
+      const config = { durationMs: 5000 };
+      if (needsPeople) config.pickedStaffIds = picked;
+      if (mode === 'things') config.customList = things;
+      if (mode === 'people_prizes') config.customList2 = things;
+      const made = await arena.createSpin(session.id, { title: title.trim() || 'Quick spin', kind, config });
       const spinId = made && made.spin && made.spin.id;
       if (spinId) await arena.openSpin(spinId);
       onChanged();
       showMessage('It is on the stage — press "Spin the wheel" there when everybody is watching.', { title: 'Ready', tone: 'info' });
-      setText('');
     } catch (e) { showMessage((e && e.message) || 'That did not work.', { tone: 'error' }); }
     finally { setBusy(false); }
   };
   return (
     <div className="arena-card">
-      <h3>Quick spin — type it, spin it</h3>
+      <h3>Quick spin — no settings, just spin</h3>
       <p className="muted small">
-        One thing per line — names, prizes, anything. It goes straight onto a wheel on the stage,
-        where you press the spin button and everybody watches it land. Equal odds, provably fair,
-        nothing else to set up.
+        A one-off wheel, outside the day's plan. Nothing to configure and nobody has to check in —
+        it lands on the stage the moment you press the button, and everybody watches it turn.
       </p>
       <div className="arena-group-chips">
-        <button type="button" className="btn ghost small" disabled={!everyone} onClick={() => fill(null)}>Put in the whole team</button>
-        <button type="button" className="btn ghost small" disabled={!everyone} onClick={() => fill(['loan_officer', 'account_executive'])}>All the officers</button>
-        <button type="button" className="btn ghost small" disabled={!everyone} onClick={() => fill(['processor', 'underwriter', 'closer', 'draw_coordinator', 'loan_coordinator', 'account_manager'])}>Back office</button>
-        <button type="button" className="btn ghost small" onClick={() => setText('')}>Clear</button>
+        {[['people_prizes', 'People + prizes (two wheels)'], ['people', 'Just people'], ['things', 'Just a typed list']].map(([k, l]) => (
+          <button key={k} type="button" className={`btn ghost small${mode === k ? ' on' : ''}`} onClick={() => setMode(k)}>{l}</button>
+        ))}
       </div>
       <div className="arena-form">
         <label>What this spin is called
           <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
         </label>
       </div>
-      <label className="arena-fullfield">On the wheel — one per line
-        <textarea className="input" rows={8} value={text} placeholder={'Moshe\nRivky\nYanky'} onChange={(e) => setText(e.target.value)} />
-      </label>
-      <p className="muted small">{lines.length ? `${lines.length} slice${lines.length === 1 ? '' : 's'} on the wheel.` : 'Nothing on the wheel yet.'}</p>
-      <button className="btn" disabled={busy || lines.length < 2} onClick={go}>
+      {needsPeople && (
+        <>
+          <p className="muted small" style={{ margin: '10px 0 4px' }}>
+            <strong>Who is on the wheel</strong> — tick a group, then add or take off anyone.
+            The winner is told and the win lands on the day's record.
+          </p>
+          {!everyone && <p className="muted small">Loading the team…</p>}
+          {everyone && <RosterPicker everyone={everyone} picked={picked} onChange={setPicked} />}
+        </>
+      )}
+      {needsThings && (
+        <label className="arena-fullfield">
+          {mode === 'people_prizes' ? 'What they can win — one per line' : 'On the wheel — one per line'}
+          <textarea
+            className="input" rows={6} value={things}
+            placeholder={mode === 'people_prizes' ? 'Lunch on us\nLeave early Friday\n$50 gift card' : 'Moshe\nRivky\nYanky'}
+            onChange={(e) => setThings(e.target.value)}
+          />
+        </label>
+      )}
+      <p className="muted small">
+        {needsPeople ? `${picked.length} ${picked.length === 1 ? 'person' : 'people'} on the wheel` : ''}
+        {needsPeople && needsThings ? ' · ' : ''}
+        {needsThings ? `${lines.length} ${mode === 'people_prizes' ? 'prize' : 'slice'}${lines.length === 1 ? '' : 's'} typed` : ''}
+      </p>
+      <button className="btn" disabled={busy || !ready} onClick={go}>
         {busy ? 'Putting it up…' : 'Put it on the stage'}
       </button>
     </div>

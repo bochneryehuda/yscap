@@ -195,6 +195,31 @@ const GAMES = [
     origin: 'What people actually use a public wheel site for.',
   },
   {
+    // THE MANUAL PEOPLE WHEEL (owner-directed 2026-08-19: "automatically
+    // import which offices we want"). Hand-picked REAL people — the winner is
+    // a real winner: they are told, and the win lands on the day's record.
+    key: 'quick_pick',
+    family: 'raffle',
+    label: 'Pick the people, spin it',
+    blurb: 'Tick exactly who is on the wheel. No check-in, no settings — just spin.',
+    howItWorks: 'You pick the people; the wheel decides. The winner gets the you-won moment and lands on the day\u2019s record like any other spin.',
+    wheels: [wheel('picked_people', 'Who wins')],
+    defaults: { durationMs: 5000 },
+    origin: 'The owner\u2019s "manual one, out of the blue", live on Elementix Day.',
+  },
+  {
+    // The manual DOUBLE — picked people on wheel one, typed things on wheel
+    // two. "The officer that wins receives the prize", with nothing else set up.
+    key: 'quick_double',
+    family: 'raffle',
+    label: 'Pick the people, type the prizes',
+    blurb: 'Wheel one: exactly who you tick. Wheel two: whatever you type. The winner gets what it lands on.',
+    howItWorks: 'Two spins back to back — first the person, then what they win. Both lists are yours, typed or ticked on the spot.',
+    wheels: [wheel('picked_people', 'Who wins'), wheel('custom_list_2', 'What they win')],
+    defaults: { durationMs: 5000 },
+    origin: 'The owner\u2019s "manual one, out of the blue", live on Elementix Day.',
+  },
+  {
     key: 'mystery_box',
     family: 'raffle',
     label: 'Mystery box',
