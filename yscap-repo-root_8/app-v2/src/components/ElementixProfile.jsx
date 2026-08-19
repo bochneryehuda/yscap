@@ -260,7 +260,31 @@ function OverviewTab({ profile }) {
                   <span>6 months: <strong style={{ color: INK }}>{count(f.recentMortgages.m6)}</strong></span>
                   <span>12 months: <strong style={{ color: INK }}>{count(f.recentMortgages.m12)}</strong></span>
                   {f.firstLenderDates.any && <span>Borrowing since <strong style={{ color: INK }}>{day(f.firstLenderDates.any)}</strong></span>}
+                  {f.yearsActive != null && <span>Active <strong style={{ color: INK }}>{count(f.yearsActive)}</strong> years</span>}
+                  {f.previousExits3y != null && <span>Finished projects, last 3 years: <strong style={{ color: INK }}>{count(f.previousExits3y)}</strong></span>}
+                  {f.averageLoanSize != null && <span>Typical loan <strong style={{ color: INK }}>{money(f.averageLoanSize)}</strong></span>}
+                  {f.mostFrequentCounty && <span>Mostly in <strong style={{ color: INK }}>{f.mostFrequentCounty}</strong></span>}
                 </div>
+                {f.mailingAddress && (
+                  <div style={{ marginTop: 10, fontSize: 13.5, color: INK }}>
+                    <span style={{ color: MUTED }}>Where they get their post: </span>{f.mailingAddress}
+                  </div>
+                )}
+                {f.unlockedBy && (
+                  <div style={{ marginTop: 6, fontSize: 13, color: MUTED }}>
+                    Contact details unlocked by <strong style={{ color: INK }}>{f.unlockedBy}</strong>
+                    {f.unlockedAt ? ` on ${day(f.unlockedAt)}` : ''}
+                  </div>
+                )}
+                {(f.likelyAttorneyOrTitle || f.likelySupportStaff) && (
+                  /* The vendor's own warning. Worth showing BEFORE somebody
+                     telephones them about a loan: a closing attorney appears on
+                     hundreds of files and is not a borrower. */
+                  <div style={{ marginTop: 8, border: '1px solid #D9A441', background: '#FDF6E7', borderRadius: 10, padding: '8px 11px', color: INK, fontSize: 13.5 }}>
+                    Elementix thinks this may be {f.likelyAttorneyOrTitle ? 'a closing attorney or title agent' : 'support staff'} rather than an investor —
+                    they turn up on a lot of files. Worth checking before you call.
+                  </div>
+                )}
               </>
             )}
           </div>

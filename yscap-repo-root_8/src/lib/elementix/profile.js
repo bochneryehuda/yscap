@@ -135,6 +135,30 @@ function rowsFrom(section, data) {
   return crmTools.rowsOf(data);
 }
 
+/**
+ * Drop the vendor's inline lender logos before anything is stored.
+ *
+ * `_logoDataUri` is a base64 JPEG — 8 to 12 KB EACH — carried on every lender
+ * row and on the `topLenders[]` nested inside person rows. A person's lender
+ * tab is seventy lenders, so keeping them would put the better part of a
+ * megabyte of pictures inside one jsonb row, and the profile would be paying to
+ * store and re-read them on every page load. Nothing on the screen uses them.
+ *
+ * Recursive because they are nested; bounded in depth so a self-referencing
+ * payload cannot spin.
+ */
+const HEAVY_KEYS = new Set(['_logoDataUri', '_logoDataURI', 'logoDataUri']);
+function stripHeavy(v, depth = 0) {
+  if (depth > 6 || !v || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map((x) => stripHeavy(x, depth + 1));
+  const out = {};
+  for (const [k, val] of Object.entries(v)) {
+    if (HEAVY_KEYS.has(k)) continue;
+    out[k] = (val && typeof val === 'object') ? stripHeavy(val, depth + 1) : val;
+  }
+  return out;
+}
+
 /** The singular object a header-style tool answers with (`{person:{...}}`). */
 function objectFrom(section, data) {
   if (!data || typeof data !== 'object') return null;
@@ -143,11 +167,17 @@ function objectFrom(section, data) {
   return null;
 }
 
-/* The vendor signals "there is another page" with `nextPage`, and reports NO
-   total on a data call — confirmed live on all three paged person tools. So a
-   short answer is only distinguishable from a complete one by this key, which
-   is exactly the kind of thing that reads as "we have everything" when missed. */
-const hasMore = (d) => !!(d && typeof d === 'object' && d.nextPage != null && d.nextPage !== false);
+/* `nextPage` IS NOT A "THERE IS MORE" SIGNAL, and reading it as one was wrong.
+   Measured 2026-08-18: the vendor emits it whenever the page came back FULL —
+   `list_entities` with exactly one matching row and perPage:1 returns
+   `nextPage:2` while `scope:'count'` says the total is 1. So it means "ask
+   again", not "there is more", and trusting it marks a complete section as
+   truncated.
+   A full page is therefore only a SUSPICION, and the suspicion is settled by
+   one `scope:'count'` call — which also turns "showing the first 250" into
+   "showing the first 250 of 829". A data call carries no total of its own. */
+const looksFull = (d, rows, perPage) => !!(d && typeof d === 'object'
+  && d.nextPage != null && d.nextPage !== false && rows.length >= perPage);
 
 /**
  * The person's own roll-up, read from `get_person`'s object.
@@ -161,9 +191,31 @@ const hasMore = (d) => !!(d && typeof d === 'object' && d.nextPage != null && d.
  * useful; one that says "0" about a number it never saw is a lie a person acts
  * on.
  */
-function overviewFacts(person) {
+function overviewFacts(person, stats) {
   if (!person || typeof person !== 'object') return null;
+  const st = stats && typeof stats === 'object' ? stats : {};
   return {
+    /* From `list_people` — absent when that second call did not land, and null
+       rather than zero so a screen never prints a figure nobody read. */
+    mailingAddress: str(st.mailingAddress) || null,
+    previousExits3y: num(st.previousExits3y),
+    yearsActive: num(st.yearsActive),
+    firstLoanDate: st.firstLoanDate || null,
+    loanCount: num(st.loanCount),
+    totalVolume: num(st.totalVolume),
+    averageLoanSize: num(st.averageLoanSize),
+    shortTermLoanPct: num(st.shortTermLoanPct),
+    longTermLoanPct: num(st.longTermLoanPct),
+    mostFrequentCity: str(st.mostFrequentMortgageCity) || null,
+    mostFrequentCounty: str(st.mostFrequentMortgageCounty) || null,
+    // The vendor's own warning that this "person" may be a closing attorney or a
+    // title clerk who appears on hundreds of files. Worth showing before an
+    // officer telephones them about a loan.
+    likelyAttorneyOrTitle: st.isAttorneyOrTitleAgent === true,
+    likelySupportStaff: st.isLikelySupportStaff === true,
+    unlockedBy: str(st.unlockedBy) || null,
+    unlockedAt: st.unlockedAt || null,
+    entityRoster: Array.isArray(st.entities) ? st.entities.length : null,
     id: str(person.id) || null,
     name: str(person.name) || null,
     state: str(person.state).toUpperCase() || null,
@@ -352,6 +404,34 @@ async function writeSection(personId, section, out, client = db) {
 }
 
 /**
+ * THE SECOND HALF OF THE HEADER — `list_people` narrowed to this one person.
+ *
+ * Probing the whole catalogue turned this up as the single richest call for a
+ * person profile, and it is one request: it adds their MAILING ADDRESS (a real
+ * contact address, not a property), `previousExits3y` — completed projects in
+ * the last three years, which is a track record in one number — `yearsActive`,
+ * `firstLoanDate`, `averageLoanSize`, `totalVolume`, the short/long-term split,
+ * where they most often borrow, the vendor's own "this is probably an attorney
+ * or support staff" flags, AND the whole entities roster inline.
+ *
+ * It also carries `unlockedBy`/`unlockedAt`, so the profile can say who on the
+ * team looked this person up without a separate call.
+ *
+ * THE RESULT IS SLICED TO THE ID WE ASKED FOR. `list_people`'s own personIds
+ * filter behaved correctly when measured, but its sibling `list_entities` PADS
+ * a filtered page with unrelated rows to fill it — so trusting a filtered list
+ * to contain only what was asked for is a habit worth not having.
+ */
+async function enrichOverview({ personId, staffId, budget }) {
+  if (budget.left <= 0) return null;
+  budget.left -= 1; budget.spent += 1;
+  const res = await crmTools.call('list_people', { personIds: [personId], perPage: 5 }, { staffId });
+  if (!res || res.ok !== true) return null;
+  const row = crmTools.rowsOf(res.data).find((r) => r && str(r.id) === personId);
+  return row ? stripHeavy(row) : null;
+}
+
+/**
  * Fetch ONE section for ONE person id. Never throws — the transport already
  * guarantees that, and every refusal added here is a shaped object too.
  *
@@ -373,16 +453,22 @@ async function fetchSection({ personId, section, staffId, budget, maxPages }) {
     if (!res || res.ok !== true) {
       return { calls, unverified, error: (res && res.detail) || 'Elementix did not answer.', reason: (res && res.reason) || 'failed' };
     }
-    const obj = objectFrom(section, res.data);
-    const rows = section.rowsKey ? rowsFrom(section, res.data) : [];
+    const obj = stripHeavy(objectFrom(section, res.data));
+    const rows = stripHeavy(section.rowsKey ? rowsFrom(section, res.data) : []);
     // `raw` is kept ONLY when neither reader recognised anything — the one case
     // where a screen has nothing to show and somebody has to see what the vendor
     // actually sent. Keeping it otherwise would store the whole response twice.
     const parsed = !!obj || rows.length > 0;
+    // The header is worth a second call: see enrichOverview.
+    let stats = null;
+    if (section.key === 'overview' && obj) {
+      stats = await enrichOverview({ personId, staffId, budget });
+      if (stats) calls += 1;
+    }
     return {
       calls, unverified,
       payload: {
-        object: obj, rows,
+        object: obj, rows, stats,
         total: section.rowsKey ? rows.length : null,
         ...(parsed ? {} : { raw: res.data }),
       },
@@ -412,14 +498,18 @@ async function fetchSection({ personId, section, staffId, budget, maxPages }) {
       break;
     }
     const pageRows = rowsFrom(section, res.data);
-    rows.push(...pageRows);
-    more = hasMore(res.data);
+    rows.push(...stripHeavy(pageRows));
+    more = looksFull(res.data, pageRows, perPage);
     if (!more) break;
-    if (page === pages) break; // `more` stays true → truncated
+    if (page === pages) break; // a full last page → ask the count below
   }
 
+  /* Size it for real when the pages ran out on a full page, or when the section
+     always wants a headline count. One call, and it is the difference between
+     "showing the first 250" and "showing the first 250 of 829" — and between
+     claiming truncation and knowing it. */
   let total = null;
-  if (section.countCall && budget.left > 0) {
+  if ((section.countCall || more) && budget.left > 0) {
     spend(); calls += 1;
     const c = await crmTools.call(section.tool, { ...base, scope: 'count' }, { staffId });
     if (c && c.ok === true) total = crmTools.totalOf(c.data);
@@ -429,7 +519,9 @@ async function fetchSection({ personId, section, staffId, budget, maxPages }) {
     calls, unverified,
     payload: { rows, total, partialError: firstError || undefined },
     rowCount: rows.length,
-    truncated: more,
+    // A KNOWN total settles it outright; without one, a full final page is only
+    // a suspicion and is reported as such rather than as a fact.
+    truncated: total != null ? total > rows.length : more,
   };
 }
 
@@ -497,7 +589,7 @@ async function buildProfile(personId, opts = {}) {
       // Side effects of two particular sections, done here so the reader stays
       // a pure read.
       if (section.key === 'overview') {
-        const facts = overviewFacts(out.payload && out.payload.object);
+        const facts = overviewFacts(out.payload && out.payload.object, out.payload && out.payload.stats);
         if (facts) await ensurePersonRow(source, { name: facts.name, state: facts.state }, client);
       }
       if (section.key === 'cross_state' && out.payload && Array.isArray(out.payload.rows)) {
@@ -585,6 +677,7 @@ async function readProfile(personId, opts = {}) {
         error: r.last_error || null,
         partialError: payload.partialError || null,
         object: payload.object || null,
+        stats: payload.stats || null,
         callsSpent: r.calls_spent,
       };
       sources.push(src);
@@ -620,7 +713,7 @@ async function readProfile(personId, opts = {}) {
   let exposure = 0;
   let complete = true;
   for (const src of sections.overview.sources) {
-    const facts = overviewFacts(src.object);
+    const facts = overviewFacts(src.object, src.stats);
     if (!facts) { complete = false; byState.push({ personId: src.personId, state: src.state, name: src.name, facts: null }); continue; }
     byState.push({ personId: src.personId, state: facts.state || src.state, name: facts.name || src.name, facts });
     for (const k of Object.keys(counts)) {
@@ -679,5 +772,5 @@ module.exports = {
   buildProfile, readProfile,
   familyOf, canonicalOf, openAliasCandidates, decideAlias, syncCrossStateCandidates,
   overviewFacts,
-  _internals: { rowsFrom, objectFrom, hasMore, rowKey, perPageFor, num, PAGE_SIZE, MAX_PAGES, CALL_BUDGET, FRESH_HOURS, SECTION_STATE },
+  _internals: { rowsFrom, objectFrom, looksFull, stripHeavy, rowKey, perPageFor, num, PAGE_SIZE, MAX_PAGES, CALL_BUDGET, FRESH_HOURS, SECTION_STATE },
 };

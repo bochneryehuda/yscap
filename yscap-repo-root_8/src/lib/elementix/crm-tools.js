@@ -104,6 +104,24 @@ const PAID = new Set(['submit_contact_enrichment']);
  */
 const UNVERIFIED_SHAPE = new Set(['welcome', 'list_transactions', 'get_filter_options']);
 
+/**
+ * PARAMETERS THIS PLANE MAY NEVER SEND — a compliance refusal, not a preference.
+ *
+ * `list_people` (and its lender/entity siblings) offer filters the vendor
+ * describes as "inferred gender based on first name" and "surname is likely
+ * Hispanic/Spanish". Narrowing a marketing list by an inferred protected
+ * characteristic is exactly the conduct ECOA and the Fair Housing Act exist to
+ * prohibit, and PILOT is a lender: the fact that a vendor offers a filter is not
+ * a reason for us to have a code path that can send it.
+ *
+ * Refused HERE rather than merely "not used", because "we don't use it" is a
+ * property of today's callers and this is a property of the door. It fails the
+ * request outright rather than dropping the argument silently — a filter
+ * quietly removed would make a screen show results that do not match what it
+ * asked for, which is its own kind of wrong.
+ */
+const FORBIDDEN_ARGS = new Set(['gender', 'hasHispanicName']);
+
 const str = (v) => String(v == null ? '' : v).trim();
 
 /**
@@ -129,6 +147,13 @@ async function call(tool, args = {}, opts = {}) {
   if (PAID.has(name) && !opts.paidActor) {
     return { ok: false, reason: 'paid_tool_refused',
       detail: 'Looking up somebody\'s contact details spends a credit, so it only runs from a deliberate click.' };
+  }
+
+  for (const k of Object.keys(args || {})) {
+    if (FORBIDDEN_ARGS.has(k)) {
+      return { ok: false, reason: 'not_allowed',
+        detail: `PILOT never filters people by ${k === 'gender' ? 'gender' : 'the likely origin of a surname'} — that is a protected characteristic and a lender may not select on it.` };
+    }
   }
 
   // Preflight against the transcribed schema where we have one. A refusal here
@@ -176,4 +201,4 @@ function totalOf(d) {
   return null;
 }
 
-module.exports = { call, rowsOf, totalOf, TOOLS, PAID, UNVERIFIED_SHAPE, _internals: { isUuid, stateCode } };
+module.exports = { call, rowsOf, totalOf, TOOLS, PAID, UNVERIFIED_SHAPE, FORBIDDEN_ARGS, _internals: { isUuid, stateCode } };

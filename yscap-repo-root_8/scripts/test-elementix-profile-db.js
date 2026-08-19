@@ -61,7 +61,11 @@ const LENDERS_NJ = {
   // THE ROWS ARE UNDER `lenderConnections`, not `data` — the key the shared
   // reader does not know. This fixture is the regression guard for it.
   lenderConnections: [
-    { id: 'aaaa0000-0000-4000-8000-000000000001', name: 'CoreVest Finance', lenderType: 'Private Money', totalVolume: 284072090, mortgageCount: 39 },
+    { id: 'aaaa0000-0000-4000-8000-000000000001', name: 'CoreVest Finance', lenderType: 'Private Money', totalVolume: 284072090, mortgageCount: 39,
+      // ~9 KB of base64 JPEG the vendor embeds on EVERY lender row. Seventy of
+      // these would put the better part of a megabyte of pictures in one jsonb
+      // row, and nothing on the screen uses them.
+      _logoDataUri: 'data:image/jpeg;base64,' + 'A'.repeat(9000) },
     { id: 'aaaa0000-0000-4000-8000-000000000002', name: 'Roc Capital / Roc360', lenderType: 'Private Money', totalVolume: 27208850, mortgageCount: 47 },
   ],
 };
@@ -95,6 +99,22 @@ crmTools.call = async (tool, args, opts) => {
       return { ok: true, data: id === PID_FL ? OVERVIEW_FL : OVERVIEW_NJ };
     case 'get_person_lender_network':
       return { ok: true, data: LENDERS_NJ };
+    case 'list_people':
+      return { ok: true, data: { data: [
+        // The vendor pads some filtered lists with unrelated rows; this proves
+        // we take only the person we asked for.
+        { id: '00000050-0000-4000-8000-000000000000', name: 'A STRANGER', personState: 'IA' },
+        { id: args.personIds[0], name: 'MOTY BRISK', personState: 'NJ',
+          mailingAddress: '7 GLENWOOD AVE #418, EAST ORANGE, NJ 07017',
+          previousExits3y: 80, yearsActive: 11, firstLoanDate: '2015-02-11',
+          loanCount: 5, totalVolume: 1400550, averageLoanSize: 280110,
+          shortTermLoanPct: 40, longTermLoanPct: 0,
+          mostFrequentMortgageCity: 'SOMERDALE', mostFrequentMortgageCounty: 'Camden County',
+          isAttorneyOrTitleAgent: false, isLikelySupportStaff: false,
+          unlockedBy: 'yosef@yscapgroup.com', unlockedAt: '2026-06-10T12:00:00.000Z',
+          entities: [{ id: 'e1', name: 'JC SWB EQUITIES ONE LLC', state: 'NJ' }],
+          topLenders: [{ id: 'l1', name: 'CoreVest Finance', _logoDataUri: 'data:image/jpeg;base64,' + 'A'.repeat(9000) }] },
+      ] } };
     case 'get_person_entities':
       if (args.scope === 'count') return { ok: true, data: { totalCount: 295 } };
       return { ok: true, data: { data: [{ id: 'e0000000-0000-4000-8000-000000000001', name: 'JC SWB EQUITIES ONE LLC', state: 'NJ' }] } };
@@ -108,7 +128,14 @@ crmTools.call = async (tool, args, opts) => {
       if (isForeclosure) return { ok: true, data: { data: [{ id: `fc-${id}-1` }] } };
       return { ok: true, data: { data: [{ id: `mtg-${id}-1` }] } };
     case 'get_person_deeds': {
-      const rows = [{ id: `deed-${id}-p${args.page}` }, ...(extraDeedRows[id] || [])];
+      if (args.scope === 'count') return { ok: true, data: { totalCount: deedsAlwaysMore ? 9999 : 1 } };
+      // A REAL vendor page: when there is more, the page comes back FULL. That
+      // matters — `nextPage` alone means "ask again", not "there is more" (it is
+      // emitted on any full page, even the last), so a stub returning one row
+      // plus nextPage tests a signal the vendor never actually sends.
+      const rows = deedsAlwaysMore
+        ? Array.from({ length: args.perPage }, (_, i) => ({ id: `deed-${id}-p${args.page}-${i}` }))
+        : [{ id: `deed-${id}-p${args.page}` }, ...(extraDeedRows[id] || [])];
       return { ok: true, data: { data: rows, ...(deedsAlwaysMore ? { nextPage: args.page + 1 } : {}) } };
     }
     default:
@@ -200,6 +227,19 @@ async function main() {
   ok('the headline numbers are the vendor’s own roll-up — 349 / 602 / 829 / 3 / 295 and $197,839,792.86');
 
   assert.strictEqual(v.sections.lender_network.rows.length, 2);
+  assert.ok(!JSON.stringify(v.sections.lender_network.rows).includes('_logoDataUri'),
+    'the vendor’s inline logo images are dropped before anything is stored');
+  const stored = await db.query(
+    `SELECT length(payload::text) AS n FROM elementix_person_sections WHERE person_id = $1 AND section = 'lender_network'`, [PID_NJ]);
+  assert.ok(Number(stored.rows[0].n) < 4000, `the stored section stays small (${stored.rows[0].n} bytes)`);
+  ok('the vendor’s embedded logo images never reach the database');
+
+  const ov = v.summary.byState.find((b) => b.personId === PID_NJ);
+  assert.strictEqual(ov.facts.mailingAddress, '7 GLENWOOD AVE #418, EAST ORANGE, NJ 07017');
+  assert.strictEqual(ov.facts.previousExits3y, 80);
+  assert.strictEqual(ov.facts.yearsActive, 11);
+  assert.strictEqual(ov.facts.unlockedBy, 'yosef@yscapgroup.com');
+  ok('the header carries their mailing address, their track record and who looked them up');
   assert.strictEqual(v.sections.mortgages.status, 'ok');
   assert.strictEqual(v.sections.transactions.status, 'unavailable');
   assert.ok(v.sections.transactions.detail.length > 20);
@@ -218,10 +258,19 @@ async function main() {
   r = await profile.buildProfile(PID_NJ, { staffId: officer, force: true, sections: ['deeds'] });
   const deedRes = r.sections.find((s) => s.section === 'deeds');
   assert.strictEqual(deedRes.truncated, true);
-  assert.strictEqual(deedRes.rows, profile._internals.MAX_PAGES);
+  assert.strictEqual(deedRes.rows, profile._internals.MAX_PAGES * profile._internals.PAGE_SIZE);
   v = await profile.readProfile(PID_NJ);
   assert.strictEqual(v.sections.deeds.truncated, true);
-  ok('a list longer than we fetched comes back marked truncated, not quietly short');
+  assert.strictEqual(v.sections.deeds.total, 9999,
+    'and the count call turned "showing the first N" into "of 9,999"');
+  ok('a list longer than we fetched is marked truncated AND sized, not quietly short');
+
+  // The other half of the same rule: a section whose LAST page came back full
+  // but which really is complete must NOT be called truncated.
+  deedsAlwaysMore = false;
+  r = await profile.buildProfile(PID_NJ, { staffId: officer, force: true, sections: ['deeds'] });
+  assert.strictEqual(r.sections.find((s) => s.section === 'deeds').truncated, false);
+  ok('and a complete list is never reported as truncated just because a page was full');
   deedsAlwaysMore = false;
 
   // `force` so nothing is served from cache — otherwise there is no spending
@@ -270,7 +319,9 @@ async function main() {
 
   r = await profile.buildProfile(PID_NJ, { staffId: officer, sections: ['overview'], force: true });
   assert.strictEqual(r.sections[0].status, 'ok');
-  assert.strictEqual(calls.length, beforeFresh + 1);
+  // TWO calls, not one: the header is get_person plus the list_people row that
+  // carries the mailing address and the track record.
+  assert.strictEqual(calls.length, beforeFresh + 2);
   ok('Refresh data really does go back to Elementix');
 
   // -------------------------------------------------------------------------

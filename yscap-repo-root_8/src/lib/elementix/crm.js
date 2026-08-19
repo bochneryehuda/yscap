@@ -142,7 +142,11 @@ function normalizeContact(raw) {
     });
   }
 
-  for (const row of listAt(['addresses', 'mailingAddresses', 'mailing_addresses', 'address'])) {
+  /* `mailingAddress` — SINGULAR, a plain string — is what the person tools
+     actually carry, and it was the one spelling this list did not have. It is
+     the only genuine CONTACT address the vendor gives (everything else is a
+     property they own), so missing it left the CRM with nowhere to post to. */
+  for (const row of listAt(['addresses', 'mailingAddresses', 'mailing_addresses', 'address', 'mailingAddress', 'mailing_address'])) {
     const value = typeof row === 'string' ? row
       : str(row && (row.formatted || row.oneLine || row.line || row.address || row.fullAddress));
     if (!value) continue;
