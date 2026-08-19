@@ -108,7 +108,14 @@ console.log('\n2. THE CONTROLS ARE DERIVED FROM THE COLUMNS, never hand-listed')
   eq(f.states, ['FL', 'NJ'], 'the states come off the rows\' own source pill, normalised and sorted');
   ok(f.stateless === 1, '…and the one row with no state is COUNTED, not dropped from the picture');
   eq(f.dateCols, ['Recorded', 'Matures'], 'the date range is offered for the date columns this tab declares');
-  eq(f.moneyCols, ['Amount'], '…the amount range for its money columns');
+  /* TWO money columns on the mortgages tab, not one. `Price paid` was added
+     when the redesign started rendering `deedConsideration` -- what they paid
+     for the property -- beside `mortgageAmount`, what they borrowed on it. That
+     is the pair an officer is really comparing, and it means this tab now
+     offers a CHOICE of money field exactly as the properties tab always has.
+     The point of this assertion is unchanged: the filter bar is derived from
+     the columns the tab declares and is never hand-listed. */
+  eq(f.moneyCols, ['Amount', 'Price paid'], '…the amount range for its money columns');
   eq(f.payoff, { paid: 1, open: 3, unknown: 1 }, 'the payoff tally is stated BEFORE anybody clicks');
   ok(f.payoff.paid + f.payoff.open + f.payoff.unknown === ROWS.length,
     '…and the three add up to every row held — nothing is uncounted');

@@ -2,10 +2,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
 import { askConfirm } from '../lib/dialog.js';
 import {
-  addressOf, money, count, day, haystack,
+  addressOf, money, count, day, haystack, txt, num, pretty, flag, names,
   COLUMNS, fallbackColumns,
   NO_FILTERS, UNKNOWN_STATE, PAYOFF_LABELS,
   facetsFor, applyRowView, viewSummary, nextSort, sortLabel,
+  recordDetail, holdPeriod,
 } from '../lib/elementixRows.js';
 
 /**
@@ -116,14 +117,16 @@ function costCheck(personId) {
 // Pieces
 // ---------------------------------------------------------------------------
 
-function Tile({ label, value, wide }) {
+/* `sub` is a SECOND fact about the same figure, not decoration: "829 properties"
+   and "222 owned now" are two different questions, and stacking them beats two
+   tiles competing for the same word. `wide` is kept on the signature because
+   OverviewTab still passes it; the grid sizes every tile now, so it is inert. */
+function Tile({ label, value, sub, warn }) {
   return (
-    <div style={{
-      border: `1px solid ${LINE}`, borderRadius: 10, padding: '10px 12px',
-      background: '#FFFFFF', minWidth: wide ? 170 : 104, flex: wide ? '1 1 190px' : '0 0 auto',
-    }}>
-      <div style={{ fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase', color: MUTED, fontWeight: 600 }}>{label}</div>
-      <div style={{ fontSize: wide ? 19 : 17, fontWeight: 650, color: INK, marginTop: 2 }}>{value}</div>
+    <div className={`elx-tile${warn ? ' warn' : ''}`}>
+      <div className="k">{label}</div>
+      <div className="v">{value}</div>
+      {sub ? <div className="s">{sub}</div> : null}
     </div>
   );
 }
@@ -159,6 +162,172 @@ function SectionNotice({ section, onRefresh }) {
     return box('warn', 'Elementix answered, but we have not confirmed how this part comes back — so an empty list here is not proof there is nothing.');
   }
   return null;
+}
+
+/* One label/value pair of the drill-in. A pair whose value is unknown is DROPPED
+   rather than printed as a dash: on a record page a column of dashes reads as
+   "we hold nothing about this property", which is the opposite of true. */
+function F({ k, v }) {
+  const empty = v === null || v === undefined || v === '' || v === '—';
+  if (empty) return null;
+  /* The pair is WRAPPED. A bare dt/dd sequence inside a CSS grid places the
+     label and the value as two independent cells, so a four-column grid puts a
+     label at one end of the card and its value at the other. HTML5 allows a
+     <div> to group a dt/dd pair inside a <dl>, which keeps the semantics and
+     lets the label sit directly above the value it names. */
+  return (<div className="p"><dt>{k}</dt><dd>{v}</dd></div>);
+}
+
+function ExtLink({ href, children }) {
+  if (!href) return null;
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer"
+      style={{ color: '#1F6F76', fontWeight: 600, fontSize: 13.5 }}>{children} ↗</a>
+  );
+}
+
+/**
+ * THE RECORD BEHIND A ROW — the property, the loan on it, and the company it
+ * sits in, drawn from rows already in the cache.
+ *
+ * NOT ONE VENDOR CALL. `recordDetail` joins the cached sections on the ids the
+ * rows already carry (`deedId`, `mortgageId`, `satisfactionId`, `lenderId`, the
+ * address uuid), which is why clicking around this section is free and why it
+ * can be clicked freely. Anything it cannot resolve is simply absent — putting
+ * the WRONG deed's purchase price beside a real loan amount would be a number
+ * somebody acts on.
+ */
+function RecordDetail({ detail, onClose, onOpenTab }) {
+  if (!detail) return null;
+  const { place, mortgage, deed, ownership, lender, entities } = detail;
+  const held = holdPeriod(ownership && (ownership.startDate || ownership.purchaseDate),
+    ownership && (ownership.endDate || ownership.saleDate));
+  const stillOwns = ownership && !(ownership.endDate || ownership.saleDate);
+  const title = place.line || txt(detail.row.name) || 'This record';
+
+  return (
+    <div className="elx-rec">
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 320px', minWidth: 0 }}>
+          <h4>{title}</h4>
+          {place.area && <div style={{ color: MUTED, fontSize: 13.5, marginTop: 3 }}>{place.area}</div>}
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <ExtLink href={detail.url}>Open in Elementix</ExtLink>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
+        </div>
+      </div>
+
+      {/* WHERE IT IS, WHEN IT WAS TAKEN, AND FROM WHOM — the owner's three
+          questions, answered on one line each and in that order. */}
+      <dl className="elx-dl">
+        <F k="Held in" v={entities.length ? entities.map((e) => e.name).join(', ') : (mortgage ? names(mortgage.borrowerNames) : null)} />
+        <F k="Bought" v={ownership && (ownership.startDate || ownership.purchaseDate) ? day(ownership.startDate || ownership.purchaseDate) : (deed ? day(deed.recordingDate) : null)} />
+        <F k="Price paid" v={money(
+          (ownership && (ownership.totalConsideration ?? ownership.purchasePrice))
+          ?? (deed && deed.totalConsideration)
+          ?? (mortgage && mortgage.deedConsideration)) === '—' ? null : money(
+          (ownership && (ownership.totalConsideration ?? ownership.purchasePrice))
+          ?? (deed && deed.totalConsideration)
+          ?? (mortgage && mortgage.deedConsideration))} />
+        <F k="Sold" v={ownership && (ownership.endDate || ownership.saleDate) ? day(ownership.endDate || ownership.saleDate) : null} />
+        <F k="Sold for" v={ownership && (ownership.soldConsideration ?? ownership.salePrice) != null
+          ? money(ownership.soldConsideration ?? ownership.salePrice) : null} />
+        <F k="Held for" v={held} />
+        <F k="Owns it now" v={ownership ? (stillOwns ? 'Yes' : 'No — sold') : null} />
+        <F k="Kind of property" v={pretty((ownership && ownership.propertyUseCategory) || (mortgage && mortgage.propertyUseCategory)) === '—' ? null : pretty((ownership && ownership.propertyUseCategory) || (mortgage && mortgage.propertyUseCategory))} />
+        <F k="Arm's length" v={ownership ? flag(ownership.isNonArmsLengthTransfer, 'No — related parties', 'Yes') : null} />
+      </dl>
+
+      {mortgage && (
+        <div className="grp">
+          <div className="grp-h">The loan on it</div>
+          <dl className="elx-dl">
+            <F k="Lender" v={txt(mortgage.lenderName || mortgage.lenderAliasName) || null} />
+            <F k="Lender kind" v={pretty(mortgage.lenderType) === '—' ? null : pretty(mortgage.lenderType)} />
+            <F k="Amount" v={num(mortgage.mortgageAmount) === null ? null : money(mortgage.mortgageAmount)} />
+            <F k="Recorded" v={mortgage.recordingDate ? day(mortgage.recordingDate) : null} />
+            <F k="Term" v={num(mortgage.loanTermMonths) === null ? null : `${mortgage.loanTermMonths} months`} />
+            <F k="Matures" v={mortgage.maturityDate ? day(mortgage.maturityDate) : null} />
+            <F k="Purpose" v={mortgage.isRefinance === true ? 'Refinance' : mortgage.isExtension === true ? 'Extension' : (pretty(mortgage.loanPurpose) === '—' ? null : pretty(mortgage.loanPurpose))} />
+            <F k="Paid off" v={mortgage.satisfactionDate ? day(mortgage.satisfactionDate) : (mortgage.satisfactionId ? 'Yes' : null)} />
+            <F k="Business purpose" v={flag(mortgage.isBusinessPurpose, 'Yes', 'No') === '—' ? null : flag(mortgage.isBusinessPurpose, 'Yes', 'No')} />
+          </dl>
+          {lender && (
+            <div style={{ marginTop: 10, fontSize: 13.5, color: INK }}>
+              <span style={{ color: MUTED }}>Across everything we hold, this borrower has taken </span>
+              <strong>{count(lender.mortgageCount)}</strong>
+              <span style={{ color: MUTED }}> loan(s) from </span>
+              <strong>{txt(lender.name)}</strong>
+              <span style={{ color: MUTED }}> totalling </span>
+              <strong>{money(lender.totalVolume)}</strong>
+              {onOpenTab && (
+                <button className="elx-open" style={{ marginLeft: 8 }} onClick={() => onOpenTab('lender_network')}>
+                  See every lender
+                </button>
+              )}
+            </div>
+          )}
+          {detail.preforeclosureId && (
+            <div style={{ marginTop: 8, fontSize: 13.5, color: INK, background: '#FDF6E7',
+              border: '1px solid #D9A441', borderRadius: 8, padding: '7px 10px' }}>
+              Elementix has a foreclosure filing recorded against this loan.
+            </div>
+          )}
+          {detail.assignmentId && (
+            <div style={{ marginTop: 8, fontSize: 13, color: MUTED }}>
+              This note was assigned — the lender on record sold it on.
+            </div>
+          )}
+        </div>
+      )}
+
+      {deed && (
+        <div className="grp">
+          <div className="grp-h">The deed</div>
+          <dl className="elx-dl">
+            <F k="Recorded" v={deed.recordingDate ? day(deed.recordingDate) : null} />
+            <F k="Consideration" v={num(deed.totalConsideration) === null ? null : money(deed.totalConsideration)} />
+            <F k="From" v={names(deed.grantors) || null} />
+            <F k="To" v={names(deed.grantees) || null} />
+            <F k="Paid with" v={flag(deed.isCashPurchase, 'Cash', 'A loan') === '—' ? null : flag(deed.isCashPurchase, 'Cash', 'A loan')} />
+            <F k="County file no." v={detail.countyDocumentId} />
+          </dl>
+        </div>
+      )}
+
+      {(detail.alsoMortgages.length > 0 || detail.alsoDeeds.length > 0) && (
+        <div className="grp">
+          <div className="grp-h">Everything else recorded at this address</div>
+          <div style={{ fontSize: 13.5, color: INK, marginTop: 6, display: 'grid', gap: 4 }}>
+            {detail.alsoMortgages.map((m) => (
+              <div key={`m-${m.id}`}>
+                <span style={{ color: MUTED }}>Loan </span>{day(m.recordingDate)}
+                <span style={{ color: MUTED }}> · </span>{money(m.mortgageAmount)}
+                <span style={{ color: MUTED }}> · </span>{txt(m.lenderName || m.lenderAliasName) || 'lender not named'}
+              </div>
+            ))}
+            {detail.alsoDeeds.map((d) => (
+              <div key={`d-${d.id}`}>
+                <span style={{ color: MUTED }}>Deed </span>{day(d.recordingDate)}
+                <span style={{ color: MUTED }}> · </span>{money(d.totalConsideration)}
+                <span style={{ color: MUTED }}> · to </span>{names(d.grantees) || 'not named'}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* SAY WHAT THIS IS AND IS NOT. Everything above came out of records
+          already pulled in for this person — so it is the property as it appears
+          in THEIR file, not the property's whole history, and a reader must not
+          mistake one for the other. */}
+      <div style={{ marginTop: 12, fontSize: 12.5, color: MUTED }}>
+        Built from the records already pulled in for this person — no new lookup, nothing spent.
+        Anything Elementix holds about this property under somebody else is not shown here.
+      </div>
+    </div>
+  );
 }
 
 function OverviewTab({ profile, onRefresh, busy }) {
@@ -273,8 +442,12 @@ function FilterField({ label, basis, children }) {
  * round trip in this component — narrowing a list must never cost one of the
  * organisation's shared hourly calls.
  */
-function TabRows({ section, label }) {
+function TabRows({ section, label, profile, onOpenTab }) {
   const rows = useMemo(() => section.rows || [], [section.rows]);
+  /* WHICH ROW IS OPEN, by its own id rather than by index: the list re-orders
+     under a sort and re-filters under a search, and an index would then be
+     pointing at a different property than the one somebody opened. */
+  const [openId, setOpenId] = useState(null);
   const cols = useMemo(() => COLUMNS[section.key] || fallbackColumns(rows), [section.key, rows]);
   /* Stringified ONCE per row per load rather than once per keystroke: 800+ rows
      re-serialised on every character typed is a visibly janky search box. */
@@ -297,6 +470,14 @@ function TabRows({ section, label }) {
   const noun = String(label || 'rows').toLowerCase();
   const summary = viewSummary(view, { noun });
   const sorted = sortLabel(view.sort, cols);
+  /* Resolved from the FULL row set, not the filtered view: a record stays open
+     while somebody narrows the list underneath it, and closing a filter must not
+     make the panel vanish out from under them. */
+  const openRecord = useMemo(() => {
+    if (!openId) return null;
+    const r = rows.find((x) => x && x.id === openId);
+    return r ? recordDetail(r, section.key, profile) : null;
+  }, [openId, rows, section.key, profile]);
   const showBar = rows.length > 3;
   const oneDate = facets.dateCols.length === 1 ? facets.dateCols[0] : null;
   const oneMoney = facets.moneyCols.length === 1 ? facets.moneyCols[0] : null;
@@ -408,6 +589,15 @@ function TabRows({ section, label }) {
         <div key={t} style={{ fontSize: 13, color: MUTED, marginBottom: 6 }}>{t}</div>
       ))}
 
+      {/* THE OPEN RECORD sits ABOVE the table, not inside it as an expanded row.
+          Inside, it would be one <td colspan> stretched across an eleven-column
+          table that is itself scrolled sideways — so half the detail would be
+          off-screen and scrolling to read it would scroll the row away. Above,
+          it is always fully visible and the list keeps its place underneath. */}
+      {openRecord && (
+        <RecordDetail detail={openRecord} onClose={() => setOpenId(null)} onOpenTab={onOpenTab} />
+      )}
+
       {view.emptyReason === 'no-match' ? (
         /* NEVER A BLANK TABLE. An empty tab on this screen means "Elementix has
            none"; an empty FILTER means the officer asked a narrow question. They
@@ -419,20 +609,17 @@ function TabRows({ section, label }) {
           <button className="btn btn-ghost btn-sm" style={{ marginLeft: 8 }} onClick={() => setFilters(blank)}>Clear filters</button>
         </div>
       ) : (
-        <div style={{ overflowX: 'auto', maxWidth: '100%', border: `1px solid ${LINE}`, borderRadius: 10, background: '#FFFFFF' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5 }}>
+        <div className="elx-tw" tabIndex={0} role="region" aria-label={`${label} table`}>
+          <table className="elx-t">
             <thead>
               <tr>
                 {cols.map((c) => {
                   const on = !!(view.sort && view.sort.h === c.h);
                   return (
-                    <th key={c.h}
+                    <th key={c.h} scope="col"
+                      className={`${c.n ? 'n' : ''}${c.subject ? ' sub' : ''}`}
                       aria-sort={on ? (view.sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
-                      style={{
-                        textAlign: c.n ? 'right' : 'left', padding: '9px 11px',
-                        borderBottom: `1px solid ${LINE}`, whiteSpace: 'nowrap', width: c.w || undefined,
-                        background: on ? '#FAF6EC' : undefined,
-                      }}>
+                      style={{ width: c.w || undefined, background: on ? '#FAF6EC' : undefined }}>
                       <button type="button" onClick={() => setSort((s) => nextSort(s, c))}
                         title={`Sort by ${c.h}`}
                         style={{
@@ -449,24 +636,41 @@ function TabRows({ section, label }) {
                     </th>
                   );
                 })}
-                <th style={{ borderBottom: `1px solid ${LINE}` }} />
+                <th scope="col"><span className="sr-only">Where the record is from</span></th>
               </tr>
             </thead>
             <tbody>
               {view.rows.map((r, i) => (
-                <tr key={(r && r.id) || i} style={{ borderBottom: `1px solid ${LINE}` }}>
+                <tr key={(r && r.id) || i} className={openId && r && r.id === openId ? 'on' : undefined}>
                   {cols.map((c) => {
                     const v = c.get(r) || '—';
+                    /* THE SUBJECT CELL IS THE WAY IN. It is a real <th scope="row">
+                       so an eleven-column money row announces its own address, and
+                       the control inside it is a BUTTON rather than a link because
+                       it opens a panel on this page — it navigates nowhere, and a
+                       link that goes nowhere is a lie to a keyboard user. Opening
+                       costs nothing: everything it shows is already in the cache. */
+                    if (c.subject) {
+                      return (
+                        <th key={c.h} scope="row" className="sub">
+                          {v === '—' ? <span style={{ color: MUTED, fontWeight: 400 }}>—</span> : (
+                            <button type="button" className="elx-open"
+                              aria-expanded={!!(openId && r && r.id === openId)}
+                              onClick={() => setOpenId((cur) => (r && cur === r.id ? null : (r && r.id) || null))}>
+                              {v}
+                            </button>
+                          )}
+                        </th>
+                      );
+                    }
                     return (
-                      <td key={c.h} style={{
-                        padding: '9px 11px', color: INK, textAlign: c.n ? 'right' : 'left',
-                        fontWeight: c.strong ? 600 : 400, whiteSpace: c.strong ? 'normal' : 'nowrap',
-                      }}>{v}</td>
+                      <td key={c.h} className={c.n ? 'n' : undefined}
+                        style={{ fontWeight: c.strong ? 600 : 400, whiteSpace: c.strong ? 'normal' : 'nowrap' }}>{v}</td>
                     );
                   })}
-                  <td style={{ padding: '9px 11px', whiteSpace: 'nowrap' }}>
+                  <td style={{ whiteSpace: 'nowrap' }}>
                     {r && r._source && r._source.state
-                      ? <span style={{ fontSize: 11, color: MUTED, border: `1px solid ${LINE}`, borderRadius: 20, padding: '1px 7px' }}>{r._source.state}</span>
+                      ? <span className="elx-chip">{r._source.state}</span>
                       : null}
                   </td>
                 </tr>
@@ -953,6 +1157,31 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
   }
   const s = p.summary || {};
   const c = s.counts || {};
+  const facts = (s.byState || []).map((b) => b.facts).filter(Boolean);
+
+  /* TWO FIGURES DERIVED ACROSS THE STATES, and both refuse to be invented.
+     `ownsNow` sums what each state's record says they hold TODAY, and is null
+     when not one of them said — a person with 829 properties and an unread
+     ownership count must not read as owning none. The typical loan is a real
+     weighted average (all the money over all the loans) rather than a mean of
+     means, and only over the states that reported BOTH halves. */
+  const ownsNow = facts.reduce((a, f) => (num(f.propertiesCurrent) === null ? a : (a || 0) + num(f.propertiesCurrent)), null);
+  const avgLoan = (() => {
+    let vol = 0; let n = 0;
+    for (const f of facts) {
+      if (num(f.totalVolume) !== null && num(f.loanCount) > 0) { vol += num(f.totalVolume); n += num(f.loanCount); }
+    }
+    return n > 0 ? money(vol / n) : null;
+  })();
+  const flags = {
+    attorney: facts.some((f) => f.likelyAttorneyOrTitle),
+    support: facts.some((f) => f.likelySupportStaff),
+  };
+  const firstLoan = facts.map((f) => f.firstLoanDate || (f.firstLenderDates && f.firstLenderDates.any))
+    .filter(Boolean).sort()[0] || null;
+  const yearsActive = facts.reduce((a, f) => Math.max(a, num(f.yearsActive) || 0), 0) || null;
+  const where = facts.map((f) => f.mostFrequentCounty).filter(Boolean)[0] || null;
+
   const sections = p.sections || {};
   const current = sections[tab];
   const candidates = p.aliasCandidates || [];
@@ -962,11 +1191,6 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
     <div className="panel">
       <div className="panel-h" style={{ flexWrap: 'wrap', gap: 8 }}>
         <h3>Elementix</h3>
-        <span style={{ color: MUTED, fontSize: 13 }}>
-          {(p.person && p.person.name) || 'Linked record'}
-          {s.states && s.states.length ? ` · ${s.states.join(', ')}` : ''}
-          {p.person && p.person.refreshedAt ? ` · read ${day(p.person.refreshedAt)}` : ''}
-        </span>
         <span style={{ flex: 1 }} />
         <button className="btn btn-ghost btn-sm" disabled={!!busy} onClick={() => refresh(true)}>
           {busy === 'refresh' ? 'Refreshing…' : 'Refresh data'}
@@ -974,6 +1198,37 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
         <button className="btn btn-ghost btn-sm" disabled={!!busy} onClick={unlink}>Unlink</button>
       </div>
       <div className="panel-b">
+        {/* THE IDENTITY HEADER. At 340px this was a wrapped grey sentence in the
+            panel bar; at full width it is what the section opens with — who this
+            is, which states they are merged from, how long they have been at it,
+            and when we last read them. */}
+        <div className="elx-head">
+          <div style={{ minWidth: 0 }}>
+            <h4 className="who">{(p.person && p.person.name) || 'Linked Elementix record'}</h4>
+            <div className="facts">
+              {(s.states || []).map((st) => <span key={st} className="elx-chip">{st}</span>)}
+              {(s.states || []).length > 1 && (
+                <span>Merged from <b>{(s.states || []).length}</b> Elementix records, each confirmed by hand</span>
+              )}
+              {yearsActive && <span>Active <b>{yearsActive}</b> years</span>}
+              {firstLoan && <span>First loan <b>{day(firstLoan)}</b></span>}
+              {where && <span>Mostly in <b>{where}</b></span>}
+              {p.person && p.person.refreshedAt && <span>Read <b>{day(p.person.refreshedAt)}</b></span>}
+            </div>
+            {(flags.attorney || flags.support) && (
+              /* THE VENDOR'S OWN WARNING, said out loud. Telephoning a closing
+                 attorney as though they were the borrower is the expensive
+                 mistake this prevents. */
+              <div style={{ marginTop: 8, border: '1px solid #D9A441', background: '#FDF6E7',
+                borderRadius: 8, padding: '7px 10px', color: INK, fontSize: 13.5 }}>
+                Elementix flags this record as {flags.attorney ? 'a closing attorney or title agent' : ''}
+                {flags.attorney && flags.support ? ', and as ' : ''}
+                {flags.support ? 'support staff rather than a principal' : ''} — they may appear on hundreds
+                of files without being the borrower on any of them.
+              </div>
+            )}
+          </div>
+        </div>
         {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
         {msg && <div className="notice ok" style={{ marginBottom: 10 }}>{msg}</div>}
 
@@ -983,13 +1238,16 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-          <Tile label="Companies" value={count(c.entities)} />
-          <Tile label="Properties" value={count(c.properties)} />
-          <Tile label="Mortgages" value={count(c.mortgages)} />
+        {/* SIX TILES, in whole columns. The set is fixed, so the grid steps
+            6 -> 3 -> 2 rather than reflowing into a ragged last row, and the
+            money one no longer has to be marked `wide` to fit. */}
+        <div className="elx-stats">
+          <Tile label="Owed today" value={money(s.exposure)} />
+          <Tile label="Properties" value={count(c.properties)} sub={ownsNow != null ? `${ownsNow.toLocaleString('en-US')} owned now` : null} />
+          <Tile label="Loans" value={count(c.mortgages)} sub={avgLoan ? `typically ${avgLoan}` : null} />
           <Tile label="Deeds" value={count(c.deeds)} />
-          <Tile label="Foreclosures" value={count(c.foreclosures)} />
-          <Tile label="Owed today" value={money(s.exposure)} wide />
+          <Tile label="Companies" value={count(c.entities)} />
+          <Tile label="Foreclosures" value={count(c.foreclosures)} warn={num(c.foreclosures) > 0} />
         </div>
         {s.complete === false && (
           <div style={{ color: MUTED, fontSize: 12.5, marginBottom: 10 }}>
@@ -1027,7 +1285,7 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', borderBottom: `1px solid ${LINE}`, paddingBottom: 8, marginBottom: 12 }}>
+        <div className="elx-tabs" role="tablist" aria-label="Elementix record sections">
           {TABS.map((t) => {
             const sec = sections[t.key];
             /* A NUMBER ON A TAB IS A CLAIM, SO IT IS ONLY MADE ABOUT A SECTION WE
@@ -1042,19 +1300,12 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
             const on = tab === t.key;
             return (
               <button key={t.key} onClick={() => setTab(t.key)}
-                style={{
-                  // GOLD AS A BACKGROUND FOR WHITE TEXT is #AE8746 at 3.31:1 — the single
-                  // worst pair the repo's own contrast guard names. --gold-ink (#856529)
-                  // reads 5.40:1 and is the same brand gold, darkened just enough.
-                  border: `1px solid ${on ? GOLD_INK : LINE}`, background: on ? GOLD_INK : '#FFFFFF',
-                  color: on ? '#FFFFFF' : INK, borderRadius: 20, padding: '5px 12px',
-                  fontSize: 13.5, fontWeight: on ? 650 : 500, cursor: 'pointer',
-                }}>
+                className="elx-tab" role="tab" aria-selected={on}>
                 {t.label}
                 {t.key !== 'overview' && n != null
-                  ? <span style={{ opacity: 0.75, marginLeft: 6 }}>{n.toLocaleString('en-US')}</span>
+                  ? <span className="b">{n.toLocaleString('en-US')}</span>
                   : t.key !== 'overview' && unread
-                    ? <span style={{ opacity: 0.55, marginLeft: 6 }}
+                    ? <span className="b"
                         title={sec.status === 'error' ? 'This part did not come back — open it to try again'
                           : sec.status === 'skipped' ? 'This part was left for the next refresh'
                             : 'Not read yet'}>·</span>
@@ -1073,7 +1324,7 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
             /* KEYED ON THE TAB — a tab change REMOUNTS this, which is what clears
                the filters and the sort. Carrying a filter from one tab to the
                next hides rows nobody asked to hide. */
-            ? <TabRows key={tab} section={current} label={tabLabel} />
+            ? <TabRows key={tab} section={current} label={tabLabel} profile={p} onOpenTab={setTab} />
             : current && (current.status === 'ok' || current.status === 'partial')
               ? <div style={{ color: MUTED, fontSize: 14 }}>Elementix has nothing on record here.</div>
               : null}
