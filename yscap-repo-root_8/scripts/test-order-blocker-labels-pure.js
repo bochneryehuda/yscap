@@ -71,6 +71,33 @@ for (const code of orderCodes.filter((c) => !UNRENDERABLE.includes(c))) {
     `OrdersPanel names the '${code}' blocker (an unnamed one leaves the Order button with no visible reason)`);
 }
 
+/* ── 2b. …and the wording is a rendered <li>, not just a referenced constant ──
+   The first cut of this test asserted only that `blockers.includes('<code>')`
+   appears SOMEWHERE in the file — which OrdersPanel satisfies through its
+   derivation consts (`const needsUsps = blockers.includes('usps')`) even with
+   the <li> deleted. So a deleted wording line left the test green while a
+   blocked order rendered the gate heading over an EMPTY list — the exact
+   dead-end shape this suite exists to prevent (pre-merge audit finding,
+   2026-08-19). A code counts as WORDED only when a <li> is gated on it,
+   directly (`{blockers.includes('code') && <li`) or through an alias
+   (`const needsX = blockers.includes('code')` … `{needsX && <li`). */
+function rendersLi(source, code, file) {
+  const names = [];
+  const aliasRe = new RegExp(`const (\\w+) = blockers\\.includes\\('${code}'\\)`, 'g');
+  let m;
+  while ((m = aliasRe.exec(source))) names.push(m[1]);
+  const gates = names.concat([`blockers\\.includes\\('${code}'\\)`]);
+  return gates.some((g) => new RegExp(`\\{(?:${g})\\s*&&\\s*<li[\\s>]`).test(source));
+}
+for (const code of closingCodes.filter((c) => !UNRENDERABLE.includes(c))) {
+  assert(rendersLi(closingCard, code),
+    `ClosingPrepCard renders a <li> for the '${code}' blocker (a referenced-but-unrendered code shows an empty gate)`);
+}
+for (const code of orderCodes.filter((c) => !UNRENDERABLE.includes(c))) {
+  assert(rendersLi(ordersCard, code),
+    `OrdersPanel renders a <li> for the '${code}' blocker (a referenced-but-unrendered code shows an empty gate)`);
+}
+
 /* ── 3. both cards keep the unknown-code fallback ───────────────────────────── */
 assert(/KNOWN_BLOCKERS\.includes\(b\)/.test(closingCard) && /does not know how to explain/.test(closingCard),
   'ClosingPrepCard renders a fallback line for a blocker code it has no wording for');
