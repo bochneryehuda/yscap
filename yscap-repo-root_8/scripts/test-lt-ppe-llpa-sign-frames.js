@@ -118,11 +118,32 @@ ok(checked.some((k) => (FIX.rows.find((r) => r.key === k) || {}).raw < 0),
   'B7 a family where LP is NEGATIVE and the sheet is positive is covered (a credit)');
 
 // ---- C. THE DEPENDENCY THIS PINS -----------------------------------------------------------------
-// `num` strips the sign, which is what performs the conversion. Assert the behaviour so anyone who
-// changes it is sent here — the parity doc explains what else must move with it.
+// Dropping the sign is what performs the conversion. Assert the behaviour so anyone who changes it is
+// sent here — the parity doc explains what else must move with it.
+//
+// §2.117 MOVED THIS, AND THE MOVE IS THE POINT. It used to be `client.num`, which ALSO read every input
+// fact (fico, dscr, loan, value, months, a monthly payment) — one function doing a frame conversion and
+// a sanitizer at once, coinciding only because none of those facts is ever negative. The conversion is
+// now `magnitude()`, reachable from the adjustment call sites alone, and `num()` REFUSES a negative
+// instead of silently returning its magnitude. So this assertion follows the property to its new home
+// rather than being deleted, and gains the second half: the conversion must not be able to leak back
+// onto an input fact.
 const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'lenderprice', 'client.js'), 'utf8');
-ok(/function num\(v\)[^\n]*replace\(\/\[\^0-9\.\]\/g/.test(src),
-  'C1 client.num still strips every non-digit — the step that converts Lender Price\'s frame to the sheet\'s');
+ok(/function digitsOnly\(v\)[^\n]*replace\(\/\[\^0-9\.\]\/g/.test(src)
+  && /function magnitude\(v\) \{ return digitsOnly\(v\); \}/.test(src),
+  'C1 the frame conversion still strips every non-digit — the step that converts Lender Price\'s frame to the sheet\'s');
+// It is used where an ADJUSTMENT is read, and nowhere else: four call sites, all of them an llpa/adj
+// value. A fifth would mean some other field had quietly inherited the sign-dropping.
+{
+  // Count CALL sites only: not the definition, and not a mention in a comment. `magnitude` is a
+  // one-line alias of the private extraction precisely so this count means something — if it delegated
+  // the other way round, every `num` caller would count as reaching the conversion too.
+  const noComments = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const uses = (noComments.match(/magnitude\(/g) || []).length - 1;   // minus its own definition
+  ok(uses === 4, `C1b the conversion is reachable from exactly the four adjustment sites — found ${uses}`);
+  const adjSites = (noComments.match(/value: (?:isStr \? null : )?magnitude\(/g) || []).length;
+  ok(adjSites === 4, `C1c …and every one of them is reading an adjustment VALUE — found ${adjSites}`);
+}
 ok(/CHARGE-POSITIVE|charge-positive/.test(src),
   'C2 …and the source says so where a reader will meet it, rather than leaving it to be rediscovered');
 

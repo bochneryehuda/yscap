@@ -7655,3 +7655,75 @@ left alone here: the built-in grid's base ladder is already `lp_post_holdback` a
 subtract a holdback twice, so changing it without measuring would be touching money on a guess.
 
 181/181 suites, 33 database-backed. All seven gates green.
+
+---
+
+## §2.117 — one function was doing two jobs, and the coincidence hid a fail-open on money
+
+`client.num` stripped every non-digit, **including the minus sign**. On an ADJUSTMENT that is not a
+bug and must not be "fixed": Lender Price states an adjustment CHARGE-POSITIVE while our rate sheet
+states the same adjustment PREMIUM-POSITIVE, so taking the magnitude **is** the conversion between the
+two frames — measured family by family and enforced by `test-lt-ppe-llpa-sign-frames.js` (§2.104). Real
+captured data proves the negatives are there: `scripts/fixtures/lp-dscr-band-containers.json` carries
+`"llpa": -0.25` three times.
+
+**The same function also read every input fact** — fico, DSCR, loan amount, property value, prepay
+months, a monthly payment. None of those is ever negative, so the two jobs coincided and nothing broke.
+What the coincidence hid is the failure mode: a negative arriving on an INPUT was silently turned
+positive. A loan amount of −500,000 read as +500,000; a garbage DSCR of −1.25 read as a healthy 1.25.
+That is fail-open on money, and **no suite could have caught it** — the sign-frame suite covers
+adjustment families only, by design.
+
+### The split
+
+- **`magnitude()`** is the frame conversion. It is a one-line alias of the private extraction on
+  purpose: its whole job is to NAME what dropping the sign means, and to be the only thing an
+  adjustment value is read through. **Four call sites, all of them an `llpa`/`adj` value** — a fifth
+  would mean some other field had quietly inherited the sign-dropping, and the guard counts.
+- **`num()`** reads an input fact and now **refuses a sign it should never see** — a leading minus, and
+  a vendor's accounting parenthesis `(0.25)`, read off the RAW value before any stripping.
+
+It stays deliberately lenient about text AROUND the number, and that is not laziness: Lender Price
+answers a prepay term as `"60 Months"`, and a strict sign-preserving parse — the kind
+`search-model.js` correctly uses to BUILD a payload (§27.10) — returns null for it, which would turn
+**every** prepay term into "No PPP". So the difference between the two functions is the sign, and only
+the sign. The mutation was run: going strict fails `C2` exactly that way.
+
+### What it does NOT close, stated so nobody reads more into it
+
+The LIVE request builder is `buildSearch`, which reads its facts through `search-model.num` — a
+sign-preserving parser fixed separately — and then validates. **The live request path was never exposed
+to this.** What was exposed is `buildSearchPayload` (the decoded field-mapping builder) and the
+monthly-payment read in the parse path. This closes the second door; the first was already shut, and
+the suite asserts that by showing the live builder carrying a negative through untouched.
+
+### Nothing else moved, and that is measured rather than claimed
+
+The suite keeps a copy of the function **exactly as it stood before the split** and runs both over a
+battery of the shapes a vendor or caller actually sends — `500000`, `"$1,250.50"`, `"1,250"`, `"80%"`,
+`"60 Months"`, `".75"`, `""`, `null`, `"abc"`. Every non-negative shape parses identically (25 of 25),
+`magnitude` is byte-identical to the old reader on all of them, and the two disagree on exactly one
+thing: a negative. Both are driven as the REAL shipped functions (exported through `_internals` for
+this reason) — comparing against a re-implementation written inside the test would prove only that the
+test agrees with itself.
+
+### One assertion here was vacuous, and the mutation is what exposed it
+
+Section B was first written against `buildSearch`, asserting a negative property value no longer built
+the same request. It passed — **and it passed under the mutation that removed the refusal too**, because
+that builder never went through this reader at all. A test that stays green when the thing it names is
+deleted is measuring something else. It was rewritten to drive the reader itself and the builder it
+actually feeds, and the live-builder case is now stated as the boundary rather than mistaken for the
+subject.
+
+### What it is measured by
+
+`scripts/test-lt-ppe-vendor-sign-split.js` — 19 assertions, offline, driven through the real parser on
+the REAL captured negative. **Mutation-proven five ways**: the conversion keeping the sign, the
+conversion negating instead of taking the magnitude, the input reader's refusal removed (the pre-fix
+state), the split undone by making the conversion refuse too, and the input reader going strict (which
+silently turns every prepay term into "No PPP"). `test-lt-ppe-llpa-sign-frames.js` moved with the
+property rather than being deleted — its C1 now names `magnitude`, and two new halves assert the
+conversion is reachable from exactly the four adjustment sites.
+
+182/182 suites, 33 database-backed. All seven gates green.

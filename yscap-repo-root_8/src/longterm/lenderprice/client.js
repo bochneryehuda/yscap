@@ -1110,23 +1110,46 @@ function mapPrepay(months) {
   if (!m) return { PrepayTerm: null, PrePayment_Plan_Type: null, ppp: 'No PPP' };
   return { PrepayTerm: m + ' Months', PrePayment_Plan_Type: 'Standard', ppp: (m / 12) + ' Yr PPP' };
 }
-// ⛔ THE SIGN STRIPPING HERE IS LOAD-BEARING — DO NOT "FIX" IT WITHOUT READING THIS.
-// `replace(/[^0-9.]/g, '')` removes the MINUS SIGN, so a vendor value of -0.25 is read as 0.25. That
-// looks like an obvious bug and it is doing real work: Lender Price states an adjustment
-// CHARGE-POSITIVE (a charge is +, a credit is -) while our rate sheet states the SAME adjustment
+// ⛔ TWO JOBS, TWO FUNCTIONS — and until §2.117 they were ONE (§2.104 explains why that ever worked).
+//
+// `magnitude()` is a FRAME CONVERSION, not a sanitizer. Lender Price states an adjustment
+// CHARGE-POSITIVE (a charge is +, a credit is −) while our rate sheet states the SAME adjustment
 // PREMIUM-POSITIVE (+ improves the price — deephaven-dscr-sheet.js SHEET_FICO_CLTV says so in its own
 // words). MEASURED live 2026-08-18 across four scoped Deephaven searches, EIGHT of eight observable
-// families are EXACT negations, so taking the magnitude IS the frame conversion and the itemized-LLPA
+// families are EXACT negations, so taking the MAGNITUDE *is* the conversion and the itemized-LLPA
 // agreement holds for a real reason. Restore the sign on its own and every parsed adjustment flips.
-//
 // The relationship is enforced, not assumed: `scripts/test-lt-ppe-llpa-sign-frames.js` holds it family
 // by family against `scripts/fixtures/lp-raw-adjustment-signs.json` (the raw vendor values) and fails
-// if any family stops being an exact negation. Changing this function means changing that suite, the
-// sheet's frame, and the comparison in lp-normalize-full together. Parity doc §2.104.
+// if any family stops being an exact negation. Changing it means changing that suite, the sheet's
+// frame, and the comparison in lp-normalize-full together.
 //
-// For the INPUT side (fico / dscr / loan / value / months) the stripping is simply a sanitizer: none of
-// those is ever negative.
-function num(v) { if (v == null || v === '') return null; const n = parseFloat(String(v).replace(/[^0-9.]/g, '')); return isFinite(n) ? n : null; }
+// `num()` reads an INPUT FACT — fico, dscr, loan, value, months, a monthly payment. **None of those is
+// ever negative**, so where the frame conversion silently returned `0.25` for `-0.25`, this REFUSES a
+// negative outright: a loan amount of −500,000 is garbage, and quoting it as +500,000 is fail-open on
+// money. It stays deliberately lenient about text AROUND the number — Lender Price answers a prepay
+// term as `"60 Months"` and the whole prepay mapping depends on reading the 60 out of it — so the
+// difference from `magnitude` is the SIGN, and only the sign.
+//
+// THE POINT OF THE SPLIT is that they no longer coincide by accident. One function doing both meant a
+// future field that is legitimately negative and is NOT an adjustment would inherit the conversion and
+// be corrupted silently, with no suite able to notice: the sign-frame suite only covers adjustment
+// families. Now the conversion is named, is reachable from exactly four call sites, and everything else
+// fails closed on a sign it should never see. Parity doc §2.104 + §2.117.
+// The lenient extraction both of them are built on: pull the digits out of whatever the vendor sent
+// ("$1,250.50", "60 Months") and drop everything else — INCLUDING the sign. It is deliberately private
+// and deliberately unnamed for either job: the two callers below are what give it a meaning.
+function digitsOnly(v) { if (v == null || v === '') return null; const n = parseFloat(String(v).replace(/[^0-9.]/g, '')); return isFinite(n) ? n : null; }
+// THE FRAME CONVERSION. A one-line alias on purpose — its whole job is to NAME what dropping the sign
+// means here, and to be the only thing an adjustment value is read through.
+function magnitude(v) { return digitsOnly(v); }
+function num(v) {
+  if (v == null || v === '') return null;
+  // The sign is read off the RAW value before any stripping — `String(-0.25)` is "-0.25", and a
+  // vendor's accounting parenthesis "(0.25)" means the same thing.
+  const s = String(v).trim();
+  if (/^-/.test(s) || /^\(.*\)$/.test(s)) return null;
+  return digitsOnly(s);
+}
 
 // ---- parser (blueprint step 6): flatten the raw tree to clean ladders ------
 // The raw searchRaw response is a deep nested tree. This flattens it to a per-lender/
@@ -1197,11 +1220,11 @@ function flattenAdjustments(groups) {
     const group = g.name || null;
     const adjs = Array.isArray(g.adjustments) ? g.adjustments : [];
     if (!adjs.length && (g.finalAdjustment != null || g.totalAdjustment != null)) {
-      out.push({ group, reason: group, type: g.type || null, valueType: null, value: num(g.finalAdjustment != null ? g.finalAdjustment : g.totalAdjustment) });
+      out.push({ group, reason: group, type: g.type || null, valueType: null, value: magnitude(g.finalAdjustment != null ? g.finalAdjustment : g.totalAdjustment) });
     }
     for (const a of adjs) {
       if (!a || typeof a !== 'object') continue;
-      out.push({ group, reason: a.key || a.name || group, adjType: a.adjType || null, type: a.type || null, valueType: a.valueType || null, value: num(a.llpa != null ? a.llpa : a.adj) });
+      out.push({ group, reason: a.key || a.name || group, adjType: a.adjType || null, type: a.type || null, valueType: a.valueType || null, value: magnitude(a.llpa != null ? a.llpa : a.adj) });
     }
   }
   return out;
@@ -1214,7 +1237,7 @@ function holdbackOf(leaf) {
   for (const party of ['broker', 'lender', 'investor']) {
     const p = hb[party];
     if (p && Array.isArray(p.adjustments) && p.adjustments.length) {
-      out[party] = p.adjustments.map((a) => ({ reason: a.key || a.name || null, type: a.type || null, valueType: a.valueType || null, value: num(a.adj != null ? a.adj : a.llpa) }));
+      out[party] = p.adjustments.map((a) => ({ reason: a.key || a.name || null, type: a.type || null, valueType: a.valueType || null, value: magnitude(a.adj != null ? a.adj : a.llpa) }));
     }
   }
   return Object.keys(out).length ? out : null;
@@ -1513,7 +1536,7 @@ function disqualifyRulesOf(leaf) {
         add(isStr ? a : (a && (a.key || a.name)), {
           group: g.name || null,
           adjType: (!isStr && a && a.adjType) || null,
-          value: isStr ? null : num(a && (a.llpa != null ? a.llpa : a.adj)),
+          value: isStr ? null : magnitude(a && (a.llpa != null ? a.llpa : a.adj)),
         });
       }
     }
@@ -1749,7 +1772,10 @@ module.exports = {
   // The raw-payload sink, re-exported so a caller that ends a run — every CLI here — can await
   // `client.capture.flush()` without reaching past the client for it.
   capture: rawCapture,
-  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, foundationReadiness, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery,
+  // `num` and `magnitude` are exported here for ONE reason: §2.117 split them apart, and the suite that
+  // proves the split has to drive the REAL functions. Comparing against a copy of the new logic written
+  // inside the test would prove only that the test agrees with itself.
+  _internals: { assertAllowed, scrub, basicClientAuthorization, mapPurpose, mapPropertyType, mapPrepay, num, magnitude, AUTH_BASE, API_BASE, ORIGIN, CLIENT_ID, storeKickoff, DISQ_STORE, pollDisqualifiedByKey, hasStoredSearch, searchKeyFor, disqStore, requestIdOf, applyPollDelta, breakerOpen, recordRecovery, foundationProvenance, foundationLiveGate, foundationReadiness, requireLiveFoundation, invalidateSession, invalidateFoundation, RECOVERY_MAX, searchRawWithRecovery,
     renewalPlan, mergeRefreshed, sessionFromTokenBody, refreshSession, authDiagnostics, resetTokenState, reauthenticate, errText, classifyUpstreamError, fetchPpeUserId, invalidatePpeUser,
     refreshBackoffMs, expireRefreshBackoff, REFRESH_GRANT_BACKOFF_MS, REFRESH_GRANT_BACKOFF_MAX_MS },
 };
