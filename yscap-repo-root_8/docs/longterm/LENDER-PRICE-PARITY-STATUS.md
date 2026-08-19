@@ -8914,3 +8914,87 @@ measurements, and each carries a pointer to the file where the UNREADABLE cases 
 
 **Full suite:** 191/191 LT PPE suites, all 34 database-backed proven against a real Postgres, all seven
 gates green.
+
+---
+
+### §2.126c — the guard that watches for dark capabilities was blind to a third of the codebase
+
+`scripts/check-lt-export-reachability.js` exists for exactly one class: **a capability built inside a
+module that IS wired, which nothing calls** (§2.45, §2.46). §2.126b was that class, at its most
+expensive — `run-store.partitionReadable`, the guard that decides whether a stored canary run can be
+read at all, built and tested and called by nothing while the go-live gate promoted investors off
+unreadable runs.
+
+**So why did the checker not say so?** It reads a module's export surface with
+
+```js
+/module\.exports\s*=\s*\{([\s\S]*?)\n\};?/
+```
+
+— note the `\n` before the closing brace. `run-store.js` ends its export block like this:
+
+```js
+module.exports = {
+  partitionReadable, rowToRunRecord, persistRun, listRuns, listSeriesKeys, assembleScoreboard };
+```
+
+The brace is on the last line, so the pattern matched nothing, the module contributed **zero** names,
+and it was invisible. Not flagged, not recorded, not in either list — absent.
+
+**Measured, 2026-08-19.**
+
+| what | measured |
+| --- | --- |
+| LT modules using the object export form | 152 |
+| …of those, invisible to the checker | **56** (37%) — `run-store`, `parity`, `parity-detectors`, `shadow`, `canary`, `finding-store`, `search-model`, … |
+| real exports the fix made visible | **240** |
+| names the old reader reported that are NOT exports | **191** — it flattened nested `_internals` seams into the list |
+| ledger rows before / after | 360 → 272 |
+| authored reasons about names that were never exports | **39** |
+
+Its headline — *"360 uncalled exported names"* — was a confident count over 63% of the tree, with a
+quarter of the rows describing things that do not exist. That is this workstream's own class, applied
+to the instrument: **a number stated with confidence about a population it never looked at.**
+
+**Built.**
+
+* **A balancing reader.** `exportedBlock` walks braces, so where the closing one sits is irrelevant;
+  `namesFromBlock` skips a nested object WHOLE (a key inside `_internals` is not an export of the
+  module) and skips a spread (those names belong elsewhere). Line comments come out first.
+* **`parseFailed` makes an unreadable module LOUD.** Three shapes are legitimate and readable — a
+  braced object, `module.exports.x =`, and a bare re-export. Anything else, most importantly an
+  unbalanced block, is UNKNOWN and is named. "Contributed no names" and "could not be read" looked
+  identical for two years; they never will again.
+* **The census says what it covered.** `census()` reports `{ wired, read, unreadable[] }`, and the
+  suite asserts `read === wired` with an empty `unreadable`, so the headline can never again be over a
+  subset nobody counted.
+* **⛔ AND THE PARSER IS CHECKED AGAINST THE RUNTIME, not against fixtures.** G29/G30 `require()` every
+  Long-Term module and compare `Object.keys(module.exports)` with what the reader claims — no sampling,
+  no allowance, a single divergence fails. **152 of 152 match exactly.** This is what makes the class
+  impossible rather than fixed: a fixture only proves the shapes somebody thought of, and the shape
+  that hid 56 modules was one nobody thought of.
+* It also caught the last defect **in the fix itself**: `ppe/adjustment-overlap.js` explains inside its
+  export block, in prose containing commas, why one name is deliberately not exported — and splitting
+  that prose produced the "exports" `and` and `in`. 151 matched, one did not, and that is the only
+  reason it was found.
+* **The ledger's own header is generated now.** Three paragraphs recording that the §2.119 rows were
+  *measured, not labelled* had been hand-written into a file whose heading says the lists are
+  generated — so the next `--update` would have silently deleted the only record of that work. They
+  live in `renderLedger` and survive.
+
+**What is NOT claimed.** The 272 rows are a **newly-visible backlog, not a measured set**, and the
+ledger says so in those words. The measured set remains the 23 rows of §2.119, each of which was
+mutated individually. Nothing here should be read as "checked and fine"; the ratchet can hold from
+here, which is the whole point of recording them.
+
+**Enforcement is NOT changed, deliberately.** The checker stays advisory
+(`LT_EXPORT_REACHABILITY_ENFORCE=1` makes it blocking), because its own header says enforcement is the
+owner's call and not an agent's. **That is now an open question worth asking**: this gate, had it been
+blocking and able to see `run-store`, would have caught §2.126b before it shipped.
+
+**Evidence.** `scripts/test-lt-export-reachability-gate.js` sections 7 and 8 (G16–G30, suite 15 → 32
+assertions). Five mutations run (X1–X5), every one caught — including X1, which restores the exact old
+pattern and is refused.
+
+**Full suite:** 191/191 LT PPE suites, all 34 database-backed proven against a real Postgres, all seven
+gates green.

@@ -118,6 +118,107 @@ const ROW = (file, name, bucket = 'tested') => ({ file, name, bucket });
     'G12 …while an ordinary line comment IS removed, so a mention in a comment is not a caller');
 }
 
+// ---- 7) §2.126c — THE READER COULD NOT SEE A THIRD OF THE TREE ----------------------------------
+//
+// The old pattern was `module.exports\s*=\s*\{([\s\S]*?)\n\};?` — note the `\n` before the closing
+// brace. A module whose export block closes on the SAME line as its last name matched nothing and
+// contributed ZERO names, so the whole module was invisible to the one checker that exists to find
+// dark capabilities. MEASURED, 2026-08-19: 56 of the 152 Long-Term modules using the object form close
+// that way, `ppe/run-store.js` among them — and `run-store.partitionReadable` is the exact guard
+// §2.126b found built, tested, and wired to nothing.
+{
+  const E = check._internals.exportedNames;
+
+  // G16 — THE DEFECT, PLANTED. This is `run-store.js`'s real shape, character for character.
+  const runStoreShape = [
+    'module.exports = {',
+    '  partitionReadable, rowToRunRecord, persistRun, listRuns, listSeriesKeys, assembleScoreboard };',
+    '',
+  ].join('\n');
+  const found = E(runStoreShape);
+  ok(found.has('partitionReadable') && found.has('assembleScoreboard'),
+    'G16 a block closing on its LAST LINE is read — the shape that hid 56 modules');
+  // …and the old pattern really did miss it, so this assertion is pinned to a measured fact rather
+  // than to a story about one.
+  ok(!/module\.exports\s*=\s*\{([\s\S]*?)\n\};?/.test(runStoreShape),
+    'G16a …and the pattern this replaced genuinely matched nothing on it');
+
+  ok(E('module.exports = { a, b };\n').has('b'), 'G17 a one-line export block is read too');
+
+  // G18 — a NESTED object is skipped WHOLE. The old flattening reported `_internals`\' contents as
+  // exports of the module: 191 names across the tree that are not exports at all, several of which
+  // reached the dark-export ledger as rows about things that do not exist.
+  const nested = E('module.exports = {\n  real,\n  _internals: { hidden, alsoHidden },\n};\n');
+  ok(nested.has('real') && nested.has('_internals'), 'G18 the real export and the seam are both seen');
+  ok(!nested.has('hidden') && !nested.has('alsoHidden'),
+    'G18a …and what is INSIDE the seam is not reported as an export of this module');
+
+  // G19 — a spread carries another module\'s names, so it is skipped.
+  ok(!E('module.exports = {\n  ...other,\n  mine,\n};\n').has('other'), 'G19 a spread is not an export name');
+
+  // G20-G22 — the three legitimate shapes are READABLE; anything else is UNKNOWN and must be loud,
+  // because "contributed no names" and "could not be read" looked identical for two years.
+  const F = check._internals.parseFailed;
+  ok(F('module.exports = { a, b };') === false, 'G20 a braced object reads');
+  ok(F('module.exports.thing = 1;') === false, 'G21 the property form reads');
+  ok(F('module.exports = router;') === false, 'G22 a bare re-export reads (its surface is elsewhere)');
+  ok(F('module.exports = {\n  a, b,\n') === true, 'G23 an UNBALANCED block is a parse FAILURE, not an empty module');
+  ok(F('module.exports = makeThing(1, 2);') === true, 'G24 …as is a shape this reader does not know');
+  ok(F('const x = 1;\n') === false, 'G25 a file with no module.exports is not a failure — there is nothing to read');
+
+  // G26 — AND THE LIVE TREE. The census now says how many modules it looked at, so its headline can
+  // never again be a confident number over a subset nobody counted.
+  const rows = check.census();
+  ok(rows.modules && rows.modules.wired > 0, `G26 the census reports how many wired modules it examined (${rows.modules.wired})`);
+  ok(rows.modules.unreadable.length === 0,
+    `G27 every one of them was READ — an unreadable module is named, never silently skipped (${rows.modules.unreadable.join(', ')})`);
+  ok(rows.modules.read === rows.modules.wired,
+    'G28 …and the two counts reconcile, so a module cannot go missing between them');
+}
+
+// ---- 8) §2.126c — THE PARSER IS CHECKED AGAINST WHAT THE MODULES ACTUALLY EXPORT ----------------
+//
+// Every guard above tests the reader on FIXTURES, and a fixture only proves the shapes somebody
+// thought of. The shape that hid 56 modules for two years was one nobody thought of. So this asks the
+// runtime instead: `require()` each Long-Term module and compare `Object.keys(module.exports)` with
+// what the reader claims. There is no sampling and no allowance — a single divergence fails.
+//
+// This is what caught the last defect in the fix itself: `ppe/adjustment-overlap.js` explains INSIDE
+// its export block, in prose containing commas, why one name is deliberately not exported, and
+// splitting that prose produced the "exports" `and` and `in`. 151 modules matched and one did not,
+// which is the only reason it was found.
+{
+  const fs = require('fs');
+  const path = require('path');
+  const LT = path.join(__dirname, '..', 'src', 'longterm');
+  const walk = (d, out = []) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p, out);
+      else if (/\.js$/.test(e.name)) out.push(p);
+    }
+    return out;
+  };
+  let checked = 0;
+  const bad = [];
+  for (const f of walk(LT)) {
+    let mod;
+    try { mod = require(f); } catch (_) { continue; } // a module that will not load is another gate's job
+    if (!mod || typeof mod !== 'object') continue;
+    checked += 1;
+    const runtime = new Set(Object.keys(mod));
+    const parsed = check._internals.exportedNames(fs.readFileSync(f, 'utf8'));
+    const missed = [...runtime].filter((x) => !parsed.has(x));
+    const extra = [...parsed].filter((x) => !runtime.has(x));
+    if (missed.length || extra.length) {
+      bad.push(`${path.relative(LT, f)} missed=[${missed}] invented=[${extra}]`);
+    }
+  }
+  ok(checked > 100, `G29 the cross-check actually ran over the tree (${checked} modules loaded)`);
+  ok(bad.length === 0,
+    `G30 the reader's export list matches what every module REALLY exports — no name missed, none invented (${bad.slice(0, 3).join(' | ')})`);
+}
+
 // ---- 6) the live tree agrees with its own baseline right now ------------------------------------
 {
   const recorded = check.readLedger();

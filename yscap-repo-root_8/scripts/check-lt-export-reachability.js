@@ -103,20 +103,94 @@ function stripLineComments(src) {
   return src.split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '')).join('\n');
 }
 
-/** Every name a module puts on `module.exports`, from the object form and the property form. */
-function exportedNames(src) {
-  const names = new Set();
-  const m = src.match(/module\.exports\s*=\s*\{([\s\S]*?)\n\};?/);
-  if (m) {
-    for (const tok of m[1].split(/[,\n]/)) {
-      const t = tok.trim();
-      if (!t || t.startsWith('//') || t.startsWith('...')) continue;
-      const k = t.split(':')[0].trim();
-      if (/^[A-Za-z_$][\w$]*$/.test(k)) names.add(k);
+/**
+ * Every name a module puts on `module.exports`.
+ *
+ * ⛔ THIS USED TO REQUIRE THE CLOSING BRACE ON ITS OWN LINE (§2.126c). The pattern was
+ * `module.exports\s*=\s*\{([\s\S]*?)\n\};?` — the `\n` before `}` — so a module written
+ *
+ *     module.exports = {
+ *       partitionReadable, rowToRunRecord, persistRun, listRuns, assembleScoreboard };
+ *
+ * contributed ZERO names and became completely invisible to this checker. MEASURED, 2026-08-19: **56
+ * of the 152 Long-Term modules using the object form** closed that way, `run-store.js` among them —
+ * and `run-store.partitionReadable` is the exact guard §2.126b found built, tested and wired to
+ * nothing. The checker that exists to catch that class could not see the module it lived in, and its
+ * headline ("360 uncalled exported names") was a confident count over 63% of the tree.
+ *
+ * It now reads the braced block by BALANCING the braces, so where the closing one sits is irrelevant,
+ * and `parseFailed` below makes an unreadable module LOUD instead of silently empty.
+ */
+function exportedBlock(src) {
+  const at = src.search(/module\.exports\s*=\s*\{/);
+  if (at < 0) return null;
+  const open = src.indexOf('{', at);
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    const c = src[i];
+    if (c === '{') depth += 1;
+    else if (c === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(open + 1, i);
     }
   }
-  for (const mm of src.matchAll(/module\.exports\.([A-Za-z_$][\w$]*)\s*=/g)) names.add(mm[1]);
+  return null; // an unbalanced block — reported, never treated as "no exports"
+}
+
+/**
+ * The names in a braced export block. Nested objects are skipped WHOLE (a nested key is not an export
+ * of this module), and a spread is skipped because the names it carries belong to another module.
+ */
+function namesFromBlock(block) {
+  const names = new Set();
+  let depth = 0;
+  let buf = '';
+  const flush = () => {
+    const t = buf.trim();
+    buf = '';
+    if (!t || t.startsWith('...')) return;
+    const k = t.split(':')[0].trim();
+    if (/^[A-Za-z_$][\w$]*$/.test(k)) names.add(k);
+  };
+  for (const c of block) {
+    if (c === '{' || c === '[' || c === '(') { depth += 1; buf += c; continue; }
+    if (c === '}' || c === ']' || c === ')') { depth -= 1; buf += c; continue; }
+    if (depth === 0 && (c === ',' || c === '\n')) { flush(); continue; }
+    buf += c;
+  }
+  flush();
   return names;
+}
+
+function exportedNames(src) {
+  // ⛔ LINE COMMENTS COME OUT FIRST, and a real block proves why: `ppe/adjustment-overlap.js` explains
+  // inside its export block, in prose containing commas, why one name is deliberately NOT exported.
+  // Splitting that prose on commas produced the "exports" `and` and `in`. Caught by cross-checking the
+  // parser against `require()` on all 152 modules — 151 matched exactly and this one did not, which is
+  // the only reason it was found at all. It also stops a commented-out `module.exports.x =` counting.
+  const clean = stripLineComments(src);
+  const names = new Set();
+  const block = exportedBlock(clean);
+  if (block != null) for (const n of namesFromBlock(block)) names.add(n);
+  for (const mm of clean.matchAll(/module\.exports\.([A-Za-z_$][\w$]*)\s*=/g)) names.add(mm[1]);
+  return names;
+}
+
+/**
+ * Could this module's export surface be read at all? THREE forms are legitimate and readable:
+ * a braced object, `module.exports.x =` properties, and `module.exports = someIdentifier` (a module
+ * re-exporting one thing, whose surface is that identifier's and not enumerable from here).
+ * Anything else — most importantly a braced block whose braces do not balance — is UNKNOWN, and an
+ * unknown module must be loud. Silently contributing zero names is how 56 modules disappeared.
+ */
+function parseFailed(rawSrc) {
+  const src = stripLineComments(rawSrc);
+  const hasBrace = /module\.exports\s*=\s*\{/.test(src);
+  if (hasBrace) return exportedBlock(src) == null;
+  if (/module\.exports\.[A-Za-z_$][\w$]*\s*=/.test(src)) return false;
+  if (/module\.exports\s*=\s*[A-Za-z_$][\w$]*\s*;/.test(src)) return false;
+  if (/module\.exports\s*=/.test(src)) return true; // some other shape — say so rather than guess
+  return false; // no module.exports at all: not a CommonJS module surface, nothing to read
 }
 
 function wordRe(name) {
@@ -144,9 +218,21 @@ function census() {
   for (const f of scriptFiles) scriptText.set(f, stripLineComments(fs.readFileSync(f, 'utf8')));
 
   const rows = [];
+  // §2.126c — HOW MANY MODULES WERE ACTUALLY LOOKED AT. The headline "360 uncalled exported names" was
+  // computed over whatever the parser happened to read, and for two years that silently excluded 56 of
+  // 152 modules. A census that cannot say what it covered is the defect this whole workstream is about,
+  // one layer up: a confident number about a population nobody measured.
+  const modules = { wired: 0, read: 0, unreadable: [] };
   for (const f of walk(LT)) {
     if (!wired.has(path.resolve(f))) continue;
-    const names = exportedNames(fs.readFileSync(f, 'utf8'));
+    modules.wired += 1;
+    const text = fs.readFileSync(f, 'utf8');
+    if (parseFailed(text)) {
+      modules.unreadable.push(path.relative(LT, f).split(path.sep).join('/'));
+      continue;
+    }
+    modules.read += 1;
+    const names = exportedNames(text);
     for (const n of names) {
       if (SEAM_NAMES.has(n)) continue;
       const re = wordRe(n);
@@ -162,6 +248,9 @@ function census() {
     }
   }
   rows.sort((a, b) => (a.file.localeCompare(b.file)) || a.name.localeCompare(b.name));
+  // The rows ARE the return value (every caller iterates them), so the census rides alongside as a
+  // non-enumerable property rather than changing the contract.
+  Object.defineProperty(rows, 'modules', { value: modules, enumerable: false });
   return rows;
 }
 
@@ -215,6 +304,37 @@ striking it here in the same commit.
 **A row is not a defect.** Plenty of these are deliberate: a constant exported so a suite can assert
 against the definition instead of retyping it, an operator command, a capability written ahead of its
 caller. A row is an invitation to say which — that is what the reason field is for.
+
+**⛔ AND "REFERENCED NOWHERE" IS NOT THE SAME QUESTION AS "UNTESTED", which is the trap in reading this
+file.** The checker counts references from OTHER files, so a helper its own module calls on every
+request lands in the first list looking abandoned. \`capture.scrubSecrets\` — the credential scrub — is
+in it, and it runs on every captured payload. What actually matters is whether the BEHAVIOUR is
+pinned, and this file cannot answer that; only a mutation can.
+
+**So the 23 rows recorded on 2026-08-19 were each measured, not labelled.** Every one was mutated on
+its own and its suite re-run. **None was a missing wire**: each is either internal to its module and
+proven THROUGH the door that calls it — which is the stronger test, since a scrub proven on the helper
+says nothing about whether the sink runs it (§2.112) — or driven directly by a suite. Where a mutation
+was run, the row records what it cost (*"MEASURED: making it always null fails 26 assertions"*). Those
+counts are a SNAPSHOT of that day; treat a stale one as a prompt to re-measure, never as a live gate.
+One mutation attempt in that pass silently failed to apply and reported a clean pass — **a mutation
+that does not apply proves nothing**, so the harness now verifies the file actually changed before it
+believes the result.
+
+**⛔ THIS HEADER IS GENERATED TOO (§2.126c), and it had to become so.** The three paragraphs above were
+hand-written into the file, under a heading that says the LISTS are generated — and \`--update\` rewrote
+the whole file, so the next regeneration would have silently deleted the only record that those 23 rows
+were measured rather than labelled. They now live in \`renderLedger\` and survive.
+
+**⛔ AND THE ROWS BELOW ARE A NEWLY-VISIBLE BACKLOG, NOT A MEASURED SET (§2.126c).** Until 2026-08-19
+the reader required an export block's closing brace to sit on its own line, so **56 of the 152**
+Long-Term modules using the object form contributed ZERO names and were invisible — \`ppe/run-store.js\`
+among them, whose \`partitionReadable\` is the exact guard §2.126b found built, tested and wired to
+nothing. Fixing the reader made **240** real exports visible for the first time and struck **191**
+names that were never exports at all (the old pattern flattened nested \`_internals\` seams into the
+list, so the ledger carried rows about things that do not exist). Those newly-visible rows are recorded
+so the ratchet can hold from here; they are **NOT** measured, and none of them should be read as
+"checked and fine". The measured set is the 23 above.
 
 ## Referenced nowhere at all (${un.length})
 
@@ -295,4 +415,4 @@ if (require.main === module) {
   process.exit(enforce ? code : 0);
 }
 
-module.exports = { census, readLedger, readLedgerFrom, renderLedger, compare, _internals: { exportedNames, stripLineComments, SEAM_NAMES } };
+module.exports = { census, readLedger, readLedgerFrom, renderLedger, compare, _internals: { exportedNames, exportedBlock, namesFromBlock, parseFailed, stripLineComments, SEAM_NAMES } };
