@@ -178,7 +178,39 @@ const PROFILE = {
     ok('a crossed lender join shows nothing at all — never another lender’s history');
   }
 
-  console.log('\n6. HOW LONG THEY HELD IT');
+  console.log('\n6. A LENDER AND A COMPANY ARE SUBJECTS TOO');
+  {
+    // "When you click on the lender, it comes up" — half the owner's request.
+    // Opening one used to draw an almost empty card, because a lender has no
+    // address and is not a mortgage. Their loans are a filter over rows we
+    // already hold, so this costs nothing either.
+    const d = R.recordDetail(LENDER, 'lender_network', PROFILE);
+    assert.strictEqual(d.loansFrom.length, 1, 'the loans THIS borrower took from that lender');
+    assert.strictEqual(d.loansFrom[0].id, 'm1', '…the right ones, by lenderId');
+    assert.deepStrictEqual(d.heldHere, [], 'and a lender holds no company records');
+    ok('opening a lender shows what this borrower took from them');
+
+    const other = R.recordDetail({ id: 'l9', name: 'Somebody Else Bank' }, 'lender_network', PROFILE);
+    assert.strictEqual(other.loansFrom.length, 1, 'a different lender resolves to a different loan');
+    assert.strictEqual(other.loansFrom[0].id, 'm2', '…by id, not by position');
+    ok('two lenders never share each other’s loans');
+
+    const ent = R.recordDetail({ id: 'e1', name: 'MAPLE HOLDINGS LLC' }, 'entities', PROFILE);
+    const kinds = ent.heldHere.map((x) => x.section).sort();
+    assert.deepStrictEqual(kinds, ['mortgages'], 'the company’s own records, from every section that names it');
+    assert.strictEqual(ent.heldHere[0].row.id, 'm1', '…and the right record');
+    assert.deepStrictEqual(ent.loansFrom, [], 'and a company is not a lender');
+    ok('opening a company shows the deals recorded in it');
+
+    const nobody = R.recordDetail({ id: 'e-none', name: 'A COMPANY WITH NOTHING' }, 'entities', PROFILE);
+    assert.deepStrictEqual(nobody.heldHere, [], 'a company nothing names holds nothing — not everything');
+    const mort = R.recordDetail(MORTGAGE, 'mortgages', PROFILE);
+    assert.deepStrictEqual(mort.loansFrom, [], 'and a mortgage is never given a lender’s list');
+    assert.deepStrictEqual(mort.heldHere, [], '…nor a company’s');
+    ok('every other kind of row gets neither list — the panel is not padded');
+  }
+
+  console.log('\n7. HOW LONG THEY HELD IT');
   {
     assert.strictEqual(R.holdPeriod('2021-03-02', '2022-01-19'), '10.6 months', 'months for under two years');
     assert.strictEqual(R.holdPeriod('2015-01-01', '2020-01-01'), '5 years', 'years beyond that, without a trailing .0');

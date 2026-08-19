@@ -322,7 +322,7 @@ function RecordDetail({ detail, onClose, onOpenTab, personId }) {
   const held = holdPeriod(ownership && (ownership.startDate || ownership.purchaseDate),
     ownership && (ownership.endDate || ownership.saleDate));
   const stillOwns = ownership && !(ownership.endDate || ownership.saleDate);
-  const title = place.line || txt(detail.row.name) || 'This record';
+  const title = txt(detail.row.name) || place.line || 'This record';
 
   return (
     <div className="elx-rec">
@@ -337,8 +337,75 @@ function RecordDetail({ detail, onClose, onOpenTab, personId }) {
         </div>
       </div>
 
+      {/* THE SUBJECT'S OWN FACTS, when the subject is not a property. A lender
+          and a company have no address and no purchase date, so the property
+          block below renders nothing for them and this is what they get
+          instead. */}
+      {(detail.kind === 'lender_network' || detail.kind === 'entities' || detail.kind === 'associated_people' || detail.kind === 'cross_state') && (
+        <dl className="elx-dl">
+          <F k="Kind" v={pretty(detail.row.lenderType || detail.row.entityType || detail.row.type) === '—' ? null : pretty(detail.row.lenderType || detail.row.entityType || detail.row.type)} />
+          <F k="State" v={txt(detail.row.state) || null} />
+          <F k="Loans" v={num(detail.row.mortgageCount) === null ? null : count(detail.row.mortgageCount)} />
+          <F k="Deeds" v={num(detail.row.deedCount) === null ? null : count(detail.row.deedCount)} />
+          <F k="Total lent" v={num(detail.row.totalVolume) === null ? null : money(detail.row.totalVolume)} />
+          <F k="Owns now" v={num(detail.row.currentOwnershipsCount) === null ? null : count(detail.row.currentOwnershipsCount)} />
+          <F k="Their role" v={detail.row.isPrincipal === true ? 'Principal' : (txt(detail.row.sosTitle) || txt(detail.row.researchTitle) || null)} />
+          <F k="Website" v={txt(detail.row.domainName) || null} />
+          <F k="Last seen" v={detail.row.latestTransactionDate ? day(detail.row.latestTransactionDate) : null} />
+          <F k="Shared records" v={num(detail.row.sharedTotalCount) === null ? null : count(detail.row.sharedTotalCount)} />
+        </dl>
+      )}
+
+      {/* CLICK THE LENDER AND IT COMES UP — the loans THIS person took from
+          them, filtered out of mortgages we already hold. No call, no wait. */}
+      {detail.loansFrom.length > 0 && (
+        <div className="grp">
+          <div className="grp-h">What this borrower took from them — {detail.loansFrom.length.toLocaleString('en-US')} loan(s) we hold</div>
+          <div style={{ display: 'grid', gap: 4, fontSize: 13.5, color: INK, marginTop: 6 }}>
+            {detail.loansFrom.slice(0, 15).map((m) => (
+              <div key={m.id}>
+                {day(m.recordingDate)}
+                <span style={{ color: MUTED }}> · </span>{money(m.mortgageAmount)}
+                <span style={{ color: MUTED }}> · </span>{addressOf(m) || 'address not stated'}
+              </div>
+            ))}
+            {detail.loansFrom.length > 15 && (
+              <div style={{ color: MUTED }}>…and {(detail.loansFrom.length - 15).toLocaleString('en-US')} more on the Mortgages tab.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* CLICK THE COMPANY AND ITS DEALS COME UP, the same way. */}
+      {detail.heldHere.length > 0 && (
+        <div className="grp">
+          <div className="grp-h">Recorded in this company — {detail.heldHere.length.toLocaleString('en-US')} of the records we hold</div>
+          <div style={{ display: 'grid', gap: 4, fontSize: 13.5, color: INK, marginTop: 6 }}>
+            {detail.heldHere.slice(0, 15).map((x, i) => (
+              <div key={`${x.section}-${x.row.id || i}`}>
+                <span style={{ color: GOLD_INK, fontWeight: 650 }}>
+                  {x.section === 'mortgages' ? 'Loan' : x.section === 'deeds' ? 'Deed' : 'Property'}
+                </span>
+                <span style={{ color: MUTED }}> · </span>{day(x.row.recordingDate || x.row.startDate)}
+                {num(x.row.mortgageAmount ?? x.row.totalConsideration) !== null && (
+                  <><span style={{ color: MUTED }}> · </span>{money(x.row.mortgageAmount ?? x.row.totalConsideration)}</>
+                )}
+                <span style={{ color: MUTED }}> · </span>{addressOf(x.row) || 'address not stated'}
+              </div>
+            ))}
+            {detail.heldHere.length > 15 && (
+              <div style={{ color: MUTED }}>…and {(detail.heldHere.length - 15).toLocaleString('en-US')} more.</div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* WHERE IT IS, WHEN IT WAS TAKEN, AND FROM WHOM — the owner's three
-          questions, answered on one line each and in that order. */}
+          questions, answered on one line each and in that order. Drawn only when
+          the subject IS a property: on a lender or a company every pair below is
+          empty, and an empty definition list under a heading reads as a property
+          we know nothing about. */}
+      {(detail.addressId || ownership || deed || mortgage) && (
       <dl className="elx-dl">
         <F k="Held in" v={entities.length ? entities.map((e) => e.name).join(', ') : (mortgage ? names(mortgage.borrowerNames) : null)} />
         <F k="Bought" v={ownership && (ownership.startDate || ownership.purchaseDate) ? day(ownership.startDate || ownership.purchaseDate) : (deed ? day(deed.recordingDate) : null)} />
@@ -357,6 +424,7 @@ function RecordDetail({ detail, onClose, onOpenTab, personId }) {
         <F k="Kind of property" v={pretty((ownership && ownership.propertyUseCategory) || (mortgage && mortgage.propertyUseCategory)) === '—' ? null : pretty((ownership && ownership.propertyUseCategory) || (mortgage && mortgage.propertyUseCategory))} />
         <F k="Arm's length" v={ownership ? flag(ownership.isNonArmsLengthTransfer, 'No — related parties', 'Yes') : null} />
       </dl>
+      )}
 
       {mortgage && (
         <div className="grp">

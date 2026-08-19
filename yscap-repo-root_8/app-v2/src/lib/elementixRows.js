@@ -681,12 +681,30 @@ export function recordDetail(row, kind, profile) {
   const entities = entityOf(row).length ? entityOf(row)
     : (entityOf(mortgage || {}).length ? entityOf(mortgage) : entityOf(ownership || {}));
 
+  /* A LENDER ROW AND A COMPANY ROW ARE SUBJECTS TOO. Opening one used to draw
+     an almost empty card, because neither has an address and neither is a
+     mortgage — and "click on the lender, it comes up" is half the owner's
+     request. Both resolve the same way and just as cheaply: every mortgage we
+     hold names its `lenderId`, and every mortgage, deed and ownership row names
+     the companies on it, so their loans are a filter over rows already paid for.
+     `loansFrom`/`heldHere` are empty for every other kind, which is what keeps
+     the panel honest rather than padded. */
+  const loansFrom = kind === 'lender_network'
+    ? rowsOfSection(profile, 'mortgages').filter((m) => idEq(m && m.lenderId, row.id))
+    : [];
+  const heldHere = kind === 'entities'
+    ? ['mortgages', 'deeds', 'properties'].flatMap((k) => rowsOfSection(profile, k)
+      .filter((r) => entityOf(r).some((e) => idEq(e.id, row.id)))
+      .map((r) => ({ section: k, row: r })))
+    : [];
+
   return {
     kind,
     addressId,
     place,
     entities,
     row, mortgage, deed, ownership, lender,
+    loansFrom, heldHere,
     alsoMortgages, alsoDeeds,
     url: urlOf(row),
     // The vendor's own ids, so a recorded instrument can be looked up at the
