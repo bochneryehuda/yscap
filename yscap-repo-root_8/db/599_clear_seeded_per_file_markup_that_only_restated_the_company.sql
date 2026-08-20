@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/598 — clear seeded per-file markup that only restated the company default
+-- db/599 — clear seeded per-file markup that only restated the company default
 --
 -- WHAT THIS CHANGES, AND WHY. The owner set the Standard and Silver markup to
 -- 0.5 in the Pricing Admin Center and reported that every file still priced at
@@ -155,7 +155,7 @@ BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
   SELECT 'system', NULL, 'file_markup_seeded_default_cleared', 'application', c.id,
          jsonb_strip_nulls(jsonb_build_object(
-           'migration', 'db/598',
+           'migration', 'db/599',
            'why', 'the per-file markup only restated the company default in force when the file was registered; it now follows the live company default',
            'standard', CASE WHEN c.clear_std    THEN jsonb_build_object('was', c.std,    'company_default_then', c.def_std)    END,
            'gold',     CASE WHEN c.clear_gold   THEN jsonb_build_object('was', c.gold,   'company_default_then', c.def_gold)   END,
@@ -164,7 +164,7 @@ BEGIN
 
   GET DIAGNOSTICS healed = ROW_COUNT;
   IF healed > 0 THEN
-    RAISE NOTICE 'db/598: released % file(s) from a frozen copy of an old company markup', healed;
+    RAISE NOTICE 'db/599: released % file(s) from a frozen copy of an old company markup', healed;
   END IF;
 END $$;
 

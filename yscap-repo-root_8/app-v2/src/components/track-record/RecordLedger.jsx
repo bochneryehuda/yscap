@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import LineDetail from './LineDetail.jsx';
+import RecordsStamp from './RecordsStamp.jsx';
 import { trStatusShort, trIsPendingReview } from '../../lib/trackRecordStatus.js';
 import { trackRecordPropertyTypeLabel } from '../../lib/trackRecordPropertyTypes.js';
 
@@ -151,6 +152,9 @@ export default function RecordLedger({
             {t.is_verified
               ? <span className="ts-badge ok">Verified</span>
               : (t.verification_status && <span className="pill small">{trStatusShort(t.verification_status)}</span>)}
+            {/* The records stamp, compact — a scanner asking "which of these did
+                the county records back?" reads it off the row (2026-08-19). */}
+            <RecordsStamp stamp={t.records_stamp} at={t.records_stamp_at} compact />
             <button type="button" className="btn ghost small" onClick={() => toggle(t.id)}>{isOpen ? 'Close' : 'Open'}</button>
           </div>
         </div>

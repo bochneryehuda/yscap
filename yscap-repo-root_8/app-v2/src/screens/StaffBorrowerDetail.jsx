@@ -14,6 +14,7 @@ import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
 import ExperienceHeader from '../components/track-record/ExperienceHeader.jsx';
 import RecordLedger from '../components/track-record/RecordLedger.jsx';
+import { EntityRecordsStamp } from '../components/track-record/RecordsStamp.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import { useAuth } from '../lib/auth.jsx';
 
@@ -498,6 +499,7 @@ function Entities({ id }) {
           <div className="row" style={{ alignItems: 'center', marginBottom: 8 }}>
             <h3 style={{ margin: 0 }}>{l.llc_name}
               {l.is_verified ? <span className="pill ok" style={{ marginLeft: 8 }}>Verified ✓</span> : <span className="pill" style={{ marginLeft: 8 }}>Unverified</span>}
+              {' '}<EntityRecordsStamp adoptedSource={l.adopted_source} at={l.adopted_at} />
             </h3>
             <div className="spacer" />
             <button className="btn ghost small" disabled={busy === l.id}

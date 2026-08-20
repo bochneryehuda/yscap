@@ -4572,6 +4572,21 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   background:rgba(174,135,70,.08);font-weight:600}
 .tr-pt.is-empty::before{background:#AE8746}
 
+/* ---- The records stamp (RecordsStamp.jsx — mirror of records-stamp.js) ----
+   NAMESPACED `rstamp-*` per the .off-collision lesson: never a bare state
+   class. State rides the glyph + the word, never colour alone; teal-deep
+   #2A6B72 is 6.1:1 on white and slate #5B5F64 is 6.4:1 — both AA. Sits on the
+   white card surface (chips are never placed on the raw Paper canvas). */
+.rstamp{display:inline-flex;align-items:center;gap:4px;height:18px;
+  padding:0 8px 0 5px;border-radius:9px;text-transform:uppercase;
+  font-family:"Hanken Grotesk",Arial,sans-serif;font-size:10px;font-weight:600;
+  line-height:1;letter-spacing:.07em;white-space:nowrap;vertical-align:middle}
+.rstamp svg{flex:0 0 auto}
+.rstamp-verified{background:#EEF5F5;color:#2A6B72;
+  box-shadow:inset 0 0 0 1px rgba(47,127,134,.35)}
+.rstamp-sourced{background:#FFFFFF;color:#5B5F64;
+  box-shadow:inset 0 0 0 1px #D2D4D6}
+
 /* ---- Borrower draw notes (blocking reasons / next steps) ----
    Two blocks were hand-drawing the same bullet with inline styles; one class, two tones. */
 .dd-notes{margin-top:10px;display:flex;flex-direction:column;gap:6px}

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * db/598 — RELEASING A FILE FROM A FROZEN COPY OF AN OLD COMPANY MARKUP.
+ * db/599 — RELEASING A FILE FROM A FROZEN COPY OF AN OLD COMPANY MARKUP.
  * Real Postgres, the REAL migration, run through the REAL boot replay.
  *
  * WHY THIS SUITE HAS TO BE A DB ONE. `migrate-boot` replays every file in `db/`
@@ -11,7 +11,7 @@
  * against a real database can catch that, which is exactly why the first thing
  * asserted here is that the file APPLIED AT ALL.
  *
- * WHAT db/598 IS FOR (owner-reported 2026-08-20): the Term Sheet Studio used to
+ * WHAT db/599 IS FOR (owner-reported 2026-08-20): the Term Sheet Studio used to
  * paint the company default of the day into the admin markup box, which the
  * register path then stored as a PER-FILE override — so files are carrying a
  * frozen copy of an old company markup, price at it forever, and read as a
@@ -44,7 +44,7 @@ const db = require('../src/db');
 const { skipUnlessDb } = require('./lib/db-gate');
 const { ensureSchema } = require('../src/migrate-boot');
 
-const MIG = '598';
+const MIG = '599';
 const suffix = `mkheal${Date.now().toString(36)}`;
 
 async function mkBorrower(i) {
@@ -86,7 +86,7 @@ const num = (v) => (v == null ? null : Number(v));
 (async () => {
   await skipUnlessDb('test-markup-heal-db');
   // Build the database first. `migrate-boot` replays EVERY file on EVERY boot,
-  // so db/598 runs here too — against nothing, since the fixtures below do not
+  // so db/599 runs here too — against nothing, since the fixtures below do not
   // exist yet. The run that matters is the SECOND ensureSchema(), which is what
   // a real deploy does to a database that already holds these files.
   await ensureSchema();
