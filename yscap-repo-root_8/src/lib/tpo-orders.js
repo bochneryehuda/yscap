@@ -67,7 +67,10 @@ function tpoOrderState(data, orderRows, kind) {
     vendor: vendor ? {                                   // the broker's OWN vendor — safe to show
       company_name: vendor.company_name || null,
       contact_name: vendor.contact_name || null,
-      email: vendor.email || null,
+      // Every address the order goes to (db/224's array folded with the legacy
+      // scalar), so the broker's card shows what will actually be mailed.
+      email: require('./vendor-directory').allEmails(vendor)[0] || null,
+      emails: require('./vendor-directory').allEmails(vendor),
       phone: vendor.phone || null,
     } : null,
   };

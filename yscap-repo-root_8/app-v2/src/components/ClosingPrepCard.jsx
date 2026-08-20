@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { ChainAddress, ChainDocuments, ChainHistory } from './ClosingEmailChain.jsx';
 import DocPreview from './DocPreview.jsx';
+import { ScheduleButton, ScheduledSends, useScheduledSends } from './ScheduleSend.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ATTORNEY CLOSING PREP — the third order on the Orders desk.
@@ -305,6 +306,24 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
     catch (_) { /* ignore */ }
   };
 
+  /* SEND IT LATER. The intent is queued; `gatherPackage` runs at the due moment,
+     so outside counsel receives the closing package as it stands when the email
+     actually goes — not as it stood at 2am. */
+  const sched = useScheduledSends(appId, [placed]);
+  const scheduleIt = async ({ day, time }) => {
+    const r = await api.staffScheduleClosingPrep(appId, {
+      day, time, force: !!placed,
+      extraEmails: extra.split(/[,;\s]+/).filter(Boolean),
+      note,
+    });
+    await sched.reload();
+    setMsg({ tone: (r.warnings && r.warnings.length) ? 'warn' : 'ok',
+      text: (r.warnings && r.warnings.length)
+        ? `Scheduled for ${r.scheduled.sendAtText}. It will NOT go out unless you also: ${r.warnings.join(' ')}`
+        : `Closing-prep request scheduled for ${r.scheduled.sendAtText}.` });
+    onChanged && onChanged();
+  };
+
   const place = async (force) => {
     setBusy('place'); setMsg(null);
     try {
@@ -534,6 +553,7 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
         </div>
       )}
 
+      <ScheduledSends rows={sched.rows} onCancel={sched.cancel} kinds={['closing_prep']} />
       <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
         {!placed && (
           <button className="btn primary small" disabled={!!busy || !ready} onClick={() => place(orderOnChain)}
@@ -544,6 +564,9 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
             {busy === 'place' ? 'Sending…' : (orderOnChain ? 'Send closing prep request again' : 'Send closing prep request')}
           </button>
         )}
+        {!placed && (
+          <ScheduleButton onSchedule={scheduleIt} busy={!!busy} what="the closing-prep request" />
+        )}
         {placed && (
           <>
             <button className="btn primary small" disabled={!!busy} onClick={() => setFollowOpen((o) => !o)}>Follow up</button>
@@ -551,6 +574,7 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
               title={ready ? 'Send the whole request again, with the documents as they stand now' : 'Finish the steps listed above first'}>
               {busy === 'place' ? 'Sending…' : 'Re-send request'}
             </button>
+            <ScheduleButton onSchedule={scheduleIt} busy={!!busy} what="the closing-prep request" />
             {/* NOT on a FINISHED request. Cancelling is an explicit stand-down
                 that shuts the follow-up and reply doors on the closing chain, so
                 on a request that already finished it can only cost the team the

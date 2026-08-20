@@ -1287,6 +1287,13 @@ if (require.main === module) {
     // Reminder/task dispatcher (#93): fires scheduled reminders at their due
     // moment via the notify fan-out. Minute cadence; self-gated + idempotent.
     try { require('./lib/reminders').startDispatcher(); } catch (e) { console.warn('reminder dispatcher not started:', e.message); }
+    // Scheduled ORDER EMAILS (owner-directed 2026-08-20): a staffer working at
+    // 2am picks a time and the title / insurance / closing-prep / investor
+    // delivery goes out then. Minute cadence. It sends nothing itself — it
+    // RE-ENTERS the ordinary send route at the due moment, so every blocker and
+    // freeze is re-checked against the file as it stands (see
+    // lib/scheduled-sends.js). Off with SCHEDULED_SENDS_DISABLED=1.
+    try { require('./lib/scheduled-sends').start(); } catch (e) { console.warn('scheduled sends not started:', e.message); }
     // SharePoint one-way sync (owner-directed 2026-07-13): mirrors every
     // document into Pipeline Drive/<Officer>/<Borrower>/<Address>/YS portal
     // syncing/<Condition>/ — write-only, never deletes, versions on supersede.

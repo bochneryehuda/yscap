@@ -20,7 +20,11 @@ const routing = require('./routing');
 const tpIntake = require('./trustpoint-intake');
 const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a draw is named in a subject
 const EV = require('./inspection-evidence');
-const { inboundDrawCopy } = require('./draw-inbound-copy');
+const { inboundDrawCopy, draftStartedCopy } = require('./draw-inbound-copy');
+// THE ONE definition of draft-vs-submitted (owner-directed 2026-08-20). The same
+// module the TrustPoint import task and the Trinity inspection order read, so the
+// desk can never be told a draw was submitted while those doors stand down.
+const lifecycle = require('./draw-lifecycle');
 
 /**
  * Auto-adopt Sitewire-seeded MANDATORY MEDIA items that PILOT never pushed.
@@ -164,17 +168,27 @@ async function recordInboundChange(appId, drawId, entity, entityId, field, oldV,
 // for a TrustPoint-administered file, where the next step is the coordinator's manual
 // TrustPoint entry (the import task), not a PILOT approval.
 const REACT_STATUS = {
+  /* NOTE — THE SUBMISSION ITSELF IS NOT A RUNG HERE (owner-directed 2026-08-20).
+     A draw reaches "submitted" at a DIFFERENT rung depending on the file: a
+     Sitewire virtual draw goes drafting → inspecting → pending, while a physical
+     or TrustPoint draw skips `inspecting` and lands straight on `pending`. Keying
+     the submission on a status therefore either misses one shape or mislabels a
+     later re-inspection as a fresh submission. It is keyed on the CROSSING out of
+     a draft status instead (`draw-lifecycle.crossedIntoSubmitted`, handled in the
+     transition branch below), so every shape announces it exactly once, at the
+     moment it actually happens. These rungs stay what they always were: the
+     movements AFTER a draw is already live. */
   pending: {
     tone: 'gold',
     title: (ctx) => (ctx && ctx.platform === 'trustpoint')
-      ? 'A draw was submitted — enter it into TrustPoint'
+      ? 'A draw was submitted for review — enter it into TrustPoint'
       : (ctx && ctx.method === 'traditional')
-        ? 'A draw was submitted — arrange the on-site inspection'
+        ? 'A draw was submitted for review — arrange the on-site inspection'
         : 'A draw was inspected — ready for your review',
     body: (n, addr, ctx) => (ctx && ctx.platform === 'trustpoint')
-      ? `Draw #${n} for ${addr} was submitted in Sitewire. This file's draws are administered on TrustPoint — a task was opened for the draw coordinator to enter it there.`
+      ? `Draw #${n} for ${addr} was submitted for review in Sitewire — it is no longer a draft. This file's draws are administered on TrustPoint — a task was opened for the draw coordinator to enter it there.`
       : (ctx && ctx.method === 'traditional')
-        ? `Draw #${n} for ${addr} was submitted in Sitewire and is awaiting review. This is a physical-inspection file — arrange the on-site inspection, then set the approved amounts and approve it.`
+        ? `Draw #${n} for ${addr} was submitted for review in Sitewire and is no longer a draft. This is a physical-inspection file — arrange the on-site inspection, then set the approved amounts and approve it.`
         : `Draw #${n} for ${addr} was inspected in Sitewire and is awaiting your review. Set the approved amounts and approve it, or deliver the findings to the borrower.`,
   },
   pending_capital_partner: { tone: 'gold',
@@ -260,6 +274,59 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
     }).catch(() => {});
   };
 
+  /* "A BORROWER STARTED A DRAW" — the draft notice (owner-reported 2026-08-20).
+     One definition, called from BOTH doors a brand-new draw can arrive through:
+     the first-seen branch, and the first-status arrival on a row PILOT was already
+     watching with no status yet. A second copy is how one of those two doors ends
+     up still saying "a new draw request came in".
+
+     IN-APP ONLY, deliberately (the 2026-07-20 "routine staff events are in-app only
+     — stop the bombardment with stuff that is not important" rule): nothing is
+     asked of the desk by a draft, and an email days before the real request is the
+     exact noise the owner reported. The SUBMISSION is what emails. Set
+     DRAW_DRAFT_STARTED_EMAIL=1 to put the email back with no deploy — read at call
+     time, so it takes effect on the very next poll.
+
+     NO MONEY BLOCK, deliberately: a draft's figures move while the borrower works,
+     and a headline dollar amount is precisely what reads as a request. */
+  /* "A DRAW WAS SUBMITTED FOR REVIEW" — one definition, called from BOTH doors a
+     submission can arrive through: a draw first SEEN in a submitted state (the
+     borrower composed and submitted between two polls), and a draw PILOT watched
+     cross out of its draft. `crossedFromDraft` only changes whether the body draws
+     the contrast — a first-seen submitted draw has no draft of ours to contrast
+     with, and claiming one would be inventing a history we never watched. */
+  const announceSubmitted = async ({ crossedFromDraft, status }) => {
+    const copy = inboundDrawCopy({
+      platform: ctx.platform, method: ctx.method,
+      submitted: lifecycle.isSubmitted(status),
+    });
+    const b = await drawBlocks();
+    const unknown = lifecycle.phaseOf(status) === 'unknown';
+    await notify.notifyAppStaffThread(appId, {
+      type: 'draw_inbound', title: 'A draw was submitted for review',
+      drawTag: drawLabel.drawLabel(draw.number),
+      badge: copy.actionNeeded ? { text: 'Action needed', tone: 'action' } : { text: 'Submitted for review', tone: 'gold' },
+      body: `Draw #${draw.number == null ? '—' : draw.number} for ${addrText} was submitted for review through Sitewire`
+        + `${unknown ? ` (Sitewire reports it as "${String(status)}")` : ''}`
+        + `${crossedFromDraft ? ' — it is no longer a draft' : ''}. `
+        + `${copy.methodLabel} — ${copy.actionLabel}. ${copy.nextStep}`,
+      ...moneyOpts(b),
+      applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+  };
+
+  const announceDraftStarted = async () => {
+    const copy = draftStartedCopy({ platform: ctx.platform, method: ctx.method, phaseKnown: true });
+    await notify.notifyAppStaffThread(appId, {
+      type: 'draw_draft_started', title: 'A borrower started a draw — it is a draft, not submitted',
+      drawTag: drawLabel.drawLabel(draw.number),
+      badge: { text: 'Draft started', tone: 'neutral' },
+      inAppOnly: process.env.DRAW_DRAFT_STARTED_EMAIL !== '1',
+      body: `A borrower started Draw #${draw.number == null ? '—' : draw.number} for ${addrText} in Sitewire. `
+        + 'It is a DRAFT — they have not submitted it for review yet, and they may be a few days taking photos and filling it in. '
+        + `${copy.methodLabel} — ${copy.actionLabel}. ${copy.nextStep} ${copy.whenItLands}`,
+      applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+  };
+
   // A draw with no prior mirror row. ATOMIC claim: set the watermark only if still unset, and notify
   // only if THIS pass won it — so two overlapping reconcile passes can never double-notify (audit LOW-2).
   // If Sitewire returned this draw with a NULL status (a rare drafting/transition state we can't
@@ -278,23 +345,26 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       // …unless it is PILOT's OWN just-created historical close-out draw racing its mirror
       // row (audit-4 #11): a historical draw is never a borrower submission.
       if (draw.historical === true) { await recordInboundChange(appId, drawId, 'draw', drawId, 'new_draw_historical', null, newStatus, false); return; }
-      await recordInboundChange(appId, drawId, 'draw', drawId, 'new_draw', null, newStatus, true);
-      // Say the two things the reader needs first (owner-directed 2026-08-03): is this a VIRTUAL or
-      // a PHYSICAL inspection, and does it NEED ACTION (a TrustPoint hand-entry / a Trinity physical
-      // inspection) or run automatically (a Sitewire virtual). The dollar amount + budget breakdown
-      // ride the money block below.
-      const copy = inboundDrawCopy({
-        platform: ctx.platform, method: ctx.method,
-        submitted: tpIntake.SUBMITTED_STATUSES.has(String(newStatus)),
-      });
-      const b = await drawBlocks();
-      await notify.notifyAppStaffThread(appId, {
-        type: 'draw_inbound', title: 'A new draw request came in',
-        drawTag: drawLabel.drawLabel(draw.number),
-        badge: copy.actionNeeded ? { text: 'Action needed', tone: 'action' } : { text: 'New draw', tone: 'gold' },
-        body: `A new draw request (Draw #${draw.number == null ? '—' : draw.number}) came in for ${addrText} through Sitewire. ${copy.methodLabel} — ${copy.actionLabel}. ${copy.nextStep}`,
-        ...moneyOpts(b),
-        applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+      // WHICH EVENT IS THIS? (owner-reported 2026-08-20). Pressing Start in Sitewire
+      // CREATES the draw row, so a first-seen draw is very often a DRAFT the borrower
+      // is still photographing — sometimes for days. This branch used to announce every
+      // one of them as "A new draw request came in", with an Action-needed badge, which
+      // is what made the desk read a Start button as a submission. The phase decides the
+      // whole notification now, and both readings come from the ONE lifecycle module.
+      const phase = lifecycle.phaseOf(newStatus);
+      const isDraftDraw = phase === 'draft';
+      await recordInboundChange(appId, drawId, 'draw', drawId,
+        isDraftDraw ? 'new_draw_draft' : 'new_draw', null, newStatus, true);
+      if (isDraftDraw) {
+        await announceDraftStarted();
+      } else {
+        // SUBMITTED (or a status we do not recognise, which reads as submitted — see
+        // draw-lifecycle.phaseOf). The borrower composed and submitted it between two
+        // polls, so PILOT never watched a draft of its own.
+        await announceSubmitted({ crossedFromDraft: false, status: newStatus });
+      }
+      // Always safe to call: both ordering doors read the SAME submitted set, so a
+      // draft opens no TrustPoint task and sends no inspector anywhere.
       maybeImportTask();
     }
     return;
@@ -317,6 +387,19 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
       return;
     }
     if (won) {
+      /* THE SAME DRAFT-VS-SUBMITTED READING AS THE FIRST-SEEN BRANCH. This door is
+         reached when PILOT already had the row but Sitewire had given it no status
+         yet — and the status that then arrives is most often `drafting`, i.e. the
+         borrower pressing Start. REACT_STATUS has no draft rung (and must not gain
+         one: it also fires on ordinary later transitions), so without this the
+         start of a draw came through this door in complete silence while the other
+         door announced it. */
+      if (lifecycle.isDraft(newStatus)) {
+        await recordInboundChange(appId, drawId, 'draw', drawId, 'first_status_draft', null, newStatus, true);
+        await announceDraftStarted();
+        maybeImportTask();
+        return;
+      }
       const r = reactFor(newStatus, draw.number == null ? '—' : draw.number, addrText, ctx);
       await recordInboundChange(appId, drawId, 'draw', drawId, 'first_status', null, newStatus, !!r);
       if (r) {
@@ -337,15 +420,34 @@ async function reactToInboundDraw(appId, draw, prev, firstReconcile, addrText, f
   if (newStatus && newStatus !== prev.status_synced) {
     const won = (await db.query(`UPDATE sitewire_draws SET status_synced=$2 WHERE sitewire_draw_id=$1 AND status_synced IS DISTINCT FROM $2 RETURNING sitewire_draw_id`, [drawId, newStatus])).rowCount === 1;
     if (won) {
-      const r = reactFor(newStatus, draw.number == null ? '—' : draw.number, addrText, ctx);
-      await recordInboundChange(appId, drawId, 'draw', drawId, 'status', prev.status_synced, newStatus, !!r);
-      if (r) {
-        const b = await drawBlocks();
-        await notify.notifyAppStaffThread(appId, {
-          type: 'draw_inbound', title: r.title, drawTag: drawLabel.drawLabel(draw.number), badge: { text: 'Sitewire update', tone: r.tone },
-          body: r.body, ...moneyOpts(b),
-          applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+      /* THE SUBMISSION (owner-directed 2026-08-20: "when they actually submit the
+         draw request for review to the inspector, it should be that it was
+         submitted for review"). Crossing OUT of a draft status is that moment,
+         whichever submitted rung the draw lands on — `inspecting` on a virtual
+         file, `pending` on a physical or TrustPoint one. Announced here rather
+         than as a REACT_STATUS rung so it fires exactly once per shape, and so a
+         later re-inspection (a live draw moving BACK to `inspecting`) is never
+         mislabelled as a fresh submission. A poll gap wide enough for a draft to
+         reach `approved` defers to the approval's own richer wording — see
+         `draw-lifecycle.announcesSubmission`. Audited under its own field name so
+         the plain `status` reactions stay countable on their own. */
+      if (lifecycle.announcesSubmission(prev.status_synced, newStatus)) {
+        await recordInboundChange(appId, drawId, 'draw', drawId, 'status_submitted', prev.status_synced, newStatus, true);
+        await announceSubmitted({ crossedFromDraft: true, status: newStatus });
+      } else {
+        const r = reactFor(newStatus, draw.number == null ? '—' : draw.number, addrText, ctx);
+        await recordInboundChange(appId, drawId, 'draw', drawId, 'status', prev.status_synced, newStatus, !!r);
+        if (r) {
+          const b = await drawBlocks();
+          await notify.notifyAppStaffThread(appId, {
+            type: 'draw_inbound', title: r.title, drawTag: drawLabel.drawLabel(draw.number), badge: { text: 'Sitewire update', tone: r.tone },
+            body: r.body, ...moneyOpts(b),
+            applicationId: appId, link: `/internal/app/${appId}/draws` }).catch(() => {});
+        }
       }
+      // NOT inside either arm, and NOT behind a `return`: the approved-amount audit +
+      // release-drift check below this block must run on every transition, crossing
+      // included.
       maybeImportTask();
     }
   }

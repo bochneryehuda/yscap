@@ -17,6 +17,7 @@ import { askConfirm, askPrompt } from '../lib/dialog.js';
 // a bare hash cannot do. Used by the appraisal card to hand off to the one screen
 // that is allowed to talk to the appraisal companies.
 import { goToSection } from './FileSections.jsx';
+import { ScheduleButton, ScheduledSends, useScheduledSends } from './ScheduleSend.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS DESK (#orders) — order TITLE and INSURANCE for a file, and track each
@@ -522,6 +523,23 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
     finally { setBusy(''); }
   };
 
+  /* SEND IT LATER. The scheduling door takes the SAME body the send takes, so
+     what is queued tonight is exactly what pressing the button now would do —
+     and it is the send ROUTE, not a rendered email, that runs in the morning. */
+  const sched = useScheduledSends(appId, [order.status]);
+  const scheduleIt = async ({ day, time }) => {
+    const body = { day, time };
+    if (placed) body.force = true;
+    if (ccBorrower != null) body.ccBorrower = !!ccBorrower;
+    const r = await api.staffScheduleOrder(appId, kind, body);
+    await sched.reload();
+    setMsg({ tone: (r.warnings && r.warnings.length) ? 'warn' : 'ok',
+      text: (r.warnings && r.warnings.length)
+        ? `Scheduled for ${r.scheduled.sendAtText}. It will NOT go out unless you also: ${r.warnings.join(' ')}`
+        : `${KIND_LABEL[kind]} order scheduled for ${r.scheduled.sendAtText}.` });
+    onChanged && onChanged();
+  };
+
   const place = async (force) => {
     setBusy('place'); setMsg(null);
     try {
@@ -666,6 +684,9 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
         </div>
       )}
 
+      <ScheduledSends rows={sched.rows} onCancel={sched.cancel}
+        kinds={[kind === 'title' ? 'title_order' : 'insurance_order']} />
+
       {/* Actions */}
       <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
         {!placed && (
@@ -673,6 +694,9 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
             title={needsLoan ? 'Add the loan number first' : needsContact ? `Add the ${CONTACT_ASK[kind]} first` : needsUsps ? 'Import the USPS-verified address first — see the step above' : blocked ? 'Finish the steps listed above first' : `Send the ${kind} order to the vendor`}>
             {busy === 'place' ? 'Sending…' : `Order ${kind}`}
           </button>
+        )}
+        {!placed && (
+          <ScheduleButton onSchedule={scheduleIt} busy={!!busy} what={`the ${kind} order`} />
         )}
         {!placed && !blocked && (
           <span className="muted small" style={{ alignSelf: 'center' }}>
@@ -686,6 +710,8 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
               title={needsUsps ? 'Import the USPS-verified address first — see the step above' : 'Re-send the full order to the vendor + CC chain'}>
               {busy === 'place' ? 'Sending…' : 'Re-send order'}
             </button>
+            <ScheduleButton onSchedule={scheduleIt} busy={!!busy} disabled={needsContact || needsUsps}
+              what={`the ${kind} order`} />
             {/* NOT on a FINISHED order. Cancelling is not a tidier way of saying
                 "done" — it is an explicit stand-down that shuts the vendor reply
                 door, so on an order that already finished it can only lose the
