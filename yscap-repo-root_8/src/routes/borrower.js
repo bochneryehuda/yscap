@@ -2635,13 +2635,32 @@ router.get('/applications/:id/change-requests', async (req, res) => {
 // future files via autocomplete. tool_key on the checklist item decides which
 // contact type the form collects.
 const CONTACT_TYPES = ['title_company', 'insurance_agent', 'attorney', 'contractor', 'other'];
+
+/* THE BORROWER'S OWN PREVIOUS CONTACTS, as a type-ahead (owner-directed
+   2026-08-20: "every borrower's profile should have all the contacts that he
+   previously used for title and insurance on his second file … he should be able
+   to pre-fill from his previous contacts. It should come up with all the options
+   that he used previously for title").
+
+   DELIBERATELY THEIR OWN ONLY. The staff door searches the whole vendor directory;
+   this one does not, because a type-ahead over every title company we work with
+   would publish our vendor roster to an outside party. `lib/vendor-directory`
+   enforces that from the audience argument rather than from this call site, so the
+   boundary lives in one place. Blank `q` is a legitimate ask — it means "show me
+   what I have used" the moment the field is focused, which is the prefill. */
+router.get('/vendor-suggest', async (req, res) => {
+  const out = await require('../lib/vendor-directory').suggest({
+    type: req.query.type, q: req.query.q, borrowerId: me(req), audience: 'borrower', limit: req.query.limit,
+  });
+  res.json(out);
+});
 router.get('/contacts', async (req, res) => {
   const type = CONTACT_TYPES.includes(req.query.type) ? req.query.type : null;
   // merged_into_id is set when an admin merged this contact into another
   // vendor (db/224). Hide it from the borrower's autocomplete so they never
   // pick a soft-deleted duplicate — the survivor already carries the data.
   const r = await db.query(
-    `SELECT id,contact_type,company_name,contact_name,email,phone,last_used_at
+    `SELECT id,contact_type,company_name,contact_name,email,emails,phone,last_used_at
        FROM service_contacts
       WHERE borrower_id=$1 AND merged_into_id IS NULL
         AND ($2::text IS NULL OR contact_type=$2)
@@ -2653,7 +2672,15 @@ router.get('/contacts', async (req, res) => {
 router.post('/contacts', async (req, res) => {
   const b = req.body || {};
   const type = CONTACT_TYPES.includes(b.contactType) ? b.contactType : 'other';
-  if (!b.companyName && !b.contactName && !b.email && !b.phone)
+  /* ADDITIONAL EMAIL ADDRESSES on the condition too (owner-directed 2026-08-20:
+     "in the condition, we should also be able to add additional email addresses,
+     which should be included for the insurance contact and for title contact").
+     Both columns are written together, the scalar always the FIRST of the array,
+     so every existing reader of `email` keeps working — see the staff route for
+     the full reasoning. A form that sends only `email` is unchanged. */
+  const VDb = require('../lib/vendor-directory');
+  const emails = VDb.dedupBy(Array.isArray(b.emails) ? b.emails : (b.email ? [b.email] : []), VDb._internals.normEmail);
+  if (!b.companyName && !b.contactName && !emails.length && !b.phone)
     return res.status(400).json({ error: 'enter at least one contact detail' });
   if (b.applicationId) {
     const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [b.applicationId, me(req)]);
@@ -2662,16 +2689,18 @@ router.post('/contacts', async (req, res) => {
   let contactId = b.contactId || null;
   if (contactId) {
     const upd = await db.query(
-      `UPDATE service_contacts SET company_name=$3,contact_name=$4,email=$5,phone=$6,updated_at=now(),last_used_at=now()
+      `UPDATE service_contacts SET company_name=$3,contact_name=$4,email=$5,emails=$7,phone=$6,updated_at=now(),last_used_at=now()
         WHERE id=$1 AND borrower_id=$2 RETURNING id`,
-      [contactId, me(req), b.companyName || null, b.contactName || null, b.email || null, b.phone || null]);
+      [contactId, me(req), b.companyName || null, b.contactName || null,
+       emails[0] || null, b.phone || null, emails.length ? emails : null]);
     if (!upd.rows[0]) contactId = null;
   }
   if (!contactId) {
     const ins = await db.query(
-      `INSERT INTO service_contacts (borrower_id,contact_type,company_name,contact_name,email,phone,last_used_at)
-       VALUES ($1,$2,$3,$4,$5,$6,now()) RETURNING id`,
-      [me(req), type, b.companyName || null, b.contactName || null, b.email || null, b.phone || null]);
+      `INSERT INTO service_contacts (borrower_id,contact_type,company_name,contact_name,email,emails,phone,last_used_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,now()) RETURNING id`,
+      [me(req), type, b.companyName || null, b.contactName || null,
+       emails[0] || null, emails.length ? emails : null, b.phone || null]);
     contactId = ins.rows[0].id;
   }
   if (b.applicationId) {
@@ -2737,7 +2766,7 @@ router.get('/applications/:id/file-contacts', async (req, res) => {
   if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
   const r = await db.query(
     `SELECT l.id AS link_id, sc.id AS contact_id, sc.contact_type, sc.custom_type,
-            sc.company_name, sc.contact_name, sc.email, sc.phone, sc.address, sc.notes,
+            sc.company_name, sc.contact_name, sc.email, sc.emails, sc.phone, sc.address, sc.notes,
             l.added_by_kind, l.created_at
        FROM application_service_contacts l
        JOIN service_contacts sc ON sc.id = l.service_contact_id
@@ -2751,11 +2780,16 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
   if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
   const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : 'other';
   const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
-  if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
+  // Additional addresses here too — the same both-columns rule as every other
+  // contact writer (the scalar is always the first of the array).
+  const VDf = require('../lib/vendor-directory');
+  const fcEmails = VDf.dedupBy(Array.isArray(b.emails) ? b.emails : (b.email ? [b.email] : []), VDf._internals.normEmail);
+  if (!b.companyName && !b.contactName && !fcEmails.length && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
   const sc = await db.query(
-    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,phone,address,notes,added_by_borrower_id,last_used_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$1,now()) RETURNING id`,
-    [me(req), type, custom, b.companyName || null, b.contactName || null, b.email || null, b.phone || null, b.address || null, b.notes || null]);
+    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,emails,phone,address,notes,added_by_borrower_id,last_used_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$10,$7,$8,$9,$1,now()) RETURNING id`,
+    [me(req), type, custom, b.companyName || null, b.contactName || null, fcEmails[0] || null,
+     b.phone || null, b.address || null, b.notes || null, fcEmails.length ? fcEmails : null]);
   const scId = sc.rows[0].id;
   const link = await db.query(
     `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
@@ -2768,7 +2802,10 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
 // Edit a file contact in place (owner-directed 2026-07-16 — parity with staff).
 router.patch('/file-contacts/:linkId', async (req, res) => {
   const b = req.body || {};
-  if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
+  // Same both-columns rule as every other contact writer.
+  const VDp = require('../lib/vendor-directory');
+  const fcpEmails = VDp.dedupBy(Array.isArray(b.emails) ? b.emails : (b.email ? [b.email] : []), VDp._internals.normEmail);
+  if (!b.companyName && !b.contactName && !fcpEmails.length && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
   // Own-file guard: resolve the link to its service_contact only for files the
   // borrower owns.
   const link = await db.query(
@@ -2780,10 +2817,11 @@ router.patch('/file-contacts/:linkId', async (req, res) => {
   await db.query(
     `UPDATE service_contacts SET contact_type=COALESCE($2, contact_type),
         custom_type=CASE WHEN $2::text IS NULL THEN custom_type ELSE $3 END,
-        company_name=$4, contact_name=$5, email=$6, phone=$7, address=$8, notes=$9, updated_at=now()
+        company_name=$4, contact_name=$5, email=$6, emails=$10, phone=$7, address=$8, notes=$9, updated_at=now()
       WHERE id=$1`,
     [link.rows[0].service_contact_id, type, custom, b.companyName || null, b.contactName || null,
-     b.email || null, b.phone || null, b.address || null, b.notes || null]);
+     fcpEmails[0] || null, b.phone || null, b.address || null, b.notes || null,
+     fcpEmails.length ? fcpEmails : null]);
   if (type) await db.query(`UPDATE application_service_contacts SET contact_type=$2 WHERE id=$1`, [req.params.linkId, type]);
   res.json({ ok: true });
 });
@@ -2799,7 +2837,7 @@ router.delete('/file-contacts/:linkId', async (req, res) => {
 // Hides merged rows (db/224) so a soft-deleted duplicate never shows as its own entry.
 router.get('/my-contacts', async (req, res) => {
   const r = await db.query(
-    `SELECT sc.id, sc.contact_type, sc.custom_type, sc.company_name, sc.contact_name, sc.email, sc.phone, sc.notes,
+    `SELECT sc.id, sc.contact_type, sc.custom_type, sc.company_name, sc.contact_name, sc.email, sc.emails, sc.phone, sc.notes,
             count(l.application_id)::int AS files_used
        FROM service_contacts sc
        LEFT JOIN application_service_contacts l ON l.service_contact_id = sc.id

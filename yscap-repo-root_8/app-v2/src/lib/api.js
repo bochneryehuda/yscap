@@ -398,6 +398,10 @@ export const api = {
   saveContact:  (b) => req('POST', '/api/borrower/contacts', b),
   // general file contacts (#144) — any vendor, many per file, shared on the file
   fileContacts:    (appId) => req('GET', `/api/borrower/applications/${appId}/file-contacts`),
+  /* The borrower's OWN previously-used contacts as a type-ahead — never the
+     company vendor directory (see lib/vendor-directory for why the two
+     audiences differ). Blank `q` = "what have I used before". */
+  vendorSuggest:   (type, q) => req('GET', `/api/borrower/vendor-suggest?type=${encodeURIComponent(type || '')}&q=${encodeURIComponent(q || '')}`),
   addFileContact:  (appId, b) => req('POST', `/api/borrower/applications/${appId}/file-contacts`, b),
   editFileContact: (linkId, b) => req('PATCH', `/api/borrower/file-contacts/${linkId}`, b),
   delFileContact:  (linkId) => req('DELETE', `/api/borrower/file-contacts/${linkId}`),
@@ -1387,6 +1391,11 @@ export const api = {
   staffMergeVendors: (body) => req('POST', '/api/staff/vendors/merge', body),
   // general file contacts (#144) — staff side + a borrower's whole vendor list
   staffFileContacts:   (appId) => req('GET', `/api/staff/applications/${appId}/file-contacts`),
+  /* THE VENDOR TYPE-AHEAD (owner-directed 2026-08-20). Scoped to a FILE, because
+     that is also the permission — anybody who may edit this file's contacts may
+     look one up. A blank `q` is a real ask: it means "show me the ones already
+     used", which is the prefill half of the request. */
+  staffVendorSuggest:  (appId, type, q) => req('GET', `/api/staff/applications/${appId}/vendor-suggest?type=${encodeURIComponent(type || '')}&q=${encodeURIComponent(q || '')}`),
   staffAddFileContact: (appId, b) => req('POST', `/api/staff/applications/${appId}/file-contacts`, b),
   staffEditFileContact:(linkId, b) => req('PATCH', `/api/staff/file-contacts/${linkId}`, b),
   staffDelFileContact: (linkId) => req('DELETE', `/api/staff/file-contacts/${linkId}`),

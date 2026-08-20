@@ -6353,7 +6353,10 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       }
       const data = await orders.getOrderData(appId);
       if (!data) return res.status(404).json({ error: 'not found' });
-      if (!data.vendors[kind] || !data.vendors[kind].email) {
+      // ONE reading of "does this vendor have an address" — orders.vendorEmails,
+      // which folds the legacy scalar with db/224's `emails` array. A second copy
+      // here is how a door refuses an order the send path would have delivered.
+      if (!orders.vendorEmails(kind, data).length) {
         return res.status(400).json({ error: `The ${kind === 'title' ? 'title company' : 'insurance agent'} contact is missing, so there is no one to reply to.`, code: 'contact' });
       }
       // THE SAME ADDRESS GATE THE FOLLOW-UP DOOR USES. A reply re-states the property
@@ -6676,7 +6679,12 @@ router.get('/applications/:id/orders', async (req, res) => {
         orderType: k,
         status: row ? row.status : 'not_ordered',
         blockers: orders.blockers(k, data),
-        vendor: vendor ? { id: vendor.id, name: vendor.company_name || vendor.contact_name, email: vendor.email, phone: vendor.phone, contactName: vendor.contact_name } : null,
+        // EVERY address the order will go to, not just the primary — the desk has to
+        // show what will actually be mailed, or "all emails are included" is a claim
+        // nobody can check before pressing Send (owner-directed 2026-08-20).
+        vendor: vendor ? { id: vendor.id, name: vendor.company_name || vendor.contact_name,
+          email: orders.vendorEmails(k, data)[0] || null, emails: orders.vendorEmails(k, data),
+          phone: vendor.phone, contactName: vendor.contact_name } : null,
         orderedAt: row ? row.ordered_at : null,
         lastFollowupAt: row ? row.last_followup_at : null,
         followupCount: row ? row.followup_count : 0,
@@ -6917,7 +6925,7 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     }
     const data = await orders.getOrderData(appId);
     if (!data) return res.status(404).json({ error: 'not found' });
-    if (!data.vendors[kind] || !data.vendors[kind].email) return res.status(400).json({ error: 'The vendor contact is missing.', code: 'contact' });
+    if (!orders.vendorEmails(kind, data).length) return res.status(400).json({ error: 'The vendor contact is missing.', code: 'contact' });
     // A follow-up re-sends the current property address; if the address was edited
     // after the order (which re-opens the USPS condition), block it until re-imported.
     if (data.uspsGate && !data.uspsImported) return res.status(422).json({ error: `The property address is no longer USPS-verified. Re-verify and import it in “USPS Address Verification” before following up on the ${kind} order, so the vendor never gets an unverified address.`, code: 'usps' });
@@ -18502,11 +18510,32 @@ router.post('/vendors/merge', async (req, res) => {
 // Keep this list in step with the copy in routes/borrower.js and the TYPES list in
 // app-v2/src/components/FileContacts.jsx — an unlisted type is coerced to 'other'.
 const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'settlement_agent', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
+
+/* TYPE-AHEAD OVER THE VENDOR DIRECTORY (owner-directed 2026-08-20: "we already
+   have a database from all the vendors that we're using across the board. Anywhere
+   you start typing … it gives you a lot of options of the insurance companies that
+   you can auto-populate all the information just by starting to type").
+
+   Scoped to a FILE, and that is the permission: `canTouchApp` is the same gate the
+   file-contacts routes use, so anybody who may edit this file's contacts may look
+   one up — the vendors ADMIN screen's `manage_vendors` would be the wrong gate
+   here, because the person filling in a title contact is usually the loan officer,
+   who does not hold it. What comes back is a vendor's business card and nothing
+   else: no `notes`, no borrower, no file. See lib/vendor-directory for why. */
+router.get('/applications/:id/vendor-suggest', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const app = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+  if (!app) return res.status(404).json({ error: 'not found' });
+  const out = await require('../lib/vendor-directory').suggest({
+    type: req.query.type, q: req.query.q, borrowerId: app.borrower_id, audience: 'staff', limit: req.query.limit,
+  });
+  res.json(out);
+});
 router.get('/applications/:id/file-contacts', async (req, res) => {
   if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   const r = await db.query(
     `SELECT l.id AS link_id, sc.id AS contact_id, sc.contact_type, sc.custom_type,
-            sc.company_name, sc.contact_name, sc.email, sc.phone, sc.address, sc.notes,
+            sc.company_name, sc.contact_name, sc.email, sc.emails, sc.phone, sc.address, sc.notes,
             l.added_by_kind, l.created_at,
             s.full_name AS added_by_staff, NULLIF(b.full_name,'') AS added_by_borrower
        FROM application_service_contacts l
@@ -18528,10 +18557,26 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
   // guard the lookup itself).
   const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
   if (!app.rows[0]) return res.status(404).json({ error: 'not found' });
+  /* ADDITIONAL EMAIL ADDRESSES (owner-directed 2026-08-20: "we should be able to
+     add additional email addresses for vendors, and all emails should be included
+     when we send out the orders. In the condition, we should also be able to add
+     additional email addresses, which should be included for the insurance contact
+     and for title contact").
+
+     BOTH COLUMNS ARE WRITTEN, and that is not belt-and-braces — it is what keeps
+     every existing reader working. `email` (the scalar) is what the Orders desk
+     card, the vendors screen and a dozen queries display; `emails` (db/224) is the
+     full set the order goes to. The scalar is always the FIRST of the array, so
+     the two can never describe different vendors. A form that sends only the old
+     `email` field still works untouched. */
+  const VD = require('../lib/vendor-directory');
+  const emails = VD.dedupBy(Array.isArray(b.emails) ? b.emails : (b.email ? [b.email] : []), VD._internals.normEmail);
   const sc = await db.query(
-    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,phone,address,notes,added_by_staff_id,last_used_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) RETURNING id`,
-    [app.rows[0].borrower_id, type, custom, b.companyName || null, b.contactName || null, b.email || null, b.phone || null, b.address || null, b.notes || null, req.actor.id]);
+    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,emails,phone,address,notes,added_by_staff_id,last_used_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now()) RETURNING id`,
+    [app.rows[0].borrower_id, type, custom, b.companyName || null, b.contactName || null,
+     emails[0] || null, emails.length ? emails : null,
+     b.phone || null, b.address || null, b.notes || null, req.actor.id]);
   const link = await db.query(
     `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
      VALUES ($1,$2,$3,'staff',$4)
@@ -18575,19 +18620,23 @@ router.patch('/file-contacts/:linkId', async (req, res) => {
   if (!f.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canTouchApp(req, f.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
   const b = req.body || {};
-  if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
+  const VDe = require('../lib/vendor-directory');
+  const emailsIn = VDe.dedupBy(Array.isArray(b.emails) ? b.emails : (b.email ? [b.email] : []), VDe._internals.normEmail);
+  if (!b.companyName && !b.contactName && !emailsIn.length && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
   const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : null;
   const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
   // COALESCE the type so a request that omits it keeps the stored value; keep the
   // stored custom_type too when no valid type is given (only reset it when the
-  // type is actually being changed).
+  // type is actually being changed). The two email columns move TOGETHER — the
+  // scalar is always the first of the array (see the POST above for why).
   await db.query(
     `UPDATE service_contacts SET contact_type=COALESCE($2, contact_type),
         custom_type=CASE WHEN $2::text IS NULL THEN custom_type ELSE $3 END,
-        company_name=$4, contact_name=$5, email=$6, phone=$7, address=$8, notes=$9, updated_at=now()
+        company_name=$4, contact_name=$5, email=$6, emails=$10, phone=$7, address=$8, notes=$9, updated_at=now()
       WHERE id=$1`,
     [f.rows[0].service_contact_id, type, custom, b.companyName || null, b.contactName || null,
-     b.email || null, b.phone || null, b.address || null, b.notes || null]);
+     emailsIn[0] || null, b.phone || null, b.address || null, b.notes || null,
+     emailsIn.length ? emailsIn : null]);
   if (type) await db.query(`UPDATE application_service_contacts SET contact_type=$2 WHERE id=$1`, [req.params.linkId, type]);
   await audit(req, 'edit_file_contact', 'application', f.rows[0].application_id, { contactType: type || undefined });
   res.json({ ok: true });
