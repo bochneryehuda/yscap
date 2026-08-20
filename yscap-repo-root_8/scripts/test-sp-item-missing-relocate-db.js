@@ -101,15 +101,43 @@ function restoreGraph() { Object.assign(sp, real); }
        FROM documents WHERE id=$1`, [id])).rows[0];
   const cardCount = async (id) => (await db.query(
     `SELECT count(*)::int AS n FROM sync_review_queue WHERE task_id=$1`, [`spdoc:${id}`])).rows[0].n;
+  // Drive ONE document through the audit. Deliberately NOT verifyOnce: that sweeps
+  // EVERY document in the database that is due, which in the shared test database
+  // npm test runs against means another suite's rows — answered by the Graph stubs
+  // below, which rewrote a foreign document's ref to this test's fake item (proved,
+  // 2026-08-20) — while this suite's own freshly-created row can be pushed out of
+  // the batch entirely (the selector orders created_at ASC, so the newest row sorts
+  // last). The row still comes from the REAL selector, so selection is still proven.
+  const auditOne = async (id) => {
+    const rows = await backup.verifyBatch(2000);
+    const row = rows.find((r) => r.id === id);
+    if (!row) throw new Error(`doc ${id} was not selected by verifyBatch — the audit would never see it`);
+    return backup.verifyRow(row);
+  };
+
   const relocatedLogs = async (id) => (await db.query(
     `SELECT count(*)::int AS n FROM audit_log WHERE entity_id=$1::uuid AND action='sharepoint_mirror_relocated'`, [id])).rows[0].n;
+
+  // A FOREIGN mirrored document — what an earlier suite in the npm test chain leaves
+  // in the shared database. This suite must never touch it: the Graph stubs below
+  // answer for ANY document the audit reaches, so a pass that swept the whole table
+  // rewrote this row's ref to this test's fake item and stamped it 'ok' (reproduced
+  // 2026-08-20, and it is why CI went red where the suite passed alone).
+  const foreignRef = 'sp:otherdrive:foreign-item';
+  const foreign = (await db.query(
+    `INSERT INTO documents (filename, content_type, doc_kind, storage_provider, storage_ref, size_bytes,
+        application_id, borrower_id, is_current, sharepoint_backup_ref, sharepoint_parent_id,
+        sharepoint_web_url, sharepoint_backed_up_at, sharepoint_verified_at)
+     VALUES ('another-suites-doc.pdf','application/pdf','insurance','local','zz/foreign.pdf',10,$1,$2,true,
+        $3,'foreign-parent','https://x/another-suites-doc.pdf', now() - interval '40 days', NULL)
+     RETURNING id`, [app, b, foreignRef])).rows[0].id;
 
   // === CASE A: the copy is back in its own folder with a NEW id ===============
   // A restore from the recycle bin / a re-upload. Graph's createdBy says it is
   // ours, so the audit must re-point and verify — never card it as deleted.
   const docA = await mkMirrored();
   stubGraph({ byName: item('restored-item-id', { parentId: 'parent-folder-2' }) });
-  await backup.verifyOnce({ limit: 100 });
+  await auditOne(docA);
   restoreGraph();
   const a = await docOf(docA);
   ok('A: a copy found in its own folder is re-pointed, not declared missing', a.i === 'ok');
@@ -124,7 +152,7 @@ function restoreGraph() { Object.assign(sp, real); }
   // the read that never existed before this fix.
   const docB = await mkMirrored();
   stubGraph({ byStamp: item('stamped-item-id', { parentId: 'parent-folder-3' }) });
-  await backup.verifyOnce({ limit: 100 });
+  await auditOne(docB);
   restoreGraph();
   const bRow = await docOf(docB);
   ok('B: the PilotDocumentId stamp re-finds a copy that name+folder cannot', bRow.i === 'ok');
@@ -136,7 +164,7 @@ function restoreGraph() { Object.assign(sp, real); }
   // the stamp finds nothing → the honest "missing" verdict, as before.
   const docC = await mkMirrored();
   stubGraph({ byName: item('a-humans-own-file', { appId: 'some-other-app' }), byStamp: null });
-  await backup.verifyOnce({ limit: 100 });
+  await auditOne(docC);
   restoreGraph();
   const c = await docOf(docC);
   ok('C: a same-named file a PERSON created is never claimed as our mirror copy', c.i === 'item-missing');
@@ -149,7 +177,7 @@ function restoreGraph() { Object.assign(sp, real); }
   // this pass writes one). Backdated = re-checked on the next rotation.
   const docD = await mkMirrored();
   stubGraph({});                       // every probe 404s / finds nothing
-  await backup.verifyOnce({ limit: 100 });
+  await auditOne(docD);
   restoreGraph();
   const d = await docOf(docD);
   ok('D: nothing found anywhere → item-missing', d.i === 'item-missing');
@@ -175,7 +203,7 @@ function restoreGraph() { Object.assign(sp, real); }
   ok('E: a day later the item-missing row is back in the audit selection',
     (await backup.verifyBatch(500)).some((r) => r.id === docD));
   stubGraph({ byId: { [DEAD_ITEM]: item(DEAD_ITEM) } });
-  await backup.verifyOnce({ limit: 100 });
+  await auditOne(docD);
   restoreGraph();
   const e = await docOf(docD);
   ok('E: a restored copy verifies clean on the very next rotation', e.i === 'ok');
@@ -185,6 +213,12 @@ function restoreGraph() { Object.assign(sp, real); }
   ok('E: the loan officer’s card auto-closes once the copy verifies clean',
     (await db.query(`SELECT count(*)::int n FROM sync_review_queue WHERE task_id=$1 AND status='open'`,
       [`spdoc:${docD}`])).rows[0].n === 0);
+
+  // === HERMETIC GUARD: this suite touches ONLY its own rows ==================
+  const f = await docOf(foreign);
+  ok('G: a document belonging to another suite is never re-pointed by this one', f.ref === foreignRef);
+  ok('G: nor stamped with a verdict this suite\u2019s stubs invented', f.i === null);
+  ok('G: nor carded', (await cardCount(foreign)) === 0);
 
   // === CASE F: the pure name recovery ========================================
   ok('F: the mirrored name is recovered from the recorded webUrl (percent-decoded)',

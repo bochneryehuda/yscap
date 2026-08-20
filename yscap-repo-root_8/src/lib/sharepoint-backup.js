@@ -3031,7 +3031,11 @@ module.exports = {
   relocateMirror, mirrorNameFromWebUrl,
   // The audit's OWN selection SQL — exported so a test asserts that a verdict
   // really does stay in the rotation, against the same query the pass runs.
-  verifyBatch,
+  // verifyRow rides along so a DB test can audit ONE row: verifyOnce sweeps every
+  // document in the database that is due, which in a shared test database means
+  // another suite's rows (answered by that test's Graph stubs, and its own row
+  // possibly pushed out of the batch). A test drives its OWN row through this.
+  verifyBatch, verifyRow,
   // Exported for the recategorize repair (scripts/sharepoint-recategorize-existing.js)
   // + the pure category test (scripts/test-sharepoint-category.js).
   categoryPathFor, scopeKeyFor, stateKeyFor,
