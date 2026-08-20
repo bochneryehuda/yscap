@@ -75,6 +75,71 @@ console.log('\n2. Promotion is STRICTER than the advisory matcher, on purpose');
     'and two plainly different names are still different');
 }
 
+// ═════════ 2b. THE SUFFIX IS PART OF THE COMPANY WHEN A STAMP DEPENDS ON IT
+console.log('\n2b. LLC and Corp are two companies — the matcher that mints a stamp says so');
+{
+  /* `promotionMatch` deletes the entity suffix from BOTH sides before comparing,
+     which is RIGHT for linking a typed name to a company somebody abbreviated —
+     "Smith Holdings" and "Smith Holdings LLC" are one company. It is WRONG for
+     the one decision that PROMOTES a records pillar to `proved` and prints
+     "Verified to Elementix" on the investor package: an operating LLC beside a
+     management Corp is an ordinary shape on one borrower's profile, and reading
+     them as one company minted the stamp for a company whose own Check A was
+     still false. `pickEntity` already refuses that exact pair as AMBIGUOUS —
+     this is the same judgement, applied where ONE name meets ONE company. */
+  const strangers = [
+    ['Smith Holdings LLC', 'Smith Holdings Corp'],
+    ['Smith Holdings LLC', 'Smith Holdings Inc'],
+    ['Smith Holdings LLC', 'Smith Holdings LP'],
+    ['Smith Holdings Corp', 'Smith Holdings Inc'],
+    ['Smith Holdings', 'Smith Holdings LLC'],          // one side has no suffix at all
+    ['Maple Grove Properties Company', 'Maple Grove Properties Corporation'],
+  ];
+  const loose = strangers.filter(([a, b]) => T.promotionMatch(a, b));
+  ok(loose.length === strangers.length,
+    `promotionMatch calls all ${strangers.length} of these pairs the same company — which is why this matcher exists`);
+  const leaked = strangers.filter(([a, b]) => T.sameLegalEntityName(a, b));
+  ok(leaked.length === 0,
+    `sameLegalEntityName refuses every one${leaked.length ? ` — leaked: ${leaked.map((p) => p.join(' <> ')).join('; ')}` : ''}`);
+
+  /* AND IT MUST NOT REFUSE EVERYTHING. A stricter matcher that never matches
+     would silently stop promoting real deeds, and nothing would look broken —
+     the pillar would simply stay `no_data` for ever. */
+  const same = [
+    ['Smith Holdings LLC', 'Smith Holdings, L.L.C.'],
+    ['Smith Holdings LLC', 'smith holdings llc'],
+    ['Smith Holdings LLC', 'Smith  Holdings   LLC'],
+    ['Core Tex Solutions LLC', 'Coretex Solutions LLC'],
+    ['Maple Grove Properties Inc', 'Maple Grove Properties, Incorporated'],
+    ['Coretex', 'Core Tex'],                            // neither side carries a suffix
+  ];
+  const refused = same.filter(([a, b]) => !T.sameLegalEntityName(a, b));
+  ok(refused.length === 0,
+    `…while every real re-spelling of ONE company still matches${refused.length ? ` — refused: ${refused.map((p) => p.join(' <> ')).join('; ')}` : ''}`);
+
+  ok(T.sameLegalEntityName('Smith Holdings LLC', 'Jones Holdings LLC') === false,
+    'and two plainly different names are still different');
+  ok(T.sameLegalEntityName('Hudson Properties LLC', 'Hudson Properties LLC II') === false,
+    '…and it inherits every refusal promotionMatch already makes — it can only ever be stricter');
+
+  /* ONE DEFINITION OF WHAT A SUFFIX IS. `core()` in compare.js STRIPS exactly
+     these tokens to build the loose match this tightens, so a second copy of
+     the list would make the two disagree the first time either gained an entry
+     — and the disagreement is silent. */
+  const { ENTITY_SUFFIX } = require('../src/lib/underwriting/compare');
+  ok(ENTITY_SUFFIX instanceof RegExp,
+    'the suffix list is exported from compare.js, where the loose matcher already keeps it');
+  const entitySrc = require('fs').readFileSync(require('path').join(__dirname, '../src/lib/track-record-entity.js'), 'utf8');
+  ok(!entitySrc.includes(ENTITY_SUFFIX.source),
+    '…and track-record-entity carries no second copy of it — both matchers read the one list');
+  for (const junk of [null, undefined, '', '   ', 'LLC', 42, {}]) {
+    if (T.sameLegalEntityName(junk, 'Smith Holdings LLC') || T.sameLegalEntityName('Smith Holdings LLC', junk)) {
+      ok(false, `junk ${JSON.stringify(junk)} matched a real company`);
+    }
+  }
+  ok(true, 'junk on either side never matches, and never throws');
+}
+
 // ═══════════════════════════════════ 3. Ambiguity writes nothing
 console.log('\n3. Two possible companies means a person decides, not us');
 {

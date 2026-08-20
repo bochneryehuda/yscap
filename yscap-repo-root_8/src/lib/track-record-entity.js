@@ -112,8 +112,13 @@ function promotionMatch(a, b) {
   const ca = canon(a), cb = canon(b);
   if (!ca || !cb) return false;
   if (ca === cb) return true;                                   // identical
-  const SUFFIX = /\b(llc|llp|lp|inc|corp|co|ltd)\b/g;
-  const core = (x) => x.replace(SUFFIX, '').replace(/\s+/g, ' ').trim();
+  /* compare.js's OWN list, not a copy: `core()` there strips exactly these to
+     build the match this re-checks, so a second copy could disagree with the
+     thing it is re-checking. Safe to share: `.replace` on a /g regex resets
+     `lastIndex`. A missing export falls through to the identical-name arm,
+     which is the conservative answer. */
+  const SUFFIX = compare.ENTITY_SUFFIX;
+  const core = (x) => (SUFFIX instanceof RegExp ? x.replace(SUFFIX, '') : x).replace(/\s+/g, ' ').trim();
   const ka = core(ca), kb = core(cb);
   if (ka && kb && ka === kb) return true;                       // suffix-only difference
   // Pure re-spacing: same letters, compatible segmentation. Recomputed here
@@ -205,9 +210,47 @@ async function promoteEntityName(borrowerId, name, opts = {}) {
   }
 }
 
+/**
+ * STRICTER THAN `promotionMatch`, FOR THE ONE DECISION THAT MINTS A STAMP.
+ *
+ * `promotionMatch` deletes the entity suffix from BOTH sides before comparing
+ * (`entityMatch`'s `core()`), which is right for LINKING a typed name to a
+ * company — "Smith Holdings" and "Smith Holdings LLC" are one company somebody
+ * abbreviated. It is WRONG for deciding that a recorded deed names the company
+ * a staffer just confirmed: "Smith Holdings LLC" and "Smith Holdings Corp" are
+ * TWO legal entities, and a borrower holding an operating LLC beside a
+ * management Corp is entirely ordinary. Read loosely, confirming control of the
+ * LLC printed "Verified to Elementix" on a property whose deed names the Corp,
+ * while the Corp's own Check A was still false — on the investor package.
+ *
+ * `pickEntity` already refuses that same pair as AMBIGUOUS, saying why in its
+ * own words: writing either one "attaches this property to a company that may
+ * not have held it, and Check A would then carry the wrong verification". This
+ * is that judgement, applied where one name is compared to one company.
+ *
+ * So: everything `promotionMatch` accepts, MINUS any pair whose suffix tokens
+ * differ — including one side having a suffix and the other none. Punctuation
+ * and spelling of the SAME suffix still match, because `canonEntity` folds
+ * "L.L.C."→llc and "Corporation"→corp before the tokens are read.
+ */
+function sameLegalEntityName(a, b) {
+  if (!promotionMatch(a, b)) return false;
+  const canon = compare.canonEntity;
+  if (typeof canon !== 'function') return false;       // fail closed, as promotionMatch does
+  /* THE SUFFIX LIST IS COMPARE'S OWN — never a second copy. `core()` there
+     STRIPS exactly these tokens to build the loose comparison this tightens, so
+     a list that drifted would make the two disagree about what a suffix even
+     is. Safe to share: `.match` on a /g regex resets `lastIndex`. */
+  const SUFFIX = compare.ENTITY_SUFFIX;
+  if (!(SUFFIX instanceof RegExp)) return false;       // fail closed
+  const tokens = (x) => ((canon(x) || '').match(SUFFIX) || []).join(' ');
+  return tokens(a) === tokens(b);
+}
+
 module.exports = {
   junkEntityName,
   promotionMatch,
+  sameLegalEntityName,
   pickEntity,
   promoteEntityName,
   _internals: { JUNK_EXACT },

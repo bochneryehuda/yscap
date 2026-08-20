@@ -106,6 +106,41 @@ console.log('\n5. "Nothing found" is neutral, and the copy says whose limitation
     'the ownership copy says plainly that a records gap is not the borrower\'s fault');
   ok(/lease is never public/.test(PA.AUTO_MEANING.no_data.exit),
     'and the exit copy explains that a lease is never in the public record at all');
+
+  /* ONE VERDICT, TWO COMPLETELY DIFFERENT SITUATIONS. An ownership `no_data`
+     that CARRIES a records finding — the deed was found, naming the company,
+     and only the borrower's control of it is unconfirmed — is checks.js's own
+     entityNoData state, and the state a revoke or the boot heal now leaves
+     behind. Printing "Nothing was found in the public records" directly above a
+     snippet quoting that deed contradicts the card's own evidence and sends a
+     reviewer to re-run a search that already succeeded. */
+  const card = (ev) => PA.evidenceCard(pillar({ auto_verdict: 'no_data', auto_source: 'elementix', auto_evidence: ev }), SIGNER);
+  ok(/Nothing was found/.test(card({ why: 'no records' }).meaning),
+    'a genuinely empty ownership search still says nothing was found — the gap wording is not weakened');
+  for (const [what, ev] of [
+    ['the deed names the company, control unasked', { checkB: { grantee: 'MW TRADING LLC', granteeIsMatchedEntity: true, heldAs: 'entity' } }],
+    ['a grantee alone', { checkB: { grantee: 'MW TRADING LLC' } }],
+    ['a document id alone', { checkB: { documentId: 'deed-1' } }],
+    ['after a revoke or the boot heal withdrew it', { priorWhy: 'The company is the grantee on the recorded deed.' }],
+  ]) {
+    if (!/records DID find this property/.test(card(ev).meaning)) {
+      ok(false, `no_data carrying ${what} still claimed nothing was found`);
+    }
+  }
+  ok(true, 'but a no_data that CARRIES a records finding says the records DID find it — the card never contradicts its own snippet');
+  ok(card({ checkB: {} }).meaning === PA.AUTO_MEANING.no_data.ownership,
+    'an EMPTY checkB is not a finding — it falls back to the plain gap wording rather than promising evidence that is not there');
+  for (const junk of [null, undefined, [], 'string', 42, { checkB: [] }, { checkB: 'x' }, { priorWhy: '   ' }]) {
+    if (!/Nothing was found/.test(card(junk).meaning)) { ok(false, `malformed evidence ${JSON.stringify(junk)} was read as a finding`); }
+  }
+  ok(true, '…and a malformed evidence blob falls back to the gap wording rather than throwing or over-claiming');
+
+  ok(/Nothing recording this exit/.test(
+    PA.evidenceCard(pillar({ pillar: 'exit', auto_verdict: 'no_data', auto_evidence: { checkB: { grantee: 'X' } } }), SIGNER).meaning),
+  'and the new wording is OWNERSHIP-only — the exit pillar keeps its own sentence');
+  ok(PA.evidenceCard(pillar({ auto_verdict: 'proved', auto_evidence: { checkB: { grantee: 'X' } } }), SIGNER).meaning
+    === PA.AUTO_MEANING.proved.ownership,
+  '…and it only ever applies to no_data — a proved pillar is untouched');
 }
 
 // ═══════════════════ 6. The evidence card's four parts
