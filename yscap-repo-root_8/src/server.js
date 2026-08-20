@@ -1186,6 +1186,16 @@ if (require.main === module) {
         // record the deal going forward; this walks the loans already funded, once,
         // from a durable cursor. Idempotent — a property already on the record is
         // filled, never duplicated.
+        // A STAMP MUST NOT OUTLIVE THE EVIDENCE IT RESTS ON. Until the revoke
+        // learned to withdraw them, a records proof that rested on a company's
+        // Check A survived that company being un-verified — so lines are on disk
+        // today still printing "Verified to Elementix" for control nobody stands
+        // behind. Same downgrade, applied once; self-draining, only ever removes
+        // a claim, never touches a human's own decision.
+        require('./lib/track-record-ownership').healRevokedRecordsProofsOnce()
+          .then((r) => r && r.downgraded
+            && console.log('[boot] records proofs withdrawn for revoked entity control:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] revoked-proof heal failed:', e.message));
         require('./lib/track-record-from-file').backfillFundedOnce()
           .then((r) => r && (r.added || r.filled)
             && console.log('[boot] funded deals onto track records:', JSON.stringify(r)))

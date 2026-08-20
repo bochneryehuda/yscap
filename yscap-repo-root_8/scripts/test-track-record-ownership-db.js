@@ -59,7 +59,14 @@ console.log('\n2. The machine observes; a person decides');
   ok(all.every((v) => !('human_verdict' in v)),
     'NOT ONE of them carries a human_verdict — the sign-off gate reads that column and nothing automatic may write it');
   const src = require('fs').readFileSync(require('path').join(__dirname, '../src/lib/track-record-ownership.js'), 'utf8');
-  ok(!/human_verdict\s*=\s*\$/.test(src) && !/SET[^;]*human_verdict/.test(src),
+  /* THE SUBJECT IS THE SET CLAUSE, NOT THE STATEMENT. `SET[^;]*human_verdict`
+     also fired on a WHERE that READS the column further down the same statement
+     — and reading it is the safety property, not a violation: the revoke and the
+     boot heal both refuse to touch a pillar a human confirmed. So each SET list
+     is cut out at its own WHERE and only that is searched. */
+  const setClauses = src.split(/\bSET\b/).slice(1).map((chunk) => chunk.split(/\bWHERE\b/)[0]);
+  ok(setClauses.length > 0, '(the guard found SET clauses to search — it is not vacuous)');
+  ok(!/human_verdict\s*=\s*\$/.test(src) && !setClauses.some((c) => /human_verdict/.test(c)),
     'and the module contains no SQL that writes human_verdict at all');
 }
 
