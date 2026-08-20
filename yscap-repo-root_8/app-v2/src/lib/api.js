@@ -861,6 +861,16 @@ export const api = {
   // Orders desk (#orders) — title + insurance orders on a file.
   staffOrders:        (appId) => req('GET', `/api/staff/applications/${appId}/orders`),
   staffPlaceOrder:    (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/place`, body || {}),
+  // SEND IT LATER (owner-directed 2026-08-20). The scheduling doors mirror the
+  // send doors one for one — same file, same kind, same body — because the
+  // dispatcher re-enters the very route `staffPlaceOrder` posts to.
+  staffScheduleOrder: (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/schedule`, body || {}),
+  staffScheduleClosingPrep: (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/schedule`, body || {}),
+  staffScheduledSends: (appId) => req('GET', `/api/staff/applications/${appId}/scheduled-sends`),
+  staffCancelScheduledSend: (appId, id) => req('POST', `/api/staff/applications/${appId}/scheduled-sends/${id}/cancel`, {}),
+  drawScheduleInvestorDelivery: (appId, drawId, body) => req('POST', `/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery/schedule`, body || {}),
+  drawScheduledSends: (appId) => req('GET', `/api/sitewire/files/${appId}/scheduled-sends`),
+  drawCancelScheduledSend: (appId, id) => req('POST', `/api/sitewire/files/${appId}/scheduled-sends/${id}/cancel`, {}),
   staffOrderFollowup: (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/followup`, body || {}),
   staffClassifyOrderDoc: (appId, kind, docId, slot) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/documents/${docId}/classify`, { slot }),
   // Put a document into one of ITS OWN condition's named slots (binder / invoice),

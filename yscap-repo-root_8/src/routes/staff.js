@@ -6911,6 +6911,101 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Could not send the order.' }); }
 });
 
+/* ── SCHEDULE AN ORDER FOR LATER (owner-directed 2026-08-20) ────────────────
+   "If somebody wants to work in the middle of the night but he wants it to go
+   out in the morning … just add an additional option with the small icon, like
+   a time to schedule the email instead of ordering it immediately."
+
+   THE AUTHORIZATION HERE IS THE SAME AS THE SEND'S, and it is checked TWICE on
+   purpose: once here, so nobody can queue a send on a file they cannot open, and
+   again at the due moment, because the route the dispatcher re-enters does its
+   own `canTouchApp` against the actor as it is THEN. Scheduling is not a way to
+   bank authority you are about to lose.
+
+   THE BLOCKERS ARE A WARNING HERE, NOT A REFUSAL. Somebody scheduling tonight's
+   order for 8am may be about to add the title contact, or waiting on the USPS
+   verification — refusing would make the feature useless in exactly the case it
+   was asked for. What must never happen is a silent one: the response NAMES what
+   is still outstanding so the screen can say "this will not go out unless you
+   also…", and if it is still outstanding at 8am the send refuses and tells the
+   person who scheduled it. The one thing refused outright is an order that has
+   ALREADY gone — there is nothing left to schedule. */
+router.post('/applications/:id/orders/:kind/schedule', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const sched = require('../lib/scheduled-sends');
+    const b = req.body || {};
+    const at = sched.parseNyLocal(b.day, b.time);
+    const bad = sched.whenProblem(at);
+    if (bad) return res.status(400).json({ error: bad.error, code: bad.code });
+
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const dead = await deadFileOrderReason(appId);
+    if (dead) return res.status(422).json({ error: dead, code: 'file_closed' });
+    const existing = (await db.query(
+      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    const force = b.force === true || b.force === 'true';
+    if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
+      return res.status(409).json({ error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
+    }
+
+    // The PAYLOAD is the body the place route would have received — nothing more.
+    // `ccBorrower` is carried as the person's explicit choice ONLY when they made
+    // one, so an unset checkbox still resolves through the officer's own default
+    // at send time rather than being frozen to whatever it happened to be tonight.
+    const payload = { force: !!force };
+    if (b.ccBorrower != null) payload.ccBorrower = b.ccBorrower === true || b.ccBorrower === 'true';
+
+    const out = await require('../lib/scheduled-sends').schedule({
+      appId, kind: kind === 'title' ? 'title_order' : 'insurance_order',
+      at, payload, actorId: req.actor.id,
+    });
+    if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
+    try { await audit(req, 'order_scheduled', 'application', appId, { kind, sendAt: at.toISOString(), force: !!force }); } catch (_) { /* recorded either way */ }
+    res.json({ ok: true, scheduled: out.row, warnings: orderScheduleWarnings(kind, data) });
+  } catch (e) { res.status(500).json({ error: 'Could not schedule that order.' }); }
+});
+
+/* What would stop this order going out if nothing changes. The SAME
+   `orders.blockers` the send path reads, turned into the same sentences the
+   place route answers with — so the warning a person sees tonight is word for
+   word the refusal they would get if they pressed Send now. */
+function orderScheduleWarnings(kind, data) {
+  const out = [];
+  const blk = orders.blockers(kind, data);
+  if (blk.includes('loan_number')) out.push('Add the file’s loan number — it prints in the mortgage clause.');
+  if (blk.includes('contact')) out.push(`Add the ${kind === 'title' ? 'title company' : 'insurance agent'} contact.`);
+  if (blk.includes('usps')) out.push('Import the USPS-verified property address.');
+  return out;
+}
+
+/* ── WHAT IS QUEUED ON THIS FILE ──────────────────────────────────────────── */
+router.get('/applications/:id/scheduled-sends', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    res.json(await require('../lib/scheduled-sends').listForApp(appId));
+  } catch (e) { res.status(500).json({ error: 'Could not read the scheduled sends.' }); }
+});
+
+/* Take one back out of the queue. Anyone who can work the file can cancel it —
+   the same people who could have sent it now. */
+router.post('/applications/:id/scheduled-sends/:sid/cancel', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const out = await require('../lib/scheduled-sends').cancel({ id: req.params.sid, appId, actorId: req.actor.id });
+    if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
+    try { await audit(req, 'scheduled_send_cancelled', 'application', appId, { id: req.params.sid }); } catch (_) { /* recorded either way */ }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'Could not cancel that.' }); }
+});
+
+
 // Send a follow-up on an existing order (same thread, to the vendor + CC chain).
 // Never the first contact — the order must already be placed.
 router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
@@ -7802,6 +7897,64 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
     res.status(500).json({ error: 'Could not send the closing-prep request.' });
   }
 });
+
+/* ── SCHEDULE THE CLOSING-PREP REQUEST FOR LATER (owner-directed 2026-08-20) ──
+   Same shape as the order scheduler above and the same reasoning: the intent is
+   queued, and the REAL send route runs at the due moment. That matters more here
+   than anywhere else, because this email carries the closing PACKAGE — the term
+   sheet, the contract, the entity documents, the insurance invoice, the ID. A
+   package frozen tonight is a package missing whatever lands at 7am; re-entering
+   the route means `gatherPackage` runs fresh and outside counsel receives the
+   file as it stands when the email actually goes. */
+router.post('/applications/:id/closing-prep/schedule', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const sched = require('../lib/scheduled-sends');
+    const b = req.body || {};
+    const at = sched.parseNyLocal(b.day, b.time);
+    const bad = sched.whenProblem(at);
+    if (bad) return res.status(400).json({ error: bad.error, code: bad.code });
+
+    const data = await closingPrep.getClosingPrepData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const force = b.force === true || b.force === 'true';
+    const existing = (await db.query(
+      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+    if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
+      return res.status(409).json({ error: 'The closing-prep request has already gone out. Use Follow-up, or force a re-send.', code: 'already_ordered' });
+    }
+
+    // The extra addresses and the note are the person's own words and travel
+    // verbatim; the DOCUMENTS deliberately do not — they are gathered at send
+    // time, which is the whole point of scheduling the intent.
+    const payload = { force: !!force };
+    const extra = cleanEmailList(b.extraEmails);
+    if (extra.length) payload.extraEmails = extra;
+    const note = String(b.note || '').trim().slice(0, 4000);
+    if (note) payload.note = note;
+
+    const out = await sched.schedule({ appId, kind: 'closing_prep', at, payload, actorId: req.actor.id });
+    if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
+    try { await audit(req, 'closing_prep_scheduled', 'application', appId, { sendAt: at.toISOString(), force: !!force }); } catch (_) { /* recorded either way */ }
+
+    // Warn on whatever would stop it, in the place route's own words. The package
+    // is read here ONLY to answer that question — a failure to read it is a
+    // warning, never a refusal to schedule.
+    let warnings = [];
+    try {
+      const pkg = await closingPrep.gatherPackage(appId);
+      const blk = closingPrep.blockers(data, pkg);
+      if (blk.includes('loan_number')) warnings.push('Add the file’s loan number.');
+      if (blk.includes('not_registered')) warnings.push('Register the product — the attorney needs a term sheet to draft from.');
+      if (blk.includes('term_sheet')) warnings.push('Generate the term sheet.');
+      if (blk.includes('attorney')) warnings.push('The closing attorney’s group inbox is not set up yet — ask an admin.');
+      if (blk.includes('usps')) warnings.push('Import the USPS-verified property address.');
+    } catch (_) { warnings = ['PILOT could not check this file’s documents just now — it will check again when the request goes out.']; }
+    res.json({ ok: true, scheduled: out.row, warnings });
+  } catch (e) { res.status(500).json({ error: 'Could not schedule the closing-prep request.' }); }
+});
+
 
 // A human follow-up ON THE SAME CHAIN. Never the first contact.
 router.post('/applications/:id/closing-prep/followup', async (req, res) => {
