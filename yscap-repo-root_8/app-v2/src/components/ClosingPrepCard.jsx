@@ -31,6 +31,22 @@ const GOLD = 'var(--gold,#AE8746)';
 // card rendered as unboxed body text. These are the surface a callout needs.
 const CALLOUT = { border: `1px solid ${GOLD}`, background: 'var(--paper,#F6F3EC)' };
 
+/* PLACED — the closing-prep order exists and has not been stood down. ONE
+   definition, because it is needed in TWO places that sit on opposite sides of
+   this card's loading gate: the scheduling door near the top of the component,
+   and the render body below the `if (!data) return` early exit.
+
+   It is a module-level function rather than a `const` inside the component for a
+   reason that cost a production outage: the scheduling door used to read the
+   `placed` binding declared ~90 lines FURTHER DOWN the same function scope. A
+   `const` is hoisted but uninitialised until its declaration runs, so reading it
+   above that line is a ReferenceError ("Cannot access 'placed' before
+   initialization") thrown on EVERY render of this card — and this card is
+   rendered by the Orders desk on every file, so every file's order section died
+   in the ErrorBoundary. Declaring it up here, on a status string that is
+   available before the gate, makes the ordering un-gettable-wrong. */
+const isPlacedStatus = (status) => status !== 'not_ordered' && status !== 'cancelled';
+
 /** Who is ACTUALLY copied, counted rather than assumed — the old wording asserted a
     loan officer even on an unassigned file and read "The loan officer are copied." */
 function copiedLine(team = {}) {
@@ -308,11 +324,20 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
 
   /* SEND IT LATER. The intent is queued; `gatherPackage` runs at the due moment,
      so outside counsel receives the closing package as it stands when the email
-     actually goes — not as it stood at 2am. */
-  const sched = useScheduledSends(appId, [placed]);
+     actually goes — not as it stood at 2am.
+
+     Keyed on the order's STATUS STRING, read straight off the payload this
+     component already holds. Two things follow from that, and both are the point:
+     the hook sits ABOVE the `if (!data) return` gate below (a hook may never move
+     under an early return — that is the "rendered more hooks than during the
+     previous render" crash), and it depends on nothing declared further down. It
+     also reloads the queue when the order moves BETWEEN two placed statuses,
+     which a boolean could not see. Same idiom as OrdersPanel's own cards. */
+  const orderStatus = ((data && data.order) || {}).status;
+  const sched = useScheduledSends(appId, [orderStatus]);
   const scheduleIt = async ({ day, time }) => {
     const r = await api.staffScheduleClosingPrep(appId, {
-      day, time, force: !!placed,
+      day, time, force: isPlacedStatus(orderStatus),
       extraEmails: extra.split(/[,;\s]+/).filter(Boolean),
       note,
     });
@@ -401,7 +426,7 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
 
   const order = data.order || {};
   const blockers = order.blockers || [];
-  const placed = order.status !== 'not_ordered' && order.status !== 'cancelled';
+  const placed = isPlacedStatus(order.status);
   // A CANCELLED order still leaves its 'order' message on the chain (cancelling
   // deliberately keeps everything the attorney already sent). So plain "send" would
   // lose to that message's claim and answer 409 "use Follow-up, or force a re-send"
