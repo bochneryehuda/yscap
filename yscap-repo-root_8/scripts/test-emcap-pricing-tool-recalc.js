@@ -34,24 +34,82 @@ const { fillXlsxCells } = require('../src/lib/tapes/xlsx-template');
 // ---------------------------------------------------------------------------
 // Is there a spreadsheet engine on this machine?
 // ---------------------------------------------------------------------------
+/**
+ * Can this binary actually OPEN a spreadsheet?
+ *
+ * An engine that cannot is WORSE than no engine at all: `libreoffice-core` installs
+ * `soffice` and answers `--version` perfectly happily, but with `libreoffice-calc`
+ * missing it refuses every workbook with "source file could not be loaded". That
+ * lands on the first assertion in recalculate() — "the workbook we built opens in a
+ * spreadsheet engine" — so a MISSING PACKAGE is reported as OUR FILE BEING BROKEN,
+ * which is the one conclusion nobody should draw from it. `--version` cannot tell
+ * the two apart (it succeeds either way), so the only honest probe is to hand the
+ * engine a throwaway spreadsheet and look at what it produced.
+ *
+ * THE EXIT CODE IS USELESS HERE, AND DELIBERATELY IGNORED: `soffice --convert-to`
+ * exits 0 even while printing "Error: source file could not be loaded" and writing
+ * nothing at all. The file on disk is the only truthful signal — the same reason
+ * recalculate() asserts on existsSync rather than trusting execFileSync to throw.
+ *
+ * CSV -> XLSX is the cheapest conversion that still needs Calc at both ends (its
+ * import filter to read the rows, its export filter to write the workbook), so it
+ * cannot pass on a core-only install. Its own profile directory, so probing can
+ * never collide with the real conversions below.
+ */
+function canOpenSpreadsheet(bin) {
+  let dir = null;
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'emcap-probe-'));
+    const src = path.join(dir, 'probe.csv');
+    fs.writeFileSync(src, 'a,b\n1,2\n');
+    spawnSync(bin, [
+      '--headless', `-env:UserInstallation=file://${path.join(dir, '.loprofile')}`,
+      '--convert-to', 'xlsx', '--outdir', dir, src,
+    ], { stdio: 'pipe', timeout: 120000 });
+    return fs.existsSync(path.join(dir, 'probe.xlsx'));
+  } catch (_) {
+    return false;                       // unusable engine — skip the proof, never fail it
+  } finally {
+    if (dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* best effort */ } }
+  }
+}
+
 function findSoffice() {
   for (const bin of ['soffice', 'libreoffice']) {
     const r = spawnSync('which', [bin], { encoding: 'utf8' });
-    if (r.status === 0 && r.stdout.trim()) {
-      // libreoffice-core without libreoffice-calc cannot open a spreadsheet at all,
-      // and reports that as "source file could not be loaded" — which would read as
-      // a broken workbook rather than a missing package. Check for the Calc filter.
-      const probe = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 60000 });
-      if (probe.status === 0) return bin;
-    }
+    if (r.status === 0 && r.stdout.trim() && canOpenSpreadsheet(bin)) return bin;
   }
   return null;
 }
 
-const SOFFICE = process.env.EMCAP_RECALC_SOFFICE || findSoffice();
+// An explicitly-set override is PROBED TOO — a mis-set path would otherwise walk
+// straight into the misleading "your workbook is broken" failure this guard exists
+// to prevent — but it is never SILENT about it: a deliberate setting that does not
+// work deserves to be named, not quietly ignored.
+const OVERRIDE = process.env.EMCAP_RECALC_SOFFICE || null;
+if (OVERRIDE && !canOpenSpreadsheet(OVERRIDE)) {
+  console.log('EMCAP pricing tool recalculation — SKIPPED.');
+  console.log(`  EMCAP_RECALC_SOFFICE is set to ${JSON.stringify(OVERRIDE)}, but it cannot open a`);
+  console.log('  spreadsheet (is it the right binary, and is libreoffice-calc installed?).');
+  process.exit(0);
+}
+
+const SOFFICE = OVERRIDE || findSoffice();
 if (!SOFFICE) {
-  console.log('EMCAP pricing tool recalculation — SKIPPED (no LibreOffice on this machine).');
-  console.log('  Install libreoffice-calc to run the proof, or set EMCAP_RECALC_SOFFICE.');
+  // Say WHICH of the two it is: "not installed" and "installed but cannot open a
+  // spreadsheet" need different things done about them, and the old wording claimed
+  // the first on a machine where soffice was plainly present.
+  const present = ['soffice', 'libreoffice'].filter((b) => {
+    const r = spawnSync('which', [b], { encoding: 'utf8' });
+    return r.status === 0 && r.stdout.trim();
+  });
+  if (present.length) {
+    console.log(`EMCAP pricing tool recalculation — SKIPPED (${present.join('/')} is installed but cannot open a spreadsheet).`);
+    console.log('  That is libreoffice-core without libreoffice-calc — install libreoffice-calc to run the proof.');
+  } else {
+    console.log('EMCAP pricing tool recalculation — SKIPPED (no LibreOffice on this machine).');
+    console.log('  Install libreoffice-calc to run the proof, or set EMCAP_RECALC_SOFFICE.');
+  }
   process.exit(0);
 }
 
