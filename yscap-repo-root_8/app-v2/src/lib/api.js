@@ -977,6 +977,10 @@ export const api = {
   // CSV, ready to import on their side with no editing.
   staffCorrfirstTrackRecordPreview: (appId) => req('GET', `/api/staff/applications/${appId}/export/corrfirst-track-record/preview`),
   staffCorrfirstTrackRecordExport:  (appId) => download(`/api/staff/applications/${appId}/export/corrfirst-track-record`),
+  // EMCAP's own pricing & eligibility workbook, filled with this loan's inputs so
+  // THEIR formulas price it. Not a data tape — its own section of Send to investor.
+  staffEmcapPricingToolPreview: (appId) => req('GET', `/api/staff/applications/${appId}/export/emcap-pricing-tool/preview`),
+  staffEmcapPricingToolExport:  (appId) => download(`/api/staff/applications/${appId}/export/emcap-pricing-tool`),
   // Capital-provider data tapes. A loan can only export the tape of the provider
   // it is currently assigned to (staffTapesForApp says which, and why not).
   staffTapesList:    () => req('GET', '/api/staff/tapes'),
