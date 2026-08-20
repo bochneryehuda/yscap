@@ -67,7 +67,12 @@ const FIELDS = [
  *  or a date off the calendar, is reported as unstorable, never a 22003 that
  *  reads as "PILOT is broken". */
 function storable(kind, v) {
-  if (kind === 'money') { const n = num(v); return n != null && n >= 0 && n < 1e12 ? n : null; }
+  /* `> 0`, NOT `>= 0`. A deed recorded at $0 (or $1) is a NOMINAL transfer —
+     an intra-family or entity-to-entity conveyance — not a price. Offered as a
+     fill it is pre-ticked by the panel and one click puts "$0" on the line as
+     though it were the real figure. Refusing it leaves the blank blank, which
+     is the honest state. */
+  if (kind === 'money') { const n = num(v); return n != null && n > 0 && n < 1e12 ? n : null; }
   if (kind === 'date') {
     const d = ymd(v); if (!d) return null;
     const y = Number(d.slice(0, 4)); return y >= 1900 && y <= 2100 ? d : null;
@@ -159,6 +164,10 @@ async function moreInfo(trackRecordId, { staffId, refresh } = {}, client) {
     cached: run.cached === true,
     calls: run.calls || 0,
     searched: run.searched === true,
+    /* "We could not reach the county" is a DIFFERENT answer from "the county
+       holds nothing", and the panel must never render the first as the second
+       — an empty story under a silent failure reads as proof of absence. */
+    readFailed: run.readFailed === true,
     errors: run.errors || [],
     address,
     entityName: (run.line && run.line.entityName) || null,
@@ -184,15 +193,30 @@ async function applyFromRecords(trackRecordId, { staffId, fields, confirmReopen 
   const t = await loadLine(db, trackRecordId);
   const info = await moreInfo(trackRecordId, { staffId }, client);
 
-  const want = new Set(Array.isArray(fields) && fields.length ? fields.map(String) : FIELDS.map((f) => f.field));
+  /* AN EMPTY LIST MEANS "NOTHING", NOT "EVERYTHING". `fields.length ? … : ALL`
+     turned a caller that sent no ticked boxes into a fill of every blank on the
+     line — the opposite of what an empty selection says, and a trap the next
+     caller inherits (today's panel guards it client-side, which is exactly the
+     kind of guard that does not survive a second caller). Only an ABSENT list
+     means "all the records can fill". */
+  const want = new Set(Array.isArray(fields) ? fields.map(String) : FIELDS.map((f) => f.field));
   const fillable = info.suggestions.filter((s) => s.fillable && want.has(s.field));
   if (!fillable.length) {
     return { ok: true, applied: [], skipped: info.suggestions.filter((s) => !s.fillable).map((s) => ({ field: s.field, reason: 'already_filled' })), reopened: false };
   }
 
   /* The importer's merge rule, verbatim: filling a MATERIAL blank un-verifies
-     the line (db/485), so a verified line needs the second, explicit yes. */
-  if (t.is_verified === true && fillable.some((s) => s.material) && confirmReopen !== true) {
+     the line (db/485), so a verified line needs the second, explicit yes.
+     RE-READ, because `t` was loaded BEFORE moreInfo's vendor round trip: a line
+     verified during those seconds would otherwise be filled without the
+     handshake. db/485 still re-opens the review honestly either way, so what
+     this closes is a skipped confirmation rather than a lost verification —
+     but the whole point of the second yes is that nobody loses a verification
+     by surprise. */
+  const nowVerified = (await db.query(
+    `SELECT is_verified FROM track_records WHERE id=$1`, [trackRecordId])).rows[0];
+  const isVerified = nowVerified ? nowVerified.is_verified === true : t.is_verified === true;
+  if (isVerified && fillable.some((s) => s.material) && confirmReopen !== true) {
     const e = new Error('This line is VERIFIED. Filling it from the records re-opens that verification — confirm to continue.');
     e.status = 409; e.code = 'would_reopen';
     e.fields = fillable.map((s) => s.field);
@@ -214,7 +238,7 @@ async function applyFromRecords(trackRecordId, { staffId, fields, confirmReopen 
     ok: true,
     applied: fillable.map((s) => ({ field: s.field, label: s.label, value: s.records })),
     skipped: info.suggestions.filter((s) => !s.fillable).map((s) => ({ field: s.field, reason: 'already_filled' })),
-    reopened: t.is_verified === true && fillable.some((s) => s.material),
+    reopened: isVerified && fillable.some((s) => s.material),
     borrowerId: t.borrower_id,
   };
 }

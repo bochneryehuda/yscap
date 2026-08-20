@@ -152,6 +152,63 @@ const found = (name) => {
       'a HUMAN-verified line with no records provenance still carries no records stamp');
   }
 
+  console.log('\n1b. THE DISQUALIFIER — a line the records DISAGREE with never says "Verified to Elementix"');
+  {
+    // Reproduces the audit finding: a PROVED ownership beside a CONTRADICTED
+    // exit — the module's own headline check, "they say they sold it and the
+    // record still shows them owning it" — used to print ✓ Verified to
+    // Elementix on the investor package.
+    const both = async (over) => {
+      const l = await line({ origin: 'public_records', addr: over.addr });
+      for (const p of over.pillars) {
+        await db.query(
+          `INSERT INTO track_record_pillars (track_record_id, pillar, auto_source, auto_verdict, human_verdict, auto_checked_at)
+           VALUES ($1,$2,'elementix',$3,$4, now())
+           ON CONFLICT (track_record_id, pillar) DO UPDATE
+             SET auto_source=EXCLUDED.auto_source, auto_verdict=EXCLUDED.auto_verdict,
+                 human_verdict=EXCLUDED.human_verdict, auto_checked_at=EXCLUDED.auto_checked_at`,
+          [l.id, p.pillar, p.auto, p.human || null]);
+      }
+      return l;
+    };
+    const clean = await both({ addr: '10 Clean Rd, Lakewood, NJ 08701', pillars: [{ pillar: 'ownership', auto: 'proved' }, { pillar: 'exit', auto: 'proved' }] });
+    ok((await stampOf(clean.id)).records_stamp === 'verified', 'both pillars proved → VERIFIED (the control)');
+
+    const contra = await both({ addr: '11 Contradicted Exit St, Lakewood, NJ 08701', pillars: [{ pillar: 'ownership', auto: 'proved' }, { pillar: 'exit', auto: 'contradicted' }] });
+    const cs = await stampOf(contra.id);
+    ok(cs.records_stamp === 'sourced',
+      'ownership proved but the exit CONTRADICTED → falls back to sourced, never "Verified to Elementix"');
+    ok(require('../src/lib/track-record/records-stamp').exportCellText(cs.records_stamp, cs.records_stamp_at).startsWith('○'),
+      'and the export cell says Sourced, not a tick');
+
+    const rejected = await both({ addr: '12 Human Rejected Ave, Lakewood, NJ 08701', pillars: [{ pillar: 'ownership', auto: 'proved', human: 'rejected' }] });
+    ok((await stampOf(rejected.id)).records_stamp === 'sourced',
+      'a human REJECTION outranks the machine — the stamp never re-asserts over a person');
+
+    const confirmed = await both({ addr: '13 Human Confirmed Ln, Lakewood, NJ 08701', pillars: [{ pillar: 'ownership', auto: 'proved', human: 'confirmed' }] });
+    ok((await stampOf(confirmed.id)).records_stamp === 'verified',
+      'a human CONFIRMATION is not required and does not change it — a records match is a fact about the records');
+
+    // The headline sentence must not claim more than the cells show.
+    const rows = (await db.query(
+      `SELECT ${RS.stampSelect('t')} FROM track_records t WHERE t.borrower_id=$1
+         AND t.property_address->>'oneLine' LIKE ANY (ARRAY['10 Clean%','11 Contradicted%','12 Human Rejected%'])`,
+      [borrowerId])).rows;
+    const lineTxt = RS.summaryLine(rows);
+    ok(/1 of 3 properties matched/.test(String(lineTxt)),
+      `the export headline counts ONE of the three as matched (got: ${lineTxt})`);
+  }
+
+  console.log('\n1c. THE STAMP DATE ACTUALLY RENDERS — pg hands us a Date, not a string');
+  {
+    const l = await line({ origin: 'public_records', addr: '14 Dated St, Lakewood, NJ 08701' });
+    const s = await stampOf(l.id);
+    ok(s.records_stamp_at instanceof Date,
+      '(the driver really does return a JS Date for these timestamptz columns — the premise of the bug)');
+    const cell = RS.exportCellText(s.records_stamp, s.records_stamp_at);
+    ok(/· \d{4}-\d{2}-\d{2}$/.test(cell), `the export cell carries the day (got: ${cell})`);
+  }
+
   console.log('\n2. The ENTITY stamp — the db/400 adoption source, on the bundle every screen reads');
   {
     const el = (await db.query(
@@ -225,9 +282,13 @@ const found = (name) => {
     // The monthly ceiling: age the real search out of the cooldown, then fill
     // the 30-day window with borrower-run rows.
     await db.query(`UPDATE track_record_searches SET run_at = now() - interval '20 minutes' WHERE borrower_id=$1`, [borrowerId]);
+    // Rows that actually SPENT something — the ceiling deliberately ignores a
+    // run that never reached the vendor (see 3b), so a fixture with no
+    // api_calls would no longer count and would prove nothing.
     for (let i = 0; i < 10; i++) {
       await db.query(
-        `INSERT INTO track_record_searches (borrower_id, query, run_at) VALUES ($1,'{"requestedBy":"borrower"}', now() - interval '1 day')`,
+        `INSERT INTO track_record_searches (borrower_id, query, api_calls, run_at)
+         VALUES ($1,'{"requestedBy":"borrower"}', 4, now() - interval '1 day')`,
         [borrowerId]);
     }
     const r3 = await bcall('/api/borrower/track-record-search', { method: 'POST', body: '{}' });
@@ -336,6 +397,190 @@ const found = (name) => {
     ok(html.includes('○ Sourced via Elementix'), 'the saved copy prints the per-line stamp cell');
     ok(/SOURCED VIA ELEMENTIX — |VERIFIED TO ELEMENTIX — /.test(html), 'and the headline stamp line');
     ok(html.includes('From the public records:'), 'and the sum chip');
+  }
+
+  console.log('\n6. THE AUDIT FIXES — the dead end, the race, the cap, the outage, the id guard');
+  {
+    const SS = require('../src/lib/track-record/self-search');
+    const C2 = require('../src/lib/crypto');
+    // A second borrower with a CLEAN history, so these start from zero.
+    const b2 = (await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Audit','Fixes',$1) RETURNING id`,
+      [`${tag}-b2@example.com`])).rows[0].id;
+    await db.query(
+      `INSERT INTO borrower_auth (borrower_id, password_hash, token_version) VALUES ($1,'x',0)
+       ON CONFLICT (borrower_id) DO NOTHING`, [b2]);
+    const t2 = C2.signJwt({ sub: b2, kind: 'borrower', tv: 0 });
+    const call2 = (p, o) => fetch(`${base}${p}`, {
+      ...o, headers: { 'content-type': 'application/json', authorization: `Bearer ${t2}`, ...(o && o.headers) },
+    });
+
+    // ── 6a. A run with NOTHING TO SEARCH must not charge them for it ──────
+    // b2 has no companies and no linked records profile, so the engine cannot
+    // search at all. Before the fix this still wrote a row that armed the
+    // 15-minute cooldown AND burned 1 of 10 — while the screen told them, in
+    // those words, to add a company and try again. That is a dead end.
+    reply = found;
+    const empty = await (await call2('/api/borrower/track-record-search', { method: 'POST', body: '{}' })).json();
+    ok(empty.ran === true && empty.nothingToSearch === true, 'with nothing to search the run reports it plainly');
+    ok(/add the company you buy under/i.test(String(empty.summary)), 'and the sentence tells them what to do');
+    const spent = (await db.query(
+      `SELECT COALESCE(api_calls,0) AS c FROM track_record_searches WHERE borrower_id=$1 ORDER BY run_at DESC LIMIT 1`,
+      [b2])).rows[0];
+    ok(Number(spent.c) === 0, '(it really did spend nothing)');
+    const retry = await SS.selfSearch(b2);
+    ok(retry.cooldown !== true,
+      'the retry it just invited is NOT refused by the cooldown — a run that spent nothing does not lock them out');
+    const counted = (await db.query(
+      `SELECT count(*)::int AS c FROM track_record_searches
+        WHERE borrower_id=$1 AND query->>'requestedBy'='borrower' AND COALESCE(api_calls,0) > 0`, [b2])).rows[0];
+    ok(counted.c === 0, 'and nothing was charged against the 10-per-30-days ceiling');
+
+    // ── 6b. ONE SEARCH AT A TIME ──────────────────────────────────────────
+    // Three clicks landing together used to pass the read-then-act guards and
+    // all run (measured: 3 full searches, and a borrower one under the ceiling
+    // could push past it). The lock makes the losers say so instead.
+    const b3 = (await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Race','Fixes',$1) RETURNING id`,
+      [`${tag}-b3@example.com`])).rows[0].id;
+    await db.query(`INSERT INTO llcs (borrower_id, llc_name, formation_state) VALUES ($1,'RS Trading LLC','NJ')`, [b3]);
+    const burst = await Promise.all([SS.selfSearch(b3), SS.selfSearch(b3), SS.selfSearch(b3)]);
+    const ranCount = burst.filter((r) => r.ran === true).length;
+    ok(ranCount === 1, `three simultaneous clicks run the engine ONCE (ran: ${burst.map((r) => r.ran).join(',')})`);
+    ok(burst.some((r) => r.running === true || r.cooldown === true),
+      'and the losers say a search is already running — never a silent no-op');
+    const rows3 = (await db.query(
+      `SELECT count(*)::int AS c FROM track_record_searches WHERE borrower_id=$1 AND COALESCE(api_calls,0) > 0`, [b3])).rows[0];
+    ok(rows3.c === 1, 'exactly one search row spent anything');
+
+    // ── 6c. THE BORROWER DOES NOT SET THE BILL ────────────────────────────
+    const b4 = (await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email) VALUES ('Cap','Fixes',$1) RETURNING id`,
+      [`${tag}-b4@example.com`])).rows[0].id;
+    for (let i = 0; i < 20; i++) {
+      await db.query(`INSERT INTO llcs (borrower_id, llc_name, formation_state) VALUES ($1,$2,'NJ')`,
+        [b4, `Cap Test Holdings ${i} LLC`]);
+    }
+    calls.length = 0;
+    const capped = await SS.selfSearch(b4);
+    const entityLookups = calls.filter((c) => c.n === 'match_entity').length;
+    ok(capped.ran === true, 'the capped search still runs');
+    ok(entityLookups <= SS.BORROWER_ENTITY_CAP,
+      `20 companies on the profile look up at most ${SS.BORROWER_ENTITY_CAP} (was ${entityLookups}) — one click cannot drain the office's shared allowance`);
+    const capSkip = (await db.query(
+      `SELECT skips FROM track_record_searches WHERE borrower_id=$1 ORDER BY run_at DESC LIMIT 1`, [b4])).rows[0];
+    ok(Array.isArray(capSkip.skips) && capSkip.skips.some((s) => s.reason === 'entity_cap'),
+      'and what it did not reach is RECORDED — no silent caps');
+
+    // ── 6d. A FAILED READ MUST NOT ERASE THE STAMP ────────────────────────
+    const keep = await line({ origin: 'public_records', addr: '20 Outage Rd, Lakewood, NJ 08701' });
+    await db.query(
+      `INSERT INTO track_record_pillars (track_record_id, pillar, auto_source, auto_verdict, auto_checked_at)
+       VALUES ($1,'ownership','elementix','proved', now())
+       ON CONFLICT (track_record_id, pillar) DO UPDATE
+         SET auto_source=EXCLUDED.auto_source, auto_verdict=EXCLUDED.auto_verdict,
+             human_verdict=NULL, auto_checked_at=EXCLUDED.auto_checked_at`, [keep.id]);
+    ok((await stampOf(keep.id)).records_stamp === 'verified', '(the line is verified before the outage)');
+    reply = () => { throw new Error('vendor unreachable'); };
+    const outage = await require('../src/lib/track-record/verify-run')
+      .runVerify(keep.id, { staffId: null, force: true }, db);
+    ok(outage.readFailed === true, 'a forced re-read during an outage reports readFailed');
+    ok(outage.pillarsWritten === false, 'and writes no verdicts at all');
+    ok((await stampOf(keep.id)).records_stamp === 'verified',
+      'so the stamp SURVIVES — a click on "Re-read the records" during an outage no longer destroys it');
+    reply = found;
+
+    // ── 6e. THE ID GUARD AND THE EMPTY SELECTION ──────────────────────────
+    const staff2 = (await db.query(
+      `INSERT INTO staff_users (email, full_name, role) VALUES ($1,'Audit Fix Tester','underwriter') RETURNING id, token_version`,
+      [`${tag}-staff2@example.com`])).rows[0];
+    const st2 = C2.signJwt({ sub: staff2.id, kind: 'staff', role: 'underwriter', tv: staff2.token_version || 0 });
+    const scall2 = (p, o) => fetch(`${base}${p}`, {
+      ...o, headers: { 'content-type': 'application/json', authorization: `Bearer ${st2}`, ...(o && o.headers) },
+    });
+    const bad = await scall2('/api/staff/track-records/not-a-uuid/more-info', { method: 'POST', body: '{}' });
+    ok(bad.status === 404, 'a malformed track-record id is a 404, not a 500 reading as "PILOT is broken"');
+    const bad2 = await scall2('/api/staff/track-records/not-a-uuid/more-info/apply', { method: 'POST', body: '{}' });
+    ok(bad2.status === 404, 'the apply door guards its id too');
+
+    /* The line is at the address the stubbed records DO cover, and carries
+       blanks — so the records genuinely have something to fill. Without that
+       the assertion below is vacuous (it passes whether or not the fix is
+       there), which is exactly how the first cut of this check slipped a
+       mutation. The CONTROL immediately after proves the fixture was fillable. */
+    const blank = (await db.query(
+      `INSERT INTO track_records (borrower_id, property_address, deal_type, entity_name, entered_by_kind)
+       VALUES ($1,$2,'flip','RS Trading LLC','staff') RETURNING id`,
+      [borrowerId, JSON.stringify({ oneLine: A1, street: '62 Highland St', city: 'Lakewood', state: 'NJ', zip: '08701' })])).rows[0];
+    const LD = require('../src/lib/track-record/line-details');
+    const none = await LD.applyFromRecords(blank.id, { staffId: staff2.id, fields: [] }, db);
+    ok((none.applied || []).length === 0,
+      'an EMPTY selection fills nothing — it no longer silently means "fill every blank on the line"');
+    const all = await LD.applyFromRecords(blank.id, { staffId: staff2.id }, db);
+    ok((all.applied || []).length > 0,
+      `(control: the records really did have fields to fill — ${(all.applied || []).length} of them — so the check above is not vacuous)`);
+    await db.query(`DELETE FROM track_records WHERE id=$1`, [blank.id]).catch(() => {});
+
+    // ── 6f. THE FULL SCREEN FINDS THE BORROWER IT WAS SENT TO ─────────────
+    // The queue is capped and ordered by recency, so narrowing it client-side
+    // showed NOTHING for any borrower outside the cap: the full-screen link off
+    // a loan file landed on "Nothing is waiting", which is false for a borrower
+    // who has lines. The narrowing is the SERVER's job now.
+    {
+      const W = require('../src/lib/track-record/workspace');
+      const mine = await W.loadQueue({ borrowerId, filter: 'all' }, db);
+      ok(Array.isArray(mine.groups) && mine.groups.length === 1,
+        `scoping to one borrower returns exactly that borrower's group (got ${(mine.groups || []).length})`);
+      ok(mine.groups[0] && String(mine.groups[0].borrowerId) === String(borrowerId), 'and it is the right person');
+      ok((mine.groups[0].lines || []).length > 0, 'with their lines on it');
+      const other = await W.loadQueue({ borrowerId: b4, filter: 'all' }, db);
+      ok((other.groups || []).every((g) => String(g.borrowerId) === String(b4)),
+        'another borrower id returns only that borrower — never a neighbour');
+      // AND it still ANDs onto the visibility scope rather than replacing it.
+      const scoped = await W.loadQueue(
+        { borrowerId, filter: 'all', visibleBorrowerSql: 'b.id = $1', params: ['00000000-0000-0000-0000-000000000000'] }, db);
+      ok((scoped.groups || []).length === 0,
+        'the borrower filter never widens the caller\'s own visibility scope');
+    }
+
+    // ── 6g. THE INVESTOR PDF SURVIVES A STAMPED LINE ──────────────────────
+    // `✓` / `○` are not encodable in the PDF's WinAnsi font, and the builder
+    // sits in a try/catch that only warns — so one stamped line made the
+    // investor package's Track Record.pdf silently disappear from the ZIP.
+    {
+      const TRX = require('../src/lib/track-record-export');
+      const cols = [
+        { header: 'Property', key: 'property', w: 3 },
+        { header: 'Review status', key: 'status', w: 1.5 },
+        { header: 'Public records', key: 'records', w: 1.8 },
+      ];
+      for (const st of ['verified', 'sourced']) {
+        const rows = [{
+          property: '62 Highland St', status: 'Verified', __status: 'verified',
+          records: RS.exportCellText(st, new Date()), __recordsStamp: st, __recordsStampAt: new Date(),
+        }];
+        let buf = null; let threw = null;
+        try { buf = await TRX.buildTrackRecordPdf([{ title: 'FIX & FLIP', columns: cols, rows }], { borrowerName: 'T' }); }
+        catch (e) { threw = e; }
+        ok(!threw && Buffer.isBuffer(buf) && buf.length > 0,
+          `the investor PDF builds with a ${st} line${threw ? ` (threw: ${threw.message})` : ''}`);
+      }
+      ok(RS.exportCellText('verified', null, { ascii: true }) === 'Verified to Elementix',
+        'the ASCII cell carries the same words with no glyph');
+      ok(!/[^ -ÿ]/.test(RS.exportCellText('verified', new Date(), { ascii: true }).replace('·', '')),
+        'and everything left in it is inside the PDF font');
+    }
+
+    for (const id of [b2, b3, b4]) {
+      await db.query(`DELETE FROM track_record_candidates WHERE borrower_id=$1`, [id]).catch(() => {});
+      await db.query(`DELETE FROM track_record_searches WHERE borrower_id=$1`, [id]).catch(() => {});
+      await db.query(`DELETE FROM track_record_pillars WHERE track_record_id IN (SELECT id FROM track_records WHERE borrower_id=$1)`, [id]).catch(() => {});
+      await db.query(`DELETE FROM track_records WHERE borrower_id=$1`, [id]).catch(() => {});
+      await db.query(`DELETE FROM llcs WHERE borrower_id=$1`, [id]).catch(() => {});
+      await db.query(`DELETE FROM borrower_auth WHERE borrower_id=$1`, [id]).catch(() => {});
+      await db.query(`DELETE FROM audit_log WHERE entity_id=$1`, [id]).catch(() => {});
+      await db.query(`DELETE FROM borrowers WHERE id=$1`, [id]).catch(() => {});
+    }
   }
 
   // ---- cleanup ----

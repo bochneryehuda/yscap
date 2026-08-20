@@ -117,6 +117,7 @@ function trackRecordAoa(sections, meta = {}) {
 // section". pdf-lib only (already a dependency); modeled on src/trustpoint/report.js.
 async function buildTrackRecordPdf(sections, meta = {}) {
   const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+  const RSTAMP = require('./track-record/records-stamp');
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
@@ -210,6 +211,13 @@ async function buildTrackRecordPdf(sections, meta = {}) {
           const st = REVIEW_STATUS[row.__status] || REVIEW_STATUS.not_verified;
           return cell(row.status || st.label, i, { f: bold, size: 7, color: rgb(st.rgb[0], st.rgb[1], st.rgb[2]) });
         }
+        /* THE PDF FONT IS WinAnsi AND `drawText` THROWS on a glyph it cannot
+           encode — and this whole builder sits inside a try/catch in
+           tpr-export that only console.warns, so one stamped line made the
+           investor package's Track Record.pdf disappear from the ZIP with
+           nothing said anywhere. The ASCII form of the stamp carries the same
+           words without the tick or the ring. */
+        if (c.key === 'records') return cell(RSTAMP.exportCellText(row.__recordsStamp, row.__recordsStampAt, { ascii: true }), i);
         cell(c.money ? money(row[c.key]) : row[c.key], i);
       });
       y -= ROW;

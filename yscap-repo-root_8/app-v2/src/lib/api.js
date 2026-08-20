@@ -769,7 +769,11 @@ export const api = {
      these payloads is computed by src/lib/track-record/pillar-actions.js — the
      screen renders them verbatim and never re-decides one. */
   staffTrackRecordWorkspace: (q = {}) =>
-    req('GET', `/api/staff/track-record-workspace?filter=${encodeURIComponent(q.filter || 'open')}`),
+    req('GET', `/api/staff/track-record-workspace?filter=${encodeURIComponent(q.filter || 'open')}`
+      // Narrowing to one person happens SERVER-side: the queue is capped, so a
+      // client-side filter over one page shows nothing at all for a borrower
+      // who did not make the cut.
+      + (q.borrowerId ? `&borrower=${encodeURIComponent(q.borrowerId)}` : '')),
   staffTrackRecordLine: (id) => req('GET', `/api/staff/track-records/${id}/workspace`),
   staffDecidePillar: (pillarId, body) => req('POST', `/api/staff/track-record-pillars/${pillarId}/decide`, body),
   staffBulkConfirmPillars: (id, body) => req('POST', `/api/staff/track-records/${id}/pillars/bulk-confirm`, body || {}),

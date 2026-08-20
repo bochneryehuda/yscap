@@ -731,6 +731,9 @@ async function buildTprExport(appId) {
       status: trExport.REVIEW_STATUS[statusKey].label,
       docs: hasDocs ? 'Attached' : '—',
       records: RSTAMP.exportCellText(r.records_stamp, r.records_stamp_at),
+      // The PDF renderer re-derives its own cell from these (its font cannot
+      // carry the glyphs), so the raw values must ride the row.
+      __recordsStampAt: r.records_stamp_at || null,
       counts: counts ? 'Yes' : (exit ? 'No' : ''),
       __verified: !!r.is_verified, __status: statusKey, __hasDocs: hasDocs,
       __recordsStamp: r.records_stamp || null,
@@ -757,7 +760,15 @@ async function buildTprExport(appId) {
   try {
     const trPdf = await trExport.buildTrackRecordPdf(trSections, trMeta);
     if (Buffer.isBuffer(trPdf) && trPdf.length) files.push({ name: `${REO}/Track Record.pdf`, data: trPdf });
-  } catch (e) { console.warn('[tpr-export] track-record PDF failed:', e && e.message); }
+  } catch (e) {
+    /* NEVER SILENT. This used to console.warn and move on, so a PDF that could
+       not be drawn simply was not in the delivered package and nobody knew —
+       which is how an unencodable stamp glyph went unnoticed. The package still
+       ships (an Excel + the documents beat nothing), but what is missing is
+       named in the manifest the export already carries. */
+    console.warn('[tpr-export] track-record PDF failed:', e && e.message);
+    unavailable.push({ source: 'Track Record.pdf', requirement: `REO — ${(e && e.message) || 'the PDF could not be built'}` });
+  }
 
   const trFolderCounts = {};
   const trManifest = [];

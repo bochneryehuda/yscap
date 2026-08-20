@@ -465,7 +465,16 @@
   function encSnap(o) { return btoa(unescape(encodeURIComponent(JSON.stringify(o)))); }
   function snapshotHtml() {
     var snap = TR.snap();
-    var props = snap.props || [];
+    /* REJECTED LINES ARE OUT, exactly as the server builder does it
+       (src/lib/track-record/html-copy.js). Both writers coalesce onto ONE
+       document, so a different row set here made the stamp headline read
+       "2 of 5" or "2 of 4" depending on which writer ran last. The live list
+       only hides a rejected card in the DOM; the saved copy must actually
+       exclude it. */
+    var props = (snap.props || []).filter(function (p) {
+      var st = propsById[p.id] && propsById[p.id].status;
+      return st !== 'rejected';
+    });
     var counts = bucketCounts(props);
     var openUrl = location.origin + "/tools/track-record.html#d=" + encSnap(snap);
     var when = new Date().toLocaleString("en-US");

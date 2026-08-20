@@ -131,16 +131,42 @@ async function runVerify(trackRecordId, opts = {}, client) {
   };
   const results = CHECKS.computeChecks(t, research, entityContext, today);
 
+  /* A READ THAT FAILED TEACHES US NOTHING, AND MUST NOT ERASE WHAT WE LEARNED
+     BEFORE. With the vendor unreachable, `researchProperty` degrades to an
+     empty payload carrying its errors, `computeChecks` honestly reads that as
+     `no_data`, and writing those verdicts REPLACES a real prior observation —
+     which, because the records stamp is DERIVED from exactly these rows, takes
+     a "Verified to Elementix" off the line with no record that it was ever
+     there. The stamp cannot go stale; it could be destroyed. That is one
+     casual click away now that "Re-read the records" sits inside the
+     read-labelled "See more information" panel.
+     The test is deliberately narrow — errors AND nothing searched, i.e. we
+     tried and could not reach the county. A clean `searched:false` with no
+     errors is a real answer ("no such entity on record") and still writes. */
+  const readFailed = research.searched !== true && (research.errors || []).length > 0;
+
   const written = [];
   for (const r of results) {
     /* auto_* ONLY. The `human_*` columns are not in this statement and must
        never be — re-reading the county is not a reason to un-answer a question
        a person already answered. */
+    /* ON A FAILED READ, FILL ONLY WHAT WAS NEVER OBSERVED. The county could not
+       be reached, so `computeChecks` honestly produced `no_data` — which is the
+       right thing to record on a pillar nobody has ever checked, and the WRONG
+       thing to write over a real prior observation: because the records stamp
+       is DERIVED from exactly these rows, that overwrite silently took a
+       "Verified to Elementix" off the line with no record it had ever been
+       there. The stamp cannot go stale; it could be destroyed — one click, from
+       inside a panel labelled as a read.
+       `AND auto_verdict IS NULL` is the whole guard, and it keeps both truths:
+       a never-checked line still learns "no data", and a checked one keeps what
+       it learned. */
     const u = await db.query(
       `UPDATE track_record_pillars
           SET auto_verdict=$2, auto_source=$3, auto_confidence=$4, auto_grade=$5,
               auto_evidence=$6::jsonb, auto_checked_at=now(), updated_at=now()
         WHERE track_record_id=$1 AND pillar=$7
+          ${readFailed ? 'AND auto_verdict IS NULL' : ''}
         RETURNING id, human_verdict`,
       [trackRecordId, r.auto_verdict, r.auto_source, r.auto_confidence, r.auto_grade,
         JSON.stringify(r.auto_evidence || {}), r.pillar]);
@@ -162,6 +188,13 @@ async function runVerify(trackRecordId, opts = {}, client) {
     calls: research.calls || 0,
     errors: research.errors || [],
     searched: research.searched === true,
+    /* Said out loud rather than looking like a clean run that found nothing:
+       the county could not be reached, so no verdict was rewritten and what
+       the line already carried still stands. */
+    readFailed,
+    /* On a failed read only never-observed pillars are filled, so this says
+       whether a full rewrite happened — not whether any row moved. */
+    pillarsWritten: !readFailed,
     ambiguousEntity: research.ambiguousEntity === true,
     tooCommon: research.tooCommon === true,
     pillars: written,

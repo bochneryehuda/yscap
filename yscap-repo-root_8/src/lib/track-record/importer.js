@@ -478,7 +478,7 @@ function firstOtherName(list, names) {
  * or email anybody — the sentence the screen shows above the button, kept true
  * here rather than only promised there.
  */
-async function runSearch({ borrowerId, staffId, states, requestedBy, personalNameSearch }, client) {
+async function runSearch({ borrowerId, staffId, states, requestedBy, personalNameSearch, entityCap: entityCapIn }, client) {
   const db = client || require('../../db');
   const b = (await db.query(
     `SELECT id, NULLIF(TRIM(COALESCE(full_name,'')),'') AS name, elementix_person_id
@@ -614,7 +614,25 @@ async function runSearch({ borrowerId, staffId, states, requestedBy, personalNam
     }
   };
 
-  for (const ent of searchEnts) {
+  /* HOW MANY COMPANIES THIS RUN MAY LOOK UP. Unset (every staff door) means
+     every one of them, exactly as before. The borrower's own door passes a cap
+     because the fan-out is one set of vendor round trips PER COMPANY out of an
+     allowance the whole office shares, and a borrower can add companies with
+     no limit — so without this the size of one borrower's click is set by the
+     borrower. What the cap did not reach is REPORTED, never silently dropped:
+     the standing no-silent-caps rule, and the difference between "your record
+     holds nothing else" and "we stopped looking". */
+  const entityCap = Number.isFinite(Number(entityCapIn)) && Number(entityCapIn) > 0
+    ? Math.floor(Number(entityCapIn)) : null;
+  const cappedEnts = entityCap ? searchEnts.slice(0, entityCap) : searchEnts;
+  if (entityCap && searchEnts.length > cappedEnts.length) {
+    const left = searchEnts.length - cappedEnts.length;
+    skips.push({ reason: 'entity_cap',
+      why: `This search looked up ${cappedEnts.length} of your ${searchEnts.length} companies. `
+        + `${left} more ${left === 1 ? 'was' : 'were'} not searched this time — your loan team can search the rest.` });
+  }
+
+  for (const ent of cappedEnts) {
     /* WHICH STATES TO ASK ABOUT THIS COMPANY: the state it was registered in,
        PLUS every state the person picked — the records service keys entities
        by (name, state), so the same LLC name in another state is a DIFFERENT

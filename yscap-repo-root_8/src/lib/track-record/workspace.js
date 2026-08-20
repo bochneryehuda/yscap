@@ -63,10 +63,21 @@ function urgencyOf(row) {
  * module never re-implements who may see whom (the repo's standing rule that a
  * scope has one definition).
  */
-async function loadQueue({ visibleBorrowerSql, params = [], limit = 40, filter = 'all', staffId = null }, client) {
+async function loadQueue({ visibleBorrowerSql, params = [], limit = 40, filter = 'all', staffId = null, borrowerId = null }, client) {
   const db = client || require('../../db');
   const where = [];
   if (visibleBorrowerSql) where.push(`(${visibleBorrowerSql})`);
+  /* NARROWING TO ONE PERSON IS THE SERVER'S JOB, NOT THE SCREEN'S. The queue is
+     capped (40 groups out of a much larger row cap) and ordered by recency, so
+     a client-side filter over that page silently shows NOTHING for any borrower
+     who did not make the cut — the full-screen link off a loan file lands on
+     "Nothing is waiting. A project appears here the moment somebody adds one",
+     which is false for that borrower and offers no way forward. Measured on the
+     test database: 40 of 103 borrowers were reachable that way.
+     Filtering here also makes the caps irrelevant for the one-borrower case:
+     everything they have fits. It ANDs onto the visibility scope, never
+     replaces it — a borrower outside the caller's scope stays invisible. */
+  if (borrowerId) { params.push(borrowerId); where.push(`t.borrower_id = $${params.length}`); }
   // A line nobody can act on is not work: terminal and already-verified lines
   // are excluded unless the caller asks for everything.
   if (filter !== 'all') where.push(`t.is_verified = false`);

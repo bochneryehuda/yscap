@@ -52,6 +52,28 @@ const VERIFIED_PILLAR_WHERE = (a) => `
       AND sp.auto_source = 'elementix'
       AND sp.auto_verdict = 'proved'`;
 
+/** WHAT DISQUALIFIES A LINE FROM 'verified', however many pillars proved.
+ *
+ *  A PROVED ownership beside a CONTRADICTED exit is the module's own headline
+ *  finding — "they say they sold it and the records still show them owning
+ *  it" — and an EXISTS over an OR would have printed "✓ Verified to Elementix"
+ *  on exactly that line, on the investor package. A stamp that survives the
+ *  records disagreeing with the line is not a verification, it is decoration.
+ *
+ *  A human REJECTION outranks the machine for the same reason the pillar table
+ *  keeps `human_verdict` in its own column: a person looked at this and said
+ *  no. The stamp must never re-assert over them. (`human_verdict='confirmed'`
+ *  is deliberately NOT required — a records match is a fact about the records,
+ *  and waiting for a human to co-sign it would make the stamp mean the human
+ *  verification, which is the third thing this module must never imply.)
+ *
+ *  A disqualified line is not un-stamped: it falls through to the `sourced`
+ *  branch, so a line that genuinely came from the records still says so. */
+const VERIFIED_BLOCKED_WHERE = (a) => `
+      sq.track_record_id = ${a}.id
+      AND sq.pillar IN ('ownership','exit')
+      AND (sq.auto_verdict = 'contradicted' OR sq.human_verdict = 'rejected')`;
+
 /** The candidate test — which decided candidates make a line 'sourced'. A
  *  DECLINED candidate pointing at a line proves nothing about the line, so
  *  only the two success verbs count, each on its own id column. */
@@ -63,7 +85,9 @@ const SOURCED_CANDIDATE_WHERE = (a) => `
 /** 'verified' | 'sourced' | NULL for one track_records row aliased `a`. */
 function STAMP_SQL(a = 't') {
   return `CASE
-    WHEN EXISTS (SELECT 1 FROM track_record_pillars sp WHERE ${VERIFIED_PILLAR_WHERE(a)}) THEN 'verified'
+    WHEN EXISTS (SELECT 1 FROM track_record_pillars sp WHERE ${VERIFIED_PILLAR_WHERE(a)})
+      AND NOT EXISTS (SELECT 1 FROM track_record_pillars sq WHERE ${VERIFIED_BLOCKED_WHERE(a)})
+    THEN 'verified'
     WHEN ${a}.origin = 'public_records'
       OR EXISTS (SELECT 1 FROM track_record_candidates sc WHERE ${SOURCED_CANDIDATE_WHERE(a)})
     THEN 'sourced'
@@ -74,8 +98,14 @@ function STAMP_SQL(a = 't') {
 /** When the stamp was earned: the records check for 'verified', the import
  *  decision (or the line's own creation) for 'sourced'. NULL with no stamp. */
 function STAMP_AT_SQL(a = 't') {
+  /* The pillar date is used ONLY while the line is actually verified — it is
+     gated by the same disqualifier, or a contradicted line would fall back to
+     'sourced' and then date that stamp by the records CHECK rather than by the
+     import it is actually claiming. */
   return `COALESCE(
-    (SELECT max(sp.auto_checked_at) FROM track_record_pillars sp WHERE ${VERIFIED_PILLAR_WHERE(a)}),
+    (SELECT max(sp.auto_checked_at) FROM track_record_pillars sp
+      WHERE ${VERIFIED_PILLAR_WHERE(a)}
+        AND NOT EXISTS (SELECT 1 FROM track_record_pillars sq WHERE ${VERIFIED_BLOCKED_WHERE(a)})),
     (SELECT max(COALESCE(sc.decided_at, sc.created_at)) FROM track_record_candidates sc WHERE ${SOURCED_CANDIDATE_WHERE(a)}),
     CASE WHEN ${a}.origin = 'public_records' THEN ${a}.created_at END)`;
 }
@@ -103,6 +133,7 @@ const WORDING = {
     chip: 'VERIFIED · PUBLIC RECORDS',
     long: 'Matched to the county public records via Elementix',
     cell: '✓ Verified to Elementix',     // ✓ — a text glyph, never an emoji
+    cellAscii: 'Verified to Elementix',  // the same claim, for a WinAnsi PDF font
     stamp: 'VERIFIED TO ELEMENTIX',
     stampSub: 'Matched to the county public records',
   },
@@ -110,23 +141,58 @@ const WORDING = {
     chip: 'FROM PUBLIC RECORDS',
     long: 'Imported from the county public records via Elementix — not yet matched line by line',
     cell: '○ Sourced via Elementix',     // ○
+    cellAscii: 'Sourced via Elementix',
     stamp: 'SOURCED VIA ELEMENTIX',
     stampSub: 'Imported from the county public records — not yet matched',
   },
 };
 
+/* THE THREE SOURCES ARE `timestamptz`, SO pg HANDS THIS A JS `Date`, NOT A
+   STRING. src/db.js string-parses OID 1082 (`date`) only, so every server-side
+   caller — the TPR investor cell, both saved-copy builders — was matching a
+   regex against "Mon Aug 19 2026 …" and silently printing no date at all,
+   forever. The browser mirrors never saw it because JSON serialises a Date to
+   an ISO string on the way out, which is exactly why the mirror-drift guard
+   could not catch it: it feeds strings to both sides.
+   A Date is read in New York, matching how every other artifact here states a
+   day (html-copy's own "saved …" line), so a 9pm stamp is not printed as
+   tomorrow. `en-CA` yields YYYY-MM-DD; the result is re-validated and falls
+   back to the UTC day rather than printing something malformed. */
 const day = (v) => {
-  const m = String(v == null ? '' : v).match(/^(\d{4}-\d{2}-\d{2})/);
+  if (v == null) return '';
+  if (v instanceof Date) {
+    if (!Number.isFinite(v.getTime())) return '';
+    try {
+      const s = v.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    } catch (_) { /* fall through to the UTC day */ }
+    return v.toISOString().slice(0, 10);
+  }
+  const m = String(v).match(/^(\d{4}-\d{2}-\d{2})/);
   return m ? m[1] : '';
 };
 
-/** The one-cell text for a spreadsheet / plain-text surface. '' with no stamp,
- *  so an unstamped line's cell stays genuinely empty. */
-function exportCellText(stamp, at) {
+/**
+ * The one-cell text for a spreadsheet / plain-text surface. '' with no stamp,
+ * so an unstamped line's cell stays genuinely empty.
+ *
+ * `{ ascii: true }` DROPS THE GLYPH, and that is not cosmetic. pdf-lib's
+ * StandardFonts are WinAnsi, which cannot encode `✓` (U+2713) or `○` (U+25CB)
+ * — `drawText` THROWS on them. The investor package's track-record PDF is
+ * built inside a try/catch that only console.warns, so a stamped line made the
+ * whole PDF vanish from the delivered ZIP with nothing said on any screen.
+ * (The repo's own tool PDF documents the same trap and avoids the glyphs; the
+ * server renderer had to learn it too.) The WORDS are identical either way —
+ * only the tick and the ring are dropped — so the two surfaces can never
+ * disagree about what they claim, and `·`, the em dash and every letter used
+ * here are all inside WinAnsi.
+ */
+function exportCellText(stamp, at, opts = {}) {
   const w = WORDING[stamp];
   if (!w) return '';
+  const cell = opts && opts.ascii ? w.cellAscii : w.cell;
   const d = day(at);
-  return d ? `${w.cell} · ${d}` : w.cell;
+  return d ? `${cell} · ${d}` : cell;
 }
 
 /**

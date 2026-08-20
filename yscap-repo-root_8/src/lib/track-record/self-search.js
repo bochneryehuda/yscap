@@ -43,6 +43,12 @@
 
 const COOLDOWN_MINUTES = 15;
 const MONTHLY_CAP = 10;
+/* How many of the borrower's companies ONE self-search may look up. A borrower
+   can add companies without limit, and every company is its own set of vendor
+   round trips out of an allowance the whole office shares. Twelve is the same
+   order as the importer's own STATE_CAP and covers every real portfolio seen
+   here; past it, the search says what it did not reach. */
+const BORROWER_ENTITY_CAP = 12;
 
 const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
@@ -54,6 +60,9 @@ function borrowerSummary(kind, c = {}) {
   }
   if (kind === 'limit') {
     return 'You have reached this month’s limit for record searches. Your loan team can run one for you if something is missing.';
+  }
+  if (kind === 'running') {
+    return 'A search of your records is already running — give it a moment, then refresh this page to see what it found.';
   }
   if (kind === 'unavailable') {
     return 'The public-records search is not available right now, so nothing was searched. Please try again in a little while — this says nothing about your record.';
@@ -84,21 +93,73 @@ function borrowerSummary(kind, c = {}) {
 async function selfSearch(borrowerId, client) {
   const db = client || require('../../db');
 
-  // 2. THE DURABLE COOLDOWN — any search, any requester. The check reads; only
-  //    a real run writes, so a cooldown answer can never extend the cooldown.
+  /* ONE SEARCH PER BORROWER AT A TIME — the two guards below are read-then-act,
+     and the write that arms them happens inside runSearch, so three clicks
+     landing together all read "no recent search" and all run. Measured before
+     this lock existed: 3 concurrent posts → 3 full searches, and a borrower one
+     under the ceiling could push past it. The in-memory route throttle is not a
+     bound here (it dies with the process and does not span instances).
+     `pg_try_advisory_lock` rather than the blocking form the conditions engine
+     uses: a search takes vendor round trips, and holding an HTTP request open
+     behind one for half a minute is worse than telling the second click that a
+     search is already running — which is true, and is what the cooldown would
+     have said a second later anyway.
+     It FAILS OPEN on a lock error (a database hiccup must not make the button
+     dead), which is the same trade `evaluateApplication` documents: the worst
+     case is one extra search, and the durable guards still bound the rest. */
+  let lockConn = null;
+  const lockKey = `tr-self-search:${borrowerId}`;
+  if (!client) {
+    try {
+      lockConn = await db.getClient();
+      const got = await lockConn.query('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok', [lockKey]);
+      if (!got.rows[0] || got.rows[0].ok !== true) {
+        try { lockConn.release(); } catch (_) { /* noop */ }
+        return { ok: true, ran: false, running: true, forReview: await stagedCount(db, borrowerId), summary: borrowerSummary('running') };
+      }
+    } catch (_) {
+      if (lockConn) { try { lockConn.release(); } catch (_e) { /* noop */ } }
+      lockConn = null;                     // fail open — never a dead button
+    }
+  }
+  try {
+    return await selfSearchLocked(borrowerId, db);
+  } finally {
+    if (lockConn) {
+      try { await lockConn.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockKey]); } catch (_) { /* noop */ }
+      try { lockConn.release(); } catch (_) { /* noop */ }
+    }
+  }
+}
+
+/* A RUN THAT REACHED THE VENDOR IS THE ONLY RUN THAT COUNTS, for both durable
+   guards. The search row is written BEFORE the outcome is known (so an outage
+   can never bypass the cooldown), which means a run that could not search at
+   all — no company on the profile, no linked records profile, vendor switched
+   off — was still burning one of ten monthly credits AND locking the borrower
+   out for fifteen minutes. The screen tells them, in those words, to add a
+   company and try again; the retry was then refused. That is the dead end this
+   file exists to avoid, so both guards read `api_calls > 0`: we only charge
+   somebody for a search that actually went out. */
+const SPENT_SQL = 'COALESCE(api_calls, 0) > 0';
+
+async function selfSearchLocked(borrowerId, db) {
+  // 2. THE DURABLE COOLDOWN — any search that SPENT something, any requester.
   const recent = (await db.query(
     `SELECT 1 FROM track_record_searches
-      WHERE borrower_id=$1 AND run_at > now() - ($2 || ' minutes')::interval
+      WHERE borrower_id=$1 AND ${SPENT_SQL}
+        AND run_at > now() - ($2 || ' minutes')::interval
       LIMIT 1`, [borrowerId, String(COOLDOWN_MINUTES)])).rows[0];
   if (recent) {
     return { ok: true, ran: false, cooldown: true, forReview: await stagedCount(db, borrowerId), summary: borrowerSummary('cooldown') };
   }
 
-  // 3. THE MONTHLY CEILING — borrower-run rows only; a staff search never
-  //    spends the borrower's allowance, and a cooldown answer never counts.
+  // 3. THE MONTHLY CEILING — borrower-run rows that spent something; a staff
+  //    search never spends the borrower's allowance, and neither does a run
+  //    that had nothing to search.
   const month = (await db.query(
     `SELECT count(*)::int AS c FROM track_record_searches
-      WHERE borrower_id=$1 AND query->>'requestedBy'='borrower'
+      WHERE borrower_id=$1 AND query->>'requestedBy'='borrower' AND ${SPENT_SQL}
         AND run_at > now() - interval '30 days'`, [borrowerId])).rows[0];
   if (n(month && month.c) >= MONTHLY_CAP) {
     return { ok: true, ran: false, limit: true, forReview: await stagedCount(db, borrowerId), summary: borrowerSummary('limit') };
@@ -106,6 +167,15 @@ async function selfSearch(borrowerId, client) {
 
   const out = await require('./importer').runSearch({
     borrowerId, staffId: null, requestedBy: 'borrower', personalNameSearch: false,
+    /* THE BORROWER DOES NOT GET TO SET THE BILL. The search loops every company
+       on the profile, and a borrower can add companies with no cap — measured:
+       50 companies on one profile = 200 calls out of the office's SHARED
+       hourly allowance, in a single click, which then answers `rate_limited`
+       to the underwriting desk. Staff keep the uncapped fan-out (they are
+       spending deliberately); the borrower's own door searches at most
+       BORROWER_ENTITY_CAP, and what it did not reach is REPORTED as a skip
+       rather than quietly left out. */
+    entityCap: BORROWER_ENTITY_CAP,
   }, db);
 
   const el = out.elementix || {};
@@ -147,4 +217,7 @@ async function stagedCount(db, borrowerId) {
   } catch (_) { return 0; }
 }
 
-module.exports = { selfSearch, COOLDOWN_MINUTES, MONTHLY_CAP, _internals: { borrowerSummary, stagedCount } };
+module.exports = {
+  selfSearch, COOLDOWN_MINUTES, MONTHLY_CAP, BORROWER_ENTITY_CAP,
+  _internals: { borrowerSummary, stagedCount, SPENT_SQL },
+};

@@ -57,11 +57,19 @@ export default function StaffTrackRecordWorkspace() {
     setTimeout(() => setRowErr((m) => { const n = { ...m }; delete n[id]; return n; }), 12000);
   };
 
-  const loadQueue = () => api.staffTrackRecordWorkspace({ filter: showAll ? 'all' : 'open' })
+  /* The borrower narrowing is sent to the SERVER (the queue is capped, so
+     filtering one page client-side showed NOTHING for any borrower outside the
+     cap — the full-screen link off a loan file landed on a false "nothing is
+     waiting"). The client-side filter below stays as a belt-and-suspenders on
+     the render + the J/K walk. */
+  const loadQueue = () => api.staffTrackRecordWorkspace({
+    filter: showAll ? 'all' : 'open',
+    borrowerId: borrowerFilter || undefined,
+  })
     .then((d) => setQueue(d && Array.isArray(d.groups) ? d : { groups: [], totals: {} }))
     .catch((e) => { setQueue({ groups: [], totals: {} }); rowError('queue', (e && e.message) || 'could not load the queue'); });
 
-  useEffect(() => { loadQueue(); }, [showAll]);   // eslint-disable-line
+  useEffect(() => { loadQueue(); }, [showAll, borrowerFilter]);   // eslint-disable-line
 
   /* The borrower filter narrows BOTH the render and the J/K walk, so the keys
      never move the selection onto a row the screen is not showing. */
@@ -128,7 +136,13 @@ export default function StaffTrackRecordWorkspace() {
         <div>
           {!groups.length && (
             <div className="panel"><p className="muted small" style={{ margin: 0 }}>
-              Nothing is waiting. A project appears here the moment somebody adds one to a borrower&rsquo;s record.
+              {borrowerFilter && !showAll
+                /* Scoped to one person with the default "unfinished" filter, an
+                   empty list usually means their projects are all VERIFIED —
+                   saying "nothing is waiting" there reads as "this borrower has
+                   no record", which is a different and often false claim. */
+                ? <>Nothing unfinished for this borrower. <button className="btn link small" onClick={() => setShowAll(true)}>Show everything</button> to see their verified projects.</>
+                : 'Nothing is waiting. A project appears here the moment somebody adds one to a borrower’s record.'}
             </p></div>
           )}
           {groups.map((g) => (

@@ -649,10 +649,15 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
 
             {/* ON the row, not buried in "More" — the owner's own ask (2026-08-19:
                 "on each and every thing of the track record, we should be able to
-                click 'See more information'"). The first click answers from the
-                cache at zero vendor cost. */}
+                click 'See more information'"). On a line the records check has
+                already run, this answers from the same 90-day cache at zero
+                vendor cost; on a line NEVER checked there is nothing to answer
+                from, so the first click is a real lookup. The title says so —
+                the "Re-read the records" button inside already warned, and the
+                button that OPENS the panel was the quieter of the two. */}
             <button className="btn ghost small" disabled={busy === 'moreinfo'} onClick={() => openMoreInfo(false)}
-              title="The property's whole recorded story — every deed, mortgage and party the county records hold — and what they can fill in on this line.">
+              title={'The property’s whole recorded story — every deed, mortgage and party the county records hold — and what they can fill in on this line. '
+                + 'If the records have not been read for this line yet, this first look reads them (part of the office’s shared lookup allowance); after that it is free.'}>
               {busy === 'moreinfo' ? 'Reading the records…' : (moreOpen ? 'Hide more information' : 'See more information')}
             </button>
 
@@ -767,6 +772,17 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
                   </div>
                 ))}
               </div>
+            ) : more.readFailed ? (
+              /* "We could not reach the county" is a DIFFERENT answer from "the
+                 county holds nothing", and rendering the first as the second
+                 would show an empty story as proof of absence. Nothing on the
+                 line was rewritten either — say so, or a reviewer reads the
+                 unchanged checks as a fresh confirmation. */
+              <p className="small" style={{ color: '#8A2B2B', margin: '8px 0 0' }}>
+                The county records could not be read just now, so nothing here was refreshed and
+                nothing on this line was changed. Try again in a little while — this says nothing
+                about the deal.
+              </p>
             ) : (
               <p className="small" style={{ color: MUTED, margin: '8px 0 0' }}>
                 No recorded documents came back for this exact address{more.entityName ? ` under ${more.entityName}` : ''}.

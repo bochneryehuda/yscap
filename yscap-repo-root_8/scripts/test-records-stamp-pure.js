@@ -101,6 +101,24 @@ console.log('\nD. The summary sentence — fragments derived FROM the server, pr
     'the tool\'s Excel cells carry the exact server cell wording');
 }
 
+console.log('\nD2. THE STAMP DATE IS A pg `Date`, NOT A STRING (audit finding — it never rendered)');
+{
+  /* The three sources are `timestamptz`; src/db.js string-parses OID 1082
+     (`date`) only, so every SERVER-side caller was handed a JS Date and the
+     regex matched nothing — the TPR investor cell and both saved copies
+     silently printed no date at all. The browser mirrors were fine because
+     JSON serialises a Date to ISO, which is exactly why the mirror-drift guard
+     could not see it: it feeds strings to both sides. */
+  const d = new Date('2026-08-20T02:30:00Z');          // 10:30pm Aug 19 in New York
+  ok(RS.exportCellText('verified', d) === '✓ Verified to Elementix · 2026-08-19',
+    'a pg Date renders its NEW YORK day — not blank, and not tomorrow');
+  ok(RS.exportCellText('verified', '2026-08-19T10:00:00Z') === '✓ Verified to Elementix · 2026-08-19',
+    'an ISO string still reads the same day');
+  ok(RS.exportCellText('sourced', new Date('nonsense')) === '○ Sourced via Elementix',
+    'an invalid Date prints the cell with no date, never "Invalid Date"');
+  ok(RS.exportCellText('verified', {}) === '✓ Verified to Elementix', 'an unreadable object prints no date');
+}
+
 console.log('\nE. exportCellText — the one-cell truth table');
 {
   ok(RS.exportCellText(null, '2026-01-01') === '', 'no stamp → a genuinely empty cell');
@@ -138,6 +156,19 @@ console.log('\nG. The SQL provenance shape — what makes a line verified/source
     'a candidate counts only on the two SUCCESS verbs (a declined candidate proves nothing)');
   ok(!/is_verified/.test(sql), 'the stamp NEVER reads is_verified — the human verification is a third thing');
   ok(/adopted_source\s*=\s*'elementix'/.test(RS.ENTITY_STAMP_SQL('l')), 'the entity stamp reads the db/400 adoption source');
+
+  /* THE DISQUALIFIER (audit finding): a PROVED ownership beside a CONTRADICTED
+     exit is the module's own headline finding — "they say they sold it and the
+     records still show them owning it" — and a bare EXISTS printed
+     "✓ Verified to Elementix" on exactly that line, on the investor package. */
+  ok(/NOT EXISTS/.test(sql), 'the verified branch carries a disqualifier, not a bare EXISTS');
+  ok(/auto_verdict = 'contradicted'/.test(sql), 'a CONTRADICTED ownership/exit pillar disqualifies verified');
+  ok(/human_verdict = 'rejected'/.test(sql), "and so does a human's rejection — the machine never re-asserts over a person");
+  ok(!/human_verdict = 'confirmed'/.test(sql),
+    'but a human CONFIRMATION is deliberately NOT required — that would make the stamp mean the human verification');
+  const atSql = RS.STAMP_AT_SQL('t');
+  ok(/NOT EXISTS/.test(atSql),
+    'the stamp DATE is gated by the same disqualifier — a contradicted line falls back to sourced and must not be dated by the check');
 }
 
 console.log('\nH. The borrower self-search wording — borrower-safe by construction');
@@ -211,6 +242,37 @@ console.log('\nI. line-details — storable + suggestionsFor (fill-only offers)'
   const ldSrc = read('src/lib/track-record/line-details.js');
   ok(/COALESCE\(\$\{s\.field\},\s*\$\$\{vals\.length\}\)/.test(ldSrc),
     'the apply writes col = COALESCE(col, $n) — fill-only against a concurrent edit, by construction');
+  /* AN EMPTY SELECTION MEANS NOTHING, NOT EVERYTHING (audit finding). The old
+     `fields.length ? … : ALL` turned "no boxes ticked" into "fill every blank"
+     — guarded client-side today, which is exactly the guard a second caller
+     does not inherit. */
+  ok(/Array\.isArray\(fields\)\s*\?\s*fields\.map\(String\)/.test(ldSrc),
+    'an EMPTY fields list fills nothing; only an ABSENT list means "all the records can fill"');
+  /* The would_reopen handshake is judged on a RE-READ, because the first read
+     happens before a multi-second vendor round trip. */
+  ok(/SELECT is_verified FROM track_records WHERE id=\$1/.test(ldSrc)
+    && /const isVerified\s*=/.test(ldSrc),
+  'the verified check is re-read immediately before the write, not trusted from before the vendor call');
+
+  /* A READ THAT FAILED MUST NOT ERASE WHAT WE LEARNED BEFORE (audit finding):
+     with the vendor unreachable the checks honestly read `no_data`, and writing
+     those verdicts destroys the derived stamp with no record it ever existed. */
+  const vrSrc = read('src/lib/track-record/verify-run.js');
+  ok(/const readFailed = research\.searched !== true && \(research\.errors \|\| \[\]\)\.length > 0/.test(vrSrc),
+    'verify-run computes readFailed from "we tried and could not reach the county"');
+  ok(/\$\{readFailed \? 'AND auto_verdict IS NULL' : ''\}/.test(vrSrc),
+    'and on a failed read fills ONLY never-observed pillars — a real prior observation is never overwritten');
+
+  /* The borrower's fan-out is capped and the cap is REPORTED (no silent caps);
+     both durable guards only count a run that actually reached the vendor. */
+  const ssSrc2 = read('src/lib/track-record/self-search.js');
+  ok(/entityCap: BORROWER_ENTITY_CAP/.test(ssSrc2), 'the borrower door caps how many companies one click looks up');
+  ok(/COALESCE\(api_calls, 0\) > 0/.test(ssSrc2),
+    'the cooldown and the ceiling count only a search that SPENT something — a run with nothing to search is not charged');
+  ok(/pg_try_advisory_lock/.test(ssSrc2),
+    'one search per borrower at a time — the two read-then-act guards are serialised, non-blocking');
+  const impSrc2 = read('src/lib/track-record/importer.js');
+  ok(/reason: 'entity_cap'/.test(impSrc2), 'and what the cap did not reach is reported as a skip, never dropped silently');
 }
 
 console.log('\nJ. The server exports carry the stamp through ONE definition');

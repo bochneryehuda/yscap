@@ -12183,6 +12183,10 @@ router.get('/track-record-workspace', async (req, res) => {
       limit: Number(req.query.limit) || 40,
       filter: req.query.filter === 'all' ? 'all' : 'open',
       staffId: req.actor.id,
+      // One borrower's whole record (the full-screen link off a loan file).
+      // Shape-checked here so a malformed id is "no rows", never a pg 22P02
+      // that the catch below turns into "server error".
+      borrowerId: UUID_RE.test(String(req.query.borrower || '')) ? String(req.query.borrower) : null,
     }));
   } catch (e) { console.warn('[workspace]', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
@@ -12342,6 +12346,8 @@ router.post('/track-records/:id/research', async (req, res) => {
    re-reads the county. STAFF-ONLY — the story names raw recorded parties. */
 router.post('/track-records/:id/more-info', async (req, res) => {
   try {
+    // A malformed id is a 404, never a pg 22P02 surfacing as "server error".
+    if (!UUID_RE.test(String(req.params.id || ''))) return res.status(404).json({ error: 'not found' });
     const own = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
     if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
@@ -12359,6 +12365,7 @@ router.post('/track-records/:id/more-info', async (req, res) => {
    guard on a verified line. */
 router.post('/track-records/:id/more-info/apply', async (req, res) => {
   try {
+    if (!UUID_RE.test(String(req.params.id || ''))) return res.status(404).json({ error: 'not found' });
     const own = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
     if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
@@ -12369,8 +12376,30 @@ router.post('/track-records/:id/more-info/apply', async (req, res) => {
       confirmReopen: b.confirmReopen === true,
     });
     await audit(req, 'track_record_records_fill', 'track_record', req.params.id,
-      { applied: (out.applied || []).map((a) => a.field), reopened: out.reopened === true });
+      /* The VALUES, not only the field names — "what figure did we write onto
+         this line, from the records, on that day" is the question this row has
+         to answer years later, and a list of column names cannot. */
+      { applied: (out.applied || []).map((a) => ({ field: a.field, value: a.value })), reopened: out.reopened === true });
     if ((out.applied || []).length) {
+      /* A MATERIAL FILL UN-VERIFIES THE LINE (db/485), SO THE COUNT THAT PRICES
+         THE DEAL JUST MOVED. Every other door that can move it recomputes the
+         tier and re-syncs the experience condition — the edit, the delete and
+         the verify routes all do, and so does the borrower's own search. This
+         one did neither, so `borrowers.tier` (a live Condition-Center rule
+         field, and part of the AI grounding block) kept quoting the old number
+         and a signed-off experience condition was never reopened. Same three
+         calls, same order, all best-effort. */
+      if (out.reopened === true) {
+        await db.query(
+          `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records
+              WHERE borrower_id=$1 AND is_verified=true AND (${RECENT_EXIT_SQL})) WHERE id=$1`,
+          [own.rows[0].borrower_id]).catch(() => {});
+        try { await require('../lib/experience').syncExperienceChecklistForBorrower(own.rows[0].borrower_id); } catch (_) { /* best effort */ }
+        try {
+          await conditionEngine.evaluateBorrowerApplications(own.rows[0].borrower_id,
+            { actor: req.actor, reason: 'track_record_unverified' });
+        } catch (_) { /* best effort */ }
+      }
       require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     }
     res.json(out);
