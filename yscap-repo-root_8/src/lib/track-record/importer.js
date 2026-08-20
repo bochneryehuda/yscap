@@ -478,7 +478,7 @@ function firstOtherName(list, names) {
  * or email anybody — the sentence the screen shows above the button, kept true
  * here rather than only promised there.
  */
-async function runSearch({ borrowerId, staffId, states }, client) {
+async function runSearch({ borrowerId, staffId, states, requestedBy, personalNameSearch, entityCap: entityCapIn }, client) {
   const db = client || require('../../db');
   const b = (await db.query(
     `SELECT id, NULLIF(TRIM(COALESCE(full_name,'')),'') AS name, elementix_person_id
@@ -507,9 +507,16 @@ async function runSearch({ borrowerId, staffId, states }, client) {
        FROM llcs WHERE borrower_id=$1 AND llc_name IS NOT NULL`, [borrowerId])).rows;
   const entityNames = entities.map((e) => e.llc_name).filter(Boolean);
 
+  /* WHO ASKED is recorded on the search row itself (`query.requestedBy`) — the
+     borrower door's cooldown + monthly ceiling count these rows, and "the
+     borrower ran this" must be readable years later without inferring it from
+     a NULL run_by (the cache imports also run with no staff id). */
   const search = (await db.query(
     `INSERT INTO track_record_searches (borrower_id, run_by, query) VALUES ($1,$2::uuid,$3::jsonb) RETURNING id`,
-    [borrowerId, staffId || null, JSON.stringify({ names: b.name ? [b.name] : [], entities: entityNames, states: cappedStates })])).rows[0];
+    [borrowerId, staffId || null, JSON.stringify({
+      names: b.name ? [b.name] : [], entities: entityNames, states: cappedStates,
+      ...(requestedBy ? { requestedBy: String(requestedBy) } : {}),
+    })])).rows[0];
 
   let found = 0; let staged = 0; let apiCalls = 0;
   let searchedAny = false;
@@ -607,7 +614,25 @@ async function runSearch({ borrowerId, staffId, states }, client) {
     }
   };
 
-  for (const ent of searchEnts) {
+  /* HOW MANY COMPANIES THIS RUN MAY LOOK UP. Unset (every staff door) means
+     every one of them, exactly as before. The borrower's own door passes a cap
+     because the fan-out is one set of vendor round trips PER COMPANY out of an
+     allowance the whole office shares, and a borrower can add companies with
+     no limit — so without this the size of one borrower's click is set by the
+     borrower. What the cap did not reach is REPORTED, never silently dropped:
+     the standing no-silent-caps rule, and the difference between "your record
+     holds nothing else" and "we stopped looking". */
+  const entityCap = Number.isFinite(Number(entityCapIn)) && Number(entityCapIn) > 0
+    ? Math.floor(Number(entityCapIn)) : null;
+  const cappedEnts = entityCap ? searchEnts.slice(0, entityCap) : searchEnts;
+  if (entityCap && searchEnts.length > cappedEnts.length) {
+    const left = searchEnts.length - cappedEnts.length;
+    skips.push({ reason: 'entity_cap',
+      why: `This search looked up ${cappedEnts.length} of your ${searchEnts.length} companies. `
+        + `${left} more ${left === 1 ? 'was' : 'were'} not searched this time — your loan team can search the rest.` });
+  }
+
+  for (const ent of cappedEnts) {
     /* WHICH STATES TO ASK ABOUT THIS COMPANY: the state it was registered in,
        PLUS every state the person picked — the records service keys entities
        by (name, state), so the same LLC name in another state is a DIFFERENT
@@ -664,7 +689,21 @@ async function runSearch({ borrowerId, staffId, states }, client) {
      stages still goes through the same scoring ladder and the same human
      review — a personal-name candidate has no proposed entity, so the line it
      becomes is owned personally unless the reviewer says otherwise. */
-  if (b.name && !deepRan) {
+  /* THE BORROWER DOOR NEVER SEARCHES A BARE PERSONAL NAME (the 08-borrower-
+     self-import research rule): a name search is the one version of this that
+     can hand a member of the public a list of a STRANGER's real estate — a
+     different person with the same name, staged as candidates on their screen.
+     A staffer is trained, audited and works a queue; a borrower is holding a
+     phone. So the borrower's own door passes `personalNameSearch: false`, and
+     the name branch is skipped WITH A REASON — never silently. The linked
+     person-id pull (identity a human already confirmed) and the entity
+     searches are unaffected. Staff callers pass nothing and are byte-identical. */
+  const nameSearchAllowed = personalNameSearch !== false;
+  if (b.name && !deepRan && !nameSearchAllowed) {
+    skips.push({ reason: 'personal_name_not_searched',
+      why: 'A borrower-run search never looks up a bare personal name — a name alone can belong to a stranger with the same name. The linked records profile and the companies on the profile were searched instead.' });
+  }
+  if (b.name && !deepRan && nameSearchAllowed) {
     /* The NAME-based person search runs only when the linked-profile pull did
        not: the deep pull reads the same person's records by ID — a strictly
        better identity — so re-resolving them by name would re-spend the
@@ -727,9 +766,14 @@ async function runSearch({ borrowerId, staffId, states }, client) {
      file gave us anything to search under is a separate question, answered
      from the file's own identities so a failed pull can never read as "you
      gave us nothing to search". */
+  /* The person's NAME is listed when it was genuinely covered: by the name
+     search itself, or by the person-id pull (which reads the same identity,
+     confirmed by a human). With the name search suppressed and no linked
+     profile, the name was NOT searched and must not be claimed. */
+  const nameCovered = !!b.name && (deepRan || nameSearchAllowed);
   const searchedUnder = [
     ...(deepRan ? ['their linked Elementix profile'] : []),
-    ...(b.name ? [b.name] : []), ...entityNames,
+    ...(nameCovered ? [b.name] : []), ...entityNames,
   ];
   const nothingToSearch = !str(b.elementix_person_id) && !b.name && !entityNames.length;
   const vendorProblem = !searchedAny && !nothingToSearch
@@ -740,10 +784,10 @@ async function runSearch({ borrowerId, staffId, states }, client) {
           'no_response', 'unreadable_response', 'tool_error'].includes(s.reason)) ? 'failed' : null)
     : null;
   const underText = (deepRan ? 'their linked Elementix profile'
-    + (b.name || entityNames.length ? ' and ' : '') : '')
+    + (nameCovered || entityNames.length ? ' and ' : '') : '')
     + (entityNames.length
-      ? `${b.name ? `${b.name} and ` : ''}${entityNames.length === 1 ? entityNames[0] : `${entityNames.length} companies`}`
-      : (b.name || (deepRan ? '' : 'nothing')))
+      ? `${nameCovered ? `${b.name} and ` : ''}${entityNames.length === 1 ? entityNames[0] : `${entityNames.length} companies`}`
+      : (nameCovered ? b.name : (deepRan ? '' : 'nothing')))
     + (cappedStates.length ? ` in ${cappedStates.join(', ')}` : '');
   /* WHAT THE DEEP PULL DID lands in the headline too — an import a person
      cannot see happened is an import they cannot trust. Empty when nothing was

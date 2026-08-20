@@ -7,6 +7,7 @@ import DocPreview from '../DocPreview.jsx';
 import { useMenuAutoClose, closeMenu } from '../ConditionActions.jsx';
 import { TR_STATUS_LABEL, TR_REVIEW_OUTCOMES, trStatusShort } from '../../lib/trackRecordStatus.js';
 import { trackRecordPropertyTypeLabel, trackRecordPropertyTypeOptions } from '../../lib/trackRecordPropertyTypes.js';
+import RecordsStamp from './RecordsStamp.jsx';
 
 /* ONE LINE'S WHOLE STORY, IN ONE COMPONENT (mega-workspace "one screen"
    enhancement, owner-directed 2026-08-09: "every single option available on the
@@ -119,6 +120,9 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
   const [editing, setEditing] = useState(null); // the inline edit draft, or null
   const [focusPillar, setFocusPillar] = useState(0);
   const [keysOpen, setKeysOpen] = useState(false);
+  const [more, setMore] = useState(null);        // the "See more information" payload
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [morePick, setMorePick] = useState(() => new Set());  // fields ticked for import
   useMenuAutoClose(); // shared closer for the "More ▾" menus (same as the conditions rows)
 
   /* An error goes in the banner AND on the row — in a long section the banner is
@@ -138,8 +142,8 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
   }, [trackRecordId]);
   useEffect(() => { reload(); }, [reload]);
   useEffect(() => { api.staffTrackRecordDocTypes().then((d) => setDocTypes((d && d.docTypes) || [])).catch(() => {}); }, []);
-  // A new line resets the transient view (focus, an open edit form).
-  useEffect(() => { setFocusPillar(0); setEditing(null); }, [trackRecordId]);
+  // A new line resets the transient view (focus, an open edit form, the records panel).
+  useEffect(() => { setFocusPillar(0); setEditing(null); setMore(null); setMoreOpen(false); }, [trackRecordId]);
 
   // Anything that changes the line re-reads THIS detail and tells the parent to
   // refresh its list (so the ledger/queue outside stays in step).
@@ -298,6 +302,49 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
       flash(true, 'Checked against the public records.' + (errs.length ? ` ${errs.length} source${errs.length === 1 ? '' : 's'} could not be read.` : ''));
       changed();
     } catch (e) { flash(false, (e && e.message) || 'could not check the records'); }
+    finally { setBusy(''); }
+  }
+
+  /* "SEE MORE INFORMATION" (owner-directed 2026-08-19): the property's whole
+     recorded story — every deed, mortgage and party the county records hold —
+     plus what they could fill in on this line. Reads through the SAME cache the
+     Check-the-records button fills, so the usual click costs nothing; the
+     panel's own "Re-read the records" is the deliberate fresh pull. */
+  async function openMoreInfo(refresh) {
+    if (moreOpen && !refresh) { setMoreOpen(false); return; }
+    setBusy('moreinfo');
+    try {
+      const d = await api.staffTrackRecordMoreInfo(trackRecordId, refresh === true);
+      setMore(d); setMoreOpen(true);
+      // Pre-tick every fillable field — the apply is fill-only server-side anyway.
+      setMorePick(new Set((d.suggestions || []).filter((s) => s.fillable).map((s) => s.field)));
+      if (refresh) changed();   // a forced re-read refreshes the pillar verdicts too
+    } catch (e) { flash(false, (e && e.message) || 'could not read the records'); }
+    finally { setBusy(''); }
+  }
+  async function applyMoreInfo() {
+    const fields = [...morePick];
+    if (!fields.length) return;
+    setBusy('moreapply');
+    try {
+      let out;
+      try { out = await api.staffTrackRecordMoreInfoApply(trackRecordId, { fields }); }
+      catch (e) {
+        if (e && e.data && e.data.code === 'would_reopen') {
+          const yes = await askConfirm(
+            (e.message || 'This line is verified.') + '\n\nImport the records’ figures anyway? The verification re-opens and a person reviews it again.',
+            { confirmLabel: 'Import and re-open the review', cancelLabel: 'Not now' });
+          if (!yes) { setBusy(''); return; }
+          out = await api.staffTrackRecordMoreInfoApply(trackRecordId, { fields, confirmReopen: true });
+        } else { throw e; }
+      }
+      const nApplied = (out.applied || []).length;
+      flash(true, nApplied
+        ? `Imported ${nApplied} detail${nApplied === 1 ? '' : 's'} from the records.`
+        : 'Nothing to import — every field already has a value.');
+      setMoreOpen(false); setMore(null);
+      changed();
+    } catch (e) { flash(false, (e && e.message) || 'could not import from the records'); }
     finally { setBusy(''); }
   }
 
@@ -563,6 +610,10 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
               to verify" reasons) — never the raw stored value. */}
           {line.verificationStatus && !line.isVerified && <span className="pill small">{trStatusShort(line.verificationStatus)}</span>}
           {line.isVerified && <span className="ts-badge ok">Fully verified</span>}
+          {/* The records stamp — 'verified' (matched to the county records) or
+              'sourced' (imported from them); nothing when neither. One
+              definition: records-stamp.js + RecordsStamp.jsx. */}
+          <RecordsStamp stamp={line.recordsStamp} at={line.recordsStampAt} />
         </div>
 
         <div className="tr-figs">
@@ -595,6 +646,20 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
               : (maySignOff && line.isVerified
                 ? <span className="tr-chk-ok" style={{ alignSelf: 'center' }}>✓ Counts toward experience</span>
                 : null)}
+
+            {/* ON the row, not buried in "More" — the owner's own ask (2026-08-19:
+                "on each and every thing of the track record, we should be able to
+                click 'See more information'"). On a line the records check has
+                already run, this answers from the same 90-day cache at zero
+                vendor cost; on a line NEVER checked there is nothing to answer
+                from, so the first click is a real lookup. The title says so —
+                the "Re-read the records" button inside already warned, and the
+                button that OPENS the panel was the quieter of the two. */}
+            <button className="btn ghost small" disabled={busy === 'moreinfo'} onClick={() => openMoreInfo(false)}
+              title={'The property’s whole recorded story — every deed, mortgage and party the county records hold — and what they can fill in on this line. '
+                + 'If the records have not been read for this line yet, this first look reads them (part of the office’s shared lookup allowance); after that it is free.'}>
+              {busy === 'moreinfo' ? 'Reading the records…' : (moreOpen ? 'Hide more information' : 'See more information')}
+            </button>
 
             <details className="cond-more">
               <summary className="btn ghost small cond-more-btn" title="Every other action on this project">More ▾</summary>
@@ -670,6 +735,98 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
           {maySignOff && !line.isVerified && detail.bulk && !detail.bulk.ok && <div className="cond-act-hint">{detail.bulk.reason}</div>}
           {rowErr.verify && <div className="notice err small" style={{ marginTop: 6 }}>{rowErr.verify}</div>}
         </div>
+
+        {/* ── "SEE MORE INFORMATION" — the recorded story + the import ─────── */}
+        {moreOpen && more && (
+          <div className="panel" style={{ marginTop: 10, padding: 12 }}>
+            <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+              <strong style={{ color: INK }}>What the county records hold</strong>
+              <span className="small" style={{ color: MUTED }}>
+                {more.cached ? 'from the last read — re-read below if something changed'
+                  : (more.searched ? 'read just now' : 'the records could not be read')}
+              </span>
+              <div className="spacer" />
+              <button className="btn ghost small" disabled={busy === 'moreinfo'} onClick={() => openMoreInfo(true)}
+                title="Re-read the county records now — spends part of the office's shared lookup allowance.">
+                {busy === 'moreinfo' ? 'Reading…' : 'Re-read the records'}
+              </button>
+            </div>
+            {(more.errors || []).length > 0 && (
+              <div className="notice err small" style={{ marginTop: 6 }}>
+                {(more.errors || []).map((e2) => e2.detail || e2.reason).filter(Boolean).join(' · ') || 'Some sources could not be read.'}
+              </div>
+            )}
+            {more.story && more.story.length > 0 ? (
+              <div style={{ marginTop: 8 }}>
+                {more.story.map((s, i) => (
+                  <div key={i} className="small" style={{ color: INK, padding: '5px 0', borderBottom: '1px solid rgba(20,27,34,.08)' }}>
+                    <b style={{ textTransform: 'capitalize' }}>{s.kind}</b>
+                    {s.date ? ` · ${s.date}` : ''}
+                    {s.amount != null ? ` · ${money(s.amount)}` : ''}
+                    {s.kind === 'deed' && (s.grantors || []).length ? <span style={{ color: MUTED }}> — from {s.grantors.join(', ')}</span> : null}
+                    {s.kind === 'deed' && (s.grantees || []).length ? <span style={{ color: MUTED }}> to {s.grantees.join(', ')}</span> : null}
+                    {s.kind !== 'deed' && s.lender ? <span style={{ color: MUTED }}> — lender {s.lender}</span> : null}
+                    {s.kind !== 'deed' && s.purpose ? <span style={{ color: MUTED }}> · {s.purpose}</span> : null}
+                    {s.satisfied ? <span style={{ color: MUTED }}> · satisfied {s.satisfied}</span> : null}
+                    {s.docId ? <span style={{ color: MUTED }}> · doc {s.docId}</span> : null}
+                  </div>
+                ))}
+              </div>
+            ) : more.readFailed ? (
+              /* "We could not reach the county" is a DIFFERENT answer from "the
+                 county holds nothing", and rendering the first as the second
+                 would show an empty story as proof of absence. Nothing on the
+                 line was rewritten either — say so, or a reviewer reads the
+                 unchanged checks as a fresh confirmation. */
+              <p className="small" style={{ color: '#8A2B2B', margin: '8px 0 0' }}>
+                The county records could not be read just now, so nothing here was refreshed and
+                nothing on this line was changed. Try again in a little while — this says nothing
+                about the deal.
+              </p>
+            ) : (
+              <p className="small" style={{ color: MUTED, margin: '8px 0 0' }}>
+                No recorded documents came back for this exact address{more.entityName ? ` under ${more.entityName}` : ''}.
+                Counties do not always publish online — this is not evidence against the deal.
+              </p>
+            )}
+            {more.otherProperties > 0 && (
+              <p className="small" style={{ color: MUTED, margin: '8px 0 0' }}>
+                The same search surfaced {more.otherProperties} other recorded propert{more.otherProperties === 1 ? 'y' : 'ies'} —
+                run the records search on the borrower to stage them.
+              </p>
+            )}
+            {(more.suggestions || []).length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <strong className="small" style={{ color: INK }}>What the records can fill in</strong>
+                {(more.suggestions || []).map((s) => (
+                  <label key={s.field} className="small" style={{ display: 'flex', gap: 8, alignItems: 'baseline', color: INK, padding: '4px 0' }}>
+                    {s.fillable
+                      ? <input type="checkbox" checked={morePick.has(s.field)}
+                          onChange={(ev) => setMorePick((old) => { const n2 = new Set(old); if (ev.target.checked) n2.add(s.field); else n2.delete(s.field); return n2; })} />
+                      : <span style={{ width: 13 }} />}
+                    <span style={{ minWidth: 120 }}>{s.label}</span>
+                    <b>{s.kind === 'money' ? money(s.records) : String(s.records)}</b>
+                    {!s.fillable && (
+                      <span style={{ color: MUTED }}>
+                        — the line already says {s.kind === 'money' ? money(s.current) : String(s.current)}; use Edit details to change it deliberately
+                      </span>
+                    )}
+                  </label>
+                ))}
+                {(more.suggestions || []).some((s) => s.fillable) && (
+                  <button className="btn primary small" style={{ marginTop: 6 }} disabled={busy === 'moreapply' || !morePick.size}
+                    onClick={applyMoreInfo}
+                    title="Fill the ticked blanks from the records. A value anybody typed is never overwritten.">
+                    {busy === 'moreapply' ? 'Importing…' : `Import ${morePick.size} detail${morePick.size === 1 ? '' : 's'} from the records`}
+                  </button>
+                )}
+              </div>
+            )}
+            {(more.suggestions || []).length === 0 && (more.story || []).length > 0 && (
+              <p className="small" style={{ color: MUTED, margin: '8px 0 0' }}>Nothing to fill in — the line already carries everything the records state.</p>
+            )}
+          </div>
+        )}
 
         {/* INLINE EDIT — one aligned column; the exit fields SWAP with the deal
             type (a flip shows a sale, a hold shows rent/refi, ground-up picks the
