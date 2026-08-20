@@ -30,8 +30,13 @@ const drawLabel = require('../lib/draw-label');   // "Draw 2" — the ONE way a 
 const usd = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // Statuses that mean "the borrower actually submitted this draw" — drafting /
-// pending_borrower draws are not ready to enter into TrustPoint yet.
-const SUBMITTED_STATUSES = new Set(['inspecting', 'pending', 'pending_capital_partner', 'approved']);
+// pending_borrower draws are not ready to enter into TrustPoint yet. THE ONE
+// DEFINITION lives in ./draw-lifecycle (owner-directed 2026-08-20): the desk's
+// "started a draft" vs "submitted for review" notifications read the same set,
+// so a drift here could no longer leave the desk told a draw was submitted while
+// this door quietly stood down. Re-exported under its old name so every existing
+// caller is untouched.
+const { SUBMITTED_STATUSES } = require('./draw-lifecycle');
 
 /** The submitted per-line table for the email: [{ name, requested_cents }], media $0 gates skipped. */
 async function drawLines(drawId) {

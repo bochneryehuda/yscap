@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import PdfViewer from './PdfViewer.jsx';
+import { useDocPreviewLayer } from '../lib/overlay-layers.js';
 
 /**
  * In-place document preview — see a file without downloading it. Downloads on
@@ -28,10 +30,35 @@ import PdfViewer from './PdfViewer.jsx';
  *   highlight   optional string — text to soft-highlight (see PdfViewer).
  *   highlightBoxes optional [{page,polygon}] — precise evidence boxes (R5.17),
  *               passed straight to PdfViewer.
+ *
+ * IT SHARES THE SCREEN WITH THE FILE OVERVIEW (owner-directed 2026-08-20: "we need
+ * to have the overview available while we're previewing the PDF … so you can
+ * compare maybe the PDF to the file overview"). Two things make that work:
+ *
+ *   · IT IS PORTALED TO <body>. A preview opened from inside another modal used to
+ *     inherit that modal's stacking context, so NO z-index here could put the
+ *     overview panel above it. At the top of the document the whole app shares one
+ *     stacking context and the layer order is decidable. React portals still
+ *     bubble events through the REACT tree, so every onClick that worked before
+ *     works identically.
+ *   · ITS BACKDROP IS ITS OWN LAYER (`dp-back`, z 150) — below the app's confirm
+ *     dialogs (`.cv-modal-back`, z 200, which must always win) and below the file
+ *     overview when that is open (z 160/165). While the overview is out, the
+ *     preview also SHRINKS by the width of the panel, so neither covers the other:
+ *     that is the "see both together" the owner asked for, not a preview hiding
+ *     under a drawer.
+ *
+ * ESC CLOSES THE TOP LAYER, WHICH IS NOT ALWAYS THIS ONE. Both components listen
+ * on `window`, so with the overview out an unguarded Esc closed BOTH at once. The
+ * overview is the higher layer whenever it is open, so it gets the key and this
+ * one stands down.
  */
 export default function DocPreview({ title, filename, contentType, load, onDownload, onClose, initialPage, highlight, highlightBoxes, ocr }) {
   const [state, setState] = useState({ status: 'loading' });   // loading | ready | error
   const urlRef = useRef(null);
+  // Register this preview as an open layer, and learn whether the file overview
+  // is out beside it.
+  const layers = useDocPreviewLayer(true);
 
   useEffect(() => {
     let alive = true;
@@ -67,19 +94,22 @@ export default function DocPreview({ title, filename, contentType, load, onDownl
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Esc closes the TOP layer. With the overview panel out, that is the overview —
+  // so this handler stands down rather than closing both at one press.
   useEffect(() => {
+    if (layers.overview) return undefined;
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, layers.overview]);
 
   // A PDF that PDF.js can't parse falls back to the browser's native PDF viewer
   // (if we have a blob URL), and only then to the download card.
   const pdfFailed = () => setState(s => (s.pdfUrl ? { ...s, kind: 'pdf-native' } : { ...s, kind: 'other' }));
   const previewable = state.kind && state.kind !== 'other';
 
-  return (
-    <div className="cv-modal-back" onClick={onClose}>
+  const body = (
+    <div className={`cv-modal-back dp-back${layers.overview ? ' dp-beside-overview' : ''}`} onClick={onClose}>
       <div className="cv-modal docpreview" style={{ maxWidth: 1040, width: '96%', height: '92vh', display: 'flex', flexDirection: 'column' }}
         onClick={(e) => e.stopPropagation()}>
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', padding: '2px 2px 10px' }}>
@@ -121,4 +151,9 @@ export default function DocPreview({ title, filename, contentType, load, onDownl
       </div>
     </div>
   );
+  // Portaled to <body> so the layer order below is decidable no matter which
+  // screen (or modal) opened the preview. `document` is guarded for the same
+  // reason every other portal in this app guards it — a non-browser render must
+  // not throw.
+  return typeof document !== 'undefined' && document.body ? createPortal(body, document.body) : body;
 }

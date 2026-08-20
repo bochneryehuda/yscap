@@ -1828,7 +1828,14 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   display:grid;grid-template-columns:248px minmax(0,1fr);grid-template-rows:auto 1fr;
   grid-template-areas:'side top' 'side main'}
 .app-sidebar{grid-area:side;background:var(--surface);border-right:1px solid var(--border);
-  padding:20px 14px;display:flex;flex-direction:column;gap:3px;position:sticky;top:0;
+  /* NO BOTTOM PADDING — the pinned .sb-foot below is a sticky child, and a sticky
+     box is constrained to its containing block (the rail's CONTENT box). Bottom
+     padding therefore left a 20px strip UNDER the pinned footer that the nav
+     links scrolled through in plain sight (owner-reported 2026-08-20: "that
+     section is transparent … you can see it in the back of it and at the bottom
+     of it"). The footer owns that space now, as its own padding, so the rail's
+     content box ends exactly where the visible rail does. */
+  padding:20px 14px 0;display:flex;flex-direction:column;gap:3px;position:sticky;top:0;
   height:100vh;overflow-y:auto;z-index:60;
   /* A VISIBLE scrollbar is the affordance a trackpad user needs to reach the
      bottom of a long nav (owner-reported 2026-07-31: "not scrollable without a
@@ -1875,9 +1882,22 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
    reachable without scrolling, even when the nav list overflows on a short
    laptop screen (owner-reported 2026-07-31). The nav links scroll behind it;
    the solid background covers anything scrolling underneath. */
-.sb-foot{border-top:1px solid var(--surface-soft);margin-top:6px;padding-top:10px;
-  display:flex;flex-direction:column;gap:8px;
-  position:sticky;bottom:0;background:var(--surface);padding-bottom:2px}
+/* A SOLID BAR, EDGE TO EDGE — never a translucent strip. Three separate gaps used
+   to let the scrolling nav show around it (owner-reported 2026-08-20):
+     · the rail's 20px BOTTOM padding, under the pinned footer (fixed above);
+     · the rail's 14px SIDE padding, either side of it — cancelled here with
+       negative margins so the bar spans the full width of the rail;
+     · its own 6px transparent margin-top, above the divider — folded into the
+       bar's own padding so there is no see-through band anywhere.
+   `background` is an OPAQUE token (--surface = #FFFFFF); never an rgba() or an
+   opacity, which is what makes a bar like this ghost. The upward shadow is the
+   only thing that hints at content underneath. */
+.sb-foot{display:flex;flex-direction:column;gap:8px;
+  position:sticky;bottom:0;z-index:2;
+  margin:6px calc(-1 * var(--sb-pad-r,14px)) 0 calc(-1 * var(--sb-pad-l,14px));
+  padding:10px var(--sb-pad-r,14px) var(--sb-pad-b,20px) var(--sb-pad-l,14px);
+  background:var(--surface);border-top:1px solid var(--border);
+  box-shadow:0 -10px 18px -14px rgba(20,27,34,.45)}
 
 /* min-height 72 (not 68) so the topbar's bottom always meets .file-top's top:72px.
    At 68 a 4px band opened between the two sticky bars on desktop and scrolling
@@ -2173,8 +2193,14 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .app-sidebar{position:fixed;top:0;left:0;bottom:0;width:min(84vw,300px);height:100dvh;
     transform:translateX(-100%);transition:transform .22s cubic-bezier(.32,.72,.35,1);
     box-shadow:16px 0 44px -24px rgba(0,0,0,.4);
-    padding:calc(18px + env(safe-area-inset-top)) 14px calc(20px + env(safe-area-inset-bottom))
-      calc(14px + env(safe-area-inset-left));z-index:80}
+    /* Same rule as desktop: the drawer keeps NO bottom padding, and the phone's
+       safe-area inset is handed to .sb-foot (via --sb-pad-b) so the solid bar
+       covers the home-indicator strip instead of leaving it see-through. The
+       left inset rides --sb-pad-l so the bar's negative margin still lands
+       exactly on the drawer edge. */
+    --sb-pad-l:calc(14px + env(safe-area-inset-left, 0px));
+    --sb-pad-b:calc(20px + env(safe-area-inset-bottom, 0px));
+    padding:calc(18px + env(safe-area-inset-top)) 14px 0 var(--sb-pad-l);z-index:80}
   .app-sidebar.open{transform:none}
   .app-scrim{position:fixed;inset:0;background:rgba(20,27,34,.42);z-index:70;animation:navfade .18s ease}
   .app .wrap{padding:0 24px}
@@ -4957,7 +4983,14 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    dialogs live on .cv-modal-back at z 200, so the WHOLE fov layer sits BELOW
    200 — a confirm dialog must always paint over (and block clicks to) this
    panel and its tab. The tab anchors LOW on the right edge, clear of the
-   sticky headers and any bottom action bars. */
+   sticky headers and any bottom action bars.
+
+   IT OUTRANKS A DOCUMENT PREVIEW (owner-directed 2026-08-20). The preview used
+   to share .cv-modal-back's z 200, so its dim sat over the tab: the button was
+   still there and still clickable in the DOM sense, behind an opaque sheet of
+   black. The preview now owns `.dp-back` at z 150, and when one is open this
+   tab climbs to 160 and the panel to 165 — visible, clickable, and on top of
+   the document without disturbing the confirm-dialog rule above it. */
 .fov-tab{position:fixed;right:0;bottom:140px;z-index:120;writing-mode:vertical-rl;
   background:#141B22;color:#F6F3EC;border:1px solid #141B22;border-right:none;border-radius:10px 0 0 10px;
   padding:14px 7px;font:700 12px/1 'Hanken Grotesk',system-ui,sans-serif;letter-spacing:.1em;text-transform:uppercase;
@@ -4968,7 +5001,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .fov-tab:hover .fov-tab-ico{color:#FFFFFF}
 .fov-tab-text{display:inline-block}
 .fov-back{position:fixed;inset:0;background:rgba(20,27,34,.45);z-index:130}
-.fov-panel{position:fixed;top:0;right:0;bottom:0;width:min(420px,94vw);z-index:135;background:#FFFFFF;
+.fov-panel{position:fixed;top:0;right:0;bottom:0;width:min(var(--fov-w,420px),94vw);z-index:135;background:#FFFFFF;
   border-left:1px solid #D9D4C8;box-shadow:-6px 0 28px rgba(20,27,34,.16);
   transform:translateX(102%);transition:transform .22s ease;display:flex;flex-direction:column;
   visibility:hidden}
@@ -5000,6 +5033,46 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
   .fov-panel{width:min(360px,94vw)}
   /* Above the .cv-modal bottom-sheet band and the safe area on phones. */
   .fov-tab{bottom:calc(180px + env(safe-area-inset-bottom, 0px));padding:10px 5px;font-size:11px}
+}
+
+/* ---- THE FILE OVERVIEW AND A DOCUMENT PREVIEW, SIDE BY SIDE ----------------
+   Owner-directed 2026-08-20: "we need to have the overview available while
+   we're previewing the PDF or any other thing … you should be able to see both
+   together so you can compare maybe the PDF to the file overview to see the
+   details."
+
+   THREE LAYERS, ONE ORDER, and nothing here may reorder them:
+     200  .cv-modal-back            app confirm dialogs — always win
+     165  .fov-panel.fov-over-preview
+     160  .fov-tab.fov-over-preview
+     150  .cv-modal-back.dp-back    the document preview
+     135  .fov-panel                (on its own)
+     120  .fov-tab                  (on its own)
+
+   `.dp-back` is TWO classes, so it beats the single-class `.cv-modal-back`
+   z-index on specificity — no !important needed, and an ordinary dialog opened
+   from inside a preview still paints over it. */
+.cv-modal-back.dp-back{z-index:150}
+.fov-tab.fov-over-preview{z-index:160}
+.fov-panel.fov-over-preview{z-index:165}
+/* THE PREVIEW MAKES ROOM rather than hiding under the panel. `padding-right` on
+   the flex backdrop re-centres the document in what is left, so the two sit
+   beside each other — which is the whole point of "see both together". The
+   width is the panel's own, kept in ONE place so the two can never disagree. */
+:root{--fov-w:420px}
+.cv-modal-back.dp-back.dp-beside-overview{padding-right:calc(var(--fov-w) + 20px);
+  transition:padding-right .22s ease}
+@media(max-width:1024px){
+  /* Below this there is no room for a document AND a 420px panel side by side,
+     so the panel OVERLAYS instead — still on top, still closable. Shifting the
+     preview here would squeeze it to nothing, which is worse than an overlay. */
+  .cv-modal-back.dp-back.dp-beside-overview{padding-right:20px}
+}
+@media(max-width:640px){
+  /* .cv-modal-back drops to padding:0 on phones (the bottom-sheet band), and the
+     shift is off above — restate the phone padding so the two-class selector
+     cannot re-introduce a 20px gutter under the sheet. */
+  .cv-modal-back.dp-back.dp-beside-overview{padding-right:0}
 }
 
 /* ==========================================================================
