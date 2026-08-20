@@ -1528,7 +1528,10 @@ async function verifyBatch(limit) {
     `SELECT id, filename, content_type, storage_ref, storage_provider, size_bytes, sha256,
             sharepoint_backup_ref, sharepoint_parent_id, sharepoint_web_url,
             sharepoint_backed_up_at,
-            application_id, borrower_id, doc_kind, slot_label, is_current
+            -- source_type says WHO made this file, which decides what a person can
+            -- actually do about a damaged one: chase whoever sent it, or re-run
+            -- the export that produced it.
+            application_id, borrower_id, doc_kind, slot_label, is_current, source_type
        FROM documents
       WHERE sharepoint_backup_ref IS NOT NULL
         -- Audit mirrored docs on EVERY provider (bytes read via the storage layer).
@@ -1744,8 +1747,17 @@ async function verifyRow(row) {
   const expected = expectedKind(row.filename, row.content_type);
   const sniffed = sniffKind(bytes);
   const sourceSuspect = expected && BINARY_KINDS.includes(expected) && sniffed !== expected;
+  // WHO MADE THIS FILE decides what a person can do about it. "Request a fresh
+  // copy from whoever uploaded it" is unactionable nonsense on a document PILOT
+  // generated itself — a TPR export, a track-record snapshot, a draw report:
+  // nobody uploaded it, so nobody can re-send it. Those are re-made by re-running
+  // the export (owner-reported 2026-08-20 on TPR_YSCAP258134701_2026-07-21.zip).
+  const pilotMade = row.source_type === 'system' || isRegenKind(row.doc_kind);
+  const fixAdvice = pilotMade
+    ? 'PILOT generated this file itself, so there is nobody to ask for a fresh copy — re-run the export on the file to build it again.'
+    : 'It was already damaged when it was uploaded, so re-mirroring cannot fix it: request a fresh copy from whoever uploaded it.';
   const okVerdict = sourceSuspect
-    ? `source-suspect: content looks like ${sniffed || 'unrecognized data'}, not ${expected} — corrupted before upload; a fresh copy must be re-uploaded`
+    ? `source-suspect: content looks like ${sniffed || 'unrecognized data'}, not ${expected} — ${pilotMade ? 'PILOT generated it; re-run the export' : 'corrupted before upload; a fresh copy must be re-uploaded'}`
     : 'ok';
   if (sourceSuspect && row.is_current) {
     try {
@@ -1754,8 +1766,8 @@ async function verifyRow(row) {
         taskId: `spdoc:${row.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
         reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
         clickupValue: null,
-        portalValue: `${row.filename || 'document'} — the FILE ITSELF appears corrupted (content is ${sniffed || 'unrecognized data'}, not ${expected}). It was already damaged when it was uploaded, so re-mirroring cannot fix it: request a fresh copy from whoever uploaded it.`.slice(0, 400),
-        rawValue: JSON.stringify({ docId: row.id, kind: 'source-suspect', sniffed, expected }).slice(0, 500) });
+        portalValue: `${row.filename || 'document'} — the FILE ITSELF appears corrupted (content is ${sniffed || 'unrecognized data'}, not ${expected}). ${fixAdvice}`.slice(0, 400),
+        rawValue: JSON.stringify({ docId: row.id, kind: 'source-suspect', sniffed, expected, pilotMade }).slice(0, 500) });
     } catch (_) { /* visibility best-effort */ }
   }
 
