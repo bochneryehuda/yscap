@@ -156,23 +156,34 @@ const SP_DOC_PARKED = {
   'item-missing': 'The copy PILOT put in the drive is no longer there — someone deleted or moved it, and PILOT looked for it again by name and by its Pilot stamp without finding it. PILOT will NOT put it back on its own (re-uploading over a deliberate deletion is your call), so until you retry it the document is not in the drive.',
   'local-missing': 'PILOT can no longer read its own stored copy, so the SharePoint copy may be the only one left — do NOT delete it. PILOT has stopped touching this one on its own.',
   'source-suspect': 'The saved file itself is damaged — it was already damaged when it was uploaded, so re-mirroring cannot fix it and PILOT has stopped retrying. Ask whoever uploaded it for a fresh copy.',
+  // The SAME verdict on a file PILOT generated itself (a TPR export, a track-record
+  // snapshot, a draw report). Telling an officer to "ask whoever uploaded it" there
+  // is unactionable — nobody did (owner-reported 2026-08-20). The producer flag
+  // rides on the card's own raw_value, set by the integrity audit.
+  'source-suspect:pilot': 'The file PILOT generated is damaged, so re-mirroring cannot fix it and PILOT has stopped retrying. Nobody uploaded this one — re-run the export on the file to build it again.',
   'malware-flagged': 'Microsoft Defender flagged the SharePoint copy and blocked it. PILOT has stopped retrying — check the source document in PILOT before you retry anything.',
 };
 function sharepointDocEmail({ borrowerName, portalValue, rawValue } = {}) {
   const who = borrowerName ? ` for ${borrowerName}` : '';
   const spec = portalValue ? `: ${String(portalValue).trim()}` : '';
   let kind = null;
+  let pilotMade = false;
   try {
     const raw = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue;
     kind = raw && raw.kind ? String(raw.kind) : null;
+    pilotMade = !!(raw && raw.pilotMade);
   } catch (_) { /* unreadable raw_value — fall back to the retrying copy */ }
-  const status = SP_DOC_PARKED[kind]
+  const status = (pilotMade && SP_DOC_PARKED[`${kind}:pilot`])
+    || SP_DOC_PARKED[kind]
     || 'PILOT keeps retrying on its own, but this one needs a look so the document isn’t missing from the drive.';
+  // The closing line names an action too, so it follows the producer as well —
+  // a borrower cannot re-upload a package PILOT built.
+  const close = pilotMade
+    ? 'Open the Sync review screen to retry it or re-check where it files — and if the file itself is damaged, re-run the export on the file.'
+    : 'Open the Sync review screen to retry it or re-check where it files — and if the document’s saved copy is damaged, ask the borrower to upload it again.';
   return {
     title: `A document couldn’t be saved to SharePoint${who}`,
-    body: `A document${who} couldn’t be copied into your SharePoint team drive${spec}. ` +
-      `${status} ` +
-      `Open the Sync review screen to retry it or re-check where it files — and if the document’s saved copy is damaged, ask the borrower to upload it again.`,
+    body: `A document${who} couldn’t be copied into your SharePoint team drive${spec}. ${status} ${close}`,
   };
 }
 

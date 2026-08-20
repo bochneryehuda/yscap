@@ -1324,6 +1324,15 @@ if (require.main === module) {
     // mirrored before the categorizer change match it. Marker-gated, guarded,
     // kill switch SHAREPOINT_EMD_REFOLDER_DISABLED=1; inert when sync is off.
     try { require('./lib/sharepoint-emd-refolder').kickoff(); } catch (e) { console.warn('emd refolder not scheduled:', e.message); }
+    // One-shot: put every document carrying a `source-suspect` verdict back in
+    // front of the integrity audit, so the FIXED content sniffer re-judges it
+    // (owner-reported 2026-08-20: a TPR export PILOT built itself was reported
+    // corrupted because the tolerant "%PDF anywhere" scan outranked the ZIP
+    // signature). Marker-gated, bounded, never throws; SP_SOURCE_SUSPECT_RECHECK_DISABLED=1.
+    try {
+      require('./lib/sp-source-suspect-recheck').recheckSourceSuspectOnce()
+        .catch((e) => console.warn('source-suspect re-check skipped:', e.message));
+    } catch (e) { console.warn('source-suspect re-check not scheduled:', e.message); }
     // DocuSign e-sign heartbeat: drains the Connect event inbox + send queue and
     // reconciles any in-flight envelope that went quiet (missed-webhook recovery).
     // Self-gated — inert until the DocuSign credentials are configured.
