@@ -340,3 +340,90 @@ explicitly instead of silently inheriting an interpretation.
    version/sha in this doc and the CLAUDE.md frozen-baseline notes, with the
    owner's written authorization quoted; the engine is then re-frozen at the
    new numbers.
+
+---
+
+## 5. Sending EMCAP their OWN sheet back, filled in (owner-directed 2026-08-20)
+
+The Silver program was transcribed **from** this workbook. This section is about
+sending EMCAP the **original**: their file, their formulas, with the loan's inputs
+typed into the yellow cells, so their auto-classification, tier grid, rate key,
+indicative buy rate and eligibility decision all populate **by themselves** when
+they open it.
+
+- **Where it lives:** its own section of *Send to investor* on the loan file
+  (`sec-tapes`), beside the TPR export, the CorrFirst export and the data tape.
+- **What it is not:** a data tape. A tape (`src/lib/tapes/emcap.js`) is the loan
+  being **sold** — one row on EMCAP's submission workbook, behind the Encompass
+  reconciliation gate. This is the question asked **before** that: *would EMCAP
+  take this loan, and at what rate.* It is deliberately not in the tape registry
+  and does not go through the tape export gate. It DOES read every figure through
+  the tape's own derivations (`emcap.js economics` / `termMonths`), so the
+  eligibility sheet and the tape can never tell EMCAP two different numbers about
+  the same loan.
+- **Module:** `src/lib/tapes/emcap-pricing-tool.js`; template checked in verbatim
+  at `src/lib/tapes/templates/emcap-pricing-tool.xlsx`; routes
+  `GET /api/staff/applications/:id/export/emcap-pricing-tool[/preview]`.
+
+### The seventeen yellow cells
+
+| Cell | Input | Filled from |
+|---|---|---|
+| C6 | Loan Product | `ev.product` (FF / GUC / BR) |
+| C7 | Loan Purpose | `ev.loanType` → P / R |
+| C8 | Requested Term | `SVP.termToken(months)` → 12 / 18 / 24 |
+| C9 | Property Market | `ev.market` → STD / NYC |
+| C10 | Property ZIP | the file's property ZIP, as text |
+| C11 | Exit Strategy | `ev.exit` (FLIP / HOLD / BRIDGE) |
+| C13 | FICO | the file's pricing score |
+| C14 | Comparable projects (3 yrs) | **VERIFIED** experience, via `SVP.projectCount` |
+| C15 | GC-only experience | always **"No"** — never derived |
+| C17–C20 | Loan / acquisition cost / rehab / ARV | the tape's own `economics()` |
+| C21 | Note Rate | the file's final note rate (as a fraction) |
+| C23, C25 | Projected DSCR, projected profit | always **empty** |
+| C24 | Cash-Out | refinance only, from the registered quote's `refi.cashOut` |
+
+C18 is the engine's own `sizing.acqDenom` — the same denominator
+`costBasis0 = acqDenom + rehab` uses — so EMCAP's acq-LTV and LTC equal ours.
+
+### Three rules that must not be relaxed
+
+1. **The dropdown labels are read out of the workbook, never re-typed.** Every
+   downstream formula is an `INDEX(…Tokens, MATCH(C6, …Labels, 0))`, so a label one
+   character off its list does not look slightly wrong — it returns `#N/A` and the
+   loan reads INELIGIBLE. The module reads `ProdLabels/ProdTokens`,
+   `PurpLabels/PurpTokens`, `MktLabels/MktTokens`, `ExitLabels/ExitTokens`,
+   `TermsList` and `YesNoList` off the hidden **Engine** tab of the very file it is
+   about to fill, and looks each label up **by its token** — the same tokens the
+   frozen engine speaks, because both were transcribed from this workbook. A token
+   with no label ships the cell **blank** and names it.
+2. **The classification comes from `SVP.evaluate()`, not a second opinion.**
+   Product, purpose, market and exit are read off the same frozen engine, on the
+   same inputs (`pricing.buildInputs`), that priced the file. NYC is never typed by
+   hand — `marketOf` decides it from the property.
+3. **The vendor's sample loan must not survive.** EMCAP ships the tool with a
+   worked example typed in, so every input cell is written on every export (with a
+   value or blank), every formula cell's cached answer is dropped, and
+   `fullCalcOnLoad` is set. A viewer that ignores the flag then shows an empty cell
+   rather than the sample's verdict over our loan's inputs.
+
+### Evidence
+
+- `scripts/test-emcap-pricing-tool-pure.js` (in `npm test`) — reads the lists out
+  of the template and asserts every emitted value is a member; every input cell
+  written; no formula cell keeping a cached answer; every other zip part
+  byte-identical.
+- `scripts/test-emcap-pricing-tool-recalc.js` (in `npm test`) — **actually
+  recalculates** the built workbook in headless LibreOffice and asserts on what
+  EMCAP's own formulas computed (tier, bands, rate key, eligibility decision).
+  Skips loudly with no spreadsheet engine installed. Measured 2026-08-20: 58 checks
+  across 5 recalculated workbooks, and the pure suite was proven to fail against
+  four deliberate mutations (a mis-spelled label, claimed-instead-of-verified
+  experience, an unwritten input cell, and stale cached answers left in place).
+
+### Adding a note buyer's own sheet later
+
+Read the vocabulary out of that vendor's workbook the same way; classify from the
+frozen engine, never a second derivation; write **every** input cell; clear their
+cached answers; and prove it by recalculating a built file, not by inspecting the
+XML.
