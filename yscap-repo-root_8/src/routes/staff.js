@@ -11197,6 +11197,7 @@ router.get('/borrowers/:id/track-records', async (req, res) => {
               t.purchase_date, t.sale_date, t.rent_amount, t.rent_date, t.refi_amount, t.refi_date,
               t.current_value, t.notes, t.is_verified, t.verified_at, t.docs_status,
               t.property_type, t.verification_status, t.lo_notes, t.owned_personally,
+              ${require('../lib/track-record/records-stamp').stampSelect('t')},
               COALESCE(t.entity_name, l.llc_name) AS entity_name, v.full_name AS verified_by_name,
               (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count,
               (SELECT COALESCE(json_agg(json_build_object(
@@ -12382,6 +12383,10 @@ router.get('/track-record-workspace', async (req, res) => {
       limit: Number(req.query.limit) || 40,
       filter: req.query.filter === 'all' ? 'all' : 'open',
       staffId: req.actor.id,
+      // One borrower's whole record (the full-screen link off a loan file).
+      // Shape-checked here so a malformed id is "no rows", never a pg 22P02
+      // that the catch below turns into "server error".
+      borrowerId: UUID_RE.test(String(req.query.borrower || '')) ? String(req.query.borrower) : null,
     }));
   } catch (e) { console.warn('[workspace]', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
@@ -12533,6 +12538,72 @@ router.post('/track-records/:id/research', async (req, res) => {
     require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json(out);
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+/* "SEE MORE INFORMATION" on one line (owner-directed 2026-08-19) — the
+   property's whole recorded story (deeds, mortgages, satisfactions, parties)
+   plus what the records could fill in. Reads through the SAME cached research
+   the Verify button uses, so a second click costs nothing; `refresh:true`
+   re-reads the county. STAFF-ONLY — the story names raw recorded parties. */
+router.post('/track-records/:id/more-info', async (req, res) => {
+  try {
+    // A malformed id is a 404, never a pg 22P02 surfacing as "server error".
+    if (!UUID_RE.test(String(req.params.id || ''))) return res.status(404).json({ error: 'not found' });
+    const own = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const out = await require('../lib/track-record/line-details').moreInfo(req.params.id, {
+      staffId: req.actor.id, refresh: (req.body || {}).refresh === true,
+    });
+    await audit(req, 'track_record_more_info', 'track_record', req.params.id,
+      { calls: out.calls, cached: out.cached, suggestions: (out.suggestions || []).length });
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+/* …and IMPORT what it found: fill the line's BLANK fields from the records —
+   COALESCE-only (a value anybody typed is never overwritten), through the
+   importer's own records→deal mapping, with the merge verb's confirm-to-reopen
+   guard on a verified line. */
+router.post('/track-records/:id/more-info/apply', async (req, res) => {
+  try {
+    if (!UUID_RE.test(String(req.params.id || ''))) return res.status(404).json({ error: 'not found' });
+    const own = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    const out = await require('../lib/track-record/line-details').applyFromRecords(req.params.id, {
+      staffId: req.actor.id,
+      fields: Array.isArray(b.fields) ? b.fields : null,
+      confirmReopen: b.confirmReopen === true,
+    });
+    await audit(req, 'track_record_records_fill', 'track_record', req.params.id,
+      /* The VALUES, not only the field names — "what figure did we write onto
+         this line, from the records, on that day" is the question this row has
+         to answer years later, and a list of column names cannot. */
+      { applied: (out.applied || []).map((a) => ({ field: a.field, value: a.value })), reopened: out.reopened === true });
+    if ((out.applied || []).length) {
+      /* A MATERIAL FILL UN-VERIFIES THE LINE (db/485), SO THE COUNT THAT PRICES
+         THE DEAL JUST MOVED. Every other door that can move it recomputes the
+         tier and re-syncs the experience condition — the edit, the delete and
+         the verify routes all do, and so does the borrower's own search. This
+         one did neither, so `borrowers.tier` (a live Condition-Center rule
+         field, and part of the AI grounding block) kept quoting the old number
+         and a signed-off experience condition was never reopened. Same three
+         calls, same order, all best-effort. */
+      if (out.reopened === true) {
+        await db.query(
+          `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records
+              WHERE borrower_id=$1 AND is_verified=true AND (${RECENT_EXIT_SQL})) WHERE id=$1`,
+          [own.rows[0].borrower_id]).catch(() => {});
+        try { await require('../lib/experience').syncExperienceChecklistForBorrower(own.rows[0].borrower_id); } catch (_) { /* best effort */ }
+        try {
+          await conditionEngine.evaluateBorrowerApplications(own.rows[0].borrower_id,
+            { actor: req.actor, reason: 'track_record_unverified' });
+        } catch (_) { /* best effort */ }
+      }
+      require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
+    }
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error', code: e.code, fields: e.fields }); }
 });
 router.post('/track-record-pillars/:id/decide', async (req, res) => {
   try {

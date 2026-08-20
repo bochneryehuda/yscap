@@ -16,11 +16,13 @@
  * ═══ NOTHING HERE SPENDS MONEY ════════════════════════════════════════════
  * This module makes NO vendor call — not one, not cached, not conditional. It
  * reads a queue a staffer already paid for. A borrower pressing a button must
- * never be able to spend the office's hourly allowance, and the way to guarantee
- * that is for the code path to contain no lookup at all rather than a throttle
- * somebody could later raise. A test asserts the module never requires the
- * lookups layer. Borrower-INITIATED search is a separate, later thing with its
- * own budget class and its own privacy design.
+ * never be able to spend the office's hourly allowance THROUGH THIS MODULE, and
+ * the way to guarantee that is for the code path to contain no lookup at all
+ * rather than a throttle somebody could later raise. A test asserts the module
+ * never requires the lookups layer. Borrower-INITIATED search exists as its own
+ * separate door with its own budget class (self-search.js, 2026-08-19 — durable
+ * cooldown + monthly ceiling, never a bare personal-name search); what it finds
+ * lands in THIS queue for the borrower to confirm.
  *
  * ═══ WHAT A BORROWER MAY SEE ══════════════════════════════════════════════
  * `SAFE_FIELDS` is a closed list and the projection is built from it, so a

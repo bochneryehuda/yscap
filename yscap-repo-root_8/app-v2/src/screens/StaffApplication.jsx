@@ -2689,7 +2689,7 @@ function StaffTrackRecordPanel({ app, role }) {
   const borrowerId = people.some(p => p.id === selected) ? selected : app.borrower_id;
   const [snap, setSnap] = useState(null);
   const [dl, setDl] = useState(false);
-  const [full, setFull] = useState(false);   // full-screen tool sheet (same UX as the Scope of Work)
+  const [full, setFull] = useState(false);   // the legacy spreadsheet-editor tool sheet (bulk grid + xlsx import/export)
   // Per-line-item list so staff can raise an issue/request against a SPECIFIC
   // past project — it becomes a named condition on this file the borrower answers.
   const [trs, setTrs] = useState([]);
@@ -2807,13 +2807,24 @@ function StaffTrackRecordPanel({ app, role }) {
       <div className="row" style={{ marginBottom: 6, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <h3>Track record &amp; experience</h3>
         <div className="spacer" />
-        <button className="btn primary small" onClick={() => setFull(true)}
-          title="Open the track record in the full-screen workspace — same as the Scope of Work">
+        {/* THE FULL SCREEN IS THE REAL WORKSPACE (owner-directed 2026-08-19:
+            "when we click on the full screen, it's coming up like the statics
+            type of copy" — it opened the legacy static tool in an iframe). It
+            now opens /internal/track-record narrowed to this borrower: the
+            live checks, documents, actions AND the public-records search. The
+            legacy tool stays one click away below as the spreadsheet editor —
+            it is still the one place to bulk-edit or import/export the grid. */}
+        <Link className="btn primary small" to={`/internal/track-record?borrower=${borrowerId}`}
+          title="This borrower's projects in the full-screen track-record workspace — every check, the documents, the actions, and the public-records search.">
           Open full screen
+        </Link>
+        <button className="btn ghost small" onClick={() => setFull(true)}
+          title="The spreadsheet-style editor (the legacy tool sheet) — bulk-edit the grid, import or export Excel.">
+          Spreadsheet editor
         </button>
         {/* #82: the "Preview" of a saved static copy was removed — it opened a
-            stale snapshot. "Open full screen" is the live, editable, auto-saving
-            record; the HTML export below stays for a static copy on hand. */}
+            stale snapshot. The workspace link is the live record; the HTML
+            export below stays for a static copy on hand. */}
         {snap && (
           <button className="btn ghost small" disabled={dl} onClick={download}
             title="The borrower's saved static copy — refreshed automatically on every change">
@@ -2886,11 +2897,15 @@ function StaffTrackRecordPanel({ app, role }) {
           borrowerName={(people.find(p => p.id === borrowerId) || {}).label || ''} />
       </div>
       {/* Phase E (owner-directed 2026-08-09): the EMBEDDED legacy editor is
-          retired — the ledger above is the record you read, "Open full screen"
-          is the editor, and the borrower's saved copy is rebuilt SERVER-SIDE on
-          every write (src/lib/track-record/html-copy.js), so nothing depends on
-          this page hosting the tool any more. The borrower's own tool sheet and
-          the ?internal=1 bridge are untouched (constraint A13). */}
+          retired — the ledger above is the record you read. "Open full screen"
+          now navigates to the REAL workspace (/internal/track-record?borrower=,
+          owner-directed 2026-08-19: the full screen must be the live center,
+          never the static-copy tool), and the legacy grid survives behind the
+          "Spreadsheet editor" button (the ToolModal below — still the only
+          bulk-edit grid / xlsx import). The borrower's saved copy is rebuilt
+          SERVER-SIDE on every write (src/lib/track-record/html-copy.js), so
+          nothing depends on this page hosting the tool any more. The borrower's
+          own tool sheet and the ?internal=1 bridge are untouched (A13). */}
       {/* AFTER the record itself (owner-directed 2026-08-03) — you read the track
           record, then you read what is still left on it. The detail list reads
           the SAME todo payload fetched above (`preloaded`), so the section costs
@@ -3987,7 +4002,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                    iframe modal. The Track Record CENTER on this same page is now
                    the workspace — jump there (the whose-record picker at its top
                    covers the co-borrower case the old per-borrower buttons did;
-                   full editing stays one click away via its "Open full screen"). */
+                   its "Open full screen" link opens the real workspace and its
+                   "Spreadsheet editor" button keeps the legacy grid one click
+                   away). */
                 <button className="btn ghost small" onClick={() => goToSection('sec-track')}
                   title="Open the Track Record Center on this file — the record, the experience math, and every action">
                   Open the track record

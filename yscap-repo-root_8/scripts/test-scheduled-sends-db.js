@@ -355,7 +355,7 @@ const rowOf = async (id) => (await db.query(`SELECT * FROM scheduled_sends WHERE
     /* ── J. the registry and the doors agree ─────────────────────────────── */
     console.log('\nJ. what can be scheduled');
     const fs = require('fs');
-    const chk = fs.readFileSync(require('path').join(__dirname, '..', 'db', '598_scheduled_sends_for_order_emails.sql'), 'utf8');
+    const chk = fs.readFileSync(require('path').join(__dirname, '..', 'db', '599_scheduled_sends_for_order_emails.sql'), 'utf8');
     for (const k of Object.keys(sched.KINDS)) {
       ok(chk.includes(`'${k}'`), `the database allows the kind the registry offers: ${k}`);
     }

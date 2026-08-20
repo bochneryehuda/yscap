@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
 import LlcManager, { llcBadge, US_STATES } from '../components/LlcManager.jsx';
+import { EntityRecordsStamp } from '../components/track-record/RecordsStamp.jsx';
 
 /* Your entities (LLCs) — the full, standalone section. Every LLC the borrower
    borrows through lives here as its own card: formation details, EIN, the
@@ -27,6 +28,7 @@ function EntityCard({ llc, apps, onChanged, startOpen }) {
           <div className="row" style={{ gap: 8, alignItems: 'center' }}>
             <h3 style={{ margin: 0 }}>{llc.llc_name}</h3>
             <span className={`ts-badge ${badge.cls}`}>{badge.text}</span>
+            <EntityRecordsStamp adoptedSource={llc.adopted_source} at={llc.adopted_at} />
           </div>
           <div className="muted small" style={{ marginTop: 4 }}>
             {[

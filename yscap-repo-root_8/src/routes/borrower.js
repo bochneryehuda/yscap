@@ -2914,6 +2914,37 @@ router.post('/track-record-candidates/:id/undo', async (req, res) => {
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
 
+/* ── THE BORROWER'S OWN SEARCH (owner-directed 2026-08-19: "also on the
+   borrower side, they can click the search button on themselves and import
+   their entire track record"). The ONE borrower door that may spend the
+   office's lookup allowance — which is exactly why it is a separate module
+   with a DURABLE cooldown + monthly ceiling (src/lib/track-record/
+   self-search.js: same engine as the staff button, never a bare personal-name
+   search, borrower-safe wording), plus this per-minute throttle keyed on the
+   PERSON — never the IP; the confirm routes above stay vendor-free, exactly
+   as their comment promises. */
+const selfSearchThrottle = require('../lib/rate-limit').keyedRateLimit({
+  bucket: 'borrower-tr-search', windowMs: 60000, max: 3, keyOf: (req) => me(req) || '',
+});
+router.post('/track-record-search', selfSearchThrottle, async (req, res) => {
+  try {
+    const out = await require('../lib/track-record/self-search').selfSearch(me(req));
+    if (out.ran) {
+      await audit(req, 'borrower_track_record_search', 'borrower', me(req), {
+        ...(out._audit || {}),
+        found: out.found, imported: out.imported, merged: out.merged,
+        entitiesAdded: out.entitiesAdded, forReview: out.forReview,
+      });
+      try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+      if (out.found || out.imported || out.merged || out.forReview) {
+        require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
+      }
+    }
+    const { _audit, ...body } = out;   // audit detail never rides to the screen
+    res.json(body);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+
 router.get('/track-records', async (req, res) => {
   // Explicit borrower-safe allowlist — NEVER `t.*`. The row carries internal-only
   // columns the borrower must not see: `lo_notes` (candid staff notes on the deal,
@@ -2937,6 +2968,11 @@ router.get('/track-records', async (req, res) => {
                is worse than one that was never asked for: it looks like the
                system lost the answer, and on the next save it actually does. */
             t.property_type,
+            /* The records stamp — 'verified' | 'sourced' | null (one definition,
+               src/lib/track-record/records-stamp.js). Borrower-safe: it is a
+               statement about THEIR OWN line's provenance, carrying no vendor
+               payload, no staff decision and no internal note. */
+            ${require('../lib/track-record/records-stamp').stampSelect('t')},
             COALESCE(t.entity_name, l.llc_name) AS entity_name,
             (SELECT count(*)::int FROM documents d
               WHERE d.track_record_id=t.id AND d.visibility='borrower' AND d.is_current) AS doc_count,

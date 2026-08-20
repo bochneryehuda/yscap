@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/598 — scheduled sends for order emails
+-- db/599 — scheduled sends for order emails
 --
 -- WHAT THIS CHANGES, AND WHY (owner-directed 2026-08-20). The Orders desk could
 -- only send an order NOW. The owner: "If somebody wants to work in the middle of

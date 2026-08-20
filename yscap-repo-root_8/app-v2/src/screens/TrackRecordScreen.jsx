@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { askConfirm } from '../lib/dialog.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import ConfirmFoundProperties from '../components/ConfirmFoundProperties.jsx';
@@ -43,13 +44,18 @@ export default function TrackRecordScreen() {
   const [note, setNote] = useState('');
   const [req, setReq] = useState(null);      // this file's experience requirement
   const [counts, setCounts] = useState(null); // live counts (server rows, then tool sync events)
+  const [searching, setSearching] = useState(false);
+  const [searchNote, setSearchNote] = useState('');   // the server's own borrower-safe summary
+  const [confirmKey, setConfirmKey] = useState(0);    // remounts ConfirmFoundProperties after a search
+
+  const refreshCounts = () => api.trackRecords().then((rows) => {
+    const c = { flips: 0, holds: 0, ground: 0, total: 0 };
+    for (const r of rows || []) { c[bucketOf(r.deal_type)]++; c.total++; }
+    setCounts(c);
+  }).catch(() => {});
 
   useEffect(() => {
-    api.trackRecords().then(rows => {
-      const c = { flips: 0, holds: 0, ground: 0, total: 0 };
-      for (const r of rows || []) { c[bucketOf(r.deal_type)]++; c.total++; }
-      setCounts(c);
-    }).catch(() => {});
+    refreshCounts();
     if (appId) {
       api.application(appId).then(a => setReq({
         flips: Number(a.requested_exp_flips) || 0,
@@ -74,14 +80,11 @@ export default function TrackRecordScreen() {
   useEffect(() => {
     const unsub = subscribeChat((event) => {
       if (event !== 'track_record:updated') return;
-      api.trackRecords().then((rows) => {
-        const c = { flips: 0, holds: 0, ground: 0, total: 0 };
-        for (const r of rows || []) { c[bucketOf(r.deal_type)]++; c.total++; }
-        setCounts(c);
-      }).catch(() => {});
+      refreshCounts();
       reloadTrackRecordFrames();
     });
     return unsub;
+    /* eslint-disable-next-line */
   }, []);
 
   // The sheet takes the page over — the portal chrome behind it must not scroll.
@@ -111,6 +114,39 @@ export default function TrackRecordScreen() {
       }
     } finally {
       nav(`/app/${appId}`);
+    }
+  }
+
+  /* The borrower's own public-records search (owner-directed 2026-08-19: "also
+     on the borrower side, they can click the search button on themselves and
+     import their entire track record"). One button: the server runs the SAME
+     records search our team runs (never a bare personal-name lookup — the
+     server enforces that), imports what it can, and stages the rest in the
+     confirm section below. The note shown afterwards is the server's own
+     borrower-safe summary — this screen never words an outcome itself. */
+  async function runRecordsSearch() {
+    if (searching) return;
+    const go = await askConfirm(
+      'We will look through the county public records for past projects connected to you and your '
+      + 'companies, and add what we find to your track record. Anything we are not sure about will '
+      + 'wait below for you to confirm.\n\nRun the search now?',
+      { title: 'Search the public records', confirmLabel: 'Search the records' },
+    );
+    if (!go) return;
+    setSearching(true);
+    setSearchNote('');
+    try {
+      const out = await api.borrowerTrackRecordSearch();
+      setSearchNote((out && out.summary) || 'The search finished.');
+      if (out && out.ran) {
+        reloadTrackRecordFrames();
+        refreshCounts();
+        setConfirmKey((k) => k + 1);
+      }
+    } catch (e) {
+      setSearchNote((e && e.message) || 'The search could not run right now — please try again in a few minutes.');
+    } finally {
+      setSearching(false);
     }
   }
 
@@ -162,13 +198,30 @@ export default function TrackRecordScreen() {
               writes a line server-side, so the tool below is told to re-read
               rather than being edited from here. It renders nothing at all when
               there is nothing to confirm, which is the ordinary case. */}
-          <ConfirmFoundProperties onChanged={() => {
+          {/* The borrower's own records search — a card, above the confirm
+              section it feeds. Explicit dark text per the hard rule. */}
+          <div className="panel" style={{ marginBottom: 12 }}>
+            <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <strong style={{ color: '#141B22' }}>Fill in my track record from the public records</strong>
+                <p className="muted small" style={{ margin: '4px 0 0' }}>
+                  We check the county public records for past projects connected to you and your
+                  companies and add them here — anything we are not sure about waits for you to confirm.
+                </p>
+              </div>
+              <button className="btn primary" disabled={searching} onClick={runRecordsSearch}>
+                {searching ? 'Searching the records…' : 'Search the records for my projects'}
+              </button>
+            </div>
+            {searchNote && (
+              <div className="notice" style={{ marginTop: 8 }}>
+                <span style={{ color: '#141B22' }}>{searchNote}</span>
+              </div>
+            )}
+          </div>
+          <ConfirmFoundProperties key={`cfp-${confirmKey}`} onChanged={() => {
             reloadTrackRecordFrames();
-            api.trackRecords().then((rows) => {
-              const c = { flips: 0, holds: 0, ground: 0, total: 0 };
-              for (const r of rows || []) { c[bucketOf(r.deal_type)]++; c.total++; }
-              setCounts(c);
-            }).catch(() => {});
+            refreshCounts();
           }} />
           <StaticToolFrame
             title="Borrower track record"

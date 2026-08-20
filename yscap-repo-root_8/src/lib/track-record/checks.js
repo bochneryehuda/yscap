@@ -950,5 +950,5 @@ module.exports = {
   DATE_TOLERANCE_DAYS,
   PERM_TERM_MIN_MONTHS,
   PURCHASE_FINANCING_DAYS,
-  _internals: { ymd, daysBetween, monthsBetween, whoIsThis, normalizeContext, normalizeRecords, gradeOf },
+  _internals: { ymd, daysBetween, monthsBetween, whoIsThis, normalizeContext, normalizeRecords, gradeOf, samePlace, forProperty, addressesOfRecord },
 };
