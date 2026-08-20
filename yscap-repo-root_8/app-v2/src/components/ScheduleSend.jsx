@@ -189,7 +189,15 @@ export function useScheduledSends(appId, deps = []) {
     try { setRows(await api.staffScheduledSends(appId)); }
     catch (_) { /* the queue is an assist; a failed read must not break the panel */ }
   }, [appId]);
-  useEffect(() => { load(); }, [load, ...deps]);   // eslint-disable-line react-hooks/exhaustive-deps
+  /* THE CALLER'S DEPS ARE FOLDED INTO ONE KEY, NEVER SPREAD. React throws a hard
+     error the moment a dependency list changes LENGTH between renders, and
+     spreading a caller-supplied array hands that decision to the caller — every
+     caller, forever. Both of today's callers happen to pass a fixed one-element
+     array, so nothing misbehaves; one built from data that starts empty and fills
+     would take the file screen down. Folding them makes the list exactly two
+     entries by construction, and the effect still re-runs when a value changes. */
+  const depKey = deps.map((d) => (d == null ? '' : String(d))).join('');
+  useEffect(() => { load(); }, [load, depKey]);   // eslint-disable-line react-hooks/exhaustive-deps
   const cancel = useCallback(async (row) => {
     if (!(await askConfirm(`Cancel the scheduled ${String(row.what || row.label).toLowerCase()}? Nothing will be sent, and you can schedule it again.`))) return;
     try { await api.staffCancelScheduledSend(appId, row.id); await load(); }
