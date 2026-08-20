@@ -6313,6 +6313,7 @@ export default function StaffApplication() {
         info="Everything that leaves this file for an outside party: the TPR clean-file export, the MISMO 3.4 file, and the capital provider's own data tape.">
       <TprExport appId={id} />
       <CorrfirstExport appId={id} />
+      <EmcapPricingTool appId={id} />
       <MismoExport appId={id} />
       {can('export_data_tapes') && <TapeExport appId={id} />}
       </Section>
@@ -6740,6 +6741,131 @@ function CorrfirstExport({ appId }) {
    Excel workbook (e.g. the Fidelis Pricing Matrix / Data Tape). A loan can only
    export the tape of the provider it is CURRENTLY assigned to; the others show a
    plain reason (switch the capital provider first). */
+/* EMCAP PRICING & ELIGIBILITY TOOL — the investor's own sheet, filled in.
+
+   This is the workbook the Silver program was transcribed from. We send EMCAP the
+   ORIGINAL: their file, their formulas, with this loan's inputs typed into the
+   yellow cells, so their auto-classification, their tier grid, their rate and their
+   eligibility decision all populate BY THEMSELVES when they open it.
+
+   Not a data tape. A tape is the loan being SOLD; this is the question asked BEFORE
+   that — would EMCAP take this loan, and at what rate — so it has its own section
+   here and does not go through the tape export gate.
+
+   Everything a yellow cell gets is listed BEFORE the download, and any cell that
+   will ship empty is NAMED with the reason — nothing goes to a note buyer
+   unannounced. */
+function EmcapPricingTool({ appId }) {
+  const [prev, setPrev] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  useEffect(() => {
+    let live = true;
+    api.staffEmcapPricingToolPreview(appId)
+      .then((p) => { if (live) setPrev(p); })
+      .catch(() => { if (live) setPrev({ error: true }); });
+    return () => { live = false; };
+  }, [appId]);
+  async function download() {
+    setBusy(true); setMsg('');
+    try {
+      const { blob, filename } = await api.staffEmcapPricingToolExport(appId);
+      saveBlob(blob, filename || 'EMCAP-Pricing-Eligibility.xlsx');
+      setMsg('Exported EMCAP’s pricing & eligibility sheet. Open it in Excel — it prices itself.');
+    } catch (e) {
+      const d = (e && e.data) || {};
+      showMessage(d.message || d.error || e.message || 'Export failed');
+    } finally { setBusy(false); }
+  }
+  const avail = (prev && prev.availability) || null;
+  const filled = (prev && prev.filled) || [];
+  const gaps = (prev && prev.gaps) || [];
+  const cls = (prev && prev.classification) || null;
+  const ve = (prev && prev.verifiedExperience) || null;
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <h3>EMCAP pricing &amp; eligibility sheet</h3>
+        <div className="spacer" />
+        <button className="btn primary" onClick={download}
+          disabled={busy || !prev || prev.error || !avail || !avail.available}>
+          {busy ? 'Building…' : 'Export the sheet (Excel)'}
+        </button>
+      </div>
+      {!prev ? <p className="muted small">Checking this loan…</p> : prev.error ? (
+        <p className="muted small" style={{ color: 'var(--gold-ink)' }}>Couldn’t read this loan. Refresh to try again.</p>
+      ) : (
+        <>
+          <p className="muted small">
+            EMCAP’s own <b style={{ color: '#141B22' }}>RTL Seller Pricing &amp; Eligibility Tool</b>, with this loan
+            typed into its yellow input cells. Their sheet does the rest when they open it — the auto-classification,
+            the borrower tier, the rate and the eligibility decision all fill themselves in. Nothing else in the
+            workbook is touched.
+          </p>
+          {avail && !avail.available && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--gold,#AE8746)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>This isn’t an EMCAP loan.</b>
+              <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>{avail.why}</div>
+              <button type="button" onClick={() => goToSection('sec-overview')}
+                style={{ background: 'none', border: 'none', color: '#0B6B63', textDecoration: 'underline', cursor: 'pointer', padding: 0, marginTop: 6, font: 'inherit' }}>
+                Change the capital provider →
+              </button>
+            </div>
+          )}
+          {cls && (
+            <div className="row small" style={{ gap: 6, flexWrap: 'wrap', marginTop: 8, color: '#4B585C' }}>
+              <span className="muted">EMCAP will read this as:</span>
+              {[cls.product, cls.purpose === 'R' ? 'Refinance' : 'Purchase', cls.market, cls.exit].filter(Boolean).map((t, i) => (
+                <span key={i} className="pill">{t}</span>
+              ))}
+            </div>
+          )}
+          {filled.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div className="small" style={{ fontWeight: 600, color: '#141B22', marginBottom: 3 }}>
+                Going into their yellow cells ({filled.length}):
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: '2px 14px' }}>
+                {filled.map((f) => (
+                  <div key={f.cell} className="small" style={{ color: '#4B585C' }}>
+                    <span style={{ color: '#141B22' }}>{f.label}</span>: <b style={{ color: '#141B22' }}>{f.display}</b>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* The verified track record is what sets EMCAP's borrower tier, so show what
+              the number in that cell is actually made of. */}
+          {ve && (
+            <div className="small" style={{ color: '#4B585C', marginTop: 6 }}>
+              Verified track record behind the comparable-projects cell: {ve.flips} fix &amp; flip · {ve.holds} fix &amp; hold · {ve.ground} ground-up
+              {' '}(only VERIFIED projects go to a note buyer).
+            </div>
+          )}
+          {gaps.length > 0 && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--gold,#AE8746)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>These cells go out empty:</b>
+              <ul style={{ margin: '3px 0 0 18px', padding: 0, color: '#4B585C' }}>
+                {gaps.map((g) => (
+                  <li key={g.cell} className="small">
+                    <span style={{ color: '#141B22' }}>{g.label}</span> — {g.why}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="small" style={{ color: '#4B585C', marginTop: 8 }}>
+            Left for a human on purpose: <b style={{ color: '#141B22' }}>GC-only experience</b> stays “No” (nothing on the
+            file records it, and it would move EMCAP’s tier), and the projected DSCR and projected project profit stay
+            empty. Their dropdowns are still live, so anyone can change them in the sheet.
+          </div>
+          {msg && <div className="small" role="status" style={{ marginTop: 6, color: '#0B6B63' }}>{msg}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
 function TapeExport({ appId }) {
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(null);

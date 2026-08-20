@@ -5290,6 +5290,62 @@ router.get('/applications/:id/export/corrfirst-track-record', async (req, res) =
   }
 });
 
+// ============ EMCAP pricing & eligibility tool (the investor's own sheet) =====
+// EMCAP's RTL Seller Pricing & Eligibility Tool — their workbook, their formulas,
+// with this loan's inputs typed into the yellow cells so their own tabs price it
+// and rule on it when they open the file. This is the question asked BEFORE the
+// sale ("would EMCAP take this loan, and at what rate"), so it is deliberately NOT
+// a data tape: no tape registry, no tape export gate, its own section of Send to
+// investor. All of the shaping lives in src/lib/tapes/emcap-pricing-tool.js.
+//
+// Readiness preview — every value that will go into a yellow cell, and every cell
+// that will ship EMPTY with the reason, BEFORE the file is built.
+router.get('/applications/:id/export/emcap-pricing-tool/preview', async (req, res) => {
+  try {
+    const out = await require('../lib/tapes/emcap-pricing-tool').previewEmcapPricingTool(req.params.id, db);
+    if (!out) return res.status(404).json({ error: 'application not found' });
+    res.json(out);
+  } catch (e) {
+    console.error('[emcap-pricing-tool] preview failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+// The download. Same issuance backstop as the TPR / MISMO / CorrFirst exports
+// beside it — a confirmed-fatal file is a super-admin-overridable HARD WARNING
+// before this borrower's figures leave for a capital partner. Fails OPEN on no run.
+router.get('/applications/:id/export/emcap-pricing-tool', async (req, res) => {
+  try {
+    const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
+    if (issuance.hardWarning && !issuance.proceed) {
+      return res.status(409).json({ error: 'blocked', action: 'export_emcap_pricing_tool', issuance });
+    }
+    if (issuance.override && issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_emcap_pricing_tool', tier: issuance.tier, reason: issuance.override.reason });
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_emcap_pricing_tool: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_emcap_pricing_tool', tier: issuance.tier || null, at: new Date().toISOString() } });
+    }
+    const out = await require('../lib/tapes/emcap-pricing-tool').buildEmcapPricingTool(req.params.id, db);
+    if (!out) return res.status(404).json({ error: 'application not found' });
+    if (!out.availability.available) {
+      return res.status(409).json({ error: 'not_emcap', message: out.availability.why });
+    }
+    // What was filled and what shipped blank rides on the AUDIT ROW: a workbook has
+    // nowhere to put a note, so this is the only durable record of what EMCAP was
+    // sent and of every cell we could not answer.
+    await audit(req, 'export_emcap_pricing_tool', 'application', req.params.id, {
+      bytes: out.buf.length,
+      filled: out.filled.map((f) => `${f.cell}=${f.display}`),
+      gaps: out.gaps.map((g) => `${g.cell}: ${g.why}`),
+      classification: out.classification,
+    });
+    res.set('Content-Type', out.contentType);
+    res.set('Content-Disposition', `attachment; filename="${out.filename}"`);
+    res.send(out.buf);
+  } catch (e) {
+    console.error('[emcap-pricing-tool] export failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'export failed' });
+  }
+});
+
 // ============================ Capital-provider data tapes =====================
 // A "data tape" is one capital provider's required loan export — their own Excel
 // workbook with our loan's figures typed into its data-entry row so the provider's
