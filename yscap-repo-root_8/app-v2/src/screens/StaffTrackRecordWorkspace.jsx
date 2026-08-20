@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { canDeleteDoc } from '../lib/condition-actions.js';
 import LineDetail from '../components/track-record/LineDetail.jsx';
+import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 
 /* THE TRACK-RECORD WORKSPACE — ONE screen: the queue of every borrower with
    unfinished track-record work on the left, and one line's whole story on the
@@ -191,6 +192,18 @@ export default function StaffTrackRecordWorkspace() {
                 onDeleted={() => setSelected(null)} />}
         </div>
       </div>
+
+      {/* ── THE PUBLIC-RECORDS SEARCH — available here too (owner-directed
+          2026-08-19: "the option to pull in their public records should be
+          available in all places"). It needs ONE person to search for, so it
+          renders only when the screen is narrowed to one borrower; the search
+          + import land on the record and loadQueue picks them up. The SAME
+          shared workbench the loan file and the profile mount — never a copy. */}
+      {borrowerFilter && (
+        <div style={{ marginTop: 12 }}>
+          <StaffPropertyWorkbench key={`wb-${borrowerFilter}`} borrowerId={borrowerFilter} />
+        </div>
+      )}
     </div>
   );
 }

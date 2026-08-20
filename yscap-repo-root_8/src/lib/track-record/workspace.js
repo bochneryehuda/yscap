@@ -163,7 +163,8 @@ async function loadLine(trackRecordId, { role, canSignOff } = {}, client) {
   const db = client || require('../../db');
   const t = (await db.query(
     `SELECT t.*, NULLIF(TRIM(COALESCE(b.full_name,'')),'') AS borrower_name,
-            l.llc_name, l.is_verified AS entity_docs_verified
+            l.llc_name, l.is_verified AS entity_docs_verified,
+            ${require('./records-stamp').stampSelect('t')}
        FROM track_records t
        JOIN borrowers b ON b.id = t.borrower_id
        LEFT JOIN llcs l ON l.id = t.llc_id
@@ -246,6 +247,10 @@ async function loadLine(trackRecordId, { role, canSignOff } = {}, client) {
       llcId: t.llc_id,
       entityDocsVerified: t.entity_docs_verified === true,
       loNotes: t.lo_notes,
+      /* The records stamp (one definition, records-stamp.js) — the chip the
+         line detail renders beside the address. */
+      recordsStamp: t.records_stamp || null,
+      recordsStampAt: t.records_stamp_at || null,
     },
     cards,
     readiness: PA.lineReadiness(pillars),

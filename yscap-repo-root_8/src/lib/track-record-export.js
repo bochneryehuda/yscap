@@ -54,6 +54,16 @@ function tallyReviewStatus(sections) {
   return c;
 }
 
+// The records-stamp headline ("VERIFIED TO ELEMENTIX — N of M …"), or null when
+// no row is records-backed. Rows carry __recordsStamp (set by the caller from
+// the derived records_stamp column); the wording is the ONE definition in
+// track-record/records-stamp.js — never restated here.
+function recordsStampLine(sections) {
+  const rows = [];
+  for (const sec of sections) for (const row of (sec.rows || [])) rows.push({ records_stamp: row.__recordsStamp || null });
+  return require('./track-record/records-stamp').summaryLine(rows);
+}
+
 // Build the array-of-arrays for the workbook. Money cells stay NUMERIC (so they
 // sum + right-align in Excel), everything else is a string. Fed straight into
 // tpr-export.buildXlsx — the same proven, style-free writer the package already
@@ -94,6 +104,10 @@ function trackRecordAoa(sections, meta = {}) {
   aoa.push(['  Pending review (self-reported): ' + t.pending]);
   aoa.push(['  Not yet verified: ' + t.not_verified]);
   aoa.push(['  Total with documentation attached: ' + t.withDocs]);
+  // The records stamp — the owner's own words ("Verified to Elementix"),
+  // printed only when a row actually carries it; an unstamped export is unchanged.
+  const stampLine = recordsStampLine(sections);
+  if (stampLine) aoa.push(['  ' + stampLine]);
   aoa.push([]);
   aoa.push(['Status key:  Verified = confirmed by the loan team.  Docs in — review = a document is attached and is being reviewed (not yet verified).  Pending review = the borrower entered this and it is waiting on the loan team.  Not verified = nothing attached and not yet reviewed.']);
   return aoa;
@@ -142,7 +156,20 @@ async function buildTrackRecordPdf(sections, meta = {}) {
     chip('not_verified', tally.not_verified);
     page.drawText(`· Documentation attached: ${tally.withDocs} of ${tally.total}`, { x, y, size: 7.5, font, color: muted });
   }
-  y -= 18;
+  y -= 13;
+  // THE RECORDS STAMP — a flat teal line under the summary (never angled; the
+  // stamp design spec), drawn only when a row is records-backed. The words are
+  // records-stamp.summaryLine's — "VERIFIED TO ELEMENTIX", the owner's own.
+  {
+    const stampLine = recordsStampLine(sections);
+    if (stampLine) {
+      const teal = rgb(0.184, 0.498, 0.525);
+      page.drawRectangle({ x: ML, y: y - 3, width: 3, height: 11, color: teal });
+      page.drawText(stampLine, { x: ML + 7, y, size: 7.5, font: bold, color: teal });
+      y -= 13;
+    }
+  }
+  y -= 5;
 
   for (const sec of sections) {
     const totalW = sec.columns.reduce((a, c) => a + (c.w || 1), 0) || 1;
@@ -205,4 +232,4 @@ async function buildTrackRecordPdf(sections, meta = {}) {
   return Buffer.from(await doc.save());
 }
 
-module.exports = { trackRecordAoa, buildTrackRecordPdf, trackRecordReviewStatus, REVIEW_STATUS, tallyReviewStatus };
+module.exports = { trackRecordAoa, buildTrackRecordPdf, trackRecordReviewStatus, REVIEW_STATUS, tallyReviewStatus, recordsStampLine };

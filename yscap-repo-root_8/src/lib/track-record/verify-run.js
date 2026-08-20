@@ -168,6 +168,12 @@ async function runVerify(trackRecordId, opts = {}, client) {
     // What the ladder would make of it, so the screen can show a band without a
     // second round trip. Advisory — nothing is decided by it.
     signals: CHECKS.signalsFor(results, research, entityContext),
+    /* The records themselves (additive 2026-08-20) — the per-line "See more
+       information" panel reads the same payload the checks judged, so the story
+       it tells and the verdicts above can never come from two different reads.
+       STAFF-ONLY consumers: the raw vendor rows never reach a borrower. */
+    research,
+    line: { address, entityName, state, borrowerNames, entityNames },
   };
 }
 

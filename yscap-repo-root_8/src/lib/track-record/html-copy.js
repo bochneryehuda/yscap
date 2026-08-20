@@ -104,6 +104,10 @@ function exitCell(r) {
 
 function rowHtml(r) {
   const st = String(r.verification_status || 'pending');
+  /* The records stamp (one definition — records-stamp.js): '✓ Verified to
+     Elementix' / '○ Sourced via Elementix', or nothing. The client bridge's
+     snapshotHtml renders the same wording — the two builders must stay in step. */
+  const stamp = require('./records-stamp').exportCellText(r.records_stamp, r.records_stamp_at);
   return '<tr><td>' + esc(addrLine(r.property_address)) +
     '</td><td>' + esc(r.owned_personally ? 'Personal name' : (r.entity_name || '—')) +
     /* Rendered through the shared vocabulary so the saved copy spells a type the
@@ -114,7 +118,8 @@ function rowHtml(r) {
     '</td><td>' + money(r.purchase_price) + (r.purchase_date ? '<br><small>' + esc(day(r.purchase_date)) + '</small>' : '') +
     '</td><td>' + money(r.rehab_amount) +
     '</td><td>' + exitCell(r) +
-    '</td><td>' + esc(STATUS_LABEL[st] || st) + '</td></tr>';
+    '</td><td>' + esc(STATUS_LABEL[st] || st)
+    + (stamp ? '<br><small>' + esc(stamp) + '</small>' : '') + '</td></tr>';
 }
 
 function sectionHtml(title, list) {
@@ -140,6 +145,9 @@ function buildSavedCopyHtml({ borrowerName, rows, generatedAt, portalUrl }) {
   const when = generatedAt instanceof Date ? generatedAt : new Date(generatedAt || Date.now());
   const whenText = when.toLocaleString('en-US', { timeZone: 'America/New_York' });
   const live = String(portalUrl || '/portal/#/track-record');
+  // The one-line records stamp ("Verified to Elementix — N of M …"), or null
+  // when nothing on the record is records-backed. One definition: records-stamp.js.
+  const stampLine = require('./records-stamp').summaryLine(props);
   return '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">' +
     '<title>Track Record — ' + esc(borrowerName || 'Borrower') + '</title><style>' +
     "body{font-family:'Hanken Grotesk',system-ui,Arial,sans-serif;background:#141B22;color:#F4F0E7;margin:0;padding:2rem 1rem;line-height:1.5}" +
@@ -161,11 +169,16 @@ function buildSavedCopyHtml({ borrowerName, rows, generatedAt, portalUrl }) {
     '<span class="chip">' + flips.length + ' fix &amp; flip</span>' +
     '<span class="chip">' + holds.length + ' fix &amp; hold</span>' +
     (ground.length ? '<span class="chip">' + ground.length + ' ground-up</span>' : '') +
+    (props.some((r) => r.records_stamp === 'verified')
+      ? '<span class="chip">✓ Verified to Elementix: ' + props.filter((r) => r.records_stamp === 'verified').length + '</span>' : '') +
+    (props.some((r) => r.records_stamp === 'sourced')
+      ? '<span class="chip">○ From the public records: ' + props.filter((r) => r.records_stamp === 'sourced').length + '</span>' : '') +
     '</div>' +
     sectionHtml('Fix & Flip', flips) + sectionHtml('Fix & Hold', holds) + sectionHtml('Ground-up', ground) +
     (total === 0 ? '<p class="muted">No deals on record yet.</p>' : '') +
     '<a class="open" href="' + esc(live) + '">Open the live Track Record →</a>' +
     '<p class="muted">This is the saved static copy of the live track record. The portal keeps it in sync automatically.</p>' +
+    (stampLine ? '<p class="muted">' + esc(stampLine) + '</p>' : '') +
     '<footer>YS Capital Group · NMLS ID 2609746 · For verification and underwriting reference.</footer>' +
     '</main></body></html>';
 }
@@ -191,12 +204,13 @@ async function refreshSavedCopy(borrowerId, { client = null } = {}) {
        FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
   if (!b) return null;
   const rows = (await db.query(
-    `SELECT property_address, deal_type, property_type, entity_name, owned_personally,
-            purchase_price, purchase_date, rehab_amount, sale_price, sale_date,
-            rent_amount, rent_date, refi_amount, refi_date, verification_status
-       FROM track_records
-      WHERE borrower_id=$1
-      ORDER BY purchase_date DESC NULLS LAST, created_at DESC`, [borrowerId])).rows;
+    `SELECT t.property_address, t.deal_type, t.property_type, t.entity_name, t.owned_personally,
+            t.purchase_price, t.purchase_date, t.rehab_amount, t.sale_price, t.sale_date,
+            t.rent_amount, t.rent_date, t.refi_amount, t.refi_date, t.verification_status,
+            ${require('./records-stamp').stampSelect('t')}
+       FROM track_records t
+      WHERE t.borrower_id=$1
+      ORDER BY t.purchase_date DESC NULLS LAST, t.created_at DESC`, [borrowerId])).rows;
   const html = buildSavedCopyHtml({ borrowerName: b.name || 'Borrower', rows, generatedAt: new Date() });
   const who = String(b.name || 'Borrower').replace(/[^\w]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'Borrower';
   const filename = 'Track_Record_' + who + '_' + new Date().toISOString().slice(0, 10) + '.html';
