@@ -143,13 +143,35 @@ function humanizeSitewireReason(reason) {
 // specific document, that it could not be copied into the team drive, and the RIGHT next steps
 // (retry / re-check filing on the review screen, or ask for a re-upload if the saved copy is
 // damaged). Pure + exported so the copy is unit-tested without a DB. Owner-directed 2026-07-21.
-function sharepointDocEmail({ borrowerName, portalValue } = {}) {
+// WHAT PILOT IS ACTUALLY DOING ABOUT IT (owner-reported 2026-08-20). The four
+// verdicts the integrity audit writes — carried on the row as raw_value.kind —
+// all leave documents.sharepoint_backed_up_at SET, and every selector that feeds
+// the mirror (pendingBatch / neverAttemptedStrays / stuckDocuments / the
+// force-attempt) requires it NULL. So for these four PILOT is NOT retrying: the
+// document sits exactly as it is until a person acts. Telling the loan officer
+// “PILOT keeps retrying on its own” there was false, and it is the sentence that
+// decides whether they open the screen today or leave it for the automation.
+// Every other producer (an upload that failed) really does keep retrying.
+const SP_DOC_PARKED = {
+  'item-missing': 'The copy PILOT put in the drive is no longer there — someone deleted or moved it, and PILOT looked for it again by name and by its Pilot stamp without finding it. PILOT will NOT put it back on its own (re-uploading over a deliberate deletion is your call), so until you retry it the document is not in the drive.',
+  'local-missing': 'PILOT can no longer read its own stored copy, so the SharePoint copy may be the only one left — do NOT delete it. PILOT has stopped touching this one on its own.',
+  'source-suspect': 'The saved file itself is damaged — it was already damaged when it was uploaded, so re-mirroring cannot fix it and PILOT has stopped retrying. Ask whoever uploaded it for a fresh copy.',
+  'malware-flagged': 'Microsoft Defender flagged the SharePoint copy and blocked it. PILOT has stopped retrying — check the source document in PILOT before you retry anything.',
+};
+function sharepointDocEmail({ borrowerName, portalValue, rawValue } = {}) {
   const who = borrowerName ? ` for ${borrowerName}` : '';
   const spec = portalValue ? `: ${String(portalValue).trim()}` : '';
+  let kind = null;
+  try {
+    const raw = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue;
+    kind = raw && raw.kind ? String(raw.kind) : null;
+  } catch (_) { /* unreadable raw_value — fall back to the retrying copy */ }
+  const status = SP_DOC_PARKED[kind]
+    || 'PILOT keeps retrying on its own, but this one needs a look so the document isn’t missing from the drive.';
   return {
     title: `A document couldn’t be saved to SharePoint${who}`,
     body: `A document${who} couldn’t be copied into your SharePoint team drive${spec}. ` +
-      `PILOT keeps retrying on its own, but this one needs a look so the document isn’t missing from the drive. ` +
+      `${status} ` +
       `Open the Sync review screen to retry it or re-check where it files — and if the document’s saved copy is damaged, ask the borrower to upload it again.`,
   };
 }
@@ -221,7 +243,8 @@ async function notifyLoanOfficer(reviewId) {
   const fileLevel = ['file_link', 'push_job', 'ys_loan_number', 'sharepoint_folder', 'co_first_name', 'co_cell_phone', 'borrower_identity', 'co_borrower_identity', 'shared_email'].includes(row.field_key);
   let title, body;
   if (isSharepointDoc) {
-    ({ title, body } = sharepointDocEmail({ borrowerName: row.borrower_name, portalValue: row.portal_value }));
+    ({ title, body } = sharepointDocEmail({
+      borrowerName: row.borrower_name, portalValue: row.portal_value, rawValue: row.raw_value }));
   } else if (isCtcConfirm) {
     title = `Confirm needed: ClickUp moved this file to Clear to Close${who}`;
     body = `ClickUp changed this file's status to Clear to Close, but in PILOT it is still "${row.portal_value || 'an earlier status'}". ` +
