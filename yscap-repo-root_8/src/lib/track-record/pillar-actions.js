@@ -66,6 +66,15 @@ const AUTO_MEANING = {
   no_data: {
     recency: 'There is no finished exit on this project yet.',
     ownership: 'Nothing was found in the public records for this property. That is a gap in the records, not a problem with the borrower.',
+    /* THE SAME VERDICT, TWO COMPLETELY DIFFERENT SITUATIONS. An ownership
+       `no_data` that CARRIES a records finding — the deed was found, naming the
+       company, and only the borrower's control of it is unconfirmed — is the
+       state `checks.js` calls entityNoData, and the state a revoke or the boot
+       heal now leaves behind. Printing "nothing was found" directly above a
+       snippet quoting the deed contradicts the card's own evidence and sends a
+       reviewer to re-run a search that already succeeded. `_ownershipFound` is
+       used only when the row proves there IS something to read. */
+    _ownershipFound: 'The records DID find this property — what is missing is confirmation that the borrower controls the company named on the deed.',
     exit: 'Nothing recording this exit was found. Some counties do not publish, and a lease is never public at all — that is a gap in the records, not a problem with the borrower.',
   },
   too_recent: {
@@ -202,6 +211,18 @@ function pillarOtherSteps(p, opts = {}) {
   return out;
 }
 
+/** Did the records actually FIND something on this pillar, whatever its verdict?
+ *  Read off the row rather than inferred: the deed's own Check B block, or a
+ *  sentence kept from before a withdrawal. Never throws on a malformed evidence
+ *  blob (an array, a string, null) — an unreadable one simply answers no. */
+function recordsFound(ev) {
+  if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return false;
+  const b = ev.checkB;
+  const hasCheckB = !!b && typeof b === 'object' && !Array.isArray(b)
+    && (b.granteeIsMatchedEntity === true || !!str(b.grantee) || !!str(b.documentId));
+  return hasCheckB || !!str(ev.priorWhy);
+}
+
 /**
  * The evidence card, in the four parts §8.1 requires every time:
  * the claim → the source with its confidence and date → the VERBATIM snippet →
@@ -236,7 +257,9 @@ function evidenceCard(p, opts = {}) {
     /* NEUTRAL IS NOT FAILURE — the flag the screen keys its icon and colour on,
        so "nothing found" can never be painted the same as "contradicted". */
     neutral: auto === 'no_data' || auto === 'too_recent',
-    meaning: (AUTO_MEANING[auto] && AUTO_MEANING[auto][pil]) || 'This has not been checked yet.',
+    meaning: ((auto === 'no_data' && pil === 'ownership' && recordsFound(ev))
+      ? AUTO_MEANING.no_data._ownershipFound
+      : (AUTO_MEANING[auto] && AUTO_MEANING[auto][pil])) || 'This has not been checked yet.',
     source: source || null,
     confidence: str(p && p.auto_confidence) || null,
     grade: str(p && p.auto_grade) || null,

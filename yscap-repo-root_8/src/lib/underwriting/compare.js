@@ -85,6 +85,11 @@ function canonEntity(s) {
     .replace(/\blimited\b/g, 'ltd');
   return t.replace(/\s+/g, ' ').trim();
 }
+/* THE ONE LIST OF ENTITY SUFFIXES. Exported because `track-record-entity`
+   asks the OPPOSITE question of `core()` below — core() STRIPS them, and the
+   stamp matcher COMPARES them — and two copies of this list would disagree the
+   first time one gained a suffix, silently. Only ever use it with `.replace` or
+   `.match`: both reset `lastIndex`, which `.test`/`.exec` on a /g regex do not. */
 const ENTITY_SUFFIX = /\b(llc|llp|lp|inc|corp|co|ltd)\b/g;
 // True when `a` and `b` are the SAME letter sequence with word-breaks only ADDED or REMOVED — the
 // coarser side's tokens each concatenate a CONTIGUOUS run of the finer side's tokens, in order. This
@@ -210,7 +215,7 @@ function daysBetween(a, b) {
 module.exports = {
   norm, digitsOnly, num, withinMoney,
   namesMatch, namesMatchLoose, nameTokens,
-  canonEntity, entityMatch,
+  canonEntity, entityMatch, ENTITY_SUFFIX,
   toISODate,
   addrKey, addrMatches, addrLine, daysBetween,
 };

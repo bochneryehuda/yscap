@@ -75,9 +75,16 @@ console.log('\n2. The machine observes; a person decides');
      also matches "set" in ordinary prose ("the set is still small enough…"),
      and such a chunk then runs on into the SQL below it and swallows a WHERE
      that merely READS the column — which made the guard fail on clean code. A
-     SQL SET clause is always `SET <identifier> =`. */
+     SQL SET clause is always `SET <identifier> =`.
+
+     THE IDENTIFIER MAY BE QUOTED. Postgres accepts `SET "human_verdict" = …`
+     as the identical write, and an anchor that only admits a bare identifier
+     never finds that SET clause at all — so the chunk is never cut and the
+     write is never searched. The old `SET[^;]*human_verdict` shape DID catch
+     it, so admitting an optional quote is what keeps this strictly stronger
+     than the guard it replaced on every shape rather than merely on most. */
   const setClauses = [];
-  for (const m of src.matchAll(/\bSET\s+[a-z_][\w.]*\s*=/gi)) {
+  for (const m of src.matchAll(/\bSET\s+"?[a-z_][\w."]*"?\s*=/gi)) {
     let depth = 0; let end = src.length;
     for (let i = m.index; i < src.length; i += 1) {
       const c = src[i];

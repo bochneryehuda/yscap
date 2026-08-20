@@ -214,7 +214,16 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
          matcher (identical, suffix-only, or a pure re-spacing; never a
          substring), so the two can never drift about what counts as the same
          company — and the holder must be an ENTITY: a deed naming the borrower
-         in person is `proved` already and has no company to confirm. */
+         in person is `proved` already and has no company to confirm.
+
+         `sameLegalEntityName`, NOT `promotionMatch`. The looser matcher deletes
+         the entity suffix from both sides, so it reads "Smith Holdings LLC" and
+         "Smith Holdings Corp" as one company — two different legal entities, and
+         an operating LLC beside a management Corp is an ordinary shape on one
+         borrower's profile. Confirming the LLC then minted "Verified to
+         Elementix" on a property whose deed names the Corp, with the Corp's own
+         Check A still false. `pickEntity` already refuses that exact pair as
+         ambiguous; the strict matcher is that judgement applied here. */
       const restsOnThisEntity = row.pillar_source === 'elementix'
         && row.pillar_verdict === 'proved'
         && row.pillar_control === 'confirmed'
@@ -225,7 +234,7 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
       try {
         recordsMatchedThisEntity = recordsHasCheckB
           && String(row.pillar_held_as || '') === 'entity'
-          && require('./track-record-entity').promotionMatch(row.pillar_grantee, row.entity_name);
+          && require('./track-record-entity').sameLegalEntityName(row.pillar_grantee, row.entity_name);
       } catch (_) { recordsMatchedThisEntity = false; }   // an unreadable matcher never promotes
       const recordsProvedCheckB = recordsMatchedThisEntity;
 
@@ -492,61 +501,108 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
  * what the deed said, so the only way back is to read the county again — a
  * vendor call, per line, which is a human's decision to spend, not a boot pass's.
  */
+/* THE CANDIDATE TEST, WRITTEN ONCE. The selection phase and the write phase
+   must ask EXACTLY the same question: the selector only bounds the work, so a
+   row it excludes can never be healed however the write's own WHERE reads, and
+   a row the write excludes is simply skipped. Two copies of this drift, and the
+   drift is silent — the old selector asked about whichever company the LINE
+   points at NOW (a join on b.llc_id = t.llc_id) while the write asked nothing
+   about a company at all, so an ORPHANED proof (its entity deleted, so the FK
+   NULLed track_records.llc_id) fell out of the join entirely and went on
+   printing "Verified to Elementix" for a company that no longer exists.
+
+   NO BACKTICKS IN THIS STRING -- it is spliced into a JS template literal and
+   one would end it. That has bitten this file twice. */
+const HEAL_CANDIDATE_SQL = (p) => `
+     ${p}.pillar = 'ownership'
+     AND ${p}.auto_source = 'elementix'
+     AND ${p}.auto_verdict = 'proved'
+     AND ${p}.auto_evidence->>'controlVerdict' = 'confirmed'
+     AND COALESCE(${p}.human_verdict,'') <> 'confirmed'
+     AND COALESCE(${p}.auto_evidence->>'satisfiedByLlcId','') <> ''
+     AND NOT EXISTS (
+       SELECT 1
+         FROM track_records t_
+         JOIN llc_borrowers b_ ON b_.borrower_id = t_.borrower_id
+        WHERE t_.id = ${p}.track_record_id
+          AND b_.llc_id::text = ${p}.auto_evidence->>'satisfiedByLlcId'
+          AND b_.ownership_verified = true)`;
+
+/* IT ASKS ABOUT THE COMPANY THE PROOF NAMES, NOT THE ONE THE LINE POINTS AT.
+   `satisfiedByLlcId` is what the proof RESTS on; `track_records.llc_id` is
+   whatever the line happens to reference today, and the two come apart in two
+   ordinary ways -- the entity is deleted (the FK NULLs the column) or the line
+   is re-pointed at a different company. Keyed on the line's column, a proof
+   resting on an UNVERIFIED company was never reached the moment those diverged. */
+async function healSelectIds(client, limit) {
+  const r = await client.query(
+    `SELECT p.id
+       FROM track_record_pillars p
+      WHERE ${HEAL_CANDIDATE_SQL('p')}
+      ORDER BY p.id
+      LIMIT ${limit}`);
+  return r.rows.map((x) => x.id);
+}
+
+/* THE WRITE RE-ASKS THE WHOLE QUESTION, and it is a SEPARATE STATEMENT on
+   purpose. Under READ COMMITTED every statement takes its own snapshot, so a
+   Confirm that commits between the selection and this write IS seen here and
+   the row is skipped -- as one statement it would have been judged on a
+   snapshot taken before that Confirm existed and would have withdrawn a stamp
+   for a company that had just been verified.
+
+   HONEST LIMIT: a Confirm committing DURING this statement is still missed, and
+   cannot be caught without serialising the whole pass. That residue only ever
+   REMOVES a claim (the posture of this whole function), it is bounded by one
+   statement inside one boot, and the withdrawn pillar keeps its checkB -- so the
+   next press of Confirm, or the next records read, promotes it straight back.
+
+   AND IT REPEATS THE WHOLE CANDIDATE TEST, which is not belt-and-braces either
+   -- it is the correctness of the statement. An id list carries NO condition on
+   the target row, and under READ COMMITTED Postgres re-checks only the quals
+   against the TARGET relation when a blocked writer wakes: the list was fixed
+   before the lock wait, so a second writer proceeds anyway. With the priorWhy
+   merge below, a second application copies the FIRST one's withdrawal sentence
+   into priorWhy and the deed's own words are destroyed. Two ordinary ways in:
+   two instances booting at once on a zero-downtime deploy (each takes the same
+   first-500-by-id), and a staffer pressing Revoke while a deploy's heal runs.
+   Repeating the test makes the re-check see a row that no longer qualifies, so
+   the second write is a clean 0 rows -- the shape the live revoke already had.
+   The COALESCE on priorWhy is the second layer. */
+async function healApply(client, ids) {
+  if (!ids.length) return 0;
+  const r = await client.query(
+    `UPDATE track_record_pillars p
+        SET auto_verdict='no_data', auto_confidence=NULL, satisfied_by_llc_id=NULL,
+            auto_evidence = COALESCE(p.auto_evidence,'{}'::jsonb)
+                            || jsonb_build_object('priorWhy',
+                                 COALESCE(p.auto_evidence->'priorWhy', p.auto_evidence->'why'))
+                            || $1::jsonb,
+            auto_checked_at=now(), updated_at=now()
+      WHERE p.id = ANY($2::uuid[])
+        AND ${HEAL_CANDIDATE_SQL('p')}`,
+    [JSON.stringify({
+      controlVerdict: null,
+      needsControlCheck: true,
+      controlRevokedAt: new Date().toISOString(),
+      why: 'The records show the company held this property, but this borrower’s control of that company is not verified — so holding it does not show their ownership. Confirm the company, or check whether a deed names the borrower themselves.',
+    }), ids]);
+  return r.rowCount || 0;
+}
+
 async function healRevokedRecordsProofsOnce(opts = {}) {
   const out = { downgraded: 0, ok: true };
   if (String(process.env.TRACK_RECORD_REVOKED_PROOF_HEAL_DISABLED || '') === '1') return { ...out, skipped: 'disabled' };
   const client = opts.client || require('../db');
   const limit = Math.max(1, Math.min(5000, Number(process.env.TRACK_RECORD_REVOKED_PROOF_HEAL_LIMIT) || 500));
   try {
-    const r = await client.query(
-      /* THE PREDICATES ARE REPEATED ON THE OUTER UPDATE, and that is not
-         belt-and-braces — it is the correctness of the statement.
-         `WHERE p.id IN (SELECT …)` carries NO condition on the target row, and
-         under READ COMMITTED Postgres re-checks only the quals against the
-         TARGET relation when a blocked writer wakes up: the id list from the
-         semi-join was fixed before the lock wait, so the second writer proceeds
-         anyway. With the `priorWhy` merge below, a second application copies the
-         FIRST one's withdrawal sentence into `priorWhy` and the deed's own words
-         are destroyed. Two ordinary ways in: two instances booting at once on a
-         zero-downtime deploy (each runs this pass and both take the same
-         first-500-by-id), and a staffer pressing Revoke while a deploy's heal is
-         running. Repeating the predicates makes the re-check see a row that no
-         longer qualifies, so the second write is a clean 0 rows — the shape the
-         live revoke already had. The COALESCE is the second layer. */
-      `UPDATE track_record_pillars p
-          SET auto_verdict='no_data', auto_confidence=NULL, satisfied_by_llc_id=NULL,
-              auto_evidence = COALESCE(p.auto_evidence,'{}'::jsonb)
-                              || jsonb_build_object('priorWhy',
-                                   COALESCE(p.auto_evidence->'priorWhy', p.auto_evidence->'why'))
-                              || $1::jsonb,
-              auto_checked_at=now(), updated_at=now()
-        WHERE p.pillar = 'ownership'
-          AND p.auto_source = 'elementix'
-          AND p.auto_verdict = 'proved'
-          AND p.auto_evidence->>'controlVerdict' = 'confirmed'
-          AND COALESCE(p.human_verdict,'') <> 'confirmed'
-          AND p.id IN (
-          SELECT p2.id
-            FROM track_record_pillars p2
-            JOIN track_records t   ON t.id = p2.track_record_id
-            JOIN llc_borrowers  b  ON b.llc_id = t.llc_id AND b.borrower_id = t.borrower_id
-           WHERE p2.pillar = 'ownership'
-             AND p2.auto_source = 'elementix'
-             AND p2.auto_verdict = 'proved'
-             AND p2.auto_evidence->>'controlVerdict' = 'confirmed'
-             AND COALESCE(p2.auto_evidence->>'satisfiedByLlcId','') = t.llc_id::text
-             AND COALESCE(p2.human_verdict,'') <> 'confirmed'
-             AND b.ownership_verified IS DISTINCT FROM true
-           ORDER BY p2.id
-           LIMIT ${limit}
-        )`,
-      [JSON.stringify({
-        controlVerdict: null,
-        needsControlCheck: true,
-        controlRevokedAt: new Date().toISOString(),
-        why: 'The records show the company held this property, but this borrower’s control of that company is not verified — so holding it does not show their ownership. Confirm the company, or check whether a deed names the borrower themselves.',
-      })]);
-    out.downgraded = r.rowCount || 0;
+    const ids = await healSelectIds(client, limit);
+    out.downgraded = await healApply(client, ids);
+    /* NO SILENT CAPS. It drains at most `limit` rows PER BOOT, so a large back
+       book takes several deploys to finish - true, and invisible unless it is
+       said. `more` counts what was SELECTED, not what was written: a row the
+       write's re-check skipped was still work this pass took off the queue. */
+    out.more = ids.length >= limit;
     return out;
   } catch (e) {
     out.ok = false;
@@ -560,4 +616,8 @@ module.exports = {
   ownershipVerdict,
   syncEntityToTrackRecords,
   healRevokedRecordsProofsOnce,
+  /* The two phases are exported ONLY so a test can commit a Confirm BETWEEN
+     them and prove the write re-asks. Nothing in production calls them
+     directly -- the pass above is the one entry point. */
+  _internals: { healSelectIds, healApply },
 };
