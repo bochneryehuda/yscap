@@ -3249,15 +3249,14 @@ router.delete('/track-records/:id', async (req, res) => {
 });
 // Supporting documents on ONE track-record entry (closing statement, deed,
 // lease…) — what staff verify against.
-// #112: the optional document TYPE a track-record supporting doc can be tagged with
-// (stored in documents.slot_label). Kept in sync with the tool's dropdown in
-// web/tools/track-record-portal.js. `trackDocType(v)` returns a valid label or null.
-const TRACK_RECORD_DOC_TYPES = [
-  'Closing statement (HUD)', 'Deed', 'Recorded mortgage', 'Payoff statement',
-  'Lease', 'Property profile report', 'Other',
-];
-const TRACK_RECORD_DOC_TYPE_SET = new Set(TRACK_RECORD_DOC_TYPES);
-const trackDocType = (v) => (TRACK_RECORD_DOC_TYPE_SET.has(String(v || '').trim()) ? String(v).trim() : null);
+// #112: the optional document TYPE a track-record supporting doc can be tagged
+// with (stored in documents.slot_label). THE ONE DEFINITION is
+// `lib/track-record/doc-request.resolveDocTypeLabel` — this was a second hand-typed
+// copy of a seven-label list that the staff side had already outgrown, and the
+// borrower tool's own dropdown (web/(v2/)tools/track-record-portal.js) still sends
+// those legacy labels, which the resolver accepts and canonicalises. So the tool
+// keeps working unchanged and both doors now agree on what a type is.
+const trackDocType = (v) => require('../lib/track-record/doc-request').resolveDocTypeLabel(v);
 
 router.get('/track-records/:id/documents', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);

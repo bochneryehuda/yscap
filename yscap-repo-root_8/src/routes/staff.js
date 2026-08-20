@@ -11185,13 +11185,13 @@ router.get('/track-records/:id/documents', async (req, res) => {
       WHERE track_record_id=$1 AND is_current ORDER BY created_at`, [req.params.id]);
   res.json(r.rows);
 });
-// #112: valid track-record supporting-doc TYPEs (stored in documents.slot_label),
-// kept in sync with the borrower route + the tool's dropdown.
-const TR_DOC_TYPE_SET = new Set([
-  'Closing statement (HUD)', 'Deed', 'Recorded mortgage', 'Payoff statement',
-  'Lease', 'Property profile report', 'Other',
-]);
-const trDocType = (v) => (TR_DOC_TYPE_SET.has(String(v || '').trim()) ? String(v).trim() : null);
+// #112: the track-record supporting-doc TYPE (stored in documents.slot_label).
+// THE ONE DEFINITION is `lib/track-record/doc-request.resolveDocTypeLabel`, which
+// owns DOC_TYPES — this used to be a hand-typed list of seven LABELS while the
+// screen's dropdown sent SLUGS, so the type a staffer picked matched nothing and
+// was silently dropped on every upload (owner-directed 2026-08-20). It accepts a
+// slug or any known label and answers the canonical label.
+const trDocType = (v) => require('../lib/track-record/doc-request').resolveDocTypeLabel(v);
 router.post('/track-records/:id/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
@@ -11232,6 +11232,45 @@ router.post('/track-records/:id/documents', async (req, res) => {
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
+});
+
+/* SET (or clear) a track-record document's TYPE after it has landed
+   (owner-directed 2026-08-20: "whatever you drop, it should go in, and then you
+   can select if you want which document type").
+
+   THE TYPE COULD ONLY EVER BE CHOSEN BEFORE THE UPLOAD, which is exactly backwards
+   for a drag-and-drop: you drop three files onto a line and THEN say what they are.
+   A file dropped on a COLLAPSED ledger row has no dropdown to read at all, so
+   without this the drop would either have to be refused or file everything
+   untyped forever.
+
+   SCOPED TWICE, deliberately. `canSeeBorrowerId` is the ordinary permission gate;
+   the document is then pinned to the track record named in the path
+   (`d.track_record_id = $2`), so a document id belonging to another borrower's
+   line — or to a loan file — cannot be relabelled through this door however the
+   caller reached it. An unrecognised type answers 400 rather than storing free
+   text, and an empty value deliberately CLEARS it (mis-typing something is as
+   ordinary as typing it). */
+router.post('/track-records/:id/documents/:docId/type', async (req, res) => {
+  try {
+    const tr = (await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id])).rows[0];
+    if (!tr) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, tr.borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const raw = String((req.body || {}).docType == null ? '' : (req.body || {}).docType).trim();
+    const label = raw ? trDocType(raw) : null;
+    if (raw && !label) return res.status(400).json({ error: 'That is not a document type we recognise.' });
+    const upd = await db.query(
+      `UPDATE documents SET slot_label=$3 WHERE id=$1 AND track_record_id=$2 RETURNING id`,
+      [req.params.docId, req.params.id, label]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'document not found on this project' });
+    await audit(req, 'staff_set_track_record_doc_type', 'track_record', req.params.id,
+      { documentId: req.params.docId, docType: label });
+    // The mirrored copy's folder is named from this label, so a re-file is worth a
+    // nudge — best-effort, exactly like the upload above.
+    try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
+    require('../lib/events').publishTrackRecordUpdate(tr.borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
+    res.json({ ok: true, docType: label });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.get('/borrowers/:id/ssn', async (req, res) => {
   try {
