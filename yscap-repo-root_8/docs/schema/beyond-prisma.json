@@ -7,11 +7,11 @@
     "checkConstraints": 304,
     "triggers": 35,
     "functions": 138,
-    "partialIndexes": 349,
+    "partialIndexes": 351,
     "primaryKeys": 370,
     "foreignKeys": 774,
     "uniqueConstraints": 47,
-    "indexes": 1258,
+    "indexes": 1260,
     "enums": 12,
     "views": 0
   },
@@ -3832,6 +3832,16 @@
         "name": "reminders_due_idx",
         "table": "reminders",
         "definition": "CREATE INDEX reminders_due_idx ON public.reminders USING btree (status, due_at) WHERE (status = 'scheduled'::text)"
+      },
+      {
+        "name": "trc_imported_line_idx",
+        "table": "track_record_candidates",
+        "definition": "CREATE INDEX trc_imported_line_idx ON public.track_record_candidates USING btree (imported_track_record_id) WHERE ((imported_track_record_id IS NOT NULL) AND (status = 'imported'::text))"
+      },
+      {
+        "name": "trc_merged_line_idx",
+        "table": "track_record_candidates",
+        "definition": "CREATE INDEX trc_merged_line_idx ON public.track_record_candidates USING btree (match_track_record_id) WHERE ((match_track_record_id IS NOT NULL) AND (status = 'merged'::text))"
       },
       {
         "name": "uq_ai_suggestions_open_dedupe",
@@ -16483,6 +16493,16 @@
         "definition": "CREATE UNIQUE INDEX training_proposals_pkey ON public.training_proposals USING btree (id)"
       },
       {
+        "name": "trc_imported_line_idx",
+        "table": "track_record_candidates",
+        "definition": "CREATE INDEX trc_imported_line_idx ON public.track_record_candidates USING btree (imported_track_record_id) WHERE ((imported_track_record_id IS NOT NULL) AND (status = 'imported'::text))"
+      },
+      {
+        "name": "trc_merged_line_idx",
+        "table": "track_record_candidates",
+        "definition": "CREATE INDEX trc_merged_line_idx ON public.track_record_candidates USING btree (match_track_record_id) WHERE ((match_track_record_id IS NOT NULL) AND (status = 'merged'::text))"
+      },
+      {
         "name": "trinity_inspection_orders_pkey",
         "table": "trinity_inspection_orders",
         "definition": "CREATE UNIQUE INDEX trinity_inspection_orders_pkey ON public.trinity_inspection_orders USING btree (id)"
@@ -25069,8 +25089,8 @@
   ],
   "generatedFrom": {
     "migrations": {
-      "count": 594,
-      "highest": 597
+      "count": 595,
+      "highest": 598
     }
   }
 }

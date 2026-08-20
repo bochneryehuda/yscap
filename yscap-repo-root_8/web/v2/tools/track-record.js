@@ -99,6 +99,35 @@ const TR=(function(){
   }
   function holdMonths(p){ return monthsBetween(p.purchaseDate, exitDate(p)); }
 
+  /* ── THE RECORDS STAMP on the EXPORTS (owner-directed 2026-08-19: "when
+     you're exporting the Excel track record or the PDF … it should have a stamp
+     which says 'Verified to Elementix'"). The wording mirrors the server's ONE
+     definition (src/lib/track-record/records-stamp.js — exportCellText +
+     summaryLine); scripts/test-records-stamp-pure.js reads THIS file too and
+     fails the build the moment the words drift. The stamp values ride each prop
+     as _recordsStamp/_recordsStampAt (set by the portal bridge from the server's
+     derived columns); a standalone/marketing session has none, so every helper
+     answers empty and the exports are byte-identical to before. */
+  function rstampCellText(p){
+    const s=p&&p._recordsStamp;
+    const cell=s==="verified"?"✓ Verified to Elementix":(s==="sourced"?"○ Sourced via Elementix":"");
+    if(!cell) return "";
+    const m=/^(\d{4}-\d{2}-\d{2})/.exec(String((p&&p._recordsStampAt)||""));
+    return m?cell+" · "+m[1]:cell;
+  }
+  function rstampSummary(props){
+    const list=props||[]; const total=list.length;
+    let verified=0,sourced=0;
+    list.forEach(p=>{ const s=p&&p._recordsStamp; if(s==="verified")verified++; else if(s==="sourced")sourced++; });
+    if(!verified&&!sourced) return null;
+    const noun="propert"+(total===1?"y":"ies");
+    if(verified){
+      return "VERIFIED TO ELEMENTIX — "+verified+" of "+total+" "+noun+" matched to the county public records"
+        +(sourced?"; "+sourced+" more imported from the records":"");
+    }
+    return "SOURCED VIA ELEMENTIX — "+sourced+" of "+total+" "+noun+" imported from the county public records";
+  }
+
   function validate(p){
     const errs=[], alerts=[], warns=[];
     if(!String(p.address).trim()) errs.push("Property address is required.");
@@ -573,6 +602,15 @@ const TR=(function(){
         {h:"Hold (mo)",get:p=>{const h=holdMonths(p);return h==null?"":h;},al:"center",w:10},
         {h:"Recent (3yr)",get:p=>qualifies(p)?"Yes":(exitDate(p)?"No":""),al:"center",w:12}
       ];
+      /* The records-stamp column appears ONLY when the record actually carries a
+         records-backed line (portal sessions; the stamp rides each prop). A
+         standalone export gains no always-empty column. Same column pushed onto
+         all three sections so the width-parity rule below keeps holding. */
+      const anyStamp=S.props.some(p=>p&&(p._recordsStamp==="verified"||p._recordsStamp==="sourced"));
+      if(anyStamp){
+        const stampCol={h:"Public records",get:p=>rstampCellText(p),w:26,al:"left"};
+        flipCols.push(stampCol); holdCols.push(stampCol); groundCols.push(stampCol);
+      }
       const N=Math.max(flipCols.length, holdCols.length, groundCols.length);
       const aoa=[], merges=[], rowH={}, styleMap={}; const A=(r,c)=>X.utils.encode_cell({r:r,c:c});
       const setRow=r=>{ if(!aoa[r])aoa[r]=[]; };
@@ -590,6 +628,13 @@ const TR=(function(){
       let R=0;
       put(R,0,"YS CAPITAL GROUP — BORROWER TRACK RECORD",stTitle); span(R,0,N-1,stTitle); merge(R,0,N-1); rowH[R]={hpt:24}; R++;
       put(R,0,(S.borrower?("Borrower: "+S.borrower+"   ·   "):"")+"Generated "+new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"})+"   ·   NMLS ID 2609746",stTag); span(R,0,N-1,stTag); merge(R,0,N-1); rowH[R]={hpt:15}; R++;
+      // The records stamp headline — "Verified to Elementix" in the owner's own
+      // words, counted from the rows so it never claims more than the cells show.
+      const stampSum=rstampSummary(S.props);
+      if(stampSum){
+        const stStamp={font:{name:"Arial",sz:10,bold:true,color:{rgb:TEAL}},fill:{fgColor:{rgb:INK}},alignment:{horizontal:"left",vertical:"center"}};
+        put(R,0,stampSum,stStamp); span(R,0,N-1,stStamp); merge(R,0,N-1); rowH[R]={hpt:16}; R++;
+      }
       R++;
       function block(title,kind,cols,bg){
         // SECTION WIDTH PARITY (owner-directed 2026-07-13): both sections span
@@ -719,6 +764,26 @@ const TR=(function(){
       doc.setFont("helvetica","normal"); doc.setFontSize(9.3); doc.setTextColor(60,66,70);
       doc.text(s.qual+" qualifying exit(s) in the last 3 years   ·   "+s.total+" total deals   ·   "+s.flips+" flips / "+s.holds+" holds   ·   "+money(s.vol)+" acquisition volume   ·   "+money(s.rehab)+" rehab", M+18, y+45);
       y+=bandH+22;
+
+      /* THE RECORDS STAMP — a FLAT block (never angled; the stamp design spec),
+         drawn only when the record carries records-backed lines. The headline is
+         the owner's own words; the count line comes from the same summary the
+         Excel header and both saved copies print, so no export can claim more
+         than another. Text only — ✓/○ are not in jsPDF's WinAnsi fonts. */
+      const stampSum=rstampSummary(S.props);
+      if(stampSum){
+        const dash=stampSum.indexOf(" — ");
+        const stampTitle=dash>0?stampSum.slice(0,dash):stampSum;
+        const stampRest=dash>0?stampSum.slice(dash+3):"";
+        const sbH=36;
+        doc.setFillColor(238,245,245); doc.setDrawColor(TEAL[0],TEAL[1],TEAL[2]); doc.setLineWidth(1); doc.roundedRect(M,y,W-2*M,sbH,5,5,"FD");
+        doc.setFillColor(TEAL[0],TEAL[1],TEAL[2]); doc.roundedRect(M,y,4.5,sbH,2,2,"F");
+        doc.setFont("helvetica","bold"); doc.setFontSize(10.5); doc.setTextColor(TEAL[0],TEAL[1],TEAL[2]);
+        doc.text(pdfSafe(stampTitle), M+18, y+15, {charSpace:1});
+        doc.setFont("helvetica","normal"); doc.setFontSize(8.4); doc.setTextColor(60,66,70);
+        doc.text(pdfSafe(stampRest), M+18, y+28);
+        y+=sbH+16;
+      }
 
       const PROJ={flip:"Fix & Flip",hold:"Fix & Hold",ground:"Ground-Up"};
       // SECTION WIDTH PARITY (owner-directed 2026-07-13): both section tables
