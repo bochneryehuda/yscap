@@ -486,6 +486,53 @@ async function backfillTpoIntakeConditionsOnce(limit = 500) {
   return totals;
 }
 
+/**
+ * Backfill (previous AND future) for db/601 — the GROUND-UP CONSTRUCTION conditions
+ * (the feasibility report and the GC information), owner-directed 2026-08-20:
+ * *"also go back to previous projects."*
+ *
+ * WHY THE ENGINE AND NOT AN `INSERT` IN THE MIGRATION. "Is this file a ground-up
+ * construction?" is answered by the rule tree db/601 installs, read through the
+ * field registry (`program_strategy` / `rehab_type`). A hand-written SQL predicate
+ * in the migration would be a SECOND definition of ground-up, free to drift from
+ * the rule the day either normalizer changes — the first thing to rot. So the pass
+ * simply RUNS THE ENGINE, which is the one thing that already knows.
+ *
+ * It is `evaluateAllOpen` with a marker, deliberately: that is the same sweep the
+ * Condition Center's "Re-run rules" button performs, so this attaches nothing a
+ * human could not attach from the admin screen, and duplicate suppression means a
+ * file that already carries a condition is untouched. Terminal and deleted files
+ * are skipped by the engine itself.
+ *
+ * SILENT (`notify: false`). This is history being filled in, not news, and a boot
+ * task must never fan a borrower notification out across every existing build at
+ * once. A file opened from now on notifies normally through the engine's ordinary
+ * path. Marker-guarded in `data_migrations` so it runs ONCE, ever; bounded by
+ * `evaluateAllOpen`; best-effort — one bad file never stops the pass, and a failure
+ * leaves the marker unwritten so the next boot retries.
+ */
+const GROUND_UP_BACKFILL_KEY = 'db601_ground_up_construction_conditions_v1';
+
+async function backfillGroundUpConstructionConditionsOnce() {
+  try {
+    await db.query(
+      `CREATE TABLE IF NOT EXISTS data_migrations (key text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`);
+    const done = await db.query(`SELECT 1 FROM data_migrations WHERE key = $1`, [GROUND_UP_BACKFILL_KEY]);
+    if (done.rows[0]) return { skipped: true };
+  } catch (_) { return { skipped: true }; }
+  let totals;
+  try {
+    totals = await evaluateAllOpen({ reason: 'ground_up_conditions_backfill', notify: false });
+  } catch (e) {
+    console.error('[conditions] ground-up condition backfill failed:', e.message);
+    return { error: e.message };
+  }
+  try {
+    await db.query(`INSERT INTO data_migrations(key) VALUES ($1) ON CONFLICT DO NOTHING`, [GROUND_UP_BACKFILL_KEY]);
+  } catch (_) { /* the next boot re-runs it; the engine suppresses duplicates */ }
+  return totals;
+}
+
 /* The details door speaks camelCase and the field registry speaks snake_case,
    and `file-lock.payoffContactLockReason` is keyed on the DETAILS door's names
    (that is where its carve-out is defined). Only the payoff contact pair needs
@@ -681,5 +728,6 @@ module.exports = {
   evaluateAllOpen,
   evaluateBorrowerApplications,
   backfillTpoIntakeConditionsOnce,
+  backfillGroundUpConstructionConditionsOnce,
   writeFieldValue,
 };

@@ -141,6 +141,14 @@ const CODE_CATEGORY = {
   rtl_p3_reo: C.REO,
   // Scope of Work / rehab budget / plans & permits
   scope_of_work: C.SOW, rtl_p3_sow1: C.SOW, rtl_p1_budget: C.SOW, rtl_p1_plans: C.SOW, draw_cond_plans_permits: C.SOW,
+  // The two GROUND-UP construction conditions (db/601). They file with the Scope of
+  // Work because that is this taxonomy's construction folder — a feasibility report
+  // and the general contractor's paperwork describe the same build the scope does.
+  // Without these two lines the keyword fallback finds nothing to match on either
+  // ("feasibility" and "general contractor" are deliberately absent from it, being
+  // words that mean other things elsewhere on a loan file) and both would land in
+  // "Other Documents" in every investor package and in the SharePoint mirror.
+  rtl_cond_feasibility: C.SOW, rtl_cond_gc_info: C.SOW,
   // (rtl_cond_fraud is handled specially below — it holds BOTH background and
   //  criminal reports, split by the document's slot.)
 };

@@ -871,6 +871,14 @@ if (require.main === module) {
         require('./lib/conditions/engine').backfillTpoIntakeConditionsOnce()
           .then((r) => r && r.added && console.log('[boot] TPO intake condition backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] TPO intake condition backfill failed:', e.message));
+        // One-shot (db/601, owner-directed 2026-08-20): every GROUND-UP CONSTRUCTION file
+        // carries the feasibility report + the GC information condition, on PREVIOUS files
+        // as well as future ones. The rule db/601 installs is the ONE definition of
+        // "ground-up", so the backfill RUNS THE ENGINE rather than re-stating that test in
+        // SQL. Marker-guarded (runs once, ever), silent, bounded, fire-and-forget.
+        require('./lib/conditions/engine').backfillGroundUpConstructionConditionsOnce()
+          .then((r) => r && r.added && console.log('[boot] ground-up condition backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] ground-up condition backfill failed:', e.message));
         // One-shot: recompute the experience condition on co-borrower files so it
         // carries the per-borrower breakdown + each borrower's track-record link
         // (#103). Idempotent, preserves sign-offs; fire-and-forget.
