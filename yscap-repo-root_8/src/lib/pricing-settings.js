@@ -138,7 +138,7 @@ function bust() { _cache = { at: 0, val: _cache.val || SYSTEM_DEFAULTS }; }
  * new one), so "what was the default when this file was registered?" is a fact
  * that can be read rather than guessed — which is what lets a per-file value be
  * classified as a deliberate override or as a copy of that day's default
- * (owner-reported 2026-08-20; see db/599 and the studio's seedAdminDefaults).
+ * (owner-reported 2026-08-20; see db/600 and the studio's seedAdminDefaults).
  *
  * A moment older than every settings row falls back to SYSTEM_DEFAULTS — the
  * literals the studio's own `CO` constants carried before the Pricing Admin
