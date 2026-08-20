@@ -131,4 +131,31 @@ function current() {
 
 function bust() { _cache = { at: 0, val: _cache.val || SYSTEM_DEFAULTS }; }
 
-module.exports = { current, load, bust, SYSTEM_DEFAULTS, cleanExtraFees, cleanMarkupTiers, extraFeesForState, extraFeesTotalForState };
+/**
+ * The company defaults that were IN FORCE at a moment in the past.
+ *
+ * This table is append-only (each save flips the prior current row and inserts a
+ * new one), so "what was the default when this file was registered?" is a fact
+ * that can be read rather than guessed — which is what lets a per-file value be
+ * classified as a deliberate override or as a copy of that day's default
+ * (owner-reported 2026-08-20; see db/598 and the studio's seedAdminDefaults).
+ *
+ * A moment older than every settings row falls back to SYSTEM_DEFAULTS — the
+ * literals the studio's own `CO` constants carried before the Pricing Admin
+ * Center existed. NEVER throws: an unreadable history returns null, and every
+ * caller must read that as "cannot classify", never as "it was the default".
+ */
+async function asOf(when) {
+  if (!when) return null;
+  try {
+    const r = await db.query(
+      `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct,
+              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability
+         FROM company_pricing_settings
+        WHERE created_at <= $1
+        ORDER BY created_at DESC LIMIT 1`, [when]);
+    return r.rows[0] ? shape(r.rows[0]) : SYSTEM_DEFAULTS;
+  } catch (_) { return null; }
+}
+
+module.exports = { current, load, asOf, bust, SYSTEM_DEFAULTS, cleanExtraFees, cleanMarkupTiers, extraFeesForState, extraFeesTotalForState };

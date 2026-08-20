@@ -223,18 +223,72 @@ function describeOverrides(changes) {
 }
 
 /**
+ * RESTATING THE COMPANY DEFAULT IS NOT AN OVERRIDE — normalize it to the studio's
+ * own explicit-blank form (owner-reported 2026-08-20).
+ *
+ * THE BUG THIS CLOSES. `web/v2/tools/termsheet.js seedAdminDefaults()` used to
+ * PAINT the company default into the admin markup / origination / fee inputs, so
+ * every registration carried an explicit per-file value that merely restated the
+ * default of that day — which the register path then FROZE onto the file
+ * (`applications.file_markup_*_pct`). Change the company markup afterwards and
+ * the file keeps pricing at the frozen number, and re-registering reads as a
+ * DISCOUNT (0.4 against a 0.5 default) so every registration needs an approval.
+ * The studio no longer paints those values; this is the same rule at the SERVER,
+ * so a client that still sends the seeded number — an older cached bundle, a
+ * restored registration, an officer typing the default back by hand — behaves
+ * identically to a blank box.
+ *
+ * WHY `''` AND NOT "drop the key". `''` is the studio's documented "use the
+ * company default" contract and it is the ONLY form that also CLEARS a stale
+ * sticky: `buildInputs` deletes it, `hasValue()` reads it as not-an-override, and
+ * the register path's `hasOwnProperty` check writes NULL over the frozen value.
+ * Dropping the key instead would leave an old sticky in place forever.
+ *
+ * WHY EXACT EQUALITY, not `sameNumber()`'s tolerance. A value that is exactly the
+ * default resolves, through the company default, to the byte-identical number the
+ * engine would have used — so this is provably PRICE-NEUTRAL. `pricingOverridesEngaged`
+ * keeps its cent-level tolerance, which is a superset, so a near-miss still raises
+ * no approval either way; it simply keeps its (harmless, deliberate-looking) sticky.
+ *
+ * Only the knobs that HAVE a company default are considered, and only when that
+ * default is readable — with no defaults nothing is normalized (fail SAFE: keep
+ * the value and let the approval detector ask, never silently drop a real override).
+ */
+function normalizeCompanyDefaultKnobs(raw, defaults) {
+  const o = (raw && typeof raw === 'object') ? { ...raw } : {};
+  const cd = (defaults && typeof defaults === 'object') ? defaults : null;
+  if (!cd) return o;
+  for (const key of Object.keys(DEFAULTED_OVERRIDE_KEYS)) {
+    if (!hasValue(o, key)) continue;                      // absent or already blank
+    const value = numOrNull(o[key]);
+    if (value == null) continue;                          // unreadable → leave it alone
+    const meta = DEFAULTED_OVERRIDE_KEYS[key];
+    const defaultValue = numOrNull(cd[meta.defaultKey || key]);
+    if (defaultValue == null) continue;                   // no default to restate
+    if (value === defaultValue) o[key] = '';              // exact restatement → the blank contract
+  }
+  return o;
+}
+
+/**
  * Staff override sanitizer. Since 2026-07-27 (evening) NOTHING is stripped for a
  * staff role — every role may enter every admin-zone knob, and the deviation is
  * routed to an admin for approval instead of being silently dropped or refused
  * at the door. Kept as the single chokepoint (register / quote / details /
  * completeness all call it) so a future role rule lands in ONE place.
  *
+ * `defaults` (the company pricing singleton) is OPTIONAL and additive: when it is
+ * supplied, a knob that merely RESTATES the company default is normalized to the
+ * explicit-blank form (see normalizeCompanyDefaultKnobs). Omitting it leaves the
+ * payload byte-identical to before, so a caller that has no defaults in hand is
+ * unchanged.
+ *
  * `strippedAdminKeys` is retained in the shape and is always false — the loud
  * "your terms would differ from what the studio showed" refusal it drove can no
  * longer happen, because nothing diverges anymore.
  */
-function sanitizeStaffOverrides(role, raw) {
-  const overrides = (raw && typeof raw === 'object') ? { ...raw } : {};
+function sanitizeStaffOverrides(role, raw, defaults) {
+  const overrides = normalizeCompanyDefaultKnobs(raw, defaults);
   return { overrides, strippedAdminKeys: false, isAdmin: isAdminRole(role) };
 }
 
@@ -279,5 +333,5 @@ function borrowerPricingOverrides(raw) {
 module.exports = {
   DEFAULTED_OVERRIDE_KEYS, ENGAGED_OVERRIDE_KEYS, APPROVAL_OVERRIDE_KEYS,
   pricingOverridesEngaged, needsPricingApproval, describeOverrides,
-  sanitizeStaffOverrides, borrowerPricingOverrides, isAdminRole, engaged,
+  sanitizeStaffOverrides, normalizeCompanyDefaultKnobs, borrowerPricingOverrides, isAdminRole, engaged,
 };

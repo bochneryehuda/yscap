@@ -1353,22 +1353,47 @@
   function origPctStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + "%"; }
   function origPtStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + (p === 1 ? " pt" : " pts"); }
   function adminNumRaw(id) { var e = el(id); if (!e) return null; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : null; }  // null = blank/unset
-  // Fill the (blank) admin fee/markup inputs from the company defaults for
-  // DISPLAY only. Never overwrite a value already present — a non-blank field is
-  // an explicit per-file override (typed by staff or restored by the studio's
-  // applyState) and must win. Pricing reads CO for any blank field via adminNum,
-  // so the math is already correct before this ever runs.
+  /* SHOW the company defaults in the admin fee/markup inputs — as PLACEHOLDERS,
+     never as typed VALUES (owner-reported 2026-08-20, and this is the root cause
+     of "I changed the markup to 0.5 in admin settings and every file still prices
+     at 0.4 / every registration comes up as an exception").
+
+     WHAT WENT WRONG. This function used to WRITE the company default into
+     `e.value`. A value in that box is, by every downstream contract, an EXPLICIT
+     PER-FILE OVERRIDE: `readSnapshot` harvests it, `overridesFromSnapshot` sends
+     it as `markupStdPct`, and the register path STICKS it onto the file
+     (`applications.file_markup_*_pct`, db/109). So every registration silently
+     froze the company default of THAT DAY onto THAT FILE, forever. Change the
+     company default afterwards and:
+       · every later quote on the file still prices at the frozen number —
+         `buildInputs` re-applies the sticky markup and `quoteProgram` prefers it
+         over the company default (measured: 10.300% vs 10.400%);
+       · re-opening the studio restores the frozen number into this box (via
+         `adminStateFromEngineInputs`), so the next register sends 0.4 against a
+         0.5 company default, `pricingOverridesEngaged` reads a DISCOUNT, and the
+         registration needs an admin approval — "every single registration goes
+         for an exception".
+     The register path's own comment already stated the intended contract — "a
+     live company-default registration (no markup key) never freezes the default
+     onto the file" — and seeding the VALUE is precisely what broke it.
+
+     BLANK IS THE CONTRACT EVERYWHERE, so a blank box is not a loss of anything:
+     pricing here reads CO for any blank field via `adminNum`, the payload sends
+     `''` (which `buildInputs` drops and the server treats as "clear the sticky,
+     use the company default"), and the approval detector's `hasValue` reads it
+     as "not an override". So the live company default governs on every surface,
+     and a file that was frozen at an old default HEALS on its next registration.
+     A number a staffer actually TYPES is untouched and still sticks + escalates,
+     exactly as before — which is the only thing that was ever meant to. */
   function seedAdminDefaults() {
-    // The seeded company default is STAMPED on the field (data-ts-seeded) so the
-    // admin accordion's "In use" chip can tell a seeded default from a typed
-    // override — without the stamp, seeding "0.5"/"1.25"/"2195" made three
-    // untouched sections read "In use" forever (audit 2026-08-18 finding 1).
-    // Stamped even when a value is already present: the default is the same
-    // number either way, and the chip's question is "does the value DEVIATE?".
+    // The company default is STAMPED on the field (data-ts-seeded) so the admin
+    // accordion's "In use" chip can tell a seeded default from a typed override
+    // (audit 2026-08-18 finding 1), and shown as the PLACEHOLDER so the officer
+    // still reads the number the blank box will price at.
     var s = function (id, v) {
       var e = el(id); if (!e) return;
       try { e.setAttribute("data-ts-seeded", String(v)); } catch (_) { /* chip is cosmetic */ }
-      if (String(e.value).trim() === "") e.value = v;
+      try { e.placeholder = String(v); } catch (_) { /* hint is cosmetic */ }
     };
     s("tsYspStd", String(CO.markupStd)); s("tsYspGold", String(CO.markupGold)); s("tsYspSilver", String(CO.markupSilver));
     s("tsOrigStd", String(CO.origStd)); s("tsOrigGold", String(CO.origGold)); s("tsOrigSilver", String(CO.origSilver));
@@ -1717,9 +1742,17 @@
     }
     function lockDown() {
       if (panel) panel.hidden = true; if (lock) lock.hidden = true; trig.hidden = false; trig.setAttribute("aria-expanded", "false");
-      setVal("tsYspStd", String(CO.markupStd)); setVal("tsYspGold", String(CO.markupGold)); setVal("tsYspSilver", String(CO.markupSilver)); setVal("tsOrigStd", String(CO.origStd)); setVal("tsOrigGold", String(CO.origGold)); setVal("tsOrigSilver", String(CO.origSilver)); setVal("tsOrigManual", "");   // blank = follow Standard (it has no default of its own)
+      /* RE-LOCKING THE PANEL RESETS EVERY KNOB TO THE COMPANY DEFAULT, AND BLANK
+         IS THAT DEFAULT (owner-reported 2026-08-20 — see seedAdminDefaults).
+         These used to be re-filled with CO's numbers, which is the same
+         freeze-the-default-onto-the-file bug one step later: a re-locked panel
+         still sent an explicit per-file markup on the next register. Blank means
+         "use whatever the company default is at pricing time", which is exactly
+         what a reset should mean; seedAdminDefaults re-paints the placeholders. */
+      setVal("tsYspStd", ""); setVal("tsYspGold", ""); setVal("tsYspSilver", ""); setVal("tsOrigStd", ""); setVal("tsOrigGold", ""); setVal("tsOrigSilver", ""); setVal("tsOrigManual", "");   // blank = follow Standard (it has no default of its own)
       setVal("tsYspGoldT1", "");   // blank = Gold top tier keeps its normal (0 / company-default) markup
-      setVal("tsFeeUW", String(CO.lender)); setVal("tsFeeCredit", String(CO.credit)); setVal("tsFeeAppr", String(CO.appraisal)); setVal("tsFeeTitle", CO.title != null ? String(CO.title) : "");
+      setVal("tsFeeUW", ""); setVal("tsFeeCredit", ""); setVal("tsFeeAppr", ""); setVal("tsFeeTitle", "");
+      seedAdminDefaults();
       var mo = el("tsManualOn"); if (mo) mo.checked = false;
       setVal("tsMLtv", ""); setVal("tsMArv", ""); setVal("tsMLtc", ""); setVal("tsMRate", ""); setVal("tsMIr", "");
       // Reset the term-sheet options to their defaults: Non-Dutch accrual, no
@@ -1839,7 +1872,7 @@
       advWhyEl.innerHTML = showWhy ? advWhy : "";
     }
     YS.put("rHoldback", sized ? YS.fmtUSD(d.rehabHoldback) : EM);
-    var hbTag = el("rHoldbackTag"); if (hbTag) hbTag.textContent = (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "(capped \u2014 see eligibility)" : ((sized && d.oopRehab > 0) ? "(financed portion, in draws)" : "(= rehab, in draws)");
+    var hbTag = el("rHoldbackTag"); if (hbTag) hbTag.textContent = (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? ((d.R.sizing.rehabOopAuto ? "(" + pcFull(d.R.sizing.rehabFinancedPct) + " of budget" : "(capped") + " \u2014 see eligibility)") : ((sized && d.oopRehab > 0) ? "(financed portion, in draws)" : "(= rehab, in draws)");
     YS.put("rRate", (sized && d.rate > 0) ? fmtRate3(d.rate) + "%" : EM);
     // two interest-only payment lines: initial-advance payment + fully-drawn payment
     YS.put("rPmtInit", (sized && d.initialPayment > 0) ? YS.fmtUSD(d.initialPayment) + "/mo" : EM);
@@ -2873,7 +2906,7 @@
         if (d.financedIR > 0) { var finMo = (d.fullPayment > 0) ? Math.round(d.financedIR / d.fullPayment) : (d.irMonths || 0); yL = rowIn(xL, colW, "Financed interest reserve (" + finMo + " mo)", money(d.financedIR), yL); }
         yL = rowIn(xL, colW, "Total project cost", money(d.totalCost), yL, { bold: true });
         yL = rowIn(xL, colW, "Initial advance (at closing)", sized ? (money(d.initialAdvance) + (d.ltvPct > 0 ? "   (" + pc(d.ltvPct) + " LTV)" : "")) : "\u2014", yL);
-        yL = rowIn(xL, colW, (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "Construction holdback (capped \u2014 see eligibility)" : (d.oopRehab > 0 ? "Construction holdback (financed portion)" : "Construction holdback (= rehab)"), sized ? money(d.rehabHoldback) : "\u2014", yL);
+        yL = rowIn(xL, colW, (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? ("Construction holdback (" + (d.R.sizing.rehabOopAuto ? pcFull(d.R.sizing.rehabFinancedPct) + " of budget" : "capped") + " \u2014 see eligibility)") : (d.oopRehab > 0 ? "Construction holdback (financed portion)" : "Construction holdback (= rehab)"), sized ? money(d.rehabHoldback) : "\u2014", yL);
         if (sized && d.oopRehab > 0) yL = rowIn(xL, colW, "Out-of-pocket rehab (funded over construction)", money(d.oopRehab), yL);
       }
       yL = rowIn(xL, colW, isBridge ? "Total loan amount (disbursed at closing)" : "Total loan amount", sized ? money(d.totalLoan) : "\u2014", yL, { bold: true, accent: true });
@@ -2984,7 +3017,7 @@
       if (isBridge) {
         para("This is a stabilized bridge loan \u2014 it is sized against the as-is value only. The loan is capped at " + pc(_bldCaps ? _bldCaps.maxAcqLTV : 0) + " of the lower of purchase price or as-is value. A bridge has no rehab holdback, no loan-to-cost limit and no after-repair-value limit." + (d.pricingReady && d.binding ? (" On this deal, " + d.binding + " is the binding limit.") : ""));
       } else {
-        para("Your maximum loan is the lesser of four program limits \u2014 the most conservative one sets your number. (1) The initial advance is capped at " + pc(_bldCaps ? _bldCaps.maxAcqLTV : 0) + " of the lower of purchase price or as-is value. (2) 100% of your rehab budget is financed and released in draws as work is verified \u2014 no rehab comes out of pocket." + ((d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? " (On this deal the program cap limits the holdback below the budget \u2014 see the eligibility notes.)" : "") + " (3) The total loan can't exceed " + pc(_bldCaps ? _bldCaps.maxLTC : 0) + " loan-to-cost (purchase + rehab). (4) The total loan can't exceed " + pc(_bldCaps ? _bldCaps.maxARLTV : 0) + " of the after-repair value." + (d.pricingReady && d.binding ? (" On this deal, " + d.binding + " is the binding limit.") : ""));
+        para("Your maximum loan is the lesser of four program limits \u2014 the most conservative one sets your number. (1) The initial advance is capped at " + pc(_bldCaps ? _bldCaps.maxAcqLTV : 0) + " of the lower of purchase price or as-is value. (2) 100% of your rehab budget is financed and released in draws as work is verified \u2014 no rehab comes out of pocket." + ((d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? ((d.R && d.R.sizing && d.R.sizing.rehabOopAuto) ? (" (On this deal the initial advance is already zero, so the caps have nothing left to cut and the loan finances " + pcFull(d.R.sizing.rehabFinancedPct) + " of the budget \u2014 the balance comes out of pocket over the construction. See the eligibility notes.)") : " (On this deal the program cap limits the holdback below the budget \u2014 see the eligibility notes.)") : "") + " (3) The total loan can't exceed " + pc(_bldCaps ? _bldCaps.maxLTC : 0) + " loan-to-cost (purchase + rehab). (4) The total loan can't exceed " + pc(_bldCaps ? _bldCaps.maxARLTV : 0) + " of the after-repair value." + (d.pricingReady && d.binding ? (" On this deal, " + d.binding + " is the binding limit.") : ""));
         if (_bldLower && sized) para("These four limits are your program maximum and are set by your tier (FICO and experience) \u2014 they do not change when the deal changes. On this deal the program prices up to " + pc(d.caps.maxLTC) + " loan-to-cost and " + pc(d.caps.maxARLTV) + " of the after-repair value, which is lower. " + pricedWhy(d, _bldCaps, d.caps));
       }
 
@@ -3785,7 +3818,7 @@
       derivRows.push(["Cost basis \u2014 " + ((d.asg && (d.asg.overLimit || d.asg.overridden)) ? "effective purchase price" : "price / as-is basis"), money(d.basisPrice)]);
       derivRows.push(["Initial advance at closing", money(d.initialAdvance)]);
       derivRows.push(["= " + pc(d.ltvPct) + " of as-is value (initial LTV)", "", "sub"]);
-      if (d.rehabHoldback > 0) derivRows.push(["Construction holdback \u2014 " + ((d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "capped below the budget" : "100% of budget"), money(d.rehabHoldback)]);
+      if (d.rehabHoldback > 0) derivRows.push(["Construction holdback \u2014 " + ((d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? ((d.R.sizing.rehabOopAuto ? pcFull(d.R.sizing.rehabFinancedPct) + " of budget (balance out of pocket)" : "capped below the budget")) : "100% of budget"), money(d.rehabHoldback)]);
       if (d.financedIR > 0) { var fm = (d.fullPayment > 0) ? Math.round(d.financedIR / d.fullPayment) : (inp.irMonths || 0); derivRows.push(["Financed interest reserve (" + fm + " mo)", money(d.financedIR)]); }
       derivRows.push(["Total loan amount", money(d.totalLoan), "tot"]);
     }

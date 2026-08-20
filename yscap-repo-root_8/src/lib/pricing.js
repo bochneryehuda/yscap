@@ -614,7 +614,21 @@ function normalize(program, input, ev, ladder, opts) {
   // Use the EFFECTIVE acquisition cap the deal was sized at — pricedCeiling when the
   // engine splits it out (Silver), else caps (Standard/Gold) — matching the `caps`
   // mapping below and the engine's own A = maxAcqLTV × acqDenom.
-  const maxInitial = Math.floor(Math.max(0, num(((ev.pricedCeiling || ev.caps) || {}).maxAcqLTV) * num(s.acqDenom)));
+  /* …AND EVERY OTHER CEILING ON THE INITIAL ADVANCE, not just the LTV one
+     (owner-directed 2026-08-20). `A = maxAcqLTV × acqDenom` is one of the
+     engine's MINs, and a rule that adds another — today the Standard program's
+     judicial-state sub-$100k exception, which holds the initial to
+     `price − $20,000` so the borrower's own money is in the deal — must bound
+     this too. Otherwise the out-of-pocket-rehab exception's own "raise the
+     initial to its max" would quietly lift the initial back over that floor and
+     undo the requirement the term sheet just printed. `s.minDownPayment` is 0 on
+     every deal no rule touched, so this is inert everywhere else; an admin who
+     genuinely needs more still has the manual basis, which the judicial rule
+     deliberately excludes itself from. */
+  const acqLtvCeiling = Math.max(0, num(((ev.pricedCeiling || ev.caps) || {}).maxAcqLTV) * num(s.acqDenom));
+  const downFloorCeiling = num(s.minDownPayment) > 0 && num(s.pp) > 0
+    ? Math.max(0, num(s.pp) - num(s.minDownPayment)) : Infinity;
+  const maxInitial = Math.floor(Math.min(acqLtvCeiling, downFloorCeiling));
   const initialCut = Math.max(0, maxInitial - initialAdvance);         // how much the initial was cut below its cap
   const maxOopRehab = Math.max(0, Math.min(initialCut, rehabHoldback)); // biggest rehab we could push out of pocket
   const requestedOop = input.oopRehabMax ? maxOopRehab : Math.max(0, Math.floor(num(input.oopRehab)));
@@ -797,6 +811,23 @@ function normalize(program, input, ev, ladder, opts) {
       maxOopRehab,
       initialCut,
       maxInitial,
+      /* THE CAP-DRIVEN construction shortfall, and whether it is automatically
+         allowed (owner-directed 2026-08-20). DISTINCT from `oopRehab` above:
+         that is the APPROVED exception amount an admin entered to raise the
+         initial advance, this is what the LTC / ARV / max-loan wall could not
+         finance in the first place. `rehabOopAuto` is true when the initial
+         advance was already zero and at least 90% of the budget is still
+         financed — the caps had nothing left to cut, so the engine allows it
+         with no exception and the term sheet DISCLOSES it instead. Both are 0 /
+         false on every deal that does not trip a cap. */
+      rehabUnfinanced: round2(num(s.rehabUnfinanced)),
+      rehabFinancedPct: s.rehabFinancedPct != null ? num(s.rehabFinancedPct) : 1,
+      rehabOopAuto: !!s.rehabOopAuto,
+      // A dollar floor on the borrower's own money at the purchase, when a rule
+      // sets one (today: the Standard program's judicial-state sub-$100k
+      // exception). 0 on every other deal. Leverage is never changed by it —
+      // it only caps the initial advance, so `downPayment` is at least this.
+      minDownPayment: round2(num(s.minDownPayment)),
       initialPayment,
       monthlyPayment: num(s.fullPayment),
       ltcPct: num(s.ltcPct),
@@ -878,6 +909,12 @@ function normalize(program, input, ev, ladder, opts) {
       maxReserveMonths: num(s.maxReserveMonths),
       heavyRehab: !!ev.heavy,
       sqftAddition: !!ev.sqft,
+      /* The judicial-state sub-$100,000 purchase exception, when the engine
+         applied it (Standard program only, owner-directed 2026-08-20). Carried
+         verbatim from the engine so the term sheet, the registration record and
+         the escalation card all state the SAME requirement it enforced — never
+         a second derivation. null on every other deal. */
+      judicialSmallPurchase: ev.judicialSmallPurchase || null,
     },
     adminPricing: {
       markupPct: hasInput(input, markupKeyFor(program))
