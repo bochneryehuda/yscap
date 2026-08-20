@@ -46,6 +46,21 @@
  * revoke too and clears every pillar it had carried. A pillar a HUMAN confirmed
  * is NOT silently cleared — that would erase a person's decision — it is left
  * standing and reported, so the caller can raise `entity_unverified` against it.
+ * A records read that PROVED the pillar because Check A held at the time is the
+ * second thing a revoke has to answer for: its conclusion is withdrawn (down to
+ * the `no_data` state a fresh read would now produce) while what the deed says
+ * is kept, because that observation is still true.
+ *
+ * ── IT ONLY EVER ADDS CONFIDENCE — IT NEVER OVERWRITES THE RECORDS ─────────
+ * Verifying an entity is an action that can only make a line MORE proven, so
+ * the carry refuses to write over an ownership pillar the records check has
+ * already settled (`auto_source='elementix'` with `proved` or `contradicted`).
+ * Unguarded it did exactly that — stamping `auto_source='entity'` over a
+ * records-proved pillar, which took the derived "Verified to Elementix" stamp
+ * off the line the moment a staffer confirmed the company. The one thing that
+ * still writes over a proved row is a CONTRADICTION this module itself finds
+ * (the membership window), because a negative finding is never suppressed to
+ * protect a stamp. See the guard at the write for the whole reasoning.
  *
  * ── AND IT NEVER TOUCHES track_records.is_verified ──────────────────────────
  * That flag is about the DEAL — its verify route gates on a completed, in-window
@@ -132,7 +147,7 @@ function ownershipVerdict({ checkA, checkB, hold, member }) {
 async function syncEntityToTrackRecords(llcId, opts = {}) {
   const database = require('../db');
   const client = opts.client || database;
-  const out = { carried: 0, cleared: 0, contradicted: 0, noData: 0, humanConfirmed: [], ok: true };
+  const out = { carried: 0, cleared: 0, contradicted: 0, noData: 0, preserved: 0, downgraded: 0, humanConfirmed: [], ok: true };
   try {
     if (!llcId) return out;
 
@@ -149,7 +164,10 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
     const lines = (await client.query(
       `SELECT t.id, t.borrower_id, t.llc_id, t.purchase_date, t.counts_from,
               b.ownership_verified, b.ownership_verified_at, b.held_from, b.held_to,
-              p.human_verdict AS pillar_human, p.satisfied_by_llc_id
+              p.human_verdict AS pillar_human, p.satisfied_by_llc_id,
+              p.auto_source AS pillar_source, p.auto_verdict AS pillar_verdict,
+              p.auto_evidence->>'controlVerdict'   AS pillar_control,
+              p.auto_evidence->>'satisfiedByLlcId' AS pillar_control_llc
          FROM track_records t
          JOIN llc_borrowers b ON b.llc_id = t.llc_id AND b.borrower_id = t.borrower_id
          LEFT JOIN track_record_pillars p
@@ -162,9 +180,24 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
       if (!checkA.verified) {
         /* REVOKED (or never verified). Clear only what WE carried. A pillar a
            human confirmed is never silently cleared — that erases a decision —
-           so it is reported instead, for the caller to raise entity_unverified. */
-        if (row.pillar_human === 'confirmed' && row.satisfied_by_llc_id) {
-          out.humanConfirmed.push({ trackRecordId: row.id, llcId: row.satisfied_by_llc_id });
+           so it is reported instead, for the caller to raise entity_unverified.
+
+           THE RECORDS READ IS THE SECOND THING CHECK A CAN HAVE PROVED, and it
+           is not ours to erase. When the records check ran while the entity was
+           confirmed, `checks.js` wrote the pillar as `elementix`/`proved` with
+           `controlVerdict:'confirmed'` in its evidence — and it does NOT set
+           `satisfied_by_llc_id`, so the clear above matched nothing and that
+           pillar stood after a revoke, still stating "this borrower's control of
+           that company has been confirmed" and still printing "Verified to
+           Elementix" on the investor package. A stamp that outlives the evidence
+           it rests on is the mirror image of the carry overwriting one. */
+        const controlDependent = row.pillar_source === 'elementix'
+          && row.pillar_verdict === 'proved'
+          && row.pillar_control === 'confirmed'
+          && String(row.pillar_control_llc || '') === String(row.llc_id || '');
+
+        if (row.pillar_human === 'confirmed' && (row.satisfied_by_llc_id || controlDependent)) {
+          out.humanConfirmed.push({ trackRecordId: row.id, llcId: row.satisfied_by_llc_id || row.llc_id });
           continue;
         }
         const r = await client.query(
@@ -175,6 +208,33 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
             WHERE track_record_id=$1 AND pillar='ownership' AND satisfied_by_llc_id IS NOT NULL`,
           [row.id]);
         out.cleared += r.rowCount || 0;
+
+        /* DOWNGRADED, NEVER WIPED. What the deed says is a real records
+           observation and survives; only the CONCLUSION that rested on Check A
+           is withdrawn, landing the pillar exactly where a fresh read of the
+           same records would land it — `checks.js`'s own entityNoData state
+           (source `elementix`, verdict `no_data`, same grade, needsControlCheck).
+           A deed naming the BORROWER THEMSELVES carries no `controlVerdict` at
+           all, so it can never match this and is never touched. */
+        if (controlDependent) {
+          const d = await client.query(
+            `UPDATE track_record_pillars
+                SET auto_verdict='no_data', auto_confidence=NULL,
+                    auto_evidence = COALESCE(auto_evidence,'{}'::jsonb)
+                                    || jsonb_build_object('priorWhy', auto_evidence->'why')
+                                    || $2::jsonb,
+                    auto_checked_at=now(), updated_at=now()
+              WHERE track_record_id=$1 AND pillar='ownership'
+                AND auto_source='elementix' AND auto_verdict='proved'
+                AND auto_evidence->>'controlVerdict' = 'confirmed'`,
+            [row.id, JSON.stringify({
+              controlVerdict: null,
+              needsControlCheck: true,
+              controlRevokedAt: new Date().toISOString(),
+              why: 'The records show the company held this property, but this borrower’s control of that company has since been revoked — so holding it no longer shows their ownership. Confirm the company again, or check whether a deed names the borrower themselves.',
+            })]);
+          out.downgraded += d.rowCount || 0;
+        }
         continue;
       }
 
@@ -186,14 +246,63 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
       });
       if (!verdict) continue;
 
-      await client.query(
+      /* THE CARRY MAY ONLY ADD CONFIDENCE — IT MAY NEVER OVERWRITE WHAT WE READ
+         OFF THE RECORD.
+
+         This UPDATE used to be unconditional, while the CLEAR branch above has
+         always had the shape it should have had too ("touch only what WE
+         carried", `AND satisfied_by_llc_id IS NOT NULL`). Unguarded, the carry
+         wrote `auto_source='entity'` straight over an ownership pillar the
+         RECORDS CHECK had already PROVED (`auto_source='elementix'`) — and
+         because the records stamp is DERIVED from exactly those two columns,
+         marking an entity's ownership verified TOOK "Verified to Elementix" OFF
+         the line, on every screen and on the investor package. An action that
+         can only ever ADD confidence was silently removing it.
+
+         `recordsSettled` is what the records have already decided about this
+         pillar, and an inference never re-opens it:
+           · `proved`       — we read the deed. Nothing the carry knows is
+                              stronger, and its own `proved` says LESS, because
+                              the stamp reads the SOURCE and not just the verdict.
+           · `contradicted` — a real negative finding ("every recorded deed
+                              conveys this property to somebody else"). Writing
+                              over it would hide the one thing a reviewer has to
+                              look at.
+
+         A CONTRADICTION THE CARRY ITSELF FINDS STILL WRITES OVER A PROVED ROW,
+         deliberately: the membership window is evidence about the BORROWER that
+         the records read never saw ("this entity held the property before they
+         had anything to do with it"), and a negative finding must never be
+         suppressed to protect a stamp. It correctly drops the line to
+         `sourced` — which is exactly what VERIFIED_BLOCKED_WHERE is for.
+
+         Everything the carry has always answered is untouched: a pillar nobody
+         has checked, an `elementix`/`no_data` ("the company held it, nobody has
+         confirmed control") — the very question Check A answers — and its own
+         earlier carry. COALESCE on both columns because a never-checked pillar
+         holds NULLs, and `NOT (NULL AND NULL)` is NULL, not true: the standing
+         three-valued-logic trap, which here would have refused every fresh row
+         and turned the whole feature off. */
+      const recordsSettled = verdict.auto_verdict === 'contradicted'
+        ? ['contradicted']
+        : ['proved', 'contradicted'];
+
+      const w = await client.query(
         `UPDATE track_record_pillars
             SET auto_verdict=$2, auto_source=$3, auto_confidence=$4, auto_grade=$5,
                 auto_evidence=$6::jsonb, satisfied_by_llc_id=$7, auto_checked_at=now(), updated_at=now()
-          WHERE track_record_id=$1 AND pillar='ownership'`,
+          WHERE track_record_id=$1 AND pillar='ownership'
+            AND NOT (COALESCE(auto_source,'') = 'elementix'
+                     AND COALESCE(auto_verdict,'') = ANY($8::text[]))`,
         [row.id, verdict.auto_verdict, verdict.auto_source, verdict.auto_confidence, verdict.auto_grade,
           JSON.stringify({ message: verdict.message, checkA: { verifiedAt: row.ownership_verified_at, llcId: row.llc_id } }),
-          row.llc_id]);
+          row.llc_id, recordsSettled]);
+
+      /* COUNT WHAT ACTUALLY MOVED. The entity screen shows this summary to the
+         reviewer, so reporting a carry the guard refused would claim evidence
+         nothing wrote. A refused row is REPORTED as preserved, never dropped in
+         silence. */
+      if (!w.rowCount) { out.preserved += 1; continue; }
 
       if (verdict.auto_verdict === 'proved') out.carried += 1;
       else if (verdict.auto_verdict === 'contradicted') out.contradicted += 1;
