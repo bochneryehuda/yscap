@@ -946,6 +946,20 @@ const found = (name) => {
       checkB: { grantee: `${tag} Alpha Holdings, L.L.C.`, granteeIsMatchedEntity: true, documentId: 'deed-alpha', heldAs: 'entity' },
     }, 'strong');
 
+    /* AND THE SUFFIX IS PART OF THE COMPANY. `promotionMatch` deletes the entity
+       suffix from BOTH sides before comparing — right for linking a typed name
+       to a company somebody abbreviated, wrong for the one decision that mints a
+       stamp: an operating LLC beside a management Corp is an ordinary shape on
+       one borrower's profile, and reading them as one company printed "Verified
+       to Elementix" on a property whose deed names the Corp while the Corp's own
+       Check A was still false. */
+    const corpDeed = await mkLine(alpha, '84b Corp Not LLC Rd, Lakewood, NJ 08701', false);
+    await setPillar(corpDeed, 'elementix', 'no_data', {
+      why: `"${tag} Alpha Holdings Corp" is the grantee on the recorded deed.`,
+      matched: `${tag} Alpha Holdings Corp`, needsControlCheck: true,
+      checkB: { grantee: `${tag} Alpha Holdings Corp`, granteeIsMatchedEntity: true, documentId: 'deed-corp', heldAs: 'entity' },
+    }, 'strong');
+
     const j7i = await (await confirm(alpha, {})).json();
     const afterX = await own(crossed);
     ok(afterX.auto_verdict === 'no_data' && afterX.auto_source === 'elementix',
@@ -965,8 +979,16 @@ const found = (name) => {
       '(control) …so the identity test refuses the stranger without refusing everything');
     ok(afterS.auto_evidence && /grantee on the recorded deed/.test(String(afterS.auto_evidence.priorWhy)),
       '…and the promotion keeps the deed’s own sentence as priorWhy');
-    ok(j7i.carry.carried === 1 && j7i.carry.preserved === 1,
-      `(one promoted, one preserved — carried ${j7i.carry.carried}, preserved ${j7i.carry.preserved})`);
+    const afterCorp = await own(corpDeed);
+    ok(afterCorp.auto_verdict === 'no_data' && afterCorp.auto_source === 'elementix',
+      'confirming the LLC does not promote a pillar whose deed names the CORP of the same name');
+    ok((await stampOf(corpDeed)).records_stamp === 'sourced',
+      '…so no stamp is minted across two different legal entities');
+    ok(JSON.stringify(afterCorp.auto_evidence || {}).includes('deed-corp'),
+      '…and that deed’s evidence is preserved rather than overwritten by the carry');
+
+    ok(j7i.carry.carried === 1 && j7i.carry.preserved === 2,
+      `(one promoted, two preserved — carried ${j7i.carry.carried}, preserved ${j7i.carry.preserved})`);
 
     // ── 7j. TWO HEALS AT ONCE MUST NOT EAT THE DEED SENTENCE ─────────────
     /* `WHERE p.id IN (SELECT …)` carries no predicate on the TARGET row, and
@@ -1033,6 +1055,135 @@ const found = (name) => {
     const s1 = await OWN.healRevokedRecordsProofsOnce({ client: db });
     const s2 = await OWN.healRevokedRecordsProofsOnce({ client: db });
     ok(s1.downgraded >= 1 && s2.downgraded === 0, 'and a second boot still finds nothing left to do');
+
+    // ── 7k. A CONFIRM THAT LANDS MID-PASS IS NOT IGNORED ────────────────
+    /* The heal used to select its rows and write them in ONE statement, so the
+       whole pass was judged on ONE snapshot: a staffer pressing Confirm after
+       the selection but before the write had their confirmation ignored — the
+       pass withdrew "Verified to Elementix" for a company that had JUST been
+       verified, and it stayed withdrawn until somebody pressed Confirm again.
+       Selection and write are now two statements, and under READ COMMITTED the
+       write takes its own snapshot, so it re-asks the whole question and skips
+       the row. Driven here through the two phases directly, with a REAL commit
+       in between — nothing else can show an interleaving. */
+    const echo = await mkEntity(`${tag} Echo LLC`);
+    const contested = await mkLine(echo, '87 Confirm Mid Heal Rd, Lakewood, NJ 08701', false);
+    const seedContested = async () => {
+      await setPillar(contested, 'elementix', 'proved',
+        { why: 'THE ECHO DEED SENTENCE', controlVerdict: 'confirmed', satisfiedByLlcId: echo }, 'superior');
+      await db.query('UPDATE llc_borrowers SET ownership_verified=false, ownership_verified_at=NULL WHERE llc_id=$1', [echo]);
+    };
+    await seedContested();
+    ok((await stampOf(contested)).records_stamp === 'verified',
+      '(fixture) the line carries a records stamp resting on a company nobody has verified yet');
+
+    {
+      const picked = await OWN._internals.healSelectIds(db, 500);
+      ok(picked.map(String).includes(String(
+        (await db.query(`SELECT id FROM track_record_pillars WHERE track_record_id=$1 AND pillar='ownership'`, [contested])).rows[0].id)),
+      '(fixture) the selection phase picks the row up');
+      // A staffer confirms the company in the gap between the two phases.
+      await db.query(`UPDATE llc_borrowers SET ownership_verified=true, ownership_verified_at=now() WHERE llc_id=$1`, [echo]);
+      const wrote = await OWN._internals.healApply(db, picked);
+      ok(wrote === 0,
+        'a Confirm committed BETWEEN the two phases is seen by the write — it withdraws nothing');
+      ok((await own(contested)).auto_verdict === 'proved'
+        && (await own(contested)).auto_evidence.why === 'THE ECHO DEED SENTENCE',
+      '…so the pillar is still proved with the deed’s own sentence untouched');
+      ok((await stampOf(contested)).records_stamp === 'verified',
+        '…and "Verified to Elementix" stands, rather than needing a second press of Confirm');
+    }
+
+    /* AND THE INVERSE — the same two phases with NOTHING committed in between
+       must still withdraw, or the guard above would be indistinguishable from a
+       heal that had simply stopped working. */
+    await seedContested();
+    {
+      const picked = await OWN._internals.healSelectIds(db, 500);
+      ok(await OWN._internals.healApply(db, picked) >= 1,
+        '(control) with nothing committed in between the write DOES land — the guard refuses, it does not disable');
+      ok((await stampOf(contested)).records_stamp === 'sourced', '(control) …and the stamp goes');
+    }
+
+    // ── 7k2. THE PROOF'S COMPANY, NOT THE LINE'S ────────────────────────
+    /* The selector used to join `b.llc_id = t.llc_id` — whichever company the
+       LINE points at now — while the proof RESTS on the company named in
+       `satisfiedByLlcId`. Re-point the line at a company that IS verified and
+       the old selector read the row as sound and left "Verified to Elementix"
+       standing for the unverified company the deed was actually judged against. */
+    const golf = await mkEntity(`${tag} Golf LLC`);          // the proof rests on this one
+    const hotel = await mkEntity(`${tag} Hotel LLC`);        // …and the line is re-pointed here
+    const repointed = await mkLine(golf, '89 Repointed Line Rd, Lakewood, NJ 08701', false);
+    await setPillar(repointed, 'elementix', 'proved',
+      { why: 'THE GOLF DEED SENTENCE', controlVerdict: 'confirmed', satisfiedByLlcId: golf }, 'superior');
+    await db.query('UPDATE llc_borrowers SET ownership_verified=false, ownership_verified_at=NULL WHERE llc_id=$1', [golf]);
+    await db.query('UPDATE llc_borrowers SET ownership_verified=true,  ownership_verified_at=now()  WHERE llc_id=$1', [hotel]);
+    await db.query('UPDATE track_records SET llc_id=$2 WHERE id=$1', [repointed, hotel]);
+    ok((await stampOf(repointed)).records_stamp === 'verified',
+      '(fixture) the stamp is standing while the company the proof rests on is unverified');
+    ok((await OWN.healRevokedRecordsProofsOnce({ client: db })).downgraded === 1,
+      'the pass judges the company the PROOF names, so it reaches it');
+    ok((await stampOf(repointed)).records_stamp === 'sourced', '…and the stamp goes');
+
+    /* THE MIRROR CONTROL, which is the one that would catch an over-eager
+       rewrite: the proof rests on a VERIFIED company while the line points at
+       an unverified one. Nothing is withdrawn — the proof is sound. */
+    const india = await mkEntity(`${tag} India LLC`);        // verified — the proof rests here
+    const juliet = await mkEntity(`${tag} Juliet LLC`);      // unverified — the line points here
+    const soundProof = await mkLine(india, '90 Sound Proof Rd, Lakewood, NJ 08701', false);
+    await setPillar(soundProof, 'elementix', 'proved',
+      { why: 'THE INDIA DEED SENTENCE', controlVerdict: 'confirmed', satisfiedByLlcId: india }, 'superior');
+    await db.query('UPDATE llc_borrowers SET ownership_verified=true,  ownership_verified_at=now()  WHERE llc_id=$1', [india]);
+    await db.query('UPDATE llc_borrowers SET ownership_verified=false, ownership_verified_at=NULL WHERE llc_id=$1', [juliet]);
+    await db.query('UPDATE track_records SET llc_id=$2 WHERE id=$1', [soundProof, juliet]);
+    ok((await OWN.healRevokedRecordsProofsOnce({ client: db })).downgraded === 0,
+      '(control) a proof resting on a company that IS verified is left alone, whatever the line now points at');
+    ok((await stampOf(soundProof)).records_stamp === 'verified',
+      '(control) …so its stamp survives');
+
+    // ── 7l. AN ORPHANED PROOF — the company it rests on is gone ──────────
+    /* The proof rests on the company named in `satisfiedByLlcId`, which is not
+       necessarily the one the LINE points at now: deleting an entity NULLs
+       `track_records.llc_id` (the FK), and the heal's selector used to join
+       THROUGH that column — so an orphaned proof fell out of the join entirely
+       and went on printing "Verified to Elementix" for a company that no longer
+       exists, on every screen and on the investor package, for ever. */
+    const foxtrot = await mkEntity(`${tag} Foxtrot LLC`);
+    const orphan = await mkLine(foxtrot, '88 Orphan Proof Rd, Lakewood, NJ 08701', false);
+    await setPillar(orphan, 'elementix', 'proved',
+      { why: 'THE FOXTROT DEED SENTENCE', controlVerdict: 'confirmed', satisfiedByLlcId: foxtrot }, 'superior');
+    ok((await stampOf(orphan)).records_stamp === 'verified',
+      '(fixture) the line carries a records stamp resting on Foxtrot');
+    // The entity is deleted: llc_borrowers goes with it and track_records.llc_id is NULLed.
+    await db.query('DELETE FROM llc_borrowers WHERE llc_id=$1', [foxtrot]);
+    await db.query('UPDATE track_records SET llc_id=NULL WHERE id=$1', [orphan]);
+    await db.query('DELETE FROM llcs WHERE id=$1', [foxtrot]).catch(() => {});
+    ok((await db.query('SELECT llc_id FROM track_records WHERE id=$1', [orphan])).rows[0].llc_id === null,
+      '(fixture) the line no longer points at any company');
+    ok((await stampOf(orphan)).records_stamp === 'verified',
+      '(fixture) …and the stamp is STILL standing, which is the defect');
+
+    const healOrphan = await OWN.healRevokedRecordsProofsOnce({ client: db });
+    ok(healOrphan.ok === true && healOrphan.downgraded === 1,
+      'the boot pass reaches it — the selector asks about the company the PROOF names, not the one the line points at');
+    ok((await stampOf(orphan)).records_stamp === 'sourced', '…so the stamp goes');
+    ok((await own(orphan)).auto_evidence.priorWhy === 'THE FOXTROT DEED SENTENCE',
+      '…and the deed’s own sentence is kept, exactly as every other withdrawal keeps it');
+    ok((await OWN.healRevokedRecordsProofsOnce({ client: db })).downgraded === 0,
+      '…and it is still self-draining');
+
+    /* NO SILENT CAPS — the pass drains at most `limit` rows per boot, so a large
+       back book takes several deploys. That is fine, and invisible unless it is
+       said. */
+    await setPillar(orphan, 'elementix', 'proved',
+      { why: 'THE FOXTROT DEED SENTENCE', controlVerdict: 'confirmed', satisfiedByLlcId: foxtrot }, 'superior');
+    process.env.TRACK_RECORD_REVOKED_PROOF_HEAL_LIMIT = '1';
+    const capped = await OWN.healRevokedRecordsProofsOnce({ client: db });
+    delete process.env.TRACK_RECORD_REVOKED_PROOF_HEAL_LIMIT;
+    ok(capped.downgraded === 1 && capped.more === true,
+      'a pass that stops AT the ceiling says so (more=true) rather than reading as finished');
+    ok((await OWN.healRevokedRecordsProofsOnce({ client: db })).more === false,
+      '…and a pass that runs out of work says more=false');
 
     await db.query(`DELETE FROM staff_users WHERE id=$1`, [staff3.id]).catch(() => {});
   }
