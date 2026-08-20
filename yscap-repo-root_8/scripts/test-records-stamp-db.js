@@ -836,12 +836,16 @@ const found = (name) => {
        grade strong → weak, the deed sentence and document id DELETED, and a
        message claiming the entity link was still unconfirmed when the records
        had confirmed it. Confirming made the line strictly WEAKER. */
-    const e6 = await mkEntity(`${tag} Carry Six LLC`);
+    const sixName = `${tag} Carry Six LLC`;
+    const e6 = await mkEntity(sixName);
     const awaitingA = await mkLine(e6, '80 Awaiting Check A Rd, Lakewood, NJ 08701', false);
+    /* The grantee is THIS company's own name — what a real deed carries. The
+       promotion is an identity test now (7i), so a fixture naming some other
+       company would be refused, correctly, and prove nothing about this path. */
     await setPillar(awaitingA, 'elementix', 'no_data', {
-      why: '"Six LLC" is the grantee on the recorded deed, so the company did hold this property. Nobody has confirmed yet that this borrower controls that company.',
-      matched: 'Six LLC', needsControlCheck: true,
-      checkB: { grantee: 'Six LLC', granteeIsMatchedEntity: true, documentId: 'deed-7f', recordingDate: '2023-02-01', heldAs: 'entity' },
+      why: `"${sixName}" is the grantee on the recorded deed, so the company did hold this property. Nobody has confirmed yet that this borrower controls that company.`,
+      matched: sixName, needsControlCheck: true,
+      checkB: { grantee: sixName, granteeIsMatchedEntity: true, documentId: 'deed-7f', recordingDate: '2023-02-01', heldAs: 'entity' },
     }, 'strong');
     ok((await stampOf(awaitingA)).records_stamp === 'sourced',
       '(fixture) the records found the deed but nobody has confirmed control — SOURCED, not verified');
@@ -915,6 +919,120 @@ const found = (name) => {
 
     const heal2 = await require('../src/lib/track-record-ownership').healRevokedRecordsProofsOnce({ client: db });
     ok(heal2.downgraded === 0, 'and it is self-draining — a second boot finds nothing left to do');
+
+    // ── 7i. THE RECORDS NAMED A COMPANY — WHICH ONE? ─────────────────────
+    /* `checkB.granteeIsMatchedEntity` does NOT mean "the records proved Check B
+       for THIS entity": checks.js sets it when the recorded party matches ANY
+       name in ctx.entityNames, and verify-run.js fills that list with the line's
+       free-text entity_name PLUS EVERY COMPANY ON THE BORROWER'S PROFILE. Read
+       as identity, confirming control of ALPHA promoted a pillar whose deed
+       names BRAVO — writing "control of that company has now been confirmed"
+       while Bravo's own Check A was still false, and printing "Verified to
+       Elementix" on the investor package for a company nobody had confirmed. */
+    const alpha = await mkEntity(`${tag} Alpha Holdings LLC`);
+    const bravo = await mkEntity(`${tag} Bravo Holdings LLC`);
+    const crossed = await mkLine(alpha, '84 Cross Entity Rd, Lakewood, NJ 08701', false);
+    await setPillar(crossed, 'elementix', 'no_data', {
+      why: `"${tag} Bravo Holdings LLC" is the grantee on the recorded deed, so the company did hold this property.`,
+      matched: `${tag} Bravo Holdings LLC`, needsControlCheck: true,
+      checkB: { grantee: `${tag} Bravo Holdings LLC`, granteeIsMatchedEntity: true, documentId: 'deed-bravo', heldAs: 'entity' },
+    }, 'strong');
+    /* The SAME entity, spelled with a different suffix — the control that proves
+       the new identity test is not simply refusing everything. */
+    const sameCo = await mkLine(alpha, '85 Same Entity Rd, Lakewood, NJ 08701', false);
+    await setPillar(sameCo, 'elementix', 'no_data', {
+      why: `"${tag} Alpha Holdings, L.L.C." is the grantee on the recorded deed.`,
+      matched: `${tag} Alpha Holdings, L.L.C.`, needsControlCheck: true,
+      checkB: { grantee: `${tag} Alpha Holdings, L.L.C.`, granteeIsMatchedEntity: true, documentId: 'deed-alpha', heldAs: 'entity' },
+    }, 'strong');
+
+    const j7i = await (await confirm(alpha, {})).json();
+    const afterX = await own(crossed);
+    ok(afterX.auto_verdict === 'no_data' && afterX.auto_source === 'elementix',
+      'confirming ALPHA does not promote a pillar whose deed names BRAVO');
+    ok((await stampOf(crossed)).records_stamp === 'sourced',
+      '…so no "Verified to Elementix" is minted for a company nobody confirmed');
+    ok(JSON.stringify(afterX.auto_evidence || {}).includes('deed-bravo'),
+      '…and the records’ own deed evidence is left intact, not replaced by the carry');
+    ok((await db.query('SELECT ownership_verified FROM llc_borrowers WHERE llc_id=$1', [bravo]))
+      .rows[0].ownership_verified === false,
+      '(fixture) Bravo’s own Check A really is still unverified');
+
+    const afterS = await own(sameCo);
+    ok(afterS.auto_verdict === 'proved' && afterS.auto_source === 'elementix' && afterS.auto_grade === 'strong',
+      '(control) a deed naming THIS entity — suffix spelled differently — is still promoted');
+    ok((await stampOf(sameCo)).records_stamp === 'verified',
+      '(control) …so the identity test refuses the stranger without refusing everything');
+    ok(afterS.auto_evidence && /grantee on the recorded deed/.test(String(afterS.auto_evidence.priorWhy)),
+      '…and the promotion keeps the deed’s own sentence as priorWhy');
+    ok(j7i.carry.carried === 1 && j7i.carry.preserved === 1,
+      `(one promoted, one preserved — carried ${j7i.carry.carried}, preserved ${j7i.carry.preserved})`);
+
+    // ── 7j. TWO HEALS AT ONCE MUST NOT EAT THE DEED SENTENCE ─────────────
+    /* `WHERE p.id IN (SELECT …)` carries no predicate on the TARGET row, and
+       under READ COMMITTED Postgres re-checks only quals against the target
+       relation when a blocked writer wakes up — the id list from the semi-join
+       was fixed before the lock wait, so the second writer proceeds anyway and
+       copies the FIRST withdrawal's own sentence into priorWhy, destroying the
+       deed's words. Two instances booting at once on a zero-downtime deploy, or
+       a staffer revoking mid-deploy. A SEQUENTIAL test cannot see this — the
+       first pass takes the row out of its own predicate — so this drives two
+       real overlapping transactions. */
+    const delta = await mkEntity(`${tag} Delta LLC`);
+    const twice = await mkLine(delta, '86 Double Heal Rd, Lakewood, NJ 08701', false);
+    const OWN = require('../src/lib/track-record-ownership');
+    const seedProof = async () => {
+      await setPillar(twice, 'elementix', 'proved',
+        { why: 'THE DEED SENTENCE', controlVerdict: 'confirmed', satisfiedByLlcId: delta }, 'superior');
+      await db.query('UPDATE llc_borrowers SET ownership_verified=false, ownership_verified_at=NULL WHERE llc_id=$1', [delta]);
+    };
+    /* Run `job` on two overlapping transactions: B starts while A holds the row
+       lock, so B's re-check is what decides whether the second write lands. */
+    const raced = async (job) => {
+      const A = await db.getClient(); const B = await db.getClient();
+      try {
+        await A.query('BEGIN'); await B.query('BEGIN');
+        const ra = await job(A);                 // A takes the row lock
+        let settled = false;
+        const pb = job(B).then((r) => { settled = true; return r; });
+        /* THE PAUSE IS WHAT MAKES THIS A RACE AT ALL. Without it A commits
+           before B's statement has been dispatched, so B takes its snapshot
+           AFTER the change, its subquery matches nothing, and the test passes
+           for the wrong reason — vacuously, on broken code too. `blocked` below
+           is the assertion that keeps it honest. */
+        await new Promise((r) => setTimeout(r, 400));
+        const blocked = !settled;
+        await A.query('COMMIT');
+        const rb = await pb;                     // …then proceeds
+        await B.query('COMMIT');
+        return { a: ra, b: rb, blocked };
+      } finally { A.release(); B.release(); }
+    };
+
+    await seedProof();
+    const healRace = await raced((c) => OWN.healRevokedRecordsProofsOnce({ client: c }));
+    ok(healRace.a.downgraded === 1, '(fixture) the first heal withdraws the proof');
+    ok(healRace.blocked === true,
+      '(fixture) the second heal really did BLOCK on the first — without this the race is vacuous');
+    ok(healRace.b.downgraded === 0,
+      'a SECOND heal running concurrently writes nothing — its re-check sees a row that no longer qualifies');
+    ok((await own(twice)).auto_evidence.priorWhy === 'THE DEED SENTENCE',
+      '…so the DEED’s sentence survives, never overwritten by the first withdrawal’s own text');
+
+    // The live revoke has always had its predicates on the target row; pin it.
+    await seedProof();
+    const revokeRace = await raced((c) => OWN.syncEntityToTrackRecords(delta, { client: c }));
+    ok(revokeRace.blocked === true, '(fixture) the second revoke blocked on the first');
+    ok(revokeRace.a.downgraded === 1 && revokeRace.b.downgraded === 0,
+      'two concurrent revokes land exactly once for the same reason');
+    ok((await own(twice)).auto_evidence.priorWhy === 'THE DEED SENTENCE',
+      '…and the deed’s sentence survives there too');
+
+    // And the sequential case still self-drains.
+    await seedProof();
+    const s1 = await OWN.healRevokedRecordsProofsOnce({ client: db });
+    const s2 = await OWN.healRevokedRecordsProofsOnce({ client: db });
+    ok(s1.downgraded >= 1 && s2.downgraded === 0, 'and a second boot still finds nothing left to do');
 
     await db.query(`DELETE FROM staff_users WHERE id=$1`, [staff3.id]).catch(() => {});
   }

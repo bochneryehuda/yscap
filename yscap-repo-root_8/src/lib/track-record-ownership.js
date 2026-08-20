@@ -169,10 +169,14 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
               p.auto_evidence->>'controlVerdict'   AS pillar_control,
               p.auto_evidence->>'satisfiedByLlcId' AS pillar_control_llc,
               p.auto_evidence->'checkB'->>'granteeIsMatchedEntity' AS pillar_check_b,
+              p.auto_evidence->'checkB'->>'grantee' AS pillar_grantee,
+              p.auto_evidence->'checkB'->>'heldAs'  AS pillar_held_as,
               p.auto_evidence->>'matched'          AS pillar_matched,
-              p.auto_grade                         AS pillar_grade
+              p.auto_grade                         AS pillar_grade,
+              l.llc_name                           AS entity_name
          FROM track_records t
          JOIN llc_borrowers b ON b.llc_id = t.llc_id AND b.borrower_id = t.borrower_id
+         JOIN llcs l          ON l.id = t.llc_id
          LEFT JOIN track_record_pillars p
                 ON p.track_record_id = t.id AND p.pillar = 'ownership'
         WHERE t.llc_id = ANY($1::uuid[])`, [ids])).rows;
@@ -194,16 +198,36 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
          between them and the property, so nothing about this entity — verified,
          revoked, or a membership window — has anything to say about it.
 
-         `recordsProvedCheckB` — the records found OUR party named as the grantee
-         or holder on a recorded instrument (`checkB.granteeIsMatchedEntity`, set
-         only where checks.js actually matched one). That IS Check B answered, by
-         the records, whatever the pillar's verdict is. */
+         `recordsMatchedThisEntity` — the records found a party named as the
+         grantee or holder on a recorded instrument AND THAT PARTY IS THIS
+         COMPANY. The `granteeIsMatchedEntity` flag alone is NOT that: `checks.js`
+         sets it when the recorded party matches ANY name in `ctx.entityNames`,
+         and `verify-run.js` fills that list with the line's free-text
+         `entity_name` PLUS EVERY COMPANY ON THE BORROWER'S PROFILE — nothing
+         ties it back to `t.llc_id`. Reading the bare flag as "the records proved
+         Check B for this entity" therefore let confirming control of Alpha
+         promote a pillar whose deed names BRAVO, writing "control of that
+         company has now been confirmed" while Bravo's own Check A was still
+         false, and printing "Verified to Elementix" on the investor package for
+         a company nobody had confirmed. So the grantee is compared to THIS
+         entity's name through the shared `promotionMatch` — the repo's strict
+         matcher (identical, suffix-only, or a pure re-spacing; never a
+         substring), so the two can never drift about what counts as the same
+         company — and the holder must be an ENTITY: a deed naming the borrower
+         in person is `proved` already and has no company to confirm. */
       const restsOnThisEntity = row.pillar_source === 'elementix'
         && row.pillar_verdict === 'proved'
         && row.pillar_control === 'confirmed'
         && String(row.pillar_control_llc || '') === String(row.llc_id || '');
-      const recordsProvedCheckB = row.pillar_source === 'elementix'
+      const recordsHasCheckB = row.pillar_source === 'elementix'
         && String(row.pillar_check_b || '') === 'true';
+      let recordsMatchedThisEntity = false;
+      try {
+        recordsMatchedThisEntity = recordsHasCheckB
+          && String(row.pillar_held_as || '') === 'entity'
+          && require('./track-record-entity').promotionMatch(row.pillar_grantee, row.entity_name);
+      } catch (_) { recordsMatchedThisEntity = false; }   // an unreadable matcher never promotes
+      const recordsProvedCheckB = recordsMatchedThisEntity;
 
       if (!checkA.verified) {
         /* REVOKED (or never verified). Clear only what WE carried. A pillar a
@@ -245,12 +269,19 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
              is withdrawn, landing the pillar exactly where a fresh read of the
              same records would land it — `checks.js`'s own entityNoData state
              (source `elementix`, verdict `no_data`, same grade, needsControlCheck).
-             `satisfied_by_llc_id` goes with it: we are no longer carrying this. */
+             `satisfied_by_llc_id` goes with it: we are no longer carrying this.
+             The merge COALESCEs off any existing `priorWhy`: written bare, a
+             second application copies the FIRST withdrawal's own sentence into
+             `priorWhy` and the deed's words are gone — the opposite of what this
+             branch is for. This statement's predicates are on the TARGET row, so
+             its re-check already makes a second write a clean no-op; the COALESCE
+             is the belt to that brace. */
           const d = await client.query(
             `UPDATE track_record_pillars
                 SET auto_verdict='no_data', auto_confidence=NULL, satisfied_by_llc_id=NULL,
                     auto_evidence = COALESCE(auto_evidence,'{}'::jsonb)
-                                    || jsonb_build_object('priorWhy', auto_evidence->'why')
+                                    || jsonb_build_object('priorWhy',
+                                         COALESCE(auto_evidence->'priorWhy', auto_evidence->'why'))
                                     || $2::jsonb,
                     auto_checked_at=now(), updated_at=now()
               WHERE track_record_id=$1 AND pillar='ownership'
@@ -304,9 +335,11 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
          writing anything else here would make "confirm the company" and "re-read
          the records" produce two different pillars for one set of facts, and the
          stamp would appear or disappear depending on which button somebody
-         pressed. The evidence is MERGED, never replaced: the deed sentence, the
-         document id, the recording date and any `priorWhy` from an earlier
-         revoke all survive. `auto_grade` is deliberately absent from the SET —
+         pressed. The evidence is MERGED, never replaced: the document id, the
+         recording date and the grantee all survive inside `checkB`, and the
+         sentence being replaced is kept as `priorWhy` rather than dropped —
+         COALESCEd off any existing `priorWhy` so a second application can never
+         overwrite the deed's own words with our own. `auto_grade` is deliberately absent from the SET —
          the records graded this, we did not. Only an UNSETTLED records row is
          promoted; an already-proved one keeps checks.js's own specific sentence
          (a refinance, a current-owner record) rather than gaining our generic
@@ -357,6 +390,17 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
          holds NULLs, and `NOT (NULL AND NULL)` is NULL, not true: the standing
          three-valued-logic trap, which here would have refused every fresh row
          and turned the whole feature off. */
+      /* THE RECORDS NAMED A DIFFERENT COMPANY — SAY NOTHING, DESTROY NOTHING.
+         Narrowing the promotion above is only half the answer: without this the
+         carry would fall through to the ordinary write and REPLACE that pillar's
+         evidence with "we have not yet confirmed that this entity is the one
+         that held this property", deleting the deed sentence, the grantee's name
+         and the document id the records did find — the exact clobber this whole
+         change exists to stop, just moved one case along. Confirming Alpha has
+         nothing to say about a deed naming Bravo, so the honest answer is to
+         leave the row exactly as the records left it and report it preserved. */
+      if (recordsHasCheckB && !recordsMatchedThisEntity) { out.preserved += 1; continue; }
+
       const recordsSettled = (verdict.auto_verdict === 'contradicted' && restsOnThisEntity)
         ? ['contradicted']
         : ['proved', 'contradicted'];
@@ -365,7 +409,10 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
         ? await client.query(
           `UPDATE track_record_pillars
               SET auto_verdict='proved', auto_source='elementix', auto_confidence='certain',
-                  auto_evidence = COALESCE(auto_evidence,'{}'::jsonb) || $2::jsonb,
+                  auto_evidence = COALESCE(auto_evidence,'{}'::jsonb)
+                                  || jsonb_build_object('priorWhy',
+                                       COALESCE(auto_evidence->'priorWhy', auto_evidence->'why'))
+                                  || $2::jsonb,
                   satisfied_by_llc_id=$3, auto_checked_at=now(), updated_at=now()
             WHERE track_record_id=$1 AND pillar='ownership'
               AND auto_source='elementix'
@@ -378,6 +425,13 @@ async function syncEntityToTrackRecords(llcId, opts = {}) {
             controlVerdict: 'confirmed',
             satisfiedByLlcId: row.llc_id,
             needsControlCheck: false,
+            /* A WITHDRAWAL THAT HAS BEEN ANSWERED IS NOT STILL STANDING. Round-
+               tripping confirm → revoke → confirm otherwise left the row reading
+               `proved` and `controlVerdict:'confirmed'` while still carrying the
+               revoke's own `controlRevokedAt` — self-contradictory state on a row
+               an auditor may read years later. jsonb `||` cannot delete a key, so
+               it is nulled. */
+            controlRevokedAt: null,
             checkA: { verifiedAt: row.ownership_verified_at, llcId: row.llc_id },
           }), row.llc_id])
         : await client.query(
@@ -445,13 +499,33 @@ async function healRevokedRecordsProofsOnce(opts = {}) {
   const limit = Math.max(1, Math.min(5000, Number(process.env.TRACK_RECORD_REVOKED_PROOF_HEAL_LIMIT) || 500));
   try {
     const r = await client.query(
+      /* THE PREDICATES ARE REPEATED ON THE OUTER UPDATE, and that is not
+         belt-and-braces — it is the correctness of the statement.
+         `WHERE p.id IN (SELECT …)` carries NO condition on the target row, and
+         under READ COMMITTED Postgres re-checks only the quals against the
+         TARGET relation when a blocked writer wakes up: the id list from the
+         semi-join was fixed before the lock wait, so the second writer proceeds
+         anyway. With the `priorWhy` merge below, a second application copies the
+         FIRST one's withdrawal sentence into `priorWhy` and the deed's own words
+         are destroyed. Two ordinary ways in: two instances booting at once on a
+         zero-downtime deploy (each runs this pass and both take the same
+         first-500-by-id), and a staffer pressing Revoke while a deploy's heal is
+         running. Repeating the predicates makes the re-check see a row that no
+         longer qualifies, so the second write is a clean 0 rows — the shape the
+         live revoke already had. The COALESCE is the second layer. */
       `UPDATE track_record_pillars p
           SET auto_verdict='no_data', auto_confidence=NULL, satisfied_by_llc_id=NULL,
               auto_evidence = COALESCE(p.auto_evidence,'{}'::jsonb)
-                              || jsonb_build_object('priorWhy', p.auto_evidence->'why')
+                              || jsonb_build_object('priorWhy',
+                                   COALESCE(p.auto_evidence->'priorWhy', p.auto_evidence->'why'))
                               || $1::jsonb,
               auto_checked_at=now(), updated_at=now()
-        WHERE p.id IN (
+        WHERE p.pillar = 'ownership'
+          AND p.auto_source = 'elementix'
+          AND p.auto_verdict = 'proved'
+          AND p.auto_evidence->>'controlVerdict' = 'confirmed'
+          AND COALESCE(p.human_verdict,'') <> 'confirmed'
+          AND p.id IN (
           SELECT p2.id
             FROM track_record_pillars p2
             JOIN track_records t   ON t.id = p2.track_record_id
