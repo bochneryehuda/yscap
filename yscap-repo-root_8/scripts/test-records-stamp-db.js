@@ -18,6 +18,12 @@
  *       documents; the apply is FILL-ONLY by construction; a VERIFIED line
  *       refuses without confirmReopen and db/485 honestly re-opens on the
  *       confirmed fill.
+ *   §7  The entity ownership-check, both ways round: confirming a company ADDS
+ *       confidence and can never take "Verified to Elementix" off a line the
+ *       records proved (the post-merge audit finding), while REVOKING one
+ *       withdraws the proof that rested on it — with the deed's own observation
+ *       kept, a borrower-named deed untouched, and a human's decision reported
+ *       rather than erased.
  */
 
 let fail = 0;
@@ -581,6 +587,211 @@ const found = (name) => {
       await db.query(`DELETE FROM audit_log WHERE entity_id=$1`, [id]).catch(() => {});
       await db.query(`DELETE FROM borrowers WHERE id=$1`, [id]).catch(() => {});
     }
+  }
+
+  console.log('\n7. VERIFYING THE COMPANY ADDS CONFIDENCE — IT NEVER TAKES THE STAMP OFF');
+  {
+    /* THE POST-MERGE AUDIT FINDING, REPRODUCED THROUGH THE REAL DOOR.
+       `POST /api/staff/llcs/:id/ownership-check` fans a verified entity out to
+       every property it held, and its UPDATE was unconditional — so it wrote
+       `auto_source='entity'` straight over an ownership pillar the RECORDS
+       check had PROVED. The stamp is derived from exactly those two columns, so
+       confirming a company TOOK "Verified to Elementix" off the line, on the
+       screen and on the investor package: an action that can only ever add
+       confidence was silently removing it. */
+    const staff3 = (await db.query(
+      `INSERT INTO staff_users (email, full_name, role) VALUES ($1,'Carry Tester','underwriter') RETURNING id, token_version`,
+      [`${tag}-staff3@example.com`])).rows[0];
+    const st3 = C.signJwt({ sub: staff3.id, kind: 'staff', role: 'underwriter', tv: staff3.token_version || 0 });
+    const scall3 = (path, o) => fetch(`${base}${path}`, {
+      ...o, headers: { 'content-type': 'application/json', authorization: `Bearer ${st3}`, ...(o && o.headers) },
+    });
+
+    const mkEntity = async (name) => {
+      const id = (await db.query(
+        `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, name])).rows[0].id;
+      await db.query(`INSERT INTO llc_borrowers (llc_id, borrower_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+        [id, borrowerId]);
+      return id;
+    };
+    /* A line the RECORDS proved: origin public_records (so it is at least
+       'sourced' whatever happens to the pillar) plus a proved elementix
+       ownership pillar. The pillar row is seeded by a trigger, hence upsert. */
+    const mkLine = async (llcId, addr, provedByRecords) => {
+      const id = (await db.query(
+        /* `counts_from` is GENERATED (db/499) — a flip exits on its SALE date,
+           so the holding period the carry judges is set by writing that. */
+        `INSERT INTO track_records (borrower_id, llc_id, property_address, deal_type, origin,
+                                    entered_by_kind, purchase_date, sale_date)
+         VALUES ($1,$2,$3::jsonb,'flip','public_records','staff','2023-02-01','2024-05-01') RETURNING id`,
+        [borrowerId, llcId, JSON.stringify({ oneLine: addr })])).rows[0].id;
+      if (provedByRecords) {
+        await db.query(
+          `INSERT INTO track_record_pillars (track_record_id, pillar, auto_source, auto_verdict, auto_checked_at)
+           VALUES ($1,'ownership','elementix','proved', now())
+           ON CONFLICT (track_record_id, pillar) DO UPDATE
+             SET auto_source=EXCLUDED.auto_source, auto_verdict=EXCLUDED.auto_verdict,
+                 auto_checked_at=EXCLUDED.auto_checked_at`, [id]);
+      }
+      return id;
+    };
+    const own = async (id) => (await db.query(
+      `SELECT auto_verdict, auto_source, satisfied_by_llc_id FROM track_record_pillars
+        WHERE track_record_id=$1 AND pillar='ownership'`, [id])).rows[0];
+
+    // ── 7a. THE PLAIN CONFIRMATION (no Check B) ───────────────────────────
+    const e1 = await mkEntity(`${tag} Carry One LLC`);
+    const proved1 = await mkLine(e1, '70 Stamp Keeper Rd, Lakewood, NJ 08701', true);
+    const fresh1 = await mkLine(e1, '71 Never Checked Rd, Lakewood, NJ 08701', false);
+
+    const s7 = await stampOf(proved1);
+    ok(s7.records_stamp === 'verified', '(fixture) the records-proved line starts VERIFIED');
+    ok(RS.exportCellText(s7.records_stamp, s7.records_stamp_at, { ascii: true }).startsWith('Verified to Elementix'),
+      '(fixture) and its export cell says Verified to Elementix');
+
+    const r7a = await scall3(`/api/staff/llcs/${e1}/ownership-check`, {
+      method: 'POST',
+      body: JSON.stringify({ verified: true, evidenceKind: 'operating_agreement', note: 'OA names them managing member' }),
+    });
+    ok(r7a.status === 200, 'confirming the company answers 200');
+    const j7a = await r7a.json();
+
+    const afterProved = await own(proved1);
+    ok(afterProved.auto_verdict === 'proved' && afterProved.auto_source === 'elementix',
+      'the records-proved ownership pillar is LEFT ALONE — no downgrade to no_data, no entity source');
+    ok((await stampOf(proved1)).records_stamp === 'verified',
+      'so "Verified to Elementix" SURVIVES a company confirmation (the audit finding)');
+    ok(j7a.carry && j7a.carry.preserved === 1,
+      `and the summary REPORTS the preserved row rather than claiming a carry (preserved ${j7a.carry && j7a.carry.preserved})`);
+
+    // THE CONTROL — the guard must not have turned Check A off.
+    const afterFresh = await own(fresh1);
+    ok(afterFresh.auto_verdict === 'no_data' && afterFresh.auto_source === 'entity',
+      '(control) a never-checked line still receives the carry — the guard did not switch Check A off');
+    ok(j7a.carry.noData === 1, '(control) and it is counted');
+
+    // ── 7b. THE assumeCheckB BRANCH — equally destructive before the fix ──
+    const e2 = await mkEntity(`${tag} Carry Two LLC`);
+    const proved2 = await mkLine(e2, '72 Assume Check B Rd, Lakewood, NJ 08701', true);
+    const fresh2 = await mkLine(e2, '73 Assume Fresh Rd, Lakewood, NJ 08701', false);
+
+    const r7b = await scall3(`/api/staff/llcs/${e2}/ownership-check`, {
+      method: 'POST',
+      body: JSON.stringify({ verified: true, evidenceKind: 'sos_officer_listing', assumeCheckB: true }),
+    });
+    ok(r7b.status === 200, 'confirming with assumeCheckB answers 200');
+    const j7b = await r7b.json();
+
+    const afterProved2 = await own(proved2);
+    ok(afterProved2.auto_verdict === 'proved' && afterProved2.auto_source === 'elementix',
+      'assumeCheckB does not restamp a records-proved pillar as entity-sourced either');
+    ok((await stampOf(proved2)).records_stamp === 'verified',
+      '…so the stamp survives that branch too — the carry’s own PROVED says LESS, because the stamp reads the source');
+    ok(j7b.carry.preserved === 1 && j7b.carry.carried === 1,
+      `(control) the fresh line WAS carried while the proved one was preserved (carried ${j7b.carry.carried}, preserved ${j7b.carry.preserved})`);
+    const afterFresh2 = await own(fresh2);
+    ok(afterFresh2.auto_verdict === 'proved' && afterFresh2.auto_source === 'entity'
+      && String(afterFresh2.satisfied_by_llc_id) === String(e2),
+      '(control) …stamped with WHICH entity carried it, exactly as before');
+
+    // ── 7c. A NEGATIVE FINDING IS NEVER SUPPRESSED TO PROTECT A STAMP ─────
+    /* The membership window is evidence about the BORROWER that the records
+       read never saw — the entity held this property before they had anything
+       to do with it. That contradiction writes over a proved row on purpose,
+       and the line correctly falls back to 'sourced' rather than claiming a
+       verification the file itself disagrees with. */
+    const e3 = await mkEntity(`${tag} Carry Three LLC`);
+    const proved3 = await mkLine(e3, '74 Joined Later Rd, Lakewood, NJ 08701', true);
+    ok((await stampOf(proved3)).records_stamp === 'verified', '(fixture) starts VERIFIED');
+
+    const r7c = await scall3(`/api/staff/llcs/${e3}/ownership-check`, {
+      method: 'POST',
+      body: JSON.stringify({ verified: true, evidenceKind: 'operating_agreement', heldFrom: '2030-01-01' }),
+    });
+    ok(r7c.status === 200, 'confirming an entity the borrower joined long after answers 200');
+    const j7c = await r7c.json();
+    const afterC = await own(proved3);
+    ok(afterC.auto_verdict === 'contradicted',
+      'a membership-window CONTRADICTION still writes over a records-proved pillar — a negative finding is never hidden');
+    ok(j7c.carry.contradicted === 1 && j7c.carry.preserved === 0,
+      '…and is reported as a contradiction, not as a preserved row');
+    ok((await stampOf(proved3)).records_stamp === 'sourced',
+      '…so the line honestly drops to Sourced instead of printing "Verified to Elementix" over a contradiction');
+
+    // ── 7d. AND REVOKING THE COMPANY WITHDRAWS WHAT ITS CONTROL PROVED ────
+    /* The mirror image, and it was live on merged main independently of the
+       carry: when the records check runs while Check A holds, checks.js writes
+       the pillar as elementix/proved carrying `controlVerdict:'confirmed'` — and
+       it never sets `satisfied_by_llc_id`, so the revoke's "clear only what WE
+       carried" matched nothing. The pillar stood after a revoke still stating
+       that the borrower's control "has been confirmed", and the line kept
+       printing "Verified to Elementix" on the investor package. */
+    const recordsProof = async (llcId, addr, extra) => {
+      const id = await mkLine(llcId, addr, false);
+      await db.query(
+        `INSERT INTO track_record_pillars (track_record_id, pillar, auto_source, auto_verdict,
+                                           auto_confidence, auto_grade, auto_evidence, auto_checked_at)
+         VALUES ($1,'ownership','elementix','proved','certain','superior',$2::jsonb, now())
+         ON CONFLICT (track_record_id, pillar) DO UPDATE
+           SET auto_source=EXCLUDED.auto_source, auto_verdict=EXCLUDED.auto_verdict,
+               auto_confidence=EXCLUDED.auto_confidence, auto_grade=EXCLUDED.auto_grade,
+               auto_evidence=EXCLUDED.auto_evidence, auto_checked_at=EXCLUDED.auto_checked_at`,
+        [id, JSON.stringify({ why: 'The company is the grantee on the recorded deed.', ...extra })]);
+      return id;
+    };
+    const ev = async (id) => (await db.query(
+      `SELECT auto_evidence FROM track_record_pillars WHERE track_record_id=$1 AND pillar='ownership'`,
+      [id])).rows[0].auto_evidence;
+
+    const e4 = await mkEntity(`${tag} Carry Four LLC`);
+    // Proved BECAUSE Check A held — the pillar a revoke has to answer for.
+    const viaControl = await recordsProof(e4, '75 Via Control Rd, Lakewood, NJ 08701',
+      { controlVerdict: 'confirmed', satisfiedByLlcId: e4 });
+    // Proved by a deed naming the BORROWER themselves — no controlVerdict at all.
+    const viaPerson = await recordsProof(e4, '76 Own Name Rd, Lakewood, NJ 08701', {});
+    // Proved via control, but a HUMAN then confirmed the pillar.
+    const viaHuman = await recordsProof(e4, '77 Human Said So Rd, Lakewood, NJ 08701',
+      { controlVerdict: 'confirmed', satisfiedByLlcId: e4 });
+    await db.query(
+      `UPDATE track_record_pillars SET human_verdict='confirmed', human_by=$2, human_at=now()
+        WHERE track_record_id=$1 AND pillar='ownership'`, [viaHuman, staff3.id]);
+
+    await scall3(`/api/staff/llcs/${e4}/ownership-check`, {
+      method: 'POST', body: JSON.stringify({ verified: true, evidenceKind: 'operating_agreement' }),
+    });
+    ok((await stampOf(viaControl)).records_stamp === 'verified', '(fixture) all three start VERIFIED');
+
+    const r7d = await scall3(`/api/staff/llcs/${e4}/ownership-check`, {
+      method: 'POST', body: JSON.stringify({ verified: false, reason: 'the operating agreement names somebody else' }),
+    });
+    ok(r7d.status === 200, 'revoking the company answers 200');
+    const j7d = await r7d.json();
+
+    const afterD = await own(viaControl);
+    ok(afterD.auto_verdict === 'no_data',
+      'a records proof that RESTED on Check A is withdrawn when Check A is revoked');
+    ok(afterD.auto_source === 'elementix',
+      '…DOWNGRADED, never wiped — what the deed says is a records observation and survives');
+    const evD = await ev(viaControl);
+    ok(evD && evD.needsControlCheck === true && evD.priorWhy && /grantee on the recorded deed/.test(String(evD.why)) === false,
+      '…landing exactly where a fresh read would land it, with the old sentence kept as priorWhy');
+    ok((await stampOf(viaControl)).records_stamp === 'sourced',
+      'so the line stops saying "Verified to Elementix" the moment its basis is revoked');
+    ok(j7d.carry.downgraded === 1, `and the summary says so (downgraded ${j7d.carry.downgraded})`);
+
+    const afterP = await own(viaPerson);
+    ok(afterP.auto_verdict === 'proved' && afterP.auto_source === 'elementix',
+      '(control) a deed naming the BORROWER themselves carries no controlVerdict and is never touched');
+    ok((await stampOf(viaPerson)).records_stamp === 'verified',
+      '(control) …so its stamp survives the revoke, correctly');
+
+    const afterH = await own(viaHuman);
+    ok(afterH.auto_verdict === 'proved',
+      'a pillar a HUMAN confirmed is never silently downgraded — a person’s decision is not erased');
+    ok((j7d.carry.humanConfirmed || []).some((h) => String(h.trackRecordId) === String(viaHuman)),
+      '…it is REPORTED instead, so the caller can raise entity_unverified against it');
+
+    await db.query(`DELETE FROM staff_users WHERE id=$1`, [staff3.id]).catch(() => {});
   }
 
   // ---- cleanup ----
