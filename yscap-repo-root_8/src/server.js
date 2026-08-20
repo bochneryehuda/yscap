@@ -1190,6 +1190,17 @@ if (require.main === module) {
           .then((r) => r && (r.added || r.filled)
             && console.log('[boot] funded deals onto track records:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] funded track-record backfill failed:', e.message));
+        // A STAMP MUST NOT OUTLIVE THE EVIDENCE IT RESTS ON. Until the revoke
+        // learned to withdraw them, a records proof that rested on a company's
+        // Check A survived that company being un-verified — so lines are on disk
+        // today still printing "Verified to Elementix" for control nobody stands
+        // behind. Same downgrade, applied once; self-draining, only ever removes
+        // a claim, never touches a human's own decision or a deed naming the
+        // borrower in person.
+        require('./lib/track-record-ownership').healRevokedRecordsProofsOnce()
+          .then((r) => r && r.downgraded
+            && console.log('[boot] records proofs withdrawn for revoked entity control:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] revoked-proof heal failed:', e.message));
         // GOOGLE COORDINATES ARE KEPT ONLY AS LONG AS GOOGLE ALLOWS (db/413,
         // owner-authorized 2026-08-02). Maps Platform permits keeping a `place_id`
         // indefinitely and caps a stored latitude/longitude at 30 days; this cache
