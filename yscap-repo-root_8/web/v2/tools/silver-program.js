@@ -1416,7 +1416,12 @@
     if (arvMissing) add("MANUAL", (sc === "NC")
       ? "After-repair value is required to size a ground-up loan — enter the completed (as-built) value and this scenario can be priced."
       : "After-repair value is required to size a fix & flip / fix & hold loan — enter the after-repair value and this scenario can be priced.");
-    else if (sizing.rehabOverCap) add("MANUAL", "The rehab budget exceeds what this program can finance — the loan is capped at " + usd(sizing.totalLoan) + ", so the remaining budget would be funded out of pocket. Reduce the scope or use a larger facility.");
+    // Allowed automatically — and only DISCLOSED — once the INITIAL advance is already zero and ≥90% of
+    // the budget is still financed: the caps have nothing left to cut (owner-directed 2026-08-20; the rule
+    // and the numbers live in YSP.sizeLoan, which this program sizes on, so all three programs agree).
+    // The else-if chain is kept: a missing ARV is a different and more fundamental problem and still wins.
+    else if (sizing.rehabOverCap && !sizing.rehabOopAuto) add("MANUAL", "The rehab budget exceeds what this program can finance — the loan is capped at " + usd(sizing.totalLoan) + ", so the remaining budget would be funded out of pocket. Reduce the scope or use a larger facility.");
+    else if (sizing.rehabOopAuto) add("ELIGIBLE", "The loan finances " + pct(sizing.rehabFinancedPct) + " of the " + usd(sizing.rehab) + " construction budget (" + usd(sizing.rehabUnfinanced) + " comes out of pocket over the construction). The initial advance is already zero, so the caps have nothing left to cut — no exception is needed.");
 
     // ---- DSCR gate (fix & hold exit): projected DSCR must be ≥ 1.00 when known ----
     var dscr = 0;

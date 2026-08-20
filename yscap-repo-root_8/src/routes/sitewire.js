@@ -3576,6 +3576,75 @@ router.get('/files/:id/draws/:drawId/investor-delivery', requirePermission('mana
   } catch (e) { console.warn('[sitewire] investor preview:', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
+/* ── SCHEDULE THE INVESTOR DELIVERY FOR LATER (owner-directed 2026-08-20) ─────
+   The owner named investor delivery alongside the title, insurance and closing-
+   prep orders. Same shape as those: the INTENT is queued and the real delivery
+   route runs at the due moment, so the attachment plan, the money split, the
+   sold-status check and the funding mode are all resolved against the file as it
+   stands when the email actually goes — not as it stood at 2am.
+
+   THE INVESTOR IS CONFIRMED TWICE. `confirm_note_buyer` is checked here, so a
+   mis-click cannot even be queued, and again by the delivery route at the due
+   moment — which is what catches a note buyer that CHANGED overnight. Without
+   the second check a delivery confirmed for one investor could be mailed to
+   another; with it, the send refuses and the person who scheduled it is told. */
+router.post('/files/:id/draws/:drawId/investor-delivery/schedule', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id, drawId = req.params.drawId;
+  if (!/^\d+$/.test(drawId)) return res.status(404).json({ error: 'draw not found' });
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]);
+  if (!own.rowCount) return res.status(404).json({ error: 'draw not found on this file' });
+  try {
+    const sched = require('../lib/scheduled-sends');
+    const b = req.body || {};
+    const at = sched.parseNyLocal(b.day, b.time);
+    const bad = sched.whenProblem(at);
+    if (bad) return res.status(400).json({ error: bad.error, code: bad.code });
+
+    const confirm = String(b.confirm_note_buyer || '').trim();
+    const app = (await db.query(`SELECT lender FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+    if (!confirm || investorSend.investorKeyFor(confirm) !== investorSend.investorKeyFor(app.lender)) {
+      return res.status(400).json({ error: `Confirm the investor before scheduling — this file's note buyer is ${app.lender || '(not set)'}.` });
+    }
+
+    // Exactly the body the delivery route reads. `preflight` is deliberately NOT
+    // carried: a preflight sends nothing, so a scheduled one would be a send that
+    // does nothing at the appointed hour and reports success.
+    const payload = { confirm_note_buyer: confirm };
+    if (b.mode) payload.mode = b.mode;
+    if (b.note) payload.note = String(b.note).slice(0, 4000);
+    if (b.acknowledge_omissions === true) payload.acknowledge_omissions = true;
+    if (Array.isArray(b.share_link_keys) && b.share_link_keys.length) payload.share_link_keys = b.share_link_keys;
+    if (Number(b.compress_level)) payload.compress_level = Number(b.compress_level);
+
+    const out = await sched.schedule({
+      appId, kind: 'investor_delivery', targetKey: String(drawId), at,
+      payload, actorId: req.actor.id,
+    });
+    if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
+    res.json({ ok: true, scheduled: out.row });
+  } catch (e) { res.status(500).json({ error: 'Could not schedule that delivery.' }); }
+});
+
+// ---- GET /files/:id/scheduled-sends — what is queued on this file ----
+router.get('/files/:id/scheduled-sends', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const all = await require('../lib/scheduled-sends').listForApp(req.params.id);
+    res.json(all.filter((r) => r.kind === 'investor_delivery'));
+  } catch (e) { res.status(500).json({ error: 'Could not read the scheduled deliveries.' }); }
+});
+
+// ---- POST /files/:id/scheduled-sends/:sid/cancel ----
+router.post('/files/:id/scheduled-sends/:sid/cancel', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const out = await require('../lib/scheduled-sends').cancel({ id: req.params.sid, appId: req.params.id, actorId: req.actor.id });
+    if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'Could not cancel that.' }); }
+});
+
 // ---- POST /files/:id/draws/:drawId/investor-delivery — deliver it ----
 // `confirm` must name the investor the desk showed, so a mis-click (or a note buyer changed in
 // another tab since the preview loaded) can never mail one investor's draw to another.

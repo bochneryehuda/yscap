@@ -1,6 +1,11 @@
 'use strict';
 /**
- * THE WORDING FOR THE INTERNAL "A NEW DRAW REQUEST CAME IN" EMAIL.
+ * THE WORDING FOR THE TWO INTERNAL DRAW NOTIFICATIONS — a draft that was STARTED
+ * (`draftStartedCopy`) and a draw that was SUBMITTED FOR REVIEW
+ * (`inboundDrawCopy`). They are two different events; until 2026-08-20 they
+ * shared one sentence, and the desk read every Start button as a request.
+ *
+ * ── inboundDrawCopy — "a draw was submitted" ────────────────────────────────
  *
  * Owner-directed 2026-08-03, on the staff draw notifications: *"it should say how much the draw
  * request is — the dollar amount — and if it's a VIRTUAL or a PHYSICAL inspection. And if it's an
@@ -63,4 +68,56 @@ function inboundDrawCopy({ platform = null, method = null, submitted = false } =
   };
 }
 
-module.exports = { inboundDrawCopy };
+/* ── draftStartedCopy — "a borrower started a draft" ────────────────────────── */
+
+/**
+ * THE BORROWER PRESSED START — nothing has been submitted (owner-reported
+ * 2026-08-20: "he just clicks Start, and he's starting to take pictures.
+ * Sometimes it could take a few days … it sounds for our team that this is an
+ * actual draw request that he submitted already. The truth is that he just
+ * started a draft").
+ *
+ * EVERY WORD HERE IS CHOSEN TO SAY "NOT YET":
+ *   · the phase is named FIRST ("started a draft"), before anything else, because
+ *     the desk reads the title and the first clause and stops;
+ *   · it states plainly that nothing is needed from us yet — the old copy's
+ *     "Action needed" badge on a draft is exactly what made the desk act early;
+ *   · it PROMISES the next email, so silence afterwards is not read as the draw
+ *     having been forgotten;
+ *   · it never quotes an amount as though it were a request. A draft's figures
+ *     move while the borrower works, and the caller drops the money band when
+ *     there is nothing real in it.
+ *
+ * The routing sentence is deliberately FUTURE tense on both action platforms
+ * ("a task WILL open once it is submitted"), matching `inboundDrawCopy`'s own
+ * not-yet-submitted branch, so the two can never tell the desk different things
+ * about the same file.
+ *
+ * @param platform 'trustpoint' | 'sitewire' | 'trinity' | null
+ * @param method   'traditional' = physical | else virtual
+ * @param phaseKnown false when Sitewire gave a status we do not recognise
+ * @returns { methodLabel, actionNeeded:false, actionLabel, nextStep, whenItLands }
+ */
+function draftStartedCopy({ platform = null, method = null, phaseKnown = true } = {}) {
+  const physical = method === 'traditional';
+  const methodLabel = physical ? 'Physical (on-site) inspection' : 'Virtual inspection';
+
+  const whenItLands = platform === 'trustpoint'
+    ? 'Once they submit it, a task will open for the draw coordinator to enter it into TrustPoint.'
+    : physical
+      ? 'Once they submit it, we will arrange the on-site inspection.'
+      : 'Once they submit it, the virtual inspection runs automatically through Sitewire.';
+
+  return {
+    methodLabel,
+    actionNeeded: false,
+    // Deliberately NOT the phrase "action needed": the desk scans for it, and a
+    // negated form of the words they are scanning for is read as the words.
+    actionLabel: 'nothing to do yet — this is a draft',
+    nextStep: 'Nothing is needed from the draw desk yet. We will email again the moment it is submitted for review.'
+      + (phaseKnown ? '' : ' (Sitewire reported a status we do not recognise, so treat the phase as unconfirmed.)'),
+    whenItLands,
+  };
+}
+
+module.exports = { inboundDrawCopy, draftStartedCopy };

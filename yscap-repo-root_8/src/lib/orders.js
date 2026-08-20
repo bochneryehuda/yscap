@@ -190,8 +190,12 @@ async function getOrderData(appId) {
   if (!a) return null;
 
   // The vendor contacts linked to THIS file (most-recently used first).
+  // `emails`/`phones` are SELECTed alongside the legacy scalars because a vendor
+  // may carry several addresses (db/224: a title company with a rundown@ and a
+  // closing@, an agent plus their assistant) and the owner's rule is that ALL of
+  // them go on the order — see `recipientsFor`.
   const vc = await db.query(
-    `SELECT sc.id, sc.contact_type, sc.company_name, sc.contact_name, sc.email, sc.phone
+    `SELECT sc.id, sc.contact_type, sc.company_name, sc.contact_name, sc.email, sc.emails, sc.phone, sc.phones
        FROM application_service_contacts l
        JOIN service_contacts sc ON sc.id = l.service_contact_id
       WHERE l.application_id = $1 AND sc.contact_type = ANY($2::text[])
@@ -258,12 +262,21 @@ function uspsGateActive() {
   catch (_) { return false; }
 }
 
+/** Every address this order will go TO. The ONE reading — see recipientsFor. */
+function vendorEmails(kind, data) {
+  return require('./vendor-directory').allEmails(data && data.vendors ? data.vendors[kind] : null);
+}
+
 /** What still blocks an order — an empty list means it's ready to send. */
 function blockers(kind, data) {
   const out = [];
   if (!data) { out.push('file'); return out; }
   if (!data.hasLoanNumber) out.push('loan_number');
-  if (!data.vendors[kind] || !data.vendors[kind].email) out.push('contact');
+  // "Has an address" is ANY address, not the legacy scalar one. A vendor edited to
+  // carry only additional addresses (db/224's `emails` array, with the scalar left
+  // null) would otherwise read as having no contact at all and block its own order
+  // — a gate refusing on a technicality that the send path itself does not share.
+  if (!vendorEmails(kind, data).length) out.push('contact');
   // No order may be placed until a USPS-verified address has been imported.
   if (data.uspsGate && !data.uspsImported) out.push('usps');
   return out;
@@ -272,7 +285,8 @@ function blockers(kind, data) {
 /** The vendor's display name for the greeting ("Hi <name>,"). */
 function vendorGreetName(vendor) {
   if (!vendor) return 'there';
-  return vendor.contact_name || vendor.company_name || (vendor.email ? vendor.email.split('@')[0] : 'there');
+  const first = require('./vendor-directory').allEmails(vendor)[0];
+  return vendor.contact_name || vendor.company_name || (first ? first.split('@')[0] : 'there');
 }
 
 /**
@@ -444,7 +458,19 @@ function ccBorrowerDefault(kind, loSetting) {
 function recipientsFor(kind, data, opts) {
   const o = opts || {};
   const vendor = data.vendors[kind];
-  const to = vendor && vendor.email ? [vendor.email] : [];
+  /* EVERY ADDRESS THE VENDOR CARRIES IS A RECIPIENT (owner-directed 2026-08-20:
+     "we should be able to add additional email addresses for vendors, and all
+     emails should be included when we send out the orders").
+
+     THE COLUMN PAIR IS THE TRAP, and `vendorDirectory.allEmails` is the ONE place
+     that reads it: db/224 added `emails text[]` beside the legacy scalar `email`
+     and backfilled only the rows that existed then, so on a lot of live vendors
+     `emails` is NULL and the scalar is the only value, while on others the scalar
+     is merely the first entry of the array. Reading either alone drops addresses —
+     which on this desk means a title company's closing@ inbox never receiving the
+     order and nobody knowing. Folding both, primary first, is what makes the rule
+     true for old vendors as well as new ones. */
+  const to = require('./vendor-directory').allEmails(vendor);
   const cc = [];
   const seen = new Set(to.map((e) => e.toLowerCase()));
   const add = (e) => { const k = String(e || '').trim().toLowerCase(); if (k && !seen.has(k)) { seen.add(k); cc.push(k); } };
@@ -622,7 +648,10 @@ async function placeOrder(opts) {
          WHERE file_orders.status IN ('not_ordered','cancelled')
             OR ($9::boolean AND COALESCE(file_orders.ordered_at, 'epoch'::timestamptz) < now() - interval '10 seconds')
        RETURNING id, status, ordered_at::text AS claim_token`,
-      [appId, kind, vendor ? vendor.id : null, (vendor && vendor.email) || null,
+      // The stored `vendor_email` is the desk's DISPLAY address (one line on a card),
+      // so it is the primary — read through the same folding so it can never name an
+      // address the send did not actually use.
+      [appId, kind, vendor ? vendor.id : null, require('./vendor-directory').allEmails(vendor)[0] || null,
        (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, actorId, ccBorrower, !!force]);
     if (!claim.rows[0]) {
       return { ok: false, httpStatus: 409, code: force ? 'too_soon' : 'already_ordered',
@@ -700,7 +729,7 @@ module.exports = {
   transactionType, propertyLine, money, dayText,
   INSURANCE_COVERAGE_LINES, insuranceDetailMeta,
   mortgageeClauseFor, isRcnNoteBuyer, MORTGAGEE_CLAUSE, MORTGAGEE_CLAUSE_RCN,
-  sendOrderMail, sendVerdict, isAmbiguousSendFailure,
+  sendOrderMail, sendVerdict, isAmbiguousSendFailure, vendorEmails,
   newOrderMessageId, replyOrderSubject,
   placeOrder,
 };

@@ -22,6 +22,8 @@ import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import { onFilesDropped } from '../lib/drop-files.js';
+import VendorAutocomplete from '../components/VendorAutocomplete.jsx';
+import EmailListInput, { clean as cleanEmails } from '../components/EmailListInput.jsx';
 import EsignBorrowerCard from '../components/EsignBorrowerCard.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
@@ -360,17 +362,55 @@ function ContactCondition({ it, appId, onSaved }) {
   const meta = CONTACT[it.tool_key];
   const done = isDone(it.status);
   const [saved, setSaved] = useState([]);
-  const [f, setF] = useState({ companyName: '', contactName: '', email: '', phone: '' });
+  const [f, setF] = useState({ companyName: '', contactName: '', emails: [''], phone: '' });
   const [contactId, setContactId] = useState(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [err, setErr] = useState('');
   useEffect(() => { api.contacts(meta.type).then(setSaved).catch(() => {}); }, [meta.type]);
-  const useSaved = (c) => { setContactId(c.id); setF({ companyName: c.company_name || '', contactName: c.contact_name || '', email: c.email || '', phone: c.phone || '' }); };
+
+  /* PRE-FILL FROM WHAT THEY USED BEFORE (owner-directed 2026-08-20: "every
+     borrower's profile should have all the contacts that he previously used for
+     title and insurance on his second file … he should be able to pre-fill from
+     his previous contacts. It should come up with all the options that he used
+     previously for title. You can just select which title agency you want").
+
+     ONE control does both halves: focusing the company box with nothing typed
+     lists everything they have used, and typing narrows it. Picking one fills the
+     WHOLE form. The row of bare buttons this replaces showed only a name — no
+     email, no phone, no way to tell two saved agencies apart — and disappeared
+     off the edge once somebody had a handful.
+
+     THEIR OWN CONTACTS ONLY. The server decides that (lib/vendor-directory): a
+     type-ahead over every title company we work with would publish our vendor
+     roster to an outside party, which is a different decision from this one. */
+  const suggest = useCallback((q) => api.vendorSuggest(meta.type, q), [meta.type]);
+  const takeVendor = (v) => {
+    // Adopting a saved contact means EDITING it (the same row, `last_used_at`
+    // moved), never minting a near-duplicate — which is what `contactId` has
+    // always been for on this form.
+    setContactId(v.id || null);
+    setF((p) => ({
+      ...p,
+      companyName: v.companyName || '',
+      contactName: v.contactName || '',
+      emails: (v.emails && v.emails.length) ? v.emails.slice() : [''],
+      phone: v.phone || '',
+    }));
+  };
+
   async function submit() {
+    const emails = cleanEmails(f.emails);
     setBusy(true); setErr('');
     try {
-      await api.saveContact({ contactType: meta.type, contactId, ...f, applicationId: appId, checklistItemId: it.id });
+      await api.saveContact({
+        contactType: meta.type, contactId,
+        companyName: f.companyName, contactName: f.contactName, phone: f.phone,
+        // The primary rides as `email` so nothing that reads only the scalar
+        // changes; `emails` is the full set the order goes to.
+        emails, email: emails[0] || '',
+        applicationId: appId, checklistItemId: it.id,
+      });
       setOpen(false); await onSaved();
     } catch (e) { setErr(e.message || 'Could not save'); }
     finally { setBusy(false); }
@@ -384,21 +424,24 @@ function ContactCondition({ it, appId, onSaved }) {
       open={open}
       action={<button className="btn ghost small" onClick={() => setOpen(o => !o)}>{open ? 'Close' : done ? 'Edit' : 'Enter information'}</button>}
     >
-      {saved.length > 0 && (
-        <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-          <span className="muted small">Use a saved contact:</span>
-          {saved.map(c => <button key={c.id} className="btn ghost small" onClick={() => useSaved(c)}>{c.company_name || c.contact_name || c.email}</button>)}
-        </div>
-      )}
       <div className="grid cols-2">
         <div className="field"><label>Company / agency</label>
-          <input className="input" value={f.companyName} onChange={e => setF({ ...f, companyName: e.target.value })} /></div>
+          <VendorAutocomplete value={f.companyName} onChange={(v) => { setContactId(null); setF((p) => ({ ...p, companyName: v })); }}
+            onPick={takeVendor} fetchSuggestions={suggest}
+            placeholder={saved.length ? 'Start typing, or click to see the ones you have used' : 'Start typing…'}
+            emptyHint="Nothing saved yet — just type the details in." />
+          {saved.length > 0 && (
+            <div className="muted small" style={{ marginTop: 4, color: '#4B585C' }}>
+              You have {saved.length} saved {saved.length === 1 ? 'contact' : 'contacts'} — click the box to pick one.
+            </div>
+          )}
+        </div>
         <div className="field"><label>Contact name</label>
           <input className="input" value={f.contactName} onChange={e => setF({ ...f, contactName: e.target.value })} /></div>
       </div>
       <div className="grid cols-2">
         <div className="field"><label>Email</label>
-          <EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></div>
+          <EmailListInput value={f.emails} onChange={(v) => setF((p) => ({ ...p, emails: v }))} disabled={busy} /></div>
         <div className="field"><label>Phone</label>
           <PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></div>
       </div>

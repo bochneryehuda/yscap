@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
 import FileSections, { Section, goToSection } from './FileSections.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
+import { ScheduleButton, ScheduledSends } from './ScheduleSend.jsx';
 
 /* Per-file construction-draw desk (staff). One place tying draws ↔ Scope of Work ↔
    construction budget: the unified per-line/per-unit rollup, each draw's per-line
@@ -2844,6 +2845,7 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
   const [linkKeys, setLinkKeys] = useState([]);
   const [ack, setAck] = useState(false);
   const [plan, setPlan] = useState(null);
+  const [queued, setQueued] = useState([]);
   const load = useCallback(() => {
     api.get(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`).then(setP).catch(() => {});
   }, [appId, drawId]);
@@ -2872,6 +2874,32 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
       if (r.plan.needs_consent) setGate({ plan: r.plan, warnings: r.linkWarnings || [] });
     } catch (e) { setErr(e?.data?.error || 'Could not check the documents.'); }
     finally { setBusy(false); }
+  }
+
+  /* SEND IT LATER (owner-directed 2026-08-20, who named investor delivery
+     alongside the title, insurance and closing-prep orders). The intent is
+     queued and the delivery route runs at the due moment, so the attachment
+     plan, the money split, the sold status and the funding mode are all resolved
+     against the file as it stands then. `preflight` is deliberately not carried:
+     a preflight sends nothing, so a scheduled one would be a send that does
+     nothing at the appointed hour and reports success. */
+  const loadQueue = useCallback(() => {
+    api.get(`/api/sitewire/files/${appId}/scheduled-sends`).then(setQueued).catch(() => {});
+  }, [appId]);
+  useEffect(() => { if (open) loadQueue(); }, [open, loadQueue]);
+  async function scheduleIt({ day, time }) {
+    const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery/schedule`, {
+      day, time, confirm_note_buyer: p.note_buyer, mode: p.funding_mode,
+      ...(ack ? { acknowledge_omissions: true } : {}),
+      ...(linkKeys.length ? { share_link_keys: linkKeys } : {}),
+    });
+    loadQueue();
+    setMsg(`Scheduled for ${r.scheduled.sendAtText}. Everything is checked again when it goes out.`);
+  }
+  async function cancelQueued(row) {
+    if (!(await askConfirm('Cancel the scheduled delivery? Nothing will be sent, and you can schedule it again.'))) return;
+    try { await api.post(`/api/sitewire/files/${appId}/scheduled-sends/${row.id}/cancel`, {}); loadQueue(); }
+    catch (e) { setErr(e?.data?.error || 'Could not cancel that.'); }
   }
 
   /**
@@ -3132,12 +3160,20 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
               {busy ? (p.funding_mode === 'manual' ? 'Recording…' : 'Sending…')
                 : p.funding_mode === 'manual' ? 'Record manual delivery' : `Deliver to ${p.note_buyer || 'the investor'}`}
             </button>
+            {/* A MANUAL delivery is a RECORD of something a human already did
+                outside PILOT — there is nothing to send later, so it is never
+                offered a clock. */}
+            {p.funding_mode !== 'manual' && (
+              <ScheduleButton onSchedule={scheduleIt} busy={busy} disabled={!p.can_send}
+                what={`the draw delivery to ${p.note_buyer || 'the investor'}`} />
+            )}
             {p.history.length > 0 && (
               <span className="act-card-sub" style={{ marginTop: 0 }}>
                 Last sent {new Date(p.history[0].sent_at).toLocaleString('en-US')}{p.history[0].status === 'error' ? ' (failed)' : ''} · {p.history.length} on record
               </span>
             )}
           </div>
+          <ScheduledSends rows={queued} onCancel={cancelQueued} kinds={['investor_delivery']} />
           {msg ? <div className="act-card-sub" style={{ color: 'var(--primary,#2F7F86)' }}>{msg}</div> : null}
           {err ? <div className="act-card-sub" style={{ color: 'var(--danger,#B4453C)' }}>{err}</div> : null}
         </>

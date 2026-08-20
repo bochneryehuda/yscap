@@ -6,6 +6,8 @@ import { ENTITY_TYPES, describeEntity, titlesFor, subtypesFor, hasSubtypes } fro
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fileToBase64 } from '../lib/files.js';
 import { onFilesDropped } from '../lib/drop-files.js';
+import VendorAutocomplete from '../components/VendorAutocomplete.jsx';
+import EmailListInput, { clean as cleanEmails, atLeastOne as atLeastOneEmail } from '../components/EmailListInput.jsx';
 import { fmtDay } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { moneyNum } from '../lib/money.js';
@@ -3246,20 +3248,49 @@ const StaffCardEntry = AppraisalCardEntry;
 function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   const contactType = toolKey === 'title_contact' ? 'title_company' : 'insurance_agent';
   const [open, setOpen] = useState(false);
-  const [f, setF] = useState({ companyName: '', contactName: '', email: '', phone: '' });
+  const [f, setF] = useState({ companyName: '', contactName: '', emails: [''], phone: '' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
+
+  /* THE TYPE-AHEAD IS SCOPED TO THIS FILE, and so is its permission — the server
+     decides what a staffer may see, never this component (lib/vendor-directory).
+     Memoised on the file + type so the autocomplete's own debounce is not reset by
+     a new function identity on every keystroke. */
+  const suggest = React.useCallback(
+    (q) => api.staffVendorSuggest(appId, contactType, q), [appId, contactType]);
+
+  /* PICKING A VENDOR FILLS THE WHOLE FORM — "auto-populate all the information
+     just by starting to type". Every address the vendor carries comes with it,
+     because all of them go on the order. */
+  const takeVendor = (v) => setF((p) => ({
+    ...p,
+    companyName: v.companyName || p.companyName || '',
+    contactName: v.contactName || p.contactName || '',
+    emails: (v.emails && v.emails.length) ? v.emails.slice() : p.emails,
+    phone: v.phone || p.phone || '',
+  }));
+
   function startEdit() {
-    setF({ companyName: current?.company_name || '', contactName: current?.contact_name || '', email: current?.email || '', phone: current?.phone || '' });
+    setF({
+      companyName: current?.company_name || '',
+      contactName: current?.contact_name || '',
+      // The stored shape is the scalar + db/224's array; show every address it has.
+      emails: atLeastOneEmail(cleanEmails([current?.email, ...(current?.emails || [])])),
+      phone: current?.phone || '',
+    });
     setErr(''); setOpen(true);
   }
   async function save() {
-    if (!f.companyName && !f.contactName && !f.email && !f.phone) { setErr('Enter at least one detail (company, name, email or phone).'); return; }
+    const emails = cleanEmails(f.emails);
+    if (!f.companyName && !f.contactName && !emails.length && !f.phone) { setErr('Enter at least one detail (company, name, email or phone).'); return; }
     setBusy(true); setErr('');
     try {
-      if (current && current.link_id) await api.staffEditFileContact(current.link_id, { ...f, contactType });
-      else await api.staffAddFileContact(appId, { ...f, contactType });
+      // `email` rides along as the primary so a server that only reads the scalar
+      // is unchanged; `emails` is the full set the order goes to.
+      const body = { companyName: f.companyName, contactName: f.contactName, phone: f.phone, emails, email: emails[0] || '', contactType };
+      if (current && current.link_id) await api.staffEditFileContact(current.link_id, body);
+      else await api.staffAddFileContact(appId, body);
       setOpen(false);
       if (onSaved) await onSaved();
     } catch (e) { setErr((e && e.message) || 'Could not save the contact.'); }
@@ -3267,10 +3298,16 @@ function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   }
   if (!open) return <button className="btn ghost small" onClick={startEdit}>{current ? 'Edit contact' : 'Enter contact'}</button>;
   return (
-    <div className="small" style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'flex-end' }}>
-      <input className="input" style={{ maxWidth: 180 }} placeholder="Company" value={f.companyName} onChange={set('companyName')} />
+    <div className="small" style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'flex-start', justifyContent: 'flex-end' }}>
+      <div style={{ width: 200 }}>
+        <VendorAutocomplete value={f.companyName} onChange={(v) => setF((p) => ({ ...p, companyName: v }))}
+          onPick={takeVendor} fetchSuggestions={suggest} placeholder="Company — start typing"
+          emptyHint="No match in our vendor list — type the details in." />
+      </div>
       <input className="input" style={{ maxWidth: 150 }} placeholder="Contact name" value={f.contactName} onChange={set('contactName')} />
-      <EmailInput style={{ maxWidth: 190 }} placeholder="Email" value={f.email} onChange={v => setF(p => ({ ...p, email: v }))} />
+      <div style={{ width: 220 }}>
+        <EmailListInput value={f.emails} onChange={(v) => setF((p) => ({ ...p, emails: v }))} disabled={busy} compact />
+      </div>
       <PhoneInput style={{ maxWidth: 150 }} placeholder="Phone" value={f.phone} onChange={v => setF(p => ({ ...p, phone: v }))} />
       <button className="btn small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save contact'}</button>
       <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>

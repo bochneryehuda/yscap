@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api, saveBlob } from '../../lib/api.js';
 import { fileToBase64 } from '../../lib/files.js';
+import useFileDrop from '../../lib/useFileDrop.js';
 import { askConfirm, askPrompt } from '../../lib/dialog.js';
 import DocPreview from '../DocPreview.jsx';
 import { useMenuAutoClose, closeMenu } from '../ConditionActions.jsx';
@@ -124,6 +125,24 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
   const [moreOpen, setMoreOpen] = useState(false);
   const [morePick, setMorePick] = useState(() => new Set());  // fields ticked for import
   useMenuAutoClose(); // shared closer for the "More ▾" menus (same as the conditions rows)
+  /* THE WHOLE DOCUMENTS CARD IS A DROP TARGET (owner-directed 2026-08-20). Declared
+     up here with every other hook — this component has early returns below, and a
+     hook after one of them is the full-page-crash class test-react-hook-order guards. */
+  const docDrop = useFileDrop(uploadFiles, true);
+
+  /* THE STORED VALUE IS THE LABEL, THE PICKER'S VALUE IS THE SLUG. `documents.slot_label`
+     holds the label because that is what every screen, the SharePoint folder resolver and
+     the TPR categoriser display; the dropdown is keyed on the slug because that is the
+     stable identifier. Matched case-insensitively, and an unrecognised stored label reads
+     as "not typed yet" rather than silently selecting the wrong option. (The server accepts
+     BOTH, so a legacy label sent back unchanged still resolves — see
+     lib/track-record/doc-request.resolveDocTypeLabel.) */
+  const docTypeSlug = (label) => {
+    const want = String(label == null ? '' : label).trim().toLowerCase();
+    if (!want) return '';
+    const hit = docTypes.find((t) => String(t.label || '').trim().toLowerCase() === want);
+    return hit ? hit.slug : '';
+  };
 
   /* An error goes in the banner AND on the row — in a long section the banner is
      off-screen by the time you have scrolled to the row you clicked, and a
@@ -348,24 +367,61 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
     finally { setBusy(''); }
   }
 
-  // UPLOAD a document straight onto this line (owner-directed: "staff can add MULTIPLE documents
-  // per line, doc-type dropdown, add as many as wanted — the upload slots must be obvious"). It
-  // files onto the line (track_record_id), auto-attaches to any open request, and lands pending
-  // for review right below. Available to any staffer on the file, like "Ask for a document".
-  async function uploadDoc(e) {
-    const f = (e.target.files || [])[0];
-    if (e.target) e.target.value = '';
-    if (!f) return;
+  /* UPLOAD documents straight onto this line (owner-directed: "staff can add
+     MULTIPLE documents per line, doc-type dropdown, add as many as wanted — the
+     upload slots must be obvious", and 2026-08-20: "you should be able to just
+     drop documents into that line item"). Files onto the line (track_record_id),
+     auto-attaches to any open request, and lands pending for review right below.
+     Available to any staffer on the file, like "Ask for a document".
+
+     ONE uploader for BOTH doors — the Upload button and the drop zone — so a
+     dropped document and a picked one can never be filed differently.
+
+     EVERY FILE IS ATTEMPTED, and a failure NAMES the file it was. Dropping five
+     documents and being told only "could not upload that document" leaves you
+     with no idea which of the five is missing, or whether the other four landed. */
+  async function uploadFiles(files) {
+    const list = Array.from(files || []).filter(Boolean);
+    if (!list.length) return;
     setBusy('upload');
+    const failed = [];
+    let ok = 0;
+    for (const f of list) {
+      try {
+        const dataBase64 = await fileToBase64(f);
+        await api.post(`/api/staff/track-records/${trackRecordId}/documents`, {
+          filename: f.name, contentType: f.type || 'application/octet-stream', dataBase64,
+          docType: upType || undefined,
+        });
+        ok += 1;
+      } catch (ex) { failed.push(`${f.name}${ex && ex.message ? ` (${ex.message})` : ''}`); }
+    }
+    setBusy('');
+    if (ok) changed();
+    if (failed.length) {
+      flash(false, `${failed.length} of ${list.length} could not be uploaded: ${failed.join('; ')}`
+        + (ok ? ` — the other ${ok} did land.` : ''));
+    } else {
+      flash(true, list.length === 1
+        ? 'Document uploaded — it’s on the line below, ready to review.'
+        : `${list.length} documents uploaded — they’re on the line below, ready to review.`);
+    }
+  }
+  async function uploadDoc(e) {
+    const files = Array.from(e.target.files || []);
+    if (e.target) e.target.value = '';
+    await uploadFiles(files);
+  }
+
+  /* SET A DOCUMENT'S TYPE AFTER IT LANDED. A file dropped on the ledger row has no
+     dropdown to read, and even here you normally drop first and say what it is
+     second — so the type is editable on the row, not only before the upload. */
+  async function setDocType(d, docType) {
+    setBusy(d.id);
     try {
-      const dataBase64 = await fileToBase64(f);
-      await api.post(`/api/staff/track-records/${trackRecordId}/documents`, {
-        filename: f.name, contentType: f.type || 'application/octet-stream', dataBase64,
-        docType: upType || undefined,
-      });
-      flash(true, 'Document uploaded — it’s on the line below, ready to review.');
+      await api.post(`/api/staff/track-records/${trackRecordId}/documents/${d.id}/type`, { docType });
       changed();
-    } catch (ex) { flash(false, (ex && ex.message) || 'could not upload that document'); }
+    } catch (e) { rowError(d.id, (e && e.message) || 'could not change the document type'); }
     finally { setBusy(''); }
   }
 
@@ -972,22 +1028,26 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
           "the whole document center … should be on the main line item"). Each
           document keeps ONE clear action and tucks Preview / Download / Reject /
           Delete into a popup, the same shape as a condition's document row. */}
-      <div className="tr-deal" style={{ marginBottom: 10 }}>
+      <div className={`tr-deal cond-drop${docDrop.over ? ' drop-over' : ''}`} style={{ marginBottom: 10 }} {...docDrop.dropProps}>
+        {docDrop.over && <div className="drop-hint">Drop documents onto this project</div>}
         <div className="tr-deal-h" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
           <h3 style={{ fontSize: 15 }}>Documents</h3>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            {/* UPLOAD — an obvious slot: pick a type, add a file, repeat for as many as you need. */}
+            {/* UPLOAD — an obvious slot: pick a type, add files, repeat for as many as you need.
+                The type here is the one applied to what you upload NEXT; every document's own
+                type is editable on its row below, which is what makes a drop (with no dropdown
+                to read) usable. */}
             <select className="input" value={upType} onChange={(e) => setUpType(e.target.value)}
-              title="What kind of document is this?" aria-label="Document type"
+              title="What kind of document is this? You can also set it per document after it lands." aria-label="Document type"
               style={{ height: 32, padding: '0 8px', fontSize: 13, maxWidth: 190 }}>
               <option value="">Type (optional)…</option>
               {docTypes.map((d) => <option key={d.slug} value={d.slug}>{d.label}</option>)}
             </select>
             <button className="btn small" disabled={busy === 'upload'} onClick={() => upRef.current && upRef.current.click()}
-              title="Upload a document onto this project. Add as many as you need — each one waits for review below.">
-              {busy === 'upload' ? 'Uploading…' : '↑ Upload a document'}
+              title="Upload documents onto this project. Add as many as you need — each one waits for review below.">
+              {busy === 'upload' ? 'Uploading…' : '↑ Upload documents'}
             </button>
-            <input ref={upRef} type="file" style={{ display: 'none' }} onChange={uploadDoc} />
+            <input ref={upRef} type="file" multiple style={{ display: 'none' }} onChange={uploadDoc} />
             <button className="btn soft small" onClick={() => openAsk('')}
               title="Ask the borrower for a document on this project — it becomes a real request.">Ask for a document…</button>
           </div>
@@ -1001,8 +1061,20 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
                 <div className="tr-doc" key={d.id}>
                   <div className="tr-doc-name">
                     <b>{d.filename}</b>
-                    {d.doc_type ? <span>{d.doc_type}</span> : null}
+                    {/* THE TYPE IS SET HERE, AFTER THE FACT (owner-directed 2026-08-20:
+                        "whatever you drop, it should go in, and then you can select if you
+                        want which document type"). It was previously chosen before the
+                        upload only — impossible for a file dropped on a collapsed ledger
+                        row, which has no dropdown at all. Blank clears it. */}
+                    <select className="input" value={docTypeSlug(d.doc_type)} disabled={busy === d.id}
+                      onChange={(e) => setDocType(d, e.target.value)}
+                      title="What kind of document is this?" aria-label={`Document type for ${d.filename}`}
+                      style={{ height: 26, padding: '0 6px', fontSize: 12, maxWidth: 200 }}>
+                      <option value="">Not typed yet…</option>
+                      {docTypes.map((t) => <option key={t.slug} value={t.slug}>{t.label}</option>)}
+                    </select>
                     {rs === 'rejected' && d.rejection_reason ? <span style={{ color: 'var(--danger)' }}>{d.rejection_reason}</span> : null}
+                    {rowErr[d.id] ? <span style={{ color: 'var(--danger)' }}>{rowErr[d.id]}</span> : null}
                   </div>
                   <span className="pill small" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
                   <div className="tr-doc-acts">
@@ -1028,7 +1100,7 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
               );
             })}
           </div>
-          : <p className="tr-hint">No documents yet — pick a type and use <b>Upload a document</b> above to add the closing statement, deed, lease or anything else that proves this project. Add as many as you need.</p>}
+          : <p className="tr-hint">No documents yet — <b>drop them anywhere on this card</b>, or use <b>Upload documents</b> above, to add the closing statement, deed, lease or anything else that proves this project. Add as many as you need; you can say what each one is after it lands.</p>}
 
         {detail.requests.length > 0 && (
           <div className="tr-edit-sec">

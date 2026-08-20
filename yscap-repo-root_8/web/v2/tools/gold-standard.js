@@ -413,8 +413,12 @@
     // supported loan never exceeds it — the leverage-supported amount before the
     // dollar ceiling is what tells us the borrower's demand blew past the max.
     if ((sizing.preMaxTotal || loanAmt) > MAX_LOAN + 0.5) add("MANUAL", "The supported loan exceeds the $3,000,000 maximum — submit for manual review.");
-    // rehab/construction budget larger than the program can finance (total capped at the max/ARV wall)
-    if (sizing.rehabOverCap) add("MANUAL", "The rehab/construction budget exceeds what this program can finance — the loan is capped at " + dollars(sizing.totalLoan) + ", so the remaining budget would be funded out of pocket. Reduce the scope or use a larger facility.");
+    // rehab/construction budget larger than the program can finance (total capped at the max/ARV wall).
+    // Allowed automatically — and only DISCLOSED — once the INITIAL advance is already zero and ≥90% of
+    // the budget is still financed: the caps have nothing left to cut (owner-directed 2026-08-20; the rule
+    // and the numbers live in YSP.sizeLoan, which this program sizes on, so all three programs agree).
+    if (sizing.rehabOverCap && !sizing.rehabOopAuto) add("MANUAL", "The rehab/construction budget exceeds what this program can finance — the loan is capped at " + dollars(sizing.totalLoan) + ", so the remaining budget would be funded out of pocket. Reduce the scope or use a larger facility.");
+    else if (sizing.rehabOopAuto) add("ELIGIBLE", "The loan finances " + pct(sizing.rehabFinancedPct) + " of the " + dollars(sizing.rehab) + " construction budget (" + dollars(sizing.rehabUnfinanced) + " comes out of pocket over the construction). The initial advance is already zero, so the caps have nothing left to cut — no exception is needed.");
 
     // ---- loan profitability: for any loan with a renovation or construction component,
     //      if total project costs exceed the ARV the loan is INELIGIBLE for purchase. Bridge is exempt
