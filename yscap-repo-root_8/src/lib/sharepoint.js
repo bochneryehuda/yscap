@@ -669,9 +669,14 @@ async function ensurePilotColumns(driveId) {
       await graph(`/sites/${siteId}/lists/${listId}/columns`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // hidden:false so staff SEE the provenance in the library view; indexed
-        // so a future id-based lookup query is efficient.
-        body: JSON.stringify({ name, text: {}, enforceUniqueValues: false, indexed: name === 'PilotFileId' }),
+        // hidden:false so staff SEE the provenance in the library view. INDEXED on
+        // both id columns: PilotFileId groups a file's documents, and
+        // PilotDocumentId is the column findByPilotDocumentId() filters on to
+        // re-find a single mirror copy whose driveItem id stopped resolving —
+        // that lookup was the "future id-based lookup query" this line was
+        // written for, and it was indexing the wrong one of the two.
+        body: JSON.stringify({ name, text: {}, enforceUniqueValues: false,
+          indexed: name === 'PilotFileId' || name === 'PilotDocumentId' }),
       });
     } catch (e) {
       // A column that already exists under a slightly different internal name,
@@ -700,6 +705,65 @@ async function stampItemFields(driveId, itemId, fields) {
   return { stamped: Object.keys(body) };
 }
 
+/**
+ * RE-FIND one of OUR OWN mirror copies by the identity stamp we already write
+ * onto it — the missing half of roadmap R1 (owner-directed 2026-08-20 after a
+ * signed assignment was reported "no longer in SharePoint").
+ *
+ * stampItemFields() has always written PilotDocumentId onto every mirrored
+ * driveItem so "the link survives ANY human rename/move" — but nothing ever
+ * READ it back, so the mirror's only handle on its copy stayed the driveItem
+ * id in documents.sharepoint_backup_ref. That id survives a rename and an
+ * in-drive move, and does NOT survive the things people actually do: a
+ * delete-then-restore that mints a new id, a re-upload of the same file, or a
+ * drag through an Explorer/OneDrive-synced folder (which is a create+delete
+ * server-side). In every one of those the document is sitting in the drive and
+ * the audit reported it deleted. This is the read that finds it again.
+ *
+ * READ-ONLY and inside the one-way policy: this is a list query of our own
+ * library — the same class of operation as listChildren() — and it never
+ * downloads document bytes.
+ *
+ * A custom column is not indexed on a library that already existed when the
+ * columns were added, and Graph refuses a $filter on an un-indexed column
+ * unless the caller opts in with this exact documented header. The opt-in is
+ * safe here: this only ever runs for the handful of documents whose item id
+ * stopped resolving, never in the mirror's hot path.
+ *
+ * Returns full item metadata (via itemMeta, so there is ONE definition of what
+ * a mirror item's metadata looks like) or null when nothing carries the stamp.
+ */
+async function findByPilotDocumentId(driveId, documentId) {
+  const id = String(documentId == null ? '' : documentId).trim();
+  // Fail closed on anything that is not a plain document id: the value is
+  // interpolated into an OData filter, so it is validated, never escaped.
+  if (!/^[0-9a-fA-F-]{8,64}$/.test(id)) return null;
+  const j = await graph(
+    `/drives/${driveId}/list/items?$expand=fields,driveItem`
+    + `&$filter=fields/PilotDocumentId eq '${id}'&$top=5`,
+    { headers: { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' } });
+  for (const li of j.value || []) {
+    // Trust only an EXACT stamp match — Graph's filter is the search, this is
+    // the proof (a library that silently ignored the filter returns everything).
+    const stamped = li && li.fields && li.fields.PilotDocumentId;
+    if (String(stamped || '') !== id) continue;
+    // A listItem id is NOT a driveItem id — the list item is a small integer and
+    // the driveItem an opaque string, so /drives/{d}/items/{listItemId} would 404.
+    // The expand carries the link; ask the list item for its driveItem when the
+    // library did not return one.
+    let driveItemId = li.driveItem && li.driveItem.id;
+    if (!driveItemId) {
+      try {
+        driveItemId = (await graph(
+          `/drives/${driveId}/list/items/${encodeURIComponent(li.id)}/driveItem?$select=id`)).id;
+      } catch (_) { continue; }
+    }
+    if (!driveItemId) continue;
+    return itemMeta(driveId, driveItemId);
+  }
+  return null;
+}
+
 function makeRef(driveId, itemId) { return `sp:${driveId}:${itemId}`; }
 function parseRef(ref) {
   const m = /^sp:([^:]+):(.+)$/.exec(String(ref || ''));
@@ -720,6 +784,7 @@ module.exports = {
   createdByThisApp,
   ensurePilotColumns,
   stampItemFields,
+  findByPilotDocumentId,
   PILOT_COLUMNS,
   credentialHealth,
   deleteEnabled,

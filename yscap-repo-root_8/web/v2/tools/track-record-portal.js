@@ -158,7 +158,44 @@
       status: r.verification_status || (r.is_verified ? "verified" : "pending"),
       _verified: !!r.is_verified, _docCount: r.doc_count || 0, _dealType: r.deal_type || "",
       _docs: r.docs || [], _requests: r.doc_requests || [],
+      // The records stamp (derived server-side — src/lib/track-record/records-stamp.js):
+      // 'verified' | 'sourced' | ''. Display-only here; the tool never writes it.
+      _recordsStamp: r.records_stamp || "", _recordsStampAt: r.records_stamp_at || "",
     };
+  }
+
+  /* ---- the RECORDS STAMP wording — the tool bridge's mirror of the server's
+     ONE definition (src/lib/track-record/records-stamp.js). This static tool
+     has no bundler (the pricing-engine copy arrangement), so the words are
+     mirrored here and scripts/test-records-stamp-pure.js reads THIS file too,
+     failing the build the moment the two drift. Colours per the stamp design
+     spec: teal for verified, slate for sourced — never colour alone (the glyph
+     and the words differ too, so the chip survives grayscale). ---- */
+  var RSTAMP = {
+    verified: { chip: "VERIFIED · PUBLIC RECORDS", long: "Matched to the county public records via Elementix", cell: "✓ Verified to Elementix", color: "#2F7F86" },
+    sourced: { chip: "FROM PUBLIC RECORDS", long: "Imported from the county public records via Elementix — not yet matched line by line", cell: "○ Sourced via Elementix", color: "#5B5F64" },
+  };
+  function rstampDay(v) { var m = String(v == null ? "" : v).match(/^(\d{4}-\d{2}-\d{2})/); return m ? m[1] : ""; }
+  function rstampCellText(stamp, at) {
+    var w = RSTAMP[stamp];
+    if (!w) return "";
+    var d = rstampDay(at);
+    return d ? w.cell + " · " + d : w.cell;
+  }
+  // The one-line export stamp ("VERIFIED TO ELEMENTIX — N of M …"), mirroring
+  // records-stamp.summaryLine word for word; null when nothing is stamped.
+  function rstampSummaryLine(stamps) {
+    var list = stamps || [];
+    var total = list.length;
+    var verified = 0, sourced = 0;
+    list.forEach(function (s) { if (s === "verified") verified++; else if (s === "sourced") sourced++; });
+    if (!verified && !sourced) return null;
+    var noun = "propert" + (total === 1 ? "y" : "ies");
+    if (verified) {
+      return "VERIFIED TO ELEMENTIX — " + verified + " of " + total + " " + noun + " matched to the county public records"
+        + (sourced ? "; " + sourced + " more imported from the records" : "");
+    }
+    return "SOURCED VIA ELEMENTIX — " + sourced + " of " + total + " " + noun + " imported from the county public records";
   }
   function payloadFromProp(p) {
     var addr = {
@@ -428,7 +465,16 @@
   function encSnap(o) { return btoa(unescape(encodeURIComponent(JSON.stringify(o)))); }
   function snapshotHtml() {
     var snap = TR.snap();
-    var props = snap.props || [];
+    /* REJECTED LINES ARE OUT, exactly as the server builder does it
+       (src/lib/track-record/html-copy.js). Both writers coalesce onto ONE
+       document, so a different row set here made the stamp headline read
+       "2 of 5" or "2 of 4" depending on which writer ran last. The live list
+       only hides a rejected card in the DOM; the saved copy must actually
+       exclude it. */
+    var props = (snap.props || []).filter(function (p) {
+      var st = propsById[p.id] && propsById[p.id].status;
+      return st !== 'rejected';
+    });
     var counts = bucketCounts(props);
     var openUrl = location.origin + "/tools/track-record.html#d=" + encSnap(snap);
     var when = new Date().toLocaleString("en-US");
@@ -442,15 +488,20 @@
       if (p.refiAmount) bits.push("Refi " + fmtMoney(p.refiAmount) + (p.refiDate ? " · " + escH(p.refiDate) : ""));
       return bits.join("<br>") || "—";
     }
+    function stampOf(p) { return (propsById[p.id] && propsById[p.id]._recordsStamp) || ""; }
     function row(p) {
       var st = propsById[p.id] ? (propsById[p.id].status || "pending") : "pending";
+      // The records stamp under the verification — mirrors the server builder
+      // (src/lib/track-record/html-copy.js rowHtml); the two must stay in step.
+      var stampTxt = rstampCellText(stampOf(p), propsById[p.id] && propsById[p.id]._recordsStampAt);
       return "<tr><td>" + escH([p.address, [p.city, p.state].filter(Boolean).join(", "), p.zip].filter(Boolean).join(", ") || "—") +
         "</td><td>" + escH(p.ownedPersonally ? "Personal name" : (p.entity || "—")) +
         "</td><td>" + escH(p.propType || "—") +
         "</td><td>" + fmtMoney(p.purchasePrice) + (p.purchaseDate ? "<br><small>" + escH(p.purchaseDate) + "</small>" : "") +
         "</td><td>" + fmtMoney(p.rehab) +
         "</td><td>" + exitCell(p) +
-        "</td><td>" + escH(STATUS_LABEL[st] || st) + "</td></tr>";
+        "</td><td>" + escH(STATUS_LABEL[st] || st) +
+        (stampTxt ? "<br><small>" + escH(stampTxt) + "</small>" : "") + "</td></tr>";
     }
     function section(title, list) {
       if (!list.length) return "";
@@ -462,6 +513,11 @@
     var flips = props.filter(function (p) { return !isG(p) && p.kind === "flip"; });
     var holds = props.filter(function (p) { return !isG(p) && p.kind !== "flip"; });
     var ground = props.filter(isG);
+    // The records-stamp roll-up — same chips + headline as the server builder.
+    var stamps = props.map(stampOf);
+    var stampVerified = stamps.filter(function (s) { return s === "verified"; }).length;
+    var stampSourced = stamps.filter(function (s) { return s === "sourced"; }).length;
+    var stampLine = rstampSummaryLine(stamps);
     return "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
       "<title>Track Record — " + escH(snap.borrower || "Borrower") + "</title><style>" +
       "body{font-family:'Hanken Grotesk',system-ui,Arial,sans-serif;background:#141B22;color:#F4F0E7;margin:0;padding:2rem 1rem;line-height:1.5}" +
@@ -483,10 +539,13 @@
       "<span class=\"chip\">" + counts.flips + " fix &amp; flip</span>" +
       "<span class=\"chip\">" + counts.holds + " fix &amp; hold</span>" +
       (counts.ground ? "<span class=\"chip\">" + counts.ground + " ground-up</span>" : "") +
+      (stampVerified ? "<span class=\"chip\">✓ Verified to Elementix: " + stampVerified + "</span>" : "") +
+      (stampSourced ? "<span class=\"chip\">○ From the public records: " + stampSourced + "</span>" : "") +
       "</div>" +
       section("Fix & Flip", flips) + section("Fix & Hold", holds) + section("Ground-up", ground) +
       "<a class=\"open\" href=\"" + escH(openUrl) + "\">Open in the live Track Record builder →</a>" +
       "<p class=\"muted\">This is the saved static copy of the live track record — it reopens the builder with these exact deals. The portal keeps it in sync automatically.</p>" +
+      (stampLine ? "<p class=\"muted\">" + escH(stampLine) + "</p>" : "") +
       "<footer>YS Capital Group · NMLS ID 2609746 · For verification and underwriting reference.</footer>" +
       "</main></body></html>";
   }
@@ -575,6 +634,17 @@
         b.textContent = STATUS_LABEL[st] || st;
         b.style.cssText = "font-size:.72rem;font-weight:700;letter-spacing:.04em;padding:.18rem .55rem;border-radius:999px;border:1px solid " + (STATUS_COLOR[st] || "#8a949c") + ";color:" + (STATUS_COLOR[st] || "#8a949c");
         head.appendChild(b);
+      }
+      // The records stamp — beside the verification badge, never instead of it
+      // (a records match and a human's verification are two different facts).
+      if (head && p._recordsStamp && RSTAMP[p._recordsStamp] && !head.querySelector(".tr-portal-rstamp")) {
+        var rw = RSTAMP[p._recordsStamp];
+        var rb = document.createElement("span");
+        rb.className = "tr-portal-rstamp";
+        rb.title = rw.long + (p._recordsStampAt ? " · " + rstampDay(p._recordsStampAt) : "");
+        rb.textContent = (p._recordsStamp === "verified" ? "✓ " : "○ ") + rw.chip;
+        rb.style.cssText = "font-size:.66rem;font-weight:700;letter-spacing:.06em;padding:.18rem .55rem;border-radius:999px;border:1px solid " + rw.color + ";color:" + rw.color + ";white-space:nowrap";
+        head.appendChild(rb);
       }
       if (!actions) return;
       // A verified/limited deal is locked underwriting evidence for the borrower.

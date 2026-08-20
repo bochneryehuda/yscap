@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import LlcManager, { llcBadge } from './LlcManager.jsx';
+import { EntityRecordsStamp } from './track-record/RecordsStamp.jsx';
 import { ENTITY_TYPES, DEFAULT_ENTITY_TYPE, describeEntity, subtypesFor, hasSubtypes } from '../lib/entityType.js';
 
 /* The borrower's reusable ENTITIES — the full entity section of the profile.
@@ -35,6 +36,7 @@ function EntityCard({ llc, onChanged }) {
             {` · ${c.docs_accepted || 0}/${c.docs_required || 3} docs accepted`}
           </div>
         </div>
+        <EntityRecordsStamp adoptedSource={llc.adopted_source} at={llc.adopted_at} />
         <span className={`ts-badge ${badge.cls}`}>{badge.text}</span>
         <button className="btn ghost small" onClick={() => setOpen(o => !o)}>{open ? 'Close' : llc.is_verified ? 'View' : 'Set up'}</button>
       </div>

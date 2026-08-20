@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { canDeleteDoc } from '../lib/condition-actions.js';
 import LineDetail from '../components/track-record/LineDetail.jsx';
+import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 
 /* THE TRACK-RECORD WORKSPACE — ONE screen: the queue of every borrower with
    unfinished track-record work on the left, and one line's whole story on the
@@ -56,11 +57,19 @@ export default function StaffTrackRecordWorkspace() {
     setTimeout(() => setRowErr((m) => { const n = { ...m }; delete n[id]; return n; }), 12000);
   };
 
-  const loadQueue = () => api.staffTrackRecordWorkspace({ filter: showAll ? 'all' : 'open' })
+  /* The borrower narrowing is sent to the SERVER (the queue is capped, so
+     filtering one page client-side showed NOTHING for any borrower outside the
+     cap — the full-screen link off a loan file landed on a false "nothing is
+     waiting"). The client-side filter below stays as a belt-and-suspenders on
+     the render + the J/K walk. */
+  const loadQueue = () => api.staffTrackRecordWorkspace({
+    filter: showAll ? 'all' : 'open',
+    borrowerId: borrowerFilter || undefined,
+  })
     .then((d) => setQueue(d && Array.isArray(d.groups) ? d : { groups: [], totals: {} }))
     .catch((e) => { setQueue({ groups: [], totals: {} }); rowError('queue', (e && e.message) || 'could not load the queue'); });
 
-  useEffect(() => { loadQueue(); }, [showAll]);   // eslint-disable-line
+  useEffect(() => { loadQueue(); }, [showAll, borrowerFilter]);   // eslint-disable-line
 
   /* The borrower filter narrows BOTH the render and the J/K walk, so the keys
      never move the selection onto a row the screen is not showing. */
@@ -127,7 +136,13 @@ export default function StaffTrackRecordWorkspace() {
         <div>
           {!groups.length && (
             <div className="panel"><p className="muted small" style={{ margin: 0 }}>
-              Nothing is waiting. A project appears here the moment somebody adds one to a borrower&rsquo;s record.
+              {borrowerFilter && !showAll
+                /* Scoped to one person with the default "unfinished" filter, an
+                   empty list usually means their projects are all VERIFIED —
+                   saying "nothing is waiting" there reads as "this borrower has
+                   no record", which is a different and often false claim. */
+                ? <>Nothing unfinished for this borrower. <button className="btn link small" onClick={() => setShowAll(true)}>Show everything</button> to see their verified projects.</>
+                : 'Nothing is waiting. A project appears here the moment somebody adds one to a borrower’s record.'}
             </p></div>
           )}
           {groups.map((g) => (
@@ -191,6 +206,18 @@ export default function StaffTrackRecordWorkspace() {
                 onDeleted={() => setSelected(null)} />}
         </div>
       </div>
+
+      {/* ── THE PUBLIC-RECORDS SEARCH — available here too (owner-directed
+          2026-08-19: "the option to pull in their public records should be
+          available in all places"). It needs ONE person to search for, so it
+          renders only when the screen is narrowed to one borrower; the search
+          + import land on the record and loadQueue picks them up. The SAME
+          shared workbench the loan file and the profile mount — never a copy. */}
+      {borrowerFilter && (
+        <div style={{ marginTop: 12 }}>
+          <StaffPropertyWorkbench key={`wb-${borrowerFilter}`} borrowerId={borrowerFilter} />
+        </div>
+      )}
     </div>
   );
 }

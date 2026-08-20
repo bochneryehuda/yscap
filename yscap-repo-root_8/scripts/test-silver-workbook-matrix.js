@@ -651,6 +651,18 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     else if (/No priced grid cell/.test(m)) sawNoCell = true;   // checked against the fixture below
     else if (/rehab budget exceeds what this program can finance/.test(m)) {
       if (!(s && s.rehabOverCap)) bad('rehab-over-cap reason without the sizing flag', m);
+      if (s && s.rehabOopAuto) bad('the MANUAL rehab-over-cap reason on a deal the engine auto-allows', m);
+    }
+    /* The AUTO-ALLOWED out-of-pocket rehab (owner-directed 2026-08-20): the
+       initial advance is already zero, so the caps had nothing left to cut and a
+       holdback under the full budget is arithmetic rather than a choice. It is an
+       ELIGIBLE DISCLOSURE, not a refusal — assert it only ever appears with the
+       sizing flag that earns it, and never alongside the MANUAL wording. */
+    else if (/of the .* construction budget \(/.test(m) && /comes out of pocket over the construction/.test(m)) {
+      if (!(s && s.rehabOverCap && s.rehabOopAuto)) bad('auto-allowed OOP-rehab reason without the sizing flags', m);
+      if (!(s.acquisition <= 0.5)) bad(`auto-allowed OOP rehab with an initial advance of ${s.acquisition}`, m);
+      if (!(s.rehabFinancedPct >= 0.90)) bad(`auto-allowed OOP rehab financing only ${s.rehabFinancedPct}`, m);
+      if (has(/rehab budget exceeds what this program can finance/)) bad('both the auto-allow and the MANUAL refusal on one deal', m);
     }
     else if (/The projected DSCR of .* is below the 1\.00 minimum/.test(m)) {
       // recompute independently — the engine's ev.dscr is ROUNDED to 2dp (a
@@ -696,7 +708,10 @@ function verifyScenario(cellName, cell, spec, input, ev, effCap, C, recordFail) 
     if (total > 0 && total < MIN_LOAN && !has(/Sized below the \$100,000 minimum/)) bad(`sized ${total} < $100k without the below-min MANUAL flag`);
     // (a ground-up deal with no ARV reports the missing ARV instead — never
     // generated here, the matrix always gives GUC a positive ARV)
-    if (s && s.rehabOverCap && !has(/rehab budget exceeds/) && !has(/After-repair value is required/)) bad('rehabOverCap without its MANUAL reason');
+    // rehabOverCap must always be ANSWERED — by the MANUAL refusal, by the
+    // auto-allow disclosure (initial already zero, >=90% of the budget still
+    // financed), or by the more fundamental missing-ARV reason.
+    if (s && s.rehabOverCap && !has(/rehab budget exceeds/) && !has(/comes out of pocket over the construction/) && !has(/After-repair value is required/)) bad('rehabOverCap without its MANUAL reason');
     if (EXIT_OF[prodKey] === 'HOLD' && input.monthlyRent > 0 && s && s.fullPayment > 0 &&
         (input.monthlyRent / s.fullPayment) < 1 && !has(/DSCR/)) bad('failing DSCR without the refusal');
     if (refi && coAmt > 0 && profit > 0 && coAmt > 0.5 * profit + 0.5 && !has(/Cash-out proceeds/)) bad('cash-out over 50% of profit not refused');

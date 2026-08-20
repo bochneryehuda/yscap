@@ -87,6 +87,9 @@ const KICKER_OF = {
   draw_setup: 'Construction draws are open',
   draw_accepted: 'Construction draw', draw_disputed: 'Construction draw', draw_dispute_resolved: 'Draw inspection',
   draw_message: 'Message from your loan team', draw_started: 'Construction draw', draw_inbound: 'Construction draw',
+  // The borrower pressed Start; nothing was submitted. The eyebrow says so before
+  // the reader gets to the title (owner-reported 2026-08-20).
+  draw_draft_started: 'Construction draw — draft started',
   draw_docs_pulled: 'Construction draw',
   trustpoint_import: 'Construction draw',
   sow_reallocation: 'Budget change', sow_change_request: 'Budget change',
@@ -452,6 +455,13 @@ async function _mark(id, status) {
 // bombardment the 2026-07-20 rule exists to stop. The IMPORTED backfill is
 // silent for a stronger reason — see elementix/crm.js.
 const STAFF_INAPP_TYPES = new Set(['tool_submitted', 'doc_uploaded', 'condition_added', 'draw_docs_pulled',
+  // A borrower pressing Start on a draw. It is a DRAFT — often days from being
+  // submitted — so it asks nothing of the desk, and an email at that moment is
+  // read as a real request (owner-reported 2026-08-20: "it sounds for our team
+  // that this is an actual draw request that he submitted already"). Stated HERE,
+  // at the one definition of in-app-only, so any future sender of this type
+  // inherits it; the call site's own inAppOnly still wins either way.
+  'draw_draft_started',
   'elementix_lead',
   // The Arena's challenge bell. About twenty of these land across one sales
   // afternoon, and the people they are for are on the phone all day — emailing
@@ -659,6 +669,10 @@ const CATEGORY_OF = {
   // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
   draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws', draw_dispute_resolved: 'draws',
   draw_message: 'draws', draw_started: 'draws', draw_inbound: 'draws',
+  // A borrower opening a draw to start photographing it. 'draws' like every other
+  // draw event, so the draw loop-in (coordinator + desk + officer) and the
+  // role-scoped visibility rule treat it exactly as they treat the submission.
+  draw_draft_started: 'draws',
   draw_docs_pulled: 'draws',
   // Action-needed (a submitted draw must be hand-entered into TrustPoint) — deliberately
   // NOT in STAFF_INAPP_TYPES, so it emails the coordinator.
@@ -1365,8 +1379,25 @@ function _staffThreadRecipients({ assignees = [], loopIn = [], explicit = [] } =
 async function notifyAppStaffThread(appId, opts = {}) {
   const shared = { ...opts, applicationId: opts.applicationId || appId };
 
+  /* AN EXPLICIT inAppOnly:true MEANS NO EMAIL — ON THIS HELPER TOO
+     (owner-directed 2026-08-20, found while splitting the draw draft/submitted
+     notifications). This helper composes ONE shared email to a direct To list
+     rather than fanning out through `notifyStaff`, and it used to send that email
+     unconditionally — so `inAppOnly` was accepted, carried, and quietly ignored,
+     and a caller that had deliberately asked for an in-app-only event got an
+     email anyway with nothing anywhere saying why. A flag that means one thing on
+     `notifyAppStaff` and nothing here is a trap for every future caller.
+
+     Deliberately EXPLICIT-ONLY: it does NOT infer from STAFF_INAPP_TYPES the way
+     `notifyStaff` does. Inferring would silently un-email existing thread callers
+     whose types happen to be on that list, and this helper's whole job is the one
+     shared email. So a caller has to say so — and then it is honoured everywhere,
+     including the fail-toward-sending fallback below, which must not turn an
+     explicit "do not email" into an email because the To list came back empty. */
+  const inAppOnly = opts.inAppOnly === true;
+
   let recipients = [];
-  try {
+  if (!inAppOnly) try {
     const assignees = (await db.query(
       // ACTIVE assignees only, with a real address — the same roster notifyAppStaff fans out to.
       // Roles ride along for the role-scope filter (owner-directed 2026-08-10): a closer's
@@ -1401,7 +1432,7 @@ async function notifyAppStaffThread(appId, opts = {}) {
   }
 
   let emailed = false;
-  if (recipients.length) {
+  if (!inAppOnly && recipients.length) {
     try {
       const ctx = await fileContext(appId).catch(() => null);
       // Enrich + build through the SAME path notifyAdmins uses to send one email to a fixed list,
@@ -1420,8 +1451,9 @@ async function notifyAppStaffThread(appId, opts = {}) {
   }
 
   // In-app rows for every assignee (feed + mute settings + coverage answer). Its email is
-  // suppressed only when the one shared email actually went — otherwise it emails as the fallback.
-  const staff = await notifyAppStaff(appId, { ...shared, inAppOnly: emailed });
+  // suppressed when the one shared email actually went — or when the caller asked for no
+  // email at all; otherwise it emails as the fallback so the event never goes dark.
+  const staff = await notifyAppStaff(appId, { ...shared, inAppOnly: inAppOnly || emailed });
   return { emailed, recipients: recipients.length, staff };
 }
 

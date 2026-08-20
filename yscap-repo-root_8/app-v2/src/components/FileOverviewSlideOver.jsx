@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useFileOverviewLayer } from '../lib/overlay-layers.js';
 
 /* THE FILE-OVERVIEW SLIDE-OVER (owner-directed 2026-08-18): a RIGHT-side panel
    on every file screen — staff, borrower and broker — with the whole deal at a
@@ -12,11 +14,47 @@ import React, { useEffect, useState } from 'react';
    everybody should realize what it is" — hence the ink/gold tab with a glyph
    and the full label); clicking it slides the panel out from the right over a
    backdrop. Esc or the backdrop closes it. The payload is fetched when first
-   opened (and kept for the visit), so a closed tab costs nothing. */
+   opened (and kept for the visit), so a closed tab costs nothing.
+
+   IT STAYS REACHABLE WHILE A DOCUMENT IS OPEN (owner-directed 2026-08-20: "when
+   you're previewing a document, a PDF, or anything else … the entire screen in
+   the back gets black. You can't click on the overview … we need to have the
+   overview available while we're previewing the PDF … so you can compare maybe
+   the PDF to the file overview to see the details").
+
+   Three things make that true, and each one was a separate reason it failed:
+
+     1. THE TAB OUTRANKS THE PREVIEW. The preview's dim used to sit at z 200 over
+        a tab at z 120 — the button was still there, behind an opaque sheet. The
+        preview now owns its own layer (`.dp-back`, z 150) and this tab climbs to
+        z 160 whenever a preview is open, so it is visible and clickable.
+     2. NO SECOND DIM. Opening the panel over an already-dimmed preview would
+        double the darkness and hide the very document you are comparing against,
+        so the panel's own backdrop is not rendered while a preview is open. The
+        preview's dim already separates both layers from the page.
+     3. THEY SHARE THE WIDTH. The preview shrinks by the width of this panel
+        (`.dp-beside-overview`) instead of sitting under it — "you should be able
+        to see both together". Below 1024px there is no room for that; there the
+        panel overlays, still on top and still closable.
+
+   Z-ORDER, top to bottom: app confirm dialogs (`.cv-modal-back`, 200) → this
+   panel while a preview is open (165) and its tab (160) → the document preview
+   (150) → this panel on its own (135) and its tab (120). A confirm dialog must
+   ALWAYS paint over and block clicks to everything here (audit 9a05513 #4), and
+   still does.
+
+   Portaled to <body>: a file screen nested inside a transformed or overflow-
+   clipping ancestor would otherwise trap `position:fixed` and clip the panel.
+   React portals bubble events through the REACT tree, so nothing about the
+   surrounding screen's handlers changes. */
 export default function FileOverviewSlideOver({ fetcher, title = 'File overview' }) {
   const [open, setOpen] = useState(false);
   const [card, setCard] = useState(null);
   const [state, setState] = useState('idle'); // idle | loading | ready | error
+  // Register this panel as an open layer while it is out, and learn whether a
+  // document preview is open behind it.
+  const layers = useFileOverviewLayer(open);
+  const overPreview = layers.preview;
 
   // Fetch directly (called on first open and by Try again) — never via an
   // effect keyed on `open` alone, whose stale closure made the retry a dead
@@ -32,6 +70,9 @@ export default function FileOverviewSlideOver({ fetcher, title = 'File overview'
     if (open && state === 'idle') fetchCard();
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Esc closes the TOP layer, and while this panel is out that is this panel —
+  // the preview's own Esc handler stands down for exactly this reason, so the
+  // key closes one thing per press instead of both at once.
   useEffect(() => {
     if (!open) return;
     const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
@@ -39,16 +80,20 @@ export default function FileOverviewSlideOver({ fetcher, title = 'File overview'
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
 
-  return (
+  const layer = (
     <>
-      <button type="button" className="fov-tab" onClick={() => setOpen(true)}
+      <button type="button" className={`fov-tab${overPreview ? ' fov-over-preview' : ''}`} onClick={() => setOpen(true)}
         title="Open the file overview — the whole deal at a glance" aria-expanded={open}>
         {/* aria-hidden: decorative glyph — the label is the text beside it. */}
         <span className="fov-tab-ico" aria-hidden="true">◈</span>
         <span className="fov-tab-text">{title}</span>
       </button>
-      {open && <div className="fov-back" onClick={() => setOpen(false)} />}
-      <aside className={`fov-panel${open ? ' fov-open' : ''}`} aria-hidden={!open} role="dialog" aria-label={title}>
+      {/* No second dim over a document preview — the preview's own backdrop is
+          already there, and a second one would darken the document you opened
+          this panel to compare against. */}
+      {open && !overPreview && <div className="fov-back" onClick={() => setOpen(false)} />}
+      <aside className={`fov-panel${open ? ' fov-open' : ''}${overPreview ? ' fov-over-preview' : ''}`}
+        aria-hidden={!open} role="dialog" aria-label={title}>
         <div className="fov-head">
           <div>
             <div className="fov-eyebrow">{title}</div>
@@ -89,4 +134,6 @@ export default function FileOverviewSlideOver({ fetcher, title = 'File overview'
       </aside>
     </>
   );
+
+  return typeof document !== 'undefined' && document.body ? createPortal(layer, document.body) : layer;
 }

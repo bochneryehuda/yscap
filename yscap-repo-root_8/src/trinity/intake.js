@@ -29,8 +29,12 @@ const client = require('./client');
 const eligibility = require('./eligibility');
 
 // The same reading of "the borrower actually submitted this" the physical program
-// already uses — a drafting/pending-borrower draw is not ready to inspect.
-const SUBMITTED_STATUSES = new Set(['inspecting', 'pending', 'pending_capital_partner', 'approved']);
+// already uses — a drafting/pending-borrower draw is not ready to inspect. It was
+// a second hand-typed copy of that set until 2026-08-20; it now comes from the ONE
+// definition, `sitewire/draw-lifecycle`, which the desk's draft-vs-submitted
+// notifications read too. Sending an inspector to a property is the expensive end
+// of a drift, so this list must never be re-typed here.
+const { SUBMITTED_STATUSES } = require('../sitewire/draw-lifecycle');
 
 /**
  * Place the Trinity order for a portal draw request whose order record already exists.

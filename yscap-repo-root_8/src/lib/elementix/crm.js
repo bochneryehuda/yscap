@@ -494,7 +494,20 @@ async function finishSkipTrace({ personId, staffId, reason, name, state, charged
   await recordSkipTrace({ personId, staffId, name: personName, state, reason, charged, source,
     status: 'complete', leadId: lead.id });
 
-  if (lead.created) notifyOfficer({ staffId, leadId: lead.id, name: personName, contact, borrowerId: lead.borrowerId }).catch(() => {});
+  // AWAITED, not fire-and-forget. The notification is a WRITE (an in-app
+  // `notifications` row), and skipTrace's own callers read the CRM straight
+  // back afterwards — the desk reloads, and test-elementix-crm-db asserts the
+  // officer was told. Left un-awaited, whether that row exists when the next
+  // read runs is a race with an insert still in flight, so the same code passed
+  // on one CI run and failed on the next against an identical commit.
+  //
+  // The `.catch` stays and is the whole safety property: the credit is already
+  // spent and the lead already exists by this line, so a notification failure
+  // may never turn a completed skip trace into an error. Awaiting only fixes
+  // the ORDER; it does not change what happens when notifying fails.
+  if (lead.created) {
+    await notifyOfficer({ staffId, leadId: lead.id, name: personName, contact, borrowerId: lead.borrowerId }).catch(() => {});
+  }
 
   return { ok: true, charged, leadId: lead.id, leadCreated: lead.created, contact,
     counts: { phones: contact.phones.length, emails: contact.emails.length } };

@@ -398,6 +398,10 @@ export const api = {
   saveContact:  (b) => req('POST', '/api/borrower/contacts', b),
   // general file contacts (#144) — any vendor, many per file, shared on the file
   fileContacts:    (appId) => req('GET', `/api/borrower/applications/${appId}/file-contacts`),
+  /* The borrower's OWN previously-used contacts as a type-ahead — never the
+     company vendor directory (see lib/vendor-directory for why the two
+     audiences differ). Blank `q` = "what have I used before". */
+  vendorSuggest:   (type, q) => req('GET', `/api/borrower/vendor-suggest?type=${encodeURIComponent(type || '')}&q=${encodeURIComponent(q || '')}`),
   addFileContact:  (appId, b) => req('POST', `/api/borrower/applications/${appId}/file-contacts`, b),
   editFileContact: (linkId, b) => req('PATCH', `/api/borrower/file-contacts/${linkId}`, b),
   delFileContact:  (linkId) => req('DELETE', `/api/borrower/file-contacts/${linkId}`),
@@ -421,6 +425,9 @@ export const api = {
   trackRecordCandidates: () => req('GET', '/api/borrower/track-record-candidates'),
   answerTrackRecordCandidate: (id, b) => req('POST', `/api/borrower/track-record-candidates/${id}/answer`, b),
   undoTrackRecordCandidate: (id) => req('POST', `/api/borrower/track-record-candidates/${id}/undo`),
+  // The borrower's OWN records search (2026-08-19) — one button, no options;
+  // the server owns the cooldown, the monthly ceiling and the wording.
+  borrowerTrackRecordSearch: () => req('POST', '/api/borrower/track-record-search', {}),
 
   // reusable partners (co-borrowers)
   partners:     () => req('GET', '/api/borrower/partners'),
@@ -766,7 +773,11 @@ export const api = {
      these payloads is computed by src/lib/track-record/pillar-actions.js — the
      screen renders them verbatim and never re-decides one. */
   staffTrackRecordWorkspace: (q = {}) =>
-    req('GET', `/api/staff/track-record-workspace?filter=${encodeURIComponent(q.filter || 'open')}`),
+    req('GET', `/api/staff/track-record-workspace?filter=${encodeURIComponent(q.filter || 'open')}`
+      // Narrowing to one person happens SERVER-side: the queue is capped, so a
+      // client-side filter over one page shows nothing at all for a borrower
+      // who did not make the cut.
+      + (q.borrowerId ? `&borrower=${encodeURIComponent(q.borrowerId)}` : '')),
   staffTrackRecordLine: (id) => req('GET', `/api/staff/track-records/${id}/workspace`),
   staffDecidePillar: (pillarId, body) => req('POST', `/api/staff/track-record-pillars/${pillarId}/decide`, body),
   staffBulkConfirmPillars: (id, body) => req('POST', `/api/staff/track-records/${id}/pillars/bulk-confirm`, body || {}),
@@ -826,6 +837,10 @@ export const api = {
      never marks the line verified — a person still does that, and the final
      verify stays gated on a completed in-window exit. */
   staffResearchTrackRecord:  (id, force) => req('POST', `/api/staff/track-records/${id}/research`, force ? { force: true } : {}),
+  // "See more information" — the property's whole recorded story (cached read
+  // unless refresh), and the fill that imports what the records state.
+  staffTrackRecordMoreInfo:  (id, refresh) => req('POST', `/api/staff/track-records/${id}/more-info`, refresh ? { refresh: true } : {}),
+  staffTrackRecordMoreInfoApply: (id, b) => req('POST', `/api/staff/track-records/${id}/more-info/apply`, b || {}),
   // Raise an issue/request against a track-record line item or a vesting LLC — it
   // becomes a named internal+external condition on the file (applicationId).
   staffRaiseTrackRecordIssue: (id, applicationId, reason, postCondition) => req('POST', `/api/staff/track-records/${id}/raise-issue`, { applicationId, reason, postCondition: !!postCondition }),
@@ -857,6 +872,16 @@ export const api = {
   // Orders desk (#orders) — title + insurance orders on a file.
   staffOrders:        (appId) => req('GET', `/api/staff/applications/${appId}/orders`),
   staffPlaceOrder:    (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/place`, body || {}),
+  // SEND IT LATER (owner-directed 2026-08-20). The scheduling doors mirror the
+  // send doors one for one — same file, same kind, same body — because the
+  // dispatcher re-enters the very route `staffPlaceOrder` posts to.
+  staffScheduleOrder: (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/schedule`, body || {}),
+  staffScheduleClosingPrep: (appId, body) => req('POST', `/api/staff/applications/${appId}/closing-prep/schedule`, body || {}),
+  staffScheduledSends: (appId) => req('GET', `/api/staff/applications/${appId}/scheduled-sends`),
+  staffCancelScheduledSend: (appId, id) => req('POST', `/api/staff/applications/${appId}/scheduled-sends/${id}/cancel`, {}),
+  drawScheduleInvestorDelivery: (appId, drawId, body) => req('POST', `/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery/schedule`, body || {}),
+  drawScheduledSends: (appId) => req('GET', `/api/sitewire/files/${appId}/scheduled-sends`),
+  drawCancelScheduledSend: (appId, id) => req('POST', `/api/sitewire/files/${appId}/scheduled-sends/${id}/cancel`, {}),
   staffOrderFollowup: (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/followup`, body || {}),
   staffClassifyOrderDoc: (appId, kind, docId, slot) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/documents/${docId}/classify`, { slot }),
   // Put a document into one of ITS OWN condition's named slots (binder / invoice),
@@ -1387,6 +1412,11 @@ export const api = {
   staffMergeVendors: (body) => req('POST', '/api/staff/vendors/merge', body),
   // general file contacts (#144) — staff side + a borrower's whole vendor list
   staffFileContacts:   (appId) => req('GET', `/api/staff/applications/${appId}/file-contacts`),
+  /* THE VENDOR TYPE-AHEAD (owner-directed 2026-08-20). Scoped to a FILE, because
+     that is also the permission — anybody who may edit this file's contacts may
+     look one up. A blank `q` is a real ask: it means "show me the ones already
+     used", which is the prefill half of the request. */
+  staffVendorSuggest:  (appId, type, q) => req('GET', `/api/staff/applications/${appId}/vendor-suggest?type=${encodeURIComponent(type || '')}&q=${encodeURIComponent(q || '')}`),
   staffAddFileContact: (appId, b) => req('POST', `/api/staff/applications/${appId}/file-contacts`, b),
   staffEditFileContact:(linkId, b) => req('PATCH', `/api/staff/file-contacts/${linkId}`, b),
   staffDelFileContact: (linkId) => req('DELETE', `/api/staff/file-contacts/${linkId}`),

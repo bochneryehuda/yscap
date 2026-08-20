@@ -1,5 +1,9 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import LineDetail from './LineDetail.jsx';
+import { api } from '../../lib/api.js';
+import { fileToBase64 } from '../../lib/files.js';
+import useFileDrop from '../../lib/useFileDrop.js';
+import RecordsStamp from './RecordsStamp.jsx';
 import { trStatusShort, trIsPendingReview } from '../../lib/trackRecordStatus.js';
 import { trackRecordPropertyTypeLabel } from '../../lib/trackRecordPropertyTypes.js';
 
@@ -114,61 +118,23 @@ export default function RecordLedger({
   const rejected = rows.filter((r) => isRejected(r.t));
   const reo = rows.filter((r) => r.reo && !isRejected(r.t)); // REO band excludes rejected
 
-  const line = (r) => {
-    const t = r.t;
-    // A row stored as a bare one-line string (public-records import before the shape
-    // fix / boot heal) still reads as the address, not "Past project".
-    const pa = typeof t.property_address === 'string' ? { oneLine: t.property_address } : (t.property_address || {});
-    const addr = pa.oneLine || [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ') || 'Past project';
-    const isOpen = open.has(t.id);
-    const figs = figures(t);
-    const stripe = r.reo ? 'var(--gold)' : (t.is_verified ? '#2F7F86' : 'var(--border-strong)');
-    return (
-      <div key={t.id} className={`tr-led-row${isOpen ? ' is-open' : ''}`} style={{ borderLeftColor: stripe }}>
-        <div className="tr-led-head">
-          <button type="button" className="tr-led-toggle" aria-expanded={isOpen} onClick={() => toggle(t.id)}
-            title="Open this project — every detail, the Elementix check, the documents, and every action">
-            <span className="tr-led-caret">{isOpen ? '▾' : '▸'}</span>{addr}
-          </button>
-          <div className="tr-led-tags">
-            {/* WHAT KIND OF BUILDING IT WAS (owner-directed 2026-08-16). It sits
-                with the other IDENTITY chips rather than in the figures line
-                because it classifies the deal, it does not measure it — and
-                because a reviewer scanning a ledger of twenty houses is asking
-                "which of these are the multifamilies?" before asking what any
-                of them sold for. A line with no type shows NOTHING, never a
-                placeholder: a grey "—" on every row of an untyped record reads
-                as a column of errors rather than as a question nobody has
-                answered yet. */}
-            {ptLabel(t) && <span className="pill small tr-pt" title="Property type">{ptLabel(t)}</span>}
-            {t.owned_personally
-              ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
-              : (t.entity_name
-                ? (onOpenEntity
-                  ? <button type="button" className="pill small" style={{ cursor: 'pointer' }} title="Entity on record — open the borrower's entities" onClick={() => onOpenEntity(t)}>{t.entity_name}</button>
-                  : <span className="pill small" title="Entity on record">{t.entity_name}</span>)
-                : null)}
-            {t.is_verified
-              ? <span className="ts-badge ok">Verified</span>
-              : (t.verification_status && <span className="pill small">{trStatusShort(t.verification_status)}</span>)}
-            <button type="button" className="btn ghost small" onClick={() => toggle(t.id)}>{isOpen ? 'Close' : 'Open'}</button>
-          </div>
-        </div>
-        {figs && !isOpen && <div className="tr-led-figs">{figs}</div>}
-        {r.reo && !isOpen && <div className="tr-led-reo">Not counting: {r.reo}</div>}
-        {!isOpen && (r.todo || []).filter((x) => x.code !== 'open_request').slice(0, 2).map((x, i) => (
-          <div className="tr-led-todo" key={i}>→ {x.title}</div>
-        ))}
-        {isOpen && (
-          <div className="tr-led-body">
-            <LineDetail trackRecordId={t.id} maySignOff={maySignOff} canDelete={canDelete} role={role}
-              onChanged={onChanged} onProfileScreen={lens === 'borrower'}
-              extraActions={lineActions ? (ln) => lineActions(t, addr, ln) : null} />
-          </div>
-        )}
-      </div>
-    );
-  };
+  /* EVERY LINE TAKES A DROP, OPEN OR CLOSED (owner-directed 2026-08-20: "on each
+     and every line of the track record, you actually need to upload documents …
+     you should be able to just drop documents into that line item").
+
+     THE ROW HAD TO BECOME ITS OWN COMPONENT. A drop zone needs a hook, and a hook
+     cannot live inside the `rows.map(line)` callback — one per row, created and
+     destroyed as the list re-renders, is exactly the "hooks in a loop" crash this
+     repo guards against. So each row is a component with its own state.
+
+     A DROP ON A COLLAPSED ROW OPENS IT. Dropping a file and being left staring at
+     the same closed row is indistinguishable from nothing having happened — and
+     the type picker, which is the next thing you want, is inside. */
+  const line = (r) => (
+    <LedgerRow key={r.t.id} r={r} isOpen={open.has(r.t.id)} toggle={toggle}
+      maySignOff={maySignOff} canDelete={canDelete} role={role} lens={lens}
+      onChanged={onChanged} onOpenEntity={onOpenEntity} lineActions={lineActions} />
+  );
 
   const group = (title, sub, rows) => (
     <div className="tr-led-group">
@@ -207,6 +173,115 @@ export default function RecordLedger({
             <span className="tr-led-caret">{showRejected ? '▾' : '▸'}</span>{showRejected ? 'Hide' : 'Show'} rejected ({rejected.length})
           </button>
           {showRejected && group('Rejected', `${rejected.length} — not counting; kept on the record`, rejected)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/* ONE LINE OF THE LEDGER — a drop target for its own documents, open or closed.
+
+   IT IS A COMPONENT, not a render helper, for one structural reason: it owns a
+   drop hook, and a hook created inside a `.map()` callback is a hook whose order
+   changes with the list. `test-react-hook-order` guards that class precisely
+   because getting it wrong is a full-page crash, not a glitch.
+
+   WHAT A DROP DOES, in order, and each step is there because the previous one
+   alone is not enough: file every dropped document onto THIS line; OPEN the row,
+   because a drop that leaves you looking at the same closed row is
+   indistinguishable from nothing happening, and the type picker is inside; then
+   refresh, so the documents are actually there when it opens. */
+function LedgerRow({ r, isOpen, toggle, maySignOff, canDelete, role, lens, onChanged, onOpenEntity, lineActions }) {
+  const t = r.t;
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  /* EVERY FILE IS ATTEMPTED AND A FAILURE NAMES ITS FILE — dropping four documents
+     and reading "upload failed" tells you nothing about which of the four is
+     missing. Mirrors LineDetail.uploadFiles, which is the same promise on the
+     card inside; the collapsed row simply has no dropdown, so nothing is typed
+     here and every document lands untyped for the picker inside to answer. */
+  const onFiles = useCallback(async (files) => {
+    const list = Array.from(files || []).filter(Boolean);
+    if (!list.length) return;
+    setBusy(true); setErr('');
+    const failed = [];
+    let ok = 0;
+    for (const f of list) {
+      try {
+        const dataBase64 = await fileToBase64(f);
+        await api.post(`/api/staff/track-records/${t.id}/documents`, {
+          filename: f.name, contentType: f.type || 'application/octet-stream', dataBase64,
+        });
+        ok += 1;
+      } catch (e) { failed.push(`${f.name}${e && e.message ? ` (${e.message})` : ''}`); }
+    }
+    setBusy(false);
+    if (failed.length) setErr(`${failed.length} of ${list.length} could not be uploaded: ${failed.join('; ')}`
+      + (ok ? ` — the other ${ok} did land.` : ''));
+    if (ok) {
+      if (!isOpen) toggle(t.id);      // show them, and the type picker with them
+      if (onChanged) await onChanged();
+    }
+  }, [t.id, isOpen, toggle, onChanged]);
+
+  const drop = useFileDrop(onFiles, true);
+
+  // A row stored as a bare one-line string (public-records import before the shape
+  // fix / boot heal) still reads as the address, not "Past project".
+  const pa = typeof t.property_address === 'string' ? { oneLine: t.property_address } : (t.property_address || {});
+  const addr = pa.oneLine || [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ') || 'Past project';
+  const figs = figures(t);
+  const stripe = r.reo ? 'var(--gold)' : (t.is_verified ? '#2F7F86' : 'var(--border-strong)');
+  return (
+    <div className={`tr-led-row cond-drop${isOpen ? ' is-open' : ''}${drop.over ? ' drop-over' : ''}`}
+      style={{ borderLeftColor: stripe }} {...drop.dropProps}>
+      {drop.over && <div className="drop-hint">Drop documents onto this project</div>}
+      <div className="tr-led-head">
+        <button type="button" className="tr-led-toggle" aria-expanded={isOpen} onClick={() => toggle(t.id)}
+          title="Open this project — every detail, the Elementix check, the documents, and every action">
+          <span className="tr-led-caret">{isOpen ? '▾' : '▸'}</span>{addr}
+        </button>
+        <div className="tr-led-tags">
+          {/* WHAT KIND OF BUILDING IT WAS (owner-directed 2026-08-16). It sits
+              with the other IDENTITY chips rather than in the figures line
+              because it classifies the deal, it does not measure it — and
+              because a reviewer scanning a ledger of twenty houses is asking
+              "which of these are the multifamilies?" before asking what any
+              of them sold for. A line with no type shows NOTHING, never a
+              placeholder: a grey "—" on every row of an untyped record reads
+              as a column of errors rather than as a question nobody has
+              answered yet. */}
+          {ptLabel(t) && <span className="pill small tr-pt" title="Property type">{ptLabel(t)}</span>}
+          {t.owned_personally
+            ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
+            : (t.entity_name
+              ? (onOpenEntity
+                ? <button type="button" className="pill small" style={{ cursor: 'pointer' }} title="Entity on record — open the borrower's entities" onClick={() => onOpenEntity(t)}>{t.entity_name}</button>
+                : <span className="pill small" title="Entity on record">{t.entity_name}</span>)
+              : null)}
+          {t.is_verified
+            ? <span className="ts-badge ok">Verified</span>
+            : (t.verification_status && <span className="pill small">{trStatusShort(t.verification_status)}</span>)}
+          {/* The records stamp, compact — a scanner asking "which of these did
+              the county records back?" reads it off the row (2026-08-19). */}
+          <RecordsStamp stamp={t.records_stamp} at={t.records_stamp_at} compact />
+          <button type="button" className="btn ghost small" onClick={() => toggle(t.id)}>{isOpen ? 'Close' : 'Open'}</button>
+        </div>
+      </div>
+      {busy && <div className="tr-led-todo">Uploading…</div>}
+      {err && <div className="tr-led-reo" style={{ color: 'var(--danger)' }}>{err}</div>}
+      {figs && !isOpen && <div className="tr-led-figs">{figs}</div>}
+      {r.reo && !isOpen && <div className="tr-led-reo">Not counting: {r.reo}</div>}
+      {!isOpen && (r.todo || []).filter((x) => x.code !== 'open_request').slice(0, 2).map((x, i) => (
+        <div className="tr-led-todo" key={i}>→ {x.title}</div>
+      ))}
+      {isOpen && (
+        <div className="tr-led-body">
+          <LineDetail trackRecordId={t.id} maySignOff={maySignOff} canDelete={canDelete} role={role}
+            onChanged={onChanged} onProfileScreen={lens === 'borrower'}
+            extraActions={lineActions ? (ln) => lineActions(t, addr, ln) : null} />
         </div>
       )}
     </div>
