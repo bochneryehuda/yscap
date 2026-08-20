@@ -852,12 +852,15 @@
                     return !!e.checked;
                 }
                 var v = String(e.value || '').trim();
-                /* A field the studio SEEDED with the company default (termsheet.js
-                   seedAdminDefaults stamps data-ts-seeded) is "in use" only when it
-                   DEVIATES from that default — the seeded value itself is exactly
-                   what a blank field would price at (audit 2026-08-18 finding 1). */
+                /* A field the studio stamped with the company default (termsheet.js
+                   seedAdminDefaults stamps data-ts-seeded and shows the number as a
+                   PLACEHOLDER) is "in use" only when a TYPED value DEVIATES from that
+                   default. BLANK is the default (owner-reported 2026-08-20) — it is
+                   exactly what the company default prices at — so a blank seeded field
+                   is never engaged; and typing the default back is not a change either
+                   (audit 2026-08-18 finding 1). */
                 var seeded = e.getAttribute && e.getAttribute('data-ts-seeded');
-                if (seeded != null) return v !== String(seeded).trim();
+                if (seeded != null) return v !== '' && v !== String(seeded).trim();
                 return v !== '';
             }
             function inUse(sec) {
@@ -1123,12 +1126,12 @@
 
 <script src="../suite.js?v=admin8-tsprog1"></script>
 <script src="rb-logo.js?v=admin8-tsprog1"></script>
-<script src="standard-program.js?v=asgseller18-asgelig-tiermk1-tsprog1"></script>
-<script src="gold-standard.js?v=asgseller19-tiermk1-tsprog1"></script>
-<script src="silver-program.js?v=silver9-bandeps-tiermk1-tsprog1"></script>
+<script src="standard-program.js?v=asgseller18-asgelig-tiermk1-tsprog1-oopauto1-judsmall1"></script>
+<script src="gold-standard.js?v=asgseller19-tiermk1-tsprog1-oopauto1"></script>
+<script src="silver-program.js?v=silver9-bandeps-tiermk1-tsprog1-oopauto1"></script>
 <script src="title-cost.js?v=admin8-tsprog1"></script>
 <script src="address-autocomplete.js?v=admin9-tsprog1"></script>
-<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2"></script>
+<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1"></script>
 <script src="../float-actions.js?v=admin10-applyfix-tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

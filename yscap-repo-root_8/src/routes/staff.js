@@ -2780,7 +2780,16 @@ const pricingSettings = require('../lib/pricing-settings');
 // 2026-08-07). Pure — it decides what these emails SHOW; it never computes a pricing number.
 const pricingEmail = require('../lib/email/pricing-email');
 function sanitizeOverrides(req, raw) {
-  return sanitizeStaffOverrides(req.actor && req.actor.role, raw);
+  // The company defaults are passed so a knob that merely RESTATES one is
+  // normalized to the studio's explicit-blank contract instead of being frozen
+  // onto the file as a per-file override (owner-reported 2026-08-20 — the
+  // "I changed the markup and every file still prices at the old one / every
+  // registration comes up as an exception" report). Price-neutral by
+  // construction: an exact restatement resolves to the same number through the
+  // company default. A cold/unreadable cache leaves the payload untouched.
+  let defaults = null;
+  try { defaults = pricingSettings.current(); } catch (_) { defaults = null; }
+  return sanitizeStaffOverrides(req.actor && req.actor.role, raw, defaults);
 }
 // The admin-zone knobs this payload moved off the company default — the list an
 // admin is being asked to approve. Reads the company pricing singleton; a cold
@@ -2842,6 +2851,31 @@ router.get('/applications/:id/pricing', async (req, res) => {
          FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
         WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
     const current = hist.rows.find((x) => x.is_current) || null;
+    /* A REGISTERED ADMIN KNOB THAT ONLY RESTATED THAT DAY'S COMPANY DEFAULT MUST
+       NOT RE-ARM THE STUDIO (owner-reported 2026-08-20). The panel prefills its
+       admin boxes from THIS row (`adminStateFromEngineInputs`), so a file that
+       was registered while the company markup was 0.4 would paint 0.4 back into
+       the box — and re-registering would both re-freeze it and read as a
+       discount against today's 0.5, which is the "every registration goes for an
+       exception" half of the report. The historical company defaults are a FACT
+       in the append-only settings history, so the same rule the server and
+       db/600 apply is applied here: a knob that exactly restated the default in
+       force when this registration was created is blanked, and `put()` skips a
+       blank — so the box opens empty and prices at the LIVE company default. A
+       value that DIFFERS from that day's default is a real exception somebody
+       entered and is restored untouched. Best-effort: an unreadable history
+       classifies nothing and the row is passed through exactly as before. Only
+       the COPY the studio prefills from is touched — `product_registrations` is
+       never rewritten, so the record of what the file was priced at stands. */
+    if (current && current.inputs && typeof current.inputs === 'object') {
+      try {
+        const thenDefaults = await pricingSettings.asOf(current.created_at);
+        if (thenDefaults) {
+          current.inputs = require('../lib/pricing-overrides')
+            .normalizeCompanyDefaultKnobs(current.inputs, thenDefaults);
+        }
+      } catch (_) { /* classify nothing — restore the row as-is */ }
+    }
     let quote = null;
     if (pricing.enginesReady()) { try { quote = pricing.quoteAll(f.app, f.exp); quote.experience = f.exp; } catch (_) {} }
     // Manual-product state: the current escalation (pending / decided) + the

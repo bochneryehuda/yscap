@@ -329,8 +329,26 @@ jobs:
       # Same rule as the pure job: a pull request may run a reduced plan when
       # the change is provably Long-Term-only; a push to main always runs the
       # whole suite, because that is what gates the deploy.
+      #
+      # 45, NOT 30 — MEASURED (owner-directed 2026-08-20). The cap had stopped
+      # being a hang guard and become a stopwatch the suite races. The WHOLE
+      # suite is what a package.json change forces on a pull request — so, any
+      # change that adds a test step — and it is what every push to main runs.
+      # On main at 75e4470 this step took 25m42s of the old 30-minute cap: 86%
+      # of it, which is inside ordinary runner-to-runner variance. It crossed
+      # the line the same day, and the shape of that failure is the argument:
+      # the step was killed with 26 of 1106 steps left, i.e. 97.6% of the suite
+      # had already PASSED. A cap that truncates a passing suite reports a
+      # failure about the clock rather than the code, and the only reading it
+      # invites is "just re-run it" — the exact habit the drive-to-green rules
+      # refuse, and the one that eventually waves a real failure through.
+      #
+      # Raising it can never run LESS: nothing is skipped, quarantined, or made
+      # advisory, and the hang protection is intact — 45 minutes still kills a
+      # wedged step, it just no longer kills a working one. Re-measure against
+      # the real duration when the suite grows again.
       - name: Run the tests
-        timeout-minutes: 30
+        timeout-minutes: 45
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ] && [ -s /tmp/changed-files.txt ]; then
             npm run test:changed -- --changed-from /tmp/changed-files.txt

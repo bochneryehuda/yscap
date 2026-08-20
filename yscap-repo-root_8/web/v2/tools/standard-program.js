@@ -95,6 +95,12 @@
   };
 
   var JUDICIAL = ["CT","DE","FL","IL","IN","IA","KS","KY","LA","ME","MD","MA","NE","NJ","NM","NY","ND","OH","PA","SC","VT","WI"];
+  // A purchase in a JUDICIAL state under this price is an EXCEPTION PRODUCT that
+  // requires this much of the borrower's own money down, whatever the price is
+  // (owner-directed 2026-08-20 — STANDARD PROGRAM ONLY; the full rule, and why
+  // the test is the price and not the loan amount, is in `evaluate`).
+  var JUD_SMALL_PRICE_MAX = 100000;
+  var JUD_SMALL_MIN_DOWN  = 20000;
   var INELIGIBLE_STATES = ["IN","LA"];
   var INELIGIBLE_PROPERTY = ["co-op","cooperative","mobile home","manufactured","mixed-use","mixed use","commercial",
     "rural","agricultural","bed and breakfast","boarding house","half-way house","care facility","condemned","multifamily 5+","5+ units"];
@@ -226,7 +232,20 @@
         Rules: rehab is 100% financed (no OOP) and never shaved; the INITIAL
         (acquisition) advance is the plug that absorbs every reduction; the
         interest reserve is financed into the loan.
+
+        …and the one case where that first rule cannot be honoured: when the
+        INITIAL advance has already been cut to ZERO, there is nothing left for
+        the caps to take, so a rehab holdback below the full budget is arithmetic
+        rather than a choice. The floor below is how much of the construction
+        budget the loan must still finance for that structure to stand on its own
+        (owner-directed 2026-08-20: "technically, we only have to fund 90% of the
+        construction budget" — the standard construction-financing floor on this
+        product class). Shared by all three programs, which size on THIS
+        function. See the `rehabOopAuto` block at the end of sizeLoan.
      --------------------------------------------------------------------- */
+  var REHAB_FINANCED_FLOOR = 0.90;   // ≥90% of the construction budget financed
+  var INITIAL_ZERO_EPS = 0.5;        // the sizer's own dollar epsilon: "the initial is zero"
+
   function round2(n) { return Math.round(n * 100) / 100; }
 
   function sizeLoan(d, c) {
@@ -278,6 +297,19 @@
 
     var rehabLoan = rehab;                       // 100% financed, no OOP
     var A = c.maxAcqLTV * acqDenom;              // cap on the acquisition (initial) advance
+    /* A MINIMUM DOWN PAYMENT IS ONE MORE CEILING ON THE INITIAL ADVANCE, never a
+       change to leverage (owner-directed 2026-08-20; set today only by the
+       Standard program's judicial-state sub-$100k rule — see `evaluate`). The
+       engine's own definition is `downPayment = purchase price − initial`, so
+       holding the initial at `price − floor` makes the floor true by
+       construction, at every later step of the waterfall, with no separate
+       check to fall out of step. INERT when `c.minDownPayment` is absent — which
+       it is for Gold, Silver, every manual product and every other Standard
+       deal — so those price byte-for-byte as before, and it can only ever
+       REDUCE (it is a MIN, exactly like `targetLoan`). PURCHASES ONLY: a
+       refinance has no purchase price and the engine returns downPayment = 0. */
+    var minDown = purchase ? Math.max(0, c.minDownPayment || 0) : 0;
+    if (minDown > 0) A = Math.min(A, Math.max(0, pp - minDown));
     var capARV = isBridge ? Infinity : c.maxARLTV * arv;   // no after-repair-value limit on a bridge
     var stdMax = c.maxLoan;                       // tier dollar cap on total (hard wall)
     var m = c.maxLTC;                             // LTC factor
@@ -437,6 +469,63 @@
     var arvPct = arv > 0 ? totalLoan / arv : 0;
     var downPayment = purchase ? Math.max(0, pp - acquisition) : 0;
 
+    /* ── OUT-OF-POCKET REHAB: WHEN IT IS UNAVOIDABLE, IT IS ALLOWED ──────────
+       (owner-directed 2026-08-20 — AUTHORIZED change to the reason list; NO
+       sizing math moved. This block only DESCRIBES the structure sizeLoan has
+       already produced.)
+
+       WHAT "we don't allow out-of-pocket rehab" ACTUALLY MEANS. It is a rule
+       about WHERE a cap takes its bite: when the LTC or the ARV ceiling cuts the
+       loan, the cut comes off the INITIAL advance and the construction budget
+       stays financed in full. It was never a rule that the borrower may not
+       fund construction — it is a rule that we cut the initial FIRST.
+
+       THE BUG THE OWNER REPORTED. `rehabOverCap` raised MANUAL unconditionally,
+       so a very small purchase with a very large construction budget was blocked
+       even though the structure was already the best one available: the initial
+       advance had ALREADY been cut to ZERO and the loan still financed 96–99% of
+       the budget (reproduced on all three programs — e.g. a $30,000 purchase
+       with a $400,000 budget financed $397,750, i.e. 99.4%, and was sent to
+       manual review). "The gap is happening too fast, and it's blocking us too
+       fast." With the initial at zero there is nowhere left for the cut to come
+       from, so the only alternatives are to fund a hair under the budget or not
+       to do the deal at all.
+
+       THE RULE. Once the initial advance is zero there is nothing left to cut,
+       so a rehab holdback below the full budget is unavoidable rather than a
+       choice — allowed automatically, no exception, PROVIDED the loan still
+       finances at least REHAB_FINANCED_FLOOR of the construction budget. Below
+       that floor the shortfall is large enough to be a real feasibility question
+       and it still goes to manual review, exactly as before.
+
+       WHY 90%. It is the industry's standard construction-financing floor on
+       this product class (residential transition lenders commonly fund 90–100%
+       of rehab), and it is the owner's own number: "technically, we only have to
+       fund 90% of the construction budget".
+
+       WHAT DOES NOT CHANGE: not one number. The loan amount, the split, the
+       rate, every cap and the reserve are byte-identical — `rehabOverCap` still
+       means exactly what it meant, and a deal where the initial is STILL ABOVE
+       ZERO is untouched (the cut can still come from the initial, so financing
+       less than the whole budget there really is a choice and still needs a
+       human). These three fields are additive and inert on every deal that does
+       not trip the cap. */
+    /* DERIVED FROM THE REPORTED HOLDBACK, NOT THE INTERNAL ONE. `rehabLoan` is
+       rounded to the cent on the way out, and the disclosure is read next to
+       that rounded figure — deriving the shortfall and the percentage from the
+       raw value left them a fraction of a cent adrift, so "budget − holdback"
+       did not reconcile with the two numbers printed beside it. Caught by
+       scripts/test-oop-rehab-auto-pure.js section D over 1,560 real scenarios,
+       not by inspection. The floor below therefore judges the percentage the
+       term sheet actually states, which is the honest thing for it to judge. */
+    var rehabLoanOut = round2(rehabLoan);
+    var rehabUnfinanced = Math.max(0, round2(rehab - rehabLoanOut));
+    var rehabFinancedPct = rehab > 0 ? (rehabLoanOut / rehab) : 1;
+    var rehabOopAuto = !!rehabOverCap
+      && acquisition <= INITIAL_ZERO_EPS
+      && rehab > 0
+      && rehabFinancedPct >= REHAB_FINANCED_FLOOR;
+
     return {
       purchase: purchase, pp: pp, aiv: aiv, arv: arv, rehab: rehab,
       acqDenom: acqDenom, costBasis: ltcBasis,
@@ -444,8 +533,9 @@
       financedIR: round2(financedIR), unfinancedIR: 0, monthlyInterest: monthlyInterest,
       initialPayment: round2(initialPayment), fullPayment: round2(fullPayment),
       maxReserve: round2(Math.max(0, maxReserve)), reserveCapped: reserveCapped, rehabOverCap: rehabOverCap,
+      rehabUnfinanced: rehabUnfinanced, rehabFinancedPct: rehabFinancedPct, rehabOopAuto: rehabOopAuto,
       reserveCapBy: reserveCapBy, maxReserveMonths: maxReserveMonths, desiredReserve: round2(desired),
-      downPayment: round2(downPayment),
+      downPayment: round2(downPayment), minDownPayment: round2(minDown),
       ltcPct: ltcPct, acqLtvPct: acqLtvPct, arvPct: arvPct,
       binding: binding, bindKey: bindKey,
       preMaxTotal: Math.min(capARV, m * costBasis0, A + rehabLoan)   // base total before $ max cap
@@ -593,6 +683,77 @@
     if (input.ovrLTC > 0) { maxLTC = input.ovrLTC; capsEff.maxLTC = input.ovrLTC; }
     var rateOvr = (input.ovrRate > 0) ? input.ovrRate : 0;   // admin-set final note rate
 
+    /* ── JUDICIAL STATE + A SUB-$100,000 PURCHASE PRICE: AN EXCEPTION PRODUCT
+          THAT NEEDS $20,000 OF SKIN IN THE GAME ─────────────────────────────
+       (owner-directed 2026-08-20 — AUTHORIZED guideline addition. STANDARD
+       PROGRAM ONLY: "This is only for the standard. It's not for the gold, and
+       it's not for the silver, and it's not for the manual.")
+
+       The rule, in the owner's own terms: "if it's in a jurisdictional state,
+       even if the loan amount is more than $100,000 but the purchase price is
+       less than $100,000 it should come up as an exception product … he needs to
+       put down at least a $20,000 down payment. No matter what the purchase
+       price is … They want to see skin in the game … but leverage doesn't
+       change. The loan amount gets maybe lower … but then you can offer the
+       entire budgets with all the same cap according to the experience."
+
+       WHY THE LOAN AMOUNT IS NOT THE TEST. A small, cheap property in a judicial
+       (court-supervised) foreclosure state is where a default is slowest and most
+       expensive to work out, and the loan AMOUNT says nothing about that — a
+       $60,000 house with a $300,000 construction budget is a large loan on a
+       small asset. So the test is the PURCHASE PRICE, and the answer is real
+       borrower equity in the property itself.
+
+       HOW IT IS ENFORCED — a dollar FLOOR on the borrower's own money, never a
+       change to leverage. `minDownPayment` rides on the caps row and `sizeLoan`
+       applies it as one more MIN on the acquisition (initial) advance:
+       A = min(maxAcqLTV × acqDenom, purchase price − 20,000). Every LTV / LTC /
+       ARV cap, the experience tier and the whole construction budget are
+       UNTOUCHED, which is exactly "leverage doesn't change": the initial advance
+       — and therefore the total loan — simply cannot rise above the point where
+       the borrower's own $20,000 is in the deal. `downPayment = price − initial`
+       is the engine's own definition, so the floor is satisfied by construction
+       rather than checked afterwards.
+
+       "JURISDICTIONAL STATE" is the JUDICIAL-foreclosure list this program
+       already keeps (`JUDICIAL` / `foreclosureType`) — one definition, so the
+       rate add-on and this rule can never disagree about which states they are.
+
+       WHY IT IS AN `effPurchase` TEST. On an assignment that is the RECOGNIZED
+       price the loan is actually sized on, and it is the same figure sizeLoan
+       subtracts the down payment from — so the floor is arithmetically exact
+       instead of measuring against a gross price the loan never saw.
+
+       EXCLUSIONS. Purchases only (there is no down payment on a refinance —
+       "skin in the game at the purchase"), and never on a MANUAL product: a
+       manual basis is an admin setting the LTV / LTC / ARV themselves, so a
+       hidden extra floor would silently overrule the basis they just approved.
+       The manual test is the same structural-override set `manual-program.js`
+       uses to decide a registration IS a Manual Program, so the two agree.
+
+       It registers as an EXCEPTION (MANUAL → the super-admin escalation, the
+       borrower's terms withheld until it is approved), and the reason below is
+       what prints on the term sheet's eligibility notes. */
+    var manualBasis = (input.ovrAcqLTV > 0) || (input.ovrARLTV > 0) || (input.ovrLTC > 0);
+    var judSmall = (loanType === "Purchase") && !manualBasis
+      && foreclosure === "Judicial"
+      && effPurchase > 0 && effPurchase < JUD_SMALL_PRICE_MAX;
+    if (judSmall) {
+      capsEff.minDownPayment = JUD_SMALL_MIN_DOWN;
+      /* THE FIRST SENTENCE HAS TO STAND ALONE. The staff panel's badge shows only
+         the first clause of a reason (`shortReason` in ProductStudioPanel cuts at
+         the first " — " and then at the first ". "), so leading with the label
+         alone would have put "Manual review needed: EXCEPTION PRODUCT" on screen
+         and said nothing. The whole text prints on the term sheet's eligibility
+         notes, which is where the owner asked for it in full. */
+      add("MANUAL", "Exception product: a purchase under " + usd(JUD_SMALL_PRICE_MAX) + " in " + stateName(state) + ", a judicial-foreclosure state"
+        + ". It requires a minimum " + usd(JUD_SMALL_MIN_DOWN)
+        + " down payment from the borrower at the purchase, whatever the purchase price is — they want real skin in the game on a small asset in a state where a foreclosure goes through the courts. Leverage, the experience tier and the construction budget are unchanged"
+        + (effPurchase <= JUD_SMALL_MIN_DOWN
+            ? "; the purchase price is itself at or below " + usd(JUD_SMALL_MIN_DOWN) + ", so there is no initial advance and the borrower funds the whole purchase."
+            : "; the initial advance is held to " + usd(JUD_SMALL_MIN_DOWN) + " below the purchase price so that equity is in the deal."));
+    }
+
     // ---- FICO vs tier minimum (>=600 but below min ⇒ waiver / manual) ----
     if (fico > 0 && fico < c.minFico) add("MANUAL", "FICO " + fico + " is below the " + c.minFico + " minimum for this tier — eligible with a credit-committee waiver review.");
 
@@ -640,8 +801,12 @@
     }
     // ---- initial term: the Standard Program's max allowable term is 24 months ----
     if ((input.term || 0) > 24) add("MANUAL", "The maximum initial term is 24 months — a " + (input.term || 0) + "-month term needs manual review.");
-    // rehab/construction budget larger than the program can finance (total is capped at the max/ARV wall)
-    if (sizing.rehabOverCap) add("MANUAL", "The rehab budget exceeds what this program can finance — the loan is capped at " + usd(sizing.totalLoan) + ", so the remaining budget would be funded out of pocket. Reduce the scope or use a larger facility.");
+    // rehab/construction budget larger than the program can finance (total is capped at the max/ARV wall).
+    // With the INITIAL advance already at zero and ≥90% of the budget still financed the cut had nowhere
+    // else to come from, so it is allowed automatically and only DISCLOSED (owner-directed 2026-08-20 —
+    // see the rehabOopAuto block in sizeLoan). Everything else still goes to manual review, unchanged.
+    if (sizing.rehabOverCap && !sizing.rehabOopAuto) add("MANUAL", "The rehab budget exceeds what this program can finance — the loan is capped at " + usd(sizing.totalLoan) + ", so the remaining budget would be funded out of pocket. Reduce the scope or use a larger facility.");
+    else if (sizing.rehabOopAuto) add("ELIGIBLE", "The loan finances " + pct(sizing.rehabFinancedPct) + " of the " + usd(sizing.rehab) + " construction budget (" + usd(sizing.rehabUnfinanced) + " comes out of pocket over the construction). The initial advance is already zero, so the caps have nothing left to cut — no exception is needed.");
     // ---- exit / profitability gate: ARV must cover acquisition + rehab, else manual pricing ----
     var exitGap = exitShortfall((loanType === "Purchase" ? effPurchase : (input.asIsValue || 0)), rehab, input.arv);
     if (exitGap > 0) add("MANUAL", "The after-repair value doesn't cover the purchase plus rehab (short by " + usd(exitGap) + ") — the exit doesn't support the loan, so it's sent for manual pricing.");
@@ -669,6 +834,12 @@
       reserveTermCapped: reserveTermCapped, reserveTermMonths: termMonths,
       exitShortfall: exitGap, cityReview: cityReview,
       assignment: assignment, pricingReady: fico > 0,
+      // The judicial-state sub-$100k exception, when it applies — so every
+      // surface prints the SAME requirement the engine enforced rather than
+      // re-deriving it. Absent on every other deal (owner-directed 2026-08-20).
+      judicialSmallPurchase: judSmall
+        ? { minDown: JUD_SMALL_MIN_DOWN, priceMax: JUD_SMALL_PRICE_MAX, purchasePrice: round2(effPurchase), state: state }
+        : null,
       caps: capsEff, noteRate: rate, sizing: sizing
     });
   }
