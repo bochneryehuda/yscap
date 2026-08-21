@@ -3983,8 +3983,17 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                            is re-registered), and that rule stands — but the screen never SAID so,
                            so a file whose re-register did not carry the lower number showed a
                            stubborn "5" with nothing to act on. Saying it is the way out. */
+                        /* AND WHETHER THAT ADVICE CAN BE FOLLOWED. "Re-register Products &
+                           Pricing" is the way down — but past a sent term sheet, or at
+                           clear-to-close / funded, the register route refuses, and repeating
+                           advice that will bounce is the dead-end class this codebase names
+                           elsewhere. `reRegisterBlockedBy` is the file's own freeze, read
+                           actor-less, so the line names what clears it instead. */
                         const why = p.claimBelowNeed
-                          ? ` — this comes from the REGISTERED product (priced on ${fmt(r)}); the file itself now claims ${fmt(p.required || {})}, so re-register Products & Pricing to bring the requirement down`
+                          ? ` — this comes from the REGISTERED product (priced on ${fmt(r)}); the file itself now claims ${fmt(p.required || {})}, so the requirement only comes down once the product is re-registered on the lower number`
+                            + (p.reRegisterBlockedBy
+                                ? ` — and re-registering is blocked right now: ${p.reRegisterBlockedBy}`
+                                : ' — open Products & Pricing and register again')
                           : '';
                         return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')} verified` : ' — requirement met ✓ (verified)') : ''}${why}`;
                       })()

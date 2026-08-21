@@ -62,14 +62,23 @@
  *     months ago all being emailed at once the first time this runs. The TEAM is told
  *     here, because nobody in PILOT made this move and somebody has to know it happened.
  *
- * A KNOWN, DELIBERATE LIMIT, stated rather than papered over: `status` and
- * `internal_status` are CO-OWNED with ClickUp (see `inbound-portal-edit-guard`'s
- * PENDING_EXCLUDE — the status pair is excluded there on purpose), so until the file's
- * ClickUp card also reads a funded stage, a re-ingest of that card can move PILOT's status
- * back off `funded`. That is exactly the "ClickUp has to match as well" half the owner
- * separated out; nothing here pushes a status to ClickUp, because landing that card on
- * `closed (6-email funded)` sends an email from ClickUp and that is an outward-facing
- * action nobody asked an automatic reader to take.
+ * THE LIMIT THIS FILE USED TO RECORD IS NOW CLOSED (owner-directed 2026-08-21). It said:
+ * `status` and `internal_status` are CO-OWNED with ClickUp, so until the card also reads a
+ * funded stage a re-ingest can move PILOT back off `funded` — and nothing here pushed a
+ * status, because landing the card on `closed (6-email funded)` sends an email from ClickUp
+ * and that was an outward-facing action nobody had asked an automatic reader to take.
+ *
+ * It was put to the owner as an open question, and they answered: *"Connect the statuses of
+ * our system to ClickUp: when we update our loan as funded, ClickUp updates as closed."* So
+ * the card is now moved, through `clickup/post-closing-stage.advanceCard` — the ONE place
+ * that knows the post-closing ladder — and the ClickUp email is the accepted consequence of
+ * that instruction rather than a side effect nobody chose.
+ *
+ * IT CANNOT BLAST THE BACK BOOK, by construction rather than by a watermark: the push rides
+ * `statusMoved`, and a file already funded in PILOT never moves, so only files funding from
+ * now on reach it. Files this module moved to funded BEFORE the push existed keep a card
+ * that has not caught up — that is a bounded, visible set and a deliberate one-off decision
+ * for the owner, not something to sweep automatically into a few hundred ClickUp emails.
  *
  * Best-effort end to end: it rides an Encompass pull and may NEVER break one.
  */
@@ -162,11 +171,17 @@ async function syncFundedDate(dbc, appId, loan) {
     // The move is REAL history. `source:'system'` is the honest bucket for an automated
     // move (the column's own comment lists portal | clickup | system); WHICH automation
     // rides the audit row below, which can carry a detail object.
+    let cardMoved = null;
     if (statusMoved) {
       try {
         await require('./stage-history').record(appId, row.status, FUNDED,
           { source: 'system', client: dbc || undefined });
       } catch (_) { /* history must never break a pull */ }
+      // AND THE CARD FOLLOWS (owner-directed 2026-08-21 — see the header). Guarded,
+      // idempotent and never-throwing inside that module; the ClickUp email its stage
+      // fires is the instructed outcome.
+      cardMoved = await require('../clickup/post-closing-stage')
+        .advanceCard(appId, 'funded', { client: dbc || undefined, reason: 'encompass_funded_date' });
     }
 
     // Nobody in PILOT made this move, so the team is told. Funded is a MAJOR status, so
@@ -176,7 +191,7 @@ async function syncFundedDate(dbc, appId, loan) {
         type: 'status_change',
         title: 'Encompass shows this loan funded',
         body: statusMoved
-          ? `Encompass has a funded date of ${encDate}. PILOT filled the funded date in and moved this file to Funded. It is NOT reconciled — reconciling still needs the funded date in ClickUp to match.`
+          ? `Encompass has a funded date of ${encDate}. PILOT filled the funded date in and moved this file to Funded, and moved its ClickUp card to Closed. It is NOT reconciled — reconciling is still a human's three-system check.`
           : `Encompass has a funded date of ${encDate}. PILOT filled it in on this file.`,
         applicationId: appId,
         link: `/internal/app/${appId}`,
@@ -197,7 +212,7 @@ async function syncFundedDate(dbc, appId, loan) {
         })]);
     } catch (_) { /* best-effort */ }
 
-    return { fundedDate: encDate, filled, statusFrom: row.status, statusMoved };
+    return { fundedDate: encDate, filled, statusFrom: row.status, statusMoved, cardMoved };
   } catch (_) {
     // Rides a best-effort sync — a failure here must never break an Encompass pull.
     return { skipped: 'error' };

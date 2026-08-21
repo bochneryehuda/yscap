@@ -512,10 +512,22 @@ async function syncPurchaseAdviceDate(db, appId, fieldValues) {
     // worker, the draw desk's own refresh, the manual button) land here, so the hand-off cannot
     // depend on which of them happened to notice. Once-only and every "stay quiet" case is decided
     // inside `announceSold`, which never throws — a mail problem must never break a sync.
+    let cardMoved = null;
     if (changed && paDate) {
       try { await require('../lib/post-purchase').announceSold(appId, paDate); } catch (_) { /* best-effort */ }
+      /* AND THE CLICKUP CARD MOVES ON (owner-directed 2026-08-21: *"when we mark it as sold
+         and you get the PA date from Encompass … the status in ClickUp also needs to be
+         changed to waiting for final documents"*). The stage is `waiting for final docs` —
+         ClickUp's own spelling, read live off the Loan Pipeline list; the owner's
+         "documents" is not a status any list carries.
+
+         Only when the date actually CHANGED, so a re-read of the same date never re-pushes;
+         and only forward — `advanceCard` refuses to drag a card back from a later stage.
+         A CLEARED date (paDate null) moves nothing: un-selling is a human's correction. */
+      cardMoved = await require('../clickup/post-closing-stage')
+        .advanceCard(appId, 'sold', { client: db, reason: 'encompass_purchase_advice_date' });
     }
-    return { paDate, changed };
+    return { paDate, changed, cardMoved };
   } catch (_) { return { skipped: 'error' }; }
 }
 
