@@ -55,6 +55,7 @@ const issuanceBackstop = require('../lib/underwriting/issuance-backstop'); // R6
 const advisoryPolicy = require('../lib/underwriting/advisory-policy');     // AI findings are ADVISORY ONLY (owner-directed 2026-07-27)
 const conditionRules = require('../lib/conditions/rules');
 const conditionRegistry = require('../lib/conditions/field-registry');
+const extNote = require('../lib/conditions/external-note');   // db/604 — the note a borrower and a broker read
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
 const { strayConditionReason, strayConditionMessage } = require('../lib/conditions/label-sanity');
 const adminOverride = require('../lib/conditions/admin-override');        // super-admin condition override (owner-directed 2026-07-27)
@@ -4620,6 +4621,11 @@ router.get('/applications/:id/checklist', async (req, res) => {
     `SELECT ci.id, ci.label, ci.status, ci.audience, ci.item_kind, ci.is_required,
             ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
             ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
+            -- The note the BORROWER and the TPO broker read (db/604), beside the
+            -- internal one — with who wrote it and when, which only staff see. The
+            -- borrower is shown the note and the date; naming an individual
+            -- underwriter to them would be a new exposure nobody asked for.
+            ci.external_note, ci.external_note_at, enb.full_name AS external_note_by_name,
             -- Who manually added this condition + any pending "please delete" request,
             -- so the row can offer Delete (to the adder / an admin) or Ask-to-delete
             -- (owner-directed 2026-08-04).
@@ -4672,6 +4678,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
        LEFT JOIN staff_users ov  ON ov.id  = ci.override_by
        LEFT JOIN staff_users crb ON crb.id = ci.created_by_id
        LEFT JOIN staff_users drb ON drb.id = ci.delete_requested_by
+       LEFT JOIN staff_users enb ON enb.id = ci.external_note_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
   // THE NOTE-BUYER MARK (owner-directed 2026-08-02). A condition that is on this
@@ -9635,6 +9642,19 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // the status ('issue'), so skip the explicit one in that case too.
   if (b.status && b.signedOff !== true && b.pushBack !== true && b.waived == null) add('status=?', b.status);
   if (b.notes != null) add('notes=?', b.notes);
+  // THE NOTE THE BORROWER AND THE BROKER READ (db/604). Same door, same permission
+  // as the internal note — one place a condition is edited — but its own column, so
+  // the internal note can never become visible by accident. It stamps WHO and WHEN,
+  // because staff need to know whose words are on a borrower's screen (the borrower
+  // is shown the note and the date, never the name). Clearing it clears the stamps.
+  if ('externalNote' in b) {
+    const p = extNote.noteProblem(b.externalNote);
+    if (p) return res.status(400).json({ error: p });
+    const v = extNote.clean(b.externalNote);
+    add('external_note=?', v);
+    add('external_note_by=?', v ? req.actor.id : null);
+    sets.push(v ? 'external_note_at=now()' : 'external_note_at=NULL');
+  }
   if ('assigneeStaffId' in b) add('assignee_staff_id=?', b.assigneeStaffId || null);
   // Requirement toggle — e.g. the LLC's Certificate of Good Standing is
   // optional by default; the officer/processor can flip it to required (it

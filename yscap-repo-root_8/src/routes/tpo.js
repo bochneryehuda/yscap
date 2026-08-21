@@ -27,6 +27,7 @@ const fields = require('../lib/fields');
 const storage = require('../lib/storage');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const { scrubText, scrubFields, stripQuoteInternal, stripInputsInternal, borrowerSafeQuoteBundle } = require('../lib/borrower-safe');
+const externalNote = require('../lib/conditions/external-note');   // db/604 — the note staff wrote FOR the client
 const { borrowerPricingOverrides } = require('../lib/pricing-overrides');
 const pricing = require('../lib/pricing');
 // The wholesale-channel pricing layer: resolves this TPO file's effective markup /
@@ -969,6 +970,12 @@ router.get('/applications/:id/checklist', async (req, res, next) => {
               -- keys off status/item_kind, not the code.
               -- issue_reason is a borrower-SAFE reason; fall back to the latest
               -- rejected document's reason. ci.notes (internal) is NEVER selected.
+              -- ci.external_note (db/604) IS selected and IS safe by construction:
+              -- it is the note staff wrote FOR the client on this condition, and it
+              -- goes out through the same scrub as every other word on this route.
+              -- Who wrote it never leaves the building — a broker seeing an
+              -- underwriter's name is a new exposure nobody asked for.
+              ci.external_note, ci.external_note_at,
               COALESCE(ci.issue_reason,
                 (SELECT d.rejection_reason FROM documents d WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
                   ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1)) AS rejection_reason
@@ -977,6 +984,12 @@ router.get('/applications/:id/checklist', async (req, res, next) => {
         ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
     const rows = r.rows.map((it) => {
       const s = scrubFields(it, ['label', 'hint', 'rejection_reason']);
+      // The note staff wrote for the client, through the ONE definition so the
+      // borrower portal and this one can never show it differently. The raw
+      // columns are dropped so nothing downstream can reach past the scrub.
+      const ext = externalNote.forClient(it, scrubText);
+      delete s.external_note; delete s.external_note_at;
+      if (ext) s.external_note = ext;
       // A broker may ANSWER an information condition — but only for a DEAL
       // (applications) field or an admin CUSTOM field (app-scoped, not a known
       // built-in). A PERSON field (fico → the borrowers table) is edited on the

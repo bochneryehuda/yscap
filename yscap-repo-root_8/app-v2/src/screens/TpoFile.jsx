@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import ConditionTeamNote from '../components/ConditionTeamNote.jsx';
 import { api } from '../lib/api.js';
 import { askConfirm } from '../lib/dialog.js';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
@@ -185,6 +186,10 @@ export default function TpoFile() {
                 <div style={{ fontWeight: 500 }}>{c.label}</div>
                 {c.hint && <div className="muted small" style={{ marginTop: 2 }}>{c.hint}</div>}
                 {c.rejection_reason && <div className="small" style={{ marginTop: 2, color: '#B4532A' }}>Needs a fix: {c.rejection_reason}</div>}
+                {/* The note the lender's team wrote on this condition (db/604) — the
+                    SAME component the borrower's portal renders, so one sentence can
+                    never be shown two different ways to the two people reading it. */}
+                <ConditionTeamNote note={c.external_note} />
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span className="pill">{COND_STATUS[c.status] || c.status}</span>

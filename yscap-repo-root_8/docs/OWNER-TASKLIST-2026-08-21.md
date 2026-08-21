@@ -36,7 +36,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 10 | GC information condition: informational fields + GC PDF | Conditions | ☐ |
 | 11 | Resend Draw form must work when unseen/expired | Draws | ☑ |
 | 12 | Credit report import reads the WRONG scores (2 borrowers) | Credit | ☑ |
-| 13 | Condition center: external notes for borrowers + TPOs | Conditions | ☐ |
+| 13 | Condition center: external notes for borrowers + TPOs | Conditions | ☑ |
 | 14 | Conditions: add a document slot (not a borrower request) | Conditions | ☑ |
 | 15 | Borrower profile reachable from inside a file | Navigation | ☑ |
 | 16 | Overview hover button missing on full screens | Navigation | ☑ |
@@ -366,6 +366,43 @@ supplied above), prove the parse, fix the attribution at the source, and backfil
 Two note streams on a condition: **internal** (staff only, exists today) and **external** (visible to the
 borrower and to TPOs). Must be unmistakably distinguishable so nobody posts an internal note externally by
 accident.
+
+**SHIPPED** (db/604).
+
+**What was actually missing.** A condition had exactly ONE note field, and it is internal — the borrower's
+own screen says so in the code and refuses to read it, because it carries underwriting reasoning and
+capital-partner names. So the only ways to tell a borrower something about a *specific* condition were to
+reject a document (which needs a document to reject) or send a message that is not attached to the
+condition at all. The sentence a borrower most needs — *"the August statement, not July"* — had nowhere to
+live next to the thing it is about.
+
+**Now there are two, and they can never swap places.** They are two different columns, written through the
+same one door, read by different surfaces. Nothing that was internal yesterday can become visible: no
+existing note was copied anywhere, and every borrower and broker route still refuses to select the
+internal one.
+
+**Telling them apart is done in words, never by colour.** The external note says who will read it *three
+times before you type* — on the button ("+ Add a note the borrower will see"), in the box itself, and in a
+band that stays on screen the whole time the box is open — plus a teal rule down the side that the internal
+note does not have. Staff also see **who wrote it and when**; the borrower and the broker see the note and
+the date, never the name — putting an individual underwriter's name in front of an outside party is a new
+exposure nobody asked for.
+
+**It is scrubbed like everything else a human types.** A staff member can absolutely write "Fidelis is fine
+with the August statement" into an external note, so it goes out through the same capital-partner scrub as
+every other borrower-facing word — and the shared reader **refuses to send anything at all** if the
+scrubber is missing, rather than sending an unscrubbed note.
+
+**It does not email anybody, deliberately.** The note appears on the condition it is about, on the screen
+they are already working from. Turning it into an email would be a new routine-activity notification,
+which is exactly the bombardment the notification rules cut back. Making it notify is your call.
+
+Proof: `scripts/test-condition-external-note-db.js` (real Postgres, real HTTP, all three surfaces at once —
+with a capital-partner name sitting in the internal note the whole run as a live control, so a reversed
+wiring would put the word "Fidelis" on the borrower's screen and the test would say so) and
+`scripts/test-condition-external-note-pure.js` (the rules, and the source invariants, in the no-database
+job too). Five mutations were proven to fail them — including one that only bit after the assertion was
+anchored to the start of a line.
 
 ---
 

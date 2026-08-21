@@ -5974,3 +5974,31 @@ ol.arena-ch-top li em { color: var(--a-gold-ink); font-style: normal; font-varia
   margin:0 0 12px;padding:9px 12px;background:#fff;border:1px solid var(--line,rgba(174,135,70,.28));
   border-left:3px solid var(--gold,#AE8746);border-radius:var(--radius-sm,8px)}
 .bprof-backbar-where{font-size:13px;color:#4B585C;min-width:0;overflow-wrap:anywhere}
+
+/* TWO NOTES ON A CONDITION, AND NOBODY MAY CONFUSE THEM (db/604, owner-directed
+   2026-08-21). The internal note keeps the look it always had; the one the borrower
+   and the broker read is set apart by a TEAL rule and a standing label, on staff's
+   screen and on theirs. It is never told apart by colour alone — the label says who
+   reads it, in words, on the button, in the placeholder, and while you are typing. */
+/* `.cnd-note` sets white-space:pre-wrap so a typed note keeps its line breaks. On the
+   external variant the box holds a LABEL and then the note, so that rule would also
+   preserve the layout whitespace between them and open a blank line nobody typed
+   (measured in a real render, not guessed). The container goes back to normal and the
+   NOTE keeps pre-wrap, which is the element that actually needs it. */
+.cnd-note-ext{border-left:3px solid var(--teal,#2F7F86);padding-left:9px;white-space:normal}
+.cnd-note-tag{display:block;font-size:11px;font-weight:700;letter-spacing:.04em;
+  text-transform:uppercase;color:var(--teal-br,#256168);margin-bottom:2px}
+.cnd-note-body{display:block;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.cnd-note-add-ext{color:var(--teal-br,#256168)}
+.cnd-note-warn{font-size:12px;font-weight:700;color:var(--teal-br,#256168);
+  background:rgba(47,127,134,.10);border:1px solid rgba(47,127,134,.35);
+  border-radius:var(--radius-sm,8px);padding:5px 9px;margin-bottom:6px}
+
+/* The same note as the client sees it — a small card, so it reads as something a
+   person wrote to them rather than as another line of system text. */
+.cnd-teamnote{margin:6px 0;padding:8px 11px;background:#fff;
+  border:1px solid rgba(47,127,134,.30);border-left:3px solid var(--teal,#2F7F86);
+  border-radius:var(--radius-sm,8px)}
+.cnd-teamnote-h{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--teal-br,#256168);margin-bottom:3px}
+.cnd-teamnote-body{font-size:14px;color:#141B22;white-space:pre-wrap;overflow-wrap:anywhere}

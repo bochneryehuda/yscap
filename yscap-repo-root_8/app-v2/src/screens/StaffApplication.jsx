@@ -56,7 +56,7 @@ import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
-import ConditionLine, { ConditionNote, NoteBuyerMark, ConditionCollapse } from '../components/ConditionLine.jsx';
+import ConditionLine, { ConditionNote, ConditionExternalNote, NoteBuyerMark, ConditionCollapse } from '../components/ConditionLine.jsx';
 import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
@@ -1882,6 +1882,10 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           docs={itemDocs} size="" onRequestWaiver={onRequestWaiver} />
       </div>
       <ConditionNote it={it} onPatch={onPatch} />
+      {/* And the note the BORROWER and the broker read (db/604) — its own field, its
+          own words, right under the internal one so the difference between them is
+          impossible to miss. */}
+      <ConditionExternalNote it={it} onPatch={onPatch} />
     </div>
   );
 }
@@ -2968,6 +2972,7 @@ function CondNote({ item, onPatch }) {
   return (
     <div style={{ width: '100%', paddingLeft: 20, marginTop: 4 }}>
       <ConditionNote it={item} onPatch={onPatch} />
+      <ConditionExternalNote it={item} onPatch={onPatch} />
     </div>
   );
 }

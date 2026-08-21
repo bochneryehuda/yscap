@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useLocation, useNavigate, Link } from 'react-router-dom';
+import ConditionTeamNote from '../components/ConditionTeamNote.jsx';
 import { api, saveBlob } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
@@ -1395,7 +1396,7 @@ export default function Application() {
                     title={it.label}
                     subtitle={[it.hint, it.notes].filter(Boolean).join(' · ') || null}
                     status={statusText(it)}
-                    open={docs.length > 0 || needsFix || alsoNeeded.length > 0}
+                    open={docs.length > 0 || needsFix || alsoNeeded.length > 0 || !!it.external_note}
                     action={<button className="btn ghost small" title="You can select several PDFs at once" onClick={() => pick({ itemId: it.id, slotBase: docs.length })}>{docs.length ? '+ Add another' : 'Upload'}</button>}
                     onDropFiles={(f) => uploadFiles(f, { itemId: it.id, slotBase: docs.length })}
                   >
@@ -1403,7 +1404,10 @@ export default function Application() {
                         something to reveal — a fix note, uploaded documents, or a
                         still-needed ask. A brand-new, empty condition stays a
                         plain one-line row. */}
-                    {(docs.length > 0 || needsFix || alsoNeeded.length > 0) && (<>
+                    {(docs.length > 0 || needsFix || alsoNeeded.length > 0 || !!it.external_note) && (<>
+                    {/* A note the loan team wrote FOR them on this condition (db/604).
+                        It opens the row on its own — a note nobody sees is not a note. */}
+                    <ConditionTeamNote note={it.external_note} />
                     {needsFix && it.rejection_reason && (
                       <div className="small" style={{ color: 'var(--danger)', marginBottom: 6 }}>
                         Needs a new version: {it.rejection_reason}
