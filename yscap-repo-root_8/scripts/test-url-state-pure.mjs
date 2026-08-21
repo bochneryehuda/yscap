@@ -25,7 +25,12 @@ const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/
 let fail = 0;
 const ok = (cond, what) => { console.log(`${cond ? 'PASS' : 'FAIL'} ${what}`); if (!cond) fail++; };
 
-const U = await import('../app-v2/src/lib/useUrlState.js');
+/* The PURE core — imported directly from its own React-free module. Importing the HOOK
+   instead pulls in `react` and `react-router-dom` through its top-level imports, which
+   live in app-v2/node_modules; CI installs only the root package, so that passed locally
+   and died on the runner with ERR_MODULE_NOT_FOUND. The hook is still checked below, as
+   TEXT, which needs no import at all. */
+const U = await import('../app-v2/src/lib/urlState.js');
 const SRC = read('app-v2/src/lib/useUrlState.js');
 
 // ---------------------------------------------------------------------------
@@ -122,10 +127,18 @@ console.log('\nF. the hook’s shape');
     'every write derives from the previous params (functional), never from a captured copy');
   ok(/replace: !\(opts && opts\.push\)/.test(body),
     'replace by default — choosing a tab is not navigation, so Back leaves the screen');
-  ok(/catch \(_\)/.test(body) && (body.match(/catch \(_\)/g) || []).length >= 3,
+  // These two are properties of the MECHANISM, which is the pair of files — the guards
+  // and the store live in the pure half, the React wiring in the hook. Checked over both
+  // so the split cannot quietly lose either.
+  const both = body + code(read('app-v2/src/lib/urlState.js'));
+  ok((both.match(/catch \(_\)/g) || []).length >= 3,
     'every store and parse is guarded — remembering a place may never break a screen');
-  ok(/sessionStorage/.test(body) && !/localStorage/.test(body),
+  ok(/sessionStorage/.test(both) && !/localStorage/.test(both),
     'the memory is sessionStorage: it survives a reload of THIS tab and never leaks to the next person');
+  // And the split itself must hold: the pure half is what a test can import anywhere, so
+  // it may never grow a React import (that is what broke CI the first time).
+  ok(!/from '(react|react-router-dom)'/.test(read('app-v2/src/lib/urlState.js')),
+    'the pure half imports no React — so its properties can be tested where app-v2/node_modules does not exist');
 }
 
 console.log(`\n${fail === 0 ? 'ALL' : 'SOME'} url-state assertions: ${fail} failed`);

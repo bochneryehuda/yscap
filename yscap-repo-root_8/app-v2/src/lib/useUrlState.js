@@ -43,82 +43,11 @@
 
 import { useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { paramKey, pickValue, nextParams, parseSet, joinSet, readMemory, writeMemory } from './urlState.js';
 
-/* ---- THE PURE CORE ---------------------------------------------------------
-   The three decisions this hook makes, as plain functions of their inputs. They are
-   exported and tested exhaustively; the React part below is a thin wrapper that
-   supplies today's URL. A property proven here holds for every screen that uses the
-   hook, which is the point of having one mechanism.
-   -------------------------------------------------------------------------- */
-
-/* Namespaced so two hubs can both own a `tab` without colliding — ElementixProfile's
-   tabs live inside StaffBorrowerDetail's, and EmailCenter is mounted both standalone
-   and inside the loan file. */
-export const paramKey = (key, opts) => (opts && opts.prefix ? `${opts.prefix}.${key}` : key);
-
-/** Is this a value we are willing to select? An unlisted value is treated as absent. */
-export function acceptsValue(v, allow) {
-  if (v === null || v === undefined || v === '') return false;
-  if (!allow) return true;
-  if (typeof allow === 'function') { try { return !!allow(v); } catch (_) { return false; } }
-  return Array.isArray(allow) ? allow.includes(v) : true;
-}
-
-/**
- * PRECEDENCE, in one place: an explicit URL (a shared or bookmarked link) beats what
- * this tab was last doing, which beats the default.
- *
- * A url value the caller REJECTS falls through to the memory and then the default
- * rather than being selected — a stale link to a tab that no longer exists must land
- * somewhere real instead of rendering an empty screen.
- */
-export function pickValue({ url, memory, fallback, allow }) {
-  if (acceptsValue(url, allow)) return url;
-  if (acceptsValue(memory, allow)) return memory;
-  return fallback;
-}
-
-/**
- * THE WRITE: derive the next query from the previous one, and ELIDE THE DEFAULT.
- * Takes and returns a URLSearchParams, and never mutates its input — which is what
- * makes several keys written in one tick compose instead of clobbering each other.
- */
-export function nextParams(prev, key, value, fallback) {
-  const n = new URLSearchParams(prev);
-  const v = value === null || value === undefined ? '' : String(value);
-  if (!v || v === fallback) n.delete(key); else n.set(key, v);
-  return n;
-}
-
-/** The many-at-once encoding: one short comma-separated key, order preserved. */
-export function parseSet(raw) {
-  const s = new Set();
-  for (const p of String(raw || '').split(',')) { const t = p.trim(); if (t) s.add(t); }
-  return s;
-}
-export function joinSet(ids) {
-  const out = [];
-  for (const id of ids || []) { const t = String(id || '').trim(); if (t && !out.includes(t)) out.push(t); }
-  return out.join(',');
-}
-
-const memKey = (name) => `pilot.urlState.${name}`;
-
-function readMemory(name) {
-  if (!name || typeof sessionStorage === 'undefined') return null;
-  try {
-    const v = sessionStorage.getItem(memKey(name));
-    return v === null ? null : v;
-  } catch (_) { return null; }
-}
-
-function writeMemory(name, value) {
-  if (!name || typeof sessionStorage === 'undefined') return;
-  try {
-    if (value === null || value === undefined || value === '') sessionStorage.removeItem(memKey(name));
-    else sessionStorage.setItem(memKey(name), String(value));
-  } catch (_) { /* courtesy only — a full or blocked store must never break a screen */ }
-}
+// Re-exported so a caller needs one import, and so the pure module stays the ONE
+// definition rather than a second copy.
+export { paramKey, acceptsValue, pickValue, nextParams, parseSet, joinSet } from './urlState.js';
 
 /**
  * One scalar that lives in the URL: a tab, a filter, a view, a sort.
@@ -193,4 +122,4 @@ export function useUrlSet(key, opts) {
   return [value, toggle, setAll];
 }
 
-export const _internals = { memKey, readMemory, writeMemory };
+// (The store helpers are exported from urlState.js — one place, not two.)

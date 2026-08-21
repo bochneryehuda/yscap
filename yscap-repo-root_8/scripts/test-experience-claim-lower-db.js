@@ -111,6 +111,40 @@ const SCENARIO = {
     const eD = await expOf(appD);
     assert(eD && Number(eD.f) === 5, `a register that never touches experience keeps the stored 5 (got ${eD && eD.f})`);
 
+    // ---- THE OWNER'S ITEM 22 STORY, walked in order ------------------------
+    // "We started a file and entered five experiences. The condition says that we need
+    //  five experiences. We verified only three, and we changed the application to only
+    //  three. We changed the products and prices to only three, but the condition is
+    //  still requiring five experiences, and we can't sign off that condition."
+    console.log('\n--- item 22: the requirement must follow a re-register DOWN ---');
+    const EXP = require('../src/lib/experience');
+    const needOf = (id) => EXP.registeredExperienceNeed(id, db);
+
+    const appE = await mkApp();
+    // 1. registered on FIVE.
+    const e1 = await call(server, 'POST', reg(appE), tok,
+      { program: 'standard', overrides: { ...SCENARIO, expFlips: 5, expHolds: 0, expGround: 0 } });
+    assert(e1.status === 201, `item22: registers on five (got ${e1.status})`);
+    const n1 = await needOf(appE);
+    assert(n1.flips === 5, `item22: the condition requires five (got ${n1.flips})`);
+
+    // 2. the officer edits the APPLICATION down to three. On its own this must NOT move
+    //    the requirement — that ordering is a deliberate 2026-08-09 rule: a lowered claim
+    //    only relaxes the gate once the product is RE-REGISTERED on it.
+    await db.query(`UPDATE applications SET requested_exp_flips=3 WHERE id=$1`, [appE]);
+    const n2 = await needOf(appE);
+    assert(n2.flips === 5, `item22: editing the application alone does not relax it (got ${n2.flips})`);
+
+    // 3. they re-register Products & Pricing on THREE. THIS is the step the owner says
+    //    does not take.
+    const e3 = await call(server, 'POST', reg(appE), tok,
+      { program: 'standard', overrides: { ...SCENARIO, expFlips: 3, expHolds: 0, expGround: 0 } });
+    assert(e3.status === 201, `item22: re-registers on three (got ${e3.status})`);
+    const n3 = await needOf(appE);
+    assert(n3.flips === 3, `item22: THE CONDITION NOW REQUIRES THREE (got ${n3.flips})`);
+    const claim3 = await expOf(appE);
+    assert(claim3 && Number(claim3.f) === 3, `item22: …and the file's own claim followed it down (got ${claim3 && claim3.f})`);
+
     await db.query(`DELETE FROM applications WHERE borrower_id=$1`, [borrowerId]).catch(() => {});
     await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]).catch(() => {});
     await db.query(`DELETE FROM staff_users WHERE id=$1`, [staffId]).catch(() => {});
