@@ -6012,10 +6012,10 @@ export default function StaffApplication() {
         </p>
         <div className="bprof-pair">
           {app.borrower_id && (
-            <BorrowerProfilePanel borrowerId={app.borrower_id} heading="Borrower profile" onChanged={load} />
+            <BorrowerProfilePanel borrowerId={app.borrower_id} heading="Borrower profile" onChanged={load} fromAppId={id} />
           )}
           {app.co_borrower_id && (
-            <BorrowerProfilePanel borrowerId={app.co_borrower_id} heading="Co-borrower profile" onChanged={load} />
+            <BorrowerProfilePanel borrowerId={app.co_borrower_id} heading="Co-borrower profile" onChanged={load} fromAppId={id} />
           )}
         </div>
         {/* What is about the LINK rather than about the person: find / add /

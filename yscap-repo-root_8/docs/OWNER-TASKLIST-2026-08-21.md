@@ -38,7 +38,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 12 | Credit report import reads the WRONG scores (2 borrowers) | Credit | ☑ |
 | 13 | Condition center: external notes for borrowers + TPOs | Conditions | ☐ |
 | 14 | Conditions: add a document slot (not a borrower request) | Conditions | ☑ |
-| 15 | Borrower profile reachable from inside a file | Navigation | ☐ |
+| 15 | Borrower profile reachable from inside a file | Navigation | ☑ |
 | 16 | Overview hover button missing on full screens | Navigation | ☑ |
 | 17 | Scope of work Excel import: drag-and-drop | Uploads | ☑ |
 | 18 | ClickUp: Joshua Freidlander's files land in Lead Capture | ClickUp | ◐ |
@@ -426,6 +426,43 @@ From inside a loan file you can only see the file's own details. There is a whol
 (entities/LLCs, track record, all their files) that is unreachable from there. Add a direct way in — full
 page. **Owner asked us to think of the best way to do it**, so this ships with a designed answer, not the
 first idea.
+
+**SHIPPED.**
+
+**First, honestly: a button already existed, and it did not count.** The profile panel on the file has
+carried an "Open full profile" button — but it sits inside *Application details*, which is collapsed by
+default, and then inside that section's *People* tab. So reaching a person's profile meant opening two
+things first and knowing which two. The report is exact: from where you actually stand in a file, there
+was nowhere to go.
+
+**The answer is the name.** The place you are standing when you think *"show me everything about this
+person"* is the party list at the top of the file, looking at their name — so **the name is now the way
+in**, on the overview, with no section to open first. It stays dark ink (a party list whose values turned
+blue would read as a row of links) with a dotted underline and a small ↗ so it is obviously clickable.
+Both people are linked: a file with a co-borrower must not offer only one of them. With no borrower on the
+row it stays plain text — a name that looks like a link and goes nowhere is worse than a name.
+
+**The way back is half the feature.** A full page opened from inside a file is a one-way trip: browser
+Back works until you touch a tab on the profile, and then the file is gone. So every link carries the file
+it came from, and the profile screen turns that into a plain **"← Back to the loan file"** bar naming the
+property and the loan number. It is a **hint, never an authorization** — the screen resolves it against
+that person's *own* file list, which is already scoped on the server, so a file that is not theirs (or
+that the person reading cannot see) simply produces no bar rather than a link that fails. It costs no new
+endpoint: it is the same list the profile's Files tab already renders.
+
+**One definition, three doors.** `components/BorrowerProfileLink.jsx` (over the React-free
+`lib/borrowerProfileUrl.js`) is the only place that knows where a profile link goes and what it carries.
+The party names, the panel's own button, and the "open the other profile" link in the duplicate-Social
+flow all go through it, so none of them can land differently or quietly drop the way back.
+
+Proof: `scripts/test-borrower-profile-link-pure.mjs` — the URL rule is EXECUTED (it imports nothing, so it
+runs in CI where `app-v2/node_modules` does not exist), and the wiring is read from source: both names
+link, a missing id renders plain text, no surface builds its own URL, the bar is resolved against the
+person's own files and renders nothing without a match, and the name stays ink. Four mutations were proven
+to fail it — including one that only bit after the assertion was anchored to the start of a line, which is
+why the mutations are run rather than reasoned about. The rendering was checked in headless Chromium
+against the real built stylesheet at desktop and iPhone widths: dark text, a real hit area, no sideways
+scroll.
 
 ---
 

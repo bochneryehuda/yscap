@@ -5946,3 +5946,31 @@ ol.arena-ch-top li em { color: var(--a-gold-ink); font-style: normal; font-varia
   .arena-wheel-wrap { width: 100% !important; max-width: 360px; height: auto !important; }
   .arena-wheel-wrap > svg { width: 100%; height: auto; }
 }
+
+/* A PERSON'S NAME AS THE WAY INTO THEIR PROFILE (owner-directed 2026-08-21 — "in the
+   file, you should be able to access it directly somehow and open up the borrower's
+   profile on a full page"). It sits in the file's party list, where a value is normally
+   plain text, so it has to read as BOTH: still the name (dark ink, same weight as the
+   row it lives in — never the page's teal link colour, which would make the party list
+   look like a row of links) and still obviously clickable (a dotted underline it does
+   not share with anything else here, and a ↗ mark).
+
+   The mark carries no meaning of its own — it is aria-hidden and the link's title says
+   where it goes — so a screen reader gets the name and the sentence, not "arrow". */
+.bprof-namelink{color:#141B22;text-decoration:none;border-bottom:1px dotted var(--teal-br,#256168);
+  cursor:pointer;transition:color .12s,border-color .12s}
+.bprof-namelink:hover{color:var(--teal-br,#256168);border-bottom-style:solid;text-decoration:none}
+.bprof-namelink:focus-visible{outline:2px solid var(--teal-br,#256168);outline-offset:2px;border-radius:2px}
+.bprof-namelink-mark{color:var(--teal-br,#256168);font-size:.85em;opacity:.75}
+.bprof-namelink:hover .bprof-namelink-mark{opacity:1}
+
+/* THE WAY BACK TO THE FILE YOU CAME FROM. Deliberately NOT a `.notice`: a bare one has
+   padding and nothing else, so the bar read as loose text with a button beside it — and
+   every `.notice` MODIFIER carries a light dark-theme text colour that would be
+   unreadable here (the --ink* trap, one layer up). This is its own small surface, with
+   a gold hairline so it reads as part of the page's chrome rather than as a message
+   somebody needs to dismiss. */
+.bprof-backbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  margin:0 0 12px;padding:9px 12px;background:#fff;border:1px solid var(--line,rgba(174,135,70,.28));
+  border-left:3px solid var(--gold,#AE8746);border-radius:var(--radius-sm,8px)}
+.bprof-backbar-where{font-size:13px;color:#4B585C;min-width:0;overflow-wrap:anywhere}

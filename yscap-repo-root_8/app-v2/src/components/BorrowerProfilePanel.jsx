@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import BorrowerProfileLink from './BorrowerProfileLink.jsx';
 import { api } from '../lib/api.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import { PhoneInput, ZipInput, EmailInput } from './FormattedInputs.jsx';
@@ -315,7 +316,7 @@ export function BorrowerProfileForm({ b, onSaved, onCancel }) {
    Reveal, add, correct, and un-stick a duplicate. The number has its own audited
    endpoint (it is never part of the ordinary profile save), and a collision with
    another profile NAMES that profile and offers the move instead of dead-ending. */
-export function BorrowerSsnRow({ b, onChanged }) {
+export function BorrowerSsnRow({ b, onChanged, fromAppId = null }) {
   const [full, setFull] = useState('');
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -381,10 +382,14 @@ export function BorrowerSsnRow({ b, onChanged }) {
           {err}
           {conflict && conflict.canResolve && (
             <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {/* The other profile is a full page too, and whoever is reading this is in
+                  the middle of resolving a conflict inside a loan file — so it carries
+                  the way back exactly like every other door into a profile, through the
+                  one shared definition. */}
               {conflict.borrowerId && (
-                <Link className="btn ghost small" to={`/internal/borrowers/${conflict.borrowerId}`}>
+                <BorrowerProfileLink borrowerId={conflict.borrowerId} fromAppId={fromAppId} variant="button">
                   Open {conflict.name || 'the other profile'}
-                </Link>
+                </BorrowerProfileLink>
               )}
               <button className="btn small" disabled={busy} onClick={() => save('same_person')}>
                 Same person — move the number to this profile
@@ -464,7 +469,7 @@ export function PortalAccessRow({ b, onChanged }) {
    the identity at a glance, and opens the full editor in place. Rendered once for
    the borrower and once for the co-borrower, so BOTH people are editable from the
    file — which is the whole point of the request. */
-export default function BorrowerProfilePanel({ borrowerId, heading = 'Borrower profile', onChanged }) {
+export default function BorrowerProfilePanel({ borrowerId, heading = 'Borrower profile', onChanged, fromAppId = null }) {
   const [b, setB] = useState(null);
   const [err, setErr] = useState('');
   const [editing, setEditing] = useState(false);
@@ -502,10 +507,12 @@ export default function BorrowerProfilePanel({ borrowerId, heading = 'Borrower p
         <div className="spacer" />
         {b && (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <Link className="btn ghost small" to={`/internal/borrowers/${b.id}`}
-              title="Open this person's full profile screen — their other files, entities, track record and documents">
+            {/* ONE definition of this door, shared with the file's party list, so the
+                two cannot drift in where they land or in carrying the way back
+                (BorrowerProfileLink). */}
+            <BorrowerProfileLink borrowerId={b.id} fromAppId={fromAppId} variant="button">
               Open full profile ↗
-            </Link>
+            </BorrowerProfileLink>
             <button className="btn primary small" onClick={() => setEditing(v => !v)}
               title="Edit this person's own record — legal name, date of birth, contact details, home address, housing and employment">
               {editing ? 'Close editor' : 'Edit borrower profile'}
@@ -528,7 +535,7 @@ export default function BorrowerProfilePanel({ borrowerId, heading = 'Borrower p
           <div className="small" style={{ fontWeight: 800, letterSpacing: '.05em', textTransform: 'uppercase', color: '#141B22', margin: '2px 0 2px' }}>Identity &amp; contact</div>
           <Row k="Legal name" v={fullName(b)} />
           <Row k="Date of birth" v={fmtDay(b.date_of_birth)} />
-          <BorrowerSsnRow b={b} onChanged={afterSave} />
+          <BorrowerSsnRow b={b} onChanged={afterSave} fromAppId={fromAppId} />
           <Row k="Email" v={b.email && !/@clickup\.local$/i.test(b.email) ? b.email : null} />
           <Row k="Cell phone" v={b.cell_phone} />
           <Row k="Citizenship" v={b.citizenship} />
