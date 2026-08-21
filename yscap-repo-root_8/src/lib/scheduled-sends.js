@@ -90,9 +90,21 @@ const KINDS = {
   investor_delivery: {
     label: 'Investor delivery',
     router: 'sitewire',
-    // The only kind with a target: WHICH draw is being delivered.
+    // One of the two kinds with a target: WHICH draw is being delivered.
     path: (r) => `/files/${r.application_id}/draws/${r.target_key}/investor-delivery`,
     what: 'the draw delivery to the investor',
+    requiresTarget: true,
+  },
+  tape_to_investor: {
+    label: 'Data tape to investor',
+    router: 'staff',
+    // The target is WHICH tape (the buyer's template key) — the same `:tapeKey`
+    // the download and the send-now button post to, so the scheduled send
+    // re-enters the identical path with the identical gates. Building the tape
+    // at the DUE moment rather than at scheduling time is the whole point: a
+    // tape frozen at 2am would carry figures nothing re-checked.
+    path: (r) => `/applications/${r.application_id}/tape-send/${r.target_key}`,
+    what: 'the data tape to the investor',
     requiresTarget: true,
   },
 };

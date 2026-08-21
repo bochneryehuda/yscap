@@ -994,6 +994,7 @@ export const api = {
   // the send itself (body carries recipients + note + any questionnaire answers).
   staffTapeSendPreview: (appId) => req('GET', `/api/staff/applications/${appId}/tape-send`),
   staffTapeSend:        (appId, tapeKey, body) => req('POST', `/api/staff/applications/${appId}/tape-send/${tapeKey}`, body || {}),
+  staffTapeSendSchedule: (appId, tapeKey, body) => req('POST', `/api/staff/applications/${appId}/tape-send/${tapeKey}/schedule`, body || {}),
   staffTapeLoans:    (tapeKey) => req('GET', `/api/staff/tapes/${tapeKey}/loans`),
   staffTapeBulkExport: (tapeKey, applicationIds, encompassOverrideReason) => downloadPost(`/api/staff/tapes/${tapeKey}/export/bulk${encompassOverrideReason ? qs({ encompassOverrideReason }) : ''}`, { applicationIds }),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),

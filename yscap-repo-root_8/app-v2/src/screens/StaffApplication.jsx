@@ -6909,10 +6909,18 @@ function TapeExport({ appId }) {
     } catch (e) { showMessage((e.data && e.data.error) || e.message || 'Could not load the investor contacts.'); }
     finally { setBusy(null); }
   }
-  async function runSend(tapeKey, name, answers, to, note, extra) {
+  /* SCHEDULE the same send for later. It stores the INTENT only — no tape is
+     built and no email is composed now; the server re-enters the send route at
+     the due moment, so every gate runs against the file as it stands then. */
+  async function runSchedule(tapeKey, name, { to, cc, note, day, time }) {
+    const out = await api.staffTapeSendSchedule(appId, tapeKey, { to, cc, note, day, time });
+    setSendPending(null);
+    setMsg(`The ${name} tape is queued to send ${(out.scheduled && out.scheduled.sendAtText) || 'at the time you picked'}.`);
+  }
+  async function runSend(tapeKey, name, answers, to, note, extra, cc) {
     setBusy(tapeKey); setMsg('');
     try {
-      const out = await api.staffTapeSend(appId, tapeKey, { ...(answers || {}), ...(extra || {}), to, note });
+      const out = await api.staffTapeSend(appId, tapeKey, { ...(answers || {}), ...(extra || {}), to, cc, note });
       setSendPending(null);
       setMsg(`Sent the ${name} tape to ${out.to.join(', ')}. Replies thread into this file.`);
     } catch (e) {
@@ -6921,7 +6929,7 @@ function TapeExport({ appId }) {
       // allow inline with a logged reason; everyone else asks for an exception.
       if (d.code === 'encompass_override_reason_required') {
         const reason = await askPrompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, { defaultValue: '' });
-        if (reason && reason.trim()) { await runSend(tapeKey, name, answers, to, note, { ...(extra || {}), encompassOverrideReason: reason.trim() }); return; }
+        if (reason && reason.trim()) { await runSend(tapeKey, name, answers, to, note, { ...(extra || {}), encompassOverrideReason: reason.trim() }, cc); return; }
         setBusy(null); return;
       }
       if (d.code === 'encompass_exception_required' || d.code === 'encompass_unreconciled') {
@@ -7117,7 +7125,8 @@ function TapeExport({ appId }) {
           preview={sendPending.preview}
           busy={busy === sendPending.tapeKey}
           onCancel={() => setSendPending(null)}
-          onSend={({ to, note }) => runSend(sendPending.tapeKey, sendPending.name, sendPending.answers, to, note)}
+          onSend={({ to, cc, note }) => runSend(sendPending.tapeKey, sendPending.name, sendPending.answers, to, note, undefined, cc)}
+          onSchedule={(payload) => runSchedule(sendPending.tapeKey, sendPending.name, payload)}
         />
       )}
     </div>

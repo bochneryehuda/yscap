@@ -5562,7 +5562,7 @@ router.post('/applications/:id/tape-send/:tapeKey', async (req, res) => {
     if (!out.ok) return;
     const sent = await investorSendTape.sendTapeToInvestor(req.params.id, db, {
       tape: { buf: out.buf, filename: out.filename, contentType: out.contentType },
-      to: rec.emails, note: b.note,
+      to: rec.emails, cc: b.cc, note: b.note,
       actorId: req.actor.id, actorName: req.actor.full_name || null,
     });
     await audit(req, 'tape_sent_to_investor', 'application', req.params.id, {
@@ -5571,6 +5571,50 @@ router.post('/applications/:id/tape-send/:tapeKey', async (req, res) => {
     res.json({ ok: true, to: sent.to, cc: sent.cc, replyTo: sent.replyTo, subject: sent.subject, filename: out.filename });
   } catch (e) {
     return tapeExportRefusal(res, e, 'tape send');
+  }
+});
+
+/* SCHEDULE the tape send for later (owner-directed 2026-08-21: "We need to add
+   the scheduling feature over there").
+   It stores the INTENT only — who to send to, who else to copy, the note — never
+   a built tape and never a rendered email. At the due moment the dispatcher posts
+   to the send route above from the top, so the tape is BUILT THEN and every gate
+   (permission, issuance backstop, Encompass, buyer/program match) is re-run
+   against the file as it is that morning, not as it was last night. */
+router.post('/applications/:id/tape-send/:tapeKey/schedule', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
+  const appId = req.params.id;
+  try {
+    const sched = require('../lib/scheduled-sends');
+    const investorSendTape = require('../lib/tapes/investor-send');
+    const b = req.body || {};
+
+    // The recipient rules are checked NOW as well as at send time. A person who
+    // schedules a send with no investor address has scheduled a refusal for
+    // 8am — telling them tonight is the whole value of the button.
+    const rec = investorSendTape.cleanRecipients(b.to);
+    if (rec.problem) return res.status(400).json({ error: rec.problem });
+    const extra = investorSendTape.extraAddresses(b.cc);
+    if (extra.problem) return res.status(400).json({ error: extra.problem });
+
+    const at = sched.parseNyLocal(b.day, b.time);
+    const bad = sched.whenProblem(at);
+    if (bad) return res.status(400).json({ error: bad.error, code: bad.code });
+
+    const out = await sched.schedule({
+      appId, kind: 'tape_to_investor', targetKey: String(req.params.tapeKey || ''),
+      at, payload: { to: rec.emails, cc: extra.emails, note: String(b.note || '').slice(0, 2000) },
+      actorId: req.actor.id,
+    });
+    if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
+    try {
+      await audit(req, 'tape_send_scheduled', 'application', appId,
+        { tape: req.params.tapeKey, sendAt: at.toISOString(), to: rec.emails, cc: extra.emails });
+    } catch (_) { /* recorded either way */ }
+    res.json({ ok: true, scheduled: out.row });
+  } catch (e) {
+    console.error('[tape-send schedule]', e && e.message);
+    res.status(500).json({ error: 'Could not schedule that tape send.' });
   }
 });
 

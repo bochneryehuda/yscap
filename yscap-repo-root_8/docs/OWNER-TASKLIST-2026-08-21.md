@@ -24,9 +24,9 @@ two-audit-agent gate in `CLAUDE.md`.
 
 | # | Item | Area | Status |
 |---|------|------|--------|
-| 1 | Investor delivery data-tape Excel: scheduling | Investor delivery | ☐ |
-| 2 | Investor delivery contacts: Fidelis / EMCAP prefill + CC | Investor delivery | ☐ |
-| 3 | Data tape metrics: add Total LTC, remove Effective LTV | Investor delivery | ☐ |
+| 1 | Investor delivery data-tape Excel: scheduling | Investor delivery | ☑ |
+| 2 | Investor delivery contacts: Fidelis / EMCAP prefill + CC | Investor delivery | ☑ |
+| 3 | Data tape metrics: add Total LTC, remove Effective LTV | Investor delivery | ☑ |
 | 4 | Refresh loses your place — deep-link state everywhere | Front end, global | ☐ |
 | 5 | Email replies: manual attach + drag-and-drop | Email surfaces | ☐ |
 | 6 | Drag-and-drop upload everywhere it's missing | Uploads, global | ☐ |
@@ -41,7 +41,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 15 | Borrower profile reachable from inside a file | Navigation | ☐ |
 | 16 | Overview hover button missing on full screens | Navigation | ☐ |
 | 17 | Scope of work Excel import: drag-and-drop | Uploads | ☐ |
-| 18 | ClickUp: Joshua Freidlander's files land in Lead Capture | ClickUp | ☐ |
+| 18 | ClickUp: Joshua Freidlander's files land in Lead Capture | ClickUp | ◐ |
 | 19 | ClickUp: assigning an officer moves the task to their folder | ClickUp | ☐ |
 | 20 | Rehab Budget PDF: value-add / narrative overlap | PDF | ☐ |
 | 21 | Funded date auto-read from Encompass (`CX.FUNDEDDATE`) | Encompass | ☐ |
