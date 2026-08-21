@@ -247,6 +247,12 @@ const TAG = 'dan' + crypto.randomBytes(4).toString('hex');
 
       outbox.length = 0;
       await NOTICE.notifyDrawAccepted(db, f, 'portal', {});
+      /* THE OWNER'S OTHER ASK, IN THE SAME BREATH: *"make sure that the draw coordinator is going
+         to receive EMAILS when the borrower clicks that he confirms the amount"*. An in-app row is
+         not an email, and `draw_accepted` staying OUT of `STAFF_INAPP_TYPES` is the only thing
+         that makes it one — so it is pinned on the wire rather than inferred from that list. */
+      ok('F0 the draw coordinator is EMAILED, not merely given an in-app row',
+        toList().some((a) => a.toLowerCase() === `coord.${TAG}@example.com`));
       eq('F1 the shared draw desk inbox gets exactly ONE copy', deskCopies(), 1);
       const deskMail = outbox.find((m) => (Array.isArray(m.to) ? m.to : [m.to])
         .some((a) => String(a).toLowerCase() === dr.DRAW_DESK_INBOX.toLowerCase()));
