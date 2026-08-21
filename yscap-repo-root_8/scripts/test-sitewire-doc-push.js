@@ -131,12 +131,17 @@ const parkCount = async (app) => (await db.query(`SELECT count(*)::int c FROM sy
     // 4) DEDUP — pushing again without force skips all (identical bytes)
     uploadCalls = [];
     const r2 = await docPush.pushDocuments(app, {});
-    ok('4 dedup skips all', uploadCalls.length === 0 && r2.results.every((x) => x.skipped && x.reason === 'already_pushed'));
+    // `seed()` files no plans & permits, so that slot reports itself missing and rides along in the
+    // results. These assertions are about the documents this file actually HAS, so they read past the
+    // legitimately-absent one rather than demanding that every slot in the response did the same thing.
+    ok('4 dedup skips all', uploadCalls.length === 0
+      && r2.results.filter((x) => x.reason !== 'no_plans_permits').every((x) => x.skipped && x.reason === 'already_pushed'));
 
     // 5) FORCE re-push uploads again
     uploadCalls = [];
     const r3 = await docPush.pushDocuments(app, { force: true });
-    ok('5 force re-uploads', uploadCalls.length === 3 && r3.results.every((x) => x.pushed));
+    ok('5 force re-uploads', uploadCalls.length === 3
+      && r3.results.filter((x) => x.reason !== 'no_plans_permits').every((x) => x.pushed));
     await cleanup(app, bor); }
 
   // 6) MISSING sow pdf → that slot is skipped, the other two still push
@@ -192,7 +197,8 @@ const parkCount = async (app) => (await db.query(`SELECT count(*)::int c FROM sy
   { uploadCalls = []; cfg.sitewireDryrun = true; apiDocs = [];
     const { app, bor } = await seed();
     const r = await docPush.pushDocuments(app, {});
-    ok('9 dryrun no upload', uploadCalls.length === 0 && r.results.every((x) => x.dryrun));
+    ok('9 dryrun no upload', uploadCalls.length === 0
+      && r.results.filter((x) => x.reason !== 'no_plans_permits').every((x) => x.dryrun));
     await cleanup(app, bor); cfg.sitewireDryrun = false; }
 
   // 10) gatherSowExcel FALLBACK — no stored xlsx but a saved SOW state → generated Excel is used
@@ -326,6 +332,137 @@ const parkCount = async (app) => (await db.query(`SELECT count(*)::int c FROM sy
     const s2 = await realGetSession();
     ok('12 malformed cookie rejected', s2 && s2.error === 'web_cookie_malformed');
     cfg.sitewireWebCookie = sc; cfg.sitewireWebEmail = se; cfg.sitewireWebPassword = sp; }
+
+  // What the sweep would pick up, from its OWN query — `scanOnly` runs the real predicate and pushes
+  // nothing, so the test can never drift from the selection it is measuring.
+  const sweptIds = async () => (await docPush.autoPushPlansOnce(500, { scanOnly: true })).scanned;
+
+  /* ===================== 13) PLANS & PERMITS =====================
+     Owner-directed 2026-08-21: "any time plans and permits are uploaded, they should be included in the
+     TPR and SharePoint, and it should be sent over to Sitewire as well … the same way the appraisal is
+     being sent over to Sitewire. If there is Plans and Permits on File and Plans and Permits condition,
+     it should be sent over."
+
+     Unlike the other three slots this is a FAMILY — a builder files a site plan, a permit and drawings
+     separately and the inspector needs all of them — so what is measured is that BOTH condition codes
+     feed it, that the keys are STABLE as more arrive, that the same exclusions the appraisal slot
+     applies still apply, and that the cap is REPORTED rather than silent. */
+  const addCond = async (app, code, label) => {
+    const tpl = (await db.query(`SELECT id FROM checklist_templates WHERE code=$1`, [code])).rows[0];
+    return (await db.query(
+      `INSERT INTO checklist_items (scope,application_id,template_id,label,audience,item_kind,is_required,created_by_kind)
+       VALUES ('application',$1,$2,$3,'both','document',true,'staff') RETURNING id`,
+      [app, tpl ? tpl.id : null, label])).rows[0].id;
+  };
+  const addDoc = async (app, bor, item, filename, extra = {}) => (await db.query(
+    `INSERT INTO documents(application_id,borrower_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,
+                           uploaded_by_kind,is_current,visibility,source_type,review_status)
+     VALUES($1,$2,$3,$4,'application/pdf',10,'local',$5,'staff',true,$6,'staff_upload',$7) RETURNING id`,
+    [app, bor, item, filename, 'ref/' + filename + crypto.randomBytes(3).toString('hex'),
+     extra.visibility || 'staff_only', extra.review_status || 'pending'])).rows[0].id;
+
+  // 13a) BOTH codes feed it, oldest first, with names derived from the documents.
+  { uploadCalls = []; apiDocs = [];
+    const { app, bor } = await seed({ appraisal: false, xlsx: false, pdf: false });
+    const c1 = await addCond(app, 'rtl_p1_plans', 'Plans & permits (ground-up) — if applicable');
+    const c2 = await addCond(app, 'draw_cond_plans_permits', 'Plans & permits — confirmed before the first draw');
+    await addDoc(app, bor, c1, 'Site Plan.pdf');
+    await addDoc(app, bor, c2, 'Building Permit.pdf');
+    const g = await docPush._internal.gatherPlansPermits(app);
+    ok('13a both condition codes feed the slot', g.length === 2 && !g.some((x) => x.missing));
+    ok('13a keys are the family, oldest first', g[0].which === 'plans_permits' && g[1].which === 'plans_permits:2');
+    ok('13a the name says WHICH document it is', g[0].filename === 'Plans and Permits - Site Plan.pdf'
+      && g[1].filename === 'Plans and Permits - Building Permit.pdf');
+
+    // 13b) A THIRD document does not re-letter the first two — the key has to be stable, or every
+    //      re-push would look like a change and re-upload documents Sitewire already holds.
+    await addDoc(app, bor, c1, 'Approved Drawings.pdf');
+    const g2 = await docPush._internal.gatherPlansPermits(app);
+    ok('13b an added document does not re-key the existing ones',
+      g2[0].filename === g[0].filename && g2[1].filename === g[1].filename && g2[2].which === 'plans_permits:3');
+
+    // 13c) …and they really upload, one Sitewire document each, verified.
+    apiDocs = g2.map((x) => ({ name: x.filename }));
+    const r = await docPush.pushDocuments(app, {});
+    ok('13c every plans document is pushed', uploadCalls.length === 3);
+    const l = (await links(app)).filter((x) => docPush.isPlansSlot(x.which));
+    ok('13c one link row each, all verified', l.length === 3 && l.every((x) => x.status === 'verified'));
+    await cleanup(app, bor); }
+
+  // 13d) THE SAME EXCLUSIONS THE APPRAISAL SLOT APPLIES. A rejected document, an 'internal' one and the
+  //      designated purchase advice must never ride out — the last one names the note buyer, and Sitewire
+  //      is where the BORROWER submits draws.
+  { const { app, bor } = await seed({ appraisal: false, xlsx: false, pdf: false });
+    const c1 = await addCond(app, 'rtl_p1_plans', 'Plans & permits');
+    await addDoc(app, bor, c1, 'Rejected Plan.pdf', { review_status: 'rejected' });
+    await addDoc(app, bor, c1, 'Internal Only.pdf', { visibility: 'internal' });
+    const advice = await addDoc(app, bor, c1, 'Purchase Advice.pdf');
+    await db.query(`INSERT INTO purchasing_advice (application_id, document_id) VALUES ($1,$2)
+                    ON CONFLICT (application_id) DO UPDATE SET document_id=EXCLUDED.document_id`, [app, advice]);
+    await addDoc(app, bor, c1, 'Good Permit.pdf');
+    const g = await docPush._internal.gatherPlansPermits(app);
+    const names = g.map((x) => x.filename || '').join('|');
+    ok('13d a rejected document never goes', !/Rejected/.test(names));
+    ok('13d an internal document never goes', !/Internal Only/.test(names));
+    ok('13d the purchase advice never goes — it names the note buyer', !/Purchase Advice/.test(names));
+    ok('13d and the real permit does', /Good Permit/.test(names) && g.length === 1);
+    await cleanup(app, bor); }
+
+  // 13e) NO SILENT CAP. Past the cap the count is REPORTED, on the push result and on the panel.
+  { const realMax = docPush.PLANS_MAX;
+    const { app, bor } = await seed({ appraisal: false, xlsx: false, pdf: false });
+    const c1 = await addCond(app, 'rtl_p1_plans', 'Plans & permits');
+    for (let i = 0; i < realMax + 2; i++) await addDoc(app, bor, c1, `Sheet ${i + 1}.pdf`);
+    const g = await docPush._internal.gatherPlansPermits(app);
+    ok('13e the cap is applied', g.length === realMax);
+    ok('13e …and what it left behind is counted, not dropped in silence', g.overflow === 2);
+    const st = await docPush.status(app);
+    ok('13e the panel says how many are on file', st.plans_count === realMax + 2 && st.plans_max === realMax);
+    ok('13e …and how many are not going', st.plans_overflow === 2);
+    await cleanup(app, bor); }
+
+  // 13f) A file with no plans reports the slot missing and pushes nothing for it — it must never become
+  //      an error, because most files legitimately have none.
+  { const { app, bor } = await seed({ appraisal: false, xlsx: false, pdf: false });
+    const g = await docPush._internal.gatherPlansPermits(app);
+    ok('13f nothing on file → one honest "missing"', g.length === 1 && g[0].missing === 'no_plans_permits');
+    const st = await docPush.status(app);
+    const slot = st.slots.find((x) => x.which === 'plans_permits');
+    ok('13f the panel shows the slot, empty', !!slot && slot.available === false && slot.missing === 'no_plans_permits');
+    ok('13f and nothing is reported as overflowing', st.plans_overflow === 0);
+    await cleanup(app, bor); }
+
+  // 13g) THE SWEEP — a plans document that arrives AFTER the property push still reaches Sitewire, from
+  //      whichever door filed it, because the sweep picks files by EVIDENCE (a plans document newer than
+  //      the newest plans push) rather than by being told.
+  { uploadCalls = []; apiDocs = [];
+    const { app, bor } = await seed({ appraisal: false, xlsx: false, pdf: false });
+    const c1 = await addCond(app, 'rtl_p1_plans', 'Plans & permits');
+    ok('13g a file with no plans is not swept', !(await sweptIds()).includes(app));
+    await addDoc(app, bor, c1, 'Late Permit.pdf');
+    ok('13g a file whose plans have never been pushed IS swept', (await sweptIds()).includes(app));
+    apiDocs = [{ name: 'Plans and Permits - Late Permit.pdf' }];
+    const n = await docPush.autoPushPlansOnce(50);
+    ok('13g the sweep pushes it', n.sent >= 1 && uploadCalls.length === 1);
+    ok('13g …and the file drops out of the sweep once it is up there', !(await sweptIds()).includes(app));
+
+    // A SECOND document files later → the file comes back, and only the new one uploads.
+    uploadCalls = [];
+    await addDoc(app, bor, c1, 'Revised Sheet.pdf');
+    ok('13g a later upload puts the file back in the sweep', (await sweptIds()).includes(app));
+    apiDocs = [{ name: 'Plans and Permits - Late Permit.pdf' }, { name: 'Plans and Permits - Revised Sheet.pdf' }];
+    await docPush.autoPushPlansOnce(50);
+    ok('13g only the NEW document uploads — the first is deduped by its content hash',
+      uploadCalls.length === 1 && /Revised Sheet/.test(uploadCalls[0]));
+    await cleanup(app, bor); }
+
+  // 13h) AN UNMANAGED FILE IS NEVER SWEPT — the go-forward-only rule: PILOT only ever touches a property
+  //      it created itself.
+  { const { app, bor } = await seed({ created: false, appraisal: false, xlsx: false, pdf: false });
+    const c1 = await addCond(app, 'rtl_p1_plans', 'Plans & permits');
+    await addDoc(app, bor, c1, 'Someone Elses Permit.pdf');
+    ok('13h an unmanaged file is never swept', !(await sweptIds()).includes(app));
+    await cleanup(app, bor); }
 
   console.log(`\ntest-sitewire-doc-push: ${pass} passed, ${fail} failed`);
   await db.pool.end().catch(() => {});

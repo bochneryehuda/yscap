@@ -54,7 +54,24 @@ export default function FileOverviewSlideOver({ fetcher, title = 'File overview'
   // Register this panel as an open layer while it is out, and learn whether a
   // document preview is open behind it.
   const layers = useFileOverviewLayer(open);
+  /* THE TAB MUST OUTRANK ANYTHING THAT FILLS THE SCREEN. Two things do: a document
+     preview (2026-08-20) and a full-screen TOOL SHEET — the Scope of Work, the track
+     record, the Products & Pricing studio, the generated terms (owner-reported
+     2026-08-21: "that button is not available in the full screens that are populated …
+     This should always be available"). Both get the same escalation, because the
+     requirement is the same one: the overview is always reachable.
+     A CONFIRM DIALOG STILL WINS over both — it stays on the plain `.cv-modal-back` at
+     z 200, above the escalated tab, so a question the app asks is never buried. */
   const overPreview = layers.preview;
+  /* A FULL-SCREEN TOOL SHEET covers the tab too — the Scope of Work, the track record,
+     the Products & Pricing studio and the terms it generates (owner-reported 2026-08-21:
+     "that button is not available in the full screens that are populated … This should
+     always be available"). Kept SEPARATE from the preview escalation because the number
+     is different by an order of magnitude: a preview sits at z 150 and a tool sheet at
+     1000, so one class cannot serve both. */
+  const overTool = layers.tool;
+  const over = overPreview || overTool;
+  const overClass = overTool ? ' fov-over-tool' : overPreview ? ' fov-over-preview' : '';
 
   // Fetch directly (called on first open and by Try again) — never via an
   // effect keyed on `open` alone, whose stale closure made the retry a dead
@@ -82,7 +99,7 @@ export default function FileOverviewSlideOver({ fetcher, title = 'File overview'
 
   const layer = (
     <>
-      <button type="button" className={`fov-tab${overPreview ? ' fov-over-preview' : ''}`} onClick={() => setOpen(true)}
+      <button type="button" className={`fov-tab${overClass}`} onClick={() => setOpen(true)}
         title="Open the file overview — the whole deal at a glance" aria-expanded={open}>
         {/* aria-hidden: decorative glyph — the label is the text beside it. */}
         <span className="fov-tab-ico" aria-hidden="true">◈</span>
@@ -91,8 +108,8 @@ export default function FileOverviewSlideOver({ fetcher, title = 'File overview'
       {/* No second dim over a document preview — the preview's own backdrop is
           already there, and a second one would darken the document you opened
           this panel to compare against. */}
-      {open && !overPreview && <div className="fov-back" onClick={() => setOpen(false)} />}
-      <aside className={`fov-panel${open ? ' fov-open' : ''}${overPreview ? ' fov-over-preview' : ''}`}
+      {open && !over && <div className="fov-back" onClick={() => setOpen(false)} />}
+      <aside className={`fov-panel${open ? ' fov-open' : ''}${overClass}`}
         aria-hidden={!open} role="dialog" aria-label={title}>
         <div className="fov-head">
           <div>

@@ -25,6 +25,19 @@ const ingest = require('../trinity/ingest');
 const intake = require('../trinity/intake');
 const report = require('../trinity/report');
 const mapper = require('../trinity/mapper');
+const catalog = require('../trinity/catalog');
+
+/** The file's own record of a deliberate act. Best-effort — an audit hiccup must never cost the
+ *  action it describes (the same shape every other route in this codebase uses). */
+async function audit(req, action, entityType, entityId, detail) {
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+       VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
+      [req.actor.id, action, entityType, entityId, req.ip, req.get('user-agent') || null,
+       detail ? JSON.stringify(detail) : null]);
+  } catch (_) { /* audit is best-effort */ }
+}
 
 // BOTH, in this order, exactly as /api/sitewire and /api/trustpoint mount their walls.
 // `requireAuth` IS `authenticate` — it is what reads the bearer token and puts `req.actor`
@@ -210,10 +223,15 @@ router.post('/files/:appId/orders', fileScope, async (req, res, next) => {
   try {
     if (!can(req, 'manage_draws')) return bad(res, 403, 'You do not have permission to manage draws.');
     const b = req.body || {};
+    /* ORDERING ON A FILE THAT IS NOT TRINITY'S (owner-directed 2026-08-21, item 25). The coordinator
+       must ASK for it (`override:true`) and say WHY — `eligibility.planManualOrder` is the one rule,
+       and `intake.orderManually` applies it, so this door cannot widen anything on its own. */
     const r = await intake.orderManually(req.appId, {
       sitewireDrawId: b.sitewireDrawId != null ? b.sitewireDrawId : (b.sitewire_draw_id != null ? b.sitewire_draw_id : null),
       portalRequestId: b.portalRequestId != null ? b.portalRequestId : (b.portal_request_id != null ? b.portal_request_id : null),
       staffId: req.actor.id,
+      override: b.override === true || b.override === 'true',
+      overrideReason: b.overrideReason != null ? String(b.overrideReason) : null,
     });
     if (r.blocked) return res.status(422).json(r);
     if (r.error) return res.status(502).json(r);
@@ -227,6 +245,11 @@ router.post('/files/:appId/orders', fileScope, async (req, res, next) => {
         error: r.message || 'The inspection could not be ordered just now.',
         skipped: r.skipped,
       });
+    }
+    // The file's own audit trail carries it too — the row records the reason, this records the act.
+    if (r.override) {
+      await audit(req, 'trinity_manual_override_order', 'application', req.appId,
+        { orderRowId: r.orderRowId || null, trinityOrderId: r.trinityOrderId || null });
     }
     res.json(r);
   } catch (e) { next(e); }
@@ -600,28 +623,52 @@ router.get('/status', async (req, res, next) => {
       // after a coordinator has already pressed the button on a live file. Reading it here
       // turns it into a red line on the API Health page BEFORE anything is ordered. It is
       // computed from the forms list we already fetched, so it costs no extra call.
+      /* The catalogue reader is ONE definition (src/trinity/catalog.js) — this page and the draw
+         coordinator's own Trinity section read the same answer, so the health page can never say a
+         product is enabled while the desk says it is not. */
       const want = client.formId();
-      const ids = [];
-      (function collect(node) {
-        if (Array.isArray(node)) return node.forEach(collect);
-        if (node && typeof node === 'object') {
-          if (Number.isFinite(Number(node.id)) && typeof node.name === 'string') ids.push(Number(node.id));
-          Object.values(node).forEach(collect);
-        }
-      })(out.forms);
-      out.formCheck = ids.length
-        ? {
-          formId: want,
-          enabled: ids.includes(Number(want)),
-          available: ids,
-          message: ids.includes(Number(want))
-            ? `Form ${want} is enabled on this account — orders will be accepted.`
-            : `Form ${want} is NOT enabled on this Trinity account, so every order would be refused. `
-              + `This account offers: ${ids.join(', ')}. Set TRINITY_FORM_ID to the line-item draw form for this account.`,
-        }
-        : { formId: want, enabled: null, message: 'Could not read the form list, so the form could not be checked.' };
+      const chk = catalog.productCheck(out.forms, want);
+      out.formCheck = {
+        formId: chk.formId,
+        enabled: chk.enabled,
+        available: chk.products.map((p) => p.id),
+        products: chk.products,
+        droneProducts: chk.droneProducts,
+        message: chk.enabled === false
+          ? `${chk.message} Set TRINITY_FORM_ID to the line-item draw form for this account.`
+          : chk.message,
+      };
     }
     res.json(out);
+  } catch (e) { next(e); }
+});
+
+/* WHAT WE ORDER, ON THE DESK (owner-directed 2026-08-21, item 25: *"make sure that the product that
+   you ordered is the correct product … get the list of products"*). The admin health page has
+   checked this since 2026-08-16, but the person about to press Order could not see it. Read LIVE
+   from Trinity — the production account's catalogue differs from the sandbox's, so anything we kept
+   ourselves would be right in testing and wrong on the first real order.
+
+   Cached briefly: a catalogue changes when Trinity changes our account, and the client shares one
+   rate bucket with every order and poll. Never throws — an unreadable catalogue answers `read:false`,
+   which is a different statement from "they sell nothing" and is shown as such. */
+let _catalogCache = { at: 0, value: null };
+const CATALOG_TTL_MS = 10 * 60 * 1000;
+router.get('/products', async (req, res, next) => {
+  try {
+    if (!can(req, 'manage_draws')) return bad(res, 403, 'You do not have permission to manage draws.');
+    const want = client.formId();
+    if (!client.available()) {
+      return res.json({ configured: false, formId: want, read: false, products: [],
+        message: 'The Trinity connection is not set up yet, so their product list cannot be read.' });
+    }
+    const fresh = Date.now() - _catalogCache.at < CATALOG_TTL_MS;
+    if (!fresh || !_catalogCache.value) {
+      let forms = null;
+      try { forms = await client.forms(); } catch (_) { forms = null; }
+      _catalogCache = { at: Date.now(), value: catalog.productCheck(forms, want) };
+    }
+    res.json({ configured: true, cachedAt: new Date(_catalogCache.at).toISOString(), ..._catalogCache.value });
   } catch (e) { next(e); }
 });
 

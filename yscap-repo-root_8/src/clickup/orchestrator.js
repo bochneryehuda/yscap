@@ -793,9 +793,34 @@ async function journalFieldWrite(appId, taskId, fieldId, oldVal, newVal, source,
   } catch (e) { console.warn('[clickup] write-journal insert failed:', e.message); }
 }
 
-/** Resolve the destination list: officer's pipeline folder, else Lead Capture. */
+/** Resolve the destination list: officer's pipeline folder, else Lead Capture.
+ *
+ * Resolution is by IDENTITY (ClickUp member id, then staff email, then name) — not
+ * by the officer's display name alone. Owner-reported 2026-08-21: every file
+ * belonging to one officer was landing in Lead Capture because their portal name is
+ * spelled differently from the hand-typed key in the routing registry, and an
+ * officer we could not place returned exactly the same answer as no officer at all.
+ * See routing.resolveRoutingFor for the strength order.
+ */
 async function resolveTargetList(ctx) {
-  const route = routing.resolveRouting(ctx.officerName);
+  const route = routing.resolveRoutingFor({
+    clickupUserId: ctx.officerClickupId,
+    email: ctx._row && ctx._row.officer_email,
+    name: ctx.officerName,
+  });
+  // A file that HAS an officer we could not place is a registry gap, not a lead. It
+  // still goes to Lead Capture (there is nowhere better to put it), but it is
+  // recorded so it can be found and fixed instead of sitting there unnoticed.
+  if (route.unresolved) {
+    console.error('[clickup] officer could not be routed — filing to Lead Capture:',
+      { appId: ctx.portalAppId, officerName: ctx.officerName || null, hasEmail: !!(ctx._row && ctx._row.officer_email) });
+    await logSync('routing_unresolved', ctx.portalAppId, null, {
+      officerName: ctx.officerName || null,
+      officerEmail: (ctx._row && ctx._row.officer_email) || null,
+      officerClickupId: ctx.officerClickupId || null,
+      filedTo: 'lead_capture',
+    }).catch(() => {});
+  }
   const folderId = route.pipelineFolderId || routing.LEAD_CAPTURE_FOLDER;
   if (ctx._row.clickup_folder_id == null) {
     await db.query(`UPDATE applications SET clickup_folder_id=$1 WHERE id=$2`, [folderId, ctx.portalAppId]).catch(() => {});

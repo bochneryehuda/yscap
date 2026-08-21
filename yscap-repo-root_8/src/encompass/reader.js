@@ -387,6 +387,19 @@ async function pullLoanForApplication(appId) {
     await require('../sitewire/release-party').syncPurchaseAdviceDate(db, appId, loan._fieldValues);
   } catch (_) { /* never break a pull over a reference field */ }
 
+  // THE FUNDED DATE. CX.FUNDEDDATE has been READ on every pull since the field map was
+  // written and never WRITTEN anywhere — so the closer retyped by hand a date PILOT was
+  // already holding (owner-reported 2026-08-21). This lands it on the file and moves the
+  // file to Funded. Read-only INTO our columns, exactly like the sold signal above:
+  // nothing is ever written to Encompass. It reads the SCRUBBED loan — what
+  // `encompass_extra` now holds — through `closing.readEncompassFundedDate`, the same
+  // reader the closing desk's reconciliation gate compares against, so the two can never
+  // disagree about what Encompass says. It never reconciles the file (that additionally
+  // needs ClickUp to match) and it can never break a pull.
+  try {
+    await require('../lib/encompass-funded').syncFundedDate(db, appId, scrubbed);
+  } catch (_) { /* never break a pull over a reference field */ }
+
   return { ok: true, guid, pulledAt: new Date().toISOString(), size: Buffer.byteLength(jsonText, 'utf8') };
 }
 

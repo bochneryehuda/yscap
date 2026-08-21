@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
+import DropZone from '../components/DropZone.jsx';
 import { useAuth } from '../lib/auth.jsx';
 
 /**
@@ -193,9 +194,19 @@ export default function StaffLabelingConsole() {
             onChange={(e) => setAddForm({ ...addForm, pages: e.target.value })}
             style={{ width: 130 }} />
         </label>
-        <label>File
+        {/* Drag-and-drop as well as the picker (owner item 6, 2026-08-21). The console reads
+            the file off the input at submit time, so a drop puts it THERE — a DataTransfer
+            can be assigned to an input's `files`, which keeps one source of truth instead of
+            a second piece of state that could disagree with what the box shows. */}
+        <DropZone as="label" className="dz-inline" title="Drop the document here"
+          onFiles={(list) => {
+            if (!fileRef.current || !list || !list.length) return;
+            const dt = new DataTransfer();
+            for (const f of list) dt.items.add(f);
+            fileRef.current.files = dt.files;
+          }}>File
           <input ref={fileRef} type="file" accept="application/pdf,image/*" />
-        </label>
+        </DropZone>
         <button className="btn primary" type="submit" disabled={busy || !data.blobConfigured}>{busy ? 'Uploading…' : 'Upload example'}</button>
       </form>
 

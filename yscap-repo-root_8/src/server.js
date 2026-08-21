@@ -975,6 +975,24 @@ if (require.main === module) {
         require('./lib/esign/draw-wire').backfillWireReclassifyOnce()
           .then((r) => r && (r.fixed || r.linked) && console.log('[boot] draw-wire reclassify backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] draw-wire reclassify backfill failed:', e.message));
+        // PREVIOUS FILES for the Encompass funded date (owner-reported 2026-08-21: PILOT
+        // "does not automatically recognize from Encompass the funded date"). CX.FUNDEDDATE
+        // has been READ on every pull for months and never WRITTEN, so every already-synced
+        // file is sitting on a stored loan JSON that carries it. Going forward the pull
+        // itself lands it, so this is a ONE-SHOT walk of that back book — no Encompass call
+        // is made, it reads the JSON we already hold. Cursor-driven so it resumes across
+        // boots, self-terminating, and it never reconciles anything (that still needs
+        // ClickUp to agree). Off with ENCOMPASS_FUNDED_BACKFILL_DISABLED=1.
+        (function drainEncompassFunded() {
+          require('./lib/encompass-funded').backfillStoredFundedDatesOnce()
+            .then((r) => {
+              if (r && (r.filled || r.moved)) console.log('[boot] Encompass funded-date backfill:', JSON.stringify(r));
+              // Keep walking while there is still book to walk — a bounded pass per tick
+              // rather than one giant scan, and it stops the moment the walk is finished.
+              if (r && !r.done && !r.skipped) setTimeout(drainEncompassFunded, 60000).unref?.();
+            })
+            .catch((e) => console.error('[boot] Encompass funded-date backfill failed:', e.message));
+        }());
         // PREVIOUS FILES for the Heter Iska auto-feed fix (owner-reported 2026-08: a
         // completed Heter Iska DocuSign package "wasn't fed directly into the iska
         // condition"). The send-time ensure + webhook re-resolve heal in-flight

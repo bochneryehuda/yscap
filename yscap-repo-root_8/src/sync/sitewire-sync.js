@@ -184,6 +184,20 @@ function start() {
   }, 4000);
   setInterval(reconcileOnce, Math.max(60, cfg.sitewirePollSec) * 1000);
   setTimeout(reconcileOnce, 8000);
+  // PLANS & PERMITS REACH SITEWIRE WHENEVER THEY ARRIVE (owner-directed 2026-08-21). A sweep rather than
+  // a hook on each upload door, because there are at least four of them and no single place they all pass
+  // through — see doc-push.autoPushPlansOnce. Cheap when there is nothing to do, non-reentrant, and it
+  // can never throw into the worker.
+  let plansBusy = false;
+  const plansTick = () => {
+    if (plansBusy) return;
+    plansBusy = true;
+    Promise.resolve(require('../sitewire/doc-push').autoPushPlansOnce())
+      .catch((e) => console.warn('[sitewire] plans auto-push tick:', e && e.message))
+      .finally(() => { plansBusy = false; });
+  };
+  setInterval(plansTick, Math.max(60, cfg.sitewirePollSec) * 1000);
+  setTimeout(plansTick, 12000);
 }
 
 module.exports = { start, pushOutboxOnce, reconcileOnce, backfillUnsyncedLifecycleOnce };

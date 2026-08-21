@@ -2,7 +2,25 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 import App from './App.jsx';
+import { installStrayDropGuard } from './lib/stray-drop-guard.js';
+import { showMessage } from './lib/dialog.js';
 createRoot(document.getElementById('root')).render(<App />);
+
+/* A FILE DROPPED IN THE WRONG PLACE MUST NOT DESTROY THE PAGE (owner item 6,
+   2026-08-21: dropping a document outside an upload zone "will close your file,
+   explode it"). That is the browser's default — it navigates the tab to the file and
+   the whole app goes with it, unsaved work included. Installed once, at start-up, so
+   it covers every screen and the margins outside React's root too; it only ever sees
+   drops that no upload zone claimed. */
+installStrayDropGuard((e) => {
+  showMessage(
+    'That document was dropped outside an upload box, so nothing was uploaded — and PILOT stopped '
+    + 'the browser from opening the file and closing your work.\n\n'
+    + 'Drop it straight onto the condition, the document slot, or the upload area you want it filed against.',
+    { title: 'Nothing was uploaded' },
+  );
+  void e;
+});
 
 // Register the PWA service worker so the portal is installable and opens fast.
 // It caches only the static shell — never API/auth/PII (see public/sw.js).

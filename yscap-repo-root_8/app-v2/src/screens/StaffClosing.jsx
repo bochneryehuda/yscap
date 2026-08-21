@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import { fmtDate } from '../lib/dates.js';
 import { confirmRemoveFromWorkflow } from '../lib/workflowRemove.js';
+import { useUrlState } from '../lib/useUrlState.js';
 
 /* THE CLOSING QUEUE (owner-directed 2026-07-26). Every file in the closing
    workflow, for the closer + the file's officer. Closers land here on login. */
@@ -26,7 +27,7 @@ export default function StaffClosing() {
   const { can } = useAuth();
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
-  const [filter, setFilter] = useState('active');
+  const [filter, setFilter] = useUrlState('filter', 'active', { remember: 'closing.filter' });
   const [busy, setBusy] = useState(null);
 
   function load() {

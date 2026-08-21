@@ -240,9 +240,26 @@ async function main() {
     ok((await orchestrate.loadCcViewers(db, appA, 'draw_request')).every((v) => v.name && v.email),
       'every viewer carries a name + email (DocuSign rejects a nameless recipient)');
 
+    // THE ORIGINATION PACKAGES COPY THE COORDINATOR TOO — owner-directed 2026-08-21,
+    // which REVERSES the draw_request-only scoping this block used to assert ("when
+    // you're sending out the term sheet package, when you're sending out the ISKA, and
+    // when you're sending out the draw form, then the draw coordinator … should be
+    // looped in as viewers"). The old expectation is kept in the git history, not here.
+    //
+    // But the DESK FALLBACK must not follow them there, and that is the sharper half of
+    // the rule: a file has no draw project until it FUNDS, so at term-sheet time there is
+    // never a coordinator assigned, and the wire form's fallback would put the whole draw
+    // desk plus the shared inbox on every borrower's loan documents. The wire form keeps
+    // its cover (asserted three lines up); the origination packages take only a
+    // coordinator the file actually has.
     const iska = (await orchestrate.loadCcViewers(db, appA, 'heter_iska')).map((v) => lower(v.email));
-    ok(!iska.includes(coordA.email) && !iska.includes(dr.DRAW_DESK_INBOX),
-      'an ORIGINATION package does not copy the draw desk — the rule is scoped to the wire request form');
+    ok(iska.includes(coordA.email),
+      'an ORIGINATION package (Heter Iska) copies the file\'s OWN draw coordinator');
+    ok(!iska.includes(dr.DRAW_DESK_INBOX),
+      '…but never the shared draw desk — that fallback belongs to the wire form alone');
+    const ts = (await orchestrate.loadCcViewers(db, appA, 'term_sheet_package')).map((v) => lower(v.email));
+    ok(ts.includes(coordA.email) && !ts.includes(dr.DRAW_DESK_INBOX),
+      '…and the term-sheet package behaves the same way');
     ok(iska.includes(lo.email), '…the origination package still copies the file team exactly as before');
   }
 

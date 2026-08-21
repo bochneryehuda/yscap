@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth.jsx';
 import { fmtDate } from '../lib/dates.js';
 import { useFlash } from '../components/FlashToast.jsx';
 import { confirmRemoveWorkflowItem } from '../lib/workflowRemove.js';
+import { useUrlState } from '../lib/useUrlState.js';
 
 /* THE WORKFLOW (owner-directed 2026-07-21) — my personal work queue.
    Everything submitted to me, in the order it arrived, with a live "up next"
@@ -61,9 +62,9 @@ const fmtWhen = (ts) => { try { return new Date(ts).toLocaleString(); } catch { 
 export default function StaffWorkflow() {
   const { role } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
-  const [view, setView] = useState('mine');          // 'mine' | 'role:<role>' | 'staff:<id>'
+  const [view, setView] = useUrlState('view', 'mine', { remember: 'workflow.view' });          // 'mine' | 'role:<role>' | 'staff:<id>'
   const [roster, setRoster] = useState(null);        // { staff:[{id,full_name,role}] }
-  const [tab, setTab] = useState('next');             // next | history
+  const [tab, setTab] = useUrlState('tab', 'next');             // next | history
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(null);            // item id being acted on

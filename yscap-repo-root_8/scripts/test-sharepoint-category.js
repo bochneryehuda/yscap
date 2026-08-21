@@ -130,5 +130,32 @@ ok(sk({ checklist_item_id: 'ci1', template_code: 'rtl_cond_fraud', slot_label: '
     'flood cert with no condition still files under "Flood Cert"');
 }
 
+/* PLANS & PERMITS, FEASIBILITY AND THE GC RECORD FILE WITH THE SCOPE OF WORK — both in the investor
+   package and in the team site (owner-directed 2026-08-21: "any time plans and permits are uploaded,
+   they should be included in the TPR and SharePoint", and "adding the feasibility report … and the
+   contractor contact information in the TPR export and in the SharePoint").
+
+   The keyword fallback deliberately matches none of these words — "plans", "feasibility" and "general
+   contractor" all mean other things elsewhere on a loan file — so WITHOUT the code map every one of
+   these documents lands in the catch-all folder on every ground-up file. That is what this pins. */
+{
+  const tprCat = require('../src/lib/tpr-export').categoryFor;
+  for (const code of ['rtl_p1_plans', 'draw_cond_plans_permits', 'rtl_cond_feasibility', 'rtl_cond_gc_info']) {
+    const c = cat({ template_code: code });
+    ok(!!c && c !== 'Other Documents', `${code} has a real folder of its own (got ${c})`);
+    ok(c === tprCat({ template_code: code }), `${code} files the SAME in the mirror and the TPR package`);
+  }
+  // MEASURED, not assumed: the keyword fallback already recognises "plans" and files it with the Scope
+  // of Work, so the code map and the fallback AGREE there — which is the stronger statement, because a
+  // plans document that somehow reaches the export with no condition still lands in the right folder.
+  ok(cat({ filename: 'plans.pdf' }) === 'Scope of Work',
+    'a plans document with no condition still files with the Scope of Work, by its name');
+  // "feasibility" and "general contractor" are NOT keywords — those two rely entirely on the code map,
+  // which is why removing an entry from it would quietly send them to the catch-all folder.
+  ok(cat({ filename: 'feasibility study.pdf' }) === 'Other Documents',
+    'a feasibility report with no condition has only the code map to save it');
+  ok(cat({ filename: 'general contractor information.pdf' }) === 'Other Documents', '…and so does the GC record');
+}
+
 console.log(`\nsharepoint-category: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

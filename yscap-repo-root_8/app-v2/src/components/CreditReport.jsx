@@ -1,4 +1,19 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import DropZone from './DropZone.jsx';
+
+/* WHICH SLOT A DROPPED CREDIT FILE BELONGS IN. A credit report arrives as two files —
+   the machine-readable data file and the human-readable report — and dropping both at
+   once should fill both slots rather than making somebody click twice and remember
+   which is which. Decided on the NAME and the type, never on the order they were
+   dropped in. Anything that is neither is ignored rather than guessed into a slot. */
+export function sortCreditDrop(files, put) {
+  for (const f of Array.from(files || [])) {
+    const name = String((f && f.name) || '').toLowerCase();
+    const type = String((f && f.type) || '').toLowerCase();
+    if (name.endsWith('.xml') || type.includes('xml')) put('xml', f);
+    else if (name.endsWith('.pdf') || type.includes('pdf')) put('pdf', f);
+  }
+}
 import { api, saveBlob } from '../lib/api.js';
 import { fileToBase64 } from '../lib/files.js';
 import DocPreview from './DocPreview.jsx';
@@ -579,7 +594,14 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
 
                 {uploadMode === 'separate' && hasMulti ? (
                   roster.map((bb) => (
-                    <div key={bb.borrowerId} className="crx-upload-person">
+                    /* A drop here SORTS BY KIND — the data file into the XML slot and the
+                       report into the PDF slot — so both halves of one credit report can be
+                       dragged over together (owner item 6, 2026-08-21). Per person, because
+                       a <DropZone> is a component and may be rendered in a .map() where the
+                       hook it wraps could not be called. */
+                    <DropZone key={bb.borrowerId} className="crx-upload-person dropzone"
+                      onFiles={(files) => sortCreditDrop(files, (kind, f) => setPerFile(bb.borrowerId, kind, f))}
+                      title="Drag this borrower's data file and report here">
                       <div className="crx-upload-person-name">{bb.name}
                         <span className={'crx-role-tag' + (bb.role === 'co' ? ' co' : '')}>{bb.role === 'co' ? 'Co-borrower' : 'Primary'}</span></div>
                       <div className="crx-upload-row"><span>Data file (XML)</span>
@@ -588,15 +610,16 @@ function CreditImportModal({ appId, onClose, onDone, scopeBorrowerId }) {
                       <div className="crx-upload-row"><span>Report (PDF)</span>
                         <input type="file" accept="application/pdf,.pdf"
                           onChange={(e) => setPerFile(bb.borrowerId, 'pdf', e.target.files[0] || null)} /></div>
-                    </div>
+                    </DropZone>
                   ))
                 ) : (
-                  <>
+                  <DropZone className="dropzone" title="Drag the data file and the report here"
+                    onFiles={(files) => sortCreditDrop(files, (kind, f) => (kind === 'xml' ? setXmlFile(f) : setPdfFile(f)))}>
                     <div className="crx-upload-row"><span>Data file (XML)</span>
                       <input type="file" accept=".xml,text/xml,application/xml" onChange={(e) => setXmlFile(e.target.files[0] || null)} /></div>
                     <div className="crx-upload-row"><span>Report (PDF)</span>
                       <input type="file" accept="application/pdf,.pdf" onChange={(e) => setPdfFile(e.target.files[0] || null)} /></div>
-                  </>
+                  </DropZone>
                 )}
                 <p className="crx-upload-hint">The data file (XML) builds the credit-details section{mergedMode ? ' and is what lets PILOT split a merged report between the two borrowers' : ''}; the PDF is filed on the loan.{mergedMode && !xmlFile && pdfFile ? ' With only the PDF, the same report is filed for both borrowers but there are no scores until a data file is imported.' : ''}</p>
               </section>

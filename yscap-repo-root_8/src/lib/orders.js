@@ -558,7 +558,7 @@ function replyOrderSubject(subject) {
  *        mint + In-Reply-To/References pointing at the last message we sent). The
  *        minted Message-ID is RETURNED so the caller can advance the thread.
  */
-async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromName, type, thread }) {
+async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromName, type, thread, attachments }) {
   const toList = (to || []).filter(Boolean);
   const ccList = (cc || []).filter(Boolean);
   if (!toList.length) {
@@ -587,6 +587,9 @@ async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromNa
     res = await email.sendMail({
       to: toList, cc: ccList,
       subject, html: built.html, text: built.text, headers,
+      // A staffer's own attachments on a typed reply (owner-directed 2026-08-21). Absent on
+      // the PLACE path and on every existing caller, so those sends are byte-identical.
+      ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
       replyTo: replyTo || require('./file-address').fileReplyTo(appId) || cfg.replyToDefault || null,
       from: fromName && email.fromWithName ? email.fromWithName(fromName) : undefined,
       _ctx: { applicationId: appId, type, audience: 'staff' },

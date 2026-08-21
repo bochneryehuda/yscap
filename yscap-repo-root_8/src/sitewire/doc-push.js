@@ -12,6 +12,14 @@
  *   2. sow_xlsx       — the Scope of Work Excel (doc_kind='rehab_budget_export', .xlsx/spreadsheet);
  *                        regenerated from the saved SOW if no stored Excel exists
  *   3. sow_pdf        — the Scope of Work PDF (doc_kind='rehab_budget_export', .pdf)
+ *   4. plans_permits  — the plans & permits filed on this loan (owner-directed 2026-08-21: "any time
+ *                        plans and permits are uploaded … it should be sent over to Sitewire as well …
+ *                        the same way the appraisal is being sent over to Sitewire"). Unlike the other
+ *                        three this is a FAMILY, not one document: a builder files a site plan, a
+ *                        building permit and approved drawings separately, and the inspector standing on
+ *                        the site needs all of them. So it expands to `plans_permits`, `plans_permits:2`
+ *                        … one Sitewire document each, up to PLANS_MAX — and anything past the cap is
+ *                        REPORTED rather than dropped in silence.
  *
  * Staged like every write: OFF unless SITEWIRE_DOCS_ENABLED, and still honors SITEWIRE_OUTBOUND_ENABLED
  * (write gate) + SITEWIRE_DRYRUN (log, send nothing). GO-FORWARD ONLY: a file must be PILOT-managed
@@ -26,7 +34,13 @@ const web = require('./web-client');
 const orch = require('./orchestrator');
 const sow = require('./sow-line-edit');
 
-const SLOTS = ['appraisal_pdf', 'sow_xlsx', 'sow_pdf'];
+const SLOTS = ['appraisal_pdf', 'sow_xlsx', 'sow_pdf', 'plans_permits'];
+// The plans family expands past its base key; every other slot is exactly itself.
+const PLANS_BASE = 'plans_permits';
+const isPlansSlot = (w) => w === PLANS_BASE || String(w || '').startsWith(PLANS_BASE + ':');
+// A cap, because this reads bytes into memory and opens one upload per document. It is a REPORTED cap:
+// `slotAvailability` returns the true count and `status` says how many were left behind.
+const PLANS_MAX = Math.max(1, parseInt(process.env.SITEWIRE_PLANS_MAX || '6', 10) || 6);
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
 // ---- gather the RIGHT bytes for each slot (never the wrong slot) ----
@@ -116,9 +130,66 @@ async function gatherSowPdf(appId) {
   return { which: 'sow_pdf', filename: 'Scope of Work.pdf', contentType: 'application/pdf', bytes, sourceDocId: row.id };
 }
 
+/* PLANS & PERMITS (owner-directed 2026-08-21). Both places the owner named count — "If there is Plans
+   and Permits on File and Plans and Permits condition" — which are the two live templates:
+   `rtl_p1_plans` ("Plans & permits (ground-up) — if applicable") and `draw_cond_plans_permits`
+   ("Plans & permits — confirmed before the first draw"). Matching the CODES rather than a label means a
+   relabelling cannot quietly stop the push.
+
+   THE SAME PREDICATE THE APPRAISAL SLOT USES, DELIBERATELY — the owner's own words are "the same way the
+   appraisal is being sent over to Sitewire", and the two sit on one Documents tab. So: current, not
+   rejected, never an 'internal' document, and never the designated purchase advice (it names the note
+   buyer, and Sitewire is where the borrower submits draws). It is NOT accepted-only: db/424 governs what
+   goes out to an INVESTOR or an attorney, while this is the servicing inspector working from whatever the
+   builder actually filed — and holding a permit back until somebody reviews it would leave an inspector
+   standing on a site without it. Tightening that is an owner call, and it would have to move the
+   appraisal slot beside it too. */
+const PLANS_WHERE = `d.application_id=$1 AND d.is_current=true AND COALESCE(d.review_status,'') <> 'rejected'
+    AND COALESCE(d.visibility,'') <> 'internal'
+    AND d.id IS DISTINCT FROM (SELECT a.document_id FROM purchasing_advice a WHERE a.application_id=$1)
+    AND d.checklist_item_id IN (
+          SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+           WHERE ci.application_id=$1 AND t.code IN ('rtl_p1_plans','draw_cond_plans_permits'))`;
+
+/* The Sitewire name is DERIVED FROM THE DOCUMENT, not numbered — an inspector needs to tell a site plan
+   from a building permit, and "Plans and Permits (2).pdf" tells them nothing. It is deterministic (the
+   same document always produces the same name) because verifyPresent matches on the name, so a re-push
+   has to land on the copy it already made. */
+function plansDocName(row) {
+  const raw = String(row.filename || 'Plans and Permits');
+  const dot = raw.lastIndexOf('.');
+  const base = (dot > 0 ? raw.slice(0, dot) : raw).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim() || 'Document';
+  const ext = dot > 0 ? raw.slice(dot).toLowerCase() : '';
+  return `Plans and Permits - ${base.slice(0, 60)}${ext}`;
+}
+
+async function gatherPlansPermits(appId) {
+  const rows = (await db.query(
+    `SELECT d.id, d.filename, d.content_type, d.storage_ref FROM documents d
+      WHERE ${PLANS_WHERE}
+      ORDER BY d.created_at ASC, d.id ASC`, [appId])).rows;
+  if (!rows.length) return [{ which: PLANS_BASE, missing: 'no_plans_permits' }];
+  const out = [];
+  // OLDEST FIRST, so the key a document gets is STABLE: keying newest-first would re-letter every
+  // existing document the moment one more is filed, and every re-push would then look like a change.
+  for (let i = 0; i < rows.length && i < PLANS_MAX; i++) {
+    const row = rows[i];
+    const which = i === 0 ? PLANS_BASE : `${PLANS_BASE}:${i + 1}`;
+    const bytes = await readDoc(row);
+    if (!bytes) { out.push({ which, missing: 'plans_permits_bytes_unreadable' }); continue; }
+    out.push({ which, filename: plansDocName(row), contentType: row.content_type || 'application/octet-stream',
+      bytes, sourceDocId: row.id });
+  }
+  if (rows.length > PLANS_MAX) out.overflow = rows.length - PLANS_MAX;   // NEVER a silent cap
+  return out;
+}
+
 async function gatherAll(appId) {
-  const [a, x, p] = await Promise.all([gatherAppraisalPdf(appId), gatherSowExcel(appId), gatherSowPdf(appId)]);
-  return { appraisal_pdf: a, sow_xlsx: x, sow_pdf: p };
+  const [a, x, p, pp] = await Promise.all([gatherAppraisalPdf(appId), gatherSowExcel(appId), gatherSowPdf(appId), gatherPlansPermits(appId)]);
+  const out = { appraisal_pdf: a, sow_xlsx: x, sow_pdf: p };
+  for (const g of pp) out[g.which] = g;
+  if (pp.overflow) out._plansOverflow = pp.overflow;
+  return out;
 }
 
 // METADATA-ONLY availability (no storage bytes read) for the status endpoint / panel render, which can run
@@ -137,7 +208,11 @@ async function slotAvailability(appId) {
   const pdf = rows.some((r) => (r.content_type === 'application/pdf') || /\.pdf$/.test(r.fn || ''));
   let xlsxFallback = false;
   if (!xlsx) { try { const s = await sow.loadSow(appId); xlsxFallback = !!(s && s.state); } catch (_) { xlsxFallback = false; } }
-  return { appraisal_pdf: appraisal, sow_xlsx: xlsx || xlsxFallback, sow_pdf: pdf, sow_xlsx_generated: !xlsx && xlsxFallback };
+  // The TRUE count, not the capped one — `status` needs to be able to say what was left behind.
+  const plansCount = Number((await db.query(
+    `SELECT count(*)::int AS n FROM documents d WHERE ${PLANS_WHERE}`, [appId])).rows[0].n) || 0;
+  return { appraisal_pdf: appraisal, sow_xlsx: xlsx || xlsxFallback, sow_pdf: pdf,
+    sow_xlsx_generated: !xlsx && xlsxFallback, plans_count: plansCount };
 }
 
 // A quick read-only status for the UI: which of the 3 documents are available to push + their push state.
@@ -149,14 +224,28 @@ async function status(appId) {
     `SELECT which, status, filename, sitewire_document_name, sha256, pushed_at, last_error
        FROM sitewire_document_links WHERE application_id=$1`, [appId])).rows;
   const byWhich = Object.fromEntries(links.map((r) => [r.which, r]));
-  const slots = SLOTS.map((w) => {
-    const isAvail = !!avail[w];
+  // The plans family is as long as the file's own plans are — the fixed list carries only its BASE key,
+  // so the extra ones come from what is on the file (capped) unioned with what has already been pushed
+  // (so a document since removed still shows its push record rather than vanishing from the panel).
+  const plansShown = Math.min(Math.max(avail.plans_count || 0, 1), PLANS_MAX);
+  const plansKeys = Array.from(new Set([
+    ...Array.from({ length: plansShown }, (_, i) => (i === 0 ? PLANS_BASE : `${PLANS_BASE}:${i + 1}`)),
+    ...links.map((r) => r.which).filter(isPlansSlot),
+  ]));
+  const allKeys = [...SLOTS.filter((w) => w !== PLANS_BASE), ...plansKeys];
+  const slots = allKeys.map((w) => {
+    const plansIdx = isPlansSlot(w) ? (w === PLANS_BASE ? 1 : Number(w.slice(PLANS_BASE.length + 1)) || 1) : 0;
+    const isAvail = isPlansSlot(w) ? (avail.plans_count || 0) >= plansIdx : !!avail[w];
     const rec = byWhich[w] || null;
     return {
       which: w,
-      label: w === 'appraisal_pdf' ? 'Appraisal PDF' : w === 'sow_xlsx' ? 'Scope of Work (Excel)' : 'Scope of Work (PDF)',
+      label: w === 'appraisal_pdf' ? 'Appraisal PDF' : w === 'sow_xlsx' ? 'Scope of Work (Excel)'
+        : w === 'sow_pdf' ? 'Scope of Work (PDF)'
+        : (rec && rec.filename) ? rec.filename
+        : (plansIdx > 1 ? `Plans & permits (${plansIdx})` : 'Plans & permits'),
       available: isAvail,
-      missing: isAvail ? null : (w === 'appraisal_pdf' ? 'no_appraisal_pdf' : w === 'sow_xlsx' ? 'no_sow_excel' : 'no_sow_pdf'),
+      missing: isAvail ? null : (w === 'appraisal_pdf' ? 'no_appraisal_pdf' : w === 'sow_xlsx' ? 'no_sow_excel'
+        : w === 'sow_pdf' ? 'no_sow_pdf' : 'no_plans_permits'),
       generated: w === 'sow_xlsx' ? !!avail.sow_xlsx_generated : false,
       pushed: !!(rec && (rec.status === 'pushed' || rec.status === 'verified')),
       verified: !!(rec && rec.status === 'verified'),
@@ -166,7 +255,11 @@ async function status(appId) {
       last_error: rec ? rec.last_error : null,
     };
   });
-  return { managed, enabled: !!cfg.sitewireDocsEnabled, web_configured: web.webConfigured(), slots };
+  // NO SILENT CAPS: if the file carries more plans documents than one push will take, the panel says how
+  // many are not going, rather than showing a tidy list that quietly omits them.
+  const plansOverflow = Math.max(0, (avail.plans_count || 0) - PLANS_MAX);
+  return { managed, enabled: !!cfg.sitewireDocsEnabled, web_configured: web.webConfigured(), slots,
+    plans_count: avail.plans_count || 0, plans_max: PLANS_MAX, plans_overflow: plansOverflow };
 }
 
 async function upsertLink(appId, propertyId, g, patch) {
@@ -306,7 +399,9 @@ async function verifyPushedDocsOnce(appId, propertyId, whichSlots = null, { exis
  */
 async function pushDocuments(appId, opts = {}) {
   const source = opts.source || 'doc_push';
-  const which = opts.which && SLOTS.includes(opts.which) ? [opts.which] : SLOTS;
+  // A named slot, or EVERYTHING — and "everything" is decided after the gather, because how many plans
+  // documents a file carries is a fact about the file, not a constant (see _pushDocumentsLocked).
+  const which = opts.which && (SLOTS.includes(opts.which) || isPlansSlot(opts.which)) ? [opts.which] : null;
 
   if (!cfg.sitewireDocsEnabled) return { ok: false, error: 'docs_disabled', message: 'Document push to Sitewire is turned off (SITEWIRE_DOCS_ENABLED).' };
   if (!switches.on('SITEWIRE_ENABLED')) return { ok: false, error: 'sitewire_disabled' };
@@ -342,7 +437,10 @@ async function pushDocuments(appId, opts = {}) {
 
 async function _pushDocumentsLocked(appId, opts, which, source, link, propertyId) {
   const gathered = await gatherAll(appId);
-  const toPush = which.map((w) => gathered[w]).filter(Boolean);
+  // `which === null` means "everything this file has": the three fixed slots plus however many plans &
+  // permits documents were actually found. `_plansOverflow` is bookkeeping, never a slot.
+  const wanted = which || Object.keys(gathered).filter((k) => k !== '_plansOverflow');
+  const toPush = wanted.map((w) => gathered[w]).filter(Boolean);
   const results = [];
 
   // Existing push records (for sha256 dedup — never re-upload identical bytes unless forced).
@@ -444,7 +542,76 @@ async function _pushDocumentsLocked(appId, opts, which, source, link, propertyId
     }
   }
   const anyPushed = results.some((r) => r.pushed);
-  return { ok: true, managed: true, dryrun: !!cfg.sitewireDryrun, results, anyPushed };
+  // NO SILENT CAPS: a file carrying more plans documents than one push takes says so in its own result,
+  // so a caller (and the coordinator's panel) can tell "everything went" from "most of it went".
+  const plansOverflow = gathered._plansOverflow || 0;
+  return { ok: true, managed: true, dryrun: !!cfg.sitewireDryrun, results, anyPushed,
+    ...(plansOverflow ? { plansOverflow } : {}) };
 }
 
-module.exports = { pushDocuments, status, gatherAll, SLOTS, verifyPushedDocsOnce, _internal: { gatherAppraisalPdf, gatherSowExcel, gatherSowPdf, verifyPresent } };
+/* PLANS & PERMITS REACH SITEWIRE WHENEVER THEY ARRIVE — a SWEEP, not a hook on every upload door
+   (owner-directed 2026-08-21: "any time plans and permits are uploaded … it should be sent over to
+   Sitewire as well").
+
+   WHY A SWEEP. A document can land on a plans condition from at least four doors — the staff upload, the
+   borrower's, the broker's, and a vendor's returned email — and there is no single place they all pass
+   through (the SharePoint mirror is kicked separately at each one, which is exactly the hand-kept list
+   this repo warns about). A door added next year would silently not push. One query, run on the worker's
+   own cadence, covers every door there is and every door there will be.
+
+   IT IS CHEAP WHEN THERE IS NOTHING TO DO, and that is what makes a sweep affordable: `pushDocuments`
+   dedupes on the content hash and does not even open a Sitewire website session unless something
+   genuinely needs uploading. So a file whose plans are already up there costs one query.
+
+   IT PICKS FILES BY EVIDENCE, NOT BY A CLOCK: a managed file that holds a plans document which is newer
+   than the newest plans push it has (or which has never had one). Bounded per tick, and it can never
+   throw into the worker. */
+async function autoPushPlansOnce(limit = 5, opts = {}) {
+  // Returns { scanned, sent } — `scanned` is the ids the query selected, so a test can measure WHICH
+  // files the sweep picks up without re-typing the predicate (a second copy would pass while the real
+  // one drifted) and without a monkey-patch that a local function binding would ignore anyway.
+  const none = { scanned: [], sent: 0 };
+  if (!cfg.sitewireDocsEnabled) return none;
+  if (!switches.on('SITEWIRE_ENABLED')) return none;
+  if (!(switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun)) return none;
+  let rows = [];
+  try {
+    rows = (await db.query(
+      `SELECT l.application_id AS id
+         FROM sitewire_property_links l
+        WHERE l.matched_by='created' AND l.sitewire_property_id IS NOT NULL
+          AND COALESCE(l.lifecycle_state,'active')='active'
+          AND EXISTS (
+            SELECT 1 FROM documents d
+             WHERE d.application_id = l.application_id
+               AND d.is_current=true AND COALESCE(d.review_status,'') <> 'rejected'
+               AND COALESCE(d.visibility,'') <> 'internal'
+               AND d.checklist_item_id IN (
+                     SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+                      WHERE ci.application_id = l.application_id
+                        AND t.code IN ('rtl_p1_plans','draw_cond_plans_permits'))
+               AND d.created_at > COALESCE((
+                     SELECT max(sd.pushed_at) FROM sitewire_document_links sd
+                      WHERE sd.application_id = l.application_id
+                        AND (sd.which = 'plans_permits' OR sd.which LIKE 'plans\\_permits:%')), 'epoch'::timestamptz))
+        ORDER BY l.pushed_at ASC NULLS FIRST
+        LIMIT $1`, [Math.max(1, limit)])).rows;
+  } catch (e) {
+    console.warn('[sitewire] plans auto-push scan failed (non-fatal):', e && e.message);
+    return none;
+  }
+  const scanned = rows.map((r) => r.id);
+  let sent = 0;
+  if (!opts.scanOnly) {
+    for (const r of rows) {
+      try {
+        const out = await pushDocuments(r.id, { source: 'plans_auto' });
+        if (out && out.ok) sent += 1;
+      } catch (e) { console.warn(`[sitewire] plans auto-push failed (app=${r.id}, non-fatal):`, e && e.message); }
+    }
+  }
+  return { scanned, sent };
+}
+
+module.exports = { pushDocuments, status, gatherAll, SLOTS, PLANS_BASE, PLANS_MAX, isPlansSlot, verifyPushedDocsOnce, autoPushPlansOnce,
+  _internal: { gatherAppraisalPdf, gatherSowExcel, gatherSowPdf, gatherPlansPermits, plansDocName, verifyPresent, PLANS_WHERE } };

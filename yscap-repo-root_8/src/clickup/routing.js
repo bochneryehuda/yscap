@@ -30,9 +30,10 @@ const LOAN_OFFICERS = {
   'Pinchus Wieder':      { crm: '90118110162', pipeline: '90118028635' },
   'Yisroel Weinstock':   { crm: '90118110163', pipeline: '90118081048' },
   'Simcha Shedrowitzky': { crm: '90118110164', pipeline: '90118094956' },
-  // Files folder exists but NO CRM folder yet — flagged (see OPEN_ITEMS).
-  'Chaim Lebowitz':      { crm: null, pipeline: '90118110153' },
-  'Mendel Bochner':      { crm: null, pipeline: '90118110154' },
+  // CRM folders created in ClickUp since this registry was written — verified live
+  // against the CRM & SALES space on 2026-08-21, so borrower PII dual-writes again.
+  'Chaim Lebowitz':      { crm: '90118114571', pipeline: '90118110153' },
+  'Mendel Bochner':      { crm: '90118114572', pipeline: '90118110154' },
 };
 
 // Pipeline-only. Scoped logins see only files assigned to them. Never lead targets.
@@ -62,8 +63,15 @@ const SYSTEM_FOLDERS = {
 };
 
 const OPEN_ITEMS = [
-  'Chaim Lebowitz & Mendel Bochner have Pipeline folders but no CRM folder. If they are loan officers, create CRM folders so borrower PII can dual-write.',
   'Josef Schnitzler CRM folder name has a stray leading space in ClickUp (cosmetic).',
+  // Read live off the workspace on 2026-08-21. NOT wired, deliberately: this file is a
+  // ROUTING registry, and a folder whose owner\'s role we have not been told is exactly
+  // the kind of thing that must never be guessed — routing someone\'s files at a guess
+  // puts a borrower\'s file in a stranger\'s folder. Ask the owner who each of these is
+  // (loan officer or processor), then add the row.
+  'UNWIRED pipeline folder in ClickUp: "Sarah Amsel Workflow" (90118119697) — loan officer or processor?',
+  'UNWIRED pipeline folder in ClickUp: "Brenda Fleischman Worflow" (90118223395, sic) — loan officer or processor?',
+  'UNWIRED pipeline folder in ClickUp: "Ezra Green Files" (90118271998) — the registry already has an "Ezra" processor on "Ezra Folder" (90117447287). Same person with a new folder, or a second Ezra?',
 ];
 
 // ---- ClickUp member ↔ email ↔ folder (INBOUND officer resolution) ----------
@@ -95,8 +103,8 @@ const CLICKUP_STAFF = [
   { staffEmail: 'yisroel@yscapgroup.com', clickupUserId: 87450032,  pipeline: '90118081048', crm: '90118110163', role: 'loan_officer' },
   { staffEmail: 'simcha@yscapgroup.com',  clickupUserId: 87451319,  pipeline: '90118094956', crm: '90118110164', role: 'loan_officer' },
   // Have pipeline folders but no ClickUp workspace member (assign by folder only).
-  { staffEmail: 'chaim@yscapgroup.com',   clickupUserId: null, pipeline: '90118110153', crm: null, role: 'loan_officer' },
-  { staffEmail: 'mendelb@yscapgroup.com', clickupUserId: null, pipeline: '90118110154', crm: null, role: 'loan_officer' },
+  { staffEmail: 'chaim@yscapgroup.com',   clickupUserId: null, pipeline: '90118110153', crm: '90118114571', role: 'loan_officer' },
+  { staffEmail: 'mendelb@yscapgroup.com', clickupUserId: null, pipeline: '90118110154', crm: '90118114572', role: 'loan_officer' },
   // processors (pipeline-only)
   { staffEmail: 'malky@yscapgroup.com',   clickupUserId: 87335667,  pipeline: '90117376201', crm: null, role: 'processor' },
   { staffEmail: 'goldy@yscapgroup.com',   clickupUserId: 87380437,  pipeline: '90117430703', crm: null, role: 'processor' },
@@ -144,25 +152,125 @@ function processorEmailFor(read) {
 const _officerByLowerName = {};
 for (const k of Object.keys(LOAN_OFFICERS)) _officerByLowerName[k.trim().toLowerCase()] = k;
 
+// Which officer owns a pipeline folder — lets the EMAIL/USER-ID keyed CLICKUP_STAFF
+// rows above resolve back to the canonical officer name in LOAN_OFFICERS.
+const _officerNameByPipeline = {};
+for (const [name, f] of Object.entries(LOAN_OFFICERS)) {
+  if (f && f.pipeline) _officerNameByPipeline[String(f.pipeline)] = name;
+}
+
+// Letters only, accent-folded: survives case, punctuation, double spaces and a
+// stray middle initial's period. It does NOT survive a misspelling — deliberately.
+// Guessing past a misspelling is how someone else's file ends up in your folder.
+const _nameKey = (s) => String(s == null ? '' : s)
+  .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().replace(/[^a-z]/g, '');
+const _nameKeyIndex = {};
+for (const k of Object.keys(LOAN_OFFICERS)) _nameKeyIndex[_nameKey(k)] = k;
+
+// "Last name + first initial", used ONLY when it is unique across the registry —
+// so "Joshua M. Freidlander" still lands, while two same-surname officers never
+// silently collide.
+function _shortKey(s) {
+  const parts = String(s == null ? '' : s).trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return null;
+  const first = _nameKey(parts[0]);
+  const last = _nameKey(parts[parts.length - 1]);
+  if (!first || !last) return null;
+  return `${last}|${first[0]}`;
+}
+const _shortKeyIndex = {};
+for (const k of Object.keys(LOAN_OFFICERS)) {
+  const sk = _shortKey(k);
+  if (!sk) continue;
+  _shortKeyIndex[sk] = _shortKeyIndex[sk] ? '__AMBIGUOUS__' : k;
+}
+
+function _routeForOfficer(canonical, matchedBy) {
+  return {
+    role: 'loan_officer', officer: canonical, matchedBy, unresolved: false,
+    crmFolderId: LOAN_OFFICERS[canonical].crm,
+    pipelineFolderId: LOAN_OFFICERS[canonical].pipeline,
+  };
+}
+
 /**
- * Resolve a site officer name to routing targets (case-insensitive).
- * Returns { role, crmFolderId, pipelineFolderId } or the Lead Capture fallback.
+ * Resolve an officer to their ClickUp folders, in STRENGTH ORDER.
+ *
+ * WHY IDENTITY AND NOT A NAME (owner-reported 2026-08-21: "All of the files from
+ * Joshua Freidlander is going into the lead capture folder"): routing used to match
+ * the officer's `staff_users.full_name` against the hand-typed keys of LOAN_OFFICERS.
+ * One officer whose portal name is spelled even slightly differently from the key in
+ * this file therefore had EVERY file silently filed to Lead Capture — silently,
+ * because an unresolvable officer and no officer at all returned the same answer.
+ * The INBOUND half of this very module already says why that is the wrong key:
+ * "names drift in spelling/case; emails don't".
+ *
+ * So, strongest evidence first, and stop when the evidence runs out:
+ *   1. `clickupUserId` — the workspace member id. Proof.
+ *   2. `email`         — the portal staff email, or the ClickUp-side alias. Proof.
+ *   3. `name`          — exact after case/punctuation/accent folding.
+ *   4. `name`          — last name + first initial, ONLY when unique in the registry.
+ *
+ * @returns {{role, officer, crmFolderId, pipelineFolderId, matchedBy, unresolved}}
+ *   `unresolved` is true when the file HAS an officer that could not be placed. That
+ *   is a BUG to surface, not a lead to file — the caller must not treat it as an
+ *   ordinary no-officer Lead Capture routing.
+ */
+function resolveRoutingFor(identity) {
+  const id = identity || {};
+
+  // 1) ClickUp workspace member id.
+  if (id.clickupUserId != null && String(id.clickupUserId).trim() !== '') {
+    const want = String(id.clickupUserId).trim();
+    const hit = CLICKUP_STAFF.find((s) => s.role === 'loan_officer' && s.clickupUserId != null && String(s.clickupUserId) === want);
+    const canonical = hit && _officerNameByPipeline[String(hit.pipeline)];
+    if (canonical && LOAN_OFFICERS[canonical]) return _routeForOfficer(canonical, 'clickupUserId');
+  }
+
+  // 2) Email — the portal staff address or the ClickUp-side alias.
+  const email = _norm(id.email);
+  if (email) {
+    const hit = _byStaffEmail(email) || _byClickupEmail(email);
+    if (hit && hit.role === 'loan_officer') {
+      const canonical = _officerNameByPipeline[String(hit.pipeline)];
+      if (canonical && LOAN_OFFICERS[canonical]) return _routeForOfficer(canonical, 'email');
+    }
+  }
+
+  // 3) + 4) Name, exact-after-folding then last+initial (unique only).
+  const raw = (id.name || '').trim();
+  if (raw) {
+    const canonical = LOAN_OFFICERS[raw] ? raw
+      : (_officerByLowerName[raw.toLowerCase()] || _nameKeyIndex[_nameKey(raw)]);
+    if (canonical && LOAN_OFFICERS[canonical]) return _routeForOfficer(canonical, 'name');
+    const sk = _shortKey(raw);
+    const shortHit = sk ? _shortKeyIndex[sk] : null;
+    if (shortHit && shortHit !== '__AMBIGUOUS__' && LOAN_OFFICERS[shortHit]) {
+      return _routeForOfficer(shortHit, 'lastNameInitial');
+    }
+  }
+
+  // Nothing placed them. Lead Capture is the destination either way, but say WHICH
+  // case this is: a file with no officer is normal; a file WITH one we could not
+  // place is a registry gap that must be fixed, not absorbed.
+  const hadSomeone = !!(raw || email || (id.clickupUserId != null && String(id.clickupUserId).trim() !== ''));
+  return {
+    role: 'unassigned', officer: null, matchedBy: null, unresolved: hadSomeone,
+    crmFolderId: null, pipelineFolderId: LEAD_CAPTURE_FOLDER,
+  };
+}
+
+/**
+ * Name-only resolution, kept for callers that genuinely only have a name.
+ * Prefer resolveRoutingFor({ clickupUserId, email, name }) — see above.
  */
 function resolveRouting(officerName) {
-  const raw = (officerName || '').trim();
-  const canonical = raw && (LOAN_OFFICERS[raw] ? raw : _officerByLowerName[raw.toLowerCase()]);
-  if (canonical && LOAN_OFFICERS[canonical]) {
-    return { role: 'loan_officer', officer: canonical,
-             crmFolderId: LOAN_OFFICERS[canonical].crm,
-             pipelineFolderId: LOAN_OFFICERS[canonical].pipeline };
-  }
-  // Unknown, blank, processor, or excluded -> Lead Capture for manual assignment.
-  return { role: 'unassigned', officer: null,
-           crmFolderId: null, pipelineFolderId: LEAD_CAPTURE_FOLDER };
+  return resolveRoutingFor({ name: officerName });
 }
 
 module.exports = {
   LEAD_CAPTURE_FOLDER, LOAN_OFFICERS, PROCESSORS, EXCLUDED,
-  SYSTEM_FOLDERS, OPEN_ITEMS, resolveRouting,
+  SYSTEM_FOLDERS, OPEN_ITEMS, resolveRouting, resolveRoutingFor,
   CLICKUP_STAFF, emailForPipelineFolder, loanOfficerEmailFor, processorEmailFor,
 };

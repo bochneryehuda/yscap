@@ -97,18 +97,40 @@ function investorKeyFor(lender) {
   const raw = String(lender == null ? '' : lender).trim();
   if (!raw) return null;
   try { if (fieldRegistry.isFidelisNoteBuyer(raw)) return 'fidelis'; } catch (_) { /* fall through */ }
+  // EMCAP is folded the same way and for the same reason: the production label is
+  // "EMCAP Financial", which normNoteBuyer (deliberately EXACT) turns into
+  // 'emcapfinancial', so a contact list saved under 'emcap' would never be found
+  // on a real file. Both folds reuse a helper blessed in field-registry — never a
+  // fuzzy match invented here, because the EXPORT direction is where an
+  // over-match ships one buyer's tape to another. db/602 moves any row already
+  // saved under an unfolded EMCAP key onto 'emcap'.
+  try { if (fieldRegistry.isEmcapNoteBuyer(raw)) return 'emcap'; } catch (_) { /* fall through */ }
   const key = fieldRegistry.normNoteBuyer(raw);
   return key || null;
 }
 
-/** The saved contacts for a note buyer (active only), in a stable order. Never throws. */
-async function contactsForNoteBuyer(lender) {
+/**
+ * The saved contacts for a note buyer (active only), in a stable order.
+ *
+ * `purpose` says WHICH conversation — 'draw' (the team that releases construction
+ * money) or 'tape' (the desk that reviews a new file for purchase). They are
+ * different people, and reading one list for the other is the bug db/602 fixed
+ * (owner-reported 2026-08-21: "It's automatically filling in the FileContacts as
+ * those same as the draw. It's a different contact."). It DEFAULTS to 'draw', so
+ * every caller that predates the split reads exactly what it always read.
+ *
+ * Never throws — an unreadable book is an empty list, and the caller refuses to
+ * send with no recipients rather than sending somewhere unintended.
+ */
+async function contactsForNoteBuyer(lender, opts = {}) {
   const key = investorKeyFor(lender);
   if (!key) return [];
+  const purpose = opts.purpose === 'tape' ? 'tape' : 'draw';
   try {
     const r = await db.query(
       `SELECT id, label, email, name, role FROM investor_delivery_contacts
-        WHERE label_norm = $1 AND active = true ORDER BY lower(email)`, [key]);
+        WHERE label_norm = $1 AND active = true AND $2 = ANY(purposes)
+        ORDER BY lower(email)`, [key, purpose]);
     return r.rows;
   } catch (_) { return []; }
 }
@@ -116,7 +138,7 @@ async function contactsForNoteBuyer(lender) {
 /** Every buyer that has contacts saved — for the settings screen. */
 async function allContacts() {
   const r = await db.query(
-    `SELECT id, label_norm, label, email, name, role, active, created_at
+    `SELECT id, label_norm, label, email, name, role, active, purposes, created_at
        FROM investor_delivery_contacts ORDER BY label_norm, lower(email)`);
   return r.rows;
 }

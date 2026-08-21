@@ -6,6 +6,7 @@ import { useAuth } from '../lib/auth.jsx';
 // (No overrideLine here: this queue only lists OPEN work — a cleared condition,
 // overridden or not, has already dropped off it. The file's list shows the stamp.)
 import { canOverride, isCompletion, askOverride } from '../lib/condition-override.js';
+import { useUrlState } from '../lib/useUrlState.js';
 
 const addrLine = (a) => !a ? '' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '');
 const STATUS_LABEL = { outstanding: 'Outstanding', requested: 'Requested', received: 'In review', issue: 'Needs attention' };
@@ -40,7 +41,7 @@ const SCHED_SNOOZES = [
   ['3d', 'In 3 days', 3 * 24 * 60 * 60 * 1000], ['1w', 'Next week', 7 * 24 * 60 * 60 * 1000],
 ];
 function ScheduledTasksBlock() {
-  const [scope, setScope] = useState('mine');   // mine | all
+  const [scope, setScope] = useUrlState('scope', 'mine', { allow: ['mine', 'all'], remember: 'tasks.scope' });
   const [status, setStatus] = useState('open'); // open | closed | all
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState('');
@@ -194,8 +195,9 @@ export default function StaffTasks() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(null);      // item id being acted on
-  const [filter, setFilter] = useState('all'); // all | mine | overdue
-  const [statusFilter, setStatusFilter] = useState('all'); // all | outstanding | requested | received | issue
+  const [filter, setFilter] = useUrlState('cond', 'all', { allow: ['all', 'mine', 'overdue'] });
+  const [statusFilter, setStatusFilter] = useUrlState('condstatus', 'all',
+    { allow: ['all', 'outstanding', 'requested', 'received', 'issue'] });
 
   const reload = useCallback(() => api.staffMyTasks().then(setRows).catch(e => setErr(e.message)), []);
   useEffect(() => { reload(); }, [reload]);

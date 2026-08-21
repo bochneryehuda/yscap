@@ -40,6 +40,7 @@ const llcLib = require('../lib/llc');
 const apprCard = require('../lib/appraisal-card');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRegistry = require('../lib/conditions/field-registry');
+const externalNote = require('../lib/conditions/external-note');   // db/604 — the note staff wrote FOR the borrower
 /* The details door speaks camelCase and the field registry speaks snake_case,
    and `file-lock.payoffContactLockReason` is keyed on the DETAILS door's names —
    that is where its carve-out is defined. Only the payoff contact pair needs
@@ -1578,7 +1579,11 @@ router.get('/applications/:id/checklist', async (req, res) => {
             (ci.waived_at IS NOT NULL) AS waived,
             -- ci.notes is the INTERNAL staff note (underwriting / capital-partner
             -- context) — never send it to a borrower. Only the borrower_* wording
-            -- above is safe.
+            -- above is safe. ci.external_note (db/604) is its deliberate opposite:
+            -- a note staff wrote FOR the borrower, on this condition. It still goes
+            -- out through the shared scrub below, because it is free text a human
+            -- typed — exactly the case the "scrub what a human wrote" rule covers.
+            ci.external_note, ci.external_note_at,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             -- issue_reason is a borrower-SAFE reason (set when staff reject / push
@@ -1601,7 +1606,15 @@ router.get('/applications/:id/checklist', async (req, res) => {
   // Scrub capital-partner names from borrower-facing wording (label/hint/reason)
   // before anything else uses `rows` — covers data where borrower_label was
   // defaulted from the internal label.
-  for (const it of rows) { it.label = scrubText(it.label); it.hint = scrubText(it.hint); it.rejection_reason = scrubText(it.rejection_reason); }
+  for (const it of rows) {
+    it.label = scrubText(it.label); it.hint = scrubText(it.hint); it.rejection_reason = scrubText(it.rejection_reason);
+    // The note staff wrote for them, scrubbed and reshaped by the ONE definition —
+    // the words and WHEN, never who by name. The raw columns are dropped so a
+    // future consumer cannot reach past the scrub.
+    const ext = externalNote.forClient(it, scrubText);
+    delete it.external_note; delete it.external_note_at;
+    if (ext) it.external_note = ext;
+  }
   // Co-borrower privacy (#82): personal fields (FICO / citizenship / home state)
   // are per-borrower. loadRuleContext builds them from the PRIMARY borrower, so
   // pre-fill those from the VIEWER's OWN record instead — a co-borrower must

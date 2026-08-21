@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { audienceLabel } from '../lib/conditions-vocab.js';
 import RuleBuilder, { emptyGroup, summarize } from '../components/RuleBuilder.jsx';
 import { askConfirm } from '../lib/dialog.js';
+import { useUrlState } from '../lib/useUrlState.js';
 
 /**
  * The Condition Center studio (admin + super admin).
@@ -66,7 +67,7 @@ export default function StaffConditionStudio() {
   const isAdmin = can('manage_conditions');
   const [meta, setMeta] = useState(null);
   const [defs, setDefs] = useState([]);
-  const [view, setView] = useState('list');           // list | edit
+  const [view, setView] = useUrlState('view', 'list');           // list | edit
   const [form, setForm] = useState(blankForm());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);               // {ok, text}

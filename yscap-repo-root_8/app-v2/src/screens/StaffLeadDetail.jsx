@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import DropZone from '../components/DropZone.jsx';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { PhoneInput , EmailInput, DateCommitInput } from '../components/FormattedInputs.jsx';
@@ -645,11 +646,21 @@ function AttachmentsPanel({ leadId, docs, onChange, onErr }) {
     } catch (e2) { onErr(e2.message || 'Upload failed'); }
     setBusy(false);
   }
+  /* Dragged files, through the SAME upload as the button (owner item 6, 2026-08-21).
+     Uploaded one after another rather than in parallel so a slow connection cannot
+     interleave them, and so the first failure stops and is reported. */
+  async function onDropFiles(files) {
+    for (const f of Array.from(files || [])) {
+      // eslint-disable-next-line no-await-in-loop
+      await onFile({ target: { files: [f], value: '' } });
+    }
+  }
   const kb = (n) => n == null ? '' : (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
   return (
     <div className="panel">
       <div className="panel-h"><h3>Files</h3>{docs.length > 0 && <span className="pill mut">{docs.length}</span>}</div>
-      <div className="panel-b">
+      <DropZone className="panel-b dropzone" onFiles={onDropFiles} enabled={!busy}
+        title="Drag files here, or use the button">
         <label className={`btn btn-ghost btn-sm ${busy ? 'disabled' : ''}`} style={{ cursor: busy ? 'default' : 'pointer' }}>
           {busy ? 'Uploading…' : '+ Attach a file'}
           <input type="file" style={{ display: 'none' }} onChange={onFile} disabled={busy} />
@@ -669,7 +680,7 @@ function AttachmentsPanel({ leadId, docs, onChange, onErr }) {
               ))}
             </ul>
           )}
-      </div>
+      </DropZone>
     </div>
   );
 }

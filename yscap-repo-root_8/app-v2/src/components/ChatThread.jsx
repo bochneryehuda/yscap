@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import DropZone from './DropZone.jsx';
 import { api } from '../lib/api.js';
 import { subscribeChat, getConnId } from '../lib/chatEvents.js';
 import DocPreview from './DocPreview.jsx';
@@ -506,15 +507,27 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
     }
     setPicker(null);
   }
-  async function onPickFile(e) {
-    const f = e.target.files && e.target.files[0];
+  /* ONE reader for both doors — the paperclip and a dragged file (owner item 6,
+     2026-08-21: "a lot of the uploads are missing the drag and drop option"). The
+     composer holds ONE pending attachment, so a multi-file drop takes the first and
+     says so rather than silently dropping the rest. */
+  async function attachFile(f) {
     if (!f) return;
     try {
       const dataBase64 = await readFileAsBase64(f);
       setPending({ filename: f.name, contentType: f.type || 'application/octet-stream', dataBase64, size: f.size });
       setErr('');
     } catch { setErr('Could not read that file.'); }
-    finally { if (fileRef.current) fileRef.current.value = ''; }
+  }
+  async function onPickFile(e) {
+    const f = e.target.files && e.target.files[0];
+    try { await attachFile(f); } finally { if (fileRef.current) fileRef.current.value = ''; }
+  }
+  async function onDropFiles(files) {
+    const list = Array.from(files || []);
+    if (!list.length) return;
+    await attachFile(list[0]);
+    if (list.length > 1) setErr(`Only "${list[0].name}" was attached — a message carries one file at a time.`);
   }
   async function toggleRecord() {
     if (recState === 'recording') { recRef.current && recRef.current.stop(); return; }
@@ -1095,7 +1108,8 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
               ))}
             </div>
           )}
-          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+          <DropZone className="row dropzone" style={{ gap: 8, alignItems: 'center' }} onFiles={onDropFiles}
+            title="Drag a file here, or use the paperclip">
             <input ref={fileRef} type="file" style={{ display: 'none' }}
               accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip" onChange={onPickFile} />
             <button className="btn ghost msg-tool" title="Attach a photo, video, PDF or file" onClick={() => fileRef.current && fileRef.current.click()}><CI name="attach" /></button>
@@ -1124,7 +1138,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
                 if (e.key === 'Enter' && !e.shiftKey && (!picker || !items.length)) submit();
               }} />
             <button className="btn primary" disabled={!body.trim() && !pending} onClick={() => submit()}>Send</button>
-          </div>
+          </DropZone>
         </div>
         {isStaff && conv && !(conv.borrowerVisible || conv.borrower_visible) && (
           <label className="muted small" style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6, cursor: 'pointer' }}>

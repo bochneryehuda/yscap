@@ -30,20 +30,30 @@
    is what lets the whole rule below be EXECUTED by a test rather than grepped. */
 
 /* Layer kinds. A COUNT, not a flag: two previews open at once (a compare view)
-   must still resolve correctly when the first of them closes. */
-const counts = { preview: 0, overview: 0 };
+   must still resolve correctly when the first of them closes.
+
+   `tool` is a FULL-SCREEN TOOL SHEET — the Scope of Work, the track record, the
+   Products & Pricing studio, the generated terms (owner-reported 2026-08-21: "the
+   nice overview button on the right side … is not available in the full screens
+   that are populated, including the terms you generated / products and pricing /
+   track record full screen / scope of work for full screen. This should always be
+   available"). It is the SAME defect as the preview one above, one layer along:
+   those sheets render on `.cv-modal-back`, which sits at z 200 with the app's
+   confirm dialogs, so they painted over the tab at 120. */
+const counts = { preview: 0, overview: 0, tool: 0 };
 const subscribers = new Set();
 
 /* The snapshot object is REPLACED only when a boolean actually flips.
    `useSyncExternalStore` compares snapshots by identity and will loop forever if
    `getSnapshot` mints a new object on every call — so this reference has to be
    stable across reads that changed nothing. */
-export const EMPTY = Object.freeze({ preview: false, overview: false });
+export const EMPTY = Object.freeze({ preview: false, overview: false, tool: false });
 let snapshot = EMPTY;
 
 function publish() {
-  const next = { preview: counts.preview > 0, overview: counts.overview > 0 };
-  if (next.preview === snapshot.preview && next.overview === snapshot.overview) return;
+  const next = { preview: counts.preview > 0, overview: counts.overview > 0, tool: counts.tool > 0 };
+  if (next.preview === snapshot.preview && next.overview === snapshot.overview
+      && next.tool === snapshot.tool) return;
   snapshot = Object.freeze(next);
   // Copy first: a subscriber is free to unsubscribe while we are notifying, and
   // a listener that throws must never stop the rest from hearing about it.

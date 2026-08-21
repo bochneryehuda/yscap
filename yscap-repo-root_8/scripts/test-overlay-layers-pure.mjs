@@ -21,7 +21,7 @@
 
    Pure — no React, no DOM, no browser, no DB. */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -141,8 +141,51 @@ ok(/useFileOverviewLayer\(open\)/.test(overview), 'the overview registers itself
 ok(/className=\{`cv-modal-back dp-back\$\{layers\.overview \? ' dp-beside-overview' : ''\}`\}/.test(preview),
   'the preview wears its own backdrop class, and steps aside when the overview is out');
 ok(/fov-over-preview/.test(overview), 'the overview raises itself above an open preview');
-ok(/\{open && !overPreview && <div className="fov-back"/.test(overview),
-  'the overview drops its OWN dim while a preview is open — a second dim would darken the document being compared');
+ok(/\{open && !over && <div className="fov-back"/.test(overview),
+  'the overview drops its OWN dim while ANYTHING full-screen is open — a second dim would darken what is being compared');
+
+// ---------------------------------------------------------------------------
+// D. A FULL-SCREEN TOOL SHEET (owner-reported 2026-08-21: "the nice overview button
+//    on the right side … is not available in the full screens that are populated,
+//    including: the terms you generated / products and pricing / track record full
+//    screen / scope of work for full screen. This should always be available").
+//
+//    The SAME defect as the preview, at a very different NUMBER: a tool sheet is
+//    `.toolsheet` at z 1000, not `.cv-modal-back` at 200, so the preview's 160/165
+//    escalation is nowhere near enough. That is why it is its own class.
+// ---------------------------------------------------------------------------
+console.log('\nD. a full-screen tool sheet');
+{
+  const sheet = z('.toolsheet');
+  const tab = z('.fov-tab.fov-over-tool');
+  const panel = z('.fov-panel.fov-over-tool');
+  const flash = z('.flash-dock');
+  ok(sheet === 1000, `the tool sheet really is at z 1000 (got ${sheet}) — the number this exists for`);
+  ok(tab !== null && tab > sheet, `the tab climbs ABOVE the tool sheet (${tab} > ${sheet})`);
+  ok(panel !== null && panel > tab, `…and the panel above the tab (${panel} > ${tab})`);
+  ok(flash !== null && flash > panel, `…and a toast still lands on top of both (${flash} > ${panel})`);
+  ok(z('.fov-tab.fov-over-preview') < sheet,
+    'the PREVIEW escalation is NOT enough on its own — which is why the tool layer is a separate class');
+
+  // Both sheets must register, or the tab stays buried on that one.
+  const toolModal = read('app-v2/src/components/ToolModal.jsx');
+  const studio = read('app-v2/src/components/ProductStudioPanel.jsx');
+  ok(/useToolSheetLayer\(true\)/.test(toolModal),
+    'the Scope of Work / track record sheet registers the layer');
+  ok(/useToolSheetLayer\(openStudio\)/.test(studio),
+    'the Products & Pricing studio registers it only while the sheet is OPEN (released on close and on unmount)');
+  ok(/fov-over-tool/.test(overview), 'the overview raises itself above an open tool sheet');
+  // Every component that paints a `.toolsheet` must register, or it re-opens the bug.
+  const painters = [];
+  for (const f of readdirSync(join(ROOT, 'app-v2/src/components')).filter((x) => x.endsWith('.jsx'))) {
+    const body = read(`app-v2/src/components/${f}`);
+    if (/className="toolsheet"/.test(body)) painters.push(f);
+  }
+  ok(painters.length > 0, `found the components that paint a full-screen sheet (${painters.join(', ')})`);
+  const unregistered = painters.filter((f) => !/useToolSheetLayer\(/.test(read(`app-v2/src/components/${f}`)));
+  ok(unregistered.length === 0,
+    `every component that paints a full-screen sheet registers the layer${unregistered.length ? ` — missing: ${unregistered.join(', ')}` : ''}`);
+}
 
 // Esc must close ONE thing per press. Both listen on window, so the lower layer
 // has to stand down; the overview is the higher one whenever it is open.

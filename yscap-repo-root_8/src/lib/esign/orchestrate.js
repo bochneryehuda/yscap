@@ -129,6 +129,7 @@ function composeSubject(prefix, loan, address) {
 const PACKAGES = {
   term_sheet_package: {
     label: 'Term-sheet package',
+    noticeLabel: 'term-sheet package',
     countersignRequired: true,
     // The loan officer signs the term sheet FIRST alongside the borrower (owner-directed
     // 2026-07-21). Order: borrower + loan officer at routingOrder 1, then admin (super_admin
@@ -164,6 +165,7 @@ const PACKAGES = {
   },
   heter_iska: {
     label: 'Heter Iska',
+    noticeLabel: 'Heter Iska',
     countersignRequired: false,
     subject: (loan, addr) => composeSubject('Heter Iska ready to sign', loan, addr),
     blurb: 'Please review and sign the Heter Iska.',
@@ -182,6 +184,7 @@ const PACKAGES = {
   // the typed wire values are captured (draw-wire.js).
   draw_request: {
     label: 'Draw request & wire instructions',
+    noticeLabel: 'draw request & wire instructions',
     countersignRequired: false,
     soloBorrower: true,
     // The draw request is a POST-FUNDING servicing document — the appraisal/P&P send
@@ -206,6 +209,7 @@ const PACKAGES = {
   // a co-borrower, and both individuals certify non-occupancy. No countersign, no notary.
   noo_affidavit: {
     label: 'Non-owner-occupied certification',
+    noticeLabel: 'non-owner-occupied certification',
     countersignRequired: false,
     skipAppraisalGate: true,
     subject: (loan, addr) => composeSubject('Non-owner-occupied certification ready to sign', loan, addr),
@@ -215,6 +219,26 @@ const PACKAGES = {
     ],
   },
 };
+
+/**
+ * What to CALL a package in a sentence somebody reads ("Fully signed — the draw request
+ * & wire instructions"). ONE definition, derived from PACKAGES itself.
+ *
+ * Two hand-kept copies of this map lived in webhook.js and dead-letter.js and had both gone
+ * stale: neither knew about `draw_request`, so every draw-form terminal alert and every
+ * draw-form dead-letter alert called it the generic "e-signature package" — on the one
+ * notification whose whole job is to say WHICH document needs attention. That is the class
+ * this repo already names: a list somebody has to remember to update is a list that goes
+ * stale silently. A package added later now gets its wording for free.
+ *
+ * `noticeLabel` exists because the display `label` is Title Case for a heading and reads
+ * wrong mid-sentence ("the Term-sheet package"); it falls back to `label`, so a new package
+ * that never declares one still reads better than the old generic.
+ */
+function packageLabel(purpose, fallback = 'e-signature package') {
+  const spec = PACKAGES[String(purpose || '')];
+  return (spec && (spec.noticeLabel || spec.label)) || fallback;
+}
 
 function packageSpec(purpose) {
   const spec = PACKAGES[purpose];
@@ -270,10 +294,26 @@ async function loadApplication(db, applicationId) {
  * recipient — DocuSign notifies them as the envelope is sent/viewed/signed and delivers the
  * executed copy + Certificate of Completion, which is exactly what was asked for.
  *
- * Scoped to `draw_request` on purpose: the coordinator has no part in an origination
- * package (term sheet / Heter Iska), and copying them there would leak servicing staff onto
- * the borrower's loan documents. Best-effort — a lookup failure sends without them and
- * never blocks the borrower's form.
+ * THE ORIGINATION PACKAGES COPY THE COORDINATOR TOO (owner-directed 2026-08-21, which
+ * REVERSES the `draw_request`-only scoping this function shipped with on 2026-07-28):
+ * "when you're sending out the term sheet package, when you're sending out the ISKA, and
+ * when you're sending out the draw form, then the draw coordinator and the loan officer
+ * should be looped in as viewers in the Docusign envelope." The old comment's reasoning —
+ * that the coordinator has no part in an origination package — was ours, not the owner's,
+ * and the owner has now said otherwise; it is kept above only so nobody re-derives it.
+ *
+ * "ISKA" here is the HETER ISKA envelope (`heter_iska`), not ISAOA — ISAOA exists in this
+ * codebase only as the lender's mortgagee-clause text and has no envelope at all.
+ *
+ * BUT THE TWO ORIGINATION PACKAGES USE THE **ASSIGNED-ONLY** RESOLVER, and that distinction
+ * is the whole reason this is not one line. A file has no draw project until it FUNDS, so at
+ * term-sheet time `drawCoordinatorsForFile` finds nobody EVERY time and `drawEnvelopeViewers`'
+ * desk fallback would put the ENTIRE draw desk plus the shared draws@ inbox on every
+ * borrower's loan documents. That fallback is right for a wire form (which must never go out
+ * uncovered) and wrong here: the owner asked for the coordinator, and when none is assigned
+ * there is no coordinator to loop in. The wire form's behaviour is UNCHANGED.
+ *
+ * Best-effort — a lookup failure sends without them and never blocks the borrower's form.
  */
 async function loadCcViewers(db, applicationId, purpose) {
   if (!applicationId) return [];
@@ -284,10 +324,15 @@ async function loadCcViewers(db, applicationId, purpose) {
         AND su.email IS NOT NULL AND su.email <> ''
       ORDER BY lower(su.email)`, [applicationId]);
   const out = r.rows.map((x) => ({ email: x.email, name: x.full_name || x.email }));
-  if (purpose === 'draw_request') {
+  // Which resolver — see the header. The wire form keeps its desk fallback; the origination
+  // packages take only a coordinator the file actually has.
+  const coordinatorViewers = purpose === 'draw_request' ? 'drawEnvelopeViewers'
+    : (purpose === 'term_sheet_package' || purpose === 'heter_iska') ? 'drawEnvelopeViewersAssigned'
+      : null;
+  if (coordinatorViewers) {
     try {
       const seen = new Set(out.map((v) => String(v.email).trim().toLowerCase()));
-      for (const v of await require('../draw-recipients').drawEnvelopeViewers(applicationId)) {
+      for (const v of await require('../draw-recipients')[coordinatorViewers](applicationId)) {
         const key = String(v.email).trim().toLowerCase();
         if (!key || seen.has(key)) continue;
         seen.add(key);
@@ -1087,7 +1132,18 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     const seen = new Set(signers.map((s) => String(s.email || '').toLowerCase()));
     const viewers = await loadCcViewers(db, row.application_id, row.purpose);
     let nextId = Math.max(0, ...signers.map((s) => Number(s.recipientId) || 0));
-    const ccOrder = Math.max(1, ...signers.map((s) => Number(s.routingOrder) || 1));
+    // ROUTING ORDER 1 — THIS IS THE OWNER'S "be able to see when it's going out"
+    // (owner-directed 2026-08-21). DocuSign emails a carbon copy when routing REACHES their
+    // order, so the previous `max(signer routing order)` meant that on the term sheet — where
+    // the admin counter-signer sits at order 2 — the processor heard nothing until the
+    // borrower AND the loan officer had already signed. They were copied on the finished
+    // article, which is the one moment they did not need telling.
+    //
+    // The completion half is NOT dropped, and is not left to DocuSign to be relied on: our own
+    // Connect drainer already notifies the file's staff on the terminal transition and files
+    // the executed PDF onto the condition (esign/webhook.js notifyTerminal), which is the half
+    // we control and can prove.
+    const ccOrder = 1;
     for (const v of viewers) {
       const key = String(v.email).toLowerCase();
       if (seen.has(key)) continue;   // already a signer (borrower/co/admin) or a dup — never copy twice
@@ -1242,6 +1298,7 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
 }
 
 module.exports = {
+  packageLabel,
   PACKAGES, packageSpec, buildDefinition, sendPackage,
   createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem,
   conditionCodeForSignedKind, ensureIskaCondition, latestDocument, loadApplication, loadCcViewers,

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ScheduleButton } from './ScheduleSend.jsx';
 
 /* SEND THE DATA TAPE TO THE INVESTOR — the compose screen (owner-directed
    2026-08-18). Strictly MANUAL: this modal is the only way the tape ever
@@ -14,12 +15,25 @@ import React, { useState } from 'react';
    file). ONLY the Excel tape is attached.
 
    Send stays disabled until at least ONE investor email is chosen — the
-   server enforces the same rule. */
-export default function TapeSendModal({ name, preview, busy, onCancel, onSend }) {
+   server enforces the same rule.
+
+   TWO ADDITIONS, owner-directed 2026-08-21:
+   • COPY MORE PEOPLE. The file's own team already rides as a visible Cc; this
+     adds anyone else — an attorney, a second desk at the buyer. A Cc address is
+     deliberately NOT saved to the investor's contact book: it is a one-off for
+     this file, and quietly adding it to the book would put them on every future
+     tape for that buyer.
+   • SEND IT LATER. The SAME ScheduleButton the four order emails use, never a
+     second copy. Nothing about the tape is built now — the server stores only
+     the intent and rebuilds the tape at the due moment, so it carries the file
+     as it stands then. */
+export default function TapeSendModal({ name, preview, busy, onCancel, onSend, onSchedule }) {
   const contacts = (preview && preview.contacts) || [];
   const [sel, setSel] = useState(() => new Set(contacts.map((c) => c.email)));
   const [extras, setExtras] = useState([]);
   const [typed, setTyped] = useState('');
+  const [ccList, setCcList] = useState([]);
+  const [ccTyped, setCcTyped] = useState('');
   const [note, setNote] = useState('');
   const [err, setErr] = useState('');
 
@@ -36,12 +50,25 @@ export default function TapeSendModal({ name, preview, busy, onCancel, onSend })
     if (!extras.includes(addr) && !sel.has(addr)) setExtras((x) => [...x, addr]);
     setTyped('');
   };
+  const addCc = () => {
+    const addr = ccTyped.trim().toLowerCase();
+    setErr('');
+    if (!addr) return;
+    if (!/^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]+$/.test(addr)) { setErr(`"${addr}" doesn't look like an email address.`); return; }
+    if (!ccList.includes(addr)) setCcList((x) => [...x, addr]);
+    setCcTyped('');
+  };
   const to = [...sel, ...extras.filter((e) => !sel.has(e))];
+  // Never copy somebody who is already a recipient — one person, one email.
+  const cc = ccList.filter((e) => !to.includes(e));
 
+  function payload() {
+    return { to, cc, note: note.trim() || undefined };
+  }
   function submit(e) {
     e.preventDefault();
     if (!to.length) { setErr('Pick or add at least one investor email address.'); return; }
-    onSend({ to, note: note.trim() || undefined });
+    onSend(payload());
   }
 
   return (
@@ -101,6 +128,31 @@ export default function TapeSendModal({ name, preview, busy, onCancel, onSend })
           </div>
         </div>
 
+        <div style={{ marginTop: 12 }}>
+          <div className="small" style={{ fontWeight: 700, color: '#141B22' }}>Copy more people (optional)</div>
+          <p className="small" style={{ color: '#4B585C', margin: '2px 0 4px' }}>
+            The loan officer and processor on this file are copied automatically. Anyone added here is
+            copied on this email only — they are not added to {(preview && preview.investor && preview.investor.label) || 'the investor'}’s saved contacts.
+          </p>
+          {cc.length > 0 && (
+            <div style={{ display: 'grid', gap: 4, marginTop: 4 }}>
+              {cc.map((addr) => (
+                <label key={addr} className="row small" style={{ gap: 8, alignItems: 'center', color: '#141B22' }}>
+                  <input type="checkbox" checked onChange={() => setCcList((x) => x.filter((e) => e !== addr))} />
+                  <span>{addr}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          <div className="row" style={{ gap: 6, marginTop: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input className="input" type="text" value={ccTyped} placeholder="copy another email…"
+              onChange={(e) => setCcTyped(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCc(); } }}
+              style={{ minWidth: 220 }} />
+            <button type="button" className="btn ghost small" onClick={addCc}>Copy</button>
+          </div>
+        </div>
+
         <label style={{ display: 'grid', gap: 4, marginTop: 12 }}>
           <span className="small" style={{ fontWeight: 600, color: '#141B22' }}>Add a short message (optional)</span>
           <textarea className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)}
@@ -108,8 +160,12 @@ export default function TapeSendModal({ name, preview, busy, onCancel, onSend })
         </label>
 
         {err && <div className="small" role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{err}</div>}
-        <div className="row" style={{ gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+        <div className="row" style={{ gap: 8, marginTop: 12, justifyContent: 'flex-end', flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <button type="button" className="btn ghost small" disabled={busy} onClick={onCancel}>Cancel</button>
+          {onSchedule && (
+            <ScheduleButton what="the data tape" busy={busy} disabled={to.length === 0}
+              onSchedule={({ day, time }) => onSchedule({ ...payload(), day, time })} />
+          )}
           <button type="submit" className="btn primary small" disabled={busy || to.length === 0}
             title={to.length === 0 ? 'Pick or add at least one investor email first' : undefined}>
             {busy ? 'Sending…' : `Send to ${to.length || 'the'} recipient${to.length === 1 ? '' : 's'}`}

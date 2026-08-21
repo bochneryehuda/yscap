@@ -48,6 +48,13 @@ const EXTERNAL_FOR = {
   'in underwriting': 'underwriting',
   'approval processing (3-em)': 'underwriting',
   'resubmitted (4-em)': 'underwriting',
+  // The BARE 'approved' status. It is not on the officer lists — it lives on the
+  // Lead Capture / workflow lists (verified live 2026-08-21) — and it was missing
+  // here, so it fell through to the keyword fallback (which matches "approval",
+  // not "approved") and every card on it read to the borrower as **Processing**.
+  // Found while building the officer-folder move, whose status mapping is only
+  // safe because this derivation is right.
+  'approved': 'approved',
   'delegated ctc submission': 'approved',
   'final submission (4-em)': 'approved',
   'ctc (4-email)': 'clear_to_close',
@@ -61,6 +68,13 @@ const EXTERNAL_FOR = {
   'waiting for final docs': 'funded',
   'non del closed reconciled': 'funded',
   'closed reconciled': 'funded',
+  // Repaid. Also missing here and also falling through to 'processing' — a
+  // borrower whose loan is PAID OFF was being shown "Processing". There is no
+  // paid-off bucket in the borrower-facing set, and the loan certainly funded,
+  // so 'funded' is the only truthful one of the eleven. (No surprise email: a
+  // paid-off file passed through funded earlier in its life, so its
+  // status_notified_external watermark already reads 'funded'.)
+  'paid off': 'funded',
   'declined': 'declined',
   'cancelled': 'withdrawn',
   'cancelled & reconciled': 'withdrawn',

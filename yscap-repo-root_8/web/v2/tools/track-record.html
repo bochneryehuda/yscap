@@ -257,7 +257,8 @@
             <button class="btn btn-line" type="button" onclick="TR.exportXlsx(this)">Export ⤓</button>
             <button class="btn btn-line" type="button" onclick="TR.emailToOfficer(this)" title="Send your track record (PDF &amp; Excel) straight to your loan officer or our sales desk">Send to YS Capital →</button>
             <button class="btn btn-line" type="button" onclick="document.getElementById('tr-import').click()">Import ⤒</button>
-            <input id="tr-import" type="file" accept=".xlsx" class="hide" onchange="TR.importXlsx(this)">
+            <input id="tr-import" type="file" accept=".xlsx" class="hide" onchange="TR.importXlsx(this)"
+                   data-ys-drop data-ys-drop-hint="Drop the Excel to import your track record">
         </div>
     </div>
 </header>
@@ -296,6 +297,7 @@
 <script src="../suite.js"></script>
 <script src="rb-logo.js"></script>
 <script src="address-autocomplete.js?v=usps1"></script>
+<script src="drop-import.js?v=2"></script>
 <script src="track-record.js?v=pilot10-rstamp"></script>
 <script src="track-record-portal.js?v=n17-rstamp"></script>
 <script src="../float-actions.js?v=applyfix2"></script>

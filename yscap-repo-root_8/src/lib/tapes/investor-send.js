@@ -112,16 +112,51 @@ function dealFigures(app, quote) {
   // whenever the price is the lower figure (audit 98b8fac note 7).
   add('Initial LTV (initial advance ÷ acquisition value)', pct(s.acqLtvPct));
   add('ARV LTV (total loan ÷ after-repair value)', pct(s.arvPct));
-  // "Effective LTV" — the WHOLE loan against today's value, the blended figure an
-  // investor sizes exposure on. Computed only when both halves are known.
-  {
-    const denom = Number(app.as_is_value) || Number(app.purchase_price);
-    const total = Number(s.totalLoan);
-    if (Number.isFinite(denom) && denom > 0 && Number.isFinite(total) && total > 0) {
-      add('Effective LTV (total loan ÷ as-is value)', pct(total / denom));
-    }
-  }
+  // TOTAL LTC — the whole loan against the whole COST, which is the third leverage
+  // figure this deal actually has (owner-directed 2026-08-21).
+  //
+  // It REPLACES a computed "Effective LTV (total loan ÷ as-is value)". That figure
+  // divided the WHOLE loan — which finances the rehab — by a value that does NOT
+  // include the rehab, so on any real construction deal it printed something like
+  // 108% or 140% and described nothing: the owner's words were "It's a stupid
+  // matrix … we need to add over there the total LTC and remove this other
+  // effective LTV, which calculates the total loan amount according to the initial
+  // and gets to 140 LTV."
+  //
+  // It is READ from the engine, never recomputed here. `sizing.ltcPct` is the
+  // engine's own `totalLoan / costBasis`, and `costBasis` is the frozen
+  // owner-authorized definition (2026-08-05): the LOWER of the purchase price and
+  // the as-is value, plus the construction budget. That is the same number the
+  // rate grid classifies the deal on, so the tape and the pricing can never state
+  // two different LTCs — the "one definition, never a second copy" rule.
+  add('Total LTC (total loan ÷ total cost)', pct(s.ltcPct));
+  add('Total cost (acquisition + construction budget)', usd(s.costBasis));
   return rows;
+}
+
+const dedupe = (list) => {
+  const seen = new Set();
+  const out = [];
+  for (const x of list) { const a = String(x || '').trim().toLowerCase(); if (a && !seen.has(a)) { seen.add(a); out.push(a); } }
+  return out;
+};
+
+/**
+ * An OPTIONAL address list (the extra Cc). Same address rules as the recipients,
+ * and the same refusal wording for a bad one — but an EMPTY list is a valid
+ * answer, which is the one thing that makes it different from `cleanRecipients`.
+ */
+function extraAddresses(list) {
+  if (!Array.isArray(list) || !list.length) return { emails: [], problem: '' };
+  const emails = [];
+  for (const raw of list) {
+    const m = String(raw == null ? '' : raw).trim().match(/<([^>]+)>\s*$/);
+    const addr = (m ? m[1] : String(raw == null ? '' : raw)).trim().toLowerCase();
+    if (!addr) continue;
+    if (!EMAIL_RE.test(addr)) return { emails: [], problem: `"${addr}" is not a valid email address.` };
+    emails.push(addr);
+  }
+  return { emails: dedupe(emails), problem: '' };
 }
 
 /** Validate + normalize a recipient list. Returns { emails, problem }. */
@@ -167,7 +202,9 @@ async function previewTapeSend(appId, db) {
        LEFT JOIN product_registrations pr ON pr.application_id = a.id AND pr.is_current
       WHERE a.id = $1 AND a.deleted_at IS NULL LIMIT 1`, [appId])).rows[0];
   if (!a) return null;
-  const contacts = await investorSend.contactsForNoteBuyer(a.lender);
+  // The TAPE desk's people, not the draw team's — two different conversations
+  // with the same investor (db/602; owner-reported 2026-08-21).
+  const contacts = await investorSend.contactsForNoteBuyer(a.lender, { purpose: 'tape' });
   return {
     app: a,
     subject: subjectFor(a),
@@ -188,10 +225,18 @@ async function saveRecipients(db, lenderLabel, emails, actorId) {
   if (!key) return;
   for (const addr of emails) {
     try {
+      // Saved against the TAPE list. A person already on the DRAW list keeps that
+      // membership and GAINS this one (the array is added to, never replaced) —
+      // one contact can genuinely handle both.
       await db.query(
-        `INSERT INTO investor_delivery_contacts (label_norm, label, email, active, created_by)
-         VALUES ($1,$2,$3,true,$4)
-         ON CONFLICT (label_norm, lower(email)) DO UPDATE SET active=true, updated_at=now()`,
+        `INSERT INTO investor_delivery_contacts (label_norm, label, email, active, created_by, purposes)
+         VALUES ($1,$2,$3,true,$4, ARRAY['tape']::text[])
+         ON CONFLICT (label_norm, lower(email)) DO UPDATE
+            SET active = true, updated_at = now(),
+                purposes = CASE
+                  WHEN 'tape' = ANY(investor_delivery_contacts.purposes) THEN investor_delivery_contacts.purposes
+                  ELSE investor_delivery_contacts.purposes || 'tape'::text
+                END`,
         [key, String(lenderLabel).trim(), addr, actorId || null]);
     } catch (_) { /* best-effort */ }
   }
@@ -202,16 +247,23 @@ async function saveRecipients(db, lenderLabel, emails, actorId) {
  * ONE attachment. Throws {status, message} on a refusal; returns
  * { ok, to, cc, replyTo, subject } on success.
  */
-async function sendTapeToInvestor(appId, db, { tape, to, note, actorId, actorName }) {
+async function sendTapeToInvestor(appId, db, { tape, to, cc: extraCc, note, actorId, actorName }) {
   const pre = await previewTapeSend(appId, db);
   if (!pre) { const e = new Error('file not found'); e.status = 404; throw e; }
   const { emails, problem } = cleanRecipients(to);
   if (problem) { const e = new Error(problem); e.status = 400; throw e; }
+  // Extra people to copy, typed on the compose screen (owner-directed 2026-08-21:
+  // "you need to give the option to CC more people"). OPTIONAL — an empty list is
+  // fine here, unlike `to`, so it is validated with the same address rules but
+  // never refused for being empty.
+  const extra = extraAddresses(extraCc);
+  if (extra.problem) { const e = new Error(extra.problem); e.status = 400; throw e; }
   if (!tape || !tape.buf || !tape.buf.length) { const e = new Error('The tape could not be built — nothing was sent.'); e.status = 500; throw e; }
 
   // The team rides as a VISIBLE Cc (never Bcc — a reply-all must reach everyone),
-  // minus anyone already in To.
-  const cc = pre.cc.filter((c) => !emails.includes(c));
+  // and the typed extras ride beside them. Deduped, and minus anyone already in
+  // To — one person must never receive the same email twice.
+  const cc = dedupe([...pre.cc, ...extra.emails]).filter((c) => !emails.includes(c));
   const replyTo = pre.replyTo || cfg.replyToDefault || null;
 
   const noteText = String(note || '').trim().slice(0, 2000);
@@ -256,4 +308,4 @@ async function sendTapeToInvestor(appId, db, { tape, to, note, actorId, actorNam
   return { ok: true, to: emails, cc, replyTo, subject: pre.subject, sentBy: actorName || null };
 }
 
-module.exports = { subjectFor, dealFigures, cleanRecipients, previewTapeSend, sendTapeToInvestor, saveRecipients, teamCc };
+module.exports = { subjectFor, dealFigures, cleanRecipients, extraAddresses, previewTapeSend, sendTapeToInvestor, saveRecipients, teamCc };

@@ -53,6 +53,14 @@ function classify(e, attempts) {
  * while test mode is on (the default) — so pointing at live creds during testing
  * can never mail a real borrower a watermark-free binding envelope by accident.
  * Only an explicit DOCUSIGN_TEST_MODE=0 on the production host lifts the gate.
+ *
+ * IT MUST SEE THE CARBON COPIES TOO. A CC is a real DocuSign recipient — DocuSign mails them
+ * exactly as it mails a signer — so checking `inputs.signers` alone left the gate wide open
+ * for every viewer on every envelope: on the demo host, or with test mode on, DocuSign would
+ * still mail every copied staffer while this guard reported the send safe. The gate's own
+ * contract is "refuse to mail ANYONE not on the allow-list", and a recipient it never looks
+ * at cannot be refused. Found while adding the draw coordinator to the origination packages
+ * (owner item 23), which widens exactly this exposure.
  */
 function guardTestEmails(docusign, signers) {
   const onDemo = !!(docusign.isDemoHost && docusign.isDemoHost());
@@ -139,7 +147,7 @@ async function sendClaimedEnvelope(rowId, opts = {}) {
     }
     const inputs = await buildDefinition(row);
     if (!inputs) { const e = new Error('buildDefinition returned nothing'); e.retryable = false; throw e; }
-    guardTestEmails(docusign, inputs.signers);
+    guardTestEmails(docusign, [...(inputs.signers || []), ...(inputs.carbonCopies || [])]);
 
     // Layer 2: deterministic key — replayed verbatim on any retry/reclaim.
     const idem = docusign.idempotencyKey(row.application_id, row.purpose, row.product_version);

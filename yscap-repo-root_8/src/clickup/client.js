@@ -5,6 +5,8 @@
  */
 const crypto = require('crypto');
 const BASE = 'https://api.clickup.com/api/v2';
+// v3 exists for exactly ONE call — the home-list move (see moveTaskHomeList below).
+const BASE_V3 = 'https://api.clickup.com/api/v3';
 
 function token() {
   const t = process.env.CLICKUP_API_TOKEN;
@@ -57,6 +59,24 @@ function guardNoTaskDeletion(method, path) {
     e.code = 'CLICKUP_DELETE_FORBIDDEN';
     throw e;
   }
+}
+
+// ── HARD STOP 1b: the SAME no-deletion rule on ClickUp's v3 surface. ─────────
+// TASK_PATH_RE above matches the v2 shape (`/task/{id}`); v3 addresses a task as
+// `/workspaces/{n}/tasks/{id}/…`, which that regex does NOT match — so without this
+// a v3 DELETE would sail straight past HARD STOP 1. The move endpoint is the only
+// v3 call this integration makes, and it is a PUT; anything else is refused here.
+const V3_TASK_PATH_RE = /(^|\/)tasks\/[^/?]+/;
+const V3_MOVE_PATH_RE = /^\/workspaces\/\d+\/tasks\/[^/?]+\/home_list\/[^/?]+$/;
+function guardV3TaskPath(method, path) {
+  const p = String(path);
+  if (!V3_TASK_PATH_RE.test(p)) return;                       // not a v3 task path
+  if (String(method).toUpperCase() === 'PUT' && V3_MOVE_PATH_RE.test(p)) return;  // the one sanctioned v3 call
+  const e = new Error(
+    `BLOCKED: ${method} ${p} — the only ClickUp v3 call this integration makes is the home-list MOVE ` +
+    `(PUT /workspaces/{team}/tasks/{task}/home_list/{list}). Everything else on v3 is refused.`);
+  e.code = 'CLICKUP_V3_FORBIDDEN';
+  throw e;
 }
 
 // ── HARD STOP 2 (owner-directed 2026-07-15, post data-loss report): this ──────
@@ -213,8 +233,9 @@ async function fetchWithTimeout(url, opts, ms) {
   }
 }
 
-async function call(path, { method = 'GET', body, idempotent } = {}) {
+async function call(path, { method = 'GET', body, idempotent, base } = {}) {
   guardNoTaskDeletion(method, path); // never delete a ClickUp file — see guard above
+  guardV3TaskPath(method, path);     // …including on the v3 surface (different path shape)
   const payload = body ? JSON.stringify(body) : undefined;
   // N-1 (round-2): default GET/PUT/DELETE to idempotent; a POST is NOT idempotent
   // unless the caller says so (setField is value-idempotent and opts in). A
@@ -225,7 +246,7 @@ async function call(path, { method = 'GET', body, idempotent } = {}) {
     await takeToken(); // pre-throttle (shared across processes) so we rarely get 429'd
     let res;
     try {
-      res = await fetchWithTimeout(`${BASE}${path}`, {
+      res = await fetchWithTimeout(`${base || BASE}${path}`, {
         method,
         headers: { Authorization: token(), 'Content-Type': 'application/json' },
         body: payload,
@@ -302,6 +323,32 @@ const clearAssignmentMoneyField = (taskId, fieldId) => {
 const getTeams = () => call(`/team`);
 
 const getFolderLists = (folderId) => call(`/folder/${folderId}/list`);
+// One list, WITH its configured statuses. Read-only. Needed before a home-list MOVE:
+// statuses in this workspace are LIST-level (verified live 2026-08-21 — every list
+// carries its own `status_group: subcat_<listId>` set, and the sets genuinely differ:
+// Lead Capture has `approved` and `imported to bank (2-em)` that an officer list does
+// not, and an officer list has the whole `delegated …` ladder that Lead Capture does
+// not). So a move must know what the destination can hold before it happens.
+const getList = (listId) => call(`/list/${listId}`);
+
+// ── MOVE A TASK TO A NEW HOME LIST (ClickUp API v3) ──────────────────────────
+// The ONLY v3 endpoint this integration touches, and the only way ClickUp offers to
+// relocate a task: PUT /v3/workspaces/{team}/tasks/{task}/home_list/{list}. There is
+// no v2 equivalent — `POST /v2/list/{id}/task/{id}` is "Tasks in Multiple Lists"
+// (it ADDS a home, it does not move one) and its DELETE sibling is hard-blocked here.
+//
+// TWO BODY FIELDS DECIDE WHETHER DATA SURVIVES, and both are the caller's job:
+//   · `move_custom_fields` — ClickUp does NOT carry custom fields across on its own.
+//     (Measured on this workspace: all 73 custom-field ids PILOT reads or writes are
+//     defined at the SPACE level, so within the Loan Pipeline space the definitions
+//     already exist on every list and nothing is lost either way — this is sent as
+//     belt-and-suspenders, and matters the day a field is ever list-scoped.)
+//   · `status_mappings` — required when the task's current status does not exist in
+//     the destination list. Without it the move either fails or silently re-buckets
+//     the task, and PILOT reads that status straight back inbound.
+const moveTaskHomeList = (teamId, taskId, listId, body) =>
+  call(`/workspaces/${teamId}/tasks/${taskId}/home_list/${listId}`,
+    { method: 'PUT', body: body || {}, base: BASE_V3 });
 const addComment = (taskId, comment_text) =>
   call(`/task/${taskId}/comment`, { method: 'POST', body: { comment_text } });
 
@@ -369,11 +416,11 @@ function verifyWebhookSignature(rawBody, signature, secret) {
 }
 
 module.exports = {
-  call, createTask, updateTask, setField, clearAssignmentMoneyField, ASSIGNMENT_CLEAR_FIELD_IDS, getFolderLists, addComment, getTeams,
+  call, createTask, updateTask, setField, getList, moveTaskHomeList, clearAssignmentMoneyField, ASSIGNMENT_CLEAR_FIELD_IDS, getFolderLists, addComment, getTeams,
   getTask, getListFields, getFilteredTeamTasks,
   addTaskToList, removeTaskFromList,
   createWebhook, listWebhooks, updateWebhook, deleteWebhook, verifyWebhookSignature,
-  guardNoTaskDeletion, // exported for the safety test; the guard is enforced inside call()
+  guardNoTaskDeletion, guardV3TaskPath, // exported for the safety tests; both are enforced inside call()
   guardNoFieldClearing, guardTaskUpdatePayload, // exported for the safety tests; enforced inside setField()/updateTask()
   isRetryableStatus, backoffMs, httpError, // WO-2: exported for the retry-contract test
   inCallRetryAllowed, // N-1 (round-2): exported for the create-idempotency test
