@@ -43,7 +43,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 17 | Scope of work Excel import: drag-and-drop | Uploads | ☐ |
 | 18 | ClickUp: Joshua Freidlander's files land in Lead Capture | ClickUp | ◐ |
 | 19 | ClickUp: assigning an officer moves the task to their folder | ClickUp | ☐ |
-| 20 | Rehab Budget PDF: value-add / narrative overlap | PDF | ☐ |
+| 20 | Rehab Budget PDF: value-add / narrative overlap | PDF | ☐☑ |
 | 21 | Funded date auto-read from Encompass (`CX.FUNDEDDATE`) | Encompass | ☐ |
 | 22 | Experience-count condition stuck at the old requirement | Conditions | ☐ |
 | 23 | DocuSign: processor + officer always CC'd as viewers | DocuSign | ☐ |

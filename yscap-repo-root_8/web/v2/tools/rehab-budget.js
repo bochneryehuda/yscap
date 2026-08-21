@@ -1027,6 +1027,21 @@ const RB = (function(){
       const useCols = isMulti() && colKeys.length<=6;     // dedicated section columns when they fit
       const doc=new jsPDF({unit:"pt",format:"letter",orientation:(useCols && colKeys.length>=3)?"landscape":"portrait"});
       const W=doc.internal.pageSize.getWidth(), M=42;
+      // PAGE GEOMETRY. Nothing in this document used to know where the page ENDS,
+      // which is why a long block ran off the bottom and the next one was drawn on
+      // top of it (owner-reported 2026-08-21: the value-add details and the
+      // narrative overlapping). PH/BOT and `flow()` are that missing knowledge.
+      const PH=doc.internal.pageSize.getHeight(), BOT=54, TOPY=52;
+      const roomLeft=()=>PH-BOT-y;
+      /* Make room for a block `need` points tall. `keepWhole` moves a block that
+         does not fit onto a fresh page instead of splitting it; a block taller
+         than a whole page can never be kept whole, so it is drawn where it is and
+         splits itself. Returns true when a new page was started. */
+      function flow(need,keepWhole){
+        if(y+need<=PH-BOT) return false;
+        if(keepWhole && need>PH-BOT-TOPY) return false;   // taller than any page — it must split
+        doc.addPage(); y=TOPY; return true;
+      }
       const INK=[20,27,34], TEAL=[47,127,134], TEALD=[31,58,64], GOLD=[174,135,70], GRAY=[75,88,92], LIGHT=[234,241,241], IV=[244,240,231];
       const IVORY=[250,248,242], GOLDL=[196,163,101], HAIR=[210,201,185], MUTE=[150,158,162], PAPER=[252,252,251], ZEBRA=[250,250,248], FOOT=[248,249,249];
       // ---- header band (editorial masthead) ----
@@ -1078,17 +1093,77 @@ const RB = (function(){
       if(vd.curb)vrows.push(["Exterior / curb appeal", vd.curbNotes||"Exterior and curb-appeal improvements"]);
       if(vd.other)vrows.push(["Other value-add", vd.other]);
       if(vrows.length){
-        const titleH=24, rowH=17, boxH=titleH+18+vrows.length*rowH+8;
-        doc.setFillColor(PAPER[0],PAPER[1],PAPER[2]); doc.setDrawColor(TEAL[0],TEAL[1],TEAL[2]); doc.setLineWidth(1); doc.roundedRect(M,y,W-2*M,boxH,6,6,"FD");
-        doc.setFillColor(TEALD[0],TEALD[1],TEALD[2]); doc.rect(M,y,W-2*M,titleH,"F");
-        doc.setFillColor(GOLD[0],GOLD[1],GOLD[2]); doc.rect(M,y,3.5,titleH,"F");   // gold accent on the title bar
-        doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(IV[0],IV[1],IV[2]); doc.setCharSpace(0.4); doc.text("VALUE DRIVERS — IMPROVEMENTS THAT SUPPORT THE AFTER-REPAIR VALUE", M+14, y+16); doc.setCharSpace(0);
-        doc.setFont("helvetica","italic"); doc.setFontSize(8); doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.text("What the appraiser should credit toward the after-repair value (ARV).", M+14, y+titleH+13);
-        let yy=y+titleH+30; doc.setFontSize(9.5);
-        vrows.forEach((r,ri)=>{ if(ri>0){ doc.setDrawColor(HAIR[0],HAIR[1],HAIR[2]); doc.setLineWidth(0.4); doc.line(M+14,yy-11,W-M-14,yy-11); } doc.setFont("helvetica","bold"); doc.setTextColor(TEALD[0],TEALD[1],TEALD[2]); doc.text(pdfSafe(r[0]), M+14, yy); doc.setFont("helvetica","normal"); doc.setTextColor(28,30,34); const dt=doc.splitTextToSize(pdfSafe(r[1]),W-2*M-185); doc.text(dt,M+172,yy); yy+=rowH; });
-        y+=boxH+16;
+        /* VALUE DRIVERS — MEASURED, NOT ASSUMED.
+           This box used to compute its height as `vrows.length * 17`, i.e. one line
+           per row, while each row's VALUE was wrapped by splitTextToSize and could
+           be three or four lines. So a long value (the free-text "Other value-add",
+           or a wordy basement/layout note) drew past its own row, past the box, and
+           the NARRATIVE below was then drawn straight over it — the reported
+           overlap. Now every row is measured first, the box is as tall as its
+           content, and a row that wraps simply pushes the ones under it down.
+           This is the same discipline the property-summary panel above already
+           applies to a stacked address. */
+        const titleH=24, subH=18, padB=12, labW=158, gapW=14, lineH=13, rowGap=13;
+        const valX=M+14+labW+gapW, valW=W-M-14-valX;
+        doc.setFont("helvetica","normal"); doc.setFontSize(9.5);
+        const vFit=vrows.map(r=>{
+          const lab=doc.splitTextToSize(pdfSafe(r[0]),labW);
+          const val=doc.splitTextToSize(pdfSafe(r[1]),valW);
+          // A row is as tall as its TALLEST column — the label wraps too.
+          return {lab,val,h:Math.max(lab.length,val.length)*lineH+rowGap};
+        });
+        const bodyH=vFit.reduce((a,f)=>a+f.h,0);
+        // Keep the whole box together when it can be; a box taller than a page
+        // splits at a ROW boundary and repeats its title bar.
+        flow(titleH+subH+bodyH+padB,true);
+        let i=0, first=true;
+        while(i<vFit.length){
+          // How many rows fit in what is left of this page?
+          const avail=roomLeft()-(titleH+(first?subH:0)+padB);
+          let take=0, used=0;
+          while(i+take<vFit.length && (used+vFit[i+take].h)<=avail){ used+=vFit[i+take].h; take++; }
+          // Never emit an empty continuation — one row always goes on the page,
+          // or a row taller than a whole page would loop for ever.
+          if(take===0){ if(roomLeft()<160 && !flow(9e9)) { /* already at the top */ } take=1; used=vFit[i].h; }
+          const boxH=titleH+(first?subH:0)+used+padB;
+          doc.setFillColor(PAPER[0],PAPER[1],PAPER[2]); doc.setDrawColor(TEAL[0],TEAL[1],TEAL[2]); doc.setLineWidth(1); doc.roundedRect(M,y,W-2*M,boxH,6,6,"FD");
+          doc.setFillColor(TEALD[0],TEALD[1],TEALD[2]); doc.rect(M,y,W-2*M,titleH,"F");
+          doc.setFillColor(GOLD[0],GOLD[1],GOLD[2]); doc.rect(M,y,3.5,titleH,"F");   // gold accent on the title bar
+          doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(IV[0],IV[1],IV[2]); doc.setCharSpace(0.4);
+          doc.text("VALUE DRIVERS — IMPROVEMENTS THAT SUPPORT THE AFTER-REPAIR VALUE"+(first?"":" (CONTINUED)"), M+14, y+16); doc.setCharSpace(0);
+          let yy=y+titleH;
+          if(first){ doc.setFont("helvetica","italic"); doc.setFontSize(8); doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.text("What the appraiser should credit toward the after-repair value (ARV).", M+14, yy+13); yy+=subH; }
+          yy+=14;   // first baseline inside the body
+          for(let k=0;k<take;k++){
+            const f=vFit[i+k];
+            if(k>0){ doc.setDrawColor(HAIR[0],HAIR[1],HAIR[2]); doc.setLineWidth(0.4); doc.line(M+14,yy-11,W-M-14,yy-11); }
+            doc.setFont("helvetica","bold"); doc.setFontSize(9.5); doc.setTextColor(TEALD[0],TEALD[1],TEALD[2]);
+            f.lab.forEach((ln,li)=>doc.text(ln,M+14,yy+li*lineH));
+            doc.setFont("helvetica","normal"); doc.setTextColor(28,30,34);
+            f.val.forEach((ln,li)=>doc.text(ln,valX,yy+li*lineH));
+            yy+=f.h;
+          }
+          y+=boxH+16; i+=take; first=false;
+          if(i<vFit.length){ doc.addPage(); y=TOPY; }
+        }
       }
-      if(S.narrative){ doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(TEALD[0],TEALD[1],TEALD[2]); doc.setCharSpace(0.5); doc.text("NARRATIVE",M,y); doc.setCharSpace(0); doc.setDrawColor(GOLD[0],GOLD[1],GOLD[2]); doc.setLineWidth(0.8); doc.line(M,y+4,M+58,y+4); y+=16; doc.setFont("helvetica","normal"); doc.setTextColor(35,38,42); doc.setFontSize(9); const ln=doc.splitTextToSize(pdfSafe(S.narrative),W-2*M); doc.text(ln,M,y); y+=ln.length*12+10; }
+      if(S.narrative){
+        /* THE NARRATIVE FLOWS TOO. It had no page awareness either: a long one ran
+           off the bottom of the page and the budget table was then drawn over it.
+           Its heading is kept with at least its first two lines — a heading alone
+           at the foot of a page is the other way this reads badly. */
+        doc.setFont("helvetica","normal"); doc.setFontSize(9);
+        const ln=doc.splitTextToSize(pdfSafe(S.narrative),W-2*M);
+        const headH=16, lineH=12;
+        flow(headH+Math.min(ln.length,2)*lineH+6);
+        doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(TEALD[0],TEALD[1],TEALD[2]); doc.setCharSpace(0.5);
+        doc.text("NARRATIVE",M,y); doc.setCharSpace(0);
+        doc.setDrawColor(GOLD[0],GOLD[1],GOLD[2]); doc.setLineWidth(0.8); doc.line(M,y+4,M+58,y+4);
+        y+=headH;
+        doc.setFont("helvetica","normal"); doc.setTextColor(35,38,42); doc.setFontSize(9);
+        for(const line of ln){ flow(lineH); doc.text(line,M,y); y+=lineH; }
+        y+=10;
+      }
 
       const applyLbl={each:"Same each unit",split:"Per unit",common:"Common areas",exterior:"Exterior",project:"Project-wide"};
       let head, body=[], foot=[], colStyles;
