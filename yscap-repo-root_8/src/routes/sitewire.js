@@ -2649,6 +2649,15 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
     // "already in Sitewire — not managed" banner), or another setup blocker (no SOW, budget mismatch, …).
     const setupStatus = (link && link.raw && link.raw.setup_status) ? link.raw.setup_status : null;
     const preexisting = !!(setupStatus && setupStatus.preexisting_property_id);
+    /* Read through the SAME helper every door refuses with, so the banner and the refusal can
+       never disagree about whether this file is held. Best-effort on the READ only: an
+       unreadable answer still blocks at the door (it fails closed there), and here it simply
+       shows nothing rather than crying wolf on a screen. */
+    let payoffState = null;
+    try {
+      const h = await require('../lib/payoff-demand').payoffDemandBlock(db, appId);
+      if (h && h.blocked && !h.unreadable) payoffState = { at: h.at, by: h.by || null, note: h.note || null, message: h.message };
+    } catch (_) { /* the banner is a read, never a gate */ }
     const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src, quick_notify_status_id, coordinator_id FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
     // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd): the request's own job_item_name
     // can arrive null from Sitewire (drafting-state draws often omit it); fall back FIRST to the
@@ -2817,6 +2826,17 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
       // Sitewire property PILOT didn't create; setup_status = the last birth-phase outcome (inline, not a
       // global error row); managed_since = when PILOT pushed (born) this property.
       preexisting, setup_status: setupStatus, managed_since: link ? link.pushed_at : null, go_live_date: cfg.sitewireGoLiveDate,
+      /* THE PAYOFF DEMAND, ON THE COORDINATOR'S OWN SCREEN (owner-directed 2026-08-21: *"In the
+         Draw Coordinator section AND ALSO in the Critical Date section … it should come out big
+         that there was a Pay Off Demand on this one, so you can't request the set of draws on
+         this file anymore"*).
+
+         It was enforced at every door from the day it was built and shown on NEITHER — a
+         coordinator learnt about it only by pressing Start and being refused, which is the
+         worst moment to find out and says nothing until you act. The refusal is unchanged; this
+         is the same fact, read the same way (`payoffDemandBlock`, which FAILS CLOSED), returned
+         so the screen can lead with it. */
+      payoff_demand: payoffState,
       // so the desk can show a proactive read-only banner + disable write buttons when writes are off
       // (an approve/release/finding write 503s unless BOTH the master switch and the write gate are on).
       switches: { enabled: switches.on('SITEWIRE_ENABLED'), outbound: switches.on('SITEWIRE_OUTBOUND_ENABLED'), dryrun: cfg.sitewireDryrun } });

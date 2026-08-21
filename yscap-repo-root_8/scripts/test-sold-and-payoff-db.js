@@ -182,6 +182,27 @@ function call(server, method, p, body, token) {
     eq((await PD.payoffDemandBlock(db, APP2)).blocked, false, 'and the draw centre is open again');
     const dates = await CD.criticalDates(db, APP);
     ok(!!dates.dates.find((d) => d.key === 'payoff_demand').date, 'the demand shows in the critical dates with its date');
+
+    console.log('7. …and the DRAW COORDINATOR sees it before reaching for the button');
+    /* THE GAP THIS CLOSES, found by auditing the batch back against the owner's words: *"In the
+       Draw Coordinator section AND ALSO in the Critical Date section … it should come out big
+       that there was a Pay Off Demand on this one"*. The hold was enforced at every door from
+       the day it was built and shown on NEITHER screen — so a coordinator learnt about it by
+       pressing Start and being refused, which is the worst moment to find out. The refusal
+       above is unchanged; what is asserted here is that the same fact reaches the draw view. */
+    const view = await call(server, 'GET', `/api/sitewire/files/${APP}/rollup`, null, tokCoord);
+    eq(view.status, 200, 'the draw view loads');
+    ok(view.body && view.body.payoff_demand && view.body.payoff_demand.at,
+      'and carries the payoff demand, so the panel can lead with it');
+    const pd = (view.body && view.body.payoff_demand) || {};
+    eq(pd.note, 'via the screen', 'with the note somebody typed');
+    ok(/PAYOFF DEMAND/.test(String(pd.message || '')),
+      'and the same loud sentence the doors refuse with — one fact, one wording');
+    /* A FILE WITH NO DEMAND SAYS NOTHING. A banner that renders on every file is a banner
+       nobody reads. */
+    const clean = await call(server, 'GET', `/api/sitewire/files/${APP2}/rollup`, null, tokCoord);
+    eq(clean.status, 200, 'a file with no demand loads too');
+    ok(!(clean.body && clean.body.payoff_demand), '…and carries no payoff banner at all');
   } finally {
     await db.query(`DELETE FROM application_status_history WHERE application_id = ANY($1::uuid[])`, [[APP, APP2]]).catch(() => {});
     await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[APP, APP2]]).catch(() => {});
