@@ -220,6 +220,93 @@ const TAG = 'dan' + crypto.randomBytes(4).toString('hex');
     await db.query(`UPDATE staff_users SET is_active=true WHERE id=$1`, [coord]);
   }
 
+  // ======================================================================
+  // F. THE SHARED DRAW DESK INBOX gets ONE copy (owner-directed 2026-08-21:
+  //    "you can always notify our group email, which is draws@yscapgroup.com")
+  //
+  // WHY THIS WAS MISSING and could not have been found by reading the recipient list: the fan-out
+  // emails one `staff_users` row at a time, and `draws@yscapgroup.com` is a shared MAILBOX with no
+  // such row — so no resolver could ever have put it there. It was already copied on every
+  // BORROWER draw email, on the wire-form DocuSign viewers and on the one-email thread helper; our
+  // OWN team notifications were the one place it was absent, which is exactly where the borrower
+  // pressing Accept lands. Asserted on the WIRE PAYLOAD: a passing send against the `none`
+  // provider proves nothing about who was addressed.
+  // ======================================================================
+  {
+    const mailer = require('../src/lib/email');
+    const realSend = mailer.sendMail;
+    const outbox = [];
+    mailer.sendMail = async (m) => { outbox.push(m); return { ok: true, id: 'test' }; };
+    let deskPersonToRemove = null;
+    const toList = () => outbox.flatMap((m) => (Array.isArray(m.to) ? m.to : [m.to]).filter(Boolean).map(String));
+    const deskCopies = () => toList().filter((a) => a.toLowerCase() === dr.DRAW_DESK_INBOX.toLowerCase()).length;
+    try {
+      const f = (await db.query(
+        `INSERT INTO draw_findings(application_id, sitewire_draw_id, status, wire_due_at)
+         VALUES($1,$2,'delivered', now() + interval '2 days') RETURNING *`, [app, swId + 5])).rows[0];
+
+      outbox.length = 0;
+      await NOTICE.notifyDrawAccepted(db, f, 'portal', {});
+      eq('F1 the shared draw desk inbox gets exactly ONE copy', deskCopies(), 1);
+      const deskMail = outbox.find((m) => (Array.isArray(m.to) ? m.to : [m.to])
+        .some((a) => String(a).toLowerCase() === dr.DRAW_DESK_INBOX.toLowerCase()));
+      ok('F2 …carrying the same message the team got, not a bare notice',
+        !!deskMail && /approved/i.test(String(deskMail.subject || '') + String(deskMail.text || '')));
+
+      // A NON-draw notification must be byte-identical to before — the desk hears only its own part.
+      outbox.length = 0;
+      await notify.notifyAppStaff(app, { type: 'status_change', title: 'x', body: 'y', applicationId: app });
+      eq('F3 a non-draw notification sends the desk nothing', deskCopies(), 0);
+
+      /* AN IN-APP-ONLY FAN-OUT SENDS NOTHING, and this is the load-bearing one: `notifyAppThread`
+         sets it precisely BECAUSE the borrower's email already carried the draw team — this
+         address included — on a visible Cc. Without this guard the duplicate that helper was
+         written to remove would come straight back. */
+      outbox.length = 0;
+      await notify.notifyAppStaff(app, { type: 'draw_accepted', title: 'x', body: 'y', applicationId: app, inAppOnly: true });
+      eq('F4 an in-app-only draw fan-out sends the desk nothing', deskCopies(), 0);
+
+      /* A COORDINATOR WHOSE OWN ADDRESS IS THE SHARED INBOX has already been emailed by the
+         fan-out — a second copy of one sentence is exactly what a shared inbox must not receive. */
+      /* This fixture is the ONE row in this suite whose address cannot be TAG-scoped — the whole
+         point is that it IS the shared inbox — so it must be re-runnable and must not be left
+         behind in a shared test database, where an ACTIVE staff row wearing the draw desk's
+         address would quietly join other suites' recipient lists. Created if absent, reused if a
+         previous run left one, and removed below only if THIS run created it. */
+      const made = (await db.query(
+        `INSERT INTO staff_users(email, full_name, role, is_active, is_external)
+         VALUES($1,'Draw Desk','draw_coordinator',true,false)
+         ON CONFLICT (email) DO NOTHING RETURNING id`, [dr.DRAW_DESK_INBOX])).rows[0];
+      const deskPerson = made ? made.id : (await db.query(
+        `UPDATE staff_users SET is_active=true WHERE lower(email)=lower($1) RETURNING id`,
+        [dr.DRAW_DESK_INBOX])).rows[0].id;
+      deskPersonToRemove = made ? deskPerson : null;
+      const app3 = (await db.query(
+        `INSERT INTO applications(borrower_id, loan_officer_id, status, ys_loan_number, property_address, loan_amount)
+         VALUES($1,$2,'funded',$3,'{"oneLine":"11 Desk St"}',250000) RETURNING id`,
+        [bor, lo, `YSD${TAG.toUpperCase()}`])).rows[0].id;
+      await db.query(
+        `INSERT INTO sitewire_property_links(application_id, sitewire_property_id, matched_by, state, pushed_at,
+                                             draw_setup_started_at, draw_setup_started_by)
+         VALUES($1,$2,'created','live',now(),now(),$3)`, [app3, swId + 11, deskPerson]);
+      outbox.length = 0;
+      await notify.notifyAppStaff(app3, { type: 'draw_accepted', title: 'x', body: 'y', applicationId: app3 });
+      eq('F5 …is emailed once in total, never twice', deskCopies(), 1);
+    } finally {
+      mailer.sendMail = realSend;
+      // Let every fire-and-forget fan-out settle first, INCLUDING its sent_emails capture:
+      // deleting this fixture's notifications out from under one in flight is exactly the
+      // `sent_emails → notifications` foreign-key error `drainEmails` exists to prevent.
+      try { await notify.drainEmails(); } catch (_) {}
+      // Only ever removes a row this run created — never one that was already there.
+      if (deskPersonToRemove) {
+        try { await db.query(`DELETE FROM notifications WHERE staff_id=$1`, [deskPersonToRemove]); } catch (_) {}
+        try { await db.query(`UPDATE sitewire_property_links SET draw_setup_started_by=NULL WHERE draw_setup_started_by=$1`, [deskPersonToRemove]); } catch (_) {}
+        try { await db.query(`DELETE FROM staff_users WHERE id=$1`, [deskPersonToRemove]); } catch (_) {}
+      }
+    }
+  }
+
   console.log(fail ? `test-draw-accepted-notice-db: ${pass} passed, ${fail} FAILED` : `test-draw-accepted-notice-db: all ${pass} checks passed.`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('test-draw-accepted-notice-db threw:', e); process.exit(1); });

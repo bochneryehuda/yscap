@@ -1241,6 +1241,48 @@ async function notifyAppStaff(appId, opts = {}) {
     // (DELIVERY_DRAFTED is truthy precisely so it counts here).
     if (one) delivered += 1;
   }
+  /* AND THE SHARED DRAW DESK INBOX GETS ONE COPY (owner-directed 2026-08-21: *"you can always
+     notify our group email, which is draws@yscapgroup.com"*).
+
+     THE GAP THIS CLOSES. `draws@yscapgroup.com` is a shared MAILBOX, not a person, so it has no
+     `staff_users` row — which means this fan-out, which emails one `staff_users` row at a time,
+     could never reach it however the loop-in above resolved. It was already copied on every
+     BORROWER draw email (`drawLoopInBcc`), on the wire-form DocuSign viewers and on the one-email
+     thread helper; the one place it was missing was our OWN team notifications, which is exactly
+     where the borrower pressing Accept lands.
+
+     ONE COPY, NEVER N. It is sent once, here, rather than Bcc'd onto each staffer's email — a
+     shared inbox holding six copies of one event is the noise a shared inbox exists to avoid.
+
+     `opts.inAppOnly` IS HONOURED, and it is load-bearing rather than tidy: `notifyAppThread` sets it
+     precisely because the borrower's email already carried the draw team on a VISIBLE Cc — which
+     includes this address — so sending here too would reintroduce the duplicate that helper was
+     written to remove. Same for the `alreadyEmailed` rule: an inbox already on the inbound email
+     needs no second copy. Best-effort: it can never break the fan-out it rides on. */
+  /* The SAME reading of "is this an emailing notification" that `notifyStaff` applies per
+     person, so the desk copy can never go out on a fan-out whose whole point was silence. */
+  const deskEmailOn = (opts.inAppOnly !== undefined) ? !opts.inAppOnly : !STAFF_INAPP_TYPES.has(opts.type);
+  if (deskEmailOn && categoryOf(opts.type) === 'draws') {
+    try {
+      const DESK = require('./draw-recipients').DRAW_DESK_INBOX;
+      // A coordinator whose OWN address is the shared inbox has already been emailed by the
+      // fan-out above; a second copy of the same sentence is exactly what this must not send.
+      const already = out.length
+        ? (await db.query(`SELECT lower(email) AS e FROM staff_users WHERE id = ANY($1::uuid[])`, [out]))
+            .rows.map((r) => r.e).filter(Boolean)
+        : [];
+      const to = loopedIn.withoutAlreadyEmailed([DESK], opts.alreadyEmailed)
+        .filter((a) => !already.includes(String(a).toLowerCase()));
+      if (to.length) {
+        const enriched = await enrichFileOpts({ ...shared }, 'staff');
+        const msg = buildEmail(enriched, 'staff');
+        _track(email.sendMail({
+          to, subject: msg.subject, text: msg.text, html: msg.html,
+          replyTo: opts.replyTo || fileReplyTo(appId) || cfg.replyToDefault || null,
+        }).catch(() => {}));
+      }
+    } catch (e) { console.error('[notify] draw desk copy', appId, (e && e.message) || e); }
+  }
   // Non-enumerable so nothing that serializes or spreads this array picks it up.
   Object.defineProperty(out, 'delivered', { value: delivered, enumerable: false });
   return out;
