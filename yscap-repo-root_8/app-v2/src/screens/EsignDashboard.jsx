@@ -7,6 +7,7 @@ import {
   PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime as abs, recipientSteps,
   agingHours, agingLevel, agingLabel,
 } from '../lib/esign.js';
+import { useUrlState } from '../lib/useUrlState.js';
 
 /* E-Signatures — PILOT's own DocuSign cockpit (owner-directed 2026-07-19:
  * "our own page that would sound like we have our own DocuSign system within
@@ -252,7 +253,7 @@ export default function EsignDashboard() {
   const isAdmin = ['admin', 'super_admin'].includes(role);
   const [data, setData] = useState(null);   // { envelopes, counts }
   const [err, setErr] = useState('');
-  const [tab, setTab] = useState('all');
+  const [tab, setTab] = useUrlState('tab', 'all', { remember: 'esign.tab' });
   const [refreshedAt, setRefreshedAt] = useState(null);
   const [testBusy, setTestBusy] = useState(false);
   const [testMsg, setTestMsg] = useState('');

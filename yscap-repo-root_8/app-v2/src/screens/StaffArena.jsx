@@ -14,6 +14,7 @@ import ArenaTakeover from '../components/arena/ArenaTakeover.jsx';
 import ArenaRoomBar from '../components/arena/ArenaRoomBar.jsx';
 import ArenaRecap from '../components/arena/ArenaRecap.jsx';
 import { arm as armSound } from '../lib/arenaSound.js';
+import { useUrlState, useUrlFlag } from '../lib/useUrlState.js';
 
 /* THE ARENA — the screen everybody in the building has open during a session.
  *
@@ -48,12 +49,15 @@ const fmtTime = (iso) => {
 
 export default function StaffArena() {
   const { role } = useAuth();
-  const [params, setParams] = useSearchParams();
+  const [params] = useSearchParams();   // read-only now — the URL is written by useUrlState
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
-  const [tab, setTab] = useState(params.get('tab') || 'stage');
-  const [tv, setTv] = useState(params.get('tv') === '1');
+  /* DERIVED FROM THE URL, never mirrored into state (lib/useUrlState.js, property 1). The old
+     shape — seed a useState from the params, then write both — survived a refresh and left the
+     BACK button dead, because the copy was never re-derived. */
+  const [tab, setTab] = useUrlState('tab', 'stage');
+  const [tv, setTv] = useUrlFlag('tv');
   const [now, setNow] = useState(serverNow());
   const [celebrating, setCelebrating] = useState(null);
   const [proofFor, setProofFor] = useState(null);
@@ -209,12 +213,8 @@ export default function StaffArena() {
   const current = spins.find((s) => ['open', 'locked', 'spinning'].includes(s.state)) || spins[0] || null;
   const history = spins.filter((s) => s.state === 'decided');
 
-  const setTabParam = (t) => {
-    setTab(t);
-    const p = new URLSearchParams(params);
-    p.set('tab', t);
-    setParams(p, { replace: true });
-  };
+  // The hook writes the URL itself, so there is nothing left to keep in step.
+  const setTabParam = (t) => setTab(t);
 
   const act = async (label, fn) => {
     setBusy(label);

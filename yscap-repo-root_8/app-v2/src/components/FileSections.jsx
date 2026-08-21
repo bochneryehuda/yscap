@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { rememberScroll, restoreRemembered, parkScroll, unparkScroll } from '../lib/keep-scroll.js';
+import { useUrlSet } from '../lib/useUrlState.js';
 
 /* The 1003-style layout for a loan file: a sticky section rail on the left
    (horizontal chip bar on mobile) and clearly named, anchored sections on the
@@ -14,6 +15,26 @@ import { rememberScroll, restoreRemembered, parkScroll, unparkScroll } from '../
    a section expands JUST that one and brings it into view. Sections listen for
    their own id and expand themselves (see Section's effect below). */
 const sectionBus = typeof window !== 'undefined' ? new EventTarget() : null;
+/* WHICH SECTIONS ARE OPEN LIVES IN THE URL (owner-reported 2026-08-21: "when you
+   refresh in the middle of the draw center it loses your place completely and it goes
+   back to the top … this is a major issue").
+
+   Every Section held its open/closed flag in a private useState, so a browser refresh
+   slammed all of them back to their defaults — worst on the Draw Center, where eleven
+   of thirteen are closed by default, so a refresh threw away everything you had opened.
+
+   The rail supplies the state through a CONTEXT rather than each Section reaching for
+   the URL itself, for two reasons: the Sections are the rail's own children, so one
+   provider reaches all of them; and `useSearchParams` throws outside a Router, so
+   putting it in the rail keeps that requirement in ONE place instead of in every one of
+   the ~100 Sections in this app. With no provider (a Section mounted on its own),
+   `Section` behaves exactly as it always did.
+
+   ONLY DEVIATIONS ARE WRITTEN. A section that is at its default contributes nothing, so
+   a screen nobody has touched has a clean address; `-id` means "closed though it opens
+   by default". That keeps `?sec=` short and readable instead of listing all thirteen. */
+const SectionPlaceContext = createContext(null);
+
 export function requestOpenSection(id) {
   if (sectionBus && id) sectionBus.dispatchEvent(new CustomEvent('pilot-open-section', { detail: id }));
 }
@@ -115,7 +136,15 @@ export function InfoTip({ tip }) {
    disappears when the section opens, because the real content is then right
    there and repeating it would be noise. */
 export function Section({ id, title, info, badge, children, style, collapsible = true, defaultOpen = true, action = null, summary = null, fullscreenable = false, hidden = false }) {
-  const [open, setOpen] = useState(defaultOpen);
+  /* The rail's URL-backed place, when a rail is providing one. Both hooks are called
+     unconditionally (rules of hooks); only which VALUE is used branches, so a Section
+     mounted outside a rail keeps its original private state and behaves as before. */
+  const place = useContext(SectionPlaceContext);
+  const [localOpen, setLocalOpen] = useState(defaultOpen);
+  const open = place ? place.isOpen(id, defaultOpen) : localOpen;
+  const setOpen = place
+    ? (next) => place.setOpen(id, typeof next === 'function' ? next(open) : next, defaultOpen)
+    : setLocalOpen;
   /* FULL SCREEN — owner-directed 2026-07-27: "there should also be a button by
      the conditions section to open the conditions section on a full screen so
      you can work in a big screen on all the conditions."
@@ -255,6 +284,19 @@ export function Section({ id, title, info, badge, children, style, collapsible =
    is byte-identical to before — the borrower screen and the Draw Center pass
    nothing new. */
 export default function FileSections({ sections, children, top = null, stations = null, activeStation = null, onStationGo = null, footer = null }) {
+  /* WHICH SECTIONS ARE OPEN — see the note by SectionPlaceContext. `?sec=` carries only
+     the DEVIATIONS from each section's default, so an untouched screen adds nothing to
+     the address and a shared link says exactly what the sender had open. */
+  const [openSet, toggleOpen] = useUrlSet('sec');
+  const place = useMemo(() => ({
+    isOpen: (id, defaultOpen) => (defaultOpen ? !openSet.has(`-${id}`) : openSet.has(id)),
+    setOpen: (id, want, defaultOpen) => {
+      // Back at its default → the deviation is REMOVED, not recorded the other way,
+      // which is what keeps the URL clean as somebody opens and closes things.
+      if (!!want === !!defaultOpen) { toggleOpen(defaultOpen ? `-${id}` : id, false); return; }
+      toggleOpen(defaultOpen ? `-${id}` : id, true);
+    },
+  }), [openSet, toggleOpen]);
   const [active, setActive] = useState(sections[0] && sections[0].id);
   const clickLock = useRef(0);
 
@@ -352,7 +394,7 @@ export default function FileSections({ sections, children, top = null, stations 
           </ol>
           {footer}
         </nav>
-        <div className="file-main">{children}</div>
+        <div className="file-main"><SectionPlaceContext.Provider value={place}>{children}</SectionPlaceContext.Provider></div>
       </div>
     );
   }
@@ -379,7 +421,7 @@ export default function FileSections({ sections, children, top = null, stations 
         </ol>
         {footer}
       </nav>
-      <div className="file-main">{children}</div>
+      <div className="file-main"><SectionPlaceContext.Provider value={place}>{children}</SectionPlaceContext.Provider></div>
     </div>
   );
 }

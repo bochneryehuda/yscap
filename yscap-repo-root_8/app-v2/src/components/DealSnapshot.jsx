@@ -4,6 +4,7 @@ import { dealPurchase } from '../lib/dealPrice.js';
 import { revealAnchor } from './FileSections.jsx';
 import { dealBasis, seasoningText } from '../lib/dealBasis.js';
 import { fmtRatePctFromPct } from '../lib/rateFormat.js';
+import BorrowerProfileLink from './BorrowerProfileLink.jsx';
 
 /* Staff "cockpit" band at the top of a loan file — the facts an officer wants
    without scrolling: borrower/entity, property, program, the registered terms
@@ -106,8 +107,23 @@ export default function DealSnapshot({ app, gating }) {
       <div className="snap-clusters">
         <div className="snap-cluster">
           <div className="snap-cluster-h">Parties</div>
-          {row('Borrower', fullNameOf(app) || '—', { strong: true })}
-          {row('Co-borrower', coName)}
+          {/* THE NAME IS THE WAY INTO THE PERSON (owner-directed 2026-08-21 — "in the
+              file, you should be able to access it directly somehow and open up the
+              borrower's profile on a full page"). It is here, on the overview, because
+              this is where you are standing when you want it; the profile panel's own
+              button is two collapsed sections down, which is why it did not count as
+              "anywhere to access the borrower profile". Both go through the ONE
+              definition in BorrowerProfileLink, so they can never land differently, and
+              both carry this file so the trip back exists. With no borrower id the name
+              renders as plain text — never a link to nowhere. */}
+          {row('Borrower', (
+            <BorrowerProfileLink borrowerId={app.borrower_id} fromAppId={app.id}>
+              {fullNameOf(app) || '—'}
+            </BorrowerProfileLink>
+          ), { strong: true })}
+          {row('Co-borrower', app.co_borrower_id
+            ? <BorrowerProfileLink borrowerId={app.co_borrower_id} fromAppId={app.id}>{coName}</BorrowerProfileLink>
+            : coName)}
           {/* The entity WITH its verification state (owner-directed 2026-08-02:
               entity belongs in this first block, and the old "Entity, team &
               assignment" panel it came from is now team-only). Whether the entity

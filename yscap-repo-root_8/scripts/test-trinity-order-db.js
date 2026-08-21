@@ -619,7 +619,78 @@ const eq = (a, b, label) => ok(a === b, `${label} (got ${JSON.stringify(a)}, exp
   // LIVE, never remembered from when the record was made.
   await db.query(`UPDATE sitewire_property_links SET inspection_method='mobile' WHERE application_id=$1`, [a.id]);
   eq((await intake.orderOptions(a.id)).eligible, false, 'N11 a file moved back to virtual can no longer be ordered on');
-  await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [a.id]);
+
+  /* ---- N-MANUAL. ORDERING ON A FILE THAT IS NOT TRINITY'S (owner-directed 2026-08-21, item 25:
+     *"even though a process is not set up for autopilot on Trinity … it should be able to be
+     manually placed on any file"*).
+
+     THE ROUTING RULE ITSELF DOES NOT MOVE — N11 above still holds, and the automatic doors are
+     asserted below to stand down exactly as before. What is proven here is the deliberate human act
+     beside it: refused without a reason, recorded with one, and never available on a file whose
+     setup could not be read at all. */
+  {
+    // The file is VIRTUAL — Sitewire's own inspector is already on it, which is precisely the case
+    // the owner described ("set up for virtual but, one time, he doesn't have access"). N11 above
+    // left the link row on 'mobile'; this states it outright so the section stands on its own.
+    await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [a.id]);
+    await db.query(
+      `INSERT INTO sitewire_property_links (application_id, sitewire_property_id, matched_by, inspection_method)
+       VALUES ($1,$2,'created','mobile')`, [a.id, prop]);
+    const m_opts = await intake.orderOptions(a.id);
+    eq(m_opts.eligible, false, 'NM1 a virtual file still does NOT order Trinity inspections by itself');
+    eq(m_opts.mayOverride, true, 'NM2 …but a human may place one by hand');
+    ok(/VIRTUAL/.test(String(m_opts.overrideWarning || '')),
+      'NM3 …and is told Sitewire is already inspecting it');
+    ok((m_opts.draws || []).length > 0,
+      'NM4 the file\'s draws are offered even though the file is not Trinity\'s — there has to be something to order against');
+
+    // A draw with nothing ordered on it yet.
+    const mDraw = base + 700;
+    await db.query(
+      `INSERT INTO sitewire_draws (application_id, sitewire_draw_id, sitewire_property_id, number, status)
+       VALUES ($1,$2,$3,7,'pending')`, [a.id, mDraw, prop]);
+    await db.query(
+      `INSERT INTO sitewire_draw_requests (sitewire_draw_id, sitewire_request_id, sitewire_job_item_id, requested_cents)
+       VALUES ($1,$2,$3,750000)`, [mDraw, base + 701, items[1].jid]);
+
+    const m_noAsk = await intake.orderManually(a.id, { sitewireDrawId: mDraw, staffId: stf.id });
+    eq(m_noAsk.blocked, true, 'NM5 without asking to overrule the file, it is refused');
+    eq(m_noAsk.mayOverride, true, 'NM6 …and the refusal says a human MAY overrule it');
+
+    const m_noWhy = await intake.orderManually(a.id, { sitewireDrawId: mDraw, staffId: stf.id, override: true });
+    eq(m_noWhy.blocked, true, 'NM7 asking without saying why is refused');
+    eq(m_noWhy.needsReason, true, 'NM8 …because the reason is what the file records');
+
+    const m_short = await intake.orderManually(a.id, { sitewireDrawId: mDraw, staffId: stf.id, override: true, overrideReason: 'why' });
+    eq(m_short.blocked, true, 'NM9 a reason too short to mean anything is not a reason');
+
+    const m_ok = await intake.orderManually(a.id, {
+      sitewireDrawId: mDraw, staffId: stf.id, override: true,
+      overrideReason: 'The virtual inspector cannot get access this month',
+    });
+    ok(!m_ok.blocked, 'NM10 with a real reason it goes ahead');
+    eq(m_ok.override, true, 'NM11 …and it is reported as an override');
+    const m_row = (await db.query(
+      `SELECT manual_override_reason, manual_override_by, manual_override_at
+         FROM trinity_inspection_orders WHERE sitewire_draw_id=$1`, [mDraw])).rows[0];
+    ok(m_row && /cannot get access/.test(m_row.manual_override_reason || ''),
+      'NM12 the file records WHY, in the coordinator\'s own words (db/607)');
+    eq(m_row.manual_override_by, stf.id, 'NM13 …and who decided it');
+    ok(!!m_row.manual_override_at, 'NM14 …and when');
+
+    // The automatic doors are untouched by any of this — the whole point.
+    const m_auto = await intake.maybeOrderFromSitewire(a.id, {
+      drawId: base + 702, status: 'pending', platform: 'sitewire', method: 'mobile', resolved: true,
+    });
+    ok(m_auto && m_auto.skipped, 'NM15 a VIRTUAL draw still orders NOTHING by itself');
+    ok(!/override/i.test(JSON.stringify(m_auto || {})), 'NM16 …and the automatic door never overrules anything');
+
+    /* Only the LINK is cleared — the later sections need the file back on its own routing. The
+       order and its draw are LEFT: `placeOrder` files timeline events asynchronously, and deleting
+       the row they point at makes those writes fail their foreign key (harmless, swallowed, and
+       pure noise in the log). The suite's own cleanup removes them with the file. */
+    await db.query(`DELETE FROM sitewire_property_links WHERE application_id=$1`, [a.id]);
+  }
 
   // ---- O. AN ORDER THAT NEVER REACHED TRINITY IS RE-DRIVEN -----------------------
   //

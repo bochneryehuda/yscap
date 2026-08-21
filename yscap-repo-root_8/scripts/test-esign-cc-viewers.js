@@ -153,11 +153,133 @@ async function main() {
     ok(tcc.every((c) => Number(c.recipientId) > maxSignerId), 'CC recipientIds start after EVERY signer id — no collision');
     ok(tccEmails.includes(`pr+${TAG}@ys.com`), 'the processor — who does not sign — is still copied');
 
+    // ---- 4. THEY ARE COPIED WHEN IT GOES OUT, NOT AFTER EVERYONE HAS SIGNED ----
+    // The owner's actual words are "to be able to see when it's going OUT". DocuSign
+    // emails a carbon copy when routing REACHES their order, so the old
+    // max(signer routing order) put the processor at order 2 on the term sheet —
+    // behind the admin counter-signer — i.e. they heard nothing until the borrower and
+    // the loan officer had both already signed.
+    console.log('\n4. viewers are copied at SEND time (owner item 23)');
+    ok(tcc.length > 0 && tcc.every((c) => Number(c.routingOrder) === 1),
+      'every CC sits at routing order 1, so DocuSign mails them as the envelope goes out');
+    const maxSignerOrder = Math.max(1, ...(tdef.signers || []).map((s) => Number(s.routingOrder) || 1));
+    ok(maxSignerOrder > 1, '…and the term sheet really does have a later signer (so this is not a vacuous check)');
+
+    // ---- 5. THE DRAW COORDINATOR ON THE ORIGINATION PACKAGES -------------------
+    // Owner-directed 2026-08-21, REVERSING the draw_request-only scoping of 2026-07-28:
+    // "when you're sending out the term sheet package, when you're sending out the ISKA,
+    // and when you're sending out the draw form, then the draw coordinator ... should be
+    // looped in as viewers".
+    console.log('\n5. the draw coordinator is copied on the term sheet + Heter Iska');
+    const coordId = crypto.randomUUID();
+    await db.query(`INSERT INTO staff_users (id, email, full_name, role) VALUES ($1,$2,'Cora Coordinator','draw_coordinator')`,
+      [coordId, `dc+${TAG}@ys.com`]);
+    // The file's OWN coordinator: whoever started its draw process (the durable per-file
+    // record `drawCoordinatorsForFile` reads first).
+    await db.query(
+      `INSERT INTO sitewire_property_links (application_id, matched_by, draw_setup_started_by)
+       VALUES ($1,'created',$2)
+       ON CONFLICT (application_id) DO UPDATE SET draw_setup_started_by = EXCLUDED.draw_setup_started_by`,
+      [appId, coordId]).catch(async () => {
+        await db.query(`UPDATE sitewire_property_links SET draw_setup_started_by=$2 WHERE application_id=$1`, [appId, coordId]);
+      });
+
+    const tdef2 = await orchestrate.buildDefinition(tsRow, { db, storage: fakeStorage });
+    const tcc2 = (tdef2.carbonCopies || []).map((c) => c.email);
+    ok(tcc2.includes(`dc+${TAG}@ys.com`), 'the file’s draw coordinator is copied on the TERM SHEET package');
+    // The Heter Iska envelope's roster was seeded in section 2, BEFORE section 3 gave the
+    // application a co-borrower — and buildDefinition refuses a roster short of the file's
+    // signers ("Recipient roster not fully seeded yet"). Seed the co-borrower onto it so the
+    // build exercises the CC computation rather than dying on an unrelated guard.
+    await db.query(
+      `INSERT INTO esign_recipients (envelope_row_id, role, routing_order, recipient_id_ds, borrower_id, name, email, embedded, client_user_id, status)
+       VALUES ($1,'co_borrower',1,'2',$2,'Chris Co',$3,true,$4,'created')
+       ON CONFLICT DO NOTHING`,
+      [envRowId, cbId, `co+${TAG}@example.com`, `${envRowId}:co_borrower`]).catch(() => {});
+    const idef = await orchestrate.buildDefinition(row, { db });
+    ok((idef.carbonCopies || []).map((c) => c.email).includes(`dc+${TAG}@ys.com`),
+      'the file’s draw coordinator is copied on the HETER ISKA ("ISKA") package');
+
+    // THE DESK FALLBACK MUST NOT REACH AN ORIGINATION PACKAGE. A file has no draw
+    // project until it FUNDS, so at term-sheet time the file has no coordinator EVERY
+    // time — and drawEnvelopeViewers' fallback would put the whole draw desk plus the
+    // shared draws@ inbox on every borrower's loan documents. That is not "the draw
+    // coordinator"; it is the entire servicing desk.
+    const dr = require(REPO + '/src/lib/draw-recipients');
+    await db.query(`UPDATE sitewire_property_links SET draw_setup_started_by=NULL WHERE application_id=$1`, [appId]);
+    const tdef3 = await orchestrate.buildDefinition(tsRow, { db, storage: fakeStorage });
+    const tcc3 = (tdef3.carbonCopies || []).map((c) => c.email);
+    ok(!tcc3.includes(dr.DRAW_DESK_INBOX), 'with NO coordinator assigned, the shared draws@ inbox is NOT on the term sheet');
+    ok(!tcc3.includes(`dc+${TAG}@ys.com`), '…and neither is the desk-wide coordinator who was never assigned to this file');
+    // …while the WIRE FORM keeps its cover, which is the 2026-07-28 rule and is unchanged.
+    const deskViewers = (await dr.drawEnvelopeViewers(appId)).map((v) => v.email);
+    ok(deskViewers.includes(dr.DRAW_DESK_INBOX), 'the WIRE FORM resolver still falls back to the desk (never uncovered)');
+    ok((await dr.drawEnvelopeViewersAssigned(appId)).length === 0, 'the assigned-only resolver answers nobody rather than inventing the desk');
+
+    // ---- 6. THE TEST-MODE GATE SEES THE CARBON COPIES --------------------------
+    // A CC is a real DocuSign recipient. The gate's contract is "refuse to mail ANYONE
+    // not on the allow-list", and it only ever read inputs.signers — so every viewer on
+    // every envelope was mailed from the demo host while the guard reported it safe.
+    console.log('\n6. the demo/test-mode gate refuses an off-allowlist VIEWER');
+    {
+      const sendMod = require(REPO + '/src/lib/esign/send');
+      const cfgDs = require(REPO + '/src/config').docusign;
+      const prevMode = cfgDs.testMode, prevAllow = cfgDs.testEmailAllowlist;
+      // A demo-host stub, so this proves the GATE rather than whichever host the suite ran on.
+      const dsStub = { isDemoHost: () => true };
+      cfgDs.testMode = true;
+      cfgDs.testEmailAllowlist = ['allowed@ys.com'];
+      try {
+        let threw = null;
+        try { sendMod.guardTestEmails(dsStub, [{ email: 'allowed@ys.com' }]); } catch (e) { threw = e; }
+        ok(threw === null, 'an allow-listed signer passes the gate (the control)');
+
+        threw = null;
+        try {
+          sendMod.guardTestEmails(dsStub, [{ email: 'allowed@ys.com' }, { email: `dc+${TAG}@ys.com` }]);
+        } catch (e) { threw = e; }
+        ok(threw && threw.code === 'DOCUSIGN_TEST_EMAIL_BLOCKED',
+          'an off-allowlist VIEWER is refused — a carbon copy is a real DocuSign recipient');
+        ok(threw && threw.retryable === false, '…permanently, until the allow-list or go-live flag changes');
+
+        // And the send really does hand its CCs to the gate (a behaviour test cannot see the
+        // call site, and the call site is exactly what was wrong).
+        const callSites = require('fs').readFileSync(REPO + '/src/lib/esign/send.js', 'utf8')
+          .split('\n').filter((l) => l.includes('guardTestEmails(') && !/^\s*(function|\s*\*)/.test(l) && !l.includes('module.exports'));
+        ok(callSites.length > 0, 'the gate is actually called on the send path');
+        // EVERY call site, not the first — a second send path added later that passes only the
+        // signers would re-open exactly the hole this closes.
+        ok(callSites.every((l) => l.includes('inputs.carbonCopies')),
+          'every call passes the carbon copies through that gate, not just the signers');
+      } finally { cfgDs.testMode = prevMode; cfgDs.testEmailAllowlist = prevAllow; }
+    }
+
+    // ---- 7. EVERY PACKAGE HAS A NAME IN THE NOTICES --------------------------
+    // Two hand-kept copies of a purpose->label map lived in webhook.js and dead-letter.js
+    // and had both gone stale: neither knew about `draw_request`, so a draw-form terminal
+    // or dead-letter alert called it the generic "e-signature package" — on the one
+    // notification whose job is to say WHICH document needs attention.
+    console.log('\n7. every package is named in the staff notices');
+    {
+      const fs = require('fs');
+      for (const purpose of Object.keys(orchestrate.PACKAGES)) {
+        const lbl = orchestrate.packageLabel(purpose);
+        ok(!!lbl && lbl !== 'e-signature package', `the ${purpose} package has a name of its own ("${lbl}")`);
+      }
+      ok(orchestrate.packageLabel('nope') === 'e-signature package', 'an unknown purpose falls back rather than throwing');
+      // …and neither consumer may grow a second copy of that map again.
+      for (const f of ['webhook.js', 'dead-letter.js']) {
+        ok(!/PURPOSE_LABEL\s*=/.test(fs.readFileSync(`${REPO}/src/lib/esign/${f}`, 'utf8')),
+          `${f} reads the shared label, never its own copy`);
+      }
+    }
+
     console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
   } finally {
     if (appId) await db.query(`DELETE FROM esign_envelopes WHERE application_id=$1`, [appId]).catch(() => {});
     if (appId) await db.query(`DELETE FROM applications WHERE id=$1`, [appId]).catch(() => {});
     await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [[bId, cbId]]).catch(() => {});
+    await db.query(`DELETE FROM staff_users WHERE role='draw_coordinator' AND email LIKE $1`, [`dc+${TAG}@%`]).catch(() => {});
     await db.query(`DELETE FROM staff_users WHERE id = ANY($1)`, [[loId, prId, dupAdmin]]).catch(() => {});
     await db.pool.end().catch(() => {});
   }

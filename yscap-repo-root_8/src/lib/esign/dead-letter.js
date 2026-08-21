@@ -14,12 +14,14 @@
  */
 const cfg = require('../../config');
 
-const PURPOSE_LABEL = { term_sheet_package: 'term-sheet package', heter_iska: 'Heter Iska', noo_affidavit: 'non-owner-occupied certification' };
+// See webhook.js: ONE definition of the package's name, required lazily because
+// orchestrate requires THIS module (a top-level require would be a cycle).
+const purposeLabel = (purpose, fallback) => require('./orchestrate').packageLabel(purpose, fallback);
 
 module.exports = async function onDeadLetter(row, err) {
   try {
     const notify = require('../notify');
-    const label = PURPOSE_LABEL[row.purpose] || row.purpose || 'e-signature package';
+    const label = purposeLabel(row.purpose, row.purpose || 'e-signature package');
     const reason = ((err && err.message) || 'unknown error').replace(/\s+/g, ' ').trim().slice(0, 300);
     const opts = {
       type: 'status_change',

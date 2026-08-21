@@ -348,6 +348,18 @@ textarea{min-height:90px;resize:vertical}
 /* drag-and-drop target on a condition / upload row (and generic upload cards) */
 .dropzone{transition:border-color .12s,background .12s}
 .dropzone.drop-over{border-color:var(--teal);background:rgba(127,169,176,.10);border-style:dashed}
+/* THE ONE-LINE DROP WRAPPER (owner item 6, 2026-08-21: "a lot of the uploads are missing the
+   drag and drop option. You can only click and upload"). `<DropZone className="dz-inline">`
+   wraps an existing button or label WITHOUT disturbing the layout it sits in — `display:contents`
+   would remove the element from the box tree entirely, which is exactly what we want for a
+   wrapper, but it also removes its background and outline, so there would be no highlight to
+   paint. `inline-flex` keeps the wrapper invisible in a flex row while still being paintable.
+   A wrapper carrying `row` keeps ITS OWN display (a real row), so this only ever applies to a
+   bare wrapper. */
+.dz-inline{display:inline-flex;align-items:center;gap:8px;border-radius:8px;
+  outline:2px dashed transparent;outline-offset:2px;transition:outline-color .12s,background .12s}
+.dz-inline.drop-over{outline-color:var(--teal);background:rgba(127,169,176,.10)}
+.row.dz-inline{display:flex}
 .cond-drop{transition:border-color .12s,background .12s}
 .cond-drop.drop-over{border-color:var(--teal);background:rgba(127,169,176,.10);border-style:dashed;position:relative}
 .drop-hint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
@@ -3091,6 +3103,23 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 
 .ec-reply-bar{ padding:12px 16px; border-top:1px solid var(--line); }
 .ec-reply{ padding:12px 16px; border-top:1px solid var(--line); background:var(--ink-2); }
+/* ATTACHING A DOCUMENT TO A TYPED REPLY (owner-directed 2026-08-21: "attach documents over
+   there manually and also drag and drop into the box of the email"). The whole compose box is
+   the drop target, so the highlight is on the box itself — a dashed teal edge, the same
+   language every other drop zone in the app uses. Text is explicit dark on the light card per
+   the hard rule (an --ink* token is a LIGHT paper colour and renders white-on-white here). */
+.ec-reply.ec-reply-drop{ outline:2px dashed var(--teal); outline-offset:-4px; background:rgba(127,169,176,.10); }
+.ec-atts{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.ec-att{ display:inline-flex; align-items:center; gap:8px; max-width:100%;
+  padding:4px 6px 4px 10px; border:1px solid var(--line); border-radius:999px;
+  background:#FFFFFF; font-size:12.5px; color:#141B22; }
+.ec-att-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:min(46vw,320px); }
+.ec-att-size{ color:#4B585C; font-variant-numeric:tabular-nums; }
+.ec-att-x{ border:0; background:transparent; cursor:pointer; font-size:16px; line-height:1;
+  color:#4B585C; padding:0 4px; border-radius:999px; }
+.ec-att-x:hover{ color:#141B22; background:var(--ink-3); }
+.ec-att-x:disabled{ opacity:.5; cursor:default; }
+.ec-att-hint{ margin-top:8px; font-size:12px; color:#4B585C; }
 .ec-reply-to{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:8px; font-size:13px; }
 .ec-chip{ display:inline-flex; align-items:center; gap:5px; background:var(--ink-1); border:1px solid var(--line);
   border-radius:999px; padding:2px 10px 2px 3px; font-size:12.5px; color:var(--text); }
@@ -5061,6 +5090,10 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
      165  .fov-panel.fov-over-preview
      160  .fov-tab.fov-over-preview
      150  .cv-modal-back.dp-back    the document preview
+    1200  .flash-dock               toasts — above everything
+    1015  .fov-panel.fov-over-tool
+    1010  .fov-tab.fov-over-tool
+    1000  .toolsheet                a full-screen tool sheet (SoW, track record, studio)
      135  .fov-panel                (on its own)
      120  .fov-tab                  (on its own)
 
@@ -5068,6 +5101,17 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    z-index on specificity — no !important needed, and an ordinary dialog opened
    from inside a preview still paints over it. */
 .cv-modal-back.dp-back{z-index:150}
+/* A FULL-SCREEN TOOL SHEET — the Scope of Work, the track record, the Products &
+   Pricing studio and the terms it generates (owner-reported 2026-08-21: "the nice
+   overview button on the right side … is not available in the full screens that are
+   populated … This should always be available").
+
+   SAME DEFECT AS THE PREVIEW ABOVE, but a very different NUMBER, and the number is the
+   whole point: a tool sheet is `.toolsheet` at z 1000 — not `.cv-modal-back` at 200 —
+   so the preview escalation (160/165) is nowhere near enough. These sit above the sheet
+   and below the flash dock (1200), so a toast still lands on top of everything. */
+.fov-tab.fov-over-tool{z-index:1010}
+.fov-panel.fov-over-tool{z-index:1015}
 .fov-tab.fov-over-preview{z-index:160}
 .fov-panel.fov-over-preview{z-index:165}
 /* THE PREVIEW MAKES ROOM rather than hiding under the panel. `padding-right` on
@@ -5931,3 +5975,104 @@ ol.arena-ch-top li em { color: var(--a-gold-ink); font-style: normal; font-varia
   .arena-wheel-wrap { width: 100% !important; max-width: 360px; height: auto !important; }
   .arena-wheel-wrap > svg { width: 100%; height: auto; }
 }
+
+/* A PERSON'S NAME AS THE WAY INTO THEIR PROFILE (owner-directed 2026-08-21 — "in the
+   file, you should be able to access it directly somehow and open up the borrower's
+   profile on a full page"). It sits in the file's party list, where a value is normally
+   plain text, so it has to read as BOTH: still the name (dark ink, same weight as the
+   row it lives in — never the page's teal link colour, which would make the party list
+   look like a row of links) and still obviously clickable (a dotted underline it does
+   not share with anything else here, and a ↗ mark).
+
+   The mark carries no meaning of its own — it is aria-hidden and the link's title says
+   where it goes — so a screen reader gets the name and the sentence, not "arrow". */
+.bprof-namelink{color:#141B22;text-decoration:none;border-bottom:1px dotted var(--teal-br,#256168);
+  cursor:pointer;transition:color .12s,border-color .12s}
+.bprof-namelink:hover{color:var(--teal-br,#256168);border-bottom-style:solid;text-decoration:none}
+.bprof-namelink:focus-visible{outline:2px solid var(--teal-br,#256168);outline-offset:2px;border-radius:2px}
+.bprof-namelink-mark{color:var(--teal-br,#256168);font-size:.85em;opacity:.75}
+.bprof-namelink:hover .bprof-namelink-mark{opacity:1}
+
+/* THE WAY BACK TO THE FILE YOU CAME FROM. Deliberately NOT a `.notice`: a bare one has
+   padding and nothing else, so the bar read as loose text with a button beside it — and
+   every `.notice` MODIFIER carries a light dark-theme text colour that would be
+   unreadable here (the --ink* trap, one layer up). This is its own small surface, with
+   a gold hairline so it reads as part of the page's chrome rather than as a message
+   somebody needs to dismiss. */
+.bprof-backbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  margin:0 0 12px;padding:9px 12px;background:#fff;border:1px solid var(--line,rgba(174,135,70,.28));
+  border-left:3px solid var(--gold,#AE8746);border-radius:var(--radius-sm,8px)}
+.bprof-backbar-where{font-size:13px;color:#4B585C;min-width:0;overflow-wrap:anywhere}
+
+/* TWO NOTES ON A CONDITION, AND NOBODY MAY CONFUSE THEM (db/604, owner-directed
+   2026-08-21). The internal note keeps the look it always had; the one the borrower
+   and the broker read is set apart by a TEAL rule and a standing label, on staff's
+   screen and on theirs. It is never told apart by colour alone — the label says who
+   reads it, in words, on the button, in the placeholder, and while you are typing. */
+/* `.cnd-note` sets white-space:pre-wrap so a typed note keeps its line breaks. On the
+   external variant the box holds a LABEL and then the note, so that rule would also
+   preserve the layout whitespace between them and open a blank line nobody typed
+   (measured in a real render, not guessed). The container goes back to normal and the
+   NOTE keeps pre-wrap, which is the element that actually needs it. */
+.cnd-note-ext{border-left:3px solid var(--teal,#2F7F86);padding-left:9px;white-space:normal}
+.cnd-note-tag{display:block;font-size:11px;font-weight:700;letter-spacing:.04em;
+  text-transform:uppercase;color:var(--teal-br,#256168);margin-bottom:2px}
+.cnd-note-body{display:block;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.cnd-note-add-ext{color:var(--teal-br,#256168)}
+.cnd-note-warn{font-size:12px;font-weight:700;color:var(--teal-br,#256168);
+  background:rgba(47,127,134,.10);border:1px solid rgba(47,127,134,.35);
+  border-radius:var(--radius-sm,8px);padding:5px 9px;margin-bottom:6px}
+
+/* The same note as the client sees it — a small card, so it reads as something a
+   person wrote to them rather than as another line of system text. */
+.cnd-teamnote{margin:6px 0;padding:8px 11px;background:#fff;
+  border:1px solid rgba(47,127,134,.30);border-left:3px solid var(--teal,#2F7F86);
+  border-radius:var(--radius-sm,8px)}
+.cnd-teamnote-h{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--teal-br,#256168);margin-bottom:3px}
+.cnd-teamnote-body{font-size:14px;color:#141B22;white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* THE GENERAL CONTRACTOR'S RECORD ON ITS CONDITION (db/605). A quiet inset card rather
+   than a panel — it lives INSIDE a condition row, so it must read as part of that row's
+   body and not as a second page. Explicit darks per the hard rule. */
+.gcrec{margin:6px 0 2px;padding:10px 12px;background:var(--surface-soft,#FBF9F4);
+  border:1px solid var(--line,rgba(174,135,70,.28));border-radius:var(--radius-sm,8px)}
+.gcrec-h{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  color:#141B22;margin-bottom:6px}
+.gcrec-who{margin-bottom:8px;color:#141B22;overflow-wrap:anywhere}
+.gcrec-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px 12px}
+.gcrec-f{display:flex;flex-direction:column;gap:3px;min-width:0}
+.gcrec-l{font-size:11.5px;font-weight:600;color:#4B585C}
+/* One column on a phone: two 210px fields side by side is what pushes a condition row
+   sideways, and a condition list that scrolls horizontally is unusable on a phone. */
+@media(max-width:720px){ .gcrec-grid{grid-template-columns:1fr} }
+
+/* ── THE TRACK-RECORD EXPORT CONTROL (item 7, owner-directed 2026-08-21) ──
+   One control on three surfaces (loan file, borrower profile, full-screen
+   workspace). The regular export leads; the wider two sit behind it. Every
+   colour here is an explicit dark on white — an `--ink*` token is a LIGHT
+   paper colour in this palette and would render white on white. */
+.tr-export{margin:8px 0 12px}
+.tr-export-title{font-weight:700;font-size:13.5px;margin-bottom:4px}
+.tr-export .act-label{margin-right:2px}
+.tr-export-queue{margin:6px 0 2px;padding-top:6px;border-top:1px solid var(--border)}
+@media (max-width:720px){
+  /* Two scope rows of look-alike buttons must not wrap into a hedge on a
+     phone — each scope keeps its label and its pair on their own line. */
+  .tr-export .row{align-items:flex-start}
+}
+
+/* ── TRINITY MANUAL — the order block and each inspection (item 25, 2026-08-21) ──
+   `.dd-note` is `display:flex` with a bullet `::before`: exactly right for ONE line of
+   text with a dot, and wrong for a heading + an explanation + a warning + controls, which
+   it lays out as SIDE-BY-SIDE COLUMNS — squeezing the reason box to about 70px. Found by
+   rendering the real markup against this stylesheet, not by reading it. These are plain
+   blocks with the same paper and hairline, so the card reads as one thing. */
+.tr-order{border:1px solid var(--border);border-radius:10px;
+  background:var(--surface-soft,#F4F1EA);padding:11px 13px;margin-top:10px}
+.tr-order > .row{margin-top:8px}
+/* What a coordinator is being asked to acknowledge before ordering against the file's own
+   setup — gold, the colour this palette already uses for "read this first". */
+.tr-order-warn{border-left:3px solid var(--gold,#AE8746);background:rgba(174,135,70,.10);
+  border-radius:8px;padding:9px 11px;margin-top:9px}
+.tr-order-warn .input{margin-top:8px;width:100%}

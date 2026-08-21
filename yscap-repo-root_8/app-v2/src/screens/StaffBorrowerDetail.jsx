@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
+import { FROM_PARAM } from '../lib/borrowerProfileUrl.js';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fmtDay } from '../lib/dates.js';
@@ -14,9 +15,11 @@ import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
 import ExperienceHeader from '../components/track-record/ExperienceHeader.jsx';
 import RecordLedger from '../components/track-record/RecordLedger.jsx';
+import ExportRecord from '../components/track-record/ExportRecord.jsx';
 import { EntityRecordsStamp } from '../components/track-record/RecordsStamp.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import { useAuth } from '../lib/auth.jsx';
+import { useUrlState } from '../lib/useUrlState.js';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -57,7 +60,10 @@ export default function StaffBorrowerDetail() {
   const { id } = useParams();
   const [b, setB] = useState(null);
   const [err, setErr] = useState('');
-  const [tab, setTab] = useState('Overview');
+  /* The tab lives in the address (lib/useUrlState.js), so a refresh comes back to the tab you
+     were on and a link to somebody's Credit tab opens on Credit. `allow` is the real tab list,
+     so a stale or hand-edited link can never select a tab that does not exist. */
+  const [tab, setTab] = useUrlState('tab', 'Overview', { allow: TABS, remember: 'borrower.tab' });
 
   const load = () => api.staffBorrower(id).then(setB).catch(e => setErr(e.message || 'Could not load borrower'));
   useEffect(() => { setB(null); setErr(''); load(); /* eslint-disable-next-line */ }, [id]);
@@ -70,6 +76,10 @@ export default function StaffBorrowerDetail() {
   const name = fullNameOf(b) || '(no name)';
   return (
     <>
+      {/* THE WAY BACK TO THE FILE YOU CAME FROM (owner-directed 2026-08-21). A full
+          page opened from inside a loan file is a one-way trip otherwise: browser Back
+          works until you touch a tab here, and then the file is gone. */}
+      <BackToFile borrowerId={id} />
       <p style={{ marginTop: 0 }}><Link to="/internal/borrowers" className="small">← Borrowers</Link></p>
       <NameSplitPrompt b={b} onChanged={load} />
       <Header b={b} name={name} onChanged={load} />
@@ -94,6 +104,42 @@ export default function StaffBorrowerDetail() {
       {tab === 'Activity' && <Activity id={id} />}
       {tab === 'Notes' && <Notes id={id} />}
     </>
+  );
+}
+
+/* The return bar. `?from=` is a HINT, never an authorization: it is resolved against
+   this person's OWN file list, which is already scoped server-side — so a file that is
+   not theirs, or that the person reading cannot see, simply produces no bar rather than
+   a link that 404s or, worse, confirms a file exists. It also costs no new endpoint:
+   this is the same list the Files tab renders.
+
+   It renders NOTHING until it can name the property. A bar that says "back to the loan
+   file" while it is still loading, and then turns out to point at a file this reader
+   cannot open, is worse than arriving a second later. */
+function BackToFile({ borrowerId }) {
+  const [params] = useSearchParams();
+  let from = '';
+  try { from = params.get(FROM_PARAM) || ''; } catch (_) { from = ''; }
+  const [file, setFile] = useState(null);
+  useEffect(() => {
+    let live = true;
+    setFile(null);
+    if (!from) return undefined;
+    api.staffBorrowerApplications(borrowerId)
+      .then((rows) => { if (live) setFile((Array.isArray(rows) ? rows : []).find((a) => a && a.id === from) || null); })
+      .catch(() => { /* no bar — never an error on somebody else's screen */ });
+    return () => { live = false; };
+  }, [borrowerId, from]);
+  if (!file) return null;
+  const where = (file.property_address && file.property_address.oneLine) || addr(file.property_address);
+  return (
+    <div className="bprof-backbar">
+      <Link className="btn ghost small" to={`/internal/app/${file.id}`}>&larr; Back to the loan file</Link>
+      <span className="bprof-backbar-where">
+        {where && where !== '\u2014' ? where : 'this loan file'}
+        {file.ys_loan_number ? ` \u00b7 Loan #${file.ys_loan_number}` : ''}
+      </span>
+    </div>
   );
 }
 
@@ -592,6 +638,8 @@ function TrackRecord({ id, onOpenEntities }) {
         </div>
       )}
       <ExperienceHeader lens="borrower" experience={view ? { verified: view.verified } : null} findingsOpen={0} />
+      {/* The same export control the loan file and the workspace mount (item 7). */}
+      <ExportRecord borrowerId={id} className="tr-export-profile" />
       {rows.length === 0
         ? <div className="panel"><Empty t="No track-record entries." /></div>
         : (

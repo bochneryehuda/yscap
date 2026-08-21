@@ -189,7 +189,7 @@ router.get('/files/:id/draws/:tpDrawId/report', requirePermission('manage_draws'
       const doc = (await db.query(`SELECT storage_ref FROM documents WHERE id=$1`, [r.documentId])).rows[0];
       bytes = await storage.read(doc.storage_ref);
     }
-    res.setHeader('Content-Disposition', `inline; filename="${r.filename}"`);
+    require('../lib/content-disposition').setContentDisposition(res, r.filename, { inline: true });
     res.type('application/pdf').send(Buffer.from(bytes));
   } catch (e) {
     if (e.status) return res.status(e.status).json({ error: e.message });

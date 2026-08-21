@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useUrlState } from '../lib/useUrlState.js';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import InviteApplicant from '../components/InviteApplicant.jsx';
@@ -354,7 +355,10 @@ export default function StaffQueue() {
   const [searchParams, setSearchParams] = useSearchParams();
   const qs = searchParams.toString();
 
-  const [tab, setTab] = useState('mine');       // mine | leads
+  // The pipeline already keeps every FILTER, group, sort, search and date range in the
+  // URL — its own top-level tab was the one thing that did not survive a refresh, so a
+  // reload from the leads tab dumped you back on the pipeline (owner item 4).
+  const [tab, setTab] = useUrlState('tab', 'mine', { allow: ['mine', 'leads'] });
   const [allFiles, setAllFiles] = useState(null); // full scoped pipeline → filter facets + counts
   const [list, setList] = useState(null);         // server-filtered pipeline (what's shown)
   const [leads, setLeads] = useState(null);

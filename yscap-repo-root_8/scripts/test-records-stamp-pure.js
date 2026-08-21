@@ -290,11 +290,19 @@ console.log('\nJ. The server exports carry the stamp through ONE definition');
   ok(aoa.some((r) => /VERIFIED TO ELEMENTIX/.test(String(r[0]))), 'the xlsx verification summary carries the stamp line');
   const aoa2 = TRX.trackRecordAoa([{ title: 'T', columns: [{ header: 'P', key: 'p' }], rows: [{ p: 'x' }] }], {});
   ok(!aoa2.some((r) => /ELEMENTIX/.test(String(r[0]))), 'and an unstamped export is unchanged');
-  const tprSrc = read('src/lib/tpr-export.js');
-  ok(/exportCellText\(r\.records_stamp,\s*r\.records_stamp_at\)/.test(tprSrc),
+  /* The investor package's track-record sections are BUILT by the shared
+     builder (owner-directed 2026-08-21, item 7): the staff export and the TPR
+     package render the SAME rows, so a column added to one can never be missing
+     from the other. The guard follows the code to that ONE home, and ALSO pins
+     that tpr-export delegates — a re-inlined second copy there would drift. */
+  const buildSrc = read('src/lib/track-record/export-build.js');
+  ok(/exportCellText\(r\.records_stamp,\s*r\.records_stamp_at\)/.test(buildSrc),
     'the TPR row cell goes through exportCellText — never a re-typed wording');
-  ok(/records\.some\(\(r\) => r\.records_stamp\)/.test(tprSrc),
+  ok(/records\.some\(\(r\) => r\.records_stamp\)/.test(buildSrc),
     'the TPR stamp column appears only when a line actually carries a stamp');
+  const tprSrc = read('src/lib/tpr-export.js');
+  ok(/track-record\/export-build'\)\.buildTrackRecordSections\(records, docsByTr\)/.test(tprSrc),
+    'and the investor package builds its sections through that ONE builder');
 }
 
 console.log('');

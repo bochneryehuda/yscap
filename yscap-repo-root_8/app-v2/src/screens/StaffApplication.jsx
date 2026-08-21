@@ -21,6 +21,8 @@ import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import ExperienceHeader from '../components/track-record/ExperienceHeader.jsx';
 import RecordLedger from '../components/track-record/RecordLedger.jsx';
+import ExportRecord from '../components/track-record/ExportRecord.jsx';
+import DropZone from '../components/DropZone.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import DocumentsPanel from '../components/DocumentsPanel.jsx';
 import EmailCenter from '../components/EmailCenter.jsx';
@@ -46,16 +48,18 @@ import { PhoneInput, ZipInput , EmailInput, DateCommitInput } from '../component
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, requestAppDetailTab, subscribeAppDetailTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
+import { useUrlState } from '../lib/useUrlState.js';
 import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, resolveSection, whereDidItGo } from '../lib/stations.js';
 import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll, nearestFileSectionId } from '../lib/keep-scroll.js';
 import { readStation, readSection, writeStation, savePlace } from '../lib/file-place.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
+import GcRecordCard from '../components/GcRecordCard.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp, audienceLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
-import ConditionLine, { ConditionNote, NoteBuyerMark, ConditionCollapse } from '../components/ConditionLine.jsx';
+import ConditionLine, { ConditionNote, ConditionExternalNote, NoteBuyerMark, ConditionCollapse } from '../components/ConditionLine.jsx';
 import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
@@ -1518,33 +1522,51 @@ function ConditionOrderButton({ appId, it, role, onChanged }) {
   );
 }
 
-/* REQUEST ANOTHER DOCUMENT WITHIN A CONDITION (db/578, owner-directed 2026-08-18:
-   "you got one document and you wanna request another document within that
-   condition … there should be a button for the staff members to open up another
-   slot in a condition and type the name of that slot. That should populate as an
-   open item needing it"). Opens a NAMED slot on THIS condition: an external ask
-   shows on the borrower's portal as still needed (and they are notified); an
-   internal one is our own team's to-do. The uploaded document files INTO the
-   condition — same folder in the TPR export, same SharePoint mirror. Opening a
-   slot on a signed-off condition REOPENS it (the sign-off predates this ask). */
+/* TWO WAYS TO OPEN A NAMED SLOT ON A CONDITION (db/578).
+
+   The first was owner-directed 2026-08-18: "you got one document and you wanna
+   request another document within that condition … there should be a button for
+   the staff members to open up another slot in a condition and type the name of
+   that slot. That should populate as an open item needing it."
+
+   The second is owner-directed 2026-08-21, and it is the one this pair exists
+   for: "you can request another doc, and it opens up another slot … but that is
+   putting only a request, which is requesting it from the [borrower]. If you have
+   a document that you want to put in a separate slot, I don't use that request
+   button. Next to the request button, maybe add the feature: I just open a new
+   document slot in this condition, and it should go together with that condition
+   in the same folder and stuff like that."
+
+   THE SERVER ALREADY DID BOTH — `extra-slots.js` has carried an `internal`
+   audience since the day it shipped, and only an EXTERNAL ask sets
+   status='requested' or notifies the borrower. What was missing was a way to
+   reach it: there was ONE button, and the internal option sat behind two
+   sequential confirm dialogs that only appeared on a borrower-facing condition.
+   So the owner's "I don't use that request button" was exactly right — asking for
+   an empty slot of your own meant answering two questions about the borrower
+   first. Now the AUDIENCE IS THE BUTTON, and the dialogs are gone: pressing one
+   is the whole choice, which is also why neither needs a confirmation.
+
+   Either way the slot belongs to THIS condition, so what lands in it inherits the
+   condition's TPR-export folder and its SharePoint folder with no second
+   machinery — the owner's "it should go together with that condition in the same
+   folder". Opening a slot on a signed-off condition REOPENS it (the sign-off
+   predates the new ask). */
 function RequestSlotButton({ appId, it, onChanged }) {
   const [busy, setBusy] = useState(false);
   if (it.item_kind !== 'document') return null;
   const borrowerFacing = it.audience === 'borrower' || it.audience === 'both';
-  const ask = async () => {
-    const label = await askPrompt('Name the document you are requesting on this condition (e.g. "Updated operating agreement", "October bank statement"):',
-      { placeholder: 'Document name', confirmLabel: 'Request it' });
+
+  // ONE ask, TWO doors. The audience is decided by WHICH BUTTON was pressed —
+  // never by a dialog afterwards, which is what the owner was working around.
+  const openSlot = async (audience) => {
+    const external = audience === 'external';
+    const label = await askPrompt(external
+      ? 'Name the document you are requesting FROM THE BORROWER on this condition (e.g. "Updated operating agreement", "October bank statement"):'
+      : 'Name the document slot you are opening on this condition (e.g. "Wire confirmation", "Signed change order"):',
+      { placeholder: 'Document name', confirmLabel: external ? 'Request it' : 'Open the slot' });
     if (label == null || !String(label).trim()) return;
     const name = String(label).trim();
-    let audience = 'internal';
-    if (borrowerFacing) {
-      // Two explicit steps, so Escape/backdrop is always an ABORT — never a
-      // silent "internal" nobody chose.
-      const ext = await askConfirm(`Should the BORROWER provide "${name}"?\n\nYes — it shows on their portal as still needed and they are notified.\nNo — it stays an internal ask for our own team.`,
-        { confirmLabel: 'Yes — from the borrower', cancelLabel: 'No — internal' });
-      if (ext) audience = 'external';
-      else if (!(await askConfirm(`Add "${name}" as an INTERNAL ask? The borrower will not see it.`, { confirmLabel: 'Add internal ask' }))) return;
-    }
     setBusy(true);
     try {
       let r;
@@ -1555,21 +1577,34 @@ function RequestSlotButton({ appId, it, onChanged }) {
         // other hand-typed-label surface has (never a dead end).
         const d = (e && e.data) || {};
         if (d.code === 'stray_condition_label' && d.needsConfirm) {
-          if (!(await askConfirm(`${d.error}\n\nRequest "${name}" anyway?`, { confirmLabel: 'Yes — request it' }))) return;
+          if (!(await askConfirm(`${d.error}\n\n${external ? `Request "${name}" anyway?` : `Open a slot for "${name}" anyway?`}`,
+            { confirmLabel: external ? 'Yes — request it' : 'Yes — open it' }))) return;
           r = await api.conditionSlotAdd(appId, it.id, { label: name, audience, confirmStrayLabel: true });
         } else throw e;
       }
-      if (r && r.reopened) await showMessage('This condition was signed off — it has been reopened, since the new request was made after that sign-off.');
+      if (r && r.reopened) await showMessage('This condition was signed off — it has been reopened, since the new slot was opened after that sign-off.');
       if (onChanged) await onChanged();
     } catch (e) {
       await showMessage(((e && e.data && e.data.error) || (e && e.message)) || 'Could not open the document slot.');
     } finally { setBusy(false); }
   };
+
   return (
-    <button className="btn ghost small" disabled={busy} onClick={ask}
-      title="Open another named document slot on this condition — the uploaded document stays part of this condition (same folder in the TPR export)">
-      Request another document
-    </button>
+    <>
+      {/* Only on a BORROWER-FACING condition — there is nobody to request from on
+          a staff-only one, and a button that quietly did something else would be
+          the same confusion in a new place. */}
+      {borrowerFacing && (
+        <button className="btn ghost small" disabled={busy} onClick={() => openSlot('external')}
+          title="Ask the BORROWER for one more named document on this condition — it shows on their portal as still needed and they are notified. The document stays part of this condition (same folder in the TPR export).">
+          Request another document
+        </button>
+      )}
+      <button className="btn ghost small" disabled={busy} onClick={() => openSlot('internal')}
+        title="Open an empty named slot on this condition for a document YOU have — nothing is requested from the borrower and they are not notified. What you upload stays part of this condition (same folder in the TPR export, same SharePoint folder).">
+        Add a document slot
+      </button>
+    </>
   );
 }
 
@@ -1833,6 +1868,11 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
         <UspsAddressVerification appId={appId} onChanged={onChanged} />
       )}
 
+      {/* The contractor's own record, on the condition that is about them (db/605). */}
+      {it.template_code === 'rtl_cond_gc_info' && (
+        <div style={{ paddingLeft: 20 }}><GcRecordCard appId={appId} onChanged={onChanged} /></div>
+      )}
+
       {/* Ask for one more document WITHIN this condition (db/578) — never a
           brand-new condition for a follow-up document. */}
       {isDoc && it.template_code !== 'rtl_cond_credit' && (
@@ -1850,6 +1890,10 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           docs={itemDocs} size="" onRequestWaiver={onRequestWaiver} />
       </div>
       <ConditionNote it={it} onPatch={onPatch} />
+      {/* And the note the BORROWER and the broker read (db/604) — its own field, its
+          own words, right under the internal one so the difference between them is
+          impossible to miss. */}
+      <ConditionExternalNote it={it} onPatch={onPatch} />
     </div>
   );
 }
@@ -2857,6 +2901,12 @@ function StaffTrackRecordPanel({ app, role }) {
       <ExperienceHeader app={app} experience={todo && todo.experience}
         findingsOpen={((todo && todo.findings) || []).length}
         multiBorrower={people.length > 1} />
+      {/* HAND SOMEBODY THE RECORD (owner-directed 2026-08-21, item 7): the
+          regular export is VERIFIED only; "Export all" and "Unverified only"
+          sit behind the same control and stamp every unverified line NOT
+          VERIFIED. The SAME component the borrower profile and the full-screen
+          workspace mount, so the three can never offer different exports. */}
+      <ExportRecord borrowerId={borrowerId} className="tr-export-file" />
       {/* THE RECORD, AS A LEDGER — grouped the way the tool has always grouped
           it, with the REO band carrying every not-counting line AND its reason.
           Every line OPENS IN PLACE into the shared <LineDetail> (the same
@@ -2936,6 +2986,7 @@ function CondNote({ item, onPatch }) {
   return (
     <div style={{ width: '100%', paddingLeft: 20, marginTop: 4 }}>
       <ConditionNote it={item} onPatch={onPatch} />
+      <ConditionExternalNote it={item} onPatch={onPatch} />
     </div>
   );
 }
@@ -3369,8 +3420,14 @@ function PersonalNameWaiver({ appId, app, onChanged }) {
       'could not save the affidavit');
   };
   const undo = () => run({ undo: true }, 'Back to an LLC purchase — vesting is LLC.', 'could not undo');
+  /* THE AFFIDAVIT TAKES A DRAGGED FILE TOO (owner item 6: "a lot of the uploads are missing the
+     drag and drop option"). This was the last click-only upload on the staff file: the whole row
+     is the target, the CLICK path is untouched, and a drop lands in exactly the same `waive`. */
   return (
-    <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, color: '#141B22' }}>
+    <DropZone className="row dz-inline" enabled={!isPersonal && !busy && !blocked}
+      onFiles={(files) => waive(files && files[0])}
+      title={isPersonal ? undefined : 'Drop the signed affidavit here, or use the button'}
+      style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, color: '#141B22' }}>
       {isPersonal ? (
         <>
           <span className="pill ok">Closing as an individual — no entity</span>
@@ -3395,7 +3452,7 @@ function PersonalNameWaiver({ appId, app, onChanged }) {
       )}
       {msg && <span className="muted small" style={{ color: '#256168', flexBasis: '100%' }}>{msg}</span>}
       {err && <span className="small" style={{ color: 'var(--danger)', flexBasis: '100%' }}>{err}</span>}
-    </div>
+    </DropZone>
   );
 }
 
@@ -3918,7 +3975,18 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                           r.holds > (v.holds || 0) ? `${r.holds - (v.holds || 0)} hold${r.holds - (v.holds || 0) === 1 ? '' : 's'}` : null,
                           r.ground > (v.ground || 0) ? `${r.ground - (v.ground || 0)} ground-up` : null,
                         ].filter(Boolean) : [];
-                        return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')} verified` : ' — requirement met ✓ (verified)') : ''}`;
+                        /* WHERE THE NUMBER CAME FROM — owner-reported 2026-08-21: "we changed
+                           the application to only three experiences, we changed the products and
+                           prices to only three, but the condition is still requiring five and we
+                           can't sign off". The requirement is deliberately the REGISTERED
+                           product's experience (a lowered claim only relaxes it once the product
+                           is re-registered), and that rule stands — but the screen never SAID so,
+                           so a file whose re-register did not carry the lower number showed a
+                           stubborn "5" with nothing to act on. Saying it is the way out. */
+                        const why = p.claimBelowNeed
+                          ? ` — this comes from the REGISTERED product (priced on ${fmt(r)}); the file itself now claims ${fmt(p.required || {})}, so re-register Products & Pricing to bring the requirement down`
+                          : '';
+                        return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')} verified` : ' — requirement met ✓ (verified)') : ''}${why}`;
                       })()
                     : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : app.registered_program === 'manual' ? 'Manual' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
                     : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
@@ -4118,6 +4186,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   );
                 })}
               </div>
+            )}
+            {/* The contractor's own record, on the condition that is about them (db/605) —
+                the SAME card the internal row carries, so the two views of one condition
+                cannot show different things about one company. */}
+            {it.template_code === 'rtl_cond_gc_info' && (
+              <div style={{ width: '100%', paddingLeft: 20 }}><GcRecordCard appId={appId} onChanged={onChanged} /></div>
             )}
             <CondNote item={it} onPatch={onPatch} />
             {itemDocs.length > 0 && (
@@ -5293,9 +5367,22 @@ export default function StaffApplication() {
   /* ===== end Seven Rooms machinery (render wiring further down) ===== */
   // "Application details" is ONE tabbed sub-hub too (owner-directed 2026-07-31:
   // "split in between 100 places… clean up the view"): Deal & property ·
-  // Missing info · Pipeline data. Plain local useState (not sticky) — the deal
-  // editor is the right first thing every time the section is opened.
-  const [appDetailTab, setAppDetailTab] = useState('deal');
+  // Missing info · Pipeline data · Encompass.
+  //
+  // IT LIVES IN THE URL NOW (owner-reported 2026-08-21: "it happens also on the
+  // application detail and Campus Thinking [= Encompass]" — a refresh while reading the
+  // Encompass comparison dumped you back on "Deal & property" every time). It used to be
+  // a plain useState with a comment saying the deal editor is the right first thing every
+  // time — true when you OPEN the section, wrong when you REFRESH while reading another
+  // tab, and wrong for a link somebody sends a colleague. The default is still 'deal' and
+  // is elided from the address, so an untouched file reads exactly as before.
+  //
+  // `allow` matters here: a stale link to a tab that has since been renamed lands on the
+  // deal editor rather than rendering an empty sub-hub.
+  const [appDetailTab, setAppDetailTab] = useUrlState('appTab', 'deal', {
+    allow: ['deal', 'people', 'missing', 'status', 'pipeline', 'encompass'],
+    remember: `appTab.${id}`,
+  });
   // A completeness pill for a field only the Borrower profile can edit asks for
   // that tab (they are two tabs of THIS section, so nothing has to navigate).
   useEffect(() => subscribeAppDetailTab(setAppDetailTab), []);
@@ -5956,10 +6043,10 @@ export default function StaffApplication() {
         </p>
         <div className="bprof-pair">
           {app.borrower_id && (
-            <BorrowerProfilePanel borrowerId={app.borrower_id} heading="Borrower profile" onChanged={load} />
+            <BorrowerProfilePanel borrowerId={app.borrower_id} heading="Borrower profile" onChanged={load} fromAppId={id} />
           )}
           {app.co_borrower_id && (
-            <BorrowerProfilePanel borrowerId={app.co_borrower_id} heading="Co-borrower profile" onChanged={load} />
+            <BorrowerProfilePanel borrowerId={app.co_borrower_id} heading="Co-borrower profile" onChanged={load} fromAppId={id} />
           )}
         </div>
         {/* What is about the LINK rather than about the person: find / add /
@@ -6909,10 +6996,18 @@ function TapeExport({ appId }) {
     } catch (e) { showMessage((e.data && e.data.error) || e.message || 'Could not load the investor contacts.'); }
     finally { setBusy(null); }
   }
-  async function runSend(tapeKey, name, answers, to, note, extra) {
+  /* SCHEDULE the same send for later. It stores the INTENT only — no tape is
+     built and no email is composed now; the server re-enters the send route at
+     the due moment, so every gate runs against the file as it stands then. */
+  async function runSchedule(tapeKey, name, { to, cc, note, day, time }) {
+    const out = await api.staffTapeSendSchedule(appId, tapeKey, { to, cc, note, day, time });
+    setSendPending(null);
+    setMsg(`The ${name} tape is queued to send ${(out.scheduled && out.scheduled.sendAtText) || 'at the time you picked'}.`);
+  }
+  async function runSend(tapeKey, name, answers, to, note, extra, cc) {
     setBusy(tapeKey); setMsg('');
     try {
-      const out = await api.staffTapeSend(appId, tapeKey, { ...(answers || {}), ...(extra || {}), to, note });
+      const out = await api.staffTapeSend(appId, tapeKey, { ...(answers || {}), ...(extra || {}), to, cc, note });
       setSendPending(null);
       setMsg(`Sent the ${name} tape to ${out.to.join(', ')}. Replies thread into this file.`);
     } catch (e) {
@@ -6921,7 +7016,7 @@ function TapeExport({ appId }) {
       // allow inline with a logged reason; everyone else asks for an exception.
       if (d.code === 'encompass_override_reason_required') {
         const reason = await askPrompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, { defaultValue: '' });
-        if (reason && reason.trim()) { await runSend(tapeKey, name, answers, to, note, { ...(extra || {}), encompassOverrideReason: reason.trim() }); return; }
+        if (reason && reason.trim()) { await runSend(tapeKey, name, answers, to, note, { ...(extra || {}), encompassOverrideReason: reason.trim() }, cc); return; }
         setBusy(null); return;
       }
       if (d.code === 'encompass_exception_required' || d.code === 'encompass_unreconciled') {
@@ -7117,7 +7212,8 @@ function TapeExport({ appId }) {
           preview={sendPending.preview}
           busy={busy === sendPending.tapeKey}
           onCancel={() => setSendPending(null)}
-          onSend={({ to, note }) => runSend(sendPending.tapeKey, sendPending.name, sendPending.answers, to, note)}
+          onSend={({ to, cc, note }) => runSend(sendPending.tapeKey, sendPending.name, sendPending.answers, to, note, undefined, cc)}
+          onSchedule={(payload) => runSchedule(sendPending.tapeKey, sendPending.name, payload)}
         />
       )}
     </div>

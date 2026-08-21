@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import ConditionTeamNote from '../components/ConditionTeamNote.jsx';
+import DropZone from '../components/DropZone.jsx';
 import { api } from '../lib/api.js';
 import { askConfirm } from '../lib/dialog.js';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
@@ -106,6 +108,23 @@ export default function TpoFile() {
     finally { setUploadingFor(null); }
   }
   const pickFor = (itemId) => { pendingItem.current = itemId || null; if (fileInput.current) fileInput.current.click(); };
+  /* ONE reader for both doors — the button and a dragged file (owner item 6, 2026-08-21).
+     A TPO upload carries the CONDITION it belongs to, so the drop zone is per-row: dropping
+     on a condition files it there, dropping on the documents card files it unattached. */
+  async function uploadFor(itemId, files) {
+    const list = Array.from(files || []);
+    if (!list.length) return;
+    setErr(''); setMsg(''); setUploadingFor(itemId || 'general');
+    try {
+      for (const file of list) {
+        const payload = await readFile(file);
+        await api.tpoUploadDocument({ ...payload, applicationId: id, checklistItemId: itemId || undefined });
+      }
+      setMsg(list.length === 1 ? 'Document uploaded.' : `${list.length} documents uploaded.`);
+      await Promise.all([loadChecklist(), loadDocuments()]);
+    } catch (ex) { setErr(ex.message || 'Could not upload the document'); }
+    finally { setUploadingFor(null); }
+  }
 
   // Answer an information condition (a deal field). The server validates + fits
   // the value, applies the file freeze, and moves the condition to review.
@@ -185,13 +204,21 @@ export default function TpoFile() {
                 <div style={{ fontWeight: 500 }}>{c.label}</div>
                 {c.hint && <div className="muted small" style={{ marginTop: 2 }}>{c.hint}</div>}
                 {c.rejection_reason && <div className="small" style={{ marginTop: 2, color: '#B4532A' }}>Needs a fix: {c.rejection_reason}</div>}
+                {/* The note the lender's team wrote on this condition (db/604) — the
+                    SAME component the borrower's portal renders, so one sentence can
+                    never be shown two different ways to the two people reading it. */}
+                <ConditionTeamNote note={c.external_note} />
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span className="pill">{COND_STATUS[c.status] || c.status}</span>
                 {c.item_kind === 'document' && !c.readOnly && (
+                  <DropZone className="dz-inline" enabled={uploadingFor !== c.id}
+                    title="Drop a document here to file it on this condition"
+                    onFiles={(files) => uploadFor(c.id, files)}>
                   <button className="btn ghost small" disabled={uploadingFor === c.id} onClick={() => pickFor(c.id)}>
                     {uploadingFor === c.id ? 'Uploading…' : 'Upload'}
                   </button>
+                  </DropZone>
                 )}
               </div>
             </div>
@@ -298,9 +325,12 @@ export default function TpoFile() {
       <div className="card" style={{ padding: 20, marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 12, flexWrap: 'wrap' }}>
           <div style={{ fontWeight: 600 }}>Documents</div>
-          <button className="btn ghost small" disabled={uploadingFor === 'general'} onClick={() => pickFor(null)}>
-            {uploadingFor === 'general' ? 'Uploading…' : 'Upload a document'}
-          </button>
+          <DropZone className="dz-inline" enabled={uploadingFor !== 'general'}
+            title="Drop a document here" onFiles={(files) => uploadFor(null, files)}>
+            <button className="btn ghost small" disabled={uploadingFor === 'general'} onClick={() => pickFor(null)}>
+              {uploadingFor === 'general' ? 'Uploading…' : 'Upload a document'}
+            </button>
+          </DropZone>
         </div>
         {documents.length === 0 && <div className="muted small">No documents yet.</div>}
         {documents.map((d) => (

@@ -280,6 +280,24 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
   // Falls back to the application claim when nothing is registered yet — in that
   // state the gate blocks sign-off anyway, so the fallback is never the gate.
   const gateNeed = await registeredExperienceNeed(appId, client, required);
+  /* WHERE THE NUMBER CAME FROM, and whether the file now disagrees with it
+     (owner-reported 2026-08-21: "we changed the application to only three experiences,
+     we changed the products and prices to only three, but the condition is still
+     requiring five and we can't sign off").
+     The requirement is the CURRENT REGISTERED product's experience — deliberately, so a
+     lowered claim only relaxes the gate once the product is RE-REGISTERED on it
+     (2026-08-09). That rule is right and stays; what was missing is that the screen never
+     SAID so, so a file whose re-register did not carry the lower number just showed a
+     stubborn "5" with nothing to act on. This is explanation, never a change to the
+     requirement: `needFrom` says which of the two answered, and `claimBelowNeed` is the
+     exact stuck state — the file itself now claims less than the loan was priced on. */
+  const registered = await client.query(
+    `SELECT created_at FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId]
+  ).then((r) => r.rows[0] || null).catch(() => null);
+  const needFrom = registered ? 'registration' : 'application';
+  const claimBelowNeed = !!registered && (
+    required.flips < gateNeed.flips || required.holds < gateNeed.holds || required.ground < gateNeed.ground);
+  const registeredAt = registered ? registered.created_at : null;
   // Per-borrower breakdown (#103) — on a co-borrower file the experience
   // condition shows BOTH borrowers, each named, with their OWN 3-year-window
   // counts and a link to their OWN track record. The requirement is still the
@@ -379,6 +397,8 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
     // experience). The desk shows the shortfall against gateNeed.
     autoExperienceTask: true, notApplicable, required, gateNeed, counts, verifiedCounts, satisfied,
     enteredMet, verifiedMet: met,
+    // Explanation only — see the note by needFrom. Never feeds met/required.
+    needFrom, claimBelowNeed, registeredAt,
     perBorrower,
     checkedAt: new Date().toISOString(),
   };

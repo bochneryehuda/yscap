@@ -354,15 +354,27 @@ const rowOf = async (id) => (await db.query(`SELECT * FROM scheduled_sends WHERE
 
     /* ── J. the registry and the doors agree ─────────────────────────────── */
     console.log('\nJ. what can be scheduled');
-    const fs = require('fs');
-    const chk = fs.readFileSync(require('path').join(__dirname, '..', 'db', '599_scheduled_sends_for_order_emails.sql'), 'utf8');
+    // ASK THE DATABASE WHAT IT ALLOWS — never a migration FILE.
+    //
+    // This used to read db/599, the file that first defined this constraint, and a
+    // CHECK in this repo is deliberately WIDENED IN PLACE under its own name by a
+    // later migration (the db/527 pattern; db/602 added `tape_to_investor`). So the
+    // file that defines a constraint stops being the file that DESCRIBES it the first
+    // time anybody widens it, and this section failed on a constraint that was
+    // perfectly correct — a hand-maintained pointer at a fact the database can state
+    // itself. `pg_get_constraintdef` is that fact, so the next widening needs no edit
+    // here and a genuine drift still fails.
+    const conDef = (await db.query(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+        WHERE conrelid='scheduled_sends'::regclass AND conname='scheduled_sends_kind_chk'`)).rows[0];
+    ok(!!conDef, 'the kind CHECK is on the real table — without it the queue would accept a kind nothing can run');
+    const def = (conDef && conDef.def) || '';
+    const inSql = (def.match(/'([a-z_]+)'::text/g) || []).map((x) => x.replace(/'|::text/g, ''));
     for (const k of Object.keys(sched.KINDS)) {
-      ok(chk.includes(`'${k}'`), `the database allows the kind the registry offers: ${k}`);
+      ok(inSql.includes(k), `the database allows the kind the registry offers: ${k}`);
     }
-    const allowed = (/kind IN \(([^)]*)\)/.exec(chk) || [])[1] || '';
-    const inSql = allowed.split(',').map((x) => x.trim().replace(/'/g, '')).filter(Boolean);
     ok(inSql.length === Object.keys(sched.KINDS).length,
-      'and allows nothing the registry does not — a kind the dispatcher cannot run must never sit in the queue');
+      `and allows nothing the registry does not — a kind the dispatcher cannot run must never sit in the queue (db: ${inSql.join(', ')})`);
     ok(Object.keys(sched.KINDS).every((k) => typeof sched.KINDS[k].path === 'function' && sched.KINDS[k].router),
       'every kind names the real route it re-enters');
     /* AND THAT ROUTE REALLY EXISTS. A typo in a registry path would otherwise sit
@@ -381,7 +393,7 @@ const rowOf = async (id) => (await db.query(`SELECT * FROM scheduled_sends WHERE
     for (const k of ['title_order', 'insurance_order', 'closing_prep', 'investor_delivery']) {
       ok(sched.isKind(k), `the owner asked for it and it is here: ${k}`);
     }
-    const src = fs.readFileSync(require('path').join(__dirname, '..', 'src', 'lib', 'scheduled-sends.js'), 'utf8');
+    const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'lib', 'scheduled-sends.js'), 'utf8');
     ok(!/sendMail|buildOrderEmail|attachments|recipientsFor/.test(src),
       'the scheduler contains NO email code — it re-enters the send route rather than owning a second copy of it');
 

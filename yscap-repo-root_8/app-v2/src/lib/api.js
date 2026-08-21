@@ -863,6 +863,16 @@ export const api = {
   staffAppEmails:   (appId, scope) => req('GET', `/api/staff/applications/${appId}/emails` + (scope ? `?scope=${encodeURIComponent(scope)}` : '')),   // per-file email history (scope='draw' → draw inbox)
   staffAppEmailMsg: (appId, msgId) => req('GET', `/api/staff/applications/${appId}/emails/${msgId}`),   // full body of one message
   staffAppEmailReply: (appId, body) => req('POST', `/api/staff/applications/${appId}/emails/reply`, body),
+  /* THE TRACK-RECORD EXPORT (owner item 7, 2026-08-21). `scope` is verified | all |
+     unverified — the plain button sends none and gets the verified-only report, which is what
+     the owner called "regular"; the other two are the extra options. */
+  staffTrackRecordExport: async (borrowerId, { scope, format } = {}) => {
+    const q = new URLSearchParams();
+    if (scope) q.set('scope', scope);
+    if (format) q.set('format', format);
+    const { blob, filename } = await download(`/api/staff/borrowers/${borrowerId}/track-record/export?${q.toString()}`);
+    saveBlob(blob, filename);
+  },
   staffAppReplyRecipients: (appId) => req('GET', `/api/staff/applications/${appId}/emails/reply-recipients`),
   staffEmails:      (params) => req('GET', '/api/staff/emails' + qs(params)),            // global mailbox (all visible files)
   staffEmailMsg:    (msgId) => req('GET', `/api/staff/emails/${msgId}`),                 // full body from the global mailbox
@@ -994,6 +1004,7 @@ export const api = {
   // the send itself (body carries recipients + note + any questionnaire answers).
   staffTapeSendPreview: (appId) => req('GET', `/api/staff/applications/${appId}/tape-send`),
   staffTapeSend:        (appId, tapeKey, body) => req('POST', `/api/staff/applications/${appId}/tape-send/${tapeKey}`, body || {}),
+  staffTapeSendSchedule: (appId, tapeKey, body) => req('POST', `/api/staff/applications/${appId}/tape-send/${tapeKey}/schedule`, body || {}),
   staffTapeLoans:    (tapeKey) => req('GET', `/api/staff/tapes/${tapeKey}/loans`),
   staffTapeBulkExport: (tapeKey, applicationIds, encompassOverrideReason) => downloadPost(`/api/staff/tapes/${tapeKey}/export/bulk${encompassOverrideReason ? qs({ encompassOverrideReason }) : ''}`, { applicationIds }),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),
@@ -1416,6 +1427,10 @@ export const api = {
   staffMergeVendors: (body) => req('POST', '/api/staff/vendors/merge', body),
   // general file contacts (#144) — staff side + a borrower's whole vendor list
   staffFileContacts:   (appId) => req('GET', `/api/staff/applications/${appId}/file-contacts`),
+  // The general contractor's record (db/605) — the file contact PLUS the license and
+  // insurance that only mean something for a contractor.
+  staffGcRecord:       (appId) => req('GET', `/api/staff/applications/${appId}/gc-record`),
+  staffGcRecordSave:   (appId, body) => req('PUT', `/api/staff/applications/${appId}/gc-record`, body),
   /* THE VENDOR TYPE-AHEAD (owner-directed 2026-08-20). Scoped to a FILE, because
      that is also the permission — anybody who may edit this file's contacts may
      look one up. A blank `q` is a real ask: it means "show me the ones already

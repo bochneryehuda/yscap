@@ -1,4 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { useToolSheetLayer } from '../lib/overlay-layers.js';
 import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import TermSheetStudio, {
@@ -559,6 +560,12 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const [profile, setProfile] = useState(null); // borrower profile (name + fico)
   const [snap, setSnap] = useState(null);       // live studio state
   const [openStudio, setOpenStudio] = useState(false);
+  /* THE FILE OVERVIEW STAYS REACHABLE OVER THE STUDIO (owner-reported 2026-08-21: "that
+     button is not available in the full screens that are populated, including: the terms
+     you generated / products and pricing …"). Held only while the sheet is actually open,
+     and released on close AND on unmount — so navigating away from a file with the studio
+     open can never strand the overview in its escalated layer. */
+  useToolSheetLayer(openStudio);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');

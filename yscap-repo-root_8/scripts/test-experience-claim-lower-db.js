@@ -111,6 +111,77 @@ const SCENARIO = {
     const eD = await expOf(appD);
     assert(eD && Number(eD.f) === 5, `a register that never touches experience keeps the stored 5 (got ${eD && eD.f})`);
 
+    // ---- THE OWNER'S ITEM 22 STORY, walked in order ------------------------
+    // "We started a file and entered five experiences. The condition says that we need
+    //  five experiences. We verified only three, and we changed the application to only
+    //  three. We changed the products and prices to only three, but the condition is
+    //  still requiring five experiences, and we can't sign off that condition."
+    console.log('\n--- item 22: the requirement must follow a re-register DOWN ---');
+    const EXP = require('../src/lib/experience');
+    const needOf = (id) => EXP.registeredExperienceNeed(id, db);
+
+    const appE = await mkApp();
+    // 1. registered on FIVE.
+    const e1 = await call(server, 'POST', reg(appE), tok,
+      { program: 'standard', overrides: { ...SCENARIO, expFlips: 5, expHolds: 0, expGround: 0 } });
+    assert(e1.status === 201, `item22: registers on five (got ${e1.status})`);
+    const n1 = await needOf(appE);
+    assert(n1.flips === 5, `item22: the condition requires five (got ${n1.flips})`);
+
+    // 2. the officer edits the APPLICATION down to three. On its own this must NOT move
+    //    the requirement — that ordering is a deliberate 2026-08-09 rule: a lowered claim
+    //    only relaxes the gate once the product is RE-REGISTERED on it.
+    await db.query(`UPDATE applications SET requested_exp_flips=3 WHERE id=$1`, [appE]);
+    const n2 = await needOf(appE);
+    assert(n2.flips === 5, `item22: editing the application alone does not relax it (got ${n2.flips})`);
+
+    // 3. they re-register Products & Pricing on THREE. THIS is the step the owner says
+    //    does not take.
+    const e3 = await call(server, 'POST', reg(appE), tok,
+      { program: 'standard', overrides: { ...SCENARIO, expFlips: 3, expHolds: 0, expGround: 0 } });
+    assert(e3.status === 201, `item22: re-registers on three (got ${e3.status})`);
+    const n3 = await needOf(appE);
+    assert(n3.flips === 3, `item22: THE CONDITION NOW REQUIRES THREE (got ${n3.flips})`);
+    const claim3 = await expOf(appE);
+    assert(claim3 && Number(claim3.f) === 3, `item22: …and the file's own claim followed it down (got ${claim3 && claim3.f})`);
+
+    // ---- THE STUCK STATE, and the way out ---------------------------------
+    // The owner's file was stuck showing a requirement the file itself no longer
+    // claimed. The requirement is deliberately the REGISTERED product's experience (a
+    // lowered claim only relaxes it once the product is re-registered — the 2026-08-09
+    // rule, asserted above), so the fix is not to move the number: it is to SAY where
+    // the number came from, which is what the screen never did.
+    const appF = await mkApp();
+    // The sync writes onto the file's track-record condition; these fixtures are bare
+    // applications, so give it the one row it needs (the real files get it from the
+    // checklist generator).
+    await db.query(
+      `INSERT INTO checklist_items (application_id, scope, label, tool_key, status)
+       VALUES ($1,'application','Track record','track_record','outstanding')`, [appF]);
+    await call(server, 'POST', reg(appF), tok,
+      { program: 'standard', overrides: { ...SCENARIO, expFlips: 5, expHolds: 0, expGround: 0 } });
+    await db.query(`UPDATE applications SET requested_exp_flips=3 WHERE id=$1`, [appF]);
+    const sync = await EXP.syncExperienceChecklistForApplication(appF, db);
+    const pay = (await db.query(
+      `SELECT tool_payload p FROM checklist_items WHERE application_id=$1 AND tool_key='track_record' LIMIT 1`, [appF]
+    )).rows[0];
+    const P = (pay && pay.p) || {};
+    assert(P.gateNeed && P.gateNeed.flips === 5, `item22: the stuck file still requires five (got ${P.gateNeed && P.gateNeed.flips})`);
+    assert(P.needFrom === 'registration', `item22: …and the payload SAYS the number came from the registration (got ${P.needFrom})`);
+    assert(P.claimBelowNeed === true, 'item22: …and flags that the file itself now claims less — the exact stuck state');
+    assert(P.required && P.required.flips === 3, `item22: …carrying the file's own claim so the screen can name both (got ${P.required && P.required.flips})`);
+    void sync;
+
+    // Re-registering on three clears it — the way out the message now names.
+    await call(server, 'POST', reg(appF), tok,
+      { program: 'standard', overrides: { ...SCENARIO, expFlips: 3, expHolds: 0, expGround: 0 } });
+    const pay2 = (await db.query(
+      `SELECT tool_payload p FROM checklist_items WHERE application_id=$1 AND tool_key='track_record' LIMIT 1`, [appF]
+    )).rows[0];
+    const P2 = (pay2 && pay2.p) || {};
+    assert(P2.gateNeed && P2.gateNeed.flips === 3, `item22: re-registering brings it down to three (got ${P2.gateNeed && P2.gateNeed.flips})`);
+    assert(P2.claimBelowNeed === false, 'item22: …and the stuck-state flag clears');
+
     await db.query(`DELETE FROM applications WHERE borrower_id=$1`, [borrowerId]).catch(() => {});
     await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]).catch(() => {});
     await db.query(`DELETE FROM staff_users WHERE id=$1`, [staffId]).catch(() => {});

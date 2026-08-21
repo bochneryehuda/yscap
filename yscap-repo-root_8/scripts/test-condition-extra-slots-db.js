@@ -123,6 +123,35 @@ function call(server, method, path, token, body) {
       reRow.reviewed_at === null && reRow.override_at === null && reRow.override_reason === null && reRow.override_blocked_reason === null);
     ok('B4 the [auto] note says exactly why', /\[auto\] Reopened — a new document was requested/.test(reRow.notes || '') && /Wind rider/.test(reRow.notes || ''));
 
+    // ---- B5-B8. THE INTERNAL SLOT — a slot for a document WE have (owner-directed
+    // 2026-08-21: "If you have a document that you want to put in a separate slot, I
+    // don't use that request button … I just open a new document slot in this
+    // condition"). The whole point is that it asks the BORROWER for nothing, so the
+    // two things that must NOT happen are asserted against the external ask above as
+    // a live control: that one DID move the status (B1) and DID notify (B2).
+    const selfItem = await mkItem('Wire instructions', 'both');
+    const notifBefore = Number((await db.query(
+      `SELECT count(*) c FROM notifications WHERE borrower_id=$1`, [borId])).rows[0].c);
+    const selfAdd = await call(server, 'POST', `/api/staff/applications/${appId}/checklist/${selfItem}/extra-slots`, tok,
+      { label: 'Signed change order', audience: 'internal' });
+    const selfRow = (await db.query(`SELECT status FROM checklist_items WHERE id=$1`, [selfItem])).rows[0];
+    ok('B5 an internal slot opens on a borrower-facing condition', selfAdd.status === 201 && selfAdd.body.slot.audience === 'internal');
+    ok('B6 …and does NOT turn the condition into a request (B1 proves an external ask does)',
+      selfRow.status === 'outstanding');
+    const notifAfter = Number((await db.query(
+      `SELECT count(*) c FROM notifications WHERE borrower_id=$1`, [borId])).rows[0].c);
+    ok('B7 …and the borrower is told NOTHING (B2 proves an external ask tells them)',
+      notifAfter === notifBefore);
+    // A signed-off condition still reopens: our own team now owes a document on it,
+    // and the sign-off predates that. This is about the SLOT, not about the audience.
+    const selfSigned = await mkItem('Payoff package', 'staff');
+    await db.query(`UPDATE checklist_items SET status='satisfied', signed_off_by=$2, signed_off_at=now() WHERE id=$1`, [selfSigned, superId]);
+    const selfRe = await call(server, 'POST', `/api/staff/applications/${appId}/checklist/${selfSigned}/extra-slots`, tok,
+      { label: 'Recorded mortgage', audience: 'internal' });
+    const selfReRow = (await db.query(`SELECT status, signed_off_at FROM checklist_items WHERE id=$1`, [selfSigned])).rows[0];
+    ok('B8 an internal slot on a signed-off condition reopens it too',
+      selfRe.status === 201 && selfRe.body.reopened === true && selfReRow.signed_off_at === null);
+
     // ---- C. the sign-off gate --------------------------------------------------------------
     let so = await call(server, 'PATCH', `/api/staff/checklist/${itemId}`, tok, { signedOff: true });
     ok('C1 sign-off refuses while the requested document is missing, naming it',

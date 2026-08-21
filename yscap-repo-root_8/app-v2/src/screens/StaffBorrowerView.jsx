@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { useUrlState } from '../lib/useUrlState.js';
 
 /* BORROWER VIEW — the staff-side picker (owner-directed 2026-07-26).
 
@@ -30,7 +31,7 @@ export default function StaffBorrowerView() {
   const { startBorrowerView, can } = useAuth();
   const [q, setQ] = useState('');
   const [rows, setRows] = useState(null);
-  const [scope, setScope] = useState('assigned');
+  const [scope, setScope] = useUrlState('scope', 'assigned');
   const [err, setErr] = useState('');
   const [starting, setStarting] = useState('');
   const [history, setHistory] = useState([]);

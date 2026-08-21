@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import PilotWriter from './PilotWriter.jsx';
+import DropZone from './DropZone.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    EMAIL CENTER — a modern Gmail/Outlook-style history of every email +
@@ -391,11 +392,28 @@ const SCOPED_THREAD = {
   closing: { who: 'everyone on the closing chain — the attorney, title, the settlement agent', verb: 'Reply on the closing chain', fixedSubject: true },
 };
 
+/* ONE reader for both doors — the Attach button and a dragged file. Owner-directed
+   2026-08-21: "we need to be able to attach documents over there manually and also drag and
+   drop into the box of the email." A FileReader gives back a data: URL, so the base64 is
+   everything after the comma — the same read the chat composer uses. */
+const readFileAsBase64 = (file) => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result).split(',')[1] || '');
+  r.onerror = rej; r.readAsDataURL(file);
+});
+const fmtBytes = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+/* The client-side ceiling. The SERVER decides for real (it knows the live email provider's
+   own limit, in both raw and on-the-wire bytes) — this only stops somebody queueing forty
+   files and waiting for a refusal. */
+const MAX_ATTACH = 10;
+
 /* ---- reply / compose composer (shows who it reaches) ---- */
 function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
   const scoped = SCOPED_THREAD[scope] || null;
   const [open, setOpen] = useState(!!isNew);
   const [body, setBody] = useState('');
+  const [atts, setAtts] = useState([]);
+  const fileRef = useRef(null);
   const [subj, setSubj] = useState(isNew ? '' : (subject && /^\s*re:/i.test(subject) ? subject : `Re: ${subject || 'your loan file'}`));
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
@@ -424,15 +442,54 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
     }
     api.staffAppReplyRecipients(appId).then((r) => setRecips(Array.isArray(r) ? r : [])).catch(() => setRecips([]));
   }, [open, appId, scoped, scope]);
+  /* Both doors land here. A file that cannot be read SAYS SO — it is never quietly
+     missing from an email somebody believes carried it. */
+  const addFiles = async (list) => {
+    const files = Array.from(list || []).filter(Boolean);
+    if (!files.length) return;
+    const room = Math.max(0, MAX_ATTACH - atts.length);
+    const take = files.slice(0, room);
+    const dropped = files.length - take.length;
+    const read = [];
+    const bad = [];
+    for (const f of take) {
+      try {
+        read.push({ filename: f.name, contentType: f.type || 'application/octet-stream',
+          dataBase64: await readFileAsBase64(f), size: f.size });
+      } catch (_) { bad.push(f.name); }
+    }
+    if (read.length) setAtts((cur) => [...cur, ...read]);
+    setMsg([
+      bad.length ? `Could not read ${bad.join(', ')}.` : '',
+      dropped ? `Only ${MAX_ATTACH} files can ride on one email — ${dropped} not added.` : '',
+    ].filter(Boolean).join(' '));
+  };
+  const onPickFiles = async (e) => {
+    const list = e.target.files;
+    try { await addFiles(list); } finally { if (fileRef.current) fileRef.current.value = ''; }
+  };
+  const removeAtt = (i) => setAtts((cur) => cur.filter((_, n) => n !== i));
+
   const send = async () => {
     if (!body.trim()) return;
     setBusy(true); setMsg('');
     try {
-      const r = await api.staffAppEmailReply(appId, { body, subject: subj, scope: scope || undefined });
-      setMsg(r.unconfirmed
-        ? (r.warning || 'This may or may not have gone out — check the thread before sending it again.')
-        : `Sent to ${(r.sent_to || []).length} recipient${(r.sent_to || []).length === 1 ? '' : 's'}.`);
-      setBody(''); if (!isNew) setOpen(false); if (isNew && onClose) onClose();
+      const r = await api.staffAppEmailReply(appId, {
+        body, subject: subj, scope: scope || undefined,
+        // Only the three keys the server's contract names — never the local `size`.
+        attachments: atts.map((a) => ({ filename: a.filename, contentType: a.contentType, dataBase64: a.dataBase64 })),
+      });
+      // NOTHING IS SILENTLY DROPPED. The server refuses an attachment it cannot carry (a web
+      // page, an unreadable file, one that does not fit) and names it; say so rather than
+      // letting somebody believe the vendor received it.
+      const held = Array.isArray(r.attachSkipped) ? r.attachSkipped : [];
+      setMsg([
+        r.unconfirmed
+          ? (r.warning || 'This may or may not have gone out — check the thread before sending it again.')
+          : `Sent to ${(r.sent_to || []).length} recipient${(r.sent_to || []).length === 1 ? '' : 's'}${r.attached ? ` with ${r.attached} attachment${r.attached === 1 ? '' : 's'}` : ''}.`,
+        held.length ? `Not attached: ${held.map((h) => `${h.filename} (${h.why})`).join('; ')}.` : '',
+      ].filter(Boolean).join(' '));
+      setBody(''); setAtts([]); if (!isNew) setOpen(false); if (isNew && onClose) onClose();
       onSent && onSent();
     } catch (e) { setMsg(e.message || 'Could not send.'); }
     finally { setBusy(false); }
@@ -447,7 +504,10 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
     );
   }
   return (
-    <div className="ec-reply">
+    /* THE WHOLE COMPOSE BOX IS THE DROP TARGET, not a separate little tray — "drag and drop
+       into the box of the email" is what was asked for, and a person dragging a document at
+       an email aims at the message, not at a widget beside it. */
+    <DropZone className="ec-reply" overClass="ec-reply-drop" onFiles={addFiles}>
       <div className="ec-reply-to">
         <span className="ec-metalabel">To</span>
         {/* EVERY ADDRESS, on a scoped thread as much as an ordinary one. The
@@ -477,10 +537,32 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
             replaces into the box only on "Use this". Staff surface (EmailCenter
             is a staff screen). */}
         <PilotWriter value={body} onReplace={(t) => setBody(t)} surface="staff" />
-        <button className="btn ghost small" onClick={() => { if (isNew && onClose) onClose(); else setOpen(false); setBody(''); }} disabled={busy}>Cancel</button>
+        {/* The manual half of item 6/5. A label wrapping a hidden input is the accessible
+            way to style a file picker — the button IS the input's own control, so keyboard
+            and screen readers get it for free. */}
+        <label className="btn ghost small" style={{ cursor: 'pointer', marginBottom: 0 }}
+          title="Attach a document — or just drag one onto this box">
+          📎 Attach
+          <input ref={fileRef} type="file" multiple style={{ display: 'none' }} onChange={onPickFiles} disabled={busy} />
+        </label>
+        <button className="btn ghost small" onClick={() => { if (isNew && onClose) onClose(); else setOpen(false); setBody(''); setAtts([]); }} disabled={busy}>Cancel</button>
         {msg ? <span className="muted small">{msg}</span> : null}
       </div>
-    </div>
+      {atts.length ? (
+        <div className="ec-atts">
+          {atts.map((a, i) => (
+            <span className="ec-att" key={`${a.filename}-${i}`}>
+              <span className="ec-att-name">📎 {a.filename}</span>
+              <span className="ec-att-size">{fmtBytes(a.size)}</span>
+              <button type="button" className="ec-att-x" onClick={() => removeAtt(i)} disabled={busy}
+                aria-label={`Remove ${a.filename}`} title="Remove">×</button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="ec-att-hint">Drag a document onto this box to attach it — or use Attach.</div>
+      )}
+    </DropZone>
   );
 }
 

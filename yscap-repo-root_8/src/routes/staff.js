@@ -19,6 +19,11 @@ const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
+// ONE definition of the download header: a filename built from data (a borrower's name, a
+// property address) routinely carries a curly apostrophe or an em dash, and Node THROWS on any
+// character above U+00FF in a header — which the route's catch turns into a 500 and a download
+// nobody can ever get (found live on the track-record export, 2026-08-21).
+const { setContentDisposition } = require('../lib/content-disposition');
 const docAccept = require('../lib/document-acceptance');  // what "accepted" means — one definition
 const cfg = require('../config');
 const storage = require('../lib/storage');
@@ -55,6 +60,9 @@ const issuanceBackstop = require('../lib/underwriting/issuance-backstop'); // R6
 const advisoryPolicy = require('../lib/underwriting/advisory-policy');     // AI findings are ADVISORY ONLY (owner-directed 2026-07-27)
 const conditionRules = require('../lib/conditions/rules');
 const conditionRegistry = require('../lib/conditions/field-registry');
+const extNote = require('../lib/conditions/external-note');   // db/604 — the note a borrower and a broker read
+const gcRecord = require('../lib/contractor/gc-record');       // db/605 — the general contractor's record
+const gcSheet = require('../lib/contractor/gc-sheet');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
 const { strayConditionReason, strayConditionMessage } = require('../lib/conditions/label-sanity');
 const adminOverride = require('../lib/conditions/admin-override');        // super-admin condition override (owner-directed 2026-07-27)
@@ -414,7 +422,7 @@ router.get('/applications/export', async (req, res) => {
     }
     await audit(req, 'export_pipeline', 'application', null, { rows: r.rows.length, filters: pick });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="pilot-pipeline-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+    setContentDisposition(res, `pilot-pipeline-${new Date().toISOString().slice(0, 10)}.xlsx`);
     res.send(buf);
   } catch (e) { console.error('[export pipeline]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -559,7 +567,7 @@ router.post('/tapes/:tapeKey/export/bulk', async (req, res) => {
     const { buf, filename, contentType, count } = await tapes.buildBulkTape(req.params.tapeKey, visible, db, { isAdmin: tapeAdmin(req) });
     await audit(req, 'export_tape_bulk', 'application', null, { tape: tape.key, count, requested: requested.length });
     res.set('Content-Type', contentType);
-    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    setContentDisposition(res, filename);
     res.send(buf);
   } catch (e) {
     // A loan that fails the export gate (provider/program mismatch, not registered,
@@ -4620,6 +4628,11 @@ router.get('/applications/:id/checklist', async (req, res) => {
     `SELECT ci.id, ci.label, ci.status, ci.audience, ci.item_kind, ci.is_required,
             ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
             ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
+            -- The note the BORROWER and the TPO broker read (db/604), beside the
+            -- internal one — with who wrote it and when, which only staff see. The
+            -- borrower is shown the note and the date; naming an individual
+            -- underwriter to them would be a new exposure nobody asked for.
+            ci.external_note, ci.external_note_at, enb.full_name AS external_note_by_name,
             -- Who manually added this condition + any pending "please delete" request,
             -- so the row can offer Delete (to the adder / an admin) or Ask-to-delete
             -- (owner-directed 2026-08-04).
@@ -4672,6 +4685,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
        LEFT JOIN staff_users ov  ON ov.id  = ci.override_by
        LEFT JOIN staff_users crb ON crb.id = ci.created_by_id
        LEFT JOIN staff_users drb ON drb.id = ci.delete_requested_by
+       LEFT JOIN staff_users enb ON enb.id = ci.external_note_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
   // THE NOTE-BUYER MARK (owner-directed 2026-08-02). A condition that is on this
@@ -5150,7 +5164,7 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
     try { await require('../lib/tpr-export').saveTprExportDocument(req.params.id, zip, filename, req.actor.id); }
     catch (e2) { console.warn('[tpr-export] save-to-file failed:', e2.message); }
     res.set('Content-Type', 'application/zip');
-    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    setContentDisposition(res, filename);
     res.send(zip);
   } catch (e) { res.status(500).json({ error: 'export failed' }); }
 });
@@ -5225,7 +5239,7 @@ router.get('/applications/:id/export/mismo', async (req, res) => {
     const filename = mismo.exportFilename(row.ys_loan_number, row.last_name);
     await audit(req, 'export_mismo', 'application', req.params.id, { bytes: Buffer.byteLength(xml) });
     res.set('Content-Type', 'application/xml; charset=utf-8');
-    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    setContentDisposition(res, filename);
     res.send(xml);
   } catch (e) {
     console.error('[mismo] export failed:', db.describeError ? db.describeError(e) : e.message);
@@ -5282,7 +5296,7 @@ router.get('/applications/:id/export/corrfirst-track-record', async (req, res) =
     // No BOM and LF endings — CorrFirst's own files carry neither a BOM nor CRLF,
     // and the import has to read this file exactly as it reads theirs.
     res.set('Content-Type', 'text/csv; charset=utf-8');
-    res.set('Content-Disposition', `attachment; filename="${out.filename}"`);
+    setContentDisposition(res, out.filename);
     res.send(Buffer.from(out.csv, 'utf8'));
   } catch (e) {
     console.error('[corrfirst] export failed:', db.describeError ? db.describeError(e) : e.message);
@@ -5338,7 +5352,7 @@ router.get('/applications/:id/export/emcap-pricing-tool', async (req, res) => {
       classification: out.classification,
     });
     res.set('Content-Type', out.contentType);
-    res.set('Content-Disposition', `attachment; filename="${out.filename}"`);
+    setContentDisposition(res, out.filename);
     res.send(out.buf);
   } catch (e) {
     console.error('[emcap-pricing-tool] export failed:', db.describeError ? db.describeError(e) : e.message);
@@ -5521,7 +5535,7 @@ router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
     if (!out.ok) return;
     await audit(req, 'export_tape', 'application', req.params.id, { tape: out.tape.key, bytes: out.buf.length, supplemental: Object.keys(out.savedSupplemental), seasoned: !!out.seasonedOverrides });
     res.set('Content-Type', out.contentType);
-    res.set('Content-Disposition', `attachment; filename="${out.filename}"`);
+    setContentDisposition(res, out.filename);
     res.send(out.buf);
   } catch (e) {
     return tapeExportRefusal(res, e, 'export tape');
@@ -5562,7 +5576,7 @@ router.post('/applications/:id/tape-send/:tapeKey', async (req, res) => {
     if (!out.ok) return;
     const sent = await investorSendTape.sendTapeToInvestor(req.params.id, db, {
       tape: { buf: out.buf, filename: out.filename, contentType: out.contentType },
-      to: rec.emails, note: b.note,
+      to: rec.emails, cc: b.cc, note: b.note,
       actorId: req.actor.id, actorName: req.actor.full_name || null,
     });
     await audit(req, 'tape_sent_to_investor', 'application', req.params.id, {
@@ -5571,6 +5585,50 @@ router.post('/applications/:id/tape-send/:tapeKey', async (req, res) => {
     res.json({ ok: true, to: sent.to, cc: sent.cc, replyTo: sent.replyTo, subject: sent.subject, filename: out.filename });
   } catch (e) {
     return tapeExportRefusal(res, e, 'tape send');
+  }
+});
+
+/* SCHEDULE the tape send for later (owner-directed 2026-08-21: "We need to add
+   the scheduling feature over there").
+   It stores the INTENT only — who to send to, who else to copy, the note — never
+   a built tape and never a rendered email. At the due moment the dispatcher posts
+   to the send route above from the top, so the tape is BUILT THEN and every gate
+   (permission, issuance backstop, Encompass, buyer/program match) is re-run
+   against the file as it is that morning, not as it was last night. */
+router.post('/applications/:id/tape-send/:tapeKey/schedule', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
+  const appId = req.params.id;
+  try {
+    const sched = require('../lib/scheduled-sends');
+    const investorSendTape = require('../lib/tapes/investor-send');
+    const b = req.body || {};
+
+    // The recipient rules are checked NOW as well as at send time. A person who
+    // schedules a send with no investor address has scheduled a refusal for
+    // 8am — telling them tonight is the whole value of the button.
+    const rec = investorSendTape.cleanRecipients(b.to);
+    if (rec.problem) return res.status(400).json({ error: rec.problem });
+    const extra = investorSendTape.extraAddresses(b.cc);
+    if (extra.problem) return res.status(400).json({ error: extra.problem });
+
+    const at = sched.parseNyLocal(b.day, b.time);
+    const bad = sched.whenProblem(at);
+    if (bad) return res.status(400).json({ error: bad.error, code: bad.code });
+
+    const out = await sched.schedule({
+      appId, kind: 'tape_to_investor', targetKey: String(req.params.tapeKey || ''),
+      at, payload: { to: rec.emails, cc: extra.emails, note: String(b.note || '').slice(0, 2000) },
+      actorId: req.actor.id,
+    });
+    if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
+    try {
+      await audit(req, 'tape_send_scheduled', 'application', appId,
+        { tape: req.params.tapeKey, sendAt: at.toISOString(), to: rec.emails, cc: extra.emails });
+    } catch (_) { /* recorded either way */ }
+    res.json({ ok: true, scheduled: out.row });
+  } catch (e) {
+    console.error('[tape-send schedule]', e && e.message);
+    res.status(500).json({ error: 'Could not schedule that tape send.' });
   }
 });
 
@@ -6356,6 +6414,21 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
   // email template.
   const bodyText = String((req.body && req.body.body) || '').trim().slice(0, 4000);
   if (!bodyText) return res.status(400).json({ error: 'Type a message to send.' });
+  // ATTACHMENTS ON A TYPED REPLY (owner-directed 2026-08-21: "on any reply to any Gmail
+  // section … we need to be able to attach documents over there manually and also drag and
+  // drop into the box of the email"). Read ONCE here, so all four branches below — closing
+  // chain, title, insurance, and the plain file reply — carry them identically and can never
+  // drift about what a message may hold. Nothing is silently dropped: whatever could not ride
+  // comes back on the response so the screen can say so.
+  let composed = { attachments: [], skipped: [], count: 0 };
+  try {
+    composed = require('../lib/email/compose-attachments')
+      .readComposeAttachments(req.body && req.body.attachments);
+  } catch (e) {
+    return res.status(400).json({ error: 'Those attachments could not be read. Try attaching them again.' });
+  }
+  const attach = composed.attachments;
+  const attachSkipped = composed.skipped;
   try {
     const ctx = await notify.fileContext(appId).catch(() => null);
     // The acting staffer's own email/name (req.actor carries only id/role/perms).
@@ -6412,12 +6485,12 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
         const sent = await closingThread.sendOnThread({
           applicationId: appId, eventKind: 'followup', dedupeKey: null,
           to: closingParties.to, cc: closingParties.cc, fromName: senderName, staffId: req.actor.id,
-          msgType: 'closing_followup',
+          msgType: 'closing_followup', attachments: attach,
           build: ({ address }) => closingPrep.buildFollowupEmail(data, { note: bodyText, address, senderName }),
         });
         if (!sent.ok) return res.status(500).json({ error: 'Could not send on the closing chain.', code: sent.reason });
-        await audit(req, 'closing_prep_followup', 'application', appId, { to: sent.to.length, via: 'email_center' });
-        return res.json({ ok: true, sent_to: sent.to, cc: sent.cc });
+        await audit(req, 'closing_prep_followup', 'application', appId, { to: sent.to.length, via: 'email_center', attached: attach.length });
+        return res.json({ ok: true, sent_to: sent.to, cc: sent.cc, attached: attach.length, attachSkipped });
       }
     }
 
@@ -6479,7 +6552,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       const sent = await orders.sendOrderMail({
         appId, kind, data, to, cc, replyTo, built,
         fromName: meRow.full_name || meRow.email,
-        type: `${kind}_followup`, thread,
+        type: `${kind}_followup`, thread, attachments: attach,
       });
       if (!sent.ok && !sent.ambiguous) {
         return res.status(sent.reason === 'contact' ? 400 : 502).json({ error: sent.message, code: sent.reason });
@@ -6499,8 +6572,8 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
         detail: { to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous },
       });
       try { await audit(req, 'order_followup', 'application', appId, { kind, to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous }); } catch (_) { /* sent either way */ }
-      if (sent.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: sent.message, sent_to: to, cc });
-      return res.json({ ok: true, sent_to: to, cc });
+      if (sent.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: sent.message, sent_to: to, cc, attached: attach.length, attachSkipped });
+      return res.json({ ok: true, sent_to: to, cc, attached: attach.length, attachSkipped });
     }
 
     // Recipient set: an explicit list (validated as file parties) or the default
@@ -6576,12 +6649,13 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     await email.sendMail({
       to: toEmails, subject: built.subject, html: built.html, text: built.text,
       cc: drawCc.length ? drawCc : undefined,
+      ...(attach.length ? { attachments: attach } : {}),
       replyTo: fileReplyTo(appId) || cfg.replyToDefault || null,
       from: fromName || undefined,
       _ctx: { applicationId: appId, type: replyType, audience },
     });
-    await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, cc: drawCc.length, subject });
-    res.json({ ok: true, sent_to: toEmails, cc: drawCc });
+    await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, cc: drawCc.length, subject, attached: attach.length });
+    res.json({ ok: true, sent_to: toEmails, cc: drawCc, attached: attach.length, attachSkipped });
   } catch (e) { res.status(500).json({ error: 'Could not send the reply.' }); }
 });
 
@@ -9031,7 +9105,15 @@ async function signOffGate(itemId, actor) {
     return null;
   }
 
-  if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false
+  // THE GC CONDITION'S UPLOAD SLOT IS OPTIONAL (owner-directed 2026-08-21: "Keep that slot
+  // as an optional slot, which means it should not need to upload something to sign off the
+  // condition"). The CONDITION is still required — it still blocks clear-to-close, and it is
+  // still the place a licence certificate or a W-9 is filed — but what satisfies it is the
+  // contractor's RECORD, which PILOT prints onto its own sheet. Excluding it here rather
+  // than flipping `is_required` off is what keeps that weight: an optional condition would
+  // drop out of the advancement blockers entirely.
+  const isGcInfo = code === 'rtl_cond_gc_info';
+  if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false && !isGcInfo
       && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs && !isCredit && !isIska) {
     // ACCEPTED, not merely "not rejected" (owner-directed 2026-08-03). The old
     // test was satisfied by a document nobody had ever opened, which is how a
@@ -9591,6 +9673,19 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // the status ('issue'), so skip the explicit one in that case too.
   if (b.status && b.signedOff !== true && b.pushBack !== true && b.waived == null) add('status=?', b.status);
   if (b.notes != null) add('notes=?', b.notes);
+  // THE NOTE THE BORROWER AND THE BROKER READ (db/604). Same door, same permission
+  // as the internal note — one place a condition is edited — but its own column, so
+  // the internal note can never become visible by accident. It stamps WHO and WHEN,
+  // because staff need to know whose words are on a borrower's screen (the borrower
+  // is shown the note and the date, never the name). Clearing it clears the stamps.
+  if ('externalNote' in b) {
+    const p = extNote.noteProblem(b.externalNote);
+    if (p) return res.status(400).json({ error: p });
+    const v = extNote.clean(b.externalNote);
+    add('external_note=?', v);
+    add('external_note_by=?', v ? req.actor.id : null);
+    sets.push(v ? 'external_note_at=now()' : 'external_note_at=NULL');
+  }
   if ('assigneeStaffId' in b) add('assignee_staff_id=?', b.assigneeStaffId || null);
   // Requirement toggle — e.g. the LLC's Certificate of Good Standing is
   // optional by default; the officer/processor can flip it to required (it
@@ -9914,6 +10009,17 @@ router.post('/applications/:id/assign', async (req, res) => {
       await audit(req, 'assign_processor', 'application', req.params.id, { from: cur.rows[0].processor_id || null, to: processorId });
     }
     enqueueClickupPush(req.params.id, ['officer', 'processor']).catch(() => {}); // propagate officer/processor to ClickUp promptly
+    // ASSIGNING AN OFFICER MOVES THE CARD OUT OF LEAD CAPTURE (owner-directed 2026-08-21:
+    // "if some file comes in without a loan officer and we assign a loan officer to it, it
+    // should automatically move from the lead capture folder in ClickUp to the loan officer's
+    // folder"). Fire-and-forget: the assignment itself must never fail because ClickUp is
+    // slow, and the module is a cheap no-op on a card that is not in Lead Capture. A failed
+    // move heals on the sweep. Only for a LOAN OFFICER — a processor never owns the folder.
+    if (loanOfficerId) {
+      require('../clickup/officer-move')
+        .maybeMoveToOfficerFolder(req.params.id, { source: 'assign' })
+        .catch(() => {});
+    }
     res.json({ ok: true });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
@@ -11422,6 +11528,47 @@ router.put('/borrowers/:id/track-record/snapshot', async (req, res) => {
     res.json({ ok: true, ...out });
   } catch (e) { if (!e.status) console.warn('[staff] snapshot error:', db.describeError(e)); res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the snapshot' }); }
 });
+/* EXPORT THE TRACK RECORD — Excel or PDF, in one of three scopes (owner-directed 2026-08-21,
+   item 7): *"the regular export button (PDF or Excel) should only export the verified ones.
+   There should be an extra option to export the PDF or an Excel from the unverified ones, but
+   everything that is unverified should have a stamp that it's not verified yet."*
+
+   `scope` DEFAULTS TO `verified`, so the plain button is the one the owner described as
+   "regular" and is unchanged in meaning. An unrecognised scope resolves to that default rather
+   than to the wide set — an export that cannot read its own instruction must fall back to the
+   SAFE side, never hand somebody unverified experience they did not ask for.
+
+   Same borrower gate as every other borrower read on this router (`canSeeBorrower` →
+   VISIBLE_BORROWER_SQL), and it writes nothing: it selects and renders. */
+router.get('/borrowers/:id/track-record/export', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const scopeLib = require('../lib/track-record/export-scope');
+    const raw = String((req.query && req.query.scope) || '');
+    // A scope we do not recognise is a BUG in the caller, not a licence to widen the export —
+    // say so rather than quietly serving the default under a name nobody asked for.
+    if (raw && !scopeLib.isScope(raw)) {
+      return res.status(400).json({ error: `Unknown export scope "${raw}". Choose ${scopeLib.SCOPES.join(', ')}.` });
+    }
+    const b = (await db.query(
+      `SELECT id, NULLIF(full_name,'') AS full_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
+    if (!b) return res.status(404).json({ error: 'not found' });
+    const out = await require('../lib/track-record/export-doc').buildBorrowerTrackRecordExport([b.id], {
+      scope: raw || undefined,
+      format: String((req.query && req.query.format) || 'xlsx'),
+      borrowerName: b.full_name || '',
+    });
+    if (!out || !out.data) return res.status(500).json({ error: 'Could not build that export.' });
+    await audit(req, 'track_record_export', 'borrower', b.id, { scope: out.scope, format: out.format, rows: out.rows });
+    res.setHeader('Content-Type', out.contentType);
+    setContentDisposition(res, out.filename);
+    res.send(Buffer.isBuffer(out.data) ? out.data : Buffer.from(out.data));
+  } catch (e) {
+    console.warn('[staff] track-record export:', db.describeError(e));
+    res.status(500).json({ error: 'Could not build that export.' });
+  }
+});
+
 router.get('/borrowers/:id/track-record/snapshot', async (req, res) => {
   if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
   try { res.json(await require('../lib/track-record-snapshot').latestSnapshot(req.params.id)); }
@@ -18860,6 +19007,49 @@ router.get('/applications/:id/file-contacts', async (req, res) => {
       ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [req.params.id]);
   res.json(r.rows);
 });
+/* THE GENERAL CONTRACTOR'S RECORD ON THIS FILE (db/605, owner-directed 2026-08-21: "You
+   need to add that condition to be informational, to put in: the name / the phone number
+   / the email address / license information … Don't make all the fields required").
+
+   READ and WRITE sit on the FILE, gated by `canTouchApp` — the same gate the file-contacts
+   routes use, because this IS a file contact plus the part of it that is specific to a
+   contractor. Nothing here is a new authorization: whoever may record the GC's phone
+   number may record their license.
+
+   THE SHEET IS REDRAWN ON EVERY SAVE, best-effort. That is what makes "it should be in the
+   TPR export and the SharePoint sync" true without anybody remembering to press anything —
+   and it can never fail the save, because a record somebody typed must be kept whatever the
+   PDF engine or the storage layer is doing. An unchanged record redraws nothing. */
+router.get('/applications/:id/gc-record', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const rec = await gcRecord.loadForApplication(req.params.id);
+    const sheet = rec ? (await db.query(
+      `SELECT id, filename, created_at FROM documents
+        WHERE application_id=$1 AND doc_kind=$2 AND is_current=true ORDER BY created_at DESC LIMIT 1`,
+      [req.params.id, gcSheet.DOC_KIND])).rows[0] || null : null;
+    res.json({ contact: rec, fields: gcRecord.CREDENTIAL_FIELDS, hasAnything: gcRecord.hasAnything(rec), sheet });
+  } catch (e) { console.error('[gc-record read]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+router.put('/applications/:id/gc-record', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const problem = gcRecord.credentialProblem(b);
+  if (problem) return res.status(400).json({ error: problem });
+  try {
+    const rec = await gcRecord.loadForApplication(req.params.id);
+    if (!rec) return res.status(409).json({ error: 'Add the general contractor as a file contact first — the license and insurance are recorded against that contact.', code: 'no_contractor' });
+    const saved = await gcRecord.saveCredentials(rec.id, b, req.actor.id);
+    await audit(req, 'gc_record_updated', 'application', req.params.id, { fields: saved.fields || [] });
+    // Best-effort: the record is saved either way.
+    let sheet = null;
+    try { sheet = await gcSheet.refreshForApplication(req.params.id); } catch (e) { sheet = { made: false, reason: 'sheet_failed', message: e && e.message }; }
+    const after = await gcRecord.loadForApplication(req.params.id);
+    res.json({ ok: true, contact: after, hasAnything: gcRecord.hasAnything(after), sheet });
+  } catch (e) { console.error('[gc-record save]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
 router.post('/applications/:id/file-contacts', async (req, res) => {
   if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   const b = req.body || {};
@@ -19865,6 +20055,7 @@ router.get('/applications/:id/esign', async (req, res) => {
 const esignOrchestrate = require('../lib/esign/orchestrate');
 const esignWebhook = require('../lib/esign/webhook');
 const docusignLib = require('../lib/integrations/docusign');
+const resendReadiness = require('../lib/esign/resend-readiness');
 
 // Map a thrown orchestration error to an HTTP status + safe message.
 function esignErrStatus(e) {
@@ -20033,8 +20224,17 @@ router.post('/esign/:rowId/resend', async (req, res) => {
     if (!can(req.actor, 'send_term_sheet')) return res.status(403).json({ error: 'You do not have permission to send documents for signature.' });
     const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
     if (!row) return res.status(status).json({ error });
-    if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
-    if (['completed', 'declined', 'voided'].includes(row.status)) return res.status(409).json({ error: `envelope already ${row.status}` });
+    // A refusal must name the way through, never just the state. "envelope already
+    // voided" is true and useless: an envelope that sat unsigned for months is
+    // EXPIRED by DocuSign and voided -- exactly the reported case -- and the person
+    // reading it is the one who could issue a fresh one in a click.
+    // esign/resend-readiness is the ONE place that turns the state into the action,
+    // so this pre-check and the DocuSign-refusal path below can never word it
+    // differently.
+    {
+      const bad = resendReadiness.resendProblem(row);
+      if (bad) return res.status(bad.status).json(bad);
+    }
     // Resend is a real borrower email — the master kill-switch must gate it too. Read the RUNTIME
     // switch (override ?? env) so flipping DocuSign off on the API Health page stops resends immediately.
     if (!require('../lib/integrations/switches').on('DOCUSIGN_SEND_ENABLED')) return res.status(409).json({ error: 'Sending is paused right now. Turn sending back on before resending.' });
@@ -20058,9 +20258,31 @@ router.post('/esign/:rowId/resend', async (req, res) => {
         return res.status(409).json({ error: 'The borrower’s email on file changed since this package was sent. A resend can’t update the address — use “Change email & re-send” on the signer to re-address it (or void and re-issue).' });
       }
     }
-    await docusignLib.resendEnvelope(row.envelope_id);
+    try {
+      await docusignLib.resendEnvelope(row.envelope_id);
+    } catch (e) {
+      // OUR stored status can lag reality: the envelope may have expired on
+      // DocuSign's side with no webhook landed yet, so the pre-check above passed
+      // and the wire is where we find out. Answer with the SAME sentence and the
+      // same code rather than a 500 "server error" -- the least useful thing to
+      // tell somebody about a form they were trying to nudge.
+      const refused = resendReadiness.docusignRefusal(e, row);
+      if (refused) {
+        // Record what we now know, so the screen and the next click agree with
+        // DocuSign instead of re-offering a resend that cannot work. Best-effort.
+        try {
+          await db.query(
+            `UPDATE esign_envelopes SET status='voided', updated_at=now()
+              WHERE id=$1 AND status NOT IN ('completed','declined','voided')`, [row.id]);
+        } catch (_) { /* the refusal is the answer either way */ }
+        return res.status(refused.status).json(refused);
+      }
+      throw e;
+    }
     await audit(req, 'esign_resend', 'application', row.application_id, { purpose: row.purpose });
-    res.json({ ok: true });
+    // Advisory only -- the reminder HAS gone out. It explains a nudge that is
+    // likely to produce nothing, so nobody presses it three more times.
+    res.json({ ok: true, notice: resendReadiness.staleNotice(row) || undefined });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 

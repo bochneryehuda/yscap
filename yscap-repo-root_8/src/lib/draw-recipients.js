@@ -230,6 +230,33 @@ function replyCcFrom(loopIn, { toEmails = [], sender = '' } = {}) {
  * PLUS the shared draws@ inbox so the envelope is covered either way. Never throws; the
  * caller de-dupes against the signers and drops anything DocuSign would reject.
  */
+/**
+ * The file's OWN draw coordinator(s), for an envelope where there is nobody to fall back to.
+ *
+ * `drawEnvelopeViewers` deliberately falls back to the whole desk plus the shared draws@ inbox,
+ * because a WIRE REQUEST FORM must never go out uncovered. That fallback is exactly wrong on an
+ * ORIGINATION package (term sheet / Heter Iska, owner-directed 2026-08-21): a file has no draw
+ * project until it FUNDS, so at term-sheet time `drawCoordinatorsForFile` finds nobody every
+ * single time and the fallback would put the ENTIRE draw desk plus a shared inbox on every
+ * borrower's loan documents. The owner asked for "the draw coordinator" — when none is assigned
+ * yet, there is no draw coordinator to loop in, and inventing the desk is not the same thing.
+ *
+ * Returns `[{ email, name }]`, empty when the file has no coordinator of its own. Never throws.
+ */
+async function drawEnvelopeViewersAssigned(appId) {
+  let people = [];
+  try { people = await drawCoordinatorsForFile(appId); } catch (_) { return []; }
+  const out = [];
+  const seen = new Set();
+  for (const p of people) {
+    const key = String((p && p.email) || '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ email: key, name: p.full_name || key });
+  }
+  return out;
+}
+
 async function drawEnvelopeViewers(appId) {
   const people = await coordinatorsOrDesk(appId);
   const candidates = people.map((p) => ({ email: p.email, name: p.full_name || p.email }));
@@ -247,7 +274,7 @@ async function drawEnvelopeViewers(appId) {
 
 module.exports = {
   drawRecipients, drawTeamBcc, DRAW_DESK_INBOX,
-  drawCoordinatorsForFile, drawDeskCoordinators, coordinatorsOrDesk,
+  drawCoordinatorsForFile, drawDeskCoordinators, coordinatorsOrDesk, drawEnvelopeViewersAssigned,
   fileLoanOfficerEmails, drawLoopInBcc, drawEnvelopeViewers,
   drawReplyLoopIn, drawReplyLoopInDetailed, replyCcFrom,
 };

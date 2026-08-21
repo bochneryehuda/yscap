@@ -1,6 +1,7 @@
 import React from 'react';
 import { audienceStamp, conditionDisplayState } from '../lib/conditions-vocab.js';
 import { nextStep } from '../lib/condition-actions.js';
+import { fmtDay } from '../lib/dates.js';
 
 /* THE COMPACT CONDITION LINE — one line you scan, click to open.
  *
@@ -165,33 +166,93 @@ export function EsignAutoStamp({ it }) {
   );
 }
 
-/* THE INTERNAL NOTE — shown when there IS one, a quiet link when there is not.
- * It used to render an empty box and a Save button on every single condition:
- * about a full screen of blank boxes down a 24-condition list, for something
- * only a small fraction of conditions ever carries. */
-export function ConditionNote({ it, onPatch }) {
+/* TWO NOTES ON A CONDITION, AND THEY MUST NEVER BE MISTAKEN FOR EACH OTHER.
+
+   The INTERNAL note is the one that has always been here — staff reasoning, capital-
+   partner context, the [auto] messages the engine appends. It is never selected by a
+   borrower or a broker route.
+
+   The EXTERNAL note is db/604, owner-directed 2026-08-21: "Right now, I only see
+   internal notes. We should also be able to put external notes that should be visible
+   for the borrowers and TpOS." It is the sentence a borrower most needs — "the August
+   statement, not July" — living next to the thing it is about.
+
+   ONE editor, because how a note behaves (shown when there IS one, a quiet link when
+   there is not — it used to render an empty box on every row, about a screenful of
+   them down a 24-condition list) is the same question for both. TWO sets of WORDS,
+   because the words are the safety property: the external one says who will read it on
+   the button, in the placeholder, and in a band that stays on screen the whole time you
+   are typing. Getting these two confused is the one mistake this pair can produce, so
+   nothing about it is left to a colour. */
+const NOTE_KINDS = {
+  internal: {
+    field: 'notes',
+    read: (it) => it.notes,
+    add: '+ Add an internal note',
+    placeholder: 'Internal note (staff-only)…',
+    cls: 'cnd-note',
+    banner: null,
+  },
+  external: {
+    field: 'externalNote',
+    read: (it) => (it.external_note || ''),
+    add: '+ Add a note the borrower will see',
+    placeholder: 'The borrower and the broker will read this…',
+    cls: 'cnd-note cnd-note-ext',
+    banner: 'Visible to the borrower and the broker',
+  },
+};
+
+function NoteEditor({ it, onPatch, kind }) {
+  const K = NOTE_KINDS[kind];
+  const current = K.read(it) || '';
   const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState(it.notes || '');
-  React.useEffect(() => { setDraft(it.notes || ''); }, [it.notes]);
-  const has = !!(it.notes && it.notes.trim());
+  const [draft, setDraft] = React.useState(current);
+  React.useEffect(() => { setDraft(K.read(it) || ''); }, [it, K]);
+  const has = !!(current && current.trim());
+  const save = () => { onPatch(it.id, { [K.field]: draft }); setEditing(false); };
 
   if (!editing) {
     return has ? (
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
-        <div className="cnd-note" style={{ flex: 1, minWidth: 0 }}>{it.notes}</div>
+        <div className={K.cls} style={{ flex: 1, minWidth: 0 }}>
+          {K.banner && (
+            <span className="cnd-note-tag">
+              {K.banner}
+              {it.external_note_at ? ` · ${fmtDay(it.external_note_at) || ''}` : ''}
+              {it.external_note_by_name ? ` · ${it.external_note_by_name}` : ''}
+            </span>
+          )}
+          <span className="cnd-note-body">{current}</span>
+        </div>
         <button className="btn link small" style={{ flex: 'none' }} onClick={() => setEditing(true)}>Edit note</button>
       </div>
     ) : (
-      <button className="btn link small cnd-note-add" onClick={() => setEditing(true)}>+ Add an internal note</button>
+      <button className={`btn link small cnd-note-add${kind === 'external' ? ' cnd-note-add-ext' : ''}`}
+        onClick={() => setEditing(true)}>{K.add}</button>
     );
   }
   return (
-    <div className="row" style={{ width: '100%', gap: 8 }}>
-      <input className="input" autoFocus placeholder="Internal note (staff-only)…" value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter') { onPatch(it.id, { notes: draft }); setEditing(false); } }} />
-      <button className="btn ghost" onClick={() => { onPatch(it.id, { notes: draft }); setEditing(false); }}>Save note</button>
-      <button className="btn link small" onClick={() => { setDraft(it.notes || ''); setEditing(false); }}>Cancel</button>
+    <div style={{ width: '100%' }}>
+      {/* The warning stays on screen for as long as the box is open — a label only on
+          the button is gone by the time anybody types. */}
+      {K.banner && <div className="cnd-note-warn">{K.banner}</div>}
+      <div className="row" style={{ width: '100%', gap: 8 }}>
+        <input className="input" autoFocus placeholder={K.placeholder} value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') save(); }} />
+        <button className="btn ghost" onClick={save}>Save note</button>
+        <button className="btn link small" onClick={() => { setDraft(current); setEditing(false); }}>Cancel</button>
+      </div>
     </div>
   );
+}
+
+export function ConditionNote({ it, onPatch }) {
+  return <NoteEditor it={it} onPatch={onPatch} kind="internal" />;
+}
+
+/** The note the borrower and the TPO broker read (db/604). */
+export function ConditionExternalNote({ it, onPatch }) {
+  return <NoteEditor it={it} onPatch={onPatch} kind="external" />;
 }

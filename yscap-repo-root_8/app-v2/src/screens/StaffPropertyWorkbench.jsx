@@ -4,6 +4,7 @@ import { showMessage, askConfirm } from '../lib/dialog.js';
 import { fmtDay } from '../lib/dates.js';
 import { US_STATES } from '../components/LlcManager.jsx';
 import { optionsFor as declineOptionsFor, REASON_LABELS as DECLINE_LABELS } from '../lib/declineReason.js';
+import { useUrlState } from '../lib/useUrlState.js';
 
 /**
  * THE BULK PROPERTY WORKBENCH (blueprint §9.5, owner-directed 2026-08-09)
@@ -192,7 +193,7 @@ export default function StaffPropertyWorkbench({ borrowerId, borrowerName }) {
   const [busy, setBusy] = useState(false);
   const [searchMsg, setSearchMsg] = useState(null);
   const [ticked, setTicked] = useState(() => new Set());
-  const [filter, setFilter] = useState('');
+  const [filter, setFilter] = useUrlState('filter', '', { prefix: 'wb' });
   const [run, setRun] = useState(null);      // the review run: ids, in order
   const [runAt, setRunAt] = useState(0);     // where we are in it
   const [compare, setCompare] = useState(null);

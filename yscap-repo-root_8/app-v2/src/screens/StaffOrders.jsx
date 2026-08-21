@@ -9,6 +9,7 @@ import { fmtDay } from '../lib/dates.js';
 // own order card — the decision itself is the server's (order-sla.orderState).
 import { dormantMarker } from '../lib/orderDormant.js';
 import { askConfirm } from '../lib/dialog.js';
+import { useUrlState } from '../lib/useUrlState.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS QUEUE — every title, insurance & attorney closing-prep order across the
@@ -140,7 +141,7 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
 export default function StaffOrders() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useUrlState('filter', 'all', { remember: 'orders.filter' });
   const [mine, setMine] = useState('');   // '' = anyone, or a staff id
   const [me, setMe] = useState(null);
 

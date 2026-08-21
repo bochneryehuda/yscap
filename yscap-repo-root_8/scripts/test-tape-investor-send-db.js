@@ -56,7 +56,7 @@ function call(server, method, path, token, body) {
     IS.subjectFor({ property_address: { oneLine: '10 Fidelis Way' } }) === 'New file for review - 10 Fidelis Way');
   ok('A3 a parts-only address composes', /Newark, NJ 07104$/.test(IS.subjectFor({ property_address: { line1: '10 Way', city: 'Newark', state: 'NJ', zip: '07104' } })));
 
-  const QUOTE = { noteRate: 0.105, sizing: { totalLoan: 360000, initialAdvance: 248000, rehabHoldback: 80000, financedReserve: 32000, acqLtvPct: 0.8, arvPct: 0.8, oopRehab: 0 } };
+  const QUOTE = { noteRate: 0.105, sizing: { totalLoan: 360000, initialAdvance: 248000, rehabHoldback: 80000, financedReserve: 32000, acqLtvPct: 0.8, arvPct: 0.8, ltcPct: 0.9473684, costBasis: 380000, oopRehab: 0 } };
   {
     const rows = IS.dealFigures({ loan_type: 'Purchase', purchase_price: 300000, as_is_value: 310000, rehab_budget: 80000 }, QUOTE);
     const by = Object.fromEntries(rows.map((r) => [r.label, r.value]));
@@ -65,18 +65,27 @@ function call(server, method, path, token, body) {
       && by['Interest reserve (financed)'] === '$32,000' && by['Interest rate'] === '10.50%');
     ok('B3 the three ratios are labelled with their formulas',
       by['Initial LTV (initial advance ÷ acquisition value)'] === '80%' && by['ARV LTV (total loan ÷ after-repair value)'] === '80%'
-      && /Effective LTV/.test(rows.map((r) => r.label).join('|')));
-    ok('B4 effective LTV = total loan ÷ as-is', by['Effective LTV (total loan ÷ as-is value)'] === `${Math.round((360000 / 310000) * 10000) / 100}%`);
+      && /Total LTC/.test(rows.map((r) => r.label).join('|')));
+    // OWNER-DIRECTED 2026-08-21, replacing the old "Effective LTV" assertion.
+    // That figure divided the WHOLE loan (which finances the rehab) by a value
+    // that does NOT include the rehab, so on a real construction deal it printed
+    // 108% / 140% and described nothing. Total LTC is READ from the engine's own
+    // ltcPct — never recomputed here — so the tape and the rate grid can never
+    // state two different LTCs.
+    ok('B4 Total LTC is the ENGINE\'s ltcPct, and the effective-LTV figure is gone',
+      by['Total LTC (total loan ÷ total cost)'] === '94.74%'
+      && by['Total cost (acquisition + construction budget)'] === '$380,000'
+      && !rows.some((r) => /effective/i.test(r.label)));
     ok('B5 NO origination fee, ever', !rows.some((r) => /originat/i.test(r.label) || /originat/i.test(String(r.value))));
     // A GROUND-UP's loan routinely exceeds the lot's as-is value — the ratio must
     // print as a real 400%, never "4%" (audit 98b8fac #1: the percent-form knee
     // silently divided every ratio past 150% by 100 in an email to an investor).
     {
       const gu = IS.dealFigures({ loan_type: 'Ground Up Construction', purchase_price: 100000, as_is_value: 100000 },
-        { noteRate: 0.11, sizing: { totalLoan: 400000, initialAdvance: 80000, rehabHoldback: 300000, financedReserve: 20000 } });
+        { noteRate: 0.11, sizing: { totalLoan: 400000, initialAdvance: 80000, rehabHoldback: 300000, financedReserve: 20000, ltcPct: 2.5 } });
       const gv = Object.fromEntries(gu.map((r) => [r.label, r.value]));
       ok('B8 a leverage ratio past 150% prints as itself, never divided by 100',
-        gv['Effective LTV (total loan ÷ as-is value)'] === '400%');
+        gv['Total LTC (total loan ÷ total cost)'] === '250%');
     }
   }
   {
@@ -87,8 +96,24 @@ function call(server, method, path, token, body) {
   {
     const rows = IS.dealFigures({ loan_type: 'Purchase' }, null);
     ok('B7 an unregistered file OMITS the unknowable figures rather than guessing $0',
-      !rows.some((r) => /Loan amount|Interest rate|LTV/i.test(r.label)));
+      !rows.some((r) => /Loan amount|Interest rate|LTV|LTC/i.test(r.label)));
   }
+  {
+    // The engine can legitimately report no LTC (an unpriced or refused scenario).
+    // It is OMITTED, never printed as 0% — the module's own missing-vs-zero rule.
+    const rows = IS.dealFigures({ loan_type: 'Purchase', purchase_price: 300000 },
+      { sizing: { totalLoan: 360000, acqLtvPct: 0.8 } });
+    ok('B9 no LTC on the quote → the row is omitted, never a confident 0%',
+      !rows.some((r) => /LTC/i.test(r.label)));
+  }
+  // ---- C4-C7: the OPTIONAL extra Cc (owner-directed 2026-08-21) --------------
+  ok('C4 an empty extra-Cc list is fine — unlike the recipients, it may be empty',
+    IS.extraAddresses([]).problem === '' && IS.extraAddresses(undefined).emails.length === 0);
+  ok('C5 a bad extra-Cc address refuses, naming it', /not a valid email/.test(IS.extraAddresses(['nope']).problem));
+  ok('C6 extra Cc unwraps "Name <addr>" and dedupes, exactly like the To line',
+    JSON.stringify(IS.extraAddresses(['Al B <AL@x.com>', 'al@x.com']).emails) === '["al@x.com"]');
+  ok('C7 a refused extra-Cc address yields NO addresses — never a partial send',
+    IS.extraAddresses(['good@x.com', 'nope']).emails.length === 0);
   ok('C1 an empty list refuses', /at least one/i.test(IS.cleanRecipients([]).problem));
   ok('C2 junk refuses naming the address', /not a valid email/.test(IS.cleanRecipients(['nope']).problem));
   ok('C3 a pasted "Name <addr>" unwraps + dedupes',

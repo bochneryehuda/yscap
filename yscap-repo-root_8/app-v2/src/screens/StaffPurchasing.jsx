@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import DropZone from '../components/DropZone.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import { fmtDate } from '../lib/dates.js';
 import { askConfirm } from '../lib/dialog.js';
 import { confirmRemoveFromWorkflow } from '../lib/workflowRemove.js';
+import { useUrlState } from '../lib/useUrlState.js';
 
 /* THE PURCHASING DESK (owner-directed 2026-07-26).
 
@@ -107,7 +109,7 @@ function NotifyList() {
 export default function StaffPurchasing() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
-  const [filter, setFilter] = useState('outstanding');
+  const [filter, setFilter] = useUrlState('filter', 'outstanding', { remember: 'purchasing.filter' });
   const [openId, setOpenId] = useState(null);
   const [busy, setBusy] = useState(null);
 
@@ -279,6 +281,20 @@ function PurchasingDetail({ appId, status, onChanged }) {
     finally { setBusy(false); }
   };
 
+  /* ONE reader for both doors — the picker and a dragged file (owner item 6, 2026-08-21).
+     Uploaded STAFF-ONLY and designated in one action, so the advice is never borrower-visible
+     at any point — not even for the window between upload and designation. A purchase advice
+     names the note buyer and the price the loan sold for. */
+  const uploadAdvice = (f) => {
+    if (!f) return;
+    run(async () => {
+      const up = await api.purchasingAdviceUpload(appId, {
+        filename: f.name, contentType: f.type, dataBase64: await fileToBase64(f),
+      });
+      if (up && up.documentId) await api.purchasingAdvice(appId, { documentId: up.documentId });
+    });
+  };
+
   if (!ws) return <div className="muted small" style={{ padding: 10 }}>Loading…</div>;
   // Advice lives in its OWN record and OUTLIVES a withdrawal from the desk.
   const adv = ws.advice || {};
@@ -419,27 +435,23 @@ function PurchasingDetail({ appId, status, onChanged }) {
             </select>
           </label>
         </div>
-        <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        {/* Drag-and-drop as well as the picker (owner item 6, 2026-08-21). A purchase advice
+            is ONE document, so a multi-file drop takes the first. */}
+        <DropZone className="row dz-inline" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}
+          enabled={!busy} title="Drop the purchase advice here"
+          onFiles={(list) => uploadAdvice(Array.from(list || [])[0])}>
           <label className="btn ghost small" style={{ cursor: busy ? 'default' : 'pointer' }}>
             Upload the advice…
             <input type="file" style={{ display: 'none' }} disabled={busy}
               onChange={(e) => {
                 const f = e.target.files && e.target.files[0];
                 e.target.value = '';
-                if (!f) return;
-                // Uploaded STAFF-ONLY and designated in one action, so it is never
-                // borrower-visible at any point — not even for the window between
-                // upload and designation.
-                run(async () => {
-                  const up = await api.purchasingAdviceUpload(appId, {
-                    filename: f.name, contentType: f.type, dataBase64: await fileToBase64(f),
-                  });
-                  if (up && up.documentId) await api.purchasingAdvice(appId, { documentId: up.documentId });
-                });
+                uploadAdvice(f);
               }} />
           </label>
-          <span className="muted small">Uploaded here it is staff-only from the outset.</span>
-        </div>
+          <span className="muted small">Uploaded here it is staff-only from the outset — drag it on if you prefer.</span>
+        </DropZone>
+
         <div className="muted small" style={{ marginTop: 6 }}>
           {adv.document_filename
             ? <>Current: <b>{adv.document_filename}</b> · uploaded {day(adv.document_uploaded_at)}. Upload a newer copy here to replace it post purchase — the previous one stays hidden from the borrower.</>

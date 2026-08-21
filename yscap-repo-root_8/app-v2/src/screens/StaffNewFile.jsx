@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import DropZone from '../components/DropZone.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
@@ -212,7 +213,18 @@ function MismoImport() {
   const [err, setErr] = useState('');
 
   async function onPick(e) {
-    const file = e.target.files && e.target.files[0];
+    await readMismo(e.target.files && e.target.files[0]);
+  }
+  /* ONE reader for both doors — the picker and a dragged file (owner item 6, 2026-08-21:
+     "a lot of the uploads are missing the drag and drop option"). An import is ONE file,
+     so a multi-file drop takes the first and says so. */
+  async function onDropFiles(list) {
+    const files = Array.from(list || []);
+    if (!files.length) return;
+    await readMismo(files[0]);
+    if (files.length > 1) setErr(`Only “${files[0].name}” was read — one file is imported at a time.`);
+  }
+  async function readMismo(file) {
     if (!file) return;
     setErr(''); setPreview(null); setWarnings([]); setState({ status: 'reading' });
     try {
@@ -256,12 +268,15 @@ function MismoImport() {
           exactly what it contains before anything is saved.
         </p>
         {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
-        <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <DropZone className="row dz-inline" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}
+          enabled={state.status !== 'reading' && state.status !== 'creating'}
+          title="Drop the MISMO .xml file here" onFiles={onDropFiles}>
           <input ref={fileRef} type="file" accept=".xml,text/xml,application/xml" onChange={onPick}
             disabled={state.status === 'reading' || state.status === 'creating'} />
           {state.status === 'reading' && <span className="muted small">Reading the file…</span>}
           {(preview || err) && <button type="button" className="btn btn-ghost btn-sm" onClick={reset}>Clear</button>}
-        </div>
+          <span className="muted small">…or drag the file onto this row.</span>
+        </DropZone>
 
         {preview && (
           <div style={{ marginTop: 12 }}>

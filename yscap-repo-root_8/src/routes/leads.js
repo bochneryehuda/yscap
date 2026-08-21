@@ -63,7 +63,11 @@ const CONTACTLESS_TOOLS = new Set(['term_sheet_generated']);
 // Term-sheet events carry their own descriptive subject line (used as the
 // notification title so the inbox shows EXACTLY what was generated). Routing
 // is the same for every tool — see the owner-directed rule below.
-const SALES_TOOLS = new Set(['term_sheet', 'term_sheet_generated', 'term_sheet_exception']);
+// ONE VISIT, ONE LEAD + what counts as contact details (owner-directed 2026-08-21, item 24).
+const SESSION = require('../lib/leads/session-lead');
+// The term-sheet family is stated ONCE, in that module — a second copy here is how "which tools are
+// quiet on a repeat" and "which tools carry their own subject line" would come to disagree.
+const SALES_TOOLS = SESSION.TERM_SHEET_TOOLS;
 const MX_CHECK = process.env.LEADS_MX_CHECK !== '0';
 const cryptoLib = require('crypto');
 const cfg = require('../config');
@@ -214,11 +218,12 @@ router.post('/', async (req, res) => {
        So: a submission that names NOBODY is not a lead and is never assigned; and within one
        browser session the officer, once picked, does not change. */
 
-    // Does this submission tell us who the visitor is? Name, email or phone — any one of them is
-    // enough to call somebody back, which is the entire test. `term_sheet_generated` is the tool
-    // that can arrive with none of them (CONTACTLESS_TOOLS), and that is precisely the case the
-    // owner is describing.
-    const hasContact = !!(name || email || phone);
+    /* Does this submission give us a way to REACH the visitor? An email or a phone number — and
+       from 2026-08-21 a NAME NO LONGER COUNTS, in the owner's own words: *"only if he puts in his
+       contact information, either a phone number or an email, then he should become a lead."* A name
+       with nothing to call or write to cannot be followed up, so it is signal for the sales desk and
+       not a lead in anybody's book. The one definition is `session-lead.isContactable`. */
+    const hasContact = SESSION.isContactable({ email, phone });
 
     // Resolve the branded ?lo= officer code to a real, selectable staff row. This is a DELIBERATE
     // choice by the visitor (they arrived on that officer's own link), so it applies even with no
@@ -266,6 +271,23 @@ router.post('/', async (req, res) => {
     // because it is public input headed for a text column.
     const sessionId = b.sessionId ? String(b.sessionId).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64) || null : null;
 
+    /* THE LEAD THIS VISIT ALREADY HAS (owner-directed 2026-08-21, item 24: *"if it's on one session,
+       it only gets one lead"*). Read BEFORE the assignment work, because a visit that already has a
+       lead already has its answer to "whose is this?" — and every later submission of the visit
+       enriches that ONE row instead of opening another. */
+    const sessionLead = sessionId ? await SESSION.findSessionLead(db, sessionId) : null;
+    let officerFromSession = false;
+    if (!officerId && sessionLead && sessionLead.officer_id) {
+      // The visit's officer is settled. Read their row so a notification that DOES go out (the
+      // visit becoming contactable) reaches the person who already owns it, not the rotation.
+      try {
+        const o = await db.query(
+          `SELECT id, full_name, email FROM staff_users WHERE id=$1 AND is_active=true AND is_external=false`,
+          [sessionLead.officer_id]);
+        if (o.rows[0]) { officerRow = o.rows[0]; officerId = o.rows[0].id; officerFromSession = true; }
+      } catch (e) { /* falls through to the ordinary routing — never block a capture on a lookup */ }
+    }
+
     /* STICK TO THE OFFICER THIS SESSION ALREADY HAS (owner-directed 2026-08-07). Checked BEFORE
        the rotation, so a visitor who exports three term sheets in one sitting produces three
        submissions for ONE officer instead of walking the roster. Best-effort: an unreadable
@@ -291,6 +313,10 @@ router.post('/', async (req, res) => {
     const decision = leadAssign.decideLeadOfficer({ officerId, tool, fromStaffPortal });
     let assignedVia = decision.assignedVia;
     let viaSession = false;   // reused an EXISTING assignment (suppresses re-notify below)
+    /* An officer adopted from the visit's OWN lead is not a branded-link pick — say so, or the row
+       would claim the visitor arrived on his link when they did not. It also counts as a reused
+       assignment, which is what keeps the repeat quiet. */
+    if (officerFromSession) { assignedVia = 'session'; viaSession = true; }
     const ident = { email, phone, sessionId, ip: req.ip, name };
     // Only a lead that would otherwise round-robin needs this — a branded ?lo=
     // link, a staff-portal lead, a newsletter and a nameless export never do.
@@ -358,19 +384,57 @@ router.post('/', async (req, res) => {
     // readable instead of a nameless blank. Bind positions are counted in the test — the shifted
     // bind that once put an interest reserve into `payoff_lender` came from editing a list like
     // this one, so add a column and its value in the SAME position or not at all.
-    const ins = await db.query(
-      `INSERT INTO leads (tool,name,email,phone,officer_code,officer_id,subject,message,payload,ip_address,user_agent,assigned_via,
-                          session_id,status,company,property_address,property_type,program,loan_amount)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
-      [tool, leadName, email, phone, code || null, officerId,
-       b.subject ? String(b.subject).slice(0, 240) : `${label} — ${leadName || email || 'new lead'}`,
-       b.message ? String(b.message).slice(0, 4000) : null,
-       payloadJson,
-       req.ip, (req.get('user-agent') || '').slice(0, 400), assignedVia,
-       sessionId, leadStatus,
-       facts.company, facts.propertyAddress ? F.jsonbText(facts.propertyAddress) : null,
-       facts.propertyType, facts.program, facts.loanAmount]);
-    const leadId = ins.rows[0].id;
+    /* ONE VISIT, ONE LEAD (owner-directed 2026-08-21, item 24). The visit's FIRST submission writes
+       the row; every later one ENRICHES it — fill-only, so nothing the visitor already told us can be
+       erased by a later blank — and the plan also decides whether anybody hears about this one. A
+       repeat export is silent; the visit becoming followable, or landing on an officer's own link,
+       is not. See `lib/leads/session-lead.js` for the whole rule. */
+    const plan = SESSION.planSessionSubmission(sessionLead, {
+      tool, name: leadName, email, phone, officerId, officerCode: code || null,
+      assignedVia, facts, message: b.message ? String(b.message).slice(0, 4000) : null,
+    });
+    let leadId;
+    if (plan.action === 'enrich') {
+      leadId = sessionLead.id;
+      const set = plan.set || {};
+      const cols = Object.keys(set);
+      if (cols.length) {
+        // `property_address` is jsonb; everything else is a plain column. Bound the same way the
+        // INSERT binds them, so an enrich can never write something the insert would have refused.
+        const vals = cols.map((c) => (c === 'property_address' ? F.jsonbText(set[c]) : set[c]));
+        await db.query(
+          `UPDATE leads SET ${cols.map((c, i) => `${c}=$${i + 2}`).join(', ')} WHERE id=$1`,
+          [leadId, ...vals]);
+      }
+      // The visit's later term sheets are real activity on the ONE lead — the row does not
+      // multiply, and what happened is still visible on it.
+      await db.query(
+        `INSERT INTO lead_activities (lead_id, activity_type, subject, body, meta)
+         VALUES ($1,'note',$2,$3,$4)`,
+        [leadId, `${label} — same visit`,
+          b.subject ? String(b.subject).slice(0, 240) : `Another ${label.toLowerCase()} in this visit.`,
+          JSON.stringify({ tool, reason: plan.reason, notified: plan.notify,
+            becameContactable: plan.becameContactable, gainedOfficer: plan.gainedOfficer })]
+      ).catch(() => { /* the activity line is a record, never a reason to lose the submission */ });
+    } else {
+      const ins = await db.query(
+        `INSERT INTO leads (tool,name,email,phone,officer_code,officer_id,subject,message,payload,ip_address,user_agent,assigned_via,
+                            session_id,status,company,property_address,property_type,program,loan_amount)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
+        [tool, leadName, email, phone, code || null, officerId,
+         b.subject ? String(b.subject).slice(0, 240) : `${label} — ${leadName || email || 'new lead'}`,
+         b.message ? String(b.message).slice(0, 4000) : null,
+         payloadJson,
+         req.ip, (req.get('user-agent') || '').slice(0, 400), assignedVia,
+         sessionId, leadStatus,
+         facts.company, facts.propertyAddress ? F.jsonbText(facts.propertyAddress) : null,
+         facts.propertyType, facts.program, facts.loanAmount]);
+      leadId = ins.rows[0].id;
+    }
+    // A repeat submission of the same visit never re-notifies (the crux of item 24) — the plan is
+    // the ONE place that decides it, so the officer email, the sales email and the visitor's own
+    // confirmation all read the same answer.
+    if (!plan.notify) viaSession = true;
     // The assignment decision + the row are written — release the per-prospect
     // lock now so the slow tail (filing the PDF, sending email) never serializes
     // another visitor's submission.
@@ -492,11 +556,25 @@ router.post('/', async (req, res) => {
       // "nothing picked → sales desk" rule as every content tool (it's a real
       // lead with contact info). Only the newsletter subscription keeps its own
       // quiet pilot@ inbox. All the waitlist's bot defenses stay untouched.
-      const wantsSales = !!salesTo && !officerId && tool !== 'subscribe';
+      // `plan.notify` is false on a repeat submission of the same visit — item 24's "one lead" also
+      // means one email. The sales desk hears about the visit once, not once per exported format.
+      const wantsSales = !!salesTo && !officerId && tool !== 'subscribe' && plan.notify;
       // Do NOT re-notify on a REUSED assignment (viaSession): the officer already
       // heard about this prospect on the first export, so a burst of exports must
       // not bombard them with a copy each — the crux of the owner's report.
-      if (officerId && !viaSession) { await notify.notifyStaff(officerId, { ...notifyOpts, emailTo: officerRow.email }); }
+      if (officerId && !viaSession) {
+        /* AND IT SAYS SO WHEN IT CAME FROM HIS OWN LINK (owner-directed 2026-08-21, item 24: *"it
+           should specifically say in the email, letting them know that it was from their link"*).
+           Keyed on `assigned_via`, which is the row's own record of WHY this officer has it — so the
+           line can never appear on a lead the rotation handed him. The wording lives in
+           session-lead.js and is never retyped here. */
+        const opts = { ...notifyOpts, emailTo: officerRow.email };
+        if (assignedVia === 'lo_link') {
+          opts.note = SESSION.officerLinkNote(code);
+          opts.badge = { text: 'From your link', tone: 'good' };
+        }
+        await notify.notifyStaff(officerId, opts);
+      }
       if (wantsSales) {
         // An anonymous export says so on its face, so nobody on the sales desk spends a minute
         // hunting for a name that was never given (owner-directed 2026-08-07). It is a signal that
@@ -504,9 +582,10 @@ router.post('/', async (req, res) => {
         // anybody's lead queue.
         if (anonymous) {
           notifyOpts.badge = { text: 'No contact details', tone: 'neutral' };
-          notifyOpts.emailBody = 'A visitor generated this on the site and left no name, email or phone, '
-            + 'so there is nobody to follow up with and it has not been routed to a loan officer or '
-            + 'added to the leads queue. The figures they were shown are below.';
+          // (A name alone is NOT contact details from 2026-08-21 — see session-lead.isContactable.)
+          notifyOpts.emailBody = `A visitor generated this on the site. ${SESSION.contactGapNote({ name })} `
+            + 'It has not been routed to a loan officer or added to the leads queue. '
+            + 'The figures they were shown are below.';
           notifyOpts.ctaLabel = 'Open leads';
           notifyOpts.note = 'You are seeing this because nobody was named on the submission. '
             + 'If they come back and leave their details it will arrive as a normal lead.';
