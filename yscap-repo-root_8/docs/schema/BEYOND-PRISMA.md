@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**853 objects**, and a database rebuilt from the Prisma
+**856 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 607 numbered migrations in `db/` (highest `db/610`) remain the only thing that builds this database.
+rebuild a database from them.** The 608 numbered migrations in `db/` (highest `db/611`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,16 +20,16 @@ the live database.
 | | |
 |---|---|
 | Tables | 373 |
-| Columns | 5992 |
+| Columns | 5998 |
 | Triggers | 35 |
 | Functions | 138 |
-| CHECK constraints | 309 |
+| CHECK constraints | 310 |
 | Generated columns | 12 |
-| Partial indexes | 359 |
+| Partial indexes | 361 |
 | Primary keys | 373 |
-| Foreign keys | 784 |
+| Foreign keys | 785 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1276 |
+| Indexes (all kinds) | 1278 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -227,7 +227,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (359)
+## Partial indexes (361)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -261,6 +261,8 @@ the live database.
 - **idx_applications_encompass_stale** on `applications`
 - **idx_applications_hot_poll** on `applications`
 - **idx_applications_pa_read_state** on `applications`
+- **idx_applications_payoff_demand** on `applications`
+- **idx_applications_sold_at** on `applications`
 - **idx_applications_tpo_firm** on `applications`
 - **idx_appr_findings_app** on `appraisal_findings`
 - **idx_appraisals_app_current** on `appraisals`
@@ -589,7 +591,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (309)
+## CHECK constraints (310)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -600,6 +602,7 @@ the live database.
 - **applications_a_piece_amount_chk** on `applications`
 - **applications_pa_read_state_chk** on `applications`
 - **applications_requested_ir_months_check** on `applications`
+- **applications_sold_source_chk** on `applications`
 - **applications_status_check** on `applications`
 - **applications_sync_state_check** on `applications`
 - **applications_sync_status_check** on `applications`
@@ -901,7 +904,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (784)
+## Foreign keys (785)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -952,6 +955,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **applications** → `staff_users` — `FOREIGN KEY (free_and_clear_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **applications** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE SET NULL`
 - **applications** → `staff_users` — `FOREIGN KEY (loan_officer_id) REFERENCES staff_users(id)`
+- **applications** → `staff_users` — `FOREIGN KEY (payoff_demand_requested_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **applications** → `staff_users` — `FOREIGN KEY (pipeline_removed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **applications** → `staff_users` — `FOREIGN KEY (processor_id) REFERENCES staff_users(id)`
 - **applications** → `tpo_firms` — `FOREIGN KEY (tpo_firm_id) REFERENCES tpo_firms(id) ON DELETE SET NULL`
@@ -1762,7 +1766,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 373 primary keys and 1276 indexes is
+Every one of the 373 primary keys and 1278 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
