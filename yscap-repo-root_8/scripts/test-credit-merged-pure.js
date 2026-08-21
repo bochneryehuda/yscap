@@ -335,4 +335,146 @@ assert.strictEqual(m6.pairs.length, 1, 'one report borrower + one file borrower,
 assert.strictEqual(m6.pairs[0].matchedBy, 'order');
 assert.strictEqual(m6.pairs[0].verified, false, 'a positional match is never treated as proof');
 
-console.log('OK  credit-merged: joint 2.x/3.x split per borrower, joint tradelines shared, unlabelled scores never guessed, file matching by SSN → name → order — all assertions passed');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REGRESSION — the REAL MISMO 3.4 layout (owner-reported 2026-08-21).
+//
+// Xactus is ordered at MISMO 3.4 (src/lib/credit/provider.js defaults the interface
+// version to '3.4'). In 3.4 the borrower PARTIES and the RELATIONSHIP arcs that bind
+// a score to a person live at DEAL level — OUTSIDE <CREDIT_RESPONSE>. The parser used
+// to scope segmentation to the CREDIT_RESPONSE subtree, so on a real joint 3.4 report
+// it found ZERO borrowers, never split the document, and fell back to the flat
+// per-bureau de-dupe: "first score per bureau wins" across TWO people. Both borrowers
+// were then stored with the SAME whole-document middle score.
+//
+// Live numbers from the reported file (YSCAP258134859, ref 93123672):
+//   Mordechai Scharf  TU 685 · XP 704 · EF 674  → middle 685
+//   Michelle Bleier   TU 719 · XP 680 · EF 732  → middle 719
+// PILOT showed 719 for BOTH. The fixture below reproduces that exactly; note the
+// co-borrower's scores are listed FIRST, which is what made 719 the surviving number.
+// ─────────────────────────────────────────────────────────────────────────────
+const mkScore = (label, repo, value) => `
+  <CREDIT_SCORE xlink:label="${label}"><CREDIT_SCORE_DETAIL>
+    <CreditRepositorySourceType>${repo}</CreditRepositorySourceType>
+    <CreditScoreValue>${value}</CreditScoreValue>
+  </CREDIT_SCORE_DETAIL></CREDIT_SCORE>`;
+const mkDealParty = (label, first, last, ssn) => `
+  <PARTY xlink:label="${label}">
+    <INDIVIDUAL><NAME><FirstName>${first}</FirstName><LastName>${last}</LastName></NAME></INDIVIDUAL>
+    <ROLES><ROLE><BORROWER><BORROWER_DETAIL/></BORROWER>
+      <ROLE_DETAIL><PartyRoleType>Borrower</PartyRoleType></ROLE_DETAIL></ROLE></ROLES>
+    <TAXPAYER_IDENTIFIERS><TAXPAYER_IDENTIFIER>
+      <TaxpayerIdentifierValue>${ssn}</TaxpayerIdentifierValue>
+    </TAXPAYER_IDENTIFIER></TAXPAYER_IDENTIFIERS>
+  </PARTY>`;
+// One bureau's own copy of a person: that bureau's spelling of the name, no SSN.
+const mkFileParty = (label, first, last) => `
+  <CREDIT_FILE xlink:label="${label}_FILE"><PARTY xlink:label="${label}">
+    <INDIVIDUAL><NAME><FirstName>${first}</FirstName><LastName>${last}</LastName></NAME></INDIVIDUAL>
+    <ROLES><ROLE><BORROWER/></ROLE></ROLES>
+  </PARTY></CREDIT_FILE>`;
+
+const REAL_34 = `<?xml version="1.0" encoding="utf-8"?>
+<MESSAGE xmlns:xlink="http://www.w3.org/1999/xlink" MISMOReferenceModelIdentifier="3.4">
+ <DEAL_SETS><DEAL_SET><DEALS><DEAL>
+  <PARTIES>
+${mkDealParty('PARTY_B1', 'MORDECHAI', 'SCHARF', '052925287')}
+${mkDealParty('PARTY_C1', 'MICHELLE', 'BLEIER', '057926929')}
+  </PARTIES>
+  <SERVICES><SERVICE><CREDIT>
+   <CREDIT_RESPONSE>
+    <CREDIT_RESPONSE_DETAIL>
+      <CreditReportIdentifier>93123672</CreditReportIdentifier>
+      <CreditReportFirstIssuedDate>2026-08-20</CreditReportFirstIssuedDate>
+    </CREDIT_RESPONSE_DETAIL>
+    <CREDIT_FILES>
+${mkFileParty('TUC_C1', 'MICHELLE', 'BLEIER')}
+${mkFileParty('EXP_C1', 'MICHELLE', 'BLEIER')}
+${mkFileParty('EQX_C1', 'MICHELLE', 'KATZ')}
+${mkFileParty('TUC_B1', 'MORDECHAI', 'SCHARF')}
+    </CREDIT_FILES>
+    <CREDIT_SCORES>
+${mkScore('S_C1_TU', 'TransUnion', 719)}
+${mkScore('S_C1_XP', 'Experian', 680)}
+${mkScore('S_C1_EF', 'Equifax', 732)}
+${mkScore('S_B1_TU', 'TransUnion', 685)}
+${mkScore('S_B1_XP', 'Experian', 704)}
+${mkScore('S_B1_EF', 'Equifax', 674)}
+    </CREDIT_SCORES>
+   </CREDIT_RESPONSE>
+  </CREDIT></SERVICE></SERVICES>
+  <RELATIONSHIPS>
+    <RELATIONSHIP xlink:from="PARTY_B1" xlink:to="S_B1_TU"/>
+    <RELATIONSHIP xlink:from="PARTY_B1" xlink:to="S_B1_XP"/>
+    <RELATIONSHIP xlink:from="PARTY_B1" xlink:to="S_B1_EF"/>
+    <RELATIONSHIP xlink:from="PARTY_C1" xlink:to="S_C1_TU"/>
+    <RELATIONSHIP xlink:from="PARTY_C1" xlink:to="S_C1_XP"/>
+    <RELATIONSHIP xlink:from="PARTY_C1" xlink:to="S_C1_EF"/>
+  </RELATIONSHIPS>
+ </DEAL></DEALS></DEAL_SET></DEAL_SETS>
+</MESSAGE>`;
+
+const r34 = parseCreditXml(REAL_34);
+assert.strictEqual(r34.parseError, null, 'the real 3.4 layout parses');
+assert.strictEqual(r34.isMerged, true, 'DEAL-level parties are found — the joint split runs');
+assert.strictEqual(r34.mergedAmbiguous, false, 'the RELATIONSHIP arcs say whose scores are whose');
+// The alias surname on one bureau file is the SAME co-borrower, not a third person.
+assert.strictEqual(r34.borrowers.length, 2, 'two people on the report — "Michelle Katz" is not a third');
+assert.ok(!r34.borrowers.some((b) => /katz/i.test(b.name || '')), 'no phantom alias borrower on the roster');
+
+const scharf = r34.borrowers.find((b) => /scharf/i.test(b.name));
+const bleier = r34.borrowers.find((b) => /bleier/i.test(b.name));
+assert.ok(scharf && bleier, 'both borrowers are named');
+assert.strictEqual(scharf.middleScore, 685, 'Mordechai middle = 685 (685/704/674) — was wrongly 719');
+assert.strictEqual(bleier.middleScore, 719, 'Michelle middle = 719 (719/680/732)');
+assert.notStrictEqual(scharf.middleScore, bleier.middleScore,
+  'the two borrowers must NOT share one number — that was the whole bug');
+assert.deepStrictEqual(scharf.scores.map((s) => s.value).sort((a, b) => a - b), [674, 685, 704]);
+assert.deepStrictEqual(bleier.scores.map((s) => s.value).sort((a, b) => a - b), [680, 719, 732]);
+assert.strictEqual(scharf.ssnLast4, '5287', 'the SSN that verifies the FICO write-back is read from the 3.4 party');
+assert.strictEqual(bleier.ssnLast4, '6929');
+assert.strictEqual(r34.reportId, '93123672', 'the response header still reads from the CREDIT_RESPONSE');
+assert.strictEqual(r34.reportDate, '2026-08-20');
+
+// The file's own borrowers match their segments by SSN — the higher middle (719)
+// prices the deal, and Mordechai keeps HIS 685.
+const mReal = matchSegments(r34.borrowers, [
+  { borrowerId: 'b-real', role: 'primary', firstName: 'Mordechai', lastName: 'Scharf', ssnLast4: '5287' },
+  { borrowerId: 'c-real', role: 'co', firstName: 'Michelle', lastName: 'Bleier', ssnLast4: '6929' },
+]);
+assert.strictEqual(mReal.pairs.length, 2, 'both file borrowers matched');
+assert.ok(mReal.pairs.every((x) => x.matchedBy === 'ssn' && x.verified), 'matched by SSN — proof, not a guess');
+const forPrimary = mReal.pairs.find((x) => x.borrower.borrowerId === 'b-real');
+assert.strictEqual(forPrimary.segment.middleScore, 685, 'the primary is stored with 685, not the co-borrower’s 719');
+assert.strictEqual(sliceForSegment(r34, forPrimary.segment).middleScore, 685, 'and the stored slice agrees');
+
+// A vendor that returns ONE <CREDIT_RESPONSE> PER BORROWER must not lose the second.
+const TWO_RESPONSES = `<?xml version="1.0"?>
+<MESSAGE xmlns:xlink="http://www.w3.org/1999/xlink"><DEAL>
+  <PARTIES>
+${mkDealParty('P_A', 'AVI', 'GOLD', '111223333')}
+${mkDealParty('P_B', 'RUTH', 'GOLD', '444556666')}
+  </PARTIES>
+  <SERVICES>
+   <SERVICE><CREDIT><CREDIT_RESPONSE><CREDIT_SCORES>
+${mkScore('SA1', 'TransUnion', 700)}${mkScore('SA2', 'Experian', 710)}${mkScore('SA3', 'Equifax', 690)}
+   </CREDIT_SCORES></CREDIT_RESPONSE></CREDIT></SERVICE>
+   <SERVICE><CREDIT><CREDIT_RESPONSE><CREDIT_SCORES>
+${mkScore('SB1', 'TransUnion', 640)}${mkScore('SB2', 'Experian', 660)}${mkScore('SB3', 'Equifax', 650)}
+   </CREDIT_SCORES></CREDIT_RESPONSE></CREDIT></SERVICE>
+  </SERVICES>
+  <RELATIONSHIPS>
+    <RELATIONSHIP xlink:from="P_A" xlink:to="SA1"/><RELATIONSHIP xlink:from="P_A" xlink:to="SA2"/>
+    <RELATIONSHIP xlink:from="P_A" xlink:to="SA3"/>
+    <RELATIONSHIP xlink:from="P_B" xlink:to="SB1"/><RELATIONSHIP xlink:from="P_B" xlink:to="SB2"/>
+    <RELATIONSHIP xlink:from="P_B" xlink:to="SB3"/>
+  </RELATIONSHIPS>
+</DEAL></MESSAGE>`;
+const two34 = parseCreditXml(TWO_RESPONSES);
+assert.strictEqual(two34.borrowers.length, 2, 'both borrowers found across two credit responses');
+assert.strictEqual(two34.borrowers.find((b) => b.firstName === 'AVI').middleScore, 700);
+assert.strictEqual(two34.borrowers.find((b) => b.firstName === 'RUTH').middleScore, 650,
+  'the SECOND <CREDIT_RESPONSE> is read too — reading only the first dropped this borrower entirely');
+
+
+console.log('OK  credit-merged: joint 2.x/3.x split per borrower, the REAL MISMO 3.4 layout (deal-level parties + arcs) split per borrower, alias surnames folded, several credit responses read, joint tradelines shared, unlabelled scores never guessed, file matching by SSN → name → order — all assertions passed');

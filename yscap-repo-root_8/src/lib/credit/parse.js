@@ -129,8 +129,36 @@ function dedupeScores(list) {
   });
 }
 
-function parseScores(cr) {
-  return dedupeScores(X.allDeep(cr, 'CREDIT_SCORE').map(scoreFrom).filter(Boolean));
+/**
+ * A parse has TWO scopes, never one — the bug that made every MISMO 3.4 JOINT report
+ * hand both borrowers the same score (owner-reported 2026-08-21).
+ *
+ *   • the CONTENT scope — where the credit items live: every `CREDIT_RESPONSE` in the
+ *     document (a vendor may return one per borrower; reading only the first silently
+ *     dropped the second borrower's entire report), or the whole document when there
+ *     is none.
+ *   • the IDENTITY scope — the WHOLE document. MISMO 3.4 keeps the borrower PARTIES
+ *     and the `RELATIONSHIP` arcs that bind a score to a person at DEAL level,
+ *     OUTSIDE `<CREDIT_RESPONSE>`. Looking for them inside it found nobody, so the
+ *     joint split never ran and the flat per-bureau de-dupe mixed two people's scores.
+ *
+ * A scope is an ARRAY of root nodes. `deep()` reads them as one, de-duplicating by
+ * node identity so overlapping roots (a PARTY nested inside a CREDIT_RESPONSE) never
+ * yield the same item twice.
+ */
+function deep(scope, local) {
+  const roots = Array.isArray(scope) ? scope : [scope];
+  const out = [];
+  const seen = new Set();
+  for (const r of roots) {
+    if (!r) continue;
+    for (const n of X.allDeep(r, local)) if (!seen.has(n)) { seen.add(n); out.push(n); }
+  }
+  return out;
+}
+
+function parseScores(scope) {
+  return dedupeScores(deep(scope, 'CREDIT_SCORE').map(scoreFrom).filter(Boolean));
 }
 
 // The single representative score for a borrower: middle of 3, lower of 2, or the one.
@@ -149,9 +177,9 @@ function representative(scores) {
   return vals[Math.floor((vals.length - 1) / 2)]; // middle of three+
 }
 
-function liabilityNodes(cr) {
-  return X.allDeep(cr, 'CREDIT_LIABILITY').concat(
-    X.allDeep(cr, 'LIABILITY').filter((n) => n.local === 'LIABILITY'));
+function liabilityNodes(scope) {
+  return deep(scope, 'CREDIT_LIABILITY').concat(
+    deep(scope, 'LIABILITY').filter((n) => n.local === 'LIABILITY'));
 }
 
 // One <CREDIT_LIABILITY> / <LIABILITY> node → a tradeline object.
@@ -189,8 +217,8 @@ function liabilityFrom(l) {
   };
 }
 
-function parseLiabilities(cr) {
-  return liabilityNodes(cr).map(liabilityFrom);
+function parseLiabilities(scope) {
+  return liabilityNodes(scope).map(liabilityFrom);
 }
 
 // A credit inquiry's HARD/SOFT nature. A HARD inquiry (a full pull to seek new
@@ -243,8 +271,8 @@ function inquiryFrom(q) {
   };
 }
 
-function parseInquiries(cr) {
-  return X.allDeep(cr, 'CREDIT_INQUIRY').map(inquiryFrom);
+function parseInquiries(scope) {
+  return deep(scope, 'CREDIT_INQUIRY').map(inquiryFrom);
 }
 
 function publicRecordFrom(p) {
@@ -257,8 +285,8 @@ function publicRecordFrom(p) {
   };
 }
 
-function parsePublicRecords(cr) {
-  return X.allDeep(cr, 'CREDIT_PUBLIC_RECORD').map(publicRecordFrom);
+function parsePublicRecords(scope) {
+  return deep(scope, 'CREDIT_PUBLIC_RECORD').map(publicRecordFrom);
 }
 
 // The identity block for ONE borrower. `b` is the BORROWER node (MISMO 2.x) or the
@@ -304,9 +332,11 @@ function identityFrom(b) {
  * slice flagged `sharedAcrossBorrowers`, while a shared SCORE is never attributed
  * to anyone — an unlabelled score could price the wrong borrower's deal.
  */
-function parentMap(root) {
+function parentMap(scope) {
   const parents = new Map();
-  (function walk(n) { for (const c of n.children) { parents.set(c, n); walk(c); } })(root);
+  const roots = Array.isArray(scope) ? scope : [scope];
+  const walk = (n) => { for (const c of n.children) { parents.set(c, n); walk(c); } };
+  for (const r of roots) if (r) walk(r);
   return parents;
 }
 
@@ -342,10 +372,10 @@ function ownerIdsOf(node) {
 }
 
 // label → the labels it is related to, from MISMO 3.x RELATIONSHIP arcs (both ways).
-function relationshipMap(cr) {
+function relationshipMap(scope) {
   const map = new Map();
   const add = (a, b) => { if (!map.has(a)) map.set(a, new Set()); map.get(a).add(b); };
-  for (const rel of X.allDeep(cr, 'RELATIONSHIP')) {
+  for (const rel of deep(scope, 'RELATIONSHIP')) {
     const from = X.attr(rel, 'from');
     const to = X.attr(rel, 'to');
     if (!from || !to) continue;
@@ -395,10 +425,10 @@ function samePerson(a, b) {
  * Returns fewer than two shells for an ordinary single-borrower report, and the
  * single-borrower path then stays byte-for-byte what it has always been.
  */
-function borrowerShells(cr, parents) {
+function borrowerShells(scope, parents) {
   const shells = [];
   const roots = new Set();
-  for (const b of X.allDeep(cr, 'BORROWER').concat(X.allDeep(cr, 'CREDIT_BORROWER'))) {
+  for (const b of deep(scope, 'BORROWER').concat(deep(scope, 'CREDIT_BORROWER'))) {
     const anc = ancestorsOf(b, parents);
     // MISMO 3.x keeps the NAME/SSN on the PARTY that wraps the borrower role, so the
     // party (when there is one) is the segment root; 2.x uses the BORROWER itself.
@@ -439,6 +469,60 @@ function borrowerShells(cr, parents) {
   return shells;
 }
 
+/**
+ * The deal-level `PARTIES` block is MISMO's authoritative statement of WHO the report
+ * covers. A borrower record nested inside a `CREDIT_FILE` is one bureau's copy of one
+ * of those people, carrying that bureau's spelling of the name — which is very often a
+ * maiden or alias surname (the co-borrower filed with Equifax as "Michelle Katz" and
+ * with the other two as "Michelle Bleier", owner-reported 2026-08-21). Read as its own
+ * person, such a copy invents a borrower who owns nothing and pushes a phantom name
+ * onto the screen.
+ *
+ * So when the document names deal-level parties, THEY are the roster. Every bureau
+ * copy is folded into the party it resolves to — by SSN, then by name, then by a
+ * RELATIONSHIP arc, and finally "there is only one person on this report". A copy that
+ * resolves to nobody is dropped from the roster rather than promoted to a borrower;
+ * anything sitting inside it is then owned by no segment, which is the module's
+ * existing fail-closed rule (an unattributable score is never given to anyone).
+ */
+function foldBureauCopies(shells, rel) {
+  const deal = shells.filter((s) => s.deal);
+  if (!deal.length || deal.length === shells.length) return shells;
+  const arcLinked = (from, to) => {
+    for (const id of from.ids) {
+      const linked = rel.get(id);
+      if (linked && Array.from(to.ids).some((x) => linked.has(x))) return true;
+    }
+    return false;
+  };
+  const ssnOf = (sh) => (sh.identity && sh.identity.ssnLast4) || null;
+  // Only an SSN contradicts. A different NAME is precisely the case this fold exists
+  // for (the alias surname on one bureau's file), so it must never block a fold.
+  const contradicts = (party, copy) => {
+    const a = ssnOf(party); const b = ssnOf(copy);
+    return !!(a && b && String(a) !== String(b));
+  };
+  const orphans = [];
+  for (const copy of shells) {
+    if (copy.deal) continue;
+    const host = deal.find((d) => samePerson(d, copy))
+      || deal.find((d) => arcLinked(copy, d))
+      || (deal.length === 1 && !contradicts(deal[0], copy) ? deal[0] : null);
+    if (!host) {
+      // Kept as its own borrower ONLY when the copy carries an SSN that belongs to
+      // none of the deal parties — that is proof of a different human. Without that
+      // proof it is dropped from the roster rather than promoted to a phantom.
+      const s4 = ssnOf(copy);
+      if (s4 && !deal.some((d) => String(ssnOf(d)) === String(s4))) orphans.push(copy);
+      continue;
+    }
+    copy.ids.forEach((id) => host.ids.add(id));
+    copy.nodes.forEach((n) => host.nodes.add(n));
+    if (!host.printPosition && copy.printPosition) host.printPosition = copy.printPosition;
+  }
+  return deal.concat(orphans);
+}
+
 // Which segments own this node — [] when nothing links it (shared/joint).
 function ownersOf(node, shells, rel) {
   const inside = [];
@@ -463,7 +547,7 @@ function ownersOf(node, shells, rel) {
 }
 
 // Split every section across the borrower shells. Items nobody claims are shared.
-function splitSections(cr, shells, rel) {
+function splitSections(scope, shells, rel) {
   const per = shells.map(() => ({ scores: [], liabilities: [], inquiries: [], publicRecords: [] }));
   const shared = { scores: [], liabilities: [], inquiries: [], publicRecords: [] };
   const spread = (nodes, map, key) => {
@@ -475,10 +559,10 @@ function splitSections(cr, shells, rel) {
       for (const i of owners) per[i][key].push(item);
     }
   };
-  spread(X.allDeep(cr, 'CREDIT_SCORE'), scoreFrom, 'scores');
-  spread(liabilityNodes(cr), liabilityFrom, 'liabilities');
-  spread(X.allDeep(cr, 'CREDIT_INQUIRY'), inquiryFrom, 'inquiries');
-  spread(X.allDeep(cr, 'CREDIT_PUBLIC_RECORD'), publicRecordFrom, 'publicRecords');
+  spread(deep(scope, 'CREDIT_SCORE'), scoreFrom, 'scores');
+  spread(liabilityNodes(scope), liabilityFrom, 'liabilities');
+  spread(deep(scope, 'CREDIT_INQUIRY'), inquiryFrom, 'inquiries');
+  spread(deep(scope, 'CREDIT_PUBLIC_RECORD'), publicRecordFrom, 'publicRecords');
   return { per, shared };
 }
 
@@ -489,16 +573,21 @@ function splitSections(cr, shells, rel) {
  *   (the ordinary single-borrower path, untouched). `splittable` is false when it
  *   names several people but labels NOBODY's scores — see the caller.
  */
-function borrowerSegments(cr) {
-  const parents = parentMap(cr);
-  const shells = borrowerShells(cr, parents);
+function borrowerSegments(content, doc) {
+  // Identity (who the borrowers are) and the arcs that bind an item to a person are
+  // read from the WHOLE document — MISMO 3.4 keeps both outside <CREDIT_RESPONSE>.
+  // The items themselves are still read only from the credit content.
+  const idScope = doc || content;
+  const parents = parentMap(idScope);
+  const rel = relationshipMap(idScope);
+  const shells = foldBureauCopies(borrowerShells(idScope, parents), rel);
   // The canonical record of the (first) person on the report — the deal-level party
   // when there is one. MISMO 3.x keeps the name/SSN there rather than on the
   // BORROWER element, so this is the only place a 3.x identity can be read from.
   const primary = shells.find((s) => s.deal) || shells[0];
   const primaryIdentity = primary ? primary.identity : null;
   if (shells.length < 2) return { segments: [], unattributedScores: [], splittable: false, primaryIdentity };
-  const { per, shared } = splitSections(cr, shells, relationshipMap(cr));
+  const { per, shared } = splitSections(content, shells, rel);
   const mark = (arr) => arr.map((x) => ({ ...x, sharedAcrossBorrowers: true }));
 
   const segments = shells.map((s, i) => {
@@ -651,31 +740,38 @@ function parseCreditXml(xml) {
   let root;
   try { root = X.parse(xml); } catch (e) { base.parseError = `xml parse failed: ${(e && e.message) || e}`; return base; }
 
-  const cr = X.firstDeep(root, 'CREDIT_RESPONSE') || root;
-  const { segments, unattributedScores, splittable, primaryIdentity } = borrowerSegments(cr);
+  // A document may carry SEVERAL <CREDIT_RESPONSE> blocks (a vendor returning one per
+  // borrower); reading only the first silently dropped the second borrower's whole
+  // report. The credit CONTENT is all of them; the IDENTITY scope is the whole
+  // document, because MISMO 3.4 puts the borrower PARTIES and the RELATIONSHIP arcs
+  // at DEAL level, outside the credit response — see the two-scope note above.
+  const responses = X.allDeep(root, 'CREDIT_RESPONSE');
+  const content = responses.length ? responses : [root];
+  const cr = responses[0] || root;   // the response's own header fields (id, date, version)
+  const { segments, unattributedScores, splittable, primaryIdentity } = borrowerSegments(content, root);
   // A document covering several people is only read PER BORROWER when their scores
   // are actually labelled. Unlabelled, it falls back to the whole-document read (the
   // headline score is never blanked by segmentation) and says so via `mergedAmbiguous`
   // so the importer can tell staff to import each borrower's report separately.
   const merged = segments.length > 1 && splittable;
   const ambiguous = segments.length > 1 && !splittable;
-  const publicRecords = parsePublicRecords(cr);
-  const inquiries = parseInquiries(cr);
-  const liabilities = parseLiabilities(cr);
+  const publicRecords = parsePublicRecords(content);
+  const inquiries = parseInquiries(content);
+  const liabilities = parseLiabilities(content);
   // On a MERGED document the per-bureau de-dupe runs INSIDE each borrower (a
   // document-wide de-dupe would drop the second borrower's three scores), and the
   // headline middle score is the FIRST borrower's — never a median across people.
   // The importer stores a per-borrower SLICE for each of them anyway.
   const scores = merged
     ? segments.flatMap((s) => s.scores).concat(unattributedScores)
-    : parseScores(cr);
+    : parseScores(content);
 
   const bureausReturned = Array.from(new Set(
     scores.map((s) => s.bureau).filter(Boolean)
       .concat(liabilities.flatMap((l) => l.bureaus))));
 
   const noData = scores.length === 0 && liabilities.length === 0;
-  const flatIdentity = identityFrom(X.firstDeep(cr, 'BORROWER') || X.firstDeep(cr, 'CREDIT_BORROWER'));
+  const flatIdentity = identityFrom(X.firstDeep(root, 'BORROWER') || X.firstDeep(root, 'CREDIT_BORROWER'));
 
   return {
     ...base,

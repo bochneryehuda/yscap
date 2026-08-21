@@ -35,7 +35,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 9 | Plans & permits → TPR, SharePoint **and Sitewire** | Ground-up conditions | ☐ |
 | 10 | GC information condition: informational fields + GC PDF | Conditions | ☐ |
 | 11 | Resend Draw form must work when unseen/expired | Draws | ☐ |
-| 12 | Credit report import reads the WRONG scores (2 borrowers) | Credit | ☐ |
+| 12 | Credit report import reads the WRONG scores (2 borrowers) | Credit | ☑ |
 | 13 | Condition center: external notes for borrowers + TPOs | Conditions | ☐ |
 | 14 | Conditions: add a document slot (not a borrower request) | Conditions | ☐ |
 | 15 | Borrower profile reachable from inside a file | Navigation | ☐ |
