@@ -863,6 +863,16 @@ export const api = {
   staffAppEmails:   (appId, scope) => req('GET', `/api/staff/applications/${appId}/emails` + (scope ? `?scope=${encodeURIComponent(scope)}` : '')),   // per-file email history (scope='draw' → draw inbox)
   staffAppEmailMsg: (appId, msgId) => req('GET', `/api/staff/applications/${appId}/emails/${msgId}`),   // full body of one message
   staffAppEmailReply: (appId, body) => req('POST', `/api/staff/applications/${appId}/emails/reply`, body),
+  /* THE TRACK-RECORD EXPORT (owner item 7, 2026-08-21). `scope` is verified | all |
+     unverified — the plain button sends none and gets the verified-only report, which is what
+     the owner called "regular"; the other two are the extra options. */
+  staffTrackRecordExport: async (borrowerId, { scope, format } = {}) => {
+    const q = new URLSearchParams();
+    if (scope) q.set('scope', scope);
+    if (format) q.set('format', format);
+    const { blob, filename } = await download(`/api/staff/borrowers/${borrowerId}/track-record/export?${q.toString()}`);
+    saveBlob(blob, filename);
+  },
   staffAppReplyRecipients: (appId) => req('GET', `/api/staff/applications/${appId}/emails/reply-recipients`),
   staffEmails:      (params) => req('GET', '/api/staff/emails' + qs(params)),            // global mailbox (all visible files)
   staffEmailMsg:    (msgId) => req('GET', `/api/staff/emails/${msgId}`),                 // full body from the global mailbox

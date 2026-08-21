@@ -21,6 +21,7 @@ import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import ExperienceHeader from '../components/track-record/ExperienceHeader.jsx';
 import RecordLedger from '../components/track-record/RecordLedger.jsx';
+import ExportRecord from '../components/track-record/ExportRecord.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import DocumentsPanel from '../components/DocumentsPanel.jsx';
 import EmailCenter from '../components/EmailCenter.jsx';
@@ -2899,6 +2900,12 @@ function StaffTrackRecordPanel({ app, role }) {
       <ExperienceHeader app={app} experience={todo && todo.experience}
         findingsOpen={((todo && todo.findings) || []).length}
         multiBorrower={people.length > 1} />
+      {/* HAND SOMEBODY THE RECORD (owner-directed 2026-08-21, item 7): the
+          regular export is VERIFIED only; "Export all" and "Unverified only"
+          sit behind the same control and stamp every unverified line NOT
+          VERIFIED. The SAME component the borrower profile and the full-screen
+          workspace mount, so the three can never offer different exports. */}
+      <ExportRecord borrowerId={borrowerId} className="tr-export-file" />
       {/* THE RECORD, AS A LEDGER — grouped the way the tool has always grouped
           it, with the REO band carrying every not-counting line AND its reason.
           Every line OPENS IN PLACE into the shared <LineDetail> (the same

@@ -677,97 +677,19 @@ async function buildTprExport(appId) {
   // (exit = lease-up / refinance), the same two-section shape the Track Record
   // TOOL shows — so the packaged Excel + PDF read like our own tracker, not a
   // flat grid. A row with no deal_type is bucketed by the data it carries.
-  const num = (v) => (v == null || v === '') ? null : Number(v);
-  const monthsBetween = (a, b) => {
-    if (!a || !b) return '';
-    const d1 = new Date(a), d2 = new Date(b);
-    if (isNaN(d1) || isNaN(d2)) return '';
-    const m = Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24 * 30.44));
-    return m >= 0 ? m : '';
-  };
-  const isHoldType = (r) => {
-    const t = String(r.deal_type || '').toLowerCase();
-    if (/rent|hold/.test(t)) return true;
-    if (t) return false;   // flip / bridge / ground-up all exit by sale
-    return !!(r.rent_amount || r.rent_date || r.refi_amount || r.refi_date);   // infer from data
-  };
-  const flipCols = [
-    { header: 'Property', key: 'property', w: 3, align: 'left' },
-    { header: 'Deal type', key: 'dealType', w: 1.3 },
-    { header: 'Purchase price', key: 'purchase', w: 1.3, money: true, align: 'right', sum: true },
-    { header: 'Purchase date', key: 'purchaseDate', w: 1.1, align: 'center' },
-    { header: 'Rehab budget', key: 'rehab', w: 1.2, money: true, align: 'right', sum: true },
-    { header: 'Sale price', key: 'sale', w: 1.3, money: true, align: 'right', sum: true },
-    { header: 'Sale date', key: 'saleDate', w: 1.1, align: 'center' },
-    { header: 'Hold (mo)', key: 'holdMo', w: 0.8, align: 'center' },
-    { header: 'Gross profit', key: 'profit', w: 1.2, money: true, align: 'right', sum: true },
-    { header: 'Review status', key: 'status', w: 1.5, align: 'center' },
-    { header: 'Docs', key: 'docs', w: 0.7, align: 'center' },
-    { header: 'Recent (3yr)', key: 'counts', w: 0.9, align: 'center' },
-  ];
-  const holdCols = [
-    { header: 'Property', key: 'property', w: 3, align: 'left' },
-    { header: 'Deal type', key: 'dealType', w: 1.3 },
-    { header: 'Purchase price', key: 'purchase', w: 1.3, money: true, align: 'right', sum: true },
-    { header: 'Purchase date', key: 'purchaseDate', w: 1.1, align: 'center' },
-    { header: 'Rehab budget', key: 'rehab', w: 1.2, money: true, align: 'right', sum: true },
-    { header: 'Monthly rent', key: 'rent', w: 1.2, money: true, align: 'right', sum: true },
-    { header: 'Rented date', key: 'rentDate', w: 1.1, align: 'center' },
-    { header: 'Refi amount', key: 'refi', w: 1.2, money: true, align: 'right', sum: true },
-    { header: 'Refi date', key: 'refiDate', w: 1.0, align: 'center' },
-    { header: 'Current value', key: 'currentValue', w: 1.3, money: true, align: 'right', sum: true },
-    { header: 'Review status', key: 'status', w: 1.5, align: 'center' },
-    { header: 'Docs', key: 'docs', w: 0.7, align: 'center' },
-    { header: 'Recent (3yr)', key: 'counts', w: 0.9, align: 'center' },
-  ];
+  // The two sections — Fix & Flip (exit = sale) and Fix & Hold / Rental (exit = lease-up /
+  // refinance), the same shape the Track Record TOOL shows. Built by the ONE shared builder
+  // (owner-directed 2026-08-21, item 7) so the staff export and this investor package can
+  // never disagree about the same borrower's record.
+  const trSections = require('./track-record/export-build').buildTrackRecordSections(records, docsByTr);
+  // The Excel + PDF writers. Required HERE because the block that used to declare this was the
+  // one lifted into the shared builder — and the two references below would otherwise be an
+  // undeclared identifier, which throws only when a package is actually built (caught by
+  // scripts/test-tpr-export.js, not by any load-time check).
   const trExport = require('./track-record-export');
-  // The records-stamp column joins BOTH sections only when at least one line is
-  // records-backed — an all-blank column on the investor package is noise, and
-  // an unstamped back-book export stays byte-identical. Wording is the ONE
-  // definition in track-record/records-stamp.js ("Verified to Elementix").
-  const RSTAMP = require('./track-record/records-stamp');
-  if (records.some((r) => r.records_stamp)) {
-    const stampCol = { header: 'Public records', key: 'records', w: 1.8, align: 'left' };
-    flipCols.push(stampCol); holdCols.push(stampCol);
-  }
-  const flipRows = [], holdRows = [];
-  for (const r of records) {
-    const { exit, counts } = exitInfo(r);
-    // The REVIEW STATUS + whether documentation is attached (owner-directed
-    // 2026-08-05): the export must say clearly which deals are verified, which
-    // have documentation, which are pending review, and which have documentation
-    // but are not yet verified — never "everything is verified".
-    const hasDocs = (docsByTr[r.id] || []).length > 0;
-    const statusKey = trExport.trackRecordReviewStatus({ is_verified: r.is_verified, entered_by_kind: r.entered_by_kind, hasDocs });
-    const base = {
-      property: addrText(r.property_address) || '', dealType: dealLabel(r.deal_type),
-      purchase: num(r.purchase_price), rehab: num(r.rehab_amount),
-      purchaseDate: dateStr(r.purchase_date),
-      status: trExport.REVIEW_STATUS[statusKey].label,
-      docs: hasDocs ? 'Attached' : '—',
-      records: RSTAMP.exportCellText(r.records_stamp, r.records_stamp_at),
-      // The PDF renderer re-derives its own cell from these (its font cannot
-      // carry the glyphs), so the raw values must ride the row.
-      __recordsStampAt: r.records_stamp_at || null,
-      counts: counts ? 'Yes' : (exit ? 'No' : ''),
-      __verified: !!r.is_verified, __status: statusKey, __hasDocs: hasDocs,
-      __recordsStamp: r.records_stamp || null,
-    };
-    if (isHoldType(r)) {
-      holdRows.push({ ...base, rent: num(r.rent_amount), rentDate: dateStr(r.rent_date),
-        refi: num(r.refi_amount), refiDate: dateStr(r.refi_date), currentValue: num(r.current_value) });
-    } else {
-      const sale = num(r.sale_price);
-      flipRows.push({ ...base, sale, saleDate: dateStr(r.sale_date),
-        holdMo: monthsBetween(r.purchase_date, r.sale_date),
-        profit: sale != null ? sale - (num(r.purchase_price) || 0) - (num(r.rehab_amount) || 0) : null });
-    }
-  }
-  const trSections = [
-    { title: 'FIX & FLIP EXPERIENCE   (exit = sale)', columns: flipCols, rows: flipRows },
-    { title: 'FIX & HOLD / RENTAL EXPERIENCE   (exit = lease-up / refinance)', columns: holdCols, rows: holdRows },
-  ];
-  const trMeta = { borrowerName, generatedDate: dateStr(generatedAt) };
+  // The investor package is VERIFIED-ONLY (owner-directed 2026-08-12) — its SELECT above says
+  // so, and naming the scope here makes the document say so on its face too.
+  const trMeta = { borrowerName, generatedDate: dateStr(generatedAt), scope: 'verified' };
   // Nicer, sectioned Excel (reuses the proven style-free writer — no corruption risk).
   files.push({ name: `${REO}/Track Record.xlsx`, data: buildXlsx(trExport.trackRecordAoa(trSections, trMeta), 'Track Record') });
   // Branded PDF report ("the PDF export from our track record section"). Best-effort:
@@ -898,4 +820,8 @@ module.exports = {
   selectTprPending, selectTrackRecordPending,
   // exported for unit tests
   categoryFor, keywordCategory, integrityIssue, cleanFileName, isHtmlExport,
+  // The formatting helpers the shared section builder reads — exported so there is ONE
+  // definition of how a property, a deal type, a date and an exit are rendered, rather than
+  // a second copy in the staff export.
+  addrText, dealLabel, exitInfo, dateStr,
 };

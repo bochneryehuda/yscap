@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth.jsx';
 import { canDeleteDoc } from '../lib/condition-actions.js';
 import LineDetail from '../components/track-record/LineDetail.jsx';
 import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
+import ExportRecord from '../components/track-record/ExportRecord.jsx';
 
 /* THE TRACK-RECORD WORKSPACE — ONE screen: the queue of every borrower with
    unfinished track-record work on the left, and one line's whole story on the
@@ -154,6 +155,11 @@ export default function StaffTrackRecordWorkspace() {
                 <div className="spacer" />
                 <Link className="btn ghost small" to={`/internal/borrowers/${g.borrowerId}`}>Profile</Link>
               </div>
+              {/* Hand this borrower's record to somebody (item 7) — the regular
+                  export is verified only; "Export all" / "Unverified only" are
+                  behind the same control and stamp every unverified line. The
+                  SAME component the loan file and the profile mount. */}
+              <ExportRecord borrowerId={g.borrowerId} className="tr-export-queue" />
               {g.lines.map((l) => {
                 const done = l.readiness && l.readiness.ready;
                 return (

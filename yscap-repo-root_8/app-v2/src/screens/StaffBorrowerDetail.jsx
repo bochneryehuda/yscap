@@ -15,6 +15,7 @@ import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
 import ExperienceHeader from '../components/track-record/ExperienceHeader.jsx';
 import RecordLedger from '../components/track-record/RecordLedger.jsx';
+import ExportRecord from '../components/track-record/ExportRecord.jsx';
 import { EntityRecordsStamp } from '../components/track-record/RecordsStamp.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -633,6 +634,8 @@ function TrackRecord({ id, onOpenEntities }) {
         </div>
       )}
       <ExperienceHeader lens="borrower" experience={view ? { verified: view.verified } : null} findingsOpen={0} />
+      {/* The same export control the loan file and the workspace mount (item 7). */}
+      <ExportRecord borrowerId={id} className="tr-export-profile" />
       {rows.length === 0
         ? <div className="panel"><Empty t="No track-record entries." /></div>
         : (

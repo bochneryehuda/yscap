@@ -142,10 +142,19 @@ async function maybeOrderFromSitewire(appId, { drawId, status, platform, method,
  * TrustPoint, and manually ordering a second physical inspection onto one of those would
  * put two inspectors on one draw.
  */
-async function orderManually(appId, { sitewireDrawId = null, portalRequestId = null, staffId = null } = {}) {
+async function orderManually(appId, { sitewireDrawId = null, portalRequestId = null, staffId = null,
+  override = false, overrideReason = null } = {}) {
   const ctx = await fileRouting(appId);
-  if (!eligibility.isTrinityFile(ctx)) {
-    return { blocked: true, message: `This file's inspections are not Trinity's — ${eligibility.reasonNotTrinity(ctx)}.` };
+  /* ONE rule, in `eligibility.planManualOrder` — the route and this door read the same answer, so
+     what the screen says a coordinator may do and what actually happens can never disagree. */
+  const plan = eligibility.planManualOrder(ctx, { override, overrideReason });
+  if (!plan.ok) {
+    if (plan.needsReason) {
+      return { blocked: true, needsReason: true, warning: plan.warning,
+        message: 'Say why this inspection is being ordered against the file’s own setup — it is recorded on the file.' };
+    }
+    return { blocked: true, mayOverride: plan.mayOverride, warning: plan.warning,
+      message: `This file's inspections are not Trinity's — ${plan.blockedReason}.` };
   }
 
   let orderRowId = null;
@@ -216,8 +225,23 @@ async function orderManually(appId, { sitewireDrawId = null, portalRequestId = n
     return { blocked: true, message: 'Pick the draw this inspection is for.' };
   }
 
+  /* THE OVERRIDE IS STAMPED ON THE ROW BEFORE THE ORDER GOES OUT (db/607). Before, because the
+     placement is what spends the money and dispatches a person: if it goes out, the file must
+     already say who decided that and why. Best-effort — a stamp that cannot be written must never
+     stop an order a coordinator has already confirmed, and the audit line below is the second
+     record of the same act. */
+  if (plan.override) {
+    await db.query(
+      `UPDATE trinity_inspection_orders
+          SET manual_override_reason = $2, manual_override_by = $3, manual_override_at = now()
+        WHERE id = $1 AND manual_override_reason IS NULL`,
+      [orderRowId, plan.reason, staffId || null]).catch((e) => {
+      console.warn('[trinity] could not stamp the manual override:', e && e.message);
+    });
+  }
+
   const placed = await require('./order').placeOrder(appId, orderRowId, { staffId });
-  return { orderRowId, ...placed };
+  return { orderRowId, override: plan.override, warning: plan.warning, ...placed };
 }
 
 /** The file's routing, in the shape `eligibility` reads, failing CLOSED if we cannot look. */
@@ -240,13 +264,23 @@ async function fileRouting(appId) {
 async function orderOptions(appId) {
   const ctx = await fileRouting(appId);
   const eligible = eligibility.isTrinityFile(ctx);
+  /* THE SECTION IS AVAILABLE ON EVERY FILE (owner-directed 2026-08-21, item 25: *"it should be able
+     to be manually placed on any file"* and *"that section should also be available when it's on
+     auto"*). So this answers with the file's real state — whose inspections these are, whether a
+     human may overrule that, and what they would be acknowledging — rather than going blank the
+     moment the file is not Trinity's. The draw list is still built either way: a coordinator
+     overruling the routing needs something to order AGAINST. */
+  const plan = eligibility.planManualOrder(ctx, {});
   const out = {
     eligible,
     reason: eligible ? null : eligibility.reasonNotTrinity(ctx),
+    mayOverride: plan.mayOverride && !eligible,
+    overrideWarning: plan.warning,
+    platform: (ctx && ctx.platform) || null,
+    method: (ctx && ctx.method) || null,
     draws: [],
     requests: [],
   };
-  if (!eligible) return out;
 
   const statuses = Array.from(SUBMITTED_STATUSES);
   // THE AMOUNT SHOWN IS THE ONE THE INSPECTOR WILL SEE. `sitewire_draws.total_requested_cents`

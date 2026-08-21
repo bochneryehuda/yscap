@@ -28,9 +28,9 @@ two-audit-agent gate in `CLAUDE.md`.
 | 2 | Investor delivery contacts: Fidelis / EMCAP prefill + CC | Investor delivery | ☑ |
 | 3 | Data tape metrics: add Total LTC, remove Effective LTV | Investor delivery | ☑ |
 | 4 | Refresh loses your place — deep-link state everywhere | Front end, global | ◐ |
-| 5 | Email replies: manual attach + drag-and-drop | Email surfaces | ☐ |
+| 5 | Email replies: manual attach + drag-and-drop | Email surfaces | ☑ |
 | 6 | Drag-and-drop upload everywhere it's missing | Uploads, global | ◐ |
-| 7 | Export all / export unverified with a NOT-VERIFIED stamp | Exports | ☐ |
+| 7 | Export all / export unverified with a NOT-VERIFIED stamp | Exports | ☑ |
 | 8 | Feasibility report + GC contact into TPR export & SharePoint | Ground-up conditions | ☑ |
 | 9 | Plans & permits → TPR, SharePoint **and Sitewire** | Ground-up conditions | ☑ |
 | 10 | GC information condition: informational fields + GC PDF | Conditions | ☑ |
@@ -42,13 +42,13 @@ two-audit-agent gate in `CLAUDE.md`.
 | 16 | Overview hover button missing on full screens | Navigation | ☑ |
 | 17 | Scope of work Excel import: drag-and-drop | Uploads | ☑ |
 | 18 | ClickUp: Joshua Freidlander's files land in Lead Capture | ClickUp | ◐ |
-| 19 | ClickUp: assigning an officer moves the task to their folder | ClickUp | ☐ |
+| 19 | ClickUp: assigning an officer moves the task to their folder | ClickUp | ☑ |
 | 20 | Rehab Budget PDF: value-add / narrative overlap | PDF | ☑ |
-| 21 | Funded date auto-read from Encompass (`CX.FUNDEDDATE`) | Encompass | ☐ |
+| 21 | Funded date auto-read from Encompass (`CX.FUNDEDDATE`) | Encompass | ☑ |
 | 22 | Experience-count condition stuck at the old requirement | Conditions | ◐ |
 | 23 | DocuSign: processor + officer always CC'd as viewers | DocuSign | ☑ |
-| 24 | Marketing term-sheet leads: one session, contact info, officer link | Leads | ☐ |
-| 25 | Trinity Manual section in the Draw Coordinator | Trinity | ☐ |
+| 24 | Marketing term-sheet leads: one session, contact info, officer link | Leads | ☑ |
+| 25 | Trinity Manual section in the Draw Coordinator | Trinity | ☑ |
 
 ---
 
@@ -278,6 +278,41 @@ including one dragged straight out of Outlook.
 
 **Context:** this is the track-record export (verified vs unverified experiences). Confirm against the
 export surface before building.
+
+**SHIPPED ☑**
+
+**The regular export did not move.** Press Export and you get exactly what you got before: the verified
+projects only, no stamp, no banner, in Excel or PDF. That is now a test rather than a promise — an export
+of a borrower whose record ALSO holds unverified lines is checked, line by line, for having none of the
+new wording anywhere on it.
+
+**Two more choices sit beside it.** "Export all" (everything on the record) and "Unverified only" (just the
+ones still to be checked), each in Excel and PDF. Both carry a warning line across the top saying what is
+in the report, and — the part that matters — **every unverified project carries "NOT VERIFIED — still needs
+to go through verification" ON ITS OWN ROW**, not only in a note at the top that a reader scrolling to page
+three has long since passed.
+
+**Where the buttons are.** One control, on all three places the record is shown: inside a loan file, on the
+borrower's own profile, and on the full-screen track-record workspace. It is one piece of code mounted three
+times, so a change to it changes all three at once and they can never come to offer different exports of one
+borrower's record.
+
+**One thing you should know about the wording.** It is written down in exactly ONE place. The Excel writer,
+the PDF writer, the investor package and the button on the screen all read it from there — and a test reads
+all four files and fails the build the moment any of them starts saying it in its own words. That is what
+stops a PDF headed "verified only" from one day carrying a line nobody verified.
+
+**AND IT FOUND A LIVE BUG THAT HAD NOTHING TO DO WITH THIS.** The first real press of the new button
+answered "server error". The reason: the file was named `Ann O'Brien — Track Record (Verified).xlsx`, and
+the dash in that name is a character the web's download header does not allow. Nothing was wrong with the
+report — the download simply could not be handed over, every time, for everybody.
+
+That same trap was sitting on **nine other download buttons** — the investor package, the data tapes, the
+pipeline spreadsheet, the MISMO file, the CorrFirst sheet, the draw reports and every document download. Any
+of them would have done the same thing for a borrower whose name carries a curly apostrophe — which is what
+Word, Outlook and an iPhone type automatically for O'Brien — or a name written in Hebrew. Nobody had hit it
+yet; it was waiting. All ten now go through one shared piece of code that keeps the header legal AND still
+hands the reader the real filename, with a test that proves it by asking a real web server to accept it.
 
 ---
 
@@ -993,6 +1028,38 @@ Rules:
    sheet details**, and the lead is added to **his** book — and the email must **say explicitly that it
    came from his link**.
 
+**SHIPPED ☑**
+
+**One visit is now one lead.** Somebody who prices three deals and exports the PDF, the Excel and the
+proof-of-funds used to arrive in an officer's book as several separate leads. Now the first thing they
+do creates the lead and everything else in that visit lands **on that same one** — the extra term
+sheets are still saved onto it and still show on its timeline, so nothing is lost; what stops is the
+pile of duplicate rows and the pile of duplicate emails. One visit also keeps **one** officer, which
+was already true and stays true.
+
+**A name is no longer "contact information".** You said it plainly — a phone number or an email. So
+somebody who types a name and nothing else is no longer a lead and no longer goes to an officer. The
+sales inbox is still told (with the deal figures), and the note now says exactly what happened: *"they
+gave a name but no email and no phone, so there is nobody to follow up with."*
+
+**Somebody who leaves their number later is not a second lead.** They generate a term sheet with
+nothing on it, then come back in the same visit and leave a phone number — the very same row wakes up,
+joins the queue, gets its officer, and only THEN does anybody get an email about it. That is the one
+moment worth telling somebody about, and it is the only one that sends.
+
+**Your officers' own links say so in the email.** When a visitor comes in on an officer's personal link
+the email now carries a line saying *"This came from YOUR personal link (?lo=…) — the visitor arrived on
+your own branded page, so this lead is yours and was not put into the rotation"*, on top of the full
+term-sheet details he already gets.
+
+**AND IT UNCOVERED A BUG THAT HAS BEEN LIVE FOR TWO WEEKS.** Every term sheet generated by somebody who
+left NO name and no details has been failing outright since 7 August: the visitor's page got an error,
+no lead was recorded and the sales desk was never emailed. It is the same small mistake as one we
+already fixed on 11 August, one value later — the database was never told to allow the label the system
+uses for "nobody was named". So the whole "park a nameless export where we can still see it" idea has
+never once worked. Fixed, and there is now a check that fails the build if this class ever appears a
+third time.
+
 ---
 
 ## 25. Trinity Manual — a full manual control section in the Draw Coordinator
@@ -1037,6 +1104,40 @@ Rules:
   order **physical** even on Bluelake files (annual), and the option to order a **physical manually** on
   virtual files.
 - **Nicely designed, stunning CSS, communication next level.** Then **start using it**.
+
+**SHIPPED ☑ — and a lot of it was already there, which is worth saying plainly.**
+
+**What already existed** (built 14–16 August) and is unchanged: the whole Trinity section on the draw
+screen — where the inspection is up to in Trinity's own words, a two-way message thread with their
+team, the progress timeline (ordered → inspector assigned → inspected → report in), the line-by-line
+result, their report, our own branded report, their invoice, the photos, rush, and asking them to
+cancel. Nothing there needed rebuilding, so it was not rebuilt.
+
+**What was missing, and is the actual work:**
+
+**The section used to vanish on exactly the files you asked for.** On a Blue Lake file, or one set up
+for virtual inspections, the whole Trinity area simply was not on the screen — which is the file a
+coordinator needs it on when the usual inspector cannot get in. It is now on **every** file, on
+autopilot or not, named **Trinity Manual**.
+
+**You can now order one on any file, and the file records why.** On a file that does not order Trinity
+inspections by itself, the button asks you to type a reason first ("the virtual inspector can't get
+access this month") and warns you, in plain words, exactly what you are doing — on a virtual file that
+Sitewire is already inspecting it and this sends a second, physical inspector as well; on a Blue Lake
+file that the note buyer runs their own. Then it orders it, and the file keeps who decided, when, and
+why. **Nothing automatic changed**: a virtual file still gets its virtual inspection and nothing else,
+a Blue Lake file is still theirs. The only new thing is a person deliberately deciding otherwise, and
+the file saying so.
+
+**The product is now checked against Trinity's own list, on the screen.** The person about to press
+Order sees the real product name we are ordering and why it is that one — read live from Trinity,
+because their production account genuinely offers a different list from the test account (that exact
+mismatch was found in testing). If the product is not on the account it says so in red **before**
+anything is ordered.
+
+**One honest limitation.** Everything here is proven against Trinity's documented interface and their
+test account. Nobody has yet pressed Order on the **live production** account from this build — that is
+the "start using it" step, and it needs the production credentials in place.
 
 ---
 
@@ -1182,10 +1283,29 @@ Asked here because the owner went to sleep; each has a stated assumption so the 
    existing behaviour, unchanged by item 23. It is arguably right (it is their deal) and arguably wrong
    (an outside company on loan documents). Left exactly as it was, because which one it is, is a business
    call. Say the word either way and it is one line.
-4. **Export button (item 7).** Assuming this is the **track record** export (verified vs unverified
-   experiences). If it means a different export surface, say which and it moves.
-5. **Trinity products (item 25).** The product catalogue will be read from Trinity's live API; if their
-   API does not expose a catalogue we will need the price sheet from them.
+4. **Export button (item 7) — ANSWERED BY BUILDING IT EVERYWHERE.** It was built as the **track record**
+   export (verified vs unverified experiences) and mounted on all three places that record is shown — the
+   loan file, the borrower profile and the full-screen workspace — so "which screen did you mean" no longer
+   needs an answer. If you meant a DIFFERENT export altogether (the investor package, a data tape), say
+   which and it moves: the scope rule is one shared piece of code, so pointing another export at it is
+   small.
+4b. **A visitor on an officer's own link who leaves NO contact details (item 24) — one line, your
+   call.** Your two instructions point slightly different ways here and I have not guessed: *"only if
+   he puts in his contact information … then he should become a lead"* says no lead, while *"if
+   somebody is using the loan officers' specific link, then the loan officer should get a notification
+   … and should be added to his system as a lead"* says yes. **It ships the second way** (which is also
+   how it behaved before today): a nameless visitor on Yehuda's own link is Yehuda's lead and Yehuda is
+   emailed. Say the word and it becomes "his link, but still no lead until they leave a number" — it is
+   one line.
+5. **Trinity products (item 25) — HALF ANSWERED, and the other half is now one look at a screen.**
+   Their API DOES expose the catalogue, so PILOT now reads it live and the draw screen shows the real
+   product name we order. What it cannot tell me is whether the **"SFR drone inspection"** you named is
+   the same thing or a different product: if a product with that name is on our account, the screen
+   lists it and says it is not what we order (a drone inspection is not a draw inspection). Open the
+   Trinity section on any file and it will say what is there — then tell me which one you want ordered
+   for 1–4 units, and whether the price really does scale with the budget, and I will wire it.
+   **Still needed from them either way: the price sheet** — their API exposes the products, not the
+   prices.
 6. **Funded status vs. ClickUp (item 21) — a real one, and it is a workflow call.** PILOT now moves a file
    to **Funded** the moment Encompass shows a funded date. But the file's status is co-owned with ClickUp:
    the inbound sync writes the status from the ClickUp card on every ingest, so if the card is still on an

@@ -69,29 +69,46 @@ function recordsStampLine(sections) {
 // tpr-export.buildXlsx — the same proven, style-free writer the package already
 // uses, so there is zero chance of an "unreadable in Excel" corruption.
 function trackRecordAoa(sections, meta = {}) {
+  const SCOPE = require('./track-record/export-scope');
+  const scope = SCOPE.scopeMeta(meta.scope);
   const aoa = [];
   aoa.push(['YS CAPITAL GROUP — BORROWER TRACK RECORD']);
   aoa.push([(meta.borrowerName ? 'Borrower: ' + meta.borrowerName + '   ·   ' : '')
     + 'Generated ' + (meta.generatedDate || '') + '   ·   NMLS ID 2609746']);
+  // WHAT THIS REPORT CONTAINS, on its face (owner-directed 2026-08-21). "Why is this list
+  // shorter than the one I saw yesterday" has to be answerable from the document itself, so
+  // the scope is stated — and when the report carries anything unverified, the banner says so
+  // before the reader reaches the first row. The wording is export-scope's, never retyped.
+  aoa.push([scope.title]);
+  aoa.push([scope.note]);
+  if (scope.banner) aoa.push(['⚠ ' + scope.banner]);
   aoa.push([]);
+  const stamped = SCOPE.hasUnverified(sections);
   for (const sec of sections) {
     aoa.push([sec.title]);
-    aoa.push(sec.columns.map((c) => c.header));
+    // THE STAMP RIDES EVERY UNVERIFIED ROW, not only the summary (owner-directed 2026-08-21:
+    // "everything that is unverified should have a stamp that it's not verified yet"). A
+    // summary at the top is long gone by the time a reader is on page three. The column
+    // appears only when this export really carries an unverified line, so a verified-only
+    // report is byte-identical to what shipped before.
+    aoa.push(sec.columns.map((c) => c.header).concat(stamped ? ['Verification'] : []));
     if (!sec.rows.length) {
       aoa.push(['No deals entered in this section.']);
     } else {
       for (const row of sec.rows) {
-        aoa.push(sec.columns.map((c) => {
+        const cells = sec.columns.map((c) => {
           const v = row[c.key];
           if (c.money) return (v == null || v === '' || !isFinite(Number(v))) ? '' : Number(v);
           return v == null ? '' : String(v);
-        }));
+        });
+        if (stamped) { const st = SCOPE.rowStamp(row); cells.push(st ? st.text : ''); }
+        aoa.push(cells);
       }
       aoa.push(sec.columns.map((c, i) => {
         if (i === 0) return 'TOTALS (' + sec.rows.length + ')';
         if (c.sum) { let s = 0; for (const r of sec.rows) { const v = Number(r[c.key]); if (isFinite(v)) s += v; } return s; }
         return '';
-      }));
+      }).concat(stamped ? [''] : []));
     }
     aoa.push([]);
   }
@@ -135,7 +152,24 @@ async function buildTrackRecordPdf(sections, meta = {}) {
   page.drawText('Borrower Track Record', { x: ML, y, size: 11, font: bold, color: ink }); y -= 14;
   page.drawText((meta.borrowerName ? 'Borrower: ' + meta.borrowerName + '   ·   ' : '')
     + 'Generated ' + (meta.generatedDate || '') + '   ·   NMLS ID 2609746',
-  { x: ML, y, size: 8, font, color: muted }); y -= 18;
+  { x: ML, y, size: 8, font, color: muted }); y -= 14;
+
+  // WHAT THIS REPORT CONTAINS (owner-directed 2026-08-21). The scope on its face, and — when
+  // the report carries anything unverified — a red banner BEFORE the first row. The wording is
+  // export-scope's ONE definition, never restated here; a test reads this file and fails the
+  // moment it is.
+  const SCOPE = require('./track-record/export-scope');
+  const scope = SCOPE.scopeMeta(meta.scope);
+  const stamped = SCOPE.hasUnverified(sections);
+  const warn = rgb(0.706, 0.271, 0.235);
+  page.drawText(scope.title, { x: ML, y, size: 8, font: bold, color: ink }); y -= 11;
+  page.drawText(scope.note, { x: ML, y, size: 7.5, font, color: muted }); y -= 13;
+  if (scope.banner) {
+    // A flat block, never angled — the stamp design spec this repo already follows.
+    page.drawRectangle({ x: ML, y: y - 3, width: usableW, height: 13, color: warn });
+    page.drawText(scope.banner, { x: ML + 5, y, size: 8, font: bold, color: rgb(1, 1, 1) });
+    y -= 18;
+  } else { y -= 4; }
 
   // ---- THE VERIFICATION STAMP (owner-directed 2026-08-05): a clear, colored
   // breakdown at the top so a reader sees at a glance what is verified vs not —
@@ -173,17 +207,25 @@ async function buildTrackRecordPdf(sections, meta = {}) {
   y -= 5;
 
   for (const sec of sections) {
-    const totalW = sec.columns.reduce((a, c) => a + (c.w || 1), 0) || 1;
+    // THE PER-ROW VERIFICATION STAMP is a real COLUMN, added here rather than by the caller —
+    // the same rule the Excel writer applies, so the two documents can never carry it on
+    // different terms. It exists only when this export really carries an unverified line, so a
+    // verified-only report keeps exactly the columns it always had. The SHORT form is used
+    // because the column is narrow; the sentence in full is on the banner above.
+    const cols = stamped
+      ? sec.columns.concat([{ header: 'Verification', key: '__stamp', w: 1.3, align: 'center' }])
+      : sec.columns;
+    const totalW = cols.reduce((a, c) => a + (c.w || 1), 0) || 1;
     const colX = []; const colW = [];
     let cx = ML;
-    for (const c of sec.columns) { colX.push(cx); const w = (c.w || 1) / totalW * usableW; colW.push(w); cx += w; }
+    for (const c of cols) { colX.push(cx); const w = (c.w || 1) / totalW * usableW; colW.push(w); cx += w; }
 
     // A cell, clipped to its column box, left/right-aligned.
     const cell = (txt, i, { f = font, size = 7.5, color = ink, align } = {}) => {
       let s = String(txt == null ? '' : txt);
       const boxW = colW[i] - 4;
       while (s.length && f.widthOfTextAtSize(s, size) > boxW) s = s.slice(0, -1);
-      const al = align || sec.columns[i].align || 'left';
+      const al = align || cols[i].align || 'left';
       const x = al === 'right' ? colX[i] + colW[i] - 2 - f.widthOfTextAtSize(s, size) : colX[i] + 2;
       page.drawText(s, { x, y, size, font: f, color });
     };
@@ -191,7 +233,7 @@ async function buildTrackRecordPdf(sections, meta = {}) {
       page.drawRectangle({ x: ML, y: y - 3, width: usableW, height: 13, color: bannerBg });
       page.drawText(sec.title, { x: ML + 4, y, size: 8.5, font: bold, color: bannerFg });
       y -= ROW + 3;
-      sec.columns.forEach((c, i) => cell(c.header, i, { f: bold, size: 7, color: ink }));
+      cols.forEach((c, i) => cell(c.header, i, { f: bold, size: 7, color: ink }));
       y -= ROW;
     };
 
@@ -205,7 +247,15 @@ async function buildTrackRecordPdf(sections, meta = {}) {
     }
     for (const row of sec.rows) {
       if (y - ROW < MB) { newPage(); drawHead(); }
-      sec.columns.forEach((c, i) => {
+      cols.forEach((c, i) => {
+        // The stamp cell — red and bold, so an unverified line cannot be skimmed past.
+        // ASCII only: the PDF font is WinAnsi and `drawText` THROWS on a glyph it cannot
+        // encode, and this whole builder sits inside a caller's try/catch — one un-encodable
+        // character once made the investor package's PDF disappear from the ZIP in silence.
+        if (c.key === '__stamp') {
+          const st = SCOPE.rowStamp(row);
+          return cell(st ? st.short : '', i, { f: bold, size: 7, color: warn });
+        }
         // The Review-status cell is a per-deal STAMP — coloured by its status.
         if (c.key === 'status') {
           const st = REVIEW_STATUS[row.__status] || REVIEW_STATUS.not_verified;
@@ -225,7 +275,7 @@ async function buildTrackRecordPdf(sections, meta = {}) {
     // totals band
     if (y - ROW < MB) { newPage(); drawHead(); }
     page.drawRectangle({ x: ML, y: y - 2, width: usableW, height: ROW, color: totalBg });
-    sec.columns.forEach((c, i) => {
+    cols.forEach((c, i) => {
       if (i === 0) return cell('TOTALS (' + sec.rows.length + ')', 0, { f: bold, size: 7.5 });
       if (c.sum) { let s = 0; for (const r of sec.rows) { const v = Number(r[c.key]); if (isFinite(v)) s += v; } return cell(money(s), i, { f: bold, size: 7.5 }); }
     });

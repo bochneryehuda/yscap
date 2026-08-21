@@ -19,6 +19,11 @@ const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
+// ONE definition of the download header: a filename built from data (a borrower's name, a
+// property address) routinely carries a curly apostrophe or an em dash, and Node THROWS on any
+// character above U+00FF in a header — which the route's catch turns into a 500 and a download
+// nobody can ever get (found live on the track-record export, 2026-08-21).
+const { setContentDisposition } = require('../lib/content-disposition');
 const docAccept = require('../lib/document-acceptance');  // what "accepted" means — one definition
 const cfg = require('../config');
 const storage = require('../lib/storage');
@@ -417,7 +422,7 @@ router.get('/applications/export', async (req, res) => {
     }
     await audit(req, 'export_pipeline', 'application', null, { rows: r.rows.length, filters: pick });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="pilot-pipeline-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+    setContentDisposition(res, `pilot-pipeline-${new Date().toISOString().slice(0, 10)}.xlsx`);
     res.send(buf);
   } catch (e) { console.error('[export pipeline]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
@@ -562,7 +567,7 @@ router.post('/tapes/:tapeKey/export/bulk', async (req, res) => {
     const { buf, filename, contentType, count } = await tapes.buildBulkTape(req.params.tapeKey, visible, db, { isAdmin: tapeAdmin(req) });
     await audit(req, 'export_tape_bulk', 'application', null, { tape: tape.key, count, requested: requested.length });
     res.set('Content-Type', contentType);
-    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    setContentDisposition(res, filename);
     res.send(buf);
   } catch (e) {
     // A loan that fails the export gate (provider/program mismatch, not registered,
@@ -5159,7 +5164,7 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
     try { await require('../lib/tpr-export').saveTprExportDocument(req.params.id, zip, filename, req.actor.id); }
     catch (e2) { console.warn('[tpr-export] save-to-file failed:', e2.message); }
     res.set('Content-Type', 'application/zip');
-    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    setContentDisposition(res, filename);
     res.send(zip);
   } catch (e) { res.status(500).json({ error: 'export failed' }); }
 });
@@ -5234,7 +5239,7 @@ router.get('/applications/:id/export/mismo', async (req, res) => {
     const filename = mismo.exportFilename(row.ys_loan_number, row.last_name);
     await audit(req, 'export_mismo', 'application', req.params.id, { bytes: Buffer.byteLength(xml) });
     res.set('Content-Type', 'application/xml; charset=utf-8');
-    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    setContentDisposition(res, filename);
     res.send(xml);
   } catch (e) {
     console.error('[mismo] export failed:', db.describeError ? db.describeError(e) : e.message);
@@ -5291,7 +5296,7 @@ router.get('/applications/:id/export/corrfirst-track-record', async (req, res) =
     // No BOM and LF endings — CorrFirst's own files carry neither a BOM nor CRLF,
     // and the import has to read this file exactly as it reads theirs.
     res.set('Content-Type', 'text/csv; charset=utf-8');
-    res.set('Content-Disposition', `attachment; filename="${out.filename}"`);
+    setContentDisposition(res, out.filename);
     res.send(Buffer.from(out.csv, 'utf8'));
   } catch (e) {
     console.error('[corrfirst] export failed:', db.describeError ? db.describeError(e) : e.message);
@@ -5347,7 +5352,7 @@ router.get('/applications/:id/export/emcap-pricing-tool', async (req, res) => {
       classification: out.classification,
     });
     res.set('Content-Type', out.contentType);
-    res.set('Content-Disposition', `attachment; filename="${out.filename}"`);
+    setContentDisposition(res, out.filename);
     res.send(out.buf);
   } catch (e) {
     console.error('[emcap-pricing-tool] export failed:', db.describeError ? db.describeError(e) : e.message);
@@ -5530,7 +5535,7 @@ router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
     if (!out.ok) return;
     await audit(req, 'export_tape', 'application', req.params.id, { tape: out.tape.key, bytes: out.buf.length, supplemental: Object.keys(out.savedSupplemental), seasoned: !!out.seasonedOverrides });
     res.set('Content-Type', out.contentType);
-    res.set('Content-Disposition', `attachment; filename="${out.filename}"`);
+    setContentDisposition(res, out.filename);
     res.send(out.buf);
   } catch (e) {
     return tapeExportRefusal(res, e, 'export tape');
@@ -11523,6 +11528,47 @@ router.put('/borrowers/:id/track-record/snapshot', async (req, res) => {
     res.json({ ok: true, ...out });
   } catch (e) { if (!e.status) console.warn('[staff] snapshot error:', db.describeError(e)); res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the snapshot' }); }
 });
+/* EXPORT THE TRACK RECORD — Excel or PDF, in one of three scopes (owner-directed 2026-08-21,
+   item 7): *"the regular export button (PDF or Excel) should only export the verified ones.
+   There should be an extra option to export the PDF or an Excel from the unverified ones, but
+   everything that is unverified should have a stamp that it's not verified yet."*
+
+   `scope` DEFAULTS TO `verified`, so the plain button is the one the owner described as
+   "regular" and is unchanged in meaning. An unrecognised scope resolves to that default rather
+   than to the wide set — an export that cannot read its own instruction must fall back to the
+   SAFE side, never hand somebody unverified experience they did not ask for.
+
+   Same borrower gate as every other borrower read on this router (`canSeeBorrower` →
+   VISIBLE_BORROWER_SQL), and it writes nothing: it selects and renders. */
+router.get('/borrowers/:id/track-record/export', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const scopeLib = require('../lib/track-record/export-scope');
+    const raw = String((req.query && req.query.scope) || '');
+    // A scope we do not recognise is a BUG in the caller, not a licence to widen the export —
+    // say so rather than quietly serving the default under a name nobody asked for.
+    if (raw && !scopeLib.isScope(raw)) {
+      return res.status(400).json({ error: `Unknown export scope "${raw}". Choose ${scopeLib.SCOPES.join(', ')}.` });
+    }
+    const b = (await db.query(
+      `SELECT id, NULLIF(full_name,'') AS full_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
+    if (!b) return res.status(404).json({ error: 'not found' });
+    const out = await require('../lib/track-record/export-doc').buildBorrowerTrackRecordExport([b.id], {
+      scope: raw || undefined,
+      format: String((req.query && req.query.format) || 'xlsx'),
+      borrowerName: b.full_name || '',
+    });
+    if (!out || !out.data) return res.status(500).json({ error: 'Could not build that export.' });
+    await audit(req, 'track_record_export', 'borrower', b.id, { scope: out.scope, format: out.format, rows: out.rows });
+    res.setHeader('Content-Type', out.contentType);
+    setContentDisposition(res, out.filename);
+    res.send(Buffer.isBuffer(out.data) ? out.data : Buffer.from(out.data));
+  } catch (e) {
+    console.warn('[staff] track-record export:', db.describeError(e));
+    res.status(500).json({ error: 'Could not build that export.' });
+  }
+});
+
 router.get('/borrowers/:id/track-record/snapshot', async (req, res) => {
   if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
   try { res.json(await require('../lib/track-record-snapshot').latestSnapshot(req.params.id)); }

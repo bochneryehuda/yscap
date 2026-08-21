@@ -96,4 +96,98 @@ function portalPlatformFor(ctx) {
   return String((ctx && ctx.platform) || '') === 'trustpoint' ? 'trustpoint' : 'trinity';
 }
 
-module.exports = { PHYSICAL_METHODS, isTrinityFile, reasonNotTrinity, portalPlatformFor };
+/* ---------------------------------------------------------------------------
+ * ORDERING ONE BY HAND, ON A FILE THAT IS NOT TRINITY'S (owner-directed 2026-08-21, item 25)
+ * ---------------------------------------------------------------------------
+ * The owner: *"At any time, even though a process is not set up for autopilot on Trinity
+ * (for example, something that belongs to Bluelake before it's sold or something that is
+ * set up for virtual but, one time, he doesn't have access and he wants to order a
+ * physical), we should have a full section set up … and it should be able to be manually
+ * placed on any file."*
+ *
+ * THE RULE ABOVE DOES NOT MOVE. `isTrinityFile` still decides what happens BY ITSELF — the
+ * autopilot, the Sitewire door, the portal composer — so a virtual file's automatic
+ * inspections stay Sitewire's and a Blue Lake file's stay TrustPoint's, exactly as the
+ * 2026-08-14 direction requires. What is added is a DELIBERATE HUMAN ACT beside it.
+ *
+ * FOUR THINGS MAKE THAT SAFE, and none of them may be dropped:
+ *   1. IT IS NEVER AUTOMATIC. Only a coordinator pressing the button reaches this, and the
+ *      three automatic doors do not pass `override` at all.
+ *   2. A TYPED REASON IS REQUIRED. This costs money and sends a person to somebody's
+ *      property against the file's own configured setup — the file must record WHY.
+ *   3. THE SECOND-INSPECTOR HAZARD IS SAID OUT LOUD, not hidden. On a virtual file
+ *      Sitewire is already inspecting; on a Blue Lake file TrustPoint is. Ordering here
+ *      adds a physical inspector ON TOP — which is precisely what the owner is asking for
+ *      ("one time he doesn't have access and he wants to order a physical"), so it is a
+ *      WARNING to acknowledge, never a silent allowance.
+ *   4. AN UNREADABLE FILE IS STILL REFUSED. `resolved:false` means we could not look up the
+ *      file's own setup — a transient fault, not a business state. Everything else here is
+ *      a human overruling a KNOWN state; overruling an UNKNOWN one is guessing, and this
+ *      order dispatches a real person to a real address. Try again in a moment.
+ */
+
+/** A reason short enough to be meaningless is not a reason. */
+const MIN_OVERRIDE_REASON = 8;
+
+/** Can a human overrule the routing on this file at all? Every real business state, yes —
+ *  a file we could not READ, no (rule 4 above). */
+function mayOverrideRouting(ctx) {
+  if (!ctx) return false;
+  if (ctx.resolved === false) return false;
+  return true;
+}
+
+/** What a coordinator is being asked to acknowledge, in the owner's own terms. Null when
+ *  the file is Trinity's anyway and there is nothing to warn about. */
+function overrideWarning(ctx) {
+  if (!ctx || isTrinityFile(ctx)) return null;
+  const p = String((ctx && ctx.platform) || '');
+  if (p === 'trustpoint') {
+    return 'This file’s draws are administered by the note buyer (Blue Lake / TrustPoint), who runs their '
+      + 'own inspections. Ordering here sends a Trinity inspector as well — the two do not know about '
+      + 'each other, and Trinity charges for it.';
+  }
+  if (p === 'external') {
+    return 'This file’s draws are run entirely in the partner’s own system. Ordering here sends a Trinity '
+      + 'inspector that their process does not know about, and Trinity charges for it.';
+  }
+  if (!PHYSICAL_METHODS.has(String((ctx && ctx.method) || ''))) {
+    return 'This file is set up for VIRTUAL inspections, which Sitewire is already doing. Ordering here '
+      + 'sends a physical inspector as well — Trinity charges for it, and the virtual inspection still runs.';
+  }
+  return 'This file is not set up for Trinity inspections. Ordering here places one anyway, and Trinity '
+    + 'charges for it.';
+}
+
+/**
+ * The whole decision for ONE hand-placed order — PURE, so every branch is testable with no
+ * database and both doors (the route and `intake.orderManually`) read the same answer.
+ *
+ * @param ctx  the file's routing, as `routing.resolveFilePlatform` produces it
+ * @param opts {{ override?:boolean, overrideReason?:string }}
+ * @returns {{ ok, override, reason, blockedReason, needsReason, mayOverride, warning }}
+ */
+function planManualOrder(ctx, opts = {}) {
+  const warning = overrideWarning(ctx);
+  const mayOverride = mayOverrideRouting(ctx);
+  if (isTrinityFile(ctx)) {
+    return { ok: true, override: false, reason: null, blockedReason: null, needsReason: false, mayOverride, warning: null };
+  }
+  const blockedReason = reasonNotTrinity(ctx);
+  const asked = opts && (opts.override === true || opts.override === 'true');
+  if (!asked) return { ok: false, override: false, reason: null, blockedReason, needsReason: false, mayOverride, warning };
+  if (!mayOverride) {
+    return { ok: false, override: false, reason: null, needsReason: false, mayOverride: false, warning,
+      blockedReason: 'the file’s setup could not be read just now — try again in a moment' };
+  }
+  const reason = String((opts && opts.overrideReason) || '').trim();
+  if (reason.length < MIN_OVERRIDE_REASON) {
+    return { ok: false, override: true, reason: null, blockedReason, needsReason: true, mayOverride, warning };
+  }
+  return { ok: true, override: true, reason: reason.slice(0, 500), blockedReason: null, needsReason: false, mayOverride, warning };
+}
+
+module.exports = {
+  PHYSICAL_METHODS, isTrinityFile, reasonNotTrinity, portalPlatformFor,
+  MIN_OVERRIDE_REASON, mayOverrideRouting, overrideWarning, planManualOrder,
+};

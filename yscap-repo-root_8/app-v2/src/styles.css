@@ -6046,3 +6046,33 @@ ol.arena-ch-top li em { color: var(--a-gold-ink); font-style: normal; font-varia
 /* One column on a phone: two 210px fields side by side is what pushes a condition row
    sideways, and a condition list that scrolls horizontally is unusable on a phone. */
 @media(max-width:720px){ .gcrec-grid{grid-template-columns:1fr} }
+
+/* ── THE TRACK-RECORD EXPORT CONTROL (item 7, owner-directed 2026-08-21) ──
+   One control on three surfaces (loan file, borrower profile, full-screen
+   workspace). The regular export leads; the wider two sit behind it. Every
+   colour here is an explicit dark on white — an `--ink*` token is a LIGHT
+   paper colour in this palette and would render white on white. */
+.tr-export{margin:8px 0 12px}
+.tr-export-title{font-weight:700;font-size:13.5px;margin-bottom:4px}
+.tr-export .act-label{margin-right:2px}
+.tr-export-queue{margin:6px 0 2px;padding-top:6px;border-top:1px solid var(--border)}
+@media (max-width:720px){
+  /* Two scope rows of look-alike buttons must not wrap into a hedge on a
+     phone — each scope keeps its label and its pair on their own line. */
+  .tr-export .row{align-items:flex-start}
+}
+
+/* ── TRINITY MANUAL — the order block and each inspection (item 25, 2026-08-21) ──
+   `.dd-note` is `display:flex` with a bullet `::before`: exactly right for ONE line of
+   text with a dot, and wrong for a heading + an explanation + a warning + controls, which
+   it lays out as SIDE-BY-SIDE COLUMNS — squeezing the reason box to about 70px. Found by
+   rendering the real markup against this stylesheet, not by reading it. These are plain
+   blocks with the same paper and hairline, so the card reads as one thing. */
+.tr-order{border:1px solid var(--border);border-radius:10px;
+  background:var(--surface-soft,#F4F1EA);padding:11px 13px;margin-top:10px}
+.tr-order > .row{margin-top:8px}
+/* What a coordinator is being asked to acknowledge before ordering against the file's own
+   setup — gold, the colour this palette already uses for "read this first". */
+.tr-order-warn{border-left:3px solid var(--gold,#AE8746);background:rgba(174,135,70,.10);
+  border-radius:8px;padding:9px 11px;margin-top:9px}
+.tr-order-warn .input{margin-top:8px;width:100%}

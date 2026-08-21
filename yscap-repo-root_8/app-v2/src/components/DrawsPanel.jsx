@@ -1272,10 +1272,15 @@ function TrinityInspectionCard({ appId }) {
   // out is the first date that is certainly acceptable in every timezone.
   const earliestInspect = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
   const usd = (c) => (c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 }));
+  const [why, setWhy] = useState('');             // the typed reason for an order against the setup
+  const [products, setProducts] = useState(null); // Trinity's own live catalogue
   const load = useCallback(() => {
     api.get(`/api/trinity/files/${appId}`).then(setData).catch(() => setData(null));
   }, [appId]);
   useEffect(() => { load(); }, [load]);
+  /* WHAT WE ORDER, READ FROM TRINITY (item 25). Their production catalogue differs from the sandbox
+     one, so this is read live rather than written down here. Best-effort: it never blocks the card. */
+  useEffect(() => { api.get('/api/trinity/products').then(setProducts).catch(() => setProducts(null)); }, []);
   if (!data) return null;
   const orders = Array.isArray(data.orders) ? data.orders : [];
   // What may be ordered by hand right now. The card has to render on a file with NO
@@ -1293,7 +1298,10 @@ function TrinityInspectionCard({ appId }) {
       label: `Draw request P${r.id} — ${usd(r.total_requested_cents)} requested`,
     })),
   ];
-  if (!orders.length && !(orderable.eligible && canOrder.length)) return null;
+  /* THE SECTION IS ON EVERY FILE (owner-directed 2026-08-21, item 25: *"it should be able to be
+     manually placed on any file"*, *"that section should also be available when it's on auto"*). It
+     used to disappear entirely on a Blue Lake or a virtual file — which is exactly the file a
+     coordinator needs it on when the usual inspector cannot get in. */
 
   const conn = data.connection || {};
   const STATE = {
@@ -1319,10 +1327,11 @@ function TrinityInspectionCard({ appId }) {
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           <span className="dd-card-ic"><SdIcon name="list" /></span>
           <div>
-            <h3>Trinity physical inspection</h3>
+            <h3>Trinity Manual — physical inspections</h3>
             <div className="dd-sub" style={{ marginTop: 1, color: '#4B585C' }}>
-              The inspection company we order from on this file. Nothing reaches the borrower on its own —
-              when the report is back, you check the figures and send them.
+              Order and follow a physical inspection on this file — whatever the file is set up to do, and
+              whether or not it orders them by itself. Nothing reaches the borrower on its own: when the
+              report is back, you check the figures and send them.
             </div>
           </div>
         </div>
@@ -1336,35 +1345,83 @@ function TrinityInspectionCard({ appId }) {
           comes in, so this is here for the times it stood down — the connection was off,
           Trinity was unreachable, or the draw arrived before this was switched on. It
           sends exactly what an automatic order sends. */}
-      {orderable.eligible && canOrder.length > 0 && (
-        <div className="dd-note" style={{ marginTop: 10 }}>
-          <div className="small" style={{ fontWeight: 600, color: '#141B22' }}>Order an inspection</div>
+      {/* WHAT WE ORDER — Trinity's own product name, read from their live catalogue, so the person
+          about to press the button can see that it is the right product rather than trust that it
+          is. An unreadable catalogue says so; it never claims the product is missing. */}
+      {products && (
+        <div className="small" style={{ marginTop: 8, color: products.enabled === false ? '#8A2B2B' : '#4B585C' }}>
+          {products.enabled === false ? '⚠ ' : ''}{products.message}
+          {Array.isArray(products.droneProducts) && products.droneProducts.length > 0 && (
+            <div style={{ marginTop: 2 }}>
+              Trinity also lists {products.droneProducts.map((p) => `“${p.name}”`).join(', ')} on this account —
+              a separate product from a draw inspection, so it is not ordered from here.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ORDER IT OURSELVES. On a Trinity file this is here for the times the automatic order stood
+          down (the connection was off, Trinity was unreachable, the draw predates the program). On a
+          file that is somebody ELSE's — Blue Lake before it is sold, or one set up for virtual where
+          this once nobody can get in — it is the owner's own "manually placed on any file", and it
+          asks for a reason that is recorded on the file. */}
+      {canOrder.length > 0 && (orderable.eligible || orderable.mayOverride) && (
+        <div className="tr-order">
+          <div className="small" style={{ fontWeight: 600, color: '#141B22' }}>
+            {orderable.eligible ? 'Order an inspection' : 'Order an inspection anyway'}
+          </div>
           <div className="small" style={{ color: '#4B585C', marginTop: 2 }}>
             Trinity gets the construction budget, how much has already been drawn on every line, the
             appraisal, the scope of work and the last inspection report.
           </div>
+          {!orderable.eligible && (
+            <div className="tr-order-warn">
+              <div className="small" style={{ fontWeight: 700, color: '#141B22' }}>
+                This file does not order Trinity inspections by itself
+              </div>
+              <div className="small" style={{ color: '#4B585C', marginTop: 2 }}>{orderable.overrideWarning || orderable.reason}</div>
+              <input className="input" value={why}
+                onChange={(e) => setWhy(e.target.value)} maxLength={500}
+                placeholder="Why is this being ordered? (recorded on the file — e.g. the virtual inspector can’t get access)" />
+            </div>
+          )}
           <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             <select className="input" style={{ flex: 1, minWidth: 220 }} value={pick}
               onChange={(e) => setPick(e.target.value)}>
               <option value="">Which draw is this inspection for?</option>
               {canOrder.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
             </select>
-            <button className="btn primary" disabled={busy || !pick}
+            <button className="btn primary" disabled={busy || !pick || (!orderable.eligible && why.trim().length < 8)}
               onClick={() => act(async () => {
                 if (!(await askConfirm(
-                  'Order this physical inspection from Trinity? It dispatches an inspector and Trinity charges for it.',
+                  orderable.eligible
+                    ? 'Order this physical inspection from Trinity? It dispatches an inspector and Trinity charges for it.'
+                    : `${orderable.overrideWarning || ''}\n\nOrder it anyway? It dispatches an inspector, Trinity charges for it, `
+                      + 'and your reason is recorded on the file.',
                   { confirmLabel: 'Order the inspection' }))) return null;
                 const [kind, id] = pick.split(':');
-                const r = await api.post(`/api/trinity/files/${appId}/orders`,
-                  kind === 'd' ? { sitewireDrawId: Number(id) } : { portalRequestId: Number(id) });
-                setPick('');
+                const body = kind === 'd' ? { sitewireDrawId: Number(id) } : { portalRequestId: Number(id) };
+                if (!orderable.eligible) { body.override = true; body.overrideReason = why.trim(); }
+                const r = await api.post(`/api/trinity/files/${appId}/orders`, body);
+                setPick(''); setWhy('');
                 return r;
               }, (r) => (r == null ? '' : r.already ? 'That inspection was already ordered.'
                 : r.dryrun ? 'Test mode — the order was built but nothing was sent to Trinity.'
-                  : 'Ordered from Trinity.'))}>
-              Order the inspection
+                  : r.override ? 'Ordered from Trinity — your reason is recorded on the file.'
+                    : 'Ordered from Trinity.'))}>
+              {orderable.eligible ? 'Order the inspection' : 'Order it anyway'}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Nothing to order against. Said plainly, because a section with no buttons and no explanation
+          is indistinguishable from a broken one. */}
+      {canOrder.length === 0 && !orders.length && (
+        <div className="small" style={{ marginTop: 10, color: '#4B585C' }}>
+          No inspection has been ordered on this file, and there is no draw to order one against yet —
+          compose the draw request first and the inspection goes with it.
+          {!orderable.eligible && orderable.reason ? ` (${orderable.reason}.)` : ''}
         </div>
       )}
 
@@ -1373,7 +1430,7 @@ function TrinityInspectionCard({ appId }) {
         const open = openId === o.id;
         const resultLines = (o.lines || []).filter((l) => Number(l.requested_cents || 0) > 0 || l.approved_cents != null);
         return (
-          <div key={o.id} className="dd-note" style={{ marginTop: 10 }}>
+          <div key={o.id} className="tr-order">
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
               <div>
                 <span className={'pill ' + s.cls}>{s.label}</span>
