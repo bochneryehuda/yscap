@@ -1,11 +1,17 @@
 /**
  * esign/notify-signers.js — PILOT's OWN "your documents are ready to sign" email.
  *
- * Owner-directed (2026-07-20): when a package is sent, PILOT emails each borrower
- * signer its OWN branded invitation whose button (`signUrl`) takes them STRAIGHT
- * into the DocuSign signing session (no portal stop, no "Sign now" click) and brings
- * them back INSIDE their loan file afterward, already logged in. This rides ALONGSIDE
- * DocuSign's own email (the recipients stay hybrid `SIGN_AT_DOCUSIGN`) — "both".
+ * Owner-directed (2026-07-20): when a package is sent, PILOT emails each signer its OWN
+ * branded invitation whose button (`signUrl`) takes them STRAIGHT into the DocuSign signing
+ * session (no portal stop, no "Sign now" click) and brings a BORROWER back INSIDE their loan
+ * file afterward, already logged in.
+ *
+ * IT IS NOW THE ONLY INVITATION THERE IS (owner-directed 2026-08-21). Recipients were hybrid
+ * (`SIGN_AT_DOCUSIGN`), so DocuSign emailed everybody as well — and that second email led to a
+ * page a captive recipient cannot sign on: *"The only link that works is the link that is coming
+ * directly from Pilot."* The property is gone, DocuSign sends nothing, and this email covers
+ * EVERY signer — borrowers and our own staff signers alike, the latter of whom previously
+ * received DocuSign's email and nothing from us at all.
  *
  * Best-effort: a failed email must NEVER break the send. Borrower-safe by
  * construction — the email names only the loan #, property, and package (never a
@@ -43,6 +49,10 @@ async function notifyReadyToSign(envelopeRowId, opts = {}) {
     rows = (await db.query(
       `SELECT r.recipient_id_ds, r.borrower_id, r.name, r.email, r.role,
               b.first_name AS b_first,
+              -- The FILE's borrower, for our own signers: a staff recipient has no borrower_id,
+              -- so the join above answers nothing and their email would name nobody.
+              fb.full_name AS file_borrower_name,
+              r.status AS recipient_status, r.routing_order,
               e.application_id, e.purpose, e.status, e.envelope_id,
               a.ys_loan_number, a.rehab_budget,
               COALESCE(a.property_address->>'oneLine',
@@ -60,10 +70,10 @@ async function notifyReadyToSign(envelopeRowId, opts = {}) {
          JOIN esign_envelopes e ON e.id = r.envelope_row_id
          LEFT JOIN applications a ON a.id = e.application_id
          LEFT JOIN borrowers b ON b.id = r.borrower_id
+         LEFT JOIN borrowers fb ON fb.id = a.borrower_id
          LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id
         WHERE r.envelope_row_id = $1
-          AND r.role IN ('borrower', 'co_borrower')
-          AND r.borrower_id IS NOT NULL
+          AND r.role IN ('borrower', 'co_borrower', 'loan_officer', 'admin')
           AND r.email IS NOT NULL
           AND r.signed_at IS NULL AND r.declined_at IS NULL`, [envelopeRowId])).rows;
   } catch (e) {
@@ -75,10 +85,30 @@ async function notifyReadyToSign(envelopeRowId, opts = {}) {
     if (onlyRid && String(r.recipient_id_ds) !== onlyRid) { out.skipped++; continue; }
     // Only email once the envelope is actually out for signing.
     if (!r.envelope_id || !['sent', 'delivered'].includes(r.status)) { out.skipped++; continue; }
+    /* AND ONLY WHEN IT IS ACTUALLY THEIR TURN. A counter-signer on routing order 2 sits at
+       `created` until every earlier signer has finished; DocuSign will not let them sign before
+       then, so "your signature is needed" would be false and the link would fail. The webhook
+       invites them the moment their status becomes sent/delivered. A row from before recipient
+       statuses were tracked has none, and is treated as their turn — the historic behaviour. */
+    if (r.recipient_status && !['sent', 'delivered'].includes(String(r.recipient_status))) { out.skipped++; continue; }
     try {
+      /* WHO IS THIS SIGNER? A borrower row carries `borrower_id`; one of OUR OWN carries none and
+         is matched to the staff roster by the email the envelope was addressed to. An ACTIVE
+         staff row is required — a departed officer's address must not receive a signing link —
+         and a staff recipient we cannot place is SKIPPED rather than emailed an unauthenticated
+         link, because the token is a bearer for signing that envelope. */
+      let staffId = null;
+      if (!r.borrower_id) {
+        const su = (await db.query(
+          `SELECT id, full_name FROM staff_users WHERE lower(email)=lower($1) AND is_active = true LIMIT 1`,
+          [r.email])).rows[0];
+        if (!su) { out.skipped++; continue; }
+        staffId = su.id;
+      }
       const token = magic.mintSigningToken({
         envelopeRowId: String(envelopeRowId),
-        borrowerId: String(r.borrower_id),
+        borrowerId: r.borrower_id ? String(r.borrower_id) : null,
+        staffId: staffId ? String(staffId) : null,
         recipientIdDs: String(r.recipient_id_ds),
       });
       const signUrl = magic.signingUrl(token);
@@ -99,7 +129,19 @@ async function notifyReadyToSign(envelopeRowId, opts = {}) {
       // VIEWER on the envelope itself (orchestrate.loadCcViewers, owner-directed 2026-07-28),
       // which is what gives them the sent/viewed/signed notifications and the executed copy.
       const isDrawWire = r.purpose === 'draw_request';
-      const res = isDrawWire
+      /* OUR OWN SIGNER GETS OUR OWN EMAIL — never the borrower letter, which greets them as the
+         borrower and reassures them about documents they did not ask for. */
+      const res = staffId
+        ? await mail.send('esignStaffReadyToSign', r.email, {
+            firstName: (r.name || '').split(' ')[0] || '',
+            role: r.role === 'admin' ? 'lender signatory' : 'loan officer',
+            packageLabel: PACKAGE_LABEL[r.purpose] || 'loan documents',
+            borrowerName: r.file_borrower_name || null,
+            propertyLabel: r.property_label || '',
+            loanNumber: r.ys_loan_number || '',
+            signUrl,
+          }, { replyTo: fileReplyTo(r.application_id) || undefined, applicationId: r.application_id })
+        : isDrawWire
         ? await mail.send('drawWireReadyToSign', r.email, {
             firstName: r.b_first || (r.name || '').split(' ')[0] || '',
             propertyLabel: r.property_label || '',
