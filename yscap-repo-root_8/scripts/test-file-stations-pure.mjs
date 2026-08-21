@@ -34,16 +34,20 @@ const ALL_SECTIONS = [
   'sec-overview', 'sec-application', 'sec-payoff', 'sec-pricing', 'sec-exceptions',
   'sec-conditions', 'sec-underwriting', 'sec-appraisal', 'sec-track',
   'sec-documents', 'sec-esign',
-  'sec-order-title', 'sec-order-insurance', 'sec-order-appraisal', 'sec-order-closing',
+  /* `sec-order-budget-review` joined the Orders room on 2026-08-21 (owner-directed:
+     the Trinity construction budget review "should be available in the order
+     section"). It is an ORDER, not a draw — it reads the construction plan before
+     the loan closes. */
+  'sec-order-title', 'sec-order-insurance', 'sec-order-appraisal', 'sec-order-budget-review', 'sec-order-closing',
   'sec-closing', 'sec-tapes',
   'sec-draws', 'sec-tasks', 'sec-drafting', 'sec-messages',
 ];
-ok(ALL_SECTIONS.length === 21, 'the inventory names 21 sections');
+ok(ALL_SECTIONS.length === 22, 'the inventory names 22 sections');
 const flat = STATIONS.flatMap((s) => s.sections);
 ok(flat.length === new Set(flat).size, 'no section is claimed by two rooms');
 for (const sec of ALL_SECTIONS) ok(!!STATION_OF[sec], `${sec} has a room`);
 ok(flat.length === ALL_SECTIONS.length && ALL_SECTIONS.every((s) => flat.includes(s)),
-  'the rooms cover exactly the 21 sections — nothing homeless, nothing invented');
+  'the rooms cover exactly the 22 sections — nothing homeless, nothing invented');
 ok(!flat.includes('sec-encompass'),
   'no room CLAIMS sec-encompass — a retired address is not a section');
 /* EIGHT rooms now. The original promise was seven; the owner then asked for
@@ -57,8 +61,8 @@ ok(STATIONS.length === 8, 'eight rooms — the original seven plus the owner-req
    "Orders" — the owner's report. Three sections is what lights it up, so the
    COUNT is the load-bearing part of this assertion, not just the names. */
 ok(STATIONS.some((s) => s.id === 'st-orders'
-   && s.sections.join() === 'sec-order-title,sec-order-insurance,sec-order-appraisal,sec-order-closing'),
-  'Orders holds its four order sections, in work order (appraisal beside title/insurance/attorney)');
+   && s.sections.join() === 'sec-order-title,sec-order-insurance,sec-order-appraisal,sec-order-budget-review,sec-order-closing'),
+  'Orders holds its five order sections, in work order (appraisal + the budget review beside title/insurance/attorney)');
 ok(STATIONS.find((s) => s.id === 'st-orders').sections.length > 1,
   'Orders has more than one section — which is what makes the rail show them');
 ok(STATIONS.find((s) => s.id === 'st-signing').sections.join() === 'sec-esign,sec-closing',
@@ -298,6 +302,27 @@ for (const vendor of ['AppraisalScope / NAN', 'Class Valuation']) {
   ok(aord.includes(vendor), `AppraisalOrderSection carries the ${vendor} vendor`);
 }
 ok(/\{ id: 'sec-order-appraisal',/.test(staff), 'sec-order-appraisal is in the SECTIONS array the rail reads');
+/* THE BUDGET REVIEW ORDER (owner-directed 2026-08-21). It mounts the SAME card the
+   feasibility CONDITION mounts — one definition of "may this file order one, and
+   what is still missing?", because two copies drift and the one that drifts is the
+   one somebody presses. Both mounts are asserted, plus the owner's own "only for
+   ground-ups / heavy rehabs" mark being on the card itself. */
+ok(/id="sec-order-budget-review"[^>]*title="Construction budget review"/.test(staff),
+  'sec-order-budget-review is rendered, titled "Construction budget review"');
+ok(/id="sec-order-budget-review"[\s\S]{0,900}?<TrinityBudgetReview\b/.test(staff),
+  'sec-order-budget-review mounts <TrinityBudgetReview>');
+ok(/\{ id: 'sec-order-budget-review',/.test(staff),
+  'sec-order-budget-review is in the SECTIONS array the rail reads');
+ok(/it\.template_code === 'rtl_cond_feasibility'[\s\S]{0,400}?<TrinityBudgetReview\b/.test(staff),
+  'the feasibility condition carries the same order button');
+const tbr = read('app-v2/src/components/TrinityBudgetReview.jsx');
+ok(/ground-up/i.test(tbr) && /heavy rehab/i.test(tbr),
+  'the card marks that it is only for ground-ups and heavy rehabs');
+/* `--ink*` is a LIGHT paper token in this palette, so a text colour taken from one
+   renders white-on-white. The card's own comment NAMES that trap, which is why this
+   looks for a colour DECLARATION rather than the string. */
+ok(!/color:\s*['"]?var\(--ink/.test(tbr),
+  'the card never colours text with an --ink token (they are LIGHT in this palette)');
 /* The three open by DEFAULT. Landing in the Orders room and finding three
    collapsed headers is the "go into orders and then see the 3 options" the split
    exists to end, so a defaultOpen={false} here would undo the whole change. */

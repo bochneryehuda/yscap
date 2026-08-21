@@ -632,8 +632,16 @@ async function sendDocuments(appId, orderRowId, trinityOrderId, { lines, request
     }
   }
 
-  await db.query(
-    `UPDATE trinity_inspection_orders SET documents_sent_at=now(), updated_at=now() WHERE id=$1`, [orderRowId]).catch(() => {});
+  /* STAMP THE DRAW ORDER — when this IS one. The pre-closing BUDGET REVIEW (form 159) reuses this
+     whole function (same documents, same groups, same size ceiling) but lives in its own table, and
+     it passes a non-numeric row id precisely so it can never address a draw order by accident.
+     Without this guard that UPDATE raises a type error into a `.catch(() => {})` on every review —
+     harmless, and exactly the kind of silently-swallowed failure this repo keeps finding. The
+     review records its own document outcome on its own row. */
+  if (/^\d+$/.test(String(orderRowId))) {
+    await db.query(
+      `UPDATE trinity_inspection_orders SET documents_sent_at=now(), updated_at=now() WHERE id=$1`, [orderRowId]).catch(() => {});
+  }
   return { sent, failed };
 }
 

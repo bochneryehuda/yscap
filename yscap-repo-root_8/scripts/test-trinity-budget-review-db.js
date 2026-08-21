@@ -33,10 +33,28 @@ const eq = (name, got, exp) => { if (JSON.stringify(got) === JSON.stringify(exp)
 const TAG = 'tbr' + crypto.randomBytes(4).toString('hex');
 const blocked = (g, re) => (g.blockers || []).some((b) => re.test(b));
 
+/* A REAL Scope-of-Work payload, in the shape the tool actually saves — `state.items` keyed by line
+   with `on` + `each`, which is what `sitewire/mapper.explodeSow` reads. Writing a plausible-looking
+   `{lines:[…]}` instead produced an EMPTY explosion and a gate that refused for a reason that had
+   nothing to do with the file, which is precisely the sort of fixture that proves nothing. */
+const SOW_PAYLOAD = {
+  total: 250000,
+  state: {
+    target: 250000, units: 1,
+    items: {
+      foundation: { on: true, each: 150000 },
+      framing: { on: true, each: 100000 },
+    },
+  },
+};
+
 (async () => {
   const mk = async ({ program = 'Ground-up Construction', rehab = 'Ground-up' } = {}) => {
+    // A PHONE, because Trinity requires one so the inspector can reach the borrower — the gate
+    // now reports that too (it builds the payload in the dry), so a borrower without one is
+    // correctly not orderable and this fixture would otherwise be testing the wrong thing.
     const bor = (await db.query(
-      `INSERT INTO borrowers(first_name,last_name,email) VALUES('Bud','Review',$1) RETURNING id`,
+      `INSERT INTO borrowers(first_name,last_name,email,cell_phone) VALUES('Bud','Review',$1,'512-555-0111') RETURNING id`,
       [`b.${TAG}.${crypto.randomBytes(3).toString('hex')}@example.com`])).rows[0].id;
     return (await db.query(
       `INSERT INTO applications(borrower_id,status,ys_loan_number,program,rehab_type,loan_type,
@@ -261,6 +279,135 @@ const blocked = (g, re) => (g.blockers || []).some((b) => re.test(b));
       ['draw findings', /draw_findings/],
       ['the money ledger', /draw_disbursements/],
     ]) ok(`G1 the review never touches ${what}`, !re.test(src));
+  }
+
+  // ======================================================================
+  // H. ORDERING ONE — the safety is the draw path's, line for line, because the
+  //    failure modes are identical and they were learned the hard way there
+  // ======================================================================
+  {
+    const tclient = require('../src/trinity/client');
+    // A COMPLETE, ORDERABLE FILE.
+    const app = await mk();
+    await db.query(
+      `INSERT INTO appraisals(application_id, as_is_value, appraised_value, superseded, imported_at)
+       VALUES($1, 300000, 900000, false, now())`, [app]);
+    await db.query(
+      `INSERT INTO documents(application_id, filename, doc_kind, is_current, review_status, storage_ref, content_type)
+       VALUES($1,'appraisal-report.pdf','appraisal_pdf',true,'accepted','x','application/pdf')`, [app]);
+    const gc = (await db.query(
+      `INSERT INTO service_contacts(contact_type, company_name, contact_name, email, phone)
+       VALUES('contractor','BuildCo','Pat Builder',$1,'512-555-0134') RETURNING id`,
+      [`gc2.${TAG}@example.com`])).rows[0].id;
+    await db.query(
+      `INSERT INTO application_service_contacts(application_id, service_contact_id, contact_type)
+       VALUES($1,$2,'contractor')`, [app, gc]);
+
+    // The gate still refuses — the scope of work is not filled in, which is the honest state of
+    // this fixture and exactly what the gate is for.
+    let g = await BR.reviewGate(app);
+    ok('H1 a file with the appraisal and the contractor but no scope still cannot order',
+      !g.ready && blocked(g, /Scope of Work/i));
+    ok('H2 …and the appraisal and contractor blockers are GONE, so the list is not just always-full',
+      !blocked(g, /contractor/i) && !blocked(g, /appraisal/i));
+
+    /* THE GATE ALSO REPORTS WHAT TRINITY'S OWN SCHEMA WOULD REFUSE. Without this the desk is told
+       the file is ready, presses the button, and gets a DIFFERENT refusal a moment later — which
+       is what happened in this very suite before it was fixed ("the borrower's phone number is
+       missing", from the payload builder, on a file the gate had just called ready). */
+    {
+      const noPhone = await mk();
+      await db.query(`UPDATE borrowers SET cell_phone=NULL WHERE id=(SELECT borrower_id FROM applications WHERE id=$1)`, [noPhone]);
+      await db.query(
+        `INSERT INTO appraisals(application_id, as_is_value, appraised_value, superseded, imported_at)
+         VALUES($1, 300000, 900000, false, now())`, [noPhone]);
+      await db.query(
+        `INSERT INTO documents(application_id, filename, doc_kind, is_current, review_status, storage_ref, content_type)
+         VALUES($1,'appraisal-report.pdf','appraisal_pdf',true,'accepted','x','application/pdf')`, [noPhone]);
+      const c2 = (await db.query(
+        `INSERT INTO service_contacts(contact_type, company_name, contact_name, email, phone)
+         VALUES('contractor','BuildCo','Pat Builder',$1,'512-555-0134') RETURNING id`,
+        [`gc3.${TAG}@example.com`])).rows[0].id;
+      await db.query(
+        `INSERT INTO application_service_contacts(application_id, service_contact_id, contact_type)
+         VALUES($1,$2,'contractor')`, [noPhone, c2]);
+      const t2 = (await db.query(`SELECT id FROM checklist_templates WHERE tool_key='rehab_budget' LIMIT 1`)).rows[0];
+      if (t2) {
+        await db.query(
+          `INSERT INTO checklist_items(application_id, template_id, label, status, tool_key, tool_payload, scope)
+           VALUES($1,$2,'Scope of Work','outstanding','rehab_budget',$3::jsonb,'application')`,
+          [noPhone, t2.id, JSON.stringify(SOW_PAYLOAD)]);
+        const gp = await BR.reviewGate(noPhone);
+        ok('H2b a file Trinity would refuse is NOT reported as ready, whatever our own four checks say',
+          !gp.ready && (gp.blockers || []).some((b) => /Trinity also needs/.test(b)));
+      }
+    }
+
+    const req = await BR.requestReview(app);
+    ok('H3 requesting one is refused while the gate is refusing', !req.ok && req.blocked);
+
+    // Fill the scope in so the gate opens. `checkSowBudget` compares the tool's own totals to the
+    // file's rehab budget to the cent — the same gate the Scope-of-Work CONDITION signs off on.
+    const tmpl = (await db.query(`SELECT id FROM checklist_templates WHERE tool_key='rehab_budget' LIMIT 1`)).rows[0];
+    if (tmpl) {
+      await db.query(
+        `INSERT INTO checklist_items(application_id, template_id, label, status, tool_key, tool_payload, scope)
+         VALUES($1,$2,'Scope of Work','outstanding','rehab_budget',$3::jsonb,'application')`,
+        [app, tmpl.id, JSON.stringify(SOW_PAYLOAD)]);
+      g = await BR.reviewGate(app);
+      if (!g.ready) console.log('   …gate still blocking:', JSON.stringify(g.blockers));
+      ok('H4 with the scope filled in to the cent, the gate opens', g.ready === true);
+    }
+
+    // THE SWITCHES. With Trinity off, nothing is sent — and it says so rather than failing.
+    const r2 = await BR.requestReview(app);
+    if (r2.ok) {
+      const placed = await BR.placeReviewOrder(app, r2.review.id);
+      ok('H5 with the Trinity connection off, nothing is sent and it says why',
+        placed && (placed.skipped === 'off' || placed.skipped === 'not_configured' || placed.skipped === 'outbound_off'));
+
+      // THE FORM. A wrong form orders and pays for a DIFFERENT product, so it is named explicitly
+      // and never left to the configuration that governs the draw.
+      let sentForm = null;
+      const realCreate = tclient.createOrder;
+      const realAvail = tclient.available, realEnabled = tclient.enabled, realOut = tclient.outboundEnabled;
+      const realCompany = tclient.companyId, realDoc = tclient.addDocument;
+      tclient.available = () => true; tclient.enabled = () => true; tclient.outboundEnabled = () => true;
+      tclient.companyId = async () => 39400;
+      tclient.addDocument = async () => ({ id: 1 });
+      tclient.createOrder = async (payload, opts) => {
+        sentForm = opts && opts.form;
+        return { id: 555, order: { id: 777, lineItems: payload.order.lineItems } };
+      };
+      try {
+        const out = await BR.placeReviewOrder(app, r2.review.id);
+        if (!(out && out.ok)) console.log('   …placeReviewOrder said:', JSON.stringify(out));
+        ok('H6 the order goes through', out && out.ok === true);
+        eq('H7 …on form 159, named explicitly rather than inherited from the draw form', sentForm, 159);
+        eq('H8 …and Trinity\'s order id is recorded the instant it exists', String(out.trinityOrderId), '777');
+        const row = (await db.query(`SELECT * FROM trinity_budget_reviews WHERE id=$1`, [r2.review.id])).rows[0];
+        eq('H9 …the review is marked ordered', row.status, 'ordered');
+        ok('H10 …and it records WHICH appraisal and WHICH PDF went with it', !!row.appraisal_id && !!row.appraisal_document_id);
+
+        // EXACTLY ONCE. A second press must adopt, never post again.
+        let calls = 0;
+        tclient.createOrder = async () => { calls++; return { id: 1, order: { id: 2 } }; };
+        const again = await BR.placeReviewOrder(app, r2.review.id);
+        ok('H11 pressing it again never posts a second paid order', calls === 0 && again.already === true);
+      } finally {
+        tclient.createOrder = realCreate; tclient.available = realAvail; tclient.enabled = realEnabled;
+        tclient.outboundEnabled = realOut; tclient.companyId = realCompany; tclient.addDocument = realDoc;
+      }
+    }
+
+    // ONE LIVE REVIEW PER FILE — the database's rule, not a check somebody remembers.
+    let threw = null;
+    try {
+      await db.query(
+        `INSERT INTO trinity_budget_reviews(application_id, customer_key) VALUES($1,$2)`,
+        [app, `tbr-second-${TAG}`]);
+    } catch (e) { threw = e; }
+    ok('H12 the database refuses a second live review on one file', !!threw);
   }
 
   console.log(fail ? `test-trinity-budget-review-db: ${pass} passed, ${fail} FAILED` : `test-trinity-budget-review-db: all ${pass} checks passed.`);

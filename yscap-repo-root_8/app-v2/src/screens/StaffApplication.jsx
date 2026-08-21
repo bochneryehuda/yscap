@@ -69,6 +69,7 @@ import RateTermCashCard from '../components/RateTermCashCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import AppraisalOrderSection from '../components/AppraisalOrderSection.jsx';
+import TrinityBudgetReview from '../components/TrinityBudgetReview.jsx';
 import AppraisalCardEntry from '../components/AppraisalCardEntry.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
@@ -1852,6 +1853,18 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       {/* Flood condition — order the flood certificate from Encompass (flood only). */}
       {it.template_code === 'rtl_cond_flood' && (
         <OrderFloodButton appId={appId} itemId={it.id} onChanged={onChanged} onUploadTo={onUploadTo} />
+      )}
+
+      {/* Feasibility review — order Trinity's construction budget review straight from the
+          condition that asks for it (owner-directed 2026-08-21: "on ground-ups where we post
+          the condition for feasibility review, that condition should get a button where, from
+          that button, we can order this report directly"). It is the SAME card the Orders room
+          mounts — never a second copy, so what it says about readiness cannot differ by which
+          screen you are standing on. */}
+      {it.template_code === 'rtl_cond_feasibility' && (
+        <div style={{ paddingLeft: 20 }}>
+          <TrinityBudgetReview appId={appId} compact onChanged={onChanged} />
+        </div>
       )}
 
       {/* Title / insurance — order it from right here. */}
@@ -5622,6 +5635,12 @@ export default function StaffApplication() {
     { id: 'sec-order-insurance', label: 'Insurance', group: 'Orders',
       badge: nInsToAssign ? `${nInsToAssign} to assign` : '' },
     { id: 'sec-order-appraisal', label: 'Appraisal', group: 'Orders', badge: '' },
+    /* The Trinity construction budget review (owner-directed 2026-08-21) — its own
+       order, not a draw: it reads the construction PLAN before the loan closes. It
+       lives in Orders because that is where the owner asked for it ("should be
+       available in the order section"), and the card says on its face that it is
+       only for ground-ups and, case by case, real heavy rehabs. */
+    { id: 'sec-order-budget-review', label: 'Construction budget review', group: 'Orders', badge: '' },
     { id: 'sec-order-closing', label: 'Attorney closing prep', group: 'Orders', badge: '' },
     // E-signatures BEFORE closing (owner-directed 2026-08-02).
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & closing' },
@@ -6371,6 +6390,11 @@ export default function StaffApplication() {
           RENDERS NOTHING until an appraisal has actually been ordered. */}
       <OrdersPanel appId={id} canAccept={canComplete(role)} only="appraisal" />
       <AppraisalOrderSection appId={id} onChanged={load} />
+      </Section>
+
+      <Section hidden={!show('sec-order-budget-review')} id="sec-order-budget-review" title="Construction budget review"
+        info="Order Trinity's construction budget review (form 159) — an independent read of the plans, the permits, the contractor's numbers and the schedule, before the loan closes. Only for ground-up construction, and heavy rehabs case by case. It is not a draw: no money is requested and nothing is released.">
+      <TrinityBudgetReview appId={id} onChanged={load} />
       </Section>
 
       <Section hidden={!show('sec-order-closing')} id="sec-order-closing" summary={summaries['sec-order-closing']} title="Attorney closing prep"
