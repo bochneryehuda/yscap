@@ -3361,18 +3361,21 @@ router.get('/track-records/:id/documents', async (req, res) => {
   // filename + rejection_reason + slot label are staff free text (leak fix 2026-07-23)
   res.json(r.rows.map((row) => scrubFields(row, ['filename', 'rejection_reason', 'doc_type'])));
 });
-router.post('/track-records/:id/documents', async (req, res) => {
+/* THE BORROWER'S TRACK-RECORD DOCUMENT, ON BOTH TRANSPORTS (owner-directed 2026-08-21,
+   "across the entire system"). */
+async function uploadBorrowerTrackRecordDoc(req, res) {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
-  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  // One seam for both doors — strict decode + the JSON ceiling on the JSON one, already in
+  // storage on the streaming one.
+  let up;
+  try { up = await require('../lib/upload-stream').takeUpload(req, b); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
-  if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
-  const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  const uploadBytes = up.bytes;
+  const { ref, provider } = up;
   // A back-office document request for THIS line item (a condition tagged with
   // track_record_id) is satisfied by uploading straight to the line: attach the
   // document to the oldest open request so it counts as the condition's doc too.
@@ -3383,13 +3386,17 @@ router.post('/track-records/:id/documents', async (req, res) => {
       ORDER BY created_at LIMIT 1`, [req.params.id]);
   const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
   const dupTr = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
-    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
+    filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'borrower', uploadedById: me(req),
     trackRecordId: req.params.id, checklistItemId: reqItemId, docKind: 'track_record_doc' });
-  if (dupTr) return res.status(201).json({ ok: true, documentId: dupTr, deduped: true });
+  if (dupTr) {
+    // The bytes are already stored on both doors; drop the object nothing will point at.
+    try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
+    return res.status(201).json({ ok: true, documentId: dupTr, deduped: true });
+  }
   const r = await db.query(
     `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'borrower',$1,'track_record_doc',$9) RETURNING id`,
-    [me(req), req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, trackDocType(b.docType)]);
+    [me(req), req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', uploadBytes, provider, ref, trackDocType(b.docType)]);
   await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
   if (reqItemId) {
     await db.query(
@@ -3423,7 +3430,10 @@ router.post('/track-records/:id/documents', async (req, res) => {
       }
     } catch (_) { /* never fail the upload on a notify hiccup */ }
   }
-});
+}
+router.post('/track-records/:id/documents', uploadBorrowerTrackRecordDoc);
+router.post('/track-records/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadBorrowerTrackRecordDoc);
 
 // The saved STATIC COPY of the track record: the live builder posts a fresh
 // self-contained HTML file after every change; one current copy per borrower,

@@ -860,7 +860,19 @@ export const api = {
   staffLlc:          (id) => req('GET', `/api/staff/llcs/${id}`),
   staffUpdateLlc:    (id, b) => req('PATCH', `/api/staff/llcs/${id}`, b),
   staffSaveLlcMembers: (id, members) => req('PUT', `/api/staff/llcs/${id}/members`, { members }),
-  staffUploadLlcDoc: (llcId, b) => coalesceUpload('llcDoc:' + llcId, b, () => req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b))),
+  /* THE ENTITY DOCUMENT — streamed when the caller hands over a File (owner-directed
+     2026-08-21: the upload fix is "across the entire system"). An operating agreement is a
+     multi-page scan, routinely the largest thing on a loan; the base64 branch stays for any
+     caller that still holds bytes. */
+  staffUploadLlcDoc: (llcId, b) => coalesceUpload('llcDoc:' + llcId, b, () => (b && b.file
+    ? uploadBinary(`/api/staff/llcs/${llcId}/documents/binary`, b)
+    : req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b)))),
+  /* THE SAME, for the doors whose callers post by path rather than through a named method:
+     hand it a File and it streams, hand it base64 and it does not. One helper, so a new upload
+     surface cannot quietly land on the small transport again. */
+  uploadStream: (path, b) => (b && b.file
+    ? uploadBinary(path.endsWith('/binary') ? path : `${path}/binary`, b)
+    : req('POST', path, normalizeUpload(b))),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
   staffVerifyTrackRecord:    (id, body) => req('POST', `/api/staff/track-records/${id}/verify`, body),
   /* Remove a file from ONE workflow view (pipeline | closing | purchasing) —
@@ -1353,7 +1365,9 @@ export const api = {
   staffAddLeadTask: (id, b) => req('POST', `/api/staff/leads/${id}/tasks`, b),
   staffUpdateLeadTask: (id, taskId, b) => req('PATCH', `/api/staff/leads/${id}/tasks/${taskId}`, b),
   staffLeadDocuments:(id) => req('GET', `/api/staff/leads/${id}/documents`),
-  staffAddLeadDocument:(id, b) => req('POST', `/api/staff/leads/${id}/documents`, b),
+  staffAddLeadDocument:(id, b) => (b && b.file
+    ? uploadBinary(`/api/staff/leads/${id}/documents/binary`, b)
+    : req('POST', `/api/staff/leads/${id}/documents`, b)),
   // Authed download — a plain <a href> can't send the Bearer token, so fetch
   // the bytes and hand them to saveBlob (matches every other doc download).
   staffDownloadLeadDoc:(id, docId) => download(`/api/staff/leads/${id}/documents/${docId}`),

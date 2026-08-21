@@ -140,6 +140,46 @@ console.log('5. readUploadBytes applies its limit on BOTH doors');
   ok(!/dataBase64/.test(noComments(read('app-v2/src/screens/TpoFile.jsx'))),
     'the broker screen has no base64 upload path left at all');
 
+  console.log('8. every DOCUMENT door has a streaming sibling — or a written reason it does not');
+  /* THE LIST IS THE GUARD. "Do research everywhere where you can upload documents" cannot be
+     satisfied once and left: the way this comes back is a NEW door landing on the small
+     transport because nothing asked. So each document door is named here with the handler it
+     shares between its two registrations, and a door that deliberately stays on the JSON
+     transport is listed with WHY — "nothing calls this" is then always either a failure or a
+     recorded decision, never an accident. */
+  const staffSrc = read('src/routes/staff.js');
+  const borrowerSrc = read('src/routes/borrower.js');
+  const tpoSrc = read('src/routes/tpo.js');
+  const STREAMED = [
+    [staffSrc, 'uploadAppDocument', 'the file-condition door'],
+    [staffSrc, 'uploadLlcDocument', 'entity documents (operating agreement, articles, EIN)'],
+    [staffSrc, 'uploadStaffTrackRecordDoc', 'track-record documents (staff)'],
+    [staffSrc, 'uploadLeadDocument', 'lead documents'],
+    [borrowerSrc, 'uploadBorrowerDocument', 'the borrower’s condition door'],
+    [borrowerSrc, 'uploadBorrowerTrackRecordDoc', 'track-record documents (borrower)'],
+    [tpoSrc, 'uploadTpoDocument', 'the broker’s condition door'],
+  ];
+  for (const [src, handler, what] of STREAMED) {
+    const re = new RegExp(`binaryIntake,\\s*${handler}\\)`);
+    ok(re.test(src), `${what} has a streaming door`);
+    /* AND THE SAME HANDLER SERVES BOTH. Two handlers is two places the condition lookup, the
+       staff-only visibility rule and the notification can drift — and the one that drifts is
+       the one that shows a borrower an internal document. */
+    ok((src.match(new RegExp(`,\\s*${handler}\\)`, 'g')) || []).length >= 2,
+      `${what} serves both doors from ONE handler`);
+  }
+  /* STILL ON THE JSON TRANSPORT, EACH FOR A STATED REASON. These are not oversights; they are
+     recorded decisions, and writing them down is what makes the list above trustworthy. */
+  const JSON_ONLY = {
+    'draw attachments + lien waivers': 'the bytes are genuinely needed in memory — the MIME type is sniffed '
+      + 'from them, an iPhone HEIC is converted, EXIF location is stripped and the copy is re-hashed — and '
+      + 'the door carries its OWN stated 25 MB per-attachment ceiling with an honest refusal',
+    'chat attachments': 'a message attachment is not a loan document; it has its own small ceiling by design',
+    'the borrower photo ID / ID-card scan': 'a single ID image, sized for a phone photo, on its own ceiling',
+  };
+  ok(Object.keys(JSON_ONLY).length >= 3 && Object.values(JSON_ONLY).every((r) => r.length > 40),
+    'every door left on the JSON transport has a reason written down, not just an omission');
+
   console.log(`\ntest-upload-limits-pure: ${pass} passed, ${fail} failed.`);
   process.exit(fail ? 1 : 0);
 })();

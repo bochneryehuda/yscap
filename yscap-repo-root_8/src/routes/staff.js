@@ -11603,19 +11603,22 @@ router.get('/track-records/:id/documents', async (req, res) => {
 // was silently dropped on every upload (owner-directed 2026-08-20). It accepts a
 // slug or any known label and answers the canonical label.
 const trDocType = (v) => require('../lib/track-record/doc-request').resolveDocTypeLabel(v);
-router.post('/track-records/:id/documents', async (req, res) => {
+/* A TRACK-RECORD DOCUMENT ON BOTH TRANSPORTS (owner-directed 2026-08-21, "across the entire
+   system"). A HUD statement or a settlement sheet is a scan like any other. */
+async function uploadStaffTrackRecordDoc(req, res) {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  // One seam for both doors — strict decode + the JSON ceiling on the JSON one, already in
+  // storage on the streaming one.
+  let up;
+  try { up = await require('../lib/upload-stream').takeUpload(req, b); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
-  if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
-  const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  const uploadBytes = up.bytes;
+  const { ref, provider } = up;
   // Same contract as the borrower path: an upload straight to the line item
   // also lands on the oldest open document-request condition for that line.
   const openReq = await db.query(
@@ -11625,13 +11628,17 @@ router.post('/track-records/:id/documents', async (req, res) => {
       ORDER BY created_at LIMIT 1`, [req.params.id]);
   const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
   const dupStaffTr = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
-    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+    filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'staff', uploadedById: req.actor.id,
     trackRecordId: req.params.id, checklistItemId: reqItemId, docKind: 'track_record_doc' });
-  if (dupStaffTr) return res.status(201).json({ ok: true, documentId: dupStaffTr, deduped: true });
+  if (dupStaffTr) {
+    // The bytes are already stored on both doors; drop the object nothing will point at.
+    try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
+    return res.status(201).json({ ok: true, documentId: dupStaffTr, deduped: true });
+  }
   const r = await db.query(
     `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'track_record_doc',$10) RETURNING id`,
-    [tr.rows[0].borrower_id, req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, trDocType(b.docType)]);
+    [tr.rows[0].borrower_id, req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', uploadBytes, provider, ref, req.actor.id, trDocType(b.docType)]);
   await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
   if (reqItemId) {
     await db.query(
@@ -11643,7 +11650,10 @@ router.post('/track-records/:id/documents', async (req, res) => {
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
-});
+}
+router.post('/track-records/:id/documents', uploadStaffTrackRecordDoc);
+router.post('/track-records/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadStaffTrackRecordDoc);
 
 /* SET (or clear) a track-record document's TYPE after it has landed
    (owner-directed 2026-08-20: "whatever you drop, it should go in, and then you
@@ -12084,7 +12094,12 @@ router.get('/llcs/:id', async (req, res) => {
 // Staff upload of an entity document into a specific LLC checklist slot, WITHOUT a
 // file context (the CRM entity library has no appId). Mirrors the LLC path of the
 // staff app-doc upload; visibility='borrower' so the entity's docs stay shared.
-router.post('/llcs/:id/documents', async (req, res) => {
+/* THE ENTITY DOCUMENT DOOR, ON BOTH TRANSPORTS (owner-directed 2026-08-21: the upload fix is
+   *"across the entire system"*). An operating agreement or a set of articles is a multi-page
+   SCAN — routinely the largest thing anybody files on a loan — so this door had no business
+   being the one still capped at the JSON ceiling. Same handler, two doors: `/documents` keeps
+   the historic JSON body, `/documents/binary` streams the file itself. */
+async function uploadLlcDocument(req, res) {
   try {
     const b = req.body || {};
     if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
@@ -12098,11 +12113,13 @@ router.post('/llcs/:id/documents', async (req, res) => {
       const ci = await db.query(`SELECT id FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, req.params.id]);
       if (!ci.rows[0]) return res.status(404).json({ error: 'checklist item not found on this entity' });
     }
-    let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+    /* One seam for both doors: on the JSON one this decodes strictly (a data: prefix or
+       non-base64 junk 400s rather than garbling the bytes) and applies the JSON ceiling; on the
+       streaming one the file is already in storage and this simply hands it over. */
+    let up;
+    try { up = await require('../lib/upload-stream').takeUpload(req, b); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-    const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
-    if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
+    const uploadBytes = up.bytes;
     let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
     // Every slot keeps EVERY document (owner-directed): on a plain ADD (not an
     // explicit replace), uniquify a colliding slot label so the two never display
@@ -12112,15 +12129,22 @@ router.post('/llcs/:id/documents', async (req, res) => {
       slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
     }
     const dupLlc = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
-      filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+      filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'staff', uploadedById: req.actor.id,
       llcId: req.params.id, checklistItemId: b.checklistItemId || null, slotLabel: slot });
-    if (dupLlc) return res.status(201).json({ ok: true, documentId: dupLlc, deduped: true });
-    const { ref, provider } = await storage.save(buf, { filename: b.filename });
+    if (dupLlc) {
+      /* The bytes are already in storage on BOTH doors now (the streaming one cannot know about
+         a duplicate until they have landed), so a de-duplicated upload would leave an object
+         nothing points at. Best-effort: an orphan blob is waste, never a correctness problem,
+         and must not turn a successful de-dupe into an error. */
+      try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
+      return res.status(201).json({ ok: true, documentId: dupLlc, deduped: true });
+    }
+    const { ref, provider } = up;
     const r = await db.query(
       `INSERT INTO documents (checklist_item_id,llc_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,slot_label,visibility)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,'borrower') RETURNING id`,
       [b.checklistItemId || null, req.params.id, own.rows[0].borrower_id, b.filename,
-       b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, slot]);
+       b.contentType || 'application/octet-stream', uploadBytes, provider, ref, req.actor.id, slot]);
     if (b.checklistItemId) {
       // EVERY document slot keeps EVERY document (owner-directed): a plain ADD
       // never deletes what's already there. Only an EXPLICIT replace (the user
@@ -12142,7 +12166,10 @@ router.post('/llcs/:id/documents', async (req, res) => {
     await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, llcId: req.params.id });
     res.status(201).json({ ok: true, documentId: r.rows[0].id });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
-});
+}
+router.post('/llcs/:id/documents', uploadLlcDocument);
+router.post('/llcs/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadLlcDocument);
 
 router.patch('/llcs/:id', async (req, res) => {
   const own = await db.query(`SELECT borrower_id, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
@@ -17512,22 +17539,24 @@ router.get('/leads/:id/documents', async (req, res) => {
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
-router.post('/leads/:id/documents', async (req, res) => {
+/* A LEAD'S DOCUMENT, ON BOTH TRANSPORTS (owner-directed 2026-08-21, "across the entire
+   system"). A prospect's contract arrives here before there is a loan file to put it on. */
+async function uploadLeadDocument(req, res) {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   try {
     if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
-    let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+    // One seam for both doors — strict decode + the JSON ceiling on the JSON one, already in
+    // storage on the streaming one.
+    let up;
+    try { up = await require('../lib/upload-stream').takeUpload(req, b); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-    const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
-    if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
-    const { ref, provider } = await storage.save(buf, { filename: b.filename });
+    const { ref, provider } = up;
     const r = await db.query(
       `INSERT INTO documents (lead_id, filename, content_type, size_bytes, storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id)
        VALUES ($1,$2,$3,$4,$5,$6,'staff',$7) RETURNING id`,
-      [req.params.id, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id]);
+      [req.params.id, b.filename, b.contentType || 'application/octet-stream', up.bytes, provider, ref, req.actor.id]);
     await db.query(
       `INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body, meta)
        VALUES ($1,$2,'file','Attached a file',$3,$4)`,
@@ -17536,7 +17565,10 @@ router.post('/leads/:id/documents', async (req, res) => {
     await audit(req, 'staff_upload_lead_doc', 'lead', req.params.id, { filename: b.filename });
     res.status(201).json({ ok: true, documentId: r.rows[0].id });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
-});
+}
+router.post('/leads/:id/documents', uploadLeadDocument);
+router.post('/leads/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadLeadDocument);
 router.get('/leads/:id/documents/:docId', async (req, res) => {
   try {
     if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });

@@ -170,7 +170,77 @@ function call(server, method, p, { body = null, headers = {}, token = null } = {
         'x-upload-meta': meta({ filename: 'sneaky.pdf', checklistItemId: itemId }) },
     });
     ok(r6.status === 403 || r6.status === 404, `a staffer with no access to the file is refused (got ${r6.status})`);
+
+    console.log('7. the OTHER document doors take the big file too');
+    /* "It should be fixed across the entire system. Do research everywhere where you can upload
+       documents." The condition door was fixed first; these are the rest of the doors a person
+       actually files a DOCUMENT through, and each was still capped at the JSON ceiling. An
+       operating agreement or a set of articles is a multi-page SCAN — routinely the largest
+       thing on a loan — so the entity door had no business being the one left behind.
+
+       The SAME 12 MB body against the SAME 4 MB JSON ceiling: a file that cannot go through the
+       historic door at all. */
+    const llc = (await db.query(
+      `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`,
+      [B, `Streamed Holdings ${APP.slice(0, 8)} LLC`])).rows[0].id;
+    const trk = (await db.query(
+      `INSERT INTO track_records (borrower_id, property_address, deal_type)
+       VALUES ($1,$2,'flip') RETURNING id`,
+      [B, JSON.stringify({ street: '9 Past Deal Rd', city: 'Lakewood', state: 'NJ', zip: '08701' })])).rows[0].id;
+    const lead = (await db.query(
+      // `tool` is the one NOT NULL column with no default — a lead is always recorded with the
+      // marketing tool it came in through.
+      `INSERT INTO leads (name, email, officer_id, tool) VALUES ('Streamed Lead',$1,$2,'loan_application') RETURNING id`,
+      [`lead_${APP.slice(0, 8)}@x.test`, LO])).rows[0].id;
+
+    const DOORS = [
+      { what: 'an entity document (operating agreement)', path: `/api/staff/llcs/${llc}/documents/binary`, name: 'operating-agreement.pdf' },
+      { what: 'a track-record document', path: `/api/staff/track-records/${trk}/documents/binary`, name: 'hud-statement.pdf' },
+      { what: 'a lead document', path: `/api/staff/leads/${lead}/documents/binary`, name: 'prospect-contract.pdf' },
+    ];
+    for (const D of DOORS) {
+      const r = await call(server, 'POST', D.path, {
+        body: big, token: tok,
+        headers: { 'Content-Type': 'application/octet-stream',
+          'x-upload-meta': meta({ filename: D.name, contentType: 'application/pdf' }) },
+      });
+      eq(r.status, 201, `${D.what} uploads at 12 MB`);
+      const docId = r.body && r.body.documentId;
+      ok(!!docId, `${D.what} is recorded`);
+      if (docId) {
+        /* THE BYTES ARE THE POINT — asserted by reading the stored copy back and hashing it,
+           not by trusting the 201. A streamed upload that recorded a row and stored nothing
+           would pass every other check here. */
+        const row = (await db.query(`SELECT storage_ref, storage_provider, size_bytes FROM documents WHERE id=$1`, [docId])).rows[0];
+        eq(Number(row && row.size_bytes), big.length, `${D.what}: the recorded size is the real one`);
+        const back = await storage.forRow(row).read(row.storage_ref);
+        eq(crypto.createHash('sha256').update(back).digest('hex'), bigSha,
+          `${D.what}: and the stored copy is the file, byte for byte`);
+      }
+    }
+    /* AND THE JSON DOOR STILL REFUSES HONESTLY on the same door — the ceiling did not move for
+       the transport that cannot afford it, and the refusal still names the file and the limit. */
+    const llcJsonRefusal = await call(server, 'POST', `/api/staff/llcs/${llc}/documents`, {
+      body: JSON.stringify({ filename: 'too-big.pdf', contentType: 'application/pdf',
+        dataBase64: big.slice(0, 6 * 1024 * 1024).toString('base64') }),
+      token: tok, headers: { 'Content-Type': 'application/json' },
+    });
+    ok(llcJsonRefusal.status === 413 || llcJsonRefusal.status === 400,
+      `the JSON door still refuses what it cannot afford (got ${llcJsonRefusal.status})`);
+    if (llcJsonRefusal.status === 413) {
+      ok(/too-big\.pdf/.test(String(llcJsonRefusal.body && llcJsonRefusal.body.error)),
+        '…naming the file, not just "upload failed"');
+    }
   } finally {
+    await db.query(`DELETE FROM documents WHERE llc_id IN (SELECT id FROM llcs WHERE borrower_id=$1)`, [B]).catch(() => {});
+    await db.query(`DELETE FROM documents WHERE track_record_id IN (SELECT id FROM track_records WHERE borrower_id=$1)`, [B]).catch(() => {});
+    await db.query(`DELETE FROM documents WHERE lead_id IN (SELECT id FROM leads WHERE officer_id=$1)`, [LO]).catch(() => {});
+    await db.query(`DELETE FROM lead_activities WHERE lead_id IN (SELECT id FROM leads WHERE officer_id=$1)`, [LO]).catch(() => {});
+    await db.query(`DELETE FROM leads WHERE officer_id=$1`, [LO]).catch(() => {});
+    await db.query(`DELETE FROM checklist_items WHERE track_record_id IN (SELECT id FROM track_records WHERE borrower_id=$1)`, [B]).catch(() => {});
+    await db.query(`DELETE FROM track_records WHERE borrower_id=$1`, [B]).catch(() => {});
+    await db.query(`DELETE FROM checklist_items WHERE llc_id IN (SELECT id FROM llcs WHERE borrower_id=$1)`, [B]).catch(() => {});
+    await db.query(`DELETE FROM llcs WHERE borrower_id=$1`, [B]).catch(() => {});
     await db.query(`DELETE FROM documents WHERE application_id=$1`, [APP]).catch(() => {});
     await db.query(`DELETE FROM checklist_items WHERE application_id=$1`, [APP]).catch(() => {});
     await db.query(`DELETE FROM applications WHERE id=$1`, [APP]).catch(() => {});
