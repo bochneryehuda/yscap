@@ -121,7 +121,8 @@ async function storeSignedDocument(db, storage, { applicationId, borrowerId, che
 }
 
 // ---- update the recipient roster from fetched truth -------------------------
-async function applyRecipients(db, envelopeRowId, envelope) {
+async function applyRecipients(db, envelopeRow, envelope) {
+  const envelopeRowId = envelopeRow.id;
   const parsed = docusignDefault.parseRecipients(envelope);
   for (const r of parsed) {
     /* THE TURN THAT JUST CAME. A signer on routing order 2 — the admin who counter-signs a term
@@ -136,7 +137,7 @@ async function applyRecipients(db, envelopeRowId, envelope) {
        transition is read from the row rather than inferred. */
     const prev = (await db.query(
       `WITH before AS (
-         SELECT status AS old_status, role, borrower_id
+         SELECT status AS old_status, role, borrower_id, name
            FROM esign_recipients
           WHERE envelope_row_id = $1 AND recipient_id_ds = $2
        )
@@ -150,7 +151,7 @@ async function applyRecipients(db, envelopeRowId, envelope) {
               last_event_at = now(), updated_at = now()
          FROM before
         WHERE r.envelope_row_id = $1 AND r.recipient_id_ds = $2
-        RETURNING before.old_status, before.role, before.borrower_id`,
+        RETURNING before.old_status, before.role, before.borrower_id, before.name`,
       [envelopeRowId, String(r.recipientId), next,
        r.sentAt, r.deliveredAt, r.signedAt, r.declinedAt, r.declineReason])).rows[0];
     const becameActive = prev && !['sent', 'delivered'].includes(String(prev.old_status || ''))
@@ -164,7 +165,48 @@ async function applyRecipients(db, envelopeRowId, envelope) {
         });
       } catch (_) { /* the invitation is best-effort */ }
     }
+
+    /* THE OTHER HALF OF THE SAME OWNER ASK (2026-08-21): *"Get a notification from Docusign
+       when it's signed and when it's being viewed."* The SIGNED half is ours already
+       (`notifyTerminal` fires on the terminal transition and files the executed copy). The
+       VIEWED half was left to DocuSign's carbon copies — but a CC is mailed when routing
+       REACHES their order and when the envelope COMPLETES; DocuSign does not mail a CC each
+       time somebody opens the document. So the signal PILOT already receives and already
+       STORED told nobody: DocuSign's `delivered` means the recipient OPENED the envelope (not
+       that mail was delivered), and `delivered_at` was written to the row and read by nothing.
+       Fired off the SAME captured transition as the counter-signer invite above, so a repeated
+       `delivered` webhook — which DocuSign sends freely — cannot repeat it.
+
+       IN-APP ONLY, DELIBERATELY, and stated here rather than inferred: this lands the moment a
+       borrower opens a term sheet, at whatever hour they read their mail, on every package. The
+       owner's standing rule for exactly this class is *"stop the bombardment with stuff that is
+       not important"*. The bell rings and the row is written; only the email is withheld. */
+    const becameViewed = prev && String(prev.old_status || '') !== 'delivered'
+      && String(next) === 'delivered';
+    if (becameViewed) {
+      try { await notifyViewed(db, envelopeRow, prev); }
+      catch (_) { /* the notice must never cost us the status write above */ }
+    }
   }
+}
+
+/** Tell the file's team, ONCE, that a signer has OPENED the package — never that it is signed.
+    In-app only; the call site above says why an email here would be a bombardment. */
+async function notifyViewed(db, envelopeRow, rec) {
+  // An app-less admin self-test envelope has no file and no team to tell.
+  if (!envelopeRow || !envelopeRow.application_id) return;
+  const cfg = require('../../config');
+  const label = purposeLabel(envelopeRow.purpose, 'e-signature package');
+  const who = String((rec && rec.name) || '').trim() || 'A signer';
+  await require('../notify').notifyAppStaff(envelopeRow.application_id, {
+    type: 'status_change',
+    inAppOnly: true,
+    title: `${who} opened the ${label}`,
+    badge: { text: 'Viewed', tone: 'neutral' },
+    body: `${who} opened the ${label} in DocuSign. Nothing is signed yet — this is the moment they saw it.`,
+    applicationId: envelopeRow.application_id,
+    link: `${cfg.appUrl || ''}${cfg.portalPath}/#/internal/app/${envelopeRow.application_id}`,
+  });
 }
 
 // ---- on completion: download + store signed docs, clear conditions ----------
@@ -328,7 +370,7 @@ async function reconcileEnvelope(db, docusign, storage, envelopeRow) {
   const status = String((envelope && envelope.status) || '').toLowerCase();
   const map = ENV_STATUS[status];
 
-  await applyRecipients(db, envelopeRow.id, envelope);
+  await applyRecipients(db, envelopeRow, envelope);
 
   // On completion, STORE THE SIGNED DOCS FIRST and only then stamp 'completed'.
   // If a signed-PDF download fails, handleCompletion throws BEFORE the status

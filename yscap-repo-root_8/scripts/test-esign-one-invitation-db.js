@@ -214,6 +214,95 @@ const TAG = 'es' + crypto.randomBytes(4).toString('hex');
       'an envelope with no loan file behind it says so rather than throwing');
     eq((await completionNotice.notifyExecuted({ ...iska, is_test: true }, { db })).reason, 'no_file',
       'and a self-test envelope is never mailed to anybody');
+
+    // ================================================= 6. VIEWED, NOT SIGNED
+    /* THE OWNER'S OTHER HALF (2026-08-21): *"Get a notification from Docusign when it's signed
+       and when it's being viewed."* The signed half was already ours. The viewed half rested on
+       DocuSign's carbon copies, which are mailed when routing reaches them and when the envelope
+       completes — NOT on each open. PILOT already received the signal and stored it
+       (`delivered_at`; DocuSign's `delivered` means OPENED) and told nobody. Driven through the
+       exported webhook path so this is the real transition, not a hand-called helper. */
+    console.log('\n6. a signer OPENING the package tells the team, once, in-app');
+    const webhook = require(REPO + '/src/lib/esign/webhook');
+    /* ITS OWN FILE, for two reasons: `uq_esign_inflight` allows ONE in-flight envelope per
+       (file, purpose) and the sections above already spent this file's, and counting "opened"
+       notices on a private file means no other section's fan-out can be mistaken for this one. */
+    const app6 = (await db.query(
+      `INSERT INTO applications(borrower_id, loan_officer_id, status, ys_loan_number, property_address, loan_amount)
+       VALUES($1,$2,'approved',$3,'{"oneLine":"6 View St, Town, NY 11111"}',500000) RETURNING id`,
+      [bor, lo, `YSV${TAG.toUpperCase()}`])).rows[0].id;
+    ids.apps.push(app6);
+    const envelope6 = async (purpose) => {
+      const e = (await db.query(
+        `INSERT INTO esign_envelopes(application_id, provider, envelope_id, status, purpose, embedded)
+         VALUES($1,'docusign',$2,'sent',$3,true) RETURNING *`,
+        [app6, `ds-${TAG}-v-${purpose}`, purpose])).rows[0];
+      ids.envelopes.push(e.id);
+      return e;
+    };
+    const viewedEnv = await envelope6('term_sheet_package');
+    await recipient(viewedEnv.id, {
+      role: 'borrower', rid: 7, borrowerId: bor, name: 'Grace Hopper',
+      email: `bor.${TAG}@example.com`, status: 'sent',
+    });
+    const dsEnvelope = (status, deliveredAt) => ({
+      recipients: { signers: [{
+        recipientId: '7', routingOrder: 1, name: 'Grace Hopper',
+        email: `bor.${TAG}@example.com`, status, deliveredDateTime: deliveredAt,
+      }] },
+    });
+    const openedCount = async () => Number((await db.query(
+      `SELECT count(*) AS n FROM notifications WHERE application_id=$1 AND title ILIKE '%opened%'`,
+      [app6])).rows[0].n);
+
+    outbox.length = 0;
+    await webhook.applyRecipients(db, viewedEnv, dsEnvelope('delivered', '2026-08-21T10:00:00Z'));
+    await require(REPO + '/src/lib/notify').drainEmails().catch(() => {});
+    eq(await openedCount(), 1, 'opening the package raises exactly one notice for the file team');
+    const stamped = (await db.query(
+      `SELECT delivered_at, status FROM esign_recipients WHERE envelope_row_id=$1 AND recipient_id_ds='7'`,
+      [viewedEnv.id])).rows[0];
+    ok(!!stamped.delivered_at, '…and the viewed stamp is on the recipient row');
+    eq(stamped.status, 'delivered', '…with the status DocuSign reported');
+    /* IN-APP ONLY. A borrower opens a term sheet whenever they read their mail; the owner's
+       standing rule on this class is "stop the bombardment with stuff that is not important".
+       Asserted on the WIRE with the mailer stubbed — a quiet `none` provider proves nothing. */
+    const openedMail = outbox.filter((m) => /opened/i.test(String(m.subject || '')));
+    eq(openedMail.length, 0, 'and it is IN-APP ONLY — nobody is emailed that a document was opened');
+
+    /* DocuSign resends `delivered` freely; the notice must not resend with it. */
+    await webhook.applyRecipients(db, viewedEnv, dsEnvelope('delivered', '2026-08-21T10:00:00Z'));
+    await require(REPO + '/src/lib/notify').drainEmails().catch(() => {});
+    eq(await openedCount(), 1, 'a repeated delivered webhook does NOT announce it a second time');
+
+    /* SIGNING IS NOT OPENING — the terminal notice is `notifyTerminal`'s job, and a signer who
+       goes straight to completed must not also be announced as merely having looked. */
+    const signedEnv = await envelope6('heter_iska');
+    await recipient(signedEnv.id, {
+      role: 'borrower', rid: 8, borrowerId: bor, name: 'Grace Hopper',
+      email: `bor.${TAG}@example.com`, status: 'sent',
+    });
+    const before8 = await openedCount();
+    await webhook.applyRecipients(db, signedEnv, {
+      recipients: { signers: [{
+        recipientId: '8', routingOrder: 1, name: 'Grace Hopper', email: `bor.${TAG}@example.com`,
+        status: 'completed', signedDateTime: '2026-08-21T11:00:00Z',
+      }] },
+    });
+    await require(REPO + '/src/lib/notify').drainEmails().catch(() => {});
+    eq(await openedCount(), before8, 'a signer who goes straight to signed is never announced as "opened"');
+
+    /* An app-less admin self-test has no file and no team — it must tell nobody rather than throw. */
+    const testEnv = (await db.query(
+      `INSERT INTO esign_envelopes(application_id, provider, envelope_id, status, purpose, embedded, is_test)
+       VALUES(NULL,'docusign',$1,'sent','test',true,true) RETURNING *`, [`ds-${TAG}-selftest`])).rows[0];
+    ids.envelopes.push(testEnv.id);
+    await recipient(testEnv.id, { role: 'admin', rid: 9, name: 'Admin Self', email: `adm.${TAG}@example.com`, status: 'sent' });
+    let threw = null;
+    try { await webhook.applyRecipients(db, testEnv, dsEnvelope('delivered', '2026-08-21T10:00:00Z')); }
+    catch (e) { threw = e; }
+    ok(!threw, 'an app-less self-test envelope does not throw on the viewed path');
+
   } finally {
     mailer.sendMail = realSend;
     try { await require(REPO + '/src/lib/notify').drainEmails(); } catch (_) {}
