@@ -465,10 +465,28 @@ function DrawRequestCard({ appId }) {
     if (!env || !env.row_id) return;
     setBusy(true); setMsg('');
     try {
-      await api.post(`/api/staff/esign/${env.row_id}/resend`, {});
-      setMsg('Reminder resent to the current signer.');
+      const r = await api.post(`/api/staff/esign/${env.row_id}/resend`, {});
+      // The server tells us when the form is old enough that a reminder is likely
+      // to reach a dead envelope — say so rather than letting somebody press it
+      // three more times.
+      setMsg('Reminder resent to the current signer.' + (r && r.notice ? ` ${r.notice}` : ''));
       reload();
-    } catch (e) { setMsg((e && e.data && e.data.error) || e.message || 'Could not resend the reminder.'); }
+    } catch (e) {
+      const d = (e && e.data) || {};
+      // A REMINDER CANNOT REVIVE A DEAD ENVELOPE, and this is the whole point of
+      // the fix (owner-reported 2026-08-21: the borrower never opened it for
+      // months, so DocuSign expired and voided it). Offer the one thing that DOES
+      // work — a brand-new form — instead of dead-ending on the refusal.
+      if (d.code === 'envelope_not_live' && d.reissue === 'draw_request') {
+        setBusy(false);
+        const go = await askConfirm(`${d.error}\n\nSend a fresh draw form now?`,
+          { confirmLabel: 'Send a fresh form', cancelLabel: 'Not now' });
+        if (go) { await send(true); return; }
+        setMsg(d.error);
+        return;
+      }
+      setMsg(d.error || e.message || 'Could not resend the reminder.');
+    }
     finally { setBusy(false); }
   }
   // Change the wire form's email on the in-flight envelope and re-send to the new

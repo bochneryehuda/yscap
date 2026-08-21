@@ -130,7 +130,15 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
       await fn(); if (okMsg) { setMsg(okMsg); msgT.current = setTimeout(() => setMsg(''), 6000); }   // auto-dismiss so a stale "Sent" banner never sits above a failed card
       await load(true);
       if (after) { try { await after(); } catch (_) { /* the parent refresh is best-effort */ } }
-    } catch (e) { setErr(e.message || 'Action failed'); }
+    } catch (e) {
+      setErr(e.message || 'Action failed');
+      // A refusal that says the envelope is no longer live has ALREADY moved the
+      // state server-side (we record what DocuSign told us), and the way through is
+      // the per-envelope Re-issue button — which only renders once the card knows the
+      // package is terminal. Without this refresh the message names an action whose
+      // button is still hidden, which is the dead end this whole path exists to remove.
+      if (e && e.data && e.data.code === 'envelope_not_live') { try { await load(true); } catch (_) { /* the message still stands */ } }
+    }
     finally { setBusy(''); }
   }
   useEffect(() => () => { if (msgT.current) clearTimeout(msgT.current); }, []);

@@ -18,7 +18,9 @@
  *   4. The drop target is wired (dragover preventDefault — without it the
  *      browser NAVIGATES to the dropped file) and the halo class exists in the
  *      stylesheet.
- *   5. The HTML cache-busters were bumped (these assets are cached hard).
+ *   5. An edited asset carries a MOVED cache-buster (these assets are cached
+ *      hard, so a stale ?v= serves the old file). Derived from the asset's own
+ *      content hash, never a pinned literal that fails on the next correct bump.
  */
 const fs = require('fs');
 const path = require('path');
@@ -57,8 +59,30 @@ ok('wireDrop runs at init', /function init\(\)\{[^}]*wireDrop\(\)/.test(js));
 ok('the halo class exists in the stylesheet', /body\.rb-dropping/.test(css));
 
 // 5. cache busters
-ok('rehab-budget.js cache-buster bumped', /rehab-budget\.js\?v=dnd1/.test(html));
-ok('rehab-budget.css cache-buster bumped', /rehab-budget\.css\?v=dnd1/.test(html));
+// These assets are cached HARD, so an edit that does not bump the ?v= serves the
+// STALE file to every browser that has been here before -- the tool looks unfixed.
+// Pinning the literal buster ("?v=dnd1") could not express that rule: it says "the
+// buster is exactly this", which is FALSE the moment somebody legitimately edits the
+// tool, so it failed on the CORRECT action and passed on the wrong one (edit the JS,
+// leave the buster, and the old assertion was perfectly happy).
+// So the requirement is derived from the asset's OWN CONTENT: change the file and its
+// hash stops matching, which is the one moment the buster has to move. Bump the ?v=
+// in rehab-budget.html and paste the new sha printed below.
+const crypto = require('crypto');
+const sha16 = (t) => crypto.createHash('sha256').update(t).digest('hex').slice(0, 16);
+const ASSETS = [
+  { file: 'rehab-budget.js', body: js, sha: '205c769833aecfe8', v: 'flow1' },
+  { file: 'rehab-budget.css', body: css, sha: '4a3598405f9e9680', v: 'dnd1' },
+];
+for (const a of ASSETS) {
+  const seen = sha16(a.body);
+  ok(`${a.file} is unchanged, or its cache-buster moved with it`
+    + (seen === a.sha ? '' : ` — it changed (sha ${seen}); bump ?v= in rehab-budget.html and update this line`),
+    seen === a.sha);
+  const m = new RegExp(a.file.replace('.', '\\.') + '\\?v=([A-Za-z0-9_-]+)').exec(html);
+  ok(`${a.file} is loaded with a cache-buster`, !!m);
+  if (m) ok(`${a.file}'s cache-buster is the one this test was pinned against`, m[1] === a.v);
+}
 
 console.log(`test-sow-import-guards-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

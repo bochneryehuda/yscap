@@ -34,7 +34,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 8 | Feasibility report + GC contact into TPR export & SharePoint | Ground-up conditions | ☐ |
 | 9 | Plans & permits → TPR, SharePoint **and Sitewire** | Ground-up conditions | ☐ |
 | 10 | GC information condition: informational fields + GC PDF | Conditions | ☐ |
-| 11 | Resend Draw form must work when unseen/expired | Draws | ☐ |
+| 11 | Resend Draw form must work when unseen/expired | Draws | ☑ |
 | 12 | Credit report import reads the WRONG scores (2 borrowers) | Credit | ☑ |
 | 13 | Condition center: external notes for borrowers + TPOs | Conditions | ☐ |
 | 14 | Conditions: add a document slot (not a borrower request) | Conditions | ☐ |
@@ -43,7 +43,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 17 | Scope of work Excel import: drag-and-drop | Uploads | ☐ |
 | 18 | ClickUp: Joshua Freidlander's files land in Lead Capture | ClickUp | ◐ |
 | 19 | ClickUp: assigning an officer moves the task to their folder | ClickUp | ☐ |
-| 20 | Rehab Budget PDF: value-add / narrative overlap | PDF | ☐☑ |
+| 20 | Rehab Budget PDF: value-add / narrative overlap | PDF | ☑ |
 | 21 | Funded date auto-read from Encompass (`CX.FUNDEDDATE`) | Encompass | ☐ |
 | 22 | Experience-count condition stuck at the old requirement | Conditions | ☐ |
 | 23 | DocuSign: processor + officer always CC'd as viewers | DocuSign | ☐ |
@@ -230,6 +230,28 @@ the "Plans and Permits" condition.
 
 The Resend button on the Draw section must genuinely work — including the case where the borrower never
 opened it for a long time, or the link/form has expired. Re-issue a fresh, valid form.
+
+**SHIPPED.** What was actually wrong, in plain words: a "resend" only pokes the form that is already out
+there — it never makes a new one. But a form nobody signs does not live for ever: DocuSign kills it after
+about four months, which is exactly the case the owner described. So the reminder had nothing left to poke.
+
+Two things were happening, and only one of them was visible:
+
+* **When PILOT already knew the form was dead**, the Draw section was fine — it swaps the Resend button for
+  "Re-send draw request form", which sends a brand-new one. That half already worked.
+* **When PILOT had not caught up yet** — our copy still said "out for signature" while DocuSign had already
+  killed it — pressing Resend gave a plain **"server error"**. That is the dead end, and that is what is fixed.
+
+Now: PILOT asks DocuSign, and when the answer is "that form is gone" it says so in words, records it, and
+offers **"Send a fresh draw form now?"** — one click, and the new form goes out. The same wording is used
+whether PILOT works it out itself or hears it from DocuSign, so nobody ever gets two different answers about
+the same form. A form that is still alive but simply old is still sent a reminder — with a note saying how
+long it has been waiting, so nobody presses the button five more times.
+
+The e-sign panel (term sheet, Heter Iska) shares the same button, so it is fixed there too, and the card now
+refreshes itself so the "issue a new one" button is actually on screen when the message tells you to use it.
+
+Nothing here can send a form on its own, and nothing changes what the borrower signs.
 
 ---
 

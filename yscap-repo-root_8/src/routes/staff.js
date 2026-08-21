@@ -19909,6 +19909,7 @@ router.get('/applications/:id/esign', async (req, res) => {
 const esignOrchestrate = require('../lib/esign/orchestrate');
 const esignWebhook = require('../lib/esign/webhook');
 const docusignLib = require('../lib/integrations/docusign');
+const resendReadiness = require('../lib/esign/resend-readiness');
 
 // Map a thrown orchestration error to an HTTP status + safe message.
 function esignErrStatus(e) {
@@ -20077,8 +20078,17 @@ router.post('/esign/:rowId/resend', async (req, res) => {
     if (!can(req.actor, 'send_term_sheet')) return res.status(403).json({ error: 'You do not have permission to send documents for signature.' });
     const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
     if (!row) return res.status(status).json({ error });
-    if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
-    if (['completed', 'declined', 'voided'].includes(row.status)) return res.status(409).json({ error: `envelope already ${row.status}` });
+    // A refusal must name the way through, never just the state. "envelope already
+    // voided" is true and useless: an envelope that sat unsigned for months is
+    // EXPIRED by DocuSign and voided -- exactly the reported case -- and the person
+    // reading it is the one who could issue a fresh one in a click.
+    // esign/resend-readiness is the ONE place that turns the state into the action,
+    // so this pre-check and the DocuSign-refusal path below can never word it
+    // differently.
+    {
+      const bad = resendReadiness.resendProblem(row);
+      if (bad) return res.status(bad.status).json(bad);
+    }
     // Resend is a real borrower email — the master kill-switch must gate it too. Read the RUNTIME
     // switch (override ?? env) so flipping DocuSign off on the API Health page stops resends immediately.
     if (!require('../lib/integrations/switches').on('DOCUSIGN_SEND_ENABLED')) return res.status(409).json({ error: 'Sending is paused right now. Turn sending back on before resending.' });
@@ -20102,9 +20112,31 @@ router.post('/esign/:rowId/resend', async (req, res) => {
         return res.status(409).json({ error: 'The borrower’s email on file changed since this package was sent. A resend can’t update the address — use “Change email & re-send” on the signer to re-address it (or void and re-issue).' });
       }
     }
-    await docusignLib.resendEnvelope(row.envelope_id);
+    try {
+      await docusignLib.resendEnvelope(row.envelope_id);
+    } catch (e) {
+      // OUR stored status can lag reality: the envelope may have expired on
+      // DocuSign's side with no webhook landed yet, so the pre-check above passed
+      // and the wire is where we find out. Answer with the SAME sentence and the
+      // same code rather than a 500 "server error" -- the least useful thing to
+      // tell somebody about a form they were trying to nudge.
+      const refused = resendReadiness.docusignRefusal(e, row);
+      if (refused) {
+        // Record what we now know, so the screen and the next click agree with
+        // DocuSign instead of re-offering a resend that cannot work. Best-effort.
+        try {
+          await db.query(
+            `UPDATE esign_envelopes SET status='voided', updated_at=now()
+              WHERE id=$1 AND status NOT IN ('completed','declined','voided')`, [row.id]);
+        } catch (_) { /* the refusal is the answer either way */ }
+        return res.status(refused.status).json(refused);
+      }
+      throw e;
+    }
     await audit(req, 'esign_resend', 'application', row.application_id, { purpose: row.purpose });
-    res.json({ ok: true });
+    // Advisory only -- the reminder HAS gone out. It explains a nudge that is
+    // likely to produce nothing, so nobody presses it three more times.
+    res.json({ ok: true, notice: resendReadiness.staleNotice(row) || undefined });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
