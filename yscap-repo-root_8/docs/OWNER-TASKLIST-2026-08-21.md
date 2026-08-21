@@ -37,7 +37,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 11 | Resend Draw form must work when unseen/expired | Draws | ☑ |
 | 12 | Credit report import reads the WRONG scores (2 borrowers) | Credit | ☑ |
 | 13 | Condition center: external notes for borrowers + TPOs | Conditions | ☐ |
-| 14 | Conditions: add a document slot (not a borrower request) | Conditions | ☐ |
+| 14 | Conditions: add a document slot (not a borrower request) | Conditions | ☑ |
 | 15 | Borrower profile reachable from inside a file | Navigation | ☐ |
 | 16 | Overview hover button missing on full screens | Navigation | ☑ |
 | 17 | Scope of work Excel import: drag-and-drop | Uploads | ☑ |
@@ -382,6 +382,35 @@ Today "Request another doc" opens a slot **and asks the borrower for it**. Add, 
 "**Add a document slot**" action that opens an extra slot **without** sending a request — for a document
 staff already has. It files into the **same condition and the same folder** as everything else on that
 condition.
+
+**SHIPPED.** The button is there, next to the request button, on every document condition.
+
+**Half of this was already built and unreachable, which is worth recording.** The server side has always
+been able to open a slot without asking the borrower for anything — `lib/conditions/extra-slots.js` has
+carried an `internal` audience since the day it shipped, and only an EXTERNAL ask sets the condition to
+"requested" or notifies the borrower. What was missing was a way to get to it: there was ONE button, and
+the internal option sat behind **two** confirm dialogs that only appeared on a borrower-facing condition.
+So *"I don't use that request button"* was exactly right — opening an empty slot of your own meant
+answering two questions about the borrower first.
+
+**Now the button IS the choice.** A borrower-facing condition shows both — *Request another document*
+(asks the borrower, shows on their portal, notifies them) and *Add a document slot* (opens an empty named
+slot for us, asks the borrower for nothing). A staff-only condition shows only *Add a document slot*,
+because there is nobody to request from. The two dialogs are gone: pressing one button is the whole
+decision, so there is nothing left to confirm.
+
+Either way the slot belongs to that condition, so what you upload into it inherits the condition's TPR
+export folder and its SharePoint folder with no second machinery — the owner's *"it should go together
+with that condition in the same folder"*. Opening a slot on a signed-off condition reopens it, whichever
+button opened it: the sign-off was made before the new document was asked for.
+
+Proof: `scripts/test-condition-slot-buttons-pure.mjs` (the reachability — both doors, each naming its
+audience as a literal, the add-a-slot door NOT hidden behind the borrower-facing guard, both condition
+rows still mounting it; three mutations proven to fail it) and new sections **B5–B8** in
+`scripts/test-condition-extra-slots-db.js` (against a real Postgres: an internal slot does NOT turn the
+condition into a request and tells the borrower NOTHING — measured against the external ask in the same
+run as a live control — and still reopens a signed-off condition; both proven to fail when the server's
+external-only guards are mutated out).
 
 ---
 

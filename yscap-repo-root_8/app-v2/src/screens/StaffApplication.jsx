@@ -1519,33 +1519,51 @@ function ConditionOrderButton({ appId, it, role, onChanged }) {
   );
 }
 
-/* REQUEST ANOTHER DOCUMENT WITHIN A CONDITION (db/578, owner-directed 2026-08-18:
-   "you got one document and you wanna request another document within that
-   condition … there should be a button for the staff members to open up another
-   slot in a condition and type the name of that slot. That should populate as an
-   open item needing it"). Opens a NAMED slot on THIS condition: an external ask
-   shows on the borrower's portal as still needed (and they are notified); an
-   internal one is our own team's to-do. The uploaded document files INTO the
-   condition — same folder in the TPR export, same SharePoint mirror. Opening a
-   slot on a signed-off condition REOPENS it (the sign-off predates this ask). */
+/* TWO WAYS TO OPEN A NAMED SLOT ON A CONDITION (db/578).
+
+   The first was owner-directed 2026-08-18: "you got one document and you wanna
+   request another document within that condition … there should be a button for
+   the staff members to open up another slot in a condition and type the name of
+   that slot. That should populate as an open item needing it."
+
+   The second is owner-directed 2026-08-21, and it is the one this pair exists
+   for: "you can request another doc, and it opens up another slot … but that is
+   putting only a request, which is requesting it from the [borrower]. If you have
+   a document that you want to put in a separate slot, I don't use that request
+   button. Next to the request button, maybe add the feature: I just open a new
+   document slot in this condition, and it should go together with that condition
+   in the same folder and stuff like that."
+
+   THE SERVER ALREADY DID BOTH — `extra-slots.js` has carried an `internal`
+   audience since the day it shipped, and only an EXTERNAL ask sets
+   status='requested' or notifies the borrower. What was missing was a way to
+   reach it: there was ONE button, and the internal option sat behind two
+   sequential confirm dialogs that only appeared on a borrower-facing condition.
+   So the owner's "I don't use that request button" was exactly right — asking for
+   an empty slot of your own meant answering two questions about the borrower
+   first. Now the AUDIENCE IS THE BUTTON, and the dialogs are gone: pressing one
+   is the whole choice, which is also why neither needs a confirmation.
+
+   Either way the slot belongs to THIS condition, so what lands in it inherits the
+   condition's TPR-export folder and its SharePoint folder with no second
+   machinery — the owner's "it should go together with that condition in the same
+   folder". Opening a slot on a signed-off condition REOPENS it (the sign-off
+   predates the new ask). */
 function RequestSlotButton({ appId, it, onChanged }) {
   const [busy, setBusy] = useState(false);
   if (it.item_kind !== 'document') return null;
   const borrowerFacing = it.audience === 'borrower' || it.audience === 'both';
-  const ask = async () => {
-    const label = await askPrompt('Name the document you are requesting on this condition (e.g. "Updated operating agreement", "October bank statement"):',
-      { placeholder: 'Document name', confirmLabel: 'Request it' });
+
+  // ONE ask, TWO doors. The audience is decided by WHICH BUTTON was pressed —
+  // never by a dialog afterwards, which is what the owner was working around.
+  const openSlot = async (audience) => {
+    const external = audience === 'external';
+    const label = await askPrompt(external
+      ? 'Name the document you are requesting FROM THE BORROWER on this condition (e.g. "Updated operating agreement", "October bank statement"):'
+      : 'Name the document slot you are opening on this condition (e.g. "Wire confirmation", "Signed change order"):',
+      { placeholder: 'Document name', confirmLabel: external ? 'Request it' : 'Open the slot' });
     if (label == null || !String(label).trim()) return;
     const name = String(label).trim();
-    let audience = 'internal';
-    if (borrowerFacing) {
-      // Two explicit steps, so Escape/backdrop is always an ABORT — never a
-      // silent "internal" nobody chose.
-      const ext = await askConfirm(`Should the BORROWER provide "${name}"?\n\nYes — it shows on their portal as still needed and they are notified.\nNo — it stays an internal ask for our own team.`,
-        { confirmLabel: 'Yes — from the borrower', cancelLabel: 'No — internal' });
-      if (ext) audience = 'external';
-      else if (!(await askConfirm(`Add "${name}" as an INTERNAL ask? The borrower will not see it.`, { confirmLabel: 'Add internal ask' }))) return;
-    }
     setBusy(true);
     try {
       let r;
@@ -1556,21 +1574,34 @@ function RequestSlotButton({ appId, it, onChanged }) {
         // other hand-typed-label surface has (never a dead end).
         const d = (e && e.data) || {};
         if (d.code === 'stray_condition_label' && d.needsConfirm) {
-          if (!(await askConfirm(`${d.error}\n\nRequest "${name}" anyway?`, { confirmLabel: 'Yes — request it' }))) return;
+          if (!(await askConfirm(`${d.error}\n\n${external ? `Request "${name}" anyway?` : `Open a slot for "${name}" anyway?`}`,
+            { confirmLabel: external ? 'Yes — request it' : 'Yes — open it' }))) return;
           r = await api.conditionSlotAdd(appId, it.id, { label: name, audience, confirmStrayLabel: true });
         } else throw e;
       }
-      if (r && r.reopened) await showMessage('This condition was signed off — it has been reopened, since the new request was made after that sign-off.');
+      if (r && r.reopened) await showMessage('This condition was signed off — it has been reopened, since the new slot was opened after that sign-off.');
       if (onChanged) await onChanged();
     } catch (e) {
       await showMessage(((e && e.data && e.data.error) || (e && e.message)) || 'Could not open the document slot.');
     } finally { setBusy(false); }
   };
+
   return (
-    <button className="btn ghost small" disabled={busy} onClick={ask}
-      title="Open another named document slot on this condition — the uploaded document stays part of this condition (same folder in the TPR export)">
-      Request another document
-    </button>
+    <>
+      {/* Only on a BORROWER-FACING condition — there is nobody to request from on
+          a staff-only one, and a button that quietly did something else would be
+          the same confusion in a new place. */}
+      {borrowerFacing && (
+        <button className="btn ghost small" disabled={busy} onClick={() => openSlot('external')}
+          title="Ask the BORROWER for one more named document on this condition — it shows on their portal as still needed and they are notified. The document stays part of this condition (same folder in the TPR export).">
+          Request another document
+        </button>
+      )}
+      <button className="btn ghost small" disabled={busy} onClick={() => openSlot('internal')}
+        title="Open an empty named slot on this condition for a document YOU have — nothing is requested from the borrower and they are not notified. What you upload stays part of this condition (same folder in the TPR export, same SharePoint folder).">
+        Add a document slot
+      </button>
+    </>
   );
 }
 
