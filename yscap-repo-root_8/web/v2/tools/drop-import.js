@@ -55,7 +55,7 @@
 
   var DEFAULT_CLASS = 'ys-dropping';
   var wiredClasses = {};   // one <style> per highlight class, however many times wire() is called
-  var wiredPage = false;   // the listeners are on `document`, so they go on ONCE
+  var wiredPage = false;   // see wire(): the listeners are on `document`, so they go on ONCE
 
   /** The dropped file, from either place a browser can put it. */
   function droppedFile(e) {
@@ -221,6 +221,18 @@
     var o = opts || {};
     var cls = o.className || DEFAULT_CLASS;
 
+    /* The listeners live on `document`, so they go on ONCE — binding twice would import a dropped
+       file twice. Claimed BEFORE anything else so a second call cannot inject a highlight for a
+       class that will never be applied, and it is never silent: a page that wires twice has two
+       ideas about where a dropped file goes and only the first one is in force. */
+    if (wiredPage) {
+      if (window.console && console.warn) {
+        console.warn('[ys-drop] this page is already wired; the later wire() call is ignored.');
+      }
+      return;
+    }
+    wiredPage = true;
+
     function resolveInput() {
       if (!o.input) return null;
       return typeof o.input === 'string' ? document.getElementById(o.input) : o.input;
@@ -247,9 +259,6 @@
         if (typeof o.onFile === 'function') o.onFile(file);
       }
     }
-
-    if (wiredPage) return;   // the listeners live on `document`; binding twice would double-import
-    wiredPage = true;
 
     ['dragenter', 'dragover'].forEach(function (ev) {
       document.addEventListener(ev, function (e) {
