@@ -9,27 +9,39 @@ arrives.
 
 ---
 
-## 0. Before anything is built: which product is this?
+## 0. Which product is this? — RTL, CONFIRMED
 
-`AGENTS.md` rule 1 and `CLAUDE.md`'s first session rule are absolute — a task that is not *100%
-obvious* about RTL vs Long-Term stops and asks.
+**Owner-directed 2026-08-21, in the owner's own words: *"It's only RTL."*** Asked directly, before
+anything was built, exactly as `AGENTS.md` rule 1 and `CLAUDE.md`'s first session rule require.
 
-**This document is written for RTL** (the residential transition loans — bridge, fix & flip,
-ground-up), on this reasoning:
+So: this is **RTL** — the residential transition loans (bridge, fix & flip, ground-up). Everything
+below lives in `src/fci/**` and reads and writes RTL tables only. Long-Term is out of scope entirely:
+no `lt_*` table, no `/api/lt/*` route, no LT screen, and nothing here may later be copied or
+generalised into LT without a per-item entry in `docs/LONG-TERM-AUTHORIZED-COPIES.md`.
 
-- Draws are RTL. LT has no draw workflow; every draw table, the Sitewire/TrustPoint/Trinity
-  integrations and the draw desk are RTL. The request names draws explicitly.
-- LT is *"a side build for visibility only — not live, no borrowers, no production traffic"*. Loans
-  being onboarded to a servicer are live loans with live borrowers, which LT does not have.
-- Interest strips, first payment dates and payoffs on funded loans are the RTL book.
+The reasoning that made RTL the likely answer still holds and is worth keeping, because it is what a
+future reader will check the confirmation against: draws are RTL and this integration is full of
+them; LT is *"a side build for visibility only — not live, no borrowers, no production traffic"*,
+and a loan being boarded to a servicer is a live loan with a live borrower; interest strips, first
+payment dates and payoffs on funded loans are the RTL book.
 
-**That is a reading, not a statement from the owner, so it is a question in §16 and the first thing to
-confirm.** It decides where the code lives (`src/fci/**` vs `src/longterm/fci/**`), which tables it
-may touch, and whether the CI product-separation gate will pass. Nothing in this document requires an
-answer to be *researched*; everything in it requires an answer to be *built*.
+---
 
-Research and documentation cross no product boundary, which is why this file exists at the top level
-of `docs/` rather than under `docs/longterm/`.
+## 0a. The four answers this design is built on
+
+Owner-directed 2026-08-21. Each is quoted where it governs, and each replaced a question in §16.
+
+| # | Question | The owner's answer |
+|---|---|---|
+| 1 | Which product? | *"It's only RTL."* → §0 |
+| 2 | May PILOT email a borrower about a late payment? | *"Correct. You just remind, and you can also let them know the FCI servicer loan number."* → §8.5, §8.6 |
+| 3 | How do our files find their loans at FCI? | *"You're going to need to match the files according to the address, maybe in the loan amounts."* → **§4.2, which is new and is the biggest change to this design** |
+| 4 | When does a late payment affect a draw? | *"If it's after the 10th, then we need to have the payment done. We need to have a warning before processing the draw that the payment was not done yet."* → §9 |
+
+Answer 3 is the one that reshapes the work. It says, in passing, that **our loans are already at FCI
+and there is no shared key between the two systems** — so before any monitoring, any reminder or any
+draw check can run on a single loan, PILOT has to work out which FCI loan is which of our files. That
+is now §4.2, and it moves to the front of the build plan.
 
 ---
 
@@ -380,6 +392,127 @@ other from either side. `investorAssetNumber` and `originatorLoanNumber` are two
 identifier slots; one of them should carry our `applications.id` so the crosswalk survives even if a
 number is retyped.
 
+**Everything in the last paragraph applies to loans we board FROM NOW ON. The loans already at FCI
+have none of it, which is what §4.2 is about.**
+
+### 4.2 Matching our files to the loans already at FCI
+
+> **Owner-directed 2026-08-21:** *"You're going to need to match the files according to the address,
+> maybe in the loan amounts."*
+
+That sentence carries the fact the whole build plan turns on: **our loans are already being serviced
+at FCI, and the two systems share no key.** FCI's `loanAccount` is theirs; our `ys_loan_number` is
+ours; and nothing on either side points at the other. So the first thing PILOT has to do — before a
+single balance is shown, a single reminder is sent or a single draw is checked — is work out which
+FCI loan is which of our files.
+
+**This is the highest-consequence piece of the integration, and it is worth being blunt about why.**
+A wrong link is not a cosmetic error. It shows a borrower another borrower's balance. It sends a draw
+against the wrong loan. It blocks the wrong project. It emails the wrong person about a payment they
+already made. Every feature below is built on this link being right, so the link is treated with the
+same care this repo already gives a track-record match or a borrower profile merge.
+
+#### The rule: PILOT proposes, a human confirms. Always.
+
+**No FCI loan is ever linked to a file automatically, at any confidence.** PILOT ranks and explains;
+a person presses confirm. This is the same discipline as `borrower-merge.js` (which refuses with a
+409 and a list rather than guessing which of two profiles is right) and the track-record importer
+(where a NEAR match *always* waits, because auto-merging one is how a duplicate line is born).
+
+The volume objection — *"we can't click through hundreds of loans"* — is answered by **batching, not
+by lowering the bar**: the strongest band arrives as one pre-ticked list with every reason shown, and
+a person confirms the batch. One human decision per batch, and everything weaker is decided one at a
+time.
+
+#### The comparers already exist, and both must agree
+
+`src/lib/address.js` is the one definition of *"are these two addresses the same place"*, and it was
+built for exactly this problem (the 2026-07-26 Encompass work). It already knows the traps that would
+otherwise sink an address match:
+
+- **Hyphenated house numbers.** In Queens, the Bronx, Philadelphia and Hawaii `150-11` is a number,
+  not a range — and `150-11 78th Rd` / `150-99 78th Rd` are two different houses that share a prefix.
+- **Ranges.** `27-29 Tuscany Ter` IS `27 Tuscany Ter` — one building written two ways.
+- **Units.** Both present and different is a real disagreement; one side blank is the same address
+  with less detail.
+- **The ZIP is the authority on locality**, with the city name only consulted when a ZIP is missing.
+- **The Piscataway/Plainfield trap** — one street number, two cities, two ZIPs, two buildings ~130 m
+  apart. `sameProperty` tolerates a same-city ZIP difference; `sameAddress` does not; and
+  `sameProperty` is documented as *"NOT a standalone superset"* and may only be used in union with
+  the stricter one.
+
+`src/lib/track-record/match.js` `decideMatch` is the shape to follow: **two comparers must agree
+before anything may be called exact** (the JavaScript one and the database's own), preconditions that
+can never auto-bind if they fail, and a set of forced-review shapes each carrying a plain-language
+reason a person can act on. Its rule that a comparer which could not be consulted **fails CLOSED to
+"near" rather than quietly binding** is the one to copy verbatim.
+
+#### The five signals, and what each is actually worth
+
+| Signal | Ours | FCI's | Weight |
+|---|---|---|---|
+| **Property address** | `applications.property_address` (jsonb, USPS-standardised) | `property { street, city, state, zipCode }`, and `getLoanProperties` for a loan with several | **Primary.** Compared by MEANING, never by string. |
+| **Loan amount** | `loan_amount`, and the initial advance from the draw rollup | `originalBalance` (and `currentBalance`) | **Corroborating, and see the warning below** |
+| **Borrower name** | `borrowers.full_name`, `llcs.llc_name` | `name`, `borrowerFullName` | Corroborating — surname compared through `person-name.compareNames`, which is middle-name tolerant |
+| **Origination / funding date** | `actual_closing`, `funded_date` | `originationDate`, `boardingDate` | Corroborating, and the **tie-breaker** below |
+| **Note rate** | `rate_pct` | `noteRate` | Weak corroboration; cheap to check |
+
+**The loan-amount warning, and it matters on nearly every loan we write.** On a construction or rehab
+loan the borrower does not owe the full committed amount on day one — they owe the initial advance,
+and the balance grows with each draw (§7.2). So FCI's `originalBalance` may be **either** our full
+`loan_amount` **or** our initial advance, depending on how the loan was boarded, and `currentBalance`
+is neither. A matcher that demands the full loan amount will reject the correct loan on most of the
+book. So the amount test accepts **either figure, within a tolerance**, and a miss lowers the band
+rather than rejecting — it is corroboration, never a gate.
+
+**The tie-breaker nobody thinks of until it bites:** the same borrower can do the same property
+twice. A flip bought, rehabbed, sold — and bought again two years later. Address, borrower and even
+the amount can all agree across two genuinely different loans. **So the origination date must be part
+of the identity**, and two candidate loans at one address with different origination dates is a
+forced review, never a pick.
+
+#### The bands
+
+| Band | What it means | What happens |
+|---|---|---|
+| **Exact** | Both comparers agree on the address, the amount corroborates on either figure, the surname agrees, and exactly one FCI loan is a candidate | Offered pre-ticked in a confirm batch, with every reason shown |
+| **Near** | The address agrees but something else does not — amount off, name different (an entity vs a person), or a comparer could not be consulted | One at a time, with the disagreement named |
+| **Ambiguous** | More than one FCI loan matches one file, or more than one file matches one FCI loan | Never offered as a pick. A person chooses, with both candidates side by side. |
+| **Unmatched — FCI side** | A loan at FCI we cannot place | Listed. May be legitimate (bought paper, another lender's loan we service, a loan predating PILOT). |
+| **Unmatched — our side** | A funded file with no loan at FCI | Listed. Either not boarded yet, or boarded under something we cannot read. |
+
+#### The rules that keep it safe
+
+1. **A decision is durable, both ways.** A confirmed link is stored in `fci_loan_links` and is
+   thereafter the only thing consulted — the matcher never re-derives it. A rejected pairing is
+   recorded as rejected and **never offered again**; without that, every sync re-asks a question a
+   person already answered, which is the trap `finding_decisions` (db/333) was built to close.
+2. **A link can be broken, by a human, with a reason, audited.** Somebody will confirm a wrong one.
+3. **Unlinked is a first-class state, and everything degrades to it gracefully.** An unmatched file
+   shows *"not linked to FCI yet"* — never a blank balance that reads as zero, and never a stale
+   number. Nothing about an unlinked file may block anything.
+4. **One-to-one, enforced by the database.** A unique index each way. Two files pointing at one FCI
+   loan is the failure mode that shows a borrower somebody else's money.
+5. **The link is re-verified, not trusted forever.** On each sync, the linked loan's address and
+   borrower are re-compared. A link that stops agreeing raises a finding rather than silently
+   carrying on — the same posture as §5.5 and §12.
+6. **Cross-collateralised loans are real.** One FCI loan can carry several properties
+   (`setProperties` is an array), so the address test matches against *any* of the loan's properties,
+   and a file whose address matches one property of a multi-property loan is a match, not a near miss.
+7. **It never writes to FCI.** Matching is entirely a read plus a row in our own table.
+
+#### Where it lives
+
+```
+src/fci/match.js         the banding — pure, never throws, two comparers must agree
+src/fci/match-queue.js   staging, the batch, the durable decisions
+fci_match_candidates     one row per (file, FCI loan) considered, with band + reasons + status
+fci_loan_links           the confirmed crosswalk — the ONE thing every other module reads
+```
+
+Every other module in `src/fci/**` asks `fci_loan_links`, and **nothing anywhere re-derives a link
+from an address.** One definition.
+
 ---
 
 ## 5. Ownership and the sale — the spine of the workflow
@@ -588,7 +721,7 @@ default-interest and late-charge mechanics** — 30-odd fields that are terms of
 today in the loan documents (DocLab) and in nobody's database. That gap is a real finding, not a
 blocker: it is the same shape as any other boarding data requirement and the answer is either a
 per-program default set (most RTL notes here are identical in these terms) or a small set of fields
-on the file. §16 asks which.
+on the file. §16 asks which (question 13).
 
 ### 7.2 `startingBalance` and the draw loan — get this wrong and every borrower is billed wrong
 
@@ -767,7 +900,8 @@ Routing reuses `STAFF_ROLE_CATEGORIES` — a new `servicing` category, so a clos
 servicing mail, and a `draw_coordinator` sees the draw-relevant slice. That mechanism exists and must
 not be duplicated.
 
-**To the borrower** — and this is where the care goes:
+**To the borrower** — confirmed by the owner 2026-08-21 (*"You just remind, and you can also let them
+know the FCI servicer loan number"*), and this is where the care goes:
 
 | Stage | What is said |
 |---|---|
@@ -777,6 +911,19 @@ not be duplicated.
 | **Beyond that** | **PILOT stops emailing and escalates to a human.** |
 
 **The reason PILOT stops is deliberate and is the compliance line (§8.6).**
+
+**Every borrower reminder carries FCI's own loan number** (owner-directed) — `loanAccount`, labelled
+as the servicing loan number, beside our own. It is the number the borrower will be asked for when
+they call FCI or use the payment link, and quoting only *our* number would send them to the servicer
+holding an identifier the servicer does not use. Two consequences worth naming:
+
+- **The number is only available on a LINKED loan (§4.2).** On an unlinked file there is no FCI loan
+  number to quote, and a reminder must never invent or guess one — so **an unlinked file gets no
+  borrower reminder at all.** That is the right failure: quoting the wrong servicing loan number is
+  worse than staying quiet, and it is the same reasoning that makes §4.2 a human-confirmed link.
+- **It is not a secret.** The FCI loan number is the borrower's own loan, so it crosses no
+  borrower-safe boundary. `lenderName` / `brokerName` / `vendor` — the note buyer — remain internal
+  and are never in a borrower-facing message, exactly as the standing rule requires.
 
 Every borrower reminder is suppressed when: the loan is on hold (`isOnHold`), in bankruptcy, in
 foreclosure, in loss mitigation, or has a payoff demand outstanding — because in each of those the
@@ -812,9 +959,15 @@ reminder links to `getOTPLink`, so the borrower pays FCI directly and the money 
 ledger with the right effective date. **This is not caution for its own sake — it is what stops the
 two-different-numbers failure in §2.**
 
-**§16 asks the owner to confirm this posture and to check it against the FCI servicing agreement
-before a single borrower email ships.** It is exactly the *"NEVER GUESS A BUSINESS / SERVICING /
-WORKFLOW RULE"* case.
+**CONFIRMED by the owner 2026-08-21: *"Correct. You just remind, and you can also let them know the
+FCI servicer loan number."*** So the posture above is the rule, not a proposal — PILOT reminds, FCI
+collects, and the reminder carries FCI's loan number so the borrower can act on it.
+
+One thing the owner's answer does **not** settle, and it is question 8 in §16: whether our servicing
+agreement with FCI says anything about who contacts the borrower. The owner authorised the posture;
+the agreement is a document, and a document can carry a term neither of us has in mind. Reading it
+before the first borrower email ships costs an afternoon and is the difference between a decision and
+an assumption.
 
 ### 8.7 `getOTPLink` — the mechanism FCI gave us
 
@@ -885,48 +1038,90 @@ and so on) plus `fcOnHold` and the attorney's details. A default file's timeline
 
 ---
 
-## 9. Blocking draws when payments are outstanding
+## 9. The payment check on a draw
 
-> *"block draws if payments are outstanding"*
+> The ask: *"block draws if payments are outstanding"*
+> The rule (owner-directed 2026-08-21): ***"If it's after the 10th, then we need to have the payment
+> done. We need to have a warning before processing the draw that the payment was not done yet."***
 
-This is a policy the repo is well shaped to hold, because there is already exactly one place that
-decides whether a draw may proceed, and exactly one place that decides who releases the money.
+**The owner's rule is a DATE rule, not a days-late rule, and it asks for a WARNING, not a block.**
+Both differences matter and the first proposal in this document had both wrong, so it is replaced.
 
-**Where it goes:** a new advisory-then-blocking check consulted by the draw path, taking its
-delinquency facts from the FCI mirror and its policy from an admin setting.
+### 9.1 The rule as stated
 
-**The rule, as a first proposal for the owner to correct (§16):**
+> **After the 10th of the month, that month's payment must be in. If it is not, anyone about to
+> process a draw sees a warning first.**
 
-| Condition | Effect |
-|---|---|
-| `daysLate` ≥ *grace* (default: FCI's own `lateChargesDays`) | **Warn** on the draw desk; the coordinator may proceed with a recorded reason |
-| `daysLate` ≥ 30, or default interest active | **Block** the draw release; a super-admin may override with a typed reason (the db/344 shape) |
-| Foreclosure / bankruptcy / loss-mit active | **Block**, no coordinator override — desk escalation only |
-| Payoff demand outstanding | **Warn** — the loan may be about to be repaid |
+Written as the check:
 
-**Five things that must be true of it, each learned from an existing rule in this repo:**
+```
+if (today is after the 10th of this month)
+   and (FCI's paidToDate does not cover this month's payment)
+   and (a payment was actually due this month)
+then WARN, before the draw is processed.
+```
 
-1. **It fails OPEN.** If FCI is unreachable or the mirror is stale beyond a threshold, the draw
-   proceeds and the screen says the delinquency check could not run. A construction project stopped
-   because a vendor API was down is a worse outcome than a draw released to a borrower who is five
-   days late.
-2. **Stale data may not block.** A block asserted from a 20-hour-old snapshot on a borrower who paid
-   this morning is wrong and unanswerable. Before blocking, re-read that loan live
-   (`getLoanDetails` / `getLoanPortfolio(account:)`) — one call, at the moment it matters.
-3. **There is always a way through, and it is recorded.** The repo's standing rule: a gate whose own
-   remedy the user cannot perform is a dead end. Coordinator override with a reason at the warn
-   level, super-admin override with a reason at the block level, both audited, both surfaced on the
-   file.
-4. **It blocks the RELEASE, not the REQUEST.** A borrower may still submit a draw and an inspector
-   may still inspect — the money is what stops. Blocking the request would leave the project's
-   paperwork stuck behind a payment problem that may be resolved the same day.
-5. **On a SOLD loan, the investor's own rules may differ from ours.** Once the note buyer funds the
-   draws, whether a late borrower gets a draw is partly their call. So the policy is configurable
-   **per note buyer**, in admin settings, exactly like `investor_draw_fees` (db/545) — with our
-   default as the fallback.
+Why the date form is better than *"N days late"*, and worth keeping deliberately: these loans are due
+on the 1st, so *after the 10th* is a single, sharp, checkable fact that every person in the business
+already holds in their head. `daysLate` is FCI's own arithmetic and drifts with their grace
+configuration per loan; the 10th does not drift. **PILOT still reads `daysLate` — it is what the
+past-due queue in §8.4 is sorted on — but the draw check reads the calendar and `paidToDate`.**
 
-The borrower-facing message never states a demand: *"this draw is on hold pending your loan
-account — please contact your loan officer"*, with the officer notified in the same breath.
+### 9.2 What it takes to be sure the payment is genuinely missing
+
+The warning is worth nothing if it fires on borrowers who have paid, and it is worse than nothing —
+a warning people learn to click past protects no one. Four cases where a naive check is wrong:
+
+1. **No payment is due yet.** A loan that closed on the 20th has its first payment on the 1st of the
+   month after next. `firstPaymentDate` from FCI; before that date the check does not apply.
+2. **The borrower is on auto-debit, scheduled later.** `getACHStatus` returns `nextDebitDate` — if
+   auto-debit is on and the debit for this month has not yet run, the money is coming and the wording
+   says so instead of implying they are behind.
+3. **The payment landed today and the mirror is from last night.** Before showing the warning,
+   **re-read that one loan live**. One call, at the moment it matters.
+4. **A partial payment.** `paidToDate` is the authority — it moves only when a payment is complete
+   enough to advance the due date. A suspense balance is not a paid payment, and FCI already models
+   that distinction.
+
+### 9.3 What the warning says, and what it does not
+
+It is shown to the **coordinator, before processing** — not to the borrower — and it states the
+facts: which month is outstanding, what `paidToDate` shows, whether auto-debit is on and when the
+next debit is, and how many days it has been. The coordinator may proceed; proceeding is **recorded
+with who and when** (the `treat_as_sold` shape), so *"why was this draw released while the borrower
+was behind?"* is answerable later.
+
+**It never blocks on its own, and it never speaks to the borrower.** Both are deliberate: the owner
+asked for a warning, and a draw is a construction project's cash flow — a contractor unpaid because
+of an automated hold is a real and expensive harm. Whether there is ever a point at which it should
+hard-block is question 5 in §16.
+
+The three genuinely different situations — foreclosure, bankruptcy, loss mitigation — are not this
+check. On those the loan is in somebody else's hands and a draw is a decision for a person, not a
+warning banner. They surface on the file as they arise (§8.9) and are question 6 in §16.
+
+**Four things that must be true of it, each learned from an existing rule in this repo:**
+
+1. **It fails SILENT, not loud.** If FCI is unreachable, the loan is unlinked (§4.2), or the mirror
+   is stale and cannot be refreshed, the draw proceeds and the screen says the payment check could
+   not run. **It must never warn on an unknown** — a warning that means *"we could not check"* reads
+   to a coordinator as *"the borrower is behind"*, and after that happens twice nobody reads the
+   warning again.
+2. **Stale data may not warn.** A warning asserted from a 20-hour-old snapshot on a borrower who paid
+   this morning is wrong and unanswerable. Re-read that loan live first (§9.2).
+3. **Proceeding is always available, and always recorded.** Who and when, on the file. A warning
+   nobody can act past is a block wearing a warning's clothes.
+4. **It sits on the RELEASE, not the REQUEST.** A borrower may still submit a draw and an inspector
+   may still inspect — the check is at the point money moves. Putting it earlier would leave the
+   project's paperwork stuck behind a payment that may clear the same day.
+
+**On a SOLD loan the note buyer funds the draws, so whether a behind-borrower gets one is partly
+their call.** The warning is ours and stays as it is; whether a particular buyer wants something
+stricter is question 7 in §16, and if the answer is yes the policy is per-buyer in admin settings
+exactly like `investor_draw_fees` (db/545), with our rule as the fallback.
+
+**Nothing here emails the borrower.** The draw check speaks to the coordinator. If the borrower is
+behind, the §8.5 reminder ladder is what reaches them, in its own words, on its own schedule.
 
 ---
 
@@ -1207,76 +1402,97 @@ Each phase ships something usable and is safe on its own.
 | Phase | What | Depends on |
 |---|---|---|
 | **0** | This document + the generated catalogue + the generator + its test | ✅ done |
-| **1** | Keys, the guarded client, the health-registry entry, `getApiVersion` probing green, and a manual read of one real loan | Keys, §16 answers |
-| **2** | **Read-only sync**: the crosswalk, the mirror, the three loops, a servicing panel on the file (balance, next due, days late, pay string, draws at FCI). Nothing writes, nothing emails. | 1 |
-| **3** | **Portfolio + delinquency**: the health dashboard, the outstanding-payments queue, the officer/desk reminder ladder and digests. Internal only — no borrower email yet. | 2 |
-| **4** | **Reconciliation**: §12 findings on the file, including the ownership and strip checks. Read-only, advisory. | 2 |
-| **5** | **Borrower reminders** + `getOTPLink` on the borrower portal — only after §8.6 is confirmed against the servicing agreement. | 3, owner sign-off |
-| **6** | **Draw gate** — warn first, block later, with the per-buyer policy. | 2, owner sign-off on the matrix |
-| **7** | **Boarding** — sandbox, dry run, one loan, then the rest. The first write. | 1, the boarding data gaps in §7.1 |
-| **8** | **Draw + charge push** — draws to FCI as they release, charges as they are incurred. | 7 |
-| **9** | **Payoff** — quotes on the file, the pending-demand queue, the request push. | 7 |
-| **10** | **The feedback loop** — §13's underwriting analytics, track-record exits, first-payment-default rates, the maturity ladder. | 2, 9 |
+| **1** | **One key** (Web Loan Information, read), the guarded client, the health-registry entry, `getApiVersion` probing green, and a first read of the real portfolio | The read key |
+| **2** | **Matching (§4.2)** — pull the whole FCI book, band every candidate, and put the confirm queue in front of a human. **Nothing else can start until our files know which loan is theirs.** | 1 |
+| **3** | **Read-only sync** — the mirror, the three loops, a servicing panel on each linked file (balance, next due, days late, pay string, draws at FCI). Nothing writes, nothing emails. | 2 |
+| **4** | **Portfolio + delinquency** — the health dashboard, the outstanding-payments queue, the officer/desk reminder ladder and digests. Internal only. | 3 |
+| **5** | **Reconciliation** — §12 findings on the file, including the ownership and strip checks. Read-only, advisory. | 3 |
+| **6** | **The draw payment check (§9)** — the warning, on the release, with proceeding recorded. | 3 |
+| **7** | **Borrower reminders** + `getOTPLink` + FCI's loan number, on linked files only. | 4, the servicing agreement read |
+| **8** | **Boarding** — sandbox, dry run, one loan, then the rest. **The first write.** | Write keys, the §7.1 data gaps |
+| **9** | **Draw + charge push** — draws to FCI as they release, charges as they are incurred. | 8 |
+| **10** | **Payoff** — quotes on the file, the pending-demand queue, the request push. | 8 |
+| **11** | **The feedback loop** — §13's underwriting analytics, track-record exits, first-payment-default rates, the maturity ladder. | 3, 10 |
 
-Phases 2–4 are pure reads and carry essentially no risk to a live loan. Everything from 5 onward
-either speaks to a borrower or writes to the servicer, and each of those needs its own sign-off.
+**Phase 1 needs exactly ONE key** — the Web Loan Information (PULL) one — and phases 1 through 7 need
+nothing else. Everything read-only runs on that single credential, which means the write keys can be
+sorted out later without holding up a single one of the features that were actually asked for.
+
+**Phase 2 moved to the front and is now the critical path.** It was a paragraph in the first draft;
+the owner's answer about matching by address made it the thing everything else waits on. It is also
+the phase with a human in the loop, so it is worth starting early even though it is not the most
+interesting.
+
+Phases 1–5 are pure reads and carry essentially no risk to a live loan. Phase 6 shows a coordinator a
+warning. Phase 7 is the first thing that reaches a borrower, and phase 8 is the first thing that
+writes to the servicer — each of those gets its own sign-off.
 
 ---
 
 ## 16. Questions for the owner
 
-Grouped, plainest first. Nothing in phases 1–4 is blocked by most of these; everything from 5 onward
-is.
+**Four were answered on 2026-08-21 and are recorded in §0a: the product (RTL), the borrower-reminder
+posture, matching by address, and the draw rule.** These are what is still open, asked in the order
+they block work. Nothing in phases 1–5 is blocked by any of them.
 
-**Which product**
+### Blocks phase 2 — matching (§4.2), the critical path
 
-1. **Is this RTL?** (§0) — decides where every line of code lives.
+1. **Roughly how many loans are at FCI?** Thirty and three hundred are different products: at thirty
+   a person confirms each one and we are done in an afternoon; at three hundred the batch confirm is
+   worth building properly first.
+2. **Is our loan number already anywhere in FCI?** FCI carries three free identifier slots —
+   `prevServiceAccount`, `originatorLoanNumber`, `investorAssetNumber`. If whoever boarded these
+   loans put our number in one of them, matching stops being a matching problem and becomes a lookup,
+   and phase 2 collapses to almost nothing. **Worth five minutes in the FCI portal to check before
+   anything is built.**
+3. **Is there anything at FCI that is not ours?** Paper we bought, another lender's loans we service,
+   loans that predate PILOT. It changes whether *"an FCI loan we cannot place"* is a problem to chase
+   or a normal, expected row.
+4. **Do we have loans with more than one property on one loan?** Cross-collateralised deals are
+   handled (§4.2 rule 6) but it changes how the confirm screen should look.
 
-**How we work with FCI today**
+### Blocks phase 6 — the draw check (§9)
 
-2. Are our loans already at FCI, or is this a new servicing relationship? Is there a back book to
-   board, and roughly how many loans?
-3. Who at FCI is our contact for the API and for boarding?
-4. Do we have sandbox access (`tapi.myfci.com`), or only production?
+5. **Is it only ever a warning, or is there a point where a draw genuinely should not be released?**
+   You said warning, and that is what is designed. Worth being sure there is no line — 60 days, in
+   foreclosure — past which somebody would be unhappy to learn a draw went out.
+6. **Foreclosure, bankruptcy, loss mitigation — what should happen to a draw on one of those?** These
+   are not "behind on a payment"; the loan is in somebody else's hands. My instinct is that it should
+   go to a person rather than a banner, but that is a business call.
+7. **Should a note buyer's own rule ever override ours** once they are funding the draws?
 
-**Ownership and the sale — §5**
+### Blocks phase 7 — borrower reminders (§8.5)
 
-5. **When we sell a loan that is already boarded at FCI, how does FCI learn about it today?** Is it a
-   form, an email to servicing, a portal action? (This is question 1 in §17 and it decides the whole
-   state-C workflow.)
-6. Who should hold each of the four approval rights (payoff, fees/terms, reinstatement, foreclosure)
-   — before a sale, and after? Does it differ by note buyer?
-7. Which `agreementeTemplateEnumValue` do we use — Basic Limited, High Touch Limited, High Touch
-   Full, or Basic Full Collection? Does it vary by buyer?
-8. Which FCI trust account(s) do our loans board into?
+8. **What does the FCI servicing agreement say about who contacts the borrower?** You authorised the
+   posture; the agreement is a document and may carry a term neither of us has in mind.
+9. **How far should the ladder go before it stops?** The design stops at the late-charge date and
+   hands to a person. Further, or sooner?
+10. **Should a TPO broker be told when their firm's borrower is late?** Their client, their
+    relationship — but it is our money.
+11. **Should the borrower see their loan at all** — balance, next payment, history — on their own
+    portal page? It is a bigger change than a reminder and would cut down calls to officers.
 
-**Boarding data — §7.1**
+### Blocks phase 8 — boarding (§7)
 
-9. The note's **default-interest terms** (24 fields) and **late-charge terms** (rate, minimum,
-   maximum, grace days, and how a late charge splits between lender/vendor/company): are these the
-   same on every RTL note, per program, or per file?
-10. Do we board our loans as Dutch or non-Dutch by default? (`applications.accrual_type` says
-    non-Dutch; confirming it means the boarding map can be asserted by a test.)
+12. **Do you want PILOT to board new loans at all**, or should it only ever read? Everything asked
+    for works read-only; boarding is the one piece that writes.
+13. **The note's default-interest and late-charge terms.** FCI wants ~30 fields — default rate, when
+    it starts, how it is calculated, late charge percentage and minimum and maximum, grace days, and
+    how a late charge splits between us, the buyer and FCI. Are these the same on every RTL note, or
+    do they vary by program? (Today they live in the loan documents and in no database.)
+14. **Dutch or non-Dutch by default?** The system says non-Dutch. It changes the borrower's monthly
+    payment, so it is worth saying out loud rather than inferring.
+15. **Who approves what, before and after a sale** — payoff, changes to fees or terms,
+    reinstatement, starting foreclosure. FCI sets these four at boarding and they are hard to change
+    afterwards. Does it differ by note buyer?
+16. **Which FCI servicing programme and which trust account** do our loans board into?
 
-**Reminders — §8.5 / §8.6**
+### Practical, whenever convenient
 
-11. **May PILOT email a borrower about a past-due payment at all, and does the FCI servicing
-    agreement say anything about who contacts the borrower?** This is the one that needs checking
-    against the actual agreement before a single email ships.
-12. If yes — how far should the ladder go before it stops and hands over to a human?
-13. Should the TPO broker be told when their firm's borrower is late?
-
-**Draws — §9**
-
-14. At how many days late should a draw be **warned** on, and at how many **blocked**?
-15. Does that differ by note buyer once a loan is sold — and if so, do we know each buyer's rule?
-16. Who may override a block — the draw coordinator, an admin, or super-admin only?
-
-**Charges — §11**
-
-17. FCI wants a **URL** for a charge's supporting document. Can their servicing team open a
-    link that requires a login, or does it need to be public? (Affects whether we can send documents
-    at all.)
+17. **Who is our contact at FCI** for the API and for boarding? Four things in §17 need them, and one
+    of them (how FCI learns a loan was sold) is the biggest open item in the whole design.
+18. **When we sell a loan that is already at FCI, how does FCI learn about it today?** Even the
+    current manual process would tell me what the automated one has to produce.
 
 ---
 
