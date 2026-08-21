@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { askConfirm } from '../lib/dialog.js';
+import { useUrlState } from '../lib/useUrlState.js';
 
 /* API Health (admin / platform_setup) — the status desk for every outside service PILOT
    talks to: is it Live, Configured, Off, or Not connected, with a live "Test now" check,
@@ -922,7 +923,7 @@ export default function StaffApiHealth() {
   const [pending, setPending] = useState(null);       // { sw, next } awaiting typed confirm
   const [confirmText, setConfirmText] = useState('');
   const [q, setQ] = useState('');
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useUrlState('filter', 'all');
   // A bare re-render trigger for the "checked Xs ago" clock — the value is never read,
   // the re-render is the whole point (`since()` is recomputed on every render).
   const [, tickClock] = useState(0);

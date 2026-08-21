@@ -11,7 +11,7 @@
 
    Pure — no DOM, no browser, no database. */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -139,6 +139,57 @@ console.log('\nF. the hook’s shape');
   // it may never grow a React import (that is what broke CI the first time).
   ok(!/from '(react|react-router-dom)'/.test(read('app-v2/src/lib/urlState.js')),
     'the pure half imports no React — so its properties can be tested where app-v2/node_modules does not exist');
+}
+
+// ---------------------------------------------------------------------------
+// G. THE AUDIT, AS A GUARD — a new screen cannot quietly reintroduce the bug
+// ---------------------------------------------------------------------------
+console.log('\nG. no screen keeps its tab/filter/view in a private useState');
+{
+  /* WHY THIS IS A GUARD AND NOT A LIST SOMEBODY MAINTAINS. The owner's words were "dig in
+     and find MORE places" — and the places found were fixed one by one, which fixes today
+     and nothing about tomorrow. A screen written next month, with its own
+     `const [tab, setTab] = useState('x')`, inherits exactly the bug that was reported.
+     So the audit runs on every build: any screen holding one of these values in private
+     state fails, with the hook named in the message.
+
+     THE EXEMPTIONS ARE NAMED, and each is a value that must NOT be in the address bar:
+     a sign-in form's mode (a shareable link to "reset your password, half filled in" is
+     not a feature), and a one-off action toggle inside a borrower's own accept screen. A
+     new exemption is a deliberate line here, not a silent omission. */
+  const EXEMPT = new Map([
+    ['Login.jsx', 'a sign-in form’s mode is not a place you return to'],
+    ['StaffLogin.jsx', 'a sign-in form’s mode is not a place you return to'],
+    ['TpoLogin.jsx', 'a sign-in form’s mode is not a place you return to'],
+    ['DrawAccept.jsx', 'accept-vs-dispute is one action in flight, not a view'],
+    /* NOT exempted, because it is outside the rule: StaffCrmDesk's sort is an OBJECT
+       (`{key, dir}`) with a functional setter, so the string-default test above does not
+       reach it. It is genuinely unconverted — converting it means splitting it into two
+       keys — and it is recorded in the task list rather than hidden behind an exemption
+       that would also excuse a real offender with the same name. */
+    // Three separate sub-tabs in three sub-components of one screen; they need three
+    // distinct keys, which is a deliberate change rather than a mechanical one.
+    ['StaffNotificationCenter.jsx', 'three sub-tabs in one screen need three keys'],
+  ]);
+  /* The DEFAULT MUST BE A STRING LITERAL. A tab, a filter, a view toggle always starts on a
+     named value ('all', 'mine', 'Overview'); `useState(null)` / `useState({...})` under the
+     same name is a fetched PAYLOAD, not a choice somebody made — and flagging those would
+     train the next person to add exemptions until the guard means nothing. */
+  const RE = /const \[\s*(tab|activeTab|view|filter|mode|subTab|scope|sort|section)\s*,\s*set\w+\s*\]\s*=\s*useState\(\s*['"`]/;
+  const dir = 'app-v2/src/screens';
+  const files = readdirSync(join(ROOT, dir)).filter((f) => f.endsWith('.jsx'));
+  const offenders = [];
+  for (const f of files) {
+    const src = read(`${dir}/${f}`);
+    if (RE.test(src) && !EXEMPT.has(f)) offenders.push(f);
+  }
+  ok(offenders.length === 0,
+    'every screen keeps its tab/filter/view in the URL (lib/useUrlState.js), not in private state',
+    offenders.join(', '));
+  // And the exemptions stay honest: one that no longer applies is dead weight that hides
+  // the next real offender behind a familiar name.
+  const stale = [...EXEMPT.keys()].filter((f) => files.includes(f) && !RE.test(read(`${dir}/${f}`)));
+  ok(stale.length === 0, 'every exemption still describes a real case', stale.join(', '));
 }
 
 console.log(`\n${fail === 0 ? 'ALL' : 'SOME'} url-state assertions: ${fail} failed`);

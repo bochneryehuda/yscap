@@ -27,9 +27,9 @@ two-audit-agent gate in `CLAUDE.md`.
 | 1 | Investor delivery data-tape Excel: scheduling | Investor delivery | ☑ |
 | 2 | Investor delivery contacts: Fidelis / EMCAP prefill + CC | Investor delivery | ☑ |
 | 3 | Data tape metrics: add Total LTC, remove Effective LTV | Investor delivery | ☑ |
-| 4 | Refresh loses your place — deep-link state everywhere | Front end, global | ◐ |
+| 4 | Refresh loses your place — deep-link state everywhere | Front end, global | ☑ |
 | 5 | Email replies: manual attach + drag-and-drop | Email surfaces | ☑ |
-| 6 | Drag-and-drop upload everywhere it's missing | Uploads, global | ◐ |
+| 6 | Drag-and-drop upload everywhere it's missing | Uploads, global | ☑ |
 | 7 | Export all / export unverified with a NOT-VERIFIED stamp | Exports | ☑ |
 | 8 | Feasibility report + GC contact into TPR export & SharePoint | Ground-up conditions | ☑ |
 | 9 | Plans & permits → TPR, SharePoint **and Sitewire** | Ground-up conditions | ☑ |
@@ -41,7 +41,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 15 | Borrower profile reachable from inside a file | Navigation | ☑ |
 | 16 | Overview hover button missing on full screens | Navigation | ☑ |
 | 17 | Scope of work Excel import: drag-and-drop | Uploads | ☑ |
-| 18 | ClickUp: Joshua Freidlander's files land in Lead Capture | ClickUp | ◐ |
+| 18 | ClickUp: Joshua Freidlander's files land in Lead Capture | ClickUp | ☑ |
 | 19 | ClickUp: assigning an officer moves the task to their folder | ClickUp | ☑ |
 | 20 | Rehab Budget PDF: value-add / narrative overlap | PDF | ☑ |
 | 21 | Funded date auto-read from Encompass (`CX.FUNDEDDATE`) | Encompass | ☑ |
@@ -157,8 +157,33 @@ there is now a test that boots the real system, signs in, opens a section, refre
 still open — and it was run against the *old* code first to confirm it reproduces exactly what you
 reported.
 
-**Not done yet:** the remaining smaller screens from the audit (roughly a dozen more filters and view
-toggles). They now have one obvious way to be fixed, and none of them is the case you called major.
+**FINISHED ☑ — the rest of the audit is done too.** Fourteen more screens now keep their place: the task
+desk, orders, closing, purchasing, chat, leads, workflow, the e-sign dashboard, the condition studio, API
+health, the property workbench, the Arena, and the borrower-view and broker-view pickers — plus **the
+borrower profile's tabs**, so a link to somebody's Credit tab now opens on Credit.
+
+**The Arena had a second, quieter bug** that the same change fixed: it kept a COPY of the tab in the page's
+own memory alongside the address, and a copy is never re-read — so the **Back button did nothing** there.
+The value is now read from the address itself, which is what makes Back work.
+
+**Four things are deliberately left out**, and each is a value that should not be in a link you can send
+somebody: the three sign-in screens' "sign in / reset my password" mode, and the accept-or-dispute toggle on
+a borrower's own draw screen. They are named in the guard below rather than quietly skipped.
+
+**And it cannot come back.** A check now runs on every build: any screen that keeps a tab, a filter or a
+view in its own private memory fails it, with the shared mechanism named in the message. That is the
+difference between fixing the places you found and fixing the *kind* of problem — a screen written next
+month gets it right or the build stops.
+
+**Proven in a real browser again**, on the real bundle: choose a filter, refresh, and the same control is
+still the chosen one — and the test was run against a deliberately broken copy first to be sure it actually
+catches it. (The first version of that check only looked at the address bar, which the browser keeps
+whether or not the screen reads it — it passed on the broken copy, so it was rewritten to look at the
+screen.)
+
+**One screen is genuinely still on the old shape and is not hidden:** the CRM desk's sort (it stores two
+things at once — which column and which direction — so it needs splitting into two, not converting). It
+keeps its sort for as long as you stay on the page, and forgets it on a refresh.
 
 ## 5. Email replies — manual attach + drag-and-drop into the compose box
 
@@ -253,12 +278,24 @@ equal to what will be sent, but a drop is additive by nature and dropping a seco
 first. And the per-line dispute photos sit inside a list, which is exactly why the shared piece is a
 *component* and not a hook — React forbids a hook in a loop.
 
-**Still outstanding, named rather than implied:** the **non-owner-occupied affidavit**, and three of the
-marketing-site tools (track record, term sheet, loan application), which need the small refactor the Scope of
-Work tool has already had.
+**The last two are done, so the sweep is finished.** The **non-owner-occupied affidavit** now takes a
+dragged file like every other zone. And **all four marketing-site tools** — track record, term sheet, loan
+application and the Scope of Work / rehab budget — now take a spreadsheet dropped anywhere on the page.
+
+**How the tools were done, and why it matters for the next one.** The rehab budget already had this, written
+by hand for that one page. Rather than copy it three more times, the rule moved into one small shared file
+that all four pages read. A page turns it on by tagging the upload box it already has — nothing else — and
+the list of file types it will take is read off that same box, so the drag and the button can never end up
+disagreeing about what is allowed. A page added later is one tag away from the same behaviour.
+
+**Three things it now does that it did not before.** A spreadsheet dragged straight out of **Outlook** lands
+properly (on Windows an Outlook attachment is not really a file yet, and the ordinary way of reading a drop
+gets nothing back — that was silently doing nothing). Dropping the **wrong kind of file** now says so instead
+of appearing to be ignored. And dragging **text or a link** across the page stays silent, so the one message
+that matters is not buried under ones that do not.
 
 **Item 17 was already working** — the Scope of Work importer has accepted a dragged file for some time,
-including one dragged straight out of Outlook.
+including one dragged straight out of Outlook. It now reads the same shared rule as the other three.
 
 
 ## 7. Export button — export all / export unverified, with a NOT-VERIFIED stamp
@@ -740,6 +777,32 @@ guarded by a test so it cannot quietly break.
 Every file belonging to loan officer **Joshua Freidlander** routes to the **Lead Capture** folder instead
 of **his** officer folder. Root-cause it (officer→folder mapping, name spelling, missing registry row,
 routing fallback), fix it, and repair the already-misfiled tasks.
+
+**SHIPPED ☑ — and I found the actual cause in your live ClickUp. It is one letter.**
+
+**In ClickUp, Joshua is spelled `Joshua friedlander`** (that is his workspace member name, on
+`joshua@yscapgroup.com`). **Everywhere else he is `Joshua Freidlander`** — that is the spelling on his own
+ClickUp folder ("Joshua Freidlander Files") and the spelling PILOT was matching on. *Frei* against *Fri* —
+the two letters swapped.
+
+And PILOT used to decide which folder a file goes to **by matching that name, letter for letter**. One
+letter out and the match failed; a failed match had no separate answer, so it took the same road as "this
+file has no officer at all" — **Lead Capture**. Every one of his files, silently, and nothing anywhere said
+why. That is your "massive bug", and it was one transposed letter.
+
+**PILOT no longer routes by name.** It now identifies an officer by things that cannot be mis-spelled, in
+order: his ClickUp user id, then his email, and only then his name. Both of the strong ones are on file for
+Joshua (id 81586262, joshua@yscapgroup.com), so his files reach his folder whichever way anybody types his
+name. And a file whose officer genuinely **cannot** be placed now says so as a problem to look at, instead
+of quietly filing itself with the leads.
+
+**Nothing is left to repair.** I looked at the live workspace: **Lead Capture is empty** — no cards at all,
+open or closed — and **Joshua's own folder holds 32 files**, including ones still in progress. So the
+misfiled cards are already out of there, and going forward the routing can no longer put them back.
+
+**One thing I could not check from here:** how his name and email are spelled in PILOT's own staff list —
+that is production data I cannot read from this session. It no longer decides the routing, so it cannot
+cause this again; it is worth a glance only so his name reads correctly on screen.
 
 ---
 

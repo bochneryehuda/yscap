@@ -22,6 +22,7 @@ import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import ExperienceHeader from '../components/track-record/ExperienceHeader.jsx';
 import RecordLedger from '../components/track-record/RecordLedger.jsx';
 import ExportRecord from '../components/track-record/ExportRecord.jsx';
+import DropZone from '../components/DropZone.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import DocumentsPanel from '../components/DocumentsPanel.jsx';
 import EmailCenter from '../components/EmailCenter.jsx';
@@ -3419,8 +3420,14 @@ function PersonalNameWaiver({ appId, app, onChanged }) {
       'could not save the affidavit');
   };
   const undo = () => run({ undo: true }, 'Back to an LLC purchase — vesting is LLC.', 'could not undo');
+  /* THE AFFIDAVIT TAKES A DRAGGED FILE TOO (owner item 6: "a lot of the uploads are missing the
+     drag and drop option"). This was the last click-only upload on the staff file: the whole row
+     is the target, the CLICK path is untouched, and a drop lands in exactly the same `waive`. */
   return (
-    <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, color: '#141B22' }}>
+    <DropZone className="row dz-inline" enabled={!isPersonal && !busy && !blocked}
+      onFiles={(files) => waive(files && files[0])}
+      title={isPersonal ? undefined : 'Drop the signed affidavit here, or use the button'}
+      style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, color: '#141B22' }}>
       {isPersonal ? (
         <>
           <span className="pill ok">Closing as an individual — no entity</span>
@@ -3445,7 +3452,7 @@ function PersonalNameWaiver({ appId, app, onChanged }) {
       )}
       {msg && <span className="muted small" style={{ color: '#256168', flexBasis: '100%' }}>{msg}</span>}
       {err && <span className="small" style={{ color: 'var(--danger)', flexBasis: '100%' }}>{err}</span>}
-    </div>
+    </DropZone>
   );
 }
 

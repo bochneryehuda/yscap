@@ -419,7 +419,8 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
             <a class="back" href="../suite.html">← All tools</a>
             <button class="btn btn-line" type="button" onclick="APP.share(this)" title="Copy a link that saves everything you've entered so you can finish later">Share link 🔗</button>
             <button class="btn btn-line" type="button" onclick="APP.exportXlsx(this)" title="Download a branded Excel copy that imports right back">Export ⤓</button>
-            <label class="btn btn-line" style="cursor:pointer" title="Import a previously exported YS application">Import ⤒<input id="app-import" type="file" accept=".xlsx" class="hidden" onchange="APP.importXlsx(this)"></label>
+            <label class="btn btn-line" style="cursor:pointer" title="Import a previously exported YS application">Import ⤒<input id="app-import" type="file" accept=".xlsx" class="hidden" onchange="APP.importXlsx(this)"
+                       data-ys-drop data-ys-drop-hint="Drop the Excel to import this application"></label>
         </div>
     </div>
 </header>
@@ -1064,6 +1065,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 </footer>
 
 </div>
+<script src="drop-import.js?v=2"></script>
 <script src="../suite.js?v=tsprog1"></script>
 <script src="rb-logo.js?v=tsprog1"></script>
 <script src="standard-program.js?v=tsprog1-oopauto1-judsmall1"></script>

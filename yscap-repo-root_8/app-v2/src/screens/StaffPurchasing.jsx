@@ -6,6 +6,7 @@ import { fullNameOf } from '../lib/personName.js';
 import { fmtDate } from '../lib/dates.js';
 import { askConfirm } from '../lib/dialog.js';
 import { confirmRemoveFromWorkflow } from '../lib/workflowRemove.js';
+import { useUrlState } from '../lib/useUrlState.js';
 
 /* THE PURCHASING DESK (owner-directed 2026-07-26).
 
@@ -108,7 +109,7 @@ function NotifyList() {
 export default function StaffPurchasing() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
-  const [filter, setFilter] = useState('outstanding');
+  const [filter, setFilter] = useUrlState('filter', 'outstanding', { remember: 'purchasing.filter' });
   const [openId, setOpenId] = useState(null);
   const [busy, setBusy] = useState(null);
 

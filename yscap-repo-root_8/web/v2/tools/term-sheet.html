@@ -937,7 +937,8 @@
         <div class="ts-data-io">
             <button class="btn btn-line" type="button" id="tsXlsx">Export to Excel ⤓</button>
             <button class="btn btn-line" type="button" id="tsImportBtn">Import from Excel ⤒</button>
-            <input type="file" id="tsImport" accept=".xlsx,.xls" style="display:none">
+            <input type="file" id="tsImport" accept=".xlsx,.xls" style="display:none"
+                   data-ys-drop data-ys-drop-hint="Drop the Excel to import this deal">
         </div>
         <p class="ts-data-cap">Save your work to Excel and re-import it anytime — even before the deal is complete. This saves the data you’ve entered; the priced terms fill in once the required fields are complete.</p>
         <div class="prog-note" id="progNote" style="display:none"></div>
@@ -1124,6 +1125,7 @@
 </footer>
 </main>
 
+<script src="drop-import.js?v=2"></script>
 <script src="../suite.js?v=admin8-tsprog1"></script>
 <script src="rb-logo.js?v=admin8-tsprog1"></script>
 <script src="standard-program.js?v=asgseller18-asgelig-tiermk1-tsprog1-oopauto1-judsmall1"></script>

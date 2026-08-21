@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../suite.css?v=aa1">
-<link rel="stylesheet" href="rehab-budget.css?v=dnd1">
+<link rel="stylesheet" href="rehab-budget.css?v=dnd2">
 <!-- This tool is WHITE-FIRST always (owner-directed): it must match the portal it
      embeds into, so we force the light theme before first paint regardless of any
      stale saved 'dark' preference. Embed mode (?embed=1) additionally hides the
@@ -123,7 +123,8 @@ html[data-embed] main { padding-top: 0 !important; }
             <button class="btn btn-sm btn-line" type="button" onclick="RB.share(this)" title="Copy a link that saves this scope of work">Share link 🔗</button>
             <button class="btn btn-sm btn-gold" type="button" onclick="RB.exportXlsx(this)" title="Excel is what YS needs to underwrite your rehab budget">Export Excel ⤓</button>
             <button class="btn btn-sm btn-line" type="button" onclick="document.getElementById('rb-import').click()">Import ⤒</button>
-            <input id="rb-import" type="file" accept=".xlsx" class="hide" onchange="RB.importXlsx(this)">
+            <input id="rb-import" type="file" accept=".xlsx" class="hide" onchange="RB.importXlsx(this)"
+                   data-ys-drop data-ys-drop-class="rb-dropping">
         </div>
     </div>
 </header>
@@ -163,7 +164,8 @@ html[data-embed] main { padding-top: 0 !important; }
 
 <script src="../suite.js?v=n2"></script>
 <script src="rb-logo.js?v=n2"></script>
-<script src="rehab-budget.js?v=flow1"></script>
+<script src="drop-import.js?v=2"></script>
+<script src="rehab-budget.js?v=flow2-shareddrop"></script>
 <script src="rehab-budget-portal.js?v=n6"></script>
 <script src="../float-actions.js?v=applyfix2"></script>
 </body>

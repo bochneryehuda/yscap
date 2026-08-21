@@ -205,6 +205,55 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log('  ✓', m); } else {
   const said = await page.evaluate(() => document.body.innerText.includes('Nothing was uploaded'));
   ok(said, '…and PILOT says nothing was uploaded, in its own dialog');
 
+  /* ---- THE REST OF THE AUDIT: the filters and view toggles (owner item 4's tail) ----
+     The named screens were done first; these are the "roughly a dozen more" the audit
+     listed, now on the SAME hook. Driven in a real browser for the reason this whole file
+     exists: a green build says nothing about whether the screen renders, and a URL-derived
+     value that is read wrong renders an EMPTY list rather than throwing. */
+  console.log('\n6. the remaining filters and view toggles keep their place');
+  const root = `http://127.0.0.1:${port}/portal/#/internal`;
+  /* THE ASSERTION IS ON THE SCREEN, NOT ON THE ADDRESS BAR. Checking that the URL still
+     carries `?scope=all` after a reload proves NOTHING — the browser keeps the address
+     whether or not the screen reads it, and that version of this test passed with the
+     screen reverted to a private `useState` (measured). What has to be true is that the
+     CHOSEN control is still the active one, which is only true if the value was derived
+     from the URL. */
+  /* "IS THE CHOSEN CONTROL ACTIVE?" — asked as: is there an ACTIVE control whose label is the
+     one the URL selected. Asking for "the first active control on the screen" was tried and is
+     ambiguous: these screens carry several tab groups, so it answered about whichever came
+     first in the DOM and failed on a screen that was perfectly correct. */
+  const activeReads = (label) => page.evaluate((want) => Array.from(
+    document.querySelectorAll('.tab.on, .tab.active, .btn.primary.small'))
+    .some((el) => new RegExp(want, 'i').test(el.textContent || '')), label);
+  /* Two screens, each with ONE unambiguous active control. The workflow screen was tried and
+     dropped on purpose: it carries a view toggle AND a tab, so the generic "which control is
+     active" probe reads the tab and the assertion would be about the wrong thing — a test that
+     cannot say what it is measuring is worse than no test. Its conversion is covered by the
+     source guard in test-url-state-pure.mjs. */
+  for (const [screen, key, value, expect, label] of [
+    ['tasks', 'scope', 'all', 'All my files', 'the task desk’s scope'],
+    ['leads', 'view', 'list', 'List', 'the leads board’s view'],
+  ]) {
+    await page.goto(`${root}/${screen}?${key}=${value}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2500);
+    ok((await page.locator('text=Something went wrong').count()) === 0, `${label}: the screen renders from the URL`);
+    ok(await activeReads(expect), `${label}: the URL selects the control ("${expect}")`);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2500);
+    ok(await activeReads(expect), `${label}: …and a REFRESH keeps it selected`);
+    ok((await page.locator('text=Something went wrong').count()) === 0, `${label}: …without crashing`);
+  }
+
+  /* AND THE BACK BUTTON WORKS, which is the half a mirrored `useState` copy silently kills:
+     the value is DERIVED from the URL on every render, so going back re-derives it. */
+  await page.goto(`${root}/tasks`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2500);
+  await page.evaluate(() => { window.location.hash = '#/internal/tasks?scope=all'; });
+  await page.waitForTimeout(1200);
+  await page.goBack();
+  await page.waitForTimeout(1200);
+  ok(!page.url().includes('scope=all'), 'BACK leaves the chosen filter behind — the value is derived, never mirrored', page.url());
+
   console.log(`test-file-place-render: ${pass} passed, ${fail} failed`);
   await browser.close();
   await db.query(`DELETE FROM applications WHERE id=$1`, [appId]).catch(() => {});

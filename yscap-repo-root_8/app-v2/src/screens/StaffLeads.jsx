@@ -11,6 +11,7 @@ import {
   STAGES, STAGE_LABEL, STAGE_PILL, BOARD_STAGES, OPEN_STAGES, SOURCES, PROGRAMS,
   TOOL_LABEL, leadName, initials, money, dueSoon, todayStr,
 } from '../lib/leadCrm.js';
+import { useUrlState } from '../lib/useUrlState.js';
 
 /* Leads CRM (owner-directed full CRM, 2026-07-14): a real lead desk for loan
    officers — a kanban pipeline OR list, manual + marketing-captured leads,
@@ -135,13 +136,13 @@ export default function StaffLeads({ officerId = null, officerName = null }) {
   const [rows, setRows] = useState(null);
   const [team, setTeam] = useState([]);
   const [err, setErr] = useState('');
-  const [view, setView] = useState('board');      // board | list
+  const [view, setView] = useUrlState('view', 'board', { remember: 'leads.view' });      // board | list
   const [q, setQ] = useState('');
   const [stageF, setStageF] = useState('');
   const [ownerF, setOwnerF] = useState('');
   const [originF, setOriginF] = useState('');     // where the lead came from — filtered ON THE SERVER
   const [facets, setFacets] = useState([]);       // how many leads each origin holds, inside this officer's scope
-  const [scope, setScope] = useState('open');     // open | all
+  const [scope, setScope] = useUrlState('scope', 'open', { remember: 'leads.scope' });     // open | all
   const [addOpen, setAddOpen] = useState(false);
   const [elxOpen, setElxOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);

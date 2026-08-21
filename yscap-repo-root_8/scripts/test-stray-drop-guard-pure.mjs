@@ -141,6 +141,9 @@ console.log('\n7. the converted upload zones');
     ['screens/StaffNewFile.jsx', 'the new-file MISMO import'],
     ['screens/StaffLabelingConsole.jsx', 'the labeling console'],
     ['components/arena/ArenaChallenges.jsx', 'the Arena proof photo'],
+    // The last click-only upload on the staff file (2026-08-21): the non-owner-occupied
+    // affidavit, filed in the same request that marks the file individual.
+    ['screens/StaffApplication.jsx', 'the non-owner-occupied affidavit'],
   ];
   for (const [f, what] of zones) {
     const body = read(`app-v2/src/${f}`);

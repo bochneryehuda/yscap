@@ -19,6 +19,7 @@ import ExportRecord from '../components/track-record/ExportRecord.jsx';
 import { EntityRecordsStamp } from '../components/track-record/RecordsStamp.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import { useAuth } from '../lib/auth.jsx';
+import { useUrlState } from '../lib/useUrlState.js';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -59,7 +60,10 @@ export default function StaffBorrowerDetail() {
   const { id } = useParams();
   const [b, setB] = useState(null);
   const [err, setErr] = useState('');
-  const [tab, setTab] = useState('Overview');
+  /* The tab lives in the address (lib/useUrlState.js), so a refresh comes back to the tab you
+     were on and a link to somebody's Credit tab opens on Credit. `allow` is the real tab list,
+     so a stale or hand-edited link can never select a tab that does not exist. */
+  const [tab, setTab] = useUrlState('tab', 'Overview', { allow: TABS, remember: 'borrower.tab' });
 
   const load = () => api.staffBorrower(id).then(setB).catch(e => setErr(e.message || 'Could not load borrower'));
   useEffect(() => { setB(null); setErr(''); load(); /* eslint-disable-next-line */ }, [id]);

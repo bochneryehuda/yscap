@@ -5,6 +5,7 @@ import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAuth } from '../lib/auth.jsx';
 import { subscribeChat } from '../lib/chatEvents.js';
 import ChatThread from '../components/ChatThread.jsx';
+import { useUrlState } from '../lib/useUrlState.js';
 
 /* Chat hub — a real two-pane chat app. Left: every conversation I can see,
    grouped by loan file (each file carries its Borrower chat, Loan Team chat,
@@ -47,7 +48,7 @@ export default function StaffChat() {
 
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useUrlState('filter', 'all', { remember: 'chat.filter' });
   const [q, setQ] = useState('');
   const [creating, setCreating] = useState(null);      // appId for the new-chat modal
   const [statusOpen, setStatusOpen] = useState(false);

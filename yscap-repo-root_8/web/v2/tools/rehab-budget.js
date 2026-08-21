@@ -1373,42 +1373,19 @@ const RB = (function(){
     render();
   }
 
-  /* ---------- drag-and-drop import (owner-directed 2026-08-18) ----------
-     "Everywhere in our system drag-and-drop works — that button should too."
-     The WHOLE page is the drop target (a 40px button is a needle), highlighted
-     while a drag is over it; a dropped .xlsx runs the SAME importFile flow the
-     button does. dragover MUST preventDefault or the browser navigates to the
-     file. dragleave only clears the halo when the pointer actually left the
-     window (relatedTarget null) — child-to-child transitions fire it too.
-     A light version of track-record-portal.js readDroppedFiles: files[] first,
-     then items[].getAsFile() for an Outlook-dragged virtual attachment. */
-  function droppedFile(e){
-    const dt=e.dataTransfer; if(!dt) return null;
-    if(dt.files && dt.files.length) return dt.files[0];
-    if(dt.items && dt.items.length){
-      for(let i=0;i<dt.items.length;i++){
-        const it=dt.items[i];
-        if(it && it.kind==="file"){ const f=it.getAsFile&&it.getAsFile(); if(f) return f; }
-      }
-    }
-    return null;
-  }
-  function wireDrop(){
-    ["dragenter","dragover"].forEach(ev=>document.addEventListener(ev,function(e){
-      e.preventDefault(); e.stopPropagation(); document.body.classList.add("rb-dropping");
-    }));
-    document.addEventListener("dragleave",function(e){
-      e.preventDefault(); e.stopPropagation();
-      if(!e.relatedTarget) document.body.classList.remove("rb-dropping");
-    });
-    document.addEventListener("drop",function(e){
-      e.preventDefault(); e.stopPropagation(); document.body.classList.remove("rb-dropping");
-      const f=droppedFile(e); if(f) importFile(f);
-    });
-  }
+  /* ---------- drag-and-drop import ----------
+     Owner-directed 2026-08-18: "Everywhere in our system drag-and-drop works — that button should
+     too." This page's copy of that rule was the FIRST one written; on 2026-08-21 the owner asked for
+     drag-and-drop on every click-only upload, so the rule moved to drop-import.js and every tool
+     reads that ONE definition instead of four that drift.
+
+     Nothing about this page changed: `rb-import` carries `data-ys-drop`, the shared module feeds the
+     dropped file to that input, and the input's own onchange runs the SAME importFile flow the button
+     runs. `data-ys-drop-class="rb-dropping"` keeps this page's own halo + wording (rehab-budget.css),
+     so the module injects no styling here. */
 
   /* ---------- init ---------- */
-  function init(){ restore(); prefillFromQuery(); render(); wireDrop(); document.addEventListener("click",()=>{ document.querySelectorAll(".rb-tip.show").forEach(t=>t.classList.remove("show")); }); }
+  function init(){ restore(); prefillFromQuery(); render(); document.addEventListener("click",()=>{ document.querySelectorAll(".rb-tip.show").forEach(t=>t.classList.remove("show")); }); }
   document.addEventListener("DOMContentLoaded", init);
   return { share, exportXlsx, importXlsx, importFile, exportPdf, emailLO,
            getState:()=>snap(), setState, grandTotal:()=>grand(),
