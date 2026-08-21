@@ -142,15 +142,25 @@ function call(server, method, path, token, body) {
     const app3 = (await db.query(
       `INSERT INTO applications (borrower_id, loan_officer_id, processor_id, status, program, loan_type, property_type)
        VALUES ($1,$2,$3,'processing','Fix & Flip','Purchase','SFR') RETURNING id`, [borrowerId, loId, procId])).rows[0].id;
-    const tpl = (await db.query(`SELECT id FROM checklist_templates LIMIT 1`)).rows[0].id;
+    // NO TEMPLATE, DELIBERATELY — these are HAND-TYPED conditions, the shape
+    // staff.js / borrower.js / raise-issue.js insert (template_id stays NULL).
+    //
+    // This used to hang them on `SELECT id FROM checklist_templates LIMIT 1`, and an
+    // unordered LIMIT 1 returns an ARBITRARY row: on a fresh database the heap happens
+    // to start with a harmless template, but after the ~900 suites ahead of this one
+    // have written to that table it can just as easily be `rtl_cond_iska`. signOffGate
+    // keys its per-condition rules on the TEMPLATE CODE, so the sign-off below was then
+    // refused with "Upload the executed Heter Iska …" — a real refusal, about a rule
+    // this block is not testing, on a condition nobody meant to create. (Reproduced on
+    // the shared database a full `npm test` leaves behind.) A hand-typed condition
+    // carries no template rule, so this measures the 80%-cleared nudge and nothing else.
     // 4 conditions: 3 already satisfied, 1 outstanding that we'll sign off → 4/4 = 100%.
-    const ids = [];
     for (let i = 0; i < 3; i++) await db.query(
-      `INSERT INTO checklist_items (template_id, scope, application_id, label, status, item_kind, is_required, signed_off_at)
-       VALUES ($1,'application',$2,'C','satisfied','condition',true,now())`, [tpl, app3]);
+      `INSERT INTO checklist_items (scope, application_id, label, status, item_kind, is_required, signed_off_at)
+       VALUES ('application',$1,'C','satisfied','condition',true,now())`, [app3]);
     const last = (await db.query(
-      `INSERT INTO checklist_items (template_id, scope, application_id, label, status, item_kind, is_required)
-       VALUES ($1,'application',$2,'Last','received','condition',true) RETURNING id`, [tpl, app3])).rows[0].id;
+      `INSERT INTO checklist_items (scope, application_id, label, status, item_kind, is_required)
+       VALUES ('application',$1,'Last','received','condition',true) RETURNING id`, [app3])).rows[0].id;
     const so = await call(server, 'PATCH', `/api/staff/checklist/${last}`, superT, { signedOff: true });
     assert(so.status === 200, 'signed off the last condition');
     // allow the best-effort suggestion to run

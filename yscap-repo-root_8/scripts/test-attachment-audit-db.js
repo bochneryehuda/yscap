@@ -21,6 +21,20 @@ const share = require('../src/lib/attachments/share-link');
 let passed = 0;
 function ok(name, cond) { assert.ok(cond, name); passed++; console.log(`  ok  ${name}`); }
 
+/* Wait for something the SERVER does after it has already answered us. Polls rather than sleeping a
+   flat interval so an idle machine still runs at full speed, and gives up after a second — long
+   enough that a loaded runner cannot lose, short enough that a genuine regression still fails fast.
+   Returns the last verdict, so the caller's own `ok(...)` reports the failure in its own words. */
+async function waitFor(check, ms = 1000) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    let v = false;
+    try { v = await check(); } catch (_) { v = false; }
+    if (v || Date.now() >= deadline) return v;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
 (async () => {
   console.log('\n== db/550 — the columns exist, on the real table ==');
   const cols = (await db.query(
@@ -153,8 +167,14 @@ function ok(name, cond) { assert.ok(cond, name); passed++; console.log(`  ok  ${
       ok('and never kept by a shared cache, or the expiry would not hold', /no-store/.test(a.cache || ''));
       ok('nosniff + DENY, so a mislabelled file cannot be re-read as HTML in someone else\'s frame',
         a.nosniff === 'nosniff' && a.frame === 'DENY');
-      ok('the open was counted through the real route',
-        (await db.query(`SELECT opened_count FROM document_share_links WHERE id=$1`, [live.id])).rows[0].opened_count >= 1);
+      // THE COUNTER IS WRITTEN AFTER THE BYTES ARE ON THE WIRE, DELIBERATELY (share-public.js:
+      // "a counter that fails must never cost a recipient their document"), so `fetch` above can and
+      // does resolve before that UPDATE commits. Reading it once is therefore a RACE, not a check —
+      // it wins on an idle machine and loses on a loaded CI runner, which is exactly what it did.
+      // Waiting for it asserts the real contract ("the open IS counted") without asserting a
+      // scheduling accident, and a genuinely uncounted open still fails, one second later.
+      ok('the open was counted through the real route', await waitFor(async () =>
+        (await db.query(`SELECT opened_count FROM document_share_links WHERE id=$1`, [live.id])).rows[0].opened_count >= 1));
 
       // A NON-pdf must NOT come back inline — an arbitrary stored type served inline is the
       // stored-XSS vector lib/media-headers.js exists to close.
