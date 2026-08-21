@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useToolSheetLayer } from '../lib/overlay-layers.js';
 
 /* Full-screen workspace that hosts a static tool (Scope of Work builder)
    connected to a loan-file condition. It reads as a PAGE of the portal, not a
@@ -28,6 +29,12 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 const STALL_MS = 4000;
 
 export default function ToolModal({ url, title, onClose }) {
+  /* THE FILE OVERVIEW STAYS REACHABLE OVER THIS SHEET (owner-reported 2026-08-21: "the
+     nice overview button on the right side … is not available in the full screens that
+     are populated, including … track record full screen / scope of work for full
+     screen. This should always be available"). Registering the layer is all this has to
+     do; the slide-over reads it and climbs above `.toolsheet` on its own. */
+  useToolSheetLayer(true);
   const frameRef = useRef(null);
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);

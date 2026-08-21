@@ -9,7 +9,7 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { subscribe, getSnapshot, getServerSnapshot, acquire } from './overlay-layers-store.js';
 
-/** Read-only: `{ preview, overview }` — is a layer of each kind open anywhere? */
+/** Read-only: `{ preview, overview, tool }` — is a layer of each kind open anywhere? */
 export function useOverlayLayers() {
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
@@ -27,6 +27,13 @@ function useLayer(kind, open) {
 /** Registers an open document preview. Returns the live layer state. */
 export function useDocPreviewLayer(open = true) {
   useLayer('preview', open);
+  return useOverlayLayers();
+}
+
+/** Registers an open FULL-SCREEN TOOL SHEET (Scope of Work, track record, the
+    Products & Pricing studio, the generated terms). Returns the live layer state. */
+export function useToolSheetLayer(open = true) {
+  useLayer('tool', open);
   return useOverlayLayers();
 }
 

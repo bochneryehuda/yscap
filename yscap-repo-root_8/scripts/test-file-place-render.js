@@ -130,6 +130,51 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log('  ✓', m); } else {
   ok(errors.filter((e) => !/favicon|Failed to load resource/i.test(e)).length === 0,
     'no runtime errors in the Draw Center', errors.slice(0, 2).join(' | '));
 
+  // ---- the overview button must survive a FULL-SCREEN TOOL SHEET ----------
+  // Owner item 16: "that button is not available in the full screens that are
+  // populated … This should always be available." A z-index is only true when it is
+  // PAINTED, so this asks the browser what is actually on top at the tab's own centre.
+  console.log('\n4. the overview button on a full-screen tool sheet');
+  await page.goto(base, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(6000);
+  const tabVisible = async () => page.evaluate(() => {
+    const t = document.querySelector('.fov-tab');
+    if (!t) return 'no-tab';
+    const r = t.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return 'zero-size';
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return hit && (hit === t || t.contains(hit)) ? 'clickable' : `covered-by:${hit && hit.className}`;
+  });
+  ok((await tabVisible()) === 'clickable', 'the overview tab is clickable on the ordinary file screen');
+
+  // Paint a real .toolsheet over the page and register the layer the way a tool does.
+  const covered = await page.evaluate(() => {
+    const sheet = document.createElement('div');
+    sheet.className = 'toolsheet';
+    sheet.id = 'probe-sheet';
+    sheet.style.background = '#fff';
+    document.body.appendChild(sheet);
+    const t = document.querySelector('.fov-tab');
+    const r = t.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return hit === sheet ? 'sheet-covers-tab' : 'tab-on-top';
+  });
+  ok(covered === 'sheet-covers-tab',
+    'a bare .toolsheet really does cover the tab — so this check is not vacuous', covered);
+
+  // Now with the escalation class the component applies, the tab must win.
+  const afterClass = await page.evaluate(() => {
+    document.querySelector('.fov-tab').classList.add('fov-over-tool');
+    const t = document.querySelector('.fov-tab');
+    const r = t.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    const res = hit && (hit === t || t.contains(hit)) ? 'clickable' : `covered-by:${hit && hit.className}`;
+    document.getElementById('probe-sheet').remove();
+    document.querySelector('.fov-tab').classList.remove('fov-over-tool');
+    return res;
+  });
+  ok(afterClass === 'clickable', 'THE OVERVIEW BUTTON IS ON TOP OF A FULL-SCREEN TOOL SHEET', afterClass);
+
   console.log(`test-file-place-render: ${pass} passed, ${fail} failed`);
   await browser.close();
   await db.query(`DELETE FROM applications WHERE id=$1`, [appId]).catch(() => {});

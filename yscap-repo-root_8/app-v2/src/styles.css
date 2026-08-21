@@ -5061,6 +5061,10 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
      165  .fov-panel.fov-over-preview
      160  .fov-tab.fov-over-preview
      150  .cv-modal-back.dp-back    the document preview
+    1200  .flash-dock               toasts — above everything
+    1015  .fov-panel.fov-over-tool
+    1010  .fov-tab.fov-over-tool
+    1000  .toolsheet                a full-screen tool sheet (SoW, track record, studio)
      135  .fov-panel                (on its own)
      120  .fov-tab                  (on its own)
 
@@ -5068,6 +5072,17 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    z-index on specificity — no !important needed, and an ordinary dialog opened
    from inside a preview still paints over it. */
 .cv-modal-back.dp-back{z-index:150}
+/* A FULL-SCREEN TOOL SHEET — the Scope of Work, the track record, the Products &
+   Pricing studio and the terms it generates (owner-reported 2026-08-21: "the nice
+   overview button on the right side … is not available in the full screens that are
+   populated … This should always be available").
+
+   SAME DEFECT AS THE PREVIEW ABOVE, but a very different NUMBER, and the number is the
+   whole point: a tool sheet is `.toolsheet` at z 1000 — not `.cv-modal-back` at 200 —
+   so the preview escalation (160/165) is nowhere near enough. These sit above the sheet
+   and below the flash dock (1200), so a toast still lands on top of everything. */
+.fov-tab.fov-over-tool{z-index:1010}
+.fov-panel.fov-over-tool{z-index:1015}
 .fov-tab.fov-over-preview{z-index:160}
 .fov-panel.fov-over-preview{z-index:165}
 /* THE PREVIEW MAKES ROOM rather than hiding under the panel. `padding-right` on

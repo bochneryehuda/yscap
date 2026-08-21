@@ -39,7 +39,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 13 | Condition center: external notes for borrowers + TPOs | Conditions | ☐ |
 | 14 | Conditions: add a document slot (not a borrower request) | Conditions | ☐ |
 | 15 | Borrower profile reachable from inside a file | Navigation | ☐ |
-| 16 | Overview hover button missing on full screens | Navigation | ☐ |
+| 16 | Overview hover button missing on full screens | Navigation | ☑ |
 | 17 | Scope of work Excel import: drag-and-drop | Uploads | ☐ |
 | 18 | ClickUp: Joshua Freidlander's files land in Lead Capture | ClickUp | ◐ |
 | 19 | ClickUp: assigning an officer moves the task to their folder | ClickUp | ☐ |
@@ -380,6 +380,20 @@ first idea.
 The right-side overview button must be present on **every** full-screen surface — the generated terms,
 products and pricing, track record full screen, scope of work full screen, and any other full screen.
 **Always available.**
+
+**SHIPPED.** The button was always there — the full-screen sheets were simply painted on top of it. The
+four screens named are two pieces of the system (the Scope of Work / track record sheet, and the Products &
+Pricing studio that also produces the terms), and both now step aside so the button stays on top and stays
+clickable.
+
+This is the same fix that was made a few days ago so the overview stayed reachable while a PDF is open — one
+layer further up. A **toast still appears above everything**, and a **question the app asks you still wins
+over both**, so nothing that needs your attention can end up buried behind the overview.
+
+**Checked in a real browser, not just in the code:** the test asks the browser what is actually on top at
+that button's own position — first proving a full-screen sheet really does cover it (so the check cannot
+pass by accident), then that the fix puts it back on top. And a guard now fails the build if a *new*
+full-screen sheet is ever added without this, so it cannot quietly come back.
 
 ---
 
