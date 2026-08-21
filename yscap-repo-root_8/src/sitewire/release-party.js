@@ -479,6 +479,50 @@ async function releaseStateFor(db, appId, { sitewireDrawId = null } = {}) {
 }
 
 /**
+ * WHAT THE LAST READ OF THE PURCHASE ADVICE FIELD ACTUALLY DID (db/608).
+ *
+ * Owner-reported 2026-08-21: a file with a purchase advice date in Encompass was chased as
+ * "no purchase advice 64 days after funding". It had never been ASKED — the per-file Encompass
+ * pull is a round-robin over the whole book, so a file waits its turn, and a field read can also
+ * come back without the id in it. The column was NULL in every one of those cases and the chase
+ * could not tell them apart from "Encompass says there is none".
+ *
+ *   value        a date came back — the loan is sold
+ *   blank        the field was returned and is empty — the ONLY state worth chasing
+ *   not_returned the read ran and this id was not in the answer. `client.readFields` splits its
+ *                batch on an invalid-field 400 and merges what SUCCEEDED, so an id the tenant
+ *                does not permit goes MISSING rather than raising
+ *   no_field_id  this deployment has no purchase advice field configured at all
+ *   no_loan_link PILOT holds no Encompass loan guid for this file (stamped by the sweep only)
+ */
+const PA_READ = {
+  VALUE: 'value',
+  BLANK: 'blank',
+  NOT_RETURNED: 'not_returned',
+  NO_FIELD_ID: 'no_field_id',
+  NO_LOAN_LINK: 'no_loan_link',
+};
+
+/**
+ * Record what a read of the purchase advice field did, on the file.
+ *
+ * `purchase_advice_read_at` ALWAYS moves, even when the verdict is unchanged — it is what the
+ * back-book sweep drains on, so a state-only guard would make the sweep re-read the same file
+ * forever. Never throws: this is bookkeeping riding a best-effort sync.
+ */
+async function stampPaRead(db, appId, state, fieldId) {
+  try {
+    await db.query(
+      `UPDATE applications
+          SET purchase_advice_read_at = now(),
+              purchase_advice_read_state = $2,
+              purchase_advice_field_id = $3
+        WHERE id = $1`,
+      [appId, state, fieldId ? String(fieldId) : null]);
+  } catch (_) { /* best-effort */ }
+}
+
+/**
  * Materialize the PA date onto the file, from an Encompass field-by-number read.
  *
  * Called from the per-file Encompass pull with the `_fieldValues` map it just read. Encompass is
@@ -495,13 +539,24 @@ async function releaseStateFor(db, appId, { sitewireDrawId = null } = {}) {
  * Never throws — this rides a best-effort sync and must never break a pull.
  * Returns { skipped } or { paDate, changed }.
  */
-async function syncPurchaseAdviceDate(db, appId, fieldValues) {
+async function syncPurchaseAdviceDate(db, appId, fieldValues, { silentDiscovery = false } = {}) {
   try {
     const fieldId = require('../lib/integrations/encompass-field-map').PA_DATE_FIELD_ID;
-    if (!fieldId) return { skipped: 'no_field_id' };
+    if (!fieldId) {
+      await stampPaRead(db, appId, PA_READ.NO_FIELD_ID, null);
+      return { skipped: 'no_field_id' };
+    }
+    // THE READ ITSELF FAILED (no `_fieldValues` at all — a fieldReader outage, an auth problem).
+    // Deliberately NOT stamped: that is transient, and stamping it would drain the file out of the
+    // sweep and let the chase treat one bad minute as an answer about the loan.
     if (!fieldValues || typeof fieldValues !== 'object') return { skipped: 'no_field_read' };
-    if (!Object.prototype.hasOwnProperty.call(fieldValues, fieldId)) return { skipped: 'field_not_returned' };
+    if (!Object.prototype.hasOwnProperty.call(fieldValues, fieldId)) {
+      await stampPaRead(db, appId, PA_READ.NOT_RETURNED, fieldId);
+      return { skipped: 'field_not_returned' };
+    }
     const paDate = paDateOf(fieldValues[fieldId]);
+    // Encompass answered ABOUT THIS LOAN. `blank` is the one state the 30-day chase may fire on.
+    await stampPaRead(db, appId, paDate ? PA_READ.VALUE : PA_READ.BLANK, fieldId);
     const r = await db.query(
       `UPDATE applications SET purchase_advice_date=$2, updated_at=now()
         WHERE id=$1 AND purchase_advice_date IS DISTINCT FROM $2::date
@@ -513,7 +568,18 @@ async function syncPurchaseAdviceDate(db, appId, fieldValues) {
     // depend on which of them happened to notice. Once-only and every "stay quiet" case is decided
     // inside `announceSold`, which never throws — a mail problem must never break a sync.
     let cardMoved = null;
-    if (changed && paDate) {
+    // DISCOVERING A DATE IS NOT THE SAME EVENT AS A DATE ARRIVING, and only the second is news.
+    // The back-book sweep asks about files PILOT has never asked about, so on that FIRST read a
+    // purchase advice dated in March lands as "changed" — and firing the hand-off would email the
+    // purchasing desk "this loan has been sold" about a sale months old, and drag its ClickUp card
+    // forward, for every such file at once on the first deploy. That is a back-book blast dressed
+    // as a notification. So the sweep asks for a SILENT first read: the date still lands (which is
+    // the whole fix — every downstream reader treats it as sold from that moment), and the file is
+    // COUNTED as discovered rather than announced, so nothing is hidden. Every LATER read of that
+    // same file announces and moves the card exactly as it always did, and the per-file pull is
+    // untouched — a date arriving on a file we are already watching is still news.
+    const discovered = !!(silentDiscovery && changed && paDate);
+    if (changed && paDate && !silentDiscovery) {
       try { await require('../lib/post-purchase').announceSold(appId, paDate); } catch (_) { /* best-effort */ }
       /* AND THE CLICKUP CARD MOVES ON (owner-directed 2026-08-21, corrected the same day:
          *"Sold (PA date from Encompass) — should update in our system as sold and should
@@ -534,7 +600,7 @@ async function syncPurchaseAdviceDate(db, appId, fieldValues) {
       cardMoved = await require('../clickup/post-closing-stage')
         .advanceCard(appId, 'sold', { client: db, reason: 'encompass_purchase_advice_date' });
     }
-    return { paDate, changed, cardMoved };
+    return { paDate, changed, cardMoved, discovered };
   } catch (_) { return { skipped: 'error' }; }
 }
 
@@ -637,6 +703,98 @@ async function setTreatAsSold(db, appId, { on = true, by = null, note = null } =
   return { ok: true, treatAsSold: !!r.rows[0].treat_as_sold_at };
 }
 
+// ---------------------------------------------------------------------------
+// REFRESHING THE WHOLE BOOK'S PURCHASE ADVICE FIELD — the owner's "refresh your entire system"
+// ---------------------------------------------------------------------------
+
+/**
+ * Owner-directed 2026-08-21, on the false chase: *"If you're refreshing yourself and something is
+ * wrong, you need to refresh your entire system and make sure it's looking at the correct field."*
+ *
+ * WHAT IT DOES. Takes funded files that have been asked about LEAST RECENTLY (never-asked first),
+ * re-reads THE PURCHASE ADVICE FIELD ALONE — one field by number, never the whole loan and never a
+ * pipeline search — and lands the answer through `syncPurchaseAdviceDate`, which is what records
+ * `purchase_advice_read_state`. So after a few passes every funded file carries a stated verdict
+ * and the 30-day chase can fire on `blank` alone instead of on the absence of a column nobody ever
+ * filled in.
+ *
+ * WHY IT IS SEPARATE FROM THE POLL. `src/sync/encompass-sync.js` pulls the WHOLE loan for one file
+ * every 15 minutes — the right shape for keeping the mirror fresh, far too slow to answer one
+ * question about the funded book (a given file's turn comes around once every (files ÷ ~96) days).
+ * This asks the one question, so it can move through the book orders of magnitude faster at a
+ * fraction of the cost.
+ *
+ * EVERY GUARD IS DELIBERATE, and each one is the same guard `refreshSoldSignal` already carries:
+ *   · FUNDED files only — a purchase advice belongs to a loan that closed; asking about a file in
+ *     underwriting would burn the budget on a question with no answer;
+ *   · a CACHED loan guid only. A file PILOT has never linked to Encompass is stamped `no_loan_link`
+ *     and drains out of the queue, because "we hold no loan to ask about" is a real answer and a
+ *     different piece of work from "Encompass says none";
+ *   · ONE field id per call, and the calls are PACED (`gapMs`) so a sweep can never look like a
+ *     burst to Encompass or crowd out the ordinary poll;
+ *   · BOUNDED per pass (`limit`), draining on `purchase_advice_read_at NULLS FIRST` (the db/608
+ *     partial index), so a partial pass always resumes exactly where it stopped;
+ *   · the READ FAILING is deliberately NOT stamped (`syncPurchaseAdviceDate` returns
+ *     `no_field_read` and writes nothing), so one bad minute never drains a real file out of the
+ *     sweep carrying a verdict nobody read;
+ *   · NEVER throws, and the client is INJECTABLE exactly like `db` — the whole path is provable
+ *     against a stub with no network and no credentials.
+ *
+ * Returns a summary of what it did — never a bare count, because a sweep that reports only "50
+ * files" cannot tell a working pass from one that stamped fifty `no_loan_link`s.
+ */
+const PA_SWEEP_LIMIT = Math.max(1, Number(process.env.PA_SWEEP_FILES) || 25);
+const PA_SWEEP_GAP_MS = Math.max(0, Number(process.env.PA_SWEEP_GAP_MS) || 400);
+
+async function sweepPurchaseAdviceOnce(db, { limit = PA_SWEEP_LIMIT, gapMs = PA_SWEEP_GAP_MS, client = null } = {}) {
+  const out = {
+    looked: 0, value: 0, blank: 0, notReturned: 0, noLoanLink: 0, readFailed: 0, discovered: 0,
+    fieldId: null, skipped: null,
+  };
+  try {
+    const fieldId = paFieldConfigured() && require('../lib/integrations/encompass-field-map').PA_DATE_FIELD_ID;
+    if (!fieldId) { out.skipped = 'no_field_id'; return out; }
+    out.fieldId = String(fieldId);
+    const api = client || require('../encompass/client');
+    if (!api.configured()) { out.skipped = 'encompass_not_configured'; return out; }
+
+    const rows = (await db.query(
+      `SELECT a.id, a.encompass_loan_guid AS guid,
+              (a.purchase_advice_read_at IS NULL) AS first_read
+         FROM applications a
+        WHERE a.deleted_at IS NULL
+          AND a.status = 'funded'
+        ORDER BY a.purchase_advice_read_at NULLS FIRST
+        LIMIT $1`, [Math.max(1, Math.min(500, Number(limit) || PA_SWEEP_LIMIT))])).rows;
+
+    for (const r of rows) {
+      out.looked += 1;
+      // NO LOAN TO ASK ABOUT. Stamped rather than skipped, so the file leaves the queue carrying the
+      // honest reason — and so the chase can say "PILOT cannot tell" instead of "not sold".
+      if (!r.guid) { await stampPaRead(db, r.id, PA_READ.NO_LOAN_LINK, fieldId); out.noLoanLink += 1; continue; }
+      let vals = null;
+      try { vals = await api.readFields(r.guid, [String(fieldId)]); }
+      catch (_) { vals = null; }
+      // A FILE THIS SWEEP HAS NEVER ASKED ABOUT LANDS ITS DATE SILENTLY (see the note in
+      // `syncPurchaseAdviceDate`): PILOT cannot tell a sale that happened this morning from one
+      // that happened in March, and announcing the whole back book at once is not a notification,
+      // it is a blast. Discoveries are counted and logged instead.
+      const res = await syncPurchaseAdviceDate(db, r.id, vals, { silentDiscovery: !!r.first_read });
+      if (res && res.discovered) out.discovered += 1;
+      if (res && res.skipped === 'no_field_read') out.readFailed += 1;
+      else if (res && res.skipped === 'field_not_returned') out.notReturned += 1;
+      else if (res && res.paDate) out.value += 1;
+      else out.blank += 1;
+      if (gapMs) await new Promise((res2) => setTimeout(res2, gapMs));
+    }
+    return out;
+  } catch (e) {
+    out.skipped = (e && e.message) ? String(e.message).slice(0, 120) : 'error';
+    return out;
+  }
+}
+
+
 module.exports = {
   SOLD, SOLD_LABEL, SOLD_VIA, SOLD_VIA_LABEL, NOT_SOLD_TITLE, NOT_SOLD_MODE,
   paDateOf, adviceDateOf, soldStatus, soldVia, effectiveSold, enforcedMode,
@@ -644,5 +802,6 @@ module.exports = {
   // The badge kept its old export name too, so nothing that already imports it has to change.
   notSoldWarning: notSoldBadge,
   paFieldConfigured, releaseStateFor, syncPurchaseAdviceDate, setTreatAsSold,
+  PA_READ, stampPaRead, sweepPurchaseAdviceOnce,
   refreshSoldSignal, SOLD_RECHECK_MINUTES,
 };

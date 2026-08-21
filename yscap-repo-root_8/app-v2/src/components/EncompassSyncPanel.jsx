@@ -452,6 +452,21 @@ export default function EncompassSyncPanel({ appId }) {
               ⚠ The last read from Encompass didn’t go through — {plainReason(data.lastError)}. The comparison below shows the last values we successfully read; press “Refresh from Encompass” to try again.
             </div>
           )}
+          {/* THE PURCHASE ADVICE FIELD, and what the last read of it actually did (db/608).
+              Owner-reported 2026-08-21: a file that HAS a purchase advice date was chased as
+              missing one. A blank column was four different situations wearing one face —
+              Encompass says none, we have never asked, we hold no loan to ask about, and the
+              read ran without that field in the answer — and only the first is evidence about
+              the sale. The panel now states which one this file is in, and names the field id
+              PILOT asked for, so "are you even looking at the right field?" is answerable from
+              the screen. Colours are explicit darks per the white-first rule. */}
+          {data.purchaseAdvice && (
+            <div style={{ fontSize: 12, color: data.purchaseAdvice.readState === 'value' ? V.good : (data.purchaseAdvice.readState === 'blank' ? V.muted : V.amber), marginTop: 4 }}>
+              <strong style={{ color: V.ink }}>Purchase advice:</strong>{' '}
+              {data.purchaseAdvice.note}
+              {data.purchaseAdvice.fieldId ? <> <span style={{ color: V.muted }}>(Encompass field {data.purchaseAdvice.fieldId}{data.purchaseAdvice.readAt ? `, read ${fmtAgo(data.purchaseAdvice.readAt)}` : ''})</span></> : null}
+            </div>
+          )}
         </div>
         {hasLoan && (
           <button onClick={refresh} disabled={!!busy}

@@ -14014,13 +14014,46 @@ router.post('/applications/:id/loan-number', async (req, res) => {
 // value into our column (owner-directed: not admin-only). None of these ever
 // writes to Encompass — /refresh does a READ-ONLY pull; /replace writes exactly
 // one of OUR columns.
+// PLAIN-LANGUAGE WORDING FOR EACH READ STATE — ONE definition, so the file panel and any future
+// surface can never describe the same verdict two ways. Deliberately says what it means for the
+// LOAN, not what the column contains: "blank" is the only one that is evidence about the sale.
+const PA_READ_NOTE = Object.freeze({
+  value:        'Encompass has a purchase advice date on this loan — it is sold.',
+  blank:        'PILOT asked Encompass about this loan and the purchase advice field came back empty.',
+  not_returned: 'PILOT asked, and Encompass answered without that field — usually a permission on it. This file cannot be judged either way, and it is NOT being chased.',
+  no_field_id:  'This deployment is not reading a purchase advice field at all, so nothing can be known from Encompass.',
+  no_loan_link: 'PILOT holds no Encompass loan for this file, so there was nothing to ask about.',
+  _never:       'PILOT has not asked Encompass about this loan yet, so nothing is known either way — it is NOT being chased.',
+});
+
 router.get('/applications/:id/encompass/status', async (req, res) => {
   try {
     // heal:true — this is a single-file panel view, so it may fetch the authoritative
     // field-reader values on the spot (unlike the multi-file tape/issuance gates).
     const c = await require('../encompass/reconcile').computeFindings(req.params.id, null, { heal: true });
     if (!c.found) return res.status(404).json({ error: 'application not found' });
-    res.json({ hasLoan: c.hasLoan, guid: c.guid, loanNumber: c.loanNumber, pulledAt: c.pulledAt, lastError: c.lastError, priced: c.priced, summary: c.summary });
+    // WHAT THE LAST READ OF THE PURCHASE ADVICE FIELD DID, on this file (db/608). It answers the
+    // question the panel could not before: "no purchase advice date" was equally "Encompass says
+    // none", "this file has never been asked", "we hold no Encompass loan for it" and "the read ran
+    // and that field was not in the answer" — four different pieces of work behind one blank.
+    // Best-effort: a diagnosis must never be the reason the panel fails to load.
+    let purchaseAdvice = null;
+    try {
+      const pa = (await db.query(
+        `SELECT purchase_advice_date, purchase_advice_read_at, purchase_advice_read_state,
+                purchase_advice_field_id
+           FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+      if (pa) {
+        purchaseAdvice = {
+          date: pa.purchase_advice_date || null,
+          readAt: pa.purchase_advice_read_at || null,
+          readState: pa.purchase_advice_read_state || null,
+          fieldId: pa.purchase_advice_field_id || null,
+          note: PA_READ_NOTE[pa.purchase_advice_read_state] || PA_READ_NOTE._never,
+        };
+      }
+    } catch (_) { /* the columns may not exist yet on an un-migrated database */ }
+    res.json({ hasLoan: c.hasLoan, guid: c.guid, loanNumber: c.loanNumber, pulledAt: c.pulledAt, lastError: c.lastError, priced: c.priced, summary: c.summary, purchaseAdvice });
   } catch (e) { console.warn('[staff] encompass status:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 

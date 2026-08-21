@@ -92,6 +92,9 @@ const DIGEST_ACTION = Object.freeze({
   // funding date, then we should get notified — super admin should get notified, and the closer
   // should get notified").
   PURCHASE_ADVICE_MISSING: 'purchase_advice_missing',
+  // The other half of that chase: the funded files PILOT could NOT judge either way (db/608).
+  // Global (entity NULL) — it is a statement about the connection, not about one loan.
+  PURCHASE_ADVICE_UNREADABLE: 'purchase_advice_unreadable',
 });
 
 /**
@@ -1445,6 +1448,20 @@ async function purchaseAdviceMissingOnce() {
           AND COALESCE(cw.table_funded, false) = false
           AND a.purchase_advice_date IS NULL
           AND pa.advice_date IS NULL
+          -- THE CHASE FIRES ON A STATED ANSWER, NEVER ON AN EMPTY COLUMN (db/608; owner-reported
+          -- 2026-08-21). 'purchase_advice_date IS NULL' is not "Encompass says there is none" — it
+          -- is equally "this file has not come round on the pull rota yet", "PILOT holds no
+          -- Encompass loan for it", and "the read ran and that field id was not in the answer". In
+          -- all three PILOT had never once asked about the loan and told the closer it was unsold
+          -- anyway, which is exactly the file the owner was looking at. 'blank' is the ONE state
+          -- that means we asked Encompass about THIS loan and Encompass answered empty.
+          --
+          -- CONSEQUENCE, DELIBERATE AND STATED: until release-party.sweepPurchaseAdviceOnce has
+          -- worked through the funded book this chase is QUIET on files it has not reached. Quiet
+          -- is the safe direction — a false chase costs the closer's trust and sends them hunting
+          -- for a date that is already on the loan — and silence cannot hide a broken field,
+          -- because purchaseAdviceUnreadableOnce below reports every file PILOT cannot judge.
+          AND a.purchase_advice_read_state = 'blank'
           AND ${notThrottled('a.id', DIGEST_ACTION.PURCHASE_ADVICE_MISSING, "interval '7 days'")}
         ORDER BY a.funded_date ASC, a.id
         LIMIT 200`, [String(days)])).rows;
@@ -1464,12 +1481,18 @@ async function purchaseAdviceMissingOnce() {
       if (!FC.chaseMissingPurchaseAdvice(r.lender)) continue;
       if (!(await _gate(DIGEST_ACTION.PURCHASE_ADVICE_MISSING, r.id, '7 days'))) continue;
       const age = Number(r.age || 0);
-      const who = r.lender ? String(r.lender) : 'the investor';
+      const who = r.lender ? String(r.lender) : null;
       const payload = {
         type: 'purchase_advice_missing',
         title: `No purchase advice ${age} days after funding`,
         badge: { text: 'Chase the sale', tone: 'action' },
-        body: `This loan funded ${age} days ago and was not table funded, so it still has to be sold to ${who} — and no purchase advice date has come back. Chase it, or record the advice on the file if it has already arrived.`,
+        // THE BUYER IS QUOTED AS WHAT THE FILE RECORDS, NEVER ASSERTED AS FACT (owner-reported
+        // 2026-08-21: the email named CorrFirst on a file the owner knows as EMCAP). `lender` is a
+        // pull-only field that can be stale or simply wrong, and stating it flatly makes the whole
+        // email read as nonsense to somebody who knows the deal — even when the rest of it is
+        // right. The wording says where the name came from, so a wrong one reads as a note to
+        // correct rather than as PILOT being confused about the loan.
+        body: `This loan funded ${age} days ago and was not table funded, so it still has to be sold${who ? ` (the file records the buyer as ${who})` : ''} — PILOT asked Encompass and no purchase advice date has come back. Chase it, or record the advice on the file if it has already arrived. If the loan already has a purchase advice date in Encompass, tell an admin: PILOT may be reading the wrong field.`,
         applicationId: r.id,
         link: `/internal/app/${r.id}`,
         ctaLabel: 'Open the loan file',
@@ -1493,6 +1516,81 @@ async function purchaseAdviceMissingOnce() {
     } catch (e) { console.error('[digest] purchase-advice-missing', r.id, e && e.message); }
   }
   return sent;
+}
+
+/* 6b) purchase_advice_unreadable — SILENCE MUST NEVER BE MISTAKEN FOR "ALL GOOD".
+ *
+ * The chase above now fires only on 'blank' (db/608): we asked Encompass about THIS loan and
+ * Encompass answered empty. That is the correct question, and it has a cost — every funded file
+ * PILOT could not judge is now silently absent from that email. A broken field id, a permission
+ * removed on the purchase advice field, or a sweep that has stopped running would therefore look
+ * exactly like a clean book: nobody chased, so nothing must be wrong.
+ *
+ * So the not-judged pile is reported as its OWN thing, in its own words. It is a DIFFERENT sentence
+ * and a DIFFERENT piece of work from the chase — "go and ask the investor for the purchase advice"
+ * is for the closer, "PILOT cannot read this field" is for whoever can fix the connection — which
+ * is why it goes to SUPER ADMINS ONLY and never to the closer.
+ *
+ * The diagnosis is the tenant's OWN field list, not our notes about it: `purchase-advice-diagnosis`
+ * asks `encompass_field_catalog` what your Encompass calls the field we read and what else it has
+ * whose name mentions a purchase advice. That is the owner's *"give me the field that you have"*.
+ *
+ * QUIET WHEN THERE IS NOTHING TO SAY. Files that have simply not come round on the sweep yet are
+ * reported only once they are OLDER than the chase threshold — the sweep drains the funded book in
+ * days, so a fresh unstamped file is a queue, not a fault. One global stamp per week (entity NULL),
+ * like the other book-wide summaries.
+ */
+async function purchaseAdviceUnreadableOnce() {
+  try {
+    const DIAG = require('./purchase-advice-diagnosis');
+    const reads = await DIAG.readStateCounts(db);
+    // A deployment with no funded files, or with the field switched off entirely, has nothing to
+    // report here — 'no_field_id' is a deliberate configuration, not a fault, and saying so weekly
+    // would be pure noise.
+    if (!reads.funded) return 0;
+    const stuck = Number(reads.not_returned || 0) + Number(reads.no_loan_link || 0);
+    // A never-asked file only counts once it is older than the chase window: below that it is
+    // simply waiting its turn in a sweep that drains the book in days.
+    let staleUnasked = 0;
+    try {
+      staleUnasked = Number((await db.query(
+        `SELECT COUNT(*)::int AS n FROM applications
+          WHERE deleted_at IS NULL AND status='funded' AND purchase_advice_read_at IS NULL
+            AND funded_date IS NOT NULL
+            AND funded_date <= CURRENT_DATE - (($1)::text || ' days')::interval`,
+        [String(PURCHASE_ADVICE_CHASE_DAYS())])).rows[0]?.n || 0);
+    } catch (e) { console.error('[digest] purchase-advice-unreadable stale', e && e.message); }
+    const total = stuck + staleUnasked;
+    if (!total) return 0;
+    if (!(await _gate(DIGEST_ACTION.PURCHASE_ADVICE_UNREADABLE, null, '7 days'))) return 0;
+
+    const field = await DIAG.fieldDiagnosis(db);
+    const parts = [];
+    if (reads.not_returned) parts.push(`${reads.not_returned} where Encompass answered without that field`);
+    if (reads.no_loan_link) parts.push(`${reads.no_loan_link} with no Encompass loan linked in PILOT`);
+    if (staleUnasked) parts.push(`${staleUnasked} funded over ${PURCHASE_ADVICE_CHASE_DAYS()} days ago that PILOT has still not asked about`);
+    const payload = {
+      type: 'purchase_advice_missing',
+      title: `PILOT cannot tell whether ${total} funded ${total === 1 ? 'loan is' : 'loans are'} sold`,
+      badge: { text: 'Check the connection', tone: 'action' },
+      body: [
+        `${DIAG.summarize(field, reads)}`,
+        '',
+        `Not judged: ${parts.join('; ')}.`,
+        `These loans are NOT being chased for a missing purchase advice, because PILOT has no answer about them either way — it is not saying they are unsold.`,
+        field.candidates && field.candidates.length
+          ? `Fields in your Encompass whose name mentions a purchase advice: ${field.candidates.map((c) => `${c.key}${c.label ? ` (${c.label})` : ''}`).join(', ')}.`
+          : 'Your Encompass field list has no other field whose name mentions a purchase advice.',
+      ].filter((x) => x !== null).join('\n'),
+      link: '/internal/integrations',
+      ctaLabel: 'Open the integrations page',
+    };
+    const admins = await notify.notifyAdmins({ ...payload, emailRoles: ['super_admin'], skipSharedInbox: true });
+    await _stamp(DIGEST_ACTION.PURCHASE_ADVICE_UNREADABLE, null, {
+      notReturned: reads.not_returned, noLoanLink: reads.no_loan_link, staleUnasked, fieldId: field.fieldId,
+    });
+    return Array.isArray(admins) ? admins.length : (admins ? 1 : 0);
+  } catch (e) { console.error('[digest] purchase-advice-unreadable', e && e.message); return 0; }
 }
 
 /* 7) order_trustpoint (blueprint 2b) — a draw submitted through the portal composer on a TrustPoint
@@ -2688,6 +2786,7 @@ async function runDue() {
     await investorFeeOwedOnce().catch((e) => console.error('[digests] investor-fee-owed', e && e.message));
     await retainageReleasableOnce().catch((e) => console.error('[digests] retainage-releasable', e && e.message));
     await purchaseAdviceMissingOnce().catch((e) => console.error('[digests] purchase-advice-missing', e && e.message));
+    await purchaseAdviceUnreadableOnce().catch((e) => console.error('[digests] purchase-advice-unreadable', e && e.message));
     await trainingRunOnce().catch((e) => console.error('[digests] training-run', e && e.message));
     await certificateSurveyOnce().catch((e) => console.error('[digests] cert-survey', e && e.message));
     await directSourceSweepOnce().catch((e) => console.error('[digests] direct-source-sweep', e && e.message));
@@ -2904,6 +3003,7 @@ module.exports = {
   orderTrustpointOnce, orderTrinityOnce, investorPendingDeliveryOnce, withInvestorOnce,
   drawInspectionLateOnce, drawFindingsUnreviewedOnce,
   drawApprovedUnrecordedOnce, investorFeeOwedOnce, retainageReleasableOnce, purchaseAdviceMissingOnce,
+  purchaseAdviceUnreadableOnce,
   orderOverdueOnce,
   trainingRunOnce, certificateSurveyOnce, autoCommitteeReviewOnce, directSourceSweepOnce, autoReadSweepOnce, unfundedRereadSweepOnce, section1071SweepOnce,
   aiCrossdocSweepOnce, weeklyAdminAiQuestionsOnce, weeklyTopRiskyFilesOnce, weeklyLoAiDigestOnce,
