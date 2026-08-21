@@ -51,12 +51,19 @@ ok('a disagreement is SAID, never silent', /own values were KEPT/.test(body));
 ok('dropped line items are counted, never silent', /could not be matched to the current work list/.test(body));
 ok('the success flash names address + budget + line-item count', /line item/.test(body) && /budget \$/.test(body));
 
-// 4. drag-and-drop
-ok('dragover prevents the browser navigating to the file', /\["dragenter","dragover"\]\.forEach\(ev=>document\.addEventListener\(ev,function\(e\)\{\s*e\.preventDefault\(\)/.test(js));
-ok('the drop handler feeds the SAME import flow', /document\.addEventListener\("drop",function\(e\)\{[\s\S]{0,220}importFile\(f\)/.test(js));
-ok('an Outlook virtual file is read through items[].getAsFile', /it\.getAsFile&&it\.getAsFile\(\)/.test(js));
-ok('wireDrop runs at init', /function init\(\)\{[^}]*wireDrop\(\)/.test(js));
+// 4. drag-and-drop — the page delegates now, and the delegation is what can break HERE.
+ok('the import input is marked for the shared drop module',
+  /<input id="rb-import"[^>]*\bdata-ys-drop\b/.test(html));
+ok('…and the page loads that module', /<script src="drop-import\.js\?v=/.test(html));
+ok('…and a dropped file still runs the SAME import flow, because the module feeds this input',
+  /<input id="rb-import"[^>]*onchange="RB\.importXlsx\(this\)"/.test(html));
+ok('this page keeps its OWN halo wording rather than the module’s generic one',
+  /data-ys-drop-class="rb-dropping"/.test(html));
 ok('the halo class exists in the stylesheet', /body\.rb-dropping/.test(css));
+// The rule LEFT this file on 2026-08-21. A private copy growing back is how the four tools
+// drift apart again, which is the whole reason it was shared.
+ok('the page keeps no private copy of the drop handling',
+  !/function wireDrop\(/.test(js) && !/\.dataTransfer\b/.test(js));
 
 // 5. cache busters
 // These assets are cached HARD, so an edit that does not bump the ?v= serves the
@@ -71,8 +78,8 @@ ok('the halo class exists in the stylesheet', /body\.rb-dropping/.test(css));
 const crypto = require('crypto');
 const sha16 = (t) => crypto.createHash('sha256').update(t).digest('hex').slice(0, 16);
 const ASSETS = [
-  { file: 'rehab-budget.js', body: js, sha: '205c769833aecfe8', v: 'flow1' },
-  { file: 'rehab-budget.css', body: css, sha: '4a3598405f9e9680', v: 'dnd1' },
+  { file: 'rehab-budget.js', body: js, sha: 'd573e52ce7c4afa1', v: 'flow2-shareddrop' },
+  { file: 'rehab-budget.css', body: css, sha: 'af87860acdbf456c', v: 'dnd2' },
 ];
 for (const a of ASSETS) {
   const seen = sha16(a.body);
