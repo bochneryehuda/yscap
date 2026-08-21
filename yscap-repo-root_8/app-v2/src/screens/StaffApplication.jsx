@@ -51,6 +51,7 @@ import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, resolveSection, whereD
 import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll, nearestFileSectionId } from '../lib/keep-scroll.js';
 import { readStation, readSection, writeStation, savePlace } from '../lib/file-place.js';
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
+import GcRecordCard from '../components/GcRecordCard.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp, audienceLabel } from '../lib/conditions-vocab.js';
 import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
@@ -1863,6 +1864,11 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
 
       {it.template_code === 'usps_address_verification' && (
         <UspsAddressVerification appId={appId} onChanged={onChanged} />
+      )}
+
+      {/* The contractor's own record, on the condition that is about them (db/605). */}
+      {it.template_code === 'rtl_cond_gc_info' && (
+        <div style={{ paddingLeft: 20 }}><GcRecordCard appId={appId} onChanged={onChanged} /></div>
       )}
 
       {/* Ask for one more document WITHIN this condition (db/578) — never a
@@ -4166,6 +4172,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   );
                 })}
               </div>
+            )}
+            {/* The contractor's own record, on the condition that is about them (db/605) —
+                the SAME card the internal row carries, so the two views of one condition
+                cannot show different things about one company. */}
+            {it.template_code === 'rtl_cond_gc_info' && (
+              <div style={{ width: '100%', paddingLeft: 20 }}><GcRecordCard appId={appId} onChanged={onChanged} /></div>
             )}
             <CondNote item={it} onPatch={onPatch} />
             {itemDocs.length > 0 && (

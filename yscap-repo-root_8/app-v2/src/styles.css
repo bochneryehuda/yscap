@@ -6002,3 +6002,18 @@ ol.arena-ch-top li em { color: var(--a-gold-ink); font-style: normal; font-varia
 .cnd-teamnote-h{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
   color:var(--teal-br,#256168);margin-bottom:3px}
 .cnd-teamnote-body{font-size:14px;color:#141B22;white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* THE GENERAL CONTRACTOR'S RECORD ON ITS CONDITION (db/605). A quiet inset card rather
+   than a panel — it lives INSIDE a condition row, so it must read as part of that row's
+   body and not as a second page. Explicit darks per the hard rule. */
+.gcrec{margin:6px 0 2px;padding:10px 12px;background:var(--surface-soft,#FBF9F4);
+  border:1px solid var(--line,rgba(174,135,70,.28));border-radius:var(--radius-sm,8px)}
+.gcrec-h{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  color:#141B22;margin-bottom:6px}
+.gcrec-who{margin-bottom:8px;color:#141B22;overflow-wrap:anywhere}
+.gcrec-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px 12px}
+.gcrec-f{display:flex;flex-direction:column;gap:3px;min-width:0}
+.gcrec-l{font-size:11.5px;font-weight:600;color:#4B585C}
+/* One column on a phone: two 210px fields side by side is what pushes a condition row
+   sideways, and a condition list that scrolls horizontally is unusable on a phone. */
+@media(max-width:720px){ .gcrec-grid{grid-template-columns:1fr} }

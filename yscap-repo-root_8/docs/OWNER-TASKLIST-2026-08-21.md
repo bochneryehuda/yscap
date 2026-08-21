@@ -31,9 +31,9 @@ two-audit-agent gate in `CLAUDE.md`.
 | 5 | Email replies: manual attach + drag-and-drop | Email surfaces | ☐ |
 | 6 | Drag-and-drop upload everywhere it's missing | Uploads, global | ◐ |
 | 7 | Export all / export unverified with a NOT-VERIFIED stamp | Exports | ☐ |
-| 8 | Feasibility report + GC contact into TPR export & SharePoint | Ground-up conditions | ☐ |
+| 8 | Feasibility report + GC contact into TPR export & SharePoint | Ground-up conditions | ☑ |
 | 9 | Plans & permits → TPR, SharePoint **and Sitewire** | Ground-up conditions | ☑ |
-| 10 | GC information condition: informational fields + GC PDF | Conditions | ☐ |
+| 10 | GC information condition: informational fields + GC PDF | Conditions | ☑ |
 | 11 | Resend Draw form must work when unseen/expired | Draws | ☑ |
 | 12 | Credit report import reads the WRONG scores (2 borrowers) | Credit | ☑ |
 | 13 | Condition center: external notes for borrowers + TPOs | Conditions | ☑ |
@@ -240,6 +240,17 @@ export surface before building.
 The feasibility report document (uploaded to the feasibility condition) and the contractor contact
 information must both flow into the **TPR export** and the **SharePoint** mirror.
 
+**SHIPPED — and it is two different jobs, so it was done as two.**
+
+**The feasibility report was already there** and is now pinned. Anything uploaded to the feasibility
+condition files with the **Scope of Work** in both the investor package and the team site, through the one
+shared categorizer. That is not luck: the filename fallback does **not** recognise the word "feasibility",
+so it rests entirely on the condition being mapped — which a test now states, so removing the entry cannot
+quietly send it to the catch-all folder.
+
+**The contractor's information had nowhere to come from** — see item 10, which is the same deliverable
+from the other end: PILOT now keeps a real contractor record and prints it as a sheet that rides into both.
+
 ---
 
 ## 9. Plans and permits → TPR, SharePoint, **and Sitewire**
@@ -315,6 +326,57 @@ mutations were proven to fail them.
 - **Not all fields required.** Business name explicitly optional.
 - A **generated "GC Contractor Information" PDF**, nicely laid out, is produced from those fields and
   included in the **TPR export** and the **SharePoint** sync (and therefore in investor delivery).
+
+**SHIPPED** (db/605).
+
+**The upload is optional now, and the condition still counts.** You can sign the GC condition off with
+nothing uploaded — your words. It is still a **required** condition, so it still has to be dealt with
+before clear-to-close, and it is still where a license certificate or a W-9 gets filed. (Making it
+*optional* instead would have dropped it out of the readiness list altogether, which is not what you
+asked for.) An ordinary document condition still refuses an empty sign-off — the change is only this slot.
+
+**The record: what research says a contractor file actually carries.** You asked for name / phone / email /
+license and for research into "any other official things". What a lender's contractor package and an
+investor's file review actually ask for:
+
+- **License number, license STATE and expiry.** The number alone is not checkable — a contractor license
+  is issued per state, and only the pair can be looked up on a public register. Plenty of trades and a few
+  states do not license at all, which is one reason nothing here is required.
+- **General liability** and **workers' compensation** — each with carrier, policy number and expiry, kept
+  **apart** on purpose: they are two different policies, more often than not from two different carriers,
+  and a file that has one and not the other is a real state a reviewer must be able to see.
+- **EIN from their W-9** — a business identifier that is already on every W-9 in the file. A personal
+  Social is never typed here.
+- **Business address and website** — how somebody confirms the company is real before a draw is wired.
+
+**Nothing is required.** Your instruction, and also right: a builder gives you a phone number today and an
+insurance certificate next week, and a record that refuses to save until it is complete is a record nobody
+starts. A blank field simply does not print, and the sheet says in its footer that **a blank is a blank** —
+never "there is no license".
+
+**The name and phone are NOT retyped here.** The contractor is a **file contact**, which is the one record
+this system already keeps of a company — so the card shows it and points at the contacts section to change
+it. A second box for the same phone number is exactly how two records of one company start disagreeing.
+What is edited on the condition is only the part that would be meaningless on a title company.
+
+**The sheet.** Saving redraws a one-page **"General Contractor Information"** PDF in the PILOT house style,
+files it on the GC condition, and it reaches the investor package and the team site's **Scope of Work**
+folder with no new export machinery — because a document on that condition already files there. It is born
+**accepted** (PILOT drew it; there is nobody to review it, and a pending copy would be held back from the
+very export it exists for), it **supersedes only its own predecessor** — never the license certificate a
+human filed on the same condition — and saving the same thing twice redraws **nothing**, which is what
+keeps the SharePoint version folders from filling with identical sheets. A policy that has already lapsed
+prints **(expired)** beside it; that is the one thing a reader cannot work out at a glance.
+
+Proof: `scripts/test-gc-record-pure.js` (the field list, that nothing is required, and the sheet's own
+words read back OUT of the PDF — including the expired flag and the sparse case that prints no empty
+headings) and `scripts/test-gc-record-db.js` (real Postgres, real HTTP: the optional sign-off with an
+ordinary condition as a control, the partial save that does not blank what came before, and the sheet
+actually being selected into the investor package). Four mutations were proven to fail them.
+
+**One open question for you:** should signing off the GC condition require *something* — at least a name
+and a way to reach them — or stay entirely at the team's discretion? You said the upload should not be
+required; you did not say whether the record should be. It is currently at their discretion.
 
 ---
 

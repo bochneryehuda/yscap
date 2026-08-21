@@ -200,6 +200,13 @@ function categoryFor(d) {
   // DELIBERATELY NOT in the investor TPR package: TPR_DOC_SELECT excludes draw_inspection_report /
   // draw_packet by doc_kind, and draw_support joins them there, so this only ever decides a folder.
   if (kind === 'draw_support' || kind === 'draw_inspection_report' || kind === 'draw_packet') return C.DRAWS;
+  // The "General Contractor Information" sheet PILOT draws from the file's GC record
+  // (db/605). It is normally filed ON the GC condition, so rule 4 below would place it —
+  // but a file with no GC condition (a rehab that never became ground-up) would then fall
+  // through to the keyword fallback, which does NOT recognise "general contractor", and
+  // the sheet would land in "Other Documents". Naming the kind here means it files with
+  // the Scope of Work whatever else is true of the file.
+  if (kind === 'gc_information') return C.SOW;
 
   // 2) Entity (vesting LLC + layered owning LLCs) — any doc carrying an llc_id.
   if (d.llc_id) return C.LLC;

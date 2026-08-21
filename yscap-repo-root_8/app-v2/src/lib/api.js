@@ -1417,6 +1417,10 @@ export const api = {
   staffMergeVendors: (body) => req('POST', '/api/staff/vendors/merge', body),
   // general file contacts (#144) — staff side + a borrower's whole vendor list
   staffFileContacts:   (appId) => req('GET', `/api/staff/applications/${appId}/file-contacts`),
+  // The general contractor's record (db/605) — the file contact PLUS the license and
+  // insurance that only mean something for a contractor.
+  staffGcRecord:       (appId) => req('GET', `/api/staff/applications/${appId}/gc-record`),
+  staffGcRecordSave:   (appId, body) => req('PUT', `/api/staff/applications/${appId}/gc-record`, body),
   /* THE VENDOR TYPE-AHEAD (owner-directed 2026-08-20). Scoped to a FILE, because
      that is also the permission — anybody who may edit this file's contacts may
      look one up. A blank `q` is a real ask: it means "show me the ones already

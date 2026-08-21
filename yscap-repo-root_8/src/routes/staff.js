@@ -56,6 +56,8 @@ const advisoryPolicy = require('../lib/underwriting/advisory-policy');     // AI
 const conditionRules = require('../lib/conditions/rules');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const extNote = require('../lib/conditions/external-note');   // db/604 — the note a borrower and a broker read
+const gcRecord = require('../lib/contractor/gc-record');       // db/605 — the general contractor's record
+const gcSheet = require('../lib/contractor/gc-sheet');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
 const { strayConditionReason, strayConditionMessage } = require('../lib/conditions/label-sanity');
 const adminOverride = require('../lib/conditions/admin-override');        // super-admin condition override (owner-directed 2026-07-27)
@@ -9082,7 +9084,15 @@ async function signOffGate(itemId, actor) {
     return null;
   }
 
-  if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false
+  // THE GC CONDITION'S UPLOAD SLOT IS OPTIONAL (owner-directed 2026-08-21: "Keep that slot
+  // as an optional slot, which means it should not need to upload something to sign off the
+  // condition"). The CONDITION is still required — it still blocks clear-to-close, and it is
+  // still the place a licence certificate or a W-9 is filed — but what satisfies it is the
+  // contractor's RECORD, which PILOT prints onto its own sheet. Excluding it here rather
+  // than flipping `is_required` off is what keeps that weight: an optional condition would
+  // drop out of the advancement blockers entirely.
+  const isGcInfo = code === 'rtl_cond_gc_info';
+  if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false && !isGcInfo
       && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs && !isCredit && !isIska) {
     // ACCEPTED, not merely "not rejected" (owner-directed 2026-08-03). The old
     // test was satisfied by a document nobody had ever opened, which is how a
@@ -18924,6 +18934,49 @@ router.get('/applications/:id/file-contacts', async (req, res) => {
       ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [req.params.id]);
   res.json(r.rows);
 });
+/* THE GENERAL CONTRACTOR'S RECORD ON THIS FILE (db/605, owner-directed 2026-08-21: "You
+   need to add that condition to be informational, to put in: the name / the phone number
+   / the email address / license information … Don't make all the fields required").
+
+   READ and WRITE sit on the FILE, gated by `canTouchApp` — the same gate the file-contacts
+   routes use, because this IS a file contact plus the part of it that is specific to a
+   contractor. Nothing here is a new authorization: whoever may record the GC's phone
+   number may record their license.
+
+   THE SHEET IS REDRAWN ON EVERY SAVE, best-effort. That is what makes "it should be in the
+   TPR export and the SharePoint sync" true without anybody remembering to press anything —
+   and it can never fail the save, because a record somebody typed must be kept whatever the
+   PDF engine or the storage layer is doing. An unchanged record redraws nothing. */
+router.get('/applications/:id/gc-record', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const rec = await gcRecord.loadForApplication(req.params.id);
+    const sheet = rec ? (await db.query(
+      `SELECT id, filename, created_at FROM documents
+        WHERE application_id=$1 AND doc_kind=$2 AND is_current=true ORDER BY created_at DESC LIMIT 1`,
+      [req.params.id, gcSheet.DOC_KIND])).rows[0] || null : null;
+    res.json({ contact: rec, fields: gcRecord.CREDENTIAL_FIELDS, hasAnything: gcRecord.hasAnything(rec), sheet });
+  } catch (e) { console.error('[gc-record read]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+router.put('/applications/:id/gc-record', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const problem = gcRecord.credentialProblem(b);
+  if (problem) return res.status(400).json({ error: problem });
+  try {
+    const rec = await gcRecord.loadForApplication(req.params.id);
+    if (!rec) return res.status(409).json({ error: 'Add the general contractor as a file contact first — the license and insurance are recorded against that contact.', code: 'no_contractor' });
+    const saved = await gcRecord.saveCredentials(rec.id, b, req.actor.id);
+    await audit(req, 'gc_record_updated', 'application', req.params.id, { fields: saved.fields || [] });
+    // Best-effort: the record is saved either way.
+    let sheet = null;
+    try { sheet = await gcSheet.refreshForApplication(req.params.id); } catch (e) { sheet = { made: false, reason: 'sheet_failed', message: e && e.message }; }
+    const after = await gcRecord.loadForApplication(req.params.id);
+    res.json({ ok: true, contact: after, hasAnything: gcRecord.hasAnything(after), sheet });
+  } catch (e) { console.error('[gc-record save]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
 router.post('/applications/:id/file-contacts', async (req, res) => {
   if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   const b = req.body || {};
