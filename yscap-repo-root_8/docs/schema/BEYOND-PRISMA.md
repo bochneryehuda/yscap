@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**847 objects**, and a database rebuilt from the Prisma
+**848 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 602 numbered migrations in `db/` (highest `db/605`) remain the only thing that builds this database.
+rebuild a database from them.** The 604 numbered migrations in `db/` (highest `db/607`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,16 +20,16 @@ the live database.
 | | |
 |---|---|
 | Tables | 372 |
-| Columns | 5967 |
+| Columns | 5970 |
 | Triggers | 35 |
 | Functions | 138 |
 | CHECK constraints | 307 |
 | Generated columns | 12 |
-| Partial indexes | 355 |
+| Partial indexes | 356 |
 | Primary keys | 372 |
-| Foreign keys | 780 |
+| Foreign keys | 781 |
 | Unique constraints | 47 |
-| Indexes (all kinds) | 1269 |
+| Indexes (all kinds) | 1270 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -227,7 +227,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (355)
+## Partial indexes (356)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -510,6 +510,7 @@ the live database.
 - **scheduled_sends_one_pending_uk** on `scheduled_sends`
 - **trc_imported_line_idx** on `track_record_candidates`
 - **trc_merged_line_idx** on `track_record_candidates`
+- **trinity_orders_override_idx** on `trinity_inspection_orders`
 - **uq_ai_suggestions_open_dedupe** on `ai_suggestions`
 - **uq_amc_comments_amc_id** on `amc_order_comments`
 - **uq_amc_documents_amc_id** on `amc_order_documents`
@@ -895,7 +896,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (780)
+## Foreign keys (781)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1634,6 +1635,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **track_records** → `staff_users` — `FOREIGN KEY (verified_by) REFERENCES staff_users(id)`
 - **training_proposals** → `staff_users` — `FOREIGN KEY (reviewed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **trinity_inspection_orders** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **trinity_inspection_orders** → `staff_users` — `FOREIGN KEY (manual_override_by) REFERENCES staff_users(id)`
 - **trinity_inspection_orders** → `staff_users` — `FOREIGN KEY (ordered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **trinity_inspection_orders** → `portal_draw_requests` — `FOREIGN KEY (portal_draw_request_id) REFERENCES portal_draw_requests(id) ON DELETE SET NULL`
 - **trinity_inspection_orders** → `staff_users` — `FOREIGN KEY (rescheduled_by) REFERENCES staff_users(id) ON DELETE SET NULL`
@@ -1751,7 +1753,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 372 primary keys and 1269 indexes is
+Every one of the 372 primary keys and 1270 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
