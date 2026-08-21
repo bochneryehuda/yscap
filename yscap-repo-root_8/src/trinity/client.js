@@ -238,8 +238,19 @@ async function companyId() {
 function formId() { return (cfg.trinity && cfg.trinity.formId) || 19; }
 
 /** Create the project+order in one call. NEVER retried in-call (see call()). */
-async function createOrder(payload) {
-  return call(`${P}/forms/${formId()}/new`, { method: 'POST', body: payload });
+/**
+ * Place an order. The FORM decides which product Trinity builds, so it is an explicit argument
+ * rather than always the draw form (owner-directed 2026-08-21, when the pre-closing BUDGET REVIEW
+ * on form 159 joined the draw on 1079). It defaults to the configured draw form, so every existing
+ * caller is byte-identical.
+ *
+ * A wrong form here is not a small mistake — it orders and pays for a DIFFERENT PRODUCT — which is
+ * why the argument is named and why `budget-review.js` passes its own constant rather than relying
+ * on configuration that governs the draw.
+ */
+async function createOrder(payload, { form = null } = {}) {
+  const f = form == null ? formId() : form;
+  return call(`${P}/forms/${encodeURIComponent(f)}/new`, { method: 'POST', body: payload });
 }
 async function getOrder(id) { return call(`${P}/orders/${encodeURIComponent(id)}`); }
 async function getBudget(id) { return call(`${P}/forms/${formId()}/orders/${encodeURIComponent(id)}/budget`); }

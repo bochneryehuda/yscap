@@ -99,7 +99,51 @@ function setupBlurb(s) {
   return (m ? m[1] : (s.reason || 'Setup needs a quick check.')).trim();
 }
 
-export default function DrawsPanel({ appId }) {
+export default /* THE PAYOFF DEMAND, SAID BIG (owner-directed 2026-08-21: *"it should come out big that there
+   was a Pay Off Demand on this one, so you can't request the set of draws on this file
+   anymore"*).
+
+   WHY IT EXISTS. The hold was enforced at every door — the coordinator's Start, the borrower's
+   request, the borrower's composer and the release ledger — from the day it was built, and shown
+   on NEITHER screen. So a coordinator found out by pressing Start and being refused: the worst
+   possible moment, and silent until you act. This changes nothing about the refusal; it is the
+   same fact, read through the same helper, stated before you reach for the button.
+
+   IT SAYS A DIFFERENT THING IN THE TWO STATES the owner described, because the consequence
+   genuinely differs: with no draws set up you cannot start them at all, and with draws already
+   running the project is frozen where it stands and Sitewire has been shut too. State is never
+   carried by colour alone — the heading words differ, not just the tint. */
+function PayoffDemandBanner({ payoff, started }) {
+  if (!payoff || !payoff.at) return null;
+  const when = (() => { const d = new Date(payoff.at); return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US') : null; })();
+  return (
+    <div role="alert" className="panel" style={{
+      marginTop: 12, background: '#FCF3F1', border: '1px solid #E4B7AE', borderLeft: '6px solid #B4483C',
+      padding: '14px 16px',
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: '#8C3327' }}>
+        Payoff demand outstanding
+      </div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: '#141B22', marginTop: 4, lineHeight: 1.25 }}>
+        {started ? 'Draws on this file are frozen.' : 'Draws cannot be set up on this file.'}
+      </div>
+      <div style={{ fontSize: 14, color: '#3A4550', marginTop: 6, lineHeight: 1.5 }}>
+        {started
+          ? 'A payoff figure has been quoted for this loan, so nothing further is released — the borrower cannot request a draw and no release can be recorded. Sitewire has been shut for this property too.'
+          : 'A payoff figure has been quoted for this loan, so the draw process cannot be started on it.'}
+      </div>
+      <div style={{ fontSize: 13, color: '#4B585C', marginTop: 8 }}>
+        Requested{when ? ` ${when}` : ''}{payoff.by ? ` by ${payoff.by}` : ''}
+        {payoff.note ? <> · <span style={{ fontStyle: 'italic' }}>{payoff.note}</span></> : null}
+      </div>
+      <div style={{ fontSize: 13, color: '#4B585C', marginTop: 8 }}>
+        If the payoff is not going ahead, lift it in <b>Critical dates</b> on the file overview and draws resume.
+      </div>
+    </div>
+  );
+}
+
+function DrawsPanel({ appId }) {
   const { can } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -146,7 +190,8 @@ export default function DrawsPanel({ appId }) {
   if (!data) return null;
 
   const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, oop = null, waivers = [], lien_waivers_enabled = false,
-    preexisting = false, setup_status = null, managed_since = null, go_live_date = null } = data;
+    preexisting = false, setup_status = null, managed_since = null, go_live_date = null,
+    payoff_demand = null } = data;
   // Render draw cards from rollup.draws — it carries the money (requested/approved/net_release),
   // the funded flag, and the merged risk flags + pdf_src. The top-level `draws` array has no
   // money fields, so using it would render $0.00 everywhere.
@@ -194,6 +239,10 @@ export default function DrawsPanel({ appId }) {
       {/* A refresh that failed while the desk is already up — shown inline instead of
           replacing the whole panel, so the reader stays where they are. */}
       {err && <div className="dd-card" style={{ marginTop: 12, borderLeft: '3px solid var(--bad,#b04a3f)', color: 'var(--bad,#b04a3f)' }}>{err}</div>}
+      {/* ABOVE EVERYTHING, IN BOTH STATES. The owner named the two cases separately — draws
+          never set up, and draws already running — and this is the one fact that governs both,
+          so it is ONE banner at the top rather than a copy in each branch. */}
+      <PayoffDemandBanner payoff={payoff_demand} started={!notLinked} />
       {notLinked ? (
         <>
           {/* GO-FORWARD ONLY: a pre-existing Sitewire property (loan already there, not pushed by us) is

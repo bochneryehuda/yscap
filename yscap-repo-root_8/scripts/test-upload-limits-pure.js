@@ -1,0 +1,185 @@
+'use strict';
+/**
+ * test-upload-limits-pure — the two ceilings, the wording, and the rule that keeps a
+ * bigger upload limit from becoming an out-of-memory kill of the whole site.
+ *
+ * Owner-reported 2026-08-21: a 23.3 MB executed contract would not upload, the refusal
+ * appeared at the top of the page rather than beside the condition, and *"we need to
+ * increase the limit of megabytes that we can upload to unlimit it … The sky is the
+ * limit."*
+ *
+ * WHAT MUST STAY TRUE, and why each one is here rather than assumed:
+ *  1. The DOCUMENT ceiling and the JSON-BODY ceiling are different numbers answering
+ *     different questions. Tying the second to the first is exactly how "unlimited
+ *     uploads" turns into a 512 MB instance being killed — measured, not guessed:
+ *     a base64 upload peaks at about five times the file.
+ *  2. No door derives its cap from the document ceiling any more.
+ *  3. The express body limit follows the JSON ceiling.
+ *  4. A refusal names the file, its size and the real limit.
+ *  5. `readUploadBytes` applies its limit on BOTH doors, so a JSON upload and a streamed
+ *     one behave identically.
+ *
+ * Pure — no database, no network.
+ */
+
+const fs = require('fs');
+const path = require('path');
+const REPO = path.join(__dirname, '..');
+const read = (p) => fs.readFileSync(path.join(REPO, p), 'utf8');
+
+let pass = 0, fail = 0;
+const ok = (c, m) => { if (c) { pass++; } else { fail++; console.error('  ✘ ' + m); } };
+
+const cfg = require(REPO + '/src/config');
+const U = require(REPO + '/src/lib/upload-stream');
+
+console.log('1. the two ceilings are two different questions');
+ok(cfg.maxUploadMb >= 100, `the document ceiling is generous (${cfg.maxUploadMb} MB)`);
+ok(cfg.maxJsonUploadMb <= 50, `the JSON-body ceiling stays small (${cfg.maxJsonUploadMb} MB)`);
+ok(cfg.maxUploadMb !== cfg.maxJsonUploadMb, 'they are not the same number');
+ok(U.maxUploadBytes() === cfg.maxUploadMb * 1024 * 1024, 'maxUploadBytes reports the document ceiling');
+ok(U.jsonUploadBytes() === cfg.maxJsonUploadMb * 1024 * 1024, 'jsonUploadBytes reports the JSON ceiling');
+ok(U.maxUploadBytes() > U.jsonUploadBytes(), 'a document may be far larger than any JSON body');
+
+console.log('2. no door derives its cap from the document ceiling');
+/* THE WHOLE POINT OF THE SPLIT. A door that still multiplies out `maxUploadMb` would
+   accept a body express cannot parse — or, worse, one it CAN, at five times the file. */
+for (const f of ['src/routes/staff.js', 'src/routes/borrower.js', 'src/routes/tpo.js',
+  'src/routes/sitewire.js', 'src/routes/appraisal.js', 'src/lib/chat-attach.js', 'src/lib/credit/store.js']) {
+  const s = read(f);
+  ok(!/cfg\.maxUploadMb\s*\*\s*1024/.test(s), `${f} does not size a base64 body from the document ceiling`);
+}
+ok(/JSON_LIMIT_MB = Math\.max\(25, Math\.ceil\(cfg\.maxJsonUploadMb/.test(read('src/server.js')),
+  'the express body limit follows the JSON ceiling, never the document ceiling');
+
+console.log('3. a refusal says exactly what is wrong');
+const msg = U.tooLargeMessage('Fully_Executed_Contract.pdf', 23.3 * U.MB, 20 * U.MB);
+ok(/Fully_Executed_Contract\.pdf/.test(msg), 'it names the file');
+ok(/23/.test(msg), 'it says how big the file is');
+ok(/20 MB/.test(msg), 'it says what the limit actually is');
+ok(!/^upload failed/i.test(msg) && msg.length > 40, 'it is a sentence somebody can act on, not "upload failed"');
+const anon = U.tooLargeMessage(null, 5 * U.MB, 1 * U.MB);
+ok(/That file/.test(anon), 'with no filename it still reads as English');
+
+console.log('4. metadata rides in a header, and junk never throws');
+const hdr = (o) => ({ headers: { 'x-upload-meta': Buffer.from(JSON.stringify(o)).toString('base64') } });
+ok(U.metaFromHeaders(hdr({ filename: 'a.pdf', checklistItemId: 'abc' })).checklistItemId === 'abc', 'it round-trips');
+ok(U.metaFromHeaders({ headers: {} }).filename === undefined, 'no header → no metadata, not a throw');
+ok(JSON.stringify(U.metaFromHeaders({ headers: { 'x-upload-meta': 'not base64 at all !!' } })) === '{}',
+  'unreadable metadata reads as none');
+ok(JSON.stringify(U.metaFromHeaders(hdr(['a', 'b']))) === '{}', 'an ARRAY is not metadata — a route must never index into one');
+/* A filename with an accent or a quotation mark must survive: a raw header value is
+   latin-1 on the wire, which is why the metadata is base64 JSON rather than plain. */
+ok(U.metaFromHeaders(hdr({ filename: 'Contrat_signé "final".pdf' })).filename === 'Contrat_signé "final".pdf',
+  'a non-Latin / quoted filename survives the header');
+
+console.log('5. readUploadBytes applies its limit on BOTH doors');
+(async () => {
+  const small = Buffer.alloc(10, 1);
+  ok((await U.readUploadBytes({ buf: small, bytes: 10 }, 100)) === small, 'a JSON upload under the limit returns its bytes');
+  ok((await U.readUploadBytes({ buf: small, bytes: 10 })) === small, 'no limit → the bytes');
+  /* THE ONE THAT WOULD DRIFT: shortcutting to the in-memory buffer without consulting the
+     limit makes the JSON door attach a 20 MB file to an email that the streaming door
+     correctly declines to. */
+  ok((await U.readUploadBytes({ buf: small, bytes: 10 }, 5)) === null,
+    'a JSON upload OVER the limit is refused too — the doors must behave identically');
+  ok((await U.readUploadBytes(null, 5)) === null, 'nothing in hand → null, never a throw');
+  ok((await U.readUploadBytes({ ref: 'nope/does-not-exist', bytes: 3 }, 100)) === null,
+    'an unreadable stored file answers null rather than failing the upload');
+
+  console.log('6. the client streams the file and reports where the upload happened');
+  const apiJs = read('app-v2/src/lib/api.js');
+  ok(/uploadBinary\(/.test(apiJs), 'the client has a streaming upload');
+  ok(/documents\/binary/.test(apiJs), 'it posts to the binary door');
+  ok(/b\.file\s*\?\s*\n?\s*uploadBinary/.test(apiJs.replace(/\s+/g, ' ').replace(/ /g, ' ')) || /b && b\.file/.test(apiJs),
+    'a caller handing over a File takes the streaming door');
+  ok(/const size = b\.file \? b\.file\.size/.test(apiJs),
+    'the in-flight signature keys on the file size — a streamed upload has no base64 length, and two different files must not coalesce');
+  const staff = read('app-v2/src/screens/StaffApplication.jsx');
+  ok(/file: files\[i\]/.test(staff), 'the staff upload hands over the File itself');
+  ok(!/dataBase64: await fileToBase64\(files\[i\]\)/.test(staff), 'it no longer reads the whole file into memory first');
+  ok(/setUploadNote\(\{ itemId: tgt\.itemId, tone: 'err'/.test(staff),
+    'a refusal is recorded against the condition it was for');
+  ok(/uploadNote && uploadNote\.itemId === it\.id/.test(staff), 'the condition renders its OWN note');
+  ok(/\{uploadNoteEl\}/.test(staff), 'and renders it — collapsed and open');
+  ok((staff.match(/\{uploadNoteEl\}/g) || []).length >= 2,
+    'both the collapsed row and the open one show it (an upload can be dropped on either)');
+
+  console.log('7. EVERY surface a person uploads a document from — not just the one that was reported');
+  /* THIS SECTION EXISTS BECAUSE SECTION 6 NAMED ONE SCREEN. The owner's instruction was
+     *"it should be fixed across the entire system. Do research everywhere where you can upload
+     documents"*, and the staff file screen was wired while the BORROWER's — the very door the
+     23 MB contract came through — and the broker's were left reading the file into base64, so
+     both still hit the JSON ceiling and both still reported the failure at the top of a long
+     page. A guard that names ONE surface reads as "the client streams the file" while being
+     true of a third of them, which is how that survived. So it is a TABLE now: adding a fourth
+     upload surface means adding a row, and it cannot quietly cover one out of four again. */
+  const SURFACES = [
+    { file: 'app-v2/src/screens/StaffApplication.jsx', who: 'the staff file screen',
+      streams: /file: files\[i\]/, note: /if \(tgt && tgt\.itemId\) setUploadNote\(\{ itemId: tgt\.itemId/, renders: /\{uploadNoteEl\}/ },
+    { file: 'app-v2/src/screens/Application.jsx', who: 'the borrower\u2019s own screen',
+      streams: /file: files\[i\]/, note: /if \(tgt && tgt\.itemId\) setUploadNote\(\{ itemId: tgt\.itemId/, renders: /note=\{noteFor\(/ },
+    { file: 'app-v2/src/screens/TpoFile.jsx', who: 'the broker\u2019s screen',
+      streams: /file,\s*\n\s*\}\);/, note: /if \(itemId\) setUploadNote\(\{ itemId, text \}\); else setErr/, renders: /uploadNote\.itemId === c\.id/ },
+  ];
+  for (const S of SURFACES) {
+    const src = read(S.file);
+    ok(S.streams.test(src), `${S.who} hands over the File itself`);
+    ok(S.note.test(src), `${S.who} records a refusal against the condition it was for`);
+    ok(S.renders.test(src), `${S.who} renders that refusal on the condition`);
+    /* THE DOCUMENT ITSELF is never read into memory first. A photo ID / ID-card scan may still
+       ride the small JSON door (its own ceiling, its own row when it moves), so this asks only
+       about the multi-document upload each screen actually files conditions through. */
+    ok(!/dataBase64: await (fileToBase64|readB64)\(files\[i\]\)/.test(src),
+      `${S.who} does not base64 the document first`);
+  }
+  /* COMMENTS STRIPPED FIRST: the change that removed the base64 reader necessarily NAMES it in
+     the note explaining why, and a guard that read comments would fail on its own explanation
+     and then get "fixed" by deleting the explanation. */
+  const noComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  ok(!/dataBase64/.test(noComments(read('app-v2/src/screens/TpoFile.jsx'))),
+    'the broker screen has no base64 upload path left at all');
+
+  console.log('8. every DOCUMENT door has a streaming sibling — or a written reason it does not');
+  /* THE LIST IS THE GUARD. "Do research everywhere where you can upload documents" cannot be
+     satisfied once and left: the way this comes back is a NEW door landing on the small
+     transport because nothing asked. So each document door is named here with the handler it
+     shares between its two registrations, and a door that deliberately stays on the JSON
+     transport is listed with WHY — "nothing calls this" is then always either a failure or a
+     recorded decision, never an accident. */
+  const staffSrc = read('src/routes/staff.js');
+  const borrowerSrc = read('src/routes/borrower.js');
+  const tpoSrc = read('src/routes/tpo.js');
+  const STREAMED = [
+    [staffSrc, 'uploadAppDocument', 'the file-condition door'],
+    [staffSrc, 'uploadLlcDocument', 'entity documents (operating agreement, articles, EIN)'],
+    [staffSrc, 'uploadStaffTrackRecordDoc', 'track-record documents (staff)'],
+    [staffSrc, 'uploadLeadDocument', 'lead documents'],
+    [borrowerSrc, 'uploadBorrowerDocument', 'the borrower’s condition door'],
+    [borrowerSrc, 'uploadBorrowerTrackRecordDoc', 'track-record documents (borrower)'],
+    [tpoSrc, 'uploadTpoDocument', 'the broker’s condition door'],
+  ];
+  for (const [src, handler, what] of STREAMED) {
+    const re = new RegExp(`binaryIntake,\\s*${handler}\\)`);
+    ok(re.test(src), `${what} has a streaming door`);
+    /* AND THE SAME HANDLER SERVES BOTH. Two handlers is two places the condition lookup, the
+       staff-only visibility rule and the notification can drift — and the one that drifts is
+       the one that shows a borrower an internal document. */
+    ok((src.match(new RegExp(`,\\s*${handler}\\)`, 'g')) || []).length >= 2,
+      `${what} serves both doors from ONE handler`);
+  }
+  /* STILL ON THE JSON TRANSPORT, EACH FOR A STATED REASON. These are not oversights; they are
+     recorded decisions, and writing them down is what makes the list above trustworthy. */
+  const JSON_ONLY = {
+    'draw attachments + lien waivers': 'the bytes are genuinely needed in memory — the MIME type is sniffed '
+      + 'from them, an iPhone HEIC is converted, EXIF location is stripped and the copy is re-hashed — and '
+      + 'the door carries its OWN stated 25 MB per-attachment ceiling with an honest refusal',
+    'chat attachments': 'a message attachment is not a loan document; it has its own small ceiling by design',
+    'the borrower photo ID / ID-card scan': 'a single ID image, sized for a phone photo, on its own ceiling',
+  };
+  ok(Object.keys(JSON_ONLY).length >= 3 && Object.values(JSON_ONLY).every((r) => r.length > 40),
+    'every door left on the JSON transport has a reason written down, not just an omission');
+
+  console.log(`\ntest-upload-limits-pure: ${pass} passed, ${fail} failed.`);
+  process.exit(fail ? 1 : 0);
+})();

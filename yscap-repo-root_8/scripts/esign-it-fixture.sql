@@ -7,6 +7,13 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE borrowers (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   first_name text NOT NULL, last_name text NOT NULL, email text NOT NULL,
+  -- The whole name as ONE column, exactly as db/346 defines it in production (middle name and
+  -- suffix omitted — this fixture has neither). Every read in this codebase goes through
+  -- `full_name` rather than concatenating two columns, so a fixture without it drifts from the
+  -- schema and fails the very query it is meant to exercise.
+  full_name text GENERATED ALWAYS AS (
+    btrim(regexp_replace(coalesce(btrim(first_name), '') || ' ' || coalesce(btrim(last_name), ''), '\s+', ' ', 'g'))
+  ) STORED,
   -- PII the loan application prints (loadDocGenData reads these for the app doc).
   cell_phone text,
   date_of_birth date,

@@ -291,6 +291,17 @@ function buildOrderPayload({
   companyId, projectNumber, projectCustomerKey, orderCustomerKey,
   address, appraisal, units, propertyType, projectType, totalProjectCostCents,
   borrower, contractor, analyst, lines, dateToPerformInspection, rush = false,
+  /* WHAT KIND OF ORDER THIS IS — 'draw' (the default, and byte-identical to before) or
+     'budget_review', the pre-closing feasibility / budget review on form 159
+     (owner-directed 2026-08-21). They share this builder because they share Trinity's
+     schema exactly (`DollarLineItem…ProjectModel` — forms 19/139/150/159/1074/1079/1081
+     all use it), and a second builder would be a second place the contractor rules, the
+     phone rules and the line-key uniquifier could drift.
+
+     It changes exactly ONE rule, below: a DRAW must have a line asking for money, and a
+     REVIEW asks for none by definition — it sends the whole budget for somebody to read.
+     Everything else about the payload is identical. */
+  kind = 'draw',
 }) {
   const problems = [];
 
@@ -353,7 +364,11 @@ function buildOrderPayload({
 
   const lineItems = toLineItems(lines);
   if (!lineItems.length) problems.push('the construction budget has no line items');
-  if (!lineItems.some((l) => l.isRequested)) problems.push('no line on this draw has an amount requested');
+  // A DRAW must be asking for money on at least one line; a BUDGET REVIEW asks for none —
+  // it sends the whole budget so Trinity can read it, which is the point of the product.
+  if (kind !== 'budget_review' && !lineItems.some((l) => l.isRequested)) {
+    problems.push('no line on this draw has an amount requested');
+  }
 
   const aName = splitName((analyst && analyst.name) || 'Draw Coordinator', 'Draw', 'Coordinator');
 

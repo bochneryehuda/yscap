@@ -4674,6 +4674,33 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 .dd-payout-why{flex:1 1 220px;min-width:200px;font-size:13px;line-height:1.5;color:var(--text-muted)}
 @media(max-width:720px){.dd-payout{gap:8px}.dd-payout-why{flex-basis:100%}}
 
+/* ---- THE ONE THING THE BORROWER HAS TO DO, SAID FIRST (owner-directed 2026-08-21) ----
+   The Accept / Dispute buttons live on the result card, which on a real file sits below the
+   budget hero, the line table, the draws table, the attach card, the report button and the
+   eligibility card — so the action holding up their own money was the last thing on a long
+   page. This is the callout that says it at the top and jumps them to it. It renders only
+   when something is genuinely waiting, so a borrower with nothing to do never sees it.
+   Explicit darks on white per the hard rule — never an --ink* token, which is a LIGHT paper
+   colour in this palette and renders white-on-white. */
+.dd-callout{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;
+  padding:13px 15px;border-radius:var(--radius);margin-bottom:14px;
+  border:1px solid var(--line);background:#fff}
+.dd-callout-action{border-color:#AE874666;background:#FBF6EC}
+.dd-callout-t{font-family:var(--serif);font-size:16px;font-weight:600;color:#141B22}
+.dd-callout-b{font-size:13px;line-height:1.5;color:#3A4550;margin-top:3px;max-width:62ch}
+.dd-callout .btn{flex:0 0 auto}
+/* On a phone the sentence and the button fight for one line; the button drops underneath and
+   spans, so it stays a real target rather than a sliver. */
+@media(max-width:720px){.dd-callout{gap:10px}.dd-callout .btn{width:100%}}
+
+/* An inline text link inside borrower copy — used to open a collapsed draw's detail from the
+   sentence itself, so the affordance is where the reader's eye already is. Underlined rather
+   than colour-only: colour alone is not an affordance (WCAG 1.4.1). */
+.lnk{background:none;border:0;padding:0;font:inherit;color:var(--primary-hover,#25636A);
+  text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.lnk:hover{color:#141B22}
+.lnk:focus-visible{outline:2px solid var(--primary-hover,#25636A);outline-offset:2px;border-radius:3px}
+
 /* ---- PILOT'S OWN MESSAGE BOX (AppDialog) ----------------------------------
    Replaces the browser's native alert(), whose title is the ORIGIN HOSTNAME —
    PILOT's own plain-English refusals were arriving stamped "yscap.onrender.com

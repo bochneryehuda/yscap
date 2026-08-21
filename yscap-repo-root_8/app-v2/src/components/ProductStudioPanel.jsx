@@ -174,6 +174,9 @@ export function overridesFromSnapshot(snap, mode) {
       origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold, origSilverPct: f.tsOrigSilver,
       origManualPct: f.tsOrigManual,
       lenderFee: f.tsFeeUW, creditFee: f.tsFeeCredit, appraisalFee: f.tsFeeAppr,
+      // The manual construction feasibility fee (owner-directed 2026-08-21) — blank means "use the
+      // deal's own fee"; a typed amount (0 included, which waives it) is a per-file override.
+      feasibilityFee: f.tsFeasFee,
       titleFee: f.tsFeeTitle,
       ovrAcqLTVPct: f.tsManualOn ? f.tsMLtv : null,
       ovrARLTVPct: f.tsManualOn ? f.tsMArv : null,

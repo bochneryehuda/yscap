@@ -150,8 +150,6 @@ async function recordTapeSuperOverride(req, appId, tape, encGate, reason) {
   } catch (_) { /* register write is best-effort — the audit row stands */ }
 }
 
-// Advisory-only sources must never score or notify — one shared filter (audit 2026-07-27).
-const aiSuggestions = require('../lib/underwriting/ai-suggestions');
 // The borrower DIRECTORY / CRM has a WIDER audience than file-level see_all_files
 // (owner-directed): admins, underwriters, loan_coordinators (seesAll) AND
 // processors may open ANY borrower's full profile; loan_officers stay limited to
@@ -896,21 +894,17 @@ router.get('/applications', async (req, res) => {
                            LEFT JOIN checklist_templates t ON t.id = ci.template_id
                           WHERE ci.application_id=a.id
                             AND COALESCE(t.code,'') <> 'underwriting_review_cleared'
-                            AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
-                        (SELECT count(*)::int FROM ai_suggestions s
-                           WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')
-                             AND ${aiSuggestions.notScoredSql('s')}) AS open_fatal_ai,
-                        (SELECT EXTRACT(EPOCH FROM (now() - MIN(s.created_at)))/86400 FROM ai_suggestions s
-                           WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')
-                             AND ${aiSuggestions.notScoredSql('s')}) AS open_fatal_ai_oldest_days,
-                        LEAST(100, COALESCE((SELECT
-                            SUM(CASE severity WHEN 'fatal' THEN 25 WHEN 'warning' THEN 8 WHEN 'info' THEN 2 ELSE 4 END)::int
-                          FROM ai_suggestions s
-                          WHERE s.application_id=a.id
-                            AND s.status IN ('open','marked_important','escalated','asked_admin')
-                            AND ${aiSuggestions.notScoredSql('s')}),0)) AS ai_risk_score
+                            AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items
+                        /* THE PIPELINE NO LONGER SCORES FILES (owner-directed 2026-08-21: "take
+                           them off the pipeline"). Three correlated subqueries over ai_suggestions
+                           used to run PER ROW here — an open-fatal count, the age of the oldest,
+                           and a 0-100 risk sum — to feed two red stamps on the pipeline list. The
+                           owner had the stamps removed (they read as a STOP on a screen the whole
+                           team scans, while AI findings are advisory and never block), so the
+                           subqueries went with them rather than being left computing values
+                           nothing renders on the most-loaded screen in the app. Every one of those
+                           findings is still on the FILE, where the person who can resolve one is
+                           looking. Guarded by scripts/test-advisory-not-scored-pure.js. */
                  FROM applications a JOIN borrowers b ON b.id=a.borrower_id
                  WHERE ${where.join(' AND ')} ORDER BY ${orderBy}
                  LIMIT ${add(limit)} OFFSET ${add(offset)}`;
@@ -2648,8 +2642,8 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
       let buf;
       try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
       catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-      const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-      if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+      const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
+      if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
       const filename = safeFilename(b.filename);
       const { ref, provider } = await storage.save(buf, { filename });
       const r = await db.query(
@@ -2915,6 +2909,10 @@ router.get('/applications/:id/pricing', async (req, res) => {
         origStdPct: cd.origStdPct, origGoldPct: cd.origGoldPct, origSilverPct: cd.origSilverPct,
         lenderFee: cd.lenderFee, creditFee: cd.creditFee,
         appraisalFee: cd.appraisalFee, titleFee: cd.titleFee ?? null,
+        // The construction feasibility / project review pair (owner-directed 2026-08-21), so the
+        // studio quotes the same fee the register books rather than falling back to its own copy
+        // of the owner's numbers.
+        feasibilityFees: cd.feasibilityFees || null,
       };
     } catch (_) { pricingDefaults = null; }
     // Term-sheet hold (owner-directed 2026-07-31): open fatal appraisal findings
@@ -3452,6 +3450,20 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // blank clears it → the company per-tier default (or historic 0) governs.
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupGoldT1Pct'))
         await client.query(`UPDATE applications SET file_markup_gold_t1_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldT1Pct)]);
+      /* THE MANUAL CONSTRUCTION FEASIBILITY FEE sticks the same way (owner-directed 2026-08-21,
+         db/609: "add this fee type into the manual section in the products and pricing so we can,
+         any time, add it to any other project manually as well"). A blank clears it → the company
+         default for this deal's kind governs; a typed 0 is a deliberate WAIVER and is stored as 0,
+         so `stickyFee` deliberately keeps a zero that `stickyMk` would also keep — the two differ
+         only in intent, and this comment is why the zero matters here.
+
+         THIS IS THE ONLY WRITER OF THIS COLUMN, and that is load-bearing: db/609 does not widen
+         the economics-reopen trigger for it precisely because it can only be written as part of a
+         registration, so there is never a stale registration for the trigger to catch. Adding
+         another door means widening that trigger — `test-feasibility-fee-pure` section F is what
+         will notice. */
+      if (Object.prototype.hasOwnProperty.call(overrides, 'feasibilityFee'))
+        await client.query(`UPDATE applications SET file_feasibility_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.feasibilityFee)]);
       /* THE TYPED CASH-OUT FOLLOWS THE REGISTER ONTO THE FILE (audit-found
          2026-07-31). The studio prints the officer's typed figure on the term
          sheet PDF; without this it never reached the loan file, so the file and
@@ -4570,7 +4582,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   // supersede the previous exports when at least one valid replacement exists:
   // a submission whose attachments all fail must not strip the condition of
   // its current documents.
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
   const valid = [];
   for (const a of attachments) {
     let buf;
@@ -11591,19 +11603,22 @@ router.get('/track-records/:id/documents', async (req, res) => {
 // was silently dropped on every upload (owner-directed 2026-08-20). It accepts a
 // slug or any known label and answers the canonical label.
 const trDocType = (v) => require('../lib/track-record/doc-request').resolveDocTypeLabel(v);
-router.post('/track-records/:id/documents', async (req, res) => {
+/* A TRACK-RECORD DOCUMENT ON BOTH TRANSPORTS (owner-directed 2026-08-21, "across the entire
+   system"). A HUD statement or a settlement sheet is a scan like any other. */
+async function uploadStaffTrackRecordDoc(req, res) {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  // One seam for both doors — strict decode + the JSON ceiling on the JSON one, already in
+  // storage on the streaming one.
+  let up;
+  try { up = await require('../lib/upload-stream').takeUpload(req, b); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
-  const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  const uploadBytes = up.bytes;
+  const { ref, provider } = up;
   // Same contract as the borrower path: an upload straight to the line item
   // also lands on the oldest open document-request condition for that line.
   const openReq = await db.query(
@@ -11613,13 +11628,17 @@ router.post('/track-records/:id/documents', async (req, res) => {
       ORDER BY created_at LIMIT 1`, [req.params.id]);
   const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
   const dupStaffTr = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
-    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+    filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'staff', uploadedById: req.actor.id,
     trackRecordId: req.params.id, checklistItemId: reqItemId, docKind: 'track_record_doc' });
-  if (dupStaffTr) return res.status(201).json({ ok: true, documentId: dupStaffTr, deduped: true });
+  if (dupStaffTr) {
+    // The bytes are already stored on both doors; drop the object nothing will point at.
+    try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
+    return res.status(201).json({ ok: true, documentId: dupStaffTr, deduped: true });
+  }
   const r = await db.query(
     `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'track_record_doc',$10) RETURNING id`,
-    [tr.rows[0].borrower_id, req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, trDocType(b.docType)]);
+    [tr.rows[0].borrower_id, req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', uploadBytes, provider, ref, req.actor.id, trDocType(b.docType)]);
   await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
   if (reqItemId) {
     await db.query(
@@ -11631,7 +11650,10 @@ router.post('/track-records/:id/documents', async (req, res) => {
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
-});
+}
+router.post('/track-records/:id/documents', uploadStaffTrackRecordDoc);
+router.post('/track-records/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadStaffTrackRecordDoc);
 
 /* SET (or clear) a track-record document's TYPE after it has landed
    (owner-directed 2026-08-20: "whatever you drop, it should go in, and then you
@@ -12072,7 +12094,12 @@ router.get('/llcs/:id', async (req, res) => {
 // Staff upload of an entity document into a specific LLC checklist slot, WITHOUT a
 // file context (the CRM entity library has no appId). Mirrors the LLC path of the
 // staff app-doc upload; visibility='borrower' so the entity's docs stay shared.
-router.post('/llcs/:id/documents', async (req, res) => {
+/* THE ENTITY DOCUMENT DOOR, ON BOTH TRANSPORTS (owner-directed 2026-08-21: the upload fix is
+   *"across the entire system"*). An operating agreement or a set of articles is a multi-page
+   SCAN — routinely the largest thing anybody files on a loan — so this door had no business
+   being the one still capped at the JSON ceiling. Same handler, two doors: `/documents` keeps
+   the historic JSON body, `/documents/binary` streams the file itself. */
+async function uploadLlcDocument(req, res) {
   try {
     const b = req.body || {};
     if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
@@ -12086,11 +12113,13 @@ router.post('/llcs/:id/documents', async (req, res) => {
       const ci = await db.query(`SELECT id FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, req.params.id]);
       if (!ci.rows[0]) return res.status(404).json({ error: 'checklist item not found on this entity' });
     }
-    let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+    /* One seam for both doors: on the JSON one this decodes strictly (a data: prefix or
+       non-base64 junk 400s rather than garbling the bytes) and applies the JSON ceiling; on the
+       streaming one the file is already in storage and this simply hands it over. */
+    let up;
+    try { up = await require('../lib/upload-stream').takeUpload(req, b); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    const uploadBytes = up.bytes;
     let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
     // Every slot keeps EVERY document (owner-directed): on a plain ADD (not an
     // explicit replace), uniquify a colliding slot label so the two never display
@@ -12100,15 +12129,22 @@ router.post('/llcs/:id/documents', async (req, res) => {
       slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
     }
     const dupLlc = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
-      filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+      filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'staff', uploadedById: req.actor.id,
       llcId: req.params.id, checklistItemId: b.checklistItemId || null, slotLabel: slot });
-    if (dupLlc) return res.status(201).json({ ok: true, documentId: dupLlc, deduped: true });
-    const { ref, provider } = await storage.save(buf, { filename: b.filename });
+    if (dupLlc) {
+      /* The bytes are already in storage on BOTH doors now (the streaming one cannot know about
+         a duplicate until they have landed), so a de-duplicated upload would leave an object
+         nothing points at. Best-effort: an orphan blob is waste, never a correctness problem,
+         and must not turn a successful de-dupe into an error. */
+      try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
+      return res.status(201).json({ ok: true, documentId: dupLlc, deduped: true });
+    }
+    const { ref, provider } = up;
     const r = await db.query(
       `INSERT INTO documents (checklist_item_id,llc_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,slot_label,visibility)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,'borrower') RETURNING id`,
       [b.checklistItemId || null, req.params.id, own.rows[0].borrower_id, b.filename,
-       b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, slot]);
+       b.contentType || 'application/octet-stream', uploadBytes, provider, ref, req.actor.id, slot]);
     if (b.checklistItemId) {
       // EVERY document slot keeps EVERY document (owner-directed): a plain ADD
       // never deletes what's already there. Only an EXPLICIT replace (the user
@@ -12130,7 +12166,10 @@ router.post('/llcs/:id/documents', async (req, res) => {
     await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, llcId: req.params.id });
     res.status(201).json({ ok: true, documentId: r.rows[0].id });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
-});
+}
+router.post('/llcs/:id/documents', uploadLlcDocument);
+router.post('/llcs/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadLlcDocument);
 
 router.patch('/llcs/:id', async (req, res) => {
   const own = await db.query(`SELECT borrower_id, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
@@ -14014,13 +14053,46 @@ router.post('/applications/:id/loan-number', async (req, res) => {
 // value into our column (owner-directed: not admin-only). None of these ever
 // writes to Encompass — /refresh does a READ-ONLY pull; /replace writes exactly
 // one of OUR columns.
+// PLAIN-LANGUAGE WORDING FOR EACH READ STATE — ONE definition, so the file panel and any future
+// surface can never describe the same verdict two ways. Deliberately says what it means for the
+// LOAN, not what the column contains: "blank" is the only one that is evidence about the sale.
+const PA_READ_NOTE = Object.freeze({
+  value:        'Encompass has a purchase advice date on this loan — it is sold.',
+  blank:        'PILOT asked Encompass about this loan and the purchase advice field came back empty.',
+  not_returned: 'PILOT asked, and Encompass answered without that field — usually a permission on it. This file cannot be judged either way, and it is NOT being chased.',
+  no_field_id:  'This deployment is not reading a purchase advice field at all, so nothing can be known from Encompass.',
+  no_loan_link: 'PILOT holds no Encompass loan for this file, so there was nothing to ask about.',
+  _never:       'PILOT has not asked Encompass about this loan yet, so nothing is known either way — it is NOT being chased.',
+});
+
 router.get('/applications/:id/encompass/status', async (req, res) => {
   try {
     // heal:true — this is a single-file panel view, so it may fetch the authoritative
     // field-reader values on the spot (unlike the multi-file tape/issuance gates).
     const c = await require('../encompass/reconcile').computeFindings(req.params.id, null, { heal: true });
     if (!c.found) return res.status(404).json({ error: 'application not found' });
-    res.json({ hasLoan: c.hasLoan, guid: c.guid, loanNumber: c.loanNumber, pulledAt: c.pulledAt, lastError: c.lastError, priced: c.priced, summary: c.summary });
+    // WHAT THE LAST READ OF THE PURCHASE ADVICE FIELD DID, on this file (db/608). It answers the
+    // question the panel could not before: "no purchase advice date" was equally "Encompass says
+    // none", "this file has never been asked", "we hold no Encompass loan for it" and "the read ran
+    // and that field was not in the answer" — four different pieces of work behind one blank.
+    // Best-effort: a diagnosis must never be the reason the panel fails to load.
+    let purchaseAdvice = null;
+    try {
+      const pa = (await db.query(
+        `SELECT purchase_advice_date, purchase_advice_read_at, purchase_advice_read_state,
+                purchase_advice_field_id
+           FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+      if (pa) {
+        purchaseAdvice = {
+          date: pa.purchase_advice_date || null,
+          readAt: pa.purchase_advice_read_at || null,
+          readState: pa.purchase_advice_read_state || null,
+          fieldId: pa.purchase_advice_field_id || null,
+          note: PA_READ_NOTE[pa.purchase_advice_read_state] || PA_READ_NOTE._never,
+        };
+      }
+    } catch (_) { /* the columns may not exist yet on an un-migrated database */ }
+    res.json({ hasLoan: c.hasLoan, guid: c.guid, loanNumber: c.loanNumber, pulledAt: c.pulledAt, lastError: c.lastError, priced: c.priced, summary: c.summary, purchaseAdvice });
   } catch (e) { console.warn('[staff] encompass status:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -14612,6 +14684,40 @@ router.post('/applications/:id/complete-fields', (req, res) => completeFields(re
 // condition engine, re-enforces the 5% SOW contingency and re-derives liquidity.
 // STAFF-ONLY (this router is staff-gated + the /applications/:id scope middleware) —
 // a note-buyer name is never exposed to a borrower.
+/* ── CRITICAL DATES + THE PAYOFF DEMAND ──────────────────────────────────────
+   Owner-directed 2026-08-21: *"We need to add in the file, inside a critical date section, which
+   should have: the application date, which is the day the file started · the CTC date · the funded
+   date · the purchase advice date"*, and the payoff demand *"should be added to the critical dates
+   section also with the date."*
+
+   All three are file-scoped by the `/applications/:id` middleware every route in this file sits
+   behind. Reading the dates needs no extra permission — they are the same facts already on the
+   file header. RECORDING a payoff demand does: it locks the draw centre and deactivates the
+   property in Sitewire, so it is gated on `manage_draws`, the capability that owns the draw
+   centre, and audited. */
+router.get('/applications/:id/critical-dates', async (req, res) => {
+  try {
+    res.json(await require('../lib/critical-dates').criticalDates(db, req.params.id));
+  } catch (e) { require('../lib/http-fail').fail(res, e); }
+});
+
+router.post('/applications/:id/payoff-demand', async (req, res) => {
+  try {
+    if (!can(req.actor, 'manage_draws')) return res.status(403).json({ error: 'You do not have permission to manage draws.' });
+    const b = req.body || {};
+    const P = require('../lib/payoff-demand');
+    /* CLEARING IS A SEPARATE, DELIBERATE ACT — `{clear:true}`, never inferred from an empty note.
+       Lifting the lock lets money move again, so it must be as explicit as setting it. */
+    const out = b.clear === true
+      ? await P.clearPayoffDemand(db, req.params.id, { staffId: req.actor.id })
+      : await P.recordPayoffDemand(db, req.params.id, { staffId: req.actor.id, note: b.note || null });
+    if (out && out.error) return res.status(400).json({ error: out.error });
+    await audit(req, b.clear === true ? 'payoff_demand_cleared' : 'payoff_demand_recorded',
+      'application', req.params.id, { note: b.note || null, sitewire: (out && out.sitewire) || null });
+    res.json(out);
+  } catch (e) { require('../lib/http-fail').fail(res, e); }
+});
+
 router.get('/applications/:id/note-buyer', async (req, res) => {
   try {
     // `?candidate=` previews a name that isn't in the ClickUp dropdown (staff may type
@@ -17433,22 +17539,24 @@ router.get('/leads/:id/documents', async (req, res) => {
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
-router.post('/leads/:id/documents', async (req, res) => {
+/* A LEAD'S DOCUMENT, ON BOTH TRANSPORTS (owner-directed 2026-08-21, "across the entire
+   system"). A prospect's contract arrives here before there is a loan file to put it on. */
+async function uploadLeadDocument(req, res) {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   try {
     if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
-    let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+    // One seam for both doors — strict decode + the JSON ceiling on the JSON one, already in
+    // storage on the streaming one.
+    let up;
+    try { up = await require('../lib/upload-stream').takeUpload(req, b); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
-    const { ref, provider } = await storage.save(buf, { filename: b.filename });
+    const { ref, provider } = up;
     const r = await db.query(
       `INSERT INTO documents (lead_id, filename, content_type, size_bytes, storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id)
        VALUES ($1,$2,$3,$4,$5,$6,'staff',$7) RETURNING id`,
-      [req.params.id, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id]);
+      [req.params.id, b.filename, b.contentType || 'application/octet-stream', up.bytes, provider, ref, req.actor.id]);
     await db.query(
       `INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body, meta)
        VALUES ($1,$2,'file','Attached a file',$3,$4)`,
@@ -17457,7 +17565,10 @@ router.post('/leads/:id/documents', async (req, res) => {
     await audit(req, 'staff_upload_lead_doc', 'lead', req.params.id, { filename: b.filename });
     res.status(201).json({ ok: true, documentId: r.rows[0].id });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
-});
+}
+router.post('/leads/:id/documents', uploadLeadDocument);
+router.post('/leads/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadLeadDocument);
 router.get('/leads/:id/documents/:docId', async (req, res) => {
   try {
     if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
@@ -17758,7 +17869,25 @@ router.get('/applications/:id/documents', async (req, res) => {
 // With a checklistItemId the upload lands INSIDE that condition on the
 // borrower's behalf — same slots, same supersede rules as a borrower upload —
 // so a staffer can fill the shared conditions list when the borrower can't.
-router.post('/applications/:id/documents', async (req, res) => {
+/* Two read-back ceilings, both about MEMORY rather than about what a person may upload.
+   A MISMO appraisal XML carries the whole report PDF inside itself, so 40 MB is a real
+   one; past that its market data is not worth the memory on a 512 MB instance. The AI
+   classifier's own reader refuses anything large anyway, so 25 MB is generous. */
+const UPLOAD_XML_READBACK_BYTES = 40 * 1024 * 1024;
+const UPLOAD_AI_READBACK_BYTES = 25 * 1024 * 1024;
+
+/* ONE HANDLER, TWO DOORS (owner-directed 2026-08-21: *"we need to increase the limit of
+   megabytes that we can upload to unlimit it … The sky is the limit."*).
+
+   `/documents`         — the historic JSON door: {filename, contentType, dataBase64}.
+   `/documents/binary`  — the STREAMING door: the body IS the file, the metadata rides in
+                          headers, and nothing is ever held in memory, so the size a person
+                          can upload stops being a question about this process's RAM.
+
+   Registering the same function on both is deliberate: a second route would be a second
+   place the condition lookup, the staff-only visibility rule and the notification could
+   drift, and the one that drifts is the one that leaks a document to a borrower. */
+const uploadAppDocument = async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
@@ -17820,11 +17949,24 @@ router.post('/applications/:id/documents', async (req, res) => {
   // request can only ever RESTRICT, so no caller can widen a document's reach.
   const staffOnly = itemAudience === 'staff' || b.staffOnly === true;
   const docVisibility = staffOnly ? 'staff_only' : 'borrower';
-  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  /* THE BYTES, WHICHEVER DOOR THEY CAME THROUGH (owner-directed 2026-08-21).
+     A JSON body is decoded strictly and stored here; a STREAMED upload is already in
+     storage and `takeUpload` simply reports where — so this handler, its authorization,
+     its condition lookups and its visibility rules are the SAME code on both doors.
+     Any refusal carries its real reason and its real status. */
+  let up;
+  try { up = await require('../lib/upload-stream').takeUpload(req, b); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+  const uploadBytes = up.bytes;
+  /* THREE THINGS DOWNSTREAM WANT THE ACTUAL BYTES — the appraisal XML auto-import, the
+     research warehouse's XML catch, and the AI classifier. On the JSON door they are
+     already in memory; on the STREAMING door reading them back costs memory equal to the
+     file, which is the very thing that door exists to avoid. So each asks for them
+     explicitly, under its own ceiling, and each is written to do nothing when it cannot
+     have them — every one of the three is an EXTRA, and none may turn a stored document
+     into a failed upload. */
+  const bytesFor = (limit) => require('../lib/upload-stream').readUploadBytes(up, limit);
+  const looksXmlUpload = /\.xml$/i.test(b.filename || '') || /xml/i.test(b.contentType || '');
   // A manual upload onto the Heter Iska condition gets an explicit doc_kind so it is
   // provenance-distinguishable from the DocuSign-fed executed copy (heter_iska_signed +
   // source_type system) AND is kept in-system only — heter_iska_manual is on the
@@ -17856,11 +17998,18 @@ router.post('/applications/:id/documents', async (req, res) => {
     slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
   }
   const dupApp = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
-    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+    filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'staff', uploadedById: req.actor.id,
     applicationId: llcId ? null : req.params.id, checklistItemId: b.checklistItemId || null,
     llcId: llcId || null, trackRecordId: itemTrackRecordId, slotLabel: slot, docKind, termSheetFinal });
-  if (dupApp) return res.status(201).json({ ok: true, documentId: dupApp, deduped: true, visibility: docVisibility });
-  const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  if (dupApp) {
+    /* The bytes are ALREADY in storage on both doors now (the streaming one cannot know
+       about a duplicate until they have landed), so a de-duplicated upload would leave an
+       object nothing points at. Remove it — best-effort, because an orphan blob is waste,
+       never a correctness problem, and must not turn a successful de-dupe into an error. */
+    try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
+    return res.status(201).json({ ok: true, documentId: dupApp, deduped: true, visibility: docVisibility });
+  }
+  const { ref, provider } = up;
   const r = await db.query(
     // A `term_sheet` here is PILOT'S OWN generated PDF, captured from the Term
     // Sheet Studio at registration (that is the ONLY thing that sets this kind
@@ -17879,7 +18028,7 @@ router.post('/applications/:id/documents', async (req, res) => {
              CASE WHEN $12='term_sheet' THEN now() ELSE NULL END) RETURNING id`,
     [llcId ? null : req.params.id, b.checklistItemId || null,
      (b.checklistItemId || llcId) ? borrowerId : null, llcId, itemTrackRecordId,
-     b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref,
+     b.filename, b.contentType || 'application/octet-stream', uploadBytes, provider, ref,
      req.actor.id, docKind, slot, docVisibility, termSheetFinal]);
   if (itemTrackRecordId) {
     await db.query(
@@ -17959,8 +18108,9 @@ router.post('/applications/:id/documents', async (req, res) => {
       const tc = (await db.query(
         `SELECT t.code FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id WHERE ci.id=$1`,
         [b.checklistItemId])).rows[0];
-      if (tc && tc.code === 'rtl_cond_appraisaldocs') {
-        const xml = buf.toString('utf8');
+      const xmlBuf = (tc && tc.code === 'rtl_cond_appraisaldocs') ? await bytesFor(UPLOAD_XML_READBACK_BYTES) : null;
+      if (tc && tc.code === 'rtl_cond_appraisaldocs' && xmlBuf) {
+        const xml = xmlBuf.toString('utf8');
         const pdfDoc = (await db.query(
           `SELECT id FROM documents WHERE checklist_item_id=$1 AND is_current
              AND lower(coalesce(slot_label,'')) LIKE '%pdf%' ORDER BY created_at DESC LIMIT 1`,
@@ -18013,7 +18163,8 @@ router.post('/applications/:id/documents', async (req, res) => {
   // here, which is what closes that gap.
   if (!(apprImport && apprImport.ok)) {
     require('../lib/research/xml-catch').fireCatch({
-      bytes: buf, filename: b.filename, contentType: b.contentType,
+      bytes: looksXmlUpload ? await bytesFor(UPLOAD_XML_READBACK_BYTES) : (up.buf || null),
+      filename: b.filename, contentType: b.contentType,
       documentId: r.rows[0].id,
       uploadedByStaffId: req.actor && req.actor.kind === 'staff' ? req.actor.id : null,
       why: 'a loan file (staff upload)',
@@ -18029,10 +18180,16 @@ router.post('/applications/:id/documents', async (req, res) => {
   // fast; every step is best-effort and never blocks the response.
   const uploadedDocId = r.rows[0].id;
   const appIdForAi = llcId ? null : req.params.id;
-  if (appIdForAi && buf && buf.length) setImmediate(() => {
+  if (appIdForAi && uploadBytes) setImmediate(() => {
     (async () => {
       const azc = require('../lib/ai/azure-custom');
       if (!azc.classifierConfigured()) return;   // dormant until classifier trained
+      /* The bytes are fetched AFTER the dormancy check and INSIDE the deferred work, so a
+         deployment with no classifier reads nothing back at all and the request path is
+         never slowed by it. A document too large to hold is simply not classified — the
+         reader has its own size limit anyway. */
+      const buf = await require('../lib/upload-stream').readUploadBytes(up, UPLOAD_AI_READBACK_BYTES);
+      if (!buf || !buf.length) return;
       const client = await db.pool.connect();
       try {
         // For classification we only need the bytes; classify+suggest are separate DB
@@ -18076,7 +18233,10 @@ router.post('/applications/:id/documents', async (req, res) => {
   // shadow flag is on (zero db work when off), idempotent, never throws — it can't affect this upload.
   try { await require('../pipeline/enqueue-on-upload').enqueueUploadedDocument(db, { documentId: uploadedDocId, loanId: appIdForAi, checklistItemId: b.checklistItemId || null, docKind }); } catch (_) { /* advisory only */ }
   res.status(201).json({ ok: true, documentId: r.rows[0].id, visibility: docVisibility, ...(apprImport ? { appraisal: apprImport } : {}) });
-});
+};
+router.post('/applications/:id/documents', uploadAppDocument);
+router.post('/applications/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadAppDocument);
 
 // Approve or reject an uploaded document. Rejection requires a reason, keeps the
 // rejected file in history (never in the clean file), and flips its checklist

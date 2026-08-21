@@ -640,8 +640,11 @@ function AttachmentsPanel({ leadId, docs, onChange, onErr }) {
     if (!file) return;
     setBusy(true);
     try {
-      const dataBase64 = await fileToBase64(file);
-      await api.staffAddLeadDocument(leadId, { filename: file.name, contentType: file.type || 'application/octet-stream', dataBase64 });
+      // Streamed (owner-directed 2026-08-21): a prospect's contract arrives here before there
+      // is a loan file to put it on, and it is the same size as any other contract.
+      await api.staffAddLeadDocument(leadId, {
+        filename: file.name, contentType: file.type || 'application/octet-stream', size: file.size, file,
+      });
       onChange();
     } catch (e2) { onErr(e2.message || 'Upload failed'); }
     setBusy(false);

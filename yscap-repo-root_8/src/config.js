@@ -322,7 +322,21 @@ module.exports = {
   // On Render, set STORAGE_DIR to a mounted persistent disk (e.g. /var/data/uploads)
   // so documents survive deploys — the default filesystem is ephemeral.
   storageDir:      process.env.STORAGE_DIR || 'uploads',
-  maxUploadMb:     parseInt(process.env.MAX_UPLOAD_MB || '20', 10),   // per-file cap
+  /* THE DOCUMENT CEILING — what a single upload may be, in megabytes (owner-directed
+     2026-08-21: *"we need to increase the limit of megabytes that we can upload to unlimit
+     it … The sky is the limit."*). This is now enforced on the STREAMING door
+     (`lib/upload-stream.js`), which never holds a document in memory, so raising it costs
+     no RAM: the real bound is disk/bucket space, not the process. Raise it as far as the
+     owner wants — nothing about the transport changes. */
+  maxUploadMb:     parseInt(process.env.MAX_UPLOAD_MB || '1024', 10),
+  /* WHAT A BASE64-IN-JSON BODY MAY CARRY, which is a completely different question and
+     must never follow the number above. express buffers and parses such a body whole, and
+     the cost is MEASURED at about five times the file (wire body + express's string + the
+     parsed base64 string + the decoded Buffer): 25 MB → 168 MB peak, 50 MB → 294 MB,
+     100 MB → 410 MB, on a 512 MB instance. Tying the parser's ceiling to the document
+     ceiling is how "unlimited uploads" becomes an out-of-memory kill of the whole site.
+     Documents go through the streaming door; this governs only the legacy JSON doors. */
+  maxJsonUploadMb: parseInt(process.env.MAX_JSON_UPLOAD_MB || '25', 10),
   // S3-compatible object storage (AWS S3 / Cloudflare R2 / Backblaze B2 / …). Used only when
   // STORAGE_PROVIDER=s3. Credentials come from Render env ONLY (never source). The adapter signs
   // requests itself (AWS SigV4, Node crypto — no SDK, no new deps). `region` defaults to 'auto'

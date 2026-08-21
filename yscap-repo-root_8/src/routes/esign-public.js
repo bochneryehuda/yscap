@@ -69,12 +69,30 @@ router.get('/sign', async (req, res) => {
   const claims = magic.verifySigningToken(String(req.query.t || '').trim());
   if (!claims) return res.redirect(302, `${base}/#/esign/done?state=expired`);
   try {
-    const rec = (await db.query(
-      `SELECT r.recipient_id_ds, r.name, r.email, r.client_user_id, r.signed_at, r.declined_at, r.borrower_id,
-              e.envelope_id, e.status, e.application_id
-         FROM esign_recipients r JOIN esign_envelopes e ON e.id = r.envelope_row_id
-        WHERE e.id = $1 AND r.recipient_id_ds = $2 AND r.borrower_id = $3
-        LIMIT 1`, [claims.envelopeRowId, claims.recipientIdDs, claims.borrowerId])).rows[0];
+    /* THE RECIPIENT THIS TOKEN NAMES — a borrower, or one of OUR OWN signers (2026-08-21).
+       A staff signer's row carries no `borrower_id`, so the borrower match could never find
+       one and staff had no PILOT link at all; they received DocuSign's email, which is the
+       one the owner asked to stop. The two branches are mutually exclusive by construction
+       (`verifySigningToken` refuses a token naming both or neither) and each pins the
+       recipient to the identity in the token — a borrower's token can never open a staff
+       signer's session on the envelope, or the reverse. */
+    const rec = claims.borrowerId
+      ? (await db.query(
+        `SELECT r.recipient_id_ds, r.name, r.email, r.client_user_id, r.signed_at, r.declined_at, r.borrower_id, r.role,
+                e.envelope_id, e.status, e.application_id
+           FROM esign_recipients r JOIN esign_envelopes e ON e.id = r.envelope_row_id
+          WHERE e.id = $1 AND r.recipient_id_ds = $2 AND r.borrower_id = $3
+          LIMIT 1`, [claims.envelopeRowId, claims.recipientIdDs, claims.borrowerId])).rows[0]
+      : (await db.query(
+        `SELECT r.recipient_id_ds, r.name, r.email, r.client_user_id, r.signed_at, r.declined_at, r.borrower_id, r.role,
+                e.envelope_id, e.status, e.application_id
+           FROM esign_recipients r
+           JOIN esign_envelopes e ON e.id = r.envelope_row_id
+           JOIN staff_users su ON lower(su.email) = lower(r.email)
+          WHERE e.id = $1 AND r.recipient_id_ds = $2
+            AND r.borrower_id IS NULL
+            AND su.id = $3::uuid AND su.is_active = true
+          LIMIT 1`, [claims.envelopeRowId, claims.recipientIdDs, claims.staffId])).rows[0];
     if (!rec || !rec.envelope_id) return res.redirect(302, `${base}/#/esign/done?state=notready`);
     const appId = rec.application_id;
     // Already signed / declined / no longer open → point them at their file (they'll
@@ -85,9 +103,16 @@ router.get('/sign', async (req, res) => {
     }
     // Thread a short-lived return-authorization so the /return bounce can log them
     // back in AFTER they sign, then mint the embedded signing view.
-    const ra = magic.mintReturnAuth({ borrowerId: rec.borrower_id, applicationId: appId });
+    /* AFTER SIGNING, WHERE DO THEY LAND? A BORROWER is bounced back into their own file
+       already logged in — that hand-off is what the return-auth token exists for. A STAFF
+       signer is NOT: an email link may never mint an internal console session, so they land on
+       the file's page and sign in the way they always do. Deliberately narrower than the
+       borrower path, and it must stay that way. */
+    const isStaffSigner = !rec.borrower_id;
+    const ra = isStaffSigner ? null : magic.mintReturnAuth({ borrowerId: rec.borrower_id, applicationId: appId });
     const returnUrl = `${cfg.appUrl}/api/esign/return?app=${encodeURIComponent(appId || '')}`
-      + `&env=${encodeURIComponent(rec.envelope_id)}&dest=borrower&ra=${encodeURIComponent(ra)}`;
+      + `&env=${encodeURIComponent(rec.envelope_id)}`
+      + (isStaffSigner ? '&dest=staff' : `&dest=borrower&ra=${encodeURIComponent(ra)}`);
     const url = await esignDocusign.createRecipientView(rec.envelope_id, {
       returnUrl, email: rec.email, userName: rec.name,
       clientUserId: rec.client_user_id, recipientId: rec.recipient_id_ds,

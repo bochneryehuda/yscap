@@ -143,10 +143,20 @@ ok(C.fireCatchById(null) === undefined, 'fireCatchById on a null id is a no-op, 
 // three upload doors call `fireCatch` with a `bytes` key, and the slot route calls
 // `fireCatchById`. A future edit that drops the bytes would silently stop filing
 // every report, with no error anywhere.
+//
+// THE SHAPE MOVED WHEN UPLOADS STARTED STREAMING (2026-08-21) and this guard had pinned the
+// LITERAL that carried them (`bytes: buf`), so it went red on a change that broke nothing. On
+// the streaming door the bytes are no longer in hand — reading them back costs memory equal to
+// the file, so each consumer asks explicitly under its OWN ceiling. What must be guarded is
+// therefore both halves: the `bytes` key is still passed AND it is still fed by that read-back.
+// Pinning only the key would let a door quietly pass `null` on the streaming path and stop
+// filing every report uploaded through it, which is precisely the silence this exists to catch.
 const fs = require('fs');
 const SRC = (p) => fs.readFileSync(path.join(__dirname, '..', 'src', p), 'utf8');
 for (const [file, needle, what] of [
-  ['routes/staff.js', /xml-catch'\)\.fireCatch\(\{\s*\n\s*bytes: buf,/, 'the staff upload door passes the uploaded bytes'],
+  ['routes/staff.js', /xml-catch'\)\.fireCatch\(\{\s*\n\s*bytes: (?!null)\S/, 'the staff upload door passes the uploaded bytes'],
+  ['routes/staff.js', /bytes: looksXmlUpload \? await bytesFor\(UPLOAD_XML_READBACK_BYTES\)/,
+    'the staff door reads those bytes back off the streamed file, under its own ceiling'],
   // THE DOORS AN AUDIT FOUND UNCOVERED. The first is the one the report most often
   // arrives through: the vendor replies to the order with the PDF and the MISMO XML.
   ['lib/order-inbox.js', /xml-catch'\)\.fireCatch\(/, 'a vendor emailing the report back on an order feeds the warehouse'],
@@ -155,7 +165,9 @@ for (const [file, needle, what] of [
   // AND THE ONE PLACE IT MUST *NOT* FIRE: a SUCCESSFUL desk import already feeds the
   // warehouse, richer, and firing both on the same bytes files the report twice.
   ['routes/staff.js', /if \(!\(apprImport && apprImport\.ok\)\) \{/, 'the catch stands down when the desk import just succeeded'],
-  ['routes/borrower.js', /xml-catch'\)\.fireCatch\(\{\s*\n\s*bytes: buf,/, 'the borrower upload door passes the uploaded bytes'],
+  ['routes/borrower.js', /xml-catch'\)\.fireCatch\(\{\s*\n\s*bytes: (?!null)\S/, 'the borrower upload door passes the uploaded bytes'],
+  ['routes/borrower.js', /readUploadBytes\(up, RESEARCH_XML_BYTES\)/,
+    'the borrower door reads them back too, under its own ceiling'],
   ['routes/staff.js', /fireCatchById\(doc\.id,/, 'the slot route catches the document it just re-slotted'],
   ['routes/appraisal.js', /rescueGrid\(\); return res\.status\(422\)/, 'a refused appraisal import still files its grid'],
   ['routes/appraisal.js', /catch \(e\) \{ rescueGrid\(\); throw e; \}/, '  …and so does one that throws'],

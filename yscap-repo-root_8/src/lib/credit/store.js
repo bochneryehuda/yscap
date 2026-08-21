@@ -25,7 +25,8 @@ const { enqueueChecklistStatusPush } = require('../../clickup/enqueue');
 const { sanitizeFico } = require('../fields');
 const { CO_CREDIT_MARKER } = require('./co-condition');
 
-const MAX_BYTES = (cfg.maxUploadMb || 20) * 1024 * 1024;
+// base64 door → the JSON ceiling (config.js explains why the two limits differ)
+const MAX_BYTES = () => require('../upload-stream').jsonUploadBytes();
 
 // The credit condition a report attaches to. A credit condition is
 // application-scoped (chk_one_owner forbids a borrower_id on it), so the
@@ -96,7 +97,7 @@ async function storeImport({ file, borrower, parsed, xml, pdfBase64, request, ac
   // skip the supersede (m2): a bad decode logs and we proceed data-file-only.
   let pdfBuf = null;
   if (pdfBase64 && !alreadyFiled) {
-    try { pdfBuf = decodeUploadBase64(pdfBase64, { maxBytes: MAX_BYTES }).buf; }
+    try { pdfBuf = decodeUploadBase64(pdfBase64, { maxBytes: MAX_BYTES() }).buf; }
     catch (e) { console.error('[credit] PDF decode failed — storing the data file only:', (e && e.message) || e); }
   }
 
@@ -106,7 +107,7 @@ async function storeImport({ file, borrower, parsed, xml, pdfBase64, request, ac
   try {
     if (xml && !alreadyFiled) {
       const xbuf = Buffer.from(String(xml), 'utf8');
-      if (xbuf.length <= MAX_BYTES) {
+      if (xbuf.length <= MAX_BYTES()) {
         xmlDocId = await insertDoc({
           appId, borrowerId, itemId, uploadedById: actorId, buf: xbuf,
           filename: names.xml || 'credit-report.xml', contentType: 'application/xml',

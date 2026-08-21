@@ -74,11 +74,15 @@ function planRecipientEmailChange({ env, recipient, email, name, sendEnabled }) 
     return { ok: false, status: 400, error: 'That’s already the email on this invitation — nothing to change.' };
   }
   const signerUpdate = { recipientId: String(recipient.recipient_id_ds), email: newEmail, name: newName };
-  // Keep the hybrid embedded config so the correction re-notifies the new address AND
-  // the in-portal magic link keeps working (our recipients are captive + SIGN_AT_DOCUSIGN).
+  // Keep the embedded (captive) config so the in-portal magic link keeps working against the
+  // corrected address. PILOT sends the new invitation itself; DocuSign sends nothing.
   if (recipient.client_user_id) {
+    /* Captive, exactly as the original send is (2026-08-21). `embeddedRecipientStartURL` used
+       to ride here too, so a corrected address received DocuSign's own dead link as well as
+       PILOT's working one — the same duplicate the send itself carried. PILOT re-notifies the
+       corrected signer with its own branded email (`notifyReadyToSign` with `onlyRecipientIdDs`),
+       which is the whole point of correcting the address. */
     signerUpdate.clientUserId = String(recipient.client_user_id);
-    signerUpdate.embeddedRecipientStartURL = 'SIGN_AT_DOCUSIGN';
   }
   const isBorrowerRecipient = ['borrower', 'co_borrower'].includes(recipient.role) && !!recipient.borrower_id;
   return { ok: true, newEmail, newName, prevEmail: curEmail || null, signerUpdate, isBorrowerRecipient };

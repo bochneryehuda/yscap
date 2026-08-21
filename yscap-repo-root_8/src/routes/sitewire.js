@@ -846,6 +846,13 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     const a = await orchestrator.loadFile(appId);
     if (!a) return res.status(404).json({ error: 'file not found' });
     if (a.status !== 'funded') return res.status(409).json({ error: 'the draw process starts once the loan is funded' });
+    /* A PAYOFF DEMAND LOCKS THE DRAW CENTRE (owner-directed 2026-08-21). This is the owner's
+       first workflow — draws NEVER set up: *"when you tried to set up draws on this one, it
+       should come out big that there was a Pay Off Demand on this one, so you can't request the
+       set of draws on this file anymore."* The refusal carries the whole sentence, and the
+       screen shows it large. `payoffDemandBlock` fails CLOSED. */
+    const payoffHold = await require('../lib/payoff-demand').payoffDemandBlock(db, appId);
+    if (payoffHold.blocked) return res.status(409).json({ error: payoffHold.message, code: 'payoff_demand', payoffDemand: payoffHold });
     const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
     const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
     const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
@@ -1381,8 +1388,8 @@ router.post('/files/:id/draw-request/upload-manual', requirePermission('manage_d
     let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
     try { ({ buf } = require('../lib/upload-bytes').decodeUploadBase64(b.dataBase64)); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
+    if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
     // Ensure the draw condition exists so the manual form has somewhere to file back to.
     const itemId = await drawWire.ensureDrawRequestCondition(db, appId, req.actor && req.actor.id);
     const filename = String(b.filename || 'wire-instructions.pdf').slice(0, 200);
@@ -1653,6 +1660,14 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   // ownership FIRST (never do work for a file the actor can't see), then validate the money —
   // a NaN/garbage amount must 400, never be coerced to $0 and recorded (audit E-NAN-MONEY-DISB).
   if (!application_id || !(await canSeeFile(req, application_id))) return res.status(403).json({ error: 'forbidden' });
+  /* AND OUR OWN RELEASE IS HELD TOO (owner-directed 2026-08-21) — the owner's second workflow:
+     *"If the file is already set up for draws … You need to stop our system from [releasing]
+     draws."* Blocking only the REQUEST would leave a draw already in flight able to pay out
+     against a payoff figure that was quoted without it. Fails CLOSED. */
+  {
+    const payoffHold = await require('../lib/payoff-demand').payoffDemandBlock(db, application_id);
+    if (payoffHold.blocked) return res.status(409).json({ error: payoffHold.message, code: 'payoff_demand' });
+  }
   const approvedRaw = Number(req.body.approved_cents), feeRaw = Number(req.body.fee_cents);
   if (!Number.isFinite(approvedRaw) || approvedRaw < 0 || !Number.isFinite(feeRaw) || feeRaw < 0) {
     return res.status(400).json({ error: 'approved_cents and fee_cents must be non-negative whole numbers of cents' });
@@ -2634,6 +2649,15 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
     // "already in Sitewire — not managed" banner), or another setup blocker (no SOW, budget mismatch, …).
     const setupStatus = (link && link.raw && link.raw.setup_status) ? link.raw.setup_status : null;
     const preexisting = !!(setupStatus && setupStatus.preexisting_property_id);
+    /* Read through the SAME helper every door refuses with, so the banner and the refusal can
+       never disagree about whether this file is held. Best-effort on the READ only: an
+       unreadable answer still blocks at the door (it fails closed there), and here it simply
+       shows nothing rather than crying wolf on a screen. */
+    let payoffState = null;
+    try {
+      const h = await require('../lib/payoff-demand').payoffDemandBlock(db, appId);
+      if (h && h.blocked && !h.unreadable) payoffState = { at: h.at, by: h.by || null, note: h.note || null, message: h.message };
+    } catch (_) { /* the banner is a read, never a gate */ }
     const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src, quick_notify_status_id, coordinator_id FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
     // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd): the request's own job_item_name
     // can arrive null from Sitewire (drafting-state draws often omit it); fall back FIRST to the
@@ -2802,6 +2826,17 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
       // Sitewire property PILOT didn't create; setup_status = the last birth-phase outcome (inline, not a
       // global error row); managed_since = when PILOT pushed (born) this property.
       preexisting, setup_status: setupStatus, managed_since: link ? link.pushed_at : null, go_live_date: cfg.sitewireGoLiveDate,
+      /* THE PAYOFF DEMAND, ON THE COORDINATOR'S OWN SCREEN (owner-directed 2026-08-21: *"In the
+         Draw Coordinator section AND ALSO in the Critical Date section … it should come out big
+         that there was a Pay Off Demand on this one, so you can't request the set of draws on
+         this file anymore"*).
+
+         It was enforced at every door from the day it was built and shown on NEITHER — a
+         coordinator learnt about it only by pressing Start and being refused, which is the
+         worst moment to find out and says nothing until you act. The refusal is unchanged; this
+         is the same fact, read the same way (`payoffDemandBlock`, which FAILS CLOSED), returned
+         so the screen can lead with it. */
+      payoff_demand: payoffState,
       // so the desk can show a proactive read-only banner + disable write buttons when writes are off
       // (an approve/release/finding write 503s unless BOTH the master switch and the write gate are on).
       switches: { enabled: switches.on('SITEWIRE_ENABLED'), outbound: switches.on('SITEWIRE_OUTBOUND_ENABLED'), dryrun: cfg.sitewireDryrun } });

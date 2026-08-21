@@ -1100,8 +1100,25 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     name: r.name,
     email: r.email,
     routingOrder: r.routing_order,
-    clientUserId: r.client_user_id,                      // embedded (in-portal) signing
-    embeddedRecipientStartURL: 'SIGN_AT_DOCUSIGN',       // hybrid: ALSO send the DocuSign email
+    /* CAPTIVE (embedded) SIGNING, AND NOTHING ELSE — DocuSign sends NO email of its own.
+     *
+     * Owner-reported 2026-08-21: *"they're receiving an email from DocuSign directly to sign,
+     * and they're also receiving an email from Pilot to sign. When they're clicking on the
+     * DocuSign link, it comes up an error, which is that they can't sign. The only link that
+     * works is the link that is coming directly from Pilot."*
+     *
+     * `embeddedRecipientStartURL: 'SIGN_AT_DOCUSIGN'` was the whole cause, and it was
+     * deliberate once: it makes DocuSign email a CAPTIVE recipient as well, which was wanted
+     * as a belt-and-braces fallback in 2026-07. In practice that second email is the one that
+     * fails — a recipient carrying a `clientUserId` is ours to authenticate, and DocuSign's
+     * hosted page has no session for them — so the fallback was not a fallback, it was a dead
+     * link arriving beside the working one and teaching people to distrust both.
+     *
+     * With the property removed, a recipient with a `clientUserId` is purely captive: DocuSign
+     * sends nothing, and PILOT's own branded email (esign/notify-signers.js) is the ONE
+     * invitation, for borrowers and staff signers alike. Do NOT re-add this without also
+     * removing PILOT's email — one signer, one link. */
+    clientUserId: r.client_user_id,                      // captive: WE authenticate, DocuSign never emails
     tabsByDoc: tabsFor(r.role, spec, documentIdByKind),
   }));
   // The roster must be COMPLETE before sending. A concurrent claim (or the poller)

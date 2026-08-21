@@ -224,7 +224,18 @@ function fakeStorage() {
     ok(borrowerSigner.tabsByDoc['3'].sign.includes('/bpd_b1_sig/'), 'borrower has disclosure anchor');
     eq(Object.keys(adminSigner.tabsByDoc).length, 1, 'admin signs exactly one document');
     ok(adminSigner.tabsByDoc['1'].sign.includes('/ts_admin_sig/'), 'admin counter-signs the term sheet only');
-    ok(borrowerSigner.clientUserId && borrowerSigner.embeddedRecipientStartURL === 'SIGN_AT_DOCUSIGN', 'borrower is hybrid embedded+email');
+    /* CAPTIVE, AND DOCUSIGN EMAILS NOBODY (owner-reported 2026-08-21). This used to assert the
+       HYBRID shape — `embeddedRecipientStartURL: 'SIGN_AT_DOCUSIGN'` — which is exactly what made
+       DocuSign send its own invitation beside PILOT's: *"they're receiving an email from DocuSign
+       directly to sign, and they're also receiving an email from Pilot to sign. When they're
+       clicking on the DocuSign link, it comes up an error."* A recipient carrying a clientUserId
+       is ours to authenticate, so DocuSign's hosted page has no session for them and that second
+       email is a dead link. Both halves are pinned: the clientUserId must be there (embedded
+       signing is how PILOT's own link works at all) and the start URL must NOT be. */
+    ok(borrowerSigner.clientUserId, 'borrower is a captive (embedded) recipient — PILOT authenticates them');
+    ok(!borrowerSigner.embeddedRecipientStartURL, 'and DocuSign is NOT asked to email them as well');
+    ok(adminSigner.clientUserId && !adminSigner.embeddedRecipientStartURL,
+      'our own counter-signer is captive too — they get PILOT\'s email, never DocuSign\'s');
 
     // ---- the disclosure is GENERATED on our server (jsPDF → branded PDF) --------
     // Owner-directed (2026-07-20): the business-purpose disclosure now renders on the

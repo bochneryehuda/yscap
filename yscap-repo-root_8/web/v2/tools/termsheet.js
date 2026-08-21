@@ -32,7 +32,7 @@
   // for every retail / borrower / marketing sheet it stays 0 → the broker-fee line
   // and its cash-to-close / liquidity contribution are INERT and every retail
   // number is byte-identical.
-  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [], markupTiers: null, brokerFeePct: 0 };
+  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [], markupTiers: null, brokerFeePct: 0, feasibilityFees: { groundUp: 1250, heavyRehab: 750 } };
 
   var el = function (id) { return document.getElementById(id); };
   var $ = function (s, c) { return (c || document).querySelector(s); };
@@ -631,7 +631,7 @@
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
-    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal();      // + company extra fees (NY settlement etc.); appraisal is POC (excluded)
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount();      // + company extra fees (NY settlement etc.) + the construction feasibility review; appraisal is POC (excluded)
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sl.downPayment + excessOOP + closing);   // reserve is never brought to the table; OOP rehab is funded over construction, not here
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
@@ -659,7 +659,7 @@
       totalCost: displayCost, downPayment: _sl.downPayment, excessOOP: excessOOP,
       oopRehab: _sl.oopRehab, maxOopRehab: _sl.maxOopRehab, initialCut: _sl.initialCut, maxInitial: _sl.maxInitial,
       origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
-      closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
+      closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
       // ltvPct is the initial-advance (as-is) leverage shown next to the dollar
       // initial advance. When an out-of-pocket rehab RAISES the initial advance, the
@@ -708,7 +708,7 @@
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
-    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal();
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount();
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_g.downPayment + excessOOP + closing);
     var goldReservePct = R.liquidityPct || 0.05;
@@ -733,7 +733,7 @@
       downPayment: _g.downPayment, excessOOP: excessOOP,
       oopRehab: _g.oopRehab, maxOopRehab: _g.maxOopRehab, initialCut: _g.initialCut, maxInitial: _g.maxInitial,
       origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
-      closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
+      closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
       liquidity: cashToClose + goldReserve + _g.oopRehab + closingBuffer, liquidityPct: goldReservePct,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
       // ltvPct recomputed from the OOP-boosted initial advance — see calc(). Display-only.
@@ -789,7 +789,7 @@
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
-    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal();
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount();
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sv.downPayment + excessOOP + closing);
     var reserves = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac) * reserveMonths(totalLoan);   // same liquidity buffer as Standard
@@ -813,7 +813,7 @@
       downPayment: _sv.downPayment, excessOOP: excessOOP,
       oopRehab: _sv.oopRehab, maxOopRehab: _sv.maxOopRehab, initialCut: _sv.initialCut, maxInitial: _sv.maxInitial,
       origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
-      closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves + _sv.oopRehab + closingBuffer,
+      closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves + _sv.oopRehab + closingBuffer,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
       // ltvPct recomputed from the OOP-boosted initial advance — see calc(). Display-only.
       ltcPct: s.ltcPct || 0,
@@ -1338,6 +1338,41 @@
       .map(function (f) { return { name: String(f.name), amount: Number(f.amount) }; });
   }
   function extraFeesTotal() { return extraFeeList().reduce(function (a, f) { return a + f.amount; }, 0); }
+  /* THE CONSTRUCTION FEASIBILITY / PROJECT REVIEW FEE (owner-directed 2026-08-21) — $1,250 on a
+     ground-up, $750 on a heavy rehab, and typeable by hand on any project from the admin zone.
+
+     THIS IS A BROWSER MIRROR of `src/lib/feasibility-fee.js`, and it exists for the reason every
+     mirror in this tool exists: the studio cannot require server code. The two are held together
+     by `scripts/test-feasibility-fee-pure.js`, which runs BOTH over the same battery and fails the
+     moment they disagree — because a studio that prints one fee while the register books another
+     is exactly the drift the "one definition" rule is about.
+
+     GROUND-UP IS DECIDED FIRST and off the ENGINE's own classifier (`YSP.normStrategy(...) ===
+     "NC"`), not off the rehab-scope control: the two must agree about what kind of deal this is,
+     or a loan priced on the ground-up matrix is charged the heavy-rehab fee. */
+  function feasKind() {
+    if (YSP.normStrategy(dealType()) === "NC") return "ground_up";
+    if (val("rehabScope") === "heavy") return "heavy_rehab";
+    return null;
+  }
+  function feasLabel(kind) {
+    return kind === "ground_up" ? "Ground-up construction feasibility review"
+      : "Construction feasibility & project review";
+  }
+  /* The amount for this deal. A typed manual amount wins — including a typed 0, which WAIVES the
+     fee on this file — and applies even to a deal that attracts none by type, which is the whole
+     point of the manual box. A BLANK box means "use the deal's own fee", never a waiver. */
+  function feasFee() {
+    var typed = adminNumRaw("tsFeasFee");
+    var kind = feasKind();
+    if (typed != null) return { amount: typed, kind: kind || "heavy_rehab", manual: true };
+    if (!kind) return { amount: 0, kind: null, manual: false };
+    var fees = CO.feasibilityFees || {};
+    var a = Number(kind === "ground_up" ? fees.groundUp : fees.heavyRehab);
+    if (!isFinite(a) || a < 0) a = (kind === "ground_up" ? 1250 : 750);
+    return { amount: a, kind: kind, manual: false };
+  }
+  function feasFeeAmount() { return Number(feasFee().amount) || 0; }
   // TPO broker origination fee (owner-directed 2026-08-06). Points on the loan the
   // BROKER (firm admin) sets on their OWN files — never a rate markup — seeded onto
   // CO.brokerFeePct from the resolved firm settings (setPricingDefaults). Folded
@@ -1436,6 +1471,10 @@
     if (d.appraisalFee != null) CO.appraisal = Number(d.appraisalFee);
     CO.title = (d.titleFee != null ? Number(d.titleFee) : null);
     CO.extraFees = Array.isArray(d.extraFees) ? d.extraFees : [];
+    // The construction feasibility / project review fee pair (owner-directed 2026-08-21).
+    // PRESERVE-IF-ABSENT, like programAvailability below: a payload that does not carry the key
+    // must never silently drop the fee to nothing.
+    if (d.feasibilityFees && typeof d.feasibilityFees === "object") CO.feasibilityFees = d.feasibilityFees;
     CO.markupTiers = (d.markupTiers && typeof d.markupTiers === "object") ? d.markupTiers : null;
     // Program ON/OFF switches (owner-directed 2026-08-18) — the COMPANY map
     // ({ gold:{active:false, note} }); a host-pushed per-file map (tsProgAvail)
@@ -1752,6 +1791,7 @@
       setVal("tsYspStd", ""); setVal("tsYspGold", ""); setVal("tsYspSilver", ""); setVal("tsOrigStd", ""); setVal("tsOrigGold", ""); setVal("tsOrigSilver", ""); setVal("tsOrigManual", "");   // blank = follow Standard (it has no default of its own)
       setVal("tsYspGoldT1", "");   // blank = Gold top tier keeps its normal (0 / company-default) markup
       setVal("tsFeeUW", ""); setVal("tsFeeCredit", ""); setVal("tsFeeAppr", ""); setVal("tsFeeTitle", "");
+      setVal("tsFeasFee", "");   // blank = the deal's own construction feasibility fee governs
       seedAdminDefaults();
       var mo = el("tsManualOn"); if (mo) mo.checked = false;
       setVal("tsMLtv", ""); setVal("tsMArv", ""); setVal("tsMLtc", ""); setVal("tsMRate", ""); setVal("tsMIr", "");
@@ -1897,6 +1937,13 @@
     (function () { var xf = (sized && d.extraFees) ? d.extraFees : [], w = el("rExtraWrap");
       if (w) { if (xf.length) { w.style.display = ""; var t = xf.reduce(function (a2, f) { return a2 + f.amount; }, 0);
         YS.put("rExtraLbl", xf.length === 1 ? xf[0].name : "Additional fees"); YS.put("rExtra", YS.fmtUSD2(t)); } else { w.style.display = "none"; } } })();
+    /* The construction feasibility / project review fee — its own NAMED line, shown only when the
+       deal actually carries one, so every other deal's panel is unchanged. A borrower must never
+       see a fee the sheet cannot name (owner-directed 2026-08-21). */
+    (function () { var w = el("rFeasWrap");
+      if (w) { if (sized && d.feasFee > 0) { w.style.display = "";
+        YS.put("rFeasLbl", d.feasLabel + (d.feasManual ? " (manual)" : "")); YS.put("rFeas", YS.fmtUSD2(d.feasFee)); }
+        else { w.style.display = "none"; } } })();
     YS.put("rCash", sized ? YS.fmtUSD2(d.cashToClose) : EM);
     /* ON-SCREEN refinance cash-to-close, matching the PDF: hide the purchase
        "Down payment" row on a refi, and on a RATE-AND-TERM show the existing-loan
@@ -2321,6 +2368,9 @@
       ["Credit report", stdOk ? money2(d.creditFee) : EM],
       ["Appraisal (est., POC)", stdOk ? money2(d.apprFee) : EM],
       ["Title / escrow (est.)", (stdOk && d.titleCost > 0) ? money2(d.titleCost) : EM],
+      // The construction feasibility / project review fee — only when this deal carries one, so
+      // every sheet that does not is byte-identical to before (owner-directed 2026-08-21).
+      (stdOk && d.feasFee > 0) ? [d.feasLabel, money2(d.feasFee)] : null,
       ["Estimated cash to close", stdOk ? money2(d.cashToClose) : EM],
       // 1% closing-cost buffer feeding the liquidity-to-show total (owner-authorized 2026-07-31)
       stdOk ? ["Closing cost buffer (1% of loan amount)", d.closingBufferWaived ? "Waived" : money2(d.closingBuffer || 0)] : null,
@@ -3864,7 +3914,7 @@
   // entered), so digit-grouping is all that's needed. Count/percent/FICO/term
   // inputs are deliberately excluded — they aren't dollar amounts.
   var MONEY_IDS = ["price", "origPrice", "assignFee", "construction", "asIs", "arv",
-    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr", "tsEffPrice",
+    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr", "tsEffPrice", "tsFeasFee",
     // A typed loan amount is the largest number anyone enters in the admin zone, so
     // it groups like every other money box — 1,207,500 rather than 1207500, which is
     // genuinely hard to read at a glance and easy to mistype by a factor of ten.

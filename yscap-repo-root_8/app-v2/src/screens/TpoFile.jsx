@@ -30,19 +30,17 @@ const COND_STATUS = {
 const money = (v) => v == null || v === '' ? '—' : '$' + Number(v).toLocaleString('en-US');
 const addr = (a) => !a ? '' : (typeof a === 'string' ? a : (a.oneLine || [a.line1, a.city, a.state, a.zip].filter(Boolean).join(', ')));
 
-// Read a File into the {filename, contentType, dataBase64} upload contract.
-function readFile(file) {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => {
-      const s = String(r.result || '');
-      const comma = s.indexOf(',');
-      resolve({ filename: file.name, contentType: file.type || 'application/octet-stream', dataBase64: comma >= 0 ? s.slice(comma + 1) : s });
-    };
-    r.onerror = () => reject(new Error('Could not read the file'));
-    r.readAsDataURL(file);
-  });
-}
+/* THE FILE ITSELF, STREAMED (owner-directed 2026-08-21: the upload fix is *"across the entire
+   system"*). This used to read the file into base64 first, which cost this tab a copy and the
+   SERVER about five times the file to parse — the reason a 23 MB contract could not be uploaded
+   at all. `api` picks the streaming route whenever a caller hands it a File; handing it
+   `dataBase64` silently kept the old transport and the old ceiling. */
+const uploadPayload = (file) => ({
+  filename: file.name,
+  contentType: file.type || 'application/octet-stream',
+  size: file.size,
+  file,
+});
 
 export default function TpoFile() {
   const { id } = useParams();
@@ -56,6 +54,9 @@ export default function TpoFile() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [uploadingFor, setUploadingFor] = useState(null);   // checklist item id currently uploading
+  // An upload refusal, shown ON the condition it was for rather than at the top of the page
+  // (owner-reported 2026-08-21: *"it's popping up in the wrong place"*).
+  const [uploadNote, setUploadNote] = useState(null);       // {itemId, text}
   const [infoVals, setInfoVals] = useState({});             // per-item info-answer input
   const [answeringFor, setAnsweringFor] = useState(null);   // checklist item id currently answering
   const fileInput = useRef(null);
@@ -92,19 +93,28 @@ export default function TpoFile() {
     finally { setBusy(false); }
   }
 
+  /* SAY EXACTLY WHAT WENT WRONG, AND SAY IT WHERE IT HAPPENED. The server's own sentence is
+     used verbatim — it names the file, its size and the real limit — because "Could not upload
+     the document" tells nobody anything they can act on. A general upload has no condition to
+     land on, so that one alone falls back to the page banner. */
+  function failUpload(itemId, ex) {
+    const text = (ex && ex.data && (ex.data.error || ex.data.message)) || ex.message || 'The upload did not go through.';
+    if (itemId) setUploadNote({ itemId, text }); else setErr(text);
+  }
+
   // A condition's "Upload" (or the general upload) picks the file, then this runs.
   async function onFilePicked(e) {
     const file = e.target.files && e.target.files[0];
     e.target.value = '';   // allow re-picking the same file
     if (!file) return;
     const itemId = pendingItem.current; pendingItem.current = null;
-    setErr(''); setMsg(''); setUploadingFor(itemId || 'general');
+    setErr(''); setMsg(''); setUploadNote(null); setUploadingFor(itemId || 'general');
     try {
-      const payload = await readFile(file);
+      const payload = uploadPayload(file);
       await api.tpoUploadDocument({ ...payload, applicationId: id, checklistItemId: itemId || undefined });
       setMsg('Document uploaded.');
       await Promise.all([loadChecklist(), loadDocuments()]);
-    } catch (ex) { setErr(ex.message || 'Could not upload the document'); }
+    } catch (ex) { failUpload(itemId, ex); }
     finally { setUploadingFor(null); }
   }
   const pickFor = (itemId) => { pendingItem.current = itemId || null; if (fileInput.current) fileInput.current.click(); };
@@ -114,15 +124,15 @@ export default function TpoFile() {
   async function uploadFor(itemId, files) {
     const list = Array.from(files || []);
     if (!list.length) return;
-    setErr(''); setMsg(''); setUploadingFor(itemId || 'general');
+    setErr(''); setMsg(''); setUploadNote(null); setUploadingFor(itemId || 'general');
     try {
       for (const file of list) {
-        const payload = await readFile(file);
+        const payload = uploadPayload(file);
         await api.tpoUploadDocument({ ...payload, applicationId: id, checklistItemId: itemId || undefined });
       }
       setMsg(list.length === 1 ? 'Document uploaded.' : `${list.length} documents uploaded.`);
       await Promise.all([loadChecklist(), loadDocuments()]);
-    } catch (ex) { setErr(ex.message || 'Could not upload the document'); }
+    } catch (ex) { failUpload(itemId, ex); }
     finally { setUploadingFor(null); }
   }
 
@@ -208,6 +218,9 @@ export default function TpoFile() {
                     SAME component the borrower's portal renders, so one sentence can
                     never be shown two different ways to the two people reading it. */}
                 <ConditionTeamNote note={c.external_note} />
+                {uploadNote && uploadNote.itemId === c.id && (
+                  <div className="notice err" role="status" aria-live="polite" style={{ marginTop: 6 }}>{uploadNote.text}</div>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span className="pill">{COND_STATUS[c.status] || c.status}</span>

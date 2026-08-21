@@ -43,6 +43,14 @@ const POLL_INTERVAL_MS = _envSec('ENCOMPASS_POLL_MIN', 15) * 60 * 1000;
 // (ENCOMPASS_ENRICH_ENABLED=1) on top of ENCOMPASS_ENABLED so the profile writes
 // can be turned on independently of the read-only per-file pulls.
 const ENRICH_INTERVAL_MS = _envSec('ENCOMPASS_ENRICH_DAYS', 7) * 24 * 3600 * 1000;
+// THE PURCHASE-ADVICE SWEEP runs on its OWN clock, and that is the whole point (owner-directed
+// 2026-08-21: *"you need to refresh your entire system and make sure it's looking at the correct
+// field"*). The per-loan pull above fetches the WHOLE loan for ONE file per tick — the right shape
+// for keeping the mirror fresh, and far too slow to answer one question about the funded book (a
+// given file's turn comes around once every (files ÷ ~96) days). The sweep asks ONE field by
+// number, so it can move through the funded book orders of magnitude faster at a fraction of the
+// cost, and it is what fills in the read state the 30-day purchase-advice chase now fires on.
+const PA_SWEEP_INTERVAL_MS = _envSec('ENCOMPASS_PA_SWEEP_MIN', 10) * 60 * 1000;
 const _flagOn = (name) => { const v = String(process.env[name] || '').trim().toLowerCase(); return v === '1' || v === 'true'; };
 const _flagOff = (name) => { const v = String(process.env[name] || '').trim().toLowerCase(); return v === '0' || v === 'false'; };
 const enrichEnabled = () => _flagOn('ENCOMPASS_ENRICH_ENABLED');
@@ -102,6 +110,22 @@ async function pullOldestActiveOnce() {
   }
 }
 
+// One bounded pass of the purchase-advice sweep. Best-effort and never throws: it rides the same
+// posture as every other tick here, and a failure just means the book is judged a little later.
+// Off with ENCOMPASS_PA_SWEEP_DISABLED=1 (the read state stays as it is; nothing is un-stamped).
+async function purchaseAdviceSweepOnce() {
+  if (_flagOn('ENCOMPASS_PA_SWEEP_DISABLED')) return null;
+  if (!client.configured()) return null;
+  try {
+    const out = await require('../sitewire/release-party').sweepPurchaseAdviceOnce(db);
+    // Logged whenever it LOOKED at anything — never a bare count. A pass that reports only "25
+    // files" cannot tell a working sweep from one stamping twenty-five no-loan-links.
+    if (out && out.looked) console.log('[encompass] purchase-advice sweep:', JSON.stringify(out));
+    else if (out && out.skipped) console.log('[encompass] purchase-advice sweep skipped:', out.skipped);
+    return out;
+  } catch (e) { console.warn('[encompass] purchase-advice sweep threw:', e.message); return null; }
+}
+
 // Part 2 — one borrower-profile enrichment pass: refresh the read-only snapshot
 // of ALL Encompass loans, then additively + dedupedly enrich borrower profiles
 // from it — prior-deal addresses → track record, entities (including the
@@ -145,6 +169,10 @@ function start() {
 
   setInterval(refreshCatalogOnce, CATALOG_INTERVAL_MS);
   setInterval(pullOldestActiveOnce, POLL_INTERVAL_MS);
+
+  // The purchase-advice sweep, warmed well after the first pull so a slow API never stacks them.
+  setTimeout(() => { purchaseAdviceSweepOnce(); }, 45000);
+  setInterval(purchaseAdviceSweepOnce, PA_SWEEP_INTERVAL_MS);
 
   // Part 2 — borrower-profile enrichment (opt-in, weekly).
   if (enrichEnabled()) {
@@ -197,4 +225,4 @@ function startFloodPoller() {
   setInterval(tick, FLOOD_POLL_MS);
 }
 
-module.exports = { start, startFloodPoller, refreshCatalogOnce, pullOldestActiveOnce, enrichPassOnce, pollFloodOnce, pollXactusFloodOnce };
+module.exports = { start, startFloodPoller, refreshCatalogOnce, pullOldestActiveOnce, enrichPassOnce, purchaseAdviceSweepOnce, pollFloodOnce, pollXactusFloodOnce };

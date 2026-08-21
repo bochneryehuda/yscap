@@ -262,7 +262,10 @@ async function borrowerAppraisalBlocks(appId) {
   } catch (_) { return null; }
 }
 
-const MAX_UPLOAD_BYTES = Math.max(1, cfg.maxUploadMb) * 1024 * 1024;
+// A base64-in-JSON door, so it takes the JSON ceiling — never the document ceiling
+// (see config.js: the two are different questions). Read at call time so raising
+// either number needs no redeploy of this module's constants.
+const MAX_UPLOAD_BYTES = () => require('../lib/upload-stream').jsonUploadBytes();
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 
@@ -374,11 +377,11 @@ router.post('/:appId/import', async (req, res, next) => {
     // decodeUploadBase64 returns { buf, sha256 } — destructure the Buffer (not the object).
     let xml;
     try {
-      if (b.xmlBase64) { const { buf } = decodeUploadBase64(b.xmlBase64, { maxBytes: MAX_UPLOAD_BYTES }); xml = buf.toString('utf8'); }
+      if (b.xmlBase64) { const { buf } = decodeUploadBase64(b.xmlBase64, { maxBytes: MAX_UPLOAD_BYTES() }); xml = buf.toString('utf8'); }
       else if (b.xml) {
         xml = String(b.xml);
         // Same ceiling as the base64 path — the raw-string branch must not be a larger door.
-        if (Buffer.byteLength(xml, 'utf8') > MAX_UPLOAD_BYTES) { const err = new Error('the appraisal XML is too large'); err.status = 413; throw err; }
+        if (Buffer.byteLength(xml, 'utf8') > MAX_UPLOAD_BYTES()) { const err = new Error('the appraisal XML is too large'); err.status = 413; throw err; }
       }
       else { xml = null; }
     } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
@@ -410,7 +413,7 @@ router.post('/:appId/import', async (req, res, next) => {
 
       // PDF: use the uploaded slot if given, else the PDF embedded in the XML.
       if (pdfB64) {
-        const { buf: pbuf } = decodeUploadBase64(pdfB64, { maxBytes: MAX_UPLOAD_BYTES });
+        const { buf: pbuf } = decodeUploadBase64(pdfB64, { maxBytes: MAX_UPLOAD_BYTES() });
         const ps = await storage.save(pbuf, { filename: (b.filename || 'appraisal').replace(/\.xml$/i, '') + '.pdf' });
         pdfDocId = (await db.query(
           `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility,source_type,review_status,reviewed_at)

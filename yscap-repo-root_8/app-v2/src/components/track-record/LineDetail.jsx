@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api, saveBlob } from '../../lib/api.js';
-import { fileToBase64 } from '../../lib/files.js';
 import useFileDrop from '../../lib/useFileDrop.js';
 import { askConfirm, askPrompt } from '../../lib/dialog.js';
 import DocPreview from '../DocPreview.jsx';
@@ -388,9 +387,10 @@ export default function LineDetail({ trackRecordId, maySignOff, canDelete, role,
     let ok = 0;
     for (const f of list) {
       try {
-        const dataBase64 = await fileToBase64(f);
-        await api.post(`/api/staff/track-records/${trackRecordId}/documents`, {
-          filename: f.name, contentType: f.type || 'application/octet-stream', dataBase64,
+        // Streamed: a HUD statement is a scan, and reading it into base64 first cost the
+        // server about five times the file to parse (owner-directed 2026-08-21).
+        await api.uploadStream(`/api/staff/track-records/${trackRecordId}/documents`, {
+          filename: f.name, contentType: f.type || 'application/octet-stream', file: f,
           docType: upType || undefined,
         });
         ok += 1;

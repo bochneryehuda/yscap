@@ -47,21 +47,38 @@ const RETURN_TTL_SEC = 15 * 60;           // 15 minutes
  * Mint the signing magic token for one recipient of one envelope.
  * @param {{envelopeRowId:string, borrowerId:string, recipientIdDs:string}} b
  */
-function mintSigningToken({ envelopeRowId, borrowerId, recipientIdDs }, ttlSec = SIGNING_TTL_SEC) {
+function mintSigningToken({ envelopeRowId, borrowerId = null, staffId = null, recipientIdDs }, ttlSec = SIGNING_TTL_SEC) {
   return C.signJwt({
     kind: 'esign_magic',
     sub: String(envelopeRowId),          // NOT a borrower id — can never be a session
     er: String(envelopeRowId),
-    bid: String(borrowerId),
+    /* A SIGNER IS EITHER A BORROWER OR ONE OF OUR OWN (2026-08-21). Staff signers — the loan
+       officer on a Heter Iska, the admin who counter-signs a term sheet — used to receive
+       DocuSign's email and nothing from PILOT, which is exactly the half the owner asked to
+       replace: *"They should not receive the DocuSign emails. They should receive it directly
+       from Pilot with the direct link to sign."* The token carries whichever identity applies;
+       `/api/esign/sign` matches on it, so a borrower's token can never open a staff signer's
+       session on the envelope or the other way round. */
+    ...(borrowerId ? { bid: String(borrowerId) } : {}),
+    ...(staffId ? { sid: String(staffId) } : {}),
     rid: String(recipientIdDs),
   }, ttlSec);
 }
 
-/** Verify a signing magic token → { envelopeRowId, borrowerId, recipientIdDs } or null. */
+/** Verify a signing magic token → { envelopeRowId, borrowerId, staffId, recipientIdDs } or null. */
 function verifySigningToken(token) {
   const c = C.verifyJwt(token);
-  if (!c || c.kind !== 'esign_magic' || !c.er || !c.bid || !c.rid) return null;
-  return { envelopeRowId: String(c.er), borrowerId: String(c.bid), recipientIdDs: String(c.rid) };
+  if (!c || c.kind !== 'esign_magic' || !c.er || !c.rid) return null;
+  // Exactly one identity, never both and never neither — a token naming nobody would match
+  // whichever recipient the query happened to return first.
+  const hasB = !!c.bid, hasS = !!c.sid;
+  if (hasB === hasS) return null;
+  return {
+    envelopeRowId: String(c.er),
+    borrowerId: hasB ? String(c.bid) : null,
+    staffId: hasS ? String(c.sid) : null,
+    recipientIdDs: String(c.rid),
+  };
 }
 
 /**

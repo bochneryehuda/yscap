@@ -305,7 +305,20 @@ async function sendTapeToInvestor(appId, db, { tape, to, cc: extraCc, note, acto
   });
 
   await saveRecipients(db, pre.app.lender, emails, actorId);
-  return { ok: true, to: emails, cc, replyTo, subject: pre.subject, sentBy: actorName || null };
+
+  /* THE TAPE IS THE DELIVERY, SO THE CARD MOVES WITH IT (owner-directed 2026-08-21: *"when
+     we mark our system investor delivered, ClickUp changes to in purchase review"*).
+     Sending the tape to the note buyer IS marking the file delivered — there is no separate
+     button, and inventing one would be a second place the same fact lives.
+
+     AFTER the send, deliberately: the card must never claim a delivery that failed to go
+     out. `advanceCard` refuses a file that is not funded yet (a tape sent before closing
+     moves nothing), refuses to drag a card back from a later stage, and never throws — so a
+     ClickUp problem can never turn a delivered tape into a failed request. */
+  const cardMoved = await require('../../clickup/post-closing-stage')
+    .advanceCard(appId, 'investor_delivered', { client: db, reason: 'tape_sent_to_investor' });
+
+  return { ok: true, to: emails, cc, replyTo, subject: pre.subject, sentBy: actorName || null, cardMoved };
 }
 
 module.exports = { subjectFor, dealFigures, cleanRecipients, extraAddresses, previewTapeSend, sendTapeToInvestor, saveRecipients, teamCc };

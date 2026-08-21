@@ -69,6 +69,8 @@ import RateTermCashCard from '../components/RateTermCashCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import AppraisalOrderSection from '../components/AppraisalOrderSection.jsx';
+import TrinityBudgetReview from '../components/TrinityBudgetReview.jsx';
+import CriticalDates from '../components/CriticalDates.jsx';
 import AppraisalCardEntry from '../components/AppraisalCardEntry.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
@@ -987,6 +989,14 @@ function sowUrl(appId, itemId, app) {
    never from the portal. */
 const APP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'on_hold', 'declined', 'withdrawn'];
 const APP_STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
+/* SOLD IS A STAGE ON TOP OF FUNDED, NOT A STORED STATUS (owner-directed 2026-08-21, db/611).
+   `applications.status` is the SERVICING state and 139 places read it — draws, investor delivery,
+   the data tapes and the purchase-advice sweep all test `funded` — so a sold loan stays funded and
+   the stage rides on `sold_at`. What a person SEES is the stage, which is what the owner asked for:
+   *"The files that are being sold should have a status of 'Sold'."* Table-funded loans never get
+   one; that exclusion is decided server-side (`lib/sold-status.js`), never re-derived here. */
+const soldStage = (a) => !!(a && a.sold_at && a.status === 'funded');
+const appStatusLabel = (a) => (soldStage(a) ? 'Sold' : (APP_STATUS_LABEL[a && a.status] || (a && a.status) || '—'));
 const PHASE_LABEL = {
   p1_intake: 'Phase 1 · Borrower Intake', p2_setup: 'Phase 2 · File Setup',
   p3_verify: 'Phase 3 · Verifications', p4_appraisal: 'Phase 4 · Appraisal & Numbers',
@@ -1608,7 +1618,7 @@ function RequestSlotButton({ appId, it, onChanged }) {
   );
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false, onRequestWaiver, expanded = false, onToggleExpand }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false, onRequestWaiver, expanded = false, onToggleExpand, uploadNote = null }) {
   const [open, setOpen] = useState(false);
   // EVERY condition is a compact line until you open it (owner-directed
   // 2026-07-28: "one compact line each, click to open the one you're working").
@@ -1639,6 +1649,19 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   // Full screen opens everything — the parent seeds `expandedConds` with every
   // visible row on the way in and restores the normal state on the way out, so an
   // internal condition now behaves exactly like every other one.
+  /* WHAT HAPPENED TO THE UPLOAD YOU JUST STARTED HERE (owner-reported 2026-08-21:
+     *"it's not popping up in the place where you want to upload. It's popping up on top
+     of the file."*). The server's own sentence — which names the file, its size and the
+     limit — is rendered ON THIS CONDITION, both collapsed and open, because from beside
+     the row you were working the old top-of-page banner was off screen and the upload
+     read as having silently done nothing. */
+  const myUploadNote = uploadNote && uploadNote.itemId === it.id ? uploadNote : null;
+  const uploadNoteEl = myUploadNote ? (
+    <div className={`notice${myUploadNote.tone === 'err' ? ' err' : ''}`}
+      role="status" aria-live="polite" style={{ marginTop: 6 }}>
+      {myUploadNote.text}
+    </div>
+  ) : null;
   if (!expanded) {
     return (
       // data-keep-scroll: a stable handle so a refresh can put this row back
@@ -1646,6 +1669,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ padding: '2px 10px' }}>
         <ConditionLine it={it} role={role} docs={itemDocs} open={false} done={myDone}
           onToggle={onToggleExpand} onPatch={onPatch} />
+        {uploadNoteEl}
       </div>
     );
   }
@@ -1655,6 +1679,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   // null/absent for a FREE-FORM multi-document condition (Title).
   return (
     <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
+      {uploadNoteEl}
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
         <span className={`dot ${signed ? 'cond-satisfied' : conditionStatusClass(it.status)}`} style={{ marginTop: 4 }} />
         <div style={{ flex: 1 }}>
@@ -1852,6 +1877,18 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       {/* Flood condition — order the flood certificate from Encompass (flood only). */}
       {it.template_code === 'rtl_cond_flood' && (
         <OrderFloodButton appId={appId} itemId={it.id} onChanged={onChanged} onUploadTo={onUploadTo} />
+      )}
+
+      {/* Feasibility review — order Trinity's construction budget review straight from the
+          condition that asks for it (owner-directed 2026-08-21: "on ground-ups where we post
+          the condition for feasibility review, that condition should get a button where, from
+          that button, we can order this report directly"). It is the SAME card the Orders room
+          mounts — never a second copy, so what it says about readiness cannot differ by which
+          screen you are standing on. */}
+      {it.template_code === 'rtl_cond_feasibility' && (
+        <div style={{ paddingLeft: 20 }}>
+          <TrinityBudgetReview appId={appId} compact onChanged={onChanged} />
+        </div>
       )}
 
       {/* Title / insurance — order it from right here. */}
@@ -3513,7 +3550,7 @@ function DeleteRequestBanner({ it, appId, onChanged }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, onRequestWaiver, team, canImportCredit, fullscreen = false, closingActive = false }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, onRequestWaiver, team, canImportCredit, fullscreen = false, closingActive = false, uploadNote = null }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
@@ -3883,7 +3920,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 docs={docs} onUploadTo={onUploadTo} onDropTo={onDropTo} onReviewDoc={onReviewDoc}
                 onDownloadDoc={onDownloadDoc} dlBusy={dlBusy} onPreview={onPreview} appId={appId}
                 onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen}
-                onRequestWaiver={onRequestWaiver}
+                onRequestWaiver={onRequestWaiver} uploadNote={uploadNote}
                 expanded={expandedConds.has(it.id)} onToggleExpand={() => toggleCond(it.id)} />
             );
         const itemDocs = docsFor(it.id);
@@ -3983,8 +4020,17 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                            is re-registered), and that rule stands — but the screen never SAID so,
                            so a file whose re-register did not carry the lower number showed a
                            stubborn "5" with nothing to act on. Saying it is the way out. */
+                        /* AND WHETHER THAT ADVICE CAN BE FOLLOWED. "Re-register Products &
+                           Pricing" is the way down — but past a sent term sheet, or at
+                           clear-to-close / funded, the register route refuses, and repeating
+                           advice that will bounce is the dead-end class this codebase names
+                           elsewhere. `reRegisterBlockedBy` is the file's own freeze, read
+                           actor-less, so the line names what clears it instead. */
                         const why = p.claimBelowNeed
-                          ? ` — this comes from the REGISTERED product (priced on ${fmt(r)}); the file itself now claims ${fmt(p.required || {})}, so re-register Products & Pricing to bring the requirement down`
+                          ? ` — this comes from the REGISTERED product (priced on ${fmt(r)}); the file itself now claims ${fmt(p.required || {})}, so the requirement only comes down once the product is re-registered on the lower number`
+                            + (p.reRegisterBlockedBy
+                                ? ` — and re-registering is blocked right now: ${p.reRegisterBlockedBy}`
+                                : ' — open Products & Pricing and register again')
                           : '';
                         return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')} verified` : ' — requirement met ✓ (verified)') : ''}${why}`;
                       })()
@@ -4470,7 +4516,7 @@ function ClickupSyncPanel({ app, canSetup, isAdmin, onResynced }) {
       </div>
       <div className="row" style={{ gap: 16, flexWrap: 'wrap', marginTop: 8 }}>
         <span className="muted small">Internal status (ClickUp mirror): <b>{app.internal_status || '—'}</b></span>
-        <span className="muted small">Borrower sees: <b>{app.status || '—'}</b></span>
+        <span className="muted small">Borrower sees: <b>{appStatusLabel(app)}</b></span>
         {app.ys_loan_number && <span className="muted small">YS loan #: <b>{app.ys_loan_number}</b></span>}
         <NoteBuyerRef value={app.lender} />
         {app.clickup_last_synced_at && <span className="muted small">Last synced: {new Date(app.clickup_last_synced_at).toLocaleString()}</span>}
@@ -4984,13 +5030,21 @@ export default function StaffApplication() {
   // the same one-click the borrower has (#79), from inside the conditions list.
   const studioRef = useRef(null);
   const [uploadTarget, setUploadTarget] = useState(null);   // {itemId, slotBase|slot, replaceDocumentId}
+  /* WHAT HAPPENED TO THE LAST UPLOAD, AND WHICH CONDITION IT WAS FOR (owner-reported
+     2026-08-21: *"I do see the notification pop up on top, but it's not popping up in the
+     place where you want to upload."*). A refusal used to go to `setErr`, which renders a
+     banner at the top of a very long file screen — so from beside the condition you were
+     working, the upload simply appeared to do nothing. This carries the message back to
+     the row that started it; the top banner stays for the case where no row can be
+     identified (a loose upload). */
+  const [uploadNote, setUploadNote] = useState(null);   // {itemId, tone:'err'|'ok', text}
   const pickUpload = (t) => { setUploadTarget(t || {}); staffFileRef.current && staffFileRef.current.click(); };
   // Shared by the file picker AND drag-and-drop — target passed explicitly.
   async function uploadStaffFiles(fileList, tgt) {
     const all = Array.from(fileList || []);
     if (!all.length || !tgt) return;
     const files = tgt.replaceDocumentId ? all.slice(0, 1) : all;
-    setBusyAct('upload'); setErr('');
+    setBusyAct('upload'); setErr(''); setUploadNote(null);
     try {
       const slotBase = Number.isFinite(tgt.slotBase) ? tgt.slotBase : null;
       let appraisal = null;
@@ -5006,7 +5060,11 @@ export default function StaffApplication() {
           slot: (tgt.replaceDocumentId || tgt.llcId) ? (tgt.slot || undefined)
             : slotBase != null ? `Document ${slotBase + i + 1}` : (tgt.slot || undefined),
           replaceDocumentId: tgt.replaceDocumentId || undefined,
-          filename: files[i].name, contentType: files[i].type, dataBase64: await fileToBase64(files[i]),
+          /* THE FILE ITSELF, STREAMED (owner-directed 2026-08-21). Reading it into base64
+             first cost this tab a copy and the SERVER about five times the file to parse —
+             which is why a 23 MB contract could not be uploaded at all. `api` picks the
+             streaming door whenever a caller hands it a File. */
+          filename: files[i].name, contentType: files[i].type, file: files[i],
         });
         if (resp && resp.appraisal) appraisal = resp.appraisal;   // XML dropped on the appraisal condition auto-built the findings
         // The server is the only thing that knows: visibility is derived from the
@@ -5034,7 +5092,14 @@ export default function StaffApplication() {
         flash(`${many ? `${files.length} files uploaded ✓` : 'Uploaded ✓'}${tail}`);
       }
       setUploadTarget(null); await load();
-    } catch (e2) { setErr(e2.message || 'Upload failed'); }
+    } catch (e2) {
+      /* SAY EXACTLY WHAT WENT WRONG, AND SAY IT WHERE IT HAPPENED. The server's own
+         sentence is used verbatim — it names the file, the size and the limit — because
+         "Upload failed" tells nobody anything they can act on. */
+      const text = (e2 && e2.data && (e2.data.error || e2.data.message)) || e2.message || 'The upload did not go through.';
+      if (tgt && tgt.itemId) setUploadNote({ itemId: tgt.itemId, tone: 'err', text });
+      else setErr(text);
+    }
     finally { setBusyAct(''); if (staffFileRef.current) staffFileRef.current.value = ''; }
   }
   const onStaffFile = (e) => uploadStaffFiles(e.target.files, uploadTarget);
@@ -5613,6 +5678,12 @@ export default function StaffApplication() {
     { id: 'sec-order-insurance', label: 'Insurance', group: 'Orders',
       badge: nInsToAssign ? `${nInsToAssign} to assign` : '' },
     { id: 'sec-order-appraisal', label: 'Appraisal', group: 'Orders', badge: '' },
+    /* The Trinity construction budget review (owner-directed 2026-08-21) — its own
+       order, not a draw: it reads the construction PLAN before the loan closes. It
+       lives in Orders because that is where the owner asked for it ("should be
+       available in the order section"), and the card says on its face that it is
+       only for ground-ups and, case by case, real heavy rehabs. */
+    { id: 'sec-order-budget-review', label: 'Construction budget review', group: 'Orders', badge: '' },
     { id: 'sec-order-closing', label: 'Attorney closing prep', group: 'Orders', badge: '' },
     // E-signatures BEFORE closing (owner-directed 2026-08-02).
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & closing' },
@@ -5889,6 +5960,11 @@ export default function StaffApplication() {
           switching would change. It used to live only as a pencil icon on a muted
           line inside the ClickUp panel, which is not a path anyone would find. */}
       <div id="note-buyer-slot"><NoteBuyerCard appId={id} value={app.lender} onSaved={load} /></div>
+      {/* THE FILE'S CRITICAL DATES (owner-directed 2026-08-21) — application, clear to close,
+          funded, purchase advice, sold, and the payoff-demand stamp that locks the draw centre.
+          On the overview because these are the dates the team reconciles against Encompass and
+          ClickUp by hand, and the overview is where they already look for the file's shape. */}
+      <CriticalDates appId={id} onChanged={load} />
       {/* A-piece / B-piece split (owner-directed 2026-08-18) — internal-only,
           manual-program; self-hides elsewhere. Saving never reopens pricing. */}
       <AbPieceCard appId={id} />
@@ -6227,7 +6303,7 @@ export default function StaffApplication() {
           closingActive={!!app.closer_id || ['clear_to_close', 'funded'].includes(app.status)}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
-          onOpenStudio={openStudioAnywhere} onRequestWaiver={requestWaiver} />
+          onOpenStudio={openStudioAnywhere} onRequestWaiver={requestWaiver} uploadNote={uploadNote} />
         <StaffChangeRequests appId={id} onChanged={load} />
         <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
         <div className="stack" style={{ marginTop: 14 }}>
@@ -6362,6 +6438,11 @@ export default function StaffApplication() {
           RENDERS NOTHING until an appraisal has actually been ordered. */}
       <OrdersPanel appId={id} canAccept={canComplete(role)} only="appraisal" />
       <AppraisalOrderSection appId={id} onChanged={load} />
+      </Section>
+
+      <Section hidden={!show('sec-order-budget-review')} id="sec-order-budget-review" title="Construction budget review"
+        info="Order Trinity's construction budget review (form 159) — an independent read of the plans, the permits, the contractor's numbers and the schedule, before the loan closes. Only for ground-up construction, and heavy rehabs case by case. It is not a draw: no money is requested and nothing is released.">
+      <TrinityBudgetReview appId={id} onChanged={load} />
       </Section>
 
       <Section hidden={!show('sec-order-closing')} id="sec-order-closing" summary={summaries['sec-order-closing']} title="Attorney closing prep"
