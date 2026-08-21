@@ -15,6 +15,10 @@
  *   GET  /loan/:appId             — the cached raw loan JSON for one file (staff cross-check)
  *   POST /loan/:appId/pull        — pull the loan (by loan#) from Encompass and cache it
  *   GET  /loans/status            — list every application's encompass_last_pulled_at + last_error
+ *   GET  /purchase-advice         — which field id we read for the purchase advice date, what the
+ *                                   tenant's own field list calls it, and what the last read did
+ *                                   across the funded book (db/608)
+ *   POST /purchase-advice/sweep   — run one bounded pass of that re-read on demand
  */
 
 const router = require('../lib/safe-router')();
@@ -166,6 +170,37 @@ router.get('/pull-all/runs', async (req, res) => {
 });
 
 // GET /api/admin/encompass/loans/status — pipeline-wide freshness view (staff dashboard).
+// ── The purchase advice field: which one are we reading, and is it working? ───
+//
+// Owner-reported 2026-08-21, on a file that HAS a purchase advice date receiving the "no purchase
+// advice" chase: *"Please do research to see if you're looking at the correct field … Please give
+// me the field that you have."*
+//
+// The answer is built from the TENANT'S OWN cached field list (encompass_field_catalog), not from
+// our notes about it — restating the number somebody configured back at them proves nothing, since
+// that is the number that produced the wrong answer. Read-only in every sense: two PILOT tables,
+// no Encompass call at all.
+router.get('/purchase-advice', async (req, res) => {
+  try {
+    const out = await require('../lib/purchase-advice-diagnosis').diagnose(db);
+    res.json(out);
+  } catch (e) { return fail(res, 500, e, 'Could not read the purchase advice diagnosis.'); }
+});
+
+// POST /api/admin/encompass/purchase-advice/sweep — run ONE bounded pass on demand.
+//
+// The sweep also runs on its own timer in the worker; this is the deliberate "do it now" for
+// somebody who has just corrected the field id and wants to see the book re-judged rather than
+// wait for the next tick. One field by number per file, paced, bounded, read-only — the same
+// function the worker calls, never a second copy of the logic.
+router.post('/purchase-advice/sweep', async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(200, Number((req.body || {}).limit) || 25));
+    const out = await require('../sitewire/release-party').sweepPurchaseAdviceOnce(db, { limit });
+    res.json({ ok: true, sweep: out, diagnosis: await require('../lib/purchase-advice-diagnosis').diagnose(db) });
+  } catch (e) { return fail(res, 500, e, 'Could not run the purchase advice sweep.'); }
+});
+
 router.get('/loans/status', async (req, res) => {
   try {
     const rows = (await db.query(

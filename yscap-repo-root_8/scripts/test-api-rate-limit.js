@@ -140,12 +140,24 @@ console.log('\n3. It fails OPEN, and never waits forever');
     console.log('\n5. The bucket SMOOTHS — a per-minute counter would allow double at the boundary');
     await reset(60);
     RL.DEFAULTS[TEST_API] = { rpm: 60, env: 'RL_SELFTEST_MAX_RPM' };
-    // Drain it, then confirm a further request is HELD rather than served.
-    for (let i = 0; i < 60; i++) await RL._internals.takeShared(TEST_API);
-    const held = await RL._internals.takeShared(TEST_API);
-    ok(held.ok === false && held.waitMs > 0,
-      `an over-budget request is held (waitMs ${held.waitMs}) — not served, and not a hot spin`);
-    ok(held.waitMs <= 2000, 'the hold is short so the caller re-checks promptly rather than stalling');
+    // Drain it, then confirm a further request is HELD rather than served. Drain until it
+    // actually refuses rather than counting to the capacity and assuming: 60/min is a token
+    // a second, so on a database that answers slowly the bucket refills faster than a fixed
+    // 60-iteration loop empties it, and the 61st request is legitimately served. That made
+    // this assertion fail on the clock instead of on the behaviour. Draining still outruns
+    // refilling by a wide margin (a round trip would have to take a full second to keep up),
+    // so the bound below is a runaway guard, never the normal exit.
+    let held = null;
+    let drained = 0;
+    for (let i = 0; i < 400 && !held; i++) {
+      const r = await RL._internals.takeShared(TEST_API);
+      if (r.ok === true) drained += 1; else held = r;
+    }
+    ok(held && held.ok === false && held.waitMs > 0,
+      `an over-budget request is held after ${drained} served (waitMs ${held && held.waitMs}) — ` +
+      'not served, and not a hot spin');
+    ok(held && held.waitMs > 0 && held.waitMs <= 2000,
+      'the hold is short so the caller re-checks promptly rather than stalling');
     // A refill genuinely brings a token back.
     await db.query(`UPDATE api_rate_limits SET last_refill_at = now() - interval '10 seconds' WHERE api=$1`, [TEST_API]);
     const after = await RL._internals.takeShared(TEST_API);

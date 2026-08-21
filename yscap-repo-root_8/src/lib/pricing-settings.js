@@ -33,6 +33,10 @@ const SYSTEM_DEFAULTS = Object.freeze({
   // stored. The rules live in src/lib/program-availability.js (one definition);
   // this file only stores/cleans the value.
   programAvailability: null,
+  // The construction feasibility / project review fee (owner-directed 2026-08-21, db/609).
+  // The owner's own numbers; `src/lib/feasibility-fee.js` is the ONE definition of what the fee
+  // is, which deals attract it and what it is called — this file only stores and cleans it.
+  feasibilityFees: { groundUp: 1250, heavyRehab: 750 },
 });
 
 // Normalize an extra-fees value (from a jsonb column or an API body) into a clean
@@ -66,6 +70,9 @@ function shape(row) {
     appraisalFee:  n(row.appraisal_fee, SYSTEM_DEFAULTS.appraisalFee),
     // title_fee NULL means auto-estimate — preserve null (don't coerce to 0).
     titleFee:      row.title_fee == null || row.title_fee === '' ? null : Number(row.title_fee),
+    // Cleaned through feasibility-fee's own normalizer, so an unreadable stored value falls back
+    // to the owner's number rather than silently making a real fee vanish from a term sheet.
+    feasibilityFees: require('./feasibility-fee').cleanFeasibilityFees(row.feasibility_fees),
     extraFees:     cleanExtraFees(row.extra_fees),
     markupTiers:   cleanMarkupTiers(row.markup_tiers),
     // Cleaned by the ONE rule module — never a second copy of the shape here.
@@ -112,7 +119,8 @@ async function load() {
   try {
     const r = await db.query(
       `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct,
-              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability
+              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability,
+              feasibility_fees
          FROM company_pricing_settings WHERE is_current LIMIT 1`);
     _cache = { at: Date.now(), val: shape(r.rows[0]) };
   } catch (e) {
@@ -150,7 +158,8 @@ async function asOf(when) {
   try {
     const r = await db.query(
       `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct,
-              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability
+              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability,
+              feasibility_fees
          FROM company_pricing_settings
         WHERE created_at <= $1
         ORDER BY created_at DESC LIMIT 1`, [when]);

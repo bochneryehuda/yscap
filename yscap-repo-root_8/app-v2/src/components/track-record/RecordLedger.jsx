@@ -1,7 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import LineDetail from './LineDetail.jsx';
 import { api } from '../../lib/api.js';
-import { fileToBase64 } from '../../lib/files.js';
 import useFileDrop from '../../lib/useFileDrop.js';
 import RecordsStamp from './RecordsStamp.jsx';
 import { trStatusShort, trIsPendingReview } from '../../lib/trackRecordStatus.js';
@@ -210,9 +209,9 @@ function LedgerRow({ r, isOpen, toggle, maySignOff, canDelete, role, lens, onCha
     let ok = 0;
     for (const f of list) {
       try {
-        const dataBase64 = await fileToBase64(f);
-        await api.post(`/api/staff/track-records/${t.id}/documents`, {
-          filename: f.name, contentType: f.type || 'application/octet-stream', dataBase64,
+        // Streamed — see LineDetail: the same door, the same reason.
+        await api.uploadStream(`/api/staff/track-records/${t.id}/documents`, {
+          filename: f.name, contentType: f.type || 'application/octet-stream', file: f,
         });
         ok += 1;
       } catch (e) { failed.push(`${f.name}${e && e.message ? ` (${e.message})` : ''}`); }

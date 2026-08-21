@@ -121,22 +121,92 @@ async function storeSignedDocument(db, storage, { applicationId, borrowerId, che
 }
 
 // ---- update the recipient roster from fetched truth -------------------------
-async function applyRecipients(db, envelopeRowId, envelope) {
+async function applyRecipients(db, envelopeRow, envelope) {
+  const envelopeRowId = envelopeRow.id;
   const parsed = docusignDefault.parseRecipients(envelope);
   for (const r of parsed) {
-    await db.query(
-      `UPDATE esign_recipients
+    /* THE TURN THAT JUST CAME. A signer on routing order 2 — the admin who counter-signs a term
+       sheet — sits at `created` until everyone before them has signed, and only THEN does
+       DocuSign move them to sent/delivered. Since DocuSign no longer emails anybody
+       (2026-08-21), that transition is the moment PILOT must send its own invitation, or our
+       own signatory would never be told their signature is needed. RETURNING the previous
+       status makes the transition detectable exactly once, so a repeated `delivered` webhook —
+       which DocuSign sends freely — cannot re-email them. */
+    const next = recipientStatus(r);
+    /* The CTE captures the status as it was BEFORE this write, in the same statement, so the
+       transition is read from the row rather than inferred. */
+    const prev = (await db.query(
+      `WITH before AS (
+         SELECT status AS old_status, role, borrower_id, name
+           FROM esign_recipients
+          WHERE envelope_row_id = $1 AND recipient_id_ds = $2
+       )
+       UPDATE esign_recipients r
           SET status = $3,
-              sent_at      = COALESCE($4, sent_at),
-              delivered_at = COALESCE($5, delivered_at),
-              signed_at    = COALESCE($6, signed_at),
-              declined_at  = COALESCE($7, declined_at),
-              decline_reason = COALESCE($8, decline_reason),
+              sent_at      = COALESCE($4, r.sent_at),
+              delivered_at = COALESCE($5, r.delivered_at),
+              signed_at    = COALESCE($6, r.signed_at),
+              declined_at  = COALESCE($7, r.declined_at),
+              decline_reason = COALESCE($8, r.decline_reason),
               last_event_at = now(), updated_at = now()
-        WHERE envelope_row_id = $1 AND recipient_id_ds = $2`,
-      [envelopeRowId, String(r.recipientId), recipientStatus(r),
-       r.sentAt, r.deliveredAt, r.signedAt, r.declinedAt, r.declineReason]);
+         FROM before
+        WHERE r.envelope_row_id = $1 AND r.recipient_id_ds = $2
+        RETURNING before.old_status, before.role, before.borrower_id, before.name`,
+      [envelopeRowId, String(r.recipientId), next,
+       r.sentAt, r.deliveredAt, r.signedAt, r.declinedAt, r.declineReason])).rows[0];
+    const becameActive = prev && !['sent', 'delivered'].includes(String(prev.old_status || ''))
+      && ['sent', 'delivered'].includes(String(next));
+    if (becameActive && !prev.borrower_id && ['loan_officer', 'admin'].includes(String(prev.role))) {
+      /* Best-effort, and deliberately AFTER the status write: an email that fails must never
+         cost us the status update the rest of the system reads. */
+      try {
+        await require('./notify-signers').notifyReadyToSign(envelopeRowId, {
+          db, onlyRecipientIdDs: String(r.recipientId),
+        });
+      } catch (_) { /* the invitation is best-effort */ }
+    }
+
+    /* THE OTHER HALF OF THE SAME OWNER ASK (2026-08-21): *"Get a notification from Docusign
+       when it's signed and when it's being viewed."* The SIGNED half is ours already
+       (`notifyTerminal` fires on the terminal transition and files the executed copy). The
+       VIEWED half was left to DocuSign's carbon copies — but a CC is mailed when routing
+       REACHES their order and when the envelope COMPLETES; DocuSign does not mail a CC each
+       time somebody opens the document. So the signal PILOT already receives and already
+       STORED told nobody: DocuSign's `delivered` means the recipient OPENED the envelope (not
+       that mail was delivered), and `delivered_at` was written to the row and read by nothing.
+       Fired off the SAME captured transition as the counter-signer invite above, so a repeated
+       `delivered` webhook — which DocuSign sends freely — cannot repeat it.
+
+       IN-APP ONLY, DELIBERATELY, and stated here rather than inferred: this lands the moment a
+       borrower opens a term sheet, at whatever hour they read their mail, on every package. The
+       owner's standing rule for exactly this class is *"stop the bombardment with stuff that is
+       not important"*. The bell rings and the row is written; only the email is withheld. */
+    const becameViewed = prev && String(prev.old_status || '') !== 'delivered'
+      && String(next) === 'delivered';
+    if (becameViewed) {
+      try { await notifyViewed(db, envelopeRow, prev); }
+      catch (_) { /* the notice must never cost us the status write above */ }
+    }
   }
+}
+
+/** Tell the file's team, ONCE, that a signer has OPENED the package — never that it is signed.
+    In-app only; the call site above says why an email here would be a bombardment. */
+async function notifyViewed(db, envelopeRow, rec) {
+  // An app-less admin self-test envelope has no file and no team to tell.
+  if (!envelopeRow || !envelopeRow.application_id) return;
+  const cfg = require('../../config');
+  const label = purposeLabel(envelopeRow.purpose, 'e-signature package');
+  const who = String((rec && rec.name) || '').trim() || 'A signer';
+  await require('../notify').notifyAppStaff(envelopeRow.application_id, {
+    type: 'status_change',
+    inAppOnly: true,
+    title: `${who} opened the ${label}`,
+    badge: { text: 'Viewed', tone: 'neutral' },
+    body: `${who} opened the ${label} in DocuSign. Nothing is signed yet — this is the moment they saw it.`,
+    applicationId: envelopeRow.application_id,
+    link: `${cfg.appUrl || ''}${cfg.portalPath}/#/internal/app/${envelopeRow.application_id}`,
+  });
 }
 
 // ---- on completion: download + store signed docs, clear conditions ----------
@@ -300,7 +370,7 @@ async function reconcileEnvelope(db, docusign, storage, envelopeRow) {
   const status = String((envelope && envelope.status) || '').toLowerCase();
   const map = ENV_STATUS[status];
 
-  await applyRecipients(db, envelopeRow.id, envelope);
+  await applyRecipients(db, envelopeRow, envelope);
 
   // On completion, STORE THE SIGNED DOCS FIRST and only then stamp 'completed'.
   // If a signed-PDF download fails, handleCompletion throws BEFORE the status
@@ -426,6 +496,23 @@ async function notifyTerminal(db, envelopeRow, status, voidReason) {
       && !envelopeRow.is_test && envelopeRow.application_id) {
     try { await announceExecutedTermSheet(db, envelopeRow); }
     catch (e) { console.warn('[esign] executed term sheet not announced on the closing chain:', e && e.message); }
+  }
+
+  /* AND THE PEOPLE WHO SIGNED IT ARE TOLD, WITH THE EXECUTED COPY (owner-directed 2026-08-21:
+     *"we need to add a notification for every document that is completed … They should receive a
+     nice Pilot email with the document attached once it's completed."*). Until now this function
+     told OUR TEAM and told the borrower nothing — they had DocuSign's completion email, which is
+     exactly what we have just stopped sending.
+
+     THIS is the right hook, for the same three reasons the closing-chain announcement above uses
+     it: it runs only for the WINNER of the terminal claim, so a redelivered webhook cannot send
+     twice; `handleCompletion` has already filed the signed PDF, so there is something to attach;
+     and a counter-signed package reaches 'completed' only after the lender signs, which IS the
+     owner's *"the Term Sheet Package once everyone has signed"*. Best-effort: a completed
+     envelope may never be reversed by an email failing. */
+  if (status === 'completed') {
+    try { await require('./completion-notice').notifyExecuted(envelopeRow, { db }); }
+    catch (e) { console.warn('[esign] execution notice not sent:', e && e.message); }
   }
 }
 

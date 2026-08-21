@@ -179,9 +179,11 @@ router.post('/:token/accept', tokenThrottleMutation, async (req, res) => {
     `UPDATE draw_findings SET status='accepted', accepted_at=now(), accepted_via='email', wire_due_at=now() + ($2 || ' hours')::interval, updated_at=now()
       WHERE id=$1 AND status='delivered' RETURNING wire_due_at`, [f.id, String(hours)])).rows[0];
   if (!upd) return res.status(409).json({ error: 'already handled' });
-  await notify.notifyAppStaff(f.application_id, { type: 'draw_accepted', title: 'Borrower accepted a draw (email)',
-    drawTag: await drawLabel.drawTagForRef(db, f.application_id, { sitewireDrawId: f.sitewire_draw_id }), badge: { text: 'Accepted', tone: 'positive' },
-    body: `The borrower accepted the inspection results from the email — the release is due by ${new Date(upd.wire_due_at).toLocaleString('en-US')}.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
+  // The SAME notice the portal path sends — only WHERE they pressed the button differs, and that is
+  // stated rather than left to a "(email)" in the title. Sharing it is what stops the desk learning
+  // to read one of the two and ignore the other.
+  await require('../sitewire/draw-accepted-notice')
+    .notifyDrawAccepted(db, f, 'email', { wireDueAt: upd.wire_due_at });
   res.json({ ok: true, wire_due_at: upd.wire_due_at });
 });
 

@@ -83,9 +83,38 @@ export default function BorrowerDraws({ appId }) {
   // The per-draw money, keyed by draw, so a result card can show what actually reaches the
   // borrower. Read from the rollup — the SAME source their downloadable report is built from.
   const drawMoney = new Map(((rollup && rollup.draws) || []).map((d) => [String(d.sitewire_draw_id), d]));
+  // WHAT IS WAITING ON THEM. 'delivered' is the one state where nothing moves until the borrower
+  // answers, which makes it the only thing on this page that is genuinely THEIRS to do.
+  const awaiting = findings.filter((f) => f.status === 'delivered');
 
   return (
     <div className="dd-wrap">
+      {/* THE ONE THING THEY HAVE TO DO, SAID FIRST (owner-directed 2026-08-21: a view-only draw
+          centre "with borrower actions that they have to do"). The Accept / Dispute buttons live on
+          the result card, which sits below the budget, the line table, the draw table, the attach
+          card, the report button and the eligibility card — so on a real file the one action that
+          holds up their own money was the last thing on a long page. This says it at the top and
+          jumps them to it; it renders only when something is actually waiting, so a borrower with
+          nothing to do never sees a banner about nothing. */}
+      {awaiting.length > 0 && (
+        <div className="dd-callout dd-callout-action">
+          <div>
+            <div className="dd-callout-t">
+              {awaiting.length === 1
+                ? 'One draw is waiting for your answer'
+                : `${awaiting.length} draws are waiting for your answer`}
+            </div>
+            <div className="dd-callout-b">
+              Your inspection results are ready. Nothing is released until you accept them — or tell us
+              which line you disagree with.
+            </div>
+          </div>
+          <button className="btn btn-sm primary" onClick={() => {
+            const el = document.getElementById(`dd-finding-${awaiting[0].id}`);
+            if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }}>Review them</button>
+        </div>
+      )}
       {proj && proj.budget > 0 && (
         <div className="dd-hero" style={{ gridTemplateColumns: '1fr' }}>
           <div>
@@ -161,6 +190,9 @@ export default function BorrowerDraws({ appId }) {
       {/* Eligibility preview + the in-PILOT composer (physical files) or the Sitewire hand-off */}
       {eligibility && <EligibilityCard e={eligibility} appId={appId} onChanged={load} />}
 
+      {/* Newest first, and a SETTLED draw opens collapsed — see FindingCard. A borrower six draws
+          into a build was reading six fully-expanded result cards, with the one that needed an
+          answer indistinguishable from a draw that was paid out in March. */}
       {findings.map((f) => (
         <FindingCard key={f.id} finding={f} appId={appId} onChanged={load}
           money={drawMoney.get(String(f.sitewire_draw_id)) || null} />
@@ -545,6 +577,17 @@ function FindingCard({ finding, appId, onChanged, money }) {
   const [err, setErr] = useState('');
   const [disp, setDisp] = useState({}); // lineId -> {desired, note}
   const badge = { delivered: { label: 'Please review', cls: 'sw-pending' }, accepted: { label: 'Accepted', cls: 'sw-approved' }, disputed: { label: 'Disputed — we\'re reviewing', cls: 'sw-insp' }, resolved: { label: 'Resolved', cls: 'sw-approved' } }[finding.status] || { label: finding.status, cls: 'sw-insp' };
+  // WHICH DRAW THIS IS. Every card was titled "Draw inspection results", so a borrower four draws
+  // into a build read four identically-titled cards and could not match any of them to the #1 / #2
+  // in the table right above. The number comes off the rollup — the same source that table and
+  // their PDF are built from — so the two can never disagree about which draw is which.
+  const num = money && money.number != null ? money.number : null;
+  // A SETTLED DRAW OPENS COLLAPSED. Only 'delivered' is waiting on the borrower; an accepted or
+  // resolved draw is history, and history should not be as loud on the page as the one thing they
+  // have to do. Never hidden — the header still states the draw, its state and what they received,
+  // and one press opens it in full (the same collapse-when-done pattern the conditions list uses).
+  const settled = finding.status !== 'delivered';
+  const [open, setOpen] = useState(!settled);
 
   async function accept() {
     setBusy(true); setErr('');
@@ -562,13 +605,20 @@ function FindingCard({ finding, appId, onChanged, money }) {
 
   const canAct = finding.status === 'delivered';
   return (
-    <div className="dd-card">
+    <div className="dd-card" id={`dd-finding-${finding.id}`}>
       <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           <span className="dd-card-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: 16, height: 16 }}><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg></span>
-          <h3>Draw inspection results</h3>
+          <h3>{num == null ? 'Draw inspection results' : `Draw #${num} — inspection results`}</h3>
         </div>
-        <span className={'pill ' + badge.cls}>{badge.label}</span>
+        <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+          <span className={'pill ' + badge.cls}>{badge.label}</span>
+          {settled && (
+            <button className="btn btn-sm soft" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+              {open ? 'Hide details' : 'Show details'}
+            </button>
+          )}
+        </div>
       </div>
       <div className="dd-sub" style={{ marginTop: -2 }}>
         The inspector approved {usd2(finding.total_approved_cents)} of {usd2(finding.total_requested_cents)} requested.
@@ -591,6 +641,18 @@ function FindingCard({ finding, appId, onChanged, money }) {
         </div>
       )}
 
+      {/* COLLAPSED, A SETTLED DRAW STILL SAYS EVERYTHING THAT MATTERS at a glance — which draw, its
+          state, what was approved and what reached them (all above). What folds away is the
+          DETAIL: the step tracker, the line-by-line table with the inspector's notes and photos,
+          and the actions. Nothing is removed and nothing is unreachable — "Show details" opens it
+          in full, and the draw awaiting their answer is never collapsed at all. */}
+      {!open ? (
+        <div className="dd-sub" style={{ marginTop: 8 }}>
+          {(finding.lines || []).length} line{(finding.lines || []).length === 1 ? '' : 's'} inspected
+          {' · '}
+          <button className="lnk" onClick={() => setOpen(true)}>see the line-by-line results, notes and photos</button>
+        </div>
+      ) : (<>
       {/* Visual step tracker — inspection → results → your acceptance → funds released */}
       <DrawStepper finding={finding} releasedAt={money && money.release_date} />
 
@@ -665,6 +727,7 @@ function FindingCard({ finding, appId, onChanged, money }) {
           </button>
         </>)}
       </div>
+      </>)}
     </div>
   );
 }

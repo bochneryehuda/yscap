@@ -59,6 +59,19 @@ const DIG = require('../src/lib/notification-digests');
         `INSERT INTO purchasing_advice(application_id, advice_date) VALUES($1,$2)
          ON CONFLICT (application_id) DO UPDATE SET advice_date=$2`, [app, o.adviceRecorded]);
     }
+    // WHAT THE LAST READ OF THE PURCHASE ADVICE FIELD DID (db/608, owner-reported 2026-08-21).
+    // The chase now fires on 'blank' — we asked Encompass about THIS loan and Encompass answered
+    // empty — never on the mere absence of a date, which was equally "never asked" / "no loan
+    // linked" / "the field was not in the answer". A fixture that wants to BE chased must
+    // therefore say that Encompass answered, which is what every chased file in the real world
+    // does; pass readState:null for the never-asked file the owner actually hit.
+    const readState = Object.prototype.hasOwnProperty.call(o, 'readState')
+      ? o.readState : (o.paDate ? 'value' : 'blank');
+    if (readState) {
+      await db.query(
+        `UPDATE applications SET purchase_advice_read_at=now(), purchase_advice_read_state=$2,
+                                 purchase_advice_field_id='2370' WHERE id=$1`, [app, readState]);
+    }
     return app;
   };
 

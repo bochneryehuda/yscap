@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**848 objects**, and a database rebuilt from the Prisma
+**856 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 604 numbered migrations in `db/` (highest `db/607`) remain the only thing that builds this database.
+rebuild a database from them.** The 608 numbered migrations in `db/` (highest `db/611`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 372 |
-| Columns | 5970 |
+| Tables | 373 |
+| Columns | 5998 |
 | Triggers | 35 |
 | Functions | 138 |
-| CHECK constraints | 307 |
+| CHECK constraints | 310 |
 | Generated columns | 12 |
-| Partial indexes | 356 |
-| Primary keys | 372 |
-| Foreign keys | 781 |
-| Unique constraints | 47 |
-| Indexes (all kinds) | 1270 |
+| Partial indexes | 361 |
+| Primary keys | 373 |
+| Foreign keys | 785 |
+| Unique constraints | 48 |
+| Indexes (all kinds) | 1278 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -227,7 +227,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (356)
+## Partial indexes (361)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -260,6 +260,9 @@ the live database.
 - **idx_applications_encompass_guid** on `applications`
 - **idx_applications_encompass_stale** on `applications`
 - **idx_applications_hot_poll** on `applications`
+- **idx_applications_pa_read_state** on `applications`
+- **idx_applications_payoff_demand** on `applications`
+- **idx_applications_sold_at** on `applications`
 - **idx_applications_tpo_firm** on `applications`
 - **idx_appr_findings_app** on `appraisal_findings`
 - **idx_appraisals_app_current** on `appraisals`
@@ -446,6 +449,7 @@ the live database.
 - **idx_sync_review_actor** on `sync_review_queue`
 - **idx_sync_review_open** on `sync_review_queue`
 - **idx_sync_review_source** on `sync_review_queue`
+- **idx_tbrv_open** on `trinity_budget_reviews`
 - **idx_templates_auto_apply** on `checklist_templates`
 - **idx_tio_open** on `trinity_inspection_orders`
 - **idx_tol_trinity_line** on `trinity_order_lines`
@@ -574,6 +578,7 @@ the live database.
 - **uq_section_1071_current** on `section_1071_coverage`
 - **uq_swji_jid** on `sitewire_job_item_links`
 - **uq_sync_review_open** on `sync_review_queue`
+- **uq_tbrv_live_per_file** on `trinity_budget_reviews`
 - **uq_tio_customer_key** on `trinity_inspection_orders`
 - **uq_tio_trinity_order** on `trinity_inspection_orders`
 - **uq_toc_trinity_id** on `trinity_order_comments`
@@ -586,7 +591,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (307)
+## CHECK constraints (310)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -595,7 +600,9 @@ the live database.
 - **api_rate_limits_tokens_check** on `api_rate_limits`
 - **application_assignees_role_check** on `application_assignees`
 - **applications_a_piece_amount_chk** on `applications`
+- **applications_pa_read_state_chk** on `applications`
 - **applications_requested_ir_months_check** on `applications`
+- **applications_sold_source_chk** on `applications`
 - **applications_status_check** on `applications`
 - **applications_sync_state_check** on `applications`
 - **applications_sync_status_check** on `applications`
@@ -888,6 +895,7 @@ the live database.
 - **training_proposals_status_check** on `training_proposals`
 - **trc_decided_by_kind_check** on `track_record_candidates`
 - **trc_one_decider_check** on `track_record_candidates`
+- **trinity_budget_reviews_status_check** on `trinity_budget_reviews`
 - **trinity_order_comments_direction_check** on `trinity_order_comments`
 - **trustpoint_draw_lines_approved_cents_check** on `trustpoint_draw_lines`
 - **trustpoint_draw_lines_source_check** on `trustpoint_draw_lines`
@@ -896,7 +904,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (781)
+## Foreign keys (785)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -947,6 +955,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **applications** → `staff_users` — `FOREIGN KEY (free_and_clear_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **applications** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE SET NULL`
 - **applications** → `staff_users` — `FOREIGN KEY (loan_officer_id) REFERENCES staff_users(id)`
+- **applications** → `staff_users` — `FOREIGN KEY (payoff_demand_requested_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **applications** → `staff_users` — `FOREIGN KEY (pipeline_removed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **applications** → `staff_users` — `FOREIGN KEY (processor_id) REFERENCES staff_users(id)`
 - **applications** → `tpo_firms` — `FOREIGN KEY (tpo_firm_id) REFERENCES tpo_firms(id) ON DELETE SET NULL`
@@ -1634,6 +1643,9 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **track_records** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE SET NULL`
 - **track_records** → `staff_users` — `FOREIGN KEY (verified_by) REFERENCES staff_users(id)`
 - **training_proposals** → `staff_users` — `FOREIGN KEY (reviewed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **trinity_budget_reviews** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **trinity_budget_reviews** → `staff_users` — `FOREIGN KEY (ordered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **trinity_budget_reviews** → `staff_users` — `FOREIGN KEY (requested_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **trinity_inspection_orders** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
 - **trinity_inspection_orders** → `staff_users` — `FOREIGN KEY (manual_override_by) REFERENCES staff_users(id)`
 - **trinity_inspection_orders** → `staff_users` — `FOREIGN KEY (ordered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
@@ -1682,7 +1694,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **workflow_items** → `staff_users` — `FOREIGN KEY (removed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **workflow_items** → `staff_users` — `FOREIGN KEY (to_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 
-## Unique constraints (47)
+## Unique constraints (48)
 
 - **application_service_contacts** — `UNIQUE (application_id, service_contact_id)`
 - **appraisers** — `UNIQUE (identity_key)`
@@ -1723,6 +1735,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **sitewire_property_links** — `UNIQUE (sitewire_property_id)`
 - **staff_users** — `UNIQUE (email)`
 - **term_sheet_offers** — `UNIQUE (token_hash)`
+- **trinity_budget_reviews** — `UNIQUE (customer_key)`
 - **trustpoint_draw_lines** — `UNIQUE (tp_draw_id, sitewire_job_item_id)`
 - **trustpoint_draws** — `UNIQUE (tp_draw_id)`
 - **trustpoint_milestone_links** — `UNIQUE (tp_milestone_id)`
@@ -1753,7 +1766,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 372 primary keys and 1270 indexes is
+Every one of the 373 primary keys and 1278 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

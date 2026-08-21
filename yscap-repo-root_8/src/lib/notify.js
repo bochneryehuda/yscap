@@ -1154,6 +1154,36 @@ async function notifyAppStaff(appId, opts = {}) {
   // responsible?" (an esign event on a file whose only assignees are part-roles now
   // escalates to admins, which is what 'nobody responsible heard it' should do).
   const rows = allRows.filter((r) => staffRolesSee(r.roles, opts));
+
+  /* THE DRAW LOOP-IN, ON OUR OWN SIDE (owner-reported 2026-08-21: "when a borrower is approving
+     the inspection results online … the draw coordinator is not getting a notification").
+
+     ROOT CAUSE: this fan-out selects `application_assignees`, and PILOT has no draw-coordinator
+     POINTER — a coordinator is identified by what they DID on the file (pressed "Start the draw
+     process", or holds a live draw hand-off), which is a different resolver entirely. So the
+     borrower pressed Accept, this ran, and the one person whose job it is to release the money was
+     structurally not in the list. The loan officer WAS (the db/103 trigger keeps the primary
+     officer as an assignee), which is why only half the team ever heard.
+
+     KEYED ON THE NOTIFICATION'S OWN CATEGORY, exactly like the borrower-email loop-in the owner
+     asked for on 2026-07-28 — so every draw event that exists today and every one added later
+     carries it, without each call site remembering to. It reads the SAME `draw-recipients`
+     resolver that email uses, so the two can never drift about who a file's coordinator is.
+
+     Adding them here does not widen anybody's scope: `staffRolesSee` exists so a part-of-the-file
+     role only hears its own part, and a 'draws' event IS the draw coordinator's part — which is
+     why this is applied to that category and nothing else. Best-effort: a lookup failure adds
+     nobody and never breaks the fan-out. */
+  if (categoryOf(opts.type) === 'draws') {
+    try {
+      const already = new Set(rows.map((r) => String(r.staff_id)));
+      const extra = await require('./draw-recipients').drawStaffIdsForFile(appId);
+      for (const id of extra) {
+        if (!already.has(String(id))) { already.add(String(id)); rows.push({ staff_id: id, roles: ['draw_coordinator'] }); }
+      }
+    } catch (e) { console.error('[notify] draw staff loop-in', appId, (e && e.message) || e); }
+  }
+
   const except = opts.exceptStaffId ? String(opts.exceptStaffId) : null;
   // `exceptStaffIds` is the PLURAL form, for a caller fanning out over several
   // audiences in turn (the order-overdue ladder tells the assignee, then the team,
@@ -1210,6 +1240,48 @@ async function notifyAppStaff(appId, opts = {}) {
     // A real delivery, or one the loan-officer gate is holding for later
     // (DELIVERY_DRAFTED is truthy precisely so it counts here).
     if (one) delivered += 1;
+  }
+  /* AND THE SHARED DRAW DESK INBOX GETS ONE COPY (owner-directed 2026-08-21: *"you can always
+     notify our group email, which is draws@yscapgroup.com"*).
+
+     THE GAP THIS CLOSES. `draws@yscapgroup.com` is a shared MAILBOX, not a person, so it has no
+     `staff_users` row — which means this fan-out, which emails one `staff_users` row at a time,
+     could never reach it however the loop-in above resolved. It was already copied on every
+     BORROWER draw email (`drawLoopInBcc`), on the wire-form DocuSign viewers and on the one-email
+     thread helper; the one place it was missing was our OWN team notifications, which is exactly
+     where the borrower pressing Accept lands.
+
+     ONE COPY, NEVER N. It is sent once, here, rather than Bcc'd onto each staffer's email — a
+     shared inbox holding six copies of one event is the noise a shared inbox exists to avoid.
+
+     `opts.inAppOnly` IS HONOURED, and it is load-bearing rather than tidy: `notifyAppThread` sets it
+     precisely because the borrower's email already carried the draw team on a VISIBLE Cc — which
+     includes this address — so sending here too would reintroduce the duplicate that helper was
+     written to remove. Same for the `alreadyEmailed` rule: an inbox already on the inbound email
+     needs no second copy. Best-effort: it can never break the fan-out it rides on. */
+  /* The SAME reading of "is this an emailing notification" that `notifyStaff` applies per
+     person, so the desk copy can never go out on a fan-out whose whole point was silence. */
+  const deskEmailOn = (opts.inAppOnly !== undefined) ? !opts.inAppOnly : !STAFF_INAPP_TYPES.has(opts.type);
+  if (deskEmailOn && categoryOf(opts.type) === 'draws') {
+    try {
+      const DESK = require('./draw-recipients').DRAW_DESK_INBOX;
+      // A coordinator whose OWN address is the shared inbox has already been emailed by the
+      // fan-out above; a second copy of the same sentence is exactly what this must not send.
+      const already = out.length
+        ? (await db.query(`SELECT lower(email) AS e FROM staff_users WHERE id = ANY($1::uuid[])`, [out]))
+            .rows.map((r) => r.e).filter(Boolean)
+        : [];
+      const to = loopedIn.withoutAlreadyEmailed([DESK], opts.alreadyEmailed)
+        .filter((a) => !already.includes(String(a).toLowerCase()));
+      if (to.length) {
+        const enriched = await enrichFileOpts({ ...shared }, 'staff');
+        const msg = buildEmail(enriched, 'staff');
+        _track(email.sendMail({
+          to, subject: msg.subject, text: msg.text, html: msg.html,
+          replyTo: opts.replyTo || fileReplyTo(appId) || cfg.replyToDefault || null,
+        }).catch(() => {}));
+      }
+    } catch (e) { console.error('[notify] draw desk copy', appId, (e && e.message) || e); }
   }
   // Non-enumerable so nothing that serializes or spreads this array picks it up.
   Object.defineProperty(out, 'delivered', { value: delivered, enumerable: false });

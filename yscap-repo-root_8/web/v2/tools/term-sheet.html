@@ -780,6 +780,14 @@
                     <div class="field"><label for="tsFeeCredit">Credit report ($)</label><div class="input"><input id="tsFeeCredit" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="150"></div></div>
                     <div class="field"><label for="tsFeeAppr">Appraisal — POC ($)</label><div class="input"><input id="tsFeeAppr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="800"></div></div>
                     <div class="field"><label for="tsFeeTitle">Title / escrow ($)</label><div class="input"><input id="tsFeeTitle" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto-estimate"></div></div>
+                    <!-- THE MANUAL CONSTRUCTION FEASIBILITY FEE (owner-directed 2026-08-21: "add
+                         this fee type into the manual section in the products and pricing so we
+                         can, any time, add it to any other project manually as well"). Blank =
+                         the deal's own fee ($1,250 ground-up / $750 heavy rehab, from the Pricing
+                         Center); a typed amount overrides it on THIS file, including on a deal
+                         that attracts none; a typed 0 WAIVES it. Any typed value — 0 included —
+                         goes to an admin for approval like every other knob in this zone. -->
+                    <div class="field"><label for="tsFeasFee">Construction feasibility review ($)</label><div class="input"><input id="tsFeasFee" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal type — 1250 ground-up / 750 heavy rehab"></div></div>
                 </div>
                 </div>
                 </details>
@@ -1041,6 +1049,11 @@
                 <div class="ts-line"><span class="k">Appraisal (est.)</span><span class="v" id="rAppr">$800 POC</span></div>
                 <div class="ts-line"><span class="k">Title / escrow (est.)<span class="tip" tabindex="0" role="note" aria-label="A rough estimate only, used to approximate your cash to close — your actual title cost depends on your title vendor. It scales with the loan amount, your state and the transaction type (transfer and mortgage taxes are separate).">i<span class="tip-bub">A rough estimate only, used to approximate your cash to close — your actual title cost depends on your title vendor. It scales with the loan amount, your state and the transaction type (transfer and mortgage taxes are separate).</span></span></span><span class="v" id="rTitle">—</span></div>
                 <div class="ts-line" id="rExtraWrap" style="display:none"><span class="k" id="rExtraLbl">Additional fees</span><span class="v" id="rExtra">—</span></div>
+                <!-- The construction feasibility / project review fee (owner-directed 2026-08-21):
+                     $1,250 on a ground-up, $750 on a heavy rehab, or a manual amount from the admin
+                     zone. Hidden until the deal actually carries one, so every other quote's panel
+                     is unchanged. The JS names it, because the label differs by depth. -->
+                <div class="ts-line" id="rFeasWrap" style="display:none"><span class="k" id="rFeasLbl">Construction feasibility review</span><span class="v" id="rFeas">—</span></div>
                 <!-- REFINANCE reconciliation (rate-and-term only): the existing loan
                      payoff the borrower brings, less the funds that advance at closing,
                      so the fee list adds up to the cash-to-close total. Shown by the JS

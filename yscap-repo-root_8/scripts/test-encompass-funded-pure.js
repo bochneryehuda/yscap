@@ -122,12 +122,25 @@ ok('D4 …not fully_reconciled, not reconciled_ok, not the closing stage',
 ok('D5 the borrower-notification watermark is deliberately left alone',
   !/status_notified_external/.test(code));
 
-// Nothing here drives the ClickUp card: landing it on `closed (6-email funded)` sends an email
-// from ClickUp, and that is an outward-facing action nobody asked an automatic reader to take.
-// (The word "ClickUp" DOES appear here — in the sentence the team is shown, which says
-// reconciling still needs ClickUp to agree. What must not exist is a WRITE to it.)
-ok('D6 nothing is pushed to ClickUp',
-  !/enqueueClickupPush|require\(['"][^'"]*clickup/i.test(code));
+/* D6 REVERSED, ON THE OWNER'S OWN INSTRUCTION (2026-08-21). This used to assert that
+   NOTHING here drove the ClickUp card, because landing it on `closed (6-email funded)` sends
+   an email from ClickUp and that was an outward-facing action nobody had asked an automatic
+   reader to take. It was put to the owner as an open question and answered: *"Connect the
+   statuses of our system to ClickUp: when we update our loan as funded, ClickUp updates as
+   closed."* So the card IS moved now, and this guard follows the code rather than being
+   deleted — the three things that must stay true are pinned instead.
+
+   (This is the same shape as the drag-and-drop guard that had to follow its rule out of
+   rehab-budget.js: a test pinning a deliberate limit is doing its job when it fails on the
+   day that limit is lifted, and the answer is to re-point it, never to drop it.) */
+ok('D6a the card is moved through the ONE module that knows the post-closing ladder',
+  /require\('\.\.\/clickup\/post-closing-stage'\)[\s\S]{0,140}advanceCard\(appId, 'funded'/.test(code));
+ok('D6b …only when the status ACTUALLY moved, so a re-read never re-fires its ClickUp email',
+  /if \(statusMoved\) \{[\s\S]{0,800}advanceCard\(appId, 'funded'/.test(code));
+// A stage spelled here would be a second definition of a name ClickUp validates — and a
+// drifted one is a push ClickUp refuses in silence, from inside a best-effort caller.
+ok('D6c …and this file still names no ClickUp status of its own',
+  !/['"]closed \(6-email funded\)['"]/.test(code));
 
 // The two writes are the two the owner asked for, and no more. `ON CONFLICT DO UPDATE SET`
 // is matched deliberately narrowly (`UPDATE <table>`) so the bookmark upsert is not counted.

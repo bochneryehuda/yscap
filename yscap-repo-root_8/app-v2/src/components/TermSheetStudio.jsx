@@ -276,6 +276,7 @@ export function readSnapshot(win) {
       tsOrigManual: val('tsOrigManual'),
       tsFeeUW: moneyVal('tsFeeUW'), tsFeeCredit: moneyVal('tsFeeCredit'),
       tsFeeAppr: moneyVal('tsFeeAppr'), tsFeeTitle: moneyVal('tsFeeTitle'),
+      tsFeasFee: moneyVal('tsFeasFee'),
       tsManualOn: chk('tsManualOn'),
       tsMLtv: val('tsMLtv'), tsMArv: val('tsMArv'), tsMLtc: val('tsMLtc'),
       tsMRate: val('tsMRate'), tsMIr: val('tsMIr'),
@@ -334,6 +335,7 @@ export function adminStateFromEngineInputs(inp) {
   put('tsOrigManual', inp.origManualPct);
   put('tsFeeUW', inp.lenderFee); put('tsFeeCredit', inp.creditFee);
   put('tsFeeAppr', inp.appraisalFee); put('tsFeeTitle', inp.titleFee);
+  put('tsFeasFee', inp.feasibilityFee);
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
   put('tsMLtc', inp.ovrLTCPct); put('tsMRate', inp.ovrRatePct); put('tsMIr', inp.ovrIrMonths);
   put('tsOopRehab', inp.oopRehab);   // out-of-pocket rehab exception (owner-authorized 2026-07-31)

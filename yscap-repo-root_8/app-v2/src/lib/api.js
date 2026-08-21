@@ -238,6 +238,45 @@ function normalizeUpload(b) {
   return b;
 }
 
+/* THE STREAMING UPLOAD — the file itself is the request body.
+ *
+ * Owner-directed 2026-08-21: *"we need to increase the limit of megabytes that we can
+ * upload to unlimit it … The sky is the limit."* Base64-in-JSON could not answer that: it
+ * inflates the file by a third on the wire and costs the SERVER about five times the file
+ * to parse, so on a 512 MB instance a large upload is an out-of-memory kill of the whole
+ * site rather than one failed upload. Handing `fetch` the File streams it instead — the
+ * browser sends it in chunks and the server writes it straight to storage.
+ *
+ * The metadata rides in a header as base64 JSON: a raw header value is latin-1 on the
+ * wire, so a filename with an accent, a quotation mark or a comma would corrupt silently.
+ */
+function b64json(o) {
+  const bytes = new TextEncoder().encode(JSON.stringify(o || {}));
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+async function uploadBinary(path, b) {
+  const { file, dataBase64, dataUrl, ...meta } = b || {};
+  const headers = { 'Content-Type': 'application/octet-stream' };
+  const t = getToken();
+  if (t) headers.Authorization = `Bearer ${t}`;
+  headers['x-upload-meta'] = b64json({
+    ...meta,
+    filename: meta.filename || (file && file.name) || 'upload',
+    contentType: meta.contentType || (file && file.type) || 'application/octet-stream',
+  });
+  const res = await resilientFetch(path, { method: 'POST', headers, body: file });
+  let data = null;
+  try { data = await res.json(); } catch { /* empty */ }
+  if (!res.ok) {
+    const err = new Error(friendlyError(res.status, data));
+    err.status = res.status; err.data = data;
+    throw err;
+  }
+  return data;
+}
+
 // Upload idempotency, client side (#87): a document upload that fires twice in
 // the same tick — a drop handler running twice, a double-clicked button, a React
 // double-invoke — must not send two POSTs (each of which becomes a duplicate
@@ -248,8 +287,12 @@ function normalizeUpload(b) {
 const _uploadsInFlight = new Map();
 function uploadSig(tag, b) {
   b = b || {};
+  /* A STREAMED upload carries no base64, so keying on its length would make every
+     streamed upload to one condition look identical and coalesce two different files
+     into one request. Its own byte size is the equivalent identity. */
+  const size = b.file ? b.file.size : (b.dataBase64 || '').length;
   return [tag, b.applicationId, b.checklistItemId, b.llcId, b.trackRecordId, b.slot,
-    b.docKind, b.filename, (b.dataBase64 || '').length].map((x) => (x == null ? '' : String(x))).join('|');
+    b.docKind, b.filename, size].map((x) => (x == null ? '' : String(x))).join('|');
 }
 function coalesceUpload(tag, b, fn) {
   const key = uploadSig(tag, b);
@@ -386,7 +429,9 @@ export const api = {
   mentionables: (appId) => req('GET', `/api/borrower/applications/${appId}/mentionables`),
   postMessage:  (appId, body, opts = {}) => req('POST', '/api/borrower/messages', { applicationId: appId, body, ...opts }),
   readNotif:    (id) => req('POST', `/api/borrower/notifications/${id}/read`),
-  uploadDoc:    (b) => coalesceUpload('uploadDoc', b, () => req('POST', '/api/borrower/documents', normalizeUpload(b))),
+  uploadDoc:    (b) => coalesceUpload('uploadDoc', b, () => (b && b.file
+    ? uploadBinary('/api/borrower/documents/binary', b)
+    : req('POST', '/api/borrower/documents', normalizeUpload(b)))),
   documents:    (appId) => req('GET', `/api/borrower/documents${appId ? `?applicationId=${appId}` : ''}`),
   downloadDoc:  (id) => download(`/api/borrower/documents/${id}/download`),
   // borrower completes an in-portal tool task (Rehab Budget / Track Record)
@@ -474,7 +519,9 @@ export const api = {
   // Phase 4 — the file's conditions + documents.
   tpoChecklist:      (id) => req('GET', `/api/tpo/applications/${id}/checklist`),
   tpoDocuments:      (id) => req('GET', `/api/tpo/applications/${id}/documents`),
-  tpoUploadDocument: (b) => req('POST', '/api/tpo/documents', normalizeUpload(b)),
+  tpoUploadDocument: (b) => (b && b.file
+    ? uploadBinary('/api/tpo/documents/binary', b)
+    : req('POST', '/api/tpo/documents', normalizeUpload(b))),
   // Answer an information condition (a deal field). A person field (fico) is
   // redirected to the borrower's profile by the server.
   tpoAnswerInfoCondition: (appId, itemId, value) => req('POST', `/api/tpo/applications/${appId}/checklist/${itemId}/info`, { value }),
@@ -813,7 +860,19 @@ export const api = {
   staffLlc:          (id) => req('GET', `/api/staff/llcs/${id}`),
   staffUpdateLlc:    (id, b) => req('PATCH', `/api/staff/llcs/${id}`, b),
   staffSaveLlcMembers: (id, members) => req('PUT', `/api/staff/llcs/${id}/members`, { members }),
-  staffUploadLlcDoc: (llcId, b) => coalesceUpload('llcDoc:' + llcId, b, () => req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b))),
+  /* THE ENTITY DOCUMENT — streamed when the caller hands over a File (owner-directed
+     2026-08-21: the upload fix is "across the entire system"). An operating agreement is a
+     multi-page scan, routinely the largest thing on a loan; the base64 branch stays for any
+     caller that still holds bytes. */
+  staffUploadLlcDoc: (llcId, b) => coalesceUpload('llcDoc:' + llcId, b, () => (b && b.file
+    ? uploadBinary(`/api/staff/llcs/${llcId}/documents/binary`, b)
+    : req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b)))),
+  /* THE SAME, for the doors whose callers post by path rather than through a named method:
+     hand it a File and it streams, hand it base64 and it does not. One helper, so a new upload
+     surface cannot quietly land on the small transport again. */
+  uploadStream: (path, b) => (b && b.file
+    ? uploadBinary(path.endsWith('/binary') ? path : `${path}/binary`, b)
+    : req('POST', path, normalizeUpload(b))),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
   staffVerifyTrackRecord:    (id, body) => req('POST', `/api/staff/track-records/${id}/verify`, body),
   /* Remove a file from ONE workflow view (pipeline | closing | purchasing) —
@@ -1152,7 +1211,9 @@ export const api = {
     const qs = new URLSearchParams(params).toString();
     return req('GET', `/api/admin/insights/files-with-suggestion${qs ? '?' + qs : ''}`);
   },
-  staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b))),
+  staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => (b && b.file
+    ? uploadBinary(`/api/staff/applications/${appId}/documents/binary`, b)
+    : req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b)))),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
   // `override` (optional) = { adminOverride:true, overrideReason } from
   // lib/condition-override.askOverride — a super-admin clearing/waiving a
@@ -1304,7 +1365,9 @@ export const api = {
   staffAddLeadTask: (id, b) => req('POST', `/api/staff/leads/${id}/tasks`, b),
   staffUpdateLeadTask: (id, taskId, b) => req('PATCH', `/api/staff/leads/${id}/tasks/${taskId}`, b),
   staffLeadDocuments:(id) => req('GET', `/api/staff/leads/${id}/documents`),
-  staffAddLeadDocument:(id, b) => req('POST', `/api/staff/leads/${id}/documents`, b),
+  staffAddLeadDocument:(id, b) => (b && b.file
+    ? uploadBinary(`/api/staff/leads/${id}/documents/binary`, b)
+    : req('POST', `/api/staff/leads/${id}/documents`, b)),
   // Authed download — a plain <a href> can't send the Bearer token, so fetch
   // the bytes and hand them to saveBlob (matches every other doc download).
   staffDownloadLeadDoc:(id, docId) => download(`/api/staff/leads/${id}/documents/${docId}`),

@@ -154,4 +154,29 @@ for (const r of SERVER_ONLY) {
   'over-budget and parallel draws remain desk-only even on the door an officer may use');
 }
 
+{
+  /* A RULE ENFORCED EVERYWHERE AND SHOWN NOWHERE IS THIS SUITE'S OWN SUBJECT, in its purest form
+     (found by auditing the 2026-08-21 batch back against the owner's words). The payoff-demand
+     hold refused at the coordinator's Start, the borrower's request, the borrower's composer and
+     the release ledger from the day it was built — and appeared on NEITHER screen, so the only
+     way to learn a file was frozen was to press the button and be refused. The owner had asked
+     for it *"In the Draw Coordinator section AND ALSO in the Critical Date section"* and *"it
+     should come out big"*; only the second was built.
+
+     Both halves are pinned, because either alone is the same silence: the view must CARRY the
+     fact, and the panel must RENDER it. */
+  const routes = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'sitewire.js'), 'utf8');
+  const panel = fs.readFileSync(path.join(ROOT, 'app-v2', 'src', 'components', 'DrawsPanel.jsx'), 'utf8');
+  ok(/payoff_demand: payoffState,/.test(routes), 'the draw view carries the payoff demand');
+  ok(/payoffDemandBlock\(db, appId\)/.test(routes),
+    '…read through the SAME helper the doors refuse with, so the banner and the refusal cannot disagree');
+  ok(/<PayoffDemandBanner payoff=\{payoff_demand\}/.test(panel), 'the draw panel renders it');
+  ok(/function PayoffDemandBanner/.test(panel) && /role="alert"/.test(panel),
+    '…as a real alert, not a muted line');
+  /* IT SAYS A DIFFERENT THING IN THE TWO STATES the owner described — draws never set up vs
+     draws already running — because the consequence genuinely differs. */
+  ok(/Draws on this file are frozen\./.test(panel) && /Draws cannot be set up on this file\./.test(panel),
+    'and says the right thing for a file whose draws are running vs one whose are not');
+}
+
 console.log(`test-draw-routes-wired-pure: all ${n} wiring checks passed.`);

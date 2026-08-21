@@ -38,7 +38,7 @@ export const STATIONS = [
      then hunting inside it. Splitting them is what lights the rail up, and it
      also gives each order its own deep link, its own badge and its own scroll
      target. `sec-orders` still lands: see RETIRED_SECTION. */
-  { id: 'st-orders', label: 'Orders', sections: ['sec-order-title', 'sec-order-insurance', 'sec-order-appraisal', 'sec-order-closing'] },
+  { id: 'st-orders', label: 'Orders', sections: ['sec-order-title', 'sec-order-insurance', 'sec-order-appraisal', 'sec-order-budget-review', 'sec-order-closing'] },
   /* E-signatures BEFORE closing (owner-directed 2026-08-02). */
   { id: 'st-signing', label: 'Signing & Closing', sections: ['sec-esign', 'sec-closing'] },
   { id: 'st-delivery', label: 'Send to Investor', sections: ['sec-tapes'] },

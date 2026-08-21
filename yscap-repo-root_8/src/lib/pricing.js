@@ -252,6 +252,13 @@ function buildInputs(app, experience, overrides) {
     ...(app.file_markup_std_pct  != null ? { markupStdPct:  num(app.file_markup_std_pct) }  : {}),
     ...(app.file_markup_gold_pct != null ? { markupGoldPct: num(app.file_markup_gold_pct) } : {}),
     ...(app.file_markup_silver_pct != null ? { markupSilverPct: num(app.file_markup_silver_pct) } : {}),
+    /* Sticky per-file CONSTRUCTION FEASIBILITY fee (owner-directed 2026-08-21, db/609) — the
+       studio's manual box, persisted exactly like the markups above so a re-quote never drops the
+       amount an admin typed. NULL/absent → the company default for this deal's kind governs, so
+       every existing file is unchanged. A stored 0 is a deliberate WAIVER and is carried through
+       as 0, which `feasibilityFeeFor` reads as "no fee on this file" — dropping it here instead
+       would silently put the fee back on the next quote. */
+    ...(app.file_feasibility_fee != null ? { feasibilityFee: num(app.file_feasibility_fee) } : {}),
     // Sticky per-file GOLD top-tier markup (item 15) — the studio's manual
     // top-tier section, persisted like the sticky whole-program markups above so
     // a re-quote never drops it. NULL/absent → the company per-tier default (or
@@ -287,7 +294,7 @@ function buildInputs(app, experience, overrides) {
     // that doesn't use it. See markupTiersFor().
     'markupGoldT1Pct',
     'origStdPct', 'origGoldPct', 'origSilverPct', 'origManualPct',
-    'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
+    'lenderFee', 'creditFee', 'appraisalFee', 'titleFee', 'feasibilityFee',
     'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
     // Out-of-pocket rehab exception (owner-authorized 2026-07-31): a dollar amount
     // of the rehab budget brought OUT OF POCKET so the initial advance can rise
@@ -669,7 +676,22 @@ function normalize(program, input, ev, ladder, opts) {
   // close AND the liquidity to show (owner-directed 2026-07-17).
   const extraFeeList = pricingSettings.extraFeesForState(cd.extraFees, state);
   const extraFeesTotal = extraFeeList.reduce((a, f) => a + (num(f.amount) || 0), 0);
-  const closingDueAtClose = round2(origination + brokerFee + lenderFee + creditFee + titleTotal + extraFeesTotal);
+  /* THE CONSTRUCTION FEASIBILITY / PROJECT REVIEW FEE (owner-directed 2026-08-21, db/609 —
+     $1,250 on a ground-up, $750 on a heavy rehab, and addable by hand to any project).
+     `src/lib/feasibility-fee.js` is the ONE definition of what it is, which deals attract it, what
+     it is called and how a manual amount overrides it — the studio and the admin screen read the
+     same module, so the fee on the paper and the fee in the math cannot drift.
+
+     It is a real third-party cost with an invoice behind it, so it is quoted as a named CLOSING
+     COST alongside the lender fee, the credit fee and title — which is what makes it cascade into
+     cash-to-close and the liquidity the borrower must show. NO FROZEN NUMBER MOVES: the loan
+     amount, the note rate, every cap and the whole sizing waterfall are computed above this line
+     and never read it. A deal that attracts no fee adds 0 and is byte-identical to before. */
+  const feasibility = require('./feasibility-fee').feasibilityFeeFor(input, cd, {
+    manual: hasInput(input, 'feasibilityFee') ? input.feasibilityFee : null,
+  });
+  const feasibilityFee = feasibility ? num(feasibility.amount) : 0;
+  const closingDueAtClose = round2(origination + brokerFee + lenderFee + creditFee + titleTotal + extraFeesTotal + feasibilityFee);
   /* REFINANCE CASH TO CLOSE (owner-directed 2026-08-04). On a purchase this is the
      down payment (equity) plus the closing costs. On a REFINANCE there is no down
      payment (the frozen engine returns downPayment=0 for a refi), and instead the
@@ -857,6 +879,13 @@ function normalize(program, input, ev, ladder, opts) {
       creditFee,
       titleAndSettlement: titleTotal,
       extraFees: extraFeeList.map((f) => ({ name: f.name, amount: round2(num(f.amount)) })),
+      // The construction feasibility / project review fee, as its own named line — a borrower is
+      // never charged a fee that the sheet cannot name and explain. Added ONLY when there is one,
+      // so every deal that attracts none reports a byte-identical closingCosts object.
+      ...(feasibility ? {
+        feasibilityFee: round2(feasibilityFee),
+        feasibility: { amount: round2(feasibilityFee), kind: feasibility.kind, label: feasibility.label, note: feasibility.note, manual: feasibility.manual },
+      } : {}),
       dueAtClosing: closingDueAtClose,
       appraisalPoc: appraisalFee,
       totalIncludingPoc: round2(closingDueAtClose + appraisalFee),
@@ -1053,7 +1082,7 @@ function econVersionFor(app) {
     // the sticky per-file markups.
     app.rehab_type, app.sqft_pre, app.sqft_post,
     (app.property_address && app.property_address.state) || '',
-    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct,
+    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct, app.file_feasibility_fee,
     app.file_markup_gold_t1_pct,   // sticky per-file Gold top-tier markup (item 15) — a fingerprinted sibling
 
     // The Silver engine keys geography off the ZIP too (exclusions + NYC market).
@@ -1069,5 +1098,13 @@ module.exports = {
   // Exposed for the rate build-up test only — the guards (omit-don't-guess when
   // the probe re-sized the deal, restore the caller's markup state) are the whole
   // point, so they are asserted directly rather than inferred from a quote.
+  /* THE PORTAL-LABEL NORMALIZER, exported so nothing outside has to keep a second copy of it.
+     It exists because "Fix & Flip w/ Construction" contains the word "construction", which the
+     frozen engine classifies as GROUND-UP — so every reader that asks "is this a ground-up?" off
+     `applications.program` must run it through here first, or it will answer YES about an ordinary
+     fix & flip. `buildInputs` has always applied it; `trinity/budget-review` now does too, after
+     exactly that bug was caught in test (a heavy-rehab-only file read as a ground-up because the
+     stored label carried the word). */
+  engineStrategy,
   _internals: { measureRateBuildUp, sizingFingerprint, ratePct },
 };

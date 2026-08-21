@@ -255,6 +255,79 @@ router.post('/files/:appId/orders', fileScope, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/* ── THE PRE-CLOSING BUDGET REVIEW (form 159) ────────────────────────────────────────────────
+   Owner-directed 2026-08-21. A SEPARATE workflow from the Draw Center, in the file's Order
+   section, for ground-ups and case-by-case heavy rehabs — and its own routes rather than an
+   option on the draw ones, because a review is not a draw and every draw query would otherwise
+   have to carry a "…and not a review" clause forever.
+
+   GATED ON `manage_draws` like the rest of this router: it is the construction desk's product,
+   and the people who own a file's construction are the people who order its reviews. */
+
+// What the desk needs to SEE: whether this file may order one, what is still missing, and the
+// state of the one it already has. Read-only, so it is `view_draws`-shaped like the file view.
+router.get('/files/:appId/budget-review', fileScope, async (req, res, next) => {
+  try {
+    const BR = require('../trinity/budget-review');
+    const [gate, existing] = await Promise.all([
+      BR.reviewGate(req.appId),
+      db.query(`SELECT * FROM trinity_budget_reviews WHERE application_id=$1 ORDER BY created_at DESC LIMIT 1`, [req.appId])
+        .then((r) => r.rows[0] || null).catch(() => null),
+    ]);
+    res.json({
+      form: BR.BUDGET_REVIEW_FORM_ID,
+      suitability: gate.suitability,
+      ready: gate.ready,
+      blockers: gate.blockers,
+      review: existing,
+      // Said on the screen, in the owner's own words, so nobody orders one on a light rehab
+      // because the button happened to be there.
+      intendedFor: 'Ground-up construction, and heavy rehabs case by case.',
+    });
+  } catch (e) { next(e); }
+});
+
+// ORDER ONE. Two steps in one press — record it, then place it — because the desk pressing
+// "order" means both, and a record with no order is not a thing anybody wants to look at.
+router.post('/files/:appId/budget-review', fileScope, async (req, res, next) => {
+  try {
+    if (!can(req, 'manage_draws')) return bad(res, 403, 'You do not have permission to manage draws.');
+    const BR = require('../trinity/budget-review');
+    const b = req.body || {};
+    const req1 = await BR.requestReview(req.appId, { staffId: req.actor.id, note: b.note });
+    if (!req1.ok) return res.status(422).json(req1);
+
+    const placed = await BR.placeReviewOrder(req.appId, req1.review.id, { staffId: req.actor.id });
+    if (placed.blocked) return res.status(422).json(placed);
+    if (placed.error) return res.status(502).json(placed);
+    /* A SKIP IS NOT A SUCCESS — the same rule the draw order route states above. `placeReviewOrder`
+       stands down with `{skipped:'off'|'outbound_off'|…}` and no error, which is right for a
+       background caller and wrong to hand to somebody who just pressed a button: the screen would
+       say "ordered" about an order that was never sent. */
+    if (placed.skipped && !placed.already) {
+      return res.status(409).json({ error: placed.message || 'The budget review could not be ordered just now.', skipped: placed.skipped });
+    }
+    await audit(req, 'trinity_budget_review_ordered', 'application', req.appId,
+      { reviewId: req1.review.id, trinityOrderId: placed.trinityOrderId || null, dryrun: !!placed.dryrun });
+    res.json({ ...placed, review: req1.review });
+  } catch (e) { next(e); }
+});
+
+// STAND ONE DOWN. Cancelled reviews do not hold the one-per-file rule, so the desk can order
+// again — which is a real thing to do when a scope changes materially before closing.
+router.post('/files/:appId/budget-review/:reviewId/cancel', fileScope, async (req, res, next) => {
+  try {
+    if (!can(req, 'manage_draws')) return bad(res, 403, 'You do not have permission to manage draws.');
+    const r = (await db.query(
+      `UPDATE trinity_budget_reviews SET status='cancelled', updated_at=now()
+        WHERE id=$1 AND application_id=$2 AND status <> 'cancelled' RETURNING id`,
+      [req.params.reviewId, req.appId])).rows[0];
+    if (!r) return bad(res, 404, 'That budget review was not found on this file.');
+    await audit(req, 'trinity_budget_review_cancelled', 'application', req.appId, { reviewId: r.id });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
 router.post('/files/:appId/orders/:orderId/place', fileScope, async (req, res, next) => {
   try {
     if (!can(req, 'manage_draws')) return bad(res, 403, 'You do not have permission to manage draws.');

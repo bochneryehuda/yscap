@@ -134,7 +134,7 @@ async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, a
   // junk must never garble stored bytes), and only supersede the previous
   // exports when at least one valid replacement exists: a submission whose
   // attachments all fail must not strip the condition of its current documents.
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
   const valid = [];
   for (const a of attachments) {
     let buf;
@@ -569,8 +569,8 @@ router.post('/profile/photo-id', async (req, res) => {
   let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
   try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+  const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
+  if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
   let appId = null, appItemId = null;
   if (b.applicationId) {
     const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [b.applicationId, me(req)]);
@@ -725,6 +725,13 @@ router.post('/applications/:id/request-draw', async (req, res) => {
   const a = own.rows[0];
   if (!a) return res.status(404).json({ error: 'not found' });
   if (a.status !== 'funded') return res.status(400).json({ error: 'Draws can be requested once your loan is funded.' });
+  /* THE PAYOFF-DEMAND LOCK (owner-directed 2026-08-21) — this is the door that BIRTHS the draw
+     process, so it is the one the owner's first workflow is really about: a file with a payoff
+     outstanding must not be able to start draws at all. */
+  {
+    const payoffHold = await require('../lib/payoff-demand').payoffDemandBlock(db, req.params.id);
+    if (payoffHold.blocked) return res.status(409).json({ error: payoffHold.message, code: 'payoff_demand' });
+  }
   // ONE request per file (owner-directed 2026-07-14): repeat clicks used to
   // fan out the full email set every time. The atomic claim below wins exactly
   // once — every later call answers ok/already with the original timestamp and
@@ -3354,18 +3361,21 @@ router.get('/track-records/:id/documents', async (req, res) => {
   // filename + rejection_reason + slot label are staff free text (leak fix 2026-07-23)
   res.json(r.rows.map((row) => scrubFields(row, ['filename', 'rejection_reason', 'doc_type'])));
 });
-router.post('/track-records/:id/documents', async (req, res) => {
+/* THE BORROWER'S TRACK-RECORD DOCUMENT, ON BOTH TRANSPORTS (owner-directed 2026-08-21,
+   "across the entire system"). */
+async function uploadBorrowerTrackRecordDoc(req, res) {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
-  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  // One seam for both doors — strict decode + the JSON ceiling on the JSON one, already in
+  // storage on the streaming one.
+  let up;
+  try { up = await require('../lib/upload-stream').takeUpload(req, b); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
-  const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  const uploadBytes = up.bytes;
+  const { ref, provider } = up;
   // A back-office document request for THIS line item (a condition tagged with
   // track_record_id) is satisfied by uploading straight to the line: attach the
   // document to the oldest open request so it counts as the condition's doc too.
@@ -3376,13 +3386,17 @@ router.post('/track-records/:id/documents', async (req, res) => {
       ORDER BY created_at LIMIT 1`, [req.params.id]);
   const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
   const dupTr = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
-    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
+    filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'borrower', uploadedById: me(req),
     trackRecordId: req.params.id, checklistItemId: reqItemId, docKind: 'track_record_doc' });
-  if (dupTr) return res.status(201).json({ ok: true, documentId: dupTr, deduped: true });
+  if (dupTr) {
+    // The bytes are already stored on both doors; drop the object nothing will point at.
+    try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
+    return res.status(201).json({ ok: true, documentId: dupTr, deduped: true });
+  }
   const r = await db.query(
     `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'borrower',$1,'track_record_doc',$9) RETURNING id`,
-    [me(req), req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, trackDocType(b.docType)]);
+    [me(req), req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', uploadBytes, provider, ref, trackDocType(b.docType)]);
   await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
   if (reqItemId) {
     await db.query(
@@ -3416,7 +3430,10 @@ router.post('/track-records/:id/documents', async (req, res) => {
       }
     } catch (_) { /* never fail the upload on a notify hiccup */ }
   }
-});
+}
+router.post('/track-records/:id/documents', uploadBorrowerTrackRecordDoc);
+router.post('/track-records/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadBorrowerTrackRecordDoc);
 
 // The saved STATIC COPY of the track record: the live builder posts a fresh
 // self-contained HTML file after every change; one current copy per borrower,
@@ -3441,7 +3458,25 @@ router.get('/track-record/snapshot', async (req, res) => {
 
 // ---------------- DOCUMENTS (upload metadata + bytes via storage) ----------------
 // Accepts base64 body {filename, contentType, dataBase64, applicationId|llcId, checklistItemId}
-router.post('/documents', async (req, res) => {
+/* Two ceilings that are about MEMORY, not about what a person may upload.
+
+   RESEARCH_XML_BYTES — how large an appraisal data file may be before PILOT declines to
+   read it back into memory to mine its comparable sales. A MISMO XML carries the whole
+   report PDF inside itself, so 40 MB is a real one; past that the market data is not
+   worth the memory on a 512 MB instance.
+
+   EMAIL_ATTACH_BYTES — the mail providers' inline-attachment ceiling (Graph gives up
+   around 3 MB). Bigger documents are still LISTED in the email and are one tap away in
+   the portal; this only decides whether the bytes ride along. */
+const RESEARCH_XML_BYTES = 40 * 1024 * 1024;
+const EMAIL_ATTACH_BYTES = 3 * 1024 * 1024;
+
+/* ONE HANDLER, TWO DOORS — the borrower mirror of the staff upload (2026-08-21).
+   `/documents` takes the historic JSON body; `/documents/binary` streams the file itself
+   with the metadata in headers, so an upload's size stops being a question about this
+   process's memory. Same handler, so the own-file scope, the condition rules and the
+   team notification cannot differ by which door was used. */
+const uploadBorrowerDocument = async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
@@ -3497,11 +3532,14 @@ router.post('/documents', async (req, res) => {
       if (v.rows[0] && v.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before replacing documents' });
     }
   }
-  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  /* THE BYTES, WHICHEVER DOOR THEY CAME THROUGH — the borrower mirror of the staff door
+     (owner-directed 2026-08-21). A JSON body is decoded strictly and stored here; a
+     STREAMED upload is already in storage and nothing was ever held in memory. Every
+     refusal carries its real reason and its real status. */
+  let up;
+  try { up = await require('../lib/upload-stream').takeUpload(req, b); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+  const uploadBytes = up.bytes;
   // Optional kind tag. 'term_sheet' marks the registered-product term sheet
   // PDF captured from the Term Sheet Studio: each re-registration supersedes
   // the previous term sheet so exactly one is current on the file.
@@ -3525,11 +3563,11 @@ router.post('/documents', async (req, res) => {
   // second "New document uploaded" email. Collapse a byte-identical re-upload to
   // the same context within the window onto the already-saved document.
   const dupId = await require('../lib/doc-dedup').recentDuplicateDocId({
-    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
+    filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'borrower', uploadedById: me(req),
     applicationId: b.applicationId || null, checklistItemId: b.checklistItemId || null,
     llcId: b.llcId || null, trackRecordId, slotLabel: slot, docKind, termSheetFinal });
   if (dupId) return res.status(201).json({ ok: true, documentId: dupId, deduped: true });
-  const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  const { ref, provider } = up;   // already stored — by takeUpload (JSON) or by the streaming door
   const r = await db.query(
     // The borrower mirror of the staff door: a `term_sheet` here is the studio's
     // OWN generated PDF captured at registration — the only thing that sets this
@@ -3542,7 +3580,7 @@ router.post('/documents', async (req, res) => {
              CASE WHEN $12='term_sheet' THEN 'accepted' ELSE 'pending' END,
              CASE WHEN $12='term_sheet' THEN now() ELSE NULL END) RETURNING id`,
     [b.checklistItemId || null, b.applicationId || null, me(req), b.llcId || null, trackRecordId,
-     b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, me(req), docKind, slot, termSheetFinal]);
+     b.filename, b.contentType || 'application/octet-stream', uploadBytes, provider, ref, me(req), docKind, slot, termSheetFinal]);
   // The requested line item has its document — reflect it on the line too.
   if (trackRecordId) {
     await db.query(
@@ -3597,8 +3635,15 @@ router.post('/documents', async (req, res) => {
   // research warehouse, never an appraisal row, a condition, a finding or a value.
   // `uploadedByStaffId` is null and must stay null — the actor here is a borrower, and
   // `research_imports.uploaded_by` points at the staff roster.
+  /* READING A STREAMED UPLOAD BACK COSTS MEMORY EQUAL TO THE FILE, so it is done only
+     when the upload could plausibly BE an appraisal data file — `xml-catch` acts on
+     nothing else, and a 200 MB scan read back to be told "not MISMO" is pure waste. On
+     the JSON door the bytes are already in hand, so this is the value it always was. */
+  const researchBytes = (/\.xml$/i.test(b.filename || '') || /xml/i.test(b.contentType || ''))
+    ? await require('../lib/upload-stream').readUploadBytes(up, RESEARCH_XML_BYTES)
+    : (up.buf || null);
   require('../lib/research/xml-catch').fireCatch({
-    bytes: buf, filename: b.filename, contentType: b.contentType,
+    bytes: researchBytes, filename: b.filename, contentType: b.contentType,
     documentId: r.rows[0].id, uploadedByStaffId: null,
     // UNTRUSTED PROVENANCE. The report's property facts land exactly as they do from
     // any other door — a comparable sale that happened, happened. What a borrower's
@@ -3677,6 +3722,12 @@ router.post('/documents', async (req, res) => {
           if (it.rows[0]) { condLabel = it.rows[0].label; where = ` to condition "${condLabel}"${slot ? ` — ${slot}` : ''}`; }
         } else if (slot) where = ` — ${slot}`;
         const ctx = await notify.fileContext(b.applicationId);
+        /* The emailed copy, when it is small enough to be one. `readUploadBytes` applies
+           the ceiling on BOTH doors — a JSON upload's bytes are already in memory, but
+           attaching them past this limit on one door and not the other is exactly the
+           kind of drift that makes two paths behave differently for the same file. A
+           streamed upload is read back from storage only when it is under the ceiling. */
+        const emailCopy = await require('../lib/upload-stream').readUploadBytes(up, EMAIL_ATTACH_BYTES);
         const opts = {
           type: 'doc_uploaded',
           // Specific subject: the condition it answers (or the filename), so the
@@ -3694,15 +3745,18 @@ router.post('/documents', async (req, res) => {
           files: [b.filename],
           // Re-encode the DECODED bytes (never the raw client payload): the
           // stored document and the emailed copy must be the same bytes.
-          attachments: buf.length <= 3 * 1024 * 1024
-            ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: buf.toString('base64') }]
+          attachments: emailCopy
+            ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: emailCopy.toString('base64') }]
             : undefined,
         };
         await notify.notifyAppStaff(b.applicationId, opts);   // #113: whole team (primary + assistants)
       }
     } catch (_) { /* never fail the upload on a notify hiccup */ }
   }
-});
+};
+router.post('/documents', uploadBorrowerDocument);
+router.post('/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadBorrowerDocument);
 
 // List the borrower's own documents (optionally scoped to one application).
 // Only borrower-visible items, and never chat attachments — those render inside
