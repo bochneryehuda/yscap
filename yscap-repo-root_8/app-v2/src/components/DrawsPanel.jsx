@@ -2542,7 +2542,7 @@ function SitewireDocumentPush({ appId, writesOff }) {
       <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           <span className="dd-card-ic"><SdIcon name="upload" /></span>
-          <div><h3>Send our documents to Sitewire</h3><div className="dd-sub" style={{ marginTop: 1 }}>Appraisal PDF, Scope of Work (Excel), Scope of Work (PDF) — placed in Sitewire’s Documents tab automatically. No need to log into Sitewire.</div></div>
+          <div><h3>Send our documents to Sitewire</h3><div className="dd-sub" style={{ marginTop: 1 }}>Appraisal PDF, Scope of Work (Excel), Scope of Work (PDF) and the plans &amp; permits on this file — placed in Sitewire’s Documents tab automatically. No need to log into Sitewire.</div></div>
         </div>
       </div>
       {!d.enabled && <div className="dd-sub" style={{ marginTop: 8, color: 'var(--warn, #9a6b00)' }}>Sending documents to Sitewire isn’t switched on yet. It turns on once the Sitewire website login is set up.</div>}
@@ -2561,6 +2561,15 @@ function SitewireDocumentPush({ appId, writesOff }) {
           </div>
         ))}
       </div>
+      {/* NO SILENT CAPS. One push takes a bounded number of plans documents; if the file carries more,
+          the card says how many are staying behind rather than showing a tidy list that omits them. */}
+      {d.plans_overflow > 0 && (
+        <div className="dd-sub" style={{ marginTop: 8, color: 'var(--warn, #9a6b00)' }}>
+          This file has {d.plans_count} plans &amp; permits documents — {d.plans_max} of them go to Sitewire,
+          so {d.plans_overflow} {d.plans_overflow === 1 ? 'is' : 'are'} not being sent. Ask an admin to raise the limit
+          if the inspector needs all of them.
+        </div>
+      )}
       {msg && <div className="dd-sub" style={{ marginTop: 8, color: msg.err ? 'var(--danger,#b00)' : 'var(--ok,#137333)' }}>{msg.t}</div>}
       <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
         <button className="btn btn-sm" disabled={writesOff || !d.enabled || !d.web_configured || !anyAvailable || busy === 'send'}

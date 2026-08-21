@@ -446,7 +446,9 @@ router.post('/files/:id/documents-push', requirePermission('manage_draws'), asyn
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   const b = req.body || {};
-  const which = b.which && docPush.SLOTS.includes(b.which) ? b.which : undefined;
+  // A plans & permits document is a slot too, but its key carries an index (`plans_permits:3`), so a
+  // fixed-list test would silently widen a one-slot re-push into a push of everything.
+  const which = b.which && (docPush.SLOTS.includes(b.which) || docPush.isPlansSlot(b.which)) ? b.which : undefined;
   try {
     const r = await docPush.pushDocuments(appId, { which, force: !!b.force, staffId: req.actor && req.actor.id, source: 'desk' });
     if (r.error === 'docs_disabled') return res.status(409).json({ error: 'Sending documents to Sitewire is turned off right now. It can be switched on once the Sitewire login is set up.' });

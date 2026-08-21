@@ -32,7 +32,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 6 | Drag-and-drop upload everywhere it's missing | Uploads, global | ◐ |
 | 7 | Export all / export unverified with a NOT-VERIFIED stamp | Exports | ☐ |
 | 8 | Feasibility report + GC contact into TPR export & SharePoint | Ground-up conditions | ☐ |
-| 9 | Plans & permits → TPR, SharePoint **and Sitewire** | Ground-up conditions | ☐ |
+| 9 | Plans & permits → TPR, SharePoint **and Sitewire** | Ground-up conditions | ☑ |
 | 10 | GC information condition: informational fields + GC PDF | Conditions | ☐ |
 | 11 | Resend Draw form must work when unseen/expired | Draws | ☑ |
 | 12 | Credit report import reads the WRONG scores (2 borrowers) | Credit | ☑ |
@@ -252,6 +252,46 @@ information must both flow into the **TPR export** and the **SharePoint** mirror
 Any plans-and-permits upload → TPR export **and** SharePoint **and** pushed to Sitewire, using the **same
 path the appraisal already uses** to reach Sitewire. Both sources count: "Plans and Permits on File" and
 the "Plans and Permits" condition.
+
+**SHIPPED.**
+
+**The TPR and SharePoint half was already true, and is now pinned.** Both plans conditions —
+*Plans & permits (ground-up)* and *Plans & permits — confirmed before the first draw* — already file with
+the **Scope of Work** in the investor package and in the team site, through the one shared categorizer, so
+the two can never disagree. What was missing was a test saying so; there is one now, and it also covers the
+feasibility report and the GC record, because "feasibility" and "general contractor" are **not** words the
+filename fallback recognises — those two rely entirely on the code map, so removing an entry would quietly
+send them to the catch-all folder.
+
+**Sitewire is the new half, and it is the same path the appraisal takes** — your own words. It is a fourth
+slot on the same Documents-tab push, with one difference that matters: unlike the appraisal it is a
+**family, not one document**. A builder files a site plan, a permit and approved drawings separately and
+the inspector standing on the site needs all of them, so each becomes its own Sitewire document, named
+after the document itself (*"Plans and Permits - Building Permit.pdf"*) rather than numbered — an
+inspector needs to tell a site plan from a permit. The keys are **stable**: a document filed later never
+re-letters the ones already up there, or every re-push would look like a change and re-upload what
+Sitewire already holds.
+
+**"Any time they are uploaded" is a sweep, not a hook.** A plans document can arrive from at least four
+doors (a staffer, the borrower, a broker, a vendor's email) and there is no single place they all pass
+through — so a hook would be a list somebody has to remember to extend, and a door added next year would
+silently not push. Instead a background pass picks up any managed file holding a plans document newer than
+its newest plans push. It is cheap when there is nothing to do (the push dedupes on the content hash and
+does not even open a Sitewire session unless something genuinely needs uploading), and a file drops out of
+the sweep the moment it is up to date.
+
+**Two things stated plainly.** (1) There is a **limit of 6** documents per push, and it is **reported, not
+silent** — the draw panel says how many the file has and how many are not going, so nobody believes a tidy
+list that quietly omits three sheets. Raise `SITEWIRE_PLANS_MAX` if the inspector needs more. (2) It uses
+the **same document filter the appraisal slot uses** — current, not rejected, never internal, never the
+purchase advice (that one names the note buyer, and Sitewire is where the borrower submits draws). It is
+**not** accepted-only: holding a permit back until somebody reviews it would leave an inspector on a site
+without it. Tightening that is your call, and it would have to move the appraisal beside it too.
+
+Proof: eight new cases in `scripts/test-sitewire-doc-push.js` (both condition codes feeding it, stable
+keys, every exclusion, the reported cap, the sweep picking a file up and letting it go again, and an
+unmanaged file never being touched) plus the category pins in `scripts/test-sharepoint-category.js`. Six
+mutations were proven to fail them.
 
 ---
 
