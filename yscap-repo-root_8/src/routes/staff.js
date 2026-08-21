@@ -150,8 +150,6 @@ async function recordTapeSuperOverride(req, appId, tape, encGate, reason) {
   } catch (_) { /* register write is best-effort — the audit row stands */ }
 }
 
-// Advisory-only sources must never score or notify — one shared filter (audit 2026-07-27).
-const aiSuggestions = require('../lib/underwriting/ai-suggestions');
 // The borrower DIRECTORY / CRM has a WIDER audience than file-level see_all_files
 // (owner-directed): admins, underwriters, loan_coordinators (seesAll) AND
 // processors may open ANY borrower's full profile; loan_officers stay limited to
@@ -896,21 +894,17 @@ router.get('/applications', async (req, res) => {
                            LEFT JOIN checklist_templates t ON t.id = ci.template_id
                           WHERE ci.application_id=a.id
                             AND COALESCE(t.code,'') <> 'underwriting_review_cleared'
-                            AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
-                        (SELECT count(*)::int FROM ai_suggestions s
-                           WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')
-                             AND ${aiSuggestions.notScoredSql('s')}) AS open_fatal_ai,
-                        (SELECT EXTRACT(EPOCH FROM (now() - MIN(s.created_at)))/86400 FROM ai_suggestions s
-                           WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')
-                             AND ${aiSuggestions.notScoredSql('s')}) AS open_fatal_ai_oldest_days,
-                        LEAST(100, COALESCE((SELECT
-                            SUM(CASE severity WHEN 'fatal' THEN 25 WHEN 'warning' THEN 8 WHEN 'info' THEN 2 ELSE 4 END)::int
-                          FROM ai_suggestions s
-                          WHERE s.application_id=a.id
-                            AND s.status IN ('open','marked_important','escalated','asked_admin')
-                            AND ${aiSuggestions.notScoredSql('s')}),0)) AS ai_risk_score
+                            AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items
+                        /* THE PIPELINE NO LONGER SCORES FILES (owner-directed 2026-08-21: "take
+                           them off the pipeline"). Three correlated subqueries over ai_suggestions
+                           used to run PER ROW here — an open-fatal count, the age of the oldest,
+                           and a 0-100 risk sum — to feed two red stamps on the pipeline list. The
+                           owner had the stamps removed (they read as a STOP on a screen the whole
+                           team scans, while AI findings are advisory and never block), so the
+                           subqueries went with them rather than being left computing values
+                           nothing renders on the most-loaded screen in the app. Every one of those
+                           findings is still on the FILE, where the person who can resolve one is
+                           looking. Guarded by scripts/test-advisory-not-scored-pure.js. */
                  FROM applications a JOIN borrowers b ON b.id=a.borrower_id
                  WHERE ${where.join(' AND ')} ORDER BY ${orderBy}
                  LIMIT ${add(limit)} OFFSET ${add(offset)}`;
