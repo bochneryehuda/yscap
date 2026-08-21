@@ -157,7 +157,7 @@ there is now a test that boots the real system, signs in, opens a section, refre
 still open — and it was run against the *old* code first to confirm it reproduces exactly what you
 reported.
 
-**FINISHED ☑ — the rest of the audit is done too.** Fourteen more screens now keep their place: the task
+**FINISHED ☑ — the rest of the audit is done too.** Fifteen more screens now keep their place: the task
 desk, orders, closing, purchasing, chat, leads, workflow, the e-sign dashboard, the condition studio, API
 health, the property workbench, the Arena, and the borrower-view and broker-view pickers — plus **the
 borrower profile's tabs**, so a link to somebody's Credit tab now opens on Credit.
@@ -166,9 +166,12 @@ borrower profile's tabs**, so a link to somebody's Credit tab now opens on Credi
 own memory alongside the address, and a copy is never re-read — so the **Back button did nothing** there.
 The value is now read from the address itself, which is what makes Back work.
 
-**Four things are deliberately left out**, and each is a value that should not be in a link you can send
-somebody: the three sign-in screens' "sign in / reset my password" mode, and the accept-or-dispute toggle on
-a borrower's own draw screen. They are named in the guard below rather than quietly skipped.
+**Five screens are deliberately left out**, and none of them is an oversight. Four hold a value that
+should never be in a link you can send somebody: the three sign-in screens' "sign in / reset my password"
+mode, and the accept-or-dispute toggle on a borrower's own draw screen. The fifth is the notification
+centre, which has three separate sub-tabs inside one screen and so needs three separate names in the
+address — a decision, not a mechanical change. All five are named in the guard below rather than quietly
+skipped, and the guard also fails if one of them ever stops being true.
 
 **And it cannot come back.** A check now runs on every build: any screen that keeps a tab, a filter or a
 view in its own private memory fails it, with the shared mechanism named in the message. That is the
