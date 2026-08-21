@@ -27,7 +27,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 1 | Investor delivery data-tape Excel: scheduling | Investor delivery | ☑ |
 | 2 | Investor delivery contacts: Fidelis / EMCAP prefill + CC | Investor delivery | ☑ |
 | 3 | Data tape metrics: add Total LTC, remove Effective LTV | Investor delivery | ☑ |
-| 4 | Refresh loses your place — deep-link state everywhere | Front end, global | ☐ |
+| 4 | Refresh loses your place — deep-link state everywhere | Front end, global | ◐ |
 | 5 | Email replies: manual attach + drag-and-drop | Email surfaces | ☐ |
 | 6 | Drag-and-drop upload everywhere it's missing | Uploads, global | ☐ |
 | 7 | Export all / export unverified with a NOT-VERIFIED stamp | Exports | ☐ |
@@ -134,6 +134,31 @@ active tab, sub-tab, expanded panel, and selected row round-trip through the URL
 not 30 hand-rolled `useState` fixes.
 
 ---
+
+**SHIPPED (the mechanism + the places you named).** One shared thing, not thirty patches — the build note
+on this item asked for exactly that.
+
+**What was wrong.** Every screen kept "which section is open" and "which tab am I on" in its own private
+memory, so each one lost your place its own way and any new screen inherited the problem by default. The
+Draw Center was the worst case and for a structural reason: eleven of its thirteen sections are closed to
+begin with, so a refresh threw away everything you had opened.
+
+**What it does now.** Where you are lives in the address bar. So a refresh puts you back exactly where you
+were — and, as a free consequence, the Back button works, and you can send somebody a link that opens on
+the same spot. The address only ever records what you actually *changed*: a screen sitting at its defaults
+still has a short, clean link.
+
+**Covered:** every collapsible section on every screen that uses the standard layout (the loan file, the
+Draw Center, the borrower's own file, the draw rules and broker-firm screens) — one change, all of them;
+the **Encompass tab** ("Campus Thinking"); the pipeline's Pipeline/Leads tab; and the draw desk's filter.
+
+**Proven in a real browser, not just built.** A build passing says nothing about whether a page renders, so
+there is now a test that boots the real system, signs in, opens a section, refreshes, and checks it is
+still open — and it was run against the *old* code first to confirm it reproduces exactly what you
+reported.
+
+**Not done yet:** the remaining smaller screens from the audit (roughly a dozen more filters and view
+toggles). They now have one obvious way to be fixed, and none of them is the case you called major.
 
 ## 5. Email replies — manual attach + drag-and-drop into the compose box
 

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useUrlState } from '../lib/useUrlState.js';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -33,7 +34,10 @@ export default function StaffDraws() {
   const [draws, setDraws] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
-  const [filter, setFilter] = useState('all');
+  // Survives a refresh and can be linked to a colleague (owner item 4).
+  const [filter, setFilter] = useUrlState('filter', 'all', {
+    allow: ['all', 'active', 'action', 'open', 'closed'],
+  });
   const [fees, setFees] = useState(null);
 
   // The fees list is loaded on its OWN, not inside the Promise.all above: it is a side report, and a

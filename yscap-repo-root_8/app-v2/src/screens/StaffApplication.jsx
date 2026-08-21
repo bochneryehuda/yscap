@@ -46,6 +46,7 @@ import { PhoneInput, ZipInput , EmailInput, DateCommitInput } from '../component
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, requestAppDetailTab, subscribeAppDetailTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
+import { useUrlState } from '../lib/useUrlState.js';
 import { STATIONS, STATION_OF, ANCHOR_SECTION, stationOf, resolveSection, whereDidItGo } from '../lib/stations.js';
 import { captureScrollAnchor, keepAnchored, keepTabPlace, parkScroll, restoreScrollAnchor, unparkScroll, nearestFileSectionId } from '../lib/keep-scroll.js';
 import { readStation, readSection, writeStation, savePlace } from '../lib/file-place.js';
@@ -5293,9 +5294,22 @@ export default function StaffApplication() {
   /* ===== end Seven Rooms machinery (render wiring further down) ===== */
   // "Application details" is ONE tabbed sub-hub too (owner-directed 2026-07-31:
   // "split in between 100 places… clean up the view"): Deal & property ·
-  // Missing info · Pipeline data. Plain local useState (not sticky) — the deal
-  // editor is the right first thing every time the section is opened.
-  const [appDetailTab, setAppDetailTab] = useState('deal');
+  // Missing info · Pipeline data · Encompass.
+  //
+  // IT LIVES IN THE URL NOW (owner-reported 2026-08-21: "it happens also on the
+  // application detail and Campus Thinking [= Encompass]" — a refresh while reading the
+  // Encompass comparison dumped you back on "Deal & property" every time). It used to be
+  // a plain useState with a comment saying the deal editor is the right first thing every
+  // time — true when you OPEN the section, wrong when you REFRESH while reading another
+  // tab, and wrong for a link somebody sends a colleague. The default is still 'deal' and
+  // is elided from the address, so an untouched file reads exactly as before.
+  //
+  // `allow` matters here: a stale link to a tab that has since been renamed lands on the
+  // deal editor rather than rendering an empty sub-hub.
+  const [appDetailTab, setAppDetailTab] = useUrlState('appTab', 'deal', {
+    allow: ['deal', 'people', 'missing', 'status', 'pipeline', 'encompass'],
+    remember: `appTab.${id}`,
+  });
   // A completeness pill for a field only the Borrower profile can edit asks for
   // that tab (they are two tabs of THIS section, so nothing has to navigate).
   useEffect(() => subscribeAppDetailTab(setAppDetailTab), []);
