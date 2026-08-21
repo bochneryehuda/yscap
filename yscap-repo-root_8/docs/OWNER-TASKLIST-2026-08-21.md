@@ -45,7 +45,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 19 | ClickUp: assigning an officer moves the task to their folder | ClickUp | ☐ |
 | 20 | Rehab Budget PDF: value-add / narrative overlap | PDF | ☑ |
 | 21 | Funded date auto-read from Encompass (`CX.FUNDEDDATE`) | Encompass | ☐ |
-| 22 | Experience-count condition stuck at the old requirement | Conditions | ☐ |
+| 22 | Experience-count condition stuck at the old requirement | Conditions | ◐ |
 | 23 | DocuSign: processor + officer always CC'd as viewers | DocuSign | ☑ |
 | 24 | Marketing term-sheet leads: one session, contact info, officer link | Leads | ☐ |
 | 25 | Trinity Manual section in the Draw Coordinator | Trinity | ☐ |
@@ -461,6 +461,27 @@ believes the field is **`CX.FUNDEDDATE`** — verify against the real field list
 The experience-count condition froze at 5 after the file was re-registered at 3. It must **live within the
 file** and **re-derive its requirement** whenever the application / products-and-pricing are re-registered
 — up or down — so it can be signed off.
+
+**PARTLY SHIPPED, and the honest part first: I could not reproduce it from the steps as described.** Walked
+exactly as written — register on five, verify three, change the application to three, re-register Products &
+Pricing on three — against a real system through the real screens' own doors, the condition **does** drop to
+three and can be signed off. That is now pinned as a test so it can never quietly break.
+
+**So the requirement is already re-derived on every re-register.** What it is derived FROM is the *registered
+product*, not the application — deliberately: a lowered claim only counts once the product has actually been
+re-priced on it, otherwise anybody could clear the condition by typing a smaller number into the application.
+That rule is right and I have not changed it.
+
+**What was genuinely broken is that the screen never explained itself.** It printed a bare "5" with no hint
+of where the 5 came from, so a file whose re-register didn't carry the lower number (a stale Products &
+Pricing box, or a re-register that was refused) looked simply stuck. It now says so in words: *"this comes
+from the REGISTERED product (priced on 5 flips); the file itself now claims 3, so re-register Products &
+Pricing to bring the requirement down"* — and the moment they disagree, the file says so.
+
+**What would help me finish it:** if this is still happening on that file, send me the loan number. With the
+file in front of me I can tell in a minute which of the two it was — a re-register that didn't take, or one
+that was refused — instead of guessing. I have deliberately not "fixed" it by making the number follow the
+application, because that would let the condition be cleared without the loan ever being re-priced.
 
 ---
 

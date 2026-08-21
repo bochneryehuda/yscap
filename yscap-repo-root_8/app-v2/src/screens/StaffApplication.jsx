@@ -3919,7 +3919,18 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                           r.holds > (v.holds || 0) ? `${r.holds - (v.holds || 0)} hold${r.holds - (v.holds || 0) === 1 ? '' : 's'}` : null,
                           r.ground > (v.ground || 0) ? `${r.ground - (v.ground || 0)} ground-up` : null,
                         ].filter(Boolean) : [];
-                        return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')} verified` : ' — requirement met ✓ (verified)') : ''}`;
+                        /* WHERE THE NUMBER CAME FROM — owner-reported 2026-08-21: "we changed
+                           the application to only three experiences, we changed the products and
+                           prices to only three, but the condition is still requiring five and we
+                           can't sign off". The requirement is deliberately the REGISTERED
+                           product's experience (a lowered claim only relaxes it once the product
+                           is re-registered), and that rule stands — but the screen never SAID so,
+                           so a file whose re-register did not carry the lower number showed a
+                           stubborn "5" with nothing to act on. Saying it is the way out. */
+                        const why = p.claimBelowNeed
+                          ? ` — this comes from the REGISTERED product (priced on ${fmt(r)}); the file itself now claims ${fmt(p.required || {})}, so re-register Products & Pricing to bring the requirement down`
+                          : '';
+                        return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')} verified` : ' — requirement met ✓ (verified)') : ''}${why}`;
                       })()
                     : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : app.registered_program === 'manual' ? 'Manual' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
                     : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
