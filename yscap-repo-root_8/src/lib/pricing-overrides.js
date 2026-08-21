@@ -106,6 +106,20 @@ const ENGAGED_OVERRIDE_KEYS = Object.freeze({
   // cap. Off by default; any real amount (or the "raise initial to max" toggle) needs
   // the same admin approval as any other pricing override.
   oopRehab:      { label: 'Out-of-pocket rehab exception',             unit: 'money' },
+  /* The construction feasibility / project review fee, typed by hand on ONE file
+     (owner-directed 2026-08-21 — "add this fee type into the manual section in the
+     products and pricing so we can, any time, add it to any other project manually
+     as well"). It lives HERE rather than among the defaulted knobs because its
+     company default is keyed on the DEAL KIND ($1,250 ground-up / $750 heavy rehab)
+     rather than being one number to compare against — so any typed amount is a
+     deliberate departure from what this deal would otherwise be charged.
+
+     `zeroIsEngaged` because a typed 0 WAIVES the fee, and waiving $1,250 is exactly
+     the decision an admin should see. That is the opposite of markupGoldT1Pct above,
+     where 0 IS the historic default and therefore no exception at all — which is why
+     it is a per-key flag and not a change to the shared `engaged()`, whose "0 means
+     unset" reading is correct for every other knob here. */
+  feasibilityFee: { label: 'Construction feasibility / project review fee', unit: 'money', zeroIsEngaged: true },
   oopRehabMax:   { label: 'Out-of-pocket rehab — raise the initial to its max', unit: 'flag' },
   manualPricing: { label: 'Manual scenario (admin-set basis)',         unit: 'flag'  },
   forcePrice:    { label: 'Force-price past the guideline limits',     unit: 'flag'  },
@@ -187,8 +201,15 @@ function pricingOverridesEngaged(raw, defaults) {
     out.push({ key, label: meta.label, unit: meta.unit, value, defaultValue });
   }
   for (const key of Object.keys(ENGAGED_OVERRIDE_KEYS)) {
-    if (!engaged(o[key])) continue;
     const meta = ENGAGED_OVERRIDE_KEYS[key];
+    // `zeroIsEngaged` (today only the feasibility fee): a typed 0 is a real decision —
+    // it WAIVES a fee the deal would otherwise be charged — rather than the "unset"
+    // that 0 means for every other knob here. It still has to be a value somebody
+    // actually sent: an absent or explicitly blanked key is never an override.
+    const isEngaged = meta.zeroIsEngaged
+      ? (hasValue(o, key) && numOrNull(o[key]) != null)
+      : engaged(o[key]);
+    if (!isEngaged) continue;
     out.push({
       key, label: meta.label, unit: meta.unit,
       value: meta.unit === 'flag' ? true : numOrNull(o[key]),

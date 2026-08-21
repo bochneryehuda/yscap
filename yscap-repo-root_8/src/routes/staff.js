@@ -2915,6 +2915,10 @@ router.get('/applications/:id/pricing', async (req, res) => {
         origStdPct: cd.origStdPct, origGoldPct: cd.origGoldPct, origSilverPct: cd.origSilverPct,
         lenderFee: cd.lenderFee, creditFee: cd.creditFee,
         appraisalFee: cd.appraisalFee, titleFee: cd.titleFee ?? null,
+        // The construction feasibility / project review pair (owner-directed 2026-08-21), so the
+        // studio quotes the same fee the register books rather than falling back to its own copy
+        // of the owner's numbers.
+        feasibilityFees: cd.feasibilityFees || null,
       };
     } catch (_) { pricingDefaults = null; }
     // Term-sheet hold (owner-directed 2026-07-31): open fatal appraisal findings
@@ -3452,6 +3456,20 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // blank clears it → the company per-tier default (or historic 0) governs.
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupGoldT1Pct'))
         await client.query(`UPDATE applications SET file_markup_gold_t1_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldT1Pct)]);
+      /* THE MANUAL CONSTRUCTION FEASIBILITY FEE sticks the same way (owner-directed 2026-08-21,
+         db/609: "add this fee type into the manual section in the products and pricing so we can,
+         any time, add it to any other project manually as well"). A blank clears it → the company
+         default for this deal's kind governs; a typed 0 is a deliberate WAIVER and is stored as 0,
+         so `stickyFee` deliberately keeps a zero that `stickyMk` would also keep — the two differ
+         only in intent, and this comment is why the zero matters here.
+
+         THIS IS THE ONLY WRITER OF THIS COLUMN, and that is load-bearing: db/609 does not widen
+         the economics-reopen trigger for it precisely because it can only be written as part of a
+         registration, so there is never a stale registration for the trigger to catch. Adding
+         another door means widening that trigger — `test-feasibility-fee-pure` section F is what
+         will notice. */
+      if (Object.prototype.hasOwnProperty.call(overrides, 'feasibilityFee'))
+        await client.query(`UPDATE applications SET file_feasibility_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.feasibilityFee)]);
       /* THE TYPED CASH-OUT FOLLOWS THE REGISTER ONTO THE FILE (audit-found
          2026-07-31). The studio prints the officer's typed figure on the term
          sheet PDF; without this it never reached the loan file, so the file and
