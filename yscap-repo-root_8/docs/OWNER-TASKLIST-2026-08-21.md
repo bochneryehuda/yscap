@@ -702,6 +702,64 @@ believes the field is **`CX.FUNDEDDATE`** — verify against the real field list
 
 **Encompass is READ-ONLY** (`AGENTS.md` §3) — this is a read, which is allowed. Nothing writes back.
 
+### ☑ SHIPPED
+
+**The field is right, and it was already being read — it was just never written anywhere.** `CX.FUNDEDDATE`
+has been on the Encompass panel for months (the field map carries it, `closing.readEncompassFundedDate` digs
+it back out for the closing desk's three-way reconciliation), so the closer was retyping by hand a date PILOT
+was already holding. Nothing errored, which is exactly why it lasted.
+
+**What happens now.** On every Encompass pull, and once over the whole back book, `src/lib/encompass-funded.js`
+reads that date off the loan PILOT just stored and:
+
+- **fills the funded date on the file** — *fill-only*: a date somebody typed is never replaced (the Encompass
+  panel already shows both sides when they disagree, so a human can see it; silently swapping the closer's
+  figure for the vendor's is how the number money moved on changes with nobody deciding);
+- **moves the file to Funded** — not gated on open conditions, because Encompass carrying a funded date means
+  the money moved and refusing to record a fact would be wrong. Forward only; a DECLINED or WITHDRAWN file is
+  left completely alone (a funded date on a declined loan is two systems contradicting each other and belongs
+  to a human);
+- **never reconciles it** — the owner's own carve-out. `closing_workflow` is not written in any column: not the
+  stage, not `fully_reconciled_at`, not `reconciled_ok`. A test asserts that on a file that HAS a closing
+  workflow to disturb, which is the only way that assertion can bite.
+
+**Previous AND future.** The per-file Encompass pull is a round-robin that takes ONE file every 15 minutes, so a
+file's turn comes round once every (files ÷ ~96) days. Every file already synced is therefore sitting on a stored
+loan JSON that already carries the date. A **one-shot** boot walk reads that stored JSON — **zero Encompass calls,
+nothing new is fetched** — with a durable bookmark so it resumes across restarts and stops for good when it is
+finished. It is a one-shot rather than a timer because a blob only gains a funded date on a pull, and every pull
+now lands it itself. Off with `ENCOMPASS_FUNDED_BACKFILL_DISABLED=1`.
+
+**Encompass is untouched.** Nothing here calls Encompass at all — it reads the loan JSON already on
+`applications.encompass_extra` and writes only into our own columns, the same direction the purchase-advice date
+and the borrower-profile enrichment already write. The read-only gate stays green.
+
+**Two deliberate decisions, said out loud rather than buried:**
+
+1. **The borrower is NOT emailed by this door, and that is on purpose.** The "your loan is now Funded" email is
+   fired by a watermark (`status_notified_external`). Moving that watermark here would make the email silent
+   *forever after* — the ClickUp echo that would have sent it reads as an already-announced status — and on the
+   first run it would blast a back book of loans that funded months ago. So the watermark is left alone: the
+   borrower is told at the moment the team actually processes the funding, and OUR TEAM is told immediately here,
+   because nobody in PILOT made this move and somebody has to know.
+2. **Nothing is pushed to ClickUp.** Landing the card on `closed (6-email funded)` sends an email *from ClickUp*,
+   which is an outward-facing action nobody asked an automatic reader to take.
+
+**A KNOWN LIMIT, stated rather than papered over — and it is a question for the owner (see the questions section).**
+`status` is co-owned with ClickUp: the inbound pull writes the file's status from the card on every ingest, and the
+status pair is deliberately excluded from the guard that protects portal edits. So until the file's ClickUp card
+also reads a funded stage, a re-ingest of that card can move PILOT's status back off Funded. That is exactly the
+"ClickUp has to match as well" half the owner separated out — but it does mean the status change may not *stick*
+on a file whose card is stale, and whether PILOT should hold its ground there (or drive the card) is the owner's
+call, not mine.
+
+Tests `scripts/test-encompass-funded-pure.js` (36 checks — the decision table, fill-only, both tenant field shapes,
+and source guards that this can never call Encompass, never reconcile, never move the watermark, never push to
+ClickUp) and `scripts/test-encompass-funded-db.js` (40 checks against a real Postgres — the owner's case end to end,
+the closing workflow proven untouched, the refusals, idempotency, stage history, the audit record, the borrower
+still being told once ClickUp agrees, and the back-book walk). **Six mutations of the production code were each
+proven to fail them**, with an unmutated control green either side.
+
 ---
 
 ## 22. Experience-count condition stuck at the old requirement
@@ -1013,3 +1071,17 @@ Asked here because the owner went to sleep; each has a stated assumption so the 
    experiences). If it means a different export surface, say which and it moves.
 5. **Trinity products (item 25).** The product catalogue will be read from Trinity's live API; if their
    API does not expose a catalogue we will need the price sheet from them.
+6. **Funded status vs. ClickUp (item 21) — a real one, and it is a workflow call.** PILOT now moves a file
+   to **Funded** the moment Encompass shows a funded date. But the file's status is co-owned with ClickUp:
+   the inbound sync writes the status from the ClickUp card on every ingest, so if the card is still on an
+   earlier stage, a re-ingest of that card can move PILOT back off Funded. Three ways to go, and it is your
+   call — I have not guessed:
+   **(a)** leave it exactly as built — PILOT records it, and it settles when somebody moves the ClickUp card
+   (this is what ships today);
+   **(b)** PILOT holds its ground — an inbound ClickUp status can no longer move a funded file backwards;
+   **(c)** PILOT drives the ClickUp card to the funded stage itself — which is what happens when a human sets
+   Funded in PILOT today, **but** that ClickUp stage (`closed (6-email funded)`) fires an email from ClickUp,
+   so having an automatic reader trigger it is a decision I would not make for you.
+   Related: today the **borrower is not emailed** by this door either (they are told when ClickUp catches up)
+   — deliberately, so switching this on does not email a back book of loans that funded months ago. Say if
+   you want the borrower told the moment Encompass shows it instead.
