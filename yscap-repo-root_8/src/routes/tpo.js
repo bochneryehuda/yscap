@@ -1635,8 +1635,11 @@ router.post('/applications/:id/findings/:findingId/accept', async (req, res, nex
     if (!upd) return res.status(409).json({ error: 'already handled' });
     // Our AE/AM (internal assignees) are notified; notifyAppStaff filters is_external, so the broker
     // never receives their own action back (the Phase-2 internal-fan-out sweep).
-    await notify.notifyAppStaff(appId, { type: 'draw_accepted', title: 'Broker accepted a draw', badge: { text: 'Accepted', tone: 'positive' },
-      body: `The broker accepted the inspection results — the release is due by ${new Date(upd.wire_due_at).toLocaleString('en-US')}.`, applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
+    // The same shared notice, in the broker voice — the coordinator is about to move money, so who
+    // authorised it is the first thing they read. notifyAppStaff filters is_external, so the broker
+    // never receives their own action back (the Phase-2 internal-fan-out sweep).
+    await require('../sitewire/draw-accepted-notice')
+      .notifyDrawAccepted(db, f, 'tpo', { wireDueAt: upd.wire_due_at });
     await tpoAudit(req, 'tpo_accept_draw', 'application', appId, { findingId: f.id, sitewireDrawId: f.sitewire_draw_id });
     res.json({ ok: true, wire_due_at: upd.wire_due_at });
   } catch (e) { next(e); }

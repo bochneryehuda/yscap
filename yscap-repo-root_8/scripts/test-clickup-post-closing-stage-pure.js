@@ -168,8 +168,18 @@ ok('C13 …but the funded event itself is allowed to move a pre-closing file',
 
   const pa = code('src/sitewire/release-party.js');
   ok('D5 a purchase advice date moves the card', /advanceCard\(appId, 'sold'/.test(pa));
+  /* The guard's SUBJECT is "the push sits inside the date-actually-changed branch", and the
+     condition is allowed to be STRICTER than that — it has since gained `&& !silentDiscovery`,
+     so the back-book sweep can land a months-old purchase advice without announcing it as
+     news. Pinning the exact condition text would have made this fail on a change that makes
+     the rule tighter, which is the wrong way round: it would force the production code to be
+     bent to fit a test about structure. So it requires `changed && paDate` to LEAD the
+     condition and tolerates further terms — the same widening this file's own header
+     describes for comments. */
   ok('D6 …only when the date CHANGED, so a re-read of the same date never re-pushes',
-    /if \(changed && paDate\) \{[\s\S]{0,700}advanceCard\(appId, 'sold'/.test(pa));
+    /if \(changed && paDate[^)]*\) \{[\s\S]{0,700}advanceCard\(appId, 'sold'/.test(pa));
+  ok('D6b …and a first read by the back-book sweep lands the date without moving the card',
+    /if \(changed && paDate && !silentDiscovery\) \{[\s\S]{0,700}advanceCard\(appId, 'sold'/.test(pa));
 
   /* A hard-coded stage string in a caller is a second definition waiting to drift from the
      live list — and a drifted one is a push ClickUp silently refuses. The list is EVERY

@@ -1154,6 +1154,36 @@ async function notifyAppStaff(appId, opts = {}) {
   // responsible?" (an esign event on a file whose only assignees are part-roles now
   // escalates to admins, which is what 'nobody responsible heard it' should do).
   const rows = allRows.filter((r) => staffRolesSee(r.roles, opts));
+
+  /* THE DRAW LOOP-IN, ON OUR OWN SIDE (owner-reported 2026-08-21: "when a borrower is approving
+     the inspection results online … the draw coordinator is not getting a notification").
+
+     ROOT CAUSE: this fan-out selects `application_assignees`, and PILOT has no draw-coordinator
+     POINTER — a coordinator is identified by what they DID on the file (pressed "Start the draw
+     process", or holds a live draw hand-off), which is a different resolver entirely. So the
+     borrower pressed Accept, this ran, and the one person whose job it is to release the money was
+     structurally not in the list. The loan officer WAS (the db/103 trigger keeps the primary
+     officer as an assignee), which is why only half the team ever heard.
+
+     KEYED ON THE NOTIFICATION'S OWN CATEGORY, exactly like the borrower-email loop-in the owner
+     asked for on 2026-07-28 — so every draw event that exists today and every one added later
+     carries it, without each call site remembering to. It reads the SAME `draw-recipients`
+     resolver that email uses, so the two can never drift about who a file's coordinator is.
+
+     Adding them here does not widen anybody's scope: `staffRolesSee` exists so a part-of-the-file
+     role only hears its own part, and a 'draws' event IS the draw coordinator's part — which is
+     why this is applied to that category and nothing else. Best-effort: a lookup failure adds
+     nobody and never breaks the fan-out. */
+  if (categoryOf(opts.type) === 'draws') {
+    try {
+      const already = new Set(rows.map((r) => String(r.staff_id)));
+      const extra = await require('./draw-recipients').drawStaffIdsForFile(appId);
+      for (const id of extra) {
+        if (!already.has(String(id))) { already.add(String(id)); rows.push({ staff_id: id, roles: ['draw_coordinator'] }); }
+      }
+    } catch (e) { console.error('[notify] draw staff loop-in', appId, (e && e.message) || e); }
+  }
+
   const except = opts.exceptStaffId ? String(opts.exceptStaffId) : null;
   // `exceptStaffIds` is the PLURAL form, for a caller fanning out over several
   // audiences in turn (the order-overdue ladder tells the assignee, then the team,

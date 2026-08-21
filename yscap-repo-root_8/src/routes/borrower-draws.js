@@ -275,9 +275,12 @@ router.post('/findings/:findingId/accept', async (req, res) => {
     `UPDATE draw_findings SET status='accepted', accepted_at=now(), accepted_via='portal', wire_due_at=now() + ($2 || ' hours')::interval, updated_at=now()
       WHERE id=$1 AND status='delivered' RETURNING wire_due_at`, [f.id, String(hours)])).rows[0];
   if (!upd) return res.status(409).json({ error: 'already handled' });
-  await notify.notifyAppStaff(f.application_id, { type: 'draw_accepted', title: 'Borrower accepted a draw', badge: { text: 'Accepted', tone: 'positive' },
-    drawTag: await drawLabel.drawTagForRef(db, f.application_id, { sitewireDrawId: f.sitewire_draw_id }),
-    body: `The borrower accepted the inspection results — the release is due by ${new Date(upd.wire_due_at).toLocaleString('en-US')}.`, applicationId: f.application_id, link: `/internal/app/${f.application_id}` }).catch(() => {});
+  // ONE definition of the "approved" notice, shared with the emailed link and the broker surface —
+  // it names the draw and the money, and says WHERE they pressed the button (owner-reported
+  // 2026-08-21). The draw coordinator reaches it through the 'draws' loop-in in notify.js, which is
+  // what was missing: they are not an assignee, so this fan-out never reached them.
+  await require('../sitewire/draw-accepted-notice')
+    .notifyDrawAccepted(db, f, 'portal', { wireDueAt: upd.wire_due_at });
   res.json({ ok: true, wire_due_at: upd.wire_due_at });
 });
 
