@@ -111,23 +111,37 @@ async function planDay(sessionId, spinId, opts = {}) {
  */
 async function tick(now = new Date()) {
   const out = { opened: [], closed: [], errors: [] };
+  // The autopilot switch (owner-directed 2026-08-19): with it OFF, a scheduled
+  // challenge WAITS for a human's "Start now" instead of landing on everyone's
+  // screen by itself. Closing stays automatic either way — a window that ended
+  // has ended, and shutting a door is not populating anything.
+  let autoOpen = false;
   try {
+    const cfg = await require('./settings').load();
+    autoOpen = cfg.settings && cfg.settings.autoLaunchEnabled === true;
+  } catch (_) { autoOpen = false; }
+  try {
+    if (!autoOpen) throw Object.assign(new Error('skip'), { autopilotOff: true });
     const open = await db.query(
-      `UPDATE arena_challenges
+      `UPDATE arena_challenges c
           SET state = 'live', updated_at = now()
-        WHERE state = 'scheduled' AND opens_at IS NOT NULL AND opens_at <= $1
-          AND (closes_at IS NULL OR closes_at > $1)
-        RETURNING *`, [now]);
+        FROM arena_sessions s
+        WHERE s.id = c.session_id AND s.state = 'live' AND s.paused_at IS NULL
+          AND c.state = 'scheduled' AND c.opens_at IS NOT NULL AND c.opens_at <= $1
+          AND (c.closes_at IS NULL OR c.closes_at > $1)
+        RETURNING c.*`, [now]);
     out.opened = open.rows;
     for (const c of open.rows) broadcast('arena:challenge-open', publicChallenge(c));
-  } catch (e) { out.errors.push(`open: ${e.message}`); }
+  } catch (e) { if (!e.autopilotOff) out.errors.push(`open: ${e.message}`); }
 
   try {
     const shut = await db.query(
-      `UPDATE arena_challenges
-          SET state = 'closed', updated_at = now()
-        WHERE state = 'live' AND closes_at IS NOT NULL AND closes_at <= $1
-        RETURNING id, session_id, title`, [now]);
+      `UPDATE arena_challenges c
+          SET state = 'closed', closed_reason = 'time', updated_at = now()
+        FROM arena_sessions s
+        WHERE s.id = c.session_id AND s.paused_at IS NULL
+          AND c.state = 'live' AND c.closes_at IS NOT NULL AND c.closes_at <= $1
+        RETURNING c.id, c.session_id, c.title`, [now]);
     out.closed = shut.rows;
     for (const c of shut.rows) broadcast('arena:challenge-close', { challengeId: c.id, sessionId: c.session_id });
   } catch (e) { out.errors.push(`close: ${e.message}`); }
@@ -173,11 +187,33 @@ async function fulfil({ challengeId, staffId, note, evidence, countValue }) {
     if (!ch) { await client.query('ROLLBACK'); return { ok: false, reason: 'That challenge does not exist.' }; }
     if (ch.state !== 'live') {
       await client.query('ROLLBACK');
+      // A challenge that closed because its places FILLED answers with the
+      // taken wording, not a flat "closed" — the person racing the last slot
+      // deserves to hear they were beaten to it, and the screen keys on
+      // `taken` (proven by test-arena-play-db's four-way race, which went red
+      // in CI when the auto-close first landed and said "closed" instead).
+      if (ch.state === 'closed' && ch.closed_reason === 'filled') {
+        const capN = ch.award_mode === 'everyone' ? null : Math.max(1, ch.slots);
+        return {
+          ok: false, taken: true,
+          reason: capN === 1
+            ? 'Somebody got this one first. It has gone.'
+            : `All ${capN} places on this one have gone.`,
+        };
+      }
       return { ok: false, reason: ch.state === 'closed' ? 'That one has closed.' : 'That one is not open yet.' };
     }
     if (ch.proof_type === 'upload' && !evidence) {
       await client.query('ROLLBACK');
       return { ok: false, reason: 'This one needs a screenshot or a photo.' };
+    }
+    // Every "I did it" says WHAT — the client, the file, what happened — so an
+    // admin deciding it (and payroll reading the ledger later) is never left
+    // guessing (owner-directed 2026-08-19). The screen already requires it;
+    // this is the server saying so too.
+    if (!text || text.trim().length < 5) {
+      await client.query('ROLLBACK');
+      return { ok: false, reason: 'Say what it was — the client, the file, what happened. A word or two is not enough.' };
     }
 
     // How many slots are already gone. A PENDING claim holds a place: somebody
@@ -216,9 +252,27 @@ async function fulfil({ challengeId, staffId, note, evidence, countValue }) {
       await client.query('ROLLBACK');
       return { ok: false, reason: 'You have already sent this one in.' };
     }
+    // THE LAST PLACE CLOSES THE DOOR (owner-directed 2026-08-19: "only then
+    // does that challenge get closed, because it's only one"). Counted inside
+    // the same transaction that claimed the place, so two people racing the
+    // last slot cannot both leave it open. closed_reason='filled' is what
+    // lets a later rejection reopen it — and ONLY it (db/594).
+    let filledNow = false;
+    if (cap !== null) {
+      const held = await client.query(
+        `SELECT count(*)::int AS n FROM arena_challenge_entries
+          WHERE challenge_id = $1 AND status <> 'rejected'`, [challengeId]);
+      if (held.rows[0].n >= cap) {
+        await client.query(
+          `UPDATE arena_challenges SET state = 'closed', closed_reason = 'filled', updated_at = now()
+            WHERE id = $1 AND state = 'live'`, [challengeId]);
+        filledNow = true;
+      }
+    }
     await client.query('COMMIT');
     broadcast('arena:challenge-entry', { challengeId, sessionId: ch.session_id, staffId: String(staffId), place });
-    return { ok: true, entry: ins.rows[0], challenge: ch, place };
+    if (filledNow) broadcast('arena:challenge-close', { challengeId, sessionId: ch.session_id, filled: true });
+    return { ok: true, entry: ins.rows[0], challenge: ch, place, filled: filledNow };
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) { /* gone already */ }
     throw e;
@@ -285,6 +339,31 @@ async function decide({ entryId, status, byStaffId, reason }) {
     // award and any earlier correction — which is precisely why a correction
     // carries the entry: a row the next read cannot see is a row that gets
     // applied twice.
+    // A REJECTION FREES A PLACE. If the challenge closed itself because its
+    // places filled (closed_reason='filled', db/594) and this rejection means
+    // there is room again — and its own clock has not run out — it reopens on
+    // its own. An admin's deliberate Close ('manual') and a timed close
+    // ('time') are never overruled here.
+    let reopened = false;
+    if (status === 'rejected') {
+      const chr = await client.query(
+        `SELECT id, state, closed_reason, award_mode, slots, closes_at
+           FROM arena_challenges WHERE id = $1 FOR UPDATE`, [e.challenge_id]);
+      const c = chr.rows[0];
+      if (c && c.state === 'closed' && c.closed_reason === 'filled' && c.award_mode !== 'everyone'
+          && (!c.closes_at || new Date(c.closes_at) > new Date())) {
+        const held = await client.query(
+          `SELECT count(*)::int AS n FROM arena_challenge_entries
+            WHERE challenge_id = $1 AND status <> 'rejected'`, [e.challenge_id]);
+        if (held.rows[0].n < Math.max(1, c.slots)) {
+          await client.query(
+            `UPDATE arena_challenges SET state = 'live', closed_reason = NULL, updated_at = now()
+              WHERE id = $1`, [e.challenge_id]);
+          reopened = true;
+        }
+      }
+    }
+
     const paid = await client.query(
       `SELECT COALESCE(sum(count), 0)::int AS n FROM arena_tickets WHERE entry_id = $1`, [entryId]);
     const delta = tickets - (Number(paid.rows[0].n) || 0);
@@ -308,7 +387,8 @@ async function decide({ entryId, status, byStaffId, reason }) {
       challengeId: e.challenge_id, sessionId: e.session_id, staffId: String(e.staff_id), status, tickets,
       streakRun: streak.best !== undefined ? streak : null,
     });
-    return { ok: true, tickets, streak, entry: { ...e, status } };
+    if (reopened) broadcast('arena:challenge-open', { challengeId: e.challenge_id, sessionId: e.session_id, reopened: true });
+    return { ok: true, tickets, streak, entry: { ...e, status }, reopened };
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) { /* gone already */ }
     throw err;

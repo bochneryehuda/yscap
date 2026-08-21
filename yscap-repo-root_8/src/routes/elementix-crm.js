@@ -797,8 +797,39 @@ router.post('/people/:personId/profile/build', async (req, res) => {
   });
   if (!out || out.ok !== true) return refuse(res, out);
   await audit(req, 'elementix_profile_built', { personId, calls: out.callsSpent, force: body.force === true }, personId);
+  /* BUILDING A PROFILE BUILDS THE BORROWER'S OWN RECORD (owner-directed
+     2026-08-19: "anytime you build someone's Elementix profile, it should
+     right away be building up his track record and his entity page"). For
+     every borrower a human linked to this person, the freshly cached history
+     lands on their profile — companies as entities (held out of provable funds
+     until documented), recorded deals as UNVERIFIED track-record lines, all
+     through the track-record importer's own gates. Best-effort by contract: a
+     failure here never fails the build that paid for the data. */
+  let historyImport = null;
+  try {
+    const all = await require('../lib/elementix/deep-history').importAfterBuild({ personId, staffId: req.actor.id });
+    /* THE RESPONSE IS SCOPED EVEN THOUGH THE WRITE IS NOT (pre-merge audit
+       2026-08-19). The import itself correctly lands on EVERY linked borrower
+       — the data belongs on the borrower's own record whoever pressed Build —
+       but this route only needs the person to be visible through ONE
+       relationship, so echoing every linked borrower's id + import counts
+       would hand officer A a borrower id and activity that belongs to officer
+       B's book (`recordScope` would refuse to open that record). Same
+       discipline as `/people/:id/contact`: when a route must stay open,
+       narrow what it SAYS. Invisible borrowers fold into an anonymous
+       aggregate so the screen can still say the work happened. */
+    const visible = [];
+    const others = { count: 0, imported: 0, merged: 0, entitiesAdded: 0, leftForReview: 0 };
+    for (const e of (all || [])) {
+      const scope = await recordScope(req, 'borrower', e.borrowerId);
+      if (scope.allowed) { visible.push(e); continue; }
+      others.count += 1;
+      for (const k of ['imported', 'merged', 'entitiesAdded', 'leftForReview']) others[k] += Number(e[k]) || 0;
+    }
+    historyImport = { borrowers: visible, others: others.count ? others : null };
+  } catch (_) { historyImport = null; }
   const view = await profile.readProfile(personId);
-  res.json({ ...out, profile: view.ok ? view : null });
+  res.json({ ...out, profile: view.ok ? view : null, historyImport });
 });
 
 router.get('/people/:personId/aliases', async (req, res) => {
@@ -913,7 +944,22 @@ router.post('/link', async (req, res) => {
   const r = await db.query(sql, [recordId, personId]);
   if (!r.rowCount) return res.status(404).json({ error: 'That record could not be found.' });
   await audit(req, 'elementix_link_set', { kind, recordId, personId, replaced: b.replace === true }, recordId);
-  res.json({ ok: true, personId: r.rows[0].elementix_person_id, changed: r.rows[0].elementix_person_id === personId });
+  /* LINKING A BORROWER LANDS THE CACHED HISTORY RIGHT AWAY (owner-directed
+     2026-08-19) — the link is the human judgement that this Elementix person IS
+     this borrower, and everything a build already cached (companies, recorded
+     deals) belongs on their profile from that moment. Cache-only, so it costs
+     nothing; a person with no profile built yet imports on their first build.
+     Best-effort: a failure here never fails the link. */
+  let historyImport = null;
+  if (kind === 'borrower' && r.rows[0].elementix_person_id === personId) {
+    try {
+      historyImport = require('../lib/elementix/deep-history')
+        .summarizeImport(await require('../lib/elementix/deep-history').importFromCache({
+          borrowerId: recordId, personId, staffId: req.actor.id,
+        }));
+    } catch (_) { historyImport = null; }
+  }
+  res.json({ ok: true, personId: r.rows[0].elementix_person_id, changed: r.rows[0].elementix_person_id === personId, historyImport });
 });
 
 /** What is attached to this lead / borrower, and its profile if there is one. */
@@ -963,6 +1009,49 @@ router.get('/for/:kind/:recordId', async (req, res) => {
   const candidates = view.ok ? await profile.openAliasCandidates(view.personId) : [];
   res.json({ linked: true, personId, contact,
     profile: view.ok ? { ...view, aliasCandidates: candidates } : null });
+});
+
+// ---------------------------------------------------------------------------
+// THE LEAD'S PHONE BOOK — the call-log picker and the working / not-working
+// marks (owner-directed 2026-08-19). lib/elementix/lead-phones.js is the one
+// definition of the union (the lead's own numbers + everything the unlock
+// holds, deduped by the plane's shared phoneKey) and of the mark upsert; the
+// lead activity route in routes/staff.js delegates to the SAME functions, so
+// the picker, the panel and a verdict riding a call log can never disagree.
+// Mounted HERE, not on /api/staff/leads, because the union reads the stored
+// contact and only this router (+ lib/elementix) may — which also means these
+// routes inherit the internal-only door, the external-staff refusal and the
+// per-officer throttle for free. A mark NEVER removes a number.
+// ---------------------------------------------------------------------------
+const leadPhones = require('../lib/elementix/lead-phones');
+
+router.get('/leads/:leadId/phones', async (req, res) => {
+  const leadId = str(req.params.leadId);
+  if (!isUuid(leadId)) return res.status(400).json({ error: 'That record could not be found.' });
+  const scope = await recordScope(req, 'lead', leadId);
+  if (!scope.allowed) return refuseScope(res, scope);
+  const out = await leadPhones.leadPhonesFor(leadId);
+  if (!out.found) return res.status(404).json({ error: 'That record could not be found.' });
+  res.json(out);
+});
+
+router.post('/leads/:leadId/phones/mark', async (req, res) => {
+  const b = req.body || {};
+  const leadId = str(req.params.leadId);
+  if (!isUuid(leadId)) return res.status(400).json({ error: 'That record could not be found.' });
+  const scope = await recordScope(req, 'lead', leadId);
+  if (!scope.allowed) return refuseScope(res, scope);
+  const out = await leadPhones.markLeadPhone({
+    leadId, phone: b.phone, status: b.status, rightPerson: b.rightPerson, staffId: req.actor.id,
+  });
+  if (!out.ok) {
+    if (out.reason === 'unknown_number') return res.status(400).json({ error: "That number is not one of this lead's phone numbers." });
+    if (out.reason === 'not_found') return res.status(404).json({ error: 'That record could not be found.' });
+    return res.status(400).json({ error: 'A mark is working, not working, or clear.' });
+  }
+  await audit(req, 'elementix_lead_phone_mark',
+    { leadId, phoneKey: out.key, status: out.mark.status, rightPerson: out.mark.rightPerson }, leadId);
+  res.json(out);
 });
 
 module.exports = router;

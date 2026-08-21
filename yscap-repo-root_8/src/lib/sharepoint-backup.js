@@ -1528,7 +1528,10 @@ async function verifyBatch(limit) {
     `SELECT id, filename, content_type, storage_ref, storage_provider, size_bytes, sha256,
             sharepoint_backup_ref, sharepoint_parent_id, sharepoint_web_url,
             sharepoint_backed_up_at,
-            application_id, borrower_id, doc_kind, slot_label, is_current
+            -- source_type says WHO made this file, which decides what a person can
+            -- actually do about a damaged one: chase whoever sent it, or re-run
+            -- the export that produced it.
+            application_id, borrower_id, doc_kind, slot_label, is_current, source_type
        FROM documents
       WHERE sharepoint_backup_ref IS NOT NULL
         -- Audit mirrored docs on EVERY provider (bytes read via the storage layer).
@@ -1540,11 +1543,24 @@ async function verifyBatch(limit) {
   return rows;
 }
 
+// Verdicts that must stay in the audit rotation instead of being exiled for the
+// full VERIFY_RECHECK_DAYS window — stamped "re-check tomorrow" (backdated, so
+// they also leave the head of the NULLS FIRST queue):
+//   verify-error — a transient failure; the answer isn't known yet.
+//   item-missing — the copy is not where we last saw it, and the ONE thing that
+//     puts it back is a person: restoring it from the SharePoint recycle bin
+//     (which keeps the driveItem id), re-uploading it, or moving it home. A
+//     30-day exile meant a copy restored an hour later stayed "missing" for a
+//     month, with the loan officer's card open the whole time — sync-review-
+//     recheck can only close that card on a good integrity verdict, and only
+//     this pass writes one. Re-checking daily costs one metadata read per
+//     affected document, and the population is by definition tiny (it makes the
+//     mirror report unhealthy). The review row is deduped per document and a
+//     dismissal sticks, so nothing re-notifies.
+const RECHECK_SOON_RE = /^verify-error|^item-missing$/;
+
 async function stampVerdict(id, verdict, extra = {}) {
-  // A transient verify ERROR must not push the doc out of the audit rotation
-  // for the full recheck window — stamp it as "re-check tomorrow" instead
-  // (backdated so it also leaves the head of the NULLS FIRST queue).
-  const isError = /^verify-error/.test(String(verdict));
+  const recheckSoon = RECHECK_SOON_RE.test(String(verdict));
   await db.query(
     `UPDATE documents SET
         sharepoint_verified_at = CASE WHEN $5 THEN now() - make_interval(days => ${VERIFY_RECHECK_DAYS - 1}) ELSE now() END,
@@ -1553,7 +1569,7 @@ async function stampVerdict(id, verdict, extra = {}) {
         sharepoint_item_size = COALESCE($4, sharepoint_item_size)
       WHERE id = $1`,
     [id, String(verdict).slice(0, 200), extra.sha256 || null,
-     extra.itemSize != null ? Number(extra.itemSize) : null, isError]);
+     extra.itemSize != null ? Number(extra.itemSize) : null, recheckSoon]);
 }
 
 async function auditLogVerify(row, action, details) {
@@ -1572,8 +1588,108 @@ async function auditLogVerify(row, action, details) {
 // copy" verdict on those.
 const SOURCE_MISSING_RE = /ENOENT|no such file|NoSuchKey|s3 (read|stream) failed \(HTTP 404\)/i;
 
+// ------------------------------------------------- re-find a moved mirror copy
+// ROOT FIX (owner-reported 2026-08-20, a signed assignment reported "no longer
+// in SharePoint"): the mirror held exactly ONE handle on its SharePoint copy —
+// the driveItem id in documents.sharepoint_backup_ref — and treated a single
+// Graph 404 on it as proof the copy had been deleted. A driveItem id survives a
+// rename and an in-drive move; it does NOT survive a delete-then-restore, a
+// re-upload, or a drag through an Explorer/OneDrive-synced folder (a
+// create+delete server-side). All three leave the document sitting in the drive
+// while the audit reports it gone, parks it (nothing re-mirrors a doc whose
+// sharepoint_backed_up_at is set — see pendingBatch/neverAttemptedStrays/
+// stuckDocuments) and emails the loan officer.
+//
+// Every mirrored item already carries a durable identity stamp for exactly this
+// case (uploadAndRecord → sp.stampItemFields, "so the link survives ANY human
+// rename/move") — it was written and never read. This LOOKS for the copy before
+// crying wolf, using two read-only probes, cheapest first:
+//   1. its own folder, its own name — the restored / re-uploaded copy, back
+//      where it belongs with a fresh id. Accepted ONLY if Graph says our app
+//      created it, so a human's same-named file is never adopted.
+//   2. the PilotDocumentId stamp, drive-wide — the copy that moved to another
+//      folder and came back with a new id. The exact stamp match IS the proof
+//      of ownership, so no further test is needed.
+// A hit re-points the row and the verify continues against the found item, so
+// the normal size/hash comparison still has to pass — a relocation is never
+// taken as a clean bill of health. No hit → the old behaviour, unchanged.
+const RELOCATE_TIMEOUT_MS = 25000;
+
+// The mirror copy's own file NAME, recovered from the webUrl we recorded for it
+// (the mirrored name is derived — echo-stripped, sanitized, possibly trimmed or
+// uniquified — so it is NOT documents.filename and cannot be re-derived here
+// without re-running that whole pipeline). Pure; exported for the unit test.
+function mirrorNameFromWebUrl(webUrl) {
+  const u = String(webUrl == null ? '' : webUrl).split('#')[0].split('?')[0];
+  if (!u) return null;
+  let last = u.slice(u.lastIndexOf('/') + 1);
+  try { last = decodeURIComponent(last); } catch (_) { /* keep the raw segment */ }
+  last = last.trim();
+  // Must look like a file, not a folder/aspx viewer URL — a wrong guess here
+  // would probe a name that cannot exist and simply miss, but this keeps the
+  // Graph call out of the obviously-hopeless cases.
+  if (!last || !/\.[A-Za-z0-9]{1,12}$/.test(last) || /\.aspx$/i.test(last)) return null;
+  return last;
+}
+
+async function relocateMirror(row) {
+  let driveId, oldItemId;
+  try { ({ driveId, itemId: oldItemId } = sp.parseRef(row.sharepoint_backup_ref)); }
+  catch (_) { return null; }
+
+  const probes = [];
+  const name = mirrorNameFromWebUrl(row.sharepoint_web_url);
+  if (row.sharepoint_parent_id && name) {
+    probes.push({
+      how: 'back in its own folder under its own name',
+      run: () => sp.itemMetaByName(driveId, row.sharepoint_parent_id, name),
+      // Provenance is NOT proven by name+folder alone — require Graph's own
+      // createdBy so a human's same-named file is never claimed as our mirror.
+      requiresOurProvenance: true,
+    });
+  }
+  if (cfg.sharepointStampMetadata) {
+    probes.push({
+      how: 'its PilotDocumentId stamp',
+      run: () => sp.findByPilotDocumentId(driveId, row.id),
+      requiresOurProvenance: false,   // the stamp match IS the proof
+    });
+  }
+
+  for (const p of probes) {
+    let item = null;
+    try { item = await withTimeout(p.run(), RELOCATE_TIMEOUT_MS, `re-find (${p.how}) timed out`); }
+    catch (_) { continue; }          // 404 / throttle / anything — try the next probe
+    if (!item || !item.id || item.folder) continue;
+    if (item.id === oldItemId) continue;                              // the same dead id, not a relocation
+    if (p.requiresOurProvenance && !sp.createdByThisApp(item)) continue;
+    const newParent = (item.parentReference && item.parentReference.id) || null;
+    await db.query(
+      `UPDATE documents SET
+          sharepoint_backup_ref  = $2,
+          sharepoint_parent_id   = COALESCE($3, sharepoint_parent_id),
+          sharepoint_web_url     = COALESCE($4, sharepoint_web_url)
+        WHERE id = $1`,
+      [row.id, sp.makeRef(driveId, item.id), newParent, item.webUrl || null]);
+    // Keep the in-memory row honest: the caller goes on to compare bytes and may
+    // re-queue this row, and it must not act on the dead id.
+    row.sharepoint_backup_ref = sp.makeRef(driveId, item.id);
+    if (newParent) row.sharepoint_parent_id = newParent;
+    await auditLogVerify(row, 'sharepoint_mirror_relocated', {
+      filename: row.filename, how: p.how, oldItemId, newItemId: item.id,
+      newParentId: newParent, name: item.name });
+    console.log(`[sp-verify] doc ${row.id}: mirror copy re-found (${p.how}) — ref re-pointed ${oldItemId} → ${item.id}`);
+    return { item, how: p.how };
+  }
+  return null;
+}
+
 async function verifyRow(row) {
-  const { driveId, itemId } = sp.parseRef(row.sharepoint_backup_ref);
+  // `itemId` is re-bound when relocateMirror re-points a copy whose recorded id
+  // stopped resolving, so everything downstream (the corrupt-mirror audit entry)
+  // names the item that actually exists, never the dead id.
+  const { driveId } = sp.parseRef(row.sharepoint_backup_ref);
+  let { itemId } = sp.parseRef(row.sharepoint_backup_ref);
 
   let bytes;
   try {
@@ -1631,8 +1747,17 @@ async function verifyRow(row) {
   const expected = expectedKind(row.filename, row.content_type);
   const sniffed = sniffKind(bytes);
   const sourceSuspect = expected && BINARY_KINDS.includes(expected) && sniffed !== expected;
+  // WHO MADE THIS FILE decides what a person can do about it. "Request a fresh
+  // copy from whoever uploaded it" is unactionable nonsense on a document PILOT
+  // generated itself — a TPR export, a track-record snapshot, a draw report:
+  // nobody uploaded it, so nobody can re-send it. Those are re-made by re-running
+  // the export (owner-reported 2026-08-20 on TPR_YSCAP258134701_2026-07-21.zip).
+  const pilotMade = row.source_type === 'system' || isRegenKind(row.doc_kind);
+  const fixAdvice = pilotMade
+    ? 'PILOT generated this file itself, so there is nobody to ask for a fresh copy — re-run the export on the file to build it again.'
+    : 'It was already damaged when it was uploaded, so re-mirroring cannot fix it: request a fresh copy from whoever uploaded it.';
   const okVerdict = sourceSuspect
-    ? `source-suspect: content looks like ${sniffed || 'unrecognized data'}, not ${expected} — corrupted before upload; a fresh copy must be re-uploaded`
+    ? `source-suspect: content looks like ${sniffed || 'unrecognized data'}, not ${expected} — ${pilotMade ? 'PILOT generated it; re-run the export' : 'corrupted before upload; a fresh copy must be re-uploaded'}`
     : 'ok';
   if (sourceSuspect && row.is_current) {
     try {
@@ -1641,8 +1766,8 @@ async function verifyRow(row) {
         taskId: `spdoc:${row.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
         reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
         clickupValue: null,
-        portalValue: `${row.filename || 'document'} — the FILE ITSELF appears corrupted (content is ${sniffed || 'unrecognized data'}, not ${expected}). It was already damaged when it was uploaded, so re-mirroring cannot fix it: request a fresh copy from whoever uploaded it.`.slice(0, 400),
-        rawValue: JSON.stringify({ docId: row.id, kind: 'source-suspect', sniffed, expected }).slice(0, 500) });
+        portalValue: `${row.filename || 'document'} — the FILE ITSELF appears corrupted (content is ${sniffed || 'unrecognized data'}, not ${expected}). ${fixAdvice}`.slice(0, 400),
+        rawValue: JSON.stringify({ docId: row.id, kind: 'source-suspect', sniffed, expected, pilotMade }).slice(0, 500) });
     } catch (_) { /* visibility best-effort */ }
   }
 
@@ -1651,20 +1776,33 @@ async function verifyRow(row) {
     meta = await sp.itemMeta(driveId, itemId);
   } catch (e) {
     if (e.status === 404 || e.graphCode === 'itemNotFound') {
-      await stampVerdict(row.id, 'item-missing', { sha256: contentSha });
-      try {
-        await require('./sync-review').queueReview({
-          applicationId: row.application_id || null, borrowerId: row.borrower_id || null,
-          taskId: `spdoc:${row.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
-          reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
-          clickupValue: null,
-          portalValue: `${row.filename || 'document'} — its mirror copy is no longer in SharePoint (deleted or moved by a person). Retry re-mirrors it; dismiss keeps it un-mirrored.`.slice(0, 300),
-          rawValue: JSON.stringify({ docId: row.id, kind: 'item-missing' }).slice(0, 500) });
-      } catch (_) { /* visibility best-effort */ }
-      return 'item-missing';
+      // The recorded driveItem id no longer resolves — which is NOT the same
+      // fact as "the copy is gone". LOOK for it first (relocateMirror: its own
+      // folder + name, then the PilotDocumentId stamp we put on every mirrored
+      // item for exactly this). A hit re-points the ref and the verify carries
+      // on against the found item, so integrity is still proven, not assumed.
+      let relocated = null;
+      try { relocated = await relocateMirror(row); }
+      catch (err) { console.warn(`[sp-verify] doc ${row.id}: re-find failed (${err.message})`); }
+      if (!relocated) {
+        await stampVerdict(row.id, 'item-missing', { sha256: contentSha });
+        try {
+          await require('./sync-review').queueReview({
+            applicationId: row.application_id || null, borrowerId: row.borrower_id || null,
+            taskId: `spdoc:${row.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
+            reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
+            clickupValue: null,
+            portalValue: `${row.filename || 'document'} — its mirror copy is no longer in SharePoint (deleted or moved by a person), and it could not be found again by name or by its Pilot stamp. Retry re-mirrors it; dismiss keeps it un-mirrored.`.slice(0, 300),
+            rawValue: JSON.stringify({ docId: row.id, kind: 'item-missing' }).slice(0, 500) });
+        } catch (_) { /* visibility best-effort */ }
+        return 'item-missing';
+      }
+      meta = relocated.item;
+      itemId = relocated.item.id;
+    } else {
+      await stampVerdict(row.id, `verify-error: ${String(e.message).slice(0, 150)}`, { sha256: contentSha });
+      return 'verify-error';
     }
-    await stampVerdict(row.id, `verify-error: ${String(e.message).slice(0, 150)}`, { sha256: contentSha });
-    return 'verify-error';
   }
 
   // MALWARE-FLAGGED mirror (research, 2026-07-16): Microsoft scans uploads
@@ -2900,6 +3038,16 @@ module.exports = {
   REGEN_KIND_SQL, NEVER_MIRROR_SQL, snapshotSettleSec, DEFAULT_BATCH,
   // Exported for the pure unit test (scripts/test-sharepoint-shortpath.js).
   stripPathEchoes,
+  // The re-find that runs before an "item-missing" verdict, and the pure name
+  // recovery it depends on — exported for scripts/test-sp-item-missing-relocate-db.js.
+  relocateMirror, mirrorNameFromWebUrl,
+  // The audit's OWN selection SQL — exported so a test asserts that a verdict
+  // really does stay in the rotation, against the same query the pass runs.
+  // verifyRow rides along so a DB test can audit ONE row: verifyOnce sweeps every
+  // document in the database that is due, which in a shared test database means
+  // another suite's rows (answered by that test's Graph stubs, and its own row
+  // possibly pushed out of the batch). A test drives its OWN row through this.
+  verifyBatch, verifyRow,
   // Exported for the recategorize repair (scripts/sharepoint-recategorize-existing.js)
   // + the pure category test (scripts/test-sharepoint-category.js).
   categoryPathFor, scopeKeyFor, stateKeyFor,

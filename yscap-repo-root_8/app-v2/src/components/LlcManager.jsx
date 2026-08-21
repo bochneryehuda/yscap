@@ -5,6 +5,7 @@ import { fileToBase64 } from '../lib/files.js';
 import { onFilesDropped } from '../lib/drop-files.js';
 import { EmailInput } from './FormattedInputs.jsx';
 import { ENTITY_TYPES, describeEntity, entityTypeAssumed, titlesFor, subtypesFor } from '../lib/entityType.js';
+import { EntityRecordsStamp } from './track-record/RecordsStamp.jsx';
 
 /* One LLC, fully managed: entity details, ownership structure (the borrower's
    own % plus every other member until it totals 100%), and the three fixed
@@ -234,6 +235,10 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
       <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 8 }}>
         {!compactHeader && <div className="ent-name" style={{ fontSize: 17 }}>{llc.llc_name}</div>}
         <span className={`ts-badge ${badge.cls}`}>{badge.text}</span>
+        {/* The records stamp — this company came onto the profile from the
+            county public records (llcs.adopted_source='elementix'). A different
+            fact from "Verified ✓" (a human judged its papers), so both show. */}
+        <EntityRecordsStamp adoptedSource={llc.adopted_source} at={llc.adopted_at} />
         {(llc.completeness || {}).gs_expired &&
           <span className="ts-badge warn" title="The Certificate of Good Standing on file is more than 30 days old — upload a current one. The entity stays verified.">Good standing expired</span>}
         <div className="spacer" />

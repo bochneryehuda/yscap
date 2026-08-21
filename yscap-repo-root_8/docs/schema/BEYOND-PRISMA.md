@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**834 objects**, and a database rebuilt from the Prisma
+**844 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 588 numbered migrations in `db/` (highest `db/591`) remain the only thing that builds this database.
+rebuild a database from them.** The 598 numbered migrations in `db/` (highest `db/601`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 369 |
-| Columns | 5918 |
+| Tables | 371 |
+| Columns | 5947 |
 | Triggers | 35 |
 | Functions | 138 |
-| CHECK constraints | 303 |
+| CHECK constraints | 306 |
 | Generated columns | 12 |
-| Partial indexes | 346 |
-| Primary keys | 369 |
-| Foreign keys | 772 |
+| Partial indexes | 353 |
+| Primary keys | 371 |
+| Foreign keys | 777 |
 | Unique constraints | 47 |
-| Indexes (all kinds) | 1254 |
+| Indexes (all kinds) | 1265 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -227,7 +227,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (346)
+## Partial indexes (353)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -236,8 +236,10 @@ the live database.
 - **arena_messages_pinned_idx** on `arena_messages`
 - **arena_prizes_slug_idx** on `arena_prizes`
 - **arena_sessions_one_live_idx** on `arena_sessions`
+- **arena_sessions_setup_day_open_uk** on `arena_sessions`
 - **arena_spins_deadline_idx** on `arena_spins`
 - **arena_spins_launch_idx** on `arena_spins`
+- **arena_spins_session_template_uk** on `arena_spins`
 - **arena_tickets_one_per_entry_idx** on `arena_tickets`
 - **borrower_assistants_borrower_idx** on `borrower_assistants`
 - **borrower_assistants_email_uk** on `borrower_assistants`
@@ -281,6 +283,7 @@ the live database.
 - **idx_audit_detail_application** on `audit_log`
 - **idx_audit_impersonator** on `audit_log`
 - **idx_borrower_dedup_open** on `borrower_dedup_candidates`
+- **idx_borrowers_elx_import_due** on `borrowers`
 - **idx_borrowers_elx_person** on `borrowers`
 - **idx_borrowers_name_review** on `borrowers`
 - **idx_borrowers_name_unchecked** on `borrowers`
@@ -501,6 +504,10 @@ the live database.
 - **market_areas_name_uk** on `market_areas`
 - **market_areas_where_idx** on `market_areas`
 - **reminders_due_idx** on `reminders`
+- **scheduled_sends_due_idx** on `scheduled_sends`
+- **scheduled_sends_one_pending_uk** on `scheduled_sends`
+- **trc_imported_line_idx** on `track_record_candidates`
+- **trc_merged_line_idx** on `track_record_candidates`
 - **uq_ai_suggestions_open_dedupe** on `ai_suggestions`
 - **uq_amc_comments_amc_id** on `amc_order_comments`
 - **uq_amc_documents_amc_id** on `amc_order_documents`
@@ -576,7 +583,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (303)
+## CHECK constraints (306)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -764,6 +771,7 @@ the live database.
 - **label_training_runs_target_project_check** on `label_training_runs`
 - **lead_activities_activity_type_check** on `lead_activities`
 - **lead_activities_direction_check** on `lead_activities`
+- **lead_phone_marks_status_check** on `lead_phone_marks`
 - **leads_status_check** on `leads`
 - **llc_borrowers_shares_check** on `llc_borrowers`
 - **llc_external_links_confidence_check** on `llc_external_links`
@@ -836,6 +844,8 @@ the live database.
 - **reminders_status_chk** on `reminders`
 - **request_audit_log_actor_kind_check** on `request_audit_log`
 - **rv_orders_property_upload_type_check** on `rv_orders`
+- **scheduled_sends_kind_chk** on `scheduled_sends`
+- **scheduled_sends_status_chk** on `scheduled_sends`
 - **section_1071_coverage_classification_check** on `section_1071_coverage`
 - **sitewire_inspection_rules_inspection_method_check** on `sitewire_inspection_rules`
 - **sitewire_job_item_links_state_check** on `sitewire_job_item_links`
@@ -882,7 +892,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (772)
+## Foreign keys (777)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1331,6 +1341,8 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lead_activities** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **lead_notes** → `leads` — `FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE`
 - **lead_notes** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **lead_phone_marks** → `leads` — `FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE`
+- **lead_phone_marks** → `staff_users` — `FOREIGN KEY (marked_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **lead_tasks** → `staff_users` — `FOREIGN KEY (assignee_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **lead_tasks** → `staff_users` — `FOREIGN KEY (created_by_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **lead_tasks** → `leads` — `FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE`
@@ -1546,6 +1558,9 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **rv_write_log** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL`
 - **rv_write_log** → `rv_orders` — `FOREIGN KEY (rv_order_row) REFERENCES rv_orders(id) ON DELETE SET NULL`
 - **rv_write_log** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **scheduled_sends** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **scheduled_sends** → `staff_users` — `FOREIGN KEY (cancelled_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **scheduled_sends** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **section_1071_coverage** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
 - **sent_emails** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
 - **sent_emails** → `notifications` — `FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE`
@@ -1730,7 +1745,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 369 primary keys and 1254 indexes is
+Every one of the 371 primary keys and 1265 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

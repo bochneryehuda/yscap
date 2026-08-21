@@ -2780,7 +2780,16 @@ const pricingSettings = require('../lib/pricing-settings');
 // 2026-08-07). Pure — it decides what these emails SHOW; it never computes a pricing number.
 const pricingEmail = require('../lib/email/pricing-email');
 function sanitizeOverrides(req, raw) {
-  return sanitizeStaffOverrides(req.actor && req.actor.role, raw);
+  // The company defaults are passed so a knob that merely RESTATES one is
+  // normalized to the studio's explicit-blank contract instead of being frozen
+  // onto the file as a per-file override (owner-reported 2026-08-20 — the
+  // "I changed the markup and every file still prices at the old one / every
+  // registration comes up as an exception" report). Price-neutral by
+  // construction: an exact restatement resolves to the same number through the
+  // company default. A cold/unreadable cache leaves the payload untouched.
+  let defaults = null;
+  try { defaults = pricingSettings.current(); } catch (_) { defaults = null; }
+  return sanitizeStaffOverrides(req.actor && req.actor.role, raw, defaults);
 }
 // The admin-zone knobs this payload moved off the company default — the list an
 // admin is being asked to approve. Reads the company pricing singleton; a cold
@@ -2842,6 +2851,31 @@ router.get('/applications/:id/pricing', async (req, res) => {
          FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
         WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
     const current = hist.rows.find((x) => x.is_current) || null;
+    /* A REGISTERED ADMIN KNOB THAT ONLY RESTATED THAT DAY'S COMPANY DEFAULT MUST
+       NOT RE-ARM THE STUDIO (owner-reported 2026-08-20). The panel prefills its
+       admin boxes from THIS row (`adminStateFromEngineInputs`), so a file that
+       was registered while the company markup was 0.4 would paint 0.4 back into
+       the box — and re-registering would both re-freeze it and read as a
+       discount against today's 0.5, which is the "every registration goes for an
+       exception" half of the report. The historical company defaults are a FACT
+       in the append-only settings history, so the same rule the server and
+       db/600 apply is applied here: a knob that exactly restated the default in
+       force when this registration was created is blanked, and `put()` skips a
+       blank — so the box opens empty and prices at the LIVE company default. A
+       value that DIFFERS from that day's default is a real exception somebody
+       entered and is restored untouched. Best-effort: an unreadable history
+       classifies nothing and the row is passed through exactly as before. Only
+       the COPY the studio prefills from is touched — `product_registrations` is
+       never rewritten, so the record of what the file was priced at stands. */
+    if (current && current.inputs && typeof current.inputs === 'object') {
+      try {
+        const thenDefaults = await pricingSettings.asOf(current.created_at);
+        if (thenDefaults) {
+          current.inputs = require('../lib/pricing-overrides')
+            .normalizeCompanyDefaultKnobs(current.inputs, thenDefaults);
+        }
+      } catch (_) { /* classify nothing — restore the row as-is */ }
+    }
     let quote = null;
     if (pricing.enginesReady()) { try { quote = pricing.quoteAll(f.app, f.exp); quote.experience = f.exp; } catch (_) {} }
     // Manual-product state: the current escalation (pending / decided) + the
@@ -5256,6 +5290,62 @@ router.get('/applications/:id/export/corrfirst-track-record', async (req, res) =
   }
 });
 
+// ============ EMCAP pricing & eligibility tool (the investor's own sheet) =====
+// EMCAP's RTL Seller Pricing & Eligibility Tool — their workbook, their formulas,
+// with this loan's inputs typed into the yellow cells so their own tabs price it
+// and rule on it when they open the file. This is the question asked BEFORE the
+// sale ("would EMCAP take this loan, and at what rate"), so it is deliberately NOT
+// a data tape: no tape registry, no tape export gate, its own section of Send to
+// investor. All of the shaping lives in src/lib/tapes/emcap-pricing-tool.js.
+//
+// Readiness preview — every value that will go into a yellow cell, and every cell
+// that will ship EMPTY with the reason, BEFORE the file is built.
+router.get('/applications/:id/export/emcap-pricing-tool/preview', async (req, res) => {
+  try {
+    const out = await require('../lib/tapes/emcap-pricing-tool').previewEmcapPricingTool(req.params.id, db);
+    if (!out) return res.status(404).json({ error: 'application not found' });
+    res.json(out);
+  } catch (e) {
+    console.error('[emcap-pricing-tool] preview failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+// The download. Same issuance backstop as the TPR / MISMO / CorrFirst exports
+// beside it — a confirmed-fatal file is a super-admin-overridable HARD WARNING
+// before this borrower's figures leave for a capital partner. Fails OPEN on no run.
+router.get('/applications/:id/export/emcap-pricing-tool', async (req, res) => {
+  try {
+    const issuance = await issuanceBackstop.backstopForRun(req.params.id, 'term_sheet', db, { actorRole: req.actor.role, overrideReason: req.query && req.query.overrideReason });
+    if (issuance.hardWarning && !issuance.proceed) {
+      return res.status(409).json({ error: 'blocked', action: 'export_emcap_pricing_tool', issuance });
+    }
+    if (issuance.override && issuance.override.applied) {
+      await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_emcap_pricing_tool', tier: issuance.tier, reason: issuance.override.reason });
+      await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_emcap_pricing_tool: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_emcap_pricing_tool', tier: issuance.tier || null, at: new Date().toISOString() } });
+    }
+    const out = await require('../lib/tapes/emcap-pricing-tool').buildEmcapPricingTool(req.params.id, db);
+    if (!out) return res.status(404).json({ error: 'application not found' });
+    if (!out.availability.available) {
+      return res.status(409).json({ error: 'not_emcap', message: out.availability.why });
+    }
+    // What was filled and what shipped blank rides on the AUDIT ROW: a workbook has
+    // nowhere to put a note, so this is the only durable record of what EMCAP was
+    // sent and of every cell we could not answer.
+    await audit(req, 'export_emcap_pricing_tool', 'application', req.params.id, {
+      bytes: out.buf.length,
+      filled: out.filled.map((f) => `${f.cell}=${f.display}`),
+      gaps: out.gaps.map((g) => `${g.cell}: ${g.why}`),
+      classification: out.classification,
+    });
+    res.set('Content-Type', out.contentType);
+    res.set('Content-Disposition', `attachment; filename="${out.filename}"`);
+    res.send(out.buf);
+  } catch (e) {
+    console.error('[emcap-pricing-tool] export failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'export failed' });
+  }
+});
+
 // ============================ Capital-provider data tapes =====================
 // A "data tape" is one capital provider's required loan export — their own Excel
 // workbook with our loan's figures typed into its data-entry row so the provider's
@@ -6353,7 +6443,10 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       }
       const data = await orders.getOrderData(appId);
       if (!data) return res.status(404).json({ error: 'not found' });
-      if (!data.vendors[kind] || !data.vendors[kind].email) {
+      // ONE reading of "does this vendor have an address" — orders.vendorEmails,
+      // which folds the legacy scalar with db/224's `emails` array. A second copy
+      // here is how a door refuses an order the send path would have delivered.
+      if (!orders.vendorEmails(kind, data).length) {
         return res.status(400).json({ error: `The ${kind === 'title' ? 'title company' : 'insurance agent'} contact is missing, so there is no one to reply to.`, code: 'contact' });
       }
       // THE SAME ADDRESS GATE THE FOLLOW-UP DOOR USES. A reply re-states the property
@@ -6676,7 +6769,12 @@ router.get('/applications/:id/orders', async (req, res) => {
         orderType: k,
         status: row ? row.status : 'not_ordered',
         blockers: orders.blockers(k, data),
-        vendor: vendor ? { id: vendor.id, name: vendor.company_name || vendor.contact_name, email: vendor.email, phone: vendor.phone, contactName: vendor.contact_name } : null,
+        // EVERY address the order will go to, not just the primary — the desk has to
+        // show what will actually be mailed, or "all emails are included" is a claim
+        // nobody can check before pressing Send (owner-directed 2026-08-20).
+        vendor: vendor ? { id: vendor.id, name: vendor.company_name || vendor.contact_name,
+          email: orders.vendorEmails(k, data)[0] || null, emails: orders.vendorEmails(k, data),
+          phone: vendor.phone, contactName: vendor.contact_name } : null,
         orderedAt: row ? row.ordered_at : null,
         lastFollowupAt: row ? row.last_followup_at : null,
         followupCount: row ? row.followup_count : 0,
@@ -6903,6 +7001,101 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Could not send the order.' }); }
 });
 
+/* ── SCHEDULE AN ORDER FOR LATER (owner-directed 2026-08-20) ────────────────
+   "If somebody wants to work in the middle of the night but he wants it to go
+   out in the morning … just add an additional option with the small icon, like
+   a time to schedule the email instead of ordering it immediately."
+
+   THE AUTHORIZATION HERE IS THE SAME AS THE SEND'S, and it is checked TWICE on
+   purpose: once here, so nobody can queue a send on a file they cannot open, and
+   again at the due moment, because the route the dispatcher re-enters does its
+   own `canTouchApp` against the actor as it is THEN. Scheduling is not a way to
+   bank authority you are about to lose.
+
+   THE BLOCKERS ARE A WARNING HERE, NOT A REFUSAL. Somebody scheduling tonight's
+   order for 8am may be about to add the title contact, or waiting on the USPS
+   verification — refusing would make the feature useless in exactly the case it
+   was asked for. What must never happen is a silent one: the response NAMES what
+   is still outstanding so the screen can say "this will not go out unless you
+   also…", and if it is still outstanding at 8am the send refuses and tells the
+   person who scheduled it. The one thing refused outright is an order that has
+   ALREADY gone — there is nothing left to schedule. */
+router.post('/applications/:id/orders/:kind/schedule', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const sched = require('../lib/scheduled-sends');
+    const b = req.body || {};
+    const at = sched.parseNyLocal(b.day, b.time);
+    const bad = sched.whenProblem(at);
+    if (bad) return res.status(400).json({ error: bad.error, code: bad.code });
+
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const dead = await deadFileOrderReason(appId);
+    if (dead) return res.status(422).json({ error: dead, code: 'file_closed' });
+    const existing = (await db.query(
+      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    const force = b.force === true || b.force === 'true';
+    if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
+      return res.status(409).json({ error: `This ${kind} order was already sent. Use Follow-up, or force a re-send.`, code: 'already_ordered' });
+    }
+
+    // The PAYLOAD is the body the place route would have received — nothing more.
+    // `ccBorrower` is carried as the person's explicit choice ONLY when they made
+    // one, so an unset checkbox still resolves through the officer's own default
+    // at send time rather than being frozen to whatever it happened to be tonight.
+    const payload = { force: !!force };
+    if (b.ccBorrower != null) payload.ccBorrower = b.ccBorrower === true || b.ccBorrower === 'true';
+
+    const out = await require('../lib/scheduled-sends').schedule({
+      appId, kind: kind === 'title' ? 'title_order' : 'insurance_order',
+      at, payload, actorId: req.actor.id,
+    });
+    if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
+    try { await audit(req, 'order_scheduled', 'application', appId, { kind, sendAt: at.toISOString(), force: !!force }); } catch (_) { /* recorded either way */ }
+    res.json({ ok: true, scheduled: out.row, warnings: orderScheduleWarnings(kind, data) });
+  } catch (e) { res.status(500).json({ error: 'Could not schedule that order.' }); }
+});
+
+/* What would stop this order going out if nothing changes. The SAME
+   `orders.blockers` the send path reads, turned into the same sentences the
+   place route answers with — so the warning a person sees tonight is word for
+   word the refusal they would get if they pressed Send now. */
+function orderScheduleWarnings(kind, data) {
+  const out = [];
+  const blk = orders.blockers(kind, data);
+  if (blk.includes('loan_number')) out.push('Add the file’s loan number — it prints in the mortgage clause.');
+  if (blk.includes('contact')) out.push(`Add the ${kind === 'title' ? 'title company' : 'insurance agent'} contact.`);
+  if (blk.includes('usps')) out.push('Import the USPS-verified property address.');
+  return out;
+}
+
+/* ── WHAT IS QUEUED ON THIS FILE ──────────────────────────────────────────── */
+router.get('/applications/:id/scheduled-sends', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    res.json(await require('../lib/scheduled-sends').listForApp(appId));
+  } catch (e) { res.status(500).json({ error: 'Could not read the scheduled sends.' }); }
+});
+
+/* Take one back out of the queue. Anyone who can work the file can cancel it —
+   the same people who could have sent it now. */
+router.post('/applications/:id/scheduled-sends/:sid/cancel', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const out = await require('../lib/scheduled-sends').cancel({ id: req.params.sid, appId, actorId: req.actor.id });
+    if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
+    try { await audit(req, 'scheduled_send_cancelled', 'application', appId, { id: req.params.sid }); } catch (_) { /* recorded either way */ }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'Could not cancel that.' }); }
+});
+
+
 // Send a follow-up on an existing order (same thread, to the vendor + CC chain).
 // Never the first contact — the order must already be placed.
 router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
@@ -6917,7 +7110,7 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     }
     const data = await orders.getOrderData(appId);
     if (!data) return res.status(404).json({ error: 'not found' });
-    if (!data.vendors[kind] || !data.vendors[kind].email) return res.status(400).json({ error: 'The vendor contact is missing.', code: 'contact' });
+    if (!orders.vendorEmails(kind, data).length) return res.status(400).json({ error: 'The vendor contact is missing.', code: 'contact' });
     // A follow-up re-sends the current property address; if the address was edited
     // after the order (which re-opens the USPS condition), block it until re-imported.
     if (data.uspsGate && !data.uspsImported) return res.status(422).json({ error: `The property address is no longer USPS-verified. Re-verify and import it in “USPS Address Verification” before following up on the ${kind} order, so the vendor never gets an unverified address.`, code: 'usps' });
@@ -7794,6 +7987,64 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
     res.status(500).json({ error: 'Could not send the closing-prep request.' });
   }
 });
+
+/* ── SCHEDULE THE CLOSING-PREP REQUEST FOR LATER (owner-directed 2026-08-20) ──
+   Same shape as the order scheduler above and the same reasoning: the intent is
+   queued, and the REAL send route runs at the due moment. That matters more here
+   than anywhere else, because this email carries the closing PACKAGE — the term
+   sheet, the contract, the entity documents, the insurance invoice, the ID. A
+   package frozen tonight is a package missing whatever lands at 7am; re-entering
+   the route means `gatherPackage` runs fresh and outside counsel receives the
+   file as it stands when the email actually goes. */
+router.post('/applications/:id/closing-prep/schedule', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const sched = require('../lib/scheduled-sends');
+    const b = req.body || {};
+    const at = sched.parseNyLocal(b.day, b.time);
+    const bad = sched.whenProblem(at);
+    if (bad) return res.status(400).json({ error: bad.error, code: bad.code });
+
+    const data = await closingPrep.getClosingPrepData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const force = b.force === true || b.force === 'true';
+    const existing = (await db.query(
+      `SELECT status FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0];
+    if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
+      return res.status(409).json({ error: 'The closing-prep request has already gone out. Use Follow-up, or force a re-send.', code: 'already_ordered' });
+    }
+
+    // The extra addresses and the note are the person's own words and travel
+    // verbatim; the DOCUMENTS deliberately do not — they are gathered at send
+    // time, which is the whole point of scheduling the intent.
+    const payload = { force: !!force };
+    const extra = cleanEmailList(b.extraEmails);
+    if (extra.length) payload.extraEmails = extra;
+    const note = String(b.note || '').trim().slice(0, 4000);
+    if (note) payload.note = note;
+
+    const out = await sched.schedule({ appId, kind: 'closing_prep', at, payload, actorId: req.actor.id });
+    if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
+    try { await audit(req, 'closing_prep_scheduled', 'application', appId, { sendAt: at.toISOString(), force: !!force }); } catch (_) { /* recorded either way */ }
+
+    // Warn on whatever would stop it, in the place route's own words. The package
+    // is read here ONLY to answer that question — a failure to read it is a
+    // warning, never a refusal to schedule.
+    let warnings = [];
+    try {
+      const pkg = await closingPrep.gatherPackage(appId);
+      const blk = closingPrep.blockers(data, pkg);
+      if (blk.includes('loan_number')) warnings.push('Add the file’s loan number.');
+      if (blk.includes('not_registered')) warnings.push('Register the product — the attorney needs a term sheet to draft from.');
+      if (blk.includes('term_sheet')) warnings.push('Generate the term sheet.');
+      if (blk.includes('attorney')) warnings.push('The closing attorney’s group inbox is not set up yet — ask an admin.');
+      if (blk.includes('usps')) warnings.push('Import the USPS-verified property address.');
+    } catch (_) { warnings = ['PILOT could not check this file’s documents just now — it will check again when the request goes out.']; }
+    res.json({ ok: true, scheduled: out.row, warnings });
+  } catch (e) { res.status(500).json({ error: 'Could not schedule the closing-prep request.' }); }
+});
+
 
 // A human follow-up ON THE SAME CHAIN. Never the first contact.
 router.post('/applications/:id/closing-prep/followup', async (req, res) => {
@@ -11036,6 +11287,7 @@ router.get('/borrowers/:id/track-records', async (req, res) => {
               t.purchase_date, t.sale_date, t.rent_amount, t.rent_date, t.refi_amount, t.refi_date,
               t.current_value, t.notes, t.is_verified, t.verified_at, t.docs_status,
               t.property_type, t.verification_status, t.lo_notes, t.owned_personally,
+              ${require('../lib/track-record/records-stamp').stampSelect('t')},
               COALESCE(t.entity_name, l.llc_name) AS entity_name, v.full_name AS verified_by_name,
               (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count,
               (SELECT COALESCE(json_agg(json_build_object(
@@ -11185,13 +11437,13 @@ router.get('/track-records/:id/documents', async (req, res) => {
       WHERE track_record_id=$1 AND is_current ORDER BY created_at`, [req.params.id]);
   res.json(r.rows);
 });
-// #112: valid track-record supporting-doc TYPEs (stored in documents.slot_label),
-// kept in sync with the borrower route + the tool's dropdown.
-const TR_DOC_TYPE_SET = new Set([
-  'Closing statement (HUD)', 'Deed', 'Recorded mortgage', 'Payoff statement',
-  'Lease', 'Property profile report', 'Other',
-]);
-const trDocType = (v) => (TR_DOC_TYPE_SET.has(String(v || '').trim()) ? String(v).trim() : null);
+// #112: the track-record supporting-doc TYPE (stored in documents.slot_label).
+// THE ONE DEFINITION is `lib/track-record/doc-request.resolveDocTypeLabel`, which
+// owns DOC_TYPES — this used to be a hand-typed list of seven LABELS while the
+// screen's dropdown sent SLUGS, so the type a staffer picked matched nothing and
+// was silently dropped on every upload (owner-directed 2026-08-20). It accepts a
+// slug or any known label and answers the canonical label.
+const trDocType = (v) => require('../lib/track-record/doc-request').resolveDocTypeLabel(v);
 router.post('/track-records/:id/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
@@ -11232,6 +11484,45 @@ router.post('/track-records/:id/documents', async (req, res) => {
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
+});
+
+/* SET (or clear) a track-record document's TYPE after it has landed
+   (owner-directed 2026-08-20: "whatever you drop, it should go in, and then you
+   can select if you want which document type").
+
+   THE TYPE COULD ONLY EVER BE CHOSEN BEFORE THE UPLOAD, which is exactly backwards
+   for a drag-and-drop: you drop three files onto a line and THEN say what they are.
+   A file dropped on a COLLAPSED ledger row has no dropdown to read at all, so
+   without this the drop would either have to be refused or file everything
+   untyped forever.
+
+   SCOPED TWICE, deliberately. `canSeeBorrowerId` is the ordinary permission gate;
+   the document is then pinned to the track record named in the path
+   (`d.track_record_id = $2`), so a document id belonging to another borrower's
+   line — or to a loan file — cannot be relabelled through this door however the
+   caller reached it. An unrecognised type answers 400 rather than storing free
+   text, and an empty value deliberately CLEARS it (mis-typing something is as
+   ordinary as typing it). */
+router.post('/track-records/:id/documents/:docId/type', async (req, res) => {
+  try {
+    const tr = (await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id])).rows[0];
+    if (!tr) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, tr.borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const raw = String((req.body || {}).docType == null ? '' : (req.body || {}).docType).trim();
+    const label = raw ? trDocType(raw) : null;
+    if (raw && !label) return res.status(400).json({ error: 'That is not a document type we recognise.' });
+    const upd = await db.query(
+      `UPDATE documents SET slot_label=$3 WHERE id=$1 AND track_record_id=$2 RETURNING id`,
+      [req.params.docId, req.params.id, label]);
+    if (!upd.rows[0]) return res.status(404).json({ error: 'document not found on this project' });
+    await audit(req, 'staff_set_track_record_doc_type', 'track_record', req.params.id,
+      { documentId: req.params.docId, docType: label });
+    // The mirrored copy's folder is named from this label, so a re-file is worth a
+    // nudge — best-effort, exactly like the upload above.
+    try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
+    require('../lib/events').publishTrackRecordUpdate(tr.borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
+    res.json({ ok: true, docType: label });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.get('/borrowers/:id/ssn', async (req, res) => {
   try {
@@ -12182,6 +12473,10 @@ router.get('/track-record-workspace', async (req, res) => {
       limit: Number(req.query.limit) || 40,
       filter: req.query.filter === 'all' ? 'all' : 'open',
       staffId: req.actor.id,
+      // One borrower's whole record (the full-screen link off a loan file).
+      // Shape-checked here so a malformed id is "no rows", never a pg 22P02
+      // that the catch below turns into "server error".
+      borrowerId: UUID_RE.test(String(req.query.borrower || '')) ? String(req.query.borrower) : null,
     }));
   } catch (e) { console.warn('[workspace]', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
@@ -12333,6 +12628,72 @@ router.post('/track-records/:id/research', async (req, res) => {
     require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json(out);
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+/* "SEE MORE INFORMATION" on one line (owner-directed 2026-08-19) — the
+   property's whole recorded story (deeds, mortgages, satisfactions, parties)
+   plus what the records could fill in. Reads through the SAME cached research
+   the Verify button uses, so a second click costs nothing; `refresh:true`
+   re-reads the county. STAFF-ONLY — the story names raw recorded parties. */
+router.post('/track-records/:id/more-info', async (req, res) => {
+  try {
+    // A malformed id is a 404, never a pg 22P02 surfacing as "server error".
+    if (!UUID_RE.test(String(req.params.id || ''))) return res.status(404).json({ error: 'not found' });
+    const own = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const out = await require('../lib/track-record/line-details').moreInfo(req.params.id, {
+      staffId: req.actor.id, refresh: (req.body || {}).refresh === true,
+    });
+    await audit(req, 'track_record_more_info', 'track_record', req.params.id,
+      { calls: out.calls, cached: out.cached, suggestions: (out.suggestions || []).length });
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+/* …and IMPORT what it found: fill the line's BLANK fields from the records —
+   COALESCE-only (a value anybody typed is never overwritten), through the
+   importer's own records→deal mapping, with the merge verb's confirm-to-reopen
+   guard on a verified line. */
+router.post('/track-records/:id/more-info/apply', async (req, res) => {
+  try {
+    if (!UUID_RE.test(String(req.params.id || ''))) return res.status(404).json({ error: 'not found' });
+    const own = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    const out = await require('../lib/track-record/line-details').applyFromRecords(req.params.id, {
+      staffId: req.actor.id,
+      fields: Array.isArray(b.fields) ? b.fields : null,
+      confirmReopen: b.confirmReopen === true,
+    });
+    await audit(req, 'track_record_records_fill', 'track_record', req.params.id,
+      /* The VALUES, not only the field names — "what figure did we write onto
+         this line, from the records, on that day" is the question this row has
+         to answer years later, and a list of column names cannot. */
+      { applied: (out.applied || []).map((a) => ({ field: a.field, value: a.value })), reopened: out.reopened === true });
+    if ((out.applied || []).length) {
+      /* A MATERIAL FILL UN-VERIFIES THE LINE (db/485), SO THE COUNT THAT PRICES
+         THE DEAL JUST MOVED. Every other door that can move it recomputes the
+         tier and re-syncs the experience condition — the edit, the delete and
+         the verify routes all do, and so does the borrower's own search. This
+         one did neither, so `borrowers.tier` (a live Condition-Center rule
+         field, and part of the AI grounding block) kept quoting the old number
+         and a signed-off experience condition was never reopened. Same three
+         calls, same order, all best-effort. */
+      if (out.reopened === true) {
+        await db.query(
+          `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records
+              WHERE borrower_id=$1 AND is_verified=true AND (${RECENT_EXIT_SQL})) WHERE id=$1`,
+          [own.rows[0].borrower_id]).catch(() => {});
+        try { await require('../lib/experience').syncExperienceChecklistForBorrower(own.rows[0].borrower_id); } catch (_) { /* best effort */ }
+        try {
+          await conditionEngine.evaluateBorrowerApplications(own.rows[0].borrower_id,
+            { actor: req.actor, reason: 'track_record_unverified' });
+        } catch (_) { /* best effort */ }
+      }
+      require('../lib/events').publishTrackRecordUpdate(own.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
+    }
+    res.json(out);
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error', code: e.code, fields: e.fields }); }
 });
 router.post('/track-record-pillars/:id/decide', async (req, res) => {
   try {
@@ -16690,7 +17051,18 @@ router.patch('/leads/:id', async (req, res) => {
   // A leads-desk officer pick is a MANUAL assignment (#29). Stamp assigned_via='manual' when an
   // officer is set, and clear it back to NULL when the officer is removed, so the split stays honest.
   if (b.officerId !== undefined) { col('officer_id', b.officerId || null); col('assigned_via', b.officerId ? 'manual' : null); }
-  if (b.nextFollowUp !== undefined) col('next_follow_up', b.nextFollowUp || null);
+  // The two lead DATES go through the system-wide typed-date chokepoint
+  // (normalizeTypedDate): a 2-digit year typed into a date input arrives as year
+  // 0026 and used to be stored VERBATIM — this was the one date write path with
+  // no guard, and the save-per-keystroke follow-up box fed it mid-type
+  // intermediates (0002-08-25) that then round-tripped as "the date didn't
+  // save". A typed "26" now resolves to 2026; an unresolvable value is refused
+  // with a plain 400 naming the field; a blank still clears.
+  if (b.nextFollowUp !== undefined) {
+    const d = b.nextFollowUp ? require('../lib/fields').normalizeTypedDate(b.nextFollowUp) : null;
+    if (b.nextFollowUp && !d) return res.status(400).json({ error: 'Next follow-up must be a real calendar date (year 1900–2100)' });
+    col('next_follow_up', d);
+  }
   if (b.firstName !== undefined) col('first_name', String(b.firstName).trim() || null);
   if (b.lastName !== undefined) col('last_name', String(b.lastName).trim() || null);
   if (b.company !== undefined) col('company', b.company || null);
@@ -16704,7 +17076,11 @@ router.patch('/leads/:id', async (req, res) => {
   if (b.loanAmount !== undefined) col('loan_amount', (b.loanAmount !== '' && Number.isFinite(Number(b.loanAmount))) ? Number(b.loanAmount) : null);
   if (b.leadSource !== undefined) col('lead_source', b.leadSource || null);
   if (b.referralPartner !== undefined) col('referral_partner', b.referralPartner || null);
-  if (b.estimatedClose !== undefined) col('estimated_close', b.estimatedClose || null);
+  if (b.estimatedClose !== undefined) {
+    const d = b.estimatedClose ? require('../lib/fields').normalizeTypedDate(b.estimatedClose) : null;
+    if (b.estimatedClose && !d) return res.status(400).json({ error: 'Target close must be a real calendar date (year 1900–2100)' });
+    col('estimated_close', d);
+  }
   if (b.lostReason !== undefined) col('lost_reason', b.lostReason || null);
   if (Array.isArray(b.tags)) col('tags', b.tags.map(t => String(t).trim()).filter(Boolean).slice(0, 20));
   // Keep the flat `name` in sync when structured names change (legacy consumers).
@@ -16810,11 +17186,38 @@ router.post('/leads/:id/activities', async (req, res) => {
     // A logged activity may carry its own timestamp (e.g. "I called yesterday").
     let occurred = null;
     if (b.occurredAt && !Number.isNaN(Date.parse(b.occurredAt))) occurred = new Date(b.occurredAt).toISOString();
+    // A call/text may name WHICH of the lead's numbers was used (the phone
+    // picker — the lead's own numbers plus everything the Elementix unlock
+    // holds) and carry the officer's verdict on it: markWorking true/false
+    // and/or rightPerson true — the owner's rule that even an unanswered call
+    // can prove "this number works and reaches the right person". Membership
+    // and the mark upsert are the ONE definition in lib/elementix/lead-phones
+    // (this route may not read the stored contact itself — CRM-plane rule), so
+    // a junk number can't mint a mark row and never blocks a plain log: the
+    // number is only checked when one was actually sent.
+    let phoneMeta = null;
+    if (b.phone && (type === 'call' || type === 'sms')) {
+      const leadPhones = require('../lib/elementix/lead-phones');
+      const v = await leadPhones.validateLeadPhone(req.params.id, b.phone);
+      if (!v.ok) return res.status(400).json({ error: "That number is not one of this lead's phone numbers." });
+      phoneMeta = { phone_key: v.key, phone_display: v.display };
+      const markStatus = b.markWorking === true ? 'working' : b.markWorking === false ? 'not_working' : undefined;
+      if (markStatus !== undefined || b.rightPerson === true) {
+        await leadPhones.markLeadPhone({
+          leadId: req.params.id, phone: v.key, status: markStatus,
+          rightPerson: b.rightPerson === true ? true : undefined,
+          staffId: req.actor.id, recordActivity: false,   // the call row itself is the record
+        });
+        if (markStatus !== undefined) phoneMeta.mark_status = markStatus;
+        if (b.rightPerson === true) phoneMeta.right_person = true;
+      }
+    }
     const ins = await db.query(
-      `INSERT INTO lead_activities (lead_id, staff_id, activity_type, direction, subject, body, occurred_at)
-       VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::timestamptz, now()))
-       RETURNING id, activity_type, direction, subject, body, occurred_at, created_at`,
-      [req.params.id, req.actor.id, type, direction, subject || null, body.slice(0, 6000) || null, occurred]);
+      `INSERT INTO lead_activities (lead_id, staff_id, activity_type, direction, subject, body, occurred_at, meta)
+       VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::timestamptz, now()),$8::jsonb)
+       RETURNING id, activity_type, direction, subject, body, occurred_at, meta, created_at`,
+      [req.params.id, req.actor.id, type, direction, subject || null, body.slice(0, 6000) || null, occurred,
+        phoneMeta ? JSON.stringify(phoneMeta) : null]);
     // Logging real contact nudges a brand-new lead out of "new" and re-sorts it.
     await db.query(
       `UPDATE leads SET last_activity_at=now(), updated_at=now(),
@@ -18421,11 +18824,32 @@ router.post('/vendors/merge', async (req, res) => {
 // Keep this list in step with the copy in routes/borrower.js and the TYPES list in
 // app-v2/src/components/FileContacts.jsx — an unlisted type is coerced to 'other'.
 const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'settlement_agent', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
+
+/* TYPE-AHEAD OVER THE VENDOR DIRECTORY (owner-directed 2026-08-20: "we already
+   have a database from all the vendors that we're using across the board. Anywhere
+   you start typing … it gives you a lot of options of the insurance companies that
+   you can auto-populate all the information just by starting to type").
+
+   Scoped to a FILE, and that is the permission: `canTouchApp` is the same gate the
+   file-contacts routes use, so anybody who may edit this file's contacts may look
+   one up — the vendors ADMIN screen's `manage_vendors` would be the wrong gate
+   here, because the person filling in a title contact is usually the loan officer,
+   who does not hold it. What comes back is a vendor's business card and nothing
+   else: no `notes`, no borrower, no file. See lib/vendor-directory for why. */
+router.get('/applications/:id/vendor-suggest', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const app = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id])).rows[0];
+  if (!app) return res.status(404).json({ error: 'not found' });
+  const out = await require('../lib/vendor-directory').suggest({
+    type: req.query.type, q: req.query.q, borrowerId: app.borrower_id, audience: 'staff', limit: req.query.limit,
+  });
+  res.json(out);
+});
 router.get('/applications/:id/file-contacts', async (req, res) => {
   if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   const r = await db.query(
     `SELECT l.id AS link_id, sc.id AS contact_id, sc.contact_type, sc.custom_type,
-            sc.company_name, sc.contact_name, sc.email, sc.phone, sc.address, sc.notes,
+            sc.company_name, sc.contact_name, sc.email, sc.emails, sc.phone, sc.address, sc.notes,
             l.added_by_kind, l.created_at,
             s.full_name AS added_by_staff, NULLIF(b.full_name,'') AS added_by_borrower
        FROM application_service_contacts l
@@ -18447,10 +18871,26 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
   // guard the lookup itself).
   const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
   if (!app.rows[0]) return res.status(404).json({ error: 'not found' });
+  /* ADDITIONAL EMAIL ADDRESSES (owner-directed 2026-08-20: "we should be able to
+     add additional email addresses for vendors, and all emails should be included
+     when we send out the orders. In the condition, we should also be able to add
+     additional email addresses, which should be included for the insurance contact
+     and for title contact").
+
+     BOTH COLUMNS ARE WRITTEN, and that is not belt-and-braces — it is what keeps
+     every existing reader working. `email` (the scalar) is what the Orders desk
+     card, the vendors screen and a dozen queries display; `emails` (db/224) is the
+     full set the order goes to. The scalar is always the FIRST of the array, so
+     the two can never describe different vendors. A form that sends only the old
+     `email` field still works untouched. */
+  const VD = require('../lib/vendor-directory');
+  const emails = VD.dedupBy(Array.isArray(b.emails) ? b.emails : (b.email ? [b.email] : []), VD._internals.normEmail);
   const sc = await db.query(
-    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,phone,address,notes,added_by_staff_id,last_used_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) RETURNING id`,
-    [app.rows[0].borrower_id, type, custom, b.companyName || null, b.contactName || null, b.email || null, b.phone || null, b.address || null, b.notes || null, req.actor.id]);
+    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,emails,phone,address,notes,added_by_staff_id,last_used_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now()) RETURNING id`,
+    [app.rows[0].borrower_id, type, custom, b.companyName || null, b.contactName || null,
+     emails[0] || null, emails.length ? emails : null,
+     b.phone || null, b.address || null, b.notes || null, req.actor.id]);
   const link = await db.query(
     `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
      VALUES ($1,$2,$3,'staff',$4)
@@ -18494,19 +18934,23 @@ router.patch('/file-contacts/:linkId', async (req, res) => {
   if (!f.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canTouchApp(req, f.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
   const b = req.body || {};
-  if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
+  const VDe = require('../lib/vendor-directory');
+  const emailsIn = VDe.dedupBy(Array.isArray(b.emails) ? b.emails : (b.email ? [b.email] : []), VDe._internals.normEmail);
+  if (!b.companyName && !b.contactName && !emailsIn.length && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
   const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : null;
   const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
   // COALESCE the type so a request that omits it keeps the stored value; keep the
   // stored custom_type too when no valid type is given (only reset it when the
-  // type is actually being changed).
+  // type is actually being changed). The two email columns move TOGETHER — the
+  // scalar is always the first of the array (see the POST above for why).
   await db.query(
     `UPDATE service_contacts SET contact_type=COALESCE($2, contact_type),
         custom_type=CASE WHEN $2::text IS NULL THEN custom_type ELSE $3 END,
-        company_name=$4, contact_name=$5, email=$6, phone=$7, address=$8, notes=$9, updated_at=now()
+        company_name=$4, contact_name=$5, email=$6, emails=$10, phone=$7, address=$8, notes=$9, updated_at=now()
       WHERE id=$1`,
     [f.rows[0].service_contact_id, type, custom, b.companyName || null, b.contactName || null,
-     b.email || null, b.phone || null, b.address || null, b.notes || null]);
+     emailsIn[0] || null, b.phone || null, b.address || null, b.notes || null,
+     emailsIn.length ? emailsIn : null]);
   if (type) await db.query(`UPDATE application_service_contacts SET contact_type=$2 WHERE id=$1`, [req.params.linkId, type]);
   await audit(req, 'edit_file_contact', 'application', f.rows[0].application_id, { contactType: type || undefined });
   res.json({ ok: true });

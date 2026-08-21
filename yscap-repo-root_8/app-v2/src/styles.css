@@ -1828,7 +1828,14 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   display:grid;grid-template-columns:248px minmax(0,1fr);grid-template-rows:auto 1fr;
   grid-template-areas:'side top' 'side main'}
 .app-sidebar{grid-area:side;background:var(--surface);border-right:1px solid var(--border);
-  padding:20px 14px;display:flex;flex-direction:column;gap:3px;position:sticky;top:0;
+  /* NO BOTTOM PADDING — the pinned .sb-foot below is a sticky child, and a sticky
+     box is constrained to its containing block (the rail's CONTENT box). Bottom
+     padding therefore left a 20px strip UNDER the pinned footer that the nav
+     links scrolled through in plain sight (owner-reported 2026-08-20: "that
+     section is transparent … you can see it in the back of it and at the bottom
+     of it"). The footer owns that space now, as its own padding, so the rail's
+     content box ends exactly where the visible rail does. */
+  padding:20px 14px 0;display:flex;flex-direction:column;gap:3px;position:sticky;top:0;
   height:100vh;overflow-y:auto;z-index:60;
   /* A VISIBLE scrollbar is the affordance a trackpad user needs to reach the
      bottom of a long nav (owner-reported 2026-07-31: "not scrollable without a
@@ -1875,9 +1882,22 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
    reachable without scrolling, even when the nav list overflows on a short
    laptop screen (owner-reported 2026-07-31). The nav links scroll behind it;
    the solid background covers anything scrolling underneath. */
-.sb-foot{border-top:1px solid var(--surface-soft);margin-top:6px;padding-top:10px;
-  display:flex;flex-direction:column;gap:8px;
-  position:sticky;bottom:0;background:var(--surface);padding-bottom:2px}
+/* A SOLID BAR, EDGE TO EDGE — never a translucent strip. Three separate gaps used
+   to let the scrolling nav show around it (owner-reported 2026-08-20):
+     · the rail's 20px BOTTOM padding, under the pinned footer (fixed above);
+     · the rail's 14px SIDE padding, either side of it — cancelled here with
+       negative margins so the bar spans the full width of the rail;
+     · its own 6px transparent margin-top, above the divider — folded into the
+       bar's own padding so there is no see-through band anywhere.
+   `background` is an OPAQUE token (--surface = #FFFFFF); never an rgba() or an
+   opacity, which is what makes a bar like this ghost. The upward shadow is the
+   only thing that hints at content underneath. */
+.sb-foot{display:flex;flex-direction:column;gap:8px;
+  position:sticky;bottom:0;z-index:2;
+  margin:6px calc(-1 * var(--sb-pad-r,14px)) 0 calc(-1 * var(--sb-pad-l,14px));
+  padding:10px var(--sb-pad-r,14px) var(--sb-pad-b,20px) var(--sb-pad-l,14px);
+  background:var(--surface);border-top:1px solid var(--border);
+  box-shadow:0 -10px 18px -14px rgba(20,27,34,.45)}
 
 /* min-height 72 (not 68) so the topbar's bottom always meets .file-top's top:72px.
    At 68 a 4px band opened between the two sticky bars on desktop and scrolling
@@ -2173,8 +2193,14 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   .app-sidebar{position:fixed;top:0;left:0;bottom:0;width:min(84vw,300px);height:100dvh;
     transform:translateX(-100%);transition:transform .22s cubic-bezier(.32,.72,.35,1);
     box-shadow:16px 0 44px -24px rgba(0,0,0,.4);
-    padding:calc(18px + env(safe-area-inset-top)) 14px calc(20px + env(safe-area-inset-bottom))
-      calc(14px + env(safe-area-inset-left));z-index:80}
+    /* Same rule as desktop: the drawer keeps NO bottom padding, and the phone's
+       safe-area inset is handed to .sb-foot (via --sb-pad-b) so the solid bar
+       covers the home-indicator strip instead of leaving it see-through. The
+       left inset rides --sb-pad-l so the bar's negative margin still lands
+       exactly on the drawer edge. */
+    --sb-pad-l:calc(14px + env(safe-area-inset-left, 0px));
+    --sb-pad-b:calc(20px + env(safe-area-inset-bottom, 0px));
+    padding:calc(18px + env(safe-area-inset-top)) 14px 0 var(--sb-pad-l);z-index:80}
   .app-sidebar.open{transform:none}
   .app-scrim{position:fixed;inset:0;background:rgba(20,27,34,.42);z-index:70;animation:navfade .18s ease}
   .app .wrap{padding:0 24px}
@@ -4572,6 +4598,21 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
   background:rgba(174,135,70,.08);font-weight:600}
 .tr-pt.is-empty::before{background:#AE8746}
 
+/* ---- The records stamp (RecordsStamp.jsx — mirror of records-stamp.js) ----
+   NAMESPACED `rstamp-*` per the .off-collision lesson: never a bare state
+   class. State rides the glyph + the word, never colour alone; teal-deep
+   #2A6B72 is 6.1:1 on white and slate #5B5F64 is 6.4:1 — both AA. Sits on the
+   white card surface (chips are never placed on the raw Paper canvas). */
+.rstamp{display:inline-flex;align-items:center;gap:4px;height:18px;
+  padding:0 8px 0 5px;border-radius:9px;text-transform:uppercase;
+  font-family:"Hanken Grotesk",Arial,sans-serif;font-size:10px;font-weight:600;
+  line-height:1;letter-spacing:.07em;white-space:nowrap;vertical-align:middle}
+.rstamp svg{flex:0 0 auto}
+.rstamp-verified{background:#EEF5F5;color:#2A6B72;
+  box-shadow:inset 0 0 0 1px rgba(47,127,134,.35)}
+.rstamp-sourced{background:#FFFFFF;color:#5B5F64;
+  box-shadow:inset 0 0 0 1px #D2D4D6}
+
 /* ---- Borrower draw notes (blocking reasons / next steps) ----
    Two blocks were hand-drawing the same bullet with inline styles; one class, two tones. */
 .dd-notes{margin-top:10px;display:flex;flex-direction:column;gap:6px}
@@ -4957,7 +4998,14 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    dialogs live on .cv-modal-back at z 200, so the WHOLE fov layer sits BELOW
    200 — a confirm dialog must always paint over (and block clicks to) this
    panel and its tab. The tab anchors LOW on the right edge, clear of the
-   sticky headers and any bottom action bars. */
+   sticky headers and any bottom action bars.
+
+   IT OUTRANKS A DOCUMENT PREVIEW (owner-directed 2026-08-20). The preview used
+   to share .cv-modal-back's z 200, so its dim sat over the tab: the button was
+   still there and still clickable in the DOM sense, behind an opaque sheet of
+   black. The preview now owns `.dp-back` at z 150, and when one is open this
+   tab climbs to 160 and the panel to 165 — visible, clickable, and on top of
+   the document without disturbing the confirm-dialog rule above it. */
 .fov-tab{position:fixed;right:0;bottom:140px;z-index:120;writing-mode:vertical-rl;
   background:#141B22;color:#F6F3EC;border:1px solid #141B22;border-right:none;border-radius:10px 0 0 10px;
   padding:14px 7px;font:700 12px/1 'Hanken Grotesk',system-ui,sans-serif;letter-spacing:.1em;text-transform:uppercase;
@@ -4968,7 +5016,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .fov-tab:hover .fov-tab-ico{color:#FFFFFF}
 .fov-tab-text{display:inline-block}
 .fov-back{position:fixed;inset:0;background:rgba(20,27,34,.45);z-index:130}
-.fov-panel{position:fixed;top:0;right:0;bottom:0;width:min(420px,94vw);z-index:135;background:#FFFFFF;
+.fov-panel{position:fixed;top:0;right:0;bottom:0;width:min(var(--fov-w,420px),94vw);z-index:135;background:#FFFFFF;
   border-left:1px solid #D9D4C8;box-shadow:-6px 0 28px rgba(20,27,34,.16);
   transform:translateX(102%);transition:transform .22s ease;display:flex;flex-direction:column;
   visibility:hidden}
@@ -5000,6 +5048,46 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
   .fov-panel{width:min(360px,94vw)}
   /* Above the .cv-modal bottom-sheet band and the safe area on phones. */
   .fov-tab{bottom:calc(180px + env(safe-area-inset-bottom, 0px));padding:10px 5px;font-size:11px}
+}
+
+/* ---- THE FILE OVERVIEW AND A DOCUMENT PREVIEW, SIDE BY SIDE ----------------
+   Owner-directed 2026-08-20: "we need to have the overview available while
+   we're previewing the PDF or any other thing … you should be able to see both
+   together so you can compare maybe the PDF to the file overview to see the
+   details."
+
+   THREE LAYERS, ONE ORDER, and nothing here may reorder them:
+     200  .cv-modal-back            app confirm dialogs — always win
+     165  .fov-panel.fov-over-preview
+     160  .fov-tab.fov-over-preview
+     150  .cv-modal-back.dp-back    the document preview
+     135  .fov-panel                (on its own)
+     120  .fov-tab                  (on its own)
+
+   `.dp-back` is TWO classes, so it beats the single-class `.cv-modal-back`
+   z-index on specificity — no !important needed, and an ordinary dialog opened
+   from inside a preview still paints over it. */
+.cv-modal-back.dp-back{z-index:150}
+.fov-tab.fov-over-preview{z-index:160}
+.fov-panel.fov-over-preview{z-index:165}
+/* THE PREVIEW MAKES ROOM rather than hiding under the panel. `padding-right` on
+   the flex backdrop re-centres the document in what is left, so the two sit
+   beside each other — which is the whole point of "see both together". The
+   width is the panel's own, kept in ONE place so the two can never disagree. */
+:root{--fov-w:420px}
+.cv-modal-back.dp-back.dp-beside-overview{padding-right:calc(var(--fov-w) + 20px);
+  transition:padding-right .22s ease}
+@media(max-width:1024px){
+  /* Below this there is no room for a document AND a 420px panel side by side,
+     so the panel OVERLAYS instead — still on top, still closable. Shifting the
+     preview here would squeeze it to nothing, which is worse than an overlay. */
+  .cv-modal-back.dp-back.dp-beside-overview{padding-right:20px}
+}
+@media(max-width:640px){
+  /* .cv-modal-back drops to padding:0 on phones (the bottom-sheet band), and the
+     shift is off above — restate the phone padding so the two-class selector
+     cannot re-introduce a 20px gutter under the sheet. */
+  .cv-modal-back.dp-back.dp-beside-overview{padding-right:0}
 }
 
 /* ==========================================================================
@@ -5136,7 +5224,11 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 
 /* ── the stage ──────────────────────────────────────────────────────────── */
 .arena-stage { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr); gap: 22px; align-items: start; }
-@media (max-width: 980px) { .arena-stage { grid-template-columns: 1fr; } }
+/* minmax(0,1fr), never a bare 1fr — a bare track's automatic minimum is the
+   children's min-content, and one long chat word made the whole phone stage
+   654px wide inside a 390px screen with overflow-x:clip hiding the loss
+   (measured 2026-08-19: body.scrollWidth 676 -> 390 with this one change). */
+@media (max-width: 980px) { .arena-stage { grid-template-columns: minmax(0, 1fr); } }
 .arena-stage.tv { grid-template-columns: 1fr; justify-items: center; text-align: center; }
 .arena-wheelcol {
   display: flex; flex-direction: column; align-items: center; gap: 16px;
@@ -5225,6 +5317,27 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena-status.s-approved, .arena-status.s-live { color: var(--a-good); }
 .arena-status.s-pending, .arena-status.s-draft { color: #A8760F; }
 .arena-status.s-rejected, .arena-status.s-closed { color: var(--a-bad); }
+.arena-status.s-paused { color: #8A6215; }
+
+/* The day's plan — one row per pre-filled spin, times editable in place. */
+.arena-plan { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 10px; }
+.arena-planrow { border: 1px solid var(--line, #E4DFD3); border-radius: 10px; padding: 10px 12px; background: #FFFFFF; }
+.arena-planrow > div:first-child { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.arena-plantimes { margin-top: 8px; align-items: end; }
+.arena-plantimes .arena-decide { grid-column: 1 / -1; }
+
+/* The outbox — every arena message, grouped like mail. */
+.arena-outbox { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.arena-outbox-row { display: grid; gap: 2px; width: 100%; text-align: left; border: 1px solid var(--line, #E4DFD3); border-radius: 10px; padding: 10px 12px; background: #FFFFFF; cursor: pointer; color: #141B22; }
+.arena-outbox-row strong { color: #141B22; }
+.arena-outbox-who { list-style: none; margin: 4px 0 0; padding: 6px 12px; display: grid; gap: 3px; }
+.arena-outbox-who li { display: flex; justify-content: space-between; gap: 10px; color: #141B22; }
+.arena-unseen { color: #8A6215; }
+.arena-mon-who { list-style: none; margin: 6px 0 0; padding: 6px 10px; background: #FFFFFF; border: 1px solid var(--line, #E4DFD3); border-radius: 8px; display: grid; gap: 3px; grid-column: 1 / -1; }
+.arena-mon-who li { display: flex; justify-content: space-between; gap: 10px; color: #141B22; }
+.arena-people-flat { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 12px; max-height: 260px; overflow-y: auto; }
+.arena-people-flat label { display: flex; align-items: center; gap: 8px; color: #141B22; }
+.arena-stage-notes { margin: 8px 0 0; padding: 10px 14px; border-left: 3px solid var(--gold, #AE8746); background: #FFFFFF; border-radius: 0 10px 10px 0; color: #141B22; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 720px; }
 
 .arena-kindpick { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
 .arena-chip {
@@ -5251,7 +5364,9 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena-decide { display: inline-flex; gap: 6px; margin-left: auto; }
 
 .arena-quals li { border-bottom: 1px solid var(--a-line); padding-bottom: 10px; }
-.arena-qual-head { display: flex; justify-content: space-between; gap: 8px; }
+.arena-qual-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.arena-qual-head strong { min-width: 0; }
+.arena-qual-head em { flex: 0 0 auto; white-space: nowrap; }
 .arena-qual-head em { color: var(--a-teal-ink); font-style: normal; font-size: 12px; font-weight: 700; }
 .arena-claimform { display: flex; flex-direction: column; gap: 7px; margin-top: 7px; }
 .arena-claims li { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--a-muted); }
@@ -5274,7 +5389,7 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .arena-messages li.pending { opacity: .55; }
 .arena-messages li.failed { color: var(--a-bad); }
 .arena-msg-who { color: var(--a-violet); font-weight: 800; font-size: 12.5px; }
-.arena-msg-body { flex: 1 1 60%; }
+.arena-msg-body { flex: 1 1 60%; min-width: 0; overflow-wrap: anywhere; }
 .arena-msg-acts { display: inline-flex; gap: 2px; margin-left: auto; }
 .arena-msg-failed { color: var(--a-bad); font-size: 11.5px; }
 .arena-react { background: none; border: none; cursor: pointer; font-size: 13px; color: var(--a-muted); padding: 0 3px; transition: transform .12s; }
@@ -5445,8 +5560,21 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 }
 @keyframes arena-slidein { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
 .arena-challenges.min { max-height: 58px; overflow: hidden; }
-@media (max-width: 720px) { .arena-challenges { left: 10px; right: 10px; width: auto; } }
+/* The panel floats fixed, so the page must RESERVE its footprint — measured
+   2026-08-19: without the gutter it sat exactly on the chat box, the Send
+   button and the prize Accept buttons on desktop, and buried the entire tab
+   bar on a phone (491px of a 664px screen). Desktop reserves a right gutter;
+   the phone caps the panel and reserves the bottom. */
+@media (min-width: 981px) { .arena-stage { padding-right: 396px; } .arena-stage.tv { padding-right: 0; } }
+@media (max-width: 720px) {
+  .arena-challenges { left: 10px; right: 10px; width: auto; max-height: 42vh; }
+  .arena { padding-bottom: calc(42vh + 24px); }
+}
 .arena-ch-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+/* The leaderboard <ol> shares the class name with the flex header row; as a
+   flex it wrapped into two colliding columns with the count glued to the name
+   ("…Vandersteen III18"). A list is a list. */
+ol.arena-ch-top { display: block; }
 .arena-ch-head strong { display: block; font-size: 14px; }
 .arena-ch-tickets { color: var(--a-gold-ink); font-size: 12.5px; font-weight: 800; }
 .arena-ch-tickets em { color: var(--a-teal-ink); font-style: normal; }
@@ -5747,3 +5875,59 @@ ol.arena-ch-top li em { color: var(--a-gold-ink); font-style: normal; font-varia
 .arena-recap-lines > div:last-child { border-bottom: 0; }
 .arena-recap-lines dt { color: var(--a-muted); font-size: 13px; font-weight: 600; }
 .arena-recap-lines dd { margin: 0; color: var(--a-text); font-weight: 800; font-variant-numeric: tabular-nums; }
+
+
+/* ── contrast corrections (measured 2026-08-19) ───────────────────────────
+   White text sat on the BRIGHT accent gradients — the very colours the palette
+   comment reserves for "borders, dots, pills and gradients, where nobody has
+   to read them" — and every arena button, selected tab and status pill failed
+   4.5:1. The shapes and hues stay; only the stops under white text darken to
+   the -ink family. Solid-colour failures corrected alongside. */
+.arena {
+  --a-teal-hot-ink: #157F87;
+  --a-gold-hot-ink: #8A6215;
+  --a-good-ink: #16714C;
+  --a-coral-ink: #B23A30;
+  --a-violet-2-ink: #5B3CAF;
+}
+.arena .btn, .arena .btn.small, .arena .btn.primary {
+  background: linear-gradient(135deg, var(--a-teal-ink), var(--a-teal-hot-ink));
+}
+.arena .btn.ghost { background: none; }
+.arena-tab.on, .arena-subtab.on { background: linear-gradient(135deg, var(--a-teal-ink), var(--a-teal-hot-ink)); }
+.arena-pill.s-open { background: linear-gradient(135deg, var(--a-good-ink), #1F8B60); }
+.arena-pill.s-spinning { background: linear-gradient(135deg, #6E4C10, var(--a-gold-hot-ink)); }
+.arena-live { background: linear-gradient(135deg, var(--a-coral-ink), #A8501F); }
+.arena-seq, .arena-ai-label, .arena-ch-gone, .arena-freenote {
+  background: linear-gradient(135deg, #4E35A0, var(--a-violet-2-ink));
+}
+.arena-chip.on, .arena-vote.on { background: linear-gradient(135deg, #6E4C10, var(--a-gold-hot-ink)); }
+.arena-tk-mine { background: linear-gradient(135deg, var(--a-teal-ink), var(--a-teal-hot-ink)); }
+.arena .input::placeholder { color: #6B767C; }
+.arena-ch-tier.t1 { background: #476069; }
+.arena-ch-tier.t2 { background: var(--a-teal-ink); }
+.arena-ch-tier.t3 { background: var(--a-gold-ink); }
+.arena-ch-tier.t4 { background: #8A4E0C; }
+.arena-ch-top time.urgent, .arena-mon-nums em.hot { background: var(--a-coral-ink); }
+.arena-mon-clock.hot, .arena-ch-flame { color: var(--a-coral-ink); }
+.arena-status.s-pending, .arena-status.s-draft { color: #8A6215; }
+.arena-status.s-approved, .arena-status.s-live { color: #16714C; }
+.arena-ch-bonus { color: #16714C; }
+
+/* ── touch targets on a phone (all under 40px before) ──────────────────── */
+@media (max-width: 720px) {
+  .arena-react { min-width: 40px; min-height: 40px; font-size: 17px; padding: 0 6px; }
+  .arena-ch-min { min-width: 44px; min-height: 44px; font-size: 22px; }
+  .arena-vote { min-height: 40px; padding: 8px 12px; }
+  .arena-chip { min-height: 40px; }
+  .arena-tab, .arena-subtab { min-height: 44px; }
+  .arena-ch-admin summary, .arena-advanced summary { padding: 11px 0; }
+  .arena-roombar-head .linklike { min-height: 40px; padding: 0 8px; }
+}
+
+/* The wheel scales to the screen instead of forcing 448px onto a 390px phone.
+   The size is an inline style from ArenaWheel, hence the important. */
+@media (max-width: 720px) {
+  .arena-wheel-wrap { width: 100% !important; max-width: 360px; height: auto !important; }
+  .arena-wheel-wrap > svg { width: 100%; height: auto; }
+}

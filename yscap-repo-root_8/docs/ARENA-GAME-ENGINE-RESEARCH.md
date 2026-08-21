@@ -676,6 +676,90 @@ mutation-proven: reverting the integer grid reproduces the exact
 
 ---
 
+## 10e. The owner's first live click-through — what broke, and what it taught
+
+The owner opened the Arena and clicked through a real day. What follows is what
+actually broke, each item reproduced before it was touched, in rough order of
+how much it would have cost on the morning.
+
+**THE GO-LIVE CRASH.** ArenaChallenges.jsx computed
+`Number(board && board.countdownSeconds) >= 0 ? Number(board.countdownSeconds) : 10`.
+`Number(null)` is `0`, and `0 >= 0` is true — so the "safe" branch was
+unreachable, and `board.countdownSeconds` was read off `null` on the FIRST
+render of every live session. The page ErrorBoundary replaced the whole Arena
+with "Something went wrong", permanently, on every open. The fix is one line:
+guard on `board &&` OUTSIDE the `Number()`. Mutation-proven in a real Chromium
+harness. The lesson generalises: a truthiness guard INSIDE a Number() coercion
+guards nothing.
+
+**THE WRONG WINNER.** `settleSpin` took the FIRST revealed wheel carrying a
+staff id — and on the four-wheel Early Bird, wheel 1 is the button lottery.
+Measured, 5 runs out of 5: the award ledger, the payroll CSV, the winner email
+and the recap all named the button-holder while the room watched wheel 3
+announce someone else. Fixed by excluding stopHolders' `fromWheel` sources from
+award candidacy; mutation-proven — reverting turns test-arena-fixes-db red at
+23 passed, 2 failed.
+
+**TICKETS NEVER CHANGED THE WHEEL.** The `'tickets'` weight branch read
+`config.weights`, an admin-typed map that nothing populated. Measured: a person
+with 9 chances and a person with 1 froze as identical slices. Fixed:
+`freezeRoster` sums the `arena_tickets` ledger at freeze time into the ctx copy
+of that map — 1 + chances, so everyone in the room keeps a base slice — and an
+admin-typed entry still wins over the computed one. Mutation-proven.
+
+**THE ROOM BAR READ "0 IN THE SPIN" ALL MORNING.** `/room` picked the check-in
+spin by `seq DESC`, so the all-day Mega Spin always beat the Early Bird. It now
+picks the live spin whose door shuts soonest.
+
+**THE TEMPLATE BUTTON** left an orphan spin behind on every press and showed the
+admin a raw Postgres constraint string. It is now routed through the idempotent
+day-setup builder.
+
+**THE ECONOMY WAS COSMETIC.** The every-5-chances nomination was displayed but
+never consumed or enforced. Tier prize ceilings were displayed but never
+applied. The 11:00 "38 minutes left" alarm was missing because the deadline
+offsets were counted from the wrong end — [60,45,30,15,8] where the day needs
+[53,38,23,8]. The check-in attestation was defined but never shown or recorded.
+Reject-with-comment was supported by the server with no UI to reach it. All
+fixed.
+
+**THE TIMEZONE SIGN.** The Load-it button passed `+getTimezoneOffset()` where
+the server wants minutes AHEAD of UTC — in New York every template time would
+have shifted by twice the offset, putting the 10:30 Early Bird at 2:30 AM.
+
+**THE DIALOG THAT CALLED SUCCESS A FAILURE.** The app-wide message box titled
+every plain message "PILOT can't do that yet" unless the caller remembered to
+pass `tone:'info'` — so "Saved." rendered under a failure headline. The default
+is now neutral; the failure headline is opt-in.
+
+**THE CSV LINK LOGGED THE ADMIN OUT.** A bare `<a href>` cannot carry the login
+token, so the awards export dropped the admin onto raw JSON, signed out. It is
+now an authenticated fetch-based download.
+
+**ONE-PRESS DAY SETUP** (db/592 + day-setup.js + /setup-day): the whole
+Elementix Day is built as a DRAFT with both plans inside, and it is safe to
+press twice — unique indexes decide idempotency, not a read. Start stays a
+human act. To answer the owner's direct question in print: nothing auto-starts
+a session; the admin presses Start; everything after that — the 10:30 launch,
+the reminders, the 11:38 lock, the challenges — is automatic.
+
+**THE MEASURED CSS.** From a rendered Chromium audit with screenshots, not from
+reading stylesheets: the challenge panel sat on top of the chat box and the
+Send button on desktop, and buried the whole tab bar on a phone; the phone
+stage resolved to 654px inside a 390px viewport (the bare `1fr` /
+`min-content` trap) with `overflow-x: clip` hiding the evidence; and white text
+on the bright gradients failed 4.5:1 contrast on every arena button. All fixed.
+
+### The standing lessons
+
+- Run the WHOLE suite, not just the tests you wrote for the change.
+- A truthiness guard inside a coercion is no guard at all.
+- A fixed floating panel must have its footprint reserved in the layout.
+- A success dialog must never default to a failure title.
+- Every authenticated file leaves the app via a fetch, never a bare href.
+
+---
+
 ## 11. Sources
 
 **Wheels and fairness** — wheelofnames.com + FAQ · pickerwheel.com ·

@@ -59,7 +59,46 @@ console.log('\n2. The machine observes; a person decides');
   ok(all.every((v) => !('human_verdict' in v)),
     'NOT ONE of them carries a human_verdict — the sign-off gate reads that column and nothing automatic may write it');
   const src = require('fs').readFileSync(require('path').join(__dirname, '../src/lib/track-record-ownership.js'), 'utf8');
-  ok(!/human_verdict\s*=\s*\$/.test(src) && !/SET[^;]*human_verdict/.test(src),
+  /* THE SUBJECT IS THE SET CLAUSE, NOT THE STATEMENT. `SET[^;]*human_verdict`
+     also fired on a WHERE that READS the column further down the same statement
+     — and reading it is the safety property, not a violation: the revoke and the
+     boot heal both refuse to touch a pillar a human confirmed. So each SET list
+     is cut out at its own WHERE and only that is searched.
+
+     THE CUT IS AT PAREN DEPTH 0, which is the whole difference between this and
+     a guard that is WEAKER than the one it replaced. Cutting at the first
+     `WHERE` of any depth ends the chunk inside a sub-SELECT, so
+     `SET x = (SELECT … WHERE …), human_verdict='confirmed'` — a real write —
+     slips through. Matching is case-insensitive for the same reason: `set
+     human_verdict=` is the same write in lower case. */
+  /* ANCHOR ON A REAL SET CLAUSE, NOT THE WORD. `\bSET\b` case-insensitively
+     also matches "set" in ordinary prose ("the set is still small enough…"),
+     and such a chunk then runs on into the SQL below it and swallows a WHERE
+     that merely READS the column — which made the guard fail on clean code. A
+     SQL SET clause is always `SET <identifier> =`.
+
+     THE IDENTIFIER MAY BE QUOTED. Postgres accepts `SET "human_verdict" = …`
+     as the identical write, and an anchor that only admits a bare identifier
+     never finds that SET clause at all — so the chunk is never cut and the
+     write is never searched. The old `SET[^;]*human_verdict` shape DID catch
+     it, so admitting an optional quote is what keeps this strictly stronger
+     than the guard it replaced on every shape rather than merely on most. */
+  const setClauses = [];
+  for (const m of src.matchAll(/\bSET\s+"?[a-z_][\w."]*"?\s*=/gi)) {
+    let depth = 0; let end = src.length;
+    for (let i = m.index; i < src.length; i += 1) {
+      const c = src[i];
+      if (c === '(') depth += 1;
+      else if (c === ')') depth -= 1;
+      else if (depth === 0 && /where/i.test(src.slice(i, i + 5)) && !/\w/.test(src[i - 1] || ' ')) { end = i; break; }
+    }
+    setClauses.push(src.slice(m.index, end));
+  }
+  /* NON-VACUITY: an exact-ish count of real SQL SET clauses. A bare `length > 0`
+     would once have been satisfied by English — the split used to land on the
+     word "SET" inside a comment — and would pass on a module with no SQL at all. */
+  ok(setClauses.length >= 3, `(the guard is searching real SQL SET clauses — found ${setClauses.length})`);
+  ok(!/human_verdict\s*=\s*\$/i.test(src) && !setClauses.some((c) => /human_verdict/i.test(c)),
     'and the module contains no SQL that writes human_verdict at all');
 }
 

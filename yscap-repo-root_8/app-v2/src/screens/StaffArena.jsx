@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { showMessage, askConfirm } from '../lib/dialog.js';
+import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { useAuth } from '../lib/auth.jsx';
 import { subscribeChat } from '../lib/chatEvents.js';
 import { arena, money, countdown, serverNow, spinProgress, prefersReducedMotion } from '../lib/arena.js';
@@ -69,7 +69,10 @@ export default function StaffArena() {
   // wheels lands twice and is decided once, and only the decision is the news.
   const [takeover, setTakeover] = useState(null);
   const seenDecided = useRef(new Set());
-  const isSuper = role === 'super_admin';
+  // A named Arena HOST runs the room like a super admin (settings.hosts) —
+  // the server says so on the board; the role check covers the empty screen
+  // before any board has loaded.
+  const isSuper = role === 'super_admin' || !!(board && board.isSuperAdmin);
   const sessionParam = params.get('session') || '';
   const reload = useRef(null);
   // Read inside the stream subscription, which is set up once and must not be
@@ -258,6 +261,19 @@ export default function StaffArena() {
           </div>
           <h1 className="arena-title">{session.name}</h1>
           {session.subtitle && <p className="arena-sub">{session.subtitle}</p>}
+          {!!(session.settings && session.settings.boardNotes) && (
+            <p className="arena-stage-notes">{session.settings.boardNotes}</p>
+          )}
+          {isSuper && !tv && tab !== 'control' && (
+            <p style={{ margin: '6px 0 0' }}>
+              <button className="btn small" onClick={() => setTabParam('control')}>Open the control room</button>
+            </p>
+          )}
+          {session.paused_at && (
+            <p className="arena-sub" style={{ color: '#8A6215', fontWeight: 700 }}>
+              Paused — back in a moment. Check-in reopens when it resumes.
+            </p>
+          )}
         </div>
         <div className="arena-head-actions">
           <button className="btn ghost small" onClick={() => setTv(!tv)}>
@@ -335,7 +351,9 @@ function Stage({ board, spin, now, isSuper, busy, onAct, onProof, tv, onReload, 
     || [...draws].reverse().find((d) => d.state === 'revealed')
     || draws.find((d) => d.roster) || draws[0] || null;
 
-  const roster = (active && active.roster) || [];
+  // Array.isArray, not truthiness — arena_draws.roster is jsonb, and a non-array
+  // value there would make .reduce throw past the || [] guard.
+  const roster = Array.isArray(active && active.roster) ? active.roster : [];
   const total = roster.reduce((a, c) => a + (Number(c.weight) || 0), 0);
   const angles = total > 0
     ? roster.map((c) => (360 * (Number(c.weight) || 0)) / total)
@@ -488,13 +506,32 @@ function MyPart({ spin, board, onAct, busy, now }) {
   return (
     <div className="arena-card arena-me">
       <h3>You</h3>
-      {!mine && spin.state === 'open' && (
+      {/* A session limited to a picked list refuses everyone else at check-in
+          — so they are TOLD that instead of being handed a button that 400s. */}
+      {!mine && spin.state === 'open' && board && board.iAmIn === false && (
+        <p className="muted">This session is limited to a picked list, and you are not on it — ask a super admin if that is wrong.</p>
+      )}
+      {!mine && spin.state === 'open' && !(board && board.iAmIn === false) && (
         <>
           <p className="muted">You are not in this spin yet.</p>
+          {/* The wording they agree to is SHOWN and their agreement RECORDED —
+              the attestation was configured on the spin and stored with the
+              check-in, so what they attested to is on the record (it was
+              defined and never shown anywhere until the 2026-08-19 audit). */}
           <button
             className="btn"
             disabled={busy === 'checkin'}
-            onClick={() => onAct('checkin', () => arena.checkIn(spin.id))}
+            onClick={async () => {
+              const wording = spin.config && typeof spin.config.attestation === 'string'
+                ? spin.config.attestation.trim() : '';
+              if (wording) {
+                const sure = await askConfirm(wording, { title: 'Before you check in', confirmLabel: 'That is me — check me in' });
+                if (!sure) return;
+                onAct('checkin', () => arena.checkIn(spin.id, undefined, true));
+                return;
+              }
+              onAct('checkin', () => arena.checkIn(spin.id));
+            }}
           >{busy === 'checkin' ? 'Checking in…' : 'Check in — I am here'}</button>
         </>
       )}
@@ -604,10 +641,29 @@ function WhoIsOn({ spin, roster, total, settings, isSuper, onAct }) {
                 <li key={c.id}>
                   <span>{c.full_name}</span>
                   <em className={`arena-status s-${c.status}`}>{c.status === 'approved' ? 'in' : c.status}</em>
+                  {/* Take somebody off THIS spin — the server side existed since
+                      phase 2 with no button anywhere (2026-08-19 audit). Only
+                      before the wheel is set; it adds them to the excluded
+                      list, and the same endpoint can put them back. */}
+                  {isSuper && c.status === 'approved' && !['spinning', 'decided'].includes(spin.state) && (
+                    <button className="btn ghost small" onClick={async () => {
+                      if (!await askConfirm(`Take ${c.full_name} off this spin? They stay checked in — they just will not be on this wheel.`, { confirmLabel: 'Take them off' })) return;
+                      onAct('roster', async () => {
+                        const cur = await arena.spinRoster(spin.id);
+                        const off = new Set((cur.excluded || []).map(String));
+                        off.add(String(c.staff_id));
+                        await arena.setSpinRoster(spin.id, [...off]);
+                      });
+                    }}>Take off this wheel</button>
+                  )}
                   {isSuper && c.status === 'pending' && (
                     <span className="arena-decide">
                       <button className="btn ghost small" onClick={() => onAct('cin', () => arena.decideCheckin(c.id, 'approved'))}>Let in</button>
-                      <button className="btn ghost small" onClick={() => onAct('cin', () => arena.decideCheckin(c.id, 'rejected'))}>No</button>
+                      <button className="btn ghost small" onClick={async () => {
+                        const reason = await askPrompt('Why not? The reason is shown to them.', { title: 'Turn this check-in down' });
+                        if (reason === null) return;
+                        onAct('cin', () => arena.decideCheckin(c.id, 'rejected', reason.trim() || undefined));
+                      }}>No</button>
                     </span>
                   )}
                 </li>
@@ -616,7 +672,14 @@ function WhoIsOn({ spin, roster, total, settings, isSuper, onAct }) {
             </ul>
             {isSuper && !!pending.length && (
               <button className="btn small" onClick={() => onAct('cin', async () => {
-                for (const c of pending) await arena.decideCheckin(c.id, 'approved');
+                // One failure must not silently strand the rest — approve what
+                // can be approved and say exactly who could not be.
+                const failed = [];
+                for (const c of pending) {
+                  try { await arena.decideCheckin(c.id, 'approved'); }
+                  catch (e) { failed.push(`${c.full_name || 'somebody'}: ${(e && e.message) || 'failed'}`); }
+                }
+                if (failed.length) throw new Error(`${failed.length} could not be let in — ${failed.join('; ')}`);
               })}>Let all {pending.length} in</button>
             )}
           </>
@@ -721,7 +784,11 @@ function Prizes({ spin, isSuper, onAct }) {
                 <em>{money(e.value_cents)}{e.kind === 'business' ? ' · business' : ''}</em>
                 <span className="arena-decide">
                   <button className="btn ghost small" onClick={() => onAct('ent', () => arena.decideEntry(e.id, 'approved'))}>Accept</button>
-                  <button className="btn ghost small" onClick={() => onAct('ent', () => arena.decideEntry(e.id, 'rejected'))}>Decline</button>
+                  <button className="btn ghost small" onClick={async () => {
+                    const reason = await askPrompt('Why not? The reason is shown to them.', { title: 'Decline this prize idea' });
+                    if (reason === null) return;
+                    onAct('ent', () => arena.decideEntry(e.id, 'rejected', reason.trim() || undefined));
+                  }}>Decline</button>
                 </span>
               </li>
             ))}
@@ -843,7 +910,10 @@ function Suggestions({ sessionId, isSuper }) {
           <li key={s.id}>
             <button
               className={`arena-vote${s.voted ? ' on' : ''}`}
-              onClick={async () => { await arena.voteSuggestion(s.id, !s.voted); await load(); }}
+              onClick={async () => {
+                try { await arena.voteSuggestion(s.id, !s.voted); await load(); }
+                catch (err) { showMessage((err && err.message) || 'The vote did not go through.', { tone: 'error' }); }
+              }}
               aria-label={s.voted ? 'Take my vote back' : 'I like this one'}
             >▲ {s.votes}</button>
             <span>{s.body}</span>
@@ -851,7 +921,10 @@ function Suggestions({ sessionId, isSuper }) {
             {isSuper && (
               <select
                 className="input small" value={s.status}
-                onChange={async (e) => { await arena.setSuggestionStatus(s.id, e.target.value); await load(); }}
+                onChange={async (e) => {
+                  try { await arena.setSuggestionStatus(s.id, e.target.value); await load(); }
+                  catch (err) { showMessage((err && err.message) || 'That did not save.', { tone: 'error' }); }
+                }}
               >
                 {['new', 'planned', 'used', 'declined'].map((v) => <option key={v} value={v}>{v}</option>)}
               </select>

@@ -141,6 +141,14 @@ const CODE_CATEGORY = {
   rtl_p3_reo: C.REO,
   // Scope of Work / rehab budget / plans & permits
   scope_of_work: C.SOW, rtl_p3_sow1: C.SOW, rtl_p1_budget: C.SOW, rtl_p1_plans: C.SOW, draw_cond_plans_permits: C.SOW,
+  // The two GROUND-UP construction conditions (db/601). They file with the Scope of
+  // Work because that is this taxonomy's construction folder — a feasibility report
+  // and the general contractor's paperwork describe the same build the scope does.
+  // Without these two lines the keyword fallback finds nothing to match on either
+  // ("feasibility" and "general contractor" are deliberately absent from it, being
+  // words that mean other things elsewhere on a loan file) and both would land in
+  // "Other Documents" in every investor package and in the SharePoint mirror.
+  rtl_cond_feasibility: C.SOW, rtl_cond_gc_info: C.SOW,
   // (rtl_cond_fraud is handled specially below — it holds BOTH background and
   //  criminal reports, split by the document's slot.)
 };
@@ -579,8 +587,9 @@ async function buildTprExport(appId) {
     // on-screen / internal track record still shows every line.
     `SELECT id, borrower_id, property_address, deal_type, purchase_price, sale_price, rehab_amount,
             purchase_date, sale_date, rent_amount, rent_date, refi_amount, refi_date, current_value,
-            is_verified, verified_at, verification_status, entered_by_kind, notes
-       FROM track_records
+            is_verified, verified_at, verification_status, entered_by_kind, notes,
+            ${require('./track-record/records-stamp').stampSelect('t')}
+       FROM track_records t
       WHERE borrower_id = ANY($1::uuid[])
         AND is_verified = true
       ORDER BY COALESCE(sale_date, refi_date, rent_date, purchase_date) DESC NULLS LAST, created_at DESC`,
@@ -705,6 +714,15 @@ async function buildTprExport(appId) {
     { header: 'Recent (3yr)', key: 'counts', w: 0.9, align: 'center' },
   ];
   const trExport = require('./track-record-export');
+  // The records-stamp column joins BOTH sections only when at least one line is
+  // records-backed — an all-blank column on the investor package is noise, and
+  // an unstamped back-book export stays byte-identical. Wording is the ONE
+  // definition in track-record/records-stamp.js ("Verified to Elementix").
+  const RSTAMP = require('./track-record/records-stamp');
+  if (records.some((r) => r.records_stamp)) {
+    const stampCol = { header: 'Public records', key: 'records', w: 1.8, align: 'left' };
+    flipCols.push(stampCol); holdCols.push(stampCol);
+  }
   const flipRows = [], holdRows = [];
   for (const r of records) {
     const { exit, counts } = exitInfo(r);
@@ -720,8 +738,13 @@ async function buildTprExport(appId) {
       purchaseDate: dateStr(r.purchase_date),
       status: trExport.REVIEW_STATUS[statusKey].label,
       docs: hasDocs ? 'Attached' : '—',
+      records: RSTAMP.exportCellText(r.records_stamp, r.records_stamp_at),
+      // The PDF renderer re-derives its own cell from these (its font cannot
+      // carry the glyphs), so the raw values must ride the row.
+      __recordsStampAt: r.records_stamp_at || null,
       counts: counts ? 'Yes' : (exit ? 'No' : ''),
       __verified: !!r.is_verified, __status: statusKey, __hasDocs: hasDocs,
+      __recordsStamp: r.records_stamp || null,
     };
     if (isHoldType(r)) {
       holdRows.push({ ...base, rent: num(r.rent_amount), rentDate: dateStr(r.rent_date),
@@ -745,7 +768,15 @@ async function buildTprExport(appId) {
   try {
     const trPdf = await trExport.buildTrackRecordPdf(trSections, trMeta);
     if (Buffer.isBuffer(trPdf) && trPdf.length) files.push({ name: `${REO}/Track Record.pdf`, data: trPdf });
-  } catch (e) { console.warn('[tpr-export] track-record PDF failed:', e && e.message); }
+  } catch (e) {
+    /* NEVER SILENT. This used to console.warn and move on, so a PDF that could
+       not be drawn simply was not in the delivered package and nobody knew —
+       which is how an unencodable stamp glyph went unnoticed. The package still
+       ships (an Excel + the documents beat nothing), but what is missing is
+       named in the manifest the export already carries. */
+    console.warn('[tpr-export] track-record PDF failed:', e && e.message);
+    unavailable.push({ source: 'Track Record.pdf', requirement: `REO — ${(e && e.message) || 'the PDF could not be built'}` });
+  }
 
   const trFolderCounts = {};
   const trManifest = [];

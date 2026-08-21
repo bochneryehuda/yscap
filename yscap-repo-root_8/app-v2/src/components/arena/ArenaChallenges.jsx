@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { showMessage } from '../../lib/dialog.js';
+import { showMessage, askPrompt } from '../../lib/dialog.js';
 import { subscribeChat } from '../../lib/chatEvents.js';
 import { arena, money, countdown, serverNow } from '../../lib/arena.js';
 import ArenaAiHelp from './ArenaAiHelp.jsx';
@@ -49,8 +49,16 @@ export default function ArenaChallenges({ sessionId, isSuper, onChanged }) {
   // How long the room counts down is a SETTING (the owner asked for ten or
   // twenty seconds), read from the board rather than hard-coded. Zero means no
   // count-in at all -- the challenge simply appears.
+  // THE GUARD LIVES ON THE CONDITION, NOT INSIDE Number() (owner-reported
+  // 2026-08-19: pressing Go live crashed the whole Arena page, permanently).
+  // Number(null) is 0 and 0 >= 0 is true, so the old test passed on the very
+  // first render — before this component's own fetch had resolved — and the
+  // consequent then read board.countdownSeconds off null and threw, which the
+  // page ErrorBoundary turned into the full-screen "Something went wrong" on
+  // every open of a live session. The board must be IN HAND before its value
+  // is trusted.
   const countFrom = Math.max(0, Math.min(60,
-    Number(board && board.countdownSeconds) >= 0 ? Number(board.countdownSeconds) : 10));
+    board && Number(board.countdownSeconds) >= 0 ? Number(board.countdownSeconds) : 10));
   useEffect(() => subscribeChat((event, data) => {
     if (event === 'arena:challenge-open' && data && data.id) {
       setDropping(data);
@@ -167,8 +175,10 @@ export default function ArenaChallenges({ sessionId, isSuper, onChanged }) {
                                   catch (x) { showMessage((x && x.message) || 'That did not work.'); }
                                 }}>Yes</button>
                                 <button className="btn ghost small" onClick={async () => {
-                                  try { await arena.decideFulfilment(e.id, 'rejected'); await load(); }
-                                  catch (x) { showMessage((x && x.message) || 'That did not work.'); }
+                                  const reason = await askPrompt('Why not? The reason is shown to them.', { title: 'Turn this one down' });
+                                  if (reason === null) return;
+                                  try { await arena.decideFulfilment(e.id, 'rejected', reason.trim() || undefined); await load(); }
+                                  catch (x) { showMessage((x && x.message) || 'That did not work.', { tone: 'error' }); }
                                 }}>No</button>
                               </span>
                             ) : <em className={`arena-status s-${e.status}`}> {e.status}</em>}
@@ -306,7 +316,7 @@ function FulfilBox({ challenge, onClose, onDone }) {
         <label className="arena-fullfield">What did you do?
           <textarea
             className="input" rows={3} value={note} maxLength={2000}
-            placeholder="Say what happened and how we can see it."
+            placeholder="What it was — the client, the file, what happened — so we can check it."
             onChange={(e) => setNote(e.target.value)}
           />
         </label>

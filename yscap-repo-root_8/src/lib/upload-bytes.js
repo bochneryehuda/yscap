@@ -94,19 +94,35 @@ function decodeUploadBase64(input, opts = {}) {
 function sniffKind(buf) {
   if (!buf || buf.length < 4) return null;
   const head = buf.subarray(0, 8);
-  // The PDF spec tolerates a preamble before the header — accept %PDF anywhere
-  // in the first 1KB (matches how real readers find it).
-  const pdfAt = buf.subarray(0, 1024).indexOf('%PDF');
-  if (pdfAt >= 0) return 'pdf';
+  // ORDER IS THE WHOLE RULE: a signature ANCHORED AT BYTE 0 beats a scan-anywhere
+  // heuristic, always — because a CONTAINER's payload must never be able to
+  // impersonate the container (owner-reported 2026-08-20:
+  // "TPR_YSCAP258134701_2026-07-21.zip — the FILE ITSELF appears corrupted
+  // (content is pdf, not zip)", on a package PILOT had just built itself).
+  // Our own ZIP writer stores members UNCOMPRESSED (lib/zip.js is STORE-only, on
+  // purpose: its members are already-compressed PDFs), so the first member's raw
+  // "%PDF" sits about seventy bytes in — comfortably inside the 1KB window the
+  // tolerant PDF scan used to run FIRST. Every TPR export whose first document is
+  // a PDF therefore sniffed as a PDF and reported itself corrupted.
+  if (head[0] === 0x50 && head[1] === 0x4B) return 'zip';           // docx/xlsx/zip
+  if (head.subarray(0, 4).toString('latin1') === '%PDF') return 'pdf';
   if (head[0] === 0x89 && head.subarray(1, 4).toString('latin1') === 'PNG') return 'png';
   if (head[0] === 0xFF && head[1] === 0xD8 && head[2] === 0xFF) return 'jpg';
-  if (head[0] === 0x50 && head[1] === 0x4B) return 'zip';           // docx/xlsx/zip
   if (head.subarray(0, 4).toString('latin1') === 'GIF8') return 'gif';
   if (buf.length >= 12 && buf.subarray(4, 12).toString('latin1').startsWith('ftyp')) return 'heic';
   if (head[0] === 0x49 && head[1] === 0x49 && head[2] === 0x2A) return 'tiff';
   if (head[0] === 0x4D && head[1] === 0x4D && head[2] === 0x00) return 'tiff';
+  // ---- below here nothing is a definitive signature, so nothing may outrank one.
+  // An HTML document ANCHORS its own start, so it is judged before the unanchored
+  // PDF scan: an e-sign error page saved as ".pdf" that happens to mention %PDF in
+  // its body is exactly the accident the source-corruption detector exists to
+  // catch, and reading it as a PDF is how it used to slip through.
   const text = buf.subarray(0, 256).toString('latin1').trimStart().toLowerCase();
   if (text.startsWith('<!doctype html') || text.startsWith('<html')) return 'html';
+  // The PDF spec tolerates a preamble before the header and real readers scan for
+  // it, so a PDF whose header is not at byte 0 is still a PDF — but only once
+  // nothing anchored above has claimed these bytes.
+  if (buf.subarray(0, 1024).indexOf('%PDF') >= 0) return 'pdf';
   return null;
 }
 

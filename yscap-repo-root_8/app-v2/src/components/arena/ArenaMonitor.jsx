@@ -31,6 +31,7 @@ export default function ArenaMonitor({ sessionId }) {
   const [m, setM] = useState(null);
   const [now, setNow] = useState(serverNow());
   const [err, setErr] = useState('');
+  const [whoOpen, setWhoOpen] = useState(null);
 
   const load = useCallback(async () => {
     if (!sessionId) return;
@@ -101,6 +102,12 @@ export default function ArenaMonitor({ sessionId }) {
                   <em>{s.entries} prize{s.entries === 1 ? '' : 's'}</em>
                   {s.entriesPending > 0 && <em className="hot">{s.entriesPending} to approve</em>}
                   <em>{s.wheelsDone}/{s.wheelsTotal} wheels</em>
+                  {!!(s.checkinPeople && s.checkinPeople.length) && (
+                    <button type="button" className="btn ghost small"
+                      onClick={() => setWhoOpen(whoOpen === s.id ? null : s.id)}>
+                      {whoOpen === s.id ? 'Hide the list' : 'Who is in'}
+                    </button>
+                  )}
                 </span>
                 {s.state === 'open' && left != null && (
                   <span className={`arena-mon-clock${left < 5 * 60000 ? ' hot' : ''}`}>
@@ -113,6 +120,18 @@ export default function ArenaMonitor({ sessionId }) {
                   </span>
                 )}
                 {s.outcomeNote && <span className="muted small arena-mon-note">{s.outcomeNote}</span>}
+                {whoOpen === s.id && (
+                  <ul className="arena-mon-who">
+                    {(s.checkinPeople || []).map((cp, i) => (
+                      <li key={i}>
+                        <span>{cp.name}</span>
+                        <em className={`muted small${cp.status === 'pending' ? ' hot' : ''}`}>
+                          {cp.status === 'approved' ? 'in the spin' : cp.status === 'pending' ? 'waiting on approval' : cp.status}
+                        </em>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </li>
             );
           })}

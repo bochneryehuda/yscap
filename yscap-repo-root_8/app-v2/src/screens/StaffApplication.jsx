@@ -6,7 +6,9 @@ import { ENTITY_TYPES, describeEntity, titlesFor, subtypesFor, hasSubtypes } fro
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fileToBase64 } from '../lib/files.js';
 import { onFilesDropped } from '../lib/drop-files.js';
-import { fmtDay, dayInputValue } from '../lib/dates.js';
+import VendorAutocomplete from '../components/VendorAutocomplete.jsx';
+import EmailListInput, { clean as cleanEmails, atLeastOne as atLeastOneEmail } from '../components/EmailListInput.jsx';
+import { fmtDay } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { moneyNum } from '../lib/money.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -40,7 +42,7 @@ import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
 import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
-import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
+import { PhoneInput, ZipInput , EmailInput, DateCommitInput } from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip, subscribeConditionsTab, goToSection, requestOpenSection, requestConditionsTab, requestAppDetailTab, subscribeAppDetailTab, setSectionResolver, revealAnchor } from '../components/FileSections.jsx';
@@ -78,29 +80,12 @@ import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import LoudHint from '../components/LoudHint.jsx';
 
-/* A closing-date <input type="date"> that DOESN'T fight the typist.
- * The old input saved on every onChange and reloaded the file — but a date
- * input fires change with each intermediate value while you type the year
- * (0002 → 0020 → 0202 → 2026), and the reload reset focus, so "you can't even
- * type in dates." This holds a local draft, saves only on blur/Enter, and only
- * when the value is a real complete date (or cleared) — never mid-type. */
-function ClosingDateField({ value, onSave }) {
-  const [draft, setDraft] = useState(dayInputValue(value));
-  useEffect(() => { setDraft(dayInputValue(value)); }, [value]);
-  const commit = () => {
-    const cur = dayInputValue(value);
-    if (draft === cur) return;                                   // unchanged
-    if (draft && !/^\d{4}-\d{2}-\d{2}$/.test(draft)) return;      // incomplete → ignore
-    if (draft && Number(draft.slice(0, 4)) < 1900) return;        // mid-type year → ignore
-    onSave(draft || null);
-  };
-  return (
-    <input className="input" type="date" value={draft}
-      onChange={e => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
-  );
-}
+/* The draft-commit closing-date input that used to live here ("you can't even
+   type in dates" — a date input fires change with each intermediate value while
+   you type the year, and saving per change + reloading wiped the typed date) is
+   now the shared DateCommitInput in components/FormattedInputs.jsx: the lead
+   CRM's follow-up date had the exact same bug, and a second private copy is how
+   the two would drift. Same semantics — commit on blur/Enter, never mid-type. */
 
 /* The inline DOB row that used to live here is gone — the shared
    shared BorrowerProfilePanel (components/BorrowerProfilePanel.jsx) now owns
@@ -2704,7 +2689,7 @@ function StaffTrackRecordPanel({ app, role }) {
   const borrowerId = people.some(p => p.id === selected) ? selected : app.borrower_id;
   const [snap, setSnap] = useState(null);
   const [dl, setDl] = useState(false);
-  const [full, setFull] = useState(false);   // full-screen tool sheet (same UX as the Scope of Work)
+  const [full, setFull] = useState(false);   // the legacy spreadsheet-editor tool sheet (bulk grid + xlsx import/export)
   // Per-line-item list so staff can raise an issue/request against a SPECIFIC
   // past project — it becomes a named condition on this file the borrower answers.
   const [trs, setTrs] = useState([]);
@@ -2822,13 +2807,24 @@ function StaffTrackRecordPanel({ app, role }) {
       <div className="row" style={{ marginBottom: 6, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <h3>Track record &amp; experience</h3>
         <div className="spacer" />
-        <button className="btn primary small" onClick={() => setFull(true)}
-          title="Open the track record in the full-screen workspace — same as the Scope of Work">
+        {/* THE FULL SCREEN IS THE REAL WORKSPACE (owner-directed 2026-08-19:
+            "when we click on the full screen, it's coming up like the statics
+            type of copy" — it opened the legacy static tool in an iframe). It
+            now opens /internal/track-record narrowed to this borrower: the
+            live checks, documents, actions AND the public-records search. The
+            legacy tool stays one click away below as the spreadsheet editor —
+            it is still the one place to bulk-edit or import/export the grid. */}
+        <Link className="btn primary small" to={`/internal/track-record?borrower=${borrowerId}`}
+          title="This borrower's projects in the full-screen track-record workspace — every check, the documents, the actions, and the public-records search.">
           Open full screen
+        </Link>
+        <button className="btn ghost small" onClick={() => setFull(true)}
+          title="The spreadsheet-style editor (the legacy tool sheet) — bulk-edit the grid, import or export Excel.">
+          Spreadsheet editor
         </button>
         {/* #82: the "Preview" of a saved static copy was removed — it opened a
-            stale snapshot. "Open full screen" is the live, editable, auto-saving
-            record; the HTML export below stays for a static copy on hand. */}
+            stale snapshot. The workspace link is the live record; the HTML
+            export below stays for a static copy on hand. */}
         {snap && (
           <button className="btn ghost small" disabled={dl} onClick={download}
             title="The borrower's saved static copy — refreshed automatically on every change">
@@ -2901,11 +2897,15 @@ function StaffTrackRecordPanel({ app, role }) {
           borrowerName={(people.find(p => p.id === borrowerId) || {}).label || ''} />
       </div>
       {/* Phase E (owner-directed 2026-08-09): the EMBEDDED legacy editor is
-          retired — the ledger above is the record you read, "Open full screen"
-          is the editor, and the borrower's saved copy is rebuilt SERVER-SIDE on
-          every write (src/lib/track-record/html-copy.js), so nothing depends on
-          this page hosting the tool any more. The borrower's own tool sheet and
-          the ?internal=1 bridge are untouched (constraint A13). */}
+          retired — the ledger above is the record you read. "Open full screen"
+          now navigates to the REAL workspace (/internal/track-record?borrower=,
+          owner-directed 2026-08-19: the full screen must be the live center,
+          never the static-copy tool), and the legacy grid survives behind the
+          "Spreadsheet editor" button (the ToolModal below — still the only
+          bulk-edit grid / xlsx import). The borrower's saved copy is rebuilt
+          SERVER-SIDE on every write (src/lib/track-record/html-copy.js), so
+          nothing depends on this page hosting the tool any more. The borrower's
+          own tool sheet and the ?internal=1 bridge are untouched (A13). */}
       {/* AFTER the record itself (owner-directed 2026-08-03) — you read the track
           record, then you read what is still left on it. The detail list reads
           the SAME todo payload fetched above (`preloaded`), so the section costs
@@ -3248,20 +3248,49 @@ const StaffCardEntry = AppraisalCardEntry;
 function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   const contactType = toolKey === 'title_contact' ? 'title_company' : 'insurance_agent';
   const [open, setOpen] = useState(false);
-  const [f, setF] = useState({ companyName: '', contactName: '', email: '', phone: '' });
+  const [f, setF] = useState({ companyName: '', contactName: '', emails: [''], phone: '' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
+
+  /* THE TYPE-AHEAD IS SCOPED TO THIS FILE, and so is its permission — the server
+     decides what a staffer may see, never this component (lib/vendor-directory).
+     Memoised on the file + type so the autocomplete's own debounce is not reset by
+     a new function identity on every keystroke. */
+  const suggest = React.useCallback(
+    (q) => api.staffVendorSuggest(appId, contactType, q), [appId, contactType]);
+
+  /* PICKING A VENDOR FILLS THE WHOLE FORM — "auto-populate all the information
+     just by starting to type". Every address the vendor carries comes with it,
+     because all of them go on the order. */
+  const takeVendor = (v) => setF((p) => ({
+    ...p,
+    companyName: v.companyName || p.companyName || '',
+    contactName: v.contactName || p.contactName || '',
+    emails: (v.emails && v.emails.length) ? v.emails.slice() : p.emails,
+    phone: v.phone || p.phone || '',
+  }));
+
   function startEdit() {
-    setF({ companyName: current?.company_name || '', contactName: current?.contact_name || '', email: current?.email || '', phone: current?.phone || '' });
+    setF({
+      companyName: current?.company_name || '',
+      contactName: current?.contact_name || '',
+      // The stored shape is the scalar + db/224's array; show every address it has.
+      emails: atLeastOneEmail(cleanEmails([current?.email, ...(current?.emails || [])])),
+      phone: current?.phone || '',
+    });
     setErr(''); setOpen(true);
   }
   async function save() {
-    if (!f.companyName && !f.contactName && !f.email && !f.phone) { setErr('Enter at least one detail (company, name, email or phone).'); return; }
+    const emails = cleanEmails(f.emails);
+    if (!f.companyName && !f.contactName && !emails.length && !f.phone) { setErr('Enter at least one detail (company, name, email or phone).'); return; }
     setBusy(true); setErr('');
     try {
-      if (current && current.link_id) await api.staffEditFileContact(current.link_id, { ...f, contactType });
-      else await api.staffAddFileContact(appId, { ...f, contactType });
+      // `email` rides along as the primary so a server that only reads the scalar
+      // is unchanged; `emails` is the full set the order goes to.
+      const body = { companyName: f.companyName, contactName: f.contactName, phone: f.phone, emails, email: emails[0] || '', contactType };
+      if (current && current.link_id) await api.staffEditFileContact(current.link_id, body);
+      else await api.staffAddFileContact(appId, body);
       setOpen(false);
       if (onSaved) await onSaved();
     } catch (e) { setErr((e && e.message) || 'Could not save the contact.'); }
@@ -3269,10 +3298,16 @@ function StaffContactEntry({ appId, toolKey, current, onSaved }) {
   }
   if (!open) return <button className="btn ghost small" onClick={startEdit}>{current ? 'Edit contact' : 'Enter contact'}</button>;
   return (
-    <div className="small" style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'flex-end' }}>
-      <input className="input" style={{ maxWidth: 180 }} placeholder="Company" value={f.companyName} onChange={set('companyName')} />
+    <div className="small" style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'flex-start', justifyContent: 'flex-end' }}>
+      <div style={{ width: 200 }}>
+        <VendorAutocomplete value={f.companyName} onChange={(v) => setF((p) => ({ ...p, companyName: v }))}
+          onPick={takeVendor} fetchSuggestions={suggest} placeholder="Company — start typing"
+          emptyHint="No match in our vendor list — type the details in." />
+      </div>
       <input className="input" style={{ maxWidth: 150 }} placeholder="Contact name" value={f.contactName} onChange={set('contactName')} />
-      <EmailInput style={{ maxWidth: 190 }} placeholder="Email" value={f.email} onChange={v => setF(p => ({ ...p, email: v }))} />
+      <div style={{ width: 220 }}>
+        <EmailListInput value={f.emails} onChange={(v) => setF((p) => ({ ...p, emails: v }))} disabled={busy} compact />
+      </div>
       <PhoneInput style={{ maxWidth: 150 }} placeholder="Phone" value={f.phone} onChange={v => setF(p => ({ ...p, phone: v }))} />
       <button className="btn small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save contact'}</button>
       <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
@@ -3967,7 +4002,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                    iframe modal. The Track Record CENTER on this same page is now
                    the workspace — jump there (the whose-record picker at its top
                    covers the co-borrower case the old per-borrower buttons did;
-                   full editing stays one click away via its "Open full screen"). */
+                   its "Open full screen" link opens the real workspace and its
+                   "Spreadsheet editor" button keeps the legacy grid one click
+                   away). */
                 <button className="btn ghost small" onClick={() => goToSection('sec-track')}
                   title="Open the Track Record Center on this file — the record, the experience math, and every action">
                   Open the track record
@@ -5643,12 +5680,12 @@ export default function StaffApplication() {
           <div className="grid cols-2" style={{ gap: 16, marginTop: 14 }}>
             <div className="field" style={{ marginBottom: 0 }}>
               <label>Expected closing</label>
-              <ClosingDateField value={app.expected_closing} onSave={v => setClosing('expectedClosing', v)} />
+              <DateCommitInput value={app.expected_closing} onCommit={v => setClosing('expectedClosing', v)} />
               <div className="hint" style={{ marginTop: 6 }}>Setting an expected date notifies the borrower.</div>
             </div>
             <div className="field" style={{ marginBottom: 0 }}>
               <label>Actual closing</label>
-              <ClosingDateField value={app.actual_closing} onSave={v => setClosing('actualClosing', v)} />
+              <DateCommitInput value={app.actual_closing} onCommit={v => setClosing('actualClosing', v)} />
             </div>
           </div>
 
@@ -6276,6 +6313,7 @@ export default function StaffApplication() {
         info="Everything that leaves this file for an outside party: the TPR clean-file export, the MISMO 3.4 file, and the capital provider's own data tape.">
       <TprExport appId={id} />
       <CorrfirstExport appId={id} />
+      <EmcapPricingTool appId={id} />
       <MismoExport appId={id} />
       {can('export_data_tapes') && <TapeExport appId={id} />}
       </Section>
@@ -6703,6 +6741,131 @@ function CorrfirstExport({ appId }) {
    Excel workbook (e.g. the Fidelis Pricing Matrix / Data Tape). A loan can only
    export the tape of the provider it is CURRENTLY assigned to; the others show a
    plain reason (switch the capital provider first). */
+/* EMCAP PRICING & ELIGIBILITY TOOL — the investor's own sheet, filled in.
+
+   This is the workbook the Silver program was transcribed from. We send EMCAP the
+   ORIGINAL: their file, their formulas, with this loan's inputs typed into the
+   yellow cells, so their auto-classification, their tier grid, their rate and their
+   eligibility decision all populate BY THEMSELVES when they open it.
+
+   Not a data tape. A tape is the loan being SOLD; this is the question asked BEFORE
+   that — would EMCAP take this loan, and at what rate — so it has its own section
+   here and does not go through the tape export gate.
+
+   Everything a yellow cell gets is listed BEFORE the download, and any cell that
+   will ship empty is NAMED with the reason — nothing goes to a note buyer
+   unannounced. */
+function EmcapPricingTool({ appId }) {
+  const [prev, setPrev] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  useEffect(() => {
+    let live = true;
+    api.staffEmcapPricingToolPreview(appId)
+      .then((p) => { if (live) setPrev(p); })
+      .catch(() => { if (live) setPrev({ error: true }); });
+    return () => { live = false; };
+  }, [appId]);
+  async function download() {
+    setBusy(true); setMsg('');
+    try {
+      const { blob, filename } = await api.staffEmcapPricingToolExport(appId);
+      saveBlob(blob, filename || 'EMCAP-Pricing-Eligibility.xlsx');
+      setMsg('Exported EMCAP’s pricing & eligibility sheet. Open it in Excel — it prices itself.');
+    } catch (e) {
+      const d = (e && e.data) || {};
+      showMessage(d.message || d.error || e.message || 'Export failed');
+    } finally { setBusy(false); }
+  }
+  const avail = (prev && prev.availability) || null;
+  const filled = (prev && prev.filled) || [];
+  const gaps = (prev && prev.gaps) || [];
+  const cls = (prev && prev.classification) || null;
+  const ve = (prev && prev.verifiedExperience) || null;
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <h3>EMCAP pricing &amp; eligibility sheet</h3>
+        <div className="spacer" />
+        <button className="btn primary" onClick={download}
+          disabled={busy || !prev || prev.error || !avail || !avail.available}>
+          {busy ? 'Building…' : 'Export the sheet (Excel)'}
+        </button>
+      </div>
+      {!prev ? <p className="muted small">Checking this loan…</p> : prev.error ? (
+        <p className="muted small" style={{ color: 'var(--gold-ink)' }}>Couldn’t read this loan. Refresh to try again.</p>
+      ) : (
+        <>
+          <p className="muted small">
+            EMCAP’s own <b style={{ color: '#141B22' }}>RTL Seller Pricing &amp; Eligibility Tool</b>, with this loan
+            typed into its yellow input cells. Their sheet does the rest when they open it — the auto-classification,
+            the borrower tier, the rate and the eligibility decision all fill themselves in. Nothing else in the
+            workbook is touched.
+          </p>
+          {avail && !avail.available && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--gold,#AE8746)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>This isn’t an EMCAP loan.</b>
+              <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>{avail.why}</div>
+              <button type="button" onClick={() => goToSection('sec-overview')}
+                style={{ background: 'none', border: 'none', color: '#0B6B63', textDecoration: 'underline', cursor: 'pointer', padding: 0, marginTop: 6, font: 'inherit' }}>
+                Change the capital provider →
+              </button>
+            </div>
+          )}
+          {cls && (
+            <div className="row small" style={{ gap: 6, flexWrap: 'wrap', marginTop: 8, color: '#4B585C' }}>
+              <span className="muted">EMCAP will read this as:</span>
+              {[cls.product, cls.purpose === 'R' ? 'Refinance' : 'Purchase', cls.market, cls.exit].filter(Boolean).map((t, i) => (
+                <span key={i} className="pill">{t}</span>
+              ))}
+            </div>
+          )}
+          {filled.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div className="small" style={{ fontWeight: 600, color: '#141B22', marginBottom: 3 }}>
+                Going into their yellow cells ({filled.length}):
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: '2px 14px' }}>
+                {filled.map((f) => (
+                  <div key={f.cell} className="small" style={{ color: '#4B585C' }}>
+                    <span style={{ color: '#141B22' }}>{f.label}</span>: <b style={{ color: '#141B22' }}>{f.display}</b>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* The verified track record is what sets EMCAP's borrower tier, so show what
+              the number in that cell is actually made of. */}
+          {ve && (
+            <div className="small" style={{ color: '#4B585C', marginTop: 6 }}>
+              Verified track record behind the comparable-projects cell: {ve.flips} fix &amp; flip · {ve.holds} fix &amp; hold · {ve.ground} ground-up
+              {' '}(only VERIFIED projects go to a note buyer).
+            </div>
+          )}
+          {gaps.length > 0 && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--gold,#AE8746)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>These cells go out empty:</b>
+              <ul style={{ margin: '3px 0 0 18px', padding: 0, color: '#4B585C' }}>
+                {gaps.map((g) => (
+                  <li key={g.cell} className="small">
+                    <span style={{ color: '#141B22' }}>{g.label}</span> — {g.why}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="small" style={{ color: '#4B585C', marginTop: 8 }}>
+            Left for a human on purpose: <b style={{ color: '#141B22' }}>GC-only experience</b> stays “No” (nothing on the
+            file records it, and it would move EMCAP’s tier), and the projected DSCR and projected project profit stay
+            empty. Their dropdowns are still live, so anyone can change them in the sheet.
+          </div>
+          {msg && <div className="small" role="status" style={{ marginTop: 6, color: '#0B6B63' }}>{msg}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
 function TapeExport({ appId }) {
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(null);

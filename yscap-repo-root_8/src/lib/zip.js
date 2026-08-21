@@ -24,7 +24,19 @@ function dosDateTime(d) {
   return { date, time };
 }
 
-function zip(files, when = new Date()) {
+/**
+ * zip(files, when, opts) → Buffer
+ *
+ * opts.deflate {boolean} — DEFLATE each entry instead of storing it (default OFF,
+ * so every existing caller's bytes are unchanged). `unzip` below already inflates
+ * method 8, so this is the writer catching up with the reader; it exists because a
+ * vendor workbook re-zipped STORED can be many times the size of the file they sent
+ * us (an investor's pricing tool went 270 KB → 2.1 MB), and what we hand back to a
+ * capital provider should not look like a different, bloated file. An entry that
+ * does not actually get smaller is still STORED, per entry.
+ */
+function zip(files, when = new Date(), opts = {}) {
+  const deflate = !!(opts && opts.deflate);
   const { date, time } = dosDateTime(when);
   const local = [];
   const central = [];
@@ -39,23 +51,31 @@ function zip(files, when = new Date()) {
     const name = Buffer.from(f.name, 'utf8');
     const data = Buffer.isBuffer(f.data) ? f.data : Buffer.from(f.data || '');
     const crc = crc32(data);
+    // CRC-32 and the uncompressed size always describe the ORIGINAL bytes; only the
+    // stored payload and its size change. A deflate that does not shrink the entry
+    // falls back to STORED so we never grow a file in order to compress it.
+    let body = data; let method = 0;
+    if (deflate && data.length) {
+      const packed = zlib.deflateRawSync(data, { level: 9 });
+      if (packed.length < data.length) { body = packed; method = 8; }
+    }
     const lh = Buffer.alloc(30);
     lh.writeUInt32LE(0x04034b50, 0);
-    lh.writeUInt16LE(20, 4); lh.writeUInt16LE(UTF8_FLAG, 6); lh.writeUInt16LE(0, 8);
+    lh.writeUInt16LE(20, 4); lh.writeUInt16LE(UTF8_FLAG, 6); lh.writeUInt16LE(method, 8);
     lh.writeUInt16LE(time, 10); lh.writeUInt16LE(date, 12);
-    lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(data.length, 22);
+    lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(body.length, 18); lh.writeUInt32LE(data.length, 22);
     lh.writeUInt16LE(name.length, 26); lh.writeUInt16LE(0, 28);
-    local.push(lh, name, data);
+    local.push(lh, name, body);
     const ch = Buffer.alloc(46);
     ch.writeUInt32LE(0x02014b50, 0);
-    ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(UTF8_FLAG, 8); ch.writeUInt16LE(0, 10);
+    ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(UTF8_FLAG, 8); ch.writeUInt16LE(method, 10);
     ch.writeUInt16LE(time, 12); ch.writeUInt16LE(date, 14);
-    ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(data.length, 24);
+    ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(body.length, 20); ch.writeUInt32LE(data.length, 24);
     ch.writeUInt16LE(name.length, 28); ch.writeUInt16LE(0, 30); ch.writeUInt16LE(0, 32);
     ch.writeUInt16LE(0, 34); ch.writeUInt16LE(0, 36); ch.writeUInt32LE(0, 38);
     ch.writeUInt32LE(offset, 42);
     central.push(ch, name);
-    offset += 30 + name.length + data.length;
+    offset += 30 + name.length + body.length;
   }
   const cd = Buffer.concat(central);
   const eocd = Buffer.alloc(22);

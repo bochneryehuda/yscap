@@ -272,6 +272,17 @@ module.exports = {
   filename,
   bulkFilename,
   COLUMNS,
+  /* Shared with the EMCAP PRICING & ELIGIBILITY TOOL export
+     (./emcap-pricing-tool.js). That workbook asks EMCAP the same questions this
+     tape answers — total loan, purchase/acquisition cost, rehab budget, ARV, note
+     rate, term, purchase-vs-refinance — so it reads them THROUGH THESE FUNCTIONS
+     rather than deriving its own. One definition: a change to how a figure is
+     read moves the tape and the eligibility sheet together, and the two can never
+     tell EMCAP different numbers about the same loan. */
+  economics,
+  termMonths,
+  purchaseRefi,
+  strategyLabel,
   // Supplemental (questionnaire) interface — used by the export flow:
   SUPPLEMENTAL_FIELDS,
   isNewConstruction,

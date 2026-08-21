@@ -34,6 +34,7 @@ const GLOSSARY = {
   appraisal_comparables: 'The other properties an appraiser compared this one to.',
   credit_reports: 'A credit pull for one borrower, including the scores the deal was priced on.',
   track_records: 'Deals a borrower has done before — what their experience level is built from.',
+  leads: 'A person who might become a borrower — the CRM record of them before there is a loan file.',
   application_assignees: 'Who on the team is on which file, and in what role.',
   conditions: 'Conditions raised on a file outside the standard checklist.',
   sync_queue: 'Work waiting to be pushed out to ClickUp or another outside system.',

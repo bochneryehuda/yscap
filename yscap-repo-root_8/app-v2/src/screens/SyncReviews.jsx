@@ -179,7 +179,7 @@ function spError(r) {
     const raw = r.raw_value ? JSON.parse(r.raw_value) : null;
     if (!raw) return '';
     if (raw.error) return String(raw.error);
-    if (raw.kind === 'item-missing') return 'the mirror copy is no longer in SharePoint (deleted or moved by a person)';
+    if (raw.kind === 'item-missing') return 'the mirror copy is no longer in SharePoint (deleted or moved by a person) — PILOT looked for it again by name and by its Pilot stamp and could not find it, and will not put it back on its own';
     if (raw.kind === 'local-missing') return 'the portal’s own stored bytes are unreadable — the SharePoint copy may be the only surviving one';
     if (raw.kind === 'source-suspect') return `the file’s content looks like ${raw.sniffed || 'unrecognized data'}, not ${raw.expected || 'its declared type'} — it was already damaged when it was uploaded`;
     return '';

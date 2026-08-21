@@ -76,10 +76,23 @@ const WORK_BATCH = envSec('ELEMENTIX_CRM_WORK_BATCH', 20);
 const SETTLE_INTERVAL_MS = envSec('ELEMENTIX_CRM_SETTLE_SEC', 120) * 1000;
 const SETTLE_BATCH = envSec('ELEMENTIX_CRM_SETTLE_BATCH', 25);
 
+/* THE HISTORY BACKFILL — the owner's "backdate this: all the profiles we
+   currently have" (2026-08-19). Walks borrowers already linked to an Elementix
+   person and lands the CACHED profile history on their real profile — entities
+   + unverified track-record lines. CACHE-ONLY: it never calls the vendor, so it
+   is deliberately NOT gated on the Elementix switch — data already paid for is
+   imported whether or not the connection is currently on. Its own kill switch,
+   default ON, readable at call time like every other switch here. */
+const HISTORY_INTERVAL_MS = envSec('ELEMENTIX_HISTORY_IMPORT_SEC', 600) * 1000;
+const HISTORY_BATCH = envSec('ELEMENTIX_HISTORY_IMPORT_BATCH', 10);
+const historyImportOn = () => flags.enabled('ELEMENTIX_HISTORY_IMPORT_ENABLED',
+  process.env.ELEMENTIX_HISTORY_IMPORT_ENABLED !== '0');
+
 let started = false;
 let listing = false;
 let working = false;
 let settling = false;
+let importingHistory = false;
 
 /**
  * Who the passes run AS. Every CRM-plane call needs a staff id — it is how the
@@ -201,6 +214,29 @@ async function settleOnce() {
   } finally { settling = false; }
 }
 
+/**
+ * Land already-cached Elementix histories on their linked borrowers, a few at
+ * a time. Bounded + self-draining (the db/597 stamps); no vendor calls at all,
+ * so it cannot spend a slot of the shared allowance or a credit. Quiet when
+ * there is nothing to do, which after the first drain is the normal state.
+ */
+async function historyOnce() {
+  if (importingHistory) return null;
+  if (!historyImportOn()) return null;
+  importingHistory = true;
+  try {
+    const out = await require('../lib/elementix/deep-history').backfillOnce({ limit: HISTORY_BATCH });
+    if (out && (out.imported || out.failed)) {
+      console.log('[elementix-crm] history import: %d borrower(s) imported, %d had no cached profile yet, %d failed (retried up to 3 times)',
+        out.imported, out.nothing, out.failed);
+    }
+    return out;
+  } catch (e) {
+    console.warn('[elementix-crm] history import pass failed:', e.message);
+    return null;
+  } finally { importingHistory = false; }
+}
+
 function start() {
   if (started) return;
   started = true;
@@ -230,7 +266,13 @@ function start() {
   setTimeout(workOnce, 90000);
   setInterval(listOnce, LIST_INTERVAL_MS);
   setInterval(workOnce, WORK_INTERVAL_MS);
+
+  /* The cache-only history backfill (owner-directed 2026-08-19). Not behind the
+     Elementix switch — see its constant above — but behind its own, read at
+     call time. Staggered behind the other first passes. */
+  setTimeout(historyOnce, 120000);
+  setInterval(historyOnce, HISTORY_INTERVAL_MS);
 }
 
-module.exports = { start, listOnce, workOnce, settleOnce, autoImportOn,
-  _internals: { runAs, LIST_INTERVAL_MS, WORK_INTERVAL_MS, WORK_BATCH, SETTLE_INTERVAL_MS, SETTLE_BATCH } };
+module.exports = { start, listOnce, workOnce, settleOnce, historyOnce, autoImportOn, historyImportOn,
+  _internals: { runAs, LIST_INTERVAL_MS, WORK_INTERVAL_MS, WORK_BATCH, SETTLE_INTERVAL_MS, SETTLE_BATCH, HISTORY_INTERVAL_MS, HISTORY_BATCH } };

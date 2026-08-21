@@ -66,16 +66,43 @@ export default function ArenaProof({ drawId, onClose }) {
               <dt>Secret revealed afterwards</dt>
               <dd className="mono">{r.serverSeed || 'not revealed yet'}</dd>
               <dt>Fingerprint of the frozen list</dt><dd className="mono">{r.rosterHash || '—'}</dd>
-              <dt>The number from the room</dt><dd className="mono">{r.clientSeed || '—'}</dd>
-              <dt>Turn</dt><dd className="mono">{r.nonce}</dd>
+              {/* A held draw was decided by a PRESS, not a pre-drawn number —
+                  so its evidence is the press, the speed and the coast, and the
+                  auto-draw's "number from the room"/"turn" rows would print "—"
+                  under instructions for the wrong maths (found by the
+                  2026-08-19 audit; the rematch is exactly a held draw). */}
+              {r.mode === 'held' ? (
+                <>
+                  <dt>How it stopped</dt><dd>Somebody pressed the button</dd>
+                  <dt>The press, after the wheel started</dt>
+                  <dd className="mono">{Number.isFinite(Number(r.elapsedMs)) ? `${(Number(r.elapsedMs) / 1000).toFixed(3)} seconds` : '—'}</dd>
+                  <dt>Wheel speed</dt><dd className="mono">{r.degPerSecond}° per second</dd>
+                  <dt>Coast after the press</dt><dd className="mono">{r.spinDownDeg}°</dd>
+                </>
+              ) : (
+                <>
+                  <dt>The number from the room</dt><dd className="mono">{r.clientSeed || '—'}</dd>
+                  <dt>Turn</dt><dd className="mono">{r.nonce}</dd>
+                </>
+              )}
             </dl>
 
-            <p className="muted small">
-              To redo it yourself: the SHA-256 of the revealed secret has to equal the fingerprint published
-              beforehand. Then take HMAC-SHA256 of “{'{the number from the room}'}:{'{turn}'}” keyed with that
-              secret, read it as a number, and count along the wheel by slice size. It lands on the same name
-              every time. This is the same commit-and-reveal method regulated prize draws use.
-            </p>
+            {r.mode === 'held' ? (
+              <p className="muted small">
+                To redo it yourself: the SHA-256 of the revealed secret has to equal the fingerprint published
+                beforehand — that secret set where the wheel STARTED, before anyone could know it. Then turn the
+                wheel forward by (speed × seconds until the press) plus the coast, and read off which slice the
+                pointer is in. It lands on the same name every time. Where it stopped really was decided by when
+                the button was pressed; the sealed secret is what stops anybody lining the wheel up in advance.
+              </p>
+            ) : (
+              <p className="muted small">
+                To redo it yourself: the SHA-256 of the revealed secret has to equal the fingerprint published
+                beforehand. Then take HMAC-SHA256 of “{'{the number from the room}'}:{'{turn}'}” keyed with that
+                secret, read it as a number, and count along the wheel by slice size. It lands on the same name
+                every time. This is the same commit-and-reveal method regulated prize draws use.
+              </p>
+            )}
           </>
         )}
       </div>

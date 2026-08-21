@@ -84,6 +84,11 @@ export const CODE_SUBJECT = {
   // Plans & permits re-raised at the FIRST DRAW (db/576, owner-directed 2026-08-18).
   draw_cond_plans_permits: 'construction',
   rtl_cond_feasibility: 'construction', draw_cond_signed_request: 'construction',
+  /* db/601 — the two conditions the owner asked for on every ground-up construction
+     file, which belong in the SAME group as the Scope of Work above (owner-directed
+     2026-08-20: "under the same section where you have the scope of work"). The
+     feasibility report already sat here; the general contractor joins it. */
+  rtl_cond_gc_info: 'construction',
   // title
   title_commitment: 'title', rtl_cond_title: 'title',
   // db/464 — the REFINANCE payoff conditions (external = the borrower's current

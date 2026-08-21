@@ -17,6 +17,7 @@ import { askConfirm, askPrompt } from '../lib/dialog.js';
 // a bare hash cannot do. Used by the appraisal card to hand off to the one screen
 // that is allowed to talk to the appraisal companies.
 import { goToSection } from './FileSections.jsx';
+import { ScheduleButton, ScheduledSends, useScheduledSends } from './ScheduleSend.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ORDERS DESK (#orders) — order TITLE and INSURANCE for a file, and track each
@@ -64,6 +65,13 @@ const KIND_LABEL = { title: 'Title', insurance: 'Insurance' };
    derivation is what removes the class, not a longer-lived useState around it. */
 const CONTACT_TYPE = { title: 'title_company', insurance: 'insurance_agent' };
 const CONTACT_ASK = { title: 'title company', insurance: 'insurance agent' };
+/* Every blocker code this card can NAME. The server's `orders.blockers()` is the
+   authority on which codes can arrive, and scripts/test-order-blocker-labels-pure.js
+   fails the build the moment that list gains a code with no wording here — a blocker
+   the card cannot name used to leave the Order button clickable with nothing on the
+   screen saying why it would refuse (the 'usps' address gate shipped exactly that
+   way). Codes outside this list still render, through the fallback line. */
+const KNOWN_ORDER_BLOCKERS = ['loan_number', 'contact', 'usps'];
 
 function when(ts) { return ts ? new Date(ts).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : ''; }
 
@@ -487,6 +495,14 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
   const blockers = order.blockers || [];
   const needsLoan = blockers.includes('loan_number');
   const needsContact = blockers.includes('contact');
+  // The USPS address gate: the server refuses to place (or re-send) an order until
+  // the USPS-verified address is imported, so the card must say so up front.
+  const needsUsps = blockers.includes('usps');
+  // A blocker code this screen has no wording for still shows and still holds the
+  // button — the server will refuse it anyway, and a clickable button that fails
+  // after the click (or a silently disabled one) is the dead end this fixes.
+  const otherBlockers = blockers.filter((b) => !KNOWN_ORDER_BLOCKERS.includes(b));
+  const blocked = needsLoan || needsContact || needsUsps || otherBlockers.length > 0;
   const placed = order.status !== 'not_ordered' && order.status !== 'cancelled';
   const recipsRaw = order.recipients || { to: [], cc: [] };
   // The preview follows the checkbox live: the server built the cc list with the
@@ -505,6 +521,23 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
     try { await api.staffCancelOrder(appId, kind, reopen); onChanged && onChanged(); }
     catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not update the order.' }); }
     finally { setBusy(''); }
+  };
+
+  /* SEND IT LATER. The scheduling door takes the SAME body the send takes, so
+     what is queued tonight is exactly what pressing the button now would do —
+     and it is the send ROUTE, not a rendered email, that runs in the morning. */
+  const sched = useScheduledSends(appId, [order.status]);
+  const scheduleIt = async ({ day, time }) => {
+    const body = { day, time };
+    if (placed) body.force = true;
+    if (ccBorrower != null) body.ccBorrower = !!ccBorrower;
+    const r = await api.staffScheduleOrder(appId, kind, body);
+    await sched.reload();
+    setMsg({ tone: (r.warnings && r.warnings.length) ? 'warn' : 'ok',
+      text: (r.warnings && r.warnings.length)
+        ? `Scheduled for ${r.scheduled.sendAtText}. It will NOT go out unless you also: ${r.warnings.join(' ')}`
+        : `${KIND_LABEL[kind]} order scheduled for ${r.scheduled.sendAtText}.` });
+    onChanged && onChanged();
   };
 
   const place = async (force) => {
@@ -629,25 +662,43 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
       {/* Before you can order: show EXACTLY what's still needed, each with a
           visible action — never a silently greyed-out button (a loan officer read
           the disabled "Order" as "I'm not allowed to order it"). */}
-      {!placed && (needsLoan || needsContact) && (
+      {blocked && (
         <div className="notice" style={{ marginTop: 6, marginBottom: 2, background: 'var(--surface-soft, #fbf7ee)', borderColor: 'var(--gold,#AE8746)' }}>
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>To send this {kind} order, first:</div>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>
+            {placed ? `Before you can send this ${kind} order again:` : `To send this ${kind} order, first:`}
+          </div>
           <ul style={{ margin: '0 0 2px 18px', padding: 0 }}>
             {needsContact && <li style={{ marginBottom: 4 }}>Add the {CONTACT_ASK[kind]} (who to email) — the box above.</li>}
             {needsLoan && <li>Add the file’s loan number — the box above (it prints in the mortgage clause).</li>}
+            {/* THE USPS ADDRESS GATE — same rule as the attorney closing prep: an
+                order transmits the property address to an outside vendor, so it
+                goes out USPS-verified or not at all. Same words the server
+                answers with. */}
+            {needsUsps && <li>Import the USPS-verified property address — open <b style={{ color: 'var(--ivory,#141B22)' }}>USPS Address Verification</b> on this file's conditions list, verify the subject address, and click "Import verified address". The {CONTACT_ASK[kind]} must never get an unverified address. If USPS cannot confirm the address, a super admin can accept it there as an exception.</li>}
+            {/* A blocker this screen has no wording for still SHOWS — a held-back
+                order with nothing on screen saying why is a dead end. */}
+            {otherBlockers.map((b) => (
+              <li key={b}>Something on the server is holding this order (its code is "{b}") and this screen does not know how to explain it yet. Refresh the page — if this line is still here, the portal needs an update.</li>
+            ))}
           </ul>
         </div>
       )}
 
+      <ScheduledSends rows={sched.rows} onCancel={sched.cancel}
+        kinds={[kind === 'title' ? 'title_order' : 'insurance_order']} />
+
       {/* Actions */}
       <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
         {!placed && (
-          <button className="btn primary small" disabled={!!busy || needsLoan || needsContact} onClick={() => place(false)}
-            title={needsLoan ? 'Add the loan number first' : needsContact ? `Add the ${CONTACT_ASK[kind]} first` : `Send the ${kind} order to the vendor`}>
+          <button className="btn primary small" disabled={!!busy || blocked} onClick={() => place(false)}
+            title={needsLoan ? 'Add the loan number first' : needsContact ? `Add the ${CONTACT_ASK[kind]} first` : needsUsps ? 'Import the USPS-verified address first — see the step above' : blocked ? 'Finish the steps listed above first' : `Send the ${kind} order to the vendor`}>
             {busy === 'place' ? 'Sending…' : `Order ${kind}`}
           </button>
         )}
-        {!placed && !needsLoan && !needsContact && (
+        {!placed && (
+          <ScheduleButton onSchedule={scheduleIt} busy={!!busy} what={`the ${kind} order`} />
+        )}
+        {!placed && !blocked && (
           <span className="muted small" style={{ alignSelf: 'center' }}>
             Emails the {CONTACT_ASK[kind]}, cc’ing the loan officer and processor{ccBorrower ? ' — and the borrower' : ''}.
           </span>
@@ -655,9 +706,12 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
         {placed && (
           <>
             <button className="btn primary small" disabled={!!busy} onClick={() => setFollowOpen(o => !o)}>Follow up</button>
-            <button className="btn ghost small" disabled={!!busy || needsContact} onClick={() => place(true)} title="Re-send the full order to the vendor + CC chain">
+            <button className="btn ghost small" disabled={!!busy || needsContact || needsUsps} onClick={() => place(true)}
+              title={needsUsps ? 'Import the USPS-verified address first — see the step above' : 'Re-send the full order to the vendor + CC chain'}>
               {busy === 'place' ? 'Sending…' : 'Re-send order'}
             </button>
+            <ScheduleButton onSchedule={scheduleIt} busy={!!busy} disabled={needsContact || needsUsps}
+              what={`the ${kind} order`} />
             {/* NOT on a FINISHED order. Cancelling is not a tidier way of saying
                 "done" — it is an explicit stand-down that shuts the vendor reply
                 door, so on an order that already finished it can only lose the

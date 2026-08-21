@@ -22,6 +22,7 @@ const runner = require('../lib/arena/spin-runner');
 const challenges = require('../lib/arena/challenges');
 const lib = require('../lib/arena/challenge-library');
 const templates = require('../lib/arena/templates');
+const daySetup = require('../lib/arena/day-setup');
 const copilot = require('../lib/arena/copilot');
 const games = require('../lib/arena/game-types');
 const { decodeUploadBase64 } = require('../lib/upload-bytes');
@@ -33,7 +34,12 @@ challenges.setBroadcaster((event, data) => {
 
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 function requireSuper(req, res, next) {
-  if (settings.isSuperAdmin(req.actor)) return next();
+  settings.runsArena(req.actor).then((ok) => {
+    if (ok) return next();
+    refuseSuper(res);
+  }).catch(() => refuseSuper(res));
+}
+function refuseSuper(res) {
   return bad(res, 'Only a super admin can do that.', 403);
 }
 async function audit(req, action, entityId, detail) {
@@ -108,6 +114,55 @@ router.put('/spins/:id/roster', requireSuper, async (req, res) => {
 // TEMPLATES
 // ===========================================================================
 
+/**
+ * SET THE WHOLE DAY UP IN ONE PRESS.
+ *
+ * Builds "Elementix Day" as a DRAFT with both ready-made plans inside it, so
+ * the morning is a Start button rather than a form. It never puts the day live
+ * and never mails anybody — the owner asked to be able to read it and adjust it
+ * first ("so I have more control").
+ *
+ * Safe to press twice: db/592's unique indexes decide, not a read here, so a
+ * second press reports what was already there and changes nothing.
+ *
+ * `day` is the room's own calendar day and `offsetMinutes` how far the room is
+ * from UTC — both from the browser, because the server sits in whatever region
+ * it sits in and "10:30" means 10:30 where the people are.
+ */
+router.post('/setup-day', requireSuper, async (req, res) => {
+  const b = req.body || {};
+  try {
+    const out = await daySetup.setUpDay({
+      day: String(b.day || '').trim(),
+      offsetMinutes: Number(b.offsetMinutes) || 0,
+      name: b.name, subtitle: b.subtitle,
+      keys: Array.isArray(b.templates) ? b.templates : null,
+      createdBy: req.actor.id,
+    });
+    await audit(req, 'arena_day_set_up', out.session.id, {
+      day: out.day,
+      sessionCreated: out.sessionCreated,
+      built: out.parts.filter((p) => p.ok && p.created).map((p) => p.key),
+      alreadyThere: out.parts.filter((p) => p.ok && !p.created).map((p) => p.key),
+    });
+    events.publishToStaff('arena:session', { sessionId: out.session.id, state: out.session.state });
+    res.status(out.sessionCreated ? 201 : 200).json({
+      session: out.session,
+      sessionCreated: out.sessionCreated,
+      summary: out.summary,
+      parts: out.parts.map((p) => ({
+        key: p.key, ok: p.ok, created: !!p.created, label: p.label || null,
+        reason: p.reason || null, warning: p.warning || null,
+        challengesPlanned: p.challengesPlanned || 0,
+        spinId: p.spin ? p.spin.id : null,
+      })),
+    });
+  } catch (e) {
+    if (e && e.badRequest) return bad(res, e.message);
+    return bad(res, (e && e.message) || 'The day could not be set up.', 500);
+  }
+});
+
 router.get('/templates', async (req, res) => {
   res.json({ templates: templates.describeTemplates() });
 });
@@ -126,31 +181,40 @@ router.post('/sessions/:id/templates/:key', requireSuper, async (req, res) => {
   const built = templates.buildTemplate(req.params.key, { day, offsetMinutes });
   if (!built) return bad(res, 'There is no template by that name.', 404);
   try {
-    const spin = await runner.createSpin({
-      sessionId: req.params.id,
-      title: built.title, subtitle: built.subtitle, kind: built.kind,
-      config: built.config, entryOpensAt: built.entryOpensAt, entryDeadlineAt: built.entryDeadlineAt,
-      createdBy: req.actor.id,
-    });
-    await db.query(
-      `UPDATE arena_spins SET launch_at = $2, template_key = $3 WHERE id = $1`,
-      [spin.id, built.launchAt || null, built.templateKey]);
-
-    // The Mega Spin brings a whole day of challenges with it.
-    let planned = null;
-    if (built.config.challengePlan) {
-      const p = built.config.challengePlan;
-      planned = await challenges.planDay(req.params.id, spin.id, {
-        from: p.from, to: p.to, targetGapMinutes: p.targetGapMinutes, jitterMinutes: p.jitterMinutes,
-        windowMinutes: p.windowMinutes, seed: p.seed, replace: true, createdBy: req.actor.id,
+    // Through the ONE idempotent builder — the same code the one-press day
+    // setup uses. The old inline version had the exact defect db/401 documents:
+    // createSpin committed, the separate template_key stamp then hit db/592's
+    // unique index, the raw Postgres string went to the screen, and a complete
+    // ORPHAN spin was left on the board — one more per press (measured: four
+    // presses left four Early Birds, three of them unstamped). ensureSpin
+    // adopts the existing copy instead and cancels its own loser on a race.
+    const session = await runner.getSession(req.params.id);
+    if (!session) return bad(res, 'That session does not exist.', 404);
+    const part = await daySetup.ensureSpin(session, req.params.key, { day, offsetMinutes, createdBy: req.actor.id });
+    if (!part.ok) return bad(res, part.reason || 'That template could not be loaded.');
+    if (!part.created) {
+      if (part.revived) {
+        await audit(req, 'arena_template_revived', part.spin.id, { template: req.params.key, day });
+        events.publishToStaff('arena:spin', { spinId: part.spin.id, sessionId: req.params.id, state: 'draft' });
+        return res.json({
+          spin: part.spin, revived: true,
+          message: `${part.label || 'That plan'} had been called off — it is back now as a draft, with its times restored.`,
+          challengesPlanned: 0,
+        });
+      }
+      return res.json({
+        spin: part.spin, alreadyThere: true,
+        message: `${part.label || 'That plan'} is already in this session — nothing was added twice.`,
+        challengesPlanned: 0,
       });
     }
-    await audit(req, 'arena_template_loaded', spin.id, { template: req.params.key, day });
-    events.publishToStaff('arena:spin', { spinId: spin.id, sessionId: req.params.id, state: 'draft' });
+    await audit(req, 'arena_template_loaded', part.spin.id, { template: req.params.key, day });
+    events.publishToStaff('arena:spin', { spinId: part.spin.id, sessionId: req.params.id, state: 'draft' });
     res.status(201).json({
-      spin: { ...spin, launch_at: built.launchAt, template_key: built.templateKey },
+      spin: { ...part.spin, launch_at: built.launchAt, template_key: built.templateKey },
       announcement: built.announcement, emailSubject: built.emailSubject,
-      challengesPlanned: planned ? planned.created : 0,
+      challengesPlanned: part.challengesPlanned || 0,
+      warning: part.warning || null,
     });
   } catch (e) {
     return bad(res, e.message || 'That template could not be loaded.');
@@ -172,7 +236,11 @@ router.get('/challenges/library', async (req, res) => {
 /** What is live, what is next, and where I stand. */
 router.get('/sessions/:id/challenges', async (req, res) => {
   res.json(await challenges.boardFor(req.params.id, req.actor.id, {
-    isSuperAdmin: settings.isSuperAdmin(req.actor),
+    // runsArena, not the bare role: a named HOST decides fulfilments, so they
+    // must SEE the note and the picture flag on each one (2026-08-19 audit —
+    // the role-only flag stripped entries to name+status for hosts while the
+    // screen still showed them the Approve buttons).
+    isSuperAdmin: await settings.runsArena(req.actor),
   }));
 });
 
@@ -222,7 +290,15 @@ router.post('/sessions/:id/challenges', requireSuper, async (req, res) => {
       Math.max(1, Math.floor(Number(b.slots ?? (base && base.slots) ?? 1))),
       Math.max(0, Math.floor(Number(b.ticketsAwarded ?? t.tickets))),
       Math.max(0, Math.floor(Number(b.prizeCapCents ?? t.prizeCapCents))),
-      b.opensAt || null, b.closesAt || null,
+      b.opensAt || null,
+      // A closing time, one way or another. `closesInMinutes` is the plain
+      // "close it in N minutes" the control room sends; without ANY closing
+      // time a hand-added live challenge could never be closed by the sweep
+      // (it only closes rows whose closes_at is set) and sat on every screen
+      // until a human remembered — found by the 2026-08-19 audit.
+      b.closesAt || (Number(b.closesInMinutes) > 0
+        ? new Date(Date.now() + Math.min(24 * 60, Math.floor(Number(b.closesInMinutes))) * 60000)
+        : (b.startNow ? new Date(Date.now() + 20 * 60000) : null)),
       b.startNow ? 'live' : 'scheduled', req.actor.id]);
   await audit(req, 'arena_challenge_added', b.spinId || null, { title, tier });
   if (r.rows[0].state === 'live') events.publishToStaff('arena:challenge-open', challenges.publicChallenge(r.rows[0]));
@@ -242,7 +318,11 @@ router.put('/challenges/:id', requireSuper, async (req, res) => {
             award_mode = COALESCE($7, award_mode), slots = COALESCE($8, slots),
             tickets_awarded = COALESCE($9, tickets_awarded), prize_cap_cents = COALESCE($10, prize_cap_cents),
             opens_at = COALESCE($11, opens_at), closes_at = COALESCE($12, closes_at),
-            state = COALESCE($13, state), updated_at = now()
+            state = COALESCE($13, state),
+            closed_reason = CASE WHEN $13 = 'closed' THEN COALESCE(closed_reason, 'manual')
+                                 WHEN $13 = 'live' THEN NULL
+                                 ELSE closed_reason END,
+            updated_at = now()
       WHERE id = $1 RETURNING *`,
     [req.params.id,
       b.title ? String(b.title).trim() : null, b.prompt ? String(b.prompt).trim() : null,
@@ -365,7 +445,11 @@ router.get('/sessions/:id/monitor', requireSuper, async (req, res) => {
               (SELECT count(*) FROM arena_entries  e WHERE e.spin_id = p.id) AS entries,
               (SELECT count(*) FROM arena_entries  e WHERE e.spin_id = p.id AND e.status = 'pending') AS entries_pending,
               (SELECT count(*) FROM arena_draws    d WHERE d.spin_id = p.id AND d.state = 'revealed') AS wheels_done,
-              (SELECT count(*) FROM arena_draws    d WHERE d.spin_id = p.id) AS wheels_total
+              (SELECT count(*) FROM arena_draws    d WHERE d.spin_id = p.id) AS wheels_total,
+              (SELECT COALESCE(json_agg(json_build_object('name', su.full_name, 'status', c.status)
+                                        ORDER BY c.checked_in_at), '[]'::json)
+                 FROM arena_checkins c JOIN staff_users su ON su.id = c.staff_id
+                WHERE c.spin_id = p.id) AS checkin_people
          FROM arena_spins p WHERE p.session_id = $1 ORDER BY p.seq DESC`, [sid]),
     db.query(
       `SELECT a.*, s.full_name, p.seq AS spin_seq, p.title AS spin_title
@@ -405,6 +489,7 @@ router.get('/sessions/:id/monitor', requireSuper, async (req, res) => {
       id: p.id, seq: p.seq, title: p.title, state: p.state,
       entryDeadlineAt: p.entry_deadline_at, launchAt: p.launch_at, decidedAt: p.decided_at,
       checkins: Number(p.checkins), checkinsPending: Number(p.checkins_pending),
+      checkinPeople: p.checkin_people || [],
       entries: Number(p.entries), entriesPending: Number(p.entries_pending),
       wheelsDone: Number(p.wheels_done), wheelsTotal: Number(p.wheels_total),
       outcomeNote: p.outcome_note,

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { ChainAddress, ChainDocuments, ChainHistory } from './ClosingEmailChain.jsx';
 import DocPreview from './DocPreview.jsx';
+import { ScheduleButton, ScheduledSends, useScheduledSends } from './ScheduleSend.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ATTORNEY CLOSING PREP — the third order on the Orders desk.
@@ -30,6 +31,22 @@ const GOLD = 'var(--gold,#AE8746)';
 // card rendered as unboxed body text. These are the surface a callout needs.
 const CALLOUT = { border: `1px solid ${GOLD}`, background: 'var(--paper,#F6F3EC)' };
 
+/* PLACED — the closing-prep order exists and has not been stood down. ONE
+   definition, because it is needed in TWO places that sit on opposite sides of
+   this card's loading gate: the scheduling door near the top of the component,
+   and the render body below the `if (!data) return` early exit.
+
+   It is a module-level function rather than a `const` inside the component for a
+   reason that cost a production outage: the scheduling door used to read the
+   `placed` binding declared ~90 lines FURTHER DOWN the same function scope. A
+   `const` is hoisted but uninitialised until its declaration runs, so reading it
+   above that line is a ReferenceError ("Cannot access 'placed' before
+   initialization") thrown on EVERY render of this card — and this card is
+   rendered by the Orders desk on every file, so every file's order section died
+   in the ErrorBoundary. Declaring it up here, on a status string that is
+   available before the gate, makes the ordering un-gettable-wrong. */
+const isPlacedStatus = (status) => status !== 'not_ordered' && status !== 'cancelled';
+
 /** Who is ACTUALLY copied, counted rather than assumed — the old wording asserted a
     loan officer even on an unassigned file and read "The loan officer are copied." */
 function copiedLine(team = {}) {
@@ -48,6 +65,13 @@ const STATUS_LABEL = {
   not_ordered: 'Not requested', ordered: 'Requested', documents_in: 'Documents in',
   completed: 'Completed', cancelled: 'Cancelled',
 };
+/* Every blocker code this card can NAME. The server's `closing-prep.blockers()` is
+   the authority on which codes can arrive, and scripts/test-order-blocker-labels-pure.js
+   fails the build the moment that list gains a code with no wording here — because a
+   blocker the card cannot name used to render as an EMPTY "To send this, first:" box
+   over a disabled Send button: a dead end with no words (the 'usps' code shipped
+   exactly that way). Codes outside this list still render, through the fallback line. */
+const KNOWN_BLOCKERS = ['loan_number', 'not_registered', 'term_sheet', 'attorney', 'documents_unavailable', 'usps'];
 const STATUS_TONE = {
   not_ordered: { borderColor: GOLD, color: GOLD },
   ordered: { borderColor: TEAL, color: TEAL },
@@ -298,6 +322,33 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
     catch (_) { /* ignore */ }
   };
 
+  /* SEND IT LATER. The intent is queued; `gatherPackage` runs at the due moment,
+     so outside counsel receives the closing package as it stands when the email
+     actually goes — not as it stood at 2am.
+
+     Keyed on the order's STATUS STRING, read straight off the payload this
+     component already holds. Two things follow from that, and both are the point:
+     the hook sits ABOVE the `if (!data) return` gate below (a hook may never move
+     under an early return — that is the "rendered more hooks than during the
+     previous render" crash), and it depends on nothing declared further down. It
+     also reloads the queue when the order moves BETWEEN two placed statuses,
+     which a boolean could not see. Same idiom as OrdersPanel's own cards. */
+  const orderStatus = ((data && data.order) || {}).status;
+  const sched = useScheduledSends(appId, [orderStatus]);
+  const scheduleIt = async ({ day, time }) => {
+    const r = await api.staffScheduleClosingPrep(appId, {
+      day, time, force: isPlacedStatus(orderStatus),
+      extraEmails: extra.split(/[,;\s]+/).filter(Boolean),
+      note,
+    });
+    await sched.reload();
+    setMsg({ tone: (r.warnings && r.warnings.length) ? 'warn' : 'ok',
+      text: (r.warnings && r.warnings.length)
+        ? `Scheduled for ${r.scheduled.sendAtText}. It will NOT go out unless you also: ${r.warnings.join(' ')}`
+        : `Closing-prep request scheduled for ${r.scheduled.sendAtText}.` });
+    onChanged && onChanged();
+  };
+
   const place = async (force) => {
     setBusy('place'); setMsg(null);
     try {
@@ -375,7 +426,7 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
 
   const order = data.order || {};
   const blockers = order.blockers || [];
-  const placed = order.status !== 'not_ordered' && order.status !== 'cancelled';
+  const placed = isPlacedStatus(order.status);
   // A CANCELLED order still leaves its 'order' message on the chain (cancelling
   // deliberately keeps everything the attorney already sent). So plain "send" would
   // lose to that message's claim and answer 409 "use Follow-up, or force a re-send"
@@ -505,6 +556,16 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
                 not work. Same words the server answers with. */}
             {blockers.includes('attorney') && <li>Ask an admin to set up the closing attorney's group inbox — there is nowhere to send this yet. Adding an attorney contact to the file will not help: that contact is the borrower's own lawyer and is never copied on this email.</li>}
             {blockers.includes('documents_unavailable') && <li>We could not read this file's documents just now. Try again in a moment.</li>}
+            {/* THE USPS ADDRESS GATE — the same rule the title and insurance orders
+                have: nothing carrying the property address goes to an outside party
+                until the USPS-verified address is imported. Same words the server
+                answers with. */}
+            {blockers.includes('usps') && <li>Import the USPS-verified property address — open <b style={{ color: INK }}>USPS Address Verification</b> on this file's conditions list, verify the subject address, and click "Import verified address". The attorney drafts the closing documents off this address, so it goes out USPS-verified or not at all. If USPS cannot confirm the address, a super admin can accept it there as an exception.</li>}
+            {/* A blocker this screen has no wording for still SHOWS — an empty
+                "To send this, first:" box over a disabled button is a dead end. */}
+            {blockers.filter((b) => !KNOWN_BLOCKERS.includes(b)).map((b) => (
+              <li key={b}>Something on the server is holding this order (its code is "{b}") and this screen does not know how to explain it yet. Refresh the page — if this line is still here, the portal needs an update.</li>
+            ))}
           </ul>
         </div>
       )}
@@ -517,6 +578,7 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
         </div>
       )}
 
+      <ScheduledSends rows={sched.rows} onCancel={sched.cancel} kinds={['closing_prep']} />
       <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
         {!placed && (
           <button className="btn primary small" disabled={!!busy || !ready} onClick={() => place(orderOnChain)}
@@ -527,6 +589,9 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
             {busy === 'place' ? 'Sending…' : (orderOnChain ? 'Send closing prep request again' : 'Send closing prep request')}
           </button>
         )}
+        {!placed && (
+          <ScheduleButton onSchedule={scheduleIt} busy={!!busy} what="the closing-prep request" />
+        )}
         {placed && (
           <>
             <button className="btn primary small" disabled={!!busy} onClick={() => setFollowOpen((o) => !o)}>Follow up</button>
@@ -534,6 +599,7 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
               title={ready ? 'Send the whole request again, with the documents as they stand now' : 'Finish the steps listed above first'}>
               {busy === 'place' ? 'Sending…' : 'Re-send request'}
             </button>
+            <ScheduleButton onSchedule={scheduleIt} busy={!!busy} what="the closing-prep request" />
             {/* NOT on a FINISHED request. Cancelling is an explicit stand-down
                 that shuts the follow-up and reply doors on the closing chain, so
                 on a request that already finished it can only cost the team the

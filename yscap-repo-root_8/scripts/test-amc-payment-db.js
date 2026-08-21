@@ -133,9 +133,15 @@ const deadTransport = { write: async () => { const e = new Error('AMC PaymentAut
         'F: our own payment reference is kept — a later capture is addressed to it');
 
       // NOTHING SECRET COMES BACK, and nothing secret is stored outside the one
-      // encrypted column.
+      // encrypted column. The CVC is matched as a JSON VALUE (`"731"`), exactly
+      // like the row check below — a bare `.includes('731')` false-fires on the
+      // volatile noise inside `out.intent` (RETURNING * carries UUID hex and
+      // millisecond timestamps, either of which contains "731" a few percent of
+      // the time; it did, on main run 32286841845, failing this suite with the
+      // payment code entirely correct). A leaked CVC is a FIELD carrying 731,
+      // and the quoted form catches every such field deterministically.
       const body = JSON.stringify(out);
-      ok(!body.includes(CARD.number) && !body.includes(CARD.cvc), 'F: the answer carries no card number and no security code');
+      ok(!body.includes(CARD.number) && !body.includes(`"${CARD.cvc}"`), 'F: the answer carries no card number and no security code');
       const row = JSON.stringify(intent);
       ok(!row.includes(CARD.number) && !row.includes('"731"'), 'F: and neither does the recorded row');
       void appId;

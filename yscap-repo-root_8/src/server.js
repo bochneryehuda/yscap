@@ -871,6 +871,14 @@ if (require.main === module) {
         require('./lib/conditions/engine').backfillTpoIntakeConditionsOnce()
           .then((r) => r && r.added && console.log('[boot] TPO intake condition backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] TPO intake condition backfill failed:', e.message));
+        // One-shot (db/601, owner-directed 2026-08-20): every GROUND-UP CONSTRUCTION file
+        // carries the feasibility report + the GC information condition, on PREVIOUS files
+        // as well as future ones. The rule db/601 installs is the ONE definition of
+        // "ground-up", so the backfill RUNS THE ENGINE rather than re-stating that test in
+        // SQL. Marker-guarded (runs once, ever), silent, bounded, fire-and-forget.
+        require('./lib/conditions/engine').backfillGroundUpConstructionConditionsOnce()
+          .then((r) => r && r.added && console.log('[boot] ground-up condition backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] ground-up condition backfill failed:', e.message));
         // One-shot: recompute the experience condition on co-borrower files so it
         // carries the per-borrower breakdown + each borrower's track-record link
         // (#103). Idempotent, preserves sign-offs; fire-and-forget.
@@ -898,6 +906,10 @@ if (require.main === module) {
         // because it reads arena_* tables db/585 creates.
         try { require('./lib/arena/sweep').start(); }
         catch (e) { console.error('[boot] arena sweep failed to start:', e.message); }
+        // Heal any spin the short-lived broken revive left with no wheels
+        // (2026-08-19) — exact, idempotent, bounded; see spin-runner.
+        try { require('./lib/arena/spin-runner').healDrawlessSpinsOnce(); }
+        catch (e) { console.error('[boot] arena drawless heal failed:', e.message); }
         // PREVIOUS AND FUTURE (owner-directed 2026-08-16): the appraisal became a
         // first-class order on the Orders desk (db/564), so every file that already
         // has a vendor appraisal order needs its desk row projecting — otherwise the
@@ -1178,6 +1190,17 @@ if (require.main === module) {
           .then((r) => r && (r.added || r.filled)
             && console.log('[boot] funded deals onto track records:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] funded track-record backfill failed:', e.message));
+        // A STAMP MUST NOT OUTLIVE THE EVIDENCE IT RESTS ON. Until the revoke
+        // learned to withdraw them, a records proof that rested on a company's
+        // Check A survived that company being un-verified — so lines are on disk
+        // today still printing "Verified to Elementix" for control nobody stands
+        // behind. Same downgrade, applied once; self-draining, only ever removes
+        // a claim, never touches a human's own decision or a deed naming the
+        // borrower in person.
+        require('./lib/track-record-ownership').healRevokedRecordsProofsOnce()
+          .then((r) => r && r.downgraded
+            && console.log('[boot] records proofs withdrawn for revoked entity control:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] revoked-proof heal failed:', e.message));
         // GOOGLE COORDINATES ARE KEPT ONLY AS LONG AS GOOGLE ALLOWS (db/413,
         // owner-authorized 2026-08-02). Maps Platform permits keeping a `place_id`
         // indefinitely and caps a stored latitude/longitude at 30 days; this cache
@@ -1283,6 +1306,13 @@ if (require.main === module) {
     // Reminder/task dispatcher (#93): fires scheduled reminders at their due
     // moment via the notify fan-out. Minute cadence; self-gated + idempotent.
     try { require('./lib/reminders').startDispatcher(); } catch (e) { console.warn('reminder dispatcher not started:', e.message); }
+    // Scheduled ORDER EMAILS (owner-directed 2026-08-20): a staffer working at
+    // 2am picks a time and the title / insurance / closing-prep / investor
+    // delivery goes out then. Minute cadence. It sends nothing itself — it
+    // RE-ENTERS the ordinary send route at the due moment, so every blocker and
+    // freeze is re-checked against the file as it stands (see
+    // lib/scheduled-sends.js). Off with SCHEDULED_SENDS_DISABLED=1.
+    try { require('./lib/scheduled-sends').start(); } catch (e) { console.warn('scheduled sends not started:', e.message); }
     // SharePoint one-way sync (owner-directed 2026-07-13): mirrors every
     // document into Pipeline Drive/<Officer>/<Borrower>/<Address>/YS portal
     // syncing/<Condition>/ — write-only, never deletes, versions on supersede.
@@ -1294,6 +1324,15 @@ if (require.main === module) {
     // mirrored before the categorizer change match it. Marker-gated, guarded,
     // kill switch SHAREPOINT_EMD_REFOLDER_DISABLED=1; inert when sync is off.
     try { require('./lib/sharepoint-emd-refolder').kickoff(); } catch (e) { console.warn('emd refolder not scheduled:', e.message); }
+    // One-shot: put every document carrying a `source-suspect` verdict back in
+    // front of the integrity audit, so the FIXED content sniffer re-judges it
+    // (owner-reported 2026-08-20: a TPR export PILOT built itself was reported
+    // corrupted because the tolerant "%PDF anywhere" scan outranked the ZIP
+    // signature). Marker-gated, bounded, never throws; SP_SOURCE_SUSPECT_RECHECK_DISABLED=1.
+    try {
+      require('./lib/sp-source-suspect-recheck').recheckSourceSuspectOnce()
+        .catch((e) => console.warn('source-suspect re-check skipped:', e.message));
+    } catch (e) { console.warn('source-suspect re-check not scheduled:', e.message); }
     // DocuSign e-sign heartbeat: drains the Connect event inbox + send queue and
     // reconciles any in-flight envelope that went quiet (missed-webhook recovery).
     // Self-gated — inert until the DocuSign credentials are configured.

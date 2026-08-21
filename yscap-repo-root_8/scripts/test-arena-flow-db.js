@@ -139,7 +139,12 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     eq((await call(server, 'POST', `/api/arena/sessions/${sessionId}/state`, boss, { state: 'live' })).status, 200,
       'the session goes live');
 
-    const people = await call(server, 'GET', `/api/arena/sessions/${sessionId}/people`, alice);
+    // The people picker carries every colleague's EMAIL, so it is super-admin
+    // only (2026-08-19 audit); an ordinary officer reads the room through
+    // /room, which carries names and no addresses.
+    eq((await call(server, 'GET', `/api/arena/sessions/${sessionId}/people`, alice)).status, 403,
+      'an ordinary officer cannot read the email-bearing people picker');
+    const people = await call(server, 'GET', `/api/arena/sessions/${sessionId}/people`, boss);
     eq(people.body.limitedToPicked, true, 'the session is limited to the picked roster');
     eq(people.body.people.length, 3, 'and the roster is the three people who were picked');
 

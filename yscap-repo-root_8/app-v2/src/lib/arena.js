@@ -104,6 +104,12 @@ export const arena = {
   board: (sessionId) => timedGet(`/api/arena/board${sessionId ? `?session=${encodeURIComponent(sessionId)}` : ''}`),
 
   sessions: () => api.get('/api/arena/sessions'),
+  // The whole internal roster, for picking who plays BEFORE a session exists.
+  roster: () => api.get('/api/arena/roster'),
+  // ONE press builds the whole day — "Elementix Day" with the Early Bird and
+  // the Mega Spin inside it, as a DRAFT. Safe to press twice (the server
+  // reports what was already there). day = 'YYYY-MM-DD' where the room is.
+  setupDay: (b) => api.post('/api/arena/setup-day', b),
   createSession: (b) => api.post('/api/arena/sessions', b),
   updateSession: (id, b) => api.put(`/api/arena/sessions/${id}`, b),
   setSessionState: (id, state) => api.post(`/api/arena/sessions/${id}/state`, { state }),
@@ -114,6 +120,7 @@ export const arena = {
   openSpin: (id) => api.post(`/api/arena/spins/${id}/open`, {}),
   lockSpin: (id) => api.post(`/api/arena/spins/${id}/lock`, {}),
   cancelSpin: (id, reason) => api.post(`/api/arena/spins/${id}/cancel`, { reason }),
+  reviveSpin: (id) => api.post(`/api/arena/spins/${id}/revive`, {}),
   turnWheel: (id, seq, clientSeed) => api.post(`/api/arena/spins/${id}/spin`, { seq, clientSeed }),
   freezeWheel: (id, seq) => api.post(`/api/arena/spins/${id}/freeze`, { seq }),
   preview: (id, seq) => api.get(`/api/arena/spins/${id}/preview?seq=${seq}`),
@@ -137,6 +144,7 @@ export const arena = {
   decideFulfilment: (id, status, reason) => api.post(`/api/arena/challenge-entries/${id}/decide`, { status, reason }),
   myTickets: (sessionId) => api.get(`/api/arena/sessions/${sessionId}/my-tickets`),
   monitor: (sessionId) => api.get(`/api/arena/sessions/${sessionId}/monitor`),
+  outbox: () => api.get('/api/arena/notifications'),
   room: (sessionId) => api.get(`/api/arena/sessions/${sessionId}/room`),
   recap: (sessionId, staffId) => api.get(`/api/arena/sessions/${sessionId}/recap${staffId ? `?staff=${encodeURIComponent(staffId)}` : ''}`),
   rematchSuggestion: (sessionId) => api.get(`/api/arena/sessions/${sessionId}/rematch-suggestion`),
@@ -151,7 +159,7 @@ export const arena = {
   aiRewrite: (text, purpose) => api.post('/api/arena/ai/rewrite', { text, purpose }),
   aiSubjects: (text) => api.post('/api/arena/ai/subjects', { text }),
 
-  checkIn: (spinId, note) => api.post(`/api/arena/spins/${spinId}/checkin`, { note }),
+  checkIn: (spinId, note, attested) => api.post(`/api/arena/spins/${spinId}/checkin`, { note, attested: attested === true }),
   decideCheckin: (id, status, reason) => api.post(`/api/arena/checkins/${id}/decide`, { status, reason }),
   enter: (spinId, b) => api.post(`/api/arena/spins/${spinId}/entries`, b),
   decideEntry: (id, status, reason) => api.post(`/api/arena/entries/${id}/decide`, { status, reason }),
@@ -176,6 +184,15 @@ export const arena = {
 
   awards: (sessionId) => api.get(`/api/arena/sessions/${sessionId}/awards`),
   awardsCsvUrl: (sessionId) => `/api/arena/sessions/${sessionId}/awards.csv`,
+  // The CSV is behind the login, so it is FETCHED with the token and saved as a
+  // file — a plain <a href> cannot carry the Authorization header, and clicking
+  // one navigated the admin onto a raw {"error":"unauthenticated"} JSON page
+  // (owner-reported 2026-08-19). downloadAwardsCsv is the only way to get it.
+  downloadAwardsCsv: async (id) => {
+    const { downloadAuthed, saveBlob } = await import('./api.js');
+    const { blob, filename } = await downloadAuthed(`/api/arena/sessions/${id}/awards.csv`);
+    saveBlob(blob, filename || 'arena-prizes.csv');
+  },
 };
 
 /* ------------------------------------------------------------------ helpers */

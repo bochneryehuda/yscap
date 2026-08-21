@@ -97,6 +97,53 @@ const BY_SLUG = new Map(DOC_TYPES.map((d) => [d.slug, d]));
 /** The requested type, or null. Never guesses from a near-miss. */
 const docType = (slug) => BY_SLUG.get(String(slug || '').trim()) || null;
 
+/* WHAT A TRACK-RECORD DOCUMENT'S TYPE IS, AND THE ONE PLACE THAT DECIDES
+   (owner-directed 2026-08-20: "you can select if you want which document type").
+   `documents.slot_label` stores the LABEL, because that is the string every
+   screen, the SharePoint folder resolver and the TPR categoriser display.
+
+   THE BUG THIS FIXES, found while wiring the drag-and-drop. There were TWO
+   vocabularies and FOUR hand-typed copies of them: the seven legacy LABELS
+   (`routes/staff.js TR_DOC_TYPE_SET`, `routes/borrower.js TRACK_RECORD_DOC_TYPES`,
+   and the borrower tool's own dropdown), and the fifteen SLUGS above, which the
+   staff line-detail dropdown has been sending since it was built. The two upload
+   routes validated against the label list, so a slug matched nothing, `trDocType`
+   answered null, and the type a staffer picked was silently DROPPED on every
+   upload — no error, and a document filed with no type. The legacy list even
+   spells one of them differently ("Closing statement (HUD)" vs
+   "…(HUD/ALTA)"), so the two vocabularies could never have agreed.
+
+   So this accepts EITHER vocabulary and always answers the canonical label:
+   a slug, a canonical label, or one of the legacy labels a stored row or the
+   borrower tool may still send. Case- and whitespace-insensitive, because these
+   arrive from three different dropdowns. Anything else answers null — a type
+   nobody recognises is left unset rather than stored as free text, which is what
+   keeps the filter on these documents meaningful. */
+const LEGACY_LABEL_SLUG = {
+  'closing statement (hud)': 'closing_statement',
+  'closing statement': 'closing_statement',
+  'deed': 'deed',
+  'recorded mortgage': 'recorded_mortgage',
+  'payoff statement': 'payoff_statement',
+  'lease': 'lease',
+  'property profile report': 'property_profile_report',
+  'other': 'other',
+};
+const BY_LABEL = new Map(DOC_TYPES.map((d) => [d.label.trim().toLowerCase(), d]));
+
+/** The canonical LABEL for a document type given a slug or any known label, else null. */
+function resolveDocTypeLabel(v) {
+  const raw = String(v == null ? '' : v).trim();
+  if (!raw) return null;
+  const bySlug = BY_SLUG.get(raw) || BY_SLUG.get(raw.toLowerCase());
+  if (bySlug) return bySlug.label;
+  const key = raw.toLowerCase();
+  const byLabel = BY_LABEL.get(key);
+  if (byLabel) return byLabel.label;
+  const legacy = LEGACY_LABEL_SLUG[key];
+  return legacy && BY_SLUG.has(legacy) ? BY_SLUG.get(legacy).label : null;
+}
+
 /**
  * What each pillar is FOR, in the borrower's own words. Never says "pillar",
  * never says "verification" — it says what the document proves about their
@@ -384,6 +431,7 @@ module.exports = {
   PILLARS,
   PILLAR_PURPOSE,
   docType,
+  resolveDocTypeLabel,
   fieldKeyFor,
   parseFieldKey,
   buildRequest,
