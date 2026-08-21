@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { moneyCents } from '../lib/money.js';
+import DropZone from './DropZone.jsx';
 
 /* Borrower draw view. You submit draws and upload photos in Sitewire; here you see the
    live picture of your construction budget vs. what's been released, and you review each
@@ -203,7 +204,11 @@ function AttachToDraw({ appId, draws, onChanged }) {
       <div className="small" style={{ color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.5 }}>
         An invoice, a receipt or a progress photo for a draw you’ve already requested. Your team sees it on that draw.
       </div>
-      <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+      {/* Drag-and-drop as well as the picker (owner item 6, 2026-08-21) — the whole row is the
+          target, so a document dragged at this card lands on the draw the picker is showing. */}
+      <DropZone className="row dz-inline" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}
+        enabled={!busy} title="Drop an invoice, receipt or photo here"
+        onFiles={async (list) => { setFiles((await filesToBase64(list)).filter(Boolean)); }}>
         <select className="input" value={drawId} disabled={busy} onChange={(e) => setDrawId(e.target.value)} style={{ maxWidth: 180 }}>
           {draws.map((d) => (
             <option key={d.sitewire_draw_id} value={String(d.sitewire_draw_id)}>Draw {d.number ?? '—'}</option>
@@ -214,7 +219,7 @@ function AttachToDraw({ appId, draws, onChanged }) {
         <button className="btn btn-sm primary" disabled={busy || !files.length} onClick={send}>
           {busy ? 'Adding…' : `Add ${files.length || ''} document${files.length === 1 ? '' : 's'}`.trim()}
         </button>
-      </div>
+      </DropZone>
       {files.length > 0 && (
         <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
           {files.map((f, i) => (
@@ -437,14 +442,24 @@ function BorrowerComposer({ appId, composer, onChanged, sitewireUrl }) {
             <div className="small" style={{ color: 'var(--text-muted)', marginBottom: 6 }}>
               Anything that shows the work is done. Your team sees these with your request.
             </div>
-            <input type="file" multiple accept="image/*,application/pdf" disabled={busy}
-              onChange={async (ev) => {
-                const picked = (await filesToBase64(ev.target.files)).filter(Boolean);
-                // Replacing rather than appending keeps what is on screen equal to what will be
-                // sent — the picker always reports the whole current selection.
-                setFiles(picked);
-                ev.target.value = '';
-              }} />
+            <DropZone className="dz-inline" enabled={!busy} title="Drop invoices, receipts or photos here"
+              onFiles={async (list) => {
+                // A DROP APPENDS, unlike the picker below. The picker always reports its whole
+                // current selection, so replacing keeps the screen equal to what will be sent; a
+                // drop is additive by nature — dropping a second photo must not discard the first.
+                const picked = (await filesToBase64(list)).filter(Boolean);
+                setFiles((cur) => [...cur, ...picked]);
+              }}>
+              <input type="file" multiple accept="image/*,application/pdf" disabled={busy}
+                onChange={async (ev) => {
+                  const picked = (await filesToBase64(ev.target.files)).filter(Boolean);
+                  // Replacing rather than appending keeps what is on screen equal to what will be
+                  // sent — the picker always reports the whole current selection.
+                  setFiles(picked);
+                  ev.target.value = '';
+                }} />
+              <div className="small" style={{ color: 'var(--text-muted)', marginTop: 4 }}>…or drag them here.</div>
+            </DropZone>
             {files.length > 0 && (
               <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
                 {files.map((f, i) => (
@@ -599,11 +614,17 @@ function FindingCard({ finding, appId, onChanged, money }) {
                     <input className="input" style={{ width: 160, marginTop: 4 }} placeholder="why (optional)" value={(disp[l.id] || {}).note ?? ''}
                       onChange={(e) => setDisp((s) => ({ ...s, [l.id]: { ...(s[l.id] || {}), note: e.target.value } }))} />
                     <div className="row" style={{ gap: 6, marginTop: 5, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <label className="btn btn-xs ghost" style={{ cursor: 'pointer', margin: 0 }}>
-                        📎 Add photos
-                        <input type="file" accept="image/*" multiple style={{ display: 'none' }}
-                          onChange={async (e) => { const arr = (await filesToBase64(e.target.files)).filter(Boolean); e.target.value = ''; setDisp((s) => ({ ...s, [l.id]: { ...(s[l.id] || {}), media: [...(((s[l.id] || {}).media) || []), ...arr].slice(0, 8) } })); }} />
-                      </label>
+                      {/* Inside a .map(), which is exactly why this is a COMPONENT and not the
+                          hook — React forbids a hook in a loop, and each rendered DropZone is
+                          its own instance with its own state. */}
+                      <DropZone className="dz-inline" title="Drop photos of this line here"
+                        onFiles={async (list) => { const arr = (await filesToBase64(list)).filter(Boolean); setDisp((s) => ({ ...s, [l.id]: { ...(s[l.id] || {}), media: [...(((s[l.id] || {}).media) || []), ...arr].slice(0, 8) } })); }}>
+                        <label className="btn btn-xs ghost" style={{ cursor: 'pointer', margin: 0 }}>
+                          📎 Add photos
+                          <input type="file" accept="image/*" multiple style={{ display: 'none' }}
+                            onChange={async (e) => { const arr = (await filesToBase64(e.target.files)).filter(Boolean); e.target.value = ''; setDisp((s) => ({ ...s, [l.id]: { ...(s[l.id] || {}), media: [...(((s[l.id] || {}).media) || []), ...arr].slice(0, 8) } })); }} />
+                        </label>
+                      </DropZone>
                       {((disp[l.id] || {}).media || []).length > 0 && (
                         <span className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
                           {((disp[l.id] || {}).media || []).map((m, i) => (

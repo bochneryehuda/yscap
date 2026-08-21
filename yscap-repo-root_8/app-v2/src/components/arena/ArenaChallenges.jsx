@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { showMessage, askPrompt } from '../../lib/dialog.js';
+import DropZone from '../DropZone.jsx';
 import { subscribeChat } from '../../lib/chatEvents.js';
 import { arena, money, countdown, serverNow } from '../../lib/arena.js';
 import ArenaAiHelp from './ArenaAiHelp.jsx';
@@ -302,6 +303,15 @@ function FulfilBox({ challenge, onClose, onDone }) {
     }
   };
 
+  /* ONE reader for both doors — the picker and a dragged file. */
+  const takePhoto = (f) => {
+    if (!f) { setFile(null); return; }
+    if (f.size > 12 * 1024 * 1024) { showMessage('That picture is too big — keep it under 12MB.'); return; }
+    const r = new FileReader();
+    r.onload = () => setFile({ name: f.name, type: f.type, data: String(r.result).split(',')[1] });
+    r.readAsDataURL(f);
+  };
+
   return (
     <div className="arena-modal" role="dialog" aria-modal="true" aria-label={challenge.title}>
       <div className="arena-modal-box">
@@ -331,20 +341,17 @@ function FulfilBox({ challenge, onClose, onDone }) {
         )}
 
         {needsPhoto && (
-          <label className="arena-fullfield">A screenshot or photo
+          /* Drag-and-drop as well as the picker (owner item 6, 2026-08-21). ONE reader for
+             both doors, so the size limit and the "too big" message cannot be enforced on one
+             door and not the other. */
+          <DropZone as="label" className="arena-fullfield dz-inline" title="Drop the screenshot or photo here"
+            onFiles={(list) => takePhoto(Array.from(list || [])[0])}>A screenshot or photo
             <input
               className="input" type="file" accept="image/*"
-              onChange={(e) => {
-                const f = e.target.files && e.target.files[0];
-                if (!f) { setFile(null); return; }
-                if (f.size > 12 * 1024 * 1024) { showMessage('That picture is too big — keep it under 12MB.'); return; }
-                const r = new FileReader();
-                r.onload = () => setFile({ name: f.name, type: f.type, data: String(r.result).split(',')[1] });
-                r.readAsDataURL(f);
-              }}
+              onChange={(e) => { takePhoto(e.target.files && e.target.files[0]); }}
             />
             {file && <span className="muted small">{file.name} ready</span>}
-          </label>
+          </DropZone>
         )}
 
         <button

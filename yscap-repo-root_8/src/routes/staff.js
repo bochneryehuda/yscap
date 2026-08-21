@@ -6409,6 +6409,21 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
   // email template.
   const bodyText = String((req.body && req.body.body) || '').trim().slice(0, 4000);
   if (!bodyText) return res.status(400).json({ error: 'Type a message to send.' });
+  // ATTACHMENTS ON A TYPED REPLY (owner-directed 2026-08-21: "on any reply to any Gmail
+  // section … we need to be able to attach documents over there manually and also drag and
+  // drop into the box of the email"). Read ONCE here, so all four branches below — closing
+  // chain, title, insurance, and the plain file reply — carry them identically and can never
+  // drift about what a message may hold. Nothing is silently dropped: whatever could not ride
+  // comes back on the response so the screen can say so.
+  let composed = { attachments: [], skipped: [], count: 0 };
+  try {
+    composed = require('../lib/email/compose-attachments')
+      .readComposeAttachments(req.body && req.body.attachments);
+  } catch (e) {
+    return res.status(400).json({ error: 'Those attachments could not be read. Try attaching them again.' });
+  }
+  const attach = composed.attachments;
+  const attachSkipped = composed.skipped;
   try {
     const ctx = await notify.fileContext(appId).catch(() => null);
     // The acting staffer's own email/name (req.actor carries only id/role/perms).
@@ -6465,12 +6480,12 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
         const sent = await closingThread.sendOnThread({
           applicationId: appId, eventKind: 'followup', dedupeKey: null,
           to: closingParties.to, cc: closingParties.cc, fromName: senderName, staffId: req.actor.id,
-          msgType: 'closing_followup',
+          msgType: 'closing_followup', attachments: attach,
           build: ({ address }) => closingPrep.buildFollowupEmail(data, { note: bodyText, address, senderName }),
         });
         if (!sent.ok) return res.status(500).json({ error: 'Could not send on the closing chain.', code: sent.reason });
-        await audit(req, 'closing_prep_followup', 'application', appId, { to: sent.to.length, via: 'email_center' });
-        return res.json({ ok: true, sent_to: sent.to, cc: sent.cc });
+        await audit(req, 'closing_prep_followup', 'application', appId, { to: sent.to.length, via: 'email_center', attached: attach.length });
+        return res.json({ ok: true, sent_to: sent.to, cc: sent.cc, attached: attach.length, attachSkipped });
       }
     }
 
@@ -6532,7 +6547,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       const sent = await orders.sendOrderMail({
         appId, kind, data, to, cc, replyTo, built,
         fromName: meRow.full_name || meRow.email,
-        type: `${kind}_followup`, thread,
+        type: `${kind}_followup`, thread, attachments: attach,
       });
       if (!sent.ok && !sent.ambiguous) {
         return res.status(sent.reason === 'contact' ? 400 : 502).json({ error: sent.message, code: sent.reason });
@@ -6552,8 +6567,8 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
         detail: { to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous },
       });
       try { await audit(req, 'order_followup', 'application', appId, { kind, to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous }); } catch (_) { /* sent either way */ }
-      if (sent.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: sent.message, sent_to: to, cc });
-      return res.json({ ok: true, sent_to: to, cc });
+      if (sent.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: sent.message, sent_to: to, cc, attached: attach.length, attachSkipped });
+      return res.json({ ok: true, sent_to: to, cc, attached: attach.length, attachSkipped });
     }
 
     // Recipient set: an explicit list (validated as file parties) or the default
@@ -6629,12 +6644,13 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     await email.sendMail({
       to: toEmails, subject: built.subject, html: built.html, text: built.text,
       cc: drawCc.length ? drawCc : undefined,
+      ...(attach.length ? { attachments: attach } : {}),
       replyTo: fileReplyTo(appId) || cfg.replyToDefault || null,
       from: fromName || undefined,
       _ctx: { applicationId: appId, type: replyType, audience },
     });
-    await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, cc: drawCc.length, subject });
-    res.json({ ok: true, sent_to: toEmails, cc: drawCc });
+    await audit(req, 'email_reply_sent', 'application', appId, { to: toEmails.length, cc: drawCc.length, subject, attached: attach.length });
+    res.json({ ok: true, sent_to: toEmails, cc: drawCc, attached: attach.length, attachSkipped });
   } catch (e) { res.status(500).json({ error: 'Could not send the reply.' }); }
 });
 

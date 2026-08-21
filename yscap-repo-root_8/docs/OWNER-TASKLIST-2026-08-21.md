@@ -169,6 +169,41 @@ toggles). They now have one obvious way to be fixed, and none of them is the cas
 **Surfaces named:** insurance order, title order, draw section, general email inbox — **and any other
 reply box we have**. Both a manual attach button **and** drag-and-drop onto the compose box.
 
+### ☑ SHIPPED
+
+**All five surfaces at once, because there is only ONE composer.** The insurance order, the title order,
+the draw section, the general email inbox and the closing chain all render the same reply box — so it took
+one change, and it could not be half-done. A test asserts each of those screens still uses the shared one.
+
+**Both doors.** An **Attach** button, and the **whole compose box** is the drop target — a person dragging
+a document at an email aims at the message, not at a little tray beside it. Attached files show as chips
+with a × to take one back off, and the box says so when it is empty.
+
+**The email plumbing already carried attachments** (the closing package, the investor delivery and the order
+emails all send them, both providers take them, and the Email Center records them) — what did not exist was
+a way for a person to put one on a message they were writing. That is what was built, and every branch of
+the reply carries them identically: closing chain, title, insurance, and the plain file reply.
+
+**What it refuses, and why each one is there:**
+- **bytes that are not really a file** — read through the one decoding chokepoint, never a bare decode
+  (whose silent character-skipping is what once mirrored garbage into SharePoint as "a corrupted document");
+- **a type taken from what the sender SAID rather than from the bytes** — a file called `invoice.pdf` that
+  actually contains a web page is a script aimed at whoever opens it, and these attachments are opened by an
+  outside company whose mail client we do not control. Web pages and SVGs are refused outright;
+- **a filename that is not a filename** — paths, quotes, newlines and a NUL are stripped, and two files
+  called `scan.pdf` are told apart rather than arriving as one name twice;
+- **more, or bigger, than the provider will actually take** — measured against the LIVE provider's real
+  ceiling in both dimensions (raw bytes AND the size on the wire, which is the number a receiving mail
+  server measures). That ceiling is the closing package's own, reused rather than restated.
+
+**Nothing is ever silently dropped.** Anything that cannot ride comes back named, with a reason in plain
+words, and the screen says so — and the message still SENDS. One bad attachment never loses the reply.
+
+Tests `scripts/test-email-compose-attach-pure.js` (44) and `scripts/test-email-compose-attach-db.js` (23,
+real Postgres through the real HTTP door with the mailer stubbed, so what the provider was actually handed
+is read back — a pure test cannot prove that, and this codebase has been bitten there before). **Five
+mutations of the production code were each proven to fail them.**
+
 ---
 
 ## 6. Drag-and-drop upload everywhere it's missing
@@ -201,12 +236,26 @@ attachment** on every thread — staff, borrower and broker; the **credit report
 drop by type so you can drag the data file *and* the report over together and both land in the right slot;
 the **appraisal XML import**; and **lead files**.
 
-**Still click-only, and named rather than implied:** the draws panel (manual wire form, supporting
-documents), the borrower's own draw uploads, the broker portal's uploads, purchasing, the non-owner-occupied
-affidavit, the new-file MISMO import, the labeling console and the Arena proof photo — plus three of the
-marketing-site tools (track record, term sheet, loan application), which need a small refactor first that the
-Scope of Work tool has already had. There is now a one-line way to convert each, and a test that lists which
-are done.
+**Every zone that was still click-only in the portal now takes a dragged file.** The list that was named
+here as outstanding is done: the draws panel (**the manual wire form** and **the supporting documents**),
+the **borrower's own draw uploads** (all three — adding a document to a draw, the documents that ride with
+a draw request, and the per-line dispute photos), the **broker portal's uploads** (per condition and
+unattached), **purchasing** (the purchase advice), the **new-file MISMO import**, the **labeling console**
+and the **Arena proof photo** — plus the email compose box from item 5.
+
+Each one keeps its button; the drag is *in addition*, never instead. Every one routes through the one shared
+drop component, so a zone added next year gets the same behaviour in one line, and the test now lists all
+twelve converted zones by name — a zone that loses its drop support fails the build.
+
+**Two judgement calls worth knowing about.** On the borrower's draw-request uploads a DROP **appends** while
+the picker **replaces**: the picker always reports its whole current selection, so replacing keeps the screen
+equal to what will be sent, but a drop is additive by nature and dropping a second photo must not discard the
+first. And the per-line dispute photos sit inside a list, which is exactly why the shared piece is a
+*component* and not a hook — React forbids a hook in a loop.
+
+**Still outstanding, named rather than implied:** the **non-owner-occupied affidavit**, and three of the
+marketing-site tools (track record, term sheet, loan application), which need the small refactor the Scope of
+Work tool has already had.
 
 **Item 17 was already working** — the Scope of Work importer has accepted a dragged file for some time,
 including one dragged straight out of Outlook.

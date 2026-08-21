@@ -348,6 +348,18 @@ textarea{min-height:90px;resize:vertical}
 /* drag-and-drop target on a condition / upload row (and generic upload cards) */
 .dropzone{transition:border-color .12s,background .12s}
 .dropzone.drop-over{border-color:var(--teal);background:rgba(127,169,176,.10);border-style:dashed}
+/* THE ONE-LINE DROP WRAPPER (owner item 6, 2026-08-21: "a lot of the uploads are missing the
+   drag and drop option. You can only click and upload"). `<DropZone className="dz-inline">`
+   wraps an existing button or label WITHOUT disturbing the layout it sits in — `display:contents`
+   would remove the element from the box tree entirely, which is exactly what we want for a
+   wrapper, but it also removes its background and outline, so there would be no highlight to
+   paint. `inline-flex` keeps the wrapper invisible in a flex row while still being paintable.
+   A wrapper carrying `row` keeps ITS OWN display (a real row), so this only ever applies to a
+   bare wrapper. */
+.dz-inline{display:inline-flex;align-items:center;gap:8px;border-radius:8px;
+  outline:2px dashed transparent;outline-offset:2px;transition:outline-color .12s,background .12s}
+.dz-inline.drop-over{outline-color:var(--teal);background:rgba(127,169,176,.10)}
+.row.dz-inline{display:flex}
 .cond-drop{transition:border-color .12s,background .12s}
 .cond-drop.drop-over{border-color:var(--teal);background:rgba(127,169,176,.10);border-style:dashed;position:relative}
 .drop-hint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
@@ -3091,6 +3103,23 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 
 .ec-reply-bar{ padding:12px 16px; border-top:1px solid var(--line); }
 .ec-reply{ padding:12px 16px; border-top:1px solid var(--line); background:var(--ink-2); }
+/* ATTACHING A DOCUMENT TO A TYPED REPLY (owner-directed 2026-08-21: "attach documents over
+   there manually and also drag and drop into the box of the email"). The whole compose box is
+   the drop target, so the highlight is on the box itself — a dashed teal edge, the same
+   language every other drop zone in the app uses. Text is explicit dark on the light card per
+   the hard rule (an --ink* token is a LIGHT paper colour and renders white-on-white here). */
+.ec-reply.ec-reply-drop{ outline:2px dashed var(--teal); outline-offset:-4px; background:rgba(127,169,176,.10); }
+.ec-atts{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.ec-att{ display:inline-flex; align-items:center; gap:8px; max-width:100%;
+  padding:4px 6px 4px 10px; border:1px solid var(--line); border-radius:999px;
+  background:#FFFFFF; font-size:12.5px; color:#141B22; }
+.ec-att-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:min(46vw,320px); }
+.ec-att-size{ color:#4B585C; font-variant-numeric:tabular-nums; }
+.ec-att-x{ border:0; background:transparent; cursor:pointer; font-size:16px; line-height:1;
+  color:#4B585C; padding:0 4px; border-radius:999px; }
+.ec-att-x:hover{ color:#141B22; background:var(--ink-3); }
+.ec-att-x:disabled{ opacity:.5; cursor:default; }
+.ec-att-hint{ margin-top:8px; font-size:12px; color:#4B585C; }
 .ec-reply-to{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:8px; font-size:13px; }
 .ec-chip{ display:inline-flex; align-items:center; gap:5px; background:var(--ink-1); border:1px solid var(--line);
   border-radius:999px; padding:2px 10px 2px 3px; font-size:12.5px; color:var(--text); }

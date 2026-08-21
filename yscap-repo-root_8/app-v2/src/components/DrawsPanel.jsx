@@ -3,6 +3,7 @@ import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
+import DropZone from './DropZone.jsx';
 import FileSections, { Section, goToSection } from './FileSections.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import { ScheduleButton, ScheduledSends } from './ScheduleSend.jsx';
@@ -524,6 +525,19 @@ function DrawRequestCard({ appId }) {
   async function uploadManual(e) {
     const f = (e.target.files || [])[0];
     e.target.value = '';
+    await uploadManualFile(f);
+  }
+  /* ONE reader for both doors — the button and a dragged file (owner item 6, 2026-08-21:
+     "a lot of the uploads are missing the drag and drop option"). The wire form is ONE
+     document, so a multi-file drop takes the first and says so rather than silently
+     dropping the rest. */
+  async function uploadManualFiles(files) {
+    const list = Array.from(files || []);
+    if (!list.length) return;
+    await uploadManualFile(list[0]);
+    if (list.length > 1) setMsg(`Only “${list[0].name}” was used — the wire form is one document.`);
+  }
+  async function uploadManualFile(f) {
     if (!f) return;
     setBusy(true); setMsg('');
     try {
@@ -782,13 +796,14 @@ function DrawRequestCard({ appId }) {
             envelope, declined/voided, or already signed). Some files make manual changes to the
             wire form; a manual copy supersedes the current one and still needs accepting. */}
         {(!env || terminal) && (
-          <>
+          <DropZone className="dz-inline" onFiles={uploadManualFiles} enabled={!busy}
+            title="Drop the wire form here, or click to choose one">
             <button className="btn soft" disabled={busy} onClick={() => manualRef.current && manualRef.current.click()}
-              title="Upload a wire form you filled in by hand instead of sending it through DocuSign. It goes to the investor with the draw once you accept it.">
+              title="Upload a wire form you filled in by hand instead of sending it through DocuSign — or drag it onto this button. It goes to the investor with the draw once you accept it.">
               {busy ? 'Uploading…' : (d.signed_document ? 'Replace with a manual wire form' : 'Upload the wire form manually')}
             </button>
             <input ref={manualRef} type="file" accept="application/pdf,image/*" disabled={busy} onChange={uploadManual} style={{ display: 'none' }} />
-          </>
+          </DropZone>
         )}
         {/* CLEAR the DocuSign form while it is OUT for signature, so a manual one can replace it. */}
         {env && !terminal && env.clearable && (
@@ -3515,6 +3530,13 @@ function DrawAttachments({ appId, drawId }) {
   async function onPick(e) {
     const files = [...(e.target.files || [])];
     e.target.value = '';
+    await addFiles(files);
+  }
+  /* ONE reader for both doors — the button and a dragged file (owner item 6). A dropped
+     file is filed under whichever category the picker beside it is showing, which is what
+     somebody dragging onto this card means. */
+  async function addFiles(dropped) {
+    const files = Array.from(dropped || []);
     if (!files.length) return;
     setBusy(true); setErr(''); setMsg('');
     try {
@@ -3589,7 +3611,8 @@ function DrawAttachments({ appId, drawId }) {
         </ul>
       )}
       {preview && <AttachmentPreview key={preview.id} appId={appId} drawId={drawId} att={preview} onClose={() => setPreview(null)} />}
-      <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <DropZone className="row dz-inline" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}
+        onFiles={addFiles} enabled={!busy} title="Drop invoices, receipts or photos here">
         <select className="input" style={{ maxWidth: 190 }} value={cat} onChange={(e) => setCat(e.target.value)} aria-label="What kind of document">
           {((d && d.categories) || [{ value: 'invoice', label: 'Invoice' }]).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
@@ -3597,7 +3620,8 @@ function DrawAttachments({ appId, drawId }) {
           {busy ? 'Attaching…' : 'Add a document'}
           <input type="file" multiple disabled={busy} onChange={onPick} style={{ display: 'none' }} />
         </label>
-      </div>
+        <span className="dd-sub">…or drag them onto this row.</span>
+      </DropZone>
       {msg ? <div className="act-card-sub" style={{ color: 'var(--primary,#2F7F86)' }}>{msg}</div> : null}
       {err ? <div className="act-card-sub" style={{ color: 'var(--danger,#B4453C)' }}>{err}</div> : null}
     </div>

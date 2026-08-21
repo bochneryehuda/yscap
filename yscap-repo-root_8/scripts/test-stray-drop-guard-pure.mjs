@@ -132,6 +132,15 @@ console.log('\n7. the converted upload zones');
     ['components/CreditReport.jsx', 'the credit report import'],
     ['components/AppraisalPanel.jsx', 'the appraisal XML import'],
     ['screens/StaffLeadDetail.jsx', 'lead files'],
+    // ---- the 2026-08-21 sweep: everything the task list still listed as click-only ----
+    ['components/EmailCenter.jsx', 'the email compose box — every reply surface shares it (item 5)'],
+    ['components/DrawsPanel.jsx', 'the draw desk: the manual wire form + the supporting documents'],
+    ['components/BorrowerDraws.jsx', 'the borrower’s own draw uploads (three of them)'],
+    ['screens/TpoFile.jsx', 'the broker portal’s uploads — per condition and unattached'],
+    ['screens/StaffPurchasing.jsx', 'the purchase advice'],
+    ['screens/StaffNewFile.jsx', 'the new-file MISMO import'],
+    ['screens/StaffLabelingConsole.jsx', 'the labeling console'],
+    ['components/arena/ArenaChallenges.jsx', 'the Arena proof photo'],
   ];
   for (const [f, what] of zones) {
     const body = read(`app-v2/src/${f}`);
