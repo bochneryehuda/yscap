@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { askConfirm } from '../lib/dialog.js';
 import {
@@ -204,6 +204,18 @@ function PropSection({ sec, children }) {
     );
   }
   if (sec.status === 'not_loaded') return null;
+  /* "WE COULD NOT READ OUR OWN COPY" IS NOT "ELEMENTIX HAS NONE". The module
+     goes to the trouble of returning `unavailable` with a reason precisely so
+     this line is not printed about it; falling through to the empty-list case
+     threw that away and printed the confident denial instead. */
+  if (sec.status === 'unavailable') {
+    return (
+      <div style={{ fontSize: 13.5, color: INK, background: '#FAF8F3', border: `1px solid ${LINE}`,
+        borderRadius: 8, padding: '7px 10px', marginTop: 8 }}>
+        {sec.label}: {sec.detail || 'PILOT could not read this just now.'} That is not the same as there being none.
+      </div>
+    );
+  }
   if (!sec.rows.length) {
     return <div style={{ fontSize: 13.5, color: MUTED, marginTop: 8 }}>{sec.label}: Elementix has none on record.</div>;
   }
@@ -218,6 +230,13 @@ function PropSection({ sec, children }) {
   );
 }
 
+/* HOW MANY OF EACH ARE DRAWN. A cap is fine; a SILENT one is not — the heading
+   above each list prints the true total, so a list that quietly stops at twelve
+   of forty tells the reader they have seen it all. Both lists say what is not
+   shown, exactly as the cached blocks further up already do. */
+const OWN_SHOWN = 12;
+const TX_SHOWN = 20;
+
 /** The property as Elementix holds it: who owns it, and everything recorded. */
 function PropertyRecord({ prop }) {
   const secs = (prop && prop.sections) || {};
@@ -227,7 +246,7 @@ function PropertyRecord({ prop }) {
     <div>
       <PropSection sec={own}>
         <div style={{ display: 'grid', gap: 4, fontSize: 13.5, color: INK }}>
-          {(own && own.rows ? own.rows : []).slice(0, 12).map((r, i) => {
+          {(own && own.rows ? own.rows : []).slice(0, OWN_SHOWN).map((r, i) => {
             const current = !r.endDate && !r.end_date;
             const who = names(r.grantees) || (Array.isArray(r.entity_grantees) ? r.entity_grantees.map((e) => e && e.name).filter(Boolean).join(', ') : '')
               || (Array.isArray(r.people) ? r.people.map((e) => e && e.name).filter(Boolean).join(', ') : '') || 'owner not named';
@@ -242,12 +261,17 @@ function PropertyRecord({ prop }) {
               </div>
             );
           })}
+          {own && own.rows && own.rows.length > OWN_SHOWN && (
+            <div style={{ color: MUTED }}>
+              …and {(own.rows.length - OWN_SHOWN).toLocaleString('en-US')} earlier owner(s) not shown.
+            </div>
+          )}
         </div>
       </PropSection>
 
       <PropSection sec={tx}>
         <div style={{ display: 'grid', gap: 4, fontSize: 13.5, color: INK }}>
-          {(tx && tx.rows ? tx.rows : []).slice(0, 20).map((r, i) => (
+          {(tx && tx.rows ? tx.rows : []).slice(0, TX_SHOWN).map((r, i) => (
             <div key={r.id || i}>
               <span style={{ color: GOLD_INK, fontWeight: 650 }}>{pretty(r.type || r.documentType)}</span>
               <span style={{ color: MUTED }}> · </span>{day(r.recordingDate || r.recording_date)}
@@ -257,6 +281,11 @@ function PropertyRecord({ prop }) {
               )}
             </div>
           ))}
+          {tx && tx.rows && tx.rows.length > TX_SHOWN && (
+            <div style={{ color: MUTED }}>
+              …and {(tx.rows.length - TX_SHOWN).toLocaleString('en-US')} older record(s) not shown.
+            </div>
+          )}
         </div>
       </PropSection>
 
@@ -286,6 +315,10 @@ function RecordDetail({ detail, onClose, onOpenTab, personId }) {
      the repo has a guard that fails the build for exactly this. */
   const addressId = detail ? detail.addressId : null;
   const [prop, setProp] = useState(null);
+  // Which record is on screen RIGHT NOW, readable from inside a resolved promise
+  // — state would be the value captured when the call started, which is the bug.
+  const addressIdRef = useRef(addressId);
+  useEffect(() => { addressIdRef.current = addressId; }, [addressId]);
   const [propBusy, setPropBusy] = useState(false);
   const [propErr, setPropErr] = useState('');
 
@@ -312,9 +345,21 @@ function RecordDetail({ detail, onClose, onOpenTab, personId }) {
       { confirmLabel: 'Read the property' });
     if (!yes) return;
     setPropBusy(true); setPropErr('');
-    try { setProp(await api.elxAddressRead(addressId, personId, false)); }
-    catch (e) { setPropErr(e.message); }
-    finally { setPropBusy(false); }
+    /* THE ANSWER MUST LAND ON THE RECORD IT WAS ASKED ABOUT. This call takes
+       three to five vendor requests, and the panel is reused when the officer
+       clicks another row — so without pinning the id, a read started on 14 Maple
+       St resolves under 9 Other Rd's heading and prints its owners and its
+       instruments as that property's. `askedFor` is captured before the await
+       and re-checked after it; a stale answer is dropped, not shown. */
+    const askedFor = addressId;
+    try {
+      const out = await api.elxAddressRead(addressId, personId, false);
+      if (askedFor === addressIdRef.current) setProp(out);
+    } catch (e) {
+      if (askedFor === addressIdRef.current) setPropErr(e.message);
+    } finally {
+      if (askedFor === addressIdRef.current) setPropBusy(false);
+    }
   };
 
   if (!detail) return null;
@@ -1122,6 +1167,10 @@ function LookupPanel({ personId, personName, personState, held, onDone }) {
 export default function ElementixProfile({ kind, recordId, personName, personState }) {
   const [state, setState] = useState({ loading: true, linked: false, personId: null, profile: null, contact: null });
   const [tab, setTab] = useState('overview');
+  /* Which person this tab has ALREADY tried to read on open. A ref, not state:
+     it must not cause a render, and it must be readable from inside the
+     promise that decides whether to spend the request. */
+  const triedBuild = useRef(null);
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
@@ -1143,13 +1192,20 @@ export default function ElementixProfile({ kind, recordId, personName, personSta
      to forty calls across eight paged sections, out of an allowance the whole
      organisation shares, and browsing a list of leads must not spend that. They
      fill on "Refresh data", which is the deliberate press.
-     It cannot loop: the server stamps the person as read whether the build
-     succeeded or failed, so a second open never re-triggers it.
+     IT MUST NOT REPEAT WHILE ELEMENTIX IS REFUSING, and the reason it was
+     thought safe was wrong. `loaded` is `some(section is ok or partial)`, so a
+     FAILED overview leaves it false — meaning while the vendor is down, every
+     open of that lead, by every officer, spent another request with nobody
+     asking. So the attempt is remembered per person for the life of this tab
+     (`triedBuild`): the automatic one happens at most once, and "Refresh data"
+     — a deliberate press — is what tries again.
      AND NOTHING HERE IS THE PAID DOOR — every call on this path is a read. */
   const load = () => api.elxFor(kind, recordId)
     .then((r) => {
       setState({ loading: false, linked: !!r.linked, personId: r.personId, profile: r.profile, contact: r.contact || null });
-      if (r.linked && r.personId && r.profile && r.profile.loaded === false) {
+      if (r.linked && r.personId && r.profile && r.profile.loaded === false
+        && triedBuild.current !== r.personId) {
+        triedBuild.current = r.personId;
         return api.elxProfileBuild(r.personId, { sections: ['overview'] })
           .then((built) => setState((s) => ({ ...s, profile: built.profile })))
           .catch(() => { /* the lead still opens; Refresh data is right there */ });

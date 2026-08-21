@@ -206,16 +206,22 @@ export default function StaffCrmDesk() {
             page counts everything those logins ever unlocked over there. Both are
             right, and the difference is the import still running \u2014 which reads as
             a contradiction unless the screen says so out loud. */}
-        {backfill && (backfill.pending > 0 || backfill.skipped > 0) && (
+        {backfill && ((backfill.pending || 0) + (backfill.skipped || 0) + (backfill.failed || 0)) > 0 && (
           <div style={{
             border: `1px solid ${LINE}`, background: '#FBF9F4', borderRadius: 10,
             padding: '10px 12px', color: INK, fontSize: 14, marginBottom: 12,
           }}>
             <strong>The Elementix history is still coming in.</strong>{' '}
             {fmtNum(backfill.done)} of {fmtNum(backfill.total)} contacts are in the CRM so far;{' '}
-            {fmtNum((backfill.pending || 0) + (backfill.skipped || 0))} still to come, so
+            {/* EVERY ONE THAT IS NOT IN IS COUNTED HERE — waiting, still to work,
+                AND refused. Leaving the refused ones out made this line's own
+                arithmetic fail to add to the total, and made the Elementix page
+                (which counts all three) quote a different number for the same
+                thing on the same day. */}
+            {fmtNum((backfill.pending || 0) + (backfill.skipped || 0) + (backfill.failed || 0))} still to come, so
             “From Elementix” and “Unlocked” below will keep climbing on their own.
             {backfill.skipped > 0 && ` ${fmtNum(backfill.skipped)} of them are waiting for somebody to say which officer that Elementix login belongs to.`}
+            {backfill.failed > 0 && ` ${fmtNum(backfill.failed)} could not be read from Elementix after three tries and are on the Elementix page.`}
           </div>
         )}
 

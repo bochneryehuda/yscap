@@ -187,7 +187,66 @@ async function main() {
   assert.strictEqual(partial.sections.transactions.rows.length, 3,
     'while the sections that DID answer are kept in full');
   ownershipFails = false;
+
+  /* AND IT CAN BE RETRIED. A single `max(fetched_at)` across the sections that
+     SUCCEEDED keeps the watermark fresh, so the one that refused is never asked
+     again — the officer presses "Read it again", nothing is spent, nothing
+     changes, and nothing says why, for a week. A section carrying an error is
+     always due, exactly as the person profile does it. */
+  const beforeRetry = calls.filter((c) => c.tool === 'get_address_ownership').length;
+  const retry = await address.buildAddress(ADDR, { staffId: staff });   // NOT forced
+  const afterRetry = calls.filter((c) => c.tool === 'get_address_ownership').length;
+  assert.ok(afterRetry > beforeRetry, 'the refused section is asked again on the next read');
+  assert.notStrictEqual(retry.cached, true, '…so the read is not short-circuited as cached');
+  assert.strictEqual(retry.sections.ownership.status, 'ok', 'and it lands once the vendor answers');
+  assert.strictEqual(retry.sections.ownership.rows.length, 2, 'with its rows');
+  ok('a section that refused is retried on the next read — never held stale behind its siblings');
+
+  // The sections that DID answer are not re-bought to get it.
+  const txCallsBefore = calls.filter((c) => c.tool === 'get_address_transactions').length;
+  await address.buildAddress(ADDR, { staffId: staff });
+  assert.strictEqual(calls.filter((c) => c.tool === 'get_address_transactions').length, txCallsBefore,
+    'and once everything is fresh, a repeat read spends nothing at all');
+  ok('a complete read still short-circuits — the retry is for the refusal, not a licence to re-ask');
+
   ok('a section the vendor refused says so, and never renders as a property nobody owns');
+
+  // -------------------------------------------------------------------------
+  console.log('\n5b. A long recorded history is trimmed to fit, never blanked');
+  // -------------------------------------------------------------------------
+  /* THE SAME DEFECT THE PERSON PROFILE HAD FIXED ONE COMMIT EARLIER, and this
+     module reintroduced verbatim: over 400,000 characters `vendorJsonb` replaces
+     the whole document with a marker, `payload.rows` reads back empty, and the
+     screen prints "Elementix has none on record" about a property with a long
+     history. A page of transactions can reach the ceiling on its own — and if
+     the vendor carries its inline logos (8-12 KB each), one page does it alone,
+     which is why they are stripped BEFORE the fit rather than after. */
+  {
+    const many = Array.from({ length: 400 }, (_, i) => ({
+      id: `t-${i}`, type: 'mortgage', recordingDate: '2021-03-02', amount: '380000.00',
+      partiesGrantee: ['A LENDER WITH A LONG NAME LLC'], partiesGrantor: ['A BORROWING COMPANY LLC'],
+      _logoDataUri: `data:image/jpeg;base64,${'A'.repeat(9000)}`,
+      filler: 'x'.repeat(900),
+    }));
+    const savedTx = crmTools.call;
+    crmTools.call = async (tool, args, opts) => {
+      if (tool === 'get_address_transactions') return { ok: true, data: { data: many } };
+      return savedTx(tool, args, opts);
+    };
+    const big = await address.buildAddress(ADDR, { staffId: staff, force: true });
+    crmTools.call = savedTx;
+
+    const tx = big.sections.transactions;
+    assert.ok(tx.rows.length > 0, 'the rows survive — the tab is not blanked');
+    assert.strictEqual(tx.status, 'ok', 'and it is not reported as an error either');
+    assert.ok(!JSON.stringify(tx.rows).includes('data:image/jpeg'),
+      'the vendor’s inline logos are stripped — pictures never take a real row’s place');
+    const stored = (await db.query(
+      `SELECT payload FROM elementix_address_sections WHERE address_id = $1 AND section = 'transactions'`, [ADDR])).rows[0];
+    assert.ok(!stored.payload._dropped, 'nothing was replaced by a too-large marker');
+    assert.ok(JSON.stringify(stored.payload).length <= crmTools._internals.JSONB_MAX, '…and what is stored fits');
+    ok(`a ${many.length}-row property history keeps ${tx.rows.length} rows instead of storing a marker`);
+  }
 
   // -------------------------------------------------------------------------
   console.log('\n6. An unreadable store answers, it does not fall over');

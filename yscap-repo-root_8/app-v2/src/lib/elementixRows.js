@@ -635,6 +635,56 @@ export function placeOf(row) {
 }
 
 /**
+ * The one ownership span a record belongs to, or null.
+ *
+ * NEVER POSITIONAL. See the note at the call site: several spans per address is
+ * the ordinary shape, and the wrong one makes every money figure on the record
+ * page wrong while looking completely ordinary.
+ */
+export function pickOwnership(spans, { deedId, on } = {}) {
+  const rows = Array.isArray(spans) ? spans.filter(Boolean) : [];
+  if (!rows.length) return null;
+
+  // 1. The deed identifies the exact transfer. Exact, and always right.
+  if (deedId) {
+    const byDeed = rows.find((r) => idEq(r.deedId || r.deed_id, deedId));
+    if (byDeed) return byDeed;
+  }
+
+  // 2. The span that was live on the day the loan (or deed) was recorded. An
+  //    open span (no end date) runs to today. Boundary days count as inside:
+  //    a purchase-money mortgage is recorded the same day the span opens.
+  const day = ymd(on);
+  if (day) {
+    const covering = rows.filter((r) => {
+      const a = ymd(r.startDate || r.start_date || r.purchaseDate);
+      if (!a || a > day) return false;
+      const b = ymd(r.endDate || r.end_date || r.saleDate);
+      return !b || b >= day;
+    });
+    if (covering.length === 1) return covering[0];
+    // Two spans covering one day is contradictory data, not a choice to make.
+    if (covering.length > 1) return null;
+  }
+
+  // 3. One span at this address is unambiguous whatever else is missing.
+  if (rows.length === 1) return rows[0];
+
+  // 4. Several spans and nothing to tell them apart: say nothing.
+  return null;
+}
+
+/** A row at this address recorded on the same day — the deal, not the id. */
+export function sameDayAtAddress(profile, key, addressId, on) {
+  const day = ymd(on);
+  if (!day || !addressId) return null;
+  const hits = rowsAtAddress(profile, key, addressId)
+    .filter((r) => ymd(r.recordingDate || r.recording_date) === day);
+  // Exactly one, or it is not an identification.
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/**
  * THE RECORD BEHIND A ROW.
  *
  * `kind` is the section the row was clicked in. The return shape is deliberately
@@ -647,15 +697,39 @@ export function recordDetail(row, kind, profile) {
 
   // The three sibling records, resolved LOCALLY. `mortgage`/`deed` are the
   // row itself when the row is one of them.
+  /* DEED -> MORTGAGE. `mortgageId` on a person deed row is the documented join,
+     but it has NOT been seen on a captured `get_person_deeds` response (only on
+     the entity twin), so it may simply be absent in production. The fallback is
+     the deal itself: a purchase-money mortgage is recorded at the SAME address
+     on the SAME day as the deed that it paid for. Both are exact — neither
+     guesses — and the fallback only ever runs where the id gave nothing. */
   const mortgage = kind === 'mortgages' || kind === 'foreclosures' ? row
-    : (kind === 'deeds' ? findById(profile, 'mortgages', row.mortgageId) : null);
+    : (kind === 'deeds'
+      ? (findById(profile, 'mortgages', row.mortgageId)
+        || sameDayAtAddress(profile, 'mortgages', addressId, row.recordingDate))
+      : null);
   const deed = kind === 'deeds' ? row
     : findById(profile, 'deeds', row.deedId || (mortgage && mortgage.deedId));
 
-  // The ownership record tells us the hold period and who holds it NOW, which
-  // neither the mortgage nor the deed carries.
+  /* WHICH OWNERSHIP SPAN — and this must never be "the first one at this
+     address". `get_person_properties` returns OWNERSHIP RECORDS, not properties:
+     the vendor's own roll-up separates 829 ownership records from 222 properties
+     held today, so several spans per address is the ORDINARY shape (buy
+     personally, deed it into the LLC, sell = two spans on one address), and a
+     merged cross-state profile doubles the exposure.
+     Picking positionally printed a 2015 purchase price, a 3.4-year hold and
+     "owns it now: No — sold" on the record page of a live 2021 loan against a
+     property still held. Every field on that page was wrong and every one of
+     them looked ordinary.
+     So: the DEED id first (both rows carry one, and it identifies the exact
+     transfer), then the span that actually CONTAINS the loan's recording date,
+     then the only span if there is only one — and otherwise NOTHING, because a
+     record page with no purchase price is honest and one with somebody else's
+     is not. */
   const ownership = kind === 'properties' ? row
-    : rowsAtAddress(profile, 'properties', addressId)[0] || null;
+    : pickOwnership(rowsAtAddress(profile, 'properties', addressId),
+      { deedId: (deed && deed.id) || row.deedId || (mortgage && mortgage.deedId),
+        on: (mortgage && mortgage.recordingDate) || (deed && deed.recordingDate) || null });
 
   /* THE LENDER ROLL-UP IS ONLY SHOWN WHEN THE TWO SIDES AGREE ABOUT WHO IT IS.
      The join is by id, which should be exact — but if the cached lender network

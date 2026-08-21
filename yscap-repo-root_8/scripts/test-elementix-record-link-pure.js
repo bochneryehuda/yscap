@@ -178,6 +178,77 @@ const PROFILE = {
     ok('a crossed lender join shows nothing at all — never another lender’s history');
   }
 
+  console.log('\n5b. WHICH OWNERSHIP SPAN — the post-merge audit\'s serious finding');
+  {
+    /* `get_person_properties` returns OWNERSHIP RECORDS, not properties — the
+       vendor's own roll-up separates 829 ownership records from 222 properties
+       held today — so several spans on ONE address is the ordinary shape: buy
+       personally, deed it into the LLC, sell. Picking the first row at the
+       address printed the 2015 purchase price, a 3.4-year hold and "owns it now:
+       No — sold" on the record page of a LIVE 2021 loan against a property still
+       held. Every figure was wrong and every one looked completely ordinary. */
+    const OLD_SPAN = { id: 'p-old', addressId: 'a1', deedId: 'd-old',
+      startDate: '2015-01-05', endDate: '2018-06-01', totalConsideration: 200000, soldConsideration: 300000 };
+    const NEW_SPAN = { id: 'p-new', addressId: 'a1', deedId: 'd-new',
+      startDate: '2021-03-02', endDate: null, totalConsideration: 415000,
+      entityGrantees: [{ id: 'e1', name: 'MAPLE HOLDINGS LLC' }] };
+    const NEW_DEED = { id: 'd-new', recordingDate: '2021-03-02', totalConsideration: 415000,
+      property_addresses: [{ id: 'a1', address_full: '14 MAPLE ST' }] };
+    const TWO = { sections: {
+      mortgages: { rows: [MORTGAGE] },
+      deeds: { rows: [DEED, NEW_DEED] },
+      properties: { rows: [OLD_SPAN, NEW_SPAN] },     // the OLD one first, as the vendor sent it
+      lender_network: { rows: [LENDER] },
+    } };
+
+    const d = R.recordDetail({ ...MORTGAGE, deedId: 'd-new' }, 'mortgages', TWO);
+    assert.strictEqual(d.ownership.id, 'p-new', 'the deed id picks the exact transfer, not the first row');
+    assert.strictEqual(d.ownership.totalConsideration, 415000, '…so the price paid is this loan\'s, not a 2015 one');
+    assert.strictEqual(d.ownership.endDate, null, '…and the property still reads as held');
+    ok('a property owned twice resolves to the span the loan actually belongs to');
+
+    // No deed id at all: the DATE still identifies it, because a span that ended
+    // in 2018 cannot be the one a 2021 loan was recorded against.
+    const noDeed = R.recordDetail({ ...MORTGAGE, deedId: null, recordingDate: '2021-03-02' }, 'mortgages', TWO);
+    assert.strictEqual(noDeed.ownership.id, 'p-new', 'without a deed id, the span that was live on the day wins');
+    const older = R.recordDetail({ ...MORTGAGE, deedId: null, recordingDate: '2016-04-01' }, 'mortgages', TWO);
+    assert.strictEqual(older.ownership.id, 'p-old', '…and an older loan resolves to the older span');
+    ok('with no deed id, the span that was live on the recording date is the one');
+
+    // AND WHEN IT CANNOT TELL, IT SAYS NOTHING. A record page with no purchase
+    // price is honest; one with somebody else's is not.
+    const blind = R.recordDetail({ ...MORTGAGE, deedId: null, recordingDate: null }, 'mortgages', TWO);
+    assert.strictEqual(blind.ownership, null, 'two spans and nothing to tell them apart resolves to NOTHING');
+    const overlap = R.pickOwnership([
+      { id: 'x', startDate: '2020-01-01', endDate: null },
+      { id: 'y', startDate: '2020-01-01', endDate: null },
+    ], { on: '2021-03-02' });
+    assert.strictEqual(overlap, null, 'and two spans covering one day is contradictory data, not a choice');
+    ok('when the span cannot be identified it is left blank, never guessed');
+
+    // One span is unambiguous whatever else is missing — the ordinary case must
+    // not have been made stricter by any of the above.
+    const one = R.recordDetail({ ...MORTGAGE, deedId: null, recordingDate: null }, 'mortgages', PROFILE);
+    assert.strictEqual(one.ownership.id, 'p1', 'a single span at the address still resolves with nothing else to go on');
+    ok('the ordinary one-span case is untouched');
+
+    /* DEED -> MORTGAGE without `mortgageId`. That field is documented but has
+       never been seen on a captured `get_person_deeds` row, so the hop cannot
+       depend on it alone: the purchase-money mortgage is recorded at the same
+       address on the same day. */
+    const deedNoId = { ...NEW_DEED, mortgageId: null };
+    const fromDeed = R.recordDetail(deedNoId, 'deeds',
+      { sections: { ...TWO.sections, mortgages: { rows: [{ ...MORTGAGE, recordingDate: '2021-03-02' }] } } });
+    assert.strictEqual(fromDeed.mortgage && fromDeed.mortgage.id, 'm1',
+      'the loan recorded the same day at the same address is the one that paid for it');
+    const twoSameDay = R.sameDayAtAddress({ sections: { mortgages: { rows: [
+      { id: 'q1', recordingDate: '2021-03-02', propertyAddresses: [{ id: 'a1' }] },
+      { id: 'q2', recordingDate: '2021-03-02', propertyAddresses: [{ id: 'a1' }] },
+    ] } } }, 'mortgages', 'a1', '2021-03-02');
+    assert.strictEqual(twoSameDay, null, 'two loans the same day is not an identification');
+    ok('a deed finds its loan by the deal when the id is absent — and refuses when two could be it');
+  }
+
   console.log('\n6. A LENDER AND A COMPANY ARE SUBJECTS TOO');
   {
     // "When you click on the lender, it comes up" — half the owner's request.

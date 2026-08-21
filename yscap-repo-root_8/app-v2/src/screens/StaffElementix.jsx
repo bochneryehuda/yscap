@@ -191,7 +191,17 @@ export default function StaffElementix() {
                                 {n((u.pending || 0) + (u.skipped || 0) + (u.failed || 0))} still to come
                                 {u.skipped ? ' — waiting on a login' : ''}
                               </div>
-                            ) : (u.queued ? <div style={{ color: MUTED, fontSize: 12 }}>all in</div> : null)}
+                            ) : u.queued ? (
+                              <div style={{ color: MUTED, fontSize: 12 }}>all in</div>
+                            ) : (
+                              /* NOTHING LISTED IS NOT NONE IMPORTED. A login with no
+                                 queue rows at all — linked by hand before the history
+                                 was ever read — printed a bold 0 with nothing under
+                                 it, which reads as "we imported none of their 159" on
+                                 the very screen added to stop two numbers looking like
+                                 a contradiction. */
+                              <div style={{ color: MUTED, fontSize: 12 }}>not listed yet</div>
+                            )}
                           </>
                         )}
                       </td>
