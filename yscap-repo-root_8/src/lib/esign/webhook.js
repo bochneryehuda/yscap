@@ -265,7 +265,7 @@ async function noteCompletionFailure(db, envelopeRow, err) {
         WHERE id = $1 AND completion_alerted_at IS NULL RETURNING id`, [envelopeRow.id]);
     if (!won.rows.length) return;
     const cfg = require('../../config');
-    const label = PURPOSE_LABEL[envelopeRow.purpose] || 'documents';
+    const label = purposeLabel(envelopeRow.purpose, 'documents');
     const reason = String((err && err.message) || 'unknown error').replace(/\s+/g, ' ').trim().slice(0, 200);
     const notify = require('../notify');
     const opts = {
@@ -371,13 +371,18 @@ async function reconcileEnvelope(db, docusign, storage, envelopeRow) {
   return status;
 }
 
-const PURPOSE_LABEL = { term_sheet_package: 'term-sheet package', heter_iska: 'Heter Iska', noo_affidavit: 'non-owner-occupied certification' };
+// What to call the package in these notices. ONE definition (orchestrate.packageLabel),
+// derived from PACKAGES — the hand-kept map that used to live here never knew about
+// `draw_request`, so every draw-form alert said the generic "e-signature package".
+// Required LAZILY: orchestrate requires dead-letter, which is on this module's graph, so a
+// top-level require would be a cycle and PACKAGES could be undefined at load.
+const purposeLabel = (purpose, fallback) => require('./orchestrate').packageLabel(purpose, fallback);
 
 /** Alert the file's team on the FIRST terminal transition of a real envelope. */
 async function notifyTerminal(db, envelopeRow, status, voidReason) {
   const notify = require('../notify');
   const cfg = require('../../config');
-  const label = PURPOSE_LABEL[envelopeRow.purpose] || 'e-signature package';
+  const label = purposeLabel(envelopeRow.purpose);
   let title, body;
   if (status === 'declined') {
     title = `Borrower declined to sign — ${label}`;
@@ -506,7 +511,7 @@ async function maybeNotifyCountersign(db, envelopeRow) {
   if (!won.rows.length) return;
   const notify = require('../notify');
   const cfg = require('../../config');
-  const label = PURPOSE_LABEL[envelopeRow.purpose] || 'e-signature package';
+  const label = purposeLabel(envelopeRow.purpose);
   const opts = {
     type: 'status_change',
     title: `Borrower signed — counter-signature needed on the ${label}`,

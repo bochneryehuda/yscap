@@ -46,7 +46,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 20 | Rehab Budget PDF: value-add / narrative overlap | PDF | ☑ |
 | 21 | Funded date auto-read from Encompass (`CX.FUNDEDDATE`) | Encompass | ☐ |
 | 22 | Experience-count condition stuck at the old requirement | Conditions | ☐ |
-| 23 | DocuSign: processor + officer always CC'd as viewers | DocuSign | ☐ |
+| 23 | DocuSign: processor + officer always CC'd as viewers | DocuSign | ☑ |
 | 24 | Marketing term-sheet leads: one session, contact info, officer link | Leads | ☐ |
 | 25 | Trinity Manual section in the Draw Coordinator | Trinity | ☐ |
 
@@ -453,6 +453,46 @@ file** and **re-derive its requirement** whenever the application / products-and
 - **Term sheet package, ISKA, and draw form** envelopes additionally loop in the **draw coordinator** and
   the **loan officer** as viewers.
 
+**SHIPPED.** Most of this already worked and the useful part of the job was finding the two places it
+didn't.
+
+* **Already working:** the file's processor and loan officer are already copied on every envelope, and the
+  draw coordinator was already on the draw form. On the term sheet the loan officer actually **signs**, which
+  is a stronger seat than being copied.
+* **The draw coordinator now rides the term sheet and the Heter Iska too** — that is the owner's ask, and it
+  reverses a decision we made on 2026-07-28 (we had scoped the coordinator to the draw form on the reasoning
+  that they have no part in an origination package; the owner has now said otherwise, so it is recorded as a
+  reversal rather than quietly flipped).
+* **One thing needed care:** a file has no draw project until it *funds*, so at term-sheet time there is
+  never a coordinator assigned — and the draw-form rule falls back to "the whole draw desk plus the shared
+  draws@ inbox" so a wire form is never uncovered. Copying that onto a term sheet would put the entire
+  servicing desk on every borrower's loan documents. So the origination packages take **only a coordinator
+  the file actually has**, and the wire form keeps its cover exactly as before.
+* **The real bug: they were being copied at the wrong moment.** DocuSign emails a copied person when the
+  signing order reaches them — and they were placed *last*, behind the counter-signer. So the processor heard
+  nothing until the borrower and the officer had both already signed: they were told about the finished
+  article, which is the one moment they didn't need telling. The owner's words were "to be able to see when
+  it's **going out**", so they are now copied as it goes out. The "it's signed" half is not lost — PILOT's own
+  alert already fires on completion and files the signed copy.
+
+**Two live bugs found next door and fixed in the same pass** (both proven against the real system first, not
+assumed):
+
+* **The non-owner-occupied certification could never be sent, ever.** It is a real package with its own
+  document, condition and screen wording — but the database had never been told the name, so the very first
+  step of sending one was rejected and the screen said "server error". Measured, then fixed (db/603).
+* **The safety net that stops test sends reaching real people never looked at viewers.** It checked the
+  people signing and not the people copied — so on the test system DocuSign would still have emailed every
+  copied staff member while the check reported the send safe. This work adds viewers, so it widened exactly
+  that hole; it is closed.
+* Draw-form alerts also called it a generic "e-signature package" because two hand-kept name lists had gone
+  stale. There is now one list, so a package added later gets its name automatically.
+
+**One thing deliberately NOT changed — and it is a question for the owner (see Appendix B).** On a broker
+(TPO) file the *broker* is the loan officer, so today they are copied on that file's envelopes. That is
+existing behaviour, not something this change introduced, and whether an outside brokerage should be a viewer
+on loan documents is a business call, not ours to guess.
+
 ---
 
 ## 24. Marketing term-sheet leads — one session, contact info required, officer link
@@ -658,8 +698,16 @@ Asked here because the owner went to sleep; each has a stated assumption so the 
    total rehab budget)**, read from the existing pricing engine's LTC — not a second formula. Confirm.
 2. **"Vesta delivery" (item 2).** Assuming Vesta is the second EMCAP delivery artifact that ships
    alongside the data tape, and both go to the same two EMCAP addresses. Confirm.
-3. **"ISKA" (item 23).** Assuming this is the ISAOA / insurance-authorization envelope in our DocuSign
-   catalogue; will match it to the closest existing envelope type and name it in the PR.
+3. **"ISKA" (item 23) — ANSWERED, no longer a question.** The earlier assumption (ISAOA / an insurance
+   authorization) was **wrong**. "ISKA" is the **Heter Iska** — a real, first-class DocuSign package here,
+   with its own document, condition and clearing logic. ISAOA does exist in the system but only as the
+   lender's mortgagee-clause wording on insurance checks; there is no ISAOA envelope at all. Item 23 was
+   built against the Heter Iska.
+3b. **Should a broker (TPO) be a viewer on their own file's DocuSign envelopes? (item 23)** On a broker
+   file the broker IS the loan officer, so today they are copied on that file's envelopes — that is
+   existing behaviour, unchanged by item 23. It is arguably right (it is their deal) and arguably wrong
+   (an outside company on loan documents). Left exactly as it was, because which one it is, is a business
+   call. Say the word either way and it is one line.
 4. **Export button (item 7).** Assuming this is the **track record** export (verified vs unverified
    experiences). If it means a different export surface, say which and it moves.
 5. **Trinity products (item 25).** The product catalogue will be read from Trinity's live API; if their
