@@ -1646,6 +1646,25 @@ function start() {
     setTimeout(addrTick, 120 * 1000).unref();          // let boot settle first
     setInterval(addrTick, 60 * 1000).unref();
   }
+
+  // OFFICER-FOLDER MOVE SWEEP (owner-directed 2026-08-21). The assign door moves a card the
+  // moment an officer is set; this is the other half — the cards ALREADY sitting in Lead
+  // Capture with an officer on the file. Two populations, one shape: a lead somebody assigned
+  // while ClickUp was unreachable, and the back book left by the 2026-08-21 routing bug (a
+  // file that HAD an officer filed to Lead Capture because the officer's name did not match
+  // the registry key). Bounded per tick, re-reads every card live so it can never move one a
+  // human already filed by hand. Off: CLICKUP_OFFICER_MOVE_DISABLED=1.
+  {
+    const officerMove = require('../clickup/officer-move');
+    const moveTick = () => {
+      if (!switches.on('CLICKUP_OUTBOUND_ENABLED')) return Promise.resolve();
+      return officerMove.sweepLeadCaptureOnce()
+        .then((r) => { if (r && (r.moved || r.refused)) console.log('[clickup-officer-move]', JSON.stringify(r)); })
+        .catch((e) => console.error('[clickup-sync] officer-move sweep', e && e.message));
+    };
+    setTimeout(moveTick, 150 * 1000).unref();          // after the address sweep, well past boot
+    setInterval(moveTick, 10 * 60 * 1000).unref();
+  }
 }
 
 module.exports = { start, pushOutboxOnce, redriveDeadPushesOnce, sweepDirtyOnce, processInboxOnce, redriveInboxErrorsOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, flagDeadUnlinkedFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,

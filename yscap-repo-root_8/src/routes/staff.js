@@ -9988,6 +9988,17 @@ router.post('/applications/:id/assign', async (req, res) => {
       await audit(req, 'assign_processor', 'application', req.params.id, { from: cur.rows[0].processor_id || null, to: processorId });
     }
     enqueueClickupPush(req.params.id, ['officer', 'processor']).catch(() => {}); // propagate officer/processor to ClickUp promptly
+    // ASSIGNING AN OFFICER MOVES THE CARD OUT OF LEAD CAPTURE (owner-directed 2026-08-21:
+    // "if some file comes in without a loan officer and we assign a loan officer to it, it
+    // should automatically move from the lead capture folder in ClickUp to the loan officer's
+    // folder"). Fire-and-forget: the assignment itself must never fail because ClickUp is
+    // slow, and the module is a cheap no-op on a card that is not in Lead Capture. A failed
+    // move heals on the sweep. Only for a LOAN OFFICER — a processor never owns the folder.
+    if (loanOfficerId) {
+      require('../clickup/officer-move')
+        .maybeMoveToOfficerFolder(req.params.id, { source: 'assign' })
+        .catch(() => {});
+    }
     res.json({ ok: true });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });

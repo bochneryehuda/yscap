@@ -671,6 +671,72 @@ the ClickUp task must **move** to that officer's folder automatically. **Owner e
 of research so this doesn't break anything else** — custom fields, statuses, comments, watchers, existing
 crosswalk rows and the relink logic all have to survive the move.
 
+### ☑ SHIPPED — and the research first, because that is what the owner asked for
+
+Everything below was **measured against the live workspace on 2026-08-21**, not assumed. Each item is a
+way this could have quietly broken something.
+
+**1. There is no v2 way to move a task.** `POST /v2/list/{id}/task/{id}` is the "Tasks in Multiple Lists"
+feature — it *adds* a second home, it does not move one — and its DELETE sibling is permanently blocked
+here by the no-deletion hard stop. The one endpoint that relocates a task is **v3**:
+`PUT /v3/workspaces/{team}/tasks/{task}/home_list/{list}`. So the client gained a second base URL, fenced
+so that **this is the only v3 call the integration can make** — any other method or path on v3 is refused
+before the wire, and deleting a task is still impossible.
+
+**2. Custom fields do not travel by themselves.** ClickUp's own docs: the move carries them only when
+`move_custom_fields` is set. PILOT's entire sync lives in custom fields, so losing them would be a
+data-loss event. **Measured: all 73 custom-field ids PILOT reads or writes are defined at the SPACE level**
+of the Loan Pipeline space, so every list in that space already carries the definitions and nothing can be
+lost. The flag is sent anyway — it costs nothing and it is what protects the day somebody makes one of
+those fields list-scoped.
+
+**3. Statuses are LIST-level here, and the sets genuinely differ.** This is the real hazard. Lead Capture's
+list carries `approved`, `imported to bank (2-em)` and `paid off`, which an officer list does not; an
+officer list carries the whole `delegated …` ladder and the post-closing statuses, which Lead Capture does
+not. Move a card naively and ClickUp re-buckets it — and PILOT reads that status straight back inbound,
+which moves the borrower's own status and, on a `(#-em)` status, makes **ClickUp** send an email.
+
+**4. So a status is only ever mapped through the table that cannot change its meaning.** If the card's
+status name exists in the destination, nothing is mapped and nothing can change. If it does not, the
+mapping goes through `LANDING_INTERNAL` — the same table the portal's own status door uses, whose stated
+invariants are that the borrower-facing word is preserved and that PILOT never lands on an email-firing
+status except Clear to Close and Funded. If that target is **also** missing from the destination, the move
+is **refused and recorded** — never guessed. A test asserts the word-preserving property over *every*
+status either real list can hold, not on a couple of examples.
+
+**5. Nothing else is lost, and that was checked rather than assumed.** The task ID does not change, so
+every crosswalk row, the Portal-File-ID stamp, comments, watchers, attachments and subtasks still address
+the same card. Both folders are in the SAME space, so a space-scoped webhook still delivers. And the
+folder set the reconcile poll scans contains Lead Capture **and** every officer folder, so the card is
+inside the polled set on both sides of the move.
+
+**What it does.** Assigning a loan officer fires the move; a ten-minute sweep is the other half, for cards
+already sitting in Lead Capture — the owner's case (assigned while ClickUp was unreachable) **and the back
+book left by item 18's routing bug**, which look identical from here. The destination is the *same list a
+brand-new card would be created in*. It reads the card's current home **live** and never trusts our cached
+folder column (a human may have filed it by hand — trusting the cache would move their card back). After
+the write it re-reads the card and checks three things: it landed, its status still means the same thing,
+and the Portal-File-ID stamp survived; anything that does not check out is reported loudly, and a card that
+provably landed somewhere else does **not** get our caches rewritten to claim it moved.
+
+**What it deliberately does NOT do: reassignment.** A card already in an officer's folder is left alone
+even when the file's officer is now somebody else. Pulling a live file out of the folder its owner keeps it
+in is a much bigger decision than filing an unfiled one, and it is not what was asked for. Say the word and
+it is a small change.
+
+**Two real bugs found on the way, and fixed.** Two ClickUp statuses were missing from the borrower-facing
+derivation map entirely and fell through its keyword fallback (which matches "approval", not "approved")
+to **Processing**: a card on `approved` and a card on `paid off` both showed the borrower "Processing".
+Both now read correctly (`Approved`, `Funded`). A paid-off file passed through Funded earlier in its life,
+so its notification watermark already says Funded and no stale email can fire; an `approved` file will
+correctly tell the borrower it is approved.
+
+Off switch `CLICKUP_OFFICER_MOVE_DISABLED=1`; it also obeys the live outbound switch and the dry-run flag,
+and counts into the same outbound volume breaker every other ClickUp write does. Tests
+`scripts/test-clickup-officer-move-pure.js` (33) and `scripts/test-clickup-officer-move-db.js` (37, real
+Postgres with ClickUp stubbed so nothing leaves the machine). **Six mutations of the production code were
+each proven to fail them.**
+
 ---
 
 ## 20. Rehab Budget PDF — value-add details and narrative overlap
