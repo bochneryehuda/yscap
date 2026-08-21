@@ -26,8 +26,11 @@ async function saveChatAttachment({ applicationId, borrowerId, filename, content
   // Strict decode (lib/upload-bytes): a data:-URL prefix or non-base64 junk
   // throws a 400 instead of silently garbling the stored bytes.
   const { buf } = decodeUploadBase64(dataBase64);
-  const max = cfg.maxUploadMb * 1024 * 1024;
-  if (buf.length > max) { const e = new Error(`attachment too large (max ${cfg.maxUploadMb} MB)`); e.status = 413; throw e; }
+  const max = require('./upload-stream').jsonUploadBytes();
+  if (buf.length > max) {
+    const e = new Error(require('./upload-stream').tooLargeMessage(meta && meta.filename, buf.length, max));
+    e.status = 413; throw e;
+  }
   const visibility = channel === 'borrower' ? 'borrower' : 'staff_only';
   const { ref, provider } = await storage.save(buf, { filename });
   const r = await db.query(

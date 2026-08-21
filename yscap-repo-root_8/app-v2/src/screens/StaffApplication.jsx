@@ -1609,7 +1609,7 @@ function RequestSlotButton({ appId, it, onChanged }) {
   );
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false, onRequestWaiver, expanded = false, onToggleExpand }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false, onRequestWaiver, expanded = false, onToggleExpand, uploadNote = null }) {
   const [open, setOpen] = useState(false);
   // EVERY condition is a compact line until you open it (owner-directed
   // 2026-07-28: "one compact line each, click to open the one you're working").
@@ -1640,6 +1640,19 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   // Full screen opens everything — the parent seeds `expandedConds` with every
   // visible row on the way in and restores the normal state on the way out, so an
   // internal condition now behaves exactly like every other one.
+  /* WHAT HAPPENED TO THE UPLOAD YOU JUST STARTED HERE (owner-reported 2026-08-21:
+     *"it's not popping up in the place where you want to upload. It's popping up on top
+     of the file."*). The server's own sentence — which names the file, its size and the
+     limit — is rendered ON THIS CONDITION, both collapsed and open, because from beside
+     the row you were working the old top-of-page banner was off screen and the upload
+     read as having silently done nothing. */
+  const myUploadNote = uploadNote && uploadNote.itemId === it.id ? uploadNote : null;
+  const uploadNoteEl = myUploadNote ? (
+    <div className={`notice${myUploadNote.tone === 'err' ? ' err' : ''}`}
+      role="status" aria-live="polite" style={{ marginTop: 6 }}>
+      {myUploadNote.text}
+    </div>
+  ) : null;
   if (!expanded) {
     return (
       // data-keep-scroll: a stable handle so a refresh can put this row back
@@ -1647,6 +1660,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ padding: '2px 10px' }}>
         <ConditionLine it={it} role={role} docs={itemDocs} open={false} done={myDone}
           onToggle={onToggleExpand} onPatch={onPatch} />
+        {uploadNoteEl}
       </div>
     );
   }
@@ -1656,6 +1670,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   // null/absent for a FREE-FORM multi-document condition (Title).
   return (
     <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
+      {uploadNoteEl}
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
         <span className={`dot ${signed ? 'cond-satisfied' : conditionStatusClass(it.status)}`} style={{ marginTop: 4 }} />
         <div style={{ flex: 1 }}>
@@ -3526,7 +3541,7 @@ function DeleteRequestBanner({ it, appId, onChanged }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, onRequestWaiver, team, canImportCredit, fullscreen = false, closingActive = false }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, onRequestWaiver, team, canImportCredit, fullscreen = false, closingActive = false, uploadNote = null }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
@@ -3896,7 +3911,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 docs={docs} onUploadTo={onUploadTo} onDropTo={onDropTo} onReviewDoc={onReviewDoc}
                 onDownloadDoc={onDownloadDoc} dlBusy={dlBusy} onPreview={onPreview} appId={appId}
                 onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen}
-                onRequestWaiver={onRequestWaiver}
+                onRequestWaiver={onRequestWaiver} uploadNote={uploadNote}
                 expanded={expandedConds.has(it.id)} onToggleExpand={() => toggleCond(it.id)} />
             );
         const itemDocs = docsFor(it.id);
@@ -5006,13 +5021,21 @@ export default function StaffApplication() {
   // the same one-click the borrower has (#79), from inside the conditions list.
   const studioRef = useRef(null);
   const [uploadTarget, setUploadTarget] = useState(null);   // {itemId, slotBase|slot, replaceDocumentId}
+  /* WHAT HAPPENED TO THE LAST UPLOAD, AND WHICH CONDITION IT WAS FOR (owner-reported
+     2026-08-21: *"I do see the notification pop up on top, but it's not popping up in the
+     place where you want to upload."*). A refusal used to go to `setErr`, which renders a
+     banner at the top of a very long file screen — so from beside the condition you were
+     working, the upload simply appeared to do nothing. This carries the message back to
+     the row that started it; the top banner stays for the case where no row can be
+     identified (a loose upload). */
+  const [uploadNote, setUploadNote] = useState(null);   // {itemId, tone:'err'|'ok', text}
   const pickUpload = (t) => { setUploadTarget(t || {}); staffFileRef.current && staffFileRef.current.click(); };
   // Shared by the file picker AND drag-and-drop — target passed explicitly.
   async function uploadStaffFiles(fileList, tgt) {
     const all = Array.from(fileList || []);
     if (!all.length || !tgt) return;
     const files = tgt.replaceDocumentId ? all.slice(0, 1) : all;
-    setBusyAct('upload'); setErr('');
+    setBusyAct('upload'); setErr(''); setUploadNote(null);
     try {
       const slotBase = Number.isFinite(tgt.slotBase) ? tgt.slotBase : null;
       let appraisal = null;
@@ -5028,7 +5051,11 @@ export default function StaffApplication() {
           slot: (tgt.replaceDocumentId || tgt.llcId) ? (tgt.slot || undefined)
             : slotBase != null ? `Document ${slotBase + i + 1}` : (tgt.slot || undefined),
           replaceDocumentId: tgt.replaceDocumentId || undefined,
-          filename: files[i].name, contentType: files[i].type, dataBase64: await fileToBase64(files[i]),
+          /* THE FILE ITSELF, STREAMED (owner-directed 2026-08-21). Reading it into base64
+             first cost this tab a copy and the SERVER about five times the file to parse —
+             which is why a 23 MB contract could not be uploaded at all. `api` picks the
+             streaming door whenever a caller hands it a File. */
+          filename: files[i].name, contentType: files[i].type, file: files[i],
         });
         if (resp && resp.appraisal) appraisal = resp.appraisal;   // XML dropped on the appraisal condition auto-built the findings
         // The server is the only thing that knows: visibility is derived from the
@@ -5056,7 +5083,14 @@ export default function StaffApplication() {
         flash(`${many ? `${files.length} files uploaded ✓` : 'Uploaded ✓'}${tail}`);
       }
       setUploadTarget(null); await load();
-    } catch (e2) { setErr(e2.message || 'Upload failed'); }
+    } catch (e2) {
+      /* SAY EXACTLY WHAT WENT WRONG, AND SAY IT WHERE IT HAPPENED. The server's own
+         sentence is used verbatim — it names the file, the size and the limit — because
+         "Upload failed" tells nobody anything they can act on. */
+      const text = (e2 && e2.data && (e2.data.error || e2.data.message)) || e2.message || 'The upload did not go through.';
+      if (tgt && tgt.itemId) setUploadNote({ itemId: tgt.itemId, tone: 'err', text });
+      else setErr(text);
+    }
     finally { setBusyAct(''); if (staffFileRef.current) staffFileRef.current.value = ''; }
   }
   const onStaffFile = (e) => uploadStaffFiles(e.target.files, uploadTarget);
@@ -6255,7 +6289,7 @@ export default function StaffApplication() {
           closingActive={!!app.closer_id || ['clear_to_close', 'funded'].includes(app.status)}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
-          onOpenStudio={openStudioAnywhere} onRequestWaiver={requestWaiver} />
+          onOpenStudio={openStudioAnywhere} onRequestWaiver={requestWaiver} uploadNote={uploadNote} />
         <StaffChangeRequests appId={id} onChanged={load} />
         <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
         <div className="stack" style={{ marginTop: 14 }}>

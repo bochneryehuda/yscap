@@ -1158,7 +1158,10 @@ router.get('/applications/:id/documents', async (req, res, next) => {
 // (a staff_users row, uploaded_by_kind='staff') and visible on the file
 // (visibility='borrower'). New evidence clears any prior sign-off so the LENDER
 // re-reviews — a broker provides, we sign off.
-router.post('/documents', async (req, res, next) => {
+/* ONE HANDLER, TWO DOORS (2026-08-21) — `/documents` takes the JSON body, and
+   `/documents/binary` streams the file itself with its metadata in headers, so an
+   upload's size is no longer a question about this process's memory. */
+const uploadTpoDocument = async (req, res, next) => {
   try {
     const b = req.body || {};
     if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
@@ -1202,18 +1205,24 @@ router.post('/documents', async (req, res, next) => {
       if (!it.rows[0]) return res.status(404).json({ error: 'condition not found on this file' });
       itemId = it.rows[0].id;
     }
-    let buf;
-    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+    /* THE BYTES, WHICHEVER DOOR THEY CAME THROUGH (2026-08-21) — a JSON body is decoded
+       strictly and stored here; a STREAMED upload is already in storage. Same handler,
+       so the firm scope and the borrower-safe visibility rule cannot differ by door. */
+    let up;
+    try { up = await require('../lib/upload-stream').takeUpload(req, b); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    const uploadBytes = up.bytes;
     const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [b.applicationId])).rows[0].borrower_id;
     // Collapse a double-submit onto the already-saved document (mirrors the borrower door).
     const dupId = await require('../lib/doc-dedup').recentDuplicateDocId({
-      filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+      filename, sizeBytes: uploadBytes, uploadedByKind: 'staff', uploadedById: req.actor.id,
       applicationId: b.applicationId, checklistItemId: itemId, llcId: null, trackRecordId: null, slotLabel: slot, docKind, termSheetFinal });
-    if (dupId) return res.status(201).json({ ok: true, documentId: dupId, deduped: true });
-    const { ref, provider } = await storage.save(buf, { filename });
+    if (dupId) {
+      // The bytes are already stored on both doors; drop the copy nothing will point at.
+      try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
+      return res.status(201).json({ ok: true, documentId: dupId, deduped: true });
+    }
+    const { ref, provider } = up;
     // Born PENDING — everything a broker uploads (a document OR their term sheet)
     // is reviewed by the lender before it is accepted (see the term-sheet note
     // above). `term_sheet_final` still records what the bytes PRINT (the send gate
@@ -1221,7 +1230,7 @@ router.post('/documents', async (req, res, next) => {
     const r = await db.query(
       `INSERT INTO documents (checklist_item_id,application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,term_sheet_final,visibility,review_status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,$11,$12,'borrower','pending') RETURNING id`,
-      [itemId, b.applicationId, borrowerId, filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, docKind, slot, termSheetFinal]);
+      [itemId, b.applicationId, borrowerId, filename, b.contentType || 'application/octet-stream', uploadBytes, provider, ref, req.actor.id, docKind, slot, termSheetFinal]);
     if (isTermSheet) {
       // Exactly one term sheet is current — supersede the prior (the register
       // already reopened the Products & pricing condition, so no extra flip here).
@@ -1240,7 +1249,10 @@ router.post('/documents', async (req, res, next) => {
     try { require('../lib/sharepoint-backup').kick(); } catch (_) { /* mirror is best-effort */ }
     res.status(201).json({ ok: true, documentId: r.rows[0].id });
   } catch (e) { next(e); }
-});
+};
+router.post('/documents', uploadTpoDocument);
+router.post('/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadTpoDocument);
 
 // ============================================================================
 // PHASE 5a — a broker ORDERS a credit pull on the firm's file, on OUR Xactus

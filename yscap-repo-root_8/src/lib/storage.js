@@ -103,6 +103,37 @@ const local = {
     fs.renameSync(tmp, full);
     return { ref, provider: 'local', bytes: buf.length };
   },
+  /**
+   * SAVE A FILE ALREADY ON DISK — the streaming upload path (`lib/upload-stream.js`), which
+   * never holds the document in memory. A rename is instantaneous and costs nothing; a temp
+   * file on a DIFFERENT filesystem (Render's ephemeral /tmp vs the mounted disk) cannot be
+   * renamed across the boundary, so that case falls back to a streamed copy — still flat
+   * memory, never a Buffer of the whole document.
+   */
+  async saveFile(tmpPath, { filename } = {}) {
+    const ext = (path.extname(filename || '').match(/\.[A-Za-z0-9]{1,12}$/) || [''])[0].toLowerCase();
+    const id = crypto.randomBytes(16).toString('hex');
+    const ref = path.posix.join(id.slice(0, 2), id + ext);
+    const full = safePath(ref);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    const bytes = fs.statSync(tmpPath).size;
+    const staged = full + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
+    try {
+      fs.renameSync(tmpPath, staged);
+    } catch (e) {
+      if (e && e.code === 'EXDEV') {
+        await new Promise((resolve, reject) => {
+          const rs = fs.createReadStream(tmpPath), ws = fs.createWriteStream(staged);
+          rs.on('error', reject); ws.on('error', reject); ws.on('close', resolve);
+          rs.pipe(ws);
+        });
+      } else throw e;
+    }
+    // Same atomic publish as save(): a crash mid-write can never leave a half-written
+    // document that later reads as valid.
+    fs.renameSync(staged, full);
+    return { ref, provider: 'local', bytes };
+  },
   async read(ref) {
     return fs.readFileSync(safePath(ref));
   },
@@ -135,6 +166,7 @@ const local = {
 const notReady = (n) => ({
   name: n, base: null,
   async save() { throw new Error(n + ' storage not configured'); },
+  async saveFile() { throw new Error(n + ' storage not configured'); },
   async read() { throw new Error(n + ' storage not configured'); },
   async stream() { throw new Error(n + ' storage not configured'); },
   stat() { return null; },
@@ -156,6 +188,7 @@ function dualRead(primary, fallback) {
     name: primary.name,
     get base() { return primary.base; },
     save: (...a) => primary.save(...a),
+    saveFile: (...a) => primary.saveFile(...a),
     remove: (...a) => primary.remove(...a),
     probe: () => primary.probe(),
     ping: primary.ping ? (() => primary.ping()) : undefined,

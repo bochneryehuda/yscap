@@ -40,10 +40,15 @@ app.use(require('./lib/security').securityHeaders);
 // 5xx body: a reference for everyone, the real reason for staff. See
 // src/lib/http-fail.js for what may be shown and to whom.
 app.use(require('./lib/http-fail').middleware);
-// Body limit must comfortably exceed a max-size upload AFTER base64 inflation:
-// a MAX_UPLOAD_MB-byte file becomes ~1.37x that as base64 inside the JSON body,
-// plus envelope. A flat 25mb limit silently 413'd legitimate ~19-20MB uploads.
-const JSON_LIMIT_MB = Math.max(25, Math.ceil(cfg.maxUploadMb * 1.4) + 4);
+/* THE JSON BODY LIMIT FOLLOWS `maxJsonUploadMb`, NEVER THE DOCUMENT CEILING (2026-08-21).
+   A base64 upload becomes ~1.37x the file inside the body, plus envelope — but the cost that
+   matters is the PEAK, which is about five times the file once express has buffered it,
+   stringified it, parsed it and decoded it (measured: 25 MB → 168 MB, 100 MB → 410 MB, on a
+   512 MB instance). Documents now go through the streaming door (`lib/upload-stream.js`),
+   which holds nothing in memory, so the document ceiling can be raised to anything without
+   this number moving. Deriving this from `maxUploadMb` is how a bigger upload limit turns
+   into an out-of-memory kill of the whole site. */
+const JSON_LIMIT_MB = Math.max(25, Math.ceil(cfg.maxJsonUploadMb * 1.4) + 4);
 // ClickUp webhook is mounted BEFORE the JSON parser — it needs the RAW body to
 // verify the HMAC signature (it applies its own express.raw()).
 app.use('/api/clickup/webhook', require('./routes/clickup-webhook'));

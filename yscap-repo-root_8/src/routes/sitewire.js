@@ -1381,8 +1381,8 @@ router.post('/files/:id/draw-request/upload-manual', requirePermission('manage_d
     let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
     try { ({ buf } = require('../lib/upload-bytes').decodeUploadBase64(b.dataBase64)); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
+    if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
     // Ensure the draw condition exists so the manual form has somewhere to file back to.
     const itemId = await drawWire.ensureDrawRequestCondition(db, appId, req.actor && req.actor.id);
     const filename = String(b.filename || 'wire-instructions.pdf').slice(0, 200);

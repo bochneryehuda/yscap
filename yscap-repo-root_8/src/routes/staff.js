@@ -2648,8 +2648,8 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
       let buf;
       try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
       catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-      const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-      if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+      const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
+      if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
       const filename = safeFilename(b.filename);
       const { ref, provider } = await storage.save(buf, { filename });
       const r = await db.query(
@@ -4588,7 +4588,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   // supersede the previous exports when at least one valid replacement exists:
   // a submission whose attachments all fail must not strip the condition of
   // its current documents.
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
   const valid = [];
   for (const a of attachments) {
     let buf;
@@ -11619,8 +11619,8 @@ router.post('/track-records/:id/documents', async (req, res) => {
   let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
   try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+  const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
+  if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   // Same contract as the borrower path: an upload straight to the line item
   // also lands on the oldest open document-request condition for that line.
@@ -12107,8 +12107,8 @@ router.post('/llcs/:id/documents', async (req, res) => {
     let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
     try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
+    if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
     let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
     // Every slot keeps EVERY document (owner-directed): on a plain ADD (not an
     // explicit replace), uniquify a colliding slot label so the two never display
@@ -17493,8 +17493,8 @@ router.post('/leads/:id/documents', async (req, res) => {
     let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
     try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
+    if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
     const { ref, provider } = await storage.save(buf, { filename: b.filename });
     const r = await db.query(
       `INSERT INTO documents (lead_id, filename, content_type, size_bytes, storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id)
@@ -17809,7 +17809,25 @@ router.get('/applications/:id/documents', async (req, res) => {
 // With a checklistItemId the upload lands INSIDE that condition on the
 // borrower's behalf — same slots, same supersede rules as a borrower upload —
 // so a staffer can fill the shared conditions list when the borrower can't.
-router.post('/applications/:id/documents', async (req, res) => {
+/* Two read-back ceilings, both about MEMORY rather than about what a person may upload.
+   A MISMO appraisal XML carries the whole report PDF inside itself, so 40 MB is a real
+   one; past that its market data is not worth the memory on a 512 MB instance. The AI
+   classifier's own reader refuses anything large anyway, so 25 MB is generous. */
+const UPLOAD_XML_READBACK_BYTES = 40 * 1024 * 1024;
+const UPLOAD_AI_READBACK_BYTES = 25 * 1024 * 1024;
+
+/* ONE HANDLER, TWO DOORS (owner-directed 2026-08-21: *"we need to increase the limit of
+   megabytes that we can upload to unlimit it … The sky is the limit."*).
+
+   `/documents`         — the historic JSON door: {filename, contentType, dataBase64}.
+   `/documents/binary`  — the STREAMING door: the body IS the file, the metadata rides in
+                          headers, and nothing is ever held in memory, so the size a person
+                          can upload stops being a question about this process's RAM.
+
+   Registering the same function on both is deliberate: a second route would be a second
+   place the condition lookup, the staff-only visibility rule and the notification could
+   drift, and the one that drifts is the one that leaks a document to a borrower. */
+const uploadAppDocument = async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
@@ -17871,11 +17889,24 @@ router.post('/applications/:id/documents', async (req, res) => {
   // request can only ever RESTRICT, so no caller can widen a document's reach.
   const staffOnly = itemAudience === 'staff' || b.staffOnly === true;
   const docVisibility = staffOnly ? 'staff_only' : 'borrower';
-  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  /* THE BYTES, WHICHEVER DOOR THEY CAME THROUGH (owner-directed 2026-08-21).
+     A JSON body is decoded strictly and stored here; a STREAMED upload is already in
+     storage and `takeUpload` simply reports where — so this handler, its authorization,
+     its condition lookups and its visibility rules are the SAME code on both doors.
+     Any refusal carries its real reason and its real status. */
+  let up;
+  try { up = await require('../lib/upload-stream').takeUpload(req, b); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+  const uploadBytes = up.bytes;
+  /* THREE THINGS DOWNSTREAM WANT THE ACTUAL BYTES — the appraisal XML auto-import, the
+     research warehouse's XML catch, and the AI classifier. On the JSON door they are
+     already in memory; on the STREAMING door reading them back costs memory equal to the
+     file, which is the very thing that door exists to avoid. So each asks for them
+     explicitly, under its own ceiling, and each is written to do nothing when it cannot
+     have them — every one of the three is an EXTRA, and none may turn a stored document
+     into a failed upload. */
+  const bytesFor = (limit) => require('../lib/upload-stream').readUploadBytes(up, limit);
+  const looksXmlUpload = /\.xml$/i.test(b.filename || '') || /xml/i.test(b.contentType || '');
   // A manual upload onto the Heter Iska condition gets an explicit doc_kind so it is
   // provenance-distinguishable from the DocuSign-fed executed copy (heter_iska_signed +
   // source_type system) AND is kept in-system only — heter_iska_manual is on the
@@ -17907,11 +17938,18 @@ router.post('/applications/:id/documents', async (req, res) => {
     slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
   }
   const dupApp = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
-    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+    filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'staff', uploadedById: req.actor.id,
     applicationId: llcId ? null : req.params.id, checklistItemId: b.checklistItemId || null,
     llcId: llcId || null, trackRecordId: itemTrackRecordId, slotLabel: slot, docKind, termSheetFinal });
-  if (dupApp) return res.status(201).json({ ok: true, documentId: dupApp, deduped: true, visibility: docVisibility });
-  const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  if (dupApp) {
+    /* The bytes are ALREADY in storage on both doors now (the streaming one cannot know
+       about a duplicate until they have landed), so a de-duplicated upload would leave an
+       object nothing points at. Remove it — best-effort, because an orphan blob is waste,
+       never a correctness problem, and must not turn a successful de-dupe into an error. */
+    try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
+    return res.status(201).json({ ok: true, documentId: dupApp, deduped: true, visibility: docVisibility });
+  }
+  const { ref, provider } = up;
   const r = await db.query(
     // A `term_sheet` here is PILOT'S OWN generated PDF, captured from the Term
     // Sheet Studio at registration (that is the ONLY thing that sets this kind
@@ -17930,7 +17968,7 @@ router.post('/applications/:id/documents', async (req, res) => {
              CASE WHEN $12='term_sheet' THEN now() ELSE NULL END) RETURNING id`,
     [llcId ? null : req.params.id, b.checklistItemId || null,
      (b.checklistItemId || llcId) ? borrowerId : null, llcId, itemTrackRecordId,
-     b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref,
+     b.filename, b.contentType || 'application/octet-stream', uploadBytes, provider, ref,
      req.actor.id, docKind, slot, docVisibility, termSheetFinal]);
   if (itemTrackRecordId) {
     await db.query(
@@ -18010,8 +18048,9 @@ router.post('/applications/:id/documents', async (req, res) => {
       const tc = (await db.query(
         `SELECT t.code FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id WHERE ci.id=$1`,
         [b.checklistItemId])).rows[0];
-      if (tc && tc.code === 'rtl_cond_appraisaldocs') {
-        const xml = buf.toString('utf8');
+      const xmlBuf = (tc && tc.code === 'rtl_cond_appraisaldocs') ? await bytesFor(UPLOAD_XML_READBACK_BYTES) : null;
+      if (tc && tc.code === 'rtl_cond_appraisaldocs' && xmlBuf) {
+        const xml = xmlBuf.toString('utf8');
         const pdfDoc = (await db.query(
           `SELECT id FROM documents WHERE checklist_item_id=$1 AND is_current
              AND lower(coalesce(slot_label,'')) LIKE '%pdf%' ORDER BY created_at DESC LIMIT 1`,
@@ -18064,7 +18103,8 @@ router.post('/applications/:id/documents', async (req, res) => {
   // here, which is what closes that gap.
   if (!(apprImport && apprImport.ok)) {
     require('../lib/research/xml-catch').fireCatch({
-      bytes: buf, filename: b.filename, contentType: b.contentType,
+      bytes: looksXmlUpload ? await bytesFor(UPLOAD_XML_READBACK_BYTES) : (up.buf || null),
+      filename: b.filename, contentType: b.contentType,
       documentId: r.rows[0].id,
       uploadedByStaffId: req.actor && req.actor.kind === 'staff' ? req.actor.id : null,
       why: 'a loan file (staff upload)',
@@ -18080,10 +18120,16 @@ router.post('/applications/:id/documents', async (req, res) => {
   // fast; every step is best-effort and never blocks the response.
   const uploadedDocId = r.rows[0].id;
   const appIdForAi = llcId ? null : req.params.id;
-  if (appIdForAi && buf && buf.length) setImmediate(() => {
+  if (appIdForAi && uploadBytes) setImmediate(() => {
     (async () => {
       const azc = require('../lib/ai/azure-custom');
       if (!azc.classifierConfigured()) return;   // dormant until classifier trained
+      /* The bytes are fetched AFTER the dormancy check and INSIDE the deferred work, so a
+         deployment with no classifier reads nothing back at all and the request path is
+         never slowed by it. A document too large to hold is simply not classified — the
+         reader has its own size limit anyway. */
+      const buf = await require('../lib/upload-stream').readUploadBytes(up, UPLOAD_AI_READBACK_BYTES);
+      if (!buf || !buf.length) return;
       const client = await db.pool.connect();
       try {
         // For classification we only need the bytes; classify+suggest are separate DB
@@ -18127,7 +18173,10 @@ router.post('/applications/:id/documents', async (req, res) => {
   // shadow flag is on (zero db work when off), idempotent, never throws — it can't affect this upload.
   try { await require('../pipeline/enqueue-on-upload').enqueueUploadedDocument(db, { documentId: uploadedDocId, loanId: appIdForAi, checklistItemId: b.checklistItemId || null, docKind }); } catch (_) { /* advisory only */ }
   res.status(201).json({ ok: true, documentId: r.rows[0].id, visibility: docVisibility, ...(apprImport ? { appraisal: apprImport } : {}) });
-});
+};
+router.post('/applications/:id/documents', uploadAppDocument);
+router.post('/applications/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadAppDocument);
 
 // Approve or reject an uploaded document. Rejection requires a reason, keeps the
 // rejected file in history (never in the clean file), and flips its checklist
