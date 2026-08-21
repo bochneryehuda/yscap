@@ -1098,5 +1098,13 @@ module.exports = {
   // Exposed for the rate build-up test only — the guards (omit-don't-guess when
   // the probe re-sized the deal, restore the caller's markup state) are the whole
   // point, so they are asserted directly rather than inferred from a quote.
+  /* THE PORTAL-LABEL NORMALIZER, exported so nothing outside has to keep a second copy of it.
+     It exists because "Fix & Flip w/ Construction" contains the word "construction", which the
+     frozen engine classifies as GROUND-UP — so every reader that asks "is this a ground-up?" off
+     `applications.program` must run it through here first, or it will answer YES about an ordinary
+     fix & flip. `buildInputs` has always applied it; `trinity/budget-review` now does too, after
+     exactly that bug was caught in test (a heavy-rehab-only file read as a ground-up because the
+     stored label carried the word). */
+  engineStrategy,
   _internals: { measureRateBuildUp, sizingFingerprint, ratePct },
 };
