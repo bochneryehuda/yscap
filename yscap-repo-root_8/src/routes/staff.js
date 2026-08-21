@@ -14663,6 +14663,40 @@ router.post('/applications/:id/complete-fields', (req, res) => completeFields(re
 // condition engine, re-enforces the 5% SOW contingency and re-derives liquidity.
 // STAFF-ONLY (this router is staff-gated + the /applications/:id scope middleware) —
 // a note-buyer name is never exposed to a borrower.
+/* ── CRITICAL DATES + THE PAYOFF DEMAND ──────────────────────────────────────
+   Owner-directed 2026-08-21: *"We need to add in the file, inside a critical date section, which
+   should have: the application date, which is the day the file started · the CTC date · the funded
+   date · the purchase advice date"*, and the payoff demand *"should be added to the critical dates
+   section also with the date."*
+
+   All three are file-scoped by the `/applications/:id` middleware every route in this file sits
+   behind. Reading the dates needs no extra permission — they are the same facts already on the
+   file header. RECORDING a payoff demand does: it locks the draw centre and deactivates the
+   property in Sitewire, so it is gated on `manage_draws`, the capability that owns the draw
+   centre, and audited. */
+router.get('/applications/:id/critical-dates', async (req, res) => {
+  try {
+    res.json(await require('../lib/critical-dates').criticalDates(db, req.params.id));
+  } catch (e) { require('../lib/http-fail').fail(res, e); }
+});
+
+router.post('/applications/:id/payoff-demand', async (req, res) => {
+  try {
+    if (!can(req.actor, 'manage_draws')) return res.status(403).json({ error: 'You do not have permission to manage draws.' });
+    const b = req.body || {};
+    const P = require('../lib/payoff-demand');
+    /* CLEARING IS A SEPARATE, DELIBERATE ACT — `{clear:true}`, never inferred from an empty note.
+       Lifting the lock lets money move again, so it must be as explicit as setting it. */
+    const out = b.clear === true
+      ? await P.clearPayoffDemand(db, req.params.id, { staffId: req.actor.id })
+      : await P.recordPayoffDemand(db, req.params.id, { staffId: req.actor.id, note: b.note || null });
+    if (out && out.error) return res.status(400).json({ error: out.error });
+    await audit(req, b.clear === true ? 'payoff_demand_cleared' : 'payoff_demand_recorded',
+      'application', req.params.id, { note: b.note || null, sitewire: (out && out.sitewire) || null });
+    res.json(out);
+  } catch (e) { require('../lib/http-fail').fail(res, e); }
+});
+
 router.get('/applications/:id/note-buyer', async (req, res) => {
   try {
     // `?candidate=` previews a name that isn't in the ClickUp dropdown (staff may type

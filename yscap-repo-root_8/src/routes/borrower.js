@@ -725,6 +725,13 @@ router.post('/applications/:id/request-draw', async (req, res) => {
   const a = own.rows[0];
   if (!a) return res.status(404).json({ error: 'not found' });
   if (a.status !== 'funded') return res.status(400).json({ error: 'Draws can be requested once your loan is funded.' });
+  /* THE PAYOFF-DEMAND LOCK (owner-directed 2026-08-21) — this is the door that BIRTHS the draw
+     process, so it is the one the owner's first workflow is really about: a file with a payoff
+     outstanding must not be able to start draws at all. */
+  {
+    const payoffHold = await require('../lib/payoff-demand').payoffDemandBlock(db, req.params.id);
+    if (payoffHold.blocked) return res.status(409).json({ error: payoffHold.message, code: 'payoff_demand' });
+  }
   // ONE request per file (owner-directed 2026-07-14): repeat clicks used to
   // fan out the full email set every time. The atomic claim below wins exactly
   // once — every later call answers ok/already with the original timestamp and

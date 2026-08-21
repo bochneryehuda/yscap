@@ -70,6 +70,7 @@ import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import AppraisalOrderSection from '../components/AppraisalOrderSection.jsx';
 import TrinityBudgetReview from '../components/TrinityBudgetReview.jsx';
+import CriticalDates from '../components/CriticalDates.jsx';
 import AppraisalCardEntry from '../components/AppraisalCardEntry.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
@@ -988,6 +989,14 @@ function sowUrl(appId, itemId, app) {
    never from the portal. */
 const APP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'on_hold', 'declined', 'withdrawn'];
 const APP_STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
+/* SOLD IS A STAGE ON TOP OF FUNDED, NOT A STORED STATUS (owner-directed 2026-08-21, db/611).
+   `applications.status` is the SERVICING state and 139 places read it — draws, investor delivery,
+   the data tapes and the purchase-advice sweep all test `funded` — so a sold loan stays funded and
+   the stage rides on `sold_at`. What a person SEES is the stage, which is what the owner asked for:
+   *"The files that are being sold should have a status of 'Sold'."* Table-funded loans never get
+   one; that exclusion is decided server-side (`lib/sold-status.js`), never re-derived here. */
+const soldStage = (a) => !!(a && a.sold_at && a.status === 'funded');
+const appStatusLabel = (a) => (soldStage(a) ? 'Sold' : (APP_STATUS_LABEL[a && a.status] || (a && a.status) || '—'));
 const PHASE_LABEL = {
   p1_intake: 'Phase 1 · Borrower Intake', p2_setup: 'Phase 2 · File Setup',
   p3_verify: 'Phase 3 · Verifications', p4_appraisal: 'Phase 4 · Appraisal & Numbers',
@@ -4507,7 +4516,7 @@ function ClickupSyncPanel({ app, canSetup, isAdmin, onResynced }) {
       </div>
       <div className="row" style={{ gap: 16, flexWrap: 'wrap', marginTop: 8 }}>
         <span className="muted small">Internal status (ClickUp mirror): <b>{app.internal_status || '—'}</b></span>
-        <span className="muted small">Borrower sees: <b>{app.status || '—'}</b></span>
+        <span className="muted small">Borrower sees: <b>{appStatusLabel(app)}</b></span>
         {app.ys_loan_number && <span className="muted small">YS loan #: <b>{app.ys_loan_number}</b></span>}
         <NoteBuyerRef value={app.lender} />
         {app.clickup_last_synced_at && <span className="muted small">Last synced: {new Date(app.clickup_last_synced_at).toLocaleString()}</span>}
@@ -5951,6 +5960,11 @@ export default function StaffApplication() {
           switching would change. It used to live only as a pencil icon on a muted
           line inside the ClickUp panel, which is not a path anyone would find. */}
       <div id="note-buyer-slot"><NoteBuyerCard appId={id} value={app.lender} onSaved={load} /></div>
+      {/* THE FILE'S CRITICAL DATES (owner-directed 2026-08-21) — application, clear to close,
+          funded, purchase advice, sold, and the payoff-demand stamp that locks the draw centre.
+          On the overview because these are the dates the team reconciles against Encompass and
+          ClickUp by hand, and the overview is where they already look for the file's shape. */}
+      <CriticalDates appId={id} onChanged={load} />
       {/* A-piece / B-piece split (owner-directed 2026-08-18) — internal-only,
           manual-program; self-hides elsewhere. Saving never reopens pricing. */}
       <AbPieceCard appId={id} />

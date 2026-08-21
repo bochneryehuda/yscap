@@ -884,6 +884,16 @@ if (require.main === module) {
         require('./lib/conditions/engine').backfillGroundUpConstructionConditionsOnce()
           .then((r) => r && r.added && console.log('[boot] ground-up condition backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] ground-up condition backfill failed:', e.message));
+        /* THE SOLD STAGE ON THE BACK BOOK (owner-directed 2026-08-21, db/611: *"You can
+           backfill this on the table. All the previous files that have a PA date filled …
+           update the status."*). SILENT by construction — every file it reaches was sold
+           weeks or months ago, so announcing them would fan a "this loan is now Sold" notice
+           across the whole funded book and move every ClickUp card at once. Bounded and
+           self-draining (funded + has a purchase advice date + no stage yet), so once the
+           book is stamped the pass costs one index scan. Fire-and-forget. */
+        require('./lib/sold-status').backfillSoldOnce(require('./db'))
+          .then((r) => r && r.marked && console.log('[boot] sold-stage backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] sold-stage backfill failed:', e.message));
         // One-shot: recompute the experience condition on co-borrower files so it
         // carries the per-borrower breakdown + each borrower's track-record link
         // (#103). Idempotent, preserves sign-offs; fire-and-forget.

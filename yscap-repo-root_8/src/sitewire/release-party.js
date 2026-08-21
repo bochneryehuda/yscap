@@ -539,9 +539,15 @@ async function stampPaRead(db, appId, state, fieldId) {
  * Never throws — this rides a best-effort sync and must never break a pull.
  * Returns { skipped } or { paDate, changed }.
  */
-async function syncPurchaseAdviceDate(db, appId, fieldValues, { silentDiscovery = false } = {}) {
+async function syncPurchaseAdviceDate(db, appId, fieldValues, { silentDiscovery = false, fieldId: readFieldId = null } = {}) {
   try {
-    const fieldId = require('../lib/integrations/encompass-field-map').PA_DATE_FIELD_ID;
+    /* THE ID THAT ACTUALLY ANSWERED, when the caller knows it. The sweep now tries the tenant's
+       own purchase-advice-named fields after the configured one, so the key present in the answer
+       is not always the configured id — reading the map under the wrong key would report
+       `not_returned` about a field that answered perfectly well. Callers that do not know (the
+       per-file pull, which reads the whole registry batch) fall back to the configured id, which
+       is what they asked for. */
+    const fieldId = readFieldId || require('../lib/integrations/encompass-field-map').PA_DATE_FIELD_ID;
     if (!fieldId) {
       await stampPaRead(db, appId, PA_READ.NO_FIELD_ID, null);
       return { skipped: 'no_field_id' };
@@ -600,7 +606,20 @@ async function syncPurchaseAdviceDate(db, appId, fieldValues, { silentDiscovery 
       cardMoved = await require('../clickup/post-closing-stage')
         .advanceCard(appId, 'sold', { client: db, reason: 'encompass_purchase_advice_date' });
     }
-    return { paDate, changed, cardMoved, discovered };
+    /* AND THE FILE'S OWN SOLD STAGE FOLLOWS (owner-directed 2026-08-21: *"the files that are
+       being sold should have a status of 'Sold', and that status should automatically change
+       when the PA date is filled"*). It runs on EVERY change, including a silent first read and
+       including a CLEARED date — the stage is a description of the file, so it must track the
+       evidence in both directions, and only the ANNOUNCEMENT is withheld on a discovery.
+
+       `sold-status` owns the whole rule, table funding included: a table-funded loan was sold at
+       the closing table, never receives a purchase advice, and the owner excluded it by name. */
+    let soldStage = null;
+    if (changed) {
+      soldStage = await require('../lib/sold-status')
+        .syncSoldStage(db, appId, { announce: !silentDiscovery });
+    }
+    return { paDate, changed, cardMoved, discovered, soldStage };
   } catch (_) { return { skipped: 'error' }; }
 }
 
@@ -759,7 +778,7 @@ async function sweepPurchaseAdviceOnce(db, { limit = PA_SWEEP_LIMIT, gapMs = PA_
     if (!api.configured()) { out.skipped = 'encompass_not_configured'; return out; }
 
     const rows = (await db.query(
-      `SELECT a.id, a.encompass_loan_guid AS guid,
+      `SELECT a.id, a.encompass_loan_guid AS guid, a.ys_loan_number,
               (a.purchase_advice_read_at IS NULL) AS first_read
          FROM applications a
         WHERE a.deleted_at IS NULL
@@ -767,19 +786,39 @@ async function sweepPurchaseAdviceOnce(db, { limit = PA_SWEEP_LIMIT, gapMs = PA_
         ORDER BY a.purchase_advice_read_at NULLS FIRST
         LIMIT $1`, [Math.max(1, Math.min(500, Number(limit) || PA_SWEEP_LIMIT))])).rows;
 
+    /* WHICH IDS TO ASK ABOUT — the configured one first, then whatever THIS TENANT'S OWN field
+       catalogue calls a purchase advice (owner-directed 2026-08-21: *"I want you to fix the bug so
+       that you should be able to reach and read the field. The field is there."*). Resolved once
+       per pass, not per file: the catalogue does not change mid-sweep. */
+    const paField = require('./pa-field');
+    const candidates = await paField.paFieldCandidates(db, fieldId);
+    out.candidates = candidates.length;
+
     for (const r of rows) {
       out.looked += 1;
-      // NO LOAN TO ASK ABOUT. Stamped rather than skipped, so the file leaves the queue carrying the
-      // honest reason — and so the chase can say "PILOT cannot tell" instead of "not sold".
-      if (!r.guid) { await stampPaRead(db, r.id, PA_READ.NO_LOAN_LINK, fieldId); out.noLoanLink += 1; continue; }
-      let vals = null;
-      try { vals = await api.readFields(r.guid, [String(fieldId)]); }
-      catch (_) { vals = null; }
+      /* NO LOAN TO ASK ABOUT — so FIND IT. The sweep used to stamp `no_loan_link` and move on,
+         which meant a funded file that had never been through the per-file pull could sit
+         permanently unreadable while its purchase advice sat in Encompass. One pipeline search by
+         loan number caches the GUID, and every read after this one is the cheap by-number path. */
+      let guid = r.guid;
+      if (!guid) {
+        guid = await paField.ensureLoanGuid(db, r.id, { api, loanNumber: r.ys_loan_number, existingGuid: null });
+        if (guid) out.linked = (out.linked || 0) + 1;
+      }
+      if (!guid) { await stampPaRead(db, r.id, PA_READ.NO_LOAN_LINK, fieldId); out.noLoanLink += 1; continue; }
+      const read = await paField.readPaField(api, guid, candidates);
+      const vals = read.values;
+      /* WHICH FIELD ANSWERED is recorded on the file, not assumed — a verdict that came from a
+         fallback id must be traceable to it. */
+      if (read.fieldId && read.fieldId !== String(fieldId)) out.viaFallback = (out.viaFallback || 0) + 1;
       // A FILE THIS SWEEP HAS NEVER ASKED ABOUT LANDS ITS DATE SILENTLY (see the note in
       // `syncPurchaseAdviceDate`): PILOT cannot tell a sale that happened this morning from one
       // that happened in March, and announcing the whole back book at once is not a notification,
       // it is a blast. Discoveries are counted and logged instead.
-      const res = await syncPurchaseAdviceDate(db, r.id, vals, { silentDiscovery: !!r.first_read });
+      const res = await syncPurchaseAdviceDate(db, r.id, vals, {
+        silentDiscovery: !!r.first_read,
+        fieldId: read.fieldId || fieldId,
+      });
       if (res && res.discovered) out.discovered += 1;
       if (res && res.skipped === 'no_field_read') out.readFailed += 1;
       else if (res && res.skipped === 'field_not_returned') out.notReturned += 1;

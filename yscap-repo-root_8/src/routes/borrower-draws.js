@@ -192,6 +192,11 @@ router.post('/draws/:appId/request', async (req, res) => {
   const appId = req.params.appId;
   if (!(await ownsApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
+    /* THE PAYOFF-DEMAND LOCK, on the BORROWER's own door (owner-directed 2026-08-21). PILOT
+       refuses here as well as deactivating the Sitewire property, because the block must hold
+       even with the Sitewire connection switched off and on a file that was never pushed. */
+    const payoffHold = await require('../lib/payoff-demand').payoffDemandBlock(db, appId);
+    if (payoffHold.blocked) return res.status(409).json({ error: payoffHold.message, code: 'payoff_demand' });
     const portalDraws = require('../lib/portal-draws');
     const st = await portalDraws.composerState(appId);
     if (!st.physical) {

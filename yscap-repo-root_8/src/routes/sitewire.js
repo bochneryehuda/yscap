@@ -846,6 +846,13 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     const a = await orchestrator.loadFile(appId);
     if (!a) return res.status(404).json({ error: 'file not found' });
     if (a.status !== 'funded') return res.status(409).json({ error: 'the draw process starts once the loan is funded' });
+    /* A PAYOFF DEMAND LOCKS THE DRAW CENTRE (owner-directed 2026-08-21). This is the owner's
+       first workflow — draws NEVER set up: *"when you tried to set up draws on this one, it
+       should come out big that there was a Pay Off Demand on this one, so you can't request the
+       set of draws on this file anymore."* The refusal carries the whole sentence, and the
+       screen shows it large. `payoffDemandBlock` fails CLOSED. */
+    const payoffHold = await require('../lib/payoff-demand').payoffDemandBlock(db, appId);
+    if (payoffHold.blocked) return res.status(409).json({ error: payoffHold.message, code: 'payoff_demand', payoffDemand: payoffHold });
     const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
     const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
     const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
@@ -1653,6 +1660,14 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   // ownership FIRST (never do work for a file the actor can't see), then validate the money —
   // a NaN/garbage amount must 400, never be coerced to $0 and recorded (audit E-NAN-MONEY-DISB).
   if (!application_id || !(await canSeeFile(req, application_id))) return res.status(403).json({ error: 'forbidden' });
+  /* AND OUR OWN RELEASE IS HELD TOO (owner-directed 2026-08-21) — the owner's second workflow:
+     *"If the file is already set up for draws … You need to stop our system from [releasing]
+     draws."* Blocking only the REQUEST would leave a draw already in flight able to pay out
+     against a payoff figure that was quoted without it. Fails CLOSED. */
+  {
+    const payoffHold = await require('../lib/payoff-demand').payoffDemandBlock(db, application_id);
+    if (payoffHold.blocked) return res.status(409).json({ error: payoffHold.message, code: 'payoff_demand' });
+  }
   const approvedRaw = Number(req.body.approved_cents), feeRaw = Number(req.body.fee_cents);
   if (!Number.isFinite(approvedRaw) || approvedRaw < 0 || !Number.isFinite(feeRaw) || feeRaw < 0) {
     return res.status(400).json({ error: 'approved_cents and fee_cents must be non-negative whole numbers of cents' });
