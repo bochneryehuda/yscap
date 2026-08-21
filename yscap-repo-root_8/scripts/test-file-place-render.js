@@ -175,6 +175,36 @@ const ok = (c, m, extra) => { if (c) { pass++; console.log('  ✓', m); } else {
   });
   ok(afterClass === 'clickable', 'THE OVERVIEW BUTTON IS ON TOP OF A FULL-SCREEN TOOL SHEET', afterClass);
 
+  // ---- A STRAY DROP MUST NOT BLOW THE PAGE AWAY (owner item 6) -------------
+  // "it will close your file, explode it" — the browser's default is to NAVIGATE to a
+  // dropped file, replacing the whole app. Asserted on the real bundle because the
+  // guard is a window listener and only a browser dispatches a real drop.
+  console.log('\n5. a file dropped in the wrong place');
+  await page.goto(base, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(6000);
+  const urlBefore = page.url();
+  const strayed = await page.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(['hello'], 'stray.pdf', { type: 'application/pdf' }));
+    // Somewhere that is certainly NOT an upload zone: the very top-left of the page.
+    const target = document.elementFromPoint(3, 3) || document.body;
+    const ev = new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true });
+    target.dispatchEvent(ev);
+    return { prevented: ev.defaultPrevented, target: target.tagName };
+  });
+  ok(strayed.prevented === true,
+    `a stray drop is cancelled, so the browser never opens the file (target ${strayed.target})`);
+  await page.waitForTimeout(1200);
+  // HONEST NOTE: a SYNTHETIC DragEvent cannot make a browser navigate — only a real
+  // user drag can — so this URL check passes with the guard removed too (measured).
+  // It is kept as a sanity check, not as the proof; `prevented === true` above is the
+  // proof, and that assertion DOES fail when the guard is taken out.
+  ok(page.url() === urlBefore, '…the page is still the loan file (sanity — see the note above)', `${urlBefore} -> ${page.url()}`);
+  ok((await page.locator('text=Something went wrong').count()) === 0, '…and the app did not crash');
+  // And the person is told, rather than left thinking the upload worked.
+  const said = await page.evaluate(() => document.body.innerText.includes('Nothing was uploaded'));
+  ok(said, '…and PILOT says nothing was uploaded, in its own dialog');
+
   console.log(`test-file-place-render: ${pass} passed, ${fail} failed`);
   await browser.close();
   await db.query(`DELETE FROM applications WHERE id=$1`, [appId]).catch(() => {});

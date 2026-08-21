@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import DropZone from './DropZone.jsx';
 import { showMessage, askConfirm } from '../lib/dialog.js';
 import { api } from '../lib/api.js';
 import { fmtDate } from '../lib/dates.js';
@@ -1361,7 +1362,10 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
 
       {/* import row — staff only. Borrowers see the report, never the upload. */}
       {!readOnly ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
+        <DropZone className="dropzone" enabled={!importing}
+          onFiles={(files) => { const f = Array.from(files || [])[0]; if (f) onFile({ target: { files: [f], value: '' } }); }}
+          title="Drag the appraisal XML here, or use the button"
+          style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
           <label style={{ ...btn(true), display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             {importing ? 'Importing…' : a ? 'Re-import appraisal XML' : 'Import appraisal XML'}
             <input type="file" accept=".xml,text/xml,application/xml" onChange={onFile} disabled={importing} style={{ display: 'none' }} />
@@ -1375,7 +1379,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
           )}
           {a && <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>Form {or(a.form_type)} · effective {a.effective_date ? fmtDate(a.effective_date) : '—'} · imported {a.imported_at ? fmtDate(a.imported_at) : '—'}</span>}
           {a && !expanded && <button onClick={() => setExpanded(true)} style={OPEN_BTN} title="Open the full property report">⤢ Open full report</button>}
-        </div>
+        </DropZone>
       ) : (
         a && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>

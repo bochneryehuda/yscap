@@ -29,7 +29,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 3 | Data tape metrics: add Total LTC, remove Effective LTV | Investor delivery | ☑ |
 | 4 | Refresh loses your place — deep-link state everywhere | Front end, global | ◐ |
 | 5 | Email replies: manual attach + drag-and-drop | Email surfaces | ☐ |
-| 6 | Drag-and-drop upload everywhere it's missing | Uploads, global | ☐ |
+| 6 | Drag-and-drop upload everywhere it's missing | Uploads, global | ◐ |
 | 7 | Export all / export unverified with a NOT-VERIFIED stamp | Exports | ☐ |
 | 8 | Feasibility report + GC contact into TPR export & SharePoint | Ground-up conditions | ☐ |
 | 9 | Plans & permits → TPR, SharePoint **and Sitewire** | Ground-up conditions | ☐ |
@@ -40,7 +40,7 @@ two-audit-agent gate in `CLAUDE.md`.
 | 14 | Conditions: add a document slot (not a borrower request) | Conditions | ☐ |
 | 15 | Borrower profile reachable from inside a file | Navigation | ☐ |
 | 16 | Overview hover button missing on full screens | Navigation | ☑ |
-| 17 | Scope of work Excel import: drag-and-drop | Uploads | ☐ |
+| 17 | Scope of work Excel import: drag-and-drop | Uploads | ☑ |
 | 18 | ClickUp: Joshua Freidlander's files land in Lead Capture | ClickUp | ◐ |
 | 19 | ClickUp: assigning an officer moves the task to their folder | ClickUp | ☐ |
 | 20 | Rehab Budget PDF: value-add / narrative overlap | PDF | ☑ |
@@ -181,6 +181,36 @@ reply box we have**. Both a manual attach button **and** drag-and-drop onto the 
 picker and nothing else) must also accept a dragged file. This is a sweep, not a spot fix.
 
 ---
+
+**PARTLY SHIPPED — the dangerous half first.**
+
+**The most important part is not drag-and-drop at all.** You said a file dropped in the wrong place "will
+close your file, explode it" — and that is exactly what was happening. It is the *browser's* behaviour: with
+nothing stopping it, dropping a file on a page makes the browser throw the whole app away and open the file
+instead. Everything unsaved goes with it, and the file is not uploaded either. Nothing anywhere in PILOT was
+stopping that.
+
+**PILOT now stops it, on every screen.** A file dropped anywhere that is not an upload box does nothing
+except tell you so — in PILOT's own words, naming where to drop it instead. Your work stays on screen. This
+alone makes every remaining click-only upload merely *unhelpful* rather than *destructive*, which is why it
+came first. Verified in a real browser, and verified against the old code to confirm it reproduces what you
+described.
+
+**Uploads that now take a dragged file** (they kept their button — this is in addition): the **message
+attachment** on every thread — staff, borrower and broker; the **credit report import**, which now sorts a
+drop by type so you can drag the data file *and* the report over together and both land in the right slot;
+the **appraisal XML import**; and **lead files**.
+
+**Still click-only, and named rather than implied:** the draws panel (manual wire form, supporting
+documents), the borrower's own draw uploads, the broker portal's uploads, purchasing, the non-owner-occupied
+affidavit, the new-file MISMO import, the labeling console and the Arena proof photo — plus three of the
+marketing-site tools (track record, term sheet, loan application), which need a small refactor first that the
+Scope of Work tool has already had. There is now a one-line way to convert each, and a test that lists which
+are done.
+
+**Item 17 was already working** — the Scope of Work importer has accepted a dragged file for some time,
+including one dragged straight out of Outlook.
+
 
 ## 7. Export button — export all / export unverified, with a NOT-VERIFIED stamp
 
@@ -405,6 +435,12 @@ full-screen sheet is ever added without this, so it cannot quietly come back.
 The scope-of-work Excel import button must also accept a dragged file.
 
 ---
+
+**ALREADY WORKING — verified, not assumed.** The Scope of Work builder has accepted a dragged Excel file for
+some time: the whole page is a drop target, it shares the exact same import path as the Import button, and it
+even handles a file dragged straight out of Outlook (which needs special handling most sites skip). It is
+guarded by a test so it cannot quietly break.
+
 
 ## 18. ClickUp — Joshua Freidlander's files all land in Lead Capture
 
