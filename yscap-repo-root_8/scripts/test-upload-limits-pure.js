@@ -105,6 +105,41 @@ console.log('5. readUploadBytes applies its limit on BOTH doors');
   ok((staff.match(/\{uploadNoteEl\}/g) || []).length >= 2,
     'both the collapsed row and the open one show it (an upload can be dropped on either)');
 
+  console.log('7. EVERY surface a person uploads a document from — not just the one that was reported');
+  /* THIS SECTION EXISTS BECAUSE SECTION 6 NAMED ONE SCREEN. The owner's instruction was
+     *"it should be fixed across the entire system. Do research everywhere where you can upload
+     documents"*, and the staff file screen was wired while the BORROWER's — the very door the
+     23 MB contract came through — and the broker's were left reading the file into base64, so
+     both still hit the JSON ceiling and both still reported the failure at the top of a long
+     page. A guard that names ONE surface reads as "the client streams the file" while being
+     true of a third of them, which is how that survived. So it is a TABLE now: adding a fourth
+     upload surface means adding a row, and it cannot quietly cover one out of four again. */
+  const SURFACES = [
+    { file: 'app-v2/src/screens/StaffApplication.jsx', who: 'the staff file screen',
+      streams: /file: files\[i\]/, note: /if \(tgt && tgt\.itemId\) setUploadNote\(\{ itemId: tgt\.itemId/, renders: /\{uploadNoteEl\}/ },
+    { file: 'app-v2/src/screens/Application.jsx', who: 'the borrower\u2019s own screen',
+      streams: /file: files\[i\]/, note: /if \(tgt && tgt\.itemId\) setUploadNote\(\{ itemId: tgt\.itemId/, renders: /note=\{noteFor\(/ },
+    { file: 'app-v2/src/screens/TpoFile.jsx', who: 'the broker\u2019s screen',
+      streams: /file,\s*\n\s*\}\);/, note: /if \(itemId\) setUploadNote\(\{ itemId, text \}\); else setErr/, renders: /uploadNote\.itemId === c\.id/ },
+  ];
+  for (const S of SURFACES) {
+    const src = read(S.file);
+    ok(S.streams.test(src), `${S.who} hands over the File itself`);
+    ok(S.note.test(src), `${S.who} records a refusal against the condition it was for`);
+    ok(S.renders.test(src), `${S.who} renders that refusal on the condition`);
+    /* THE DOCUMENT ITSELF is never read into memory first. A photo ID / ID-card scan may still
+       ride the small JSON door (its own ceiling, its own row when it moves), so this asks only
+       about the multi-document upload each screen actually files conditions through. */
+    ok(!/dataBase64: await (fileToBase64|readB64)\(files\[i\]\)/.test(src),
+      `${S.who} does not base64 the document first`);
+  }
+  /* COMMENTS STRIPPED FIRST: the change that removed the base64 reader necessarily NAMES it in
+     the note explaining why, and a guard that read comments would fail on its own explanation
+     and then get "fixed" by deleting the explanation. */
+  const noComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  ok(!/dataBase64/.test(noComments(read('app-v2/src/screens/TpoFile.jsx'))),
+    'the broker screen has no base64 upload path left at all');
+
   console.log(`\ntest-upload-limits-pure: ${pass} passed, ${fail} failed.`);
   process.exit(fail ? 1 : 0);
 })();
