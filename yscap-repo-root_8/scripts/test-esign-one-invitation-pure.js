@@ -114,6 +114,14 @@ const cn = read('src/lib/esign/completion-notice.js');
 ok(/ed\.envelope_row_id = \$1/.test(cn),
   'the attached copy is the one THIS envelope produced — never the newest signed copy on the file');
 ok(/role IN \('borrower', 'co_borrower'\)/.test(cn), 'it goes to the people who signed it');
+/* AND SOMETHING ACTUALLY CALLS IT. `test-esign-one-invitation-db` drives `notifyExecuted`
+   DIRECTLY, which proves the email and its attachment — and would go on passing if the hook
+   were deleted and no borrower were ever told again. A back end is not a feature: the wiring
+   needs its own assertion, and it belongs here because a source-shape check is what can see it.
+   The hook is on `completed` specifically — the winner of the terminal claim, after the signed
+   PDF is filed, and only once every signer has signed. */
+ok(/if \(status === 'completed'\)[\s\S]{0,200}?require\('\.\/completion-notice'\)\.notifyExecuted\(envelopeRow/.test(wh),
+  'the webhook fires the execution notice when an envelope completes');
 
 console.log('6. the borrower invitation stopped promising a second email');
 const invite = cat.esignReadyToSign({ firstName: 'Grace', packageLabel: 'Heter Iska', signUrl: 'https://x/y' });
