@@ -19,15 +19,26 @@
  *   orderindex 25  closed (6-email funded)       ← the owner's "closed"
  *   orderindex 32  in purchase review            ← the owner's "in purchase review"
  *   orderindex 33  purchase conditions
- *   orderindex 34  pa issued-post closing.
- *   orderindex 35  waiting for final docs        ← the owner's "waiting for final documents"
+ *   orderindex 34  pa issued-post closing.       ← the purchase-advice stage (owner-chosen)
+ *   orderindex 35  waiting for final docs
  *   orderindex 36  non del closed reconciled
  *   orderindex 37  closed reconciled
  *
- * ONE NAME DIFFERS FROM THE INSTRUCTION AND THE LIST WINS: the owner wrote "waiting for
- * final documents"; the status is spelled **"waiting for final docs"**. ClickUp refuses a
- * status a list does not carry, so writing the owner's phrasing verbatim would have failed
- * every push — which is exactly what "make sure it exists" was asking about.
+ * THE PURCHASE-ADVICE STAGE IS `pa issued-post closing.`, AND THAT IS THE OWNER'S OWN
+ * CORRECTION (2026-08-21, second message): *"Sold (PA date from Encompass) — should update
+ * in our system as sold and should update in ClickUp as pa issued-post closing."* The first
+ * cut landed it on `waiting for final docs` (orderindex 35), from the owner's opening
+ * instruction, which had said "waiting for final documents". Both stages exist; the owner
+ * picked the earlier, more precise one once the ladder was put in front of them — which is
+ * the right reading of the event, because a PA date is the purchase advice being ISSUED,
+ * not the file having reached the final-documents chase.
+ *
+ * NOTE THE TRAILING FULL STOP IN `pa issued-post closing.` — it is part of the status name
+ * as ClickUp stores it, not a sentence ending. Dropping it makes a status no list carries,
+ * and ClickUp refuses a status a list does not carry; `verifyStages()` catches that at load.
+ *
+ * `waiting for final docs` STAYS ON THE LADDER as a later rung, so a card a human has
+ * already moved there is never dragged back by a re-read of the same purchase advice.
  *
  * WHY THE ORDER IS LOAD-BEARING AND WHY IT IS NOT A GUESS. A card must never be dragged
  * BACKWARDS: a tape sent late on a file already waiting for final documents must not pull
@@ -71,7 +82,7 @@ const LADDER = [
 const STAGE_FOR = {
   funded: 'closed (6-email funded)',
   investor_delivered: 'in purchase review',
-  sold: 'waiting for final docs',
+  sold: 'pa issued-post closing.',
 };
 
 /* A stage this file names but the shared status map does not know is a typo, and a typo

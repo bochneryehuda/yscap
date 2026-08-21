@@ -6,7 +6,7 @@
  * happens to a row and to the outbound queue, which a pure test cannot see:
  *   · the Encompass funded reader moves the file AND lands the card on the funded stage;
  *   · a tape sent to the investor moves a funded card to purchase review;
- *   · a purchase advice date moves it on to waiting for final docs;
+ *   · a purchase advice date moves it on to the PA-issued stage;
  *   · a card is never dragged backwards, and a pre-closing file is never jumped;
  *   · every move is queued to ClickUp through the ordinary scoped push, and audited.
  *
@@ -94,13 +94,13 @@ const tag = `pcs-${Date.now()}-${Math.floor(Math.random() * 1e5)}`;
       eq('2b …and the borrower-facing word does not move', (await cardOf(appId)).status, 'funded');
 
       const s = await STAGE.advanceCard(appId, 'sold', { reason: 'test' });
-      ok('3a a purchase advice moves it on to waiting for final docs',
-        s.moved === true && s.stage === 'waiting for final docs');
+      ok('3a a purchase advice moves it on to the PA-issued stage',
+        s.moved === true && s.stage === 'pa issued-post closing.');
 
       // …and it can never go back.
       const back = await STAGE.advanceCard(appId, 'investor_delivered', { reason: 'test' });
       eq('3b a later tape can never drag the card back', back.skipped, 'already_past');
-      eq('3c …and the card is left where it was', (await cardOf(appId)).internal_status, 'waiting for final docs');
+      eq('3c …and the card is left where it was', (await cardOf(appId)).internal_status, 'pa issued-post closing.');
     }
 
     /* ---------------- 4. the side door stays shut ---------------- */

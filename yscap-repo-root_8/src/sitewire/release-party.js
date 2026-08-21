@@ -515,11 +515,18 @@ async function syncPurchaseAdviceDate(db, appId, fieldValues) {
     let cardMoved = null;
     if (changed && paDate) {
       try { await require('../lib/post-purchase').announceSold(appId, paDate); } catch (_) { /* best-effort */ }
-      /* AND THE CLICKUP CARD MOVES ON (owner-directed 2026-08-21: *"when we mark it as sold
-         and you get the PA date from Encompass … the status in ClickUp also needs to be
-         changed to waiting for final documents"*). The stage is `waiting for final docs` —
-         ClickUp's own spelling, read live off the Loan Pipeline list; the owner's
-         "documents" is not a status any list carries.
+      /* AND THE CLICKUP CARD MOVES ON (owner-directed 2026-08-21, corrected the same day:
+         *"Sold (PA date from Encompass) — should update in our system as sold and should
+         update in ClickUp as pa issued-post closing."*). The stage is
+         `pa issued-post closing.` — ClickUp's own spelling INCLUDING the trailing full
+         stop, which is part of the status name; the stage this originally landed on
+         (`waiting for final docs`) is a LATER rung and stays on the ladder, so a card a
+         human has already moved there is never dragged back.
+
+         "Update in our system as sold" is the UPDATE above: a purchase advice date on the
+         file is what `release-party.soldStatus` reads as sold, on the draw desk and the
+         purchasing desk alike. There is no separate stored "sold" status to write, and
+         inventing one would be a second place the same fact lives.
 
          Only when the date actually CHANGED, so a re-read of the same date never re-pushes;
          and only forward — `advanceCard` refuses to drag a card back from a later stage.

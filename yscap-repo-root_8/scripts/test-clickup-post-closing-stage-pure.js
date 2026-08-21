@@ -41,13 +41,30 @@ for (const [event, stage] of Object.entries(S.STAGE_FOR)) {
   ok(`A3 …and reads back to the SAME borrower word, so an automatic push cannot move it`,
     statusMap.externalFor(stage) === 'funded');
 }
-/* THE INSTRUCTION'S OWN WORDING IS NOT A STATUS. The owner wrote "waiting for final
-   documents"; the list carries "waiting for final docs". ClickUp refuses a status a list
-   does not have, so taking the instruction verbatim would have failed every push — which
-   is precisely what "make sure it exists" was asking about. */
+/* THE INSTRUCTION'S OWN WORDING IS NOT A STATUS. The owner's opening message wrote
+   "waiting for final documents"; no list carries that. ClickUp refuses a status a list
+   does not have, so taking an instruction verbatim would have failed every push — which
+   is precisely what "make sure it exists" was asking about. Kept even though the sold
+   event no longer targets that rung: the LESSON is the guard, not the stage. */
 ok('A4 the owner\'s phrasing "waiting for final documents" is NOT a status',
   !statusMap.isKnownInternal('waiting for final documents'));
-eq('A5 …and the stage used is the list\'s own spelling', S.STAGE_FOR.sold, 'waiting for final docs');
+
+/* THE SOLD EVENT LANDS ON `pa issued-post closing.` — the owner's OWN CORRECTION once the
+   ladder was in front of them: *"Sold (PA date from Encompass) … should update in ClickUp
+   as pa issued-post closing."* THE TRAILING FULL STOP IS PART OF THE NAME, not a sentence
+   ending — dropping it makes a status no list carries, so it is pinned literally here and
+   proven against the shared map by A2 above. */
+eq('A5 a purchase advice lands on the purchase-advice stage', S.STAGE_FOR.sold, 'pa issued-post closing.');
+ok('A5b …spelled with its trailing full stop, exactly as ClickUp stores it',
+  S.STAGE_FOR.sold.endsWith('.') && statusMap.isKnownInternal(S.STAGE_FOR.sold));
+ok('A5c …and dropping that full stop would be a status ClickUp does not carry',
+  !statusMap.isKnownInternal('pa issued-post closing'));
+
+/* AND IT IS EARLIER THAN THE RUNG THIS ORIGINALLY USED, which is what makes the correction
+   safe on a live file: `waiting for final docs` stays on the ladder, so a card a human has
+   already moved there is refused as `already_past` rather than dragged back. */
+ok('A5d the purchase-advice stage sits BEFORE waiting for final docs on the ladder',
+  S.ladderIndex(S.STAGE_FOR.sold) < S.ladderIndex('waiting for final docs'));
 
 /* ================================================================= *
  * B. The ladder is ClickUp's own order (read live 2026-08-21)         *
@@ -63,7 +80,7 @@ eq('B1 the ladder is the post-closing sequence, in order', S.LADDER, [
   'closed reconciled',
 ]);
 ok('B2 funded comes before purchase review', S.ladderIndex(S.STAGE_FOR.funded) < S.ladderIndex(S.STAGE_FOR.investor_delivered));
-ok('B3 purchase review comes before waiting for final docs', S.ladderIndex(S.STAGE_FOR.investor_delivered) < S.ladderIndex(S.STAGE_FOR.sold));
+ok('B3 purchase review comes before the purchase-advice stage', S.ladderIndex(S.STAGE_FOR.investor_delivered) < S.ladderIndex(S.STAGE_FOR.sold));
 ok('B4 a status that is not post-closing is not on the ladder', S.ladderIndex('in underwriting') === -1);
 ok('B5 the ladder is matched case/space-insensitively, like every other status compare',
   S.ladderIndex('  In Purchase Review ') === S.ladderIndex('in purchase review'));
@@ -95,7 +112,7 @@ for (const st of ['declined', 'withdrawn']) {
   const q = S.decideStage(FUNDED_CARD, 'investor_delivered');
   ok('C6 a funded file whose tape went out moves to purchase review', q.push === true && q.stage === 'in purchase review');
   const r = S.decideStage({ status: 'funded', internal_status: 'in purchase review', deleted_at: null }, 'sold');
-  ok('C7 …and a purchase advice moves it on to waiting for final docs', r.push === true && r.stage === 'waiting for final docs');
+  ok('C7 …and a purchase advice moves it on to the PA-issued stage', r.push === true && r.stage === 'pa issued-post closing.');
 }
 
 // Idempotence + never backwards.
@@ -104,18 +121,24 @@ eq('C8 a card already on the stage is not re-pushed (re-firing the funded stage 
 eq('C9 a card further along is NEVER dragged back',
   S.decideStage({ status: 'funded', internal_status: 'waiting for final docs', deleted_at: null }, 'investor_delivered').skipped,
   'already_past');
+/* THE CORRECTION'S OWN SAFETY CASE: the sold event now targets an EARLIER rung than the
+   one it first used, so a card a human already advanced to `waiting for final docs` must
+   be refused rather than pulled back a step by a re-read of the same purchase advice. */
+eq('C9b …including a card a human already moved past the PA-issued stage',
+  S.decideStage({ status: 'funded', internal_status: 'waiting for final docs', deleted_at: null }, 'sold').skipped,
+  'already_past');
 eq('C10 …including from a reconciled stage, which nothing may disturb',
   S.decideStage({ status: 'funded', internal_status: 'closed reconciled', deleted_at: null }, 'sold').skipped,
   'already_past');
 
-/* THE SIDE DOOR THIS CLOSES. `in purchase review` and `waiting for final docs` both read
+/* THE SIDE DOOR THIS CLOSES. `in purchase review` and `pa issued-post closing.` both read
    back as the borrower-facing word `funded`. Pushed onto a file still in underwriting they
    would move what the borrower sees, with no status email and nothing on the screen saying
    why — so both refuse until the file has actually funded. `funded` itself is exempt: its
    caller has just established that fact. */
 eq('C11 a pre-closing file is not jumped to purchase review by a tape',
   S.decideStage(PRE_CLOSE, 'investor_delivered').skipped, 'not_funded_yet');
-eq('C12 …nor to waiting for final docs by a purchase advice',
+eq('C12 …nor to the PA-issued stage by a purchase advice',
   S.decideStage(PRE_CLOSE, 'sold').skipped, 'not_funded_yet');
 ok('C13 …but the funded event itself is allowed to move a pre-closing file',
   S.decideStage(PRE_CLOSE, 'funded').push === true);
@@ -124,26 +147,38 @@ ok('C13 …but the funded event itself is allowed to move a pre-closing file',
  * D. The three callers go through this ONE module                    *
  * ================================================================= */
 {
-  const funded = read('src/lib/encompass-funded.js');
+  /* EVERY STRUCTURAL GUARD BELOW READS THE CODE WITH THE COMMENTS STRIPPED, and that is not
+     tidiness. These are ADJACENCY tests — "the push sits inside that `if`" — expressed as a
+     bounded window, and a comment explaining WHY the push sits there is counted by that
+     window. So the guards used to fail when somebody wrote a longer explanation, which is
+     exactly backwards: the prose would then get trimmed to satisfy a test about structure.
+     (This bit for real, on the day the sold stage was corrected — D6 went red on a comment,
+     not on a code change.) Stripping first makes them measure the code and nothing else. */
+  const code = (rel) => read(rel).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  const funded = code('src/lib/encompass-funded.js');
   ok('D1 the Encompass funded reader moves the card', /post-closing-stage'\)[\s\S]{0,120}advanceCard\(appId, 'funded'/.test(funded));
   ok('D2 …only when the status actually moved, so a re-read never re-fires the ClickUp email',
     /if \(statusMoved\) \{[\s\S]{0,700}advanceCard\(appId, 'funded'/.test(funded));
 
-  const tape = read('src/lib/tapes/investor-send.js');
+  const tape = code('src/lib/tapes/investor-send.js');
   ok('D3 sending the tape moves the card', /advanceCard\(appId, 'investor_delivered'/.test(tape));
   ok('D4 …AFTER the email is actually sent, so the card never claims a delivery that failed',
     tape.indexOf('advanceCard') > tape.indexOf('await email.sendMail('));
 
-  const pa = read('src/sitewire/release-party.js');
+  const pa = code('src/sitewire/release-party.js');
   ok('D5 a purchase advice date moves the card', /advanceCard\(appId, 'sold'/.test(pa));
   ok('D6 …only when the date CHANGED, so a re-read of the same date never re-pushes',
-    /if \(changed && paDate\) \{[\s\S]{0,900}advanceCard\(appId, 'sold'/.test(pa));
+    /if \(changed && paDate\) \{[\s\S]{0,700}advanceCard\(appId, 'sold'/.test(pa));
 
-  // A hard-coded stage string in a caller is a second definition waiting to drift from the
-  // live list — and a drifted one is a push ClickUp silently refuses.
+  /* A hard-coded stage string in a caller is a second definition waiting to drift from the
+     live list — and a drifted one is a push ClickUp silently refuses. The list is EVERY
+     stage on the ladder, not only the three targeted today: a caller reaching for
+     `closed reconciled` would be just as wrong, and adding a rung must not silently fall
+     outside the guard. Read off LADDER so the two can never disagree. */
   for (const [f, body] of [['encompass-funded.js', funded], ['investor-send.js', tape], ['release-party.js', pa]]) {
-    ok(`D7 ${f} names no ClickUp stage of its own`,
-      !/['"](closed \(6-email funded\)|in purchase review|waiting for final docs)['"]/.test(body));
+    const named = S.LADDER.filter((stage) => body.includes(`'${stage}'`) || body.includes(`"${stage}"`));
+    ok(`D7 ${f} names no ClickUp stage of its own`, named.length === 0);
   }
 }
 
