@@ -152,7 +152,14 @@ model LtLoan {
 
   // ── Identity ──────────────────────────────────────────────────────────────
   /// Our own loan number. Encompass field 364.
-  loanNumber String? @unique @map("loan_number")
+  ///
+  /// A LABEL, NOT AN IDENTITY, and deliberately not unique (db/617). Encompass does
+  /// not enforce it: a duplicated loan file carries its source's number until
+  /// somebody edits it, and a cancelled file that is re-created keeps the number it
+  /// had — so two real loans sharing one number is an ordinary state of that system.
+  /// Declaring it unique made that ordinary state refuse the whole discovery pass,
+  /// which emptied the pipeline. Identity is `encompassLoanGuid`, below.
+  loanNumber String? @map("loan_number")
   /// The Encompass loan GUID this file mirrors, when it has one. The join key back
   /// to the system of record. Nullable: a file can be started here first.
   encompassLoanGuid String? @unique @map("encompass_loan_guid")
@@ -357,6 +364,27 @@ model LtLoan {
   /// as a fresh one — see db/554.
   milestoneSinceIsBaseline Boolean @default(true) @map("milestone_since_is_baseline")
 
+  /// WHICH CLICKUP CARD BELONGS TO THIS LOAN (db/618). Long-Term is becoming
+  /// Encompass-first — the office opens the file in Encompass and PILOT opens its
+  /// ClickUp card — so a loan that cannot say which card is already its own would
+  /// have a SECOND one opened for it on the first pass.
+  /// `clickupTaskId` is ClickUp's own id and is unique across the book: one card,
+  /// one loan. `clickupCustomId`/`clickupUrl` are display copies of what ClickUp
+  /// holds and nothing keys on them.
+  clickupTaskId    String? @map("clickup_task_id")
+  clickupCustomId  String? @map("clickup_custom_id")
+  clickupUrl       String? @map("clickup_url")
+  clickupLinkedAt  DateTime? @map("clickup_linked_at") @db.Timestamptz(6)
+  /// 'reconciliation' (the one-time pass over the book that already existed),
+  /// 'created' (PILOT opened the card, so the link is a fact not a match), 'manual'.
+  clickupLinkSource String? @map("clickup_link_source")
+  /// 'confirmed' or 'probable'. Only a CONFIRMED link may carry a stamp time — the
+  /// database refuses the other combination, so a guess can never be written into
+  /// ClickUp as though it were settled.
+  clickupLinkConfidence String? @map("clickup_link_confidence")
+  clickupStampedAt DateTime? @map("clickup_stamped_at") @db.Timestamptz(6)
+  clickupStampError String? @map("clickup_stamp_error")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -376,6 +404,11 @@ model LtLoan {
   @@index([productKind])
   @@index([stageKey])
   @@index([loanFolder])
+  /// Kept under its historic `_key` name on purpose (db/617): db/549 replays on
+  /// every boot with `CREATE UNIQUE INDEX IF NOT EXISTS` on that name, and
+  /// `IF NOT EXISTS` tests the NAME, not the shape — so re-creating it under a new
+  /// name would make that statement fail forever against the duplicates.
+  @@index([loanNumber], map: "lt_loans_loan_number_key")
   @@map("lt_loans")
 }
 
@@ -1899,4 +1932,100 @@ model LtDocumentCondition {
   @@unique([documentId, encompassConditionId])
   @@index([conditionId])
   @@map("lt_document_conditions")
+}
+
+/// WHAT EVERY SYNC PASS ACTUALLY DID — so an empty book can say why (db/616).
+///
+/// `GET /api/lt/sync` builds its whole answer out of `lt_loans`: how many rows, how
+/// many were read, how many carry an error. That is a fine report on loans we HAVE
+/// and says nothing at all about a pass that never got a loan — a refused login, an
+/// Encompass outage, a search that answered with an empty list, the feature switched
+/// off. Every one of those rendered identically to "Encompass has nothing for us".
+/// A report built only from the rows a job PRODUCED can never explain a job that
+/// produced none, so this records the RUN rather than its output.
+///
+/// A LOG, not a single current-state row: "it is failing right now" and "it has been
+/// failing since Tuesday" are different facts, and the second is the one that tells
+/// somebody whether an outage explains an empty book. Pruned by its own writer
+/// (newest N per kind), so it is bounded without a scheduled job.
+model LtSyncRun {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Which pass: loans | conditions | milestone_catalog | pilot_roles. Deliberately
+  /// free text rather than an enum — a pass added later must be able to record
+  /// itself without a migration, and the cost of an unrecognised kind is a row the
+  /// screen groups under its own name, never a lost write on the one table whose job
+  /// is to explain a failure.
+  kind String
+
+  /// 'worker' (the timer) or 'manual' (somebody pressed the button). "The button did
+  /// nothing" and "the timer has not run" send you to two different places.
+  trigger String @default("worker")
+
+  startedAt DateTime @default(now()) @map("started_at") @db.Timestamptz(6)
+
+  /// NULL while a pass is still running. A row that never gains a finish IS the
+  /// record of a pass that died mid-flight, which no summary count could show.
+  finishedAt DateTime? @map("finished_at") @db.Timestamptz(6)
+
+  ok Boolean?
+
+  /// WHY, in the words a person reads. Filled on a refusal or a failure and left
+  /// NULL on a clean pass — a reason on a successful run would train people to
+  /// ignore the column.
+  reason String?
+
+  discovered Int?
+  readCount  Int? @map("read_count")
+  failed     Int?
+
+  /// Loans deliberately not mirrored — today, files the product rule proved are
+  /// short-term and belong to the other product.
+  skipped   Int?
+  remaining Int?
+  passes    Int?
+
+  /// The pass's own shape, verbatim, so a question nobody thought to ask today is
+  /// still answerable from what was captured — today, WHICH loans the database
+  /// refused.
+  detail Json?
+
+  /// The only question ever asked of this table: "what did the last pass of this
+  /// kind do?"
+  @@index([kind, startedAt(sort: Desc)], map: "lt_sync_runs_kind_started_idx")
+  @@map("lt_sync_runs")
+}
+
+
+/// EVERY TIME A LONG-TERM LOAN GAINED, CHANGED, LOST OR STAMPED ITS CLICKUP CARD
+/// (db/618). The loan row holds the CURRENT answer; this holds how it got there.
+///
+/// It exists because a link that changes silently is the one thing that could
+/// quietly re-point a deal at somebody else's card, and the loan row alone can
+/// never answer "who tied these two together, and what did they match on?".
+model LtClickupLinkLog {
+  id       String @id @default(uuid()) @db.Uuid
+  ltLoanId String @map("lt_loan_id") @db.Uuid
+
+  /// linked | relinked | unlinked | confirmed | stamped | stamp_failed. Free text
+  /// for the same reason LtSyncRun.kind is: a new action must be able to record
+  /// itself without a migration, and an unrecognised one costs a row grouped under
+  /// its own name, never a lost write on the table whose job is to explain.
+  action String
+
+  fromTaskId String? @map("from_task_id")
+  toTaskId   String? @map("to_task_id")
+  confidence String?
+  source     String?
+
+  /// Plain language: what it was matched on, or what refused. Read by a person.
+  reason String?
+
+  /// The staff_users row that did it. NULL for a pass PILOT ran on its own.
+  actedBy String? @map("acted_by") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_clickup_link_log_loan_idx")
+  @@map("lt_clickup_link_log")
 }

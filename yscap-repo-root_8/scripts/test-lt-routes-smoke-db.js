@@ -168,6 +168,11 @@ async function main() {
       '/api/lt/encompass/settings',
       '/api/lt/encompass/fields/608',
       '/api/lt/encompass/milestones/1',
+      // Purely local, and CHECKED rather than assumed: `zipLookup` reads the
+      // in-process ZIP->county table and returns before anything else — no vendor
+      // call, no database. 11219 is in that table (NY / Kings), so this opens the
+      // HAPPY path rather than only proving the 404 branch does not throw.
+      '/api/lt/dscr/zip/11219',
       // Safe to open with a nonsense key, and CHECKED rather than assumed:
       // `pollDisqualifiedByKey` answers `unknown` from its own store — an in-memory
       // map, then one read of `lt_lp_disqualify_search` — and returns BEFORE any

@@ -45,7 +45,11 @@
  */
 const COLUMNS = {
   loan_number: { label: 'Loan #', field: 'loan_number', sort: 'loan_number', emphasis: true },
-  borrower: { label: 'Borrower', field: 'borrower_name', sort: 'borrower' },
+  // `borrower`, not the default text cell: the value is the LINKED PILOT profile's
+  // name when there is one and the name on the Encompass loan otherwise, and the
+  // cell says which of the two it is drawing. An unconfirmed name must never pass
+  // for a confirmed one — see the note on the SELECT in pipeline.js.
+  borrower: { label: 'Borrower', field: 'borrower_name', sort: 'borrower', kind: 'borrower' },
   property: { label: 'Property', field: 'property_address', sort: null },
   program: { label: 'Program', field: 'program_name', sort: null },
   loan_amount: { label: 'Amount', field: 'loan_amount', sort: 'loan_amount', align: 'right', kind: 'money' },
