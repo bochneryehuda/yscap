@@ -188,6 +188,23 @@ if (!fs.existsSync(snapPath)) {
     `the glossary describes tables that are gone: ${ghosts.join(', ')} — rename or remove the note`);
   checks++;
 
+  // AND IT CANNOT DESCRIBE ONE TABLE TWICE. `GLOSSARY` is an object literal, so a
+  // repeated key is not a syntax error: the later line simply wins and the earlier
+  // sentence is dropped with nothing said. It had already happened — `arena_spins`
+  // carried two different descriptions and the page had only ever shown the second.
+  // The check above cannot see this and neither can any other assertion in this file,
+  // because by the time the object exists it holds ONE key either way. So this reads
+  // the SOURCE, and it is scoped to the literal rather than the whole file so that a
+  // key-shaped line in a comment cannot fail it.
+  const glossarySrc = fs.readFileSync(path.join(__dirname, 'schema-glossary.js'), 'utf8');
+  const body = glossarySrc.slice(glossarySrc.indexOf('const GLOSSARY = {'), glossarySrc.indexOf('\n};'));
+  const declared = [...body.matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_]*):/gm)].map((m) => m[1]);
+  ok(declared.length > 0, 'the duplicate-key reader actually found the glossary entries');
+  const twice = [...new Set(declared.filter((k, i) => declared.indexOf(k) !== i))];
+  assert.deepStrictEqual(twice, [],
+    `the glossary defines these keys twice, so one sentence is silently lost: ${twice.join(', ')}`);
+  checks++;
+
   // THE CONNECTIONS ARE COUNTED BOTH WAYS, AND THE TWO MUST AGREE. Every
   // outgoing link is somebody's incoming link; if they disagree the page is
   // telling two different stories about the same connection.
