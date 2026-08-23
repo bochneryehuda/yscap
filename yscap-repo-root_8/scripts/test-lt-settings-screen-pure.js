@@ -70,6 +70,21 @@ check(paths.length > 0 && paths.every((p) => p.startsWith('/')),
 check(!/from '\.\.\/lib\//.test(screen) && !/from '\.\.\/components\//.test(screen),
   'the screen imports no RTL module — Long-Term starts at zero, and the gate agrees');
 
+console.log('\nthe "Yours" box can actually be edited');
+
+// OWNER-REPORTED 2026-08-23: "the one where I can set my own is all preset. I can't fix
+// anything over there." The personal section's editor branched only on 'enum' and
+// 'boolean', so a NUMBER — which is what all three personal compensation figures are —
+// fell through to a read-only display. The only personal setting before them was an
+// enum, so the gap had never been visible. These pins are what stop it coming back.
+check(/editorFor\(s\) === 'number' \|\| editorFor\(s\) === 'string'/.test(code)
+  && /MineValueEditor/.test(code),
+  'a personal NUMBER (the comp figures) gets a real editor — never the read-only fallback');
+check(/draft\.trim\(\) === ''/.test(code),
+  "an EMPTY personal box saves nothing — Number('') is 0, and a blank saved as a zero comp is the silent-zero trap");
+check(/saveMine/.test(code) && /ltApi\.saveMySettings/.test(code),
+  'the personal editor saves through the /mine door, where the floor and the bounds refuse in plain words');
+
 console.log('\nthe words for an option live with the setting');
 
 const product = decl.definition('ui.defaultProduct');

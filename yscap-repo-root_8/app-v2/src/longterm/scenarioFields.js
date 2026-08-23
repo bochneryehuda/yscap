@@ -112,6 +112,13 @@ export const LOAN_TERMS = [
  *  the existing default visible and movable. */
 export const DEFAULT_TERM_YEARS = '30';
 
+/** THE LOCK IS A DROP-DOWN (owner-directed 2026-08-23): "defaulted to 30 days, but should have
+ *  the option for 15 days, 45 days, and 60 days." The default stays the 30 the field has carried
+ *  since it shipped (`emptyFields.lockDays`); a free-typed number was a way to ask Lender Price
+ *  for a lock nobody offers. Plain strings, because `lockDays` rides the NUMERIC coercion on the
+ *  way to the wire exactly as it always has. */
+export const LOCK_DAYS = ['15', '30', '45', '60'];
+
 /* ── prepayment penalty ───────────────────────────────────────────────────────
    TWO INDEPENDENT FACTS, which is the owner's own reading: the TERM is how long the penalty runs,
    the TYPE is how it is charged. They are separate fields upstream too — `PrepayTerm` and

@@ -539,6 +539,21 @@ console.log('LT Pricing Engine — structural guards\n');
   // (5) THE COMP IS INVISIBLE IN A COMP POSITION: the vendor comp block is withheld there.
   ok(/\{!compActive && <Track title="Comp">/.test(code),
     'PE-116 the vendor comp block renders only in RAW — comp figures never show in a comp position');
+
+  // (6) THE LOCK IS A DROP-DOWN (owner-directed 2026-08-23): 30 the default, 15/45/60 the
+  // options — a typed free number was a way to ask for a lock nobody offers. The default
+  // stays where it has always lived (emptyFields.lockDays = '30'), and a SAVED scenario
+  // carrying a non-standard figure keeps it rather than being silently moved to 30.
+  {
+    const sf = fs.readFileSync(path.join(ROOT, 'app-v2/src/longterm/scenarioFields.js'), 'utf8');
+    ok(/export const LOCK_DAYS = \['15', '30', '45', '60'\]/.test(sf),
+      'PE-117 the four lock choices are exactly the owner’s — 15, 30, 45, 60');
+    ok(/lockDays: '30'/.test(code), 'PE-118 …and the default stays 30 days (the field state the screen opens on)');
+    ok(/<select id="pe-lock"/.test(code) && !/<input id="pe-lock"/.test(code),
+      'PE-119 the lock renders as a SELECT, never a free-typed number');
+    ok(/LOCK_DAYS\.includes\(String\(f\.lockDays\)\) \? LOCK_DAYS : \[String\(f\.lockDays\), \.\.\.LOCK_DAYS\]/.test(code),
+      'PE-120 a restored scenario’s non-standard lock joins the list — restoring a quote never changes what was quoted');
+  }
 }
 
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);

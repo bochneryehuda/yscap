@@ -15,7 +15,7 @@ import { perMonth, monthlyPI, dscrFrom } from './dscrCalc.js';
 // plain `.js` module, and for the same reason: CI can run it, and a rule CI cannot run is a rule
 // nobody is holding. See scenarioFields.js.
 import {
-  PROPERTY_TYPES, PURPOSES, BORROWER_TYPES, PREPAY_TERMS, PREPAY_STRUCTURES, LOAN_TERMS, DEFAULT_TERM_YEARS,
+  PROPERTY_TYPES, PURPOSES, BORROWER_TYPES, PREPAY_TERMS, PREPAY_STRUCTURES, LOAN_TERMS, DEFAULT_TERM_YEARS, LOCK_DAYS,
   unitsMode, unitsFor, showsNonWarrantable, deriveAmount, toScenario,
   formatMoney, digitsOf, toNumber,
 } from './scenarioFields.js';
@@ -1627,8 +1627,16 @@ export default function LtPricer() {
                 {LOAN_TERMS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </Field>
+            {/* THE LOCK IS A DROP-DOWN (owner-directed 2026-08-23): "defaulted to 30 days, but
+                should have the option for 15 days, 45 days, and 60 days." A typed free number was
+                a way to ask Lender Price for a lock nobody offers. A SAVED scenario carrying some
+                other figure keeps it — its value joins the list rather than being silently moved
+                to 30, because restoring a quote must never change what was quoted. */}
             <Field id="pe-lock" label="Lock (days)" basis="0 0 112px" min={112}>
-              <input id="pe-lock" style={control} inputMode="numeric" value={f.lockDays} onChange={set('lockDays')} autoComplete="off" />
+              <select id="pe-lock" style={selectStyle} value={f.lockDays} onChange={set('lockDays')}>
+                {(LOCK_DAYS.includes(String(f.lockDays)) ? LOCK_DAYS : [String(f.lockDays), ...LOCK_DAYS])
+                  .map((d) => <option key={d} value={d}>{d} days</option>)}
+              </select>
             </Field>
             {/* THE THREE FLAGS, IN ONE FIELD ON THE SAME 40px CONTROL LINE as the boxes beside them.
                 First-time homebuyer is the owner's ask and is the same fact Lender Price's own
