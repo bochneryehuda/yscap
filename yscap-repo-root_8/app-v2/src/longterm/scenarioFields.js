@@ -294,3 +294,111 @@ export function toScenario(f) {
   if (out.propertyType) out.units = Number(unitsFor(out.propertyType, out.units));
   return out;
 }
+
+/**
+ * WHY A SEARCH CANNOT BE SENT YET — or null when it can (owner-directed 2026-08-23).
+ *
+ * The owner: *"If the zip code is empty on somebody's price … your system is trying to price it
+ * and is getting back with an error. You need to know by yourself"* — the person waited through
+ * a doomed vendor call to be told what this form could see before it was pressed. So the screen
+ * asks THIS rule before anything reaches the wire, and a scenario that cannot price never spends
+ * the call or the wait.
+ *
+ * ⛔ IT REFUSES ONLY WHAT IS PROVABLY UNPRICEABLE FROM HERE — a missing/short ZIP, a ZIP the
+ * lookup PROVED unresolvable with no typed state+county behind it, and an unreadable value /
+ * amount / FICO / DSCR. Judgement about the FACTS (an implausible FICO, a unit mismatch) stays
+ * the server's: a second copy of those rules here would drift, and the server's refusals already
+ * answer in plain words. `zipStatus` is the screen's own lookup state ('ok' | 'error' |
+ * 'loading' | 'idle'); a lookup still in flight does NOT block — the server resolves the ZIP
+ * itself, and the client lookup is display.
+ *
+ * Pure; never throws. Returns a plain-English sentence, or null.
+ */
+export function searchProblem(f, zipStatus) {
+  const src = f || {};
+  const zip = String(src.zip || '').trim();
+  if (!/^\d{5}$/.test(zip)) {
+    return 'Type the property’s five-digit ZIP first — it decides the state and county the loan is priced in, and a search without one cannot price.';
+  }
+  if (zipStatus === 'error') {
+    const state = String(src.state || '').trim();
+    const county = String(src.county || '').trim();
+    if (!(state.length === 2 && county)) {
+      return 'That ZIP could not be matched to a county — type the two-letter state and the county so the scenario carries a location.';
+    }
+  }
+  if (toNumber(src.value) == null) return 'Type the property value — every price is sized against it.';
+  if (src.amountMode === 'ltv') {
+    if (toNumber(src.ltv) == null) return 'Type the LTV — or switch to Loan $ and type the loan amount.';
+  } else if (toNumber(src.loan) == null) {
+    return 'Type the loan amount — or switch to LTV % and type the ratio.';
+  }
+  if (toNumber(src.fico) == null) return 'Type a FICO — the score the scenario is priced at.';
+  if (toNumber(src.dscr) == null) return 'Type a DSCR — or open Calculate and work it out from the rent.';
+  return null;
+}
+
+/**
+ * THE SEARCH, AS A ROW OF SMALL FACTS — what the sticky strip shows while the form is collapsed
+ * (owner-directed 2026-08-23: *"While it's collapsing, you should be able to see the basic
+ * details that you're searching right now, small and nicely laid out"*).
+ *
+ * Built from the FORM SNAPSHOT the price was pressed with, so the strip describes the search
+ * that produced the board — never a half-edited form (staleness is said separately). Labels come
+ * from the option lists themselves, so a renamed option renames its chip with nothing to keep
+ * in step. A fact that is blank is simply absent — a chip reading "FICO —" says nothing.
+ *
+ * Pure; never throws. Returns [{ k, v }].
+ */
+export function searchChips(f, zipInfo) {
+  const src = f || {};
+  const chips = [];
+  const labelOf = (list, v) => {
+    const hit = list.find((x) => x.value === String(v));
+    return hit ? hit.label : String(v);
+  };
+  const moneyish = (v) => {
+    const n = toNumber(v);
+    return n == null ? null : `$${Math.round(n).toLocaleString('en-US')}`;
+  };
+  chips.push({ k: 'Purpose', v: labelOf(PURPOSES, src.purpose) });
+  const val = moneyish(src.value);
+  if (val) chips.push({ k: 'Value', v: val });
+  if (src.amountMode === 'ltv') {
+    if (String(src.ltv || '').trim() !== '') chips.push({ k: 'LTV', v: `${src.ltv}%` });
+  } else {
+    const loan = moneyish(src.loan);
+    if (loan) chips.push({ k: 'Loan', v: loan });
+  }
+  if (String(src.fico || '').trim() !== '') chips.push({ k: 'FICO', v: String(src.fico) });
+  if (String(src.dscr || '').trim() !== '') chips.push({ k: 'DSCR', v: String(src.dscr) });
+  const zip = String(src.zip || '').trim();
+  if (zip) {
+    const place = zipInfo && zipInfo.state
+      ? `${zip} · ${zipInfo.state}${zipInfo.county ? `, ${zipInfo.county}` : ''}`
+      : zip;
+    chips.push({ k: 'ZIP', v: place });
+  } else if (String(src.state || '').trim()) {
+    chips.push({ k: 'State', v: String(src.state).trim() });
+  }
+  const um2 = unitsMode(src.propertyType);
+  chips.push({
+    k: 'Property',
+    v: labelOf(PROPERTY_TYPES, src.propertyType)
+      + (um2.mode !== 'fixed' && Number(src.units) > 1 ? ` · ${src.units} units` : ''),
+  });
+  if (String(src.termYears || '').trim() !== '') chips.push({ k: 'Term', v: `${src.termYears} yr` });
+  if (String(src.lockDays || '').trim() !== '') chips.push({ k: 'Lock', v: `${src.lockDays} d` });
+  if (src.prepayMonths === '0') chips.push({ k: 'Prepay', v: 'None' });
+  else if (String(src.prepayMonths || '').trim() !== '') {
+    chips.push({ k: 'Prepay', v: `${Math.round(Number(src.prepayMonths) / 12)} yr ${src.prepayStructure || ''}`.trim() });
+  }
+  const flags = [
+    src.io ? 'Interest-only' : null,
+    src.escrowWaive ? 'Escrow waived' : null,
+    src.fthb ? 'First-time buyer' : null,
+    src.nonWarrantable ? 'Non-warrantable' : null,
+  ].filter(Boolean);
+  if (flags.length) chips.push({ k: 'Options', v: flags.join(' · ') });
+  return chips;
+}

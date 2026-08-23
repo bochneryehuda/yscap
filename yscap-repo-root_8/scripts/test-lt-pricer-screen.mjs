@@ -145,8 +145,9 @@ console.log('LT Pricing Engine — structural guards\n');
 // ---------------------------------------------------------------------------
 {
   ok(/export function IneligibleView/.test(src), 'PE-22 the ineligible side is its own view');
-  ok(/view === 'ineligible'/.test(code) && /setView\('ineligible'\)/.test(code),
-    'PE-23 …that a person GOES TO, rather than a panel folded under the priced board');
+  ok(/view === 'ineligible'/.test(code) && /onView\('ineligible'\)/.test(code)
+    && /view=\{view\} onView=\{setView\}/.test(code),
+    'PE-23 …that a person GOES TO from the sticky strip’s own tab, rather than a panel folded under the priced board');
   // Word for word. Re-wording one, or grouping them under a heading of ours, would be a rule.
   ok(/\{r\.rule\}/.test(code), 'PE-24 each refusal is printed as Lender Price wrote it');
   // The real rule is that no table of OURS turns a refusal into a meaning of ours. A blanket word
@@ -174,8 +175,13 @@ console.log('LT Pricing Engine — structural guards\n');
   ok(/Pricing Engine/.test(layout), 'PE-30 the nav calls the section "Pricing Engine"');
   const navLine = (layout.match(/^.*lt\/pricer.*$/m) || [''])[0];
   ok(/Pricing Engine/.test(navLine), 'PE-31 …and that name points at the engine, not at the parked rules console');
-  const ppeNav = (layout.match(/^.*lt\/ppe.*$/m) || [''])[0];
-  ok(/parked/i.test(ppeNav), 'PE-32 …while the parked console is labelled so nobody mistakes it for the engine');
+  // The rules/parity console is PARKED FOR REAL (owner-directed 2026-08-23, second pass): it has
+  // NO nav entry at all — a "(parked)" label was still a link on the screen, which is what the
+  // owner reported. Comments are stripped first, or the note explaining the removal would fail
+  // this very guard.
+  const layoutCode = layout.replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  ok(!/<NavLink[^>]*lt\/ppe/.test(layoutCode),
+    'PE-32 …while the parked console has NO nav entry at all — parked means off the screen');
 
   // THE BOUNDARY. The engine holds no rules, so it may not import from the side that does.
   ok(!/from '\.\/(LtPpe|RuleBoard|CanaryConsole|RateSheetConsole|DisqualifierReview)/.test(code),
@@ -553,6 +559,75 @@ console.log('LT Pricing Engine — structural guards\n');
       'PE-119 the lock renders as a SELECT, never a free-typed number');
     ok(/LOCK_DAYS\.includes\(String\(f\.lockDays\)\) \? LOCK_DAYS : \[String\(f\.lockDays\), \.\.\.LOCK_DAYS\]/.test(code),
       'PE-120 a restored scenario’s non-standard lock joins the list — restoring a quote never changes what was quoted');
+  }
+
+  // (7) THE TERMS AND THE FEE SHEET (owner-reported 2026-08-23: "the terms are not filled out,
+  // only the loan amount … total origination fee is zero … cash to close needs to include the
+  // down payment … the points financed should be removed for now").
+  {
+    // The Terms track reads the keys the parser ACTUALLY emits — `term`+`termInMonths`,
+    // `dayLock`, `interestOnly` — never the phantom `termMonths`/`amortization`/`lockDays`
+    // that left every row an em dash.
+    ok(/o\.terms\.termInMonths \? 'months' : 'years'/.test(code),
+      'PE-121 the term is read from the parser’s own keys, unit and all');
+    ok(/o\.terms\.dayLock/.test(code) && !/o\.terms\.lockDays/.test(code) && !/o\.terms\.termMonths/.test(code),
+      'PE-122 the lock reads dayLock — the phantom keys that drew em dashes are gone');
+    ok(/o\.terms\.interestOnly \? 'Interest-only' : 'Fully amortising'/.test(code),
+      'PE-123 amortization is stated from the interest-only flag the vendor carries');
+    ok(/Mortgage insurance/.test(code) && /monthlyPayment\.mi/.test(code),
+      'PE-124 mortgage insurance is on the terms — the vendor’s own monthlyPayment.mi, "None" when quoted 0');
+    // Points financed is off the screen (display only — the parse still carries it).
+    ok(/r\.key !== 'pointsFinanced'/.test(code),
+      'PE-125 points financed is filtered out of the fee rows, by owner direction');
+    // The vendor's own fee fields render in RAW only — in a comp position our sheet replaces
+    // them, because "Total origination fee $0.00" beside our real charge list is the exact
+    // confusion the owner reported.
+    ok(/\{!compActive && \(\s*<Track title="Lender Price's own fee fields"/.test(code),
+      'PE-126 the vendor fee fields show in raw only, labelled as the vendor’s');
+    // The charge list carries the closing sheet: totals + down payment + cash to close, all
+    // summed from the SAME lines (closingSheet reads the charge list — one source).
+    ok(/closingSheet\(charges, \{/.test(code) && /<ChargeList charges=\{charges\} sheet=\{sheet\}/.test(code),
+      'PE-127 the closing sheet is computed from the charge list and handed to it');
+    ok(/Total origination fee/.test(code) && /Total lender fees/.test(code)
+      && /Final closing cost/.test(code) && /k="Cash to close" strong/.test(code),
+      'PE-128 the four totals the owner named, cash to close strongest');
+    ok(/Down payment\$\{sheet\.downPaymentPct != null \? ` \(\$\{sheet\.downPaymentPct\}% down\)` : ''\}/.test(code),
+      'PE-129 the down payment names its percentage down');
+    ok(/sheet\.downPaymentDollars != null && \(/.test(code),
+      'PE-130 the down-payment row renders only when there IS one — a refinance never shows a fabricated $0');
+  }
+
+  // (8) THE SEARCH-SHAPED SCREEN (owner-directed 2026-08-23): the form collapses when a price
+  // lands, the sticky strip carries the search + the lens + the tabs, and a doomed search never
+  // reaches the wire.
+  {
+    ok(/const problem = searchProblem\(f, zip\.status\);\s*if \(problem\) \{ setGateMsg\(problem\); return; \}/.test(code),
+      'PE-131 the pre-flight gate runs BEFORE the vendor call — an empty ZIP never spends a search');
+    ok(/\{gateMsg && \(/.test(code),
+      'PE-132 …and the refusal is a sentence beside the button, never a silently dead control');
+    ok(/setPricedForm\(f\);\s*setFormOpen\(false\);/.test(code),
+      'PE-133 ONLY a successful price collapses the form — a refusal leaves it open to fix');
+    ok(/\{formOpen && \(/.test(code),
+      'PE-134 the form genuinely folds away rather than being scrolled past');
+    ok(/className="lt-strip"/.test(code),
+      'PE-135 the strip rides the shared sticky class');
+    ok(/searchChips\(pricedForm \|\| f, zip\.data\)/.test(code),
+      'PE-136 the chips describe the PRICED snapshot — never a half-edited form');
+    ok(/JSON\.stringify\(toScenario\(f\)\) !== JSON\.stringify\(toScenario\(pricedForm\)\)/.test(code),
+      'PE-137 staleness compares the BUILT scenarios, so a cosmetic retype of the same figure is not "changed"');
+    ok(/Ineligible \(\$\{dqCount\}\)/.test(code) && /Ineligible \(counting…\)/.test(code),
+      'PE-138 the ineligible tab COUNTS once the answer is in — zero included — and says "counting" while asking');
+    ok(/<CompSwitch \{\.\.\.compProps\} \/>/.test(code) && /compProps=\{\{/.test(code),
+      'PE-139 the three-way switch lives ON the sticky strip, reachable however far the board scrolls');
+    ok(/setFormOpen\(true\);/.test(code) && /Edit search/.test(code),
+      'PE-140 Edit search reopens the collapsed form');
+    // The sticky class itself: pinned in the shared stylesheet, with the phone fallback.
+    const css = fs.readFileSync(path.join(ROOT, 'app-v2/src/styles.css'), 'utf8');
+    ok(/\.lt-strip\{position:sticky;top:72px/.test(css)
+      && /@media\(max-width:900px\)\{\.lt-strip\{position:static/.test(css),
+      'PE-141 .lt-strip is sticky under the app header, and static on a phone — the .file-top offsets');
+    ok(/\.lt-strip\{[^}]*background:#fff/.test(css),
+      'PE-142 …with an explicit opaque background, or the board reads straight through it');
   }
 }
 
