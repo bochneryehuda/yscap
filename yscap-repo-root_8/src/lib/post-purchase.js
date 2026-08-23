@@ -180,11 +180,16 @@ async function announceSold(appId, paDate, { dbc = db } = {}) {
 
     /* WHO WOULD BE TOLD — read BEFORE the stamp is claimed, and this order is the fix, not a
        tidy-up. The stamp is once-only and permanent, so claiming it first meant that on a
-       deployment whose `post_purchase_notify` list is still empty — which is how the table
-       ships (db/546) — the sale was marked "announced", nobody was emailed, and the file could
-       never announce again even after an admin filled the list in. An announcement with no
-       audience is not an announcement: leave the stamp unset so the next read tries again, and
-       report `no_recipients` rather than a success nobody received.
+       deployment whose `post_purchase_notify` list is EMPTY, the sale was marked "announced",
+       nobody was emailed, and the file could never announce again even after an admin filled the
+       list in. An announcement with no audience is not an announcement: leave the stamp unset so
+       the next read tries again, and report `no_recipients` rather than a success nobody received.
+
+       HOW EMPTY HAPPENS, stated precisely because the first draft of this note got it wrong and
+       claimed the table "ships empty": it does not. db/546 SEEDS it with the two people the owner
+       named — but only when the staff roster actually carries them, and only into an empty list,
+       so a fresh deployment whose roster differs, or one where an admin has removed everybody,
+       has nobody here. That is the state this guards.
        The task above has already been left either way, so nothing about the WORK depends on the
        notify list being configured — only the telling does. */
     const people = await recipients(dbc);

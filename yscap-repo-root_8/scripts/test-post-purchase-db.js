@@ -182,11 +182,20 @@ function call(server, method, p, token, body) {
 
     // ---------------------------------------------------------------- 4. the announcement
     {
-      /* NOBODY ON THE LIST → NOTHING IS ANNOUNCED, AND NOTHING IS BURNT. `post_purchase_notify`
-         ships empty (db/546). Until 2026-08-23 the once-only stamp was claimed BEFORE the
-         recipients were read, so on such a deployment the sale was marked "announced", no email
-         went anywhere, and that file could never announce again — not even after an admin filled
-         the list in. Run FIRST, while the list is still genuinely empty. */
+      /* NOBODY ON THE LIST → NOTHING IS ANNOUNCED, AND NOTHING IS BURNT.
+         Until 2026-08-23 the once-only stamp was claimed BEFORE the recipients were read, so a
+         deployment with an empty notify list marked the sale "announced", emailed nobody, and
+         could never announce that file again — not even after an admin filled the list in.
+
+         THE LIST IS EMPTIED ON PURPOSE HERE, and that correction matters. The first cut of this
+         test simply ran before the list was populated, on the belief that `post_purchase_notify`
+         ships empty. It does NOT: db/546 SEEDS it with the two people the owner named, whenever
+         the roster carries them. So the test asserted a state the database never actually starts
+         in, and it went red the moment it met a real Postgres. An empty list is still a REAL
+         state — an admin can remove everybody, and the seed finds nobody on a roster without
+         those two — it just is not the default. Empty it, prove the behaviour, put it back. */
+      const seeded = (await db.query(`SELECT staff_id FROM post_purchase_notify`)).rows.map((r) => r.staff_id);
+      await db.query(`DELETE FROM post_purchase_notify`);
       const quiet = await mkFile();
       const emptyList = await PP.announceSold(quiet, '2026-07-31');
       eq('4-0a with nobody on the notify list, nothing is announced', emptyList.announced, false);
@@ -198,6 +207,11 @@ function call(server, method, p, token, body) {
          email address has been configured — only the telling does. */
       eq('4-0c2 …but the outstanding task is left anyway', emptyList.task, true);
 
+      /* PUT BACK WHAT db/546 SEEDED, then add this run's own recipient — so the rest of the
+         section runs against the list a real deployment has, not a list this test invented. */
+      for (const id of seeded) {
+        await db.query(`INSERT INTO post_purchase_notify (staff_id) VALUES ($1) ON CONFLICT DO NOTHING`, [id]);
+      }
       await db.query(`INSERT INTO post_purchase_notify (staff_id) VALUES ($1) ON CONFLICT DO NOTHING`, [post]);
       eq('4-0d …and once somebody IS on the list, that same file announces',
         (await PP.announceSold(quiet, '2026-07-31')).announced, true);
