@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PdfViewer from './PdfViewer.jsx';
 import { saveBlob } from '../lib/api.js';
+import { rememberScroll, restoreRemembered } from '../lib/keep-scroll.js';
 
 /* =====================================================================
    ReportOpener — opening a draw report without a blank page.
@@ -131,12 +132,23 @@ function ReportPanel({ job, onClose, onRetry }) {
     return () => { alive = false; };
   }, [job.blob]);
 
+  /* Escape closes it, and the page behind is locked while it is open — but the
+     lock has to hand the reader's PLACE back too. `overflow:hidden` on the body
+     can clamp the page scroll to 0, so closing the report opened from a draw
+     halfway down a long file dropped the reader at the top of the file. Same
+     contract every other overlay here keeps (see CreditReport's own note: the
+     owner reported exactly this on the full credit report). */
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
     document.addEventListener('keydown', onKey, true);
+    const y = rememberScroll();
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    return () => { document.removeEventListener('keydown', onKey, true); document.body.style.overflow = prev; };
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      document.body.style.overflow = prev;
+      restoreRemembered(y);
+    };
   }, [onClose]);
 
   const secs = Math.floor((Date.now() - job.startedAt) / 1000);

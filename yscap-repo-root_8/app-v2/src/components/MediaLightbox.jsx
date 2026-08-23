@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { rememberScroll, restoreRemembered } from '../lib/keep-scroll.js';
 
 /* =====================================================================
    MediaLightbox — the ONE full-screen viewer for every photo and video in
@@ -140,16 +141,27 @@ export default function MediaLightbox({ items, index = 0, onIndex, onClose, titl
     return () => document.removeEventListener('keydown', onKey, true);
   }, [go, onClose, onIndex, count]);
 
-  // Lock the page behind the viewer, and give focus to the viewer — then hand it
-  // back to whatever opened it. "You can't exit it" is also true of focus.
+  /* Lock the page behind the viewer, and give focus to the viewer — then hand
+     BOTH back to whatever opened it. "You can't exit it" is true of three things,
+     not one: the overlay, the focus, and the reader's PLACE ON THE PAGE.
+
+     That third one is the easy one to miss and it is a real defect: `overflow:
+     hidden` on the body can clamp the page scroll to 0, so closing a lightbox
+     opened from the eleventh draw on a long file dropped the reader back at the
+     top — which is the same complaint that produced `keep-scroll` in the first
+     place ("it flies down to the bottom … we need to stay where we are, always").
+     `restoreRemembered` keeps asking while the page grows its images back rather
+     than setting an offset once against a page that is still short. */
   useEffect(() => {
     openerRef.current = document.activeElement;
+    const y = rememberScroll();
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const t = setTimeout(() => { if (shellRef.current) shellRef.current.focus(); }, 0);
     return () => {
       clearTimeout(t);
       document.body.style.overflow = prev;
+      restoreRemembered(y);
       try { if (openerRef.current && openerRef.current.focus) openerRef.current.focus(); } catch (_) { /* noop */ }
     };
   }, []);
