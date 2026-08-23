@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/618 — ONE outbound-email rate budget, shared by every process that sends.
+-- db/619 — ONE outbound-email rate budget, shared by every process that sends.
 --
 -- WHAT THIS FIXES. Owner-reported: *"On certain emails, I see a delivery error:
 -- Resend 429, too many requests. You can only make 10 requests per second."*

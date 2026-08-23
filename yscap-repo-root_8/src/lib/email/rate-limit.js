@@ -17,7 +17,7 @@
         a pipeline worker and two cron services against the same team
         (render.yaml). Four processes each holding themselves to 10/s spend
         40/s of a 10/s budget. So the meter cannot live in memory alone —
-        it lives in `email_rate_budget` (db/618), one row every sender shares.
+        it lives in `email_rate_budget` (db/619), one row every sender shares.
      2. It is a rate on REQUESTS, not on messages. A fan-out that sends 60
         notifications in a tight loop is 60 requests in well under a second
         however small each message is.
