@@ -152,7 +152,14 @@ model LtLoan {
 
   // ── Identity ──────────────────────────────────────────────────────────────
   /// Our own loan number. Encompass field 364.
-  loanNumber String? @unique @map("loan_number")
+  ///
+  /// A LABEL, NOT AN IDENTITY, and deliberately not unique (db/617). Encompass does
+  /// not enforce it: a duplicated loan file carries its source's number until
+  /// somebody edits it, and a cancelled file that is re-created keeps the number it
+  /// had — so two real loans sharing one number is an ordinary state of that system.
+  /// Declaring it unique made that ordinary state refuse the whole discovery pass,
+  /// which emptied the pipeline. Identity is `encompassLoanGuid`, below.
+  loanNumber String? @map("loan_number")
   /// The Encompass loan GUID this file mirrors, when it has one. The join key back
   /// to the system of record. Nullable: a file can be started here first.
   encompassLoanGuid String? @unique @map("encompass_loan_guid")
@@ -376,6 +383,11 @@ model LtLoan {
   @@index([productKind])
   @@index([stageKey])
   @@index([loanFolder])
+  /// Kept under its historic `_key` name on purpose (db/617): db/549 replays on
+  /// every boot with `CREATE UNIQUE INDEX IF NOT EXISTS` on that name, and
+  /// `IF NOT EXISTS` tests the NAME, not the shape — so re-creating it under a new
+  /// name would make that statement fail forever against the duplicates.
+  @@index([loanNumber], map: "lt_loans_loan_number_key")
   @@map("lt_loans")
 }
 
@@ -1899,4 +1911,66 @@ model LtDocumentCondition {
   @@unique([documentId, encompassConditionId])
   @@index([conditionId])
   @@map("lt_document_conditions")
+}
+
+/// WHAT EVERY SYNC PASS ACTUALLY DID — so an empty book can say why (db/616).
+///
+/// `GET /api/lt/sync` builds its whole answer out of `lt_loans`: how many rows, how
+/// many were read, how many carry an error. That is a fine report on loans we HAVE
+/// and says nothing at all about a pass that never got a loan — a refused login, an
+/// Encompass outage, a search that answered with an empty list, the feature switched
+/// off. Every one of those rendered identically to "Encompass has nothing for us".
+/// A report built only from the rows a job PRODUCED can never explain a job that
+/// produced none, so this records the RUN rather than its output.
+///
+/// A LOG, not a single current-state row: "it is failing right now" and "it has been
+/// failing since Tuesday" are different facts, and the second is the one that tells
+/// somebody whether an outage explains an empty book. Pruned by its own writer
+/// (newest N per kind), so it is bounded without a scheduled job.
+model LtSyncRun {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Which pass: loans | conditions | milestone_catalog | pilot_roles. Deliberately
+  /// free text rather than an enum — a pass added later must be able to record
+  /// itself without a migration, and the cost of an unrecognised kind is a row the
+  /// screen groups under its own name, never a lost write on the one table whose job
+  /// is to explain a failure.
+  kind String
+
+  /// 'worker' (the timer) or 'manual' (somebody pressed the button). "The button did
+  /// nothing" and "the timer has not run" send you to two different places.
+  trigger String @default("worker")
+
+  startedAt DateTime @default(now()) @map("started_at") @db.Timestamptz(6)
+
+  /// NULL while a pass is still running. A row that never gains a finish IS the
+  /// record of a pass that died mid-flight, which no summary count could show.
+  finishedAt DateTime? @map("finished_at") @db.Timestamptz(6)
+
+  ok Boolean?
+
+  /// WHY, in the words a person reads. Filled on a refusal or a failure and left
+  /// NULL on a clean pass — a reason on a successful run would train people to
+  /// ignore the column.
+  reason String?
+
+  discovered Int?
+  readCount  Int? @map("read_count")
+  failed     Int?
+
+  /// Loans deliberately not mirrored — today, files the product rule proved are
+  /// short-term and belong to the other product.
+  skipped   Int?
+  remaining Int?
+  passes    Int?
+
+  /// The pass's own shape, verbatim, so a question nobody thought to ask today is
+  /// still answerable from what was captured — today, WHICH loans the database
+  /// refused.
+  detail Json?
+
+  /// The only question ever asked of this table: "what did the last pass of this
+  /// kind do?"
+  @@index([kind, startedAt(sort: Desc)], map: "lt_sync_runs_kind_started_idx")
+  @@map("lt_sync_runs")
 }

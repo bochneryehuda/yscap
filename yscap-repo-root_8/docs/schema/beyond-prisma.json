@@ -16107,7 +16107,7 @@
       {
         "name": "lt_loans_loan_number_key",
         "table": "lt_loans",
-        "definition": "CREATE UNIQUE INDEX lt_loans_loan_number_key ON public.lt_loans USING btree (loan_number)"
+        "definition": "CREATE INDEX lt_loans_loan_number_key ON public.lt_loans USING btree (loan_number)"
       },
       {
         "name": "lt_loans_loan_officer_id_idx",
@@ -25859,8 +25859,8 @@
   ],
   "generatedFrom": {
     "migrations": {
-      "count": 613,
-      "highest": 616
+      "count": 614,
+      "highest": 617
     }
   }
 }
