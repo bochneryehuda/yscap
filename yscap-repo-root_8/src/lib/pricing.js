@@ -345,6 +345,25 @@ function buildInputs(app, experience, overrides) {
   // tax), so it rides with the other overridable deal inputs rather than being
   // read only from the stored address.
   if (overrides && typeof overrides.county === 'string' && overrides.county.trim()) base.county = overrides.county.trim();
+  /* THE TAX CITY AND THE TAX UNIT COUNT — deliberately their OWN keys, never
+     `city` and `units`.
+
+     Both would otherwise reach a frozen engine: the engines scan the CITY text for
+     the ineligible-city and adverse-market checks, and `units` is a real recorded
+     fact about the building that other readers compare against. A figure someone
+     typed into a tax box must not be able to make a property eligible, or to
+     restate how many dwellings it holds. So they are tax-only by NAME, read by
+     nothing except the government-charge engine below.
+
+     They exist because the term sheet's property question is "1 unit" or "2-4
+     units" and it has no city field at all — while New York City taxes a 3-family
+     at 2.175% and a 4-family at 2.80% of the same loan, and Philadelphia,
+     Pittsburgh and Yonkers each levy their own. */
+  if (overrides && typeof overrides.taxCity === 'string' && overrides.taxCity.trim()) base.taxCity = overrides.taxCity.trim();
+  if (overrides && overrides.taxUnits != null && overrides.taxUnits !== '') {
+    const tu = Math.round(Number(overrides.taxUnits));
+    if (Number.isFinite(tu) && tu >= 1) base.taxUnits = tu;
+  }
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
     'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC', 'targetARLTV', 'targetLoan',
     // THE PAYOFF THE STUDIO WAS PRICED ON (owner-directed 2026-08-07). A refinance
@@ -785,10 +804,27 @@ function normalize(program, input, ev, ladder, opts) {
     closingCosts.governmentCharges({
       state,
       county: input.county,
-      city: input.city,
-      units: input.units,
+      // The tax-only city when one was typed, otherwise the property's own recorded
+      // city. See the note on `taxCity`/`taxUnits` in buildInputs for why these are
+      // separate keys and not overrides of `city` / `units`.
+      city: input.taxCity || input.city,
+      // The unit ladder is the ENGINE's own (typed -> the file's count -> the top of
+      // a "2-4" range). The Term Sheet Studio faces the identical ambiguity and calls
+      // the identical function, so the printed sheet and the registered quote cannot
+      // answer "how many units" differently — which on a New York City loan is a
+      // $3,750 gap between the two documents.
+      units: closingCosts.resolveUnits({
+        typed: input.taxUnits, knownUnits: input.units, propType: input.propertyType,
+      }).units,
       loanAmount: totalLoan,
-      purchasePrice: num(input.purchasePrice),
+      // The taxable SALE price, by the engine's own rule — zero on a refinance, and
+      // on an assignment the REAL total the buyer pays rather than the capped
+      // effective price the loan is sized against (the deed records what changed
+      // hands). Same call the studio makes.
+      purchasePrice: closingCosts.taxableSalePrice({
+        isRefinance: require('./deal-basis').sizesOnAsIsValue(input.loanType),
+        totalPrice: num(input.purchasePrice),
+      }),
       // `sizesOnAsIsValue` is deal-basis.js's ONE definition of "is this a
       // refinance" — the same test buildInputs uses to pick the sizing basis. A
       // second, local `loanType === 'Refinance'` here is exactly how the two come

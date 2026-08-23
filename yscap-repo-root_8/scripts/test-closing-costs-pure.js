@@ -52,7 +52,12 @@ let r = cc.governmentCharges({ state: 'NY', county: 'Kings', city: 'Brooklyn', u
 near(amt(r, 'mortgage_tax'), 600000 * 0.01925, 'NYC 1-3 family $600k loan → 1.925% borrower share = $11,550');
 near(r.lenderTotal, 600000 * 0.0025, 'and the 0.25% special additional tax is the LENDER’s = $1,500');
 ok(lineOf(r, 'mortgage_tax_lender').payer === 'lender', 'the lender line is attributed to the lender, not the borrower');
-ok(/1-3 family/.test(lineOf(r, 'mortgage_tax').label), 'the line names the class it was taxed as');
+// The LINE is named for the charge — "New York City mortgage recording tax" — and
+// the rate class it was taxed under rides in the basis. The class alone printed as a
+// line item on a term sheet ("NYC — 1-3 family / condo, loan $500k+") reads as
+// gibberish beside a dollar figure, and this is the largest number on the page.
+ok(/New York City mortgage recording tax/.test(lineOf(r, 'mortgage_tax').label), 'the line is named for the charge, in words a borrower can read');
+ok(/1-3 family/.test(lineOf(r, 'mortgage_tax').basis), 'and the rate class it was taxed under is still recorded, in the basis');
 
 // THE UNIT COUNT MOVES THE RATE — a 4-family is "all other property" at 2.80%.
 const r4 = cc.governmentCharges({ state: 'NY', county: 'Bronx', units: 4, loanAmount: 600000, purchasePrice: 800000, transactionType: 'purchase' });
@@ -120,7 +125,13 @@ const refi = cc.governmentCharges({ state: 'PA', city: 'Philadelphia', units: 1,
 ok(amt(refi, 'transfer_tax_state') === 0 && amt(refi, 'transfer_tax_local') === 0,
   'no transfer tax on a refinance — there is no deed');
 ok(refi.notes.some((n) => /refinance/i.test(n)), 'and the result says why, rather than silently omitting it');
-ok(amt(refi, 'recording_deed') === 0, 'and no deed recording fee either');
+// NOTHING here charges a recording fee: `title-cost.js` already bundles deed and
+// mortgage recording into its flat per-state figure, which is in the quote's closing
+// costs. Adding them here too charged the borrower twice — $650 on a New York deal.
+// The frozen title estimator cannot be unbundled, so this engine's scope is exactly
+// what that estimator's own header says it EXCLUDES.
+ok(cc.CHARGE_KEYS.every((k) => !/recording/.test(k)),
+  'this engine quotes no recording fee — the title estimate already carries it');
 const refiNy = cc.governmentCharges({ state: 'NY', county: 'Erie', units: 1, loanAmount: 400000, transactionType: 'refinance' });
 ok(amt(refiNy, 'mortgage_tax') > 0, 'but a refinance DOES owe the mortgage recording tax');
 
@@ -135,7 +146,7 @@ ok(amt(noMansion, 'mansion_tax') === 0, 'under $1M there is none');
 const tx = cc.governmentCharges({ state: 'TX', units: 1, loanAmount: 250000, purchasePrice: 320000, transactionType: 'purchase' });
 ok(amt(tx, 'mortgage_tax') === 0 && amt(tx, 'transfer_tax_state') === 0, 'Texas levies neither');
 ok(tx.notes.length >= 2, 'and SAYS so, twice — "0, and here is why" is an answer; silence is not');
-ok(tx.borrowerTotal > 0, 'recording fees are still real money and are still quoted');
+ok(tx.borrowerTotal === 0, 'and a Texas deal therefore adds nothing at all to cash to close');
 
 // A file with no state cannot be estimated, and says that rather than quoting $0.
 const noState = cc.governmentCharges({ loanAmount: 400000, transactionType: 'purchase' });
@@ -190,8 +201,8 @@ if (pricing.enginesReady && pricing.enginesReady()) {
   // additive, not a re-pricing of every loan in the book.
   const txApp = { ...app, property_address: { state: 'TX', city: 'Houston' } };
   const txQuote = pricing.quoteProgram('standard', pricing.buildInputs(txApp, exp, {}));
-  ok(txQuote.closingCosts.governmentCharges < 200,
-    'a Texas deal adds only the recording fees — no state is re-priced by accident');
+  ok(txQuote.closingCosts.governmentCharges === 0,
+    'a Texas deal adds nothing — no state is re-priced by accident');
 
   // The manual override reaches all the way through.
   const typed = pricing.quoteProgram('standard', pricing.buildInputs(app, exp, { ovrTax_mortgage_tax: 4000 }));
@@ -205,6 +216,136 @@ if (pricing.enginesReady && pricing.enginesReady()) {
   ok(byCounty.closingCosts.governmentCharges !== gc, 'typing the county re-prices the tax');
 } else {
   console.log('  (pricing engines not loadable — end-to-end block skipped)');
+}
+
+// ===========================================================================
+// ONE ENGINE, LOADED TWICE — the studio and the server
+// ===========================================================================
+// The Term Sheet Studio draws the term sheet in the browser and the server prices
+// and registers the loan in Node. If those two ever computed the government
+// charges separately, the sheet the borrower SIGNS and the quote the file BOOKS
+// would disagree — so there is one file, loaded two ways. These assertions are
+// what stops a second copy quietly appearing.
+const fs = require('fs');
+const src = (f) => fs.readFileSync(R + '/' + f, 'utf8');
+const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+ok(/module\.exports\s*=\s*require\((['"])\.\.\/\.\.\/web\/v2\/tools\/gov-charges\.js\1\)/.test(src('src/lib/closing-costs.js')),
+  'the server module is a re-export of the studio’s engine, not a second copy');
+{
+  const server = strip(src('src/lib/closing-costs.js'));
+  ok(!/MORTGAGE_TAX\s*=|TRANSFER_TAX\s*=|RECORDING\s*=/.test(server),
+    'and it declares no rate table of its own — a second table is a second answer');
+}
+ok(/<script src="gov-charges\.js/.test(src('web/v2/tools/term-sheet.html')),
+  'the studio loads that same engine before termsheet.js');
+
+// EVERY program folds the charges into its closing costs, so cash to close and the
+// liquidity to show carry them without a second formula anywhere.
+{
+  const ts = src('web/v2/tools/termsheet.js');
+  const folded = (ts.match(/var closing = origFee \+ brokerFee \+ lenderFee \+ creditFee \+ titleCost \+ extraFeesTotal\(\) \+ feasFeeAmount\(\) \+ gov\.borrowerTotal;/g) || []).length;
+  ok(folded === 3, `all three programs add the government charges to closing costs (found ${folded}, want 3 — Standard, Gold, Silver)`);
+  ok(/var gov = govCharges\(totalLoan, inp\);/.test(ts), 'and each computes them from the sized loan');
+  ok(/YSGov\.resolveUnits\(/.test(ts) && !/propType"\) === "2-4" \? 4 : 1/.test(ts),
+    'the studio asks the ENGINE how many units to tax on — it does not keep its own ladder');
+  ok(/YSGov\.taxableSalePrice\(/.test(ts), 'and the engine for the taxable sale price');
+  ok(/rGovWrap/.test(ts) && /borrowerLines/.test(ts), 'and it renders the charges as their own line items');
+}
+{
+  const pj = src('src/lib/pricing.js');
+  ok(/const closingDueAtClose = round2\([^)]*govChargesTotal\)/.test(pj),
+    'the server folds them into closingDueAtClose, so cash to close and liquidity inherit them');
+  ok(/closingCosts\.resolveUnits\(/.test(pj) && /closingCosts\.taxableSalePrice\(/.test(pj),
+    'and the server asks the SAME engine the same two questions');
+}
+
+// ── THE UNIT LADDER — the one ambiguity, answered in one place ─────────────
+// Both callers face it: the term sheet only knows "1 unit" or "2-4 units", and a
+// NYC 3-family and 4-family are taxed $3,750 apart on a $600,000 loan.
+const ru = (o) => cc.resolveUnits(o);
+ok(ru({ typed: 3, knownUnits: 4, propType: '2-4' }).units === 3, 'a typed unit count wins — the person looked at the property');
+ok(ru({ typed: 3 }).assumed === false, 'and is never reported as an assumption');
+ok(ru({ knownUnits: 4, propType: '2-4' }).units === 4, 'then the count recorded on the file');
+ok(ru({ propType: '2-4' }).units === 4, 'with only "2-4" to go on it resolves UP to four — never short at the table');
+ok(ru({ propType: '2-4' }).assumed === true, 'and says so, so the screen can offer to correct it');
+ok(ru({ propType: '2-4 units' }).units === 4, 'the file’s spelling of the same answer reads identically');
+ok(ru({ propType: 'sfr' }).units === 1 && ru({ propType: 'SFR (1 unit)' }).units === 1, 'a single family is one unit, both spellings');
+ok(ru({ propType: 'sfr' }).assumed === false, 'and that is a stated answer, not an assumption');
+ok(ru({}).units === 1 && ru({ typed: 0, knownUnits: 0, propType: '' }).units === 1, 'nothing stated at all falls back to one unit');
+ok(ru({ typed: '', knownUnits: null, propType: '2-4' }).units === 4, 'blank and null are "not stated", not zero');
+{
+  // The ladder has to MATTER, or the assertions above prove nothing.
+  const three = cc.governmentCharges({ state: 'NY', county: 'Kings', city: 'Brooklyn', units: ru({ typed: 3 }).units, loanAmount: 600000, purchasePrice: 800000, transactionType: 'purchase' });
+  const four = cc.governmentCharges({ state: 'NY', county: 'Kings', city: 'Brooklyn', units: ru({ propType: '2-4' }).units, loanAmount: 600000, purchasePrice: 800000, transactionType: 'purchase' });
+  ok(four.borrowerTotal - three.borrowerTotal > 3000,
+    'and resolving up genuinely raises the NYC tax — the ladder is not decorative');
+}
+
+// ── THE TAXABLE SALE PRICE ────────────────────────────────────────────────
+ok(cc.taxableSalePrice({ isRefinance: true, totalPrice: 750000 }) === 0, 'a refinance is not a sale — no transfer tax base');
+ok(cc.taxableSalePrice({ isRefinance: false, totalPrice: 750000 }) === 750000, 'a purchase is taxed on what actually changed hands');
+ok(cc.taxableSalePrice({ isRefinance: false, totalPrice: 0 }) === 0, 'and a missing price is zero, never NaN');
+ok(cc.taxableSalePrice({}) === 0 && cc.taxableSalePrice() === 0, 'an empty call answers zero rather than throwing');
+
+// ── THE LIQUIDITY CONDITION SAYS WHAT IS IN THE NUMBER ────────────────────
+// The figure was already right the moment the tax reached the quote; what was
+// missing was the sentence. A borrower reading "closing costs $14,150" has not
+// been told that $11,550 of it is one tax.
+{
+  const liq = require(R + '/src/lib/liquidity');
+  const line = liq.governmentChargeLine({
+    governmentCharges: 11700,
+    governmentChargeLines: [
+      { label: 'New York City mortgage recording tax', amount: 11550 },
+      { label: 'Mansion tax (buyer)', amount: 150 },
+    ],
+  });
+  ok(/New York City mortgage recording tax/.test(line), 'the biggest charge is named, not summed away');
+  ok(/New York/.test(line), 'and the proper noun survives — no tidy lower-casing');
+  ok(liq.governmentChargeLine({}) === '', 'a deal with no such charges adds no sentence at all');
+  ok(liq.governmentChargeLine({ governmentCharges: 0, governmentChargeLines: [{ label: 'x', amount: 0 }] }) === '',
+    'and neither does a set of zero-dollar lines');
+  const many = liq.governmentChargeLine({
+    governmentCharges: 19600,
+    governmentChargeLines: [
+      { label: 'Florida intangible tax', amount: 150 }, { label: 'Mansion tax (buyer)', amount: 7500 },
+      { label: 'New York City mortgage recording tax', amount: 11550 }, { label: 'State transfer tax', amount: 400 },
+    ],
+  });
+  ok(many.indexOf('New York City mortgage recording tax') < many.indexOf('Mansion tax'),
+    'charges are named largest first — the one worth reading comes first');
+  ok(/other government charges/.test(many), 'and the tail is summed rather than dropped in silence');
+}
+
+// ── THE FEE TABLE HAS TO ADD UP ───────────────────────────────────────────
+// The borrower's "your terms are ready" email lists each fee and then states a
+// total, and that total is `dueAtClosing` — which carries the government charges
+// the moment the deal is in a state that levies them. Miss the rows and the table
+// shows about $19,000 of fees under a stated total of about $34,000, which is a
+// $15,000 hole in a document from their lender. This is the assertion that would
+// catch a charge added to the engine and not given a row.
+if (pricing) {
+  const nyApp = {
+    id: 'x', loan_type: 'Purchase', program: 'Fix & Flip w/ Construction',
+    property_type: '2-4 units', units: 3,
+    property_address: { state: 'NY', city: 'Brooklyn', county: 'Kings', line1: '1 Test St' },
+    purchase_price: 800000, as_is_value: 800000, arv: 1000000, rehab_budget: 120000,
+    fico: 740, requested_exp_flips: 3, term: 12,
+  };
+  const nq = pricing.quoteProgram('standard', pricing.buildInputs(nyApp, { flips: 3, holds: 0, ground: 0 }, {}));
+  const c = nq.closingCosts;
+  // Exactly the rows product-registration.borrowerTermsEmail builds, in its order.
+  const rowSum = [c.origination, c.lenderFee, c.creditFee, c.titleAndSettlement]
+    .concat((c.extraFees || []).map((f) => f.amount))
+    .concat((c.governmentChargeLines || []).map((g) => g.amount))
+    .reduce((n, v) => n + (Number(v) || 0), 0);
+  near(rowSum, c.dueAtClosing, 'every closing cost the borrower is shown sums to the total they are shown', 0.01);
+  ok((c.governmentChargeLines || []).length >= 1,
+    'and on a New York City deal the mortgage tax is among those rows, by name');
+  const fs2 = require('fs');
+  ok(/governmentChargeLines/.test(fs2.readFileSync(R + '/src/lib/product-registration.js', 'utf8')),
+    'the borrower’s terms email builds those rows rather than letting its own table disagree with itself');
 }
 
 console.log(`test-closing-costs-pure: OK (${passed} assertions)`);

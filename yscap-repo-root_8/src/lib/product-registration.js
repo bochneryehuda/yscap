@@ -32,11 +32,15 @@ function assetDetail(quote) {
   // so the "payoff − advanced" equation would sum negative; state the cash-out.
   // Rate-and-term reconciles as the payoff shortfall the borrower brings. Must read
   // the same as liquidity.js.
+  // The government charges inside those closing costs, in the SAME words the
+  // liquidity condition uses — one definition, so the approval email an admin reads
+  // and the condition the borrower reads cannot describe the same money differently.
+  const govSeg = require('./liquidity').governmentChargeLine(quote);
   const cashToCloseDetail = quote.refi
     ? (quote.refi.cashOut > 0
         ? `Cash to close: ${money(quote.cashToClose)} — the new loan covers the existing payoff and closing costs; the borrower takes ${money(quote.refi.cashOut)} cash out.`
-        : `Cash to close: ${money(quote.cashToClose)} (${money(quote.refi.payoff)} loan payoff + ${money(quote.refi.closing)} estimated closing costs − ${money(quote.refi.fundedAtClose)} advanced at closing).`)
-    : `Cash to close: ${money(quote.cashToClose)} (${money(s.downPayment)} down payment + ${money(cc.dueAtClosing)} estimated closing costs${s.assignmentExcessOOP > 0 ? ` + ${money(s.assignmentExcessOOP)} assignment excess` : ''}).`;
+        : `Cash to close: ${money(quote.cashToClose)} (${money(quote.refi.payoff)} loan payoff + ${money(quote.refi.closing)} estimated closing costs${govSeg} − ${money(quote.refi.fundedAtClose)} advanced at closing).`)
+    : `Cash to close: ${money(quote.cashToClose)} (${money(s.downPayment)} down payment + ${money(cc.dueAtClosing)} estimated closing costs${govSeg}${s.assignmentExcessOOP > 0 ? ` + ${money(s.assignmentExcessOOP)} assignment excess` : ''}).`;
   const lines = [
     `Registered product: ${productName(quote)}`,
     `Loan amount: ${money(s.totalLoan)}${quote.noteRate != null ? ` at ${fmtRatePct(quote.noteRate)}%` : ''}.`,
@@ -683,6 +687,21 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
   feeRow('Title & settlement (estimated)', cc.titleAndSettlement);
   for (const f of (Array.isArray(cc.extraFees) ? cc.extraFees : [])) {
     if (f && f.name) feeRow(f.name, f.amount);
+  }
+  /* THE GOVERNMENT CHARGES, EACH BY NAME (owner-directed 2026-08-23).
+
+     This table lists the fees and then states a total, and that total is
+     `cc.dueAtClosing` — which carries the mortgage tax, the transfer tax and the
+     recording fees the moment the deal is in a state that levies them. So without
+     these rows the table would not ADD UP: on a New York City loan the listed fees
+     come to about $19,000 against a stated total of about $34,000, and the borrower
+     would be looking at a $15,000 hole in a document from their lender. Naming them
+     is not a nicety here; leaving them out breaks the only arithmetic on the page.
+
+     They come off the quote like every other row — nothing is computed here — and a
+     deal in a state with no such tax adds no rows at all. */
+  for (const g of (Array.isArray(cc.governmentChargeLines) ? cc.governmentChargeLines : [])) {
+    if (g && g.label) feeRow(g.label, g.amount);
   }
   const feeTable = feeRows.length && num(cc.dueAtClosing) > 0
     ? {

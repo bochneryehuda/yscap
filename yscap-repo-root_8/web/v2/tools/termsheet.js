@@ -594,6 +594,86 @@
   // shape as coBorrowerPgWaived). DISPLAY + the tool's own liquidity figure
   // only — loan sizing, rates and caps are untouched.
   function liqBufferWaived(){ var e=document.getElementById("liqBufferWaived"); return !!(e && (e.value==="1"||e.value==="true")); }
+
+  /* ------------------ GOVERNMENT CHARGES (owner-directed 2026-08-23) --------
+     The mortgage tax, transfer tax, mansion tax and recording fees.
+
+     ONE DEFINITION, LOADED TWICE. This calls `gov-charges.js`, the SAME file the
+     server requires as `src/lib/closing-costs`. It is not a browser copy of a
+     server rule — copying it is how the studio comes to PRINT one cash to close
+     while the register BOOKS another, and the copy that drifts is the one that
+     goes out for signature.
+
+     THE UNIT COUNT IS THE ONE INPUT THIS SCREEN CANNOT ASK FOR. The term sheet
+     offers "1 unit" or "2-4 units", and New York City taxes a 3-family at 2.175%
+     and a 4-family at 2.80% of the same loan. So, in order: the admin box, then
+     the file's own unit count, then — with only "2-4" to go on — FOUR, the top of
+     the range, because the standing rule on this estimate is that an unknown
+     resolves UP and never leaves a borrower short at the table. That assumption
+     is stated on the panel rather than hidden, so anyone can correct it in the box.
+
+     Missing the engine entirely returns an empty result rather than throwing: a
+     stale cached bundle must degrade to the old quote, never to a blank studio. */
+  /* The unit ladder is the ENGINE's (YSGov.resolveUnits) — the server faces the
+     same ambiguity and must answer it identically, so it is one function, not two
+     that look alike. This just supplies the three things it asks about. */
+  function govUnitsResolved() {
+    var f = document.getElementById("fileUnits");
+    return YSGov.resolveUnits({
+      typed: adminNumRaw("tsTaxUnits"),
+      knownUnits: f ? Number(f.value) : 0,
+      propType: val("propType")
+    });
+  }
+  function govCity() {
+    var t = (val("tsTaxCity") || "").trim(); if (t) return t;
+    var f = document.getElementById("fileCity"); return (f && f.value) ? String(f.value).trim() : "";
+  }
+  /* The override box for each charge. The KEY LIST is the ENGINE's own
+     (YSGov.CHARGE_KEYS) rather than a second copy here — a charge added to the
+     engine and forgotten in a hand-typed list would silently become un-overridable,
+     which is the one thing an override screen must never be. */
+  var GOV_FIELD = { mortgage_tax: "tsTaxMortgage", intangible_tax: "tsTaxIntangible",
+                    transfer_tax_state: "tsTaxTransferState", transfer_tax_local: "tsTaxTransferLocal",
+                    mansion_tax: "tsTaxMansion" };
+  var GOV_EMPTY = { lines: [], borrowerLines: [], borrowerTotal: 0, lenderTotal: 0,
+                    warnings: [], notes: [], confidence: "default", unitsAssumed: false };
+  /* The government-charge rows for the xlsx / derivation exports — ONE builder for
+     all three programs, so a spreadsheet can never list a different set of charges
+     from the PDF beside it. A deal that carries none returns nothing, leaving every
+     existing export byte-identical. */
+  function govXlsxRows(d) {
+    var lines = (d && d.gov && d.gov.borrowerLines) ? d.gov.borrowerLines : [];
+    return lines.map(function (L) {
+      return [L.label + (L.auto === false ? " (entered)" : ""), YS.fmtUSD2(L.amount)];
+    });
+  }
+  function govCharges(totalLoan, inp) {
+    if (typeof YSGov === "undefined" || !YSGov) return GOV_EMPTY;
+    try {
+      var share = adminNumRaw("tsTaxBuyerShare");
+      var units = govUnitsResolved();
+      var r = YSGov.governmentCharges({
+        state: inp.state, county: val("tsTaxCounty"), city: govCity(), units: units.units,
+        loanAmount: totalLoan,
+        // The taxable SALE price — the engine's own rule, so an assignment is read
+        // the same way here and on the server.
+        purchasePrice: YSGov.taxableSalePrice({ isRefinance: isRefi(), totalPrice: effPurchase() }),
+        transactionType: isRefi() ? "refinance" : "purchase",
+        buyerTransferShare: (share != null ? share : undefined)
+      });
+      var ovr = {};
+      var keys = YSGov.CHARGE_KEYS || [];
+      for (var i = 0; i < keys.length; i++) {
+        var f = GOV_FIELD[keys[i]]; if (!f) continue;        // a charge with no box yet is simply not overridable
+        var v = adminNumRaw(f);
+        if (v != null) ovr[keys[i]] = v;                     // 0 is a deliberate waiver, not "unset"
+      }
+      r = YSGov.applyOverrides(r, ovr);
+      r.unitsAssumed = units.assumed;
+      return r;
+    } catch (e) { return GOV_EMPTY; }
+  }
   function calc() {
     var inp = gather();
     if (chosenLTC) inp.targetLTC = chosenLTC;
@@ -631,7 +711,12 @@
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
-    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount();      // + company extra fees (NY settlement etc.) + the construction feasibility review; appraisal is POC (excluded)
+    /* GOVERNMENT CHARGES ride in the closing costs (owner-directed 2026-08-23), so
+       cash to close and the liquidity to show carry them without a second formula.
+       Same order and the same figures as the server (pricing.js closingDueAtClose),
+       because both read the SAME engine. A state with none of them adds $0. */
+    var gov = govCharges(totalLoan, inp);
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + gov.borrowerTotal;      // + company extra fees (NY settlement etc.) + the construction feasibility review + mortgage/transfer/recording tax; appraisal is POC (excluded)
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sl.downPayment + excessOOP + closing);   // reserve is never brought to the table; OOP rehab is funded over construction, not here
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
@@ -661,6 +746,7 @@
       origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
+      gov: gov, govTotal: gov.borrowerTotal, govLender: gov.lenderTotal,
       // ltvPct is the initial-advance (as-is) leverage shown next to the dollar
       // initial advance. When an out-of-pocket rehab RAISES the initial advance, the
       // dollar rises but the engine's own s.acqLtvPct still reflects the pre-OOP
@@ -708,7 +794,8 @@
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
-    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount();
+    var gov = govCharges(totalLoan, inp);                                   // mortgage / transfer / recording tax — see calc()
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + gov.borrowerTotal;
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_g.downPayment + excessOOP + closing);
     var goldReservePct = R.liquidityPct || 0.05;
@@ -736,6 +823,7 @@
       closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
       liquidity: cashToClose + goldReserve + _g.oopRehab + closingBuffer, liquidityPct: goldReservePct,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
+      gov: gov, govTotal: gov.borrowerTotal, govLender: gov.lenderTotal,
       // ltvPct recomputed from the OOP-boosted initial advance — see calc(). Display-only.
       ltcPct: s.ltcPct || 0,
       ltvPct: (_g.oopRehab > 0 && s.acqDenom > 0) ? (initialAdvance / s.acqDenom) : (s.acqLtvPct || 0),
@@ -789,7 +877,8 @@
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
-    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount();
+    var gov = govCharges(totalLoan, inp);                                   // mortgage / transfer / recording tax — see calc()
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + gov.borrowerTotal;
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sv.downPayment + excessOOP + closing);
     var reserves = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac) * reserveMonths(totalLoan);   // same liquidity buffer as Standard
@@ -815,6 +904,7 @@
       origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves + _sv.oopRehab + closingBuffer,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
+      gov: gov, govTotal: gov.borrowerTotal, govLender: gov.lenderTotal,
       // ltvPct recomputed from the OOP-boosted initial advance — see calc(). Display-only.
       ltcPct: s.ltcPct || 0,
       ltvPct: (_sv.oopRehab > 0 && s.acqDenom > 0) ? (initialAdvance / s.acqDenom) : (s.acqLtvPct || 0),
@@ -1795,10 +1885,11 @@
       // blank = the government charges calculate themselves from the state, county,
       // units and loan. Clearing the zone must clear these too, or a "cleared" file
       // silently keeps a typed tax nobody can see any more.
+      setVal("tsTaxUnits", ""); setVal("tsTaxCity", "");
       setVal("tsTaxCounty", ""); setVal("tsTaxBuyerShare", "");
       setVal("tsTaxMortgage", ""); setVal("tsTaxIntangible", "");
       setVal("tsTaxTransferState", ""); setVal("tsTaxTransferLocal", "");
-      setVal("tsTaxMansion", ""); setVal("tsTaxRecDeed", ""); setVal("tsTaxRecMortgage", "");
+      setVal("tsTaxMansion", "");
       seedAdminDefaults();
       var mo = el("tsManualOn"); if (mo) mo.checked = false;
       setVal("tsMLtv", ""); setVal("tsMArv", ""); setVal("tsMLtc", ""); setVal("tsMRate", ""); setVal("tsMIr", "");
@@ -1951,6 +2042,49 @@
       if (w) { if (sized && d.feasFee > 0) { w.style.display = "";
         YS.put("rFeasLbl", d.feasLabel + (d.feasManual ? " (manual)" : "")); YS.put("rFeas", YS.fmtUSD2(d.feasFee)); }
         else { w.style.display = "none"; } } })();
+    /* GOVERNMENT CHARGES — one row per charge, because that is how they land on a
+       settlement statement and how a borrower checks them (owner-directed
+       2026-08-23: "New York City mortgage tax needs to be a line item calculated
+       separately"). A state with none of them renders nothing, so every quote
+       outside the taxing states looks exactly as it did.
+
+       AN ESTIMATE THAT HAD TO ASSUME SOMETHING SAYS SO. The note under the totals
+       carries the engine's own warnings (an unknown county priced at the top of
+       the state, a unit count taken as 4 because the sheet only knows "2-4"),
+       because a number nobody can question is a number that gets trusted further
+       than it earned. A line an admin typed is marked, so a figure from the
+       settlement agent is never mistaken for our table's guess. */
+    (function () {
+      var w = el("rGovWrap"), note = el("rGovNote");
+      var g = (sized && d.gov) ? d.gov : null;
+      var lines = (g && g.borrowerLines) ? g.borrowerLines : [];
+      if (w) {
+        w.innerHTML = "";
+        if (lines.length) {
+          w.style.display = "";
+          for (var i = 0; i < lines.length; i++) {
+            var L = lines[i];
+            var row = document.createElement("div"); row.className = "ts-line";
+            var k = document.createElement("span"); k.className = "k";
+            k.textContent = L.label + (L.auto === false ? " (entered)" : "");
+            var v = document.createElement("span"); v.className = "v";
+            v.textContent = YS.fmtUSD2(L.amount);
+            row.appendChild(k); row.appendChild(v); w.appendChild(row);
+          }
+        } else { w.style.display = "none"; }
+      }
+      if (note) {
+        var msgs = (g && g.warnings) ? g.warnings.slice() : [];
+        if (g && g.unitsAssumed && lines.length) {
+          msgs.push("Unit count taken as 4 (the sheet only knows “2-4 units”) so the tax is not understated — set the exact number in the admin section.");
+        }
+        if (g && lines.length && g.confidence !== "verified") {
+          msgs.push("These are estimates from our rate tables — the settlement agent issues the binding figures at closing.");
+        }
+        if (msgs.length) { note.style.display = ""; note.textContent = msgs.join(" "); }
+        else { note.style.display = "none"; note.textContent = ""; }
+      }
+    })();
     YS.put("rCash", sized ? YS.fmtUSD2(d.cashToClose) : EM);
     /* ON-SCREEN refinance cash-to-close, matching the PDF: hide the purchase
        "Down payment" row on a refi, and on a RATE-AND-TERM show the existing-loan
@@ -2378,6 +2512,9 @@
       // The construction feasibility / project review fee — only when this deal carries one, so
       // every sheet that does not is byte-identical to before (owner-directed 2026-08-21).
       (stdOk && d.feasFee > 0) ? [d.feasLabel, money2(d.feasFee)] : null,
+      // Every government charge, by name — the same rows the PDF prints, so the
+      // spreadsheet and the term sheet can never disagree about one line item.
+      ...govXlsxRows(stdOk ? d : null),
       ["Estimated cash to close", stdOk ? money2(d.cashToClose) : EM],
       // 1% closing-cost buffer feeding the liquidity-to-show total (owner-authorized 2026-07-31)
       stdOk ? ["Closing cost buffer (1% of loan amount)", d.closingBufferWaived ? "Waived" : money2(d.closingBuffer || 0)] : null,
@@ -2407,6 +2544,7 @@
         ["Credit report", gOk ? money2(gd.creditFee) : EM],
         ["Appraisal (est., POC)", gOk ? money2(gd.apprFee) : EM],
         ["Title / escrow (est.)", (gOk && gd.titleCost > 0) ? money2(gd.titleCost) : EM],
+        ...govXlsxRows(gOk ? gd : null),
         ["Estimated cash to close", gOk ? money2(gd.cashToClose) : EM],
         // 1% closing-cost buffer feeding the liquidity-to-show total (owner-authorized 2026-07-31)
         gOk ? ["Closing cost buffer (1% of loan amount)", gd.closingBufferWaived ? "Waived" : money2(gd.closingBuffer || 0)] : null,
@@ -2450,6 +2588,7 @@
         ["Credit report", sOk ? money2(sd.creditFee) : EM],
         ["Appraisal (est., POC)", sOk ? money2(sd.apprFee) : EM],
         ["Title / escrow (est.)", (sOk && sd.titleCost > 0) ? money2(sd.titleCost) : EM],
+        ...govXlsxRows(sOk ? sd : null),
         ["Estimated cash to close", sOk ? money2(sd.cashToClose) : EM],
         // 1% closing-cost buffer feeding the liquidity-to-show total (owner-authorized 2026-07-31)
         sOk ? ["Closing cost buffer (1% of loan amount)", sd.closingBufferWaived ? "Waived" : money2(sd.closingBuffer || 0)] : null,
@@ -3029,6 +3168,14 @@
       yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money2(d.apprFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money2(d.titleCost) : "\u2014", yR);
       if (sized && d.extraFees) d.extraFees.forEach(function (f) { yR = rowIn(xR, colW, f.name, money2(f.amount), yR); });
+      /* GOVERNMENT CHARGES, each on its own printed line (owner-directed
+         2026-08-23). On a $600,000 New York City loan the mortgage tax alone is
+         the largest single number on this page, so it prints by name rather than
+         disappearing into a total nobody can check. Nothing prints in a state
+         with no such tax. */
+      if (sized && d.gov && d.gov.borrowerLines) d.gov.borrowerLines.forEach(function (L) {
+        yR = rowIn(xR, colW, L.label + (L.auto === false ? " (entered)" : ""), money2(L.amount), yR);
+      });
       // REFINANCE: the borrower brings the existing-loan payoff, less the funds that
       // advance at closing (the initial advance), on top of the closing costs above.
       // These two rows make the section reconcile to the cash-to-close total
@@ -3901,6 +4048,32 @@
       isBridge ? null : ["Construction draw fee", drawFeeLines(_dpProg).join("; ")]
     ]);
 
+    /* GOVERNMENT CHARGES — the derivation page's job is to record HOW a figure was
+       arrived at, and these are the only closing costs computed from a rate table
+       rather than typed. So it prints the jurisdiction they were priced in, each
+       charge with the rate and the amount it was levied on, and anything the
+       estimate had to assume. Nothing prints in a state with no such tax, and
+       nothing prints when the deal did not size. */
+    (function () {
+      var g = d.gov;
+      if (!g || !g.borrowerLines || !g.borrowerLines.length) return;
+      var j = g.jurisdiction || {};
+      var where = [j.city || null, j.county ? j.county + " County" : null, j.state || null]
+        .filter(Boolean).join(", ") || (val("propState") || "—");
+      var rows = [["Priced in", where + "  ·  " + (j.units || 1) + (Number(j.units) === 1 ? " unit" : " units")]];
+      g.borrowerLines.forEach(function (L) {
+        rows.push([L.label + (L.auto === false ? " (entered)" : ""), money2(L.amount)]);
+        if (L.basis || L.rate) {
+          rows.push([[L.rate ? pc(L.rate) : null, L.basis ? "on " + L.basis : null].filter(Boolean).join(" "), "", "sub"]);
+        }
+      });
+      rows.push(["Government charges in cash to close", money2(g.borrowerTotal), "tot"]);
+      if (g.lenderTotal > 0) rows.push(["Paid by the lender (not the borrower's cash)", money2(g.lenderTotal), "sub"]);
+      (g.warnings || []).forEach(function (wmsg) { rows.push([wmsg, "", "sub"]); });
+      if (g.unitsAssumed) rows.push(["Unit count taken as 4 — the sheet knows only “2-4 units”, so the tax is not understated", "", "sub"]);
+      section("Government charges (estimated)", rows);
+    })();
+
     section("Key dates (estimated \u2014 from the estimated closing date)", [
       ["Loan term", (inp.term || 12) + " months"],
       ["Estimated closing date", _dpClose ? fmtDateLong(_dpClose) : "Not set"],
@@ -3930,7 +4103,7 @@
     // dollar field — a mortgage recording tax is routinely five figures, and 11550
     // is exactly the kind of number that gets mistyped by a factor of ten.
     "tsTaxMortgage", "tsTaxIntangible", "tsTaxTransferState", "tsTaxTransferLocal",
-    "tsTaxMansion", "tsTaxRecDeed", "tsTaxRecMortgage"];
+    "tsTaxMansion"];
   function isMoneyInput(inp) { return inp && inp.id && MONEY_IDS.indexOf(inp.id) !== -1; }
   function groupDigits(s) {
     var d = String(s == null ? "" : s).replace(/[^\d]/g, "");

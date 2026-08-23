@@ -185,14 +185,17 @@ export function overridesFromSnapshot(snap, mode) {
          in step. compact() drops every blank, so an untouched section changes
          nothing about how the deal prices. */
       county: f.tsTaxCounty,
+      // Tax-only, by NAME — never `city` / `units`. The server keeps them apart so a
+      // figure typed in a tax box can never reach a frozen engine's ineligible-city
+      // scan or restate how many dwellings the building holds.
+      taxCity: f.tsTaxCity,
+      taxUnits: f.tsTaxUnits,
       buyerTransferShare: f.tsTaxBuyerShare,
       ovrTax_mortgage_tax: f.tsTaxMortgage,
       ovrTax_intangible_tax: f.tsTaxIntangible,
       ovrTax_transfer_tax_state: f.tsTaxTransferState,
       ovrTax_transfer_tax_local: f.tsTaxTransferLocal,
       ovrTax_mansion_tax: f.tsTaxMansion,
-      ovrTax_recording_deed: f.tsTaxRecDeed,
-      ovrTax_recording_mortgage: f.tsTaxRecMortgage,
       ovrAcqLTVPct: f.tsManualOn ? f.tsMLtv : null,
       ovrARLTVPct: f.tsManualOn ? f.tsMArv : null,
       ovrLTCPct: f.tsManualOn ? f.tsMLtc : null,
@@ -1059,7 +1062,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // CURRENT address always prefills; the registered scenario's stored copy is
       // only a fallback for a file with no address yet. The old order kept the
       // registration-era address on the term sheet forever after a correction.
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff(), ...(filePricingFico ? { fico: filePricingFico } : {}) }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, city: (app.property_address && app.property_address.city) || inp.city, units: app.units ?? inp.units, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff(), ...(filePricingFico ? { fico: filePricingFico } : {}) }));
       if (isStaff) {
         // The registered scenario's admin knobs (markup, points, fees, and any
         // manual LTV/LTC/ARV/rate basis) restore for EVERY staff role — the zone
@@ -1078,6 +1081,11 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         // File-owned address/state — same rule as the registered-scenario path.
         address: addrLine(app.property_address) || inp.address,
         state: (app.property_address && app.property_address.state) || inp.state,
+        // The city and the unit count travel for the government charges — the studio
+        // has neither field of its own, and New York City taxes a 3-family and a
+        // 4-family at different rates on the same loan. File-owned, like the address.
+        city: (app.property_address && app.property_address.city) || inp.city,
+        units: app.units ?? inp.units,
         expFlips: app.requested_exp_flips ?? inp.expFlips,
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
@@ -1093,6 +1101,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         entityName: entity, borrowerName: name, coBorrowerName: coName,
         address: addrLine(app.property_address),
         state: (app.property_address && app.property_address.state) || '',
+        city: (app.property_address && app.property_address.city) || '',
         loanType: app.loan_type,
         program: app.program,
         propertyType: app.property_type,

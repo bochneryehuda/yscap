@@ -1362,6 +1362,15 @@ function BankLiquidity({ bankLiquidity, assetLedger, appId, readOnly }) {
         <div style={tileStyle}>
           <div style={tileK}>Required liquidity</div>
           <div style={{ fontSize: 16, fontWeight: 700, color: '#141B22' }}>{req != null ? money(req) : <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--muted,#4B585C)' }}>set once a product is registered</span>}</div>
+          {/* WHAT IS INSIDE THE NUMBER (owner-directed 2026-08-23). On a New York City
+              loan the mortgage tax alone can be most of the cash to close, and an
+              underwriter looking at a bare total has to go and reconstruct it. The
+              SERVER composes this sentence, through the same function the liquidity
+              condition and the approval email use, so the three cannot describe the
+              same money differently. Absent on a deal with no such charges. */}
+          {led && led.governmentChargeNote ? (
+            <div style={{ fontSize: 11, color: '#4B585C', marginTop: 2, maxWidth: 260 }}>{led.governmentChargeNote}</div>
+          ) : null}
         </div>
         {covered != null && (
           <div style={tileStyle}>
