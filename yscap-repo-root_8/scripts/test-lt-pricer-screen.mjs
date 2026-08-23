@@ -29,6 +29,11 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
 const SCREEN = 'app-v2/src/longterm/LtPricer.jsx';
 const src = read(SCREEN);
+// The form's rules moved into their own plain-JS module so CI can RUN them (scenarioFields.js).
+// The two source guards below moved with them: a guard that keeps naming the old expression reads
+// as a broken feature and gets "fixed" by loosening it, which is worse than the drift it was
+// watching for.
+const fieldsSrc = read('app-v2/src/longterm/scenarioFields.js');
 const api = read('app-v2/src/longterm/api.js');
 const app = read('app-v2/src/App.jsx');
 const layout = read('app-v2/src/components/StaffLayout.jsx');
@@ -197,11 +202,20 @@ console.log('LT Pricing Engine — structural guards\n');
   // NOTHING NARROWS THE ANSWER. The ask is to see all rates and all products.
   ok(!/maxRate|minPrice|hideExpired|lenderFilter/.test(code),
     'PE-38 the screen applies no filter of its own — every rate and every product comes back');
-  // A blank is OMITTED rather than sent as "", which the pricer would have to guess at.
-  ok(/if \(v === '' \|\| v == null\) continue;/.test(code),
+  // A blank is OMITTED rather than sent as "", which the pricer would have to guess at. The rule
+  // lives in scenarioFields.js now; `test-lt-pricer-fields.mjs` D9 proves the BEHAVIOUR, and this
+  // stays as the source guard so the line cannot quietly disappear.
+  ok(/if \(v === '' \|\| v == null\) continue;/.test(fieldsSrc),
     'PE-39 a blank field is omitted from the request, never sent as an empty value');
-  // LTV is ours and says so; it is never sent.
-  ok(/not sent/.test(src), 'PE-40 the LTV the page works out is labelled as the page\'s own and is not sent');
+  // PE-40 USED TO SAY "the LTV is never sent", and that is no longer the design: the owner asked to
+  // be able to type an LTV instead of a loan amount, so on this screen an LTV genuinely can go on
+  // the wire. What must NEVER happen is BOTH — the server refuses a supplied LTV that disagrees
+  // with loan ÷ value, so shipping the typed figure alongside the one we derived would turn a
+  // rounding difference into `ltv_conflict` instead of a price. So the guard now watches the
+  // exclusion that makes exactly one of them authoritative.
+  ok(/if \(mode === 'ltv' && k === 'loan'\) continue;/.test(fieldsSrc)
+    && /if \(mode === 'loan' && k === 'ltv'\) continue;/.test(fieldsSrc),
+    'PE-40 only the amount the person typed is sent — never the one this page worked out beside it');
 }
 
 // ---------------------------------------------------------------------------
