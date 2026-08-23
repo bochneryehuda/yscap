@@ -9,7 +9,7 @@ columns or partial indexes. On this database that is
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 612 numbered migrations in `db/` (highest `db/615`) remain the only thing that builds this database.
+rebuild a database from them.** The 614 numbered migrations in `db/` (highest `db/617`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 378 |
-| Columns | 6104 |
+| Tables | 379 |
+| Columns | 6118 |
 | Triggers | 35 |
 | Functions | 138 |
 | CHECK constraints | 310 |
 | Generated columns | 12 |
 | Partial indexes | 375 |
-| Primary keys | 378 |
+| Primary keys | 379 |
 | Foreign keys | 791 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1305 |
+| Indexes (all kinds) | 1307 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -1786,7 +1786,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 378 primary keys and 1305 indexes is
+Every one of the 379 primary keys and 1307 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

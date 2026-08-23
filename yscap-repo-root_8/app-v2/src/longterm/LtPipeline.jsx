@@ -97,7 +97,7 @@ function Chip({ on, onClick, label, count, note, group }) {
  */
 const FALLBACK_COLUMNS = [
   { key: 'loan_number', label: 'Loan #', field: 'loan_number', kind: 'text', sort: 'loan_number', align: 'left', emphasis: true },
-  { key: 'borrower', label: 'Borrower', field: 'borrower_name', kind: 'text', sort: 'borrower', align: 'left' },
+  { key: 'borrower', label: 'Borrower', field: 'borrower_name', kind: 'borrower', sort: 'borrower', align: 'left' },
   { key: 'loan_amount', label: 'Amount', field: 'loan_amount', kind: 'money', sort: 'loan_amount', align: 'right' },
   { key: 'stage', label: 'Stage', field: 'stage_key', kind: 'text', sort: 'stage', align: 'left' },
   { key: 'milestone', label: 'Milestone', field: 'milestone_name', kind: 'text', sort: 'milestone', align: 'left' },
@@ -213,6 +213,25 @@ function Cell({ col, row, stageLabel }) {
     case 'lock': return <LockCell row={row} />;
     case 'day': return <span>{day(raw)}</span>;
     case 'outstanding': return <OutstandingCell counts={raw} />;
+    // THE BORROWER, AND WHOSE NAME IT IS. The server prefers the linked PILOT
+    // profile and falls back to the name Encompass gave us, so this column stopped
+    // being a dash on every unlinked loan — but an unconfirmed name must not pass
+    // for a confirmed one, so it says which it is drawing. Quiet on purpose: it is
+    // the ordinary state of a freshly mirrored book, not a fault, and a loud badge
+    // on four hundred rows is a badge nobody reads.
+    case 'borrower': {
+      if (raw == null || raw === '') return <span style={muted}>—</span>;
+      return (
+        <span>
+          {String(raw)}
+          {row.borrower_is_linked === false && (
+            <span style={{ marginLeft: 6, fontSize: 11, color: '#4B585C' }} title="This is the name on the Encompass loan. Nobody has matched it to a PILOT borrower profile yet.">
+              from Encompass
+            </span>
+          )}
+        </span>
+      );
+    }
     case 'contact': {
       // THE ROLE IS THE COLUMN'S `field`, so a third contact column (an underwriter,
       // a closer) needs one catalog entry on the server and nothing here.
