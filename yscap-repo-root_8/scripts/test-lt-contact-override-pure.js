@@ -227,5 +227,61 @@ const upsert = contactsSrc.slice(contactsSrc.indexOf('async function writeContac
 check(!/override_staff_id|override_by|override_at|override_reason/.test(upsert),
   'the sync\'s upsert names no override column, so refreshing what Encompass says can never undo a reassignment');
 
+// ── ONE EXPRESSION, NOT FIVE COPIES ────────────────────────────────────────
+console.log('\nwho the effective person is, written once');
+
+// `COALESCE(override_staff_id, staff_id)` was typed out in five places. Five copies
+// agreeing today is not one rule: the drift this feature already found — the access
+// scope reading `staff_id = me OR override_staff_id = me` while everything else read
+// the COALESCE — is what five copies look like a year later, and the copy that went
+// wrong was the one nobody thought of as a copy. So there is one builder and the
+// rest call it, and a sixth reader (the owner's census) asks rather than types.
+const ltFiles = fs.readdirSync(path.join(__dirname, '..', 'src', 'longterm'))
+  .filter((f) => f.endsWith('.js'))
+  .map((f) => `src/longterm/${f}`)
+  .concat(['src/longterm/people/contacts.js', 'src/longterm/routes/pipeline.js', 'src/longterm/routes/book.js']);
+const copies = ltFiles.filter((f) => /COALESCE\([^)]*override_staff_id/i.test(stripComments(read(f))));
+check(copies.join() === 'src/longterm/access.js',
+  `the expression exists in ONE file — access.js — and nowhere else (found: ${copies.join(', ') || 'nowhere'})`);
+check(/function effectiveStaffSql\(alias\)/.test(stripComments(read('src/longterm/access.js')))
+  && typeof access.effectiveStaffSql === 'function',
+  '…and it is exported, so a caller has something to ask instead of something to retype');
+check(access.effectiveStaffSql('c') === 'COALESCE(c.override_staff_id, c.staff_id)'
+  && access.effectiveStaffSql('c2') === 'COALESCE(c2.override_staff_id, c2.staff_id)',
+  '…taking the row ALIAS, because each caller joins the table under its own name');
+const accessSrc = stripComments(read('src/longterm/access.js'));
+check(/\$\{effectiveStaffSql\('c'\)\} = \$\{ph\}::uuid/.test(accessSrc),
+  'and onFileSql is itself built from it — the definition is not a decoration sitting beside a sixth copy');
+
+// ── THE CENSUS ASKS THE SAME QUESTION AS THE PIPELINE ──────────────────────
+console.log('\nthe owner\'s census reads the loan TEAM, not a dead column');
+
+const bookSrc = stripComments(read('src/longterm/product-book.js'));
+check(!/staff_users s ON s\.id = l\.loan_officer_id/.test(bookSrc),
+  'THE ONE THAT MATTERS: the census no longer joins the officer on `lt_loans.loan_officer_id` — NOTHING has ever written that column, so the owner\'s own census reported "no loan officer" on every long-term file while the pipeline beside it showed one');
+check(/lt_loan_contacts/.test(bookSrc) && /effectiveStaffSql/.test(bookSrc),
+  '…it reads lt_loan_contacts through the one expression, so a locally reassigned file reads the same here as in the pipeline and on the file screen');
+check(/LEFT JOIN LATERAL/.test(bookSrc),
+  '…LATERALly, one row, because lt_loan_contacts holds one row per ROLE and joining it without naming the role would count a six-role loan six times');
+check(/officer_staff_name \|\| row\.officer_encompass_name/.test(bookSrc),
+  '…and an officer we cannot match is still NAMED, in Encompass\'s own wording — a census built to surface "these files need somebody matched" must say who to match');
+check(new RegExp(`role = '\\$\\{contacts\\.OFFICER_ROLE\\}'`).test(bookSrc),
+  '…for the SAME role key the pipeline\'s officer filter uses');
+check(/officerLinked: !!row\.officer_staff_id/.test(bookSrc),
+  'and "linked" still means PILOT knows which of OUR people it is — an officer Encompass names but we have not matched is what the census exists to surface');
+
+const pipeSrc = stripComments(read('src/longterm/pipeline.js'));
+check(/contacts\.OFFICER_ROLE/.test(pipeSrc) && contacts.OFFICER_ROLE === 'loan_officer',
+  'the pipeline asks the same constant rather than re-typing the role');
+check(contacts.DEFAULT_ROLES[0] === contacts.OFFICER_ROLE,
+  '…and the role list is built FROM it, so renaming the role cannot leave the two disagreeing');
+
+// The column is still declared, because dropping one is not something to do to a
+// live database on an inference — but it says what it is, so nobody wires it back up.
+const model = read('src/longterm/prisma/schema.prisma');
+const decl = model.slice(model.indexOf('/// NOT THE OFFICER'), model.indexOf('loanOfficerId String?') + 40);
+check(/NOT THE OFFICER, AND NOTHING HAS EVER WRITTEN IT/.test(decl) && /lt_loan_contacts/.test(decl),
+  'the dead column is labelled in the schema with where the officer really lives — a column that looks authoritative and is empty is how this happened once already');
+
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');
 process.exit(failures ? 1 : 0);

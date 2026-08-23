@@ -225,6 +225,29 @@ truth, and the way this codebase already handles that class is the way it is han
 5. **Nothing is written back to Encompass.** Ever. The override is a PILOT-side routing and
    visibility decision, not a correction to the system of record.
 
+**ONE EXPRESSION ANSWERS "WHOSE FILE IS THIS", AND EVERY SCREEN ASKS IT (2026-08-18).**
+`COALESCE(override_staff_id, staff_id)` per contact row was typed out in five places. Five
+copies agreeing today is not one rule — the drift §8 phase 8 describes is exactly what five
+copies look like a year later, and the copy that went wrong was the one nobody thought of as
+a copy. It is now `access.effectiveStaffSql(alias)`, and the access scope, both pipeline
+predicates and the row's own `staffId` are built from it.
+
+That change was forced by a sixth reader. **The owner's census read `lt_loans.loan_officer_id`
+— a column NOTHING IN THE REPOSITORY HAS EVER WRITTEN** — so the book reported *"No officer
+yet"* on every long-term file, and its CSV shipped an empty *Loan officer* column, while the
+pipeline beside it showed the officer on the same loans. The officer lives in
+`lt_loan_contacts`, and the census now reads it through the one expression, so a locally
+reassigned file names the new person there too.
+
+The census also stopped saying *"no officer"* about a file Encompass plainly names an officer
+on: **three answers, not two** — nobody on the file, somebody PILOT has not matched (named, in
+Encompass's own wording, one click from the people map), and somebody matched. A census whose
+whole job is *"these files need somebody matched"* has to say who to match.
+
+`lt_loans.loan_officer_id` is now read by nothing. It is left in place, LABELLED in the schema
+with where the officer really lives — dropping a column is not something to do to a live
+database on an inference. **Whether to drop it is §11's question 16.**
+
 ### 2.4 The screens
 
 - **Admin → Long-Term → People.** The Encompass roster on the left, PILOT staff on the
@@ -252,6 +275,387 @@ endpoints; and the investor-name block with a test that sweeps every recorded sp
 **What does not exist:** any screen at all, any sync that writes a row into an `lt_*` table,
 the condition tables, the settings persistence, and every pipeline surface. That is what
 this plan builds.
+
+**EVERY COLUMN OF THE 1003 MIRROR IS EITHER FILLED OR EXPLAINED (2026-08-18).** A column with no
+writer is invisible: the screen shows a dash, the dash reads as an ANSWER — *"not in a flood zone"*,
+*"no rent"* — and nothing anywhere fails. This side has now found that same shape five times, every
+one of them because somebody went looking. So `src/longterm/application/unsourced.js` is the ONE list
+of what the mirror deliberately does not fill, each entry saying what a SCREEN shows, what was
+MEASURED in the 3,783-field census, what would unblock it, and which of three kinds it is —
+*Encompass does not have it*, *the owner has not decided*, and *it is ours to judge* are different
+sentences and the difference is what the next person needs. `scripts/test-lt-unsourced-pure.js` fails
+the build on a column that is neither filled nor listed, and on an entry that has gone stale.
+Twenty-one columns are listed today; the file screen says the reason in the reader's own words where a
+dash used to sit. The flood determination and the entity record are the two the owner can unblock —
+§11. **The eight ARM terms joined the list** once the amortization map was fixed below and adjustable
+loans could reach the screen at all: nothing writes any of them, and the two census fields that LOOK
+like ARM terms (2625 maxLifeInterestCapPercent, 3557 firstAdjustmentMinimum) carry EXACTLY the note
+rate's own distribution, because on a fixed loan Encompass echoes the rate into them — so writing 2625
+into a lifetime cap would print a ceiling equal to the start rate. There the reason is said ONCE for
+the block rather than on eight rows, because eight identical sentences is as unreadable as the eight
+dashes it replaces, and it gives way term by term the day a writer lands.
+
+**POSTGRES JUDGES EVERY STATEMENT THIS SIDE SENDS (2026-08-18).** A query naming a column that does
+not exist is the quietest bug this repository produces: it throws at run time, inside a `try` that
+exists for a good reason — a section that cannot be read must not take the loan down — and the caller
+answers null, an empty list or a confident zero. Nothing logs, nothing fails, the screen says "none"
+forever. It has happened at least four times here (`b.full_name`, `is_current`/`created_at` on
+`appraisals`, `property_state`, `wire_due_at`), every one found late by a person. No test that reads
+source can catch it and a mocked database agrees with whatever it is handed — so
+`scripts/test-lt-sql-prepared-db.js` asks the database: `PREPARE` parses and plans a statement against
+the real schema and refuses one that does not fit. All 110 whole statements in `src/longterm` are
+accepted; a phantom column put into a real query was proven to fail it. Nothing is executed — PREPARE
+plans, and it runs inside a transaction that is rolled back regardless, which is what makes it safe to
+point at the INSERTs and UPDATEs too. **The extractor is the whole difference between this and a wall
+of false alarms**: comments are stripped first (a header quoting its own SQL otherwise hands Postgres
+English prose), and it anchors on `.query(` rather than "a backtick containing SELECT" — which picks up
+ordinary JavaScript and the shared query FRAGMENTS, where `product-book.js`'s SELECT alone reports
+"missing FROM-clause entry for table l" and looks exactly like a real defect. The eleven statements
+assembled at run time cannot be prepared from source, so each is NAMED with where it is executed
+instead — a coverage number that quietly excluded them would read as total.
+
+**EVERY LONG-TERM DOOR IS OPENED, OR EXEMPT IN WRITING (2026-08-18).** The smoke suite opened 29 of
+the 44 GET doors the routers declare, and its list is hand-written for a good reason — the point is to
+notice a door NOBODY listed, and deriving the list from the same source the app mounts would make it
+agree with whatever is there, including nothing. But **a hand-written list cannot report what is not
+on it**, so fifteen doors went from shipped to never-once-opened with nothing to say so: the Condition
+Center's own two reads among them, plus the census CSV and the per-person settings. That is the class
+the phantom-column bugs live in — a wrong column name inside a swallowing catch answers a confident
+empty forever, and only opening the door finds it. So the routers are now ALSO read: the list still
+decides what gets CALLED, and a declared GET door that is neither called nor exempt with a written
+reason fails the build. Fourteen were opened (all answer, none 500s), so forty-six doors are exercised
+against a real database; ONE is exempt — LenderPrice's `login-check`, because a smoke test that dials
+an outside company is not a smoke test and a failure there would report our side as broken. The
+disqualifications poll was exempted out of the same caution and did not deserve it: with an unknown key
+it answers from its own store and returns before any vendor call, which was checked rather than
+assumed. An exemption is a hole in a coverage check, and the shorter that list is for reasons somebody
+verified, the more the number above it means. Matching is a real
+route match off the DECLARED door's own parameters, never a guess at which segments look like ids —
+that guess swallows `export.csv`, and a coverage check that lies in either direction is worse than
+none.
+
+**WHO GRANTED ACCESS, AND WHEN, IS ON A SCREEN (2026-08-18).** Two long-term actions hand somebody
+access to files — REASSIGNING one (`access.onFileSql` matches `override_staff_id`, so naming somebody
+puts the file in their pipeline and lets them open it) and CONFIRMING a person's Encompass link (which
+decides whose pipeline that login's files land in). Both write who did it and when, on the row, at the
+moment they do it, and Long-Term writes nothing to `audit_log` — an RTL table — so **the row is the
+only record there is**. Both stamps were then read by nothing: the file screen said a file had been
+reassigned and why and never by whom; the people screen said a link was confirmed and never by whom or
+when. That is the every-column rule inverted — nothing fails, the data is perfectly correct, and the
+only place it exists is a table nobody looks at. Both now reach the screen (out of lookups those routes
+were already making, so neither costs a query), each half drawn only if we hold it so a person since
+removed never prints as "by  on ". The people map also finally shows the ENCOMPASS ROLES it has
+recorded on every sync and never displayed — the evidence somebody confirming a link is meant to weigh,
+since matching on a name alone is how the wrong person ends up owning another's files.
+`scripts/test-lt-access-record-pure.js` follows each fact from the row it is written on to the element
+that draws it. **Its first cut passed four of its own six mutations** — it asserted that a token
+appeared somewhere in the file, which survives both renaming the property and disarming the branch that
+draws it; the assertions now pin the actual shape. A source guard that greps for a name is decoration,
+and this one proved it about itself before it was believed.
+
+**EVERY VALUE MAP IS KEYED ON WHAT ENCOMPASS ACTUALLY SENDS (2026-08-18).** The mirror translates
+Encompass's words into our enums through hand-written maps, and a map is a GUESS at somebody else's
+vocabulary — being wrong about one is completely silent. `AMORTIZATION` carried `fixed`, `adjustable`
+and `arm`; field 608's measured values are `Fixed` (765 loans) and `AdjustableRate` (1), so two of its
+three keys were spellings nobody has ever sent and the one adjustable-rate loan in the book fell
+through to null. **And null did not leave the column empty** — `amortization_type` is `NOT NULL
+DEFAULT 'fixed'` and the sync COALESCEs onto what is there, so that loan mirrored as FIXED: a
+confident wrong answer to "can this borrower's payment move", with the ARM section correctly absent
+because the row really did say fixed. The same COALESCE that stops a silent payload breaking the write
+is what turns an unrecognised value into a claim. So the census is now the judge:
+`scripts/test-lt-enum-maps-pure.js` reads every map out of the mapper's ONE exported declaration,
+looks its field up in the 3,783-field census, and fails the build on a value the tenant has actually
+sent that no map recognises — the only place this class can be caught, because by construction it
+produces no error and no empty result. Values Encompass merely ALLOWS but nobody has sent are printed
+rather than mapped: mapping one is a guess, and dropping one silently is how this started.
+
+**A REASON MAY NOT CONTRADICT THE CENSUS IT CITES (2026-08-18).** The twenty-one knowingly-empty
+columns each carry a `why` a person reads instead of a dash, and those reasons are ARGUMENTS FROM
+THE CENSUS — "field 541 is filled on 40.2% of long-term loans", "its six values were withheld",
+"nothing in 3,783 fields carries a zone designation". Measuring beats asserting, which is what makes
+them worth reading; it is also exactly what lets them go wrong SILENTLY. Regenerate the census on a
+fresh pull and every number quoted in prose is a fact nothing checks. Both flood reasons were simply
+FALSE: field 541's six values were never withheld — it is a declared enum of 89 allowed values
+labelled "Property Info Flood Zone", and all six of its observed values are on its own list — and the
+sibling reason said flatly that nothing in the census carries a zone designation while that same
+field carries X, AE, X500, A and C. Two sentences on one screen, one contradicting the other's own
+cited field, telling a reader to stop looking for something we hold. `scripts/test-lt-unsourced-
+census-pure.js` now fails the build on a citation the census does not carry, a fill the census
+disagrees with, or a silence claimed about a field the census answers. A reason may still RETRACT an
+earlier claim — a correction has to QUOTE the wrong sentence, so a guard reading the live text would
+fail on the very fix that closed the hole and then be "fixed" by deleting the explanation (the
+precedent is `test-app-dialog-pure.mjs` stripping comments before its must-not-appear checks). So the
+retraction lives in its own `corrected` field and the test is its reader: it must say when, what was
+claimed and why that was wrong, and the retracted sentence must be GONE from what a reader is shown.
+**Six mutations were each proven to turn it red, and one of them was against the test itself** — its
+citation pattern was case-sensitive, a corrected reason opened with "Field 541", and that 40.2%
+quietly stopped being checked while every assertion still read green. A guard that silently measures
+nothing is the same failure it exists to catch, so it now COUNTS: every percentage quoted in any
+reason must bind to a cited field, and one that binds to none fails the build.
+
+**A VENDOR'S MINUS SIGN IS THE MEANING, AND ONE OF THE THREE READERS WAS DELETING IT (2026-08-18).**
+Turning a Lender Price number into one of ours had been written THREE times in
+`src/longterm/lenderprice/`. Two were audited and corrected; the third — `client.js`, the one that
+reads the PRICED RESULT — still carried the original `parseFloat(String(v).replace(/[^0-9.]/g, ''))`,
+and that expression deletes a minus sign. So every negative LLPA the vendor sent came back as its
+positive twin: a price CREDIT of −0.375 read as a CHARGE of +0.375, and a −0.25 lender margin read as
++0.25. Not only for text — the sign is stripped after `String(v)`, so a plain JSON number was flipped
+too. **It stayed hidden because the headline figures take a different road**: `firstNum` uses
+`Number()` and keeps the sign, so the price, the note rate and the LLPA stack TOTAL were always
+right. Only the ITEMISED breakdown flipped — the lines somebody reads to understand why a price is
+what it is — so the total and its own itemisation sat on one screen disagreeing by twice the figure,
+and nothing compared them. **And no fixture had ever sent a negative one**: the existing test carries
+a negative `basePoints` (−3.75), which travels the sign-safe road, beside a POSITIVE itemised
+adjustment — so the suite proved the half that worked. A fixture that only carries the easy sign
+tests nothing about the hard one. The parse is now ONE definition (`lenderprice/parse-num.js`) that
+all three files read: the sign is never stripped, currency formatting is tolerated, and anything else
+is REFUSED rather than salvaged — "12abc3" is not 123, "1e3" is not 13, and a boolean is not a number
+(`Number(true)` is a perfectly innocent 1, the same trap the 1003 mapper documents). Proven through
+the REAL parser on a real-shaped payload rather than on the helper in isolation, because the claim is
+that a credit reaches the screen as a credit; four mutations turn it red, and all 100+ LenderPrice
+and pricing-engine suites pass unchanged, so nothing was traded for it.
+
+**A THING THAT IS NOT A FIGURE NEVER BECOMES ONE (2026-08-18).** Reading a number out of an
+Encompass payload or a Postgres row had been written FOUR times on this side — `application/
+mapper.js`, `file.js`, `locks.js`, `workspace.js` — with four different degrees of care. Only the
+mapper's tested the TYPE, and only the mapper's wrote down why: `Number(null)`, `Number('')`,
+`Number(false)` and `Number([])` are ALL a finite, perfectly innocent 0. The other three did not, and
+it was not theoretical: handed a lock section whose `lockedRate` arrived as the boolean `true`,
+`locks.js` reported a NOTE RATE OF 1%; an empty array in `lockedPrice` reported a PRICE OF 0; `[45]`
+became a 45-day lock term. Confident, plausible, entirely wrong figures on the desk somebody locks a
+loan from, with nothing erroring — that is simply what these conversions do when handed the wrong
+kind of thing, which is why the type test has to come BEFORE the conversion. `src/longterm/num.js` is
+now the one definition for the three that can share it. **The mapper deliberately keeps its own
+copy**: it is held to "requires nothing at all, so it cannot reach a network or a database even by
+accident", which is a stronger and far more checkable property than any argument about what a
+required module happens to contain — and a guard is not loosened to fit a refactor. The cost of that
+decision is a second copy, so it is paid the way this repo pays it everywhere else (the browser twins
+of `dealBasis` and `entity-type`): a test compares the two over the whole battery and fails the
+moment they answer differently. Proven through the REAL lock reader, not the helper in isolation,
+because the claim is that the desk cannot be told a loan is locked at 1%; four mutations turn it red,
+including the twin drifting.
+
+**WHICH LONG-TERM CODE HAS A TEST EVER RUN? MEASURED, NOT ASSUMED (2026-08-18).** Every guard in
+this section answers "is this thing wired"; none of them answered "does any test ever EXECUTE it".
+So all 121 suites were run under V8 coverage and the never-executed spans collected — 132 of them
+over 150 bytes. **The first reporter was wrong and said there were none**, which is the finding
+inside the finding: V8 nests its ranges, so a function nobody calls still sits inside the script's
+own range with a count above zero, and subtracting the outer from the inner erases precisely what is
+being looked for. It reported a clean sweep and could not see a function planted in front of it to be
+found. The rule is that the INNERMOST range wins, and a reporter is not believed until a control it
+was meant to catch turns it red — the same standard the mutation proofs are held to.
+**What it found first was `people/links.js`: never loaded by any suite, let alone run.** Its own
+header calls a confirmed staff link the most consequential row in the long-term build — it decides
+which Encompass login IS which PILOT person, and therefore whose pipeline every long-term file lands
+in and who can open it — and it is live behind `routes/people.js` and `pipeline.js`. Among its
+untested refusals was a pure security boundary: an external TPO broker is a `staff_users` row, and
+linking one would hand an outside firm a long-term pipeline. The module reads well, and that is the
+point — every refusal in it was written from reasoning, which is what a test is for.
+`scripts/test-lt-staff-link-db.js` now exercises confirm, reject and unlink against a real Postgres,
+every named refusal in the words a screen shows, the confirmed-only rule that stops a machine
+suggestion attributing somebody's book, and the partial unique index that is what actually makes
+one-person-one-login true when two admins press the button at the same instant. Five mutations turn
+it red.
+
+**And the second thread: `sync/loans.js syncOnce`, the pass that brings the book in.** The worker
+suite stubs it out — correctly, it is testing the worker — and nothing else called it, so the heart of
+the mirror had never run in a test. `scripts/test-lt-loan-sync-db.js` runs the REAL pass against a
+real Postgres with Encompass and discovery stubbed through `require.cache`, and pins the four
+decisions inside it that are invisible when right and expensive when wrong: **an empty pipeline
+changes nothing** (an empty read is far likelier an outage or a changed filter than seven hundred
+loans vanishing); **a discovery pass never clobbers a figure it did not read in full** (the upsert is
+asymmetric on purpose — the loan NUMBER takes the newest value, the AMOUNT keeps the stored one — and
+an asymmetry that looks like a typo is exactly what somebody tidies); **the budget bounds the pass and
+REPORTS what it left behind**; and **the people steps are best-effort and may never cost the mirror**,
+including that a roster refusal (`{ok:false}`) is reported rather than read as success, because a pass
+printing a confident "0 officers proposed" when it never ran is worse than one that admits it. Four
+mutations turn it red — among them blanking the book on an empty read, and flipping that COALESCE.
+
+**Third thread: `people/roster.js`, the pass that PROPOSES who somebody is — and the lesson that a
+belt-and-braces guard no test can reach is decoration.** The roster mirrors the Encompass user list
+and proposes matches; an admin then confirms one, and a confirmed link decides whose pipeline every
+file lands in. The rule that the machine never overwrites a human's decision is enforced TWICE —
+`matchRoster` refuses to PROPOSE for a decided login, and `writeSuggestions` refuses to WRITE over one
+(`WHERE lt_staff_links.status = 'suggested'`). **Running the whole pass only ever exercises the
+first**, so the first cut of this suite stayed green when that WHERE clause was deleted, while its own
+comment claimed to be protecting it. Same for the deactivation guard inside `writeRoster`: `syncRoster`
+refuses an empty roster before the writer is reached, so `if (seen.length)` is unreachable through the
+pass. Both inner guards are now handed the thing they exist to refuse, directly through `_internals`,
+and the header says plainly which half each assertion proves. Four mutations turn it red — including
+the machine writing `confirmed` instead of `suggested`, and an empty roster deactivating the company.
+
+**Fourth thread: the doors that DO something — and a live defect in the switch the owner asked for.**
+The smoke suite opens every GET door; the doors that take an ACTION had never been opened, so their
+refusals had never been asked for either. Writing that suite found a real one. `PUT /api/lt/me/product`
+passes `keepDefault: true` precisely so that **a person choosing the side that HAPPENS to be the
+company default is still recorded as having chosen** — otherwise the row is deleted as redundant and
+the day an admin moves that default, they move with it. The row was kept. **The reader threw it
+away**: it asked `describe(...).isOverridden`, which answers a different question — is this value
+different from OURS — so a stored choice whose value matched the default read as "no choice", the
+company value won, and moving the company default moved everybody who had deliberately picked the old
+one. Proven end to end before anything was changed: person picks RTL, admin moves the default,
+person is on long-term. The store now records WHICH KEYS CAME FROM A ROW (`isStored`, empty on a
+degraded read, because claiming somebody chose something because the database blinked is worse than
+falling back), and the route asks that instead. `scripts/test-lt-action-doors-db.js` pins it over real
+HTTP — including that a person who never chose still follows the company — plus the sync door's
+ceiling (a caller may ask for a smaller pass and may not ask for an unbounded one: 100,000 clamps to
+200, and a budget that is not a number falls back to the default rather than to zero, because a pass
+that reads nothing looks exactly like a pass that had nothing to read) and the admin gates in front of
+sync, people-sync and settings. Four mutations turn it red, one of them being the defect itself.
+
+**Fifth thread: `sync/discover.js`, the first thing that touches a long-term loan** — and the one the
+loan-sync suite stubs out, correctly, because it is testing the sync. Two of its readers are the kind
+that go wrong quietly. **The freshness stamp**: `"8/14/2026 10:48:18 AM"` is not something
+`new Date()` parses the same way everywhere, and it is what the sync PAGES ON — a wrong one silently
+skips loans, which looks exactly like a quiet pipeline — so the boundaries every hand-written
+12-hour parser trips over (12 AM is midnight, 12 PM is noon) are now asked, along with the ISO
+fallback and nine shapes that must read as ABSENT rather than as a guess. **The amount**: absent,
+empty and unreadable all answer null and never 0, because a zero loan amount is a fact and "we could
+not read it" is not — and `Number('')` is 0, which is how the two get confused. Also pinned: the
+older v1 row shape is still read rather than silently skipped, a row with no id is dropped, and
+hitting the page cap is REPORTED, because a silent short read looks exactly like a pipeline that has
+shrunk — which is what the empty-read guard downstream exists to refuse. Four mutations turn it red,
+and one of them taught its own lesson: written against the CONSTANT's name rather than the
+parameter's it silently applied nothing and reported a clean pass, so a mutation is asserted to have
+landed before its result is believed.
+
+**A SETTING IS EITHER READ BY SOMETHING OR SAYS IT IS NOT (2026-08-18).** §7's promise to a buyer is
+that nothing about how WE do things is hard-coded. Forty-three of the 63 settings were declared ahead
+of the code that would read them, so the settings screen offered knobs that changed NOTHING and said
+so nowhere — worse than not offering them, because a silent knob is believed: somebody renames an
+eFolder status, saves, sees no error and assumes the system now knows. Each of those now carries the
+reason it is not in use, the screen prints it and refuses to let anybody type into it, and
+`scripts/test-lt-settings-wired-pure.js` fails the build on a setting that is neither read nor honest
+— in BOTH directions, because a stale "not in use" on one somebody has since wired is its own lie.
+Four reasons cover them: *the number is pinned to the measured field dictionary*, *the rule is settled
+in code where the census test can hold it*, *that part is not built*, and *the connection is
+configured where the credentials live*. Two settings are unused DELIBERATELY and say so — a condition
+is done when Encompass says so, never when its status word appears in a list we keep.
+
+**One of them was a real defect and was WIRED rather than excused.** `efolder.receivedStatuses` — the
+words that mean a document is in hand — was declared in the registry while `conditions/read.js` kept
+its own four-word list, the exact hard-coded tenant vocabulary the settings rule exists to stop. The
+day a buyer renames a status, every document in it goes onto a chase list it has already left. The
+file screen and the pipeline's own count now read the same configured words; an empty list falls back
+to the four measured across 20,569 live documents, and an unfamiliar word still counts as OUTSTANDING,
+because a word nobody recognised is not evidence that a document arrived.
+
+**THE MILESTONE CATALOG IS READ FROM THE TENANT, NOT FROZEN (2026-08-18).** `lt_encompass_milestones`
+was a PHOTOGRAPH: db/547 seeded it from a 2026-08-14 export and re-asserts those nineteen rows on
+every boot, and nothing ever read the tenant's live catalog although the read-only client carried the
+verified call. That matters more than a stale reference list usually would, because §4.2's stepper
+marks progress POSITIONALLY — a loan at a milestone the catalog does not carry leaves the current
+position at -1 and marks NOTHING reached, so the whole bar goes blank rather than slightly wrong. The
+day a buyer adds a step, every file at that step loses its stepper and nothing says why. The sync pass
+now refreshes it, and five things are deliberate: the ARCHIVED ones are asked for, so *archived in
+Encompass* and *gone from Encompass* stay two different facts; a milestone that disappears is
+ARCHIVED, never deleted, because loans passed through it; an EMPTY answer changes nothing, because an
+outage is not evidence that a buyer retired every step they have; a read that filled its page archives
+nothing, because a milestone missing from a FIRST page is not a milestone that is gone; and a detail
+read that failed leaves the role, the days and the assignment rule alone rather than writing nulls
+over a catalog that was right. It skips itself unless a day has passed — nineteen milestones is twenty
+reads against a budget shared with every other integration, and the catalog changes about never.
+
+**WHO BOUGHT THE LOAN IS FILLED AND SHOWN — STAFF ONLY (2026-08-18).** db/549 built the identity
+chain the owner said must *"survive like crazy"* — the shorthand name typed early, the accurate name
+added later, the investor's OWN loan number (the only key shared with their system), their email
+domain and the funding channel — with every field number already measured and one of them corrected
+against the owner's own recollection. Nothing wrote a row and nothing read one. It now fills from the
+payload the loan read already holds, at no extra call, and the file screen carries a *Who bought this
+loan* section, greyed with a reason until Encompass names somebody. Four things are deliberate: the
+name is NEVER the key (117 spellings resolve to about thirty companies, so the canonical key comes
+from the one investor definition and an unrecognised spelling resolves to nothing rather than to a
+guess); the reference number is VALIDATED, because a placeholder stored there looks like an answer;
+every column is COALESCEd onto what we hold, so a payload that goes quiet can never take their loan
+number with it; and the funding channel is kept apart from the buyer, because HOW a loan is funded is
+a different question from WHO bought it. **It is internal, and that is rule 10, not a preference** —
+the borrower's own screen is built FOR the client rather than filtered from a staff payload, and a
+test asserts it never reads the table at all.
+
+**A DEBT KNOWS WHICH RENTAL IT IS SECURED ON.** Encompass hangs the link on the debt
+(`vols[].reoProperty.entityId`) and it is resolved to our own row as the 1003 is mirrored, so a
+mortgage covered by a property's own rent can be read together with that rent. On a DSCR file that is
+the difference between two underwriting answers. A link that resolves to nothing stays empty rather
+than guessing — the commonest reason is honest: a debt secured on the SUBJECT, whose REO row this
+mirror deliberately does not keep.
+
+**A FILE YOU MAY NOT SEE ANSWERS EXACTLY AS A FILE THAT DOES NOT EXIST (2026-08-18).** Not a polite
+403 — the same 404, the same words, byte for byte. A different answer for a real file turns the
+loan-id space into an oracle: anybody with a scoped session could walk it to learn what is in a book
+they may not see, without ever opening a file. The rule therefore is not "return 404" but "the two
+answers are indistinguishable", and that is what the test asserts, because a suite that checks the
+status code alone would pass a 404 whose *body* named the loan. The same reasoning is why the
+reassignment door is admin-only rather than merely tidy: the pipeline scope matches
+`override_staff_id`, so writing one HANDS SOMEBODY A FILE. That is now proven as the sequence it
+actually is — a scoped officer is refused the write and the file stays invisible to them afterwards,
+and then the same write by an admin is shown to genuinely move the file, in the LIST as well as
+through a direct link. The two halves of the rule live in different languages (`onFileSql` in SQL for
+the list, `mayOpenLoan` in JS for one file), so both are asked; asserting only the direct link proved
+the half that is not the scope, and a mutation of the scope stayed green until the list was added.
+
+**THREE FRONT DOORS, ONE SESSION KIND EACH (2026-08-18).** What keeps a client off the long-term side
+is one expression at the mount seam — `requireStaff`, i.e. `kind === 'staff'` — and it lives in RTL
+code. A TPO is a REAL `staff_users` row: external, at a firm, but the same table, separated only by
+the session kind. "A broker is a staff row after all" is a refactor somebody could make in good faith,
+and it would open every long-term door to an outside brokerage and take the investor name with it.
+`audience.js` is the BACKSTOP for free text a human typed; it is not the door. Twenty-two long-term
+doors are now knocked on by a live borrower session and a live broker session, paired with the door
+each of those sessions IS meant to open, so the suite proves a wall rather than a build in which
+nothing answers. Note the failure mode this caught in its own first draft: a borrower token minted
+with no login row is REVOKED, so every refusal went green for the wrong reason — a wall knocked on
+with a dead key has not been tested.
+
+**ONLY AN EXPLICIT TRUE IS A PAYOFF (2026-08-18).** A liability marked as being paid off comes OUT of
+the borrower's monthly obligations, so a truthy-looking value read as a yes moves the very ratio the
+loan is decided on. `1`, `"true"`, `"Y"` and an object are each NOT a payoff; a real `true` still is.
+The same reader keeps four digits of the account number and drops the rest, and the test searches the
+WHOLE mapped row for the original rather than the field meant to hold it — the failure worth catching
+is the copy somebody adds later, not the field already reviewed. And both `vols[]` and the modern
+`liabilities[]` are read: `vols[]` is where this tenant's tradelines live, and reading only the
+workhorse would silently halve somebody's debts the day the other starts filling, which makes a file
+look better than it is.
+
+**THE COVERAGE SWEEP IS IN THE REPOSITORY — `scripts/lt-coverage-sweep.sh` and
+`scripts/lt-coverage-report.py` (2026-08-18).** It runs every long-term suite under V8 coverage and
+lists the code no suite has ever executed; it is a DISCOVERY tool and never fails a build, because
+most of what it lists is legitimately untested vendor code and deciding what is worth covering is a
+judgement. It found the Condition Center's two dead doors and the canary endpoint. It lived in a
+temp directory until now, which meant every coverage claim on this branch was unreproducible by
+anybody else — the method was documented and the tool was not.
+
+Three things in it were learned the hard way and are written into the files so they are not
+re-learned: **the innermost V8 range wins** (an uncalled function sits inside the script's own
+range, which has a count, so subtracting the outer erases the very thing being looked for — the
+first reporter returned a clean sweep and could not see a function planted for it to find); **it
+refuses to run without a database** (the db-gated suites skip cleanly, their coverage vanishes, and
+the report comes back LONGER — 229 spans against a stopped Postgres, 96 against a running one, with
+nothing saying which was which); and **it never truncates silently** (it printed the 25 largest
+spans and the total, so a 261-byte planted control was found and simply not shown, which read
+exactly like the reporter being blind to it). Both guards are control-proven: the refusal fires on
+an unreachable database, and the report names a planted function and stops naming it when the plant
+is removed.
+
+**A PATH BEHIND A DEFAULT-OFF SWITCH HAS NEVER BEEN RUN BY ANYBODY — SWEPT 2026-08-18.** This is
+how the Condition Center's two dead doors survived from the day they shipped: with
+`conditions.enabled` unset the route returns before the broken line, so every test and every human
+had only ever walked the switched-off path, and the failure was waiting for the day somebody turned
+the feature on. The class is worth naming because the symptom is *nothing* — the feature looks
+built, the tests are green, and the fault is scheduled for whenever it will be least welcome.
+
+Every long-term switch was then swept for the same shape. The full result, so nobody repeats it:
+
+| Switch | State | Verdict |
+|---|---|---|
+| `conditions.enabled` | off | **Two of three doors 500'd on every request.** Fixed; all three now driven with it ON. |
+| `borrower.longTermVisible` | **on** since 2026-08-17 | Behaviour correct and both paths tested — but FOUR comments still said it ships off, including one directly above `default: true`. Corrected. |
+| `efolder.writesEnabled` | off | Safe: read by NOTHING in production, so turning it on does nothing. There is no write path to enable, which is the intended state. |
+| `pipeline.inactiveFolders` | empty | Correct: `loadPipeline` reads it once and threads it into both builders, and the configured path is tested. |
+| `LP_DIAG_TOKEN` | unset | Correct: 404s when unset, constant-time compare, all four cases tested on the gate itself. |
+| `LT_SYNC_ENABLED` | off | Correct: on/off word parsing, both passes, one-half-fails, and overlap protection all tested. |
+
+The rule that falls out: **a switch is not finished until something has run the side it does not ship
+in.** Four of the six were already fine, which is the point of writing the sweep down rather than the
+findings alone — the next person can see the class was checked exhaustively rather than sampled.
 
 **Three measured findings that must survive into the code**, because each one produces a
 confidently wrong number if forgotten:
@@ -285,13 +689,34 @@ LTV · Milestone · Days in milestone · Loan officer · Processor · Conditions
 The **Conditions column does real work on its own** — a red count of what is outstanding
 means a user triages urgency from the list without opening a file.
 
-**Two of those columns cannot be sourced yet, and they say so on the screen rather than
-rendering empty.** *Conditions* waits on the Condition Center (phase 5, deferred). *Expected
-closing* has no closing date on `lt_loans` at all — it is in the setting's own default, which is
-exactly how a column nobody can fill gets configured by accident, so the resolver drops it and
-names the reason. Everything else on this list is live, plus a **Stage**, an **At milestone** age
-and an **Updated** column the build added. When a closing date is mirrored, the column becomes
-one entry in `src/longterm/pipeline-columns.js` and nothing else.
+**ONE of those columns cannot be sourced yet, and it says so on the screen rather than
+rendering empty.** *Expected closing* has no closing date on `lt_loans` at all — it is in the
+setting's own default, which is exactly how a column nobody can fill gets configured by accident,
+so the resolver drops it and names the reason. Everything else on this list is live, plus a
+**Stage**, an **At milestone** age and an **Updated** column the build added. When a closing date
+is mirrored, the column becomes one entry in `src/longterm/pipeline-columns.js` and nothing else.
+
+**CONDITIONS IS NOW LIVE — behind the Condition Center's own switch (2026-08-17).** It waited on
+phase 5, which is built, so the count is sourced. Four things about it are deliberate:
+
+- **It is drawable only while `conditions.enabled` is ON**, asked of the settings at resolve time
+  rather than declared as a constant. The mirror is empty until the feature is on, so the column
+  would otherwise print a zero on every row — and a zero there reads as *this file is clear*,
+  which is a claim rather than a blank. The reason names the switch, so the answer is "turn it on"
+  and not "ask a developer". A strict `=== true`: a settings load that failed draws one column
+  fewer rather than a column of confident zeros.
+- **A loan the sweep has not reached says "not read yet"**, never 0 — the same distinction between
+  *we do not hold this* and *there is nothing* that runs through the whole long-term side.
+- **It counts whichever feed is this file's work**, using the centre's OWN `face` rule and its OWN
+  outstanding rules. Every Encompass condition in this tenant sits on a loan that is already sold
+  while a live file's work is its eFolder needs list, so a column that counted only conditions
+  would read zero down the whole working book. The cell says which one it counted.
+- **The counting happens in JavaScript, not in SQL.** "Outstanding" is a rule that lives in
+  `conditions/read.js`; a SQL predicate in the pipeline query would be a second copy, and the day
+  somebody adds a status word the list and the file would disagree about the same loan in front
+  of the person deciding what to work on. The query groups by status and returns a handful of rows
+  per loan; the existing functions decide. It is the ONE column whose field the pipeline query
+  does not select — the route attaches it, and only when the column is actually being drawn.
 
 **Saved views** are per-user rows in an `lt_pipeline_views` table, not a code change.
 
@@ -417,29 +842,67 @@ because their user *is* the broker; ours cannot. `AUDIENCE-RULES.md` outranks an
 
 ## 5. The Condition Center
 
-> ### DEFERRED — owner-directed 2026-08-14
+> ### THE READ SIDE IS BUILT — behind the switch (2026-08-17)
 >
-> *"put the condition center in side for now that center should say colming soom continie
-> building the rest non stop"*
+> The deferral of 2026-08-14 (*"put the condition center in side for now that center should
+> say colming soom continie building the rest non stop"*) is **half lifted**: the READING is
+> built, and the switch it was deferred behind is the switch that turns it on.
 >
-> **The Condition Center is set aside.** It keeps its place in the shell — the nav entry and
-> the loan-workspace section both exist — and both render a **"Coming soon"** panel. Nothing
-> else changes:
+> **What now exists** — mirror tables `db/612` (`lt_conditions`, `lt_condition_comments`,
+> `lt_documents`, `lt_document_attachments`, `lt_document_conditions` + four freshness columns
+> on `lt_loans`); a read-only sync (`src/longterm/conditions/sync.js`) called from BOTH the
+> whole-book pass and its own admin-only door `POST /api/lt/sync/conditions`; a read layer
+> (`read.js`) and a GET-only router; and the screen `LtConditionCenter.jsx` on the loan.
+> The CONVERSATION on a condition is mirrored too, read only where Encompass's own
+> count says there is one (so a quiet loan costs no extra call) and shown beside the
+> condition — INTERNAL only, because a comment is our own reasoning about the file.
+> Its payload shape is recorded as UNVERIFIED (`COMMENT_SHAPE`), and the mirror is
+> written to fail loudly rather than duplicate if we turn out to be wrong about it.
 >
-> - **No `lt_conditions*` tables are created yet.** A migration that ships a table nobody
->   reads is a schema we would have to live with before we know the shape is right; the
->   research below (§5.0–§5.5) stays as the design of record for when it is taken up.
-> - **No condition sync runs.** The read-only sweep that settled §5.0 is a research script,
->   not a worker, and it stays that way.
-> - **The placeholder is a SETTING, not a hard-coded screen** (`conditions.enabled`,
->   default `false`). Turning it on is what un-hides the real screen when it is built — so
->   the deferral is a switch, exactly like every other customisation in §7. A buyer who
->   never wants it leaves it off.
-> - **Nothing downstream may depend on it.** No stage, no access rule, no pipeline column
->   and no settings default may read a condition; if a later phase wants one, it waits.
+> **AND THE FILES THEMSELVES, not a count of them (2026-08-17).** `lt_document_attachments`
+> was filled from the day the eFolder read shipped and READ BY NOTHING: the centre said
+> "3 files" and never named one, so the owner's *"with all the documents in there linked"*
+> was a number. Each document now carries its files — name, pages, size, who added it and
+> when — under the condition it answers AND on the eFolder needs list, which are the two
+> places somebody asks whether the right paper is in. Three things about it are
+> load-bearing:
 >
-> Everything below is the plan for the build, held in place, not deleted. When the owner
-> lifts the deferral, §8's phase order picks it up where it was.
+> - **A file that has left Encompass leaves the list.** Conditions retired and documents
+>   retired; attachments never did, so deleted paper stayed listed for ever — invisible
+>   while the screen showed a number and a plain lie the moment it shows the names.
+>   `retireMissingAttachments` is that sweep, and like everything in the eFolder it marks
+>   `is_removed` rather than deleting: the record that a document was once here has to
+>   survive.
+> - **Silence is not an answer.** The sweep runs ONLY where the payload actually stated the
+>   file list (`attachmentsStated`). An empty list is Encompass saying the slot is empty —
+>   an ordinary, meaningful state — while an ABSENT key says nothing at all, and reading
+>   the second as the first would strip every file off every document at once. Whether this
+>   endpoint can omit the key is UNVERIFIED, so the reader reports what it saw and the
+>   caller refuses to act on nothing.
+> - **The count is of what is THERE.** `lt_documents.attachment_count` records what the
+>   payload LISTED, removed files included, so a slot whose only file had been deleted read
+>   "1 file" beside an empty list. The screen counts the live rows instead. A filename and
+>   an uploader are free text a human typed, so both go through the one investor scrub —
+>   a file list is exactly where a name reaches a borrower.
+>
+> The pointer into Encompass (`encompass_uri`) is deliberately NOT sent to the screen:
+> PILOT has no route that opens one, and a link that cannot be clicked is worse than none.
+> Building that download is a decision about where borrower paper flows, and nobody has
+> asked for it.
+>
+> **What has NOT changed:**
+>
+> - **`conditions.enabled` still defaults to `false`**, and it is checked in the SYNC as well
+>   as on the screen — so on every deployment as it stands nothing is read, nothing is
+>   written, and the "Coming soon" panel is the honest answer rather than a placeholder shown
+>   while the data quietly flows.
+> - **The eFolder UPLOAD is still BLOCKED.** It is a WRITE to Encompass, its shape is recorded
+>   as UNVERIFIED on `docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md`, and the read side carries no
+>   control that could perform one. §5.6 stays the plan, not the build.
+> - **Nothing downstream depends on it.** No stage, no access rule, no pipeline column and no
+>   settings default reads a condition.
+>
+> Everything below stays the design of record; §5.6 (the write side) is what remains.
 
 The owner called this a major part of the build, and the reference portal's own condition
 screen is the interaction the whole product is judged on.
@@ -704,6 +1167,40 @@ Writes `lt_loans` and its sections, `lt_loan_contacts`, milestones. Records
 > fields as null that the full loan read populates. Never populate a decision-bearing
 > snapshot from a pipeline row.
 
+> **"Refreshing on a cadence" is now literally true — `src/longterm/sync/worker.js` (2026-08-17).**
+> Until it was written, every long-term mirror — the loans, their stage, their team, their lock,
+> the whole 1003, the Condition Center — filled ONLY when a human opened the Sync screen and
+> pressed a button, so a loan changed in Encompass overnight stayed stale until somebody
+> happened to notice. That is the same "built but never triggered" failure as a mirror with no
+> writer, one level up: every writer existed and nothing ever called them.
+>
+> It is **OFF by default** behind `LT_SYNC_ENABLED`, exactly as `ENCOMPASS_ENABLED` and
+> `CLICKUP_OUTBOUND_ENABLED` gate their own workers — and it SAYS so in the log either way,
+> because a worker that is silently off looks exactly like one that is broken. With the switch
+> off it schedules nothing, reads nothing and costs nothing, so it ships to every deployment as
+> it stands and changes none of them. `LT_SYNC_POLL_MIN` (default 20) and
+> `LT_SYNC_FIRST_RUN_SEC` (default 90) tune it.
+>
+> Four properties are load-bearing and must not be "simplified" away. **It is bounded by the
+> passes it calls, never by a limit of its own** — `loans.syncOnce` and `conditions.syncOnce`
+> each own their read budget and each report whether there is more to do; a worker with its own
+> idea of "how much" would be a second place for that to be got wrong on a tenant whose API
+> budget is shared with every other integration. **A pass never overlaps itself** — a tick that
+> lands while the previous one is still reading is SKIPPED, not queued, because queueing would
+> double our share of that shared budget and keep doing it on a slow tenant. **The two halves
+> are independent** — they read different things and fail for different reasons, so a loan pass
+> that threw still leaves the conditions read running, and each failure is reported rather than
+> swallowed. **Every timer fires a WRAPPED tick** — an unhandled rejection inside a timer takes
+> the whole process down, and a sync that kills the server is worse than a sync that misses an
+> hour.
+>
+> It is started by `src/longterm/index.js` — the ONE module `src/server.js` is permitted to
+> import — and NOT from `src/server.js` itself, which would be a second seam into Long-Term and
+> is exactly what the separation gate refuses. It schedules only reads: Encompass stays one-way.
+> Proved by `scripts/test-lt-sync-worker-pure.js` (no database, no tenant — both syncs are
+> replaced in the module cache so the real pass runs end to end against stubs, because a source
+> grep would prove a call exists, not that it happens).
+
 ### Phase 3 — The pipeline and the switch — **BUILT**
 `app-v2/src/longterm/**` comes into existence: the shell, the product switch, the pipeline
 table, filters, saved views, scope. **Ends with:** an officer signs in, flips to Long-Term,
@@ -809,17 +1306,50 @@ disagree; and the lesson worth carrying into phase 8 is that **a swallowing catc
 name OR a wrong value into a confident empty answer, and only a real row of the real type can
 tell the two apart from "there is genuinely nothing here".**
 
+**AND THEN THE SAME CLASS, ONE LAYER DOWN: none of it had a writer (2026-08-17).** db/549 shipped
+the whole URLA spine, `file.js` read all ten sections off it, the summary rail read the property
+and the pipeline LEFT JOINed it for its address and LTV column — and NOTHING had ever written a
+row into any of those tables. Every one of those surfaces answered blank on every loan, from the
+day each shipped. `src/longterm/application/{mapper,sync}.js` is that writer: the subject
+property, the borrower pairs, the people in them, and their addresses, other income, real-estate
+schedule, assets and debts — all read off the loan payload `sync/loans.js` ALREADY fetches, so it
+costs no HTTP call, no fieldReader id and no pacing delay. db/613 adds the `encompass_id` each
+child row is keyed on, because without one a second read of a nine-property schedule could only
+ever ADD. The Social Security number is never written (`ssn_last4` only — the encrypted column
+waits on an authorized crossing to the RTL crypto module, and no screen is waiting on it), and
+every field path is pinned to the field dictionary's own measured `jsonPath` after three
+plausible guesses turned out to be columns that could never have filled.
+
 **One more, from the screen rather than the data.** A grid with no declared column gets an
 implicit `auto` one that sizes to its content, so a section carrying a table wider than a phone
 stretched its whole card to 759px inside a 390px screen — and `html{overflow-x:clip}` then hid
 it, so the page reported no sideways scrolling while half of every row was cut off and
 unreachable. Measuring `documentElement` is what made it invisible; measure `document.body`.
 
-### Phase 5 — The Condition Center (read) — **DEFERRED (owner-directed 2026-08-14)**
-Set aside. The nav entry and the workspace section ship as a **"Coming soon"** placeholder
-behind the `conditions.enabled` setting (default off); no tables, no sync, no dependants.
-The design is held in §5. **Ends with:** nothing — this phase does not run until the owner
-lifts the deferral, and the phases below moved up one to take its slot.
+### Phase 5 — The Condition Center (read) — **BUILT, and PARKED OFF (owner-directed 2026-08-23)**
+The mirror (`db/612`), the read-only sync, the GET-only routes and the screen — both feeds:
+this loan's conditions with the documents that answer each one, and the eFolder needs list.
+`conditions.enabled` still defaults to OFF and is checked in the SYNC as well as on the
+screen, so an untouched deployment reads nothing and still shows "Coming soon". The eFolder
+UPLOAD is a WRITE and stays blocked on the pad. **Ends with:** a loan can answer "what is
+this file waiting on?" from Encompass's own record, and nothing can write back.
+
+**A CORRECTION, 2026-08-18.** Two of the Condition Center's three doors — the CENTRE itself and the
+eFolder needs list — returned `{"error":"server error"}` for every loan, on every request, from the
+day they shipped. `openable()` loaded the settings into its own scope and handed back the loan
+alone; both handlers then passed a bare `settings` to their reader, a free variable that did not
+exist there, and each threw a ReferenceError into its own catch.
+
+Nothing noticed because the Condition Center ships OFF. With `conditions.enabled` unset, `openable`
+answers `{enabled:false}` and returns before the broken line is reached — so every test and every
+human had only ever seen the switched-off path. The two dead doors would have failed on the day the
+owner turned the feature on, and not one moment before.
+
+A test DID guard the broken line: `test-lt-settings-wired-pure.js` asserts the call appears in the
+file, by regular expression against the source. It proved the characters were present and stayed
+GREEN against the broken code, because it never ran it. `openable` now returns `{loan, settings}` so
+a handler cannot ask for the settings without having them, and `test-lt-conditions-doors-db.js`
+drives all three doors with the feature switched ON — the only thing that could have caught this.
 
 ### Phase 6 — Settings — **BUILT**
 `lt_settings`, both screens, and the pass that moves every value this plan named as a
@@ -839,6 +1369,15 @@ settings, **so it can edit itself out of reach**. Saving `['loan_officer']` lock
 administrator out of the screen that undoes it, leaving a hand-written database row as the only way
 back. `super_admin` is now a floor, added to the list whatever the setting says — a gate whose own
 remedy nobody at the company can perform is a dead end.
+
+**Forty-three of the sixty-three declarations changed nothing, and now say so.** A setting nothing
+reads is worse than a missing one, because it is believed: somebody renames an eFolder status, saves,
+sees no error and assumes the system knows. Each unwired declaration carries a `notWired` reason, the
+screen prints it and refuses the box, and a build guard fails if a declaration is neither read nor
+excused — so the honest count can never drift back into a comment. **The number is meant to fall.**
+The eFolder "received" statuses were wired in the same pass (a real defect — the reader kept its own
+four-word list), and the two DSCR thresholds were wired next, taking it to **41 of 63**. Every entry
+retired from that list is a promise the registry stops making on credit.
 
 ### Phase 7 — Locks and pricing (read) — **BUILT**
 `lt_locks`, `lt_lock_events`, the lock section and the pipeline column. **Ends with:** the
@@ -916,6 +1455,34 @@ the single file and the officer filter give one answer. **Nothing moved on any e
 file**: with `override_staff_id` NULL the expression IS `staff_id`, asserted rather than
 argued. The reassign control states the consequence in words, so nobody presses it thinking
 it only adds somebody.
+
+### What is PARKED — owner-directed 2026-08-23
+
+Three things are set aside deliberately. None of them is finished and none of them is
+abandoned; this section exists so that "parked" can never later be read as "done".
+
+**1. Switching the Condition Center ON.** Phase 5's read side is built and lands with
+`conditions.enabled` still defaulting to **false**, checked in the SYNC as well as on the
+screen — so an untouched deployment reads nothing from Encompass and still shows "Coming
+soon". The code is in place and proven; the decision to turn it on is the owner's and has not
+been made. **Still owed:** the switch, and a first real file watched through it.
+
+**2. Phase 8's other half — the eFolder write.** Unchanged and still blocked, for the reason
+§5.5 gives: the four-step upload path is known by NAME only, its request and response shapes
+are recorded UNVERIFIED on `docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md`, and the pad authorises
+exactly one write in this repository — not this one. `efolder.writesEnabled` exists and
+defaults to false. **Still owed:** verify each shape against the live tenant, write the
+verified shapes into the pad, then build one guarded writer the CI gate can name by path.
+The v1 attachment endpoints are **sunset in ICE release 26.3**, so this verification has a
+clock on it that the rest of the parked work does not.
+
+**3. The real lock desk (§6.3).** What ships is the read-only mirror — the lock posture of
+every loan, visible and current. Pricing scenarios, margin, extensions priced against a rate
+sheet, worst-case pricing and a pull-through view are a separate build with its own
+product-and-pricing engine, and the owner has said separate agents will do that work.
+**Still owed:** all of it. This plan hands them the mirror, the data model and the surface to
+build into, and nothing more.
+
 
 ---
 
@@ -1001,8 +1568,10 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 
 **Still open:**
 
-5. **§5.0 — do conditions exist in this tenant or not?** Two of our own measurements disagree.
-   This is the largest open question in the plan and it blocks phase 5.
+5. ~~**§5.0 — do conditions exist in this tenant or not?**~~ **SETTLED 2026-08-14** by a
+   read-only sweep, and recorded in §5.0: they exist, and they are a POST-PURCHASE artifact.
+   The four v1 routes answer `200 []` on every loan — an empty 200 is not proof of absence —
+   while the v3 Enhanced Conditions resource answers. Phase 5's read side is built on it.
 6. **ICE entitlement — REVISED 2026-08-16. The owner's objection was right, and the
    likeliest cause is ours, not theirs.** 68 endpoints answer 403, including the loan-folder
    list, milestone logs, the v3 associates roster and **69 of the 91 Milestone Completion
@@ -1030,12 +1599,66 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
    real borrower PII. This matters before anything writes.
 8. **The ten files** carrying a 12- or 24-month interest-only period on the plain 30-year
    program — real short-I/O deals, or values left behind from a file that started as a bridge?
-9. **The loan doc type stores `DSCR` on 486 files**, which is not a valid code — and the
-   tenant's base Milestone Completion rule is conditioned on Doc Type = "No Documentation",
-   so those files never switch those requirements on.
+
+   **RE-MEASURED 2026-08-18 and the ten HOLDS**, which is worth saying because the question
+   beside it did not. Field 1177 `loan.regulationZ.interestOnlyMonths`, 297 loans carrying a
+   value: **12 months → 200, 24 months → 63, 120 months → 33, 1 month → 1**. The fill rates
+   separate the two books cleanly — 100% of the 251 short-term loans carry an I/O period
+   (a bridge is interest-only, so that is the product working), against 8.8% of the 490
+   long-term ones, about 43 files. Of those, **33 sit at 120 months — ten years of interest
+   only on a thirty-year loan, which is the ordinary DSCR shape and not a question at all.**
+   43 − 33 leaves about ten at 12 or 24 months: the plan's number, arrived at independently.
+
+   **And one file says its interest-only period is ONE MONTH.** That is not a product; it is
+   almost certainly a keystroke, and it is worth looking at in the same pass as the ten.
+
+   **PILOT can answer this itself the moment the book is synced** — `interest_only_months` is
+   mirrored on `lt_loans` and the term months beside it, so "which long-term files have a
+   short I/O period" is one query against our own tables rather than anything asked of
+   Encompass. What nobody here can answer is whether those ten are deliberate: that is the
+   owner's, and it is the difference between a product we should be able to price and a
+   value left behind when a bridge file was re-cut as a rental loan.
+9. ~~**The loan doc type stores `DSCR` on 486 files**~~ — **RE-MEASURED 2026-08-18, and it is
+   nine, not 486.** The number was right and attached to the wrong value: `NoDocumentation`
+   is on 484 files, and that is the VALID code the base rule wants. Counted straight off the
+   census (`field-dictionary.json`, 772 loans), field 2867 `loan.rateLock.loanDocumentationType`
+   — 750 observations: **`NoDocumentation` 484**, `Fix & Flip` 245, `FullDocumentation` 10,
+   **`DSCR` 9**, `Alternative` 1, `fix & flip` 1. Field MORNET.X67
+   (`loanProductData.loanDocumentationType`) agrees: NoDocumentation 488, Fix & Flip 244,
+   DSCR 5.
+
+   **So the long-term book is modelled correctly and the base rule DOES fire on it.** Rule #12
+   is conditioned on `Loan Doc Type is No Documentation` and carries the 117-field long-term
+   core set; the DSCR cohort is 490 loans and 484 of them carry exactly that code. What does
+   NOT satisfy it is 255 files carrying a value Encompass's own allowed list does not contain
+   — and 246 of those are `Fix & Flip` / `fix & flip`, which is the SHORT-TERM book (the
+   FIXFLIP cohort is 251), where this rule was never meant to apply.
+
+   **What is left for the owner is small and specific: nine long-term files whose doc type is
+   the literal word `DSCR`.** Encompass cannot act on it, so those nine alone miss the
+   117-field requirement set the other 484 get. It is a data-entry correction in Encompass —
+   PILOT reads that field and cannot write it — and PILOT does not mirror the column today,
+   so naming the nine on a screen would be a new column, a writer and a reader. Worth doing
+   only if the owner says those nine matter; **whether a doc type is worth chasing is a
+   business judgement, not one to infer from a field name.**
+
+   The lesson is the one this side keeps re-learning: the original line quoted a real number
+   from a real table and hung it on the neighbouring row. A measurement is only a measurement
+   while it still names what was counted.
 10. **Do long-term files appear in the RTL dashboards and KPIs**, or are the two books counted
-    separately?
+    separately? **MEASURED 2026-08-18 — today they are separate, and by construction rather than by
+    anybody's intention.** No file outside `src/longterm/` references any `lt_` table, and every
+    write `src/longterm` makes is to an `lt_` one — so long-term data is not merely absent from the
+    RTL dashboards, it is unreachable from RTL code. A long-term loan never becomes an
+    `applications` row, which is what those numbers count. That is the separation rule working, so
+    the measurement settles what IS, not what SHOULD be: whether one company wants one set of
+    numbers over both books is still the owner's answer, and merging them is a READ-layer job (§9's
+    front-end-may-show-both rule), never a join.
 11. **The underwriter's long-term access** (see item 2) — entire pipeline, or their own files?
+    **LEFT ASSUMED, owner-directed 2026-08-23.** Put to the owner and deliberately not settled:
+    the behaviour stays as the plan assumes — the entire pipeline, matching their RTL access —
+    and this caveat stays standing rather than being quietly retired. Nothing in code changed.
+    Narrowing it later is a change to the role set `access.onFileSql` reads, plus a test.
 12. **A webhook subscription already exists on this tenant** pointing at
     `automations.drivekosher.com` for `milestone` and `milestoneupdate` events. It is not ours.
     Long-Term would need its own subscription — which is a **write** to Encompass configuration
@@ -1100,8 +1723,10 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     now shows the owner their own folders with a count each; picking them is a few clicks and no
     code change.
 
-    **What is still needed is the list of folder names and which of them mean the deal is over** —
-    one answer from the owner, typed into one setting, no code change.
+    (A second closing paragraph here asked for "the list of folder names" as well — left behind by
+    the 2026-08-17 correction, and asking for the very thing that correction says we already have
+    and already show. Removed 2026-08-18. It is the same failure the item is about: a sentence
+    outliving the fact it described.)
 
 14. **ANSWERED (owner, 2026-08-17) — a reassignment MOVES the file within that role, and
     every role is its own slot.** The owner's words: *"if you reassign the Loan Coordinator,
@@ -1126,7 +1751,130 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     another role"), so nobody presses it thinking it only adds somebody. One predicate, no
     migration.
 
+15. **RE-MEASURED 2026-08-18 — half of this question was asked on a belief the census
+    disproves, and the flood half is now ONE sentence from the owner rather than a reading
+    trip.** Two of the knowingly-empty columns are the owner's to unblock (§3, `unsourced.js`),
+    and both reasons were re-checked against the census rather than re-read.
+
+    (a) **The entity — still open, and the numbers are firmer.** `CX.LLCNAME` / `CX.LLCSTATE` /
+    `CX.LLCCORP` are filled on 4 long-term files (0.8%) — confirmed. Field 1867 is free text on
+    38.0% and URLA.X138 is a vesting TYPE on 43.9% — both confirmed. What was WRONG is field 33
+    "Manner Held": this said staff type the vesting entity's name into it *"about half the
+    time"*, and neither number in that sentence is a measurement. Measured: it is filled on
+    **2.9% of long-term loans (14 files)**, and of the 19 values it was observed carrying across
+    the whole census **15 are an entity name** — and **not one of the 19 is on the field's own
+    allowed list**, so the dropdown's declared vocabulary is used by nobody. That makes field 33
+    a worse candidate than it read as, not a better one: it carries an entity name most of the
+    time it is filled, and it is filled almost never. Which field IS the entity remains a
+    business rule and is still one answer from the owner.
+
+    (b) **The flood determination — the reason for this question was FALSE, and it is worth
+    reading why, because the shape recurs.** It said field 541's six values *"were withheld from
+    the census by its own PII policy — so reading it as a yes/no would be guessing a vocabulary
+    rather than reading one"*, and asked for one read of a live loan in each state. The census
+    holds all six, and always did. Field 541 (`closingDocument.specialFloodHazardAreaIndictor`,
+    labelled **"Property Info Flood Zone"**) is a **declared enum of 89 allowed values**, filled
+    on **40.2% of long-term loans (197 of 490)**, and **every one of its six observed values is
+    on its own allowed list**: X (210), AE (12), X500 (5), A (2), C (1) and the bare word Yes
+    (1), over 231 filled values. `TQL.X110` answers on the same 197 loans (Regular 229,
+    Non-participating 1), and field 2977 carries a flood certificate number on those same loans.
+    So the vocabulary was never guessed at and no live read is needed — the census already did
+    it. A second sentence in `unsourced.js` said flatly that *"nothing in 3,783 measured fields
+    carries a zone designation (A, AE, X…)"* while field 541, in that same census, carries
+    exactly those — two reasons on one screen, one of them contradicting the other's own cited
+    field, and nothing anywhere unhappy.
+
+    **What is genuinely left is small and it is the owner's**: may PILOT read that zone letter as
+    the determination — the A and V zones being the special flood hazard area — and what does the
+    single bare "Yes" mean? Both columns stay knowingly empty until that is answered, because a
+    wrong answer here is worse than none ("No" beside a flood question is a claim somebody prices
+    a loan on) and 3 in 5 long-term loans carry nothing in the field at all. One sentence, then
+    one entry in the mapper.
+
+    **And the guard that came out of it.** These reasons are ARGUMENTS FROM THE CENSUS, which is
+    what makes them good and also what lets them go stale silently — regenerate the census on a
+    fresh pull and every percentage quoted in prose is a number nothing checks.
+    `scripts/test-lt-unsourced-census-pure.js` now fails the build if any reason cites a field
+    the census does not carry, quotes a fill the census disagrees with, or claims the census is
+    silent about a field the census answers. A reason may still RETRACT an earlier claim — that
+    is what the `corrected` field is for, and the test is its reader: a correction must say when,
+    what was claimed and why it was wrong, and the retracted sentence must be GONE from what a
+    reader is shown. Six mutations were each proven to turn it red, including one on the test
+    itself: its citation pattern was case-sensitive, a reason opened with "Field 541", and its
+    40.2% quietly stopped being checked while every assertion still read green — so the test now
+    counts, and a percentage no citation owns fails the build.
+
+16. **Should `lt_loans.loan_officer_id` be dropped?** It is left from the phase-1 shape,
+    before the loan TEAM was mirrored. **Re-checked 2026-08-18 and the claim holds exactly**: the
+    only two mentions of it in the whole long-term tree are the schema line that declares it and a
+    comment in `product-book.js` recording that nothing reads it — no writer, no reader, no query.
+    It is labelled in the schema so nobody wires it back up, and left in place because dropping a
+    column on a live database is a decision to take deliberately rather than on an inference that
+    it is empty. One answer from the owner, one small migration, no code change.
+
+17. **Should removing a member of staff erase who they decided?** (raised 2026-08-18, not urgent)
+    `lt_staff_links.confirmed_by` and `lt_loan_contacts.override_by` — the two "who decided this" columns
+    on this side — are both `ON DELETE SET NULL`. Today this is harmless and untestable: the application
+    never hard-deletes a member of staff, it deactivates them, and a deactivated person is still resolved
+    by name, so the record survives exactly as intended. The question is only about a row deleted
+    straight from the database, which would silently take the decision's author with it while leaving the
+    decision itself standing.
+
+    I am not proposing a change, because whether an audit record should outlive the person is a
+    retention decision rather than a technical one, and this side does not guess those. If the answer is
+    "it should survive", the fix is `ON DELETE SET NULL` → keeping the id with the FK dropped, or a
+    separate immutable record; both are migrations on a shared table and want the owner's word first.
+
+    What IS fixed: the comment in `people/roster.js` claimed an id we could not name would travel AS THE
+    ID rather than as a blank. That state cannot occur — the foreign key removes the id before the code
+    sees it — and the claim sent me looking for a case that does not exist. It now says what actually
+    happens.
+
+18. **Is anything already in the logs?** (raised 2026-08-18 — needs a look, not a decision)
+    Until this morning, a FAILED Encompass token mint threw the identity server's own response body
+    into its error message, and that message reaches an HTTP response (`/encompass/status` → `reason`)
+    and every log that catches it. The request being refused carries the client secret and, on the
+    password grant, the user password. That is now scrubbed.
+
+    **What I know:** the exposure existed on the live path. **What I do not know:** whether anything was
+    ever actually written, because that depends on what ICE's token endpoint echoes back on a failure —
+    which I have not observed, and cannot from here. Most OAuth servers return `{"error":
+    "invalid_client"}` and nothing more.
+
+    So this is not a "rotate now". It is: **if long-term Encompass token mints have failed in
+    production, the logs around those failures are worth reading before deciding.** If a secret is in
+    there, it is compromised and wants rotating; if the answers are the bare OAuth shape, nothing
+    happened and the scrubber is simply the guard that should always have been there. I cannot answer
+    that one from inside the repository.
+
 ---
+
+
+19. ~~**Should `enrichZip` stay?**~~ **ANSWERED (owner, 2026-08-23): no — delete it.** Done:
+    the function and its export are gone from `lenderprice/client.js`, and nothing referenced it.
+    The reasoning that was recorded here, kept because it is why the answer was easy:
+    `lenderprice/client.js enrichZip` is exported and called by NOTHING — not a route, not the
+    PPE, not a test. It was "blueprint step 3", written when the plan expected the vendor to
+    resolve a ZIP for us; the design moved past that, and the location enrichment that actually
+    runs is local (`search-model.validateScenario`, which fills state and county FIPS from a ZIP
+    with no vendor call at all).
+
+    What it still does that nothing else does is fetch a **conforming mortgage limit** by ZIP.
+    Nothing in the long-term tree reads one, the plan does not ask for one, and a conforming
+    limit is an agency-lending concept — these are DSCR investor loans. So the likely answer is
+    that it is a leftover and should go.
+
+    It is NOT removed here, and that is the difference from the `defaultView` and `isStored`
+    exports deleted on this branch: those duplicated an answer something else already gave, so
+    removing them lost nothing. This one fetches information nothing else provides, and whether
+    that information matters to the product is a call to make rather than infer. If it stays it
+    wants a caller and a test; if it goes it is a one-line deletion. Either is fine — what is
+    not fine is leaving a vendor call exported with no caller, because the next person to find
+    it will assume it is needed and wire it up, at one upstream request per scenario for a
+    number no screen shows.
+
+    **That last sentence is the whole argument, and it is why this was not left alone.**
+
 
 ## 12. The honest risks
 
@@ -1137,25 +1885,58 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 - **The 403s are a real ceiling.** Until the client registration gains `encompass_admin`, we
   cannot read the loan-folder list, the milestone logs, or most of the completion rules — and
   custom dropdown option sets are inferred floors, not the real lists.
-- **The condition centre may be built on sand — see §5.0.** Our own two measurements disagree
-  about whether this tenant holds any conditions at all. Even on the optimistic reading, 12 of
-  490 long-term loans carry them, because the investor underwrites most files — so a centre
-  built only against Encompass conditions is quiet on 97% of the book. On the pessimistic
-  reading the live workflow is the eFolder needs-list instead, and the module is a different
-  product. **This is the single biggest scoping risk in the plan**, and it is a question for
-  the owner rather than a decision for us.
-- **The URLA arrays are not where a modern reader would look.** In this tenant the loan
-  carries its data in `vols[]` / `vods[]` / `otherAssets[]`, while the modern `assets[]` and
-  `liabilities[]` arrays are **empty**. A 1003 screen built against the modern arrays would
-  render blank on every real file. The whole application is readable in one GET via 18 accepted
-  sub-entity names.
-- **The token has no stated lifetime, and the client already survives it.** It lasts 30 minutes
-  and `expires_in` is **not returned** by this tenant — so a client caching on `expires_in - 60`
-  would be caching on `undefined`. Checked: `src/longterm/encompass/client.js:138` reads
-  `(j.expires_in || 1800) - 60`, and 1800s is exactly the measured lifetime. Correct by
-  accident or by design, it holds — **do not remove that fallback.**
+- **The condition centre is quiet on most of the book — the measured half of §5.0.** The
+  question "do conditions exist at all" is SETTLED (they do, on the v3 resource, as a
+  post-purchase artifact), but the scoping risk it carried is real and remains: only a
+  minority of long-term loans carry Encompass conditions, because the investor underwrites
+  most files. That is why the built read side answers with BOTH feeds and states which of the
+  two this file's work actually is (`face`) — a centre that only ever showed conditions would
+  read as empty on most of the book. Whether the eFolder needs-list should become the primary
+  workflow is still a question for the owner rather than a decision for us.
+- **The URLA arrays are not where a modern reader would look — GUARDED 2026-08-18.** In this
+  tenant the loan carries its data in `vols[]` / `vods[]` / `otherAssets[]`, while the modern
+  `assets[]` and `liabilities[]` arrays are **empty**. A 1003 screen built against the modern
+  arrays would render blank on every real file. The whole application is readable in one GET via
+  18 accepted sub-entity names. `readLiabilities` reads BOTH — the workhorse and the modern
+  array — and until this morning nothing tested it at all; the fixture is now the recorded live
+  `vols[0]` row, and dropping either array turns the suite red. The risk is that the tenant
+  starts populating the modern array and a reader built for one silently halves somebody's
+  debts, which is why the test asserts the two are additive rather than alternatives.
+- **The token has no stated lifetime, and the client already survives it — GUARDED 2026-08-18.**
+  It lasts 30 minutes and `expires_in` is **not returned** by this tenant, so a client caching on
+  `expires_in - 60` would be caching on `undefined`. `src/longterm/encompass/client.js` reads
+  `(j.expires_in || 1800) - 60`, and 1800s is exactly the measured lifetime. This entry used to end
+  with *"do not remove that fallback"* — an instruction to a person, which is the weakest kind of
+  guard there is, and the only test that touched token caching supplied `expires_in: 3600`, a value
+  this tenant never sends: it exercised the branch that cannot happen and skipped the one that always
+  does. **Removing the fallback throws nothing**: `undefined - 60` is NaN, the stored expiry is NaN,
+  the cache test is false for ever, and every single Encompass read mints a fresh token first — no
+  error and no wrong figure, just silently twice the calls and an extra serialised round trip against
+  the 500,000-a-day budget and the 30-concurrent ceiling shared with every other integration on this
+  tenant. `scripts/test-lt-encompass-token-cache.js` now asks the question BEHAVIOURALLY, through the
+  real client with the token response this tenant actually returns: five reads must ask for one
+  token. It also pins the 60-second margin (a token with 75 seconds left is re-minted, because those
+  60 seconds are what stop a request outliving the token it was sent with, while two minutes is
+  reused), that a stated SHORT lifetime is honoured rather than overridden by the fallback, and that
+  an unreadable one caches nothing. Four mutations turn it red.
 - **The API budget is 500,000 calls a day with a ceiling of 30 concurrent** — shared across
-  every integration touching this tenant, not just ours.
+  every integration touching this tenant, not just ours. **Both halves were measured on
+  2026-08-18 and both were weaker than they read.** (a) *The calls.* The token cache is consulted
+  at the TOP of `getToken`, so a burst of callers that all arrive before the first token returns
+  each mint their own: five concurrent reads issued FIVE token requests plus the five reads — ten
+  calls where six would do. `getToken` is now single-flight (the in-flight promise cleared on both
+  settle paths, so a failed request is never handed to the next caller for ever) and the same burst
+  asks once. (b) *The concurrency.* The pacer chained only the WAIT — each caller queued behind the
+  previous caller's gap and then fetched — which spaces request STARTS without serialising the
+  requests. With a 350ms gap and a fast tenant nothing overlaps, so it read as serial and was
+  DESCRIBED as serial; but the timeouts in that module are 12 to 30 SECONDS, and any request slower
+  than the gap runs alongside the next. Measured with the gap shortened: peak 5 in flight from a
+  5-read burst. The chain now holds until the request itself settles, so peak is 1. Neither changes
+  anything today — every long-term caller is already a sequential sweep, which is why neither was
+  visible — but the first parallel sweep somebody writes would not have noticed either: the calls
+  succeed, the sync works, and the only symptom is budget spent twice over and a ceiling approached
+  that RTL is also standing under. `scripts/test-lt-encompass-token-cache.js` pins both, and three
+  mutations turn it red.
 - **The appraisal XML is unrecoverable for historical files.** The download URLs are minted at
   delivery with a ~15-minute life; all 298 historical ones are expired. The durable fix is to
   have the vendor deliver the XML to us directly.

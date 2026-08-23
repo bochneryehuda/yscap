@@ -259,20 +259,56 @@ const uniq = (p) => p + Buffer.from(String(process.pid)).toString('hex') + Math.
     await purchasing.deleteCondition(client, c1.id);
     ok((await purchasing.readConditions(N.appId, client)).length === 1, 'a condition can be removed');
 
-    // ---- PURCHASE ADVICE (date + document, re-issued post closing/post purchase) ----
+    // ---- PURCHASE ADVICE (the DOCUMENT; the date belongs to Encompass since 2026-08-23) ----
     const advDoc = (await client.query(
       `INSERT INTO documents (application_id, filename, content_type, doc_kind)
        VALUES ($1,'purchase-advice.pdf','application/pdf','purchase_advice') RETURNING id`, [N.appId])).rows[0];
-    await purchasing.setPurchaseAdvice(client, N.appId, { date: '2026-08-20' }, N.closerId);
-    let pa = await purchasing.readAdvice(N.appId, client);
-    ok(String(pa.advice_date).slice(0, 10) === '2026-08-20' && !!pa.updated_at,
-      'a purchase advice date can be recorded');
+
+    /* THE DATE IS REFUSED HERE NOW (owner-directed 2026-08-23). It is typed on the loan in
+       Encompass and read from there, so this door answers with the sentence that says so — from
+       the LIBRARY, which is what this test drives, so a route-only guard could not fake it. */
+    let dateRefused = null;
+    try { await purchasing.setPurchaseAdvice(client, N.appId, { date: '2026-08-20' }, N.closerId); }
+    catch (e) { dateRefused = e; }
+    ok(dateRefused && dateRefused.status === 422 && dateRefused.code === 'advice_date_is_encompass',
+      'typing a purchase advice date is refused — it is entered in Encompass');
+    ok(dateRefused && /Encompass/.test(dateRefused.message),
+      'and the refusal says where to go instead of just saying no');
+    ok(!(await purchasing.readAdvice(N.appId, client)),
+      'nothing was written by the refused call — a refusal that half-saves is worse than one that fails');
+
+    /* THE BACK BOOK IS NOT DESTROYED. A date somebody typed BEFORE the rule stays exactly where it
+       is and still counts (owner-directed 2026-08-23: keep those files Sold). Written the way it
+       exists in production — directly on the column, by the door that no longer exists — so this
+       proves the read path still honours it. */
+    await client.query(
+      `INSERT INTO purchasing_advice (application_id, advice_date) VALUES ($1,'2026-08-20')
+       ON CONFLICT (application_id) DO UPDATE SET advice_date=EXCLUDED.advice_date`, [N.appId]);
+
     await purchasing.setPurchaseAdvice(client, N.appId, { documentId: advDoc.id }, N.closerId);
-    pa = await purchasing.readAdvice(N.appId, client);
+    let pa = await purchasing.readAdvice(N.appId, client);
     ok(String(pa.document_id) === String(advDoc.id) && pa.document_filename === 'purchase-advice.pdf',
       'the advice document is pointed at, and its filename rides along for the desk');
     ok(String(pa.advice_date).slice(0, 10) === '2026-08-20',
-      'and setting the document did NOT clear the date (only keys present are touched)');
+      'and setting the document did NOT clear a pre-existing date (only keys present are touched)');
+
+    /* THE DESK SAYS WHERE ITS DATE CAME FROM. With nothing in Encompass, the legacy value is what
+       is shown — flagged as the old hand-typed one, and flagged as still needing to go into
+       Encompass. That flag IS the owner's "list to re-check". */
+    const wsLegacy = await purchasing.getPurchasingWorkspace(N.appId, client);
+    ok(wsLegacy.adviceDate === '2026-08-20' && wsLegacy.adviceDateSource === 'legacy',
+      'with no Encompass date the desk shows the pre-rule one and says so');
+    ok(wsLegacy.needsEncompassDate === true,
+      'and flags that it still has to be put into Encompass');
+
+    /* AND ENCOMPASS WINS THE MOMENT IT HAS ONE. Written on the column the Encompass reader owns. */
+    await client.query(`UPDATE applications SET purchase_advice_date='2026-08-22' WHERE id=$1`, [N.appId]);
+    const wsEnc = await purchasing.getPurchasingWorkspace(N.appId, client);
+    ok(wsEnc.adviceDate === '2026-08-22' && wsEnc.adviceDateSource === 'encompass',
+      'once Encompass carries the date, that is the one the desk shows');
+    ok(wsEnc.needsEncompassDate === false,
+      'and the re-check flag drains itself — nobody has to remember to clear it');
+    await client.query(`UPDATE applications SET purchase_advice_date=NULL WHERE id=$1`, [N.appId]);
 
     const advDoc2 = (await client.query(
       `INSERT INTO documents (application_id, filename, content_type, doc_kind)

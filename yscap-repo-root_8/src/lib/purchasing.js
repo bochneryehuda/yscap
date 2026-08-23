@@ -267,6 +267,23 @@ async function getPurchasingWorkspace(appId, client) {
   // Advice is read separately and OUTLIVES a withdrawal — it is a fact about the
   // loan, not about the file's current membership of the desk.
   const advice = await safe(() => readAdvice(appId, c), null);
+  /* THE DATE THE DESK SHOWS, AND WHERE IT CAME FROM (owner-directed 2026-08-23).
+     Encompass is the only place the date is typed now, so the screen reads the file's
+     Encompass-fed column and says so. `legacyDate` is what somebody typed here before
+     that rule; it is shown ONLY when Encompass has none, and `needsEncompassDate` is
+     precisely that state — the loan reads as sold on our side but the date has never
+     reached Encompass, so somebody has to go and put it there. Both answers come from
+     ONE row read, and an unreadable one degrades to "no date" rather than to a wrong one. */
+  const dates = await safe(async () => (await c.query(
+    `SELECT a.purchase_advice_date AS encompass_date,
+            a.purchase_advice_read_state AS read_state,
+            pa.advice_date AS legacy_date
+       FROM applications a
+       LEFT JOIN purchasing_advice pa ON pa.application_id = a.id
+      WHERE a.id=$1`, [appId])).rows[0] || {}, {});
+  const day = (v) => (v == null ? null : String(v).slice(0, 10));
+  const encompassDate = day(dates.encompass_date);
+  const legacyDate = day(dates.legacy_date);
   return {
     application_id: appId,
     purchasing: row,
@@ -276,6 +293,16 @@ async function getPurchasingWorkspace(appId, client) {
     conditions,
     documents,
     advice,
+    // The one date the screen prints, plus the provenance line under it. `source` is
+    // 'encompass' | 'legacy' | null — never a column name, because it is read by a person.
+    adviceDate: encompassDate || legacyDate || null,
+    adviceDateSource: encompassDate ? 'encompass' : (legacyDate ? 'legacy' : null),
+    encompassDate,
+    legacyDate,
+    needsEncompassDate: !!(legacyDate && !encompassDate),
+    // Whether PILOT has actually asked Encompass about this loan yet, so "no date" can say
+    // WHICH kind of no (db/608) instead of implying the loan is unsold.
+    encompassReadState: dates.read_state || null,
     openTasks: tasks.filter((t) => !t.done).length,
     openConditions: conditions.filter((x) => x.status === 'open').length,
   };
@@ -351,7 +378,33 @@ async function readAdvice(appId, client) {
       WHERE a.application_id=$1`, [appId])).rows[0] || null;
 }
 
-/* A PURCHASE ADVICE IS NEVER BORROWER-VISIBLE. It names the note buyer and the
+/* THE PURCHASE ADVICE DATE IS TYPED IN ENCOMPASS, AND NOWHERE ELSE
+ * (owner-directed 2026-08-23: *"it should need to be filled into Encompass, and from
+ * there our line and our field should automatically fill. You should not allow
+ * somebody to type in that field. You should say, 'Hey, go to Encompass and type it
+ * over there,' and then everything should fire"*).
+ *
+ * WHY THIS IS A REFUSAL AND NOT A MIRROR-WRITE. The obvious reading of "our field
+ * should automatically fill" is to copy Encompass's date into `advice_date` on every
+ * sync. That makes a SECOND STORED COPY of one fact, and two copies drift — which is
+ * the exact class this codebase bans. The date already has one home
+ * (`applications.purchase_advice_date`, written only by
+ * `release-party.syncPurchaseAdviceDate`) and one resolver
+ * (`release-party.adviceDateOf`). So the field fills automatically because the screen
+ * READS the resolved date; nothing new is stored, and there is nothing left to drift.
+ *
+ * `advice_date` therefore keeps exactly one job from today: it holds what people typed
+ * BEFORE this rule, so nothing a human recorded is destroyed and no live file silently
+ * stops reading as sold (owner-directed 2026-08-23, on the back book: keep them Sold,
+ * and list them so the date can be put into Encompass). It has no writer any more.
+ * `needsEncompassDate` in `getPurchasingWorkspace` is that list, and it drains itself
+ * the moment Encompass carries the date.
+ *
+ * THE REFUSAL LIVES HERE, IN THE LIBRARY, for the same reason the visibility forcing
+ * below does: a route-only guard cannot be exercised by the DB test, and this module is
+ * callable from anywhere.
+ *
+ * A PURCHASE ADVICE IS NEVER BORROWER-VISIBLE. It names the note buyer and the
  * price the loan sold for. The staff upload endpoint derives visibility from the
  * TARGET CONDITION's audience, and the purchasing screen has no upload slot of
  * its own, so an advice filed against an ordinary borrower-facing condition lands
@@ -365,8 +418,22 @@ async function readAdvice(appId, client) {
  * advice pointer moves away — because the picker offers EVERY document on the
  * file, so a mis-pick would otherwise hide a borrower's own insurance policy
  * permanently, with no undo anywhere in the codebase. */
+const ADVICE_DATE_IS_ENCOMPASS_MSG =
+  'The purchase advice date is entered in Encompass, not here. Put it on the loan in Encompass and '
+  + 'PILOT fills this in by itself — usually within a few minutes — and then marks the loan Sold, '
+  + 'moves the ClickUp card and stamps the critical dates. Upload the advice document here as usual.';
+
 async function setPurchaseAdvice(client, appId, patch, actorId) {
   const c = client || db;
+  /* NOBODY TYPES THE DATE. Refused whichever key shape the caller used, and refused even
+     for a blank — "clear the date" is the same claim about the sale, made backwards, and
+     Encompass is the only place that claim is made. */
+  if (patch && Object.prototype.hasOwnProperty.call(patch, 'date')) {
+    const e = new Error(ADVICE_DATE_IS_ENCOMPASS_MSG);
+    e.status = 422;
+    e.code = 'advice_date_is_encompass';
+    throw e;
+  }
   let prior = null;      // never mutate the caller's patch — see the upsert below
   let sameDoc = false;   // is the incoming document the one already pointed at?
   if ('documentId' in patch) {
@@ -421,7 +488,10 @@ async function setPurchaseAdvice(client, appId, patch, actorId) {
   }
   const cols = [];
   const vals = [appId];
-  if ('date' in patch) { vals.push(patch.date || null); cols.push(['advice_date', `$${vals.length}::date`]); }
+  /* NO `advice_date` ARM. It was removed with the refusal above rather than left sitting
+     unreachable: a dead write path is the thing somebody re-enables in six months without
+     reading why it was closed. The column keeps its pre-2026-08-23 values and has no
+     writer — see the header. */
   if ('documentId' in patch) {
     vals.push(patch.documentId || null); cols.push(['document_id', `$${vals.length}::uuid`]);
     // The UPDATE half COALESCEs onto the existing row so a repeat designation of
@@ -457,6 +527,7 @@ module.exports = {
   CONDITION_STATUSES,
   PURCHASING_STATUSES,
   LIMITS,
+  ADVICE_DATE_IS_ENCOMPASS_MSG,
   tooLong,
   unwindInvestorDelivery,
   applyInvestorDeliverySignOff,

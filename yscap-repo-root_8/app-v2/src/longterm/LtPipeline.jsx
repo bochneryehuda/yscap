@@ -108,6 +108,83 @@ const FALLBACK_COLUMNS = [
 ];
 
 /**
+ * What is outstanding on this file — the plan's "a red count means a user triages
+ * urgency from the list without opening a file".
+ *
+ * FOUR ANSWERS, AND THEY ARE NOT THE SAME. A file with work shows the number in
+ * red. A file that has been read and has nothing left says "Clear" in words. A file
+ * PILOT holds nothing about yet says "not read yet" — because a 0 there would be a
+ * claim that the file is clear, which is exactly the confident blank this side
+ * keeps finding. And a file the sweep has read that genuinely carries neither a
+ * condition nor an eFolder document says "none", which is a different fact again.
+ *
+ * WHICH FEED IT COUNTED IS ON THE FACE OF IT. Every Encompass condition in this
+ * tenant sits on a loan that is already sold, while a live file's work is its
+ * eFolder needs list — so a column that counted only conditions would read zero
+ * down the whole working book. The server decides which feed this file's work is,
+ * with the same rule the file screen uses, and the cell says which one it counted
+ * rather than leaving "4" to mean either.
+ */
+function OutstandingCell({ counts }) {
+  const muted = { color: '#4B585C' };
+  if (!counts) return <span style={muted} title="PILOT could not count this file just now.">—</span>;
+  if (!counts.read) return <span style={muted} title="The Condition Center has not read this loan from Encompass yet, so there is nothing to count — which is not the same as nothing being outstanding.">not read yet</span>;
+
+  const conditions = counts.face === 'conditions';
+  const open = conditions ? counts.conditionsOpen : counts.documentsOutstanding;
+  const total = conditions ? counts.conditionsTotal : counts.documentsTotal;
+  const word = conditions ? 'condition' : 'document';
+
+  if (!total) return <span style={muted} title="This loan carries no conditions and no eFolder documents.">none</span>;
+  if (!open) return <span style={{ color: '#2C5E3F' }} title={`All ${total} ${word}${total === 1 ? '' : 's'} are done.`}>Clear</span>;
+  return (
+    <span style={{ color: '#8A2D2D', fontWeight: 700 }}
+      title={`${open} of ${total} ${word}${total === 1 ? '' : 's'} still outstanding.`}>
+      {open}
+      <span style={{ ...muted, fontWeight: 400, fontSize: 11 }}> {conditions ? 'cond' : 'docs'}</span>
+    </span>
+  );
+}
+
+/**
+ * The DSCR, and which side of THIS COMPANY'S own lines it fell on.
+ *
+ * A bare 1.28 down a column tells somebody who works these loans every day exactly
+ * what they need and tells everybody else nothing — and the minimum and comfortable
+ * thresholds have been settings since the registry was written. The verdict comes
+ * from the SERVER, computed by the one rule the file screen reads, so the pipeline
+ * and the file can never call the same loan different things.
+ *
+ * NO VERDICT ON A RATIO NOBODY MEASURED: a loan with no DSCR gets a dash, never a
+ * red mark. The word is kept to one short token because this is a table cell — the
+ * full sentence, naming the threshold it fell under, is the hover.
+ */
+function DscrCell({ row }) {
+  const v = row.dscrVerdict;
+  const shown = ratio(row.dscr_ratio);
+  if (!v) return <span>{shown}</span>;
+  const tone = v.level === 'below' ? '#8A2D2D' : v.level === 'thin' ? '#8A6A22' : '#2C5E3F';
+  const word = v.level === 'below' ? 'below' : v.level === 'thin' ? 'thin' : 'ok';
+  // WHOSE NUMBER. "this company set" is a claim about authorship, and it is false
+  // whenever the company has not configured that threshold — we fall back to the
+  // shipped one, which is right, but saying they chose it is not. The verdict now
+  // says which, so a red mark is never attributed to a rule nobody wrote.
+  const whose = (isCompany) => (isCompany ? ' this company set' : ' PILOT ships by default');
+  const comfortWhose = (isCompany) => (isCompany ? 'this company calls comfortable' : 'PILOT treats as comfortable by default');
+  const why = v.level === 'below'
+    ? `Under the ${v.minimum} minimum${whose(v.minimumIsCompany)} — on these figures the property does not cover its own debt service.`
+    : v.level === 'thin'
+      ? `Over the ${v.minimum} minimum${whose(v.minimumIsCompany)} but under the ${v.comfort} ${comfortWhose(v.comfortIsCompany)}.`
+      : `At or over the ${v.comfort} ${comfortWhose(v.comfortIsCompany)}.`;
+  return (
+    <span style={{ color: tone, fontWeight: 700 }} title={why}>
+      {shown}
+      <span style={{ color: '#4B585C', fontWeight: 400, fontSize: 11 }}> {word}</span>
+    </span>
+  );
+}
+
+/**
  * One cell, drawn from what the COLUMN says it is.
  *
  * The screen no longer knows which columns exist — the server sends them, in order,
@@ -131,9 +208,11 @@ function Cell({ col, row, stageLabel }) {
     case 'money': return <span>{money(raw)}</span>;
     case 'pct': return <span>{pct(raw)}</span>;
     case 'ratio': return <span>{ratio(raw)}</span>;
+    case 'dscr': return <DscrCell row={row} />;
     case 'milestone_days': return <MilestoneAge row={row} />;
     case 'lock': return <LockCell row={row} />;
     case 'day': return <span>{day(raw)}</span>;
+    case 'outstanding': return <OutstandingCell counts={raw} />;
     case 'contact': {
       // THE ROLE IS THE COLUMN'S `field`, so a third contact column (an underwriter,
       // a closer) needs one catalog entry on the server and nothing here.

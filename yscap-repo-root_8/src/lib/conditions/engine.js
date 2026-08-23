@@ -716,6 +716,24 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
   } else {
     await db.query(`UPDATE borrowers SET ${target.column}=$2, updated_at=now() WHERE id=$1`, [borrowerId, value]);
   }
+  /* AN EXPERIENCE ANSWER MOVES THE TRACK-RECORD CONDITION — this door was the only one that
+     wrote the claim and did not say so (2026-08-23).
+     `requested_exp_*` is what decides whether the track-record condition applies at all
+     (`experience.syncExperienceChecklistForApplication`: no claim → notApplicable → it drops off
+     the list and signs off freely). EVERY other door that writes those three columns recomputes
+     the condition immediately — the staff details door, the Term Sheet Studio autosave, the
+     product register, the track-record routes. This one did not, so answering an information
+     condition with "3 flips" left the track-record condition still reading "No experience
+     required on this file" until some unrelated action happened to recompute it — and in that
+     window it was signable.
+     Keyed on the COLUMN, not on the field key, so it cannot drift from the registry's own
+     spelling of where these fields land. Best-effort: the answer is already saved and committed,
+     and a recompute failure must never turn a successful save into an error the person reading
+     it cannot act on — the next recompute picks it up. */
+  if (target && target.table === 'applications' && /^requested_exp_/.test(String(target.column))) {
+    try { await require('../experience').syncExperienceChecklistForApplication(appId); }
+    catch (e) { console.warn('[conditions] experience recompute after info answer:', e && e.message); }
+  }
   return { value };
 }
 

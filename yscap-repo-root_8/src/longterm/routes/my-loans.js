@@ -8,11 +8,23 @@
 // It is still Long-Term's own code, under /api/lt/*, in src/longterm/** — the
 // charter's namespace rules hold; only the authentication differs.
 //
-// BUILT READY, SWITCHED OFF (owner-directed 2026-08-16, "build it ready"). With
-// `borrower.longTermVisible` off — the default, and the state it ships in — this
-// answers `{enabled:false, loans:[]}` and the portal renders no switch at all. It
-// deliberately answers 200 rather than 404: the front end has to be able to tell
-// "this is off" from "this is broken", and the owner turning it on must be one
+// BUILT READY (owner-directed 2026-08-16, "build it ready") AND NOW SWITCHED ON
+// (owner-directed 2026-08-17, "turn switch on"). `borrower.longTermVisible`
+// DEFAULTS TO TRUE, so on an untouched deployment a borrower does see their
+// confirmed long-term files.
+//
+// This comment said the opposite until 2026-08-18 — three times, in the words it
+// shipped with on the 16th. The behaviour followed the owner's instruction
+// correctly; only the prose was left behind. That is not a harmless staleness on
+// a CLIENT-FACING door: anybody reasoning about what a borrower can see would
+// have read this file, concluded the surface was dark, and been wrong. The
+// registry's own `evidence` line is the record, and
+// `test-lt-borrower-switch-db.js` asserts the declared default so it cannot move
+// again without somebody saying so.
+//
+// Turned OFF it answers `{enabled:false, loans:[]}` and the portal renders no
+// switch at all — 200 rather than 404, deliberately: the front end has to tell
+// "this is off" from "this is broken", and moving it either way must be one
 // setting rather than a deploy.
 //
 // A BORROWER SEES ONLY WHAT A HUMAN CONFIRMED IS THEIRS. The list is keyed on
@@ -42,8 +54,11 @@ async function longTermVisible() {
     const { settings } = await settingsStore.load();
     return settings['borrower.longTermVisible'] === true;
   } catch (e) {
-    // A settings read that fails is not permission to show a client an unfinished
-    // product. Off is the safe answer and the one it ships in.
+    // A settings read that fails is not permission to show a client anything. Off
+    // is the safe answer — note it is NO LONGER the shipped default (that is now
+    // on), so this is a genuine fail-closed rather than a coincidence of the two
+    // agreeing. `=== true` above is the other half: a settings object that came
+    // back empty, or a value that is the string "true", reads as OFF.
     console.error('[lt] borrower long-term visibility check failed:', (e && e.message) || e);
     return false;
   }
@@ -63,6 +78,30 @@ async function longTermVisible() {
  * It falls back to our stage's LABEL and never to `stage_key`: printing
  * `clear_to_close` at a borrower is showing them a database value. With neither, it
  * says NOTHING — a status invented for a client is worse than a blank one.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * AND IT IS A WHITELIST. Every key below is NAMED. Nothing is spread off the row,
+ * and that — not a filter — is what makes rule 10 structural here: a column added
+ * to `lt_loans` tomorrow, an investor field, a funding channel, a buy rate, cannot
+ * reach a client through this door because nobody asked for it. This is the "build
+ * a client payload FOR the client" half of the rule, and a whitelist is the strong
+ * form of it: a blacklist has to be right about every key that will ever exist.
+ *
+ * WHICH IS WHY `audience.stripInternalOnly` AND `maySeeField` ARE UNUSED IN
+ * PRODUCTION, and that is deliberate rather than an oversight. They are the
+ * blacklist form of the same defence, kept for a surface built from Encompass
+ * FIELD IDS if one is ever needed. Running one over this payload would add nothing
+ * and would say the wrong thing — that keys may be spread here so long as they are
+ * filtered afterwards, which is exactly the shape this avoids. Do not "harden"
+ * this by adding one; harden it by keeping the list named.
+ *
+ * `scrubInvestorNames` is a DIFFERENT defence and IS wired: the whitelist governs
+ * which FIELDS travel, and the scrub governs free text a human typed inside one of
+ * them (a program name is the realistic case).
+ *
+ * `test-lt-investor-block.js` runs this function over a row carrying every
+ * internal field there is and fails if a single one comes out the other side.
+ * ═══════════════════════════════════════════════════════════════════════════════
  */
 function shape(row, stageCfg) {
   const verdict = productTerm.classifyProduct({
@@ -141,3 +180,11 @@ router.get('/loans', async (req, res) => {
 });
 
 module.exports = router;
+
+/**
+ * `shape` is exported so the investor-block suite can RUN it over a row carrying
+ * every internal field there is and check what comes out, rather than reading this
+ * file and hoping. It is the client payload's whole defence — see the note on the
+ * function — and a defence nothing exercises is a defence nobody has seen work.
+ */
+module.exports._internals = { shape };

@@ -1,14 +1,18 @@
 'use strict';
 /**
- * PROOF that the borrower's long-term switch is BUILT AND SWITCHED OFF — and that
- * when it is switched on it shows a client only what a human confirmed is theirs,
- * only the long-term files, and never an investor's name.
+ * PROOF that the borrower's long-term switch is BUILT AND ON — and that it shows a
+ * client only what a human confirmed is theirs, only the long-term files, and
+ * never an investor's name.
  *
- * The owner asked for the switch and then, asked whether to turn it on, said
- * *"build it ready"*. So "off" is not an incidental default here, it is the
- * requirement — and a requirement nothing tests is a requirement one careless
- * `default: true` away from putting an unfinished product in front of every
- * client. Section A is that test.
+ * The owner asked for the switch and, asked whether to turn it on, first said
+ * *"build it ready"*; on 2026-08-17 they said *"turn switch on"*. So the state of
+ * this switch is not an incidental default, it is a decision — and section A
+ * asserts the declared default matches the decision, so it cannot move in either
+ * direction without somebody having said so.
+ *
+ * This header said "BUILT AND SWITCHED OFF" until 2026-08-18, four lines above its
+ * own assertion that the default is `true`. Section A was updated when the owner
+ * changed their mind and the sentence describing it was not.
  *
  * The other three things only a database can settle:
  *   · a loan attached to NOBODY reaches nobody — the whole reason the mapping is
@@ -235,6 +239,12 @@ async function main() {
       await db.query('DELETE FROM borrowers WHERE id = ANY($1::uuid[])', [borrowerIds]).catch(() => {});
     }
     await db.pool.end().catch(() => {});
+    // AND THE RTL POOL. These suites require the app, which opens `src/db`'s pool
+    // transitively; `db` here is the LONG-TERM one. Leaving the other open kept a
+    // Postgres socket alive until its 30-second idle timeout, so the suite printed
+    // its result and then sat there doing nothing. Across nine suites that was 270
+    // of the 286 seconds the long-term database suites took.
+    await require('../src/db').pool.end().catch(() => {});
   }
 
   console.log(`\n✓ lt borrower-switch (db): ${checks} assertions passed`);

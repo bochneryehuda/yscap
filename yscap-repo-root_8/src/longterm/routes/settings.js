@@ -106,20 +106,43 @@ router.get('/mine', async (req, res) => {
     const staffId = req.actor && req.actor.id;
     if (!staffId) return res.status(400).json({ error: 'No signed-in person.' });
 
-    const [mine, company] = await Promise.all([
+    const [mine, mineRaw, company] = await Promise.all([
       settingsStore.describe(userScope(staffId)),
+      settingsStore.load(userScope(staffId)),
       settingsStore.load(),
     ]);
     const settings = mine.groups
       .flatMap((g) => g.settings)
       .filter((s) => PERSONAL_KEYS.has(s.key))
-      .map((s) => ({
-        ...s,
-        // `default` on a personal setting means the COMPANY's value, not the
-        // declared one — that is what "back to the default" means to a person.
-        default: company.settings[s.key],
-        followsCompany: !s.isOverridden,
-      }));
+      .map((s) => {
+        // DID THEY CHOOSE, RATHER THAN IS IT DIFFERENT FROM OURS. Two questions
+        // that look like one. `isOverridden` answers the second — it compares the
+        // effective value with the DECLARED default — and reading it here said
+        // "you follow the company" to somebody who had deliberately picked the
+        // side that happens to equal our pre-filled value. `routes/me.js` decides
+        // the same thing by asking whether a row exists, so a screen answering
+        // the other question would tell a person one thing while the application
+        // did another. Same rule, one question: is there a row of your own.
+        const chosen = mineRaw.stored.has(s.key);
+        // `isOverridden` does not travel on a PERSONAL setting. It is right on the
+        // company screen and wrong here, and a field answering the wrong question
+        // sitting beside one answering the right question is how the next person
+        // picks the wrong one — which is exactly how this bug arrived.
+        const { isOverridden: _dropped, ...rest } = s;
+        return {
+          ...rest,
+          // AND SHOW WHAT THEY ACTUALLY GET. `describe` on a personal scope layers
+          // that scope's rows over the DECLARED defaults, so a person with no row
+          // of their own read back our pre-filled value — not the company's, which
+          // is what the application serves them. The screen said RTL while the
+          // shell opened them on Long-Term.
+          value: chosen ? s.value : company.settings[s.key],
+          // `default` on a personal setting means the COMPANY's value, not the
+          // declared one — that is what "back to the default" means to a person.
+          default: company.settings[s.key],
+          followsCompany: !chosen,
+        };
+      });
     res.json({ scope: userScope(staffId), settings });
   } catch (e) {
     console.error('[lt] read own settings failed:', (e && e.message) || e);
