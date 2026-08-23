@@ -100,7 +100,7 @@ export default ltApi;
 const entry = `
 import React from 'react';
 import { renderToString } from 'react-dom/server';
-import LtPricer, { PriceBuild, RateRow, IneligibleView, DscrCalc, buildRateStack, toScenario, ltvOf } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
+import LtPricer, { PriceBuild, RateRow, IneligibleView, DscrCalc, CompSwitch, ChargeList, buildRateStack, toScenario, ltvOf } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
 globalThis.__React = React;
 globalThis.__renderToString = renderToString;
 globalThis.__LtPricer = LtPricer;
@@ -108,6 +108,8 @@ globalThis.__PriceBuild = PriceBuild;
 globalThis.__RateRow = RateRow;
 globalThis.__IneligibleView = IneligibleView;
 globalThis.__DscrCalc = DscrCalc;
+globalThis.__CompSwitch = CompSwitch;
+globalThis.__ChargeList = ChargeList;
 globalThis.__buildRateStack = buildRateStack;
 globalThis.__toScenario = toScenario;
 globalThis.__ltvOf = ltvOf;
@@ -148,6 +150,8 @@ const PriceBuild = globalThis.__PriceBuild;
 const RateRow = globalThis.__RateRow;
 const IneligibleView = globalThis.__IneligibleView;
 const DscrCalc = globalThis.__DscrCalc;
+const CompSwitch = globalThis.__CompSwitch;
+const ChargeList = globalThis.__ChargeList;
 const buildRateStack = globalThis.__buildRateStack;
 const toScenario = globalThis.__toScenario;
 
@@ -642,5 +646,69 @@ for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/ppeSty
   ok(!/<label[^>]*for="pe-loan"/.test(h) && !/<label[^>]*for="pe-ltv"/.test(h),
     'R71 …while the loan amount, whose switch is its name, still has no separate one');
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   R72..R81 — THE COMPENSATION OVERLAY (owner-directed 2026-08-23).
+
+   The switch, the fee list and the shifted drill-down are rendered DIRECTLY (the exported
+   components), because on the full screen they live behind a fetch renderToString never runs.
+   The charge figures come from the engine itself (compOverlay.js, imported plain — no bundler
+   needed), so these assertions can only pass when the screen draws what the engine computed.
+   ────────────────────────────────────────────────────────────────────────── */
+{
+  const { quoteCharges } = await import(new URL('../app-v2/src/longterm/compOverlay.js', import.meta.url).href);
+  const PLAN = { lenderPaid: 2, borrowerPaid: 2, ysp: 0, applicationFee: 1595, commitmentFee: 500 };
+
+  const swRaw = attempt(() => render(React.createElement(CompSwitch, { mode: 'raw', onMode: () => {}, waive: false, onWaive: () => {} })));
+  ok(!swRaw.err
+    && /Borrower-paid/.test(swRaw.html) && /Raw pricing/.test(swRaw.html) && /Lender-paid/.test(swRaw.html),
+    'R72 the switch offers all three positions by name');
+  ok((swRaw.html.match(/aria-pressed="true"/g) || []).length === 1
+    && /aria-pressed="true"[^>]*>Raw pricing/.test(swRaw.html.replace(/<!-- -->/g, '')),
+    'R73 …with RAW selected by default and nothing else pressed');
+  ok(!/Waive lender fees/.test(swRaw.html), 'R74 no waive box outside lender-paid');
+
+  const swLp = attempt(() => render(React.createElement(CompSwitch, { mode: 'lenderPaid', onMode: () => {}, waive: false, onWaive: () => {} })));
+  ok(!swLp.err && /Waive lender fees/.test(swLp.html), 'R75 lender-paid offers the waive box');
+
+  const swBad = attempt(() => render(React.createElement(CompSwitch, { mode: 'lenderPaid', onMode: () => {}, waive: true, onWaive: () => {}, planProblem: true })));
+  ok(!swBad.err && /showing raw pricing/.test(swBad.html) && !/Waive lender fees/.test(swBad.html),
+    'R76 a plan that could not load SAYS the board fell back to raw — and offers no waive');
+
+  // The owner's borrower-paid row: raw 99 → 2 points origination + 1 point buydown + the fees.
+  const bp = quoteCharges('borrowerPaid', PLAN, 99, 350000, false);
+  const clBp = attempt(() => render(React.createElement(ChargeList, { charges: bp })));
+  ok(!clBp.err
+    && /Origination/.test(clBp.html) && /Buydown/.test(clBp.html)
+    && /Application fee/.test(clBp.html) && /Commitment fee/.test(clBp.html)
+    && /12,595\.00/.test(clBp.html),
+    'R77 the fee list carries origination, buydown, both lender fees and the honest net');
+  ok(!/compensation/i.test(clBp.html) && !/\bYSP\b/i.test(clBp.html),
+    'R78 …and never says compensation or YSP — invisible on both sides, as directed');
+
+  // The waive: raw 103 lender-paid → fee lines gone, cash out of the credit.
+  const wv = quoteCharges('lenderPaid', PLAN, 103, 350000, true);
+  const clWv = attempt(() => render(React.createElement(ChargeList, { charges: wv })));
+  ok(!clWv.err
+    && !/Application fee/.test(clWv.html) && !/Commitment fee/.test(clWv.html)
+    && /Lender fees waived/.test(clWv.html) && /1,405\.00/.test(clWv.html),
+    'R79 waived: the two fee lines do not populate and the credit is smaller by the cash');
+
+  // The drill-down shifts the BASE and the FINAL together; the vendor's comp block is withheld.
+  const o = { priceBuild: { basePoints: -3, adjustmentPoints: 1, adjustedPoints: -2, price: 102 }, comp: { borrowerPaid: 5036.5 } };
+  const shifted = attempt(() => render(React.createElement(PriceBuild, {
+    o, comp: { mode: 'lenderPaid', shift: 2, plan: PLAN, waive: false, loanAmount: 350000 },
+  })));
+  ok(!shifted.err && /100\.000/.test(shifted.html) && /101\.000/.test(shifted.html),
+    'R80 in lender-paid the final reads 100.000 and the base 101.000 — both moved by the comp');
+  ok(!/>Comp</.test(shifted.html) && /What this quote charges/.test(shifted.html)
+    && !/compensation/i.test(shifted.html),
+    'R80b …the vendor comp block is withheld and our charge list stands in');
+  const plain = attempt(() => render(React.createElement(PriceBuild, { o })));
+  ok(!plain.err && /102\.000/.test(plain.html) && />Comp</.test(plain.html)
+    && !/What this quote charges/.test(plain.html),
+    'R81 with no overlay the build is the vendor verbatim: 102.000, comp block back, no charge list');
+}
+
 console.log(`\n${failures === 0 ? `OFFLINE: all ${n} passed` : `FAILURES: ${failures} of ${n}`}`);
 process.exit(failures ? 1 : 0);

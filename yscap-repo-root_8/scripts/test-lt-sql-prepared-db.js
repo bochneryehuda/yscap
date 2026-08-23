@@ -158,10 +158,20 @@ async function main() {
     // the fragment assembled, and asserts which folders it reaches and which it
     // deliberately leaves alone.
     'people/contacts.js': 'test-lt-file-setup-role-db.js drives it',
+    // The officer-picker list for a sees-all viewer. Its call site SWALLOWS its own
+    // failure (`.catch(() => null)` — the picker degrades, the pipeline survives),
+    // so mere execution could not prove it: the smoke test ASSERTS `officers` comes
+    // back as an ARRAY, which the swallowed failure (null) fails.
+    'pipeline.js': 'GET /api/lt/pipeline in the route smoke test, which asserts the officers list is an ARRAY — the call site swallows failure into null, so the assertion is what makes the execution provable',
     'ppe/rule-store.js': 'test-lt-ppe-rule-store-db.js drives it',
     'ppe/run-store.js': 'test-lt-ppe-run-store-db.js drives it',
     'product-book.js': 'GET /api/lt/book, in the route smoke test',
     'routes/stages.js': 'GET /api/lt/stages, in the route smoke test',
+    // The borrowers list assembles `WHERE ${scope.where}`, which is EMPTY for the
+    // sees-all admin the smoke test mostly runs as — so that suite also calls it
+    // as a SCOPED loan officer, which is what makes the interpolated branch a real
+    // statement (un-swallowed: a phantom column 500s and the smoke test sees it).
+    'routes/borrowers.js': 'GET /api/lt/borrowers in the route smoke test — the whole-book branch by the admin caller AND the assembled-WHERE branch by a scoped loan officer',
     'views.js': 'GET /api/lt/views, in the route smoke test',
     // THE TRASH RULE (owner-directed 2026-08-23) composes its guard into many
     // readers, and this map went STALE for two of them the day it landed — which
