@@ -25,6 +25,10 @@
  */
 
 const client = require('./client');
+// The master on/off switch. Asked DIRECTLY rather than through the client module,
+// because tests replace that module wholesale in require.cache and a stub carries only
+// the handful of methods the test needs — this one is pure and is never stubbed.
+const killSwitch = require('../lib/integrations/encompass-enabled');
 const db = require('../db');
 const cfg = require('../config');
 const identity = require('../clickup/identity');
@@ -185,6 +189,7 @@ _scrubForStorage._pathsScrubbed = PII_SCRUB_PATHS;
 // failure — records the error and continues to the next kind so a broken
 // customFields endpoint doesn't block the enum refresh.
 async function refreshFieldCatalog() {
+  if (!killSwitch.encompassEnabled()) throw new Error(killSwitch.OFF_REASON);
   if (!client.configured()) throw new Error('Encompass not configured');
   const summary = { customField: 0, standardField: 0, enum: 0, milestone: 0, folder: 0, loanTemplate: 0, errors: {} };
 
@@ -264,6 +269,7 @@ async function _searchGuid(loanNumber) {
 //     stamped into applications.encompass_last_error so the staff panel shows it)
 async function pullLoanForApplication(appId) {
   if (!appId) throw new Error('pullLoanForApplication: appId is required.');
+  if (!killSwitch.encompassEnabled()) return _stampError(appId, killSwitch.OFF_REASON);
   if (!client.configured()) return _stampError(appId, 'Encompass not configured (env)');
 
   const row = (await db.query(
@@ -427,6 +433,7 @@ async function _stampError(appId, reason) {
 // Not for routine use — a single super-dump can be several MB. The `sampleN`
 // cap keeps it in the pasteable/downloadable range (default 20 → ~2-5 MB).
 async function superDump({ sampleN = 20 } = {}) {
+  if (!killSwitch.encompassEnabled()) throw new Error(killSwitch.OFF_REASON);
   if (!client.configured()) throw new Error('Encompass not configured');
   const n = Math.max(1, Math.min(100, Number(sampleN) || 20));
 
@@ -492,6 +499,7 @@ async function superDump({ sampleN = 20 } = {}) {
 // Records progress + a per-run summary in encompass_bulk_pull_runs so admin
 // can watch a live "342 / 1147" gauge.
 async function bulkPullAllLoans({ perRequestDelayMs = 350, startedByStaffId = null, pageSize = 200 } = {}) {
+  if (!killSwitch.encompassEnabled()) throw new Error(killSwitch.OFF_REASON);
   if (!client.configured()) throw new Error('Encompass not configured');
   const runId = (await db.query(
     `INSERT INTO encompass_bulk_pull_runs (started_by, status) VALUES ($1, 'running') RETURNING id`,

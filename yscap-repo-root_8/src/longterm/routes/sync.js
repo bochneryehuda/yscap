@@ -21,6 +21,8 @@ const worker = require('../sync/worker');
 const access = require('../access');
 const settingsStore = require('../settings/store');
 const db = require('../db');
+const encClient = require('../encompass/client');
+const killSwitch = require('../encompass/enabled');
 
 async function requireSyncAdmin(req, res, next) {
   try {
@@ -186,6 +188,17 @@ router.post('/', requireSyncAdmin, async (req, res) => {
  * ENCOMPASS STAYS ONE-WAY: every call this schedules is a read.
  */
 router.post('/pull', requireSyncAdmin, async (req, res) => {
+  // A CONNECTION THAT IS SWITCHED OFF IS ANSWERED HERE, NOT IN THE BACKGROUND.
+  // Everything below answers "started" and then works out of sight, which is right
+  // for a real pull and wrong for a refusal: the person would be told the book is
+  // being pulled, watch nothing arrive, and have no way to learn why. So the one
+  // state we can know instantly is reported instantly, in the words that say what
+  // to change. A 200 on purpose — a deliberate setting is not a fault, and a 5xx
+  // would send the screen down its "something is broken" path.
+  const offReason = !killSwitch.encompassEnabled() ? killSwitch.OFF_REASON
+    : (encClient.configured() ? null : 'Encompass is not connected yet — add the long-term Encompass credentials first.');
+  if (offReason) return res.json({ started: false, reason: offReason, note: offReason });
+
   // Answer first, then work. Nothing after this line may reach the response.
   res.json({
     started: true,

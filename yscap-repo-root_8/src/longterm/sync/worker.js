@@ -218,6 +218,15 @@ function start() {
     return false;
   }
   started = true;
+  // SAID AT BOOT, because this is the state somebody will be looking for in the log
+  // when the book stops filling. The passes are still SCHEDULED — every one of them
+  // refuses cheaply while the switch is off (no Encompass call, no token, nothing on
+  // the wire) and picks straight back up the moment it is turned on, which is why
+  // the worker is not torn down here.
+  const enc = require('../encompass/enabled');
+  if (!enc.encompassEnabled()) {
+    console.log('[lt-sync] %s Passes will run and do nothing until it is turned back on.', enc.OFF_REASON);
+  }
   console.log('[lt-sync] on — a pass every %d min, first in %ds', POLL_MIN, Math.round(FIRST_RUN_MS / 1000));
 
   const safeTick = () => { tickOnce().catch((e) => console.error('[lt-sync] pass failed:', (e && e.message) || e)); };

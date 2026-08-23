@@ -79,6 +79,7 @@
 const { URL } = require('url');
 const crypto = require('crypto');
 const encompass = require('../lib/integrations/encompass');
+const killSwitch = require('../lib/integrations/encompass-enabled');
 
 // A sweep walks up to 500 loans, so an error per resource could grow without
 // bound and be carried around in memory for the whole pass. Keep a readable
@@ -775,6 +776,10 @@ async function sweepOnce(db, { loans = null, sinceDays = DEFAULT_SINCE_DAYS, ske
     capturedUnrecorded: 0, capturedBookkeepingFailed: 0, errorsDropped: 0, errors: [],
   };
   if (catchDisabled()) return { ...out, disabled: true };
+  // WHY it is off, not only THAT it is off: with ENCOMPASS_ENABLED set to off the
+  // credentials are present and deliberately unused, and "not configured" would send
+  // somebody hunting for a missing value that is sitting right there.
+  if (!killSwitch.encompassEnabled()) return { ...out, disabled: true, reason: killSwitch.OFF_REASON };
   if (!encompass.configured()) return { ...out, disabled: true, reason: 'encompass not configured' };
 
   let list = loans;

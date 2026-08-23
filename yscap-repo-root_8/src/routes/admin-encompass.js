@@ -26,6 +26,8 @@ const db = require('../db');
 const { requireAuth, requirePermission } = require('../auth');
 const reader = require('../encompass/reader');
 const client = require('../encompass/client');
+// The master on/off switch, asked directly — see the note in src/encompass/reader.js.
+const killSwitch = require('../lib/integrations/encompass-enabled');
 
 router.use(requireAuth, requirePermission('platform_setup'));
 
@@ -56,6 +58,7 @@ router.get('/catalog', async (req, res) => {
 
 // POST /api/admin/encompass/catalog/refresh — pull the tenant's field metadata NOW.
 router.post('/catalog/refresh', async (req, res) => {
+  if (!killSwitch.encompassEnabled()) return res.status(400).json({ error: killSwitch.OFF_REASON });
   if (!client.configured()) return res.status(400).json({ error: 'Encompass not configured (set ENCOMPASS_* env)' });
   try {
     const summary = await reader.refreshFieldCatalog();
@@ -86,6 +89,7 @@ router.get('/loan/:appId', async (req, res) => {
 
 // POST /api/admin/encompass/loan/:appId/pull — force a fresh pull for this file.
 router.post('/loan/:appId/pull', async (req, res) => {
+  if (!killSwitch.encompassEnabled()) return res.status(400).json({ error: killSwitch.OFF_REASON });
   if (!client.configured()) return res.status(400).json({ error: 'Encompass not configured (set ENCOMPASS_* env)' });
   try {
     const result = await reader.pullLoanForApplication(req.params.appId);
@@ -100,7 +104,8 @@ router.post('/loan/:appId/pull', async (req, res) => {
 // 20, max 100). This response can be several MB — use for reviews, not routine
 // UI polling.
 router.get('/super-dump', async (req, res) => {
-  if (!client.configured()) return res.status(400).json({ error: 'Encompass not configured' });
+  if (!killSwitch.encompassEnabled()) return res.status(400).json({ error: killSwitch.OFF_REASON });
+  if (!client.configured()) return res.status(400).json({ error: 'Encompass not configured (set ENCOMPASS_* env)' });
   try {
     const sampleN = Number(req.query.loans) || 20;
     const dump = await reader.superDump({ sampleN });
@@ -112,7 +117,8 @@ router.get('/super-dump', async (req, res) => {
 // in the tenant. Runs in the BACKGROUND (this response returns immediately
 // with the run id); watch progress via GET /pull-all/runs.
 router.post('/pull-all', async (req, res) => {
-  if (!client.configured()) return res.status(400).json({ error: 'Encompass not configured' });
+  if (!killSwitch.encompassEnabled()) return res.status(400).json({ error: killSwitch.OFF_REASON });
+  if (!client.configured()) return res.status(400).json({ error: 'Encompass not configured (set ENCOMPASS_* env)' });
   try {
     // Check if an existing run is still going — never stack.
     const existing = (await db.query(
