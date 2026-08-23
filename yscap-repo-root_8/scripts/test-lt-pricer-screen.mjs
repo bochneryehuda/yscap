@@ -455,5 +455,28 @@ console.log('LT Pricing Engine — structural guards\n');
     'PE-96 lenders within a rate are ordered by name, not by an absent price');
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+   PE-97..PE-102 — THE TERM BOX AND THE CALCULATOR ARE ON THE SCREEN.
+
+   These are SOURCE guards, and they exist because the RENDER suite that proves the same things
+   properly (R53..R66) needs esbuild, which no CI job installs — so it SKIPS on the build server and
+   the term box could quietly disappear with every job green. What can be checked here without a
+   bundler is that the screen still MOUNTS them, and mounts them fed by the shared definitions
+   rather than by a second list somebody typed into the JSX.
+   ────────────────────────────────────────────────────────────────────────── */
+{
+  ok(/id="pe-term"/.test(code) && /<select[^>]*id="pe-term"/.test(code),
+    'PE-97 the loan-term box is on the form');
+  ok(/LOAN_TERMS\.map/.test(code),
+    'PE-98 ...and its options come from the shared LOAN_TERMS, not a list typed into the screen');
+  ok(/value=\{f\.termYears\}/.test(code) && /termYears: DEFAULT_TERM_YEARS/.test(code),
+    'PE-99 ...and the value it starts on is the shared default');
+  ok(/<DscrCalc\b/.test(code), 'PE-100 the DSCR calculator is mounted');
+  ok(/termYears=\{toNumber\(f\.termYears\)\}/.test(code) && /interestOnly=\{!!f\.io\}/.test(code),
+    'PE-101 ...and it is fed the scenario\'s own term and interest-only flag, so the ratio follows them');
+  ok(/\{calcOpen && \(/.test(code) && /useState\(false\)/.test(code),
+    'PE-102 ...and it is closed until it is asked for');
+}
+
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
 process.exit(failures ? 1 : 0);
