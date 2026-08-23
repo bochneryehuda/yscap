@@ -1020,25 +1020,134 @@ async function buildReportBytes(appId, { sitewireDrawId = null, scope, mode = 's
   };
 }
 
+/* ONE BUILD PER REPORT, NEVER N (owner-reported 2026-08-23: *"it's going to a blank
+   page. It takes a very long time, and sometimes it's not even opening."*).
+
+   Building a report reads every durable photo off storage and then renders the PDF
+   with jsPDF, which is SYNCHRONOUS and CPU-bound — it holds the event loop for as
+   long as it runs. Nothing stopped two clicks (or two tabs, or a click plus the
+   borrower opening their copy) from starting the same expensive build twice, and
+   two of those in flight is a web service that has stopped answering anything. That
+   is what "sometimes it's not even opening" looks like from the outside: not an
+   error, a queue.
+
+   Keyed on the VERSION FILENAME, which already encodes the loan, the scope, the
+   mode and a hash of the figures — so two requests coalesce exactly when they would
+   have produced byte-identical output, and a genuinely different report is never
+   made to wait behind an unrelated one.
+
+   The rule itself lives in src/lib/single-flight.js because the TrustPoint report
+   builder needs the identical guarantee, and the defect this fixes WAS four copies
+   of one build sequence. */
+const { singleFlight, inFlight } = require('../lib/single-flight');
+const _buildsInFlight = new Map();
+
+/**
+ * What a client needs to decide what to SHOW before it asks for the bytes: is this
+ * report already built (instant), or does it have to be rendered first (and roughly
+ * how big a job is that)?
+ *
+ * Deliberately cheap — it loads the same metadata the builder loads and looks up the
+ * row, but never touches a photo byte or the PDF renderer. That is what makes it
+ * safe to call on every click before the download starts, and it is the difference
+ * between a progress bar that means something and a blank tab.
+ */
+async function reportStatus(appId, { sitewireDrawId = null, scope, mode = 'staff' } = {}) {
+  const meta = await loadReportMeta(appId, { sitewireDrawId, mode });
+  if (!meta || !meta.hasScope || !Array.isArray(meta.sections) || !meta.sections.length) {
+    return { exists: false, ready: false, reason: 'No draw data to report on yet — start a draw and deliver findings first.' };
+  }
+  const drawNumber = scope === 'draw' && meta.sections[0] ? meta.sections[0].number : null;
+  const filename = reportFilename({ scope, mode, drawNumber, version: meta.version, loanNo: meta.app.loanNo });
+  const row = (await lazy.db.query(
+    `SELECT id, bytes FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`,
+    [appId, filename])).rows[0];
+  // How much work a build would be, in the only unit a person cares about: photos.
+  let photos = 0, lines = 0;
+  for (const sec of meta.sections) for (const l of (sec.lines || [])) { lines++; photos += (l.photos || []).length; }
+  return {
+    exists: true,
+    ready: !!row,                                  // already built → the download is immediate
+    building: inFlight(_buildsInFlight, filename), // somebody else is rendering it right now
+    filename,
+    documentId: row ? row.id : null,
+    sizeBytes: row && row.bytes != null ? Number(row.bytes) : null,
+    photos, lines, drawNumber, scope, mode,
+  };
+}
+
 async function buildOrGetReportDoc(appId, { sitewireDrawId = null, scope, mode = 'staff' } = {}) {
   const meta = await loadReportMeta(appId, { sitewireDrawId, mode });
   if (!meta || !meta.hasScope || !Array.isArray(meta.sections) || !meta.sections.length) return null;
   const drawNumber = scope === 'draw' && meta.sections[0] ? meta.sections[0].number : null;
   const filename = reportFilename({ scope, mode, drawNumber, version: meta.version, loanNo: meta.app.loanNo });
-  const borrowerRow = (await lazy.db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
   let doc = (await lazy.db.query(
     `SELECT * FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`,
     [appId, filename])).rows[0];
   if (doc) return { doc, built: false };
-  const photoLoad = await attachPhotoBytes(meta.sections);               // read the durable photo bytes (bounded)
-  const bytes = buildDrawReport({
-    app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode,
-    // No silent caps: whatever the budget forced out is reported in the report itself.
-    photosOmitted: (photoLoad && photoLoad.omitted) || 0,
+
+  // Somebody is already rendering this exact report — wait for THEIR build instead of
+  // starting a second identical one. Two concurrent jsPDF renders is how the service
+  // stops answering; one render and a queue of waiters is how it stays up.
+  return singleFlight(_buildsInFlight, filename, async () => {
+    const borrowerRow = (await lazy.db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
+    /* ACROSS PROCESSES TOO. The map above is per-process; Render runs the web service
+       and the pipeline worker (and, if the web service is ever scaled past one
+       instance, several copies of it) against one database. A transaction-scoped
+       advisory lock makes the second process WAIT and then find the row the first one
+       just wrote, rather than repeat the whole render. `withAdvisoryLock` is
+       best-effort by construction: if the lock cannot be taken (no pool, a blip) the
+       build still happens — correctness never depends on it, only efficiency does. */
+    const t0 = Date.now();
+    const built = await withReportLock(filename, async () => {
+      // Re-check inside the lock: the process we queued behind may have just built it.
+      const fresh = (await lazy.db.query(
+        `SELECT * FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`,
+        [appId, filename])).rows[0];
+      if (fresh) return { doc: fresh, built: false };
+      const photoLoad = await attachPhotoBytes(meta.sections);           // read the durable photo bytes (bounded)
+      const bytes = buildDrawReport({
+        app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode,
+        // No silent caps: whatever the budget forced out is reported in the report itself.
+        photosOmitted: (photoLoad && photoLoad.omitted) || 0,
+      });
+      const docId = await storeDrawReport({ appId, borrowerId: borrowerRow.borrower_id, filename, bytes, mode });
+      const row = (await lazy.db.query(`SELECT * FROM documents WHERE id=$1`, [docId])).rows[0];
+      return { doc: row, built: true };
+    });
+    /* SAY HOW LONG IT TOOK. "It takes a very long time" was unanswerable because
+       nothing measured it. One line per real build, never on the cached path, so it
+       stays signal. */
+    if (built && built.built) {
+      console.log(`[draw-report] built ${filename} in ${Date.now() - t0}ms`);
+    }
+    return built;
   });
-  const docId = await storeDrawReport({ appId, borrowerId: borrowerRow.borrower_id, filename, bytes, mode });
-  doc = (await lazy.db.query(`SELECT * FROM documents WHERE id=$1`, [docId])).rows[0];
-  return { doc, built: true };
+}
+
+/* A transaction-scoped advisory lock around one report build. Transaction-scoped
+   (`pg_advisory_xact_lock`) rather than session-scoped on purpose: it is released by
+   COMMIT/ROLLBACK whatever happens, so a build that throws — or a process that dies
+   mid-render — cannot leave a lock nobody will ever unlock and wedge that report for
+   every future request. Falls through and just runs the work if a connection cannot
+   be had: a locking problem must never become a "you cannot have your report". */
+async function withReportLock(key, fn) {
+  let client = null;
+  // `getClient` rather than `pool.connect` so this borrowed connection is covered by
+  // the pool's own leak tracking, like every other hand-managed client in the app.
+  try { client = await lazy.db.getClient(); } catch (_) { return fn(); }
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`draw-report:${key}`]);
+    const out = await fn();
+    await client.query('COMMIT');
+    return out;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* already gone */ }
+    throw e;
+  } finally {
+    try { client.release(); } catch (_) { /* noop */ }
+  }
 }
 
 /* On findings delivery: durably capture the inspector's (pre-signed, EXPIRING) media NOW, then pre-build
@@ -1110,6 +1219,6 @@ function reportFilename({ scope, mode, drawNumber, version, loanNo }) {
 
 module.exports = {
   buildDrawReport, loadReportMeta, attachPhotoBytes, storeDrawReport, reportVersion, reportFilename,
-  buildOrGetReportDoc, buildReportBytes, autoDeliverArtifacts, refreshDrawFromSitewire,
+  buildOrGetReportDoc, reportStatus, buildReportBytes, autoDeliverArtifacts, refreshDrawFromSitewire,
   imageFormat, getJsPDF, MAX_PHOTOS_TOTAL, MAX_PHOTOS_PER_LINE, EMBED_BYTE_BUDGET,
 };

@@ -530,6 +530,15 @@
                      as coBorrowerPgWaived). Blank on the public site, so the 1% closing-cost buffer
                      applies; "1"/"true" waives it on the manual side. -->
                 <input id="liqBufferWaived" type="hidden" value="">
+                <!-- The FILE's own unit count and city, read-only (the same shape as
+                     liqBufferWaived). The term sheet asks only "1 unit" or "2-4 units",
+                     which cannot tell a 3-family from a 4-family — and New York City
+                     taxes those at 2.175% and 2.80% of the same loan. So when the studio
+                     is opened from a loan file it is handed the real figures. Blank on
+                     the public site, where the admin boxes below are the way to state
+                     them. -->
+                <input id="fileUnits" type="hidden" value="">
+                <input id="fileCity" type="hidden" value="">
                 <!-- Program ON/OFF switches (owner-directed 2026-08-18): the FILE's effective
                      availability map, set by the portal host via YS.applyState (the server's
                      availabilityFor shape — active / offered / note / exception per program).
@@ -788,6 +797,36 @@
                          that attracts none; a typed 0 WAIVES it. Any typed value — 0 included —
                          goes to an admin for approval like every other knob in this zone. -->
                     <div class="field"><label for="tsFeasFee">Construction feasibility review ($)</label><div class="input"><input id="tsFeasFee" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal type — 1250 ground-up / 750 heavy rehab"></div></div>
+                </div>
+                <!-- GOVERNMENT CHARGES — THE MANUAL SECTION (owner-directed 2026-08-23:
+                     "All those line items should also be able to be added to the manual
+                     section to be overwritten and should automatically fill based on the
+                     unit count, the loan type, the county, the state").
+
+                     Every box here is BLANK by default and stays blank: the estimate fills
+                     itself from the state, the county, the unit count and the loan. Type a
+                     figure only when the settlement agent has given you the real one — which
+                     always beats a rate table — or when a charge is owed that our table does
+                     not compute for that jurisdiction. A typed 0 WAIVES the charge, and, like
+                     every other knob in this zone, any typed value goes to an admin for
+                     approval.
+
+                     THE COUNTY IS HERE FOR A REASON. New York sets the mortgage recording tax
+                     by county (Cortland 1.25% against Chenango 1.00%) and Maryland sets the
+                     recordation tax the same way, so without a county the estimate falls back
+                     to the state's HIGHEST known rate and says so on the quote. Typing it is
+                     the difference between a warning and a number. -->
+                <div class="ts-admin-group">Government charges <span class="ts-admin-note">— mortgage tax, transfer tax, recording. Blank = calculated from the state, county, units and loan.</span></div>
+                <div class="ts-admin-grid2">
+                    <div class="field"><label for="tsTaxUnits">Units (exact)</label><div class="input"><input id="tsTaxUnits" data-noshare type="number" inputmode="numeric" step="1" min="1" max="99" placeholder="3 vs 4 changes the NYC rate"></div></div>
+                    <div class="field"><label for="tsTaxCity">Property city</label><div class="input"><input id="tsTaxCity" data-noshare type="text" placeholder="e.g. Brooklyn, Philadelphia, Pittsburgh"></div></div>
+                    <div class="field"><label for="tsTaxCounty">Property county</label><div class="input"><input id="tsTaxCounty" data-noshare type="text" placeholder="e.g. Kings — sets the NY / MD tax rate"></div></div>
+                    <div class="field"><label for="tsTaxBuyerShare">Transfer tax — buyer's share (%)</label><div class="input"><input id="tsTaxBuyerShare" data-noshare type="number" inputmode="numeric" step="1" min="0" max="100" placeholder="per the contract — PA splits 50/50"></div></div>
+                    <div class="field"><label for="tsTaxMortgage">Mortgage / recordation tax ($)</label><div class="input"><input id="tsTaxMortgage" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto — by state, county, units"></div></div>
+                    <div class="field"><label for="tsTaxIntangible">Intangible tax — FL ($)</label><div class="input"><input id="tsTaxIntangible" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto — 2 mills on the mortgage"></div></div>
+                    <div class="field"><label for="tsTaxTransferState">State transfer tax — buyer ($)</label><div class="input"><input id="tsTaxTransferState" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto — purchases only"></div></div>
+                    <div class="field"><label for="tsTaxTransferLocal">City / local transfer tax — buyer ($)</label><div class="input"><input id="tsTaxTransferLocal" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto — Philadelphia 3.578%, Pittsburgh 4%"></div></div>
+                    <div class="field"><label for="tsTaxMansion">Mansion tax ($)</label><div class="input"><input id="tsTaxMansion" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto — NY 1% at $1M+, buyer pays"></div></div>
                 </div>
                 </div>
                 </details>
@@ -1054,6 +1093,13 @@
                      zone. Hidden until the deal actually carries one, so every other quote's panel
                      is unchanged. The JS names it, because the label differs by depth. -->
                 <div class="ts-line" id="rFeasWrap" style="display:none"><span class="k" id="rFeasLbl">Construction feasibility review</span><span class="v" id="rFeas">—</span></div>
+                <!-- GOVERNMENT CHARGES (owner-directed 2026-08-23): the mortgage tax,
+                     transfer tax, mansion tax and recording fees, EACH ON ITS OWN LINE
+                     because that is how they appear on a settlement statement and how a
+                     borrower checks them. The JS fills this container with one row per
+                     charge (the count varies by state), so a state with none of them
+                     renders nothing and the panel is unchanged. -->
+                <div id="rGovWrap" style="display:none"></div>
                 <!-- REFINANCE reconciliation (rate-and-term only): the existing loan
                      payoff the borrower brings, less the funds that advance at closing,
                      so the fee list adds up to the cash-to-close total. Shown by the JS
@@ -1066,6 +1112,7 @@
             <div class="ts-line"><span class="k">Estimated liquidity to show<span class="tip" tabindex="0" role="note" aria-label="Cash reserves you need to show you have on hand to carry the project. This is demonstrated, not money brought to closing.">i<span class="tip-bub">Cash reserves you need to show you have on hand to carry the project. This is demonstrated, not money brought to closing.</span></span></span><span class="v" id="rLiquidity">$0</span></div>
             <!-- 1% closing-cost buffer inside the liquidity to show (owner-authorized 2026-07-31) -->
             <div class="ts-line"><span class="k">Closing cost buffer (1%)<span class="tip" tabindex="0" role="note" aria-label="A buffer for extra closing costs — about 1% of the loan amount — included in the liquidity to show so you never run short at the table. It can be waived on a manual review.">i<span class="tip-bub">A buffer for extra closing costs — about 1% of the loan amount — included in the liquidity to show so you never run short at the table. It can be waived on a manual review.</span></span></span><span class="v" id="rLiqBuffer">—</span></div>
+            <div class="ts-irnote" id="rGovNote" style="display:none"></div>
             <div class="ts-irnote" id="rIRnote" style="display:none"></div>
             <div class="ts-irnote" id="rEscNote" style="display:none"></div>
             <div class="ts-info" id="rRefiNote" style="display:none"></div>
@@ -1145,8 +1192,9 @@
 <script src="gold-standard.js?v=asgseller19-tiermk1-tsprog1-oopauto1"></script>
 <script src="silver-program.js?v=silver9-bandeps-tiermk1-tsprog1-oopauto1"></script>
 <script src="title-cost.js?v=admin8-tsprog1"></script>
+<script src="gov-charges.js?v=gov2"></script>
 <script src="address-autocomplete.js?v=admin9-tsprog1"></script>
-<script src="termsheet.js?v=cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1"></script>
+<script src="termsheet.js?v=gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1"></script>
 <script src="../float-actions.js?v=admin10-applyfix-tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

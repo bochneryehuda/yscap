@@ -76,7 +76,7 @@ const { buildXlsx } = require('../lib/xlsx');
 const mediaArchive = require('../sitewire/media-archive');
 const drawReport = require('../sitewire/draw-report');
 const storage = require('../lib/storage');
-const { setMediaHeaders } = require('../lib/media-headers');
+const { serveMedia } = require('../lib/media-headers');
 const { serveDocument } = require('../lib/serve-document');
 const { computeRelease, waiverGate } = require('../sitewire/money');
 // THE INVESTOR'S CUT OF OUR DRAW FEE — pure, and the ONE place the CorrFirst/Blue Lake rates live.
@@ -251,8 +251,11 @@ router.get('/files/:id/draws/:drawId/media/:mediaId', requireDrawView, async (re
   if (!m || !m.storage_ref) return res.status(404).end();
   let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
   if (!buf || !buf.length) return res.status(404).end();
-  setMediaHeaders(res, m.content_type);   // safe-type allowlist + sandbox CSP (never serve a dangerous type inline)
-  return res.end(buf);
+  // ONE door for every stored media byte: safe-type allowlist, the real type
+  // derived from the bytes when the stored label was lost on the way in, and HTTP
+  // range support so a <video> can actually stream and seek instead of showing a
+  // black frame (owner-reported 2026-08-23).
+  return serveMedia(req, res, buf, m.content_type);
 });
 
 // ---- PILOT-branded inspection reports (phase 2b) ----
@@ -276,6 +279,40 @@ async function generateAndServeReport(req, res, { sitewireDrawId, scope }) {
     return serveDocument(res, r.doc, { inline: true });
   } catch (e) { res.status(500).json({ error: 'Could not build the report — please try again.' }); }
 }
+/* IS IT ALREADY BUILT? (owner-reported 2026-08-23: *"it's going to a blank page …
+   If it needs time, in the pilot, you should see that it takes time loading."*)
+
+   The screen used to open a blank browser tab and only THEN start a request that
+   might take thirty seconds to render a PDF full of photos — so the user watched an
+   empty white page with no way to tell a slow build from a broken link. It cannot
+   tell the difference because the old flow never asked: the only thing it could do
+   was wait for bytes.
+
+   This is the question that makes an honest progress state possible, and it is
+   cheap — the same metadata the builder loads, the row lookup, and NOT one photo
+   byte or one line of PDF rendering. The client calls it on the click, then shows
+   either "opening" (already built) or "building this report — 43 photos" with a
+   real bar, in PILOT, where the owner asked for it. */
+async function serveReportStatus(req, res, { sitewireDrawId, scope }) {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const mode = req.query.mode === 'borrower' ? 'borrower' : 'staff';
+  try {
+    const st = await drawReport.reportStatus(appId, { sitewireDrawId, scope, mode });
+    return res.json(st);
+  } catch (e) {
+    console.warn('[sitewire] report status error:', e && e.message);
+    return res.status(500).json({ error: 'Could not check the report — please try again.' });
+  }
+}
+router.get('/files/:id/draws/:drawId/report/status', requireDrawView, async (req, res) => {
+  if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
+  return serveReportStatus(req, res, { sitewireDrawId: req.params.drawId, scope: 'draw' });
+});
+router.get('/files/:id/report/status', requireDrawView, async (req, res) => {
+  return serveReportStatus(req, res, { sitewireDrawId: null, scope: 'project' });
+});
+
 // per-draw report
 router.get('/files/:id/draws/:drawId/report', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
@@ -3234,8 +3271,8 @@ router.get('/findings/lines/:lineId/dispute-media/:idx', requireDrawView, async 
   if (!m || !m.storage_ref) return res.status(404).end();
   let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
   if (!buf || !buf.length) return res.status(404).end();
-  setMediaHeaders(res, m.content_type);   // borrower-uploaded evidence: type is server-derived, but clamp on serve too
-  return res.end(buf);
+  // borrower-uploaded evidence: the type is server-derived at intake, but clamp on serve too.
+  return serveMedia(req, res, buf, m.content_type);
 });
 
 // ---- POST /findings/:findingId/lines/:lineId/decide — admin decides a disputed line ----

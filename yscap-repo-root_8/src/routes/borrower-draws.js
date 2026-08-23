@@ -343,22 +343,41 @@ router.get('/draws/:appId/report', async (req, res) => {
     if (!own.rowCount) return res.status(404).json({ error: 'That draw was not found on your file.' });
   }
   try {
-    const meta = await drawReport.loadReportMeta(appId, { sitewireDrawId: drawId, mode: 'borrower' });
-    if (!meta || !meta.hasScope || !meta.sections.length) return res.status(404).json({ error: 'Your inspection report isn’t ready yet — it appears once your draw results are in.' });
+    /* ONE BUILDER, NOT A SECOND COPY OF IT. This route used to inline its own
+       load → attach photos → render → store sequence, byte-for-byte the same work
+       `buildOrGetReportDoc` does. The copy is why the borrower path did not get the
+       build coalescing added for the staff path (owner-reported 2026-08-23: the
+       report "takes a very long time, and sometimes it's not even opening" — two
+       concurrent synchronous PDF renders holding the event loop). It also silently
+       dropped the `photosOmitted` count the shared builder puts ON the report, so a
+       borrower's copy could omit photos and say nothing about it.
+
+       `mode` is still HARD-FORCED to 'borrower' here — a borrower can never obtain
+       the staff copy — and the caller cannot influence it. */
     const scope = drawId ? 'draw' : 'project';
-    const drawNumber = drawId && meta.sections[0] ? meta.sections[0].number : null;
-    const filename = drawReport.reportFilename({ scope, mode: 'borrower', drawNumber, version: meta.version, loanNo: meta.app.loanNo });
-    const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
-    let doc = (await db.query(
-      `SELECT * FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`, [appId, filename])).rows[0];
-    if (!doc) {
-      await drawReport.attachPhotoBytes(meta.sections);
-      const bytes = drawReport.buildDrawReport({ app: meta.app, rollup: meta.rollup, sections: meta.sections, scope, mode: 'borrower' });
-      const docId = await drawReport.storeDrawReport({ appId, borrowerId: borrowerId.borrower_id, filename, bytes, mode: 'borrower' });
-      doc = (await db.query(`SELECT * FROM documents WHERE id=$1`, [docId])).rows[0];
-    }
-    return serveDocument(res, doc, { inline: true });
+    const r = await drawReport.buildOrGetReportDoc(appId, { sitewireDrawId: drawId, scope, mode: 'borrower' });
+    if (!r || !r.doc) return res.status(404).json({ error: 'Your inspection report isn’t ready yet — it appears once your draw results are in.' });
+    return serveDocument(res, r.doc, { inline: true });
   } catch (e) { res.status(500).json({ error: 'Could not build your report right now — please try again shortly.' }); }
+});
+
+/* IS IT READY? — the cheap probe the borrower's screen asks on the click so it can
+   show "building your report" with real progress instead of a blank browser tab
+   (owner-reported 2026-08-23). Same shape and the same hard-forced borrower mode as
+   the report itself; touches no photo byte and runs no renderer. */
+router.get('/draws/:appId/report/status', async (req, res) => {
+  const appId = req.params.appId;
+  if (!(await ownsApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const drawId = /^\d{1,18}$/.test(String(req.query.drawId || '')) ? req.query.drawId : null;
+  if (drawId) {
+    const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]);
+    if (!own.rowCount) return res.status(404).json({ error: 'That draw was not found on your file.' });
+  }
+  try {
+    const st = await drawReport.reportStatus(appId, { sitewireDrawId: drawId, scope: drawId ? 'draw' : 'project', mode: 'borrower' });
+    if (st && st.exists === false) st.reason = 'Your inspection report isn’t ready yet — it appears once your draw results are in.';
+    return res.json(st);
+  } catch (e) { return res.status(500).json({ error: 'Could not check your report right now — please try again shortly.' }); }
 });
 
 // ---- POST /draws/:appId/change-request — borrower proposes a Scope-of-Work change ----

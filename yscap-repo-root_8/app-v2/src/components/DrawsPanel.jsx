@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
-import { api, saveBlob } from '../lib/api.js';
+import { api, saveBlob, trackUploads } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
 import DropZone from './DropZone.jsx';
 import FileSections, { Section, goToSection } from './FileSections.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import { ScheduleButton, ScheduledSends } from './ScheduleSend.jsx';
+import { useLightbox } from './MediaLightbox.jsx';
+import { useReportOpener } from './ReportOpener.jsx';
+import UploadRows from './UploadRows.jsx';
 
 /* Per-file construction-draw desk (staff). One place tying draws ↔ Scope of Work ↔
    construction budget: the unified per-line/per-unit rollup, each draw's per-line
@@ -144,6 +147,7 @@ function PayoffDemandBanner({ payoff, started }) {
 }
 
 function DrawsPanel({ appId }) {
+  const openReport = useReportOpener();   // the in-app report panel (see ReportOpener.jsx)
   const { can } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -236,6 +240,7 @@ function DrawsPanel({ appId }) {
 
   return (
     <div>
+      {openReport.node}
       {/* A refresh that failed while the desk is already up — shown inline instead of
           replacing the whole panel, so the reader stays where they are. */}
       {err && <div className="dd-card" style={{ marginTop: 12, borderLeft: '3px solid var(--bad,#b04a3f)', color: 'var(--bad,#b04a3f)' }}>{err}</div>}
@@ -337,12 +342,29 @@ function DrawsPanel({ appId }) {
             <Section id="dsec-draws" title="Draws" defaultOpen badge={draws.length || null}
               action={draws.length > 0 ? (
                 <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                  {/* OPENS IN PILOT WITH A VISIBLE PROGRESS STATE, not into a blank browser
+                      tab (owner-reported 2026-08-23). A whole-project report is the biggest
+                      one there is — every draw, every photo — so it is exactly the case that
+                      used to sit blank for half a minute and read as an error. */}
                   <button className="btn btn-sm soft" title="A PILOT-branded PDF of the whole construction project — schedule of values + every draw's inspection photos + notes."
-                    onClick={() => { const w = window.open('', '_blank'); act('projreport', async () => { await api.sitewireProjectReport(appId, 'staff', w); return { msg: 'Opened the whole-project report in a new tab.' }; }); }}>
+                    onClick={() => openReport.start({
+                      title: 'Whole-project inspection report',
+                      subtitle: 'Every draw, the schedule of values, inspector notes and photos.',
+                      status: () => api.sitewireProjectReportStatus(appId, 'staff'),
+                      fetch: (onP) => api.sitewireProjectReportBytes(appId, 'staff', onP),
+                    })}>
                     Whole-project report
                   </button>
                   <button className="btn btn-sm soft" title="The same whole-project report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower."
-                    onClick={async () => { if (!(await askConfirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.'))) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
+                    onClick={async () => {
+                      if (!(await askConfirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.'))) return;
+                      openReport.start({
+                        title: 'Whole-project report — borrower copy',
+                        subtitle: 'Borrower-safe. Generating it shares it with the borrower.',
+                        status: () => api.sitewireProjectReportStatus(appId, 'borrower'),
+                        fetch: (onP) => api.sitewireProjectReportBytes(appId, 'borrower', onP),
+                      });
+                    }}>
                     Borrower copy
                   </button>
                 </div>
@@ -591,7 +613,8 @@ function DrawRequestCard({ appId }) {
     setBusy(true); setMsg('');
     try {
       const up = await readAsUpload(f);
-      await api.post(`/api/sitewire/files/${appId}/draw-request/upload-manual`, up);
+      await trackUploads(`draw:${appId}-wire`, f.name,
+        () => api.post(`/api/sitewire/files/${appId}/draw-request/upload-manual`, up));
       setMsg('Manual wire form uploaded. Review it below and accept it — once accepted it goes to the investor with the draw.');
       reload();
     } catch (ex) { setMsg((ex && ex.data && ex.data.error) || ex.message || 'Could not upload the wire form.'); }
@@ -854,6 +877,7 @@ function DrawRequestCard({ appId }) {
             <input ref={manualRef} type="file" accept="application/pdf,image/*" disabled={busy} onChange={uploadManual} style={{ display: 'none' }} />
           </DropZone>
         )}
+        <UploadRows target={`draw:${appId}-wire`} />
         {/* CLEAR the DocuSign form while it is OUT for signature, so a manual one can replace it. */}
         {env && !terminal && env.clearable && (
           <button className="btn btn-sm ghost" disabled={busy} onClick={clearDocuSign}
@@ -1943,6 +1967,7 @@ function PortalDrawsCard({ appId }) {
 
 // per-line entry (transcribed from TrustPoint's console) + the push-to-Sitewire button.
 function TrustpointPanel({ appId }) {
+  const openReport = useReportOpener();   // the in-app report panel (see ReportOpener.jsx)
   const [ov, setOv] = useState(null);
   const [openLines, setOpenLines] = useState(null);   // tp_draw_id whose entry form is open
   const [lineData, setLineData] = useState(null);
@@ -1995,6 +2020,7 @@ function TrustpointPanel({ appId }) {
   // a raw database value in one place and a friendly label in the other.
   return (
     <div className="dd-card" style={{ marginTop: 12 }}>
+      {openReport.node}
       <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           <span className="dd-card-ic"><SdIcon name="ext" /></span>
@@ -2045,7 +2071,12 @@ function TrustpointPanel({ appId }) {
                 <button className="btn btn-sm ghost" disabled={busy} onClick={() => pushNow(d)}>Push approval to Sitewire</button>
               </>
             )}
-            <button className="btn btn-sm ghost" disabled={busy} onClick={() => { const w = window.open('', '_blank'); api.trustpointDrawReport(appId, d.tp_draw_id, 'staff', w).catch((e) => setMsg(e?.data?.error || e.message)); }}>Report (PDF)</button>
+            <button className="btn btn-sm ghost" disabled={busy || openReport.busy}
+              onClick={() => openReport.start({
+                title: `TrustPoint draw ${d.tp_draw_id} — inspection report`,
+                subtitle: 'Approved amounts, inspector notes and the archived photos.',
+                fetch: (onP) => api.trustpointDrawReportBytes(appId, d.tp_draw_id, 'staff', onP),
+              })}>Report (PDF)</button>
           </div>
           <DrawMessages messages={d.messages} />
           {openLines === d.tp_draw_id && lineData && (
@@ -2755,6 +2786,7 @@ function DrawTimeline({ timeline }) {
 }
 
 function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff, readsOff, quickStatuses, delivery, answers }) {
+  const openReport = useReportOpener();   // the in-app report panel (see ReportOpener.jsx)
   const offTip = writesOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const readTip = readsOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const isOpen = draw.status !== 'approved';
@@ -2777,6 +2809,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
   }
   return (
     <div className="panel" style={{ marginTop: 10 }}>
+      {openReport.node}
       <div className="row between" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
         <div className="row" style={{ gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
           <b>Draw #{draw.number ?? '—'}</b>
@@ -2952,10 +2985,26 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
             {showPhotos ? 'Hide photos' : 'Photos'}
           </button>
           <button className="btn btn-sm soft" onClick={() => api.sitewireExportPacket(appId, draw.sitewire_draw_id).catch(() => {})}>Packet (Excel)</button>
-          <button className="btn btn-sm soft" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={busy === 'rep' + draw.sitewire_draw_id}
-            onClick={() => { const w = window.open('', '_blank'); act('rep' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'staff', w); return { msg: 'Opened the PILOT report in a new tab.' }; }); }}>Our report</button>
-          <button className="btn btn-sm soft" title="The same report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower." disabled={busy === 'repb' + draw.sitewire_draw_id}
-            onClick={async () => { if (!(await askConfirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal, including the draw processing fee deducted from their release.'))) return; const w = window.open('', '_blank'); act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower', w); return { msg: 'Shared the borrower-safe report with the borrower (opened in a new tab).' }; }); }}>Borrower copy</button>
+          {/* THE REPORT OPENS HERE, IN PILOT, showing what it is doing while it builds —
+              it used to open a blank browser tab and fill it 5-40s later, which is what
+              the owner saw as "a blank page … it's not even opening". */}
+          <button className="btn btn-sm soft" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={openReport.busy}
+            onClick={() => openReport.start({
+              title: `Draw ${draw.number != null ? '#' + draw.number : ''} — inspection report`,
+              subtitle: 'Schedule of values, approved vs not approved, inspector notes and photos.',
+              status: () => api.sitewireDrawReportStatus(appId, draw.sitewire_draw_id, 'staff'),
+              fetch: (onP) => api.sitewireDrawReportBytes(appId, draw.sitewire_draw_id, 'staff', onP),
+            })}>Our report</button>
+          <button className="btn btn-sm soft" title="The same report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower." disabled={openReport.busy}
+            onClick={async () => {
+              if (!(await askConfirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal, including the draw processing fee deducted from their release.'))) return;
+              openReport.start({
+                title: `Draw ${draw.number != null ? '#' + draw.number : ''} — borrower copy`,
+                subtitle: 'Borrower-safe. Generating it shares it with the borrower.',
+                status: () => api.sitewireDrawReportStatus(appId, draw.sitewire_draw_id, 'borrower'),
+                fetch: (onP) => api.sitewireDrawReportBytes(appId, draw.sitewire_draw_id, 'borrower', onP),
+              });
+            }}>Borrower copy</button>
           {draw.pdf_src && <a className="btn btn-sm soft" href={draw.pdf_src} target="_blank" rel="noreferrer">Inspector PDF</a>}
         </span>
       </div>
@@ -3649,7 +3698,12 @@ function DrawAttachments({ appId, drawId }) {
       // The one upload contract this app uses everywhere: {filename, contentType, dataBase64}.
       const payload = [];
       for (const f of files) payload.push({ ...(await readAsUpload(f)), category: cat });
-      const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/attachments`, { files: payload });
+      /* Each file gets its live row in the list below, from the moment it is chosen
+         (owner-reported 2026-08-23). This endpoint takes its own batch shape rather
+         than one of the document doors, so it says so explicitly instead of silently
+         being the one place that still looks broken. */
+      const r = await trackUploads(`draw:${drawId}`, files.map((f) => f.name),
+        () => api.post(`/api/sitewire/files/${appId}/draws/${drawId}/attachments`, { files: payload }));
       const skipped = (r.skipped || []);
       setMsg(`${r.added.length} file${r.added.length === 1 ? '' : 's'} attached.${skipped.length ? ` ${skipped.length} could not be: ${skipped.map((s) => `${s.what} — ${s.reason}`).join('; ')}` : ''}`);
       setD(r.attachments ? { ...(d || {}), attachments: r.attachments } : d);
@@ -3716,6 +3770,8 @@ function DrawAttachments({ appId, drawId }) {
           ))}
         </ul>
       )}
+      {/* the files, on their bars, in the list they are joining */}
+      <UploadRows target={`draw:${drawId}`} />
       {preview && <AttachmentPreview key={preview.id} appId={appId} drawId={drawId} att={preview} onClose={() => setPreview(null)} />}
       <DropZone className="row dz-inline" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}
         onFiles={addFiles} enabled={!busy} title="Drop invoices, receipts or photos here">
@@ -3973,6 +4029,7 @@ function FindingStatus({ appId, finding, reload }) {
    falls back to the persisted findings (with media) if reads are off and findings were already delivered.
    This is the gap the standalone Draw-Management phase closes — staff could previously see only a count. */
 function InspectionGallery({ appId, draw, finding, readsOff }) {
+  const lb = useLightbox('Draw inspection media');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -4021,6 +4078,47 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
 
   const lines = (data && data.lines) || [];
   const totalPhotos = lines.reduce((n, l) => n + (Array.isArray(l.media) ? l.media.filter((m) => m.type !== 'video').length : 0), 0);
+
+  /* ONE FLAT SET FOR THE WHOLE INSPECTION (owner-reported 2026-08-23: *"you can't
+     click to see the next photo … You should be able to click next, next, next,
+     next"*). The gallery is grouped by draw line on the page because that is how a
+     coordinator reads it — but "next" must not stop at a line boundary, so the
+     viewer is handed every photo AND every video on the draw as a single ordered
+     list, and each tile knows its own index into it. Videos sit in the same list
+     as the photos, exactly as the owner described: *"You switch from a picture to
+     the next, and you see a video."*
+
+     PILOT's DURABLE copies win over Sitewire's live (expiring) links wherever a
+     line has been archived — same preference the tiles have always had, decided
+     once here instead of twice below. */
+  const durableFor = (l) => durableByReq.get(String(l.request_id != null ? l.request_id : l.sitewire_request_id)) || [];
+  const viewerItems = [];
+  const startIndexByLine = new Map();
+  for (const l of lines) {
+    const key = l.id || l.request_id || l.sitewire_request_id;
+    startIndexByLine.set(String(key), viewerItems.length);
+    const lineName = l.name || `Line ${l.job_item_id || l.sitewire_job_item_id || ''}`;
+    const durable = durableFor(l);
+    if (durable.length) {
+      for (const m of durable) {
+        viewerItems.push({
+          id: `d${m.id}`, kind: m.kind === 'video' ? 'video' : 'image',
+          path: `/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/media/${m.id}`,
+          title: lineName, meta: 'Saved to PILOT', filename: `${lineName}-${m.id}`,
+        });
+      }
+    } else {
+      for (const [j, m] of (Array.isArray(l.media) ? l.media : []).entries()) {
+        viewerItems.push({
+          id: `l${key}-${j}`, kind: m.type === 'video' ? 'video' : 'image',
+          src: m.src, title: lineName,
+          meta: [m.captured_at ? new Date(m.captured_at).toLocaleString('en-US') : '',
+                 (m.lat && m.lng) ? `${m.lat}, ${m.lng}` : ''].filter(Boolean).join(' · ') || undefined,
+          caption: m.note || undefined,
+        });
+      }
+    }
+  }
   return (
     <div className="panel" style={{ marginTop: 8, background: 'var(--paper,#f6f3ec)' }}>
       <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline', marginBottom: 6 }}>
@@ -4033,6 +4131,7 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
       {loading && <div className="muted small">Loading inspection photos…</div>}
       {err && !loading && <div className="muted small" style={{ color: 'var(--bad,#b04a3f)' }}>{err}</div>}
       {!loading && !err && lines.length === 0 && <div className="muted small">No inspection photos on this draw yet.</div>}
+      {lb.node}
       {!loading && !err && lines.map((l, i) => {
         const media = Array.isArray(l.media) ? l.media : [];
         // Only show approved/not-approved once the DRAW is actually approved (decided). Before that every
@@ -4058,16 +4157,22 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
             {(() => {
               // Prefer PILOT's DURABLE copies (they never expire) keyed by the draw line's request id;
               // fall back to Sitewire's live (expiring) media only when this line hasn't been archived yet.
-              const reqId = l.request_id != null ? l.request_id : l.sitewire_request_id;
-              const durable = durableByReq.get(String(reqId)) || [];
+              // Same helper the viewer's flat set uses, so the tiles and the viewer can never disagree
+              // about which copy of a photo they are showing.
+              const durable = durableFor(l);
+              const base = startIndexByLine.get(String(l.id || l.request_id || l.sitewire_request_id)) || 0;
+              /* EVERY TILE OPENS THE VIEWER, at its own place in the set — a photo
+                 and a video alike. It used to open a raw blob in a new browser tab,
+                 which is why there was nothing to exit back to and no "next". */
               if (durable.length > 0) {
                 return (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8, marginTop: 6 }}>
-                    {durable.map((m) => {
+                    {durable.map((m, j) => {
                       const path = `/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/media/${m.id}`;
+                      const openAt = () => lb.open(viewerItems, base + j);
                       return m.kind === 'video'
-                        ? <button key={m.id} onClick={() => { const w = window.open('', '_blank'); api.authedBlob(path).then((b) => { const u = URL.createObjectURL(b); if (w) w.location.href = u; }).catch(() => {}); }} title="Video (saved to PILOT)" style={{ aspectRatio: '4 / 3', borderRadius: 6, border: '1px solid var(--line,#e6e0d4)', background: '#000', color: '#fff', fontSize: 12, cursor: 'pointer' }}>▶ Video</button>
-                        : <AuthImg key={m.id} path={path} alt={l.name || 'inspection'} style={{ width: '100%', height: 'auto', aspectRatio: '4 / 3', borderRadius: 6, border: '1px solid var(--line,#e6e0d4)' }} onOpen={() => { const w = window.open('', '_blank'); api.authedBlob(path).then((b) => { const u = URL.createObjectURL(b); if (w) w.location.href = u; }).catch(() => {}); }} />;
+                        ? <button key={m.id} onClick={openAt} title="Play this video" style={{ aspectRatio: '4 / 3', borderRadius: 6, border: '1px solid var(--line,#e6e0d4)', background: '#000', color: '#fff', fontSize: 12, cursor: 'pointer' }}>▶ Video</button>
+                        : <AuthImg key={m.id} path={path} alt={l.name || 'inspection'} style={{ width: '100%', height: 'auto', aspectRatio: '4 / 3', borderRadius: 6, border: '1px solid var(--line,#e6e0d4)' }} onOpen={openAt} />;
                     })}
                   </div>
                 );
@@ -4075,12 +4180,13 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
               return media.length > 0 ? (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8, marginTop: 6 }}>
                   {media.map((m, j) => (
-                    <a key={j} href={m.src} target="_blank" rel="noreferrer" title={[m.type === 'video' ? 'Video' : 'Photo', m.note || '', m.captured_at ? new Date(m.captured_at).toLocaleString('en-US') : '', (m.lat && m.lng) ? `${m.lat}, ${m.lng}` : ''].filter(Boolean).join(' · ')}
-                      style={{ display: 'block', position: 'relative', aspectRatio: '4 / 3', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--line,#e6e0d4)', background: '#000' }}>
+                    <button key={j} type="button" onClick={() => lb.open(viewerItems, base + j)}
+                      title={[m.type === 'video' ? 'Video' : 'Photo', m.note || '', m.captured_at ? new Date(m.captured_at).toLocaleString('en-US') : '', (m.lat && m.lng) ? `${m.lat}, ${m.lng}` : ''].filter(Boolean).join(' · ')}
+                      style={{ display: 'block', position: 'relative', aspectRatio: '4 / 3', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--line,#e6e0d4)', background: '#000', padding: 0, cursor: 'pointer' }}>
                       {m.type === 'video'
                         ? <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12 }}>▶ Video</div>
                         : <img src={m.thumbnail || m.src} alt={l.name || 'inspection'} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
-                    </a>
+                    </button>
                   ))}
                 </div>
               ) : <div className="muted small" style={{ marginTop: 4 }}>No photos on this line.</div>;
