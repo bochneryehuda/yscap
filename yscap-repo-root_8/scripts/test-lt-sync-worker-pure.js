@@ -43,6 +43,11 @@ let linkCalls = 0;
 require.cache[linkPath] = { id: linkPath, filename: linkPath, loaded: true,
   exports: { linkPass: async () => { linkCalls += 1; calls.push('clickup_link'); return { ok: true, discovered: 0, read: 0 }; },
              enabled: () => true } };
+const autolinkPath = require.resolve('../src/longterm/borrower-autolink');
+let autolinkCalls = 0;
+require.cache[autolinkPath] = { id: autolinkPath, filename: autolinkPath, loaded: true,
+  exports: { autoLinkPass: async () => { autolinkCalls += 1; calls.push('borrower_links'); return { ok: true, discovered: 0, read: 0 }; },
+             enabled: () => true } };
 
 const worker = require('../src/longterm/sync/worker');
 
@@ -92,9 +97,9 @@ console.log = (...a) => { logged.push(a.join(' ')); };
 
   calls.length = 0;
   const out = await worker.tickOnce();
-  check(calls.join() === 'loans,conditions,clickup_link',
-    'the loans, then the Condition Center, then the ClickUp link pass — pinned as the exact list, '
-    + 'so a pass silently dropped from the tick fails here instead of just never running again');
+  check(calls.join() === 'loans,conditions,clickup_link,borrower_links',
+    'the loans, the Condition Center, the ClickUp link pass, then the borrower auto-link — pinned '
+    + 'as the exact list, so a pass silently dropped from the tick fails here instead of just never running again');
   check(out.loans && out.loans.ok === true && out.conditions && out.conditions.ok === true,
     'and both answers are returned, so a caller can see what happened');
 
@@ -280,6 +285,8 @@ console.log = (...a) => { logged.push(a.join(' ')); };
       `every tick runs the ClickUp link pass exactly once (got ${linkCalls - before})`);
     check(calls.indexOf('loans') < calls.indexOf('clickup_link'),
       'and it runs AFTER the loan drain, so a file discovered this tick can link this tick');
+    check(autolinkCalls > 0 && calls.indexOf('clickup_link') < calls.lastIndexOf('borrower_links'),
+      'the borrower auto-link rides every tick too, after it');
   }
 
   // ── THE PACING PAIR, AND WHY IT IS ONE ASSERTION AND NOT TWO ─────────────
