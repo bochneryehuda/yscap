@@ -155,6 +155,29 @@ const page = (n, from) => Array.from({ length: n }, (_, i) => ({ loanId: `g${fro
   check(narrow.terms.length === 2 && narrow.terms[1].value === 'DSCR',
     '…and a folder narrows it, which is when a second term appears');
 
+  // ── ARCHIVED LOANS ARE STILL OUR LOANS ───────────────────────────────────
+  // This is the one that lets a withdrawn file vanish. The upsert only runs for
+  // loans a sweep DISCOVERS, so a loan that drops out of the result set is not
+  // marked withdrawn and is not removed — it FREEZES at the folder it was last
+  // seen in and reads as a working file forever. Our own research calls the flag
+  // essential: archived loans are "otherwise invisible to the query".
+  console.log('\narchived loans are asked for, not left to the default');
+  {
+    stub.calls.length = 0;
+    stub.pages = [[]];
+    await discover.discoverLoans({});
+    const first = stub.calls[0] && stub.calls[0].request;
+    check(!!first, 'discovery made a request');
+    check(String(first.includeArchivedLoans) === 'true',
+      'and asked for archived loans, so a withdrawn file stays visible');
+    // The escape hatch has to actually work, or the flag is not a setting.
+    stub.calls.length = 0;
+    stub.pages = [[]];
+    await discover.discoverLoans({ includeArchived: false });
+    check(stub.calls[0].request.includeArchivedLoans === undefined,
+      'and it can still be asked the old way, for comparing the two');
+  }
+
   console.log(failures ? `\n${failures} FAILED` : '\nall passed');
   process.exit(failures ? 1 : 0);
 })();

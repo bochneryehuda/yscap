@@ -39,6 +39,7 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../db');
 const clickup = require('../clickup/client');
+const encompass = require('../encompass/client');
 const program = require('../clickup/program');
 const { PIPELINE, SYNC } = require('../../clickup/fields');
 
@@ -150,6 +151,63 @@ router.get('/runs', async (req, res) => {
     res.json({ ok: true, runs: rows, lastSweep: swept });
   } catch (e) {
     res.status(500).json({ ok: false, error: (e && e.message) || String(e) });
+  }
+});
+
+/**
+ * ASK ENCOMPASS ABOUT ONE LOAN, BOTH WAYS, AND PRINT THE DIFFERENCE.
+ *
+ * WHY THIS EXISTS. An officer moved files into the Withdrawn folder; PILOT went on
+ * showing them as working. Three explanations fit that equally well from the outside
+ * — the save did not happen, the pipeline view lags, or the sweep cannot see the
+ * folder at all — and they need three different fixes. Nothing we had could tell
+ * them apart, so the argument was unwinnable in either direction.
+ *
+ * The one question that separates them: what does Encompass say about this loan RIGHT
+ * NOW, and does the answer change when we ask for archived loans? So it asks twice —
+ * once exactly as discovery used to, once with `includeArchivedLoans` — and hands
+ * back both, beside what PILOT currently has stored. A difference between the two
+ * columns IS the diagnosis.
+ *
+ * Read-only: two pipeline searches for ONE loan number and one row from our own
+ * table. No write path, and it cannot touch a loan.
+ */
+router.get('/probe', async (req, res) => {
+  const loanNumber = String(req.query.loan || '').trim();
+  if (!loanNumber) return res.status(400).json({ ok: false, error: 'pass ?loan=<loan number>' });
+  if (!encompass.configured()) {
+    return res.status(503).json({ ok: false, error: 'Encompass is not connected on this deployment.' });
+  }
+  const fields = ['Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LastModified',
+                  'Loan.CurrentMilestoneName', 'Loan.LoanAmount'];
+  const ask = async (withArchived) => {
+    const request = {
+      fields,
+      filter: { terms: [{ canonicalName: 'Loan.LoanNumber', matchType: 'exact', value: loanNumber }] },
+      sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'Descending' }],
+    };
+    if (withArchived) request.includeArchivedLoans = true;
+    try {
+      const body = await encompass.pipelineSearch(request, { limit: 10, start: 0 });
+      const rows = Array.isArray(body) ? body : ((body && body.loans) || []);
+      return {
+        found: rows.length,
+        loans: rows.map((r) => {
+          const f = (r && r.fields) || r || {};
+          return { folder: f['Loan.LoanFolder'] || null, lastModified: f['Loan.LastModified'] || null,
+                   milestone: f['Loan.CurrentMilestoneName'] || null, amount: f['Loan.LoanAmount'] || null };
+        }),
+      };
+    } catch (e) { return { error: (e && e.message) || String(e) }; }
+  };
+  try {
+    const [asDiscoveryUsedTo, withArchived] = await Promise.all([ask(false), ask(true)]);
+    const { rows } = await db.query(
+      `SELECT loan_number, loan_folder, milestone_name, encompass_last_modified, encompass_synced_at
+         FROM lt_loans WHERE loan_number = $1`, [loanNumber]);
+    res.json({ ok: true, loanNumber, asDiscoveryUsedTo, withArchived, pilotHas: rows[0] || null });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: (e && e.message) || String(e) });
   }
 });
 

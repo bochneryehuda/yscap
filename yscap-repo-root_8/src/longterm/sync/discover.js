@@ -168,7 +168,8 @@ function buildFilter({ loanFolder } = {}) {
  * Returns `{loans, pages, truncated}`. `truncated` says the cap was reached, so a
  * caller reports a partial sweep as partial instead of as a shrinking pipeline.
  */
-async function discoverLoans({ loanFolder = null, limit = PAGE, maxPages = MAX_PAGES } = {}) {
+async function discoverLoans({ loanFolder = null, limit = PAGE, maxPages = MAX_PAGES,
+                               includeArchived = true } = {}) {
   // THE FIRST PAGE DECIDES WHETHER THE ENRICHED READ IS SAFE, and it is asked for
   // separately from the loop so a refusal costs ONE call rather than a whole sweep.
   // If Encompass will not answer with the two classifying fields, we fall back to the
@@ -180,7 +181,26 @@ async function discoverLoans({ loanFolder = null, limit = PAGE, maxPages = MAX_P
     fields,
     filter: buildFilter({ loanFolder }),
     sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'Descending' }],
+    // ARCHIVED LOANS ARE STILL OUR LOANS, and leaving this unset is how a withdrawn
+    // file becomes invisible. Our own research says so plainly — "funded/old loans
+    // are commonly moved to Archive-type folders and are OTHERWISE INVISIBLE to the
+    // query" (docs/encompass-research/findings/C3.md), and the API atlas calls the
+    // flag essential.
+    //
+    // WHY IT MATTERS MORE THAN A MISSING ROW: the upsert only runs for loans this
+    // sweep DISCOVERS. A loan that drops out of the result set is not marked
+    // withdrawn and is not deleted — it FREEZES at whatever folder it was last seen
+    // in, and keeps reading as a working file forever. Under the go-forward plan
+    // that frozen row would go on driving its ClickUp card as a live deal.
+    //
+    // NOT YET PROVEN TO BE THE CAUSE of the case that prompted this, and the honest
+    // reason is that a 2026-07 probe on the appraisal side measured 746 loans with
+    // the flag and 746 without — identical. That probe may simply have run against a
+    // book with nothing archived. `/probe` (book-diag) asks BOTH ways for one loan
+    // and prints the difference, so the next answer is measured rather than argued.
+    includeArchivedLoans: true,
   };
+  if (includeArchived === false) delete request.includeArchivedLoans;
 
   const loans = [];
   const seen = new Set();
