@@ -5,7 +5,7 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
-import { labelize, compRowsOf, feeRowsOf, groupByLender, priceMoney, toneColor } from './priceBuild.js';
+import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor } from './priceBuild.js';
 // The form's own rules — which options exist, when a field appears, and the amount triangle. Also a
 // plain `.js` module, and for the same reason: CI can run it, and a rule CI cannot run is a rule
 // nobody is holding. See scenarioFields.js.
@@ -17,7 +17,7 @@ import {
 import {
   INK, MUTED, SLATE, GOLD, PAPER, DANGER, CAUTION, card, eyebrow, sub, input, label,
   band, bandHead, bandBody, fieldLabel, fieldHint, control, select as selectStyle,
-  moneyWrap, moneyMark, moneyInput, segTrack, segBtn, checkRow, checkBox, fieldNote, LINE,
+  moneyWrap, moneyMark, moneyInput, segTrack, segBtn, checkRow, checkBox, fieldNote, LINE, WASH,
 } from './ppeStyles.js';
 
 /**
@@ -79,7 +79,10 @@ const START = {
   amountMode: 'loan',
   loan: '375,000',
   ltv: '',
-  fico: '740',
+  // 760 BY OWNER DIRECTION (2026-08-23). It is a STARTING POINT, not a rule: the score a
+  // borrower actually has is typed over it, and nothing here decides eligibility — the
+  // number is sent to Lender Price and their answer is what the board shows.
+  fico: '760',
   dscr: '1.20',
   // ⛔ THE ZIP STARTS EMPTY, BY OWNER DIRECTION (2026-08-23): *"Zip code should not default to
   // anything. Right now, it's defaulting to Miami."* And they are right about more than tidiness —
@@ -678,7 +681,166 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
    loop would keep spending on a screen somebody walked away from, so a press asks once and
    the screen says plainly whether to ask again. No timer, nothing to leak.
    ────────────────────────────────────────────────────────────────────────── */
-export function IneligibleView({ dq, onAsk }) {
+/* THE INELIGIBLE BOARD — the SAME THREE LEVELS as the eligible one, in the owner's own order
+   (2026-08-23): "You see all the rates. You click on the rate, and you see all the lenders. If a
+   lender has a few programs, you click on the lender ... and you see all the programs. You can
+   click on the program details, and you see all the LLPAs, eligibility, and ineligibility,
+   including the disqualifying rule."
+
+   The grouping is `buildIneligibleStack`, which uses the eligible board's OWN `groupByLender`, so
+   the two boards can never disagree about which programmes belong to one lender, and the details
+   panel is the eligible board's OWN `PriceBuild`, so a programme reads identically whichever board
+   it is on. What a declined programme ADDS is the last band: WHY Lender Price refused it, in the
+   vendor's own sentence, word for word.
+
+   A DECLINED PROGRAMME OFTEN HAS NO PRICE, and that is stated rather than papered over: the money
+   columns draw an em dash and take no colour, because a zero there would read as par. */
+/* `initialOpen` is a TESTABILITY SEAM, and the screen never passes it — the board opens collapsed,
+   which is the owner's step 1 ("you see all the rates"). It exists because this board is proven by
+   `renderToString`, which cannot click: without it the only provable state would be the collapsed
+   one, and the reason text — the whole point of the board — would be pinned by nothing. The suite
+   asserts BOTH states through it, which is strictly more than the flat board could show. */
+function IneligibleBoard({ d, loanAmount, initialOpen }) {
+  const io = initialOpen || {};
+  const [openRate, setOpenRate] = useState(io.rate != null ? io.rate : null);
+  const [openLenders, setOpenLenders] = useState(() => new Set(io.lenders || []));
+  const [openItem, setOpenItem] = useState(io.item != null ? io.item : null);
+  const stack = buildIneligibleStack(d && d.lenders);
+  const toggleLender = (k) => setOpenLenders((prev) => {
+    const nx = new Set(prev); if (nx.has(k)) nx.delete(k); else nx.add(k); return nx;
+  });
+
+  // The no-rate bucket is a REAL group with a real heading, never a footnote and never dropped.
+  const groups = [
+    ...stack.rates.map((r) => ({ ...r, label: `${r.rate.toFixed(3)}%` })),
+    ...(stack.noRate ? [{ ...stack.noRate, key: '__norate', label: 'No rate given' }] : []),
+  ];
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 13, color: SLATE }}>
+        {`${stack.itemCount} ruled out across ${stack.lenderCount} ${stack.lenderCount === 1 ? 'lender' : 'lenders'}`}
+        {stack.rateCount ? ` · ${stack.rateCount} ${stack.rateCount === 1 ? 'rate' : 'rates'}` : ''}
+        {d.truncated && (
+          <span style={{ color: CAUTION, marginLeft: 8 }}>{
+            `Showing ${d.returnedLenderCount != null ? d.returnedLenderCount : '—'} of ${d.lenderCount != null ? d.lenderCount : '—'} lenders`
+            + ` and ${d.returnedItemCount != null ? d.returnedItemCount : '—'} of ${d.itemCount != null ? d.itemCount : '—'} products — the rest were paged off.`
+          }</span>
+        )}
+      </div>
+
+      {groups.map((row) => {
+        const open = openRate === row.key;
+        return (
+          <div key={row.key} style={{ border: `1px solid ${LINE}`, borderRadius: 10, marginTop: 10, overflow: 'hidden' }}>
+            <button type="button" onClick={() => setOpenRate(open ? null : row.key)} aria-expanded={open}
+              style={{
+                display: 'flex', gap: 10, alignItems: 'baseline', width: '100%', textAlign: 'left',
+                padding: '10px 14px', border: 0, cursor: 'pointer', font: 'inherit',
+                background: open ? 'rgba(174,135,70,.06)' : WASH,
+              }}>
+              <span style={{ fontSize: 16, fontWeight: 700, color: INK, ...NUM }}>{row.label}</span>
+              <span style={{ fontSize: 13, color: SLATE }}>{
+                `${row.itemCount} ${row.itemCount === 1 ? 'product' : 'products'}`
+                + ` · ${row.lenders.length} ${row.lenders.length === 1 ? 'lender' : 'lenders'}`
+              }</span>
+              <span style={{ flex: 1 }} />
+              <span style={{ fontSize: 12, color: MUTED }}>{open ? '▾' : '▸'}</span>
+            </button>
+
+            {open && (
+              <div style={{ padding: '0 14px 12px' }}>
+                <div style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid ${GOLD}44`, fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
+                  <span style={{ flex: '2 1 200px' }}>Lender / programme</span>
+                  <span style={{ flex: '0 0 82px', textAlign: 'right' }}>Price</span>
+                  <span style={{ flex: '0 0 82px', textAlign: 'right' }}>Points</span>
+                  <span style={{ flex: '0 0 108px', textAlign: 'right' }}>Cost / credit</span>
+                  <span style={{ flex: '0 0 70px' }} />
+                </div>
+
+                {row.lenders.map((g) => {
+                  const gKey = `${row.key}|${g.key}`;
+                  const many = g.programCount > 1;
+                  const gOpen = many && openLenders.has(gKey);
+                  const shown = (gOpen ? g.quotes : [g.best]).filter(Boolean);
+                  return (
+                    <div key={g.key}>
+                      {shown.map((q, qi) => {
+                        const iKey = `${gKey}|${q.key}`;
+                        const iOpen = openItem === iKey;
+                        const first = qi === 0;
+                        return (
+                          <div key={q.key}>
+                            <div style={{
+                              display: 'flex', gap: 10, alignItems: 'baseline', padding: '9px 0',
+                              borderBottom: '1px solid rgba(20,27,34,.07)', flexWrap: 'wrap',
+                              background: gOpen ? 'rgba(174,135,70,.05)' : 'transparent',
+                            }}>
+                              <span style={{ flex: '2 1 200px', minWidth: 180 }}>
+                                {first && <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{g.lender || '—'}</span>}
+                                {first && many && (
+                                  <button type="button" onClick={() => toggleLender(gKey)} aria-expanded={gOpen}
+                                    style={{
+                                      border: 0, background: 'none', padding: '0 0 0 8px', cursor: 'pointer',
+                                      font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD,
+                                      textDecoration: 'underline', textUnderlineOffset: 3,
+                                    }}>
+                                    {gOpen ? 'hide' : `${g.programCount} programmes`}
+                                  </button>
+                                )}
+                                <span style={{ display: 'block', fontSize: 12.5, color: SLATE, marginTop: 2 }}>
+                                  {`${q.program || '—'}${q.product ? ` · ${q.product}` : ''}`}
+                                </span>
+                              </span>
+                              <MoneyCells m={priceMoney(q.price, loanAmount)} />
+                              <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
+                                <button type="button" className="btn ghost" style={{ fontSize: 12 }}
+                                  onClick={() => setOpenItem(iOpen ? null : iKey)}>
+                                  {iOpen ? 'Hide' : 'Details'}
+                                </button>
+                              </span>
+                            </div>
+                            {iOpen && (
+                              <div>
+                                <PriceBuild o={q.option} />
+                                <Track title="Why it is ineligible"
+                                  note="Lender Price's own rule, word for word. These are the lines that are NOT on the eligible side.">
+                                  {q.reasons.length === 0 ? (
+                                    <div style={{ fontSize: 12.5, color: MUTED }}>
+                                      Lender Price declined this programme without saying which test it failed.
+                                    </div>
+                                  ) : q.reasons.map((r, ri) => (
+                                    <div key={ri} style={{
+                                      fontSize: 12.5, color: SLATE, lineHeight: 1.55, padding: '5px 0',
+                                      borderTop: ri ? '1px solid rgba(20,27,34,.07)' : 0,
+                                    }}>
+                                      {r.rule}
+                                      {(r.group || r.value != null) && (
+                                        <span style={{ color: MUTED, fontSize: 11.5 }}>
+                                          {`${r.group ? ` · ${r.group}` : ''}${r.value != null ? ` · ${r.value}` : ''}`}
+                                        </span>
+                                      )}
+                                    </div>
+                                  ))}
+                                </Track>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function IneligibleView({ dq, onAsk, loanAmount, initialOpen }) {
   const d = dq.data && dq.data.disqualified ? dq.data.disqualified : null;
   // ⛔ THE ONLY NUMBER THAT MEANS ANYTHING IS THE ONE FROM A READY ANSWER. See the header note.
   const ruledOut = dq.status === 'ready' && d && d.itemCount != null ? d.itemCount : null;
@@ -720,48 +882,7 @@ export function IneligibleView({ dq, onAsk }) {
       )}
 
       {dq.status === 'ready' && d && (
-        <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 13, color: SLATE }}>
-            {d.itemCount != null ? d.itemCount : '—'} ruled out across {d.lenderCount != null ? d.lenderCount : '—'} lenders
-            {d.reasonCount != null ? `, ${d.reasonCount} reasons in all` : ''}.
-            {/* A page the server said it truncated SAYS SO and names the numbers. A silent cap
-                reads as "that was the whole list", which is the one thing it must never read as. */}
-            {d.truncated && (
-              <span style={{ color: CAUTION, marginLeft: 8 }}>{
-                `Showing ${d.returnedLenderCount != null ? d.returnedLenderCount : '—'} of ${d.lenderCount != null ? d.lenderCount : '—'} lenders`
-                + ` and ${d.returnedItemCount != null ? d.returnedItemCount : '—'} of ${d.itemCount != null ? d.itemCount : '—'} products — the rest were paged off.`
-              }</span>
-            )}
-          </div>
-
-          {(d.lenders || []).map((L, li) => (
-            <div key={li} style={{ marginTop: 12, background: PAPER, borderRadius: 10, padding: 12 }}>
-              <div style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>
-                {L.lender || '—'}
-                {L.investor && L.investor !== L.lender && (
-                  <span style={{ fontSize: 12, color: MUTED, fontWeight: 400 }}> · {L.investor}</span>
-                )}
-                <span style={{ fontSize: 12, color: MUTED, fontWeight: 400 }}>
-                  {` · ${L.itemCount != null ? L.itemCount : (L.items || []).length} ruled out`}
-                </span>
-              </div>
-              {(L.items || []).map((it, ii) => (
-                <div key={ii} style={{ marginTop: 8, paddingLeft: 10, borderLeft: `2px solid ${GOLD}55` }}>
-                  <div style={{ fontSize: 12.5, color: SLATE, fontWeight: 600 }}>
-                    {it.program || '—'}{it.product ? ` · ${it.product}` : ''}
-                    {nn(Number(it.rate)) ? ` · ${Number(it.rate).toFixed(3)}%` : ''}
-                  </div>
-                  {(it.reasons || []).map((r, ri) => (
-                    <div key={ri} style={{ fontSize: 12, color: MUTED, marginTop: 3, lineHeight: 1.5 }}>
-                      {/* The vendor's own sentence, verbatim. */}
-                      {r.rule}
-                    </div>
-                  ))}
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
+        <IneligibleBoard d={d} loanAmount={loanAmount} initialOpen={initialOpen} />
       )}
     </div>
   );
@@ -1306,7 +1427,7 @@ export default function LtPricer() {
                 ))}
               </div>
             ) : (
-              <IneligibleView dq={dq} onAsk={askDisqualified} />
+              <IneligibleView dq={dq} onAsk={askDisqualified} loanAmount={loanAmount} />
             )}
           </>
         )}

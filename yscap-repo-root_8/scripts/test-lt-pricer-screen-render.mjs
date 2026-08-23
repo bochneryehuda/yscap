@@ -167,7 +167,7 @@ const attempt = (fn) => { try { return { html: fn(), err: null }; } catch (e) { 
   // The money boxes hold GROUPED text now (owner-directed: "as dollars with a dollar sign with
   // commas"), so the prefill reads 500,000. The guard's subject has not moved — it is still "the
   // scenario arrives filled in" — only the spelling the screen fills it in with.
-  ok(/value="500,000"/.test(html || '') && /value="740"/.test(html || ''),
+  ok(/value="500,000"/.test(html || '') && /value="760"/.test(html || ''),
     'R4a …already filled in, so a staffer can price on arrival without typing plumbing');
   ok(/\$<\/span>/.test(html || '') || />\$</.test(html || ''),
     'R4a2 …with the dollar sign DRAWN beside the figure, not typed into it');
@@ -353,7 +353,10 @@ const stack = buildRateStack(capture.programs);
   // The wrapper is the SHAPE THE PARSER READS — `results.disqualifiedData`, walked for `leafs`.
   // Getting this wrong is what a hand-typed fixture does: it produced an empty answer and the two
   // assertions below then failed for a reason that had nothing to do with the screen.
-  const parsed = lp.parseDisqualified({ results: { disqualifiedData: { leafs: [leaf] } } });
+  // NESTED UNDER A `RateKey`, because that is how the vendor's tree carries the rate — the leaf
+  // itself has none. Wrapping it flat is what the first version of this fixture did, and it proved
+  // the parser could read a leaf while proving nothing about the rate the board groups on.
+  const parsed = lp.parseDisqualified({ results: { disqualifiedData: { childs: [{ type: 'RateKey', keyLabel: '7.375', leafs: [leaf] }] } } });
   const shaped = router._internals.shapeDisqualified(parsed, {});
   ok(shaped && shaped.disqualified && Array.isArray(shaped.disqualified.lenders),
     'R34 the server\'s own parser + shaper produce the payload the view reads');
@@ -361,16 +364,34 @@ const stack = buildRateStack(capture.programs);
   const dq = { status: 'ready', tries: 1, data: shaped, message: null };
   const r = attempt(() => render(React.createElement(IneligibleView, { dq, count: 1, onAsk: () => {} })));
   ok(r.err === null, `R35 the ineligible view renders it${r.err ? ` — ${r.err.message}` : ''}`);
+
+  // ⛔ STEP 1 IS THE RATE, AND IT IS PROVEN BOTH WAYS. Owner-directed 2026-08-23: "You see all the
+  // rates. You click on the rate, and you see all the lenders." So the board arrives showing the
+  // RATE the parser read off the tree, with the lender and the reason NOT yet on the page — and
+  // asserting that absence is what stops the board quietly reverting to the old flat list.
+  const itemRate = shaped.disqualified.lenders[0].items[0].rate;
+  ok(itemRate === 7.375, `R36pre the rate comes off the RateKey grouping node (${itemRate})`);
+  ok((r.html || '').includes('7.375%'), 'R36a the collapsed board shows the rate');
+
   // The lender is whatever the PARSER read off the leaf, not a name typed here — a hard-coded
   // expectation would be a claim about the fixture rather than about the screen.
   const refusedBy = shaped.disqualified.lenders[0].lender;
-  ok(!!refusedBy && (r.html || '').includes(refusedBy), `R36 …naming the lender that refused (${refusedBy})`);
+  ok(!!refusedBy && !(r.html || '').includes(refusedBy),
+    'R36b …and NOT the lender, which is one click in');
+
+  // Now the same board with the three levels opened, which is what a person sees after the clicks.
+  const openAll = { rate: '7.375', lenders: ['7.375|Deephaven Mortgage'], item: '7.375|Deephaven Mortgage|0:0' };
+  const ro = attempt(() => render(React.createElement(IneligibleView, { dq, count: 1, onAsk: () => {}, initialOpen: openAll })));
+  ok(ro.err === null, `R36c the opened board renders${ro.err ? ` — ${ro.err.message}` : ''}`);
+  ok(!!refusedBy && (ro.html || '').includes(refusedBy), `R36 …naming the lender that refused (${refusedBy})`);
+  ok((ro.html || '').includes('Why it is ineligible'),
+    'R36d …and the band the eligible side does not have');
 
   // THE VENDOR'S SENTENCE, WORD FOR WORD. Re-wording one, or grouping them under a heading of ours,
   // would be a rule — and this engine holds none.
   const firstRule = shaped.disqualified.lenders[0].items[0].reasons[0].rule;
   const escRule = String(firstRule).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  ok((r.html || '').includes(escRule), 'R37 …and printing Lender Price\'s reason exactly as it wrote it');
+  ok((ro.html || '').includes(escRule), 'R37 …and printing Lender Price\'s reason exactly as it wrote it');
 
   // The three states a reader must never see collapsed: they are three different next steps.
   const waiting = attempt(() => render(React.createElement(IneligibleView, {

@@ -403,5 +403,57 @@ console.log('LT Pricing Engine — structural guards\n');
     'PE-88 ...and the screen never reads the price response\'s own disqualified count');
 }
 
+/* ── THE INELIGIBLE BOARD'S GROUPING (owner-directed 2026-08-23) ─────────────
+   Rate -> lender -> programmes, the same three levels as the eligible board, and the LENDER level
+   is the eligible board's own `groupByLender` so the two can never disagree. Pure, so unlike the
+   render suite this runs on CI, where no front-end bundler is installed. */
+{
+  const PB3 = await import(new URL('../app-v2/src/longterm/priceBuild.js', import.meta.url));
+  const B = PB3.buildIneligibleStack;
+
+  const payload = [
+    { lender: 'Deephaven Mortgage', items: [
+      { program: 'DSCR 1.00-1.24 - 30 Yr Fixed', rate: 7.375, reasons: [{ rule: 'a' }], option: { priceBuild: {} } },
+      { program: 'DSCR 30 Yr IO', rate: 7.375, reasons: [{ rule: 'b' }], option: { priceBuild: { price: 98.5 } } },
+    ] },
+    { lender: 'AD Mortgage', items: [{ program: 'X', rate: 7.25, reasons: [], option: null }] },
+    { lender: 'Zed Capital', items: [{ program: 'Y', rate: null, reasons: [], option: null }] },
+  ];
+  const st = B(payload);
+
+  ok(st.rates.map((r) => r.key).join(',') === '7.250,7.375',
+    'PE-89 the rates stack ASCENDING, like the eligible board');
+  ok(st.rates.find((r) => r.key === '7.375').lenders[0].programCount === 2,
+    'PE-90 a lender with several programmes at one rate is ONE line that opens out');
+
+  // NOTHING IS DROPPED. An item whose rate could not be read is its own group, never discarded and
+  // never filed under a guessed rate — a silently missing programme is the defect this board ends.
+  ok(st.noRate && st.noRate.itemCount === 1 && st.noRate.lenders[0].lender === 'Zed Capital',
+    'PE-91 an item with no readable rate is KEPT, in its own group');
+  ok(st.itemCount === 4, 'PE-92 ...so every item is accounted for, in one group or another');
+
+  // A declined programme usually has no price. NULL must survive as null — a 0 would read as par.
+  const dh = st.rates.find((r) => r.key === '7.375').lenders[0];
+  ok(dh.quotes.some((q) => q.price === null) && dh.quotes.some((q) => q.price === 98.5),
+    'PE-93 a price is carried when the vendor gave one and stays NULL when it did not');
+
+  // The lender level IS groupByLender — asserted by running both and comparing, never by reading
+  // the source, so a re-implementation that merely looked similar would still fail here.
+  const flat = st.rates.find((r) => r.key === '7.375').lenders;
+  const direct = PB3.groupByLender(dh.quotes);
+  ok(flat[0].programCount === direct[0].programCount && flat[0].lender === direct[0].lender,
+    'PE-94 the lender level is the eligible board\'s own grouping, not a second one');
+
+  ok(JSON.stringify(B(null)) === JSON.stringify(B(undefined)) && B(null).rates.length === 0,
+    'PE-95 a non-array yields an empty stack rather than throwing');
+
+  // Lenders inside a rate are ordered by NAME, because a declined programme has no price to rank
+  // by and ranking on a missing number would read as a judgement this mirror does not hold.
+  const two = B([{ lender: 'Zed', items: [{ program: 'p', rate: 7, reasons: [] }] },
+                 { lender: 'Able', items: [{ program: 'q', rate: 7, reasons: [] }] }]);
+  ok(two.rates[0].lenders.map((l) => l.lender).join(',') === 'Able,Zed',
+    'PE-96 lenders within a rate are ordered by name, not by an absent price');
+}
+
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
 process.exit(failures ? 1 : 0);
