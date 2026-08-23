@@ -1664,7 +1664,34 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     Long-Term would need its own subscription — which is a **write** to Encompass configuration
     and would need its own pad entry. Worth knowing who owns the existing one before anything
     is added beside it.
-13. **Which loan folders mean the deal is over?** §4.1 says inactive loans stay in the one table,
+13. ~~**Which loan folders mean the deal is over?**~~ **ANSWERED (owner, 2026-08-23), and it is
+    THREE books rather than two.** *"Active pipeline: one view / Closed files: another view /
+    Funded files should be in the closed files view / The canceled and withdrawn files should be
+    in another view … It shouldn't be mixing them up, just keeping status separately."*
+
+    A deal that COMPLETED and a deal that DIED are different facts, so they are different books.
+    Funded sits in `closed`, because a funded loan is a finished deal rather than a dead one. A
+    fourth list is not a book at all — Training, Prospect and Pre-Approval are each "you can
+    ignore", hidden from every view but still COUNTED in the census so the totals reconcile.
+
+    | List | Folders | Files |
+    |---|---|---|
+    | `closed` | Corr Post Purchase · Broker CLOSED RECONCILED · Broker CLOSED | 316 |
+    | `withdrawn` | Withdrawn files | 35 |
+    | hidden | Training · Prospect · Pre-Approval | 17 |
+    | `active` | Pipeline active · Started · Corr Post Closing · Corr Clear To Close · On Hold | 373 |
+
+    741 of 772; the other 31 carry no folder at all and stay ACTIVE, by the fail-toward-showing
+    rule. Two of these were the owner's judgement rather than the census's: **Broker CLOSED** is
+    closed (its reconciliation is bookkeeping after the finish line, not work outstanding), and
+    **Started** is active (milestone 1 is literally "Started", so a sandbox file is the newest
+    file rather than a hidden one). Built as `pipeline.inactiveFolders`,
+    `pipeline.withdrawnFolders` and `pipeline.excludedFolders`; the original question is kept
+    below because its reasoning is why the setting exists at all.
+
+    ---
+
+    §4.1 says inactive loans stay in the one table,
     "distinguished by status — no separate archive screen", and today nothing distinguishes them:
     the sweep discovers every folder Encompass returns for a loan amount over zero, so a file
     somebody moved to Adverse or Trash sits in an officer's live book looking exactly like a
