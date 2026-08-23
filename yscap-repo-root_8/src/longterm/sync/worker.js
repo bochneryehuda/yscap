@@ -33,6 +33,7 @@ const conditions = require('../conditions/sync');
 const milestoneCatalog = require('./milestone-catalog');
 const contacts = require('../people/contacts');
 const clickupLink = require('../clickup/link');
+const borrowerAutolink = require('../borrower-autolink');
 const runLog = require('./run-log');
 
 /**
@@ -169,7 +170,7 @@ async function tickOnce({ trigger = 'worker' } = {}) {
   if (running) return { ok: false, reason: 'a pass is already running' };
   running = true;
   const started_at = Date.now();
-  const out = { loans: null, conditions: null, milestoneCatalog: null, pilotRoles: null, clickupLink: null };
+  const out = { loans: null, conditions: null, milestoneCatalog: null, pilotRoles: null, clickupLink: null, borrowerLinks: null };
   try {
     // EVERY PASS RECORDS WHAT IT DID (db/616). The log line below says the same
     // thing, and a log line is not an answer: the owner asked twice why nothing was
@@ -220,6 +221,16 @@ async function tickOnce({ trigger = 'worker' } = {}) {
       out.clickupLink = await runLog.record('clickup_link', trigger, () => clickupLink.linkPass({}));
     } catch (e) {
       out.clickupLink = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    // THE OBVIOUS BORROWER MATCHES CONFIRM THEMSELVES (owner-directed 2026-08-23):
+    // email matched one profile and the name is the same person spelled Encompass's
+    // way. Everything short of that stays a suggestion for a human, and every
+    // confirmation goes through the same door as the admin's button, so the guards
+    // re-run and the trail says 'auto'. Its own switch: LT_BORROWER_AUTOLINK_ENABLED=0.
+    try {
+      out.borrowerLinks = await runLog.record('borrower_links', trigger, () => borrowerAutolink.autoLinkPass({}));
+    } catch (e) {
+      out.borrowerLinks = { ok: false, reason: (e && e.message) || String(e) };
     }
   } finally {
     running = false;
