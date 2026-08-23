@@ -33,6 +33,7 @@ const contacts = require('./people/contacts');
 const product = require('./product');
 const stages = require('./stages');
 const book = require('./pipeline-book');
+const trash = require('./trash');
 const productTerm = require('./product-term');
 
 const lazy = {
@@ -127,6 +128,17 @@ const officerIsSql = (ph) => `EXISTS (
          AND ${access.effectiveStaffSql('c2')} = ${ph}::uuid
     )`;
 
+/** The same question asked about an officer PILOT has not linked to a login yet —
+ *  keyed on the Encompass LOGIN, the stable id every contact row carries. The picker
+ *  offers these officers too (owner-reported 2026-08-23: "I don't see my name as part
+ *  of the officers on the top"), so a name the book plainly shows is never missing
+ *  from the list that filters it. */
+const officerLoginSql = (ph) => `EXISTS (
+      SELECT 1 FROM lt_loan_contacts c5
+       WHERE c5.loan_id = l.id
+         AND c5.role = '${contacts.OFFICER_ROLE}'
+         AND c5.encompass_login_id = ${ph})`;
+
 /** "Nobody is on it yet" — the closer's and funder's reason for seeing the whole book. */
 const UNASSIGNED_SQL = `NOT EXISTS (
       SELECT 1 FROM lt_loan_contacts c3
@@ -171,6 +183,14 @@ function buildWhere(viewerAccess, staffId, filters = {}, omit = new Set(), opts 
     params.push(...scope.params);
   }
 
+  // ENCOMPASS'S TRASH IS NEVER IN THE PIPELINE — not in any book, not through any
+  // filter (owner-directed 2026-08-23: "The trash folder from Encompass is real
+  // trash … It should not be part of the pipeline at all", "not by any filters").
+  // Structural like the scope — never omittable, so no facet, no folder filter and
+  // no saved view can count or reach a deleted loan. They live on the archive
+  // screen instead (src/longterm/trash.js).
+  where.push(trash.notTrashSql('l'));
+
   if (!skip('stage') && filters.stage === NO_STAGE) {
     where.push("(l.stage_key IS NULL OR l.stage_key = '')");
   } else if (!skip('stage') && filters.stage) {
@@ -211,6 +231,12 @@ function buildWhere(viewerAccess, staffId, filters = {}, omit = new Set(), opts 
   // scoped viewer already cannot see them, so it narrows rather than widens.
   if (!skip('whose') && filters.officerStaffId) {
     where.push(officerIsSql(p(String(filters.officerStaffId))));
+  }
+  // The unlinked twin: an officer picked by their Encompass login rather than a
+  // PILOT id, because the link an admin has not confirmed yet must not make the
+  // officer unpickable.
+  if (!skip('whose') && filters.officerLoginId) {
+    where.push(officerLoginSql(p(String(filters.officerLoginId))));
   }
 
   // A SCOPE FILTER THAT CANNOT MEAN ANYTHING FOR THIS VIEWER IS NOT APPLIED, and that
@@ -315,6 +341,16 @@ function buildPipelineQuery(viewerAccess, staffId, filters = {}, opts = {}) {
            -- that rule expressed for the list, so the two can never disagree.
            CASE WHEN l.milestone_since IS NULL OR l.milestone_since_is_baseline THEN NULL
                 ELSE EXTRACT(DAY FROM (now() - l.milestone_since))::int END AS milestone_days,
+           -- TWO ENCOMPASS RECORDS, ONE LOAN NUMBER (owner-reported 2026-08-23,
+           -- YSCAP258134474: a stale copy in the Pipeline folder read "Started /
+           -- $202,500" while the real record sat sold in Corr Post Purchase). The
+           -- row must SAY its number lives on another live Encompass record, or
+           -- whichever copy somebody happens to open reads as the loan. Counted
+           -- against non-trash rows only: a twin already deleted is not a duplicate.
+           CASE WHEN l.loan_number IS NULL THEN 0 ELSE
+             (SELECT count(*)::int FROM lt_loans d
+               WHERE d.loan_number = l.loan_number
+                 AND d.id <> l.id AND ${trash.notTrashSql('d')}) END AS duplicate_records,
            (SELECT json_agg(json_build_object(
                      'role', c.role,
                      'name', c.encompass_name,
@@ -507,14 +543,56 @@ async function loadPipeline(staff, filters = {}) {
     // failed list costs the picker its options, never anybody their pipeline.
     (viewerAccess.seesAll
       ? lazy.db.query(
-        `SELECT DISTINCT ${access.effectiveStaffSql('c')} AS staff_id, su.full_name
-           FROM lt_loan_contacts c
-           JOIN lt_loans l ON l.id = c.loan_id
-           JOIN staff_users su ON su.id = ${access.effectiveStaffSql('c')}
-          WHERE c.role = 'loan_officer'
-          ORDER BY su.full_name`).then((r) => r.rows).catch(() => null)
+        // LINKED officers by their PILOT identity, and UNLINKED ones by the
+        // Encompass identity the book itself carries (owner-reported 2026-08-23:
+        // "when I go to select officer, I don't see my name … when I click to see
+        // all officers, then I see my name"). A name the rows plainly show must
+        // never be missing from the list that filters them — so an officer whose
+        // link nobody has confirmed yet is offered too, keyed on their LOGIN, and
+        // the screen filters by that instead of a PILOT id. Trash never counts:
+        // an officer whose only files are deleted is not an officer in this book.
+        `SELECT staff_id, full_name, login_id, linked FROM (
+           SELECT DISTINCT ${access.effectiveStaffSql('c')} AS staff_id,
+                  su.full_name, NULL::text AS login_id, true AS linked
+             FROM lt_loan_contacts c
+             JOIN lt_loans l ON l.id = c.loan_id
+             JOIN staff_users su ON su.id = ${access.effectiveStaffSql('c')}
+            WHERE c.role = 'loan_officer' AND ${trash.notTrashSql('l')}
+           UNION ALL
+           SELECT NULL::uuid AS staff_id,
+                  COALESCE(max(NULLIF(TRIM(c.encompass_name), '')), c.encompass_login_id) AS full_name,
+                  c.encompass_login_id AS login_id, false AS linked
+             FROM lt_loan_contacts c
+             JOIN lt_loans l ON l.id = c.loan_id
+            WHERE c.role = 'loan_officer' AND ${trash.notTrashSql('l')}
+              AND c.encompass_login_id IS NOT NULL
+              AND ${access.effectiveStaffSql('c')} IS NULL
+              -- A login linked on ANY row is listed once, as its person — never twice.
+              AND NOT EXISTS (SELECT 1 FROM lt_loan_contacts cx
+                               WHERE cx.encompass_login_id = c.encompass_login_id
+                                 AND ${access.effectiveStaffSql('cx')} IS NOT NULL)
+            GROUP BY c.encompass_login_id
+         ) o
+         ORDER BY full_name`).then((r) => r.rows).catch(() => null)
       : Promise.resolve(null)),
   ]);
+
+  // The archive's total (deleted-in-Encompass files) and whether THIS viewer's
+  // own Encompass login is linked — both only for a sees-all viewer, both
+  // best-effort, both so the screen can say something actionable: the archive gets
+  // its one quiet link, and an empty "My files" can explain ITSELF ("your login
+  // isn't connected yet") instead of reading as a broken pipeline
+  // (owner-reported 2026-08-23: "When I see my files, I don't see any files
+  // populated").
+  let archiveN = null;
+  let viewerLinked = null;
+  if (viewerAccess.seesAll) {
+    archiveN = await trash.archiveCount().catch(() => null);
+    if (staffId) {
+      try { viewerLinked = await require('./people/links').hasConfirmedLink(staffId); }
+      catch (_) { /* an unreadable link is not a claim either way */ }
+    }
+  }
 
   let emptyReason = null;
   if (!rows.length && !viewerAccess.seesAll) {
@@ -553,6 +631,14 @@ async function loadPipeline(staff, filters = {}) {
     // and null again when the list could not be read (the picker falls back to the
     // filter still working by typed id, which saved views may carry).
     officers: officers || null,
+    // The archive: how many deleted-in-Encompass files sit out of sight. Null for
+    // a scoped viewer (no link is drawn) and null when it could not be counted —
+    // never 0, which would claim a measurement.
+    archiveCount: archiveN,
+    // Does THIS viewer's PILOT login have a confirmed Encompass identity? Null =
+    // unknown or not asked; false is what lets the screen explain an empty
+    // "My files" with the actual reason and point at the Team screen.
+    viewerLinked,
     // A filter this tenant's own configuration makes moot — NAMED, so the screen can
     // say so rather than showing a book that quietly ignores what was asked for.
     filtersIgnored: [

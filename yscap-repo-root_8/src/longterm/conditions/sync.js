@@ -32,6 +32,7 @@
  */
 
 const mapper = require('./mapper');
+const trash = require('../trash');
 // The master on/off switch. Asked DIRECTLY rather than through the Encompass client,
 // because the tests replace that module wholesale in require.cache and a stub carries
 // only the handful of methods the test needs — this one is pure and is never stubbed.
@@ -611,6 +612,9 @@ async function dueLoans(dbc, budget, refreshHours) {
     `SELECT id, encompass_loan_guid AS guid
        FROM lt_loans
       WHERE encompass_loan_guid IS NOT NULL
+        -- No condition read is ever spent on a loan Encompass deleted (its trash
+        -- folder) — owner-directed 2026-08-23, and each read is a real call.
+        AND ${trash.notTrashSql('lt_loans')}
         AND (conditions_synced_at IS NULL
              OR conditions_synced_at < now() - ($2 || ' hours')::interval)
       ORDER BY conditions_synced_at ASC NULLS FIRST

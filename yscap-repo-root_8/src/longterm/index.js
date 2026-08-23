@@ -72,6 +72,11 @@ router.use('/book', require('./routes/book'));
 // /api/lt/views
 router.use('/views', require('./routes/views'));
 
+// The archive — Encompass's deleted loans (its `(Trash)` folder), out of every
+// pipeline view and totaled here, with the super-admin's permanent delete
+// (owner-directed 2026-08-23).
+router.use('/archive', require('./routes/archive'));
+
 // The Condition Center, READ side: this loan's conditions with the documents that
 // answer each one, plus the eFolder needs list — which is where the work actually
 // is on a live file, since every condition in this tenant sits on a loan that is

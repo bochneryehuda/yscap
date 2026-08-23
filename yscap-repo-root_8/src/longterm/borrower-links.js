@@ -30,6 +30,7 @@
  */
 
 const db = require('./db');
+const trash = require('./trash');
 const borrowerMatch = require('./borrower-match');
 const { nameLooksLike } = require('./people/match');
 
@@ -94,7 +95,12 @@ async function confirmLink(email, borrowerId, actorId, opts = {}) {
     // refuses to SUGGEST it; this refuses to ACCEPT it, because a screen is not a
     // security boundary and this route can be reached directly.
     const { rows: loans } = await dbc.query(
-      `SELECT id, borrower_name FROM lt_loans WHERE borrower_email = $1`, [addr],
+      `SELECT id, borrower_name FROM lt_loans l
+        WHERE borrower_email = $1
+          -- A deleted loan neither vetoes nor vouches for an identity: Encompass's
+          -- trash is full of test borrowers, and a trashed twin sharing an address
+          -- must not block a real person's confirm (owner-directed 2026-08-23).
+          AND ${trash.notTrashSql('l')}`, [addr],
     );
     if (!loans.length) {
       throw refuse(404, 'No long-term loan carries that email address, so there is nothing to link.');

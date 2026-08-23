@@ -24,6 +24,7 @@ const db = require('../db');
 const encClient = require('../encompass/client');
 const killSwitch = require('../encompass/enabled');
 const runLog = require('../sync/run-log');
+const trash = require('../trash');
 
 async function requireSyncAdmin(req, res, next) {
   try {
@@ -42,9 +43,14 @@ async function requireSyncAdmin(req, res, next) {
 router.get('/', async (req, res) => {
   try {
     const { rows } = await db.query(
-      `SELECT count(*)::int AS loans,
-              count(*) FILTER (WHERE encompass_synced_at IS NOT NULL)::int AS read_at_least_once,
-              count(*) FILTER (WHERE encompass_sync_error IS NOT NULL)::int AS failing,
+      // The BOOK is the live loans; Encompass's deleted files (its trash folder)
+      // are counted SEPARATELY as the archive, or this screen's total disagrees
+      // with the pipeline's by exactly the number of deleted files and reads as a
+      // sync problem (owner-directed 2026-08-23).
+      `SELECT count(*) FILTER (WHERE ${trash.notTrashSql('lt_loans')})::int AS loans,
+              count(*) FILTER (WHERE ${trash.trashSql('lt_loans')})::int AS archived,
+              count(*) FILTER (WHERE encompass_synced_at IS NOT NULL AND ${trash.notTrashSql('lt_loans')})::int AS read_at_least_once,
+              count(*) FILTER (WHERE encompass_sync_error IS NOT NULL AND ${trash.notTrashSql('lt_loans')})::int AS failing,
               max(encompass_synced_at) AS last_synced_at,
               min(encompass_synced_at) FILTER (WHERE encompass_synced_at IS NOT NULL) AS oldest_synced_at
          FROM lt_loans`,
@@ -55,6 +61,7 @@ router.get('/', async (req, res) => {
       `SELECT loan_number, encompass_loan_guid, encompass_sync_error, updated_at
          FROM lt_loans
         WHERE encompass_sync_error IS NOT NULL
+          AND ${trash.notTrashSql('lt_loans')}
         ORDER BY updated_at DESC
         LIMIT 20`,
     );

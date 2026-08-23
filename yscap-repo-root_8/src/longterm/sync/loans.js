@@ -40,6 +40,7 @@ const locks = require('../locks');
 const milestones = require('../milestones');
 const purchased = require('../milestone-purchased');
 const productTerm = require('../product-term');
+const trash = require('../trash');
 const borrowerMatch = require('../borrower-match');
 const application = require('../application/sync');
 
@@ -392,6 +393,17 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
   let skippedShortTerm = 0;
 
   const due = [];
+  // ENCOMPASS'S TRASH GOES TO THE ARCHIVE, NEVER THE BOOK (owner-directed
+  // 2026-08-23: "real trash … should not be part of the pipeline at all"). The
+  // pipeline search returns the `(Trash)` folder because `includeArchivedLoans` —
+  // which a WITHDRAWN file genuinely needs — brings the recycle bin along with the
+  // archives. The rule here is UPDATE-ONLY: a loan we already hold that somebody
+  // deletes in Encompass gets its folder moved (which retires it into the archive
+  // on this very pass), and a loan that was ALREADY trash when first seen is never
+  // inserted — so a permanently deleted archive row stays deleted, and a loan
+  // RESTORED from Encompass's trash comes straight back as an ordinary discovery.
+  // Counted, never silent.
+  let archivedTrash = 0;
   // ONE LOAN THAT WILL NOT SAVE MUST NOT DISCARD THE BOOK (owner-reported
   // 2026-08-23, and the run log is what finally named it: *"The last pull did not
   // work — Could not save the discovered loans: duplicate key value violates unique
@@ -431,6 +443,21 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
       }
       await dbc.query('SAVEPOINT lt_loan_row');
       try {
+        if (trash.isTrashFolder(loan.loanFolder)) {
+          await dbc.query(
+            `UPDATE lt_loans
+                SET loan_folder = $2,
+                    encompass_last_modified = GREATEST(
+                      COALESCE($3::timestamptz, encompass_last_modified),
+                      COALESCE(encompass_last_modified, $3::timestamptz)),
+                    updated_at = now()
+              WHERE encompass_loan_guid = $1`,
+            [loan.encompassLoanGuid, loan.loanFolder, loan.lastModified],
+          );
+          archivedTrash += 1;
+          await dbc.query('RELEASE SAVEPOINT lt_loan_row');
+          continue; // never scheduled for a full read — nobody spends a call on trash
+        }
         const row = await upsertDiscovered(dbc, loan, settings);
         await dbc.query('RELEASE SAVEPOINT lt_loan_row');
         if (needsRead(row)) due.push({ id: row.id, guid: loan.encompassLoanGuid });
@@ -520,6 +547,9 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
     // NO SILENT FILTERING. How many of Encompass's loans were left where they belong,
     // and — when the classifying fields were refused — that none could be.
     skippedShortTerm,
+    // Deleted-in-Encompass loans seen this pass: existing rows retired into the
+    // archive, brand-new trash never brought in. Reported, never silent.
+    archivedTrash,
     classifyFields: found.classifyFields || 'answered',
     // NO SILENT CAPS. Loans Postgres refused, named so a human can go and look at
     // them in Encompass; `refusedLoans` carries the first few with their reason.

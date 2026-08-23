@@ -46,6 +46,9 @@ router.get('/', async (req, res) => {
       folder: req.query.folder,
       search: req.query.search,
       officerStaffId: req.query.officer,
+      // An officer nobody has linked to a PILOT login yet is picked by their
+      // Encompass LOGIN instead — the screen sends whichever kind the option was.
+      officerLoginId: req.query.officerLogin,
       unassigned: String(req.query.unassigned || '') === 'true',
       // "Mine" is asked for as a flag and resolved from the SESSION, never from an
       // id in the query string — a viewer who sees the whole book could otherwise
@@ -170,6 +173,25 @@ router.get('/:loanId', async (req, res) => {
       return res.status(404).json({ error: 'No such long-term loan.' });
     }
 
+    // TWO ENCOMPASS RECORDS, ONE LOAN NUMBER — the file screen must say so
+    // (owner-reported 2026-08-23, YSCAP258134474: they opened the stale copy,
+    // every figure read wrong, and nothing anywhere said a second record
+    // existed). Live records only: a twin already in Encompass's trash is not a
+    // duplicate any more. Best-effort — an unreadable check draws no banner.
+    let duplicates = [];
+    if (rows[0].loan_number) {
+      try {
+        const trash = require('../trash');
+        const { rows: dups } = await db.query(
+          `SELECT d.id, d.loan_folder, d.milestone_name, d.loan_amount, d.encompass_last_modified
+             FROM lt_loans d
+            WHERE d.loan_number = $1 AND d.id <> $2::uuid AND ${trash.notTrashSql('d')}
+            ORDER BY d.encompass_last_modified DESC NULLS LAST`,
+          [rows[0].loan_number, rows[0].id]);
+        duplicates = dups;
+      } catch (_) { /* no banner beats a wrong one */ }
+    }
+
     // `override_by` rides along in the SAME lookup: naming who reassigned a file is
     // one more id in a query that was already being made, not a second round trip.
     const staffIds = [...new Set(team.flatMap((t) => [t.staff_id, t.override_staff_id, t.override_by]).filter(Boolean).map(String))];
@@ -253,6 +275,10 @@ router.get('/:loanId', async (req, res) => {
       // screen renders what the row says rather than what screen it is.
       ...product.stamp(),
       loan: product.tagRow(rows[0]),
+      // The other live Encompass records carrying THIS loan number (empty on a
+      // healthy file). The screen leads with it: whichever copy somebody opened,
+      // they are told a second record exists and where it sits in Encompass.
+      duplicates,
       lock,
       file,
       sections: workspace.sectionMenu(rows[0], {

@@ -427,6 +427,33 @@ export default function LtLoan() {
         </div>
       ) : null}
 
+      {/* TWO ENCOMPASS RECORDS, ONE LOAN NUMBER (owner-reported 2026-08-23,
+          YSCAP258134474: they opened the stale copy and every figure read wrong,
+          with nothing saying a second record existed). Whichever copy is open, the
+          banner names the OTHER record's folder and last touch so the stale one
+          can be found and trashed in Encompass — after which it drops off every
+          screen here on its own. */}
+      {Array.isArray(data.duplicates) && data.duplicates.length > 0 && (
+        <div className="card" style={{ marginBottom: 12, border: '1px solid #E4C7C7', background: '#FBEFEF', color: '#141B22' }}>
+          <strong style={{ color: '#8A2D2D' }}>
+            Encompass holds {data.duplicates.length + 1} records with this loan number.
+          </strong>{' '}
+          You are looking at ONE of them — the figures differ between the copies. The other{' '}
+          {data.duplicates.length === 1 ? 'record sits' : 'records sit'} in:{' '}
+          {data.duplicates.map((d, i) => (
+            <span key={d.id}>
+              {i > 0 && '; '}
+              <strong>{d.loan_folder || 'no folder'}</strong>
+              {' '}({d.milestone_name || 'no milestone'}
+              {d.loan_amount != null ? `, ${money(d.loan_amount)}` : ''}
+              {d.encompass_last_modified ? `, last touched ${day(d.encompass_last_modified)}` : ''})
+            </span>
+          ))}
+          . The stale copy should be deleted in Encompass — once it is in Encompass's trash,
+          it leaves PILOT on the next sync.
+        </div>
+      )}
+
       <Stepper stepper={stepper} clock={milestoneClock} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 300px', gap: 14, alignItems: 'start' }}

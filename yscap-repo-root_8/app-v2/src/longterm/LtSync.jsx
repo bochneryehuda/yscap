@@ -201,6 +201,9 @@ export default function LtSync() {
       {state && (
         <div className="card" style={{ display: 'flex', gap: 26, flexWrap: 'wrap', color: '#141B22' }}>
           {stat('Loans', state.loans)}
+          {/* Encompass's deleted files, counted apart so this screen's total always
+              matches the pipeline's (owner-directed 2026-08-23). Absent when zero. */}
+          {Number(state.archived) > 0 ? stat('In the archive (deleted in Encompass)', state.archived) : null}
           {stat('Read at least once', state.read_at_least_once)}
           {stat('Failing', state.failing_count != null ? state.failing_count : state.failing?.length ?? 0)}
           {stat('Last sync', when(state.last_synced_at))}

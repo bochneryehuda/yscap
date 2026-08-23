@@ -306,3 +306,37 @@ copy of the RTL guards · the officer routing table for LT.
 **The immediate gap:** the 382 pairs are computed and confirmed but live only in a
 spreadsheet. Until a staff-authenticated screen in PILOT can apply them, the link
 exists on paper and not in the system. That screen is the next thing to build.
+
+---
+
+## 10. The trash rule and the archive (owner-directed 2026-08-23, evening)
+
+Encompass's `(Trash)` folder — its recycle bin — was riding into the book through
+`includeArchivedLoans` (which the Withdrawn folder genuinely needs). 49 of the 486
+mirrored loans were trash: every "test file" the owner could not find in Encompass
+("testing, tesing", the HELOC samples, Alice Customer, the owner's own training
+files), and six of the seven duplicated loan numbers.
+
+The owner's rule, verbatim: *"The trash folder from Encompass is real trash … It
+should not be part of the pipeline at all, not by any filters. It should be totaled
+in the archive folder, and you can click over there to delete it permanently."*
+
+What shipped (`src/longterm/trash.js`, one definition):
+
+- **A trashed loan is invisible everywhere** — the pipeline (every book, every
+  filter, every facet count), the borrowers match screen, the borrower's own list,
+  the link pass, the borrower auto-link, the condition sweep. The guard is
+  structural (Encompass's own system folder name), not a setting.
+- **The mirror retires, never imports.** A live loan somebody deletes in Encompass
+  moves into the archive on the next sweep; a loan that was already trash when
+  first seen is never inserted; a loan restored from Encompass's trash walks back
+  in on its own. Counted per pass (`archivedTrash`), never silent.
+- **The archive screen** (`/internal/lt/archive`, admins) totals them, and a
+  super-admin may delete one (or all) from PILOT permanently. The delete is
+  structurally incapable of touching a live loan.
+- **The link pass consequence:** with trash excluded, six of the seven
+  "duplicate Encompass record" refusals resolve to a single live record and become
+  linkable. The one REAL live duplicate (YSCAP258134474 — Corr Post Purchase
+  $206,250 sold vs a stale Pipeline-folder copy at $202,500) is now marked on the
+  pipeline row and on the file screen, naming the other record's folder so the
+  stale copy can be found and trashed in Encompass.

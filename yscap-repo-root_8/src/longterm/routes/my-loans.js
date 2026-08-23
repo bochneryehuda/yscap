@@ -43,6 +43,7 @@ const express = require('express');
 const router = express.Router();
 
 const db = require('../db');
+const trash = require('../trash');
 const audience = require('../audience');
 const productTerm = require('../product-term');
 const settingsStore = require('../settings/store');
@@ -152,6 +153,9 @@ router.get('/loans', async (req, res) => {
          FROM lt_loans l
          LEFT JOIN lt_encompass_milestones m ON m.milestone_name = l.milestone_name
         WHERE l.borrower_id = $1::uuid
+          -- A loan deleted in Encompass (its trash folder) is not one of their
+          -- files. The archive is internal; a client never sees a deleted loan.
+          AND ${trash.notTrashSql('l')}
         ORDER BY l.encompass_synced_at DESC NULLS LAST, l.loan_number NULLS LAST`,
       [borrowerId],
     );

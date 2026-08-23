@@ -30,6 +30,12 @@ export const ltApi = {
   },
   loan: (id) => ltGet(lt(`/pipeline/${encodeURIComponent(id)}`)),
 
+  // The archive — Encompass's deleted loans, out of every pipeline view. Listing is
+  // for admins; the permanent delete is the super-admin's (the server enforces both).
+  archive: () => ltGet(lt('/archive')),
+  archiveDelete: (id) => ltDel(lt(`/archive/${encodeURIComponent(id)}`)),
+  archiveDeleteAll: () => ltPost(lt('/archive/delete-all'), {}),
+
   // Reassign one role on one file to a PILOT person — or, with `staffId` null,
   // clear the reassignment and go back to what Encompass says. Nothing is written
   // to Encompass either way; this only decides whose pipeline the file is in here.
