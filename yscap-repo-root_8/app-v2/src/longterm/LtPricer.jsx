@@ -83,7 +83,11 @@ const START = {
   // borrower actually has is typed over it, and nothing here decides eligibility — the
   // number is sent to Lender Price and their answer is what the board shows.
   fico: '760',
-  dscr: '1.20',
+  // 1.25 BY OWNER DIRECTION (2026-08-23), was 1.20. Like the FICO above it this is a STARTING
+  // POINT, not a rule: the ratio the deal actually carries is typed over it, it is sent to
+  // Lender Price as a fact, and their answer is what the board shows. Nothing here decides
+  // eligibility — the DSCR band a programme requires is the vendor's own, not ours.
+  dscr: '1.25',
   // ⛔ THE ZIP STARTS EMPTY, BY OWNER DIRECTION (2026-08-23): *"Zip code should not default to
   // anything. Right now, it's defaulting to Miami."* And they are right about more than tidiness —
   // the ZIP decides the STATE and the COUNTY a loan is priced in, and those move the answer. A
