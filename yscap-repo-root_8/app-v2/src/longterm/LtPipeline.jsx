@@ -188,6 +188,36 @@ function DscrCell({ row }) {
 }
 
 /**
+ * WHAT A CELL SAYS, AS TEXT — the one definition the per-column search filters by.
+ *
+ * It deliberately mirrors what the CELL RENDERS, not what the row stores: somebody
+ * typing "1,050" into the amount box is copying what their eye sees, and a filter
+ * that only matched the stored "1050000.00" would tell them the file is not there.
+ * Both spellings match — the formatted text and the raw digits — so either habit
+ * finds the row. A dash cell yields '', which no non-empty search matches: filtering
+ * a column keeps only rows that HAVE that value, which is what a person typing into
+ * that column means.
+ */
+function cellSearchText(col, row, stageLabel) {
+  const raw = row[col.field];
+  switch (col.kind) {
+    case 'money': return raw == null ? '' : `${money(raw)} ${String(raw)}`;
+    case 'pct': return raw == null ? '' : `${pct(raw)} ${String(raw)}`;
+    case 'ratio': return raw == null ? '' : `${ratio(raw)} ${String(raw)}`;
+    case 'dscr': return row.dscr_ratio == null ? '' : `${ratio(row.dscr_ratio)} ${String(row.dscr_ratio)}`;
+    case 'milestone_days': return row.milestone_days == null ? '' : `${row.milestone_days} days`;
+    case 'lock': return [row.lock_status, row.lock_expiration_date].filter(Boolean).join(' ');
+    case 'day': return raw == null ? '' : String(day(raw));
+    case 'outstanding': return '';
+    case 'contact': {
+      const c = (row.contacts || []).find((x) => x.role === col.field);
+      return (c && c.name) || '';
+    }
+    default: return col.key === 'stage' ? String(stageLabel(raw) || '') : (raw == null ? '' : String(raw));
+  }
+}
+
+/**
  * One cell, drawn from what the COLUMN says it is.
  *
  * The screen no longer knows which columns exist — the server sends them, in order,
@@ -281,7 +311,6 @@ export default function LtPipeline() {
   const [search, setSearch] = useState('');
   const [stage, setStage] = useState('');
   // The second control row: '' (everyone's) | 'mine' | 'unassigned'.
-  const [whose, setWhose] = useState('');
   // Which book: 'live' (the default a desk works out of) | 'closed' | 'withdrawn' | 'all'. The row
   // is only DRAWN when the tenant has named folders that mean the deal is over — see
   // `data.bookControl`.
@@ -297,6 +326,18 @@ export default function LtPipeline() {
   // by is a lie the reader has no way to catch.
   const [sortReq, setSortReq] = useState('');
   const [dirReq, setDirReq] = useState('');
+  // THE DEFAULT IS YOUR OWN FILES (owner-directed 2026-08-23: "It should always
+  // default to active files. Into your own files. And this should be like the main
+  // thing."). For a scoped officer the flag is the harmless twin of their book; for
+  // an admin it is the actual default, one click from Everyone's.
+  const [whose, setWhose] = useState('mine');
+  // Looking at ONE officer's book — the RTL-style pick. Setting it replaces the
+  // mine/everyone choice; clearing it falls back to Everyone's.
+  const [officerId, setOfficerId] = useState('');
+  // One search box PER COLUMN, keyed by the column key. These filter CLIENT-side
+  // over the whole fetched book — which the fetch below makes honest by asking for
+  // everything the server-side filters allow (the book is a few hundred rows).
+  const [colFilters, setColFilters] = useState({});
   const nav = useNavigate();
 
   const load = useCallback(() => {
@@ -306,13 +347,19 @@ export default function LtPipeline() {
       // "Mine" is asked for as a FLAG. The server resolves whose from the session,
       // so a viewer who sees the whole book cannot ask for somebody else's personal
       // queue by editing a URL.
-      mine: whose === 'mine' ? 'true' : '',
-      unassigned: whose === 'unassigned' ? 'true' : '',
+      mine: !officerId && whose === 'mine' ? 'true' : '',
+      unassigned: !officerId && whose === 'unassigned' ? 'true' : '',
+      officer: officerId,
+      // The whole (filtered) book in one answer, so the per-column search below is
+      // filtering over everything rather than over one server page — the old
+      // 50-row default page with no pager is exactly the owner's "133 active and
+      // I'm not seeing even close to that number".
+      limit: 1000,
       book,
     })
       .then(setData)
       .catch((e) => setErr(e.message || 'Could not load the long-term pipeline.'));
-  }, [search, stage, whose, book, sortReq, dirReq]);
+  }, [search, stage, whose, officerId, book, sortReq, dirReq]);
 
   useEffect(() => {
     const t = setTimeout(load, search ? 250 : 0);
@@ -339,7 +386,8 @@ export default function LtPipeline() {
     setStage(f.stage || '');
     // A saved "mine" is a flag, so a SHARED view of it means whoever opens it — which
     // is what makes "Mine, at underwriting" one view the whole desk can use.
-    setWhose(f.mine ? 'mine' : f.unassigned ? 'unassigned' : '');
+    setWhose(f.mine ? 'mine' : f.unassigned ? 'unassigned' : (f.officer ? '' : 'mine'));
+    setOfficerId(f.officer || '');
     // A view with no opinion about the book opens on the default, not on whatever the
     // last view left behind.
     setBook(f.book || 'live');
@@ -355,8 +403,9 @@ export default function LtPipeline() {
     const name = (viewName || '').trim();
     if (!name) return;
     const filters = { search: search.trim(), stage };
-    if (whose === 'mine') filters.mine = true;
-    if (whose === 'unassigned') filters.unassigned = true;
+    if (!officerId && whose === 'mine') filters.mine = true;
+    if (!officerId && whose === 'unassigned') filters.unassigned = true;
+    if (officerId) filters.officer = officerId;
     // Only stored when it is NOT the default — a view saved today must not pin the
     // desk to the live book if that default ever moves. The server drops it either way.
     if (book !== 'live') filters.book = book;
@@ -386,6 +435,21 @@ export default function LtPipeline() {
     const s = (data && data.stages ? data.stages : []).find((x) => x.key === key);
     return (s && s.label) || key || '';
   };
+
+  // The rows after the per-column searches. Every active box must match its own
+  // column — a contact select matches exactly, a text box matches anywhere in what
+  // the cell shows (case blind, and commas/dollar signs in a typed amount are
+  // ignored the same way the eye ignores them).
+  const columnsForFilter = (data && data.columns) || [];
+  const norm = (v) => String(v || '').toLowerCase().replace(/[$,\s]/g, '');
+  const shownLoans = (data ? data.loans : []).filter((row) => columnsForFilter.every((c) => {
+    const q = (colFilters[c.key] || '').trim();
+    if (!q) return true;
+    const text = cellSearchText(c, row, stageLabel);
+    if (c.kind === 'contact') return text === q;
+    return norm(text).includes(norm(q));
+  }));
+  const colFiltersActive = Object.values(colFilters).some((v) => String(v || '').trim());
 
   return (
     <LtLayout title="Long-term pipeline">
@@ -469,19 +533,34 @@ export default function LtPipeline() {
         ))}
       </div>
 
-      {/* The scope row means nothing to somebody who only ever sees their own files —
-          every chip would select the same book — so it is not drawn for them. */}
-      {data && data.scope === 'all' && data.facets && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-          <Chip group="scope" on={!whose} onClick={() => setWhose('')} label="Everyone’s files"
-            count={data.facets.all} />
-          {data.facets.mine != null && (
-            <Chip group="scope" on={whose === 'mine'} onClick={() => setWhose('mine')} label="Mine"
+      {/* WHOSE FILES (owner-directed 2026-08-23, restructured to the RTL shape):
+          your own by default, Everyone's one click away, and a named officer's book
+          through the select — the deliberate way to look at somebody else's files.
+          Not drawn for a scoped viewer: every choice would select the same book. */}
+      {data && data.scope === 'all' && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
+          {data.facets && data.facets.mine != null && (
+            <Chip group="scope" on={!officerId && whose === 'mine'}
+              onClick={() => { setOfficerId(''); setWhose('mine'); }} label="My files"
               count={data.facets.mine} />
           )}
-          <Chip group="scope" on={whose === 'unassigned'} onClick={() => setWhose('unassigned')}
-            label="Nobody yet" count={data.facets.unassigned}
+          <Chip group="scope" on={!officerId && !whose}
+            onClick={() => { setOfficerId(''); setWhose(''); }} label="Everyone’s"
+            count={data.facets ? data.facets.all : null} />
+          <Chip group="scope" on={!officerId && whose === 'unassigned'}
+            onClick={() => { setOfficerId(''); setWhose('unassigned'); }}
+            label="Nobody yet" count={data.facets ? data.facets.unassigned : null}
             note="Files with no one on them — a closing or a wire is picked up off the queue, so they have to be findable" />
+          {(data.officers || []).length > 0 && (
+            <select className="input" style={{ maxWidth: 240 }} value={officerId}
+              aria-label="Show one officer's files"
+              onChange={(e) => { setOfficerId(e.target.value); if (e.target.value) setWhose(''); else setWhose('mine'); }}>
+              <option value="">Pick an officer…</option>
+              {data.officers.map((o) => (
+                <option key={o.staff_id} value={o.staff_id}>{o.full_name}</option>
+              ))}
+            </select>
+          )}
         </div>
       )}
 
@@ -512,8 +591,22 @@ export default function LtPipeline() {
         <input className="input" placeholder="Search a loan number or borrower" value={search}
           onChange={(e) => setSearch(e.target.value)} style={{ maxWidth: 300 }} />
         {data && <span style={{ alignSelf: 'center', fontSize: 13, color: '#4B585C' }}>
-          {data.total} file{data.total === 1 ? '' : 's'}
+          {colFiltersActive
+            ? `${shownLoans.length} of ${data.total} file${data.total === 1 ? '' : 's'}`
+            : `${data.total} file${data.total === 1 ? '' : 's'}`}
+          {colFiltersActive && (
+            <button type="button" className="btn ghost" style={{ marginLeft: 8, padding: '2px 8px', fontSize: 12 }}
+              onClick={() => setColFilters({})}>Clear searches</button>
+          )}
         </span>}
+        {/* An honest cap: the fetch asks for the whole book, and if the book ever
+            outgrows it, the difference is SAID rather than silently cut — the exact
+            failure the old 50-row page had. */}
+        {data && data.total > data.loans.length && (
+          <span style={{ alignSelf: 'center', fontSize: 13, color: '#8A6A22' }}>
+            Showing the first {data.loans.length} of {data.total} — narrow it down to see the rest.
+          </span>
+        )}
       </div>
 
       {err && <div className="card" style={{ color: '#141B22' }}>{err}</div>}
@@ -521,7 +614,9 @@ export default function LtPipeline() {
       {data && !data.loans.length && (
         <div className="card" style={{ color: '#141B22' }}>
           {data.emptyReason
-            || 'No long-term files yet. They appear here once the sync has brought them in from Encompass.'}
+            || (data.scope === 'all' && whose === 'mine' && !officerId
+              ? 'No files are assigned to you. You are looking at YOUR OWN files \u2014 the default \u2014 so this is not the whole book: pick \u201CEveryone\u2019s\u201D above to see it.'
+              : 'No long-term files yet. They appear here once the sync has brought them in from Encompass.')}
           {/* THE ACTION BELONGS WHERE THE PROBLEM IS SEEN. An empty pipeline is
               exactly the moment somebody wants to press "bring them in", and sending
               them off to find another screen is how a working system reads as broken.
@@ -603,9 +698,36 @@ export default function LtPipeline() {
                   </th>
                 );
               })}
+            </tr>
+            {/* ONE SEARCH PER COLUMN (owner-directed 2026-08-23: "on every column
+                [a] separate search bar"). They filter INSTANTLY over the whole
+                fetched book — the fetch above asks for everything the server-side
+                filters allow, so narrowing here is honest. A contact column offers
+                the people actually on the rows instead of a text box, which is the
+                "officer should be like a select" half of the same instruction. */}
+            <tr>
+              {columns.map((c) => (
+                <th key={c.key} style={{ padding: '2px 8px 8px' }}>
+                  {c.kind === 'outstanding' ? null : c.kind === 'contact' ? (
+                    <select className="input" style={{ width: '100%', fontSize: 12, padding: '3px 6px' }}
+                      value={colFilters[c.key] || ''}
+                      onChange={(e) => setColFilters((f) => ({ ...f, [c.key]: e.target.value }))}>
+                      <option value="">All</option>
+                      {[...new Set(data.loans
+                        .map((r) => ((r.contacts || []).find((x) => x.role === c.field) || {}).name)
+                        .filter(Boolean))].sort().map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  ) : (
+                    <input className="input" style={{ width: '100%', fontSize: 12, padding: '3px 6px' }}
+                      placeholder="Search" aria-label={`Search ${c.label}`}
+                      value={colFilters[c.key] || ''}
+                      onChange={(e) => setColFilters((f) => ({ ...f, [c.key]: e.target.value }))} />
+                  )}
+                </th>
+              ))}
             </tr></thead>
             <tbody>
-              {data.loans.map((l) => (
+              {shownLoans.map((l) => (
                 <tr key={l.id} style={{ cursor: 'pointer' }}
                   onClick={() => nav(`/internal/lt/loan/${l.id}`)}>
                   {columns.map((c, i) => (
