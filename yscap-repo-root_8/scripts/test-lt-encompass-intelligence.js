@@ -124,6 +124,35 @@ const d = S.defaults();
 check(d['dscr.ratioFieldId'] === 'CUST01FV', 'DSCR ratio field defaults to CUST01FV');
 check(d['dscr.rentFieldId'] === '1005' && d['dscr.housingExpenseFieldId'] === '912',
   'DSCR inputs default to fields 1005 and 912');
+
+// ── THE RENT THE FILE QUALIFIES ON — owner-named 2026-08-23 ──────────────────
+// *"The amount that we are using for our rent calculation is the monthly qualifying
+// rent field ID 1005."* The field id was already right; what the owner was correcting
+// is what the system CALLED it. Those are two different numbers on the same appraisal
+// — live files show gaps of 56% between the rent in place and the market rent an
+// appraiser supports — so a settings screen naming the wrong one tells an underwriter
+// the ratio rests on a figure the credit decision never used. These assertions exist
+// so the wording cannot drift back to "market rent" without somebody deciding to.
+{
+  const rent = S.SETTINGS.find((x) => x.key === 'dscr.rentFieldId');
+  const basis = S.SETTINGS.find((x) => x.key === 'dscr.rentBasis');
+  check(!!rent && !!basis, 'the two rent settings exist');
+
+  check(/qualifying/i.test(rent.label) && /qualifying/i.test(rent.description),
+    'field 1005 is labelled and described as the monthly QUALIFYING rent');
+  check(!/market/i.test(rent.label), 'and is never labelled the market rent');
+
+  // The basis was shipped as an OPEN owner question defaulting to the market figure —
+  // the more generous of the two. The owner answered it: the qualifying rent is
+  // whatever 1005 holds, so PILOT reads that answer rather than re-deciding it.
+  check(d['dscr.rentBasis'] === 'qualifying',
+    'the DSCR runs on the QUALIFYING rent, not on the estimated-market figure');
+  check(Array.isArray(basis.options) && basis.options.includes('qualifying'),
+    '"qualifying" is an offered option, not a value only the default can reach');
+  // A settings screen must never still be asking a question the owner has answered.
+  check(!/OWNER's to answer|owner's to answer/i.test(String(basis.notWired || '')),
+    'the rent-basis question is recorded as ANSWERED, not still put to the owner');
+}
 check(d['efolder.writesEnabled'] === false,
   'eFolder writes ship OFF (authorized but not yet built or verified)');
 check(d['conditions.model'] === 'enhanced',

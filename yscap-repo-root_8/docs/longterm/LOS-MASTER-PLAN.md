@@ -1960,6 +1960,36 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 
     **That last sentence is the whole argument, and it is why this was not left alone.**
 
+20. ~~**Which rent qualifies a DSCR file?**~~ **ANSWERED (owner, 2026-08-23).** *"See in your
+    settings that you're using a different field for estimated market rent. The amount that we
+    are using for our rent calculation is the monthly qualifying rent field ID 1005."*
+
+    This was the one open credit-policy question on the DSCR ratio, deliberately left for the
+    owner because a developer may not decide which number qualifies a loan. **The answer is that
+    the question does not belong to PILOT at all:** the qualifying rent is whatever field 1005
+    holds, and PILOT reads that answer rather than re-deciding it.
+
+    **What was actually wrong was the NAMING, and that matters more than it sounds.** Field 1005
+    was already the numerator everywhere the code computes a ratio (`application/mapper.js`,
+    `encompass/formulas.js`, the `dscr.rentFieldId` default) — so no number moved. What the
+    settings screen SAID was that 1005 holds "gross monthly **market** rent", and
+    `dscr.rentBasis` shipped defaulting to `estimated-market`. Those are two different figures on
+    the same appraisal: live files here show gaps of **56%** between the rent in place and the
+    market rent an appraiser supports, and vacant properties where no actual rent exists at all.
+    A settings screen naming the wrong one tells an underwriter the ratio rests on a figure the
+    credit decision never used — which is the same class as a condition named for the action we
+    already took rather than the thing it waits on.
+
+    So: `dscr.rentFieldId` is labelled and described as the **monthly qualifying rent**;
+    `dscr.rentBasis` defaults to **`qualifying`** and is recorded as SETTLED rather than still
+    being put to the owner; and `formulas.js`, `loan-anatomy.js` and `mismo.js` — the three
+    places a reader looks the number up — stop calling it the market figure. The three older
+    options (`estimated-market`, `actual-in-place`, `lower-of-both`) are KEPT rather than
+    deleted, so a buyer who genuinely wants a rule of their own has somewhere to put it and the
+    record still shows what was considered. Pinned by `scripts/test-lt-encompass-intelligence.js`
+    (five mutations proven to fail it), so the wording cannot drift back without somebody
+    deciding to.
+
 
 ## 12. The honest risks
 

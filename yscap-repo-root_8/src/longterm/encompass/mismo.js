@@ -79,7 +79,7 @@ const APPRAISAL = {
       'Using estimated market rent produces a higher DSCR than using in-place rent. On the '
       + 'Plymouth file the difference is the gap between a comfortable ratio and a marginal '
       + 'one. Which rent feeds 1005 is a CREDIT POLICY decision, not a technical one — so it '
-      + 'is a setting (`dscr.rentBasis`), and whichever is chosen, we should carry both plus '
+      + 'was ANSWERED by the owner on 2026-08-23 — the qualifying rent is whatever field 1005 holds, so PILOT reads it rather than re-deciding it (`dscr.rentBasis` = qualifying). We still carry both plus '
       + 'the occupancy state so an underwriter can see what the ratio rests on.',
     alsoUseful:
       '_CurrentOccupancyType (TenantOccupied / Vacant) tells you whether an actual rent can '

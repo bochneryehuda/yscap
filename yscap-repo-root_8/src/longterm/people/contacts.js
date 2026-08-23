@@ -41,6 +41,10 @@
  */
 
 const match = require('./match');
+// The master on/off switch. Asked DIRECTLY rather than through the Encompass client,
+// because the tests replace that module wholesale in require.cache and a stub carries
+// only the handful of methods the test needs — this one is pure and is never stubbed.
+const killSwitch = require('../encompass/enabled');
 
 const lazy = {
   get db() { return require('../db'); },
@@ -504,6 +508,7 @@ async function confirmedLinkMap(dbc) {
  * this reads for itself, so the standalone path is unchanged.
  */
 async function syncLoanContacts(loanId, encompassLoanGuid, opts = {}) {
+  if (!killSwitch.encompassEnabled()) return { ok: false, reason: killSwitch.OFF_REASON };
   if (!lazy.client.configured()) {
     return { ok: false, reason: 'Encompass is not connected yet.' };
   }

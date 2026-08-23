@@ -40,6 +40,7 @@
  */
 const cfg = require('../config');
 const switches = require('../lib/integrations/switches');
+const killSwitch = require('../lib/integrations/encompass-enabled');
 
 // ── Config / credentials ────────────────────────────────────────────────────
 const enc = cfg.encompass || {};
@@ -97,7 +98,11 @@ function serviceReady() {
     ? !!FLOOD_SERVICE.partnerId
     : !!FLOOD_SERVICE.serviceSetupId;
 }
+// THE MASTER SWITCH COMES FIRST — `ENCOMPASS_ENABLED=0` reports flood ordering as
+// not connected however complete the credentials are. This is the ONE authorized
+// WRITE into Encompass, so it must be the first thing the master switch stops.
 function configured() {
+  if (!killSwitch.encompassEnabled()) return false;
   return !!(clientId && clientSecret && instanceId && serviceReady());
 }
 function enabled() { return switches.on('ENCOMPASS_FLOOD_ENABLED'); }
@@ -151,6 +156,12 @@ function pathAllowed(method, path) {
 // separate, GET-only helper with its own host/https validation (never here).
 async function _fetchGuarded(path, init) {
   const method = String((init && init.method) || 'GET').toUpperCase();
+  // THE MASTER SWITCH, STRUCTURALLY. Nothing reaches the wire while Encompass is
+  // switched off — the backstop behind `configured()`, and the one that matters
+  // most here because this client is the only thing in PILOT that WRITES.
+  if (!killSwitch.encompassEnabled()) {
+    throw new Error(killSwitch.OFF_REASON);
+  }
   if (!pathAllowed(method, path)) {
     // eslint-disable-next-line no-console
     console.error('[encompass-flood] refused non-flood request:', method, path);
