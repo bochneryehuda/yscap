@@ -5,7 +5,14 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
-import { labelize, compRowsOf, feeRowsOf } from './priceBuild.js';
+import { labelize, compRowsOf, feeRowsOf, groupByLender } from './priceBuild.js';
+// The form's own rules — which options exist, when a field appears, and the amount triangle. Also a
+// plain `.js` module, and for the same reason: CI can run it, and a rule CI cannot run is a rule
+// nobody is holding. See scenarioFields.js.
+import {
+  PROPERTY_TYPES, PURPOSES, BORROWER_TYPES, PREPAY_TERMS, PREPAY_STRUCTURES,
+  unitsMode, unitsFor, showsNonWarrantable, deriveAmount, toScenario,
+} from './scenarioFields.js';
 import { INK, MUTED, SLATE, GOLD, PAPER, DANGER, CAUTION, card, eyebrow, sub, input, label } from './ppeStyles.js';
 
 /**
@@ -61,48 +68,42 @@ const NUM = { fontVariantNumeric: 'tabular-nums' };
 const START = {
   purpose: 'Purchase',
   value: '500000',
+  // AMOUNT MODE — the owner's ask: "instead of typing in the loan amount, you can type the LTV, and
+  // it fills in the loan amount automatically." Whichever box you are in is the one that is SENT;
+  // the other is shown filled in and labelled as ours. See `deriveAmount` in scenarioFields.js.
+  amountMode: 'loan',
   loan: '375000',
+  ltv: '',
   fico: '740',
   dscr: '1.20',
   zip: '33101',
   propertyType: 'SingleFamily',
   units: '1',
+  nonWarrantable: false,
+  borrowerType: 'LLC',
   lockDays: '30',
+  io: false,
+  escrowWaive: false,
+  // PREPAYMENT PENALTY — TERM and TYPE, as two facts. Five-year Standard is the connector's own
+  // profile default, so stating it here changes nothing about what is priced; it makes the default
+  // VISIBLE, which is the point. Leaving it blank would price a five-year penalty that nobody on
+  // this screen ever saw.
+  prepayMonths: '60',
+  prepayStructure: 'Standard',
 };
 
-const PURPOSES = ['Purchase', 'RateTermRefinance', 'CashOutRefinance'];
-const PROPERTY_TYPES = ['SingleFamily', 'Condo', 'Townhouse', 'TwoToFourFamily', 'PUD'];
-const PURPOSE_LABEL = {
-  Purchase: 'Purchase', RateTermRefinance: 'Rate & term refinance', CashOutRefinance: 'Cash-out refinance',
-};
-const PROPERTY_LABEL = {
-  SingleFamily: 'Single family', Condo: 'Condo', Townhouse: 'Townhouse',
-  TwoToFourFamily: '2–4 family', PUD: 'PUD',
-};
+export { toScenario };
 
-/**
- * The scenario the API wants: numbers as numbers, blanks omitted ENTIRELY.
+
+/** The LTV implied by a value and a loan amount, for the screen to show.
  *
- * An empty string sent as a value IS a value — the pricer would have to guess what it meant,
- * and this engine never guesses. Omitting the key lets the server's own default apply and say
- * so in `effectiveScenario`, which the screen shows on request.
- */
-export function toScenario(f) {
-  const out = {};
-  const numeric = { value: 1, loan: 1, fico: 1, dscr: 1, units: 1, lockDays: 1 };
-  for (const [k, v] of Object.entries(f || {})) {
-    if (v === '' || v == null) continue;
-    out[k] = numeric[k] ? Number(v) : v;
-  }
-  return out;
-}
-
-/** LTV is the page's own arithmetic and is LABELLED as such. It is never SENT: the pricer derives
- *  its own from value + loan, and shipping a rounded copy would let two LTVs disagree. */
+ *  ⛔ IT GOES THROUGH THE SHARED RULE, not its own division. The screen now has an LTV the person
+ *  can TYPE, so this page holds two views of one fact — and the moment they are computed two
+ *  different ways they can disagree in the last decimal place and the server answers `ltv_conflict`
+ *  instead of a price. `deriveAmount` is the one rule, mirrored from the server's own. */
 export function ltvOf(f) {
-  const v = Number(f.value); const l = Number(f.loan);
-  if (!Number.isFinite(v) || !Number.isFinite(l) || v <= 0 || l <= 0) return null;
-  return l / v;
+  const d = deriveAmount({ value: f && f.value, loan: f && f.loan });
+  return d.ltv != null && d.ltv > 0 ? d.ltv : null;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -194,6 +195,45 @@ function Field({ id, children, hint }) {
       <label style={label} htmlFor={id}>{children}</label>
       {hint}
     </div>
+  );
+}
+
+/** A named band of fields. The scenario grew from nine boxes to twenty, and twenty in one wrapping
+ *  row is a wall — the bands are what make it readable: the deal, the property, the borrower and
+ *  the structure, then the prepayment penalty on its own. */
+function Group({ title, children }) {
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ ...eyebrow, marginBottom: 8 }}>{title}</div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>{children}</div>
+    </div>
+  );
+}
+
+/** A checkbox with its label tied to it, so the words are a click target too. 16px on the control
+ *  for the same reason every input here is 16px: iOS zooms the page on a smaller one. */
+function Check({ id, checked, onChange, children }) {
+  return (
+    <label htmlFor={id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13.5, color: INK, cursor: 'pointer' }}>
+      <input id={id} type="checkbox" checked={!!checked} onChange={onChange} style={{ width: 16, height: 16, margin: 0, accentColor: GOLD }} />
+      {children}
+    </label>
+  );
+}
+
+/** The loan-amount / LTV switch. It is a BUTTON, not a link and not a styled div: it does something
+ *  on this page, it takes keyboard focus for free, and a screen reader is told which one is on. */
+function ModeTab({ on, onClick, children }) {
+  return (
+    <button
+      type="button" onClick={onClick} aria-pressed={on}
+      style={{
+        border: 'none', background: 'none', padding: 0, cursor: 'pointer', font: 'inherit',
+        letterSpacing: 'inherit', textTransform: 'inherit',
+        color: on ? INK : MUTED, fontWeight: on ? 800 : 600,
+        textDecoration: on ? 'underline' : 'none', textUnderlineOffset: 3,
+      }}
+    >{children}</button>
   );
 }
 
@@ -391,7 +431,7 @@ export function PriceBuild({ o }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    ONE RATE, AND EVERY INVESTOR AT IT.
    ────────────────────────────────────────────────────────────────────────── */
-export function RateRow({ row, open, onToggle, openQuote, onOpenQuote }) {
+export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender }) {
   return (
     <div style={{ border: `1px solid ${open ? GOLD : 'rgba(20,27,34,.12)'}`, borderRadius: 10, marginBottom: 8, overflow: 'hidden' }}>
       <button type="button" onClick={onToggle}
@@ -424,38 +464,96 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote }) {
             <span style={{ flex: '0 0 110px', textAlign: 'right' }}>Monthly P&amp;I</span>
             <span style={{ flex: '0 0 70px' }} />
           </div>
-          {row.quotes.map((q) => {
-            const isOpen = openQuote === q.key;
+          {groupByLender(row.quotes).map((g) => {
+            const gKey = `${row.key}|${g.key}`;
+            const many = g.programCount > 1;
+            const gOpen = many && openLenders.has(gKey);
+            const shown = gOpen ? g.quotes : [g.best];
             return (
-              <div key={q.key}>
+              <div key={g.key}>
+                {/* THE LENDER LINE — one per lender, showing their BEST price.
+                    It is deliberately NOT a <button> wrapping the row: the Details control lives
+                    inside it, and a button inside a button is invalid HTML that browsers silently
+                    re-parse, which moves the inner control out of the row it belongs to. The
+                    chevron is its own button instead. */}
                 <div style={{
                   display: 'flex', gap: 10, alignItems: 'baseline', padding: '9px 0',
                   borderBottom: '1px solid rgba(20,27,34,.07)', flexWrap: 'wrap',
+                  background: gOpen ? 'rgba(174,135,70,.05)' : 'transparent',
                 }}>
                   <span style={{ flex: '2 1 200px', minWidth: 180 }}>
-                    <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{q.lender || '—'}</span>
-                    {q.investor && q.investor !== q.lender && (
-                      <span style={{ fontSize: 12, color: MUTED }}> · {q.investor}</span>
+                    <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{g.lender || '—'}</span>
+                    {many && (
+                      <button type="button" onClick={() => onToggleLender(gKey)} aria-expanded={gOpen}
+                        style={{
+                          border: 0, background: 'none', padding: '0 0 0 8px', cursor: 'pointer',
+                          font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD,
+                          textDecoration: 'underline', textUnderlineOffset: 3,
+                        }}>{
+                        /* ONE template string: react-dom puts `<!-- -->` between adjacent JSX
+                           expressions, so `{n} programmes` never exists as one readable run. */
+                        `${gOpen ? 'hide' : 'show'} all ${g.programCount} programmes ${gOpen ? '\u25BE' : '\u25B8'}`
+                      }</button>
                     )}
-                    <div style={{ fontSize: 12, color: SLATE }}>{q.program || '—'}{q.product ? ` · ${q.product}` : ''}</div>
-                    {q.expired && (
+                    <div style={{ fontSize: 12, color: SLATE }}>
+                      {g.best && g.best.investor && g.best.investor !== g.lender ? `${g.best.investor} · ` : ''}
+                      {(g.best && g.best.program) || '—'}{g.best && g.best.product ? ` · ${g.best.product}` : ''}
+                    </div>
+                    {g.best && g.best.expired && (
                       <div style={{ fontSize: 11, color: CAUTION, fontWeight: 700 }}>
                         this lender&rsquo;s rate sheet is expired
                       </div>
                     )}
                   </span>
-                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 14, fontWeight: 700, color: INK, ...NUM }}>{price(q.price)}</span>
-                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{pts(q.adjustedPoints)}</span>
-                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{rate(q.apr)}</span>
-                  <span style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{money2(q.monthlyPi)}</span>
+                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 14, fontWeight: 700, color: INK, ...NUM }}>{price(g.bestPrice)}</span>
+                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{pts(g.best && g.best.adjustedPoints)}</span>
+                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{rate(g.best && g.best.apr)}</span>
+                  <span style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{money2(g.best && g.best.monthlyPi)}</span>
                   <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
                     <button type="button" className="btn ghost" style={{ fontSize: 12 }}
-                      onClick={() => onOpenQuote(isOpen ? null : q.key)}>
-                      {isOpen ? 'Hide' : 'Details'}
+                      onClick={() => onOpenQuote(openQuote === (g.best && g.best.key) ? null : (g.best && g.best.key))}>
+                      {openQuote === (g.best && g.best.key) ? 'Hide' : 'Details'}
                     </button>
                   </span>
                 </div>
-                {isOpen && <PriceBuild o={q.option} />}
+                {openQuote === (g.best && g.best.key) && <PriceBuild o={g.best && g.best.option} />}
+
+                {/* THE LENDER'S OTHER PROGRAMMES. Every quote is listed, the front one included and
+                    marked — a list that silently omitted it would not add up to the count on the
+                    line above. */}
+                {gOpen && shown.filter((q) => q && q !== g.best).map((q) => {
+                  const isOpen = openQuote === q.key;
+                  return (
+                    <div key={q.key}>
+                      <div style={{
+                        display: 'flex', gap: 10, alignItems: 'baseline', padding: '8px 0 8px 18px',
+                        borderBottom: '1px solid rgba(20,27,34,.05)', flexWrap: 'wrap',
+                        borderLeft: `2px solid ${GOLD}55`,
+                      }}>
+                        <span style={{ flex: '2 1 200px', minWidth: 170 }}>
+                          <div style={{ fontSize: 13, color: INK }}>{q.program || '—'}{q.product ? ` · ${q.product}` : ''}</div>
+                          {q.investor && q.investor !== q.lender && (
+                            <div style={{ fontSize: 11.5, color: MUTED }}>{q.investor}</div>
+                          )}
+                          {q.expired && (
+                            <div style={{ fontSize: 11, color: CAUTION, fontWeight: 700 }}>rate sheet expired</div>
+                          )}
+                        </span>
+                        <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13.5, fontWeight: 700, color: INK, ...NUM }}>{price(q.price)}</span>
+                        <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{pts(q.adjustedPoints)}</span>
+                        <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{rate(q.apr)}</span>
+                        <span style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{money2(q.monthlyPi)}</span>
+                        <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
+                          <button type="button" className="btn ghost" style={{ fontSize: 12 }}
+                            onClick={() => onOpenQuote(isOpen ? null : q.key)}>
+                            {isOpen ? 'Hide' : 'Details'}
+                          </button>
+                        </span>
+                      </div>
+                      {isOpen && <PriceBuild o={q.option} />}
+                    </div>
+                  );
+                })}
               </div>
             );
           })}
@@ -566,18 +664,73 @@ export default function LtPricer() {
   const [elapsed, setElapsed] = useState(0);
   const [showScenario, setShowScenario] = useState(false);
   const [dq, setDq] = useState({ status: 'idle', tries: 0, data: null, message: null });
+  const [zip, setZip] = useState({ status: 'idle', data: null, message: null });
+  // WHICH LENDERS ARE OPENED OUT, keyed `<rate>|<lender>` so opening a lender on one rate row does
+  // not open the same lender on every other. A Set rather than a single key: comparing two lenders'
+  // programme lists side by side is the whole reason the dropdown exists.
+  const [openLenders, setOpenLenders] = useState(() => new Set());
   const timer = useRef(null);
 
   useEffect(() => () => { if (timer.current) clearInterval(timer.current); }, []);
 
+  /* ZIP -> STATE / COUNTY, AS YOU TYPE.
+     ⛔ THIS IS THE ONE REQUEST ON THIS SCREEN THAT MAY FIRE FROM AN EFFECT, and only because it
+     costs nothing: it reads a committed Census table on our own server — no vendor call, no
+     session, no billing. The two doors that DO cost money still fire only from a press, and that
+     line must not move. It runs only on a complete five-digit ZIP, so it is at most one lookup per
+     ZIP rather than one per keystroke, and a late answer for a ZIP the person has already typed
+     past is DISCARDED rather than shown against the new one. */
+  useEffect(() => {
+    const z = String(f.zip || '').trim();
+    if (!/^\d{5}$/.test(z)) { setZip({ status: 'idle', data: null, message: null }); return undefined; }
+    let live = true;
+    setZip({ status: 'loading', data: null, message: null });
+    ltApi.dscrZip(z)
+      .then((r) => { if (live) setZip({ status: 'ok', data: r, message: null }); })
+      .catch((e) => {
+        if (!live) return;
+        setZip({ status: 'error', data: null, message: (e && e.message) || 'We could not look that ZIP up.' });
+      });
+    return () => { live = false; };
+  }, [f.zip]);
+
   const set = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.value }));
-  const ltv = ltvOf(f);
+  const setBool = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.checked }));
+
+  const toggleLender = (k) => setOpenLenders((prev) => {
+    const next = new Set(prev);
+    if (next.has(k)) next.delete(k); else next.add(k);
+    return next;
+  });
+
+  /* CHANGING THE PROPERTY TYPE MOVES THE UNIT COUNT WITH IT. A 4 left over from a 2–4 family riding
+     into a single-family is a contradiction the server refuses (`units_conflict`) — so the form
+     never holds one. `unitsFor` is the same rule the scenario builder applies on the way out, so
+     what is on screen and what is sent cannot disagree. The non-warrantable question belongs to a
+     condo, so it is cleared when the type stops being one rather than travelling on invisibly. */
+  const setPropertyType = (e) => setF((s) => {
+    const propertyType = e.target.value;
+    return {
+      ...s,
+      propertyType,
+      units: unitsFor(propertyType, s.units),
+      nonWarrantable: showsNonWarrantable(propertyType) ? s.nonWarrantable : false,
+    };
+  });
+
+  /* THE AMOUNT TRIANGLE, ONE WAY ROUND AT A TIME. Only the box the person is typing in feeds the
+     derivation — handing it both would make the screen answer with the figure it filled in a moment
+     ago rather than the one they chose. */
+  const amt = f.amountMode === 'ltv'
+    ? deriveAmount({ value: f.value, ltv: f.ltv })
+    : deriveAmount({ value: f.value, loan: f.loan });
+  const um = unitsMode(f.propertyType);
   const stack = res ? buildRateStack(res.programs) : null;
 
   async function run(e) {
     if (e) e.preventDefault();
     setBusy(true); setErr(null); setRes(null); setElapsed(0);
-    setOpenRate(null); setOpenQuote(null); setView('priced');
+    setOpenRate(null); setOpenQuote(null); setOpenLenders(new Set()); setView('priced');
     // A new scenario means a new searchKey, so the last scenario's refusals go with it. Leaving
     // them beside a fresh price would attribute one search's declines to another.
     setDq({ status: 'idle', tries: 0, data: null, message: null });
@@ -634,21 +787,50 @@ export default function LtPricer() {
             product it will quote, and the board shows all of them.
           </div>
 
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          {/* ── THE DEAL ──────────────────────────────────────────────────── */}
+          <Group title="The deal">
             <Field id="pe-purpose">
               Purpose
               <select id="pe-purpose" style={input} value={f.purpose} onChange={set('purpose')}>
-                {PURPOSES.map((p) => <option key={p} value={p}>{PURPOSE_LABEL[p] || p}</option>)}
+                {PURPOSES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
               </select>
             </Field>
             <Field id="pe-value">
               Property value
               <input id="pe-value" style={input} inputMode="numeric" value={f.value} onChange={set('value')} />
             </Field>
-            <Field id="pe-loan">
-              Loan amount
-              <input id="pe-loan" style={input} inputMode="numeric" value={f.loan} onChange={set('loan')} />
-            </Field>
+
+            {/* THE AMOUNT, TYPED EITHER WAY. The owner's ask, and the reason it is a TOGGLE rather
+                than two live boxes: two editable amounts that each rewrite the other fight the
+                person typing, and whichever one the screen "helpfully" filled in is the one that
+                gets sent. Here exactly one is typed and it is the one on the wire; the other is a
+                read-only figure this page worked out, labelled as such. */}
+            <div style={{ flex: '1 1 200px', minWidth: 190 }}>
+              <div style={{ ...label, display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                <ModeTab on={f.amountMode !== 'ltv'} onClick={() => setF((s) => ({ ...s, amountMode: 'loan' }))}>Loan amount</ModeTab>
+                <span aria-hidden="true" style={{ color: 'rgba(20,27,34,.28)' }}>|</span>
+                <ModeTab on={f.amountMode === 'ltv'} onClick={() => setF((s) => ({ ...s, amountMode: 'ltv' }))}>LTV</ModeTab>
+              </div>
+              {f.amountMode === 'ltv' ? (
+                <>
+                  <input
+                    id="pe-ltv" style={input} inputMode="decimal" value={f.ltv} onChange={set('ltv')}
+                    aria-label="LTV percent" placeholder="75"
+                  />
+                  <div style={{ fontSize: 12, color: MUTED, marginTop: 4, ...NUM }}>
+                    Loan {amt.loan == null ? '—' : money(amt.loan)} <em>(worked out here)</em>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <input id="pe-loan" style={input} inputMode="numeric" value={f.loan} onChange={set('loan')} aria-label="Loan amount" />
+                  <div style={{ fontSize: 12, color: MUTED, marginTop: 4, ...NUM }}>
+                    LTV {amt.ltv == null ? '—' : `${(amt.ltv * 100).toFixed(2)}%`} <em>(worked out here)</em>
+                  </div>
+                </>
+              )}
+            </div>
+
             <Field id="pe-fico">
               FICO
               <input id="pe-fico" style={input} inputMode="numeric" value={f.fico} onChange={set('fico')} />
@@ -657,25 +839,108 @@ export default function LtPricer() {
               DSCR
               <input id="pe-dscr" style={input} inputMode="decimal" value={f.dscr} onChange={set('dscr')} />
             </Field>
-            <Field id="pe-zip">
-              ZIP
-              <input id="pe-zip" style={input} inputMode="numeric" value={f.zip} onChange={set('zip')} />
-            </Field>
+          </Group>
+
+          {/* ── THE PROPERTY ──────────────────────────────────────────────── */}
+          <Group title="The property">
+            <div style={{ flex: '1 1 170px', minWidth: 150 }}>
+              <label style={label} htmlFor="pe-zip">ZIP</label>
+              <input id="pe-zip" style={input} inputMode="numeric" maxLength={5} value={f.zip} onChange={set('zip')} />
+              {/* WHAT THE ZIP RESOLVED TO, SAID OUT LOUD. A county nobody chose is still a county on
+                  the quote, so it is shown rather than resolved silently — and when the ZIP spans
+                  more than one county (28% of them do) the screen says which one was assumed. */}
+              <div style={{ fontSize: 12, color: zip.status === 'error' ? DANGER : MUTED, marginTop: 4, minHeight: 16 }}>
+                {zip.status === 'loading' && 'Looking up…'}
+                {zip.status === 'ok' && zip.data && (
+                  <>
+                    {zip.data.state} · {zip.data.county} County
+                    {zip.data.split && <em style={{ color: CAUTION }}> — this ZIP spans more than one county; this is the largest</em>}
+                  </>
+                )}
+                {zip.status === 'error' && zip.message}
+              </div>
+            </div>
+
             <Field id="pe-ptype">
               Property type
-              <select id="pe-ptype" style={input} value={f.propertyType} onChange={set('propertyType')}>
-                {PROPERTY_TYPES.map((p) => <option key={p} value={p}>{PROPERTY_LABEL[p] || p}</option>)}
+              <select id="pe-ptype" style={input} value={f.propertyType} onChange={setPropertyType}>
+                {PROPERTY_TYPES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
               </select>
             </Field>
-            <Field id="pe-units">
-              Units
-              <input id="pe-units" style={input} inputMode="numeric" value={f.units} onChange={set('units')} />
+
+            {/* UNITS — the owner's rule: it appears only once it means something. A single family
+                has one unit by definition, so a box asking the question is a box that can only be
+                answered wrongly; the server refuses a single-family with 4 units, so offering the
+                choice would offer a refusal. */}
+            {um.mode === 'choice' && (
+              <Field id="pe-units">
+                Units
+                <select id="pe-units" style={input} value={f.units} onChange={set('units')}>
+                  {um.options.map((n) => <option key={n} value={String(n)}>{n}</option>)}
+                </select>
+              </Field>
+            )}
+            {um.mode === 'free' && (
+              <Field id="pe-units">
+                Units
+                <input id="pe-units" style={input} inputMode="numeric" value={f.units} onChange={set('units')} />
+              </Field>
+            )}
+
+            {showsNonWarrantable(f.propertyType) && (
+              <div style={{ flex: '1 1 200px', minWidth: 190, paddingBottom: 6 }}>
+                <Check id="pe-nonwarr" checked={!!f.nonWarrantable} onChange={setBool('nonWarrantable')}>
+                  Non-warrantable condo
+                </Check>
+              </div>
+            )}
+          </Group>
+
+          {/* ── THE BORROWER AND THE STRUCTURE ────────────────────────────── */}
+          <Group title="The borrower and the structure">
+            <Field id="pe-btype">
+              Borrower type
+              <select id="pe-btype" style={input} value={f.borrowerType} onChange={set('borrowerType')}>
+                {BORROWER_TYPES.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
+              </select>
             </Field>
-            <Field id="pe-lock">
-              Lock (days)
+            {/* A lock is two digits. The box was the same width as the loan amount, which is why the
+                owner asked for it to be smaller — a control's size is a claim about what goes in it. */}
+            <div style={{ flex: '0 0 110px', minWidth: 110 }}>
+              <label style={label} htmlFor="pe-lock">Lock (days)</label>
               <input id="pe-lock" style={input} inputMode="numeric" value={f.lockDays} onChange={set('lockDays')} />
+            </div>
+            <div style={{ flex: '1 1 260px', minWidth: 220, display: 'grid', gap: 6, paddingBottom: 6 }}>
+              <Check id="pe-io" checked={!!f.io} onChange={setBool('io')}>Interest-only</Check>
+              <Check id="pe-escrow" checked={!!f.escrowWaive} onChange={setBool('escrowWaive')}>Waive escrow</Check>
+            </div>
+          </Group>
+
+          {/* ── PREPAYMENT PENALTY ────────────────────────────────────────────
+              TWO FACTS, NOT ONE MENU. The term is how long the penalty runs; the type is how it is
+              charged. They travel as two separate fields upstream and a five-year Standard is a
+              different note from a five-year 5%-fixed, so collapsing them into one list would make
+              a real combination unreachable. */}
+          <Group title="Prepayment penalty">
+            <Field id="pe-ppterm">
+              How long
+              <select id="pe-ppterm" style={input} value={f.prepayMonths} onChange={set('prepayMonths')}>
+                {PREPAY_TERMS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
             </Field>
-          </div>
+            <Field id="pe-ppstruct">
+              How it is charged
+              <select id="pe-ppstruct" style={input} value={f.prepayStructure} onChange={set('prepayStructure')}
+                disabled={f.prepayMonths === '0'}>
+                {PREPAY_STRUCTURES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </Field>
+            <div style={{ flex: '2 1 260px', minWidth: 220, fontSize: 12.5, color: MUTED, paddingBottom: 8 }}>
+              {f.prepayMonths === '0'
+                ? 'No penalty, so there is nothing to charge.'
+                : 'The penalty runs for the term on the left and is charged the way the middle box says.'}
+            </div>
+          </Group>
 
           <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
             <button type="submit" className="btn" disabled={busy}>
@@ -684,10 +949,13 @@ export default function LtPricer() {
             <button type="button" className="btn ghost" disabled={busy} onClick={() => setF(START)}>
               Reset to the starting scenario
             </button>
-            {/* LTV IS OURS AND SAYS SO. It is not sent — the pricer derives its own, and shipping a
-                rounded copy would let two LTVs disagree about one loan. */}
-            <span style={{ fontSize: 12.5, color: MUTED }}>
-              LTV {ltv == null ? '—' : `${(ltv * 100).toFixed(2)}%`} <em>(this page&rsquo;s arithmetic, not sent)</em>
+            {/* WHAT IS ACTUALLY GOING ON THE WIRE, in one line. The amount triangle means the
+                figure this page shows and the figure it sends are deliberately not always the same
+                one — so the screen says which. */}
+            <span style={{ fontSize: 12.5, color: MUTED, ...NUM }}>
+              Sending {f.amountMode === 'ltv'
+                ? <>value {money(Number(f.value))} and LTV {f.ltv === '' ? '—' : `${f.ltv}%`}; Lender Price works out the loan amount</>
+                : <>value {money(Number(f.value))} and loan {money(Number(f.loan))}</>}
             </span>
           </div>
         </form>
@@ -764,7 +1032,7 @@ export default function LtPricer() {
                   <RateRow key={row.key} row={row}
                     open={openRate === row.key}
                     onToggle={() => { setOpenRate(openRate === row.key ? null : row.key); setOpenQuote(null); }}
-                    openQuote={openQuote} onOpenQuote={setOpenQuote} />
+                    openQuote={openQuote} onOpenQuote={setOpenQuote} openLenders={openLenders} onToggleLender={toggleLender} />
                 ))}
               </div>
             ) : (

@@ -26,8 +26,15 @@ const token = () => {
   try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
 };
 
-/** A message a person can read, from whatever the server actually sent. */
+/** A message a person can read, from whatever the server actually sent.
+ *
+ *  ⛔ THE HUMAN SENTENCE WINS OVER THE MACHINE CODE. An LT route answers a refusal as
+ *  `{ ok:false, error:'<code>', message:'<sentence>' }` — `error` is the code a caller BRANCHES on
+ *  and `message` is the one a person READS. This preferred `error`, so a refusal that had taken the
+ *  trouble to explain itself still reached the screen as `unknown_zip`. Falling back to `error`
+ *  keeps every route that carries no message behaving exactly as before. */
 function messageFor(status, data) {
+  if (data && typeof data.message === 'string' && data.message.trim()) return data.message;
   if (data && typeof data.error === 'string' && data.error.trim()) return data.error;
   if (status === 401) return 'Your session has ended. Sign in again.';
   if (status === 403) return 'You do not have access to that.';

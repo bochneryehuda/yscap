@@ -87,3 +87,62 @@ export function feeRowsOf(fees) {
   if (!fees || typeof fees !== 'object') return [];
   return Object.entries(fees).map(([k, v]) => ({ key: k, text: nn(v) ? money2(v) : '—' }));
 }
+
+/* -- ONE LINE PER LENDER, best price in front ---------------------------------
+   Owner-directed 2026-08-23: *"when you have the same lender that has a few programs, you need to
+   handle them the same way our system handles them and show them only as one lender... The front
+   should be the best price that lender has available for the best program... you can then click to
+   open up and see a dropdown on that lender itself... and see all other programs that this lender
+   has available and all prices for all their different programs."*
+
+   THE BOARD IS STILL A MIRROR, and "best" here is arithmetic rather than a judgement. At ONE note
+   rate a higher price is worth more to the borrower -- that is what a price IS, not an opinion
+   about execution. Nothing here compares across rates, ranks a lender by anything except the
+   number they themselves quoted, or hides a quote.
+
+   NOTHING IS EVER DROPPED. A quote with no price still belongs to its lender and still appears when
+   that lender is opened; it simply cannot be the front line unless there is nothing else, in which
+   case the screen shows an em dash rather than inventing a figure. A quote with no LENDER NAME
+   becomes its own group rather than being folded into somebody else's -- putting one lender's price
+   under another's name is the worst thing this board could do.
+
+   Returns [{ key, lender, best, bestPrice, quotes, programCount }], best-priced lender first.
+   Pure; never throws; a non-array yields []. */
+export function groupByLender(quotes) {
+  if (!Array.isArray(quotes)) return [];
+  // A price that is not a finite number is NOT a price. Sorting on it would let an undefined or a
+  // vendor's null win a comparison by accident, which is how a lender comes to front a figure
+  // nobody quoted.
+  const priceOf = (q) => (q && Number.isFinite(q.price) ? q.price : null);
+  // Highest price first; anything unpriced sinks rather than counting as zero.
+  const byBestPrice = (a, b) => {
+    const x = priceOf(a); const y = priceOf(b);
+    if (x == null && y == null) return 0;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return y - x;
+  };
+
+  const groups = new Map();
+  for (const q of quotes) {
+    // The KEY is the lender's name exactly as the vendor wrote it, deliberately NOT normalized:
+    // two spellings we cannot PROVE are one company must stay two rows.
+    const name = q && typeof q.lender === 'string' ? q.lender : '';
+    const key = name || ' no-lender';
+    if (!groups.has(key)) groups.set(key, { key, lender: name || null, quotes: [] });
+    groups.get(key).quotes.push(q);
+  }
+
+  const out = [...groups.values()];
+  for (const g of out) {
+    g.quotes.sort(byBestPrice);
+    g.best = g.quotes[0] || null;
+    g.bestPrice = priceOf(g.best);
+    // How many QUOTES this lender has at this rate -- which is what the dropdown reveals. It is NOT
+    // a count of distinct programme names: the same programme can appear on two different lock or
+    // price rungs, and both are real quotes somebody may want to see.
+    g.programCount = g.quotes.length;
+  }
+  out.sort((a, b) => byBestPrice(a.best, b.best));
+  return out;
+}
