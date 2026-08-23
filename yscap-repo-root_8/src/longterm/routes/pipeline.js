@@ -181,16 +181,10 @@ router.get('/:loanId', async (req, res) => {
     let duplicates = [];
     if (rows[0].loan_number) {
       try {
-        const trash = require('../trash');
-        const { rows: dups } = await db.query(
-          `SELECT d.id, d.loan_folder, d.milestone_name, d.loan_amount, d.encompass_last_modified
-             FROM lt_loans d
-            WHERE d.loan_number = $1 AND d.id <> $2::uuid AND ${trash.notTrashSql('d')}
-            ORDER BY d.encompass_last_modified DESC NULLS LAST`,
-          [rows[0].loan_number, rows[0].id]);
-        duplicates = dups;
+        duplicates = await require('../trash').liveDuplicates(rows[0].loan_number, rows[0].id);
       } catch (_) { /* no banner beats a wrong one */ }
     }
+
 
     // `override_by` rides along in the SAME lookup: naming who reassigned a file is
     // one more id in a query that was already being made, not a second round trip.

@@ -112,6 +112,13 @@ async function main() {
     const half = all.rows.find((r) => r.loan_number === `${stamp}-4000`);
     eq(Number(half.duplicate_records), 0, 'a twin already in the trash is NOT a duplicate any more');
 
+    // The file screen's own lookup — the ONE definition the route calls.
+    const dupsOfA = await trash.liveDuplicates(`${stamp}-3000`, L.dupA);
+    eq(dupsOfA.length, 1, 'liveDuplicates finds the other live record…');
+    eq(dupsOfA[0].id, L.dupB, '…and it is the right one');
+    eq((await trash.liveDuplicates(`${stamp}-4000`, L.halfA)).length, 0,
+      'and never a twin that is already deleted');
+
     console.log('\nC. the mirror: retire on move-to-trash, never insert fresh trash, restore comes back');
     const encPath = require.resolve('../src/longterm/encompass/client');
     const discPath = require.resolve('../src/longterm/sync/discover');
@@ -177,6 +184,34 @@ async function main() {
     eq(trashLinked.rows[0].clickup_task_id, null,
       'the card carrying a TRASHED loan\'s number links to nothing — a deleted loan never claims a card');
 
+    // THE RETRY SWEEP, executed for real — inside a transaction that is rolled
+    // back, so the stamps it would record on OTHER suites' leftover rows never
+    // land. This is what makes the sql-prepared suite's COVERED_BY entry for
+    // clickup/link.js an honest statement about BOTH of its assembled queries.
+    {
+      const txc = await db.getClient();
+      try {
+        await txc.query('BEGIN');
+        const sweepStamp = { enabled: () => true, stampTask: async () => ({ ok: true, wrote: ['f'] }) };
+        const out2 = await link.linkPass({ db: txc, client, stamp: sweepStamp });
+        ok(out2.ok === true, 'the link pass with the stamper on runs the retry sweep against the real schema');
+      } finally {
+        await txc.query('ROLLBACK').catch(() => {});
+        txc.release();
+      }
+    }
+
+    // THE BORROWER AUTO-LINK's own selection, against the real schema — reads
+    // live, writes stubbed, so nothing in the shared test database is confirmed
+    // by a suite about the trash rule.
+    process.env.LT_BORROWER_AUTOLINK_ENABLED = '1';
+    const autolink = require('../src/longterm/borrower-autolink');
+    const auto = await autolink.autoLinkPass({
+      links: { loadLinks: async () => [], confirmLink: async () => ({ ok: true }) },
+      loadSettings: async () => ({}),
+    });
+    ok(auto && auto.ok === true, 'autoLinkPass runs its live selection against the real schema');
+
     console.log('\nE. the archive: list, guarded delete, children, and the honest child list');
     const listed = await trash.listArchive();
     const mine = listed.filter((r) => String(r.encompass_loan_guid || '').startsWith(stamp));
@@ -241,7 +276,6 @@ async function main() {
       ['src/longterm/routes/my-loans.js', 1],       // the borrower's own list
       ['src/longterm/routes/borrowers.js', 1],      // the match screen
       ['src/longterm/conditions/sync.js', 1],       // the condition sweep
-      ['src/longterm/routes/pipeline.js', 1],       // the file screen's duplicate banner counts live twins only
     ];
     for (const [file, min] of readsGuard) {
       const src = fs.readFileSync(file, 'utf8');
@@ -256,7 +290,7 @@ async function main() {
     ok(/router\.use\('\/archive', require\('\.\/routes\/archive'\)\)/.test(
       fs.readFileSync('src/longterm/index.js', 'utf8')), 'the archive router is mounted');
     const detail = fs.readFileSync('src/longterm/routes/pipeline.js', 'utf8');
-    ok(/duplicates,/.test(detail) && /d\.loan_number = \$1 AND d\.id <> \$2::uuid/.test(detail),
+    ok(/duplicates,/.test(detail) && /liveDuplicates\(rows\[0\]\.loan_number, rows\[0\]\.id\)/.test(detail),
       'the file screen is HANDED its duplicate records — the banner has data to draw');
 
     console.log('\nG. the officer picker: linked AND unlinked, and the login filter narrows');

@@ -77,6 +77,22 @@ function notTrashSql(alias) {
   return `${book.folderNormSql(alias)} <> '${TRASH_KEY}'`;
 }
 
+/**
+ * The OTHER live Encompass records carrying one loan number — the file screen's
+ * duplicate banner (owner-reported 2026-08-23, YSCAP258134474). Live records
+ * only: a twin already in the trash is not a duplicate any more.
+ */
+async function liveDuplicates(loanNumber, excludeId, dbc = null) {
+  if (!loanNumber) return [];
+  const { rows } = await (dbc || lazy.db).query(
+    `SELECT d.id, d.loan_folder, d.milestone_name, d.loan_amount, d.encompass_last_modified
+       FROM lt_loans d
+      WHERE d.loan_number = $1 AND d.id <> $2::uuid AND ${notTrashSql('d')}
+      ORDER BY d.encompass_last_modified DESC NULLS LAST`,
+    [loanNumber, excludeId]);
+  return rows;
+}
+
 /** How many deleted-in-Encompass loans the archive holds. Never throws — a count
  *  that cannot be read reports null, and the screen says nothing rather than 0. */
 async function archiveCount(dbc = null) {
@@ -178,6 +194,7 @@ module.exports = {
   trashSql,
   notTrashSql,
   archiveCount,
+  liveDuplicates,
   listArchive,
   deleteArchivedLoan,
   deleteAllArchived,
