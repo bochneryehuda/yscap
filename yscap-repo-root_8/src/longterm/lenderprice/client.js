@@ -446,19 +446,6 @@ async function apiGet(path, { retryOn401 = true } = {}) {
   return { ok: true, data: r.json != null ? r.json : r.text };
 }
 
-// ---- enrichment (blueprint step 3): zip → county / limits / AMI ------------
-// These are the confirmed lookup endpoints seen in the login HAR. companyId/userId come
-// from the session. All read-only.
-async function enrichZip(zip, { loanAmount = 0, units = 1 } = {}) {
-  const s = await getSession();
-  if (!s.ok) return { ok: false, ...s };
-  const out = { ok: true, zip: String(zip) };
-  // Conforming/limit lookup by zip (public pricing path; units + loanAmount as the app sends).
-  const lim = await apiGet(`/rest/v1/lp-ppe-integration/pricing/mortgageLimitByZip/1/${encodeURIComponent(zip)}/${encodeURIComponent(units)}/${encodeURIComponent(Math.round(loanAmount) || 0)}`);
-  if (lim.ok) out.mortgageLimit = lim.data;
-  return out;
-}
-
 // ---- canonical pricing foundation (blueprint step 4): defaultSearch + smo --
 // The Lender Price web app never hand-builds a search: it GETs the company's full default
 // search model and its special-mortgage-option registry, then overlays only the scenario.
@@ -1655,7 +1642,7 @@ function foundationReadiness(f) {
 }
 
 module.exports = {
-  configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
+  configured, login, getSession, apiGet, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
   hasStoredSearch, searchKeyFor, parse, parseFull, parseDisqualified, summarizeRaw, pricingReadiness,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
   loginSelfTest,

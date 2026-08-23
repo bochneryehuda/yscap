@@ -1655,6 +1655,10 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     numbers over both books is still the owner's answer, and merging them is a READ-layer job (§9's
     front-end-may-show-both rule), never a join.
 11. **The underwriter's long-term access** (see item 2) — entire pipeline, or their own files?
+    **LEFT ASSUMED, owner-directed 2026-08-23.** Put to the owner and deliberately not settled:
+    the behaviour stays as the plan assumes — the entire pipeline, matching their RTL access —
+    and this caveat stays standing rather than being quietly retired. Nothing in code changed.
+    Narrowing it later is a change to the role set `access.onFileSql` reads, plus a test.
 12. **A webhook subscription already exists on this tenant** pointing at
     `automations.drivekosher.com` for `milestone` and `milestoneupdate` events. It is not ours.
     Long-Term would need its own subscription — which is a **write** to Encompass configuration
@@ -1846,7 +1850,9 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
 ---
 
 
-19. **Should `enrichZip` stay?** (raised 2026-08-18 — one line either way)
+19. ~~**Should `enrichZip` stay?**~~ **ANSWERED (owner, 2026-08-23): no — delete it.** Done:
+    the function and its export are gone from `lenderprice/client.js`, and nothing referenced it.
+    The reasoning that was recorded here, kept because it is why the answer was easy:
     `lenderprice/client.js enrichZip` is exported and called by NOTHING — not a route, not the
     PPE, not a test. It was "blueprint step 3", written when the plan expected the vendor to
     resolve a ZIP for us; the design moved past that, and the location enrichment that actually
@@ -1866,6 +1872,8 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     not fine is leaving a vendor call exported with no caller, because the next person to find
     it will assume it is needed and wire it up, at one upstream request per scenario for a
     number no screen shows.
+
+    **That last sentence is the whole argument, and it is why this was not left alone.**
 
 
 ## 12. The honest risks
