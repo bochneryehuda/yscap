@@ -156,10 +156,28 @@ async function main() {
     const c = await (await get('/api/lt/_diag/book/count', good)).json();
     ok(c.ok === true && typeof c.loans === 'number', 'the one-line count answers too, for checking the door before pulling the book');
 
+    // ── G. the OTHER half of the same door — the ClickUp cards ──────────────
+    // Whoever makes the match needs both lists, and pulling ClickUp from somewhere
+    // else would mean a second copy of the workspace token in a second place. The
+    // live pull cannot be exercised without real credentials; what IS provable here
+    // is that the same gate covers it and that it says so honestly when ClickUp is
+    // not connected — never an empty list, which would read as "no cards exist".
+    console.log('\nG. the ClickUp half rides the same gate');
+    const savedTok = process.env.LT_CLICKUP_API_TOKEN; const savedShared = process.env.CLICKUP_API_TOKEN;
+    delete process.env.LT_CLICKUP_API_TOKEN; delete process.env.CLICKUP_API_TOKEN;
+    eq((await get('/api/lt/_diag/book/cards')).status, 401, 'no header, no cards — the same gate covers it');
+    const notConn = await get('/api/lt/_diag/book/cards', good);
+    eq(notConn.status, 503, 'and with ClickUp not connected it says so');
+    const nc = await notConn.json();
+    ok(/not connected/i.test(nc.error), 'in words, rather than answering with an empty list');
+    ok(nc.cards === undefined, 'no cards key at all — an empty list would read as "there are none"');
+    if (savedTok !== undefined) process.env.LT_CLICKUP_API_TOKEN = savedTok;
+    if (savedShared !== undefined) process.env.CLICKUP_API_TOKEN = savedShared;
+
     server.close();
 
-    // ── G. it is mounted where it can be reached ────────────────────────────
-    console.log('\nG. the wiring');
+    // ── H. it is mounted where it can be reached ────────────────────────────
+    console.log('\nH. the wiring');
     const srv = require('fs').readFileSync(require.resolve('../src/server'), 'utf8');
     const bookAt = srv.indexOf("'/api/lt/_diag/book'");
     const staffAt = srv.indexOf("app.use('/api/lt', requireAuth, requireStaff");

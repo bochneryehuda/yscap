@@ -36,6 +36,9 @@
 const express = require('express');
 const crypto = require('crypto');
 const db = require('../db');
+const clickup = require('../clickup/client');
+const program = require('../clickup/program');
+const { PIPELINE, SYNC } = require('../../clickup/fields');
 
 const router = express.Router();
 
@@ -109,6 +112,76 @@ router.get('/count', async (_req, res) => {
     res.json({ ok: true, ...rows[0] });
   } catch (e) {
     res.status(500).json({ ok: false, error: (e && e.message) || String(e) });
+  }
+});
+
+/**
+ * THE OTHER HALF OF THE SAME QUESTION — the long-term cards, read with PILOT'S OWN
+ * ClickUp credentials.
+ *
+ * WHY IT LIVES HERE rather than being pulled separately: the reconciliation compares
+ * two lists, and whoever is making the match needs both. Pulling ClickUp from
+ * somewhere else would mean a second copy of the workspace token in a second place —
+ * the exact thing the credentials rule exists to prevent — and a card list that is a
+ * day older than the book it is being compared against. PILOT already holds the token
+ * and already has a read-only client for it; this hands the answer over the same
+ * gated door, so ONE setting opens both sides and no token moves anywhere.
+ *
+ * MATCH KEYS ONLY, on this side too: what the card is called, its status and folder,
+ * the YS loan number, the program, the amount, the address, and whether it already
+ * carries a portal stamp. Not the description, not the comments, not the assignees.
+ *
+ * The classification is `program.js` — the owner's own rule, the inverse of the
+ * obvious one: the five RTL products are listed and everything else is long-term, so
+ * a product added to the ClickUp dropdown tomorrow is long-term from the moment it
+ * exists instead of falling silently out of the count.
+ */
+const fieldValue = (task, id) => {
+  const list = (task && Array.isArray(task.custom_fields)) ? task.custom_fields : [];
+  const f = list.find((x) => x && x.id === id);
+  const v = f ? f.value : null;
+  const s = (v == null) ? '' : (typeof v === 'object' ? v : String(v).trim());
+  return (s === '' ? null : s);
+};
+
+router.get('/cards', async (req, res) => {
+  if (!clickup.configured()) {
+    return res.status(503).json({ ok: false, error: 'ClickUp is not connected on this deployment.' });
+  }
+  const wanted = String(req.query.product || 'long').toLowerCase();
+  try {
+    const cards = [];
+    let pages = 0;
+    // The team-task read returns 100 at a time and answers `last_page` when done.
+    // Bounded so a paging bug can never walk forever.
+    for (let page = 0; page < 30; page += 1) {
+      const out = await clickup.pipelineTasksPage(page, { includeClosed: true });
+      const tasks = (out && out.tasks) || [];
+      pages += 1;
+      for (const t of tasks) {
+        const prog = fieldValue(t, PIPELINE.program);
+        const kind = program.classifyProgram(prog).product;
+        if (wanted !== 'all' && kind !== program.PRODUCT[wanted.toUpperCase()]) continue;
+        cards.push({
+          id: t.id,
+          custom_id: t.custom_id || null,
+          name: t.name || null,
+          status: (t.status && t.status.status) || null,
+          folder: (t.folder && t.folder.name) || null,
+          list: (t.list && t.list.name) || null,
+          product: kind,
+          program: prog,
+          ys: fieldValue(t, PIPELINE.ysLoanNumber),
+          amount: fieldValue(t, PIPELINE.loanAmount),
+          addr: fieldValue(t, PIPELINE.subjectAddress),
+          portal: fieldValue(t, SYNC.portalFileId),
+        });
+      }
+      if (!tasks.length || (out && out.last_page)) break;
+    }
+    res.json({ ok: true, pages, count: cards.length, product: wanted, cards });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: (e && e.message) || String(e) });
   }
 });
 
