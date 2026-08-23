@@ -83,10 +83,17 @@ async function bookCounts(filters, opts) {
     // Typed one way in the setting, stored another way by Encompass — the case and
     // spacing difference this is most likely to meet in the wild.
     const spaced = await makeLoan('  loan   WITHDRAWN ');
+    // ADDED 2026-08-23 with the third book: a deal that DIED, and a file that is not a
+    // deal at all. Without real rows in these two folders the partition below could
+    // only ever prove the two-book case it used to.
+    const cancelled = await makeLoan('Withdrawn files', STAGE_DONE);
+    const training = await makeLoan('Training');
 
     const CLOSED = ['Adverse', 'Trash', 'Loan Withdrawn'];
-    const OFF = { inactiveFolders: [] };
-    const ON = { inactiveFolders: CLOSED };
+    const WITHDRAWN = ['Withdrawn files'];
+    const EXCLUDED = ['Training'];
+    const OFF = { books: { closed: [], withdrawn: [], excluded: [] } };
+    const ON = { books: { closed: CLOSED, withdrawn: WITHDRAWN, excluded: EXCLUDED } };
 
     // ── A. Nothing configured: nothing changes ───────────────────────────────
     console.log('with nothing configured, no file is hidden from anybody');
@@ -129,13 +136,23 @@ async function bookCounts(filters, opts) {
       'a folder typed "Loan Withdrawn" in the setting matches "  loan   WITHDRAWN " on the loan — case and '
       + 'spacing must not decide whether somebody\'s file disappears');
 
-    check(both.length === made.length,
-      `"both" returns the whole table again (${both.length})`);
-    check(live.length + closed.length === made.length,
-      `THE ONE THAT MATTERS: the two books PARTITION the book — ${live.length} live + ${closed.length} finished `
-      + `= ${made.length}, so no loan is in neither and none is in both`);
-    check(!live.some((id) => closed.includes(id)),
-      '…proven by set membership too, not only by the totals adding up');
+    const withdrawnIds = await listIds({ book: 'withdrawn' }, ON);
+    check(withdrawnIds.includes(cancelled) && !closed.includes(cancelled) && !live.includes(cancelled),
+      'THE ONE THAT MATTERS: a withdrawn file is in the withdrawn book and in NEITHER of the other two — the '
+      + 'owner ruled out mixing a deal that died with one that completed (2026-08-23)');
+    check(!live.includes(training) && !closed.includes(training) && !withdrawnIds.includes(training),
+      'a hidden folder is in no book at all — a training file is not a deal in any state');
+
+    check(both.length === made.length - 1,
+      `"all" returns the three books together and NOT the hidden file (${both.length} of ${made.length})`);
+    check(live.length + closed.length + withdrawnIds.length === made.length - 1,
+      `THE ONE THAT MATTERS: the three books PARTITION the visible table — ${live.length} live + `
+      + `${closed.length} closed + ${withdrawnIds.length} withdrawn = ${made.length - 1}, so no loan is in `
+      + 'neither and none is in two');
+    check(!live.some((id) => closed.includes(id))
+      && !live.some((id) => withdrawnIds.includes(id))
+      && !closed.some((id) => withdrawnIds.includes(id)),
+    '…proven pairwise by set membership too, not only by the totals adding up');
 
     // ── C. Every count equals what clicking returns ──────────────────────────
     console.log('\nevery chip count equals the rows clicking it returns');
@@ -143,7 +160,7 @@ async function bookCounts(filters, opts) {
     // Counted with nothing selected AND with each book selected: the facet lifts its
     // own filter, so all three must agree. A count that moved when a chip was pressed
     // would be the row-of-zeroes bug this pattern exists to prevent.
-    for (const selected of [undefined, 'live', 'closed', 'all']) {
+    for (const selected of [undefined, 'live', 'closed', 'withdrawn', 'all']) {
       const c = await bookCounts(selected ? { book: selected } : {}, ON);
       const scopedLive = Number(c.live_n);
       const scopedClosed = Number(c.closed_n);
@@ -159,8 +176,8 @@ async function bookCounts(filters, opts) {
       && Number(cBase.closed_n) === Number(cClosed.closed_n),
     'THE ONE THAT MATTERS: selecting the finished book does not change either count — the book filter is lifted '
       + 'for its own facet, so the "Live" chip never reads zero while you are standing in the other book');
-    check(Number(cBase.all_n) === Number(cBase.live_n) + Number(cBase.closed_n),
-      'and the two counts add up to the total above them, so the row reconciles on screen');
+    check(Number(cBase.all_n) === Number(cBase.live_n) + Number(cBase.closed_n) + Number(cBase.withdrawn_n),
+      'and the THREE counts add up to the total above them, so the row reconciles on screen');
 
     // ── D. A stage chip is a question about the book you are in ──────────────
     console.log('\nthe other chips narrow BY the book');
@@ -189,34 +206,63 @@ async function bookCounts(filters, opts) {
     // ── E. The whole thing, through loadPipeline ─────────────────────────────
     console.log('\nand the real read agrees with all of it');
 
-    // `loadPipeline` reads the setting itself. With the tenant unconfigured it must
-    // report no control — which is the state this database is actually in.
+    // `loadPipeline` reads the setting itself. Since 2026-08-23 the shipped default
+    // CARRIES the owner's answer, so the control is drawn on an untouched install —
+    // which is the state this database is actually in.
     const out = await pipeline.loadPipeline({ id: null, role: 'admin' }, {});
     check(out.book === 'live', 'the response names the book it drew');
-    check(out.bookControl === false,
-      'and says there is no control to draw on a tenant that has named no finished folders');
-    check(out.bookCounts == null,
-      '…with no counts, rather than a pair of zeroes that would read as a measurement');
+    check(out.bookControl === true,
+      'and draws the control, because the shipped default names the folders the owner classified');
+    check(out.bookCounts && typeof out.bookCounts.withdrawn === 'number',
+      '…with a withdrawn count beside the other two, so all three books are reachable from the row');
     check(Array.isArray(out.filtersIgnored),
       'the ignored-filter list is still an array');
 
-    const stranded = await pipeline.loadPipeline({ id: null, role: 'admin' }, { book: 'closed' });
-    check(stranded.filtersIgnored.some((f) => f.key === 'book'),
-      'THE ONE THAT MATTERS: asking for the finished book on this unconfigured tenant is REPORTED — a SHARED '
-      + 'saved view could otherwise hand a desk an empty pipeline with no control row to clear it with');
-    check(stranded.loans.length === out.loans.length,
-      '…and the pipeline shows the whole book rather than nothing');
+    // THE STRANDING CASE STILL HAS TO BE PROVEN, and it can no longer be proven by
+    // doing nothing — so the setting is explicitly emptied here. A saved view is
+    // SHARED, so somebody can hand a desk "Closed" on a tenant where the list was
+    // cleared; the book filter is then dropped and this is what says so.
+    await ltDb.query(
+      `INSERT INTO lt_settings (scope, key, value, updated_at)
+       VALUES ('company', 'pipeline.inactiveFolders', $1::jsonb, now())
+       ON CONFLICT (scope, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [JSON.stringify([])]);
+    // The store caches for a minute and busts on ITS OWN writes; a raw INSERT is
+    // invisible to it, so without this the read below would answer from the cache and
+    // the assertion would pass or fail for a reason that has nothing to do with the rule.
+    require('../src/longterm/settings/store').bust();
+    try {
+      const cleared = await pipeline.loadPipeline({ id: null, role: 'admin' }, {});
+      const stranded = await pipeline.loadPipeline({ id: null, role: 'admin' }, { book: 'closed' });
+      check(stranded.filtersIgnored.some((f) => f.key === 'book'),
+        'THE ONE THAT MATTERS: asking for the closed book on a tenant whose list was CLEARED is REPORTED — a '
+        + 'SHARED saved view could otherwise hand a desk an empty pipeline with no control row to clear it with');
+      check(stranded.loans.length >= cleared.loans.length && stranded.loans.length > 0,
+        '…and the pipeline shows the book rather than nothing');
+      const strandedIds = stranded.loans.map((l) => String(l.id));
+      check(!strandedIds.includes(training),
+        'THE ONE THAT MATTERS: dropping the book filter does NOT unhide a hidden folder — a cleared closed list '
+        + 'must not become the one request that shows a training file');
+    } finally {
+      await ltDb.query(
+        `DELETE FROM lt_settings WHERE scope = 'company' AND key = 'pipeline.inactiveFolders'`).catch(() => {});
+      require('../src/longterm/settings/store').bust();
+    }
 
     // ── F. The setting really is declared ────────────────────────────────────
-    console.log('\nthe setting exists and defaults to empty');
+    console.log('\nthe setting carries the owner\'s answer, and the reader agrees');
 
     const declared = require('../src/longterm/settings/encompass-settings')
       .SETTINGS.find((s) => s.key === 'pipeline.inactiveFolders');
     check(!!declared, 'the settings screen offers it');
-    check(Array.isArray(declared.default) && declared.default.length === 0,
-      'THE ONE THAT MATTERS: its default is EMPTY — shipping a guessed folder name would hide live loans on '
-      + 'every tenant that installed it');
-    check(book.inactiveFolders({ [declared.key]: declared.default }).length === 0,
+    // CHANGED 2026-08-23: this used to assert the default was EMPTY, because which
+    // folder means "over" was a business rule nobody here could guess. The owner
+    // answered it (§11 q13). What made an empty default safe — an unmatched folder
+    // falls through to LIVE — is asserted directly in the pure suite instead, which
+    // is the property rather than a proxy for it.
+    check(Array.isArray(declared.default) && declared.default.length > 0,
+      'its default carries the owner\'s 2026-08-23 classification rather than a blank or a guess');
+    check(book.inactiveFolders({ [declared.key]: declared.default }).length > 0,
       'and the reader agrees with the declaration');
   } catch (e) {
     failures += 1;

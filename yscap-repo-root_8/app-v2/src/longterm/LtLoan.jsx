@@ -30,6 +30,10 @@ import { ltApi } from './api.js';
 const INK = '#141B22';
 const MUTED = '#4B585C';
 const GOLD = '#AE8746';
+// PILOT's own teal, for the one step in the ladder that is OURS rather than
+// Encompass's. A different colour, not just a different word: the purchase is a
+// different KIND of fact from a workflow step and should not look like one.
+const TEAL = '#2F7F86';
 
 function Rail({ rail }) {
   if (!rail) return null;
@@ -93,8 +97,16 @@ function Stepper({ stepper, clock }) {
           <span key={s.name} style={{
             display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 1,
             fontSize: 12, padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap',
-            border: `1px solid ${s.current ? GOLD : 'rgba(20,27,34,.14)'}`,
-            background: s.current ? 'rgba(174,135,70,.14)' : s.reached ? '#F4F1EA' : 'transparent',
+            // A PILOT step is drawn as OURS: teal when it is reached, and DASHED while
+            // Encompass has not said either way, so "we have not been told" never looks
+            // like a plain "not yet" — they are different answers and the second one is
+            // the one somebody would act on.
+            border: s.pilot
+              ? `1px ${s.unknown ? 'dashed' : 'solid'} ${s.reached ? TEAL : 'rgba(20,27,34,.18)'}`
+              : `1px solid ${s.current ? GOLD : 'rgba(20,27,34,.14)'}`,
+            background: s.pilot
+              ? (s.reached ? 'rgba(47,127,134,.12)' : 'transparent')
+              : (s.current ? 'rgba(174,135,70,.14)' : s.reached ? '#F4F1EA' : 'transparent'),
             color: s.reached || s.current ? INK : MUTED,
             fontWeight: s.current ? 700 : 500,
           }}>
@@ -128,6 +140,16 @@ function Stepper({ stepper, clock }) {
           hold — so no step is marked as reached. Nothing is wrong with the loan; our list needs it added.
         </div>
       )}
+      {/* OUR OWN steps say, in words, where their answer came from. The sentence is
+          written on the server for the same reason the clock's is: "bought on the 31st",
+          "not bought — Encompass has it as Shipped" and "Encompass has not said" are three
+          different pieces of news, and deciding which one to show is not a thing a screen
+          should be doing twice. */}
+      {stepper.steps.filter((s) => s.pilot && s.note).map((s) => (
+        <div key={`note-${s.name}`} style={{ marginTop: 8, fontSize: 12, color: s.reached ? TEAL : MUTED }}>
+          {s.note}
+        </div>
+      ))}
     </div>
   );
 }
@@ -293,8 +315,15 @@ function Contacts({ contacts, canReassign = false, staff = [], onReassign }) {
             <div style={{ color: INK, fontWeight: 600 }}>{plain(c.label || c.role)}</div>
             {/* `encompassName`, which is what the server actually sends. This read
                 `c.name` — a key nothing ever set — so the person Encompass names has
-                been rendering as a dash on every file. */}
-            <div style={{ color: MUTED, fontSize: 12 }}>{plain(c.encompassName)}</div>
+                been rendering as a dash on every file.
+
+                A role that is OURS has no Encompass name and never will (Encompass's
+                workflow has nobody for file setup), so a dash there would read as a
+                broken sync rather than as a role Encompass does not have. It says so
+                instead. */}
+            <div style={{ color: MUTED, fontSize: 12 }}>
+              {c.ours ? 'Assigned in PILOT — Encompass has no role for this' : plain(c.encompassName)}
+            </div>
           </div>
           <div style={{ textAlign: 'right', fontSize: 12, color: MUTED, minWidth: 0 }}>
             {c.overridden ? (

@@ -254,6 +254,61 @@ const SETTINGS = [
       + 'MS.STATUS (and loan.milestoneCurrentName) are 100% filled.',
     notWired: NW_PINNED_FIELD },
 
+  // ── The PURCHASED step: OURS, not Encompass's (owner-directed 2026-08-23) ──
+  //
+  // The owner's own workflow carries a step Encompass's milestone list does not:
+  // *"the purchase is a new milestone, and yes, you can build this up."* Encompass
+  // has nineteen milestones and none of them is "the investor bought this loan" —
+  // its late steps (Investor Delivery → Purchasing Conditions → Final Docs) are
+  // about the WORK around the sale, not the sale itself.
+  //
+  // So this one step is PILOT's, and it is the only step in the ladder whose
+  // "reached" is a FACT rather than a position: every other step is reached because
+  // the loan is standing past it, and this one is reached because Encompass's own
+  // sell-side investor status says the loan was purchased. A file sitting at Final
+  // Docs has necessarily passed Purchasing Conditions; it has NOT necessarily been
+  // bought, and marking it so would be a confident wrong answer on the one fact
+  // this step exists to state.
+  { key: 'milestones.purchasedName', group: 'Workflow', label: 'The "purchased" step',
+    type: 'string', default: 'Purchased',
+    description: 'What to call the step that means the investor has bought this loan. '
+      + 'It is OURS — Encompass has no milestone for it.',
+    evidence: 'The tenant\'s 19 Encompass milestones carry no purchase step; the owner\'s own '
+      + 'workflow does (owner-directed 2026-08-23).' },
+  { key: 'milestones.purchasedAfter', group: 'Workflow', label: 'It comes after',
+    type: 'string', default: 'Purchasing Conditions',
+    description: 'Which Encompass milestone the purchased step follows in the ladder. A name this '
+      + 'tenant does not have puts the step at the END rather than dropping it.',
+    evidence: 'Purchasing Conditions (16 of 19) is where the buyer\'s post-purchase conditions are '
+      + 'worked, so the purchase itself lands on its heels.' },
+  { key: 'milestones.purchasedStatusFieldId', group: 'Workflow', label: 'Investor status field',
+    type: 'fieldId', default: '2031',
+    description: 'The Encompass field that says what the investor has done with this loan.',
+    evidence: 'Field 2031, loan.rateLock.sellSideInvestorStatus — a READ-ONLY Encompass dropdown '
+      + '(Unassigned / Assigned - Bulk / Assigned - Flow / Shipped / Purchased / Rejected), filled '
+      + 'on 100% of loans at Investor Delivery, Purchasing Conditions and Final Docs, and reading '
+      + '"Purchased" on 187 of the 188 loans that carry it (772-loan census, 2026-08-14).' },
+  { key: 'milestones.purchasedStatusValues', group: 'Workflow', label: 'Values that mean PURCHASED',
+    type: 'list', default: ['Purchased'],
+    description: 'Which values of that field mean the investor has bought the loan. Anything else '
+      + 'the field says means it has NOT.',
+    evidence: 'Of the six values Encompass allows, exactly one — "Purchased" — is the sale. '
+      + '"Shipped" and the two "Assigned" values are the loan on its way there.' },
+  { key: 'milestones.purchaseAdviceDateFieldId', group: 'Workflow', label: 'Purchase advice date field',
+    type: 'fieldId', default: '2370',
+    description: 'Where the DATE the investor bought the loan is recorded. Without it the step '
+      + 'still reads as reached and simply says the date is not known.',
+    evidence: 'Field 2370, "Purchase Advice Date" — filled on 175 of the 490 long-term loans, the '
+      + 'same population as the investor status (176), and 100% at the three post-delivery '
+      + 'milestones.' },
+  { key: 'milestones.purchasedConsumerStatus', group: 'Workflow', label: 'What the borrower sees',
+    type: 'string', default: 'Funded',
+    description: 'The borrower-facing wording for the purchased step. It deliberately matches the '
+      + 'other post-closing steps: who bought the loan is not the borrower\'s business.',
+    evidence: 'All five post-closing milestones (Investor Delivery through Completion) carry the '
+      + 'consumer wording "Funded" in Encompass\'s own catalog (db/547). The investor-name rule '
+      + '(CLAUDE.md rule 10) forbids any client-facing hint of who the buyer is.' },
+
   // ── Conditions ────────────────────────────────────────────────────────────
   { key: 'conditions.model', group: 'Conditions', label: 'Condition model',
     type: 'enum', default: 'enhanced', options: ['enhanced', 'legacy'],
@@ -445,9 +500,28 @@ const SETTINGS = [
       + 'Officer; the role the tenant assigns does not. "Loan Opener", "Shipper" and "Insurer" '
       + 'are standard Encompass roles that do not exist here at all — which is why this is a '
       + 'setting and why contact role is text rather than an enum.' },
+  { key: 'contacts.pilotRoles', group: 'Contacts', label: 'Roles WE assign (Encompass has nobody for them)',
+    type: 'list', default: ['file_setup'],
+    description: 'Loan-team roles PILOT owns. Encompass never names them, so nothing read from '
+      + 'Encompass may create, refresh or remove one — they are assigned here and stay here.',
+    evidence: 'Owner-directed 2026-08-23: *"the workflow assignment on Encompass doesn\'t have '
+      + 'anyone for file setup. It has processors, it has closers, it has funders, and it has '
+      + 'officers. This one should be the starter of the file … the loan officer submits it to '
+      + 'the processor, it goes to her workflow to set it up, and she is setting up the file."* '
+      + 'Verified against the live tenant: its role list carries Loan Coordinator, Loan Processor, '
+      + 'Underwriter, Closer, Funder and Post Closer, and no setup role at all.' },
+  { key: 'contacts.fileSetupDefault', group: 'Contacts', label: 'Who sets a file up by default',
+    type: 'string', default: 'Chaya Gruber',
+    description: 'The person every long-term file starts assigned to for setup. An email address '
+      + 'or a full name; whoever it names must be an active member of staff. It only ever FILLS an '
+      + 'empty slot — it can never move a file somebody has already assigned.',
+    evidence: 'Owner-directed 2026-08-23. A name (or an email) rather than an account id on '
+      + 'purpose: an id is meaningless in any database but the one it came from, so a settings '
+      + 'value carrying one would silently assign nobody the day this is set up anywhere else.' },
   { key: 'contacts.roleLabels', group: 'Contacts', label: 'What we call each role on screen',
     type: 'map',
     default: {
+      file_setup: 'File setup',
       loan_officer: 'Loan officer',
       processor: 'Processor',
       underwriter: 'Underwriter',
@@ -473,8 +547,12 @@ const SETTINGS = [
       'processor', 'conditions', 'lock_status', 'expected_closing',
     ],
     description: 'Which columns the long-term pipeline shows, in order.' },
-  { key: 'pipeline.inactiveFolders', group: 'Pipeline', label: 'Loan folders that mean the deal is over',
-    type: 'list', default: [],
+  { key: 'pipeline.inactiveFolders', group: 'Pipeline', label: 'Loan folders whose files are CLOSED (finished deals, funded included)',
+    type: 'list',
+    // ANSWERED BY THE OWNER 2026-08-23 (§11 q13). Until this date the default was []
+    // and nothing was hidden from anybody, because which folder means "over" is a
+    // business rule nobody here may guess. It is no longer a guess.
+    default: ['Corr Post Purchase', 'Broker CLOSED RECONCILED', 'Broker CLOSED'],
     // The screen offers the folder names the book ACTUALLY uses, with a count each.
     // See `src/longterm/observed.js` for why that is now possible.
     suggestFrom: 'loanFolders',
@@ -490,6 +568,45 @@ const SETTINGS = [
       + 'nobody here may guess — treating a folder called "Archive" as finished on a hunch would '
       + 'silently empty part of an officer\'s pipeline. So the names are offered and a human picks; '
       + 'until somebody picks, nothing is hidden from anybody.' },
+
+  // ── The withdrawn book (owner-directed 2026-08-23) ────────────────────────
+  // *"The canceled and withdrawn files should be in another view … It shouldn't be
+  // mixing them up, just keeping status separately."*
+  //
+  // A deal that COMPLETED and a deal that DIED are different facts. Folding both into
+  // one "not live" bucket is the mixing the owner ruled out, and it is not cosmetic:
+  // a funded loan is revenue and a withdrawn one is a lost opportunity, and a desk
+  // counting "closed files" wants the first without the second.
+  { key: 'pipeline.withdrawnFolders', group: 'Pipeline', label: 'Loan folders whose files were WITHDRAWN or CANCELLED',
+    type: 'list',
+    default: ['Withdrawn files'],
+    suggestFrom: 'loanFolders',
+    description: 'Encompass loan folders holding deals that died — withdrawn, cancelled, declined. '
+      + 'These get their own view, separate from both the active pipeline and the closed book, '
+      + 'so a finished deal is never counted alongside a lost one. A folder on BOTH this list '
+      + 'and the closed list is treated as withdrawn, because that is the more specific claim.',
+    evidence: 'Owner-directed 2026-08-23, answering §11 q13: "Withdrawn files - this is with '
+      + 'withdrawn and canceled files." 35 of the 772 files in the 2026-08-14 census sit there.' },
+
+  // ── Folders that are not a book at all (owner-directed 2026-08-23) ────────
+  // "Training - this is the training folder that you can ignore", "Prospect - this is
+  // a prospect folder that you can ignore", "Pre-Approval - which you can also ignore
+  // for now."
+  //
+  // HIDDEN IS NOT THE SAME AS FINISHED, which is why this is a third list and not more
+  // entries on the closed one. A training file is not a deal in any state; putting it
+  // in the closed book would inflate a number somebody reports.
+  { key: 'pipeline.excludedFolders', group: 'Pipeline', label: 'Loan folders to hide entirely (not a real deal)',
+    type: 'list',
+    default: ['Training', 'Prospect', 'Pre-Approval'],
+    suggestFrom: 'loanFolders',
+    description: 'Encompass loan folders that are not real deals at all — training files, '
+      + 'prospects, pre-approvals. Hidden from every pipeline view and from the borrower, but '
+      + 'STILL COUNTED in the census, so the totals continue to reconcile against Encompass. '
+      + 'This list loses to the other two: a folder named here AND on one of them still shows, '
+      + 'because a configuration mistake must not make a file vanish from every screen.',
+    evidence: 'Owner-directed 2026-08-23: Training (9 files), Prospect (7) and Pre-Approval (1) '
+      + 'are each "you can ignore" in the owner\'s own words. 17 of 772 in the 2026-08-14 census.' },
 
   // ── The product switch (owner-directed 2026-08-14) ────────────────────────
   // "everybody should have a switch on his login to switch to the long-term side".

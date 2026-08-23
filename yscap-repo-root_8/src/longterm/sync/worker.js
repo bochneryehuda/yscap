@@ -31,6 +31,7 @@
 const loans = require('./loans');
 const conditions = require('../conditions/sync');
 const milestoneCatalog = require('./milestone-catalog');
+const contacts = require('../people/contacts');
 
 /** Minutes between passes. The tenant's own pacing makes a tighter loop pointless. */
 const POLL_MIN = (() => {
@@ -44,7 +45,87 @@ const FIRST_RUN_MS = (() => {
   return (Number.isFinite(raw) && raw >= 0 ? Math.trunc(raw) : 90) * 1000;
 })();
 
-const enabled = () => /^(1|true|yes|on)$/i.test(String(process.env.LT_SYNC_ENABLED || '').trim());
+/**
+ * ON BY DEFAULT since 2026-08-23, owner-directed: *"Set up the pullback and set
+ * everything on, and she will automatically pull old files and also future files."*
+ *
+ * It shipped OFF because a worker nobody asked for should cost nothing. The owner has
+ * now asked for it, so the default flips and `LT_SYNC_ENABLED=0` is the way to stop
+ * it. Turning it on is deliberately NOT the same as making it do something: with no
+ * Encompass credentials `loans.syncOnce` returns "Encompass is not connected yet" and
+ * the pass costs one refused call, so a deployment that has never configured
+ * long-term Encompass is unaffected by this change.
+ */
+const enabled = () => {
+  const raw = String(process.env.LT_SYNC_ENABLED == null ? '' : process.env.LT_SYNC_ENABLED).trim();
+  if (!raw) return true;
+  return !/^(0|false|no|off)$/i.test(raw);
+};
+
+/**
+ * THE BACKFILL. How long one tick may keep pulling history, in seconds.
+ *
+ * `loans.syncOnce` reads at most its own budget (25) per call and reports how many
+ * are still due, so a book of 772 files needs about 31 calls. At one call per
+ * 20-minute tick that is ten hours before an officer can see their own closed
+ * files — which is not "pull everything backwards" in any useful sense.
+ *
+ * So a tick keeps calling while there is more to do, until either the book is caught
+ * up or this budget is spent. It is a WALL-CLOCK bound rather than a pass count
+ * because what has to be protected is the gap before the next tick, and a pass takes
+ * as long as the tenant's pacing makes it take. Default 10 minutes, comfortably
+ * inside the 20-minute poll so a drain can never still be running when the next tick
+ * lands (and `running` would skip it anyway).
+ *
+ * ONCE THE HISTORY IS IN, THIS COSTS NOTHING. `needsRead` is answered from the
+ * database — a loan is due only if it has never been read or Encompass has touched
+ * it since — so a caught-up book drains in one pass that finds nothing and stops.
+ */
+const DRAIN_SEC = (() => {
+  const raw = Number(process.env.LT_SYNC_DRAIN_SEC);
+  return Number.isFinite(raw) && raw >= 0 ? Math.trunc(raw) : 600;
+})();
+
+/**
+ * A hard ceiling on passes per tick, so a bug that always reports "more to do" burns
+ * a bounded number of calls rather than every call the tenant has. It is the backstop
+ * and not the control: the wall clock above is what normally ends a drain.
+ */
+const MAX_PASSES = (() => {
+  const raw = Number(process.env.LT_SYNC_MAX_PASSES);
+  return Number.isFinite(raw) && raw >= 1 ? Math.trunc(raw) : 60;
+})();
+
+/**
+ * Drain the loan backlog: pass after pass until the book is caught up or the budget
+ * is spent.
+ *
+ * Returns the LAST pass's shape with the totals accumulated across the drain, so a
+ * caller (and the log line) sees one answer rather than a list. `passes` and
+ * `caughtUp` are what say whether the history is in yet.
+ */
+async function drainLoans(now) {
+  const deadline = now() + DRAIN_SEC * 1000;
+  let last = null;
+  let passes = 0;
+  let read = 0;
+  let failed = 0;
+  for (;;) {
+    /* eslint-disable no-await-in-loop */ // deliberately serial: see the pacing note above
+    last = await loans.syncOnce({});
+    passes += 1;
+    if (!last || last.ok === false) break;          // a refusal ends the drain, not the tick
+    read += last.read || 0;
+    failed += last.failed || 0;
+    // Caught up is the ordinary exit, and it is the one that matters: it is what
+    // turns this back into a cheap incremental sync once the history is in.
+    if (!last.remaining) break;
+    if (passes >= MAX_PASSES) break;
+    if (now() >= deadline) break;
+  }
+  if (!last || last.ok === false) return { ...(last || {}), passes };
+  return { ...last, read, failed, passes, caughtUp: !last.remaining };
+}
 
 // A pass never overlaps itself. A tick that lands while the previous one is still
 // reading would double this worker's share of a shared API budget, and on a slow
@@ -65,10 +146,10 @@ async function tickOnce() {
   if (running) return { ok: false, reason: 'a pass is already running' };
   running = true;
   const started_at = Date.now();
-  const out = { loans: null, conditions: null, milestoneCatalog: null };
+  const out = { loans: null, conditions: null, milestoneCatalog: null, pilotRoles: null };
   try {
     try {
-      out.loans = await loans.syncOnce({});
+      out.loans = await drainLoans(Date.now);
     } catch (e) {
       out.loans = { ok: false, reason: (e && e.message) || String(e) };
     }
@@ -86,6 +167,17 @@ async function tickOnce() {
     } catch (e) {
       out.milestoneCatalog = { ok: false, reason: (e && e.message) || String(e) };
     }
+    // THE ROLES ENCOMPASS HAS NOBODY FOR — today, who sets a file up. It cannot ride
+    // the loan read, because a loan is only re-read when Encompass's own stamp moves
+    // (`loans.needsRead`), so a caught-up book would never gain the assignment. It
+    // costs NO Encompass call at all — it is one statement per role against our own
+    // database, fill-only, and a caught-up book inserts nothing. Independent of the
+    // three passes above, like they are of each other.
+    try {
+      out.pilotRoles = await contacts.backfillPilotRoles({});
+    } catch (e) {
+      out.pilotRoles = { ok: false, reason: (e && e.message) || String(e) };
+    }
   } finally {
     running = false;
   }
@@ -96,8 +188,21 @@ async function tickOnce() {
   const c = out.conditions || {};
   console.log('[lt-sync] pass in %ds — loans: %s; conditions: %s',
     Math.round((Date.now() - started_at) / 1000),
-    l.ok === false ? `failed (${l.reason})` : `${l.read || 0} read of ${l.discovered || 0}${l.failed ? `, ${l.failed} failed` : ''}${l.more ? ', more to go' : ''}`,
+    l.ok === false ? `failed (${l.reason})`
+      : `${l.read || 0} read of ${l.discovered || 0} in ${l.passes || 1} pass(es)`
+        + `${l.failed ? `, ${l.failed} failed` : ''}`
+        + `${l.caughtUp === false ? `, ${l.remaining} still to backfill` : ''}`,
     c.ok === false ? `skipped (${c.reason})` : `${c.read || 0} read of ${c.due || 0}${c.failed ? `, ${c.failed} failed` : ''}${c.more ? ', more to go' : ''}`);
+
+  // Said separately, and ONLY when it did something or could not. A pass that filled
+  // nothing on a caught-up book is the normal case and needs no line; a company whose
+  // setup default names nobody must be able to find that out from the log.
+  const r = out.pilotRoles || {};
+  if (r.filled || r.reason) {
+    console.log('[lt-sync] file setup: %s%s',
+      r.filled ? `${r.filled} file(s) assigned${r.more ? ', more to go' : ''}` : 'nothing assigned',
+      r.reason ? ` — ${r.reason}` : '');
+  }
 
   return out;
 }
@@ -109,16 +214,28 @@ async function tickOnce() {
 function start() {
   if (started) return false;
   if (!enabled()) {
-    console.log('[lt-sync] disabled (set LT_SYNC_ENABLED=1 to turn it on)');
+    console.log('[lt-sync] disabled (LT_SYNC_ENABLED is set to off — unset it to turn the sync back on)');
     return false;
   }
   started = true;
   console.log('[lt-sync] on — a pass every %d min, first in %ds', POLL_MIN, Math.round(FIRST_RUN_MS / 1000));
 
   const safeTick = () => { tickOnce().catch((e) => console.error('[lt-sync] pass failed:', (e && e.message) || e)); };
-  setTimeout(safeTick, FIRST_RUN_MS);
-  setInterval(safeTick, POLL_MIN * 60 * 1000);
+
+  // UNREF'D, AND THAT BECAME LOAD-BEARING THE DAY THIS WENT ON BY DEFAULT. A pending
+  // timer keeps the Node event loop alive, so once `start()` actually schedules
+  // something, ANY process that merely requires the long-term module stops being able
+  // to exit — every `scripts/test-lt-*.js` hung, and the whole chain went from 32
+  // seconds to a timeout. Found by running the suite, not by reading the diff.
+  //
+  // `unref` says "do not stay alive for me". A real server is held open by its HTTP
+  // listener, so the passes still fire exactly as before; a test or a CLI that loads
+  // the module and finishes can now finish.
+  const first = setTimeout(safeTick, FIRST_RUN_MS);
+  const every = setInterval(safeTick, POLL_MIN * 60 * 1000);
+  if (typeof first.unref === 'function') first.unref();
+  if (typeof every.unref === 'function') every.unref();
   return true;
 }
 
-module.exports = { start, tickOnce, _internals: { enabled, POLL_MIN, FIRST_RUN_MS } };
+module.exports = { start, tickOnce, _internals: { enabled, drainLoans, POLL_MIN, FIRST_RUN_MS, DRAIN_SEC, MAX_PASSES } };
