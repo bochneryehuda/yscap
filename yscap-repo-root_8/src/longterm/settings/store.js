@@ -63,7 +63,10 @@ function defaults() {
  * The effective settings for a scope: the declared defaults with any saved
  * overrides laid over them.
  *
- * Returns `{settings, degraded, source}`. `degraded` is true when the stored
+ * Returns `{settings, degraded, stored, source}`. `stored` is the set of keys
+ * this scope holds a row of its own for — which is a different question from
+ * "does the value differ from the default", and the one a caller asking "did
+ * somebody choose this" needs. `degraded` is true when the stored
  * overrides could not be read — the caller still gets a complete, usable settings
  * object, and anything that wants to warn a human can see that it is not the full
  * picture.
@@ -72,10 +75,18 @@ async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
   const key = String(scope || DEFAULT_SCOPE);
   const hit = cache.get(key);
   if (!fresh && hit && Date.now() - hit.at < TTL_MS) {
-    return { settings: hit.settings, degraded: hit.degraded, source: 'cache' };
+    return { settings: hit.settings, degraded: hit.degraded, stored: hit.stored, source: 'cache' };
   }
 
   const base = defaults();
+  // WHICH KEYS CAME FROM A ROW, as distinct from which values differ from ours.
+  // Merging rows over the defaults loses that, and it is not the same question:
+  // a value somebody DELIBERATELY set to the figure we happen to pre-fill is
+  // stored, and is a decision. `isOverridden` answers "is this different from
+  // ours" — right for a settings screen, and the wrong question to ask about a
+  // choice. See `routes/me.js`, where asking the wrong one silently moved people
+  // off the side they had chosen.
+  const stored = new Set();
   let degraded = false;
 
   try {
@@ -88,15 +99,18 @@ async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
       // that is retired in code must not keep applying from a stale row.
       if (!isKnown(r.key)) continue;
       base[r.key] = r.value;
+      stored.add(r.key);
     }
   } catch (_e) {
     // Fail to OUR behaviour, loudly enough to be visible and quietly enough not
-    // to break the request.
+    // to break the request. `stored` stays EMPTY on a failed read — claiming a
+    // person chose something because the database was briefly unreachable is the
+    // one answer worse than falling back to the default.
     degraded = true;
   }
 
-  cache.set(key, { at: Date.now(), settings: base, degraded });
-  return { settings: base, degraded, source: 'db' };
+  cache.set(key, { at: Date.now(), settings: base, degraded, stored });
+  return { settings: base, degraded, stored, source: 'db' };
 }
 
 /** One effective value. */

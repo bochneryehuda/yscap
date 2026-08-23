@@ -25,29 +25,28 @@
  * different loans and one of them is a decline; the same is true of a rent, a
  * balance and a value. Nothing here coalesces a number into 0.
  *
- * THE INVESTOR IS ABSENT BY CONSTRUCTION. `lt_loan_investors` is not read by this
- * module and there is no branch that could add it — the same shape the summary rail
- * uses. `audience.js` remains the one definition for anything that formats free text.
+ * THE INVESTOR IS READ HERE, AND THIS MODULE IS STAFF-ONLY. `lt_loan_investors`
+ * names who bought the loan, and rule 10 says that never reaches a borrower or a
+ * TPO — so what makes it safe is that nothing a client can reach loads this module:
+ * `loadFile` builds the STAFF file screen, where everything returned is internal.
+ * The borrower's own screen (`routes/my-loans.js`) is built FOR the borrower rather
+ * than filtered from this payload, which is the first of the two defences that rule
+ * names. `audience.js` remains the one definition for anything that formats free
+ * text, and `test-lt-investor-block.js` fails the build if either half slips.
  *
  * SEPARATION: reads only `lt_*` tables.
  */
+
+const unsourced = require('./application/unsourced');
+const dscrVerdict = require('./dscr-verdict');
+const { num, text } = require('./num');
 
 const lazy = {
   get db() { return require('./db'); },
 };
 
 /** A number, or null. Never 0 for "we do not know". */
-const num = (v) => {
-  if (v === null || v === undefined || v === '') return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-};
 
-const text = (v) => {
-  if (v === null || v === undefined) return null;
-  const s = String(v).trim();
-  return s === '' ? null : s;
-};
 
 /** A date column as the calendar day it is, never an instant in somebody's zone. */
 const day = (v) => (v ? String(v).slice(0, 10) : null);
@@ -160,7 +159,7 @@ function sumOrNull(values) {
  * Never throws for an ordinary failure — a section that cannot be read comes back
  * `null` with the reason, and the rest of the file still opens.
  */
-async function loadFile(loanId, loan = null) {
+async function loadFile(loanId, loan = null, opts = {}) {
   const db = lazy.db;
   const id = String(loanId);
 
@@ -174,7 +173,7 @@ async function loadFile(loanId, loan = null) {
   };
 
   const [parties, pairs, property, residences, employments, otherIncomes,
-    assets, liabilities, reo, declarations] = await Promise.all([
+    assets, liabilities, reo, declarations, investor] = await Promise.all([
     q(`SELECT p.id, p.pair_id, p.role, p.party_type, p.borrower_id,
               p.first_name, p.middle_name, p.last_name, p.name_suffix,
               p.date_of_birth, p.ssn_last4, p.citizenship, p.marital_status, p.dependent_count,
@@ -217,6 +216,7 @@ async function loadFile(loanId, loan = null) {
          JOIN lt_parties p ON p.id = d.party_id
          JOIN lt_borrower_pairs bp ON bp.id = p.pair_id
         WHERE bp.loan_id = $1::uuid`, [id]),
+    q('SELECT * FROM lt_loan_investors WHERE loan_id = $1::uuid', [id]),
   ]);
 
   const byParty = (rows, key = 'party_id') => {
@@ -255,6 +255,8 @@ async function loadFile(loanId, loan = null) {
    * "Encompass holds nothing for this borrower" and "we could not ask" look identical on
    * a screen and mean opposite things to whoever has to chase it.
    */
+  const inv = investor.rows[0] || {};
+
   const coverage = (result, count) => ({
     state: result.error ? 'unreadable' : (count > 0 ? 'read' : 'empty'),
     count: result.error ? null : count,
@@ -299,6 +301,10 @@ async function loadFile(loanId, loan = null) {
 
     property: {
       error: property.error,
+      // What PILOT knowingly does not hold, so the screen can SAY so rather than
+      // draw a dash — a dash beside "In a flood zone" reads as "No", and "No" is an
+      // answer somebody prices a loan on.
+      notSourced: unsourced.notSourcedFor('lt_properties'),
       recorded: !!prop,
       address: prop
         ? [text(prop.street), text(prop.city), text(prop.state), text(prop.zip)].filter(Boolean).join(', ') || null
@@ -338,6 +344,13 @@ async function loadFile(loanId, loan = null) {
       // (db/549) is exactly `('fixed','adjustable')`, so the column can NEVER hold
       // 'arm' — gating on that word returns null on every adjustable loan in the
       // book, silently and forever, which is why this reads the enum verbatim.
+      //
+      // AND NOTHING WRITES ANY OF THE EIGHT. That is recorded rather than left to
+      // be discovered — `unsourced` carries the measurement (the two fields that
+      // look like ARM terms are the note rate under another name), and the screen
+      // says it ONCE for the block instead of drawing eight dashes, each of which
+      // would read as a term this loan does not have. `notHeld` is what makes that
+      // sayable, and it gives way field by field the day a writer lands.
       arm: String(l.amortization_type || '').toLowerCase() === 'adjustable' ? {
         indexName: text(l.arm_index_name),
         marginPct: num(l.arm_margin_pct),
@@ -347,13 +360,27 @@ async function loadFile(loanId, loan = null) {
         periodicCapPct: num(l.arm_periodic_cap_pct),
         lifetimeCapPct: num(l.arm_lifetime_cap_pct),
         floorPct: num(l.arm_floor_pct),
+        notSourced: unsourced.notSourcedFor('lt_loans'),
+        notHeld: !(l.arm_index_name != null || l.arm_margin_pct != null
+          || l.arm_first_adjustment_months != null || l.arm_adjustment_frequency_months != null
+          || l.arm_initial_cap_pct != null || l.arm_periodic_cap_pct != null
+          || l.arm_lifetime_cap_pct != null || l.arm_floor_pct != null),
       } : null,
     },
 
     income: {
+      // The same list as the property section, because two of the three figures on
+      // this one live on `lt_properties` and one of them is knowingly empty.
+      notSourced: unsourced.notSourcedFor('lt_properties'),
       // The DSCR as Encompass computed it, beside the two figures it is built from,
       // so an underwriter can see what the ratio rests on rather than a bare number.
       dscr: num(l.dscr_ratio),
+      // …and which side of THIS COMPANY'S OWN thresholds it fell on. The rule is
+      // one pure function and the thresholds travel with the answer, so a screen
+      // can say what it compared against instead of pronouncing on the loan — and
+      // a buyer who works to a different figure changes a setting, not code. Null
+      // on a loan with no ratio: a mark nobody measured is worse than no mark.
+      dscrVerdict: dscrVerdict.dscrVerdict(num(l.dscr_ratio), opts.settings),
       grossMonthlyRent: prop ? num(prop.gross_monthly_rent) : null,
       actualMonthlyRent: prop ? num(prop.actual_monthly_rent) : null,
       housingExpenseTotal: num(l.housing_expense_total),
@@ -417,6 +444,28 @@ async function loadFile(loanId, loan = null) {
         mortgageBalance: sumOrNull(reo.rows.map((r) => r.mortgage_balance)),
         netMonthlyRentalIncome: sumOrNull(reo.rows.map((r) => r.net_monthly_rental_income)),
       },
+    },
+
+    // WHO BOUGHT THE LOAN — STAFF ONLY, and that is a hard rule rather than a
+    // preference (CLAUDE.md rule 10): the investor's name, their own loan number
+    // and the funding channel never reach a borrower or a TPO, and the channel
+    // counts because it names HOW a loan is funded, which implies WHO. This file
+    // screen is behind the staff mount and has no client audience — everything it
+    // returns is internal — so the guard here is that nothing may lift this block
+    // onto a client payload without going through `audience.js`, the one
+    // definition. `recorded` is what makes the difference between "not sold yet"
+    // and "sold, and we cannot read it" sayable on the screen.
+    investor: {
+      error: investor.error,
+      recorded: investor.rows.length > 0,
+      shorthandName: text(inv.shorthand_name),
+      accurateName: text(inv.accurate_name),
+      canonicalKey: text(inv.canonical_key),
+      // The only thing that lets us and the investor talk about the same loan.
+      investorLoanNumber: text(inv.investor_loan_number),
+      investorEmail: text(inv.investor_email),
+      fundingChannel: text(inv.funding_channel),
+      readAt: day(inv.updated_at),
     },
 
     declarations: {

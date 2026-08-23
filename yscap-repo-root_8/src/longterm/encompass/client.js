@@ -62,6 +62,36 @@ function _isFieldReaderPath(url) {
 // Configured = the app credentials + instance are present. The user login is only
 // required for the password grant.
 function configured() { return !!(cfg.clientId && cfg.clientSecret && cfg.instanceId); }
+
+/**
+ * STRIP ANY SECRET THAT MIGHT SLIP INTO A STRING LEAVING THIS MODULE.
+ *
+ * The token endpoint's own response body is put into a thrown message on every
+ * failed mint, and `ping()` turns that message into `reason` — which
+ * `routes/encompass-knowledge.js` returns in an HTTP response and which every
+ * caller logs. So whatever the identity server chose to say about our request
+ * travels, verbatim, onto a screen and into the logs.
+ *
+ * Most OAuth servers answer a bad grant with `{"error":"invalid_client"}` and
+ * nothing more. "Most" is not a property you can rely on for a credential, the
+ * request we sent it contains the client secret and the user password, and the
+ * Lender Price client in this repo has scrubbed for exactly this reason since it
+ * shipped. This is the same guard, on the side that had none.
+ *
+ * The literal secrets are removed first — that is the part that matters and it
+ * cannot false-negative — and the token-shaped patterns after, for the values we
+ * would not recognise by comparison.
+ */
+function scrub(s) {
+  let out = String(s == null ? '' : s);
+  if (cfg.clientSecret) out = out.split(cfg.clientSecret).join('<redacted>');
+  if (cfg.password) out = out.split(cfg.password).join('<redacted>');
+  out = out.replace(/(access_token"?\s*[:=]\s*"?)[A-Za-z0-9._\-]+/gi, '$1<redacted>');
+  out = out.replace(/(refresh_token"?\s*[:=]\s*"?)[A-Za-z0-9._\-]+/gi, '$1<redacted>');
+  out = out.replace(/(Bearer )[A-Za-z0-9._\-]+/g, '$1<redacted>');
+  out = out.replace(/((?:client_secret|password)=)[^&\s"]+/gi, '$1<redacted>');
+  return out;
+}
 function ensure() { if (!configured()) throw new Error('LT Encompass not configured — add LT_ENCOMPASS_CLIENT_ID / _SECRET / _INSTANCE_ID (or the shared ENCOMPASS_* vars)'); }
 
 const withTimeout = (ms) => { const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms); return { signal: ac.signal, done: () => clearTimeout(t) }; };
@@ -73,11 +103,33 @@ const withTimeout = (ms) => { const ac = new AbortController(); const t = setTim
 // ever drives heavy live Encompass traffic against the SAME tenant as RTL, revisit
 // this (a shared limiter would need an owner-authorized crossing).
 const MIN_GAP_MS = parseInt(process.env.LT_ENCOMPASS_MIN_GAP_MS || '350', 10);
+
+/**
+ * ONE REQUEST AT A TIME, with a gap between them.
+ *
+ * This used to chain only the WAIT — each caller queued behind the previous
+ * caller's gap and then fetched — which spaces request STARTS but does not
+ * serialise the requests themselves. With a 350ms gap and a fast tenant nothing
+ * overlaps, so it read as serial and was described as serial; but the timeouts
+ * in this module are 12 to 30 SECONDS, and any request slower than the gap runs
+ * alongside the next one. A burst against a slow tenant is exactly when that
+ * matters, and exactly when the ceiling does: 30 CONCURRENT, shared with every
+ * other integration on this instance, so Long-Term overlapping is not merely
+ * Long-Term's problem — it is what starves RTL.
+ *
+ * So the chain now holds until the request itself SETTLES. It costs nothing
+ * today (every Long-Term caller is already a sequential sweep) and it makes the
+ * guarantee true rather than incidental. `run` is handed the work instead of the
+ * caller awaiting a gap and then fetching on its own, because a promise the
+ * caller resolves separately is a chain anybody can step out of by accident.
+ */
 let _pace = Promise.resolve();
-function paced() {
-  const wait = _pace.then(() => new Promise((r) => setTimeout(r, MIN_GAP_MS)));
-  _pace = wait.catch(() => {});
-  return wait;
+function paced(run) {
+  const turn = _pace.then(() => new Promise((r) => setTimeout(r, MIN_GAP_MS))).then(run);
+  // The QUEUE must survive a failed request: swallow here only so the next caller
+  // still gets its turn — the rejection itself is handed to the caller untouched.
+  _pace = turn.then(() => undefined, () => undefined);
+  return turn;
 }
 
 // HARD READ-ONLY GATE. Every fetch built in this module funnels through here,
@@ -94,8 +146,7 @@ async function _fetchGuarded(url, init) {
   if (allowedPost && method !== 'POST') {
     throw new Error(`LT Encompass read-shaped endpoint requires POST (got ${method}).`);
   }
-  await paced();
-  return fetch(url, init);
+  return paced(() => fetch(url, init));
 }
 
 // A GET path against /encompass/* must not reach into the OAuth namespace.
@@ -110,8 +161,34 @@ function assertReadOnlyPath(path) {
 }
 
 let tokenCache = { token: null, exp: 0 };
+
+/**
+ * SINGLE-FLIGHT. The cache is only consulted at the TOP of this function, so a
+ * burst of callers that all arrive before the first token comes back each see an
+ * empty cache and each mint their own: measured at five concurrent reads issuing
+ * FIVE token requests plus the five reads — ten calls where two would do. The
+ * pacer below then serialises them, so it costs no concurrency; what it costs is
+ * the tenant's call budget, which is 500,000 a day shared with every other
+ * integration touching this instance (§12 of the master plan).
+ *
+ * Nothing in Long-Term issues Encompass reads in parallel TODAY — every caller is
+ * a sequential sweep, measured — so this is a hole rather than a leak. It is
+ * closed now because the first parallel sweep somebody writes would not notice it:
+ * the calls succeed, the sync works, and the only symptom is twice the budget
+ * spent, arriving as a rate limit on a busy morning.
+ *
+ * The in-flight promise is CLEARED on both settle paths — a failed token request
+ * must never be handed to the next caller for ever.
+ */
+let tokenInFlight = null;
 async function getToken() {
   if (tokenCache.token && tokenCache.exp > Date.now() + 30000) return tokenCache.token;
+  if (tokenInFlight) return tokenInFlight;
+  tokenInFlight = mintToken().finally(() => { tokenInFlight = null; });
+  return tokenInFlight;
+}
+
+async function mintToken() {
   ensure();
   // Developer Connect: resource-owner password grant when a user login is provided
   // (the common tenant setup), otherwise client-credentials. The username rides as
@@ -133,7 +210,7 @@ async function getToken() {
       body: new URLSearchParams(params), signal: g.signal,
     });
     const text = await r.text();
-    if (!r.ok) throw new Error(`LT Encompass token ${r.status}: ${text.slice(0, 160)}`);
+    if (!r.ok) throw new Error(`LT Encompass token ${r.status}: ${scrub(text).slice(0, 160)}`);
     const j = JSON.parse(text);
     tokenCache = { token: j.access_token, exp: Date.now() + Math.max(0, (j.expires_in || 1800) - 60) * 1000 };
     return j.access_token;
@@ -188,8 +265,12 @@ async function tokenProbe(scope) {
       status: r.status,
       // What we were actually GRANTED, which is the whole question.
       granted: body && body.scope ? String(body.scope) : (r.ok ? '(not stated)' : null),
-      token: r.ok && body && body.access_token ? body.access_token : null,
-      error: r.ok ? null : text.slice(0, 200),
+      // THE TOKEN ITSELF IS NOT HANDED BACK. It used to be, and no caller has ever
+      // read it — the one diagnostic that calls this prints the granted SCOPE and
+      // the status. A live credential sitting in a returned object that nothing
+      // uses is the worst version of the field-nobody-reads shape this side keeps
+      // finding: harmless until somebody logs the whole result.
+      error: r.ok ? null : scrub(text).slice(0, 200),
     };
   } finally { g.done(); }
 }
@@ -304,6 +385,17 @@ async function getMilestoneSettings({ includeArchived = false, view = 'Detail' }
   const qs = new URLSearchParams({ includeArchived: String(includeArchived), view, start: '0', limit: '100' });
   return apiGet(`/encompass/v3/settings/milestones?${qs.toString()}`);
 }
+/**
+ * ONE milestone's full settings.
+ *
+ * The LIST answer carries only `{id, name, tpoStatus, consumerStatus,
+ * milestoneColor, isArchived}` — the ROLE, the assignment rule and the expected
+ * days live only here (verified live, 2026-08-14; see ENCOMPASS-LIVE-API-PROBE §8.3).
+ * So a full catalog read is one list call plus one of these per milestone.
+ */
+async function getMilestoneSetting(id) {
+  return apiGet(`/encompass/v3/settings/milestones/${encodeURIComponent(String(id))}`);
+}
 async function getStandardFieldSchema(ids) {
   const list = (Array.isArray(ids) ? ids : [ids]).map((x) => String(x)).filter(Boolean);
   const qs = new URLSearchParams({ ids: list.join(','), start: '0', limit: '100' });
@@ -326,8 +418,8 @@ module.exports = {
   // diagnostic-only, read-only: see scripts/test-lt-encompass-access-probe.js
   tokenProbe,
   apiGet, pipelineSearch, fieldReader,
-  getMilestoneSettings, getStandardFieldSchema, getCustomFieldSettings,
+  getMilestoneSettings, getMilestoneSetting, getStandardFieldSchema, getCustomFieldSettings,
   getLoan, getLoanMilestones, getLoanMilestoneLogs,
   // exported for the read-only self-test
-  _internals: { _fetchGuarded, _isFieldReaderPath, assertReadOnlyPath, POST_ALLOWLIST, TOKEN_PATH, PIPELINE_SEARCH_PATH },
+  _internals: { _fetchGuarded, _isFieldReaderPath, assertReadOnlyPath, POST_ALLOWLIST, TOKEN_PATH, PIPELINE_SEARCH_PATH, scrub },
 };
