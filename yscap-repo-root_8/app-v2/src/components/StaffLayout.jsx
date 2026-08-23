@@ -478,7 +478,11 @@ export default function StaffLayout({ children }) {
             <NavLink className="sb-link" to="/internal/lt/borrowers" title="Which client each long-term file belongs to — what puts it on their own login."><NavIcon name="borrowers" />Borrowers</NavLink>
             <NavLink className="sb-link" to="/internal/lt/statuses" title="Encompass's milestones, our own stage names, and what the borrower is told — side by side."><NavIcon name="conditions" />Statuses</NavLink>
             <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
-            <NavLink className="sb-link" to="/internal/lt/ppe"><NavIcon name="pricing" />Pricing engine</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/pricer" title="Price a scenario through Lender Price and see every rate, every investor at each rate, and the whole build behind each price."><NavIcon name="pricing" />Pricing Engine</NavLink>
+            {/* The rules/parity console is PARKED (owner-directed 2026-08-23) and renamed so
+                nobody mistakes it for the Pricing Engine above. Kept, reached by nothing the
+                engine touches, still guarded in CI. */}
+            <NavLink className="sb-link" to="/internal/lt/ppe" title="Parked: our own rate sheets, eligibility rules and the Lender Price parity work. Not the pricing engine."><NavIcon name="pricing" />Parity &amp; rules (parked)</NavLink>
             <NavLink className="sb-link" to="/internal/lt/sync"><NavIcon name="health" />Sync</NavLink>
             <NavLink className="sb-link" to="/internal/lt/settings"><NavIcon name="settings" />Settings</NavLink>
           </>
