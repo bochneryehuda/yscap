@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { moneyCents } from '../lib/money.js';
+import { useLightbox } from './MediaLightbox.jsx';
 
 /* LOAN-OFFICER VIEW-ONLY DRAW VIEW (owner-directed 2026-08-12).
    A loan officer holds `view_draws`, not `manage_draws`, so on their own files they SEE the whole
@@ -33,7 +34,7 @@ const FINDING_BADGE = {
 /* One inspection photo/video, fetched WITH the bearer token (an <img src> can't carry it) and handed
    the browser an object URL. Mirrors the staff desk's AuthImg — the durable copy in PILOT storage, so
    it never breaks when Sitewire's pre-signed link expires. */
-function AuthMedia({ appId, drawId, media }) {
+function AuthMedia({ appId, drawId, media, onOpen }) {
   const [src, setSrc] = useState(null);
   const path = `/api/sitewire/files/${appId}/draws/${drawId}/media/${media.id}`;
   useEffect(() => {
@@ -41,12 +42,14 @@ function AuthMedia({ appId, drawId, media }) {
     api.authedBlob(path).then((b) => { if (!live) { return; } url = URL.createObjectURL(b); setSrc(url); }).catch(() => {});
     return () => { live = false; if (url) URL.revokeObjectURL(url); };
   }, [path]);
-  const open = () => { const w = window.open('', '_blank'); api.authedBlob(path).then((b) => { const u = URL.createObjectURL(b); if (w) w.location = u; }).catch(() => {}); };
+  /* OPENS THE IN-APP VIEWER, not a new browser tab (owner-reported 2026-08-23).
+     Navigating a blank tab to a blob URL left the user outside PILOT looking at one
+     raw file, with no way back and no next — which is exactly what was reported. */
   if (media.kind === 'video') {
-    return <button type="button" className="btn btn-xs ghost" onClick={open} title="Play inspection video" style={{ padding: '3px 7px' }}>▶ video</button>;
+    return <button type="button" className="btn btn-xs ghost" onClick={onOpen} title="Play inspection video" style={{ padding: '3px 7px' }}>▶ video</button>;
   }
   if (!src) return <span style={{ display: 'inline-block', width: 34, height: 34, borderRadius: 6, background: 'var(--line)' }} />;
-  return <button type="button" onClick={open} title="Open full size" style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer' }}>
+  return <button type="button" onClick={onOpen} title="Open full size" style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer' }}>
     <img src={src} alt="Inspection photo" loading="lazy" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--line)', verticalAlign: 'middle' }} />
   </button>;
 }
@@ -54,9 +57,20 @@ function AuthMedia({ appId, drawId, media }) {
 /* Durable inspection photos for one draw's line, grouped by the Sitewire request (draw line) they belong
    to. Prefers PILOT's archived copies (the desk pattern); shows the count when nothing is archived yet. */
 function LineMedia({ appId, drawId, line, byReq }) {
+  const lb = useLightbox('Draw inspection media');
   const items = (byReq.get(String(line.sitewire_request_id)) || []).filter((m) => m.kind === 'image' || m.kind === 'video').slice(0, 8);
   if (!items.length) return <span className="muted small">{(Number(line.photo_count) || 0) + (Number(line.video_count) || 0) || '—'}</span>;
-  return <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>{items.map((m) => <AuthMedia key={m.id} appId={appId} drawId={drawId} media={m} />)}</div>;
+  const viewerItems = items.map((m) => ({
+    id: m.id, kind: m.kind === 'video' ? 'video' : 'image',
+    path: `/api/sitewire/files/${appId}/draws/${drawId}/media/${m.id}`,
+    title: line.name || line.job_item_name || 'Inspection', meta: 'Saved to PILOT',
+  }));
+  return (
+    <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
+      {items.map((m, i) => <AuthMedia key={m.id} appId={appId} drawId={drawId} media={m} onOpen={() => lb.open(viewerItems, i)} />)}
+      {lb.node}
+    </div>
+  );
 }
 
 /* SUBMIT A DRAW REQUEST — the one thing an officer may START (owner-directed 2026-08-17:

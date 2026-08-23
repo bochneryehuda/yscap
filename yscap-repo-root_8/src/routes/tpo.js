@@ -54,7 +54,7 @@ const rollupMod = require('../sitewire/rollup');
 const borrowerSafeDraws = require('../sitewire/borrower-safe-draws'); // ONE borrower-safe draw scrub (shared with the borrower surface)
 const drawReport = require('../sitewire/draw-report');
 const { normalizeDisputeMedia } = require('../sitewire/dispute-media'); // ONE shared dispute-evidence sniff/strip/cap (shared with the borrower surface)
-const { setMediaHeaders } = require('../lib/media-headers');
+const { serveMedia } = require('../lib/media-headers');
 
 const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
 
@@ -1598,8 +1598,7 @@ router.get('/draw-media/:mediaId', async (req, res, next) => {
     if (!m || !m.storage_ref) return res.status(404).end();
     let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
     if (!buf || !buf.length) return res.status(404).end();
-    setMediaHeaders(res, m.content_type);   // safe-type allowlist + sandbox CSP
-    return res.end(buf);
+    return serveMedia(req, res, buf, m.content_type);   // safe-type + byte-sniff + range
   } catch (e) { next(e); }
 });
 

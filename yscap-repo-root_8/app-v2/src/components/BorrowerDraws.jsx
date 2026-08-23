@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { moneyCents } from '../lib/money.js';
 import DropZone from './DropZone.jsx';
+import { useLightbox } from './MediaLightbox.jsx';
 
 /* Borrower draw view. You submit draws and upload photos in Sitewire; here you see the
    live picture of your construction budget vs. what's been released, and you review each
@@ -531,19 +532,29 @@ function BorrowerComposer({ appId, composer, onChanged, sitewireUrl }) {
    token-scoped URLs that never expire), and only falls back to Sitewire's raw (expiring) src when a
    line hasn't been archived yet. Videos render as a small play chip. */
 function MediaStrip({ line }) {
+  const lb = useLightbox('Inspection photos');
   const durable = Array.isArray(line.photos) ? line.photos : [];
   const raw = Array.isArray(line.media) ? line.media : [];
   const items = durable.length
     ? durable.slice(0, 6)
     : raw.filter((m) => m && (m.type === 'image' || m.type === 'video')).slice(0, 6).map((m) => ({ url: m.thumbnail || m.src, full: m.src, kind: m.type }));
   if (!items.length) return <span className="muted small">{(Number(line.photo_count) || 0) + (Number(line.video_count) || 0) || '—'}</span>;
+  /* The borrower gets the SAME viewer the staff desk gets — one component, so the
+     "can't exit, can't go next, videos are black" defect cannot be fixed on one
+     surface and left standing on the other. These URLs are already token-scoped
+     (they never expire), so they go in as `src` rather than an authed path. */
+  const viewerItems = items.map((m, i) => ({
+    id: i, kind: m.kind === 'video' ? 'video' : 'image',
+    src: m.full || m.url, title: line.name || line.job_item_name || 'Inspection',
+  }));
   return (
     <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
       {items.map((m, i) => (
         m.kind === 'video'
-          ? <a key={i} href={m.url || m.full} target="_blank" rel="noreferrer" title="Play video" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, fontWeight: 700, color: 'var(--teal)', border: '1px solid var(--line)', borderRadius: 6, padding: '3px 7px' }}>▶</a>
-          : <a key={i} href={m.full || m.url} target="_blank" rel="noreferrer"><img src={m.url} alt="" loading="lazy" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 6, verticalAlign: 'middle', border: '1px solid var(--line)' }} /></a>
+          ? <button key={i} type="button" onClick={() => lb.open(viewerItems, i)} title="Play video" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, fontWeight: 700, color: 'var(--teal)', background: 'none', border: '1px solid var(--line)', borderRadius: 6, padding: '3px 7px', cursor: 'pointer' }}>▶</button>
+          : <button key={i} type="button" onClick={() => lb.open(viewerItems, i)} title="Open full size" style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer' }}><img src={m.url} alt="" loading="lazy" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 6, verticalAlign: 'middle', border: '1px solid var(--line)' }} /></button>
       ))}
+      {lb.node}
     </div>
   );
 }

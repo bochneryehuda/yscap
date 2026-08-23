@@ -7,6 +7,7 @@ import DropZone from './DropZone.jsx';
 import FileSections, { Section, goToSection } from './FileSections.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import { ScheduleButton, ScheduledSends } from './ScheduleSend.jsx';
+import { useLightbox } from './MediaLightbox.jsx';
 
 /* Per-file construction-draw desk (staff). One place tying draws ↔ Scope of Work ↔
    construction budget: the unified per-line/per-unit rollup, each draw's per-line
@@ -3973,6 +3974,7 @@ function FindingStatus({ appId, finding, reload }) {
    falls back to the persisted findings (with media) if reads are off and findings were already delivered.
    This is the gap the standalone Draw-Management phase closes — staff could previously see only a count. */
 function InspectionGallery({ appId, draw, finding, readsOff }) {
+  const lb = useLightbox('Draw inspection media');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -4021,6 +4023,47 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
 
   const lines = (data && data.lines) || [];
   const totalPhotos = lines.reduce((n, l) => n + (Array.isArray(l.media) ? l.media.filter((m) => m.type !== 'video').length : 0), 0);
+
+  /* ONE FLAT SET FOR THE WHOLE INSPECTION (owner-reported 2026-08-23: *"you can't
+     click to see the next photo … You should be able to click next, next, next,
+     next"*). The gallery is grouped by draw line on the page because that is how a
+     coordinator reads it — but "next" must not stop at a line boundary, so the
+     viewer is handed every photo AND every video on the draw as a single ordered
+     list, and each tile knows its own index into it. Videos sit in the same list
+     as the photos, exactly as the owner described: *"You switch from a picture to
+     the next, and you see a video."*
+
+     PILOT's DURABLE copies win over Sitewire's live (expiring) links wherever a
+     line has been archived — same preference the tiles have always had, decided
+     once here instead of twice below. */
+  const durableFor = (l) => durableByReq.get(String(l.request_id != null ? l.request_id : l.sitewire_request_id)) || [];
+  const viewerItems = [];
+  const startIndexByLine = new Map();
+  for (const l of lines) {
+    const key = l.id || l.request_id || l.sitewire_request_id;
+    startIndexByLine.set(String(key), viewerItems.length);
+    const lineName = l.name || `Line ${l.job_item_id || l.sitewire_job_item_id || ''}`;
+    const durable = durableFor(l);
+    if (durable.length) {
+      for (const m of durable) {
+        viewerItems.push({
+          id: `d${m.id}`, kind: m.kind === 'video' ? 'video' : 'image',
+          path: `/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/media/${m.id}`,
+          title: lineName, meta: 'Saved to PILOT', filename: `${lineName}-${m.id}`,
+        });
+      }
+    } else {
+      for (const [j, m] of (Array.isArray(l.media) ? l.media : []).entries()) {
+        viewerItems.push({
+          id: `l${key}-${j}`, kind: m.type === 'video' ? 'video' : 'image',
+          src: m.src, title: lineName,
+          meta: [m.captured_at ? new Date(m.captured_at).toLocaleString('en-US') : '',
+                 (m.lat && m.lng) ? `${m.lat}, ${m.lng}` : ''].filter(Boolean).join(' · ') || undefined,
+          caption: m.note || undefined,
+        });
+      }
+    }
+  }
   return (
     <div className="panel" style={{ marginTop: 8, background: 'var(--paper,#f6f3ec)' }}>
       <div className="row between" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline', marginBottom: 6 }}>
@@ -4033,6 +4076,7 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
       {loading && <div className="muted small">Loading inspection photos…</div>}
       {err && !loading && <div className="muted small" style={{ color: 'var(--bad,#b04a3f)' }}>{err}</div>}
       {!loading && !err && lines.length === 0 && <div className="muted small">No inspection photos on this draw yet.</div>}
+      {lb.node}
       {!loading && !err && lines.map((l, i) => {
         const media = Array.isArray(l.media) ? l.media : [];
         // Only show approved/not-approved once the DRAW is actually approved (decided). Before that every
@@ -4058,16 +4102,22 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
             {(() => {
               // Prefer PILOT's DURABLE copies (they never expire) keyed by the draw line's request id;
               // fall back to Sitewire's live (expiring) media only when this line hasn't been archived yet.
-              const reqId = l.request_id != null ? l.request_id : l.sitewire_request_id;
-              const durable = durableByReq.get(String(reqId)) || [];
+              // Same helper the viewer's flat set uses, so the tiles and the viewer can never disagree
+              // about which copy of a photo they are showing.
+              const durable = durableFor(l);
+              const base = startIndexByLine.get(String(l.id || l.request_id || l.sitewire_request_id)) || 0;
+              /* EVERY TILE OPENS THE VIEWER, at its own place in the set — a photo
+                 and a video alike. It used to open a raw blob in a new browser tab,
+                 which is why there was nothing to exit back to and no "next". */
               if (durable.length > 0) {
                 return (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8, marginTop: 6 }}>
-                    {durable.map((m) => {
+                    {durable.map((m, j) => {
                       const path = `/api/sitewire/files/${appId}/draws/${draw.sitewire_draw_id}/media/${m.id}`;
+                      const openAt = () => lb.open(viewerItems, base + j);
                       return m.kind === 'video'
-                        ? <button key={m.id} onClick={() => { const w = window.open('', '_blank'); api.authedBlob(path).then((b) => { const u = URL.createObjectURL(b); if (w) w.location.href = u; }).catch(() => {}); }} title="Video (saved to PILOT)" style={{ aspectRatio: '4 / 3', borderRadius: 6, border: '1px solid var(--line,#e6e0d4)', background: '#000', color: '#fff', fontSize: 12, cursor: 'pointer' }}>▶ Video</button>
-                        : <AuthImg key={m.id} path={path} alt={l.name || 'inspection'} style={{ width: '100%', height: 'auto', aspectRatio: '4 / 3', borderRadius: 6, border: '1px solid var(--line,#e6e0d4)' }} onOpen={() => { const w = window.open('', '_blank'); api.authedBlob(path).then((b) => { const u = URL.createObjectURL(b); if (w) w.location.href = u; }).catch(() => {}); }} />;
+                        ? <button key={m.id} onClick={openAt} title="Play this video" style={{ aspectRatio: '4 / 3', borderRadius: 6, border: '1px solid var(--line,#e6e0d4)', background: '#000', color: '#fff', fontSize: 12, cursor: 'pointer' }}>▶ Video</button>
+                        : <AuthImg key={m.id} path={path} alt={l.name || 'inspection'} style={{ width: '100%', height: 'auto', aspectRatio: '4 / 3', borderRadius: 6, border: '1px solid var(--line,#e6e0d4)' }} onOpen={openAt} />;
                     })}
                   </div>
                 );
@@ -4075,12 +4125,13 @@ function InspectionGallery({ appId, draw, finding, readsOff }) {
               return media.length > 0 ? (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8, marginTop: 6 }}>
                   {media.map((m, j) => (
-                    <a key={j} href={m.src} target="_blank" rel="noreferrer" title={[m.type === 'video' ? 'Video' : 'Photo', m.note || '', m.captured_at ? new Date(m.captured_at).toLocaleString('en-US') : '', (m.lat && m.lng) ? `${m.lat}, ${m.lng}` : ''].filter(Boolean).join(' · ')}
-                      style={{ display: 'block', position: 'relative', aspectRatio: '4 / 3', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--line,#e6e0d4)', background: '#000' }}>
+                    <button key={j} type="button" onClick={() => lb.open(viewerItems, base + j)}
+                      title={[m.type === 'video' ? 'Video' : 'Photo', m.note || '', m.captured_at ? new Date(m.captured_at).toLocaleString('en-US') : '', (m.lat && m.lng) ? `${m.lat}, ${m.lng}` : ''].filter(Boolean).join(' · ')}
+                      style={{ display: 'block', position: 'relative', aspectRatio: '4 / 3', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--line,#e6e0d4)', background: '#000', padding: 0, cursor: 'pointer' }}>
                       {m.type === 'video'
                         ? <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12 }}>▶ Video</div>
                         : <img src={m.thumbnail || m.src} alt={l.name || 'inspection'} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
-                    </a>
+                    </button>
                   ))}
                 </div>
               ) : <div className="muted small" style={{ marginTop: 4 }}>No photos on this line.</div>;

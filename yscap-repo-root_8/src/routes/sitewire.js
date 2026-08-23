@@ -76,7 +76,7 @@ const { buildXlsx } = require('../lib/xlsx');
 const mediaArchive = require('../sitewire/media-archive');
 const drawReport = require('../sitewire/draw-report');
 const storage = require('../lib/storage');
-const { setMediaHeaders } = require('../lib/media-headers');
+const { serveMedia } = require('../lib/media-headers');
 const { serveDocument } = require('../lib/serve-document');
 const { computeRelease, waiverGate } = require('../sitewire/money');
 // THE INVESTOR'S CUT OF OUR DRAW FEE — pure, and the ONE place the CorrFirst/Blue Lake rates live.
@@ -251,8 +251,11 @@ router.get('/files/:id/draws/:drawId/media/:mediaId', requireDrawView, async (re
   if (!m || !m.storage_ref) return res.status(404).end();
   let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
   if (!buf || !buf.length) return res.status(404).end();
-  setMediaHeaders(res, m.content_type);   // safe-type allowlist + sandbox CSP (never serve a dangerous type inline)
-  return res.end(buf);
+  // ONE door for every stored media byte: safe-type allowlist, the real type
+  // derived from the bytes when the stored label was lost on the way in, and HTTP
+  // range support so a <video> can actually stream and seek instead of showing a
+  // black frame (owner-reported 2026-08-23).
+  return serveMedia(req, res, buf, m.content_type);
 });
 
 // ---- PILOT-branded inspection reports (phase 2b) ----
@@ -3234,8 +3237,8 @@ router.get('/findings/lines/:lineId/dispute-media/:idx', requireDrawView, async 
   if (!m || !m.storage_ref) return res.status(404).end();
   let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
   if (!buf || !buf.length) return res.status(404).end();
-  setMediaHeaders(res, m.content_type);   // borrower-uploaded evidence: type is server-derived, but clamp on serve too
-  return res.end(buf);
+  // borrower-uploaded evidence: the type is server-derived at intake, but clamp on serve too.
+  return serveMedia(req, res, buf, m.content_type);
 });
 
 // ---- POST /findings/:findingId/lines/:lineId/decide — admin decides a disputed line ----

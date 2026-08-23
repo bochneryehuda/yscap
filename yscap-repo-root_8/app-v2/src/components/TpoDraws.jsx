@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { askConfirm } from '../lib/dialog.js';
 import { moneyCents } from '../lib/money.js';
+import { useLightbox } from './MediaLightbox.jsx';
 
 /* Phase 6b/6d — the broker's draw view. A broker SEES the same borrower-safe construction-draw
    picture the borrower sees — the budget vs. what's released, the per-line rollup, each inspection
@@ -129,7 +130,7 @@ export default function TpoDraws({ appId }) {
 /* A single inspection photo/video. The url is a firm-scoped /api/tpo/draw-media path, so it is
    blob-fetched WITH auth (an <img src> can't send the bearer token) and rendered as an object URL,
    revoked on unmount. A failed fetch renders nothing rather than a broken image. */
-function TpoPhoto({ url, kind }) {
+function TpoPhoto({ url, kind, onOpen }) {
   const [src, setSrc] = useState(null);
   const [err, setErr] = useState(false);
   useEffect(() => {
@@ -140,20 +141,29 @@ function TpoPhoto({ url, kind }) {
     return () => { alive = false; if (obj) URL.revokeObjectURL(obj); };
   }, [url]);
   if (err) return null;
+  // Opens the shared in-app viewer (arrow keys, Esc, a real video player) rather
+  // than navigating away to a raw file — the same fix as the staff and borrower
+  // desks, from the same component, so the three cannot drift.
   if (kind === 'video') {
-    if (!src) return <span className="small muted">▶</span>;
-    return <a href={src} target="_blank" rel="noreferrer" title="Play video" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, fontWeight: 700, color: 'var(--teal)', border: '1px solid var(--line)', borderRadius: 6, padding: '3px 7px' }}>▶</a>;
+    return <button type="button" onClick={onOpen} title="Play video" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, fontWeight: 700, color: 'var(--teal)', background: 'none', border: '1px solid var(--line)', borderRadius: 6, padding: '3px 7px', cursor: 'pointer' }}>▶</button>;
   }
   if (!src) return <span style={{ display: 'inline-block', width: 34, height: 34, borderRadius: 6, background: 'var(--surface-soft, #eee)', border: '1px solid var(--line)' }} />;
-  return <a href={src} target="_blank" rel="noreferrer"><img src={src} alt="" loading="lazy" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 6, verticalAlign: 'middle', border: '1px solid var(--line)' }} /></a>;
+  return <button type="button" onClick={onOpen} title="Open full size" style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer' }}><img src={src} alt="" loading="lazy" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 6, verticalAlign: 'middle', border: '1px solid var(--line)' }} /></button>;
 }
 
 function TpoMediaStrip({ line }) {
+  const lb = useLightbox('Inspection photos');
   const photos = Array.isArray(line.photos) ? line.photos : [];
   if (!photos.length) return <span className="muted small">—</span>;
+  const shown = photos.slice(0, 8);
+  const viewerItems = shown.map((p, i) => ({
+    id: i, kind: p.kind === 'video' ? 'video' : 'image',
+    path: p.url, title: line.name || line.job_item_name || 'Inspection',
+  }));
   return (
     <span className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
-      {photos.slice(0, 8).map((p, i) => <TpoPhoto key={i} url={p.url} kind={p.kind} />)}
+      {shown.map((p, i) => <TpoPhoto key={i} url={p.url} kind={p.kind} onOpen={() => lb.open(viewerItems, i)} />)}
+      {lb.node}
     </span>
   );
 }
