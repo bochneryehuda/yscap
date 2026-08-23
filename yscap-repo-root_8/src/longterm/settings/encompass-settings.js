@@ -524,6 +524,49 @@ const SETTINGS = [
       + 'funders the entire book so they can pick work off the queue, which is a different '
       + 'question from who may decide whose book is whose.' },
 
+  // ── Compensation (owner-directed 2026-08-23) ──────────────────────────────
+  // The pricing engine's compensation OVERLAY — display math on top of Lender Price,
+  // which stays searched borrower-paid on every mode. The five figures resolve through
+  // src/longterm/comp-plan.js: a person's own row wins over the company's value, which
+  // wins over these declared defaults; the two lender fees are company-only. Changing
+  // the COMPANY values is super-admin only (routes/settings.js SUPERADMIN_KEYS) — the
+  // owner's words: "you need to set superadmin settings to control the company
+  // defaults". The three points figures are also PERSONAL_KEYS, so a loan officer sets
+  // their own on the personal screen.
+  { key: 'comp.lenderPaid', group: 'Compensation', label: 'Lender-paid compensation (points)',
+    type: 'number', default: 2.0,
+    description: 'On a lender-paid search the board shows the raw price minus this many points: '
+      + 'raw 102 shows as 100 (par), the investor pays the compensation, and the borrower pays '
+      + 'no origination. Company default; each loan officer may set their own on the personal '
+      + 'settings screen. Super admin only at the company level.',
+    evidence: 'Owner-directed 2026-08-23: "Lender-paid compensation company default is going to '
+      + 'be 2.0 … the raw pricing is going to show 102. It is going to show 100, which is par."' },
+  { key: 'comp.borrowerPaid', group: 'Compensation', label: 'Borrower-paid compensation (points)',
+    type: 'number', default: 2.0,
+    description: 'On a borrower-paid search this is charged as ORIGINATION on the fee list; the '
+      + 'board keeps the raw price (less any YSP). Company default; each loan officer may set '
+      + 'their own, down or up. Super admin only at the company level.',
+    evidence: 'Owner-directed 2026-08-23: "Borrower-paid compensation should also have a company '
+      + 'default of two points … any loan officer that wants can decrease or increase."' },
+  { key: 'comp.ysp', group: 'Compensation', label: 'YSP on borrower-paid searches (points)',
+    type: 'number', default: 0,
+    description: 'A yield-spread premium a loan officer may take ON TOP of borrower-paid '
+      + 'origination: the displayed price drops by this many points and nothing on the fee list '
+      + 'says why. Company default is zero; each loan officer sets their own.',
+    evidence: 'Owner-directed 2026-08-23: raw 100.25 with a 0.25 YSP "is going to show only as '
+      + '100 … adding a charge on the fee breakdown for two points origination only and keeping '
+      + 'the YSP invisible."' },
+  { key: 'comp.applicationFee', group: 'Compensation', label: 'Application fee ($)',
+    type: 'number', default: 1595,
+    description: 'The flat application fee on every DSCR file’s fee list. Company-wide — not a '
+      + 'personal setting. Super admin only.',
+    evidence: 'Owner-directed 2026-08-23: "always a $1,595 application fee".' },
+  { key: 'comp.commitmentFee', group: 'Compensation', label: 'Commitment fee ($)',
+    type: 'number', default: 500,
+    description: 'The flat commitment fee on every DSCR file’s fee list. Company-wide — not a '
+      + 'personal setting. Super admin only.',
+    evidence: 'Owner-directed 2026-08-23: "and a $500 commitment fee".' },
+
   // ── Contacts (db/553) ─────────────────────────────────────────────────────
   { key: 'contacts.roles', group: 'Contacts', label: 'Loan team roles we track',
     type: 'list',

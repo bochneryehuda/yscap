@@ -27,6 +27,7 @@ const router = express.Router();
 const settingsStore = require('../settings/store');
 const access = require('../access');
 const observed = require('../observed');
+const compPlan = require('../comp-plan');
 
 const COMPANY = 'company';
 const userScope = (staffId) => `user:${String(staffId)}`;
@@ -37,8 +38,38 @@ const userScope = (staffId) => `user:${String(staffId)}`;
  * Deliberately a small allowlist rather than "everything not admin-only": a new
  * setting must be DECIDED onto the personal screen, because the failure mode of
  * getting it wrong is a person quietly overriding company policy for themselves.
+ *
+ * The three compensation POINTS figures are here by the owner's direction ("officers
+ * should also have settings to set their own lender-paid compensation … Borrower-paid
+ * compensation: any loan officer that wants can decrease or increase … they should
+ * also be able to set over there a YSP"). The two lender FEES are deliberately not:
+ * what the company charges on a file is not a personal preference.
  */
-const PERSONAL_KEYS = new Set(['ui.defaultProduct']);
+const PERSONAL_KEYS = new Set(['ui.defaultProduct', ...compPlan.PERSONAL_COMP_KEYS]);
+
+/**
+ * Company settings only the SUPER ADMIN may change — a narrower door than the admin
+ * gate the rest of the company screen uses. Owner-directed 2026-08-23: "you need to
+ * set superadmin settings to control the company defaults" — and this company's
+ * standing rule (2026-08-22) already reserves money-governing publishes for the super
+ * admin. The gate is on the KEYS, not the screen, so the same PATCH door serves both.
+ */
+const SUPERADMIN_KEYS = new Set(Object.keys(compPlan.COMP_BOUNDS));
+
+/**
+ * Refuse a comp figure outside its declared bounds, NAMING the key and the bound.
+ * Applied to both doors (company and personal): a typo'd 25-point comp stored today is
+ * a wrong price quoted tomorrow, and "refused with its name" beats "resolved around".
+ * Returns null when everything in the patch is acceptable, else the message to send.
+ */
+function compBoundsProblem(patch) {
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (!(k in compPlan.COMP_BOUNDS)) continue;
+    const verdict = compPlan.validateCompValue(k, v);
+    if (!verdict.ok) return verdict.message;
+  }
+  return null;
+}
 
 async function requireSettingsAdmin(req, res, next) {
   try {
@@ -84,6 +115,23 @@ router.patch('/', requireSettingsAdmin, async (req, res) => {
     const patch = (req.body && req.body.settings) || {};
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       return res.status(400).json({ error: 'Send the changes as an object of setting keys.' });
+    }
+    // THE SUPER-ADMIN KEYS — checked AFTER the admin gate, so an ordinary admin gets a
+    // truthful "this one is above your door" rather than a generic refusal. The whole
+    // patch is refused when any key needs the higher gate: a half-applied settings form
+    // leaves a person unable to tell what took.
+    const superKeys = Object.keys(patch).filter((k) => SUPERADMIN_KEYS.has(k));
+    if (superKeys.length) {
+      const { settings } = await settingsStore.load();
+      const ltRole = access.accessFor(req.actor, settings).ltRole;
+      if (ltRole !== 'super_admin') {
+        return res.status(403).json({
+          error: `Only the super admin can change the company compensation settings (${superKeys.join(', ')}).`,
+          rejected: superKeys,
+        });
+      }
+      const problem = compBoundsProblem(patch);
+      if (problem) return res.status(400).json({ error: problem });
     }
     // A key nobody declared is REFUSED, and the answer NAMES it — a flat "invalid"
     // leaves somebody guessing which of twenty fields was wrong.
@@ -169,6 +217,11 @@ router.patch('/mine', async (req, res) => {
       });
     }
 
+    // A personal comp figure gets the SAME bounds as the company one — the door being
+    // personal does not make 25 points of compensation a price anybody may quote from.
+    const problem = compBoundsProblem(patch);
+    if (problem) return res.status(400).json({ error: problem });
+
     // keepDefault — a person choosing the value that HAPPENS to equal the declared
     // default is still a choice, and the store would otherwise delete the row and
     // silently put them back on the company's value.
@@ -193,6 +246,19 @@ router.post('/reset', requireSettingsAdmin, async (req, res) => {
     const unknown = keys.filter((k) => !settingsStore.isKnown(k));
     if (unknown.length) return res.status(400).json({ error: `No such setting: ${unknown.join(', ')}.` });
 
+    // RESET IS STILL A CHANGE. Putting a super-admin key back to the default alters what
+    // every loan officer quotes tomorrow, so it takes the same door as setting it.
+    const superKeys = keys.filter((k) => SUPERADMIN_KEYS.has(k));
+    if (superKeys.length) {
+      const { settings } = await settingsStore.load();
+      if (access.accessFor(req.actor, settings).ltRole !== 'super_admin') {
+        return res.status(403).json({
+          error: `Only the super admin can reset the company compensation settings (${superKeys.join(', ')}).`,
+          rejected: superKeys,
+        });
+      }
+    }
+
     // Saving the declared default DELETES the row on the company scope, which is
     // exactly what "back to ours" means — the table then holds only real deviations.
     const patch = {};
@@ -208,3 +274,4 @@ router.post('/reset', requireSettingsAdmin, async (req, res) => {
 
 module.exports = router;
 module.exports.PERSONAL_KEYS = PERSONAL_KEYS;
+module.exports.SUPERADMIN_KEYS = SUPERADMIN_KEYS;

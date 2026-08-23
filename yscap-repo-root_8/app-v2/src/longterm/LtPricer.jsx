@@ -6,6 +6,10 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
 import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor } from './priceBuild.js';
+// The compensation OVERLAY (owner-directed 2026-08-23) — display math on top of the numbers
+// Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
+// decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
+import { COMP_MODES, DEFAULT_COMP_MODE, compShiftPoints, shiftedPrice, shiftBuild, quoteCharges } from './compOverlay.js';
 import { perMonth, monthlyPI, dscrFrom } from './dscrCalc.js';
 // The form's own rules — which options exist, when a field appears, and the amount triangle. Also a
 // plain `.js` module, and for the same reason: CI can run it, and a rule CI cannot run is a rule
@@ -386,6 +390,103 @@ function ModeTab({ on, onClick, children }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   THE COMPENSATION SWITCH (owner-directed 2026-08-23) — three positions, raw in the middle:
+   "the middle should be raw pricing, and the left should be borrower-paid and the right
+   lender-paid". It is a LENS on the board, never a search input: Lender Price is asked the
+   same question in every position, and switching re-renders instantly with no new search.
+
+   The Waive-lender-fees box exists ONLY in the lender-paid position ("borrower-paid
+   compensation should not have the option [to] waive lender fees"), and — like the switch —
+   it is an overlay: nothing is sent to Lender Price about it.
+
+   `planProblem` is the fail-safe: when the person's compensation settings could not be
+   loaded, a comp position must not show numbers we cannot compute — the board stays on raw
+   figures and this says so in words, rather than quietly pricing off a guessed plan.
+   ────────────────────────────────────────────────────────────────────────── */
+export function CompSwitch({ mode, onMode, waive, onWaive, planProblem }) {
+  return (
+    <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+      <span style={segTrack} role="group" aria-label="How pricing is shown">
+        {COMP_MODES.map((m) => (
+          <ModeTab key={m.value} on={mode === m.value} onClick={() => onMode(m.value)}>{m.label}</ModeTab>
+        ))}
+      </span>
+      {mode === 'lenderPaid' && !planProblem && (
+        <Check id="pe-waive-fees" checked={!!waive} onChange={(e) => onWaive(e.target.checked)}>
+          Waive lender fees
+        </Check>
+      )}
+      {planProblem && (
+        <span style={{ fontSize: 12, color: CAUTION }}>
+          Your compensation settings could not be loaded, so the board is showing raw pricing.
+        </span>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   WHAT THIS QUOTE CHARGES — the fee list the owner asked for on every DSCR file:
+   origination (if there is one), the buydown (if the price is under par), the application
+   fee and the commitment fee, plus any credit coming back. Rendered ONLY in a comp
+   position — raw is Lender Price verbatim and carries no charging story of ours.
+
+   ⛔ NOTHING HERE EVER NAMES OR SHOWS THE COMPENSATION ITSELF. The owner's rule: the
+   comp "should always also be kept invisible on both of the sides" — the prices arrive
+   already adjusted and the list shows only what the borrower pays or receives.
+   ────────────────────────────────────────────────────────────────────────── */
+export function ChargeList({ charges }) {
+  if (!charges) return null;
+  const cashTone = { color: '#8A2F2F' };
+  const backTone = { color: '#2F6B45' };
+  return (
+    <Track title="What this quote charges"
+      note="The fees on this file at this price. Figures move with the price and the switch above.">
+      {charges.lines.map((l) => (
+        <div key={l.key} style={{
+          display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
+          padding: '5px 0', borderBottom: '1px solid rgba(20,27,34,.07)',
+        }}>
+          <span style={{ fontSize: 12.5, color: SLATE, flex: 1 }}>{l.label}</span>
+          {nn(l.points) && <span style={{ fontSize: 11.5, color: MUTED, ...NUM }}>{pts(l.points)}</span>}
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: INK, minWidth: 84, textAlign: 'right', ...NUM }}>
+            {money2(l.dollars)}
+          </span>
+        </div>
+      ))}
+      {charges.lines.length === 0 && <Row k="Charges" v="none" indent />}
+      {charges.credit && (
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
+          padding: '5px 0', borderBottom: '1px solid rgba(20,27,34,.07)',
+        }}>
+          <span style={{ fontSize: 12.5, color: SLATE, flex: 1 }}>Credit to the borrower</span>
+          <span style={{ fontSize: 11.5, color: MUTED, ...NUM }}>{pts(-charges.credit.points)}</span>
+          <span style={{ fontSize: 12.5, fontWeight: 600, minWidth: 84, textAlign: 'right', ...NUM, ...backTone }}>
+            {money2(charges.credit.dollars)}
+          </span>
+        </div>
+      )}
+      {charges.waivedDollars > 0 && (
+        <div style={{ fontSize: 11.5, color: MUTED, marginTop: 6, lineHeight: 1.5 }}>
+          Lender fees waived — {money2(charges.waivedDollars)} taken out of the figures above in cash.
+        </div>
+      )}
+      <div style={{ height: 8 }} />
+      <Row
+        k={charges.netDollars > 0 ? 'Borrower pays (net)' : charges.netDollars < 0 ? 'Borrower receives (net)' : 'Nets to zero'}
+        v={money2(Math.abs(charges.netDollars))} strong
+        tone={undefined}
+        title="Every line above, netted: charges minus any credit."
+      />
+      <div style={{ fontSize: 11, marginTop: 2, ...(charges.netDollars > 0 ? cashTone : charges.netDollars < 0 ? backTone : { color: MUTED }) }}>
+        {charges.netDollars > 0 ? 'money the borrower brings' : charges.netDollars < 0 ? 'money that comes back to the borrower' : ''}
+      </div>
+    </Track>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    THE BREAKDOWN — the four things the owner asked to be able to see behind a price:
    the BASE PRICE, the LLPAs, the MARGIN HOLDBACK and the FINAL PRICE.
 
@@ -397,8 +498,20 @@ function ModeTab({ on, onClick, children }) {
    and it is printed BESIDE the vendor's own total, never instead of it. If the two ever
    disagree the screen says so on its face rather than quietly showing one of them.
    ────────────────────────────────────────────────────────────────────────── */
-export function PriceBuild({ o }) {
-  const b = (o && o.priceBuild) || {};
+export function PriceBuild({ o, comp }) {
+  const b0 = (o && o.priceBuild) || {};
+  /* THE COMPENSATION OVERLAY ON THE BUILD (owner-directed 2026-08-23). In a comp position the
+     BASE moves and the final price moves with it by the same amount — the exact mechanic the
+     owner described investors using ("we're putting it somewhere in the backend, and they show
+     the base price higher") — so the LLPA lines are untouched and the arithmetic on screen
+     still sums: shifted base + the same adjustments = shifted final. Nothing here says WHY the
+     base moved: the comp stays invisible on both sides, as directed. Raw shows the vendor's
+     numbers verbatim (`shiftBuild` with shift 0 returns the build untouched). */
+  const compActive = !!(comp && comp.mode && comp.mode !== 'raw');
+  const b = compActive ? shiftBuild(b0, comp.shift) : b0;
+  const charges = compActive
+    ? quoteCharges(comp.mode, comp.plan, b0.price, comp.loanAmount, comp.waive)
+    : null;
   const adj = Array.isArray(o && o.adjustments) ? o.adjustments : [];
 
   let run = nn(b.basePoints) ? b.basePoints : null;
@@ -470,7 +583,7 @@ export function PriceBuild({ o }) {
               Final price derived as 100 − points: the vendor quoted points, not a price.
             </div>
           )}
-          {nn(b.borrowerPaidPoints) && <Row k="Borrower-paid points" v={pts(b.borrowerPaidPoints)} />}
+          {!compActive && nn(b.borrowerPaidPoints) && <Row k="Borrower-paid points" v={pts(b.borrowerPaidPoints)} />}
         </Track>
       </div>
 
@@ -509,6 +622,9 @@ export function PriceBuild({ o }) {
             : feeLines.map((r) => <Row key={r.key} k={labelize(r.key)} v={r.text} title={r.key} />)}
         </Track>
 
+        {/* OUR CHARGING STORY, in the comp positions only — see ChargeList. */}
+        <ChargeList charges={charges} />
+
         {/* COMP — the compensation on this quote, in DOLLARS, with the vendor's own itemization.
             ⛔ THREE THINGS WERE WRONG HERE AND ALL THREE WERE LIVE ON EVERY QUOTE.
             (1) `borrowerPaid` / `lenderPaid` are DOLLAR AMOUNTS — measured, not assumed: on all
@@ -526,7 +642,10 @@ export function PriceBuild({ o }) {
             `compPlanBorrowerPaid` is printed with NO unit on purpose. It is 0 on every option in
             the captured answer and its name reads as a flag; nothing here can prove whether it is
             dollars, points or a yes/no, and inventing a unit is how (1) happened. */}
-        <Track title="Comp">
+        {/* In a comp position the vendor's comp block is WITHHELD — the owner's rule is that
+            compensation figures never show on either side; raw pricing is where the vendor's
+            own block is read verbatim, one click away. */}
+        {!compActive && <Track title="Comp">
           {compRows.length === 0
             ? <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no comp lines on this quote.</div>
             : compRows.map((r) => (
@@ -546,7 +665,7 @@ export function PriceBuild({ o }) {
                 ))}
               </div>
             ))}
-        </Track>
+        </Track>}
       </div>
 
       {o && o.rateSheet && (
@@ -565,7 +684,11 @@ export function PriceBuild({ o }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    ONE RATE, AND EVERY INVESTOR AT IT.
    ────────────────────────────────────────────────────────────────────────── */
-export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender, loanAmount }) {
+export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender, loanAmount, comp }) {
+  /* EVERY DISPLAYED PRICE ON THIS ROW TAKES THE SAME SHIFT (owner-directed 2026-08-23).
+     A constant shift never reorders anything — best stays best — so the grouping and the
+     sort are untouched; only what the figures READ as changes. Raw shifts by zero. */
+  const dP = (v) => shiftedPrice(v, comp && comp.mode !== 'raw' && Number.isFinite(comp.shift) ? comp.shift : 0);
   return (
     <div style={{ border: `1px solid ${open ? GOLD : 'rgba(20,27,34,.12)'}`, borderRadius: 10, marginBottom: 8, overflow: 'hidden' }}>
       <button type="button" onClick={onToggle}
@@ -586,8 +709,8 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
         <span style={{ fontSize: 12, color: MUTED }}>best price</span>
         {/* THE SAME VERDICT AS THE COLUMNS UNDERNEATH. A headline reading in plain ink over a red
             column would be the row disagreeing with itself about its own price. */}
-        <span style={{ fontSize: 16, fontWeight: 700, ...NUM, color: toneColor(priceMoney(row.bestPrice, loanAmount).tone, INK) }}>
-          {price(row.bestPrice)}
+        <span style={{ fontSize: 16, fontWeight: 700, ...NUM, color: toneColor(priceMoney(dP(row.bestPrice), loanAmount).tone, INK) }}>
+          {price(dP(row.bestPrice))}
         </span>
         <span style={{ fontSize: 12, color: MUTED, marginLeft: 8 }}>{open ? '▾' : '▸'}</span>
       </button>
@@ -643,7 +766,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                       </div>
                     )}
                   </span>
-                  <MoneyCells m={priceMoney(g.bestPrice, loanAmount)} strong />
+                  <MoneyCells m={priceMoney(dP(g.bestPrice), loanAmount)} strong />
                   <span style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{money2(g.best && g.best.monthlyPi)}</span>
                   <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
                     <button type="button" className="btn ghost" style={{ fontSize: 12 }}
@@ -652,7 +775,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                     </button>
                   </span>
                 </div>
-                {openQuote === (g.best && g.best.key) && <PriceBuild o={g.best && g.best.option} />}
+                {openQuote === (g.best && g.best.key) && <PriceBuild o={g.best && g.best.option} comp={comp} />}
 
                 {/* THE LENDER'S OTHER PROGRAMMES. Every quote is listed, the front one included and
                     marked — a list that silently omitted it would not add up to the count on the
@@ -675,7 +798,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                             <div style={{ fontSize: 11, color: CAUTION, fontWeight: 700 }}>rate sheet expired</div>
                           )}
                         </span>
-                        <MoneyCells m={priceMoney(q.price, loanAmount)} />
+                        <MoneyCells m={priceMoney(dP(q.price), loanAmount)} />
                         <span style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{money2(q.monthlyPi)}</span>
                         <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
                           <button type="button" className="btn ghost" style={{ fontSize: 12 }}
@@ -684,7 +807,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                           </button>
                         </span>
                       </div>
-                      {isOpen && <PriceBuild o={q.option} />}
+                      {isOpen && <PriceBuild o={q.option} comp={comp} />}
                     </div>
                   );
                 })}
@@ -854,7 +977,10 @@ export function DscrCalc({ c, setC, loanAmount, termYears, interestOnly, onRatio
    `renderToString`, which cannot click: without it the only provable state would be the collapsed
    one, and the reason text — the whole point of the board — would be pinned by nothing. The suite
    asserts BOTH states through it, which is strictly more than the flat board could show. */
-function IneligibleBoard({ d, loanAmount, initialOpen }) {
+function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
+  /* The same constant shift as the eligible board — a declined product's would-be price moves
+     with the switch too, so the two sides never quote one product two ways. */
+  const dP = (v) => shiftedPrice(v, comp && comp.mode !== 'raw' && Number.isFinite(comp.shift) ? comp.shift : 0);
   const io = initialOpen || {};
   const [openRate, setOpenRate] = useState(io.rate != null ? io.rate : null);
   const [openLenders, setOpenLenders] = useState(() => new Set(io.lenders || []));
@@ -946,7 +1072,7 @@ function IneligibleBoard({ d, loanAmount, initialOpen }) {
                                   {`${q.program || '—'}${q.product ? ` · ${q.product}` : ''}`}
                                 </span>
                               </span>
-                              <MoneyCells m={priceMoney(q.price, loanAmount)} />
+                              <MoneyCells m={priceMoney(dP(q.price), loanAmount)} />
                               <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
                                 <button type="button" className="btn ghost" style={{ fontSize: 12 }}
                                   onClick={() => setOpenItem(iOpen ? null : iKey)}>
@@ -956,7 +1082,7 @@ function IneligibleBoard({ d, loanAmount, initialOpen }) {
                             </div>
                             {iOpen && (
                               <div>
-                                <PriceBuild o={q.option} />
+                                <PriceBuild o={q.option} comp={comp} />
                                 <Track title="Why it is ineligible"
                                   note="Lender Price's own rule, word for word. These are the lines that are NOT on the eligible side.">
                                   {q.reasons.length === 0 ? (
@@ -994,7 +1120,7 @@ function IneligibleBoard({ d, loanAmount, initialOpen }) {
   );
 }
 
-export function IneligibleView({ dq, onAsk, loanAmount, initialOpen }) {
+export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp }) {
   const d = dq.data && dq.data.disqualified ? dq.data.disqualified : null;
   // ⛔ THE ONLY NUMBER THAT MEANS ANYTHING IS THE ONE FROM A READY ANSWER. See the header note.
   const ruledOut = dq.status === 'ready' && d && d.itemCount != null ? d.itemCount : null;
@@ -1036,7 +1162,7 @@ export function IneligibleView({ dq, onAsk, loanAmount, initialOpen }) {
       )}
 
       {dq.status === 'ready' && d && (
-        <IneligibleBoard d={d} loanAmount={loanAmount} initialOpen={initialOpen} />
+        <IneligibleBoard d={d} loanAmount={loanAmount} initialOpen={initialOpen} comp={comp} />
       )}
     </div>
   );
@@ -1055,6 +1181,13 @@ export default function LtPricer() {
   const [showScenario, setShowScenario] = useState(false);
   const [dq, setDq] = useState({ status: 'idle', tries: 0, data: null, message: null, auto: false });
   const [zip, setZip] = useState({ status: 'idle', data: null, message: null });
+  /* THE COMPENSATION SWITCH (owner-directed 2026-08-23). Defaults to RAW — "the way it should
+     work on default, the search should be raw pricing" — and is a LENS: switching it re-renders
+     the board from the answer already in hand, with no new Lender Price search. The plan is the
+     signed-in person's own figures over the company defaults, fetched once. */
+  const [compMode, setCompMode] = useState(DEFAULT_COMP_MODE);
+  const [waiveFees, setWaiveFees] = useState(false);
+  const [compPlan, setCompPlan] = useState({ status: 'loading', plan: null });
   // WHICH LENDERS ARE OPENED OUT, keyed `<rate>|<lender>` so opening a lender on one rate row does
   // not open the same lender on every other. A Set rather than a single key: comparing two lenders'
   // programme lists side by side is the whole reason the dropdown exists.
@@ -1123,6 +1256,16 @@ export default function LtPricer() {
     ask(0);
     return () => { live = false; };
   }, [f.zip]);
+
+  /* Fetch the person's compensation plan ONCE. A failure is an ANSWER — the comp positions
+     fall back to raw with a notice (CompSwitch's planProblem) rather than pricing off a guess. */
+  useEffect(() => {
+    let live = true;
+    ltApi.dscrCompPlan()
+      .then((r) => { if (live) setCompPlan({ status: 'ok', plan: r && r.plan ? r.plan : null }); })
+      .catch(() => { if (live) setCompPlan({ status: 'error', plan: null }); });
+    return () => { live = false; };
+  }, []);
 
   const set = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.value }));
   const setBool = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.checked }));
@@ -1197,6 +1340,16 @@ export default function LtPricer() {
     const typed = f.amountMode === 'ltv' ? (amt && amt.loan) : toNumber(f.loan);
     return typed != null && typed > 0 ? typed : null;
   })();
+
+  /* THE ONE OVERLAY OBJECT every board takes. `compShiftPoints` answers null when the plan is
+     missing or unreadable — then the comp positions CANNOT be computed, so the boards get the
+     raw identity (shift 0, mode raw) and the switch says why. FAIL TO RAW, NEVER TO A WRONG
+     NUMBER. Nothing here touches what is sent to Lender Price. */
+  const compShiftVal = compMode === 'raw' ? 0 : compShiftPoints(compMode, compPlan.plan);
+  const compProblem = compMode !== 'raw' && compShiftVal == null;
+  const comp = compProblem
+    ? { mode: 'raw', shift: 0, plan: null, waive: false, loanAmount }
+    : { mode: compMode, shift: compShiftVal || 0, plan: compPlan.plan, waive: waiveFees, loanAmount };
 
   async function run(e) {
     if (e) e.preventDefault();
@@ -1616,6 +1769,20 @@ export default function LtPricer() {
                   }}>{JSON.stringify(res.effectiveScenario || res.understood || res.requestedScenario || {}, null, 2)}</pre>
                 )}
               </div>
+
+              {/* ── HOW THE PRICES ARE SHOWN — the three-way compensation switch. A lens on the
+                  answer, never a search input: Lender Price was asked the same question whatever
+                  the position, and switching re-renders instantly. */}
+              <div style={{
+                marginTop: 12, paddingTop: 12, borderTop: `1px solid ${GOLD}33`,
+                display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
+              }}>
+                <span style={{ fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
+                  Pricing shown as
+                </span>
+                <CompSwitch mode={compMode} onMode={setCompMode}
+                  waive={waiveFees} onWaive={setWaiveFees} planProblem={compProblem} />
+              </div>
             </div>
 
             {view === 'priced' ? (
@@ -1631,14 +1798,14 @@ export default function LtPricer() {
                     says which products it looked at and why each was ruled out.
                   </div>
                 ) : stack.rates.map((row) => (
-                  <RateRow key={row.key} row={row} loanAmount={loanAmount}
+                  <RateRow key={row.key} row={row} loanAmount={loanAmount} comp={comp}
                     open={openRate === row.key}
                     onToggle={() => { setOpenRate(openRate === row.key ? null : row.key); setOpenQuote(null); }}
                     openQuote={openQuote} onOpenQuote={setOpenQuote} openLenders={openLenders} onToggleLender={toggleLender} />
                 ))}
               </div>
             ) : (
-              <IneligibleView dq={dq} onAsk={askDisqualified} loanAmount={loanAmount} />
+              <IneligibleView dq={dq} onAsk={askDisqualified} loanAmount={loanAmount} comp={comp} />
             )}
           </>
         )}
