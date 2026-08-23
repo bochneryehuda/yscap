@@ -127,6 +127,31 @@ export const ltApi = {
   // Admin-only on the server. Called anyway from a non-admin's screen so the
   // REFUSAL is shown — a hidden button is indistinguishable from a broken one.
   ppeDecideFinding: (key, body) => ltPost(lt(`/ppe/findings/${encodeURIComponent(key)}/decide`), body),
+
+  // ---- THE PRICING ENGINE (owner-directed 2026-08-23) --------------------------
+  // Two doors, and they are the whole engine. Both have been shipping, staff-gated,
+  // since the DSCR pricer was written, and nothing in the product could reach them:
+  // this file had exactly one `/dscr` method, the field manifest. The engine was
+  // never a missing integration — it was a missing wire.
+  //
+  // ⛔ BOTH COST A LIVE VENDOR CALL. Never fire one from an effect, never on a
+  // keystroke, only on a deliberate press. A search that runs itself on render bills
+  // us for every mounted screen, and a debounce on a money call is a slow leak.
+  //
+  // `dscrPrice` answers the ELIGIBLE side — every lender, every programme, every rung
+  // of every rate ladder, with the whole build behind each price — plus `understood`,
+  // the vendor's own confirmation of the scenario it actually ran, and a `searchKey`.
+  //
+  // The INELIGIBLE side is computed by the vendor AFTER the price, so it is polled by
+  // that key rather than re-searched: 200 once ready, 202 while it is still computing
+  // (surfaced as an ordinary body, `ready:false`), 409 once the key has expired.
+  dscrPrice: (scenario, opts) => ltPost(lt('/dscr/price'), { scenario, ...(opts || {}) }),
+  dscrDisqualifications: (searchKey, params) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, String(v));
+    const s = q.toString();
+    return ltGet(lt(`/dscr/disqualifications/${encodeURIComponent(searchKey)}${s ? `?${s}` : ''}`));
+  },
 };
 
 export default ltApi;
