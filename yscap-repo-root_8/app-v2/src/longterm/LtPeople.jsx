@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
+import { ltPost } from './http.js';
 import { day } from './format.js';
 
 /**
@@ -67,7 +68,7 @@ export default function LtPeople() {
   };
 
   return (
-    <LtLayout title="People">
+    <LtLayout title="Team">
       <p style={{ margin: '0 0 14px', color: '#4B585C', maxWidth: 720, lineHeight: 1.55 }}>
         Encompass names the people on every long-term file by their login. This is where each
         login is matched to the person in PILOT — which is what puts a file in somebody&rsquo;s
@@ -117,6 +118,23 @@ export default function LtPeople() {
                     {p.staff ? <>
                       <div>{p.staff.name}</div>
                       <div style={{ fontSize: 12, color: '#4B585C' }}>{p.staff.email}</div>
+                      {/* SEE THEIR SCREEN (owner-directed 2026-08-23). Calls the
+                          staff-view door and swaps the browser token for the one it
+                          mints — the identity-zone pattern http.js documents: the
+                          same storage key both products already share, no RTL
+                          module imported. The server holds every rule (super-admin
+                          only, read-only, on the record), so this button can be
+                          drawn hopefully and refused honestly. */}
+                      <button type="button" className="btn ghost"
+                        style={{ marginTop: 4, padding: '2px 10px', fontSize: 12 }}
+                        onClick={async () => {
+                          try {
+                            const r = await ltPost('/api/staff-view/start', { staffId: p.staff.id });
+                            try { sessionStorage.setItem('ys_portal_staff_token', localStorage.getItem('ys_portal_token') || ''); } catch { /* private mode */ }
+                            try { localStorage.setItem('ys_portal_token', r.token); } catch { /* private mode */ }
+                            window.location.assign('/internal/lt/pipeline');
+                          } catch (e) { setErr(e.message || 'Could not open their screen.'); }
+                        }}>See their screen</button>
                     </> : <span style={{ color: '#4B585C' }}>{p.whyNoMatch || '—'}</span>}
                   </td>
                   <td style={td}>

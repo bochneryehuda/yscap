@@ -25,6 +25,7 @@ const mail = require('../lib/email/catalog');
 const perms = require('../lib/permissions');
 const borrowerView = require('../lib/borrower-view');
 const tpoView = require('../lib/tpo-view');
+const staffView = require('../lib/staff-view');
 const borrowerAssistant = require('../lib/borrower-assistant');
 const { randomInt } = require('crypto');
 
@@ -299,6 +300,51 @@ async function authenticate(req, res, next) {
     };
     tpoView.touchSession(tpoImp.sessionId);
   }
+  // STAFF VIEW (src/lib/staff-view.js): the third sibling — a super-admin standing
+  // inside a TEAM MEMBER's own console, read-only. The token is a real staff
+  // token for the TARGET (validated above like any staff token), carrying the
+  // impStaff* envelope; the VIEWER behind it is re-validated here on every
+  // request, so the view dies the moment the human behind it does — the same
+  // three ways as its siblings. The envelope keys differ from imp*/tpo on
+  // purpose: no reader can mistake one surface's envelope for another's.
+  const staffImp = staffView.readImpersonation(claims);
+  if (staffImp) {
+    if (staffView.sessionExpired(staffImp)) {
+      staffView.endSession(staffImp.sessionId, 'expired');
+      return sessionDenied(req, res, 'staff_view_ended', 'This team view has ended. You are back to your own sign-in.',
+        { staffViewEnded: 'expired' });
+    }
+    let s;
+    try {
+      // The viewer must still be an ACTIVE INTERNAL staffer with an unmoved
+      // token_version — and still a super admin: view-as is granted to the role,
+      // and a demotion mid-session must end the session, not ride it out.
+      s = await db.query(
+        `SELECT token_version, role, permissions, is_active, full_name, email
+           FROM staff_users WHERE id=$1 AND is_external=false`,
+        [staffImp.viewerId]);
+    } catch (e) {
+      console.error('[auth] staff-view viewer check failed (db):', db.describeError(e));
+      return res.status(503).json({ error: 'The service is briefly unavailable — please try again in a moment.' });
+    }
+    const su = s.rows[0];
+    if (!su || su.is_active === false || (su.token_version || 0) !== (staffImp.viewerTv || 0)
+        || String(su.role) !== 'super_admin') {
+      staffView.endSession(staffImp.sessionId, 'revoked');
+      return sessionDenied(req, res, 'staff_view_ended', 'This team view has ended. You are back to your own sign-in.',
+        { staffViewEnded: 'revoked' });
+    }
+    req.staffImpersonation = {
+      viewerId: staffImp.viewerId,
+      viewerRole: su.role,
+      viewerName: su.full_name || null,
+      viewerEmail: su.email || null,
+      viewerTv: su.token_version || 0,
+      sessionId: staffImp.sessionId,
+      startedAt: staffImp.startedAt,
+    };
+    staffView.touchSession(staffImp.sessionId);
+  }
   // SECURITY: a deactivated staffer must lose access immediately. Deactivation
   // (admin toggle) doesn't bump token_version, so without this check an existing
   // session would keep renewing (sliding token) and retain access to loan files,
@@ -375,6 +421,18 @@ async function authenticate(req, res, next) {
                 staffTv: req.impersonation.staffTv, sessionId: req.impersonation.sessionId,
                 startedAt: req.impersonation.startedAt,
               }))
+        : req.staffImpersonation
+          // A staff-view token must slide into a staff-view token — same envelope,
+          // same impStaffAt — for exactly the reason its two siblings must: a plain
+          // re-mint would silently strip the envelope, and with it both the
+          // read-only guard and the attribution, turning a bounded audited view
+          // into an unmarked session in somebody else's name.
+          ? staffView.mintToken({
+              targetId: claims.sub, targetRole: r.rows[0].role || claims.role, targetTv: tv,
+              viewerId: req.staffImpersonation.viewerId, viewerRole: req.staffImpersonation.viewerRole,
+              viewerTv: req.staffImpersonation.viewerTv, sessionId: req.staffImpersonation.sessionId,
+              startedAt: req.staffImpersonation.startedAt,
+            })
         : claims.kind === 'staff'
           ? staffToken(claims.sub, r.rows[0].role || claims.role, tv, claims.sid)
           : claims.kind === 'tpo'

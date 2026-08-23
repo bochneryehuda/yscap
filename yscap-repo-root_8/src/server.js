@@ -358,6 +358,9 @@ app.get('/api/health', async (req, res) => {
 // the first line unless the bearer token actually carries a borrower-view
 // envelope. See src/lib/borrower-view.js.
 app.use(require('./lib/borrower-view').guard);
+// STAFF VIEW read-only wall — the third sibling, same mount, same reason: every
+// write is refused structurally while a super-admin is inside somebody's console.
+app.use(require('./lib/staff-view').guard);
 // Same shape for a TPO VIEW — an internal AE/AM/admin stepped into a broker's
 // login. Inert unless the bearer token carries a tpo-view envelope. See
 // src/lib/tpo-view.js.
@@ -462,6 +465,7 @@ app.use('/api/term-sheet-offers',
 // Start / leave / audit a borrower view. Mounted outside /api/staff because the
 // leave + status calls are made while holding a BORROWER-kind token.
 app.use('/api/borrower-view', require('./routes/borrower-view'));
+app.use('/api/staff-view', require('./routes/staff-view'));
 // Start / leave / audit a TPO (broker) view. Mounted outside /api/staff because
 // the leave + status calls are made while holding a TPO-kind token.
 app.use('/api/tpo-view', require('./routes/tpo-view'));

@@ -1890,6 +1890,15 @@ export const api = {
   tpoViewExit:     () => req('POST', '/api/tpo-view/exit'),
   tpoViewHistory:  (limit) => req('GET', '/api/tpo-view/history' + qs({ limit })),
 
+  // ---- Staff view: a super-admin stands inside a TEAM MEMBER's console --------
+  // The third sibling of borrower/tpo view, read-only by design (acting as
+  // another staffer would put the admin's actions on the wrong person's record).
+  staffViewEligible: (q) => req('GET', '/api/staff-view/eligible' + qs({ q })),
+  staffViewStart:    (staffId) => req('POST', '/api/staff-view/start', { staffId }),
+  staffViewSession:  () => req('GET', '/api/staff-view/session'),
+  staffViewExit:     () => req('POST', '/api/staff-view/exit'),
+  staffViewHistory:  (limit) => req('GET', '/api/staff-view/history' + qs({ limit })),
+
   // ---- Research desk: the property / comparable / appraiser database ----------
   // Built out of every appraisal XML we have ever imported (db/409). Staff-wide —
   // it holds addresses, property facts and recorded sale prices, no borrower data.
