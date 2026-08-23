@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
 import { money, money2, noteRate as rate, price, points as pts } from './format.js';
@@ -259,9 +259,21 @@ function Track({ title, note, children }) {
  * exactly the same band.
  */
 function Field({ id, label: name, head, hint, hintTone, basis = '1 1 170px', min = 150, children }) {
+  // ⛔ A CONTROL IN THE NAME BAND SITS BESIDE THE NAME — IT NEVER REPLACES IT. This read
+  // `head || name` and silently DISCARDED the name of any field that carried a control, which is
+  // exactly what the owner reported: the property-tax and insurance boxes showed a bare Mo|Yr
+  // switch and no clue which was which, and the ratio's own name was replaced by the word CLOSE.
+  // The band was built for both — it is a flex row with a gap — so both are drawn, the name first
+  // and the control pushed to the far edge. A field that passes a control and NO name (the loan
+  // amount, whose Loan $ / LTV % switch IS its name) is untouched: with nothing to push away
+  // from, the control stays exactly where it was.
+  const named = name ? <label htmlFor={id}>{name}</label> : null;
   return (
     <div style={{ flex: basis, minWidth: min }}>
-      <div style={fieldLabel}>{head || (name ? <label htmlFor={id}>{name}</label> : null)}</div>
+      <div style={fieldLabel}>
+        {named}
+        {head ? <span style={{ marginLeft: named ? 'auto' : 0, display: 'inline-flex' }}>{head}</span> : null}
+      </div>
       {children}
       <div style={{ ...fieldHint, color: hintTone || fieldHint.color }}>{hint}</div>
     </div>
@@ -715,7 +727,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
    ⛔ AND IT NEVER WRITES THE RATIO BY ITSELF. It shows the answer and offers to put it in the box;
    the person decides. A calculator that silently overwrote the DSCR somebody typed would be making
    a pricing decision on their behalf. */
-export function DscrCalc({ c, setC, loanAmount, termYears, interestOnly, onUse }) {
+export function DscrCalc({ c, setC, loanAmount, termYears, interestOnly, onRatio }) {
   const num = (v) => toNumber(v);
   const taxM = perMonth(num(c.tax), c.taxBasis);
   const insM = perMonth(num(c.insurance), c.insBasis);
@@ -724,6 +736,24 @@ export function DscrCalc({ c, setC, loanAmount, termYears, interestOnly, onUse }
     loanAmount, ratePct: num(c.rate), termYears, interestOnly,
     rentMonthly: num(c.rent), taxMonthly: taxM, insuranceMonthly: insM, hoaMonthly: hoaM,
   });
+
+  // ⛔ THE RATIO GOES INTO THE FORM ON ITS OWN — there is no button to press (owner-directed
+  // 2026-08-23: *"I want this to work automatically without a button ... The ratio should update
+  // automatically."*). Every time the answer CHANGES it is written up to the scenario, so ticking
+  // interest-only, moving the term or retyping the rate moves the ratio the loan is priced on with
+  // nothing to remember.
+  //
+  // TWO RULES THAT MAKE THAT SAFE. It writes only a real answer — an incomplete calculator never
+  // clears a ratio somebody already has, which is what would happen the instant this panel opened
+  // on an empty form. And it writes only on a CHANGE (the effect is keyed on the figure itself, and
+  // the receiver drops a write of the value already there), so it cannot loop and it cannot fight
+  // somebody typing in the box between two calculator edits.
+  // ⛔ `dscrFigure`, NOT `ratio` — `format.js` exports a `ratio` FORMATTER, and this screen is held
+  // to one meaning per name (test-lt-pipeline-columns-pure.js, which caught it). That is the third
+  // short noun in this one panel that is already a formatter's name: `points`, `money`, `ratio`.
+  // Before naming a local here, check what format.js exports.
+  const dscrFigure = out.dscr == null ? null : out.dscr.toFixed(2);
+  useEffect(() => { if (dscrFigure != null && onRatio) onRatio(dscrFigure); }, [dscrFigure, onRatio]);
 
   // ⛔ NO LOCAL `money` HERE. `format.js` already exports one and this file already imports it,
   // so a second definition would make the SAME name mean two things inside one screen — the
@@ -745,13 +775,13 @@ export function DscrCalc({ c, setC, loanAmount, termYears, interestOnly, onUse }
 
         {/* TAX AND INSURANCE CARRY THEIR OWN MONTHLY/YEARLY SWITCH, in the label band — the same
             place the loan-amount/LTV switch lives, so the boxes stay level with their neighbours. */}
-        <Field id="dc-tax" label="Property tax" basis="0 1 180px" min={170}
+        <Field id="dc-tax" label="Property tax" basis="0 1 200px" min={196}
           head={<span style={segTrack}>{basisTab('taxBasis', 'monthly', 'Mo')}{basisTab('taxBasis', 'yearly', 'Yr')}</span>}
           hint={c.taxBasis === 'yearly' && taxM != null ? `${money(taxM)} a month` : ''}>
           <Money id="dc-tax" value={c.tax} onChange={(v) => setC((p) => ({ ...p, tax: v }))} ariaLabel="Property tax" />
         </Field>
 
-        <Field id="dc-ins" label="Hazard insurance" basis="0 1 190px" min={180}
+        <Field id="dc-ins" label="Hazard insurance" basis="0 1 240px" min={234}
           head={<span style={segTrack}>{basisTab('insBasis', 'monthly', 'Mo')}{basisTab('insBasis', 'yearly', 'Yr')}</span>}
           hint={c.insBasis === 'yearly' && insM != null ? `${money(insM)} a month` : ''}>
           <Money id="dc-ins" value={c.insurance} onChange={(v) => setC((p) => ({ ...p, insurance: v }))} ariaLabel="Hazard insurance" />
@@ -785,8 +815,10 @@ export function DscrCalc({ c, setC, loanAmount, termYears, interestOnly, onUse }
             <span style={{ flex: 1 }} />
             <span style={{ fontSize: 11, color: MUTED, letterSpacing: '.07em', textTransform: 'uppercase', fontWeight: 700 }}>DSCR</span>
             <span style={{ fontSize: 20, fontWeight: 700, color: INK, ...NUM }}>{out.dscr.toFixed(2)}</span>
-            <button type="button" className="btn ghost" style={{ fontSize: 12 }}
-              onClick={() => onUse(out.dscr.toFixed(2))}>Use this ratio</button>
+            {/* WHERE THE ANSWER WENT, SAID OUT LOUD. It is now written into the scenario on its own,
+                which is invisible unless the panel says so — and a person who cannot see a thing
+                happen assumes it did not. This is what replaced the "Use this ratio" button. */}
+            <span style={{ fontSize: 11.5, color: MUTED }}>in the DSCR box above</span>
           </div>
         )}
         {/* WHAT IT IS ASSUMING, SAID OUT LOUD. The payment shape and the term come from the scenario
@@ -1032,6 +1064,14 @@ export default function LtPricer() {
   // number, the ratio, which the person then chooses to use or not.
   const [calcOpen, setCalcOpen] = useState(false);
   const [calc, setCalc] = useState(CALC_START);
+
+  /** WHERE THE CALCULATOR'S ANSWER LANDS. Stable across renders on purpose — the calculator's
+   *  effect is keyed on the figure AND on this function, so an arrow rebuilt every render would
+   *  make it fire on every render instead of on every CHANGE. It drops a write of the value the
+   *  form already holds, which is the other half of what stops it looping. */
+  const takeRatio = useCallback((v) => {
+    setF((p) => (p.dscr === v ? p : { ...p, dscr: v }));
+  }, []);
   const timer = useRef(null);
   // The auto-ask loop's own bookkeeping: which search it is chasing, how many asks it has spent, and
   // the pending timer. Refs rather than state — none of it is drawn, and putting it in state would
@@ -1339,7 +1379,7 @@ export default function LtPricer() {
               loanAmount={formLoanAmount}
               termYears={toNumber(f.termYears)}
               interestOnly={!!f.io}
-              onUse={(v) => setF((p) => ({ ...p, dscr: v }))} />
+              onRatio={takeRatio} />
           )}
 
           {/* ── THE PROPERTY ──────────────────────────────────────────────── */}
