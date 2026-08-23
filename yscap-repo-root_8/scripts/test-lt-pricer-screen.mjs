@@ -476,6 +476,27 @@ console.log('LT Pricing Engine — structural guards\n');
     'PE-101 ...and it is fed the scenario\'s own term and interest-only flag, so the ratio follows them');
   ok(/\{calcOpen && \(/.test(code) && /useState\(false\)/.test(code),
     'PE-102 ...and it is closed until it is asked for');
+
+  /* PE-103..PE-107 — the two owner reports of 2026-08-23, guarded where CI can see them.
+     The render suite proves these properly (R67..R71) and SKIPS on the build server for want of a
+     bundler, so what can be checked from the source lives here. */
+
+  // (1) A CONTROL IN THE NAME BAND MUST NOT REPLACE THE NAME. `head || name` is the exact
+  //     expression that lost the property-tax, insurance and DSCR names; it must never come back.
+  ok(!/\{\s*head\s*\|\|/.test(code),
+    'PE-103 a field never renders its control INSTEAD of its name');
+  ok(/\{named\}/.test(code) && /\{head \?/.test(code),
+    'PE-104 ...it renders both, so a switch and a name can share the band');
+
+  // (2) THE RATIO FILLS ITSELF IN — no button. The behaviour is proven by running it
+  //     (test-lt-dscr-autofill.mjs, which needs a browser); this pins the wiring.
+  ok(!/Use this ratio/.test(code), 'PE-105 there is no "Use this ratio" button to press');
+  ok(/onRatio\(dscrFigure\)/.test(code) && /\[dscrFigure, onRatio\]/.test(code),
+    'PE-106 ...the answer is handed up on every CHANGE of the figure, and only then');
+  // A receiver rebuilt each render would make that effect fire on every render instead of on every
+  // change — which is how a hand-typed ratio gets stamped over by an unrelated keystroke.
+  ok(/const takeRatio = useCallback\(/.test(code),
+    'PE-107 ...and the receiver is stable, so an unrelated re-render cannot re-write the ratio');
 }
 
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
