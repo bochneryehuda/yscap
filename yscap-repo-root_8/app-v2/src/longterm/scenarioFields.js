@@ -70,14 +70,23 @@ export function unitsFor(propertyType, current) {
 }
 
 /* ── borrower type ────────────────────────────────────────────────────────────
-   The owner named LLC, Corporation and Individual. The tenant enum carries six, and the other three
-   are real vesting types a deal can genuinely take — so all six are offered, with the owner's three
-   first and LLC as the default (which is also the server's own profile default). Hiding a valid
-   choice would make the screen refuse a loan the pricer would have quoted. */
+   ⛔ THREE, BY OWNER DIRECTION (2026-08-23): *"for now, you can park the rest of the options. You
+   can leave only LLC, corporation, and individual."* The tenant enum carries six — Partnership,
+   Trust and Non-Profit are real vesting types the pricer would quote — so this is a PARKING, not a
+   discovery that they are invalid. They are named here rather than deleted so bringing one back is
+   one line and nobody has to re-derive the tenant's spelling for it.
+
+   Every value is the upstream token, and the drift guard in test-lt-pricer-fields.mjs runs the
+   SERVER'S OWN `registry.BORROWER_TYPES` over each one — so a spelling this file invents fails the
+   build rather than reaching a person as an option that cannot price. */
 export const BORROWER_TYPES = [
   { value: 'LLC', label: 'LLC' },
   { value: 'Corporation', label: 'Corporation' },
   { value: 'Individual', label: 'Individual' },
+];
+/** PARKED by owner direction, not retired: the other three tokens the tenant enum carries. Kept
+ *  beside the live list so restoring one is an edit, never a fresh piece of research. */
+export const BORROWER_TYPES_PARKED = [
   { value: 'Partnership', label: 'Partnership' },
   { value: 'Trust', label: 'Trust' },
   { value: 'Non-Profit', label: 'Non-profit' },
@@ -143,16 +152,47 @@ export const PURPOSES = [
 // codebase already carries a guard against, so they are named for what they do.
 const roundCents = (n) => Math.round(n * 100) / 100;
 const roundRatio = (n) => Math.round(n * 1e6) / 1e6;
-function numOf(v) {
-  if (v == null || v === '') return null;
-  const n = Number(String(v).replace(/[$,\s]/g, ''));
-  return Number.isFinite(n) ? n : null;
-}
+// ONE reading of a typed figure, shared with the amount triangle below.
+const numOf = toNumber;
 /** Accept 75 or 0.75, exactly as the server does. */
 export function normalizeLtv(v) {
   const n = numOf(v);
   if (n == null) return null;
   return roundRatio(n > 1 ? n / 100 : n);
+}
+
+/* ── money, as a person writes it ─────────────────────────────────────────────
+   ⛔ THE FORM HOLDS THE TYPED TEXT, NOT A NUMBER, and these two are the only conversion. The owner
+   asked for the property value and the loan amount to read "as dollars with a dollar sign with
+   commas" — so the box shows `500,000` (the dollar sign is a fixed mark drawn beside it, never a
+   character the person has to type or delete). What goes on the wire is a NUMBER, which is why
+   `toScenario` parses through `toNumber` below: `Number("500,000")` is NaN, and a NaN reaching the
+   pricer as a property value is the silent-mispricing class this connector was hardened against.
+
+   DIGITS ONLY, DELIBERATELY. No decimal point: a property value and a loan amount are whole dollars
+   on every rate sheet this prices against, and allowing cents would put a figure on screen that the
+   grouping then has to reconcile as somebody types through it. A pasted "$1,250,000.00" keeps its
+   WHOLE-DOLLAR digits and drops the rest rather than being refused — refusing a paste is how a
+   person ends up retyping a number they already had right. */
+export function digitsOf(v) {
+  // A DECIMAL FRACTION IS DROPPED WHOLE, not folded into the digits. Stripping every non-digit from
+  // a pasted "$1,250,000.00" glues the cents on and reads $1.25M as $125M — a hundredfold error, on
+  // the property value, silently. So the text is cut at the first decimal point first.
+  const head = String(v == null ? '' : v).split('.')[0];
+  return head.replace(/\D+/g, '');
+}
+/** `500000` → `500,000`. An empty box stays empty — never `0`, which is a figure somebody chose. */
+export function formatMoney(v) {
+  const d = digitsOf(v).replace(/^0+(?=\d)/, '');
+  if (!d) return '';
+  return d.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+/** The one parse. Accepts what any of these boxes can hold — `$1,250,000`, `75%`, `1.20`, `` — and
+ *  answers null for anything that is not a finite number, so a caller never ships NaN. */
+export function toNumber(v) {
+  if (v == null || v === '') return null;
+  const n = Number(String(v).replace(/[$,%\s]/g, ''));
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -188,7 +228,11 @@ export function deriveAmount({ value, loan, ltv }) {
    pricer would have to guess what it meant, and this engine never guesses. Omitting the key lets
    the server's own default apply and say so in `effectiveScenario`. */
 const NUMERIC = new Set(['value', 'loan', 'fico', 'dscr', 'units', 'lockDays', 'prepayMonths', 'ltv']);
-const BOOLEAN = new Set(['io', 'escrowWaive', 'nonWarrantable']);
+// `fthb` is the first-time-homebuyer flag the owner asked for, and it is the SAME fact Lender
+// Price's own screen carries: the route already accepts it and the builder writes it to
+// `criteria.firstTimeHomeBuyer`. Nothing server-side had to change — it had simply never been
+// reachable from a screen.
+const BOOLEAN = new Set(['io', 'escrowWaive', 'nonWarrantable', 'fthb']);
 /** Keys the form holds for its own bookkeeping and that are never sent upstream. */
 const FORM_ONLY = new Set(['amountMode']);
 
@@ -207,7 +251,16 @@ export function toScenario(f) {
     if (mode === 'ltv' && k === 'loan') continue;
     if (mode === 'loan' && k === 'ltv') continue;
     if (BOOLEAN.has(k)) { if (v === true || v === 'true') out[k] = true; continue; }
-    out[k] = NUMERIC.has(k) ? Number(v) : v;
+    if (NUMERIC.has(k)) {
+      // ⛔ THROUGH `toNumber`, NEVER A BARE `Number(v)`. The money boxes hold grouped text now
+      // ("500,000"), and `Number("500,000")` is NaN — which the route would take as a property
+      // value and price a scenario nobody described. A figure that cannot be read is OMITTED, so
+      // the server's own refusal names the missing fact instead of quoting a guess.
+      const n = toNumber(v);
+      if (n != null) out[k] = n;
+      continue;
+    }
+    out[k] = typeof v === 'string' ? v.trim() : v;
   }
   // A units figure that contradicts the property type is refused upstream, so the form's own rule
   // decides it rather than whatever was left in the box when the type changed.

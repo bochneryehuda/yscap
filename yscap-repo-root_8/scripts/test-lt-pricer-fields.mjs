@@ -49,6 +49,17 @@ for (const b of F.BORROWER_TYPES) {
 for (const want of ['LLC', 'Corporation', 'Individual']) {
   ok(F.BORROWER_TYPES.some((b) => b.value === want), `A5 the form must offer "${want}" — the owner asked for it by name`);
 }
+// …AND ONLY THOSE THREE (owner-directed 2026-08-23: "for now, you can park the rest of the
+// options"). Asserting the LIST rather than only its members is what makes this a parking somebody
+// has to un-park deliberately, instead of a fourth option drifting back in unnoticed.
+ok(F.BORROWER_TYPES.length === 3, `A5b exactly three borrower types are offered (found ${F.BORROWER_TYPES.length})`);
+// The parked three are still real tenant tokens, so bringing one back is one line and never a
+// fresh piece of research. A parked value that has silently stopped being valid is worth knowing.
+for (const b of F.BORROWER_TYPES_PARKED) {
+  ok(registry.BORROWER_TYPES.has(b.value), `A5c parked borrower type "${b.value}" is still a tenant token`);
+}
+ok(!F.BORROWER_TYPES.some((b) => F.BORROWER_TYPES_PARKED.some((q) => q.value === b.value)),
+  'A5d nothing is both offered and parked');
 
 for (const s of F.PREPAY_STRUCTURES) {
   ok(registry.mapPrepayStructure(s.value) != null, `A6 prepay structure "${s.value}" must map to a token`);
@@ -149,13 +160,64 @@ const routeMod = require2(path.join(ROOT, 'src/longterm/routes/dscr-pricer.js'))
 const everything = F.toScenario({
   amountMode: 'ltv', purpose: 'Purchase', value: '500000', ltv: '75', fico: '740', dscr: '1.20',
   zip: '33101', propertyType: 'Condo', units: '1', nonWarrantable: true, borrowerType: 'Corporation',
-  lockDays: '30', io: true, escrowWaive: true, prepayMonths: '36', prepayStructure: 'Fixed 5%',
+  lockDays: '30', io: true, escrowWaive: true, fthb: true, prepayMonths: '36', prepayStructure: 'Fixed 5%',
+  state: 'FL', county: 'Miami-Dade',
 });
 for (const k of Object.keys(everything)) {
   ok(routeMod.SUPPORTED_FIELDS.has(k) || routeMod.META_FIELDS.has(k),
     `E1 the route must accept "${k}" — an unknown key is refused with 422 unsupported_field`);
 }
 ok(Object.keys(everything).length >= 14, `E2 …and the full form must actually send a full scenario (sent ${Object.keys(everything).length} keys)`);
+
+/* ── M) MONEY, AS A PERSON WRITES IT ───────────────────────────────────────────
+   The owner asked for the property value and the loan amount "laid out as dollars with a dollar
+   sign with commas". The moment a box holds grouped text, `Number("500,000")` is NaN — so the risk
+   this section exists for is not the formatting, it is what the formatting does to the number that
+   reaches the pricer. */
+ok(F.formatMoney('500000') === '500,000', 'M1 a plain figure groups');
+ok(F.formatMoney('1250000') === '1,250,000', 'M2 …at every thousand');
+ok(F.formatMoney('') === '', 'M3 an empty box stays empty — never 0, which is a figure somebody chose');
+ok(F.formatMoney('abc') === '', 'M4 …and so does text with no digits in it');
+ok(F.formatMoney('007') === '7', 'M5 leading zeros are dropped');
+// ⛔ THE HUNDREDFOLD ERROR. Stripping every non-digit from a pasted "$1,250,000.00" glues the cents
+// on and reads $1.25M as $125M — on the property value, silently, from an ordinary paste.
+ok(F.formatMoney('$1,250,000.00') === '1,250,000', 'M6 a pasted figure with cents keeps its WHOLE dollars');
+ok(F.formatMoney('$1,250,000') === '1,250,000', 'M7 …and a pasted figure without them is unchanged');
+ok(F.toNumber('500,000') === 500000, 'M8 grouped text parses back to the number');
+ok(F.toNumber('75%') === 75, 'M9 …and so does a percent');
+ok(F.toNumber('abc') === null && F.toNumber('') === null, 'M10 …and anything unreadable is null, never NaN');
+
+// The whole point: a formatted form still puts NUMBERS on the wire.
+const grouped = F.toScenario({
+  amountMode: 'loan', purpose: 'Purchase', value: '1,250,000', loan: '937,500', fico: '740',
+  dscr: '1.20', zip: '11211', propertyType: 'SingleFamily', units: '1', borrowerType: 'LLC',
+  lockDays: '30', prepayMonths: '60', prepayStructure: 'Standard',
+});
+ok(grouped.value === 1250000 && grouped.loan === 937500,
+  `M11 a grouped money box reaches the pricer as a number (got ${grouped.value} / ${grouped.loan})`);
+ok(Object.values(grouped).every((v) => typeof v !== 'number' || Number.isFinite(v)),
+  'M12 …and no key is ever NaN');
+// A figure that cannot be read is OMITTED, so the server refuses by name instead of pricing a guess.
+const junk = F.toScenario({ value: 'abc', fico: '740', purpose: 'Purchase' });
+ok(!('value' in junk), 'M13 an unreadable money box is omitted, never sent as NaN');
+
+/* ── N) THE FIRST-TIME-HOMEBUYER FLAG ──────────────────────────────────────────
+   The owner asked for the checkbox to be "connected to the checkbox that we have in the lender
+   price". It is the same fact: the route has accepted `fthb` all along and the builder writes it to
+   `criteria.firstTimeHomeBuyer` — it had simply never been reachable from a screen. */
+const withFthb = F.toScenario({ purpose: 'Purchase', value: '500,000', loan: '375,000', fthb: true });
+ok(withFthb.fthb === true, 'N1 a ticked first-time-homebuyer box reaches the scenario');
+const withoutFthb = F.toScenario({ purpose: 'Purchase', value: '500,000', loan: '375,000', fthb: false });
+ok(!('fthb' in withoutFthb), 'N2 …and an unticked one is omitted, so the vendor default stands');
+
+/* ── P) THE HAND-TYPED STATE AND COUNTY ───────────────────────────────────────
+   The escape hatch for a ZIP the Census table cannot resolve. On the ordinary path these are blank,
+   and a blank must be omitted ENTIRELY — a supplied-but-empty state would be a value the server has
+   to interpret, on the one field that decides which state's rules a loan is priced under. */
+const blankLoc = F.toScenario({ purpose: 'Purchase', zip: '11211', state: '', county: '' });
+ok(!('state' in blankLoc) && !('county' in blankLoc), 'P1 a blank state/county is omitted entirely');
+const typedLoc = F.toScenario({ purpose: 'Purchase', zip: '00501', state: 'NY', county: 'Suffolk' });
+ok(typedLoc.state === 'NY' && typedLoc.county === 'Suffolk', 'P2 …and a typed one is carried');
 
 /* ── report ───────────────────────────────────────────────────────────────── */
 if (fails.length) {

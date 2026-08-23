@@ -308,5 +308,100 @@ console.log('LT Pricing Engine — structural guards\n');
     'PE-64 the board actually groups by lender — a rule the screen does not call is a rule nobody is following');
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+   PE-65..PE-88 — WHAT A PRICE COSTS, AND WHAT THE SCREEN NO LONGER SAYS.
+
+   The owner asked the board to say, beside the price, the points it implies and what those points
+   come to in dollars on this loan — coloured so a cost and a credit cannot be mistaken for one
+   another. The arithmetic is a MIRROR's arithmetic: one number said three ways, nothing decided.
+   What is worth guarding is that the three can never disagree, and that a figure nobody has is
+   never given a colour. */
+{
+  const PB2 = await import(new URL('../app-v2/src/longterm/priceBuild.js', import.meta.url));
+  const PM = PB2.priceMoney;
+
+  const above = PM(102, 500000);
+  ok(above.points === -2 && above.dollars === -10000 && above.tone === 'credit',
+    `PE-65 102 on a $500,000 loan is -2 points and $10,000 back (got ${above.points} / ${above.dollars} / ${above.tone})`);
+  const below = PM(98, 500000);
+  ok(below.points === 2 && below.dollars === 10000 && below.tone === 'cost',
+    `PE-66 ...and 98 is +2 points and $10,000 out (got ${below.points} / ${below.dollars} / ${below.tone})`);
+  const par = PM(100, 500000);
+  ok(par.points === 0 && par.dollars === 0 && par.tone === 'credit',
+    'PE-67 par is zero points, zero dollars, and green - it costs nothing');
+  ok(PM(100.001, 1).tone === 'credit' && PM(99.999, 1).tone === 'cost',
+    'PE-68 the line is exactly par - a hair above is a credit, a hair below is a cost');
+
+  // ONE FACT, ONE VERDICT: the three columns take the same tone by construction.
+  for (const p of [90, 97.5, 99.875, 100, 100.25, 103.75]) {
+    const m2 = PM(p, 400000);
+    ok(m2.tone === (m2.points <= 0 ? 'credit' : 'cost'),
+      `PE-69 price ${p}: the tone and the sign of the points agree (${m2.tone})`);
+    ok(m2.dollars === 0 || (m2.dollars > 0) === (m2.points > 0),
+      `PE-70 price ${p}: the dollars carry the same sign as the points`);
+  }
+
+  /* A rate sheet quotes to a thousandth of a point; binary floating point does not. These prices
+     are chosen because `100 - p` genuinely DRIFTS on each of them (99.875 does not — 0.875 is 7/8
+     and exactly representable, which is why an earlier version of this guard passed with the
+     rounding taken out and proved nothing). Verified by running the subtraction, not assumed. */
+  ok(PM(99.99, 500000).points === 0.01,
+    `PE-71 100 minus 99.99 is 0.010, not 0.010000000000005116 (got ${PM(99.99, 500000).points})`);
+  ok(PM(97.3, 500000).points === 2.7, `PE-71a ...and 97.3 is 2.700 (got ${PM(97.3, 500000).points})`);
+  ok(PM(101.7, 500000).points === -1.7, `PE-71b ...and 101.7 is -1.700 (got ${PM(101.7, 500000).points})`);
+  ok(PM(99.99, 500000).dollars === 50, `PE-72 ...and 0.01 of a point on $500,000 is $50 (got ${PM(99.99, 500000).dollars})`);
+  ok(PM(99.875, 500000).dollars === 625, 'PE-72a ...and an eighth of a point on it is $625');
+
+  // NEVER A GUESS, AND NEVER A COLOURED EM DASH.
+  const noPrice = PM(null, 500000);
+  ok(noPrice.price === null && noPrice.points === null && noPrice.dollars === null && noPrice.tone === null,
+    'PE-73 a price the vendor did not quote yields nothing at all - and NO colour');
+  ok(PM(101, null).points === -1 && PM(101, null).dollars === null,
+    'PE-74 a loan amount we cannot read costs the DOLLAR column only - the points still stand');
+  for (const bad of [undefined, NaN, 'abc', {}]) {
+    ok(PM(bad, 500000).tone === null, `PE-75 an unreadable price (${String(bad)}) is never given a verdict`);
+    ok(PM(101, bad).dollars === null, `PE-76 ...and an unreadable loan amount (${String(bad)}) never yields dollars`);
+  }
+  ok(PM(101, 0).dollars === null && PM(101, -5).dollars === null,
+    'PE-77 a zero or negative loan amount is not a loan amount');
+
+  ok(PB2.toneColor('credit') === '#2F6B45' && PB2.toneColor('cost') === '#8A2F2F',
+    'PE-78 there are exactly two tone colours, and they come from the shared module');
+  ok(PB2.toneColor(null, '#3A4550') === '#3A4550' && PB2.toneColor(undefined, '#3A4550') === '#3A4550',
+    'PE-79 ...and no verdict falls back to the caller\'s ordinary text colour');
+  ok(!/var\(--ink/.test(String(PB2.toneColor('credit')) + String(PB2.toneColor('cost'))),
+    'PE-80 ...and never an --ink* token, which is a LIGHT paper colour in this palette');
+
+  // ── WHAT THE SCREEN NO LONGER SAYS ────────────────────────────────────────
+  // NO APR ANYWHERE (owner-directed 2026-08-23). A DSCR loan is business-purpose credit made to an
+  // entity; an APR is a consumer disclosure, so quoting one answers a question this product does not
+  // raise - and invites a comparison against products it does not apply to.
+  // ⛔ THE TEST IS FOR A QUOTED FIGURE, NOT FOR THE LETTERS. The disclosure the owner asked for
+  // necessarily SAYS "no APR is quoted" — a guard that matched the word would fail on the very
+  // sentence that explains the removal, and would then get "fixed" by deleting the explanation.
+  // So: no APR value may be read off a quote, and no column may be headed by one.
+  ok(!/\.apr\b|\bapr:/i.test(code), 'PE-81 no APR figure is read off a quote anywhere on the screen');
+  ok(!/\.apor\b|\bapor:|>\s*APOR\s*</i.test(code),
+    'PE-82 ...and no APOR, which only exists to be compared to an APR');
+  ok(!/>\s*APR\s*</i.test(code) && !/'APR'|"APR"/.test(code),
+    'PE-82a ...and no column, row or label is headed APR');
+  // The one surviving mention is the disclosure itself, and it must actually be there.
+  ok(/no APR is quoted/i.test(src), 'PE-82b ...while the screen says plainly that none is quoted');
+  ok(/business-purpose/i.test(src), 'PE-83 ...and it says WHY, which is worth more than the number was');
+  ok(!/Rate build/.test(code), 'PE-84 the rate-build block is gone');
+  ok(!/Par rate/.test(code), 'PE-85 ...including the par-rate line it led with');
+
+  // THE INELIGIBLE SIDE IS ASKED FOR AS PART OF THE WORKFLOW, and the ask is BOUNDED.
+  ok(/askDisqualified\(\{ auto: true/.test(code),
+    'PE-86 a price asks for the ineligible side on its own - the owner\'s "add it into the workflow"');
+  ok(/DQ_AUTO_TRIES/.test(code) && /tries < DQ_AUTO_TRIES/.test(code),
+    'PE-87 ...and the asking is bounded, so it can never run on a screen somebody walked away from');
+  // THE COUNT COMES FROM THE READY ANSWER. The price response carries a disqualifiedCount of its own
+  // that is ALWAYS zero - read at price time, before the vendor has computed this side - and printing
+  // it is what made the panel report "nothing ruled out" on every scenario ever priced.
+  ok(!/res\.disqualifiedCount/.test(code),
+    'PE-88 ...and the screen never reads the price response\'s own disqualified count');
+}
+
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
 process.exit(failures ? 1 : 0);
