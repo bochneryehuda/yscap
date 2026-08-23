@@ -150,6 +150,10 @@ export const ltApi = {
   // that key rather than re-searched: 200 once ready, 202 while it is still computing
   // (surfaced as an ordinary body, `ready:false`), 409 once the key has expired.
   dscrPrice: (scenario, opts) => ltPost(lt('/dscr/price'), { scenario, ...(opts || {}) }),
+  // The ONE door here that costs NOTHING. A ZIP resolves its state, county and county FIPS out of a
+  // committed Census table on our own server — no vendor call, no session, no billing — which is
+  // why this one MAY be fired as somebody types, unlike the two above.
+  dscrZip: (zip) => ltGet(lt(`/dscr/zip/${encodeURIComponent(String(zip || '').trim())}`)),
   dscrDisqualifications: (searchKey, params) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, String(v));
