@@ -222,5 +222,41 @@ function get(router, url, headers) {
     ok(/502/.test(r.body.error), 'saying what ClickUp said');
   }
 
+  // ── H. THE DATES, AND WHY THEY ARE A MATCH KEY ───────────────────────────
+  // The owner's narrowing rule: a card opened long before its Encompass file
+  // existed is history nobody has to review, and a card opened within days of the
+  // file is almost certainly that file's card even when nobody typed the loan
+  // number in. That rule is only as good as the dates it reads, and every failure
+  // here is a QUIET one — a date read off the wrong key still produces a plausible
+  // timestamp, and a card whose `touched` was mistaken for `created` looks recent
+  // forever because merely editing it moves the value.
+  console.log('\nH. the dates and the task type come off the right keys');
+  {
+    const withDates = card(1, 'HELOC', {
+      date_created: '1735689600000',   // deliberately three DIFFERENT values, so a
+      date_updated: '1767225600000',   // route that reads the wrong key cannot pass
+      date_closed: '1770000000000',    // by coincidence
+      custom_item_id: 0,
+      url: 'https://app.clickup.com/t/task1',
+    });
+    const bare = card(2, 'HELOC');      // no dates, no type, no url
+    const { router } = loadWithStub([{ tasks: [withDates, bare], last_page: true }]);
+    const r = await get(router, '/cards?product=long', H);
+    const c = r.body.cards[0];
+    eq(c.created, '1735689600000', 'when the card was opened');
+    eq(c.touched, '1767225600000', 'when it was last touched — NOT the same key as opened');
+    eq(c.closed_on, '1770000000000', 'and when it was closed');
+    ok(typeof c.created === 'string', 'handed over exactly as ClickUp sent it, not reformatted');
+    // A task type of 0 IS a type — the default task. `||` would erase it and every
+    // card would read as "no type", which is the answer that hides a whole category.
+    eq(c.type_id, 0, 'a task type of 0 survives — it means the default task, not "none"');
+    eq(c.url, 'https://app.clickup.com/t/task1', 'and the link a person can click');
+    const b = r.body.cards[1];
+    eq(b.created, null, 'a card with no dates reads as null');
+    eq(b.touched, null, 'on every one of them');
+    eq(b.closed_on, null, 'including the closed date');
+    eq(b.type_id, null, 'and a card with no type reads as null, not 0');
+  }
+
   console.log(`\nall good — ${checks} checks`);
 })().catch((e) => { console.error('\nFAILED:', e && e.message, '\n', e && e.stack); process.exit(1); });

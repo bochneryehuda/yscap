@@ -18,7 +18,9 @@
  *
  * WHAT IT WILL NOT ANSWER WITH. Match keys only — loan number, Encompass id, the
  * borrower's NAME, the program, the amount, where the file has got to, the officer's
- * folder and the property address. Deliberately NOT: the borrower's email, phone or
+ * folder, the property address, and the dates the two sides were opened and last
+ * touched — a date is a match key here, because a card that pre-dates its file is
+ * history rather than a link waiting to be made. Deliberately NOT: the borrower's email, phone or
  * Social, the rate, the DSCR, the fees, any document, anything about a condition.
  * None of that helps decide which ClickUp card a loan belongs to, and a diagnostic
  * that hands out more than its job needs is a diagnostic somebody will regret.
@@ -76,7 +78,10 @@ const BOOK_SQL = `
          l.clickup_task_id,
          l.clickup_custom_id,
          l.clickup_link_confidence,
-         l.encompass_synced_at
+         l.encompass_synced_at,
+         l.created_at,
+         l.encompass_last_modified,
+         l.milestone_since
     FROM lt_loans l
     LEFT JOIN lt_properties p ON p.loan_id  = l.id
     LEFT JOIN staff_users   s ON s.id       = l.loan_officer_id
@@ -199,6 +204,22 @@ router.get('/cards', async (req, res) => {
           amount: fieldValue(t, PIPELINE.loanAmount),
           addr: fieldValue(t, PIPELINE.subjectAddress),
           portal: fieldValue(t, SYNC.portalFileId),
+          // WHEN, on both sides — the signal that separates history from work. A card
+          // opened long before its Encompass file existed is pre-Encompass history and
+          // nobody needs to review it; a card opened within days of the file is almost
+          // certainly that file's own card even when the loan number was never typed in.
+          // ClickUp answers with millisecond strings and they are passed through
+          // untouched: formatting here would bake this server's timezone into a date
+          // the reader has to reason about in theirs.
+          created: t.date_created || null,
+          touched: t.date_updated || null,
+          closed_on: t.date_closed || null,
+          // WHAT KIND OF THING THE CARD IS. ClickUp's task types arrive as a numeric
+          // `custom_item_id` (absent or 0 meaning the default task), and a workspace
+          // that uses them for something other than a loan needs that visible — a
+          // category told apart by its own id rather than guessed from its name.
+          type_id: (t.custom_item_id == null ? null : t.custom_item_id),
+          url: t.url || null,
         });
       }
       if (!tasks.length || (out && out.last_page)) break;
