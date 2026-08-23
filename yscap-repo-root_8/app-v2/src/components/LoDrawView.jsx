@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { moneyCents } from '../lib/money.js';
 import { useLightbox } from './MediaLightbox.jsx';
+import { useReportOpener } from './ReportOpener.jsx';
 
 /* LOAN-OFFICER VIEW-ONLY DRAW VIEW (owner-directed 2026-08-12).
    A loan officer holds `view_draws`, not `manage_draws`, so on their own files they SEE the whole
@@ -197,6 +198,7 @@ function LoRequestDraw({ appId, onSubmitted }) {
 }
 
 export default function LoDrawView({ appId }) {
+  const openReport = useReportOpener();   // opens the PDF in PILOT, with progress
   const [rollup, setRollup] = useState(null);
   const [findings, setFindings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -239,6 +241,7 @@ export default function LoDrawView({ appId }) {
 
   return (
     <div className="dd-wrap">
+      {openReport.node}
       {/* VIEW-ONLY notice — the officer sees everything and runs nothing, except acting for the borrower. */}
       <div className="notice" role="note" style={{ background: 'var(--paper,#f6f3ec)', border: '1px solid var(--line)', borderRadius: 10, padding: '10px 12px' }}>
         <b style={{ color: '#141B22' }}>View-only draw access.</b>
@@ -313,7 +316,13 @@ export default function LoDrawView({ appId }) {
               <div className="act-card-title">Full inspection report</div>
               <div className="act-card-sub">Every draw, what was approved, the inspector’s notes and photos — one PDF.</div>
             </div>
-            <button className="btn btn-sm ghost" onClick={() => { const w = window.open('', '_blank'); api.sitewireProjectReport(appId, 'staff', w); }}>Download PDF</button>
+            <button className="btn btn-sm ghost" disabled={openReport.busy}
+              onClick={() => openReport.start({
+                title: 'Whole-project inspection report',
+                subtitle: 'Every draw, the schedule of values, inspector notes and photos.',
+                status: () => api.sitewireProjectReportStatus(appId, 'staff'),
+                fetch: (onP) => api.sitewireProjectReportBytes(appId, 'staff', onP),
+              })}>Open PDF</button>
           </div>
         </div>
       )}
@@ -329,6 +338,7 @@ export default function LoDrawView({ appId }) {
    per-draw report PDF, and the two borrower-behalf actions. The officer confirms it is on the borrower's
    behalf with a required note; the server records it as staff-on-behalf. */
 function LoFindingCard({ appId, finding, money, onChanged }) {
+  const openReport = useReportOpener();   // opens the PDF in PILOT, with progress
   const [detail, setDetail] = useState(null);       // { finding, lines }
   const [mediaByReq, setMediaByReq] = useState(new Map());
   const [mode, setMode] = useState(null);           // null | 'accept' | 'dispute'
@@ -377,6 +387,7 @@ function LoFindingCard({ appId, finding, money, onChanged }) {
 
   return (
     <div className="dd-card">
+      {openReport.node}
       <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           <span className="dd-card-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: 16, height: 16 }}><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg></span>
@@ -447,9 +458,15 @@ function LoFindingCard({ appId, finding, money, onChanged }) {
         {mode === 'dispute' && <button className="btn btn-sm ghost" disabled={busy} onClick={() => { setMode(null); setErr(''); }}>Cancel</button>}
         {mode === null && (<>
           {canAct && <span className="act-sep" aria-hidden="true" />}
-          <button className="btn btn-sm soft" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and photos."
-            onClick={() => { const w = window.open('', '_blank'); api.sitewireDrawReport(appId, drawId, 'staff', w); }}>
-            Download report (PDF)
+          <button className="btn btn-sm soft" disabled={openReport.busy}
+            title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and photos."
+            onClick={() => openReport.start({
+              title: 'Draw inspection report',
+              subtitle: 'Schedule of values, approved vs not approved, inspector notes and photos.',
+              status: () => api.sitewireDrawReportStatus(appId, drawId, 'staff'),
+              fetch: (onP) => api.sitewireDrawReportBytes(appId, drawId, 'staff', onP),
+            })}>
+            Open report (PDF)
           </button>
         </>)}
       </div>

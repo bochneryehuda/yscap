@@ -8,6 +8,7 @@ import FileSections, { Section, goToSection } from './FileSections.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import { ScheduleButton, ScheduledSends } from './ScheduleSend.jsx';
 import { useLightbox } from './MediaLightbox.jsx';
+import { useReportOpener } from './ReportOpener.jsx';
 
 /* Per-file construction-draw desk (staff). One place tying draws ↔ Scope of Work ↔
    construction budget: the unified per-line/per-unit rollup, each draw's per-line
@@ -145,6 +146,7 @@ function PayoffDemandBanner({ payoff, started }) {
 }
 
 function DrawsPanel({ appId }) {
+  const openReport = useReportOpener();   // the in-app report panel (see ReportOpener.jsx)
   const { can } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -237,6 +239,7 @@ function DrawsPanel({ appId }) {
 
   return (
     <div>
+      {openReport.node}
       {/* A refresh that failed while the desk is already up — shown inline instead of
           replacing the whole panel, so the reader stays where they are. */}
       {err && <div className="dd-card" style={{ marginTop: 12, borderLeft: '3px solid var(--bad,#b04a3f)', color: 'var(--bad,#b04a3f)' }}>{err}</div>}
@@ -338,12 +341,29 @@ function DrawsPanel({ appId }) {
             <Section id="dsec-draws" title="Draws" defaultOpen badge={draws.length || null}
               action={draws.length > 0 ? (
                 <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                  {/* OPENS IN PILOT WITH A VISIBLE PROGRESS STATE, not into a blank browser
+                      tab (owner-reported 2026-08-23). A whole-project report is the biggest
+                      one there is — every draw, every photo — so it is exactly the case that
+                      used to sit blank for half a minute and read as an error. */}
                   <button className="btn btn-sm soft" title="A PILOT-branded PDF of the whole construction project — schedule of values + every draw's inspection photos + notes."
-                    onClick={() => { const w = window.open('', '_blank'); act('projreport', async () => { await api.sitewireProjectReport(appId, 'staff', w); return { msg: 'Opened the whole-project report in a new tab.' }; }); }}>
+                    onClick={() => openReport.start({
+                      title: 'Whole-project inspection report',
+                      subtitle: 'Every draw, the schedule of values, inspector notes and photos.',
+                      status: () => api.sitewireProjectReportStatus(appId, 'staff'),
+                      fetch: (onP) => api.sitewireProjectReportBytes(appId, 'staff', onP),
+                    })}>
                     Whole-project report
                   </button>
                   <button className="btn btn-sm soft" title="The same whole-project report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower."
-                    onClick={async () => { if (!(await askConfirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.'))) return; const w = window.open('', '_blank'); act('projreportb', async () => { await api.sitewireProjectReport(appId, 'borrower', w); return { msg: 'Shared the borrower-safe whole-project report with the borrower.' }; }); }}>
+                    onClick={async () => {
+                      if (!(await askConfirm('Share the borrower-safe whole-project report with the borrower? They’ll be able to see it in their portal.'))) return;
+                      openReport.start({
+                        title: 'Whole-project report — borrower copy',
+                        subtitle: 'Borrower-safe. Generating it shares it with the borrower.',
+                        status: () => api.sitewireProjectReportStatus(appId, 'borrower'),
+                        fetch: (onP) => api.sitewireProjectReportBytes(appId, 'borrower', onP),
+                      });
+                    }}>
                     Borrower copy
                   </button>
                 </div>
@@ -1944,6 +1964,7 @@ function PortalDrawsCard({ appId }) {
 
 // per-line entry (transcribed from TrustPoint's console) + the push-to-Sitewire button.
 function TrustpointPanel({ appId }) {
+  const openReport = useReportOpener();   // the in-app report panel (see ReportOpener.jsx)
   const [ov, setOv] = useState(null);
   const [openLines, setOpenLines] = useState(null);   // tp_draw_id whose entry form is open
   const [lineData, setLineData] = useState(null);
@@ -1996,6 +2017,7 @@ function TrustpointPanel({ appId }) {
   // a raw database value in one place and a friendly label in the other.
   return (
     <div className="dd-card" style={{ marginTop: 12 }}>
+      {openReport.node}
       <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           <span className="dd-card-ic"><SdIcon name="ext" /></span>
@@ -2046,7 +2068,12 @@ function TrustpointPanel({ appId }) {
                 <button className="btn btn-sm ghost" disabled={busy} onClick={() => pushNow(d)}>Push approval to Sitewire</button>
               </>
             )}
-            <button className="btn btn-sm ghost" disabled={busy} onClick={() => { const w = window.open('', '_blank'); api.trustpointDrawReport(appId, d.tp_draw_id, 'staff', w).catch((e) => setMsg(e?.data?.error || e.message)); }}>Report (PDF)</button>
+            <button className="btn btn-sm ghost" disabled={busy || openReport.busy}
+              onClick={() => openReport.start({
+                title: `TrustPoint draw ${d.tp_draw_id} — inspection report`,
+                subtitle: 'Approved amounts, inspector notes and the archived photos.',
+                fetch: (onP) => api.trustpointDrawReportBytes(appId, d.tp_draw_id, 'staff', onP),
+              })}>Report (PDF)</button>
           </div>
           <DrawMessages messages={d.messages} />
           {openLines === d.tp_draw_id && lineData && (
@@ -2756,6 +2783,7 @@ function DrawTimeline({ timeline }) {
 }
 
 function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff, readsOff, quickStatuses, delivery, answers }) {
+  const openReport = useReportOpener();   // the in-app report panel (see ReportOpener.jsx)
   const offTip = writesOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const readTip = readsOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const isOpen = draw.status !== 'approved';
@@ -2778,6 +2806,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
   }
   return (
     <div className="panel" style={{ marginTop: 10 }}>
+      {openReport.node}
       <div className="row between" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
         <div className="row" style={{ gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
           <b>Draw #{draw.number ?? '—'}</b>
@@ -2953,10 +2982,26 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
             {showPhotos ? 'Hide photos' : 'Photos'}
           </button>
           <button className="btn btn-sm soft" onClick={() => api.sitewireExportPacket(appId, draw.sitewire_draw_id).catch(() => {})}>Packet (Excel)</button>
-          <button className="btn btn-sm soft" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={busy === 'rep' + draw.sitewire_draw_id}
-            onClick={() => { const w = window.open('', '_blank'); act('rep' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'staff', w); return { msg: 'Opened the PILOT report in a new tab.' }; }); }}>Our report</button>
-          <button className="btn btn-sm soft" title="The same report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower." disabled={busy === 'repb' + draw.sitewire_draw_id}
-            onClick={async () => { if (!(await askConfirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal, including the draw processing fee deducted from their release.'))) return; const w = window.open('', '_blank'); act('repb' + draw.sitewire_draw_id, async () => { await api.sitewireDrawReport(appId, draw.sitewire_draw_id, 'borrower', w); return { msg: 'Shared the borrower-safe report with the borrower (opened in a new tab).' }; }); }}>Borrower copy</button>
+          {/* THE REPORT OPENS HERE, IN PILOT, showing what it is doing while it builds —
+              it used to open a blank browser tab and fill it 5-40s later, which is what
+              the owner saw as "a blank page … it's not even opening". */}
+          <button className="btn btn-sm soft" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and the inspection photos." disabled={openReport.busy}
+            onClick={() => openReport.start({
+              title: `Draw ${draw.number != null ? '#' + draw.number : ''} — inspection report`,
+              subtitle: 'Schedule of values, approved vs not approved, inspector notes and photos.',
+              status: () => api.sitewireDrawReportStatus(appId, draw.sitewire_draw_id, 'staff'),
+              fetch: (onP) => api.sitewireDrawReportBytes(appId, draw.sitewire_draw_id, 'staff', onP),
+            })}>Our report</button>
+          <button className="btn btn-sm soft" title="The same report, borrower-safe: no capital-partner name and no photo locations. It DOES show the draw processing fee that comes out of their money — never our fee income across the project. Generating it shares it with the borrower." disabled={openReport.busy}
+            onClick={async () => {
+              if (!(await askConfirm('Share the borrower-safe report for this draw with the borrower? They’ll be able to see it in their portal, including the draw processing fee deducted from their release.'))) return;
+              openReport.start({
+                title: `Draw ${draw.number != null ? '#' + draw.number : ''} — borrower copy`,
+                subtitle: 'Borrower-safe. Generating it shares it with the borrower.',
+                status: () => api.sitewireDrawReportStatus(appId, draw.sitewire_draw_id, 'borrower'),
+                fetch: (onP) => api.sitewireDrawReportBytes(appId, draw.sitewire_draw_id, 'borrower', onP),
+              });
+            }}>Borrower copy</button>
           {draw.pdf_src && <a className="btn btn-sm soft" href={draw.pdf_src} target="_blank" rel="noreferrer">Inspector PDF</a>}
         </span>
       </div>

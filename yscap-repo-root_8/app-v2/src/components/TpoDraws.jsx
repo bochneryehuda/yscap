@@ -3,6 +3,7 @@ import { api } from '../lib/api.js';
 import { askConfirm } from '../lib/dialog.js';
 import { moneyCents } from '../lib/money.js';
 import { useLightbox } from './MediaLightbox.jsx';
+import { useReportOpener } from './ReportOpener.jsx';
 
 /* Phase 6b/6d — the broker's draw view. A broker SEES the same borrower-safe construction-draw
    picture the borrower sees — the budget vs. what's released, the per-line rollup, each inspection
@@ -170,17 +171,26 @@ function TpoMediaStrip({ line }) {
 
 /* The whole-project inspection report (PDF) — all draws in one branded, borrower-safe document. */
 function TpoProjectReportButton({ appId }) {
-  const [err, setErr] = useState('');
+  // No local error state: the report panel owns the whole outcome — progress, the
+  // server's own reason on a failure, and a Try again — so a second place to show
+  // an error would only ever be a stale copy of the first.
+  const openReport = useReportOpener();
   return (
     <div className="act-card">
+      {openReport.node}
       <div className="act-card-head">
         <div style={{ minWidth: 220, flex: 1 }}>
           <div className="act-card-title">Full inspection report</div>
           <div className="act-card-sub">Every draw, what was approved, the inspector’s notes and photos — one PDF.</div>
-          {err && <div className="act-card-sub" style={{ color: 'var(--danger)', fontWeight: 600 }}>{err}</div>}
         </div>
-        <button className="btn btn-sm ghost" onClick={() => { setErr(''); const w = window.open('', '_blank'); api.tpoDrawReport(appId, null, w).catch((e) => setErr(e?.data?.error || e.message || 'Could not open the report — please try again.')); }}>
-          Download PDF
+        <button className="btn btn-sm ghost" disabled={openReport.busy}
+          onClick={() => openReport.start({
+            title: 'Full inspection report',
+            subtitle: 'Every draw, what was approved, the inspector’s notes and photos.',
+            status: () => api.tpoDrawReportStatus(appId, null),
+            fetch: (onP) => api.tpoDrawReportBytes(appId, null, onP),
+          })}>
+          Open PDF
         </button>
       </div>
     </div>
@@ -194,6 +204,7 @@ function TpoProjectReportButton({ appId }) {
    never a partner name). The action calls the firm-scoped /api/tpo endpoints (never the reply_token)
    and reloads on success so the badge and buttons reflect the new state. */
 function TpoFindingCard({ finding, appId, money, onChanged }) {
+  const openReport = useReportOpener();   // opens the PDF in the portal, with progress
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState(null);          // null (nothing open) | 'dispute'
@@ -223,6 +234,7 @@ function TpoFindingCard({ finding, appId, money, onChanged }) {
 
   return (
     <div className="dd-card">
+      {openReport.node}
       <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           <span className="dd-card-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: 16, height: 16 }}><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg></span>
@@ -314,7 +326,13 @@ function TpoFindingCard({ finding, appId, money, onChanged }) {
         )}
         <button className="btn btn-sm soft"
           title="A PILOT-branded PDF of this draw inspection — the schedule of values, what was approved, the inspector’s notes and photos."
-          onClick={() => { setErr(''); const w = window.open('', '_blank'); api.tpoDrawReport(appId, finding.sitewire_draw_id, w).catch((e) => setErr(e?.data?.error || e.message || 'Could not open the report — please try again.')); }}>
+          disabled={openReport.busy}
+          onClick={() => openReport.start({
+            title: 'Draw inspection report',
+            subtitle: 'The schedule of values, what was approved, the inspector’s notes and photos.',
+            status: () => api.tpoDrawReportStatus(appId, finding.sitewire_draw_id),
+            fetch: (onP) => api.tpoDrawReportBytes(appId, finding.sitewire_draw_id, onP),
+          })}>
           Download report (PDF)
         </button>
       </div>

@@ -279,6 +279,40 @@ async function generateAndServeReport(req, res, { sitewireDrawId, scope }) {
     return serveDocument(res, r.doc, { inline: true });
   } catch (e) { res.status(500).json({ error: 'Could not build the report — please try again.' }); }
 }
+/* IS IT ALREADY BUILT? (owner-reported 2026-08-23: *"it's going to a blank page …
+   If it needs time, in the pilot, you should see that it takes time loading."*)
+
+   The screen used to open a blank browser tab and only THEN start a request that
+   might take thirty seconds to render a PDF full of photos — so the user watched an
+   empty white page with no way to tell a slow build from a broken link. It cannot
+   tell the difference because the old flow never asked: the only thing it could do
+   was wait for bytes.
+
+   This is the question that makes an honest progress state possible, and it is
+   cheap — the same metadata the builder loads, the row lookup, and NOT one photo
+   byte or one line of PDF rendering. The client calls it on the click, then shows
+   either "opening" (already built) or "building this report — 43 photos" with a
+   real bar, in PILOT, where the owner asked for it. */
+async function serveReportStatus(req, res, { sitewireDrawId, scope }) {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const mode = req.query.mode === 'borrower' ? 'borrower' : 'staff';
+  try {
+    const st = await drawReport.reportStatus(appId, { sitewireDrawId, scope, mode });
+    return res.json(st);
+  } catch (e) {
+    console.warn('[sitewire] report status error:', e && e.message);
+    return res.status(500).json({ error: 'Could not check the report — please try again.' });
+  }
+}
+router.get('/files/:id/draws/:drawId/report/status', requireDrawView, async (req, res) => {
+  if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
+  return serveReportStatus(req, res, { sitewireDrawId: req.params.drawId, scope: 'draw' });
+});
+router.get('/files/:id/report/status', requireDrawView, async (req, res) => {
+  return serveReportStatus(req, res, { sitewireDrawId: null, scope: 'project' });
+});
+
 // per-draw report
 router.get('/files/:id/draws/:drawId/report', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });

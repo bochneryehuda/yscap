@@ -148,20 +148,18 @@ router.get('/:token/report', tokenThrottleReport, async (req, res) => {
   if (!f) return res.status(404).json({ error: 'not found' });
   if (isExpired(f.delivered_at) && f.status !== 'accepted') return res.status(410).json({ error: 'This link has expired — please sign in to your portal.', expired: true });
   try {
+    /* THE SHARED BUILDER, NOT A FOURTH COPY OF IT. This was the last of four routes
+       carrying its own inline load → attach photos → render → store sequence, and it
+       is the one most exposed to a burst: it is the link in the borrower's email, so
+       a forwarded message can put several opens on the same report inside a second.
+       The shared builder runs ONE render for all of them (owner-reported 2026-08-23:
+       the report "takes a very long time, and sometimes it's not even opening").
+       `mode` stays HARD-FORCED to 'borrower' — a token holder can never obtain the
+       staff copy. */
     const appId = f.application_id; const drawId = String(f.sitewire_draw_id);
-    const meta = await drawReport.loadReportMeta(appId, { sitewireDrawId: drawId, mode: 'borrower' });
-    if (!meta || !meta.hasScope || !meta.sections.length) return res.status(404).json({ error: 'Your inspection report isn’t ready yet.' });
-    const drawNumber = meta.sections[0] ? meta.sections[0].number : null;
-    const filename = drawReport.reportFilename({ scope: 'draw', mode: 'borrower', drawNumber, version: meta.version, loanNo: meta.app.loanNo });
-    const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
-    let doc = (await db.query(`SELECT * FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`, [appId, filename])).rows[0];
-    if (!doc) {
-      await drawReport.attachPhotoBytes(meta.sections);
-      const bytes = drawReport.buildDrawReport({ app: meta.app, rollup: meta.rollup, sections: meta.sections, scope: 'draw', mode: 'borrower' });
-      const docId = await drawReport.storeDrawReport({ appId, borrowerId: borrowerId.borrower_id, filename, bytes, mode: 'borrower' });
-      doc = (await db.query(`SELECT * FROM documents WHERE id=$1`, [docId])).rows[0];
-    }
-    return serveDocument(res, doc, { inline: true });
+    const r = await drawReport.buildOrGetReportDoc(appId, { sitewireDrawId: drawId, scope: 'draw', mode: 'borrower' });
+    if (!r || !r.doc) return res.status(404).json({ error: 'Your inspection report isn’t ready yet.' });
+    return serveDocument(res, r.doc, { inline: true });
   } catch (e) { return res.status(500).json({ error: 'Could not build your report right now — please try again shortly.' }); }
 });
 

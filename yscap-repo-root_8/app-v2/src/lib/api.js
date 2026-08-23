@@ -178,6 +178,65 @@ async function download(path) {
   const m = /filename="([^"]+)"/.exec(cd);
   return { blob: await res.blob(), filename: m ? m[1] : 'document' };
 }
+/* THE SAME DOWNLOAD, BUT IT SAYS WHERE IT HAS GOT TO.
+ *
+ * Owner-reported 2026-08-23 about the draw report: *"it's going to a blank page. It
+ * takes a very long time … If it needs time, in the pilot, you should see that it
+ * takes time loading."* `download()` above awaits `res.blob()`, which resolves only
+ * when the LAST byte has arrived — so between the click and the file there is no
+ * information at all, and a slow build is indistinguishable from a broken link.
+ *
+ * This reads the body as a stream and reports progress as it goes. Two honest
+ * phases, and it never invents a third:
+ *   · WAITING — the request is out, no byte has come back. For a report that means
+ *     the server is still RENDERING; there is genuinely no percentage to show yet,
+ *     so the caller shows elapsed time, not a fake bar creeping to 90%.
+ *   · RECEIVING — bytes are arriving. With a Content-Length that is a real
+ *     percentage; without one it is a byte count, which is still the truth.
+ *
+ * Falls back to a plain `blob()` where the browser has no streaming body reader, so
+ * the download itself can never depend on the progress feature working.
+ */
+async function downloadProgress(path, onProgress) {
+  const t = getToken();
+  const report = (p) => { try { if (onProgress) onProgress(p); } catch (_) { /* a progress callback may never break a download */ } };
+  report({ phase: 'waiting', received: 0, total: null, pct: null });
+
+  const res = await resilientFetch(path, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
+  if (!res.ok) {
+    let data = null; try { data = await res.json(); } catch { /* empty */ }
+    const err = new Error((data && data.message) || friendlyError(res.status, data));
+    err.status = res.status; err.data = data;
+    throw err;
+  }
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = /filename="([^"]+)"/.exec(cd);
+  const filename = m ? m[1] : 'document';
+  const type = res.headers.get('Content-Type') || 'application/octet-stream';
+  const lenHeader = res.headers.get('Content-Length');
+  const total = lenHeader && /^\d+$/.test(lenHeader) ? Number(lenHeader) : null;
+
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    const blob = await res.blob();
+    report({ phase: 'done', received: blob.size, total: blob.size, pct: 100 });
+    return { blob, filename };
+  }
+  const reader = res.body.getReader();
+  const chunks = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    report({ phase: 'receiving', received, total, pct: total ? Math.min(99, Math.round((received / total) * 100)) : null });
+  }
+  const blob = new Blob(chunks, { type });
+  report({ phase: 'done', received, total: total || received, pct: 100 });
+  return { blob, filename };
+}
+export const downloadAuthedProgress = downloadProgress;
+
 // Like download(), but POSTs a JSON body first (for exports that take a selection,
 // e.g. a bulk tape). On error the server's JSON `{error,message,...}` rides along
 // on err.data so the caller can show the exact reason (e.g. a buyer mismatch).
@@ -548,6 +607,12 @@ export const api = {
     try { const { blob, filename } = await download(`/api/tpo/applications/${appId}/draws/report${drawId ? `?drawId=${drawId}` : ''}`); openBlob(blob, filename, win); }
     catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
   },
+  // The same report, opened IN the portal with a visible progress state (2026-08-23).
+  tpoDrawReportStatus: (appId, drawId) =>
+    req('GET', `/api/tpo/applications/${appId}/draws/report/status${drawId ? `?drawId=${drawId}` : ''}`),
+  tpoDrawReportBytes: (appId, drawId, onProgress) =>
+    downloadProgress(`/api/tpo/applications/${appId}/draws/report${drawId ? `?drawId=${drawId}` : ''}`, onProgress),
+
   // Phase 6d — the broker ACCEPTS / DISPUTES an inspection result (owner-locked: "like a borrower").
   // Authenticated + firm-scoped; mirrors the borrower's authenticated accept/dispute server-side —
   // never the borrower's public reply_token. Accept MOVES MONEY (starts the wire SLA).
@@ -1023,6 +1088,22 @@ export const api = {
     try { const { blob, filename } = await download(`/api/sitewire/files/${appId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`); openBlob(blob, filename, win); }
     catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
   },
+  /* THE REPORT, OPENED IN PILOT WITH A VISIBLE PROGRESS STATE (owner-reported
+     2026-08-23). `…Status` is the cheap "is it already built?" probe the screen asks
+     on the click, so it can say "opening" or "building — 43 photos" instead of
+     showing a blank tab; `…Bytes` streams the PDF and reports how far it has got.
+     The `win`-based openers above are kept for the callers that genuinely want a new
+     browser tab (the borrower-share action), unchanged. */
+  sitewireDrawReportStatus: (appId, drawId, mode) =>
+    req('GET', `/api/sitewire/files/${appId}/draws/${drawId}/report/status${mode === 'borrower' ? '?mode=borrower' : ''}`),
+  sitewireProjectReportStatus: (appId, mode) =>
+    req('GET', `/api/sitewire/files/${appId}/report/status${mode === 'borrower' ? '?mode=borrower' : ''}`),
+  sitewireDrawReportBytes: (appId, drawId, mode, onProgress) =>
+    downloadProgress(`/api/sitewire/files/${appId}/draws/${drawId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`, onProgress),
+  sitewireProjectReportBytes: (appId, mode, onProgress) =>
+    downloadProgress(`/api/sitewire/files/${appId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`, onProgress),
+  trustpointDrawReportBytes: (appId, tpDrawId, mode, onProgress) =>
+    downloadProgress(`/api/trustpoint/files/${appId}/draws/${tpDrawId}/report${mode === 'borrower' ? '?mode=borrower' : ''}`, onProgress),
   // PILOT-branded report for a TrustPoint-administered draw (staff; mode borrower = the
   // borrower-safe copy). Opens in a tab (win pre-opened in the click handler).
   trustpointDrawReport: async (appId, tpDrawId, mode, win) => {
@@ -1035,6 +1116,13 @@ export const api = {
     try { const { blob, filename } = await download(`/api/borrower/draws/${appId}/report${drawId ? `?drawId=${drawId}` : ''}`); openBlob(blob, filename, win); }
     catch (e) { try { if (win && !win.closed) win.close(); } catch { /* ignore */ } throw e; }
   },
+  // The same report, opened IN the portal with a visible progress state — the
+  // borrower sees a blank tab for exactly as long as a staffer does, so they get
+  // the same fix (owner-reported 2026-08-23).
+  borrowerDrawReportStatus: (appId, drawId) =>
+    req('GET', `/api/borrower/draws/${appId}/report/status${drawId ? `?drawId=${drawId}` : ''}`),
+  borrowerDrawReportBytes: (appId, drawId, onProgress) =>
+    downloadProgress(`/api/borrower/draws/${appId}/report${drawId ? `?drawId=${drawId}` : ''}`, onProgress),
   staffTprPreview:  (appId) => req('GET', `/api/staff/applications/${appId}/export/tpr/preview`),
   staffTprExport:   (appId) => download(`/api/staff/applications/${appId}/export/tpr`),
   // MISMO 3.4 — the mortgage industry's shared file format. Export downloads the

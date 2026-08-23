@@ -6206,3 +6206,75 @@ video.mlb-media{min-width:min(720px,88vw)}
   .mlb-backdrop,.mlb-close,.mlb-thumb-blank{animation:none;transition:none}
   .mlb-close:hover{transform:none}
 }
+
+/* ── THE REPORT PANEL (ReportOpener.jsx) — owner-reported 2026-08-23 ─────────
+   *"it's going to a blank page. It takes a very long time … If it needs time, in
+   the pilot, you should see that it takes time loading."*  The report used to open
+   into a browser tab PILOT does not own, so there was nowhere to put a spinner.
+   This is that missing surface: it lives in the app, it is on screen from the first
+   millisecond after the click, and it always says what is happening. */
+.rpt-backdrop{position:fixed;inset:0;z-index:3000;background:rgba(20,27,34,.55);
+  display:flex;align-items:center;justify-content:center;padding:24px;
+  backdrop-filter:blur(2px);animation:rpt-fade .12s ease-out}
+@keyframes rpt-fade{from{opacity:0}to{opacity:1}}
+.rpt-shell{display:flex;flex-direction:column;width:min(1080px,100%);height:min(92vh,100%);
+  background:var(--ink-1,#fff);border:1px solid var(--line,#D9D4C8);border-radius:14px;
+  box-shadow:0 24px 70px rgba(0,0,0,.28);overflow:hidden}
+
+.rpt-head{display:flex;align-items:center;gap:10px;flex:0 0 auto;
+  padding:12px 14px;border-bottom:1px solid var(--line,#D9D4C8);
+  background:linear-gradient(180deg,#fff,var(--ink-2,#F4F1EA))}
+.rpt-head-text{flex:1 1 auto;min-width:0}
+.rpt-title{font-weight:700;font-size:15px;line-height:1.25;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rpt-sub{font-size:12.5px;color:var(--muted,#4B585C);line-height:1.3;margin-top:1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rpt-x{flex:0 0 auto;width:32px;height:32px;border-radius:8px;cursor:pointer;
+  border:1px solid var(--line,#D9D4C8);background:#fff;color:var(--ivory,#141B22);
+  font-size:15px;line-height:1;display:inline-flex;align-items:center;justify-content:center}
+.rpt-x:hover{background:var(--ink-2,#F4F1EA)}
+.rpt-x:focus-visible{outline:2px solid var(--teal-br,#256168);outline-offset:2px}
+
+/* the progress block */
+.rpt-progress{flex:0 0 auto;padding:14px 16px 16px;border-bottom:1px solid var(--line,#D9D4C8);
+  background:var(--surface-soft,#FBF9F4)}
+.rpt-progress.is-error{background:rgba(163,42,42,.06);border-bottom-color:rgba(163,42,42,.3)}
+.rpt-progress-row{display:flex;align-items:baseline;gap:10px;margin-bottom:9px}
+.rpt-progress-text{flex:1 1 auto;font-size:13.5px;line-height:1.45;font-weight:600}
+.rpt-progress.is-error .rpt-progress-text{color:var(--danger,#A32A2A);font-weight:600}
+.rpt-progress-secs{flex:0 0 auto;font-size:12px;color:var(--muted,#4B585C);
+  font-variant-numeric:tabular-nums}
+
+/* THE BAR HAS TWO HONEST STATES AND NO THIRD.
+   Indeterminate while the server renders — nothing has arrived, so there is no
+   percentage that would be true. Determinate the moment bytes start, driven by
+   Content-Length. A bar that creeps to 90% and stops is what makes people believe a
+   system is broken; that is exactly the impression being fixed here. */
+.rpt-bar{position:relative;height:6px;border-radius:999px;overflow:hidden;
+  background:var(--line-soft,#EFEADD)}
+.rpt-bar-fill{height:100%;border-radius:999px;
+  background:linear-gradient(90deg,var(--teal,#2F7F86),var(--teal-br,#256168));
+  transition:width .25s ease-out}
+.rpt-bar.is-indeterminate .rpt-bar-fill{width:38%;animation:rpt-sweep 1.15s ease-in-out infinite}
+@keyframes rpt-sweep{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+
+.rpt-actions{display:flex;gap:8px;margin-top:11px;flex-wrap:wrap}
+.rpt-body{flex:1 1 auto;min-height:0;overflow:auto;background:var(--ink-2,#F4F1EA)}
+.rpt-msg{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:9px;padding:52px 24px;text-align:center;height:100%}
+.rpt-msg-h{font-weight:700;font-size:15px}
+.rpt-msg-p{font-size:13px;color:var(--muted,#4B585C);max-width:460px}
+.rpt-spin{width:28px;height:28px;border-radius:50%;
+  border:3px solid var(--line-soft,#EFEADD);border-top-color:var(--teal,#2F7F86);
+  animation:rpt-spin .8s linear infinite}
+@keyframes rpt-spin{to{transform:rotate(360deg)}}
+
+@media (max-width:720px){
+  .rpt-backdrop{padding:0}
+  .rpt-shell{width:100%;height:100%;border-radius:0;border:none}
+  .rpt-head{flex-wrap:wrap}
+}
+@media (prefers-reduced-motion:reduce){
+  .rpt-backdrop,.rpt-spin{animation:none}
+  .rpt-bar.is-indeterminate .rpt-bar-fill{animation:none;width:100%;opacity:.5}
+}
