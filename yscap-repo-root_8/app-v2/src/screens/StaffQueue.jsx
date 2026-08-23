@@ -6,6 +6,7 @@ import { useAuth } from '../lib/auth.jsx';
 import InviteApplicant from '../components/InviteApplicant.jsx';
 import { useFlash } from '../components/FlashToast.jsx';
 import { askPrompt } from '../lib/dialog.js';
+import { statusLabel, statusPill } from '../lib/soldStage.js';
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
@@ -311,7 +312,9 @@ function Row({ a, onArchive }) {
         {off ? <span className="off"><span className="mono">{initials(off)}</span>{off}</span> : <span className="mut">Unassigned</span>}
       </div>
       <div className="q-stat">
-        <span className={`pill ${PILL[a.status] || 'mut'}`}>{LABEL[a.status] || a.status}</span>
+        {/* SOLD is a stage on top of funded (db/611) — one definition, shared with the file
+            header: app-v2/src/lib/soldStage.js. */}
+        <span className={`pill ${statusPill(a, PILL)}`}>{statusLabel(a, LABEL)}</span>
       </div>
       <div className="prog-cell">
         {a.total_items > 0

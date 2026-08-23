@@ -85,6 +85,7 @@ import DraftingPanel from '../components/DraftingPanel.jsx';
 import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import LoudHint from '../components/LoudHint.jsx';
+import { statusLabel } from '../lib/soldStage.js';
 
 /* The draft-commit closing-date input that used to live here ("you can't even
    type in dates" — a date input fires change with each intermediate value while
@@ -995,8 +996,96 @@ const APP_STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_revi
    the stage rides on `sold_at`. What a person SEES is the stage, which is what the owner asked for:
    *"The files that are being sold should have a status of 'Sold'."* Table-funded loans never get
    one; that exclusion is decided server-side (`lib/sold-status.js`), never re-derived here. */
-const soldStage = (a) => !!(a && a.sold_at && a.status === 'funded');
-const appStatusLabel = (a) => (soldStage(a) ? 'Sold' : (APP_STATUS_LABEL[a && a.status] || (a && a.status) || '—'));
+/* WHAT WE CALL THE FILE INTERNALLY. Sold is a stage on top of funded, so this is the internal
+   word — never the borrower's. ONE definition, shared with the pipeline list: lib/soldStage.js. */
+const appStatusLabel = (a) => statusLabel(a, APP_STATUS_LABEL);
+/* WHAT THE BORROWER ACTUALLY SEES, which is a DIFFERENT question and used to be answered with the
+   line above (it was printed under the words "Borrower sees"). It was wrong, and wrong in the
+   direction that matters: `clickup/post-closing-stage.js` and `clickup/status.js` hold the frozen
+   rule that EVERY post-closing stage — `pa issued-post closing.`, `waiting for final docs`,
+   `closed reconciled` — derives back to the borrower-facing word `funded`, precisely so an
+   automatic push can never move what a borrower is looking at. The screen was telling staff that
+   a borrower could see the loan had been sold to an investor. They cannot, and must not. */
+const borrowerStatusLabel = (a) => (APP_STATUS_LABEL[a && a.status] || (a && a.status) || '—');
+/* THE TRACK-RECORD CONDITION, IN THREE SHORT LINES (owner-directed 2026-08-23).
+
+   *"The condition needs to come directly from the registration, because if you're lowering the
+   application it doesn't help you — the registration is still built on the higher one. It always
+   needs to come from the registration, but the condition can start from what you put in the
+   application… Make it very simple and very user-friendly, not ugly."*
+
+   THE RULE DOES NOT CHANGE — it was already right. What changes is that the screen now SAYS it,
+   always, instead of only in the one stuck case. Three lines, in the order a person reads them:
+
+     1. WHERE IT STANDS — how many are verified out of how many are needed. The number, first.
+     2. WHERE THE NUMBER COMES FROM — the registered product, or (before there is a registration)
+        the application. This line is always present. It is the whole answer to "why does it say
+        five?", and printing it only when something is wrong meant the question could only be
+        answered by someone who already knew.
+     3. WHAT TO DO — only when there IS something to do.
+
+   The server does every judgement (`lib/experience.js` stamps `gateNeed`, `needFrom`,
+   `claimBelowNeed`, `reRegisterBlockedBy` onto the condition); this reads them. Nothing here
+   re-derives a requirement, so the screen and the sign-off gate cannot disagree. */
+function TrackRecordLine({ it }) {
+  const p = it.tool_payload || {};
+  if (p.notApplicable) {
+    return (
+      <span>No experience required on this file — this comes back the moment experience is entered
+        on the application or in Products &amp; Pricing.</span>
+    );
+  }
+  const entered = p.counts;
+  const verified = p.verifiedCounts || {};
+  // What must actually be VERIFIED to sign off. Falls back to the claim on payloads written
+  // before `gateNeed` existed, exactly as the old line did.
+  const need = p.gateNeed || p.required;
+  if (!entered) return <span>Verified from the borrower’s general track record (panel below)</span>;
+
+  const fmt = (x) => [
+    `${x.flips || 0} flip${x.flips === 1 ? '' : 's'}`,
+    `${x.holds || 0} hold${x.holds === 1 ? '' : 's'}`,
+    x.ground ? `${x.ground} ground-up` : null,
+  ].filter(Boolean).join(' · ');
+
+  const needsAny = need && (need.flips + need.holds + need.ground > 0);
+  const short = needsAny ? [
+    need.flips > (verified.flips || 0) ? `${need.flips - (verified.flips || 0)} flip${need.flips - (verified.flips || 0) === 1 ? '' : 's'}` : null,
+    need.holds > (verified.holds || 0) ? `${need.holds - (verified.holds || 0)} hold${need.holds - (verified.holds || 0) === 1 ? '' : 's'}` : null,
+    need.ground > (verified.ground || 0) ? `${need.ground - (verified.ground || 0)} ground-up` : null,
+  ].filter(Boolean) : [];
+
+  // LINE 2 — always shown. `needFrom` is the server's own answer to which of the two decided.
+  const fromRegistration = p.needFrom === 'registration';
+  const where = fromRegistration
+    ? <>Required by the <b>registered product</b> ({fmt(need)}).</>
+    : <>Required by the <b>application</b> ({fmt(need)}) — once a product is registered, the
+        registration sets this number instead.</>;
+
+  // LINE 3 — only when there is something to do about it.
+  let todo = null;
+  if (p.claimBelowNeed) {
+    todo = p.reRegisterBlockedBy
+      ? <>The file now claims {fmt(p.required || {})}. To bring this number down the product has to be
+          re-registered on the lower experience — and that is blocked right now: {p.reRegisterBlockedBy}</>
+      : <>The file now claims {fmt(p.required || {})}. To bring this number down, open
+          <b> Products &amp; Pricing</b> and register again on the lower experience.</>;
+  } else if (short.length) {
+    todo = <>Verify {short.join(', ')} on the track record — or re-register on experience the
+      borrower can prove.</>;
+  }
+
+  return (
+    <span>
+      <span>Verified <b>{fmt(verified)}</b> of {fmt(need)}{!short.length && needsAny ? ' — met ✓' : ''}
+        {' '}<span className="muted">(entered: {fmt(entered)})</span>
+      </span>
+      <br />{where}
+      {todo && <><br />{todo}</>}
+    </span>
+  );
+}
+
 const PHASE_LABEL = {
   p1_intake: 'Phase 1 · Borrower Intake', p2_setup: 'Phase 2 · File Setup',
   p3_verify: 'Phase 3 · Verifications', p4_appraisal: 'Phase 4 · Appraisal & Numbers',
@@ -3985,55 +4074,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     })()
                     : it.tool_key === 'esign' ? `E-signature${it.esign_doc ? ` — ${it.esign_doc}` : ''} (activates with the e-sign integration)`
                     : it.tool_key === 'rehab_budget' ? `Scope of Work builder${app.rehab_budget != null ? ` · total ${money(app.rehab_budget)}` : ''}`
-                    : it.tool_key === 'track_record' ? (() => {
-                        // live counts stamped on the condition by the server on
-                        // every track-record change — no need to open the panel.
-                        // ENTERED (on record) vs VERIFIED are shown side by side;
-                        // the condition can only be signed off on VERIFIED
-                        // experience (owner-directed 2026-07-20).
-                        const p = it.tool_payload || {};
-                        // Shortfall is measured against what must actually be VERIFIED
-                        // to sign off — the REGISTERED product's experience (gateNeed),
-                        // matching the sign-off gate. Falls back to the claim on older
-                        // payloads that predate gateNeed.
-                        const c = p.counts, v = p.verifiedCounts || {}, r = p.gateNeed || p.required;
-                        // No experience priced/claimed on this file → nothing to
-                        // verify. It reactivates the moment experience is entered
-                        // on the application or in Products & Pricing.
-                        if (p.notApplicable) return 'No experience required on this file — reactivates if experience is entered on the application or in Products & Pricing';
-                        if (!c) return 'Verified from the borrower\'s general track record (panel below)';
-                        const fmt = (x) => `${x.flips || 0} flip${x.flips === 1 ? '' : 's'} · ${x.holds || 0} hold${x.holds === 1 ? '' : 's'}${x.ground ? ` · ${x.ground} ground-up` : ''}`;
-                        const have = `Entered: ${fmt(c)} · Verified: ${fmt(v)}`;
-                        const needsAny = r && (r.flips + r.holds + r.ground > 0);
-                        // Shortfall is judged on VERIFIED — entering deals is not
-                        // enough; they must be verified before sign-off.
-                        const short = needsAny ? [
-                          r.flips > (v.flips || 0) ? `${r.flips - (v.flips || 0)} flip${r.flips - (v.flips || 0) === 1 ? '' : 's'}` : null,
-                          r.holds > (v.holds || 0) ? `${r.holds - (v.holds || 0)} hold${r.holds - (v.holds || 0) === 1 ? '' : 's'}` : null,
-                          r.ground > (v.ground || 0) ? `${r.ground - (v.ground || 0)} ground-up` : null,
-                        ].filter(Boolean) : [];
-                        /* WHERE THE NUMBER CAME FROM — owner-reported 2026-08-21: "we changed
-                           the application to only three experiences, we changed the products and
-                           prices to only three, but the condition is still requiring five and we
-                           can't sign off". The requirement is deliberately the REGISTERED
-                           product's experience (a lowered claim only relaxes it once the product
-                           is re-registered), and that rule stands — but the screen never SAID so,
-                           so a file whose re-register did not carry the lower number showed a
-                           stubborn "5" with nothing to act on. Saying it is the way out. */
-                        /* AND WHETHER THAT ADVICE CAN BE FOLLOWED. "Re-register Products &
-                           Pricing" is the way down — but past a sent term sheet, or at
-                           clear-to-close / funded, the register route refuses, and repeating
-                           advice that will bounce is the dead-end class this codebase names
-                           elsewhere. `reRegisterBlockedBy` is the file's own freeze, read
-                           actor-less, so the line names what clears it instead. */
-                        const why = p.claimBelowNeed
-                          ? ` — this comes from the REGISTERED product (priced on ${fmt(r)}); the file itself now claims ${fmt(p.required || {})}, so the requirement only comes down once the product is re-registered on the lower number`
-                            + (p.reRegisterBlockedBy
-                                ? ` — and re-registering is blocked right now: ${p.reRegisterBlockedBy}`
-                                : ' — open Products & Pricing and register again')
-                          : '';
-                        return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')} verified` : ' — requirement met ✓ (verified)') : ''}${why}`;
-                      })()
+                    : it.tool_key === 'track_record' ? <TrackRecordLine it={it} />
                     : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : app.registered_program === 'manual' ? 'Manual' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
                     : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
                     : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? (() => {
@@ -4516,7 +4557,8 @@ function ClickupSyncPanel({ app, canSetup, isAdmin, onResynced }) {
       </div>
       <div className="row" style={{ gap: 16, flexWrap: 'wrap', marginTop: 8 }}>
         <span className="muted small">Internal status (ClickUp mirror): <b>{app.internal_status || '—'}</b></span>
-        <span className="muted small">Borrower sees: <b>{appStatusLabel(app)}</b></span>
+        <span className="muted small">In PILOT: <b>{appStatusLabel(app)}</b></span>
+        <span className="muted small">Borrower sees: <b>{borrowerStatusLabel(app)}</b></span>
         {app.ys_loan_number && <span className="muted small">YS loan #: <b>{app.ys_loan_number}</b></span>}
         <NoteBuyerRef value={app.lender} />
         {app.clickup_last_synced_at && <span className="muted small">Last synced: {new Date(app.clickup_last_synced_at).toLocaleString()}</span>}
