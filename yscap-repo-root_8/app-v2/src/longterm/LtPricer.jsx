@@ -5,7 +5,7 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
-import { labelize, compRowsOf, feeRowsOf } from './priceBuild.js';
+import { labelize, compRowsOf, feeRowsOf, groupByLender } from './priceBuild.js';
 // The form's own rules — which options exist, when a field appears, and the amount triangle. Also a
 // plain `.js` module, and for the same reason: CI can run it, and a rule CI cannot run is a rule
 // nobody is holding. See scenarioFields.js.
@@ -431,7 +431,7 @@ export function PriceBuild({ o }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    ONE RATE, AND EVERY INVESTOR AT IT.
    ────────────────────────────────────────────────────────────────────────── */
-export function RateRow({ row, open, onToggle, openQuote, onOpenQuote }) {
+export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender }) {
   return (
     <div style={{ border: `1px solid ${open ? GOLD : 'rgba(20,27,34,.12)'}`, borderRadius: 10, marginBottom: 8, overflow: 'hidden' }}>
       <button type="button" onClick={onToggle}
@@ -464,38 +464,96 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote }) {
             <span style={{ flex: '0 0 110px', textAlign: 'right' }}>Monthly P&amp;I</span>
             <span style={{ flex: '0 0 70px' }} />
           </div>
-          {row.quotes.map((q) => {
-            const isOpen = openQuote === q.key;
+          {groupByLender(row.quotes).map((g) => {
+            const gKey = `${row.key}|${g.key}`;
+            const many = g.programCount > 1;
+            const gOpen = many && openLenders.has(gKey);
+            const shown = gOpen ? g.quotes : [g.best];
             return (
-              <div key={q.key}>
+              <div key={g.key}>
+                {/* THE LENDER LINE — one per lender, showing their BEST price.
+                    It is deliberately NOT a <button> wrapping the row: the Details control lives
+                    inside it, and a button inside a button is invalid HTML that browsers silently
+                    re-parse, which moves the inner control out of the row it belongs to. The
+                    chevron is its own button instead. */}
                 <div style={{
                   display: 'flex', gap: 10, alignItems: 'baseline', padding: '9px 0',
                   borderBottom: '1px solid rgba(20,27,34,.07)', flexWrap: 'wrap',
+                  background: gOpen ? 'rgba(174,135,70,.05)' : 'transparent',
                 }}>
                   <span style={{ flex: '2 1 200px', minWidth: 180 }}>
-                    <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{q.lender || '—'}</span>
-                    {q.investor && q.investor !== q.lender && (
-                      <span style={{ fontSize: 12, color: MUTED }}> · {q.investor}</span>
+                    <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{g.lender || '—'}</span>
+                    {many && (
+                      <button type="button" onClick={() => onToggleLender(gKey)} aria-expanded={gOpen}
+                        style={{
+                          border: 0, background: 'none', padding: '0 0 0 8px', cursor: 'pointer',
+                          font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD,
+                          textDecoration: 'underline', textUnderlineOffset: 3,
+                        }}>{
+                        /* ONE template string: react-dom puts `<!-- -->` between adjacent JSX
+                           expressions, so `{n} programmes` never exists as one readable run. */
+                        `${gOpen ? 'hide' : 'show'} all ${g.programCount} programmes ${gOpen ? '\u25BE' : '\u25B8'}`
+                      }</button>
                     )}
-                    <div style={{ fontSize: 12, color: SLATE }}>{q.program || '—'}{q.product ? ` · ${q.product}` : ''}</div>
-                    {q.expired && (
+                    <div style={{ fontSize: 12, color: SLATE }}>
+                      {g.best && g.best.investor && g.best.investor !== g.lender ? `${g.best.investor} · ` : ''}
+                      {(g.best && g.best.program) || '—'}{g.best && g.best.product ? ` · ${g.best.product}` : ''}
+                    </div>
+                    {g.best && g.best.expired && (
                       <div style={{ fontSize: 11, color: CAUTION, fontWeight: 700 }}>
                         this lender&rsquo;s rate sheet is expired
                       </div>
                     )}
                   </span>
-                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 14, fontWeight: 700, color: INK, ...NUM }}>{price(q.price)}</span>
-                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{pts(q.adjustedPoints)}</span>
-                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{rate(q.apr)}</span>
-                  <span style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{money2(q.monthlyPi)}</span>
+                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 14, fontWeight: 700, color: INK, ...NUM }}>{price(g.bestPrice)}</span>
+                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{pts(g.best && g.best.adjustedPoints)}</span>
+                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{rate(g.best && g.best.apr)}</span>
+                  <span style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{money2(g.best && g.best.monthlyPi)}</span>
                   <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
                     <button type="button" className="btn ghost" style={{ fontSize: 12 }}
-                      onClick={() => onOpenQuote(isOpen ? null : q.key)}>
-                      {isOpen ? 'Hide' : 'Details'}
+                      onClick={() => onOpenQuote(openQuote === (g.best && g.best.key) ? null : (g.best && g.best.key))}>
+                      {openQuote === (g.best && g.best.key) ? 'Hide' : 'Details'}
                     </button>
                   </span>
                 </div>
-                {isOpen && <PriceBuild o={q.option} />}
+                {openQuote === (g.best && g.best.key) && <PriceBuild o={g.best && g.best.option} />}
+
+                {/* THE LENDER'S OTHER PROGRAMMES. Every quote is listed, the front one included and
+                    marked — a list that silently omitted it would not add up to the count on the
+                    line above. */}
+                {gOpen && shown.filter((q) => q && q !== g.best).map((q) => {
+                  const isOpen = openQuote === q.key;
+                  return (
+                    <div key={q.key}>
+                      <div style={{
+                        display: 'flex', gap: 10, alignItems: 'baseline', padding: '8px 0 8px 18px',
+                        borderBottom: '1px solid rgba(20,27,34,.05)', flexWrap: 'wrap',
+                        borderLeft: `2px solid ${GOLD}55`,
+                      }}>
+                        <span style={{ flex: '2 1 200px', minWidth: 170 }}>
+                          <div style={{ fontSize: 13, color: INK }}>{q.program || '—'}{q.product ? ` · ${q.product}` : ''}</div>
+                          {q.investor && q.investor !== q.lender && (
+                            <div style={{ fontSize: 11.5, color: MUTED }}>{q.investor}</div>
+                          )}
+                          {q.expired && (
+                            <div style={{ fontSize: 11, color: CAUTION, fontWeight: 700 }}>rate sheet expired</div>
+                          )}
+                        </span>
+                        <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13.5, fontWeight: 700, color: INK, ...NUM }}>{price(q.price)}</span>
+                        <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{pts(q.adjustedPoints)}</span>
+                        <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{rate(q.apr)}</span>
+                        <span style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{money2(q.monthlyPi)}</span>
+                        <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
+                          <button type="button" className="btn ghost" style={{ fontSize: 12 }}
+                            onClick={() => onOpenQuote(isOpen ? null : q.key)}>
+                            {isOpen ? 'Hide' : 'Details'}
+                          </button>
+                        </span>
+                      </div>
+                      {isOpen && <PriceBuild o={q.option} />}
+                    </div>
+                  );
+                })}
               </div>
             );
           })}
@@ -607,6 +665,10 @@ export default function LtPricer() {
   const [showScenario, setShowScenario] = useState(false);
   const [dq, setDq] = useState({ status: 'idle', tries: 0, data: null, message: null });
   const [zip, setZip] = useState({ status: 'idle', data: null, message: null });
+  // WHICH LENDERS ARE OPENED OUT, keyed `<rate>|<lender>` so opening a lender on one rate row does
+  // not open the same lender on every other. A Set rather than a single key: comparing two lenders'
+  // programme lists side by side is the whole reason the dropdown exists.
+  const [openLenders, setOpenLenders] = useState(() => new Set());
   const timer = useRef(null);
 
   useEffect(() => () => { if (timer.current) clearInterval(timer.current); }, []);
@@ -635,6 +697,12 @@ export default function LtPricer() {
   const set = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.value }));
   const setBool = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.checked }));
 
+  const toggleLender = (k) => setOpenLenders((prev) => {
+    const next = new Set(prev);
+    if (next.has(k)) next.delete(k); else next.add(k);
+    return next;
+  });
+
   /* CHANGING THE PROPERTY TYPE MOVES THE UNIT COUNT WITH IT. A 4 left over from a 2–4 family riding
      into a single-family is a contradiction the server refuses (`units_conflict`) — so the form
      never holds one. `unitsFor` is the same rule the scenario builder applies on the way out, so
@@ -662,7 +730,7 @@ export default function LtPricer() {
   async function run(e) {
     if (e) e.preventDefault();
     setBusy(true); setErr(null); setRes(null); setElapsed(0);
-    setOpenRate(null); setOpenQuote(null); setView('priced');
+    setOpenRate(null); setOpenQuote(null); setOpenLenders(new Set()); setView('priced');
     // A new scenario means a new searchKey, so the last scenario's refusals go with it. Leaving
     // them beside a fresh price would attribute one search's declines to another.
     setDq({ status: 'idle', tries: 0, data: null, message: null });
@@ -964,7 +1032,7 @@ export default function LtPricer() {
                   <RateRow key={row.key} row={row}
                     open={openRate === row.key}
                     onToggle={() => { setOpenRate(openRate === row.key ? null : row.key); setOpenQuote(null); }}
-                    openQuote={openQuote} onOpenQuote={setOpenQuote} />
+                    openQuote={openQuote} onOpenQuote={setOpenQuote} openLenders={openLenders} onToggleLender={toggleLender} />
                 ))}
               </div>
             ) : (

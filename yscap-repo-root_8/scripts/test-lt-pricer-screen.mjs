@@ -265,6 +265,47 @@ console.log('LT Pricing Engine — structural guards\n');
   // THE SCREEN MUST USE THEM. A pure module nothing imports proves nothing about the page.
   ok(/from '\.\/priceBuild\.js'/.test(src) && /compRowsOf\(/.test(code) && /feeRowsOf\(/.test(code),
     'PE-52 the screen reads its fee and comp rows from that module — one definition, not a second copy');
+
+  // ── ONE LINE PER LENDER (owner-directed 2026-08-23) ───────────────────────
+  // Runs on CI, deliberately: this rule decides WHICH PRICE a lender is fronted with, so it is the
+  // same class as the unit on a money figure — expensive to get wrong and invisible when it is.
+  const Q = (lender, program, price) => ({ key: `${lender}:${program}`, lender, program, price });
+  {
+    const g = PB.groupByLender([
+      Q('Alpha', 'P1', 100.25), Q('Beta', 'Q1', 101.0),
+      Q('Alpha', 'P2', 100.75), Q('Alpha', 'P3', null),
+    ]);
+    ok(g.length === 3 - 1, 'PE-53 a lender with three programmes is ONE line, not three');
+    ok(g[0].lender === 'Beta' && g[0].bestPrice === 101.0,
+      'PE-54 lenders are ordered by their own best price, best first');
+    const alpha = g.find((x) => x.lender === 'Alpha');
+    ok(alpha.bestPrice === 100.75,
+      'PE-55 …and the line fronts that lender\'s BEST price, not their first or their worst');
+    ok(alpha.best.program === 'P2', 'PE-56 …so the programme named on the line is the one that price belongs to');
+    ok(alpha.programCount === 3, 'PE-57 …while the line says how many it is hiding');
+    ok(alpha.quotes.length === 3 && alpha.quotes[2].price === null,
+      'PE-58 …every quote survives, and an unpriced one sorts last rather than counting as zero');
+  }
+  {
+    // NOTHING IS EVER DROPPED, and nothing is ever attributed to the wrong lender.
+    const input = [Q('A', '1', 100), Q('B', '2', 99), Q('A', '3', 98), Q('', '4', 97), Q('A', '5', 101)];
+    const g = PB.groupByLender(input);
+    const total = g.reduce((n, x) => n + x.quotes.length, 0);
+    ok(total === input.length, `PE-59 every quote lands in exactly one lender group (${total} of ${input.length})`);
+    ok(g.every((x) => x.quotes.every((q) => (q.lender || '') === (x.lender || ''))),
+      'PE-60 …and no quote is ever listed under a lender that did not quote it');
+    ok(g.some((x) => x.lender === null && x.quotes.length === 1),
+      'PE-61 a quote with no lender name is its own row, never folded into somebody else\'s');
+  }
+  {
+    // An unpriced lender must not front a figure nobody quoted.
+    const g = PB.groupByLender([Q('Solo', 'S', null)]);
+    ok(g[0].bestPrice === null, 'PE-62 a lender with nothing priced fronts NO price (the screen shows a dash)');
+    ok(PB.groupByLender(null).length === 0 && PB.groupByLender('x').length === 0,
+      'PE-63 …and a non-list yields nothing rather than throwing');
+  }
+  ok(/groupByLender\(/.test(code),
+    'PE-64 the board actually groups by lender — a rule the screen does not call is a rule nobody is following');
 }
 
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
