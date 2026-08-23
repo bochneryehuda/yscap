@@ -35,6 +35,7 @@
  * https://api.elliemae.com).
  */
 const cfg = require('../../config').encompass;
+const killSwitch = require('./encompass-enabled');
 
 // The two endpoints on the base URL that are allowed to see a non-GET request.
 // Both are READ-SHAPED (return data, mutate nothing on Encompass). Adding to
@@ -67,8 +68,22 @@ function _isFieldReaderPath(url) {
 
 // Configured = the app credentials + instance are present. The user login is only required for the
 // password grant; a client-credentials tenant needs just the three.
-function configured() { return !!(cfg.clientId && cfg.clientSecret && cfg.instanceId); }
-function ensure() { if (!configured()) throw new Error('Encompass not configured — add ENCOMPASS_CLIENT_ID / ENCOMPASS_CLIENT_SECRET / ENCOMPASS_INSTANCE_ID'); }
+// THE MASTER SWITCH COMES FIRST. `ENCOMPASS_ENABLED=0` reports this integration as
+// not connected however complete the credentials are, so every screen, gate and
+// worker that asks "can we talk to Encompass?" answers no in one place rather than
+// each learning about the switch separately. The credentials are untouched — they
+// are simply not used while it is off. See lib/integrations/encompass-enabled.js.
+function configured() {
+  if (!killSwitch.encompassEnabled()) return false;
+  return !!(cfg.clientId && cfg.clientSecret && cfg.instanceId);
+}
+// The reason has to tell the two states apart. "Not configured" on a tenant whose
+// credentials are sitting right there sends somebody hunting for a missing value;
+// the switch says plainly that it was turned off and how to turn it back on.
+function ensure() {
+  if (!killSwitch.encompassEnabled()) throw new Error(killSwitch.OFF_REASON);
+  if (!configured()) throw new Error('Encompass not configured — add ENCOMPASS_CLIENT_ID / ENCOMPASS_CLIENT_SECRET / ENCOMPASS_INSTANCE_ID');
+}
 
 const withTimeout = (ms) => { const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms); return { signal: ac.signal, done: () => clearTimeout(t) }; };
 
@@ -78,6 +93,14 @@ const withTimeout = (ms) => { const ac = new AbortController(); const t = setTim
 // suspenders backstop behind the "only READ helpers are exported" contract.
 async function _fetchGuarded(url, init) {
   const method = String((init && init.method) || 'GET').toUpperCase();
+  // THE MASTER SWITCH, STRUCTURALLY. `configured()` is what every caller asks and
+  // `ensure()` is what every exported path calls first, so TODAY this line is a
+  // BACKSTOP that never bites on any reachable route — written down plainly rather
+  // than implied to be load-bearing. It is here for the route added next year that
+  // forgets to ask, which is exactly the shape of the read-only rule below it.
+  if (!killSwitch.encompassEnabled()) {
+    throw new Error(killSwitch.OFF_REASON);
+  }
   const allowedPost = [...POST_ALLOWLIST].some((p) => url === cfg.baseUrl + p || url.startsWith(cfg.baseUrl + p + '?'))
     || _isFieldReaderPath(url);
   if (method !== 'GET' && !allowedPost) {
@@ -137,6 +160,7 @@ async function getToken() {
 
 // Cheap reachability check for the API Health page: authenticate only.
 async function ping() {
+  if (!killSwitch.encompassEnabled()) return { ok: false, reason: killSwitch.OFF_REASON };
   if (!configured()) return { ok: false, reason: 'ENCOMPASS_CLIENT_ID / _SECRET / _INSTANCE_ID not set' };
   try { await getToken(); return { ok: true }; }
   catch (e) { return { ok: false, reason: e.message }; }

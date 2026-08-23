@@ -30,6 +30,10 @@
  */
 
 const stages = require('../stages');
+// The master on/off switch. Asked DIRECTLY rather than through the Encompass client,
+// because the tests replace that module wholesale in require.cache and a stub carries
+// only the handful of methods the test needs — this one is pure and is never stubbed.
+const killSwitch = require('../encompass/enabled');
 const discover = require('./discover');
 const contacts = require('../people/contacts');
 const locks = require('../locks');
@@ -75,8 +79,9 @@ async function upsertDiscovered(dbc, loan, settings) {
   const { rows } = await dbc.query(
     `INSERT INTO lt_loans
        (id, encompass_loan_guid, loan_number, loan_amount, milestone_name, stage_key,
-        loan_folder, borrower_name, encompass_last_modified, updated_at)
-     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $8, $7::timestamptz, now())
+        loan_folder, borrower_name, encompass_last_modified, updated_at,
+        program_name, term_months)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $8, $7::timestamptz, now(), $9, $10)
      ON CONFLICT (encompass_loan_guid) DO UPDATE SET
        loan_number = COALESCE(EXCLUDED.loan_number, lt_loans.loan_number),
        borrower_name = COALESCE(EXCLUDED.borrower_name, lt_loans.borrower_name),
@@ -84,6 +89,15 @@ async function upsertDiscovered(dbc, loan, settings) {
        milestone_name = COALESCE(EXCLUDED.milestone_name, lt_loans.milestone_name),
        stage_key = COALESCE(EXCLUDED.stage_key, lt_loans.stage_key),
        loan_folder = COALESCE(EXCLUDED.loan_folder, lt_loans.loan_folder),
+       -- THE TWO THAT SAY WHOSE LOAN THIS IS. Discovery now reads them (fields 1401
+       -- and 4), and storing them here rather than waiting for the per-loan read is
+       -- what makes the pipeline's "this is the long-term pipeline" filter work on a
+       -- book that has only just been discovered — otherwise every loan reads as
+       -- unclassifiable until its full read lands, which on 772 files is the whole
+       -- first hour. COALESCE(new, old) like every other mirrored column: a pass that
+       -- could not read them must never blank what we already hold.
+       program_name = COALESCE(EXCLUDED.program_name, lt_loans.program_name),
+       term_months = COALESCE(EXCLUDED.term_months, lt_loans.term_months),
        encompass_last_modified = GREATEST(
          COALESCE(EXCLUDED.encompass_last_modified, lt_loans.encompass_last_modified),
          COALESCE(lt_loans.encompass_last_modified, EXCLUDED.encompass_last_modified)),
@@ -93,7 +107,9 @@ async function upsertDiscovered(dbc, loan, settings) {
     // only thing an admin can recognise a loan's borrower BY while deciding a
     // link, and it costs nothing — it is already on the row we are writing.
     [loan.encompassLoanGuid, loan.loanNumber, loan.loanAmount, milestoneName, stageKey,
-      loan.loanFolder, loan.lastModified, loan.borrowerName || null],
+      loan.loanFolder, loan.lastModified, loan.borrowerName || null,
+      loan.programName == null ? null : loan.programName,
+      loan.termMonths == null ? null : loan.termMonths],
   );
   return rows[0];
 }
@@ -327,6 +343,10 @@ async function readLoan(loanId, guid, settings) {
  * say what happened.
  */
 async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } = {}) {
+  // Say WHICH of the two states this is: "the credentials are missing" is useless
+  // advice on a tenant whose credentials are sitting right there and were switched
+  // off on purpose.
+  if (!killSwitch.encompassEnabled()) return { ok: false, reason: killSwitch.OFF_REASON };
   if (!lazy.client.configured()) {
     return { ok: false, reason: 'Encompass is not connected yet — add the long-term Encompass credentials first.' };
   }
@@ -346,10 +366,42 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
   }
 
   const dbc = await lazy.db.getClient();
+  // ONLY OUR OWN LOANS COME IN (owner-directed 2026-08-23: *"make sure it's only
+  // gonna pull according to our rule: only long-term files"*).
+  //
+  // Discovery reads the WHOLE Encompass book because no folder separates the two
+  // products at the source — 772 loans, 251 of them fix-and-flip. Every one of those
+  // used to be written into `lt_loans` and then READ, one Encompass call each, to
+  // establish something the discovery row could already have told us.
+  //
+  // THE RULE IS `product-term.js`, AND IT IS NOT RE-STATED HERE. It is the same one
+  // definition the census, the pipeline stamp and the SQL twin all use, so "is this
+  // ours?" has exactly one answer in this codebase.
+  //
+  // ONLY A PROVABLE SHORT-TERM LOAN IS SKIPPED. `boundary` (exactly 36 months) and
+  // `unknown` (no program and no term) are MIRRORED: refusing to bring in a loan we
+  // cannot place would make files disappear with nothing anywhere saying so, which is
+  // the confident-wrong-answer this side keeps finding. They are counted and reported
+  // instead, and the census lists them for a human to settle.
+  //
+  // AND WHEN WE COULD NOT ASK, WE DO NOT JUDGE. If Encompass refused the two
+  // classifying fields, every loan reads as unclassifiable and NOTHING is skipped —
+  // the pass behaves exactly as it did before this rule existed, and says so.
+  const mirrorShortTerm = settings['sync.mirrorShortTerm'] === true;
+  const canClassify = found.classifyFields !== 'refused';
+  let skippedShortTerm = 0;
+
   const due = [];
   try {
     await dbc.query('BEGIN');
     for (const loan of found.loans) {
+      if (!mirrorShortTerm && canClassify) {
+        const verdict = productTerm.classifyProduct({
+          programName: loan.programName,
+          termMonths: loan.termMonths,
+        });
+        if (verdict.product === productTerm.PRODUCT.SHORT) { skippedShortTerm += 1; continue; }
+      }
       const row = await upsertDiscovered(dbc, loan, settings);
       if (needsRead(row)) due.push({ id: row.id, guid: loan.encompassLoanGuid });
     }
@@ -423,6 +475,10 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
     officerSyncReason: officers.reason,
     remaining: Math.max(0, due.length - readBudget),
     truncated: found.truncated,
+    // NO SILENT FILTERING. How many of Encompass's loans were left where they belong,
+    // and — when the classifying fields were refused — that none could be.
+    skippedShortTerm,
+    classifyFields: found.classifyFields || 'answered',
   };
 }
 

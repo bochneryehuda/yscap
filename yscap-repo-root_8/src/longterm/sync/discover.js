@@ -53,6 +53,26 @@ const DISCOVERY_FIELDS = [
   'Loan.LastModified',
 ];
 
+/**
+ * TWO MORE FIELDS, ASKED FOR SEPARATELY, SO WE CAN TELL WHOSE LOAN THIS IS BEFORE
+ * SPENDING A READ ON IT.
+ *
+ * Owner-directed 2026-08-23: *"make sure it's only gonna pull according to our rule:
+ * only long-term files."* No folder separates the two products at the source, so the
+ * only way to know is the PROGRAM (field 1401, `loanProgramName`, filled on 754 of
+ * 772) or the TERM (field 4, `loanAmortizationTermMonths`, filled on 760) — which is
+ * exactly what `product-term.classifyProduct` decides on.
+ *
+ * THEY ARE SEPARATE FROM THE LIST ABOVE BECAUSE THEY MUST BE ABLE TO FAIL. The list
+ * above is proven against this tenant; these two are not, and the probe recorded that
+ * an unknown field id "rejects the whole batch" (ENCOMPASS-LIVE-API-PROBE §2.3). A
+ * rejected discovery is not a smaller sync — it is NO sync, the entire book gone from
+ * every screen. So `discoverLoans` asks for them, and if the enriched request fails it
+ * retries ONCE with the proven list and says so; the caller then knows it cannot tell
+ * the products apart this pass and mirrors everything, exactly as it did before.
+ */
+const CLASSIFY_FIELDS = ['Fields.1401', 'Fields.4'];
+
 /** The one place the discovery page size lives. */
 const PAGE = 100;
 // A runaway guard, not a limit: the long-term book is ~700 loans. Hitting it is
@@ -123,6 +143,10 @@ function rowToLoan(row) {
     milestoneName: str(f['Loan.CurrentMilestoneName']) || str(f['Fields.CoreMilestone']),
     loanOfficerLoginId: str(f['Fields.LOID']),
     lastModified: parsePipelineDate(f['Loan.LastModified']),
+    // What `product-term` needs to say whose loan this is. Both are `null` when the
+    // enrichment was refused, which reads as "we cannot tell" — never as "short-term".
+    programName: str(f['Fields.1401']),
+    termMonths: parseAmount(f['Fields.4']),
   };
 }
 
@@ -145,8 +169,15 @@ function buildFilter({ loanFolder } = {}) {
  * caller reports a partial sweep as partial instead of as a shrinking pipeline.
  */
 async function discoverLoans({ loanFolder = null, limit = PAGE, maxPages = MAX_PAGES } = {}) {
+  // THE FIRST PAGE DECIDES WHETHER THE ENRICHED READ IS SAFE, and it is asked for
+  // separately from the loop so a refusal costs ONE call rather than a whole sweep.
+  // If Encompass will not answer with the two classifying fields, we fall back to the
+  // proven list and REPORT it — the caller then knows it cannot tell the two products
+  // apart this pass, and mirrors everything rather than guessing.
+  let fields = [...DISCOVERY_FIELDS, ...CLASSIFY_FIELDS];
+  let classifyFields = 'asked';
   const request = {
-    fields: DISCOVERY_FIELDS,
+    fields,
     filter: buildFilter({ loanFolder }),
     sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'Descending' }],
   };
@@ -159,7 +190,20 @@ async function discoverLoans({ loanFolder = null, limit = PAGE, maxPages = MAX_P
 
   for (;;) {
     if (pages >= maxPages) { truncated = true; break; }
-    const body = await lazy.client.pipelineSearch(request, { limit, start });
+    let body;
+    try {
+      body = await lazy.client.pipelineSearch(request, { limit, start });
+      if (classifyFields === 'asked') classifyFields = 'answered';
+    } catch (e) {
+      // Only ever retried ONCE, and only for the enrichment. A failure after the
+      // fallback is a real failure and is thrown to the caller as before — a sync
+      // that silently reported an empty book would be far worse than one that stops.
+      if (classifyFields !== 'asked') throw e;
+      classifyFields = 'refused';
+      fields = [...DISCOVERY_FIELDS];
+      request.fields = fields;
+      body = await lazy.client.pipelineSearch(request, { limit, start });
+    }
     const batch = Array.isArray(body) ? body : (body && Array.isArray(body.loans) ? body.loans : []);
     pages += 1;
     for (const r of batch) {
@@ -176,11 +220,15 @@ async function discoverLoans({ loanFolder = null, limit = PAGE, maxPages = MAX_P
     start += batch.length;
   }
 
-  return { loans, pages, truncated };
+  // `classifyFields` is what the caller reads to decide whether it may act on the
+  // product rule at all. 'refused' means every loan comes back unclassifiable, which
+  // must read as "mirror it" and never as "it is short-term".
+  return { loans, pages, truncated, classifyFields };
 }
 
 module.exports = {
   DISCOVERY_FIELDS,
+  CLASSIFY_FIELDS,
   PAGE,
   MAX_PAGES,
   parsePipelineDate,

@@ -131,6 +131,7 @@ const configured = encompass.configured;
 const ping = encompass.ping;
 const READ_ONLY = encompass.READ_ONLY;
 
+
 module.exports = {
   READ_ONLY,
   configured,

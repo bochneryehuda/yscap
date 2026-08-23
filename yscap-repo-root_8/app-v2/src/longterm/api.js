@@ -78,6 +78,10 @@ export const ltApi = {
   // The loan sync.
   syncState: () => ltGet(lt('/sync')),
   runSync: (body = {}) => ltPost(lt('/sync'), body),
+  // The FULL pull — the whole book, not one 25-loan pass. It answers straight away
+  // and works in the background, because a drain can run for ten minutes and no
+  // browser will hold a request open that long.
+  pullFromEncompass: () => ltPost(lt('/sync/pull'), {}),
   // The Condition Center's own pass, without re-reading every loan. Admin-only
   // on the server; called anyway from a non-admin's screen so the REFUSAL is
   // shown — a hidden button is indistinguishable from a broken one.
