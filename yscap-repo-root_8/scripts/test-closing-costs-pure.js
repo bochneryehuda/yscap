@@ -348,4 +348,18 @@ if (pricing) {
     'the borrower’s terms email builds those rows rather than letting its own table disagree with itself');
 }
 
+// ── THE RATE-AND-TERM $2,000 CASH LIMIT INHERITS THESE CHARGES ────────────
+// Not a coincidence, and worth pinning: that gate works out the cash a borrower
+// walks away with as `initial advance − payoff − closing costs`, and it takes the
+// closing costs from the registered quote's `dueAtClosing` — the very field these
+// charges were folded into. So a refinance that really does owe a mortgage tax has
+// that money counted as paid at the table rather than handed to the borrower, with
+// no second wiring. Narrow that read to a subtotal and the gate silently starts
+// over-stating the borrower's cash on every taxing state.
+{
+  const gate = fs.readFileSync(R + '/src/lib/rate-term-gate.js', 'utf8');
+  ok(/Number\(qClosing\.dueAtClosing\)/.test(gate),
+    'the rate-and-term cash limit reads dueAtClosing, so it inherits the government charges');
+}
+
 console.log(`test-closing-costs-pure: OK (${passed} assertions)`);
