@@ -130,6 +130,7 @@ async function main() {
       '/api/lt/views',
       '/api/lt/people',
       '/api/lt/borrowers',
+      '/api/lt/archive',
       '/api/lt/stages',
       '/api/lt/settings',
       '/api/lt/settings/me',

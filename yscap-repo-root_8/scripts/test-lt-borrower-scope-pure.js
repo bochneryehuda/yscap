@@ -80,7 +80,13 @@ function get(router, actor) {
     await get(router, { id: 'staff-admin', role: 'super_admin' });
     const q = seen[0];
     ok(!!q, 'the list ran a query');
-    ok(!/\bWHERE\b/.test(q.sql), 'with NO WHERE clause — an admin still sees the whole book');
+    // The ONE clause an admin's read may carry is the trash guard (owner-directed
+    // 2026-08-23: deleted loans are the archive's, on no screen) — it is not a
+    // scope, it is the definition of the book. No OTHER clause, and no parameters.
+    ok(/\bWHERE\b/.test(q.sql) && /\(trash\)/.test(q.sql),
+      'the admin read carries exactly the deleted-loans guard (the archive rule)');
+    ok(!/lt_loan_contacts/.test(q.sql.split('WHERE')[1] || ''),
+      'and NO scope clause — an admin still sees the whole live book');
     ok((q.params || []).length === 0,
       'and no parameters — a dropped clause must not leave a stray $1 behind (Postgres 42P18)');
   }
@@ -94,10 +100,14 @@ function get(router, actor) {
       const { router, seen } = loadWithStubs();
       await get(router, actor);
       const q = seen[0];
-      const hasWhere = /\bWHERE\b/.test(q.sql);
+      // The trash guard (owner-directed 2026-08-23) is a constant clause with no
+      // placeholder, so "a WHERE exists" no longer implies "a parameter exists" —
+      // the invariant that survives is the ORIGINAL one: a SCOPE clause and its
+      // parameter travel together. The scope clause is the lt_loan_contacts term.
+      const hasScope = /lt_loan_contacts/.test(q.sql);
       const hasParams = (q.params || []).length > 0;
-      ok(hasWhere === hasParams,
-        `${actor.role}: a WHERE and its parameter travel together (where=${hasWhere}, params=${hasParams})`);
+      ok(hasScope === hasParams,
+        `${actor.role}: a scope clause and its parameter travel together (scope=${hasScope}, params=${hasParams})`);
     }
   }
 

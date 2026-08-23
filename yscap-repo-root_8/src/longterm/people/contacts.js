@@ -477,6 +477,27 @@ async function backfillPilotRoles(opts = {}) {
         params,
       );
       filled += rowCount || 0;
+      // THE HEAL for a row the old reattribute-clear STRIPPED (pre-merge audit,
+      // 2026-08-23): before the login-carrying guard above, every People-screen
+      // confirm NULLed staff_id on PILOT's own login-less role rows, and the
+      // fill-only INSERT could never repair them (the row still exists). Only
+      // the strip produces this exact state — no writer ever inserts a pilot
+      // role with staff_id NULL — so refilling it with the role's default is
+      // restoring precisely what was taken. Live book only, like the INSERT.
+      const healParams = [role, answer.staffId];
+      const hp = (v) => { healParams.push(v); return `$${healParams.length}`; };
+      const healWhere = book.bookWhereSql('live', cfg, hp, 'l');
+      const healed = await db.query(
+        `UPDATE lt_loan_contacts c
+            SET staff_id = $2::uuid, updated_at = now()
+           FROM lt_loans l
+          WHERE l.id = c.loan_id
+            AND c.role = $1
+            AND c.staff_id IS NULL
+            AND c.encompass_login_id IS NULL${healWhere ? `\n            AND (${healWhere})` : ''}`,
+        healParams,
+      );
+      filled += healed.rowCount || 0;
     } catch (e) {
       if (!reason) reason = `Could not assign ${role} across the book: ${(e && e.message) || e}`;
     }
@@ -575,11 +596,17 @@ async function reattributeAll(dbc = lazy.db) {
         AND c.staff_id IS DISTINCT FROM l.staff_id`,
   );
   // A link that was undone must stop attributing, or a file stays in the pipeline
-  // of somebody the admin just unlinked.
+  // of somebody the admin just unlinked. ONLY a row that CARRIES an Encompass
+  // login can ever have been attributed FROM a link, so only those are cleared —
+  // a login-less row is PILOT's OWN assignment (the file-setup role default,
+  // `ensurePilotRoles`), and clearing it here stripped that assignment on every
+  // confirm, permanently: the refill only ever fills a MISSING row, never an
+  // emptied one (pre-merge audit, 2026-08-23 — proven live before the guard).
   const { rowCount: cleared } = await dbc.query(
     `UPDATE lt_loan_contacts c
         SET staff_id = NULL, updated_at = now()
       WHERE c.staff_id IS NOT NULL
+        AND c.encompass_login_id IS NOT NULL
         AND NOT EXISTS (
           SELECT 1 FROM lt_staff_links l
            WHERE l.encompass_login_id = c.encompass_login_id

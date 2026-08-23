@@ -32,7 +32,7 @@ const route = strip(read('src/longterm/routes/pipeline.js'));
 console.log('your own files are the default, not a choice somebody has to make');
 check(/useState\('mine'\)/.test(ui),
   'the whose-state starts at "mine" — the owner\'s "this should be like the main thing"');
-check(/label="My files"/.test(ui), 'and the chip says so in words');
+check(/My files/.test(ui), 'and the control says so in words (the "My files" option)');
 check(!/label="Everyone.s files"/.test(ui),
   'the old Everyone’s-first arrangement is gone');
 

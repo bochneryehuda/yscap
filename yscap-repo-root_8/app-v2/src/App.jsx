@@ -32,6 +32,7 @@ import NotificationSettings from './screens/NotificationSettings.jsx';
 // ("rtl-import app-v2/src/App.jsx" in docs/LONG-TERM-AUTHORIZED-COPIES.md).
 import LtPipeline from './longterm/LtPipeline.jsx';
 import LtPeople from './longterm/LtPeople.jsx';
+import LtArchive from './longterm/LtArchive.jsx';
 import LtBook from './longterm/LtBook.jsx';
 import LtBorrowers from './longterm/LtBorrowers.jsx';
 import LtStatuses from './longterm/LtStatuses.jsx';
@@ -261,6 +262,7 @@ export default function App() {
           <Route path="/internal/lt" element={<StaffPrivate><LtPipeline /></StaffPrivate>} />
           <Route path="/internal/lt/book" element={<StaffPrivate><LtBook /></StaffPrivate>} />
           <Route path="/internal/lt/people" element={<StaffPrivate><LtPeople /></StaffPrivate>} />
+          <Route path="/internal/lt/archive" element={<StaffPrivate><LtArchive /></StaffPrivate>} />
           <Route path="/internal/lt/borrowers" element={<StaffPrivate><LtBorrowers /></StaffPrivate>} />
           <Route path="/internal/lt/statuses" element={<StaffPrivate><LtStatuses /></StaffPrivate>} />
           <Route path="/internal/lt/conditions" element={<StaffPrivate><LtConditions /></StaffPrivate>} />

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
 // One definition of how a value is written down, shared with the file screen — two
@@ -56,37 +56,6 @@ function LockCell({ row }) {
   );
 }
 
-/**
- * One control chip.
- *
- * THE COUNT IS ABSENT, NEVER ZERO, WHEN WE DO NOT HAVE ONE. The counting is a
- * convenience on top of the list and is allowed to fail without costing anybody their
- * pipeline — but a chip that then reads "0" would tell them the book is empty, which
- * is exactly what the rows underneath it disprove. So `null` draws no number at all.
- *
- * Colours are explicit darks: every `--ink*` token in this palette is a LIGHT paper
- * colour and would render white on white.
- */
-function Chip({ on, onClick, label, count, note, group }) {
-  return (
-    <button type="button" onClick={onClick} title={note || undefined}
-      aria-pressed={on} data-chip={group}
-      style={{
-        display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
-        padding: '5px 12px', borderRadius: 999, fontSize: 13, fontWeight: on ? 700 : 550,
-        background: on ? '#141B22' : '#FFFFFF',
-        color: on ? '#FFFFFF' : '#141B22',
-        border: `1px solid ${on ? '#141B22' : '#EAE4D7'}`,
-        whiteSpace: 'nowrap',
-      }}>
-      <span>{label}</span>
-      {count != null && (
-        <span style={{ fontSize: 11, fontWeight: 700, opacity: on ? 0.85 : 1,
-          color: on ? '#FFFFFF' : '#4B585C' }}>{count}</span>
-      )}
-    </button>
-  );
-}
 
 /**
  * What to draw when the server did not say — the nine columns this screen carried
@@ -237,6 +206,28 @@ function Cell({ col, row, stageLabel }) {
   // a server come to disagree about what "LTV" means.
   const raw = row[col.field];
 
+  // TWO ENCOMPASS RECORDS, ONE LOAN NUMBER — said on the row (owner-reported
+  // 2026-08-23, YSCAP258134474: a stale second Encompass record read "Started /
+  // $202,500" while the real one sat sold — and nothing said there were two). The
+  // count comes from the server, against live records only; the fix is deleting
+  // the stale record in Encompass, which the hover says.
+  if (col.key === 'loan_number') {
+    const dups = Number(row.duplicate_records) || 0;
+    return (
+      <span style={{ whiteSpace: 'nowrap' }}>
+        {raw == null || raw === '' ? <span style={muted}>—</span> : String(raw)}
+        {dups > 0 && (
+          <span title={`Encompass holds ${dups + 1} live records with this loan number \u2014 this row is one of them, and the figures differ between the copies. The extra record should be deleted in Encompass; once it is trashed there, it drops off this screen on the next sync.`}
+            style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em',
+              color: '#8A2D2D', border: '1px solid #E4C7C7', background: '#FBEFEF',
+              borderRadius: 999, padding: '1px 7px', verticalAlign: 'middle' }}>
+            {dups + 1} RECORDS
+          </span>
+        )}
+      </span>
+    );
+  }
+
   switch (col.kind) {
     case 'money': return <span>{money(raw)}</span>;
     case 'pct': return <span>{pct(raw)}</span>;
@@ -334,6 +325,9 @@ export default function LtPipeline() {
   // Looking at ONE officer's book — the RTL-style pick. Setting it replaces the
   // mine/everyone choice; clearing it falls back to Everyone's.
   const [officerId, setOfficerId] = useState('');
+  // The same pick for an officer whose PILOT link nobody has confirmed yet — keyed
+  // on their Encompass login, so a name the rows plainly show is still pickable.
+  const [officerLogin, setOfficerLogin] = useState('');
   // One search box PER COLUMN, keyed by the column key. These filter CLIENT-side
   // over the whole fetched book — which the fetch below makes honest by asking for
   // everything the server-side filters allow (the book is a few hundred rows).
@@ -347,9 +341,10 @@ export default function LtPipeline() {
       // "Mine" is asked for as a FLAG. The server resolves whose from the session,
       // so a viewer who sees the whole book cannot ask for somebody else's personal
       // queue by editing a URL.
-      mine: !officerId && whose === 'mine' ? 'true' : '',
-      unassigned: !officerId && whose === 'unassigned' ? 'true' : '',
+      mine: !officerId && !officerLogin && whose === 'mine' ? 'true' : '',
+      unassigned: !officerId && !officerLogin && whose === 'unassigned' ? 'true' : '',
       officer: officerId,
+      officerLogin,
       // The whole (filtered) book in one answer, so the per-column search below is
       // filtering over everything rather than over one server page — the old
       // 50-row default page with no pager is exactly the owner's "133 active and
@@ -359,7 +354,7 @@ export default function LtPipeline() {
     })
       .then(setData)
       .catch((e) => setErr(e.message || 'Could not load the long-term pipeline.'));
-  }, [search, stage, whose, officerId, book, sortReq, dirReq]);
+  }, [search, stage, whose, officerId, officerLogin, book, sortReq, dirReq]);
 
   useEffect(() => {
     const t = setTimeout(load, search ? 250 : 0);
@@ -386,8 +381,11 @@ export default function LtPipeline() {
     setStage(f.stage || '');
     // A saved "mine" is a flag, so a SHARED view of it means whoever opens it — which
     // is what makes "Mine, at underwriting" one view the whole desk can use.
-    setWhose(f.mine ? 'mine' : f.unassigned ? 'unassigned' : (f.officer ? '' : 'mine'));
-    setOfficerId(f.officer || '');
+    const officer = f.officerStaffId || f.officer || '';
+    const officerLoginSaved = f.officerLoginId || '';
+    setWhose(f.mine ? 'mine' : f.unassigned ? 'unassigned' : ((officer || officerLoginSaved) ? '' : 'mine'));
+    setOfficerId(officer);
+    setOfficerLogin(officerLoginSaved);
     // A view with no opinion about the book opens on the default, not on whatever the
     // last view left behind.
     setBook(f.book || 'live');
@@ -403,9 +401,13 @@ export default function LtPipeline() {
     const name = (viewName || '').trim();
     if (!name) return;
     const filters = { search: search.trim(), stage };
-    if (!officerId && whose === 'mine') filters.mine = true;
-    if (!officerId && whose === 'unassigned') filters.unassigned = true;
-    if (officerId) filters.officer = officerId;
+    if (!officerId && !officerLogin && whose === 'mine') filters.mine = true;
+    if (!officerId && !officerLogin && whose === 'unassigned') filters.unassigned = true;
+    // The KEY the server's saved-view validator accepts (views.js FILTER_KEYS) —
+    // the old `officer` key was silently dropped there, so an officer pick never
+    // actually survived into a saved view.
+    if (officerId) filters.officerStaffId = officerId;
+    if (officerLogin) filters.officerLoginId = officerLogin;
     // Only stored when it is NOT the default — a view saved today must not pin the
     // desk to the live book if that default ever moves. The server drops it either way.
     if (book !== 'live') filters.book = book;
@@ -507,90 +509,77 @@ export default function LtPipeline() {
         </div>
       )}
 
-      {/* TWO INDEPENDENT CONTROL ROWS, plus free-text search (§4.1) — which is the
-          arrangement the owner's reference portal uses and the reason it stays simple
-          while being exhaustive. They narrow TOGETHER: a stage and a scope are
-          different questions about the same book, so neither clears the other.
-
-          Each chip carries its own count, and each count is computed with that chip's
-          OWN filter lifted, so it always says what CLICKING it would show. A row of
-          chips reading zero because one of them is selected is a row nobody can
-          navigate out of. */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-        {/* NOT `data.total` — that is counted WITH the stage filter, so with a stage
-            selected this chip would read the selected stage's number and nobody could
-            see how big the book is. `allStages` is counted stage-lifted, like every
-            other chip in this row. */}
-        <Chip group="stage" on={!stage} onClick={() => setStage('')} label="Every stage"
-          count={data && data.facets ? data.facets.allStages : null} />
-        {(data && data.stages ? data.stages : []).map((s) => (
-          <Chip key={s.key} group="stage" on={stage === s.key} onClick={() => setStage(s.key)}
-            label={s.label} count={s.count}
-            // A stage no settings map names still gets a chip — §4.1.1: a milestone
-            // with no mapping is shown, not hidden, and a file you cannot filter to
-            // is a file people stop seeing.
-            note={s.undeclared ? 'Encompass is using this stage and the settings do not name it yet' : null} />
-        ))}
-      </div>
-
-      {/* WHOSE FILES (owner-directed 2026-08-23, restructured to the RTL shape):
-          your own by default, Everyone's one click away, and a named officer's book
-          through the select — the deliberate way to look at somebody else's files.
-          Not drawn for a scoped viewer: every choice would select the same book. */}
-      {data && data.scope === 'all' && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
-          {data.facets && data.facets.mine != null && (
-            <Chip group="scope" on={!officerId && whose === 'mine'}
-              onClick={() => { setOfficerId(''); setWhose('mine'); }} label="My files"
-              count={data.facets.mine} />
-          )}
-          <Chip group="scope" on={!officerId && !whose}
-            onClick={() => { setOfficerId(''); setWhose(''); }} label="Everyone’s"
-            count={data.facets ? data.facets.all : null} />
-          <Chip group="scope" on={!officerId && whose === 'unassigned'}
-            onClick={() => { setOfficerId(''); setWhose('unassigned'); }}
-            label="Nobody yet" count={data.facets ? data.facets.unassigned : null}
-            note="Files with no one on them — a closing or a wire is picked up off the queue, so they have to be findable" />
-          {(data.officers || []).length > 0 && (
-            <select className="input" style={{ maxWidth: 240 }} value={officerId}
-              aria-label="Show one officer's files"
-              onChange={(e) => { setOfficerId(e.target.value); if (e.target.value) setWhose(''); else setWhose('mine'); }}>
-              <option value="">Pick an officer…</option>
-              {data.officers.map((o) => (
-                <option key={o.staff_id} value={o.staff_id}>{o.full_name}</option>
-              ))}
-            </select>
-          )}
-        </div>
-      )}
-
-      {/* THE LIVE BOOK AND THE CLOSED ONE — §4.1's "inactive loans stay in it,
-          distinguished by status", so one table and a chip rather than an archive
-          screen. Drawn ONLY when the tenant has named folders that mean the deal is
-          over: with none named every chip selects identical rows, which is not a
-          control — the same reason the scope row above is hidden from somebody who
-          only ever sees their own files. */}
+      {/* THE BOOK IS THE FIRST CONTROL (owner-directed 2026-08-23: "The main first
+          link should be active, closed, withdrawn, and all" — the stage list "should
+          not be the main first link"). Segmented like the RTL pipeline's own primary
+          lens, each tab carrying its count, counted with the book filter lifted so a
+          tab always says what clicking it would show. Drawn only when the tenant has
+          named the folders that mean a deal is over — with none named every tab
+          would select identical rows, which is not a control. Encompass's TRASH is
+          in none of these: deleted files live on the archive screen alone. */}
       {data && data.bookControl && data.bookCounts && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-          <Chip group="book" on={book === 'live'} onClick={() => setBook('live')} label="Active"
-            count={data.bookCounts.live}
-            note="Everything still in play — a folder nobody has classified always counts as active" />
-          <Chip group="book" on={book === 'closed'} onClick={() => setBook('closed')} label="Closed"
-            count={data.bookCounts.closed}
-            note="Deals that completed, funded files included — kept in the same table, one click away" />
-          <Chip group="book" on={book === 'withdrawn'} onClick={() => setBook('withdrawn')} label="Withdrawn"
-            count={data.bookCounts.withdrawn}
-            note="Deals that died — withdrawn or cancelled. Kept apart from the closed book on purpose: a
-                  finished deal and a lost one are not the same fact (owner-directed 2026-08-23)" />
-          <Chip group="book" on={book === 'all'} onClick={() => setBook('all')} label="All"
-            count={data.bookCounts.all} />
+        <div className="tabs" style={{ marginBottom: 10 }}>
+          {[['live', 'Active', 'Everything still in play — a folder nobody has classified always counts as active'],
+            ['closed', 'Closed', 'Deals that completed, funded files included'],
+            ['withdrawn', 'Withdrawn', 'Deals that died — withdrawn or cancelled, kept apart from the closed book on purpose'],
+            ['all', 'All', 'Every book at once']].map(([k, label, note]) => (
+              <button key={k} type="button" className={`tab ${book === k ? 'on' : ''}`}
+                title={note} onClick={() => setBook(k)}>
+                {label}<span className="ct">{data.bookCounts[k]}</span>
+              </button>
+          ))}
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        <input className="input" placeholder="Search a loan number or borrower" value={search}
-          onChange={(e) => setSearch(e.target.value)} style={{ maxWidth: 300 }} />
-        {data && <span style={{ alignSelf: 'center', fontSize: 13, color: '#4B585C' }}>
+      {/* ONE FILTER ROW, the RTL shape (owner-directed 2026-08-23: "separate
+          filters to select the stage of the file … If I want to see only my file,
+          everyone's file that doesn't have anyone assigned yet, or pick all
+          officers"). The stage moved off the top into a select here; whose-files
+          and the officer pick are ONE select, because they are one question — and
+          it lists every officer the book itself shows, linked to a PILOT login or
+          not, so a name on the rows is never missing from the list that filters
+          them. Each option carries its count, counted with its own filter lifted. */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+        <input className="input" type="search" placeholder="Search a loan number or borrower" value={search}
+          onChange={(e) => setSearch(e.target.value)} style={{ flex: '1 1 260px', minWidth: 220, maxWidth: 420 }} />
+        <select className="input" style={{ maxWidth: 230 }} value={stage}
+          aria-label="Stage" title="Show one stage of the pipeline"
+          onChange={(e) => setStage(e.target.value)}>
+          <option value="">
+            {`Every stage${data && data.facets && data.facets.allStages != null ? ` (${data.facets.allStages})` : ''}`}
+          </option>
+          {(data && data.stages ? data.stages : []).map((st) => (
+            <option key={st.key} value={st.key}>
+              {st.label}{st.count != null ? ` (${st.count})` : ''}{st.undeclared ? ' — not in the settings yet' : ''}
+            </option>
+          ))}
+        </select>
+        {data && data.scope === 'all' && (
+          <select className="input" style={{ maxWidth: 280 }}
+            value={officerId ? `s:${officerId}` : officerLogin ? `e:${officerLogin}` : whose}
+            aria-label="Whose files" title="Whose files to show"
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v.startsWith('s:')) { setOfficerId(v.slice(2)); setOfficerLogin(''); setWhose(''); }
+              else if (v.startsWith('e:')) { setOfficerLogin(v.slice(2)); setOfficerId(''); setWhose(''); }
+              else { setOfficerId(''); setOfficerLogin(''); setWhose(v); }
+            }}>
+            <option value="mine">{`My files${data.facets && data.facets.mine != null ? ` (${data.facets.mine})` : ''}`}</option>
+            <option value="">{`Everyone\u2019s${data.facets ? ` (${data.facets.all})` : ''}`}</option>
+            <option value="unassigned">{`Nobody\u2019s yet${data.facets ? ` (${data.facets.unassigned})` : ''}`}</option>
+            {(data.officers || []).length > 0 && (
+              <optgroup label={'One officer\u2019s files'}>
+                {data.officers.map((o) => (
+                  <option key={o.staff_id || `login:${o.login_id}`}
+                    value={o.staff_id ? `s:${o.staff_id}` : `e:${o.login_id}`}>
+                    {o.full_name}{o.linked === false ? ' — not connected to a PILOT login yet' : ''}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        )}
+        {data && <span style={{ fontSize: 13, color: '#4B585C' }}>
           {colFiltersActive
             ? `${shownLoans.length} of ${data.total} file${data.total === 1 ? '' : 's'}`
             : `${data.total} file${data.total === 1 ? '' : 's'}`}
@@ -599,11 +588,20 @@ export default function LtPipeline() {
               onClick={() => setColFilters({})}>Clear searches</button>
           )}
         </span>}
+        {/* THE ARCHIVE'S ONE QUIET DOOR (owner-directed 2026-08-23: deleted-in-
+            Encompass files are "totaled in the archive folder, and you can click
+            over there"). Drawn only when it holds anything and only for a viewer
+            the server counted it for. */}
+        {data && data.archiveCount > 0 && (
+          <Link to="/internal/lt/archive" style={{ fontSize: 13, color: '#256168' }}>
+            Archive: {data.archiveCount} deleted file{data.archiveCount === 1 ? '' : 's'}
+          </Link>
+        )}
         {/* An honest cap: the fetch asks for the whole book, and if the book ever
             outgrows it, the difference is SAID rather than silently cut — the exact
             failure the old 50-row page had. */}
         {data && data.total > data.loans.length && (
-          <span style={{ alignSelf: 'center', fontSize: 13, color: '#8A6A22' }}>
+          <span style={{ fontSize: 13, color: '#8A6A22' }}>
             Showing the first {data.loans.length} of {data.total} — narrow it down to see the rest.
           </span>
         )}
@@ -614,8 +612,15 @@ export default function LtPipeline() {
       {data && !data.loans.length && (
         <div className="card" style={{ color: '#141B22' }}>
           {data.emptyReason
-            || (data.scope === 'all' && whose === 'mine' && !officerId
-              ? 'No files are assigned to you. You are looking at YOUR OWN files \u2014 the default \u2014 so this is not the whole book: pick \u201CEveryone\u2019s\u201D above to see it.'
+            || (data.scope === 'all' && whose === 'mine' && !officerId && !officerLogin
+              ? (data.viewerLinked === false
+                ? (<span>
+                    Your PILOT login is not connected to your Encompass login yet — that is why
+                    {' '}“My files” is empty even though your name is on files. Open the{' '}
+                    <Link to="/internal/lt/people" style={{ color: '#256168' }}>Team screen</Link> and
+                    confirm your own row; your files fill in the moment it is confirmed.
+                  </span>)
+                : 'No files are assigned to you. You are looking at YOUR OWN files \u2014 the default \u2014 so this is not the whole book: pick \u201CEveryone\u2019s\u201D above to see it.')
               : 'No long-term files yet. They appear here once the sync has brought them in from Encompass.')}
           {/* THE ACTION BELONGS WHERE THE PROBLEM IS SEEN. An empty pipeline is
               exactly the moment somebody wants to press "bring them in", and sending

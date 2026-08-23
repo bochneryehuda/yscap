@@ -25,6 +25,12 @@ export default function LtPeople() {
   // module (the gate refuses it), and on a table the answer belongs beside the
   // row that produced it anyway.
   const [note, setNote] = useState('');
+  // The MANUAL pick, per login (owner-directed 2026-08-23: "the system never let
+  // me confirm my name because of this [shared email] … please manually leave
+  // this one for me"). The matcher rightly refuses an ambiguous email, so an
+  // admin must be able to decide by hand — the server's confirm door has always
+  // accepted any (login, person) pair; the screen just never offered one.
+  const [pick, setPick] = useState({});
 
   const load = useCallback(() => {
     setErr(null);
@@ -132,7 +138,13 @@ export default function LtPeople() {
                             const r = await ltPost('/api/staff-view/start', { staffId: p.staff.id });
                             try { sessionStorage.setItem('ys_portal_staff_token', localStorage.getItem('ys_portal_token') || ''); } catch { /* private mode */ }
                             try { localStorage.setItem('ys_portal_token', r.token); } catch { /* private mode */ }
-                            window.location.assign('/internal/lt/pipeline');
+                            // The pipeline lives at #/internal/lt (a HashRouter app
+                            // served under /portal/) — the old bare path fell to the
+                            // wildcard and landed on the WRONG product's dashboard.
+                            // A hash-only assign does not reload, and the token just
+                            // changed, so the reload is explicit.
+                            window.location.assign('/portal/#/internal/lt');
+                            window.location.reload();
                           } catch (e) { setErr(e.message || 'Could not open their screen.'); }
                         }}>See their screen</button>
                     </> : <span style={{ color: '#4B585C' }}>{p.whyNoMatch || '—'}</span>}
@@ -170,6 +182,30 @@ export default function LtPeople() {
                         <button className="btn small ghost" disabled={busy === p.loginId}
                           title="The login goes back to unlinked, and the next sync may suggest a match again."
                           onClick={() => act(p.loginId, () => ltApi.unlinkPerson(p.loginId), 'undo that')}>Undo</button>
+                      )}
+                      {/* THE WAY OUT OF A DEAD END: a login the matcher refuses to
+                          guess about (a shared email, no email at all) had NO
+                          control here — the owner hit exactly that on their own
+                          login. Any non-confirmed row can be linked by hand. */}
+                      {p.status !== 'confirmed' && (data.staff || []).length > 0 && (
+                        <div style={{ display: 'flex', gap: 6, marginTop: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <select className="input"
+                            style={{ fontSize: 12, padding: '3px 6px', maxWidth: 220 }}
+                            title="When the automatic match cannot decide — a shared email, say — pick the person yourself."
+                            value={pick[p.loginId] || ''}
+                            onChange={(e) => setPick((m) => ({ ...m, [p.loginId]: e.target.value }))}>
+                            <option value="">Link by hand&hellip;</option>
+                            {data.staff.map((s) => (
+                              <option key={s.id} value={s.id}>{s.name}{s.email ? ` — ${s.email}` : ''}</option>
+                            ))}
+                          </select>
+                          {pick[p.loginId] ? (
+                            <button className="btn small" disabled={busy === p.loginId}
+                              onClick={() => act(p.loginId, () => ltApi.confirmPerson(p.loginId, pick[p.loginId]), 'link that')}>
+                              Link
+                            </button>
+                          ) : null}
+                        </div>
                       )}
                     </td>
                   )}

@@ -29,6 +29,7 @@ const borrowerMatch = require('../borrower-match');
 const borrowerLinks = require('../borrower-links');
 const access = require('../access');
 const db = require('../db');
+const trash = require('../trash');
 const settingsStore = require('../settings/store');
 
 async function requireBorrowerAdmin(req, res, next) {
@@ -85,7 +86,10 @@ router.get('/', async (req, res) => {
       `SELECT l.id, l.loan_number, l.borrower_email, l.borrower_name, l.borrower_id,
               l.loan_folder, l.stage_key
          FROM lt_loans l
-        ${scope.where ? `WHERE ${scope.where}` : ''}
+        -- Deleted loans (Encompass's trash) never reach the match screen: their
+        -- test borrowers ("testing, tesing") are not people to link
+        -- (owner-directed 2026-08-23).
+        WHERE ${trash.notTrashSql('l')}${scope.where ? ` AND ${scope.where}` : ''}
         ORDER BY l.borrower_email NULLS LAST, l.loan_number NULLS LAST`,
       scope.params,
     );
