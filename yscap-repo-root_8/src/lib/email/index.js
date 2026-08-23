@@ -62,11 +62,22 @@ async function sendMail(opts = {}) {
      shared by every process (db/618), and — if the provider refuses anyway —
      pauses the whole fleet for the provider's stated reset and re-offers this
      same message. The `note` callback it hands back is threaded to the provider
-     as `onRate` so the provider's own ratelimit headers train the budget. */
+     as `onRate` so the provider's own ratelimit headers train the budget.
+
+     A PROVIDER THAT CONTACTS NOTHING IS NOT METERED. The limit belongs to the
+     REMOTE service — it is Resend's ceiling, not ours — so a provider that
+     issues no request to anyone has nothing for it to protect, and pacing it
+     only throttles us. `outbound === false` (today: ./noop.js) says so on the
+     provider itself rather than as a `=== 'none'` string test here, because it
+     is a fact about the provider. Anything that does NOT declare the flag is
+     metered, so a provider added later errs toward the limit, never past it. */
+  const metered = provider.outbound !== false;
   try {
-    res = await rateLimit.schedule(
-      (note) => provider.sendMail(Object.assign({}, send, { onRate: note })),
-      { maxWaitMs: _maxWaitMs });
+    res = metered
+      ? await rateLimit.schedule(
+        (note) => provider.sendMail(Object.assign({}, send, { onRate: note })),
+        { maxWaitMs: _maxWaitMs })
+      : await provider.sendMail(send);
   } catch (e) { err = e; }
   const status = err ? 'error' : (res && res.ok ? 'sent' : 'skipped');
   // THE ATTACHMENT LINE (owner-directed 2026-08-14: "every single thing here should

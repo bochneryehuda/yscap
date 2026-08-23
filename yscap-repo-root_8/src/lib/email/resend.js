@@ -26,6 +26,9 @@ function cleanHeaders(headers) {
 
 module.exports = {
   name: 'resend',
+  // A real remote service with a real quota — metered by the shared send-rate
+  // queue at the ./index.js chokepoint. See ./noop.js for why the flag exists.
+  outbound: true,
   cleanHeaders,
   async sendMail({ to, subject, text, html, attachments, replyTo, from, bcc, cc, headers, onRate }) {
     if (!cfg.resendApiKey) {

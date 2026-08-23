@@ -15,7 +15,13 @@
  *     any one-second window (the assertion that would have caught the defect);
  *   • order is FIFO — a queue that reorders mail is not a queue;
  *   • one failed send does not poison the sends queued behind it;
- *   • a 429 from the provider is retried, not lost, and the retry succeeds.
+ *   • a 429 from the provider is retried, not lost, and the retry succeeds;
+ *   • A PROVIDER THAT CONTACTS NOTHING IS NOT METERED. The limit is Resend's
+ *     ceiling, so the 'none' provider — which issues no request to anyone —
+ *     takes no slot, and a fan-out with no provider wired is not paced at all.
+ *     Metering it cost an 8-second request timeout on the PUBLIC lead door
+ *     (CI run 32627383211), which is worse than the 429 the queue was fixing.
+ *     A provider that does not declare `outbound` is metered — the safe way.
  *
  * The shared-Postgres path is exercised by the -db test; here the limiter runs
  * on its in-process fallback bucket, which is the same arithmetic.
@@ -146,6 +152,54 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   const snap = rl.snapshot();
   ok(typeof snap.rps === 'number' && typeof snap.queueDepth === 'number' && typeof snap.granted === 'number',
     'snapshot() reports the live rate, queue depth and counters');
+
+  // ---- a provider that contacts nothing is not metered ---------------------
+  //
+  // THE HARM IS MEASURED, NOT ASSERTED. `sendMail` is driven through the REAL
+  // chokepoint with EMAIL_PROVIDER unset (the documented default before a
+  // provider is wired), so what is proven is the behaviour a deployment gets —
+  // not a flag's value. At the strict default of one send per 1/rps seconds,
+  // 12 sends through the gate cost ~11 refill waits; unmetered they cost none.
+  // The threshold sits far below the metered cost and far above the real one,
+  // so the assertion cannot pass by being slow or fail by being busy.
+  {
+    for (const k of Object.keys(require.cache)) {
+      if (k.includes('/src/lib/email/') || k.endsWith('/src/config.js')) delete require.cache[k];
+    }
+    delete process.env.EMAIL_PROVIDER;              // → the 'none' provider
+    const mailer = require(R + '/src/lib/email');
+    const noop = require(R + '/src/lib/email/noop');
+    const resend = require(R + '/src/lib/email/resend');
+    const graph = require(R + '/src/lib/email/graph');
+
+    ok(noop.outbound === false, "the 'none' provider declares that it contacts nothing");
+    ok(resend.outbound === true && graph.outbound === true,
+      'the two real providers stay metered — they have a real quota to respect');
+
+    const before = mailer.rateStatus();
+    const t = Date.now();
+    for (let i = 0; i < 12; i++) await mailer.sendMail({ to: `x${i}@t.test`, subject: 's', text: 't', _skipCapture: true });
+    const elapsed = Date.now() - t;
+    const after = mailer.rateStatus();
+
+    // At EMAIL_MAX_RPS=6 (set at the top of this file) the metered cost of 12
+    // sends is ~1,830ms of pure waiting. 400ms is comfortably under that and
+    // comfortably over the real cost, which is a console.log per message.
+    ok(elapsed < 400, `12 sends with no provider wired are not paced (took ${elapsed}ms)`);
+    ok(after.granted === before.granted && after.waited === before.waited,
+      'and they spend no slot from the shared budget at all');
+
+    // THE CONTROL: the same chokepoint DOES meter a provider that declares it
+    // sends. Without this the assertion above would also pass if the gate had
+    // simply been deleted. `outbound` is forced on the loaded 'none' provider,
+    // so the ONLY difference between the two measurements is the flag.
+    noop.outbound = true;
+    const t2 = Date.now();
+    for (let i = 0; i < 12; i++) await mailer.sendMail({ to: `y${i}@t.test`, subject: 's', text: 't', _skipCapture: true });
+    const elapsed2 = Date.now() - t2;
+    noop.outbound = false;
+    ok(elapsed2 > 1000, `…while a provider that DOES send is paced by the same gate (took ${elapsed2}ms)`);
+  }
 
   console.log(`\ntest-email-rate-limit-pure: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
