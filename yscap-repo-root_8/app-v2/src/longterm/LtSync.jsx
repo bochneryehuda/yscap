@@ -18,6 +18,23 @@ const when = (v) => {
  * state matters just as much on a fresh deployment: NO pass has been recorded yet,
  * which must never be drawn as a success.
  */
+/**
+ * Name the loans a pass could not save, so somebody can go and look at them.
+ *
+ * A COUNT ALONE IS NOT ACTIONABLE — "1 loan could not be saved" sends a person to
+ * search 772 files for it. The pass keeps the loan number and the Encompass id of
+ * the first few, and the loan NUMBER is what a human recognises a loan by, so that
+ * leads. A loan with no number yet falls back to its Encompass id rather than
+ * printing nothing.
+ */
+function refusedNames(detail) {
+  const list = (detail && Array.isArray(detail.refusedLoans)) ? detail.refusedLoans : [];
+  const names = list.map((x) => x && (x.loanNumber || x.encompassLoanGuid)).filter(Boolean);
+  if (!names.length) return 'check the long-term sync log for which';
+  const shown = names.slice(0, 3).join(', ');
+  return names.length > 3 ? `${shown} and ${names.length - 3} more` : shown;
+}
+
 function LastPull({ state }) {
   const r = state.lastLoanRun;
   const running = state.running === true;
@@ -52,6 +69,12 @@ function LastPull({ state }) {
   const read = r.read_count == null ? 0 : Number(r.read_count);
   const left = r.remaining == null ? null : Number(r.remaining);
   const skipped = r.skipped == null ? 0 : Number(r.skipped);
+  // A LOAN THE DATABASE REFUSED IS NEVER SILENT. A pass that brought in 771 of 772
+  // genuinely worked, so this stays the "it worked" state rather than crying wolf —
+  // but the one that did not come in is real work for a person, and a pull that
+  // quietly leaves a loan out is the same class of bug as a book that could not say
+  // why it was empty. `detail` holds the pass's own shape, so this needs no column.
+  const refused = Number((r.detail && r.detail.refused) || 0);
   return box('#2F7F86',
     found === 0
       ? 'The last pull worked — Encompass had no long-term files for us.'
@@ -60,6 +83,9 @@ function LastPull({ state }) {
       {`Read ${read} of them.`}
       {skipped ? ` Skipped ${skipped} short-term file(s), which belong on the other side.` : ''}
       {left ? ` ${left} still to read — the next pass picks them up.` : ''}
+      {refused
+        ? ` ${refused} loan(s) could not be saved and are NOT in the book — ${refusedNames(r.detail)}.`
+        : ''}
       <div style={{ marginTop: 6 }}>{when(r.started_at)}{r.trigger === 'manual' ? ' · you started this one' : ''}</div>
     </>);
 }

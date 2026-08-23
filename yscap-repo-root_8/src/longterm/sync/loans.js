@@ -392,6 +392,33 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
   let skippedShortTerm = 0;
 
   const due = [];
+  // ONE LOAN THAT WILL NOT SAVE MUST NOT DISCARD THE BOOK (owner-reported
+  // 2026-08-23, and the run log is what finally named it: *"The last pull did not
+  // work — Could not save the discovered loans: duplicate key value violates unique
+  // constraint lt_loans_loan_number_key"*).
+  //
+  // The whole discovered book was mirrored inside ONE transaction with the loop
+  // BARE inside it, so the first row Postgres refused aborted the transaction and
+  // the catch rolled back every loan in the pass. Two Encompass loans sharing one
+  // human loan number — an ordinary state of that system, see db/617 — therefore
+  // emptied the entire pipeline, on every pass, with the count of loans actually at
+  // fault being ONE. THE CLASS: a per-row failure inside a batch transaction is a
+  // total failure unless something scopes it to its own row.
+  //
+  // A SAVEPOINT per loan is what scopes it — the same shape `finding-decisions.js`
+  // uses. Postgres puts a transaction into a failed state on ANY error and refuses
+  // every later statement until it is rewound, so releasing the savepoint on success
+  // and rolling back TO it on failure is not decoration: without it the next loan's
+  // insert fails with `current transaction is aborted` and the whole book still goes.
+  //
+  // The batch stays ONE transaction on purpose. Discovery is a mirror of a moment,
+  // and committing per row would let a pass that dies half way leave a book that is
+  // part yesterday and part today, with nothing saying which rows are which.
+  //
+  // NOTHING IS SILENTLY DROPPED. A refused loan is counted, its loan number and
+  // Encompass id are kept, and the pass REPORTS them — a mirror that quietly skips
+  // a real loan is the confident wrong answer this side keeps finding.
+  const refused = [];
   try {
     await dbc.query('BEGIN');
     for (const loan of found.loans) {
@@ -402,8 +429,23 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
         });
         if (verdict.product === productTerm.PRODUCT.SHORT) { skippedShortTerm += 1; continue; }
       }
-      const row = await upsertDiscovered(dbc, loan, settings);
-      if (needsRead(row)) due.push({ id: row.id, guid: loan.encompassLoanGuid });
+      await dbc.query('SAVEPOINT lt_loan_row');
+      try {
+        const row = await upsertDiscovered(dbc, loan, settings);
+        await dbc.query('RELEASE SAVEPOINT lt_loan_row');
+        if (needsRead(row)) due.push({ id: row.id, guid: loan.encompassLoanGuid });
+      } catch (rowErr) {
+        // Rewind only this row. If the rewind ITSELF fails the transaction is
+        // unusable, so rethrow and let the outer catch report honestly rather than
+        // loop on a connection that will refuse everything from here on.
+        await dbc.query('ROLLBACK TO SAVEPOINT lt_loan_row');
+        await dbc.query('RELEASE SAVEPOINT lt_loan_row');
+        refused.push({
+          loanNumber: loan.loanNumber || null,
+          encompassLoanGuid: loan.encompassLoanGuid || null,
+          reason: (rowErr && rowErr.message) || String(rowErr),
+        });
+      }
     }
     await dbc.query('COMMIT');
   } catch (e) {
@@ -479,6 +521,10 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
     // and — when the classifying fields were refused — that none could be.
     skippedShortTerm,
     classifyFields: found.classifyFields || 'answered',
+    // NO SILENT CAPS. Loans Postgres refused, named so a human can go and look at
+    // them in Encompass; `refusedLoans` carries the first few with their reason.
+    refused: refused.length,
+    refusedLoans: refused.slice(0, 10),
   };
 }
 

@@ -16,10 +16,10 @@
 // *** runs without a single error and silently leaves out every one of those
 // *** 870 objects — including the guard that keeps a budget
 // *** condition from being signed off unless the totals match to the cent.
-// *** The 612 numbered migrations in db/ (highest db/615) are the only
+// *** The 614 numbered migrations in db/ (highest db/617) are the only
 // *** thing that builds this database.
 //
-// Snapshot: 378 tables, 6104 columns.
+// Snapshot: 379 tables, 6118 columns.
 // ===========================================================================
 datasource db {
   provider = "postgresql"
@@ -5331,7 +5331,7 @@ model lt_loan_investors {
 /// This model contains an index with non-default null sort order and requires additional setup for migrations. Visit https://pris.ly/d/default-index-null-ordering for more info.
 model lt_loans {
   id                              String                   @id @db.Uuid
-  loan_number                     String?                  @unique
+  loan_number                     String?
   encompass_loan_guid             String?                  @unique
   borrower_id                     String?                  @db.Uuid
   loan_officer_id                 String?                  @db.Uuid
@@ -5383,6 +5383,8 @@ model lt_loans {
   conditions_sync_error           String?
   documents_synced_at             DateTime?                @db.Timestamptz(6)
   documents_sync_error            String?
+  purchased_status                String?
+  purchased_at                    DateTime?                @db.Date
   lt_borrower_pairs               lt_borrower_pairs[]
   lt_conditions                   lt_conditions[]
   lt_documents                    lt_documents[]
@@ -5404,6 +5406,7 @@ model lt_loans {
   @@index([encompass_synced_at], map: "lt_loans_synced_idx")
   @@index([borrower_email])
   @@index([conditions_synced_at], map: "lt_loans_cond_synced_idx")
+  @@index([loan_number], map: "lt_loans_loan_number_key")
 }
 
 model lt_lock_events {
@@ -9931,6 +9934,26 @@ model trinity_budget_reviews {
   staff_users_trinity_budget_reviews_requested_byTostaff_users staff_users? @relation("trinity_budget_reviews_requested_byTostaff_users", fields: [requested_by], references: [id], onUpdate: NoAction)
 
   @@index([application_id, created_at(sort: Desc)], map: "idx_tbrv_app")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model lt_sync_runs {
+  id          String    @id @db.Uuid
+  kind        String
+  trigger     String    @default("worker")
+  started_at  DateTime  @default(now()) @db.Timestamptz(6)
+  finished_at DateTime? @db.Timestamptz(6)
+  ok          Boolean?
+  reason      String?
+  discovered  Int?
+  read_count  Int?
+  failed      Int?
+  skipped     Int?
+  remaining   Int?
+  passes      Int?
+  detail      Json?
+
+  @@index([kind, started_at(sort: Desc)], map: "lt_sync_runs_kind_started_idx")
 }
 
 enum lt_amortization_type {

@@ -194,7 +194,11 @@ async function latest(dbc = db) {
     const { rows } = await dbc.query(
       `SELECT DISTINCT ON (kind)
               kind, trigger, started_at, finished_at, ok, reason,
-              discovered, read_count, failed, skipped, remaining, passes
+              discovered, read_count, failed, skipped, remaining, passes,
+              -- The pass's own shape, so a screen can say something the columns do
+              -- not have a place for — today, WHICH loans the database refused. A
+              -- fact recorded and never selected is a fact nobody can act on.
+              detail
          FROM lt_sync_runs
         ORDER BY kind, started_at DESC`,
     );
