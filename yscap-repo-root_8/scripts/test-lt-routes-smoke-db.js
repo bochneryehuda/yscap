@@ -178,6 +178,11 @@ async function main() {
       // map, then one read of `lt_lp_disqualify_search` — and returns BEFORE any
       // call to LenderPrice. The route turns that into a 409, which is a pass here.
       '/api/lt/dscr/disqualifications/no-such-search-key',
+      // The signed-in person's compensation plan (the comp overlay, 2026-08-23):
+      // two settings-scope reads + the pure resolver — no vendor call, so it is
+      // exactly the kind of door this smoke test exists to open. On a fresh
+      // database it answers the DECLARED defaults (source 'standard' throughout).
+      '/api/lt/dscr/comp-plan',
     ];
 
     // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────
