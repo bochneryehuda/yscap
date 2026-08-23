@@ -161,6 +161,67 @@ export function buildRateStack(programs) {
   return { rates, unpriced, quoteCount, rateCount: rates.length };
 }
 
+/* ── reading the vendor's own blocks ──────────────────────────────────────────
+   `parseFull` hands the fee and comp blocks over as the vendor states them, which means
+   camelCase keys, nulls for anything the vendor did not carry, and — in the comp block —
+   two ARRAYS of itemised lines sitting beside their own totals. Rendering that with
+   `String(v)` is what put "[object Object]" on every quote. */
+
+/** A vendor key as a readable label. Typography only — `borrowerPaid` → "Borrower paid".
+ *  It invents no meaning: the raw key still rides along in the row's tooltip, so the
+ *  screen can always be checked back against the vendor's own field name. */
+export function labelize(key) {
+  const s = String(key || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : '';
+}
+
+/**
+ * ⛔ THE ONLY TWO COMP FIGURES THIS SCREEN CALLS DOLLARS, and it calls them that because it
+ * was MEASURED: on all twelve options of the captured Lender Price answer, `borrowerPaid`
+ * and `lenderPaid` each equal the sum of their own detail lines' `amount`, and those lines
+ * read "Origination : 1.439 (Points) x $350,000.00 (Loan Amount)" → $5,036.50.
+ *
+ * Everything else in the block is printed with NO unit. `compPlanBorrowerPaid` is 0 on every
+ * captured option and its name reads as a flag; nothing available here can prove whether it
+ * is dollars, points or a yes/no, and a guessed unit is exactly the defect this replaced.
+ */
+const COMP_DOLLARS = new Set(['borrowerPaid', 'lenderPaid']);
+
+/**
+ * The comp block as rows: each figure with the vendor's own itemisation underneath it.
+ *
+ * A `…Details` array is attached to the figure it belongs to (`borrowerPaidDetails` →
+ * `borrowerPaid`) rather than rendered as a row of its own, because the lines ARE the
+ * explanation of that figure. A details array whose figure is absent still gets its own
+ * row — dropping it would hide part of a paid answer.
+ *
+ * Pure, and never throws on a shape it has not seen: a non-object comp block yields no rows.
+ */
+export function compRowsOf(comp) {
+  if (!comp || typeof comp !== 'object') return [];
+  const entries = Object.entries(comp);
+  const detailOf = new Map();
+  for (const [k, v] of entries) {
+    if (/Details$/.test(k) && Array.isArray(v)) detailOf.set(k.replace(/Details$/, ''), v);
+  }
+  const rows = [];
+  for (const [k, v] of entries) {
+    if (/Details$/.test(k) && Array.isArray(v)) {
+      if (Object.prototype.hasOwnProperty.call(comp, k.replace(/Details$/, ''))) continue; // shown under its figure
+      rows.push({ key: k, text: '', lines: v });
+      continue;
+    }
+    let text;
+    if (nn(v)) text = COMP_DOLLARS.has(k) ? money2(v) : v.toFixed(3);
+    else if (v == null) text = '—';
+    else if (typeof v === 'string') text = v;               // the vendor's own word, kept
+    else if (typeof v === 'boolean') text = v ? 'yes' : 'no';
+    else text = '—';                                        // never "[object Object]"
+    rows.push({ key: k, text, lines: detailOf.get(k) || [] });
+  }
+  return rows;
+}
+
 /* ── small pieces ─────────────────────────────────────────────────────────── */
 function Row({ k, v, strong, indent, tone, title }) {
   return (
@@ -232,6 +293,9 @@ export function PriceBuild({ o }) {
   const holdbackLines = holdback
     ? Object.entries(holdback).filter(([, lines]) => Array.isArray(lines) && lines.length)
     : [];
+
+  const feeLines = (o && o.fees && typeof o.fees === 'object') ? Object.entries(o.fees) : [];
+  const compRows = compRowsOf(o && o.comp);
 
   return (
     <div style={{ background: '#fff', borderRadius: 10, padding: 14, marginTop: 10, border: `1px solid ${GOLD}33` }}>
@@ -318,15 +382,53 @@ export function PriceBuild({ o }) {
           <Row k="Lock" v={o && o.terms && nn(o.terms.lockDays) ? `${o.terms.lockDays} days` : '—'} />
           <Row k="Monthly P&amp;I" v={money2(o && o.monthlyPayment && o.monthlyPayment.monthlyPI)} />
         </Track>
+        {/* FEES — every line the vendor quoted, as MONEY.
+            An absent fee is an em dash, never the word "null": `parseFull` builds this block with
+            `firstNum`, which answers null for a fee the vendor did not carry, and `String(null)`
+            puts the literal text "null" on the screen. */}
         <Track title="Fees">
-          {o && o.fees && Object.keys(o.fees).length
-            ? Object.entries(o.fees).map(([k, v]) => <Row key={k} k={k} v={nn(v) ? money2(v) : String(v)} />)
-            : <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no fee lines on this quote.</div>}
+          {feeLines.length === 0
+            ? <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no fee lines on this quote.</div>
+            : feeLines.map(([k, v]) => <Row key={k} k={labelize(k)} v={nn(v) ? money2(v) : '—'} title={k} />)}
         </Track>
+
+        {/* COMP — the compensation on this quote, in DOLLARS, with the vendor's own itemization.
+            ⛔ THREE THINGS WERE WRONG HERE AND ALL THREE WERE LIVE ON EVERY QUOTE.
+            (1) `borrowerPaid` / `lenderPaid` are DOLLAR AMOUNTS — measured, not assumed: on all
+                twelve options of the captured answer each one equals the sum of its own detail
+                lines' `amount`, and those lines read "1.439 (Points) x $350,000.00 (Loan Amount)".
+                They were being printed with the POINTS formatter, so $5,036.50 of compensation
+                rendered as "+5036.500" — a money figure wearing the wrong unit, which is the
+                worst thing this screen can do.
+            (2) `borrowerPaidDetails` / `lenderPaidDetails` are ARRAYS of the vendor's own comp
+                lines. `String(array)` rendered them as "[object Object]", destroying the one part
+                of the block that explains where the money comes from.
+            (3) The "no comp lines" reassurance could NEVER appear: `parseFull` always emits all
+                five keys, so a genuinely empty comp block showed five rows of nothing instead.
+                Emptiness is now judged on the VALUES, which is the question being asked.
+            `compPlanBorrowerPaid` is printed with NO unit on purpose. It is 0 on every option in
+            the captured answer and its name reads as a flag; nothing here can prove whether it is
+            dollars, points or a yes/no, and inventing a unit is how (1) happened. */}
         <Track title="Comp">
-          {o && o.comp && Object.keys(o.comp).length
-            ? Object.entries(o.comp).map(([k, v]) => <Row key={k} k={k} v={nn(v) ? pts(v) : String(v)} />)
-            : <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no comp lines on this quote.</div>}
+          {compRows.length === 0
+            ? <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no comp lines on this quote.</div>
+            : compRows.map((r) => (
+              <div key={r.key}>
+                <Row k={labelize(r.key)} v={r.text} title={r.key} />
+                {r.lines.map((l, i) => (
+                  <div key={i} style={{
+                    display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
+                    padding: '4px 0 4px 12px', borderBottom: '1px solid rgba(20,27,34,.07)',
+                  }}>
+                    <span style={{ fontSize: 11.5, color: SLATE, flex: 1 }}>{l.description || '(unnamed comp line)'}</span>
+                    {nn(l.points) && <span style={{ fontSize: 11.5, color: MUTED, ...NUM }}>{pts(l.points)}</span>}
+                    <span style={{ fontSize: 12, fontWeight: 600, color: INK, minWidth: 74, textAlign: 'right', ...NUM }}>
+                      {nn(l.amount) ? money2(l.amount) : '—'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ))}
         </Track>
       </div>
 

@@ -73,7 +73,7 @@ export default ltApi;
 const entry = `
 import React from 'react';
 import { renderToString } from 'react-dom/server';
-import LtPricer, { PriceBuild, RateRow, IneligibleView, buildRateStack, toScenario, ltvOf } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
+import LtPricer, { PriceBuild, RateRow, IneligibleView, buildRateStack, toScenario, ltvOf, compRowsOf, labelize } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
 globalThis.__React = React;
 globalThis.__renderToString = renderToString;
 globalThis.__LtPricer = LtPricer;
@@ -83,6 +83,8 @@ globalThis.__IneligibleView = IneligibleView;
 globalThis.__buildRateStack = buildRateStack;
 globalThis.__toScenario = toScenario;
 globalThis.__ltvOf = ltvOf;
+globalThis.__compRowsOf = compRowsOf;
+globalThis.__labelize = labelize;
 `;
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lt-pricer-render-'));
@@ -121,6 +123,8 @@ const RateRow = globalThis.__RateRow;
 const IneligibleView = globalThis.__IneligibleView;
 const buildRateStack = globalThis.__buildRateStack;
 const toScenario = globalThis.__toScenario;
+const compRowsOf = globalThis.__compRowsOf;
+const labelize = globalThis.__labelize;
 
 const render = (el) => renderToString(el);
 const attempt = (fn) => { try { return { html: fn(), err: null }; } catch (e) { return { html: null, err: e }; } };
@@ -382,6 +386,91 @@ const stack = buildRateStack(capture.programs);
 for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/ppeStyles.js']) {
   const src = fs.readFileSync(path.join(repo, f), 'utf8');
   ok(!/color:\s*['"`]?var\(--ink/.test(src), `R44 ${path.basename(f)} never uses a --ink* token as a text colour`);
+}
+
+// ---------------------------------------------------------------------------
+// 8) the vendor's own fee and comp blocks — units, itemisation, and never a broken token
+//
+// ALL THREE OF THESE WERE LIVE ON EVERY QUOTE and were found by rendering the captured
+// answer rather than by reading the code:
+//
+//   Comp
+//     borrowerPaid          +5036.500        ← $5,036.50 of compensation, printed as POINTS
+//     lenderPaid            +5036.500
+//     borrowerPaidDetails   [object Object]  ← the vendor's own itemisation, destroyed
+//     lenderPaidDetails     [object Object]
+//
+// The unit error is the serious one: a money figure wearing the wrong unit is the single
+// most expensive thing a pricing screen can print. The "[object Object]" pair threw away
+// the only lines that explain where that money comes from. And the block's own "no comp
+// lines" reassurance could never appear, because the parser always emits all five keys —
+// so an EMPTY comp block would have shown five rows of nothing instead of saying so.
+// ---------------------------------------------------------------------------
+{
+  const opt = capture.programs[0].options[0];
+  const raw = opt.comp || {};
+  const html = attempt(() => render(React.createElement(PriceBuild, { o: opt }))).html || '';
+
+  // Every option, not just the first: a defect that survives on option 7 is still shipped.
+  let objectTokens = 0; let rendered = 0;
+  for (const p of capture.programs) {
+    for (const o of p.options || []) {
+      rendered += 1;
+      const h = attempt(() => render(React.createElement(PriceBuild, { o }))).html || '';
+      if (/\[object Object\]/.test(h)) objectTokens += 1;
+    }
+  }
+  ok(rendered >= 10, `R45 the breakdown renders for every captured option (${rendered})`);
+  ok(objectTokens === 0, 'R46 …and not one of them prints "[object Object]"');
+
+  // The unit. Proven from the capture itself rather than assumed: the figure equals the sum
+  // of its own detail lines' dollar amounts, so it is dollars, and it must read as dollars.
+  const paid = raw.borrowerPaid;
+  const sum = (raw.borrowerPaidDetails || []).reduce((s, l) => s + (Number(l.amount) || 0), 0);
+  ok(typeof paid === 'number' && Math.abs(paid - sum) < 0.01,
+    `R47 the captured comp figure IS the sum of its own detail amounts (${paid})`);
+  const asMoney = paid.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+  // ⛔ ASSERT ON THE FIGURE'S OWN CELL, not on the page. The first cut of this guard asked
+  // whether the money string appeared ANYWHERE in the breakdown — and it does, on the detail
+  // line underneath — so putting the wrong unit back on the figure left it green. Capture the
+  // first cell after the label and pin it exactly; nothing else on the page can satisfy it.
+  const text = html.replace(/<[^>]+>/g, '|');
+  const cell = (text.match(/Borrower paid\|+([^|]+)\|/) || [])[1];
+  ok(cell === asMoney, `R48 …so the figure's own cell reads as money (${asMoney}, got ${cell})`);
+  ok(!/^[+-]?\d+(\.\d+)?$/.test(String(cell)), 'R49 …and never as a bare/points number, which is what it used to do');
+
+  // The itemisation the vendor gave us, in the vendor's own words.
+  const firstLine = (raw.borrowerPaidDetails || [])[0] || {};
+  ok(!!firstLine.description && html.includes(String(firstLine.description).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')),
+    'R50 …with Lender Price\'s own comp line printed as it wrote it');
+}
+{
+  // A fee the vendor did not quote comes through as null (the parser builds this block with
+  // `firstNum`). It must read as an em dash — never as the literal word "null".
+  const r = attempt(() => render(React.createElement(PriceBuild, { o: { fees: { totalLenderFees: null } } })));
+  const text = (r.html || '').replace(/<[^>]+>/g, '|');
+  ok(r.err === null && text.includes('|—|'), 'R51 an unquoted fee is an em dash');
+  ok(!/\|null\|/.test(text) && !/\|undefined\|/.test(text),
+    'R52 …never the words "null" or "undefined"');
+}
+{
+  // The pure rule, so the shapes that never occur in one capture are still pinned.
+  const rows = compRowsOf({ borrowerPaid: 1234.5, borrowerPaidDetails: [{ description: 'x', amount: 1234.5 }] });
+  ok(rows.length === 1 && rows[0].key === 'borrowerPaid' && rows[0].lines.length === 1,
+    'R53 a details array is attached to the figure it explains, not listed as its own row');
+  const orphan = compRowsOf({ lenderPaidDetails: [{ description: 'y' }] });
+  ok(orphan.length === 1 && orphan[0].lines.length === 1,
+    'R54 …but a details array with no figure is still shown — never silently dropped');
+  const odd = compRowsOf({ someObject: { a: 1 }, missing: null, flag: true, word: 'Tier 2' });
+  const byKey = Object.fromEntries(odd.map((r) => [r.key, r.text]));
+  ok(byKey.someObject === '—' && byKey.missing === '—',
+    'R55 an unreadable value is a dash, never "[object Object]"');
+  ok(byKey.flag === 'yes' && byKey.word === 'Tier 2',
+    'R56 …a yes/no reads as yes/no, and the vendor\'s own word is kept');
+  ok(compRowsOf(null).length === 0 && compRowsOf('nope').length === 0,
+    'R57 …and a comp block that is not an object yields nothing rather than throwing');
+  ok(labelize('borrowerPaid') === 'Borrower paid' && labelize('totalLenderFees') === 'Total lender fees',
+    'R58 a vendor key reads as words — typography only, no meaning invented');
 }
 
 console.log(`\n${failures === 0 ? `OFFLINE: all ${n} passed` : `FAILURES: ${failures} of ${n}`}`);
