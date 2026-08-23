@@ -65,7 +65,16 @@ const SORTABLE = {
 };
 const DEFAULT_SORT = 'last_modified';
 
-const MAX_LIMIT = 200;
+// THE WHOLE BOOK IN ONE ANSWER. The long-term book is a few hundred loans, and
+// the screen's per-column search filters CLIENT-side over what it holds — which
+// is only honest if it holds everything the filters cover. The old cap of 200
+// with a 50-row default page was the owner's "I'm clicking Active, where it says
+// 133 files, and I'm not seeing even close to that number": the server sent 50,
+// the screen drew no pager, and 83 files were simply unreachable. A thousand
+// covers this book several times over; a book that outgrows it shows an honest
+// "narrow it down" note rather than a silent cut (the screen checks total
+// against what it received).
+const MAX_LIMIT = 1000;
 const DEFAULT_LIMIT = 50;
 
 /**
@@ -480,7 +489,7 @@ async function loadPipeline(staff, filters = {}) {
 
   const q = buildPipelineQuery(viewerAccess, staffId, filters, opts);
   const f = buildFacetQueries(viewerAccess, staffId, filters, opts);
-  const [{ rows }, { rows: counted }, facets] = await Promise.all([
+  const [{ rows }, { rows: counted }, facets, officers] = await Promise.all([
     lazy.db.query(q.sql, q.params),
     lazy.db.query(q.countSql, q.params),
     // The chip counts are a CONVENIENCE on top of the list, so a failure to count
@@ -488,6 +497,23 @@ async function loadPipeline(staff, filters = {}) {
     // rows still arrive. Reported as null rather than zero — a zero would say the
     // book is empty, which is precisely the thing the list beside it disproves.
     loadFacets(f, staffId).catch(() => null),
+    // WHO CAN BE PICKED IN THE OFFICER FILTER (owner-directed 2026-08-23: RTL-style
+    // — "I can select All and then I can select ... which loan officer"). Only a
+    // viewer who sees the whole book gets a list at all: offering a scoped officer
+    // a picker of colleagues would advertise files the scope then refuses. Built
+    // from the CONTACT rows, effective-person expression and all, so a reassigned
+    // file lists under the person who actually holds it — the same one-predicate
+    // rule every other "whose file" reader uses. Best-effort like the facets: a
+    // failed list costs the picker its options, never anybody their pipeline.
+    (viewerAccess.seesAll
+      ? lazy.db.query(
+        `SELECT DISTINCT ${access.effectiveStaffSql('c')} AS staff_id, su.full_name
+           FROM lt_loan_contacts c
+           JOIN lt_loans l ON l.id = c.loan_id
+           JOIN staff_users su ON su.id = ${access.effectiveStaffSql('c')}
+          WHERE c.role = 'loan_officer'
+          ORDER BY su.full_name`).then((r) => r.rows).catch(() => null)
+      : Promise.resolve(null)),
   ]);
 
   let emptyReason = null;
@@ -523,6 +549,10 @@ async function loadPipeline(staff, filters = {}) {
     book: book.normalizeBook(filters.book),
     bookControl: book.bookSplitApplies(books),
     bookCounts: facets ? facets.book : null,
+    // The officer picker's options — null for a scoped viewer (no picker is drawn),
+    // and null again when the list could not be read (the picker falls back to the
+    // filter still working by typed id, which saved views may carry).
+    officers: officers || null,
     // A filter this tenant's own configuration makes moot — NAMED, so the screen can
     // say so rather than showing a book that quietly ignores what was asked for.
     filtersIgnored: [
