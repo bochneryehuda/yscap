@@ -343,7 +343,7 @@ function buildPipelineQuery(viewerAccess, staffId, filters = {}, opts = {}) {
                 ELSE EXTRACT(DAY FROM (now() - l.milestone_since))::int END AS milestone_days,
            -- TWO ENCOMPASS RECORDS, ONE LOAN NUMBER (owner-reported 2026-08-23,
            -- YSCAP258134474: a stale copy in the Pipeline folder read "Started /
-           -- $202,500" while the real record sat sold in Corr Post Purchase). The
+           -- 202,500 dollars" while the real record sat sold in Corr Post Purchase). The
            -- row must SAY its number lives on another live Encompass record, or
            -- whichever copy somebody happens to open reads as the loan. Counted
            -- against non-trash rows only: a twin already deleted is not a duplicate.
