@@ -216,8 +216,16 @@ export default function LtBook() {
                       <div style={{ color: r.borrowerLinked ? '#1F6F43' : '#8A6A17' }}>
                         {r.borrowerLinked ? 'Borrower matched' : 'No borrower yet'}
                       </div>
+                      {/* THREE ANSWERS, NOT TWO. "Encompass names nobody" and
+                          "Encompass names somebody PILOT has not matched" are
+                          different jobs — the first is a question for the loan
+                          team, the second is one click on the people map — so a
+                          file whose officer we cannot match SAYS WHO IT IS
+                          instead of reading as an empty file. */}
                       <div style={{ color: r.officerLinked ? '#1F6F43' : '#8A6A17' }}>
-                        {r.officerLinked ? (r.officerName || 'Officer matched') : 'No officer yet'}
+                        {r.officerLinked
+                          ? (r.officerName || 'Officer matched')
+                          : (r.officerName ? `${r.officerName} — not matched` : 'No officer yet')}
                       </div>
                     </td>
                   </tr>

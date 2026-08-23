@@ -39,6 +39,7 @@
  */
 
 const access = require('./access');
+const contacts = require('./people/contacts');
 const productTerm = require('./product-term');
 
 const lazy = {
@@ -48,15 +49,36 @@ const lazy = {
 /**
  * The one FROM every read here shares.
  *
- * `lt_loans.borrower_id` and `.loan_officer_id` point at the SHARED identity
- * records (`borrowers`, `staff_users`) — the zone Long-Term is authorized to READ
- * and never write (ledger 2026-08-03). Every join is LEFT for the reason above:
- * an unlinked loan is precisely what this census exists to surface.
+ * `lt_loans.borrower_id` points at the SHARED identity record (`borrowers`) — the
+ * zone Long-Term is authorized to READ and never write (ledger 2026-08-03). Every
+ * join is LEFT for the reason above: an unlinked loan is precisely what this
+ * census exists to surface.
+ *
+ * THE OFFICER COMES FROM THE LOAN TEAM, NOT FROM A COLUMN ON THE LOAN. This read
+ * used to join `staff_users` on `lt_loans.loan_officer_id`, and NOTHING IN THE
+ * REPOSITORY HAS EVER WRITTEN THAT COLUMN — so the owner's own census reported
+ * "no loan officer" on every long-term file, and its CSV shipped an empty Loan
+ * officer column, while the pipeline beside it showed the officer on the same
+ * loans. Who the officer is lives in `lt_loan_contacts`, and the answer is the
+ * EFFECTIVE person — `access.effectiveStaffSql` — so a locally reassigned file
+ * reads the same way here as it does in the pipeline, on the file screen and in
+ * the officer filter. Four readings of one question, one expression.
+ *
+ * ONE ROW, because `lt_loan_contacts` holds one row per ROLE and `UNIQUE (loan_id,
+ * role)` (db/553) makes the officer's slot exactly one. Joining the table without
+ * that predicate would return a census row per CONTACT and count a six-role loan
+ * six times — which is why the role is named here rather than left to the reader.
  */
 const FROM = `
   FROM lt_loans l
   LEFT JOIN borrowers b ON b.id = l.borrower_id
-  LEFT JOIN staff_users s ON s.id = l.loan_officer_id`;
+  LEFT JOIN LATERAL (
+    SELECT ${access.effectiveStaffSql('c')} AS staff_id, c.encompass_name
+      FROM lt_loan_contacts c
+     WHERE c.loan_id = l.id
+       AND c.role = '${contacts.OFFICER_ROLE}'
+  ) o ON true
+  LEFT JOIN staff_users s ON s.id = o.staff_id`;
 
 const SELECT = `
   SELECT l.id,
@@ -70,8 +92,9 @@ const SELECT = `
          l.loan_amount,
          l.borrower_id,
          NULLIF(b.full_name, '')  AS borrower_name,
-         l.loan_officer_id,
-         NULLIF(s.full_name, '')  AS officer_name,
+         o.staff_id                    AS officer_staff_id,
+         NULLIF(s.full_name, '')       AS officer_staff_name,
+         NULLIF(o.encompass_name, '')  AS officer_encompass_name,
          l.encompass_synced_at`;
 
 /** One row, shaped for a screen or a spreadsheet, with the verdict attached. */
@@ -100,8 +123,15 @@ function shape(row) {
     // The mapping the owner asked to finalise, reported as it stands.
     loanAmount: row.loan_amount == null ? null : Number(row.loan_amount),
     borrowerLinked: !!row.borrower_id,
-    officerLinked: !!row.loan_officer_id,
-    officerName: row.officer_name || null,
+    // "Linked" means PILOT knows WHICH OF OUR PEOPLE this is. Encompass naming
+    // somebody we have not matched to a staff account is exactly what this census
+    // exists to surface, so an unmatched officer counts as UNLINKED.
+    officerLinked: !!row.officer_staff_id,
+    // …but it is still named, with Encompass's own wording when that is all we
+    // have. A census whose whole job is "these files need somebody matched" that
+    // answers "no officer" on a file Encompass plainly names an officer on is
+    // telling the reader to go and look it up somewhere else.
+    officerName: row.officer_staff_name || row.officer_encompass_name || null,
     syncedAt: row.encompass_synced_at || null,
   };
 }

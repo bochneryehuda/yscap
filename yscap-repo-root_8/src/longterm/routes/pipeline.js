@@ -24,6 +24,8 @@ const roster = require('../people/roster');
 const ltFile = require('../file');
 const stages = require('../stages');
 const settingsStore = require('../settings/store');
+const conditionRead = require('../conditions/read');
+const dscrVerdict = require('../dscr-verdict');
 const db = require('../db');
 
 // GET /api/lt/pipeline — the viewer's long-term book.
@@ -34,7 +36,9 @@ router.get('/', async (req, res) => {
     // change it and nothing happened. The SCREEN renders what this resolves; the
     // QUERY is unchanged by it, deliberately (see pipeline-columns.js).
     const { settings } = await settingsStore.load().catch(() => ({ settings: {} }));
-    const cols = pipelineColumns.resolveColumns(settings['pipeline.columns']);
+    const cols = pipelineColumns.resolveColumns(settings['pipeline.columns'], {
+      conditionsEnabled: settings['conditions.enabled'] === true,
+    });
 
     const out = await pipeline.loadPipeline(req.actor, {
       stage: req.query.stage,
@@ -57,6 +61,47 @@ router.get('/', async (req, res) => {
       limit: req.query.limit,
       offset: req.query.offset,
     });
+
+    // The outstanding count, and ONLY when the column is actually being drawn —
+    // two more queries on every pipeline load for a column nobody is looking at is
+    // a cost with no reader. It is attached per row rather than joined into the
+    // pipeline query on purpose: the counts follow the Condition Center's OWN
+    // rules for what "outstanding" means, and a SQL predicate here would be a
+    // second copy of them (see conditions/read.js).
+    if (cols.columns.some((c) => c.key === 'conditions')) {
+      try {
+        const counts = await conditionRead.outstandingForLoans((out.loans || []).map((r) => r.id), { settings });
+        for (const row of out.loans || []) row.outstanding = counts.get(row.id) || null;
+      } catch (e) {
+        // A column that cannot be counted leaves its cells saying so; it never
+        // costs the pipeline the loans themselves.
+        console.error('[lt] pipeline condition counts failed:', (e && e.message) || e);
+      }
+    }
+
+    // WHICH SIDE OF THIS COMPANY'S OWN DSCR LINES EACH LOAN FELL ON, on the same
+    // terms as the count above: attached ONLY when the column is drawn, because a
+    // field nothing renders is the exact shape this side keeps finding and fixing.
+    //
+    // Computed HERE rather than in the browser: `dscr-verdict.js` is the one rule,
+    // the file screen already reads it, and a copy in the screen is how two
+    // surfaces come to call the same loan different things. It is pure arithmetic
+    // on settings this route has already loaded — no query, no failure mode — so a
+    // loan with no ratio simply gets no verdict, which is the honest answer and
+    // NOT the same as "below".
+    if (cols.columns.some((c) => c.key === 'dscr')) {
+      for (const row of out.loans || []) {
+        // The SAME conversion the file screen's `num` makes, empty string included:
+        // `dscr_ratio` is a numeric column, so the driver hands back a STRING, and
+        // `Number('')` is a perfectly finite 0 — which would put a red "below" on a
+        // loan whose ratio is blank. The two surfaces must read one column one way
+        // or they will disagree about a loan in front of the same person.
+        const raw = row.dscr_ratio;
+        const r = (raw === null || raw === undefined || raw === '') ? null : Number(raw);
+        row.dscrVerdict = dscrVerdict.dscrVerdict(Number.isFinite(r) ? r : null, settings);
+      }
+    }
+
     res.json({ ...out, ...cols });
   } catch (e) {
     console.error('[lt] pipeline failed:', (e && e.message) || e);
@@ -98,7 +143,9 @@ router.get('/:loanId', async (req, res) => {
       return res.status(404).json({ error: 'No such long-term loan.' });
     }
 
-    const staffIds = [...new Set(team.flatMap((t) => [t.staff_id, t.override_staff_id]).filter(Boolean).map(String))];
+    // `override_by` rides along in the SAME lookup: naming who reassigned a file is
+    // one more id in a query that was already being made, not a second round trip.
+    const staffIds = [...new Set(team.flatMap((t) => [t.staff_id, t.override_staff_id, t.override_by]).filter(Boolean).map(String))];
     const names = new Map();
     if (staffIds.length) {
       const { rows: people } = await db.query(
@@ -140,7 +187,9 @@ router.get('/:loanId', async (req, res) => {
     // The sections themselves — the 1003 as this loan actually reads. Best-effort
     // like the lock: a file whose sections cannot be assembled still opens, with its
     // header, its stepper and its rail intact.
-    const file = await ltFile.loadFile(rows[0].id, rows[0]).catch(() => null);
+    // The settings ride along so the file can say which side of THIS COMPANY'S
+    // own DSCR thresholds a loan fell on, rather than showing a bare ratio.
+    const file = await ltFile.loadFile(rows[0].id, rows[0], { settings }).catch(() => null);
 
     const labels = settings['contacts.roleLabels'] || {};
 
@@ -165,6 +214,12 @@ router.get('/:loanId', async (req, res) => {
       file,
       sections: workspace.sectionMenu(rows[0], {
         conditionsEnabled: settings['conditions.enabled'] === true,
+        // The SAME income block the rail renders, so the menu can never grey a
+        // section whose figures are sitting on the screen beside it.
+        income: file && file.income,
+        // STAFF-ONLY, like everything on this route: whether Encompass names an
+        // investor decides whether the section is drawn at all.
+        investor: file && file.investor,
       }),
       stepper: workspace.milestoneStepper(rows[0], catalog, { reachedAt }),
       // How long it has been at this milestone — and, when the first sighting is all
@@ -183,6 +238,7 @@ router.get('/:loanId', async (req, res) => {
       contacts: team.map((t) => contacts.describeContact(t, {
         staffName: t.staff_id ? names.get(String(t.staff_id)) : null,
         overrideName: t.override_staff_id ? names.get(String(t.override_staff_id)) : null,
+        overrideByName: t.override_by ? names.get(String(t.override_by)) : null,
         labels,
       })),
       canReassign,
@@ -226,7 +282,7 @@ router.post('/:loanId/contacts/:role/override', async (req, res) => {
 
     // Answer with the contact as the screen will now draw it, so the row updates
     // from what the server actually stored rather than from what was typed.
-    const ids = [row.staff_id, row.override_staff_id].filter(Boolean).map(String);
+    const ids = [row.staff_id, row.override_staff_id, row.override_by].filter(Boolean).map(String);
     const names = new Map();
     if (ids.length) {
       const { rows: people } = await db.query(
@@ -238,6 +294,7 @@ router.post('/:loanId/contacts/:role/override', async (req, res) => {
       contact: contacts.describeContact(row, {
         staffName: row.staff_id ? names.get(String(row.staff_id)) : null,
         overrideName: row.override_staff_id ? names.get(String(row.override_staff_id)) : null,
+        overrideByName: row.override_by ? names.get(String(row.override_by)) : null,
         labels: settings['contacts.roleLabels'] || {},
       }),
     });

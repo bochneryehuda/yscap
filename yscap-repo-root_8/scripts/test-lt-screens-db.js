@@ -395,6 +395,7 @@ async function main() {
       await db.query('DELETE FROM borrowers WHERE id = ANY($1::uuid[])', [borrowerIds]).catch(() => {});
     }
     await db.pool.end().catch(() => {});
+    await require('../src/db').pool.end().catch(() => {});
   }
 
   console.log(`\n✓ lt screens (db): ${checks} assertions passed`);

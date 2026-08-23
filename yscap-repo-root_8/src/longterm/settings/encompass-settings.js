@@ -26,21 +26,58 @@
  * settings table arrives.
  */
 
+/**
+ * WHY A SETTING SAYS "not in use yet" — and why that sentence is in the code
+ * rather than only in somebody's head.
+ *
+ * The house rule above promises a buyer that every tenant-specific choice is a
+ * setting. Forty-one of these were declared ahead of the code that would read
+ * them, so a knob on the settings screen changed NOTHING and said so nowhere — a
+ * silent knob is worse than no knob, because it is believed. Each of those now
+ * carries `notWired`, the screen prints it, and
+ * `scripts/test-lt-settings-wired-pure.js` fails the build on a setting that is
+ * neither read by something nor honest about not being read — and on a `notWired`
+ * that has gone STALE because somebody wired it since.
+ *
+ * The reasons below are shared because they are genuinely the same reason. Adding
+ * a setting nothing reads yet means adding one of these to it.
+ */
+
+/** The number is pinned to the MEASURED field dictionary, not to this setting. */
+const NW_PINNED_FIELD = 'Not in use yet. The reader takes this field by NUMBER from the measured '
+  + 'field dictionary (772 live loans), and the build fails if a path disagrees with it — that guard '
+  + 'is what caught three field paths that could never have filled. Changing it here changes nothing '
+  + 'today; it is declared so a buyer whose Encompass carries the fact somewhere else has one place to say so.';
+
+/** The rule it describes is settled in code, where a test can hold it. */
+const NW_SETTLED_RULE = 'Not in use yet. The rule it describes is settled in code, where the census '
+  + 'test can hold it against the live book. It is declared so a buyer can reopen it without a release.';
+
+/** The feature that would read it has not been built. */
+const NW_NOT_BUILT = 'Not in use yet — the part of the system that would read it has not been built.';
+
+/** The connection is configured by the hosting environment, not from here. */
+const NW_ENV = 'Not in use yet. The connection is configured where the credentials live (the hosting '
+  + 'settings), so it can differ per environment and no secret passes through this screen.';
+
 const SETTINGS = [
   // ── Product classification ────────────────────────────────────────────────
   { key: 'program.fieldId', group: 'Product', label: 'Loan program field',
     type: 'fieldId', default: '1401',
     description: 'The Encompass field that names the loan program.',
-    evidence: 'loan.loanProgramName — filled on 100% of loans in the tenant.' },
+    evidence: 'loan.loanProgramName — filled on 100% of loans in the tenant.',
+    notWired: NW_PINNED_FIELD },
   { key: 'program.longTermPatterns', group: 'Product', label: 'Long-term program patterns',
     type: 'list', default: ['DSCR'],
     description: 'A program whose name matches any of these is a LONG-TERM file.',
     evidence: 'All 490 long-term loans carry DSCR in the program name: Investor DSCR 30/40 YEAR FRM, '
-      + 'DSCR I/O 30/40 Year FRM, DSCR ARM.' },
+      + 'DSCR I/O 30/40 Year FRM, DSCR ARM.',
+    notWired: NW_SETTLED_RULE },
   { key: 'program.shortTermPatterns', group: 'Product', label: 'Short-term program patterns',
     type: 'list', default: ['Fix & Flip', 'Fix and Flip', 'Bridge', 'Ground Up'],
     description: 'A program whose name matches any of these is a SHORT-TERM (RTL) file and is NOT ours.',
-    evidence: 'The 251 short-term loans are all "Fix & Flip Purchase + reno", 12-month terms.' },
+    evidence: 'The 251 short-term loans are all "Fix & Flip Purchase + reno", 12-month terms.',
+    notWired: NW_SETTLED_RULE },
   { key: 'program.knownPrograms', group: 'Product', label: 'Known programs',
     type: 'map',
     default: {
@@ -56,49 +93,58 @@ const SETTINGS = [
       'HELOC- Qualify Using Rate/Index': { family: 'other' },
     },
     description: 'Every program seen in the tenant, with the terms it implies.',
-    evidence: 'Census of 772 loans, 2026-08-14.' },
+    evidence: 'Census of 772 loans, 2026-08-14.',
+    notWired: NW_SETTLED_RULE },
 
   // ── The DSCR ratio ────────────────────────────────────────────────────────
   { key: 'dscr.ratioFieldId', group: 'DSCR', label: 'DSCR ratio field',
     type: 'fieldId', default: 'CUST01FV',
     description: 'The custom field holding the computed DSCR.',
-    evidence: "Tenant custom field CUST01FV, description 'DSCR', calculation Round([1005]/[912],2)." },
+    evidence: "Tenant custom field CUST01FV, description 'DSCR', calculation Round([1005]/[912],2).",
+    notWired: NW_PINNED_FIELD },
   { key: 'dscr.rentFieldId', group: 'DSCR', label: 'Gross monthly rent field',
     type: 'fieldId', default: '1005',
     description: 'Numerator: gross monthly market rent on the subject property.',
-    evidence: 'loan.subjectPropertyGrossRentalIncomeAmount.' },
+    evidence: 'loan.subjectPropertyGrossRentalIncomeAmount.',
+    notWired: NW_PINNED_FIELD },
   { key: 'dscr.housingExpenseFieldId', group: 'DSCR', label: 'Total housing expense (PITIA) field',
     type: 'fieldId', default: '912',
     description: 'Denominator: proposed total monthly housing expense.',
     evidence: 'loan.proposedHousingExpenseTotal. NOT CX.PITIA — that field is misconfigured '
-      + 'in this tenant and returns negative values (see encompass/formulas.js).' },
+      + 'in this tenant and returns negative values (see encompass/formulas.js).',
+    notWired: NW_PINNED_FIELD },
   { key: 'dscr.minimumRatio', group: 'DSCR', label: 'Minimum acceptable DSCR',
     type: 'number', default: 1.0,
     description: 'Below this the property does not cover its own debt service.',
-    evidence: 'Industry convention; the tenant holds no hard floor of its own.' },
+    evidence: 'Industry convention; the tenant holds no hard floor of its own.',
+  },
   { key: 'dscr.comfortRatio', group: 'DSCR', label: 'Comfortable DSCR',
     type: 'number', default: 1.2,
     description: 'At or above this, the file sits in the conventional DSCR comfort zone.',
-    evidence: 'Industry convention.' },
+    evidence: 'Industry convention.',
+  },
   { key: 'dscr.rentBasis', group: 'DSCR', label: 'Which rent feeds the DSCR',
     type: 'enum', default: 'estimated-market', options: ['estimated-market', 'actual-in-place', 'lower-of-both'],
     description: 'The appraisal reports BOTH the rent in place and the market rent the appraiser '
       + 'supports. Which one qualifies the file is a credit-policy decision, not a technical one.',
     evidence: 'Live appraisals show gaps of 56% (2,500 in place vs 3,900 market) and vacant '
       + 'properties where no actual rent exists at all. Encompass field 1005 currently receives '
-      + 'the market figure, so that is the shipped default — but it is the more generous of the two.' },
+      + 'the market figure, so that is the shipped default — but it is the more generous of the two.',
+    notWired: 'Not in use yet, and it is the OWNER\'s to answer rather than a developer\'s: which rent qualifies a file — the rent in place, the market rent the appraiser supports, or the lower of the two — is credit policy. Live appraisals show gaps of 56% between them and vacant properties where no actual rent exists at all, so guessing would price loans on a number nobody chose.' },
   { key: 'dscr.carryBothRents', group: 'DSCR', label: 'Always store both rents',
     type: 'boolean', default: true,
     description: 'Keep actual rent, market rent and the occupancy state on the file so an '
       + 'underwriter can see what the ratio rests on.',
     evidence: 'MULTIFAMILY_RENT_SCHEDULE in the appraisal XML carries both, plus a comment that '
-      + 'often says no lease was supplied.' },
+      + 'often says no lease was supplied.',
+    notWired: NW_SETTLED_RULE },
   { key: 'dscr.recomputeLocally', group: 'DSCR', label: 'Recompute DSCR ourselves',
     type: 'boolean', default: true,
     description: 'Recompute rent ÷ housing expense on our side rather than trusting the stored value, '
       + 'so a stale or blank custom field never drives a decision.',
     evidence: 'The stored CUST01FV matched our recomputation on every loan that had both inputs, '
-      + 'but it is blank on 34% of long-term files.' },
+      + 'but it is blank on 34% of long-term files.',
+    notWired: NW_SETTLED_RULE },
 
   // ── Credit ────────────────────────────────────────────────────────────────
   { key: 'credit.bureauFieldIds', group: 'Credit', label: 'Bureau score fields',
@@ -106,65 +152,80 @@ const SETTINGS = [
     default: { borrower: { experian: '67', transUnion: '1450', equifax: '1414' },
                coborrower: { experian: '60', transUnion: '1452', equifax: '1415' } },
     description: 'Where each bureau score lives, per borrower role.',
-    evidence: 'Tenant standard fields; declared STRING even though they hold integers.' },
+    evidence: 'Tenant standard fields; declared STRING even though they hold integers.',
+    notWired: NW_PINNED_FIELD },
   { key: 'credit.selectionRule', group: 'Credit', label: 'Qualifying score rule',
     type: 'enum', default: 'middle-of-three-lower-of-two',
     options: ['middle-of-three-lower-of-two', 'lowest', 'highest', 'average'],
     description: 'How one qualifying score is chosen from the three bureaus.',
-    evidence: 'CX.PAIR1..6 FICO formulas: median when all three report, minimum of the two that do.' },
+    evidence: 'CX.PAIR1..6 FICO formulas: median when all three report, minimum of the two that do.',
+    notWired: NW_NOT_BUILT },
   { key: 'credit.fileQualifiesOn', group: 'Credit', label: 'File-level qualifying score',
     type: 'enum', default: 'lowest-across-all-borrowers',
     options: ['lowest-across-all-borrowers', 'primary-borrower-only', 'highest-across-all-borrowers'],
     description: 'Which borrower the file qualifies on when there are several.',
-    evidence: 'CX.PAIRS16 = Min() across all six configured pairs.' },
+    evidence: 'CX.PAIRS16 = Min() across all six configured pairs.',
+    notWired: NW_NOT_BUILT },
 
   // ── Borrower pairs ────────────────────────────────────────────────────────
   { key: 'borrowerPairs.maxPairs', group: 'Borrowers', label: 'Maximum borrower pairs',
     type: 'number', default: 6,
     description: 'How many borrower pairs a file may carry.',
     evidence: 'The tenant defines CX.PAIR1..CX.PAIR6 FICO fields. Live files use at most 3 '
-      + '(737 loans have 1 pair, 31 have 2, 4 have 3).' },
+      + '(737 loans have 1 pair, 31 have 2, 4 have 3).',
+    notWired: NW_SETTLED_RULE },
   { key: 'borrowerPairs.storeAsList', group: 'Borrowers', label: 'Model pairs as a list',
     type: 'boolean', default: true,
     description: 'Carry borrowers as an ordered list of pairs rather than fixed borrower/co-borrower columns.',
-    evidence: 'loan.applications[] is an array; a two-column model cannot hold pair 2 or 3.' },
+    evidence: 'loan.applications[] is an array; a two-column model cannot hold pair 2 or 3.',
+    notWired: NW_SETTLED_RULE },
 
   // ── Property ──────────────────────────────────────────────────────────────
   { key: 'property.typeFieldId', group: 'Property', label: 'Property type field',
     type: 'fieldId', default: '1041',
     description: 'Authoritative subject property type.',
     evidence: 'loan.loanProductData.gsePropertyType — 100% filled on long-term files, versus '
-      + '54% for the alternative field 1553.' },
+      + '54% for the alternative field 1553.',
+    notWired: NW_PINNED_FIELD },
   { key: 'property.unitsFieldId', group: 'Property', label: 'Unit count field',
     type: 'fieldId', default: '16', evidence: 'loan.property.financedNumberOfUnits, 91.8% filled.',
-    description: 'Number of financed units.' },
+    description: 'Number of financed units.',
+    notWired: NW_PINNED_FIELD },
   { key: 'property.valueFieldPriority', group: 'Property', label: 'Property value priority',
     type: 'list', default: ['356', '1821', '136'],
     description: 'Which value to trust first: appraised, then estimated, then purchase price.',
-    evidence: 'Fill rates on long-term files: appraised 74.5%, estimated 69.6%, purchase price 22.7%.' },
+    evidence: 'Fill rates on long-term files: appraised 74.5%, estimated 69.6%, purchase price 22.7%.',
+    notWired: NW_PINNED_FIELD },
   { key: 'property.ltvFieldId', group: 'Property', label: 'LTV field',
-    type: 'fieldId', default: '353', evidence: 'loan.ltv, 90.2% filled.', description: 'Loan to value.' },
+    type: 'fieldId', default: '353', evidence: 'loan.ltv, 90.2% filled.', description: 'Loan to value.',
+    notWired: NW_PINNED_FIELD },
   { key: 'property.valueBasisByPurpose', group: 'Property', label: 'Value basis by loan purpose',
     type: 'map', default: { Purchase: '136', 'Cash-Out Refinance': '356', 'NoCash-Out Refinance': '356' },
     description: 'Which value the max-loan calculation applies the LTV to.',
-    evidence: 'CX.DSCRLOANAMOUNT: purchase price on a purchase, appraised value on a refinance.' },
+    evidence: 'CX.DSCRLOANAMOUNT: purchase price on a purchase, appraised value on a refinance.',
+    notWired: NW_PINNED_FIELD },
 
   // ── Terms ─────────────────────────────────────────────────────────────────
   { key: 'terms.termMonthsFieldId', group: 'Terms', label: 'Loan term field',
     type: 'fieldId', default: '4', description: 'Amortization term in months.',
-    evidence: 'loan.loanAmortizationTermMonths — 100% filled on every program.' },
+    evidence: 'loan.loanAmortizationTermMonths — 100% filled on every program.',
+    notWired: NW_PINNED_FIELD },
   { key: 'terms.interestOnlyIndicatorFieldId', group: 'Terms', label: 'Interest-only indicator',
     type: 'fieldId', default: '2982', description: 'Boolean: is this loan interest-only?',
-    evidence: 'Agrees with Terms.IntrOnly and HMDA.X109 on every loan.' },
+    evidence: 'Agrees with Terms.IntrOnly and HMDA.X109 on every loan.',
+    notWired: NW_PINNED_FIELD },
   { key: 'terms.interestOnlyMonthsFieldId', group: 'Terms', label: 'Interest-only term (months)',
     type: 'fieldId', default: '1177', description: 'How long the interest-only period lasts.',
-    evidence: 'loan.regulationZ.interestOnlyMonths — 120 on every DSCR I/O file, 12 or 24 on Fix & Flip.' },
+    evidence: 'loan.regulationZ.interestOnlyMonths — 120 on every DSCR I/O file, 12 or 24 on Fix & Flip.',
+    notWired: NW_PINNED_FIELD },
   { key: 'terms.rateFieldId', group: 'Terms', label: 'Interest rate field',
     type: 'fieldId', default: '3', evidence: 'loan.requestedInterestRatePercent, DECIMAL_3.',
-    description: 'Note rate.' },
+    description: 'Note rate.',
+    notWired: NW_PINNED_FIELD },
   { key: 'terms.loanAmountFieldId', group: 'Terms', label: 'Loan amount field',
     type: 'fieldId', default: '1109', description: 'Requested loan amount.',
-    evidence: 'loan.borrowerRequestedLoanAmount; field 2 (base loan amount) carries the same value.' },
+    evidence: 'loan.borrowerRequestedLoanAmount; field 2 (base loan amount) carries the same value.',
+    notWired: NW_PINNED_FIELD },
 
   // ── Milestones ────────────────────────────────────────────────────────────
   { key: 'milestones.order', group: 'Workflow', label: 'Milestone order',
@@ -174,81 +235,107 @@ const SETTINGS = [
       'Docs Out', 'Wire Order', 'Funding', 'Investor Delivery', 'Purchasing Conditions',
       'Final Docs', 'Closed', 'Completion'],
     description: 'The workflow, in order.',
-    evidence: 'GET /encompass/v3/settings/milestones — 19 active milestones.' },
+    evidence: 'GET /encompass/v3/settings/milestones — 19 active milestones.',
+    // NOT the shared "settled in code" reason, which is what this carried until the
+    // catalog started refreshing itself. The order is now read LIVE from the
+    // tenant's own milestone list on every catalog pass (`sync/milestone-catalog.js`
+    // writes `sequence` from the order Encompass returns, and the stepper draws
+    // that), so this list is only the shape PILOT shipped with. Wiring the setting
+    // would make it OVERRIDE the tenant's own answer, which is the wrong direction:
+    // a buyer who wants a different order changes it in Encompass, where the loans
+    // actually move through it, and the next refresh follows.
+    notWired: 'Not in use yet, and it is no longer the thing that decides. The order is read LIVE '
+      + 'from your own Encompass milestone list every time the catalog refreshes, so this is only '
+      + 'the list PILOT shipped with. Change the order in Encompass and PILOT follows it.' },
   { key: 'milestones.currentNameFieldId', group: 'Workflow', label: 'Current milestone field',
     type: 'fieldId', default: 'MS.STATUS',
     description: 'Where to read the current milestone from.',
     evidence: "The pipeline column Loan.CurrentMilestone is BLANK for every loan in this tenant; "
-      + 'MS.STATUS (and loan.milestoneCurrentName) are 100% filled.' },
+      + 'MS.STATUS (and loan.milestoneCurrentName) are 100% filled.',
+    notWired: NW_PINNED_FIELD },
 
   // ── Conditions ────────────────────────────────────────────────────────────
   { key: 'conditions.model', group: 'Conditions', label: 'Condition model',
     type: 'enum', default: 'enhanced', options: ['enhanced', 'legacy'],
     description: 'Enhanced Conditions (v3) or the legacy per-type endpoints.',
     evidence: 'The legacy v1 endpoints answer 200 with an empty array on all 772 loans; the v3 '
-      + 'Enhanced Conditions endpoint returns the real 348 conditions.' },
+      + 'Enhanced Conditions endpoint returns the real 348 conditions.',
+    notWired: NW_SETTLED_RULE },
   { key: 'conditions.openStatuses', group: 'Conditions', label: 'Statuses that count as OPEN',
     type: 'list', default: ['Added', 'Requested', 'Received', 'Rejected'],
     description: 'Which condition statuses appear on an outstanding-conditions list.',
     evidence: 'Live statuses: Added 195, Cleared 124, Fulfilled 12, Waived 11, Rejected 4, '
       + 'Received 1, Requested 1. The condition also carries a statusOpen boolean — prefer it '
-      + 'when present and use this list as the fallback.' },
+      + 'when present and use this list as the fallback.',
+    notWired: 'Not in use yet, and deliberately so: the centre ranks on `status_open` — Encompass\'s own answer — and never on the status word. Seven words were observed here and a buyer can add more, so a list parsed into a ranking would silently mis-sort the first time somebody did.' },
   { key: 'conditions.satisfiedStatuses', group: 'Conditions', label: 'Statuses that count as SATISFIED',
-    type: 'list', default: ['Cleared', 'Fulfilled', 'Waived'], description: 'Closed-out statuses.' },
+    type: 'list', default: ['Cleared', 'Fulfilled', 'Waived'], description: 'Closed-out statuses.',
+    notWired: 'Not in use yet, for the same reason as the OPEN list: a condition is done when Encompass says it is done, never when its status word appears in a list we keep.' },
   { key: 'conditions.priorToGates', group: 'Conditions', label: 'Prior-to gates',
     type: 'list', default: ['Submittal', 'Approval', 'Docs', 'Closing', 'Funding', 'Purchase'],
     description: 'The gates a condition can block, earliest first.',
-    evidence: 'Observed on live conditions and in the 197 condition templates.' },
+    evidence: 'Observed on live conditions and in the 197 condition templates.',
+    notWired: NW_NOT_BUILT },
   { key: 'conditions.categories', group: 'Conditions', label: 'Condition categories',
     type: 'list', default: ['Property', 'Credit', 'Income', 'Assets', 'Legal', 'Miscellaneous'],
     evidence: 'The six categories used across the 197 templates.',
-    description: 'How conditions are grouped.' },
+    description: 'How conditions are grouped.',
+    notWired: 'Not in use yet, deliberately: the centre groups conditions by `prior_to` — Encompass\'s OWN answer to which gate a condition blocks — because that is the grouping the work actually follows. A second grouping kept here would eventually disagree with theirs about the same condition.' },
   { key: 'conditions.defaultSet', group: 'Conditions', label: 'Default condition set for long-term',
     type: 'string', default: 'DSCR MASTER SET (YSCAP)',
     description: 'The condition set a new long-term file starts from.',
     evidence: 'One of 19 sets in the tenant. Investor-specific DSCR sets also exist '
-      + '(DEEPHAVEN, AMERICAN HERITAGE LENDING, OAK TREE, NQM FUNDING).' },
+      + '(DEEPHAVEN, AMERICAN HERITAGE LENDING, OAK TREE, NQM FUNDING).',
+    notWired: NW_NOT_BUILT },
   { key: 'conditions.borrowerFacingText', group: 'Conditions', label: 'Text shown to the borrower',
     type: 'enum', default: 'externalDescription', options: ['externalDescription', 'internalDescription', 'title'],
     description: 'Which field to show outward on a borrower or TPO condition list.',
     evidence: 'internalDescription carries staff notes and internal reference codes; '
       + 'externalDescription is the borrower-facing wording, and printDefinitions says whether '
-      + 'a condition may be shown externally at all.' },
+      + 'a condition may be shown externally at all.',
+    notWired: NW_NOT_BUILT },
 
   // ── eFolder ───────────────────────────────────────────────────────────────
   { key: 'efolder.linkDirection', group: 'eFolder', label: 'Document ↔ condition link',
     type: 'enum', default: 'document-holds-conditions', options: ['document-holds-conditions', 'condition-holds-documents'],
     description: 'Which side of the relationship stores the link.',
     evidence: 'document.conditions[] holds the EnhancedCondition references. There is no '
-      + 'condition→documents endpoint; the mapping must be inverted on read.' },
+      + 'condition→documents endpoint; the mapping must be inverted on read.',
+    notWired: NW_SETTLED_RULE },
   { key: 'efolder.receivedStatuses', group: 'eFolder', label: 'Statuses meaning "we have it"',
     type: 'list', default: ['received', 'reviewed', 'ready for UW', 'ready to ship'],
     evidence: 'Live document statuses across 20,569 rows.', description: 'Document statuses that count as in-hand.' },
   { key: 'efolder.outstandingStatuses', group: 'eFolder', label: 'Statuses meaning "still needed"',
     type: 'list', default: ['needed', 'ordered', 'reordered', 'expected', 'expected!', 'expired!'],
-    description: 'Document statuses that belong on a chase list.' },
+    description: 'Document statuses that belong on a chase list.',
+    notWired: 'Not in use yet, deliberately: "still wanted" is everything that is not IN HAND, so this would be a second list beside the received one — and a status nobody recognised must count as outstanding, because an unfamiliar word is not evidence that a document arrived.' },
   { key: 'efolder.writesEnabled', group: 'eFolder', label: 'Allow uploads into Encompass',
     type: 'boolean', default: false,
     description: 'Master switch for the owner-authorized eFolder upload + condition link. Ships OFF: '
       + 'the write path is authorized but not yet implemented or verified against a live loan.',
-    evidence: 'Owner-authorized 2026-08-14; recorded in docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md.' },
+    evidence: 'Owner-authorized 2026-08-14; recorded in docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md.',
+    notWired: 'Not in use yet — the upload itself is BLOCKED. Its request and response shapes are recorded as unverified on docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md, so no code may write to the eFolder; this is the switch that half will read once the shapes are confirmed against a live loan.' },
 
   // ── Connection ────────────────────────────────────────────────────────────
   { key: 'api.baseUrl', group: 'Connection', label: 'Encompass API base',
-    type: 'string', default: 'https://api.elliemae.com', description: 'API host.' },
+    type: 'string', default: 'https://api.elliemae.com', description: 'API host.',
+    notWired: NW_ENV },
   { key: 'api.tokenScope', group: 'Connection', label: 'OAuth scope',
     type: 'string', default: 'lp',
     description: 'The scope requested at the token endpoint.',
     evidence: 'encompass_admin is REFUSED for this client id — the token endpoint answers '
-      + '"the requested scope … exceeds that which the client is permitted".' },
+      + '"the requested scope … exceeds that which the client is permitted".',
+    notWired: NW_ENV },
   { key: 'api.minGapMs', group: 'Connection', label: 'Minimum gap between calls (ms)',
     type: 'number', default: 350,
-    description: 'Self-imposed pacing so we never crowd the shared tenant.' },
+    description: 'Self-imposed pacing so we never crowd the shared tenant.',
+    notWired: NW_ENV },
   { key: 'api.preferredVersion', group: 'Connection', label: 'Preferred API version',
     type: 'enum', default: 'v3', options: ['v3', 'v1'],
     description: 'Which API generation to use by default.',
     evidence: 'v1 attachment endpoints are being sunset in ICE release 26.3. Conditions only '
-      + 'work correctly on v3. A few reads (loan associates) still only answer on v1.' },
+      + 'work correctly on v3. A few reads (loan associates) still only answer on v1.',
+    notWired: NW_ENV },
 
   // ── Stages (db/553) ───────────────────────────────────────────────────────
   // Owner-directed 2026-08-14: "use the Encompass stages, but map those Encompass
@@ -383,7 +470,7 @@ const SETTINGS = [
     default: [
       'loan_number', 'borrower', 'property', 'program', 'loan_amount', 'note_rate',
       'dscr', 'ltv', 'stage', 'milestone', 'days_in_stage', 'loan_officer',
-      'processor', 'lock_status', 'expected_closing',
+      'processor', 'conditions', 'lock_status', 'expected_closing',
     ],
     description: 'Which columns the long-term pipeline shows, in order.' },
   { key: 'pipeline.inactiveFolders', group: 'Pipeline', label: 'Loan folders that mean the deal is over',
@@ -426,12 +513,18 @@ const SETTINGS = [
     evidence: 'Long-Term is a side build and is not live, so the default must stay RTL — '
       + 'nobody should be moved to the new side by a deploy.' },
 
-  // THE BORROWER'S OWN SWITCH — BUILT READY, AND SWITCHED OFF.
+  // THE BORROWER'S OWN SWITCH — BUILT READY, AND NOW ON.
   //
   // The owner (2026-08-16): *"The borrower should also have, in their login, the
   // option to switch from long-term to short-term."* Asked whether to turn it on,
-  // they answered *"build it ready"* — so it is wired end to end and this one
-  // setting is the whole of what stands between it and the client's screen.
+  // they answered *"build it ready"* — so it was wired end to end and left off.
+  // On 2026-08-17 they said *"turn switch on"*, and the default below is `true`.
+  //
+  // This comment still said "AND SWITCHED OFF" until 2026-08-18, directly above a
+  // declaration that reads `default: true`. The `evidence` field beneath it had
+  // been updated and the heading had not, which is the more dangerous half: a
+  // reader who trusts headings and skims fields gets the opposite of the truth
+  // about what a client can see.
   //
   // DEFAULT TRUE — THE OWNER SAID GO (2026-08-17: *"turn switch on"*), which is the
   // "until they say otherwise" this setting was built waiting for. It shipped

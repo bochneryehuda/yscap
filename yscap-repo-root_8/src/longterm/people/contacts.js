@@ -66,7 +66,17 @@ const DEFAULT_ENCOMPASS_ROLE_NAMES = {
   post_closer: 'Post Closer',
 };
 
-const DEFAULT_ROLES = ['loan_officer', 'processor', 'underwriter', 'closer', 'funder', 'post_closer'];
+/**
+ * The role key that means "this is the loan officer".
+ *
+ * Named once because three different questions turn on it and they must give the
+ * same answer: the pipeline's officer filter, the owner's census column, and the
+ * roster's "an officer with an empty book". A string typed in three places is a
+ * string somebody eventually renames in two.
+ */
+const OFFICER_ROLE = 'loan_officer';
+
+const DEFAULT_ROLES = [OFFICER_ROLE, 'processor', 'underwriter', 'closer', 'funder', 'post_closer'];
 
 /** The roles we mirror, and what each is called in Encompass, out of settings. */
 function roleConfig(settings = {}) {
@@ -158,7 +168,7 @@ function attribute(contacts, confirmedByLogin) {
  * reassigned it locally, so the file never silently disagrees with Encompass
  * without saying so.
  */
-function describeContact(row, { staffName = null, overrideName = null, labels = {} } = {}) {
+function describeContact(row, { staffName = null, overrideName = null, overrideByName = null, labels = {} } = {}) {
   const label = labels[row.role] || row.role;
   const overridden = !!row.override_staff_id;
   return {
@@ -174,6 +184,20 @@ function describeContact(row, { staffName = null, overrideName = null, labels = 
     overrideStaffId: row.override_staff_id ? String(row.override_staff_id) : null,
     overrideName: overrideName || null,
     overrideReason: row.override_reason || null,
+    // WHO DID IT AND WHEN — the other two thirds of the record `reassign` writes.
+    // All three columns were written together and only the reason was ever read, so
+    // a screen could say a file had been reassigned and why, and never by whom. On
+    // an action that GRANTS SOMEBODY ACCESS to a file (`access.onFileSql` matches
+    // `override_staff_id`) those are the two facts a reviewer actually needs, and
+    // Long-Term writes nothing to `audit_log` — an RTL table — so this row is the
+    // only place they exist.
+    //
+    // The name is resolved by the caller from the same map it already builds for
+    // the other two people on the row; a person since deleted leaves the id, which
+    // is why the id travels too rather than only a name that might be blank.
+    overrideBy: row.override_by ? String(row.override_by) : null,
+    overrideByName: overrideByName || null,
+    overrideAt: row.override_at || null,
     // The person this file actually belongs to, for anything that has to pick one.
     effectiveStaffId: row.override_staff_id ? String(row.override_staff_id)
       : (row.staff_id ? String(row.staff_id) : null),
@@ -472,6 +496,7 @@ async function reassign(loanId, role, staffId, actorId, reason, client = null) {
 
 module.exports = {
   PARTS,
+  OFFICER_ROLE,
   DEFAULT_ROLES,
   DEFAULT_ENCOMPASS_ROLE_NAMES,
   roleConfig,
