@@ -463,13 +463,6 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
               </div>
             )}
             <Total k="Total closing costs due at closing" v={money2(cc.dueAtClosing)} />
-            {/* What the COMPANY pays on this closing — New York's lender-borne 0.25%
-                special additional mortgage tax. Never part of the borrower's cash to
-                close, and never invisible either: it is a real cost of funding a New
-                York residential loan. */}
-            {Number(cc.governmentChargesLender) > 0 && (
-              <Row k="New York special additional mortgage tax (we pay this)" v={money2(cc.governmentChargesLender)} sub />
-            )}
             <Row k="Appraisal (est., paid outside closing)" v={money2(cc.appraisalPoc)} sub />
             <Total k="Total closing costs including the appraisal" v={money2(cc.totalIncludingPoc)} />
           </Sec>

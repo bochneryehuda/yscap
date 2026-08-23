@@ -1036,8 +1036,15 @@ function normalize(program, input, ev, ladder, opts) {
          settlement statement, overridden, or explained to a borrower. */
       governmentCharges: govChargesTotal,
       governmentChargeLines: govCharges.borrowerLines,
-      // What the COMPANY pays on this closing (New York's lender-borne 0.25%).
-      // Never in the borrower's cash to close, and never invisible either.
+      /* What the COMPANY pays on this closing — $0 on every deal today, and kept
+         for two reasons rather than deleted. It is a LIVE channel: the engine still
+         sums anything a rate table marks `payer: 'lender'`, so a future state or
+         programme that genuinely puts a charge on the mortgagee reports it here
+         with no new wiring. And quotes stored before 2026-08-23 carry a real
+         figure in this field — New York's 0.25% special additional tax, which was
+         split out until the owner ruled that this book never pays a portion
+         ("it's private money … Everything pays the borrower"). Removing the field
+         would rewrite what those files say they were quoted. */
       governmentChargesLender: num(govCharges.lenderTotal),
       governmentChargesConfidence: govCharges.confidence,
       governmentChargeWarnings: govCharges.warnings,

@@ -137,10 +137,17 @@
        Transportation District, plus county local-option taxes — which is why the
        total is a per-county number and not a state number.
 
-       THE SPECIAL ADDITIONAL 0.25% IS THE LENDER'S on a 1-6 family residence
-       (§ 253(1-a)(a)); above six units it falls on the borrower with everything
-       else. Modelled as `lenderPaysSpecialAdditional`, so the borrower's line and
-       the company's own cost are each right instead of one of them being wrong.
+       THE SPECIAL ADDITIONAL 0.25% IS THE BORROWER'S ON THIS BOOK (owner-directed
+       2026-08-23: *"we don't pay our portion since it's private money. Everything
+       pays the borrower, so take off our 0.25 that he put on us. We never pay the
+       portion."*).
+
+       The statute puts § 253(1-a)(a)'s special additional tax on the MORTGAGEE for
+       a 1-6 family residence, and it exempts a mortgagee that is not a "natural
+       person or … institutional lender" — a private lender's borrower pays it. So
+       the whole combined county rate is quoted to the borrower, with no split and
+       no company-cost line. Reopening this needs the owner's own words; it moves
+       real money on every New York loan we write.
 
        THE $30: a 1-2 family dwelling deducts the first $10,000 of principal from
        the MCTD additional tax — $10,000 x 0.30% = $30. Small, and it is a real
@@ -149,9 +156,11 @@
       kind: 'mortgage_recording_tax',
       authority: 'NY Tax Law §§ 253, 253-a, 255; NY State Dept. of Taxation & Finance county rate schedule',
       asOf: '2026-01-01',
-      lenderPaysSpecialAdditional: true,
+      // The special additional tax is INSIDE the combined county rate below and is
+      // charged to the borrower with the rest of it — see the note above. Kept as a
+      // named figure because the term sheet's basis line explains what makes up the
+      // rate, not because anything splits it out any more.
       specialAdditionalRate: 0.0025,
-      lenderPaysUpToUnits: 6,
       oneTwoFamilyCredit: 30,          // the $10,000 MCTD exemption, in dollars
       // Total combined rate (borrower + lender) by county. NYC is handled by
       // `nycTiers` below because its rate depends on the loan size AND the class.
@@ -353,6 +362,11 @@
       authority: 'Ohio Rev. Code § 319.54 — $1 per $1,000 plus a permissive county rate; seller-paid' },
     // Explicit "no state transfer tax" — an answer, not an omission.
     TX: { none: true, asOf: '2026-01-01', confidence: 'verified', authority: 'Texas levies no real-estate transfer tax' },
+    LA: { none: true, asOf: '2026-01-01', confidence: 'secondary', authority: 'Louisiana levies no state real-estate transfer tax (New Orleans charges a flat documentary fee)' },
+    ID: { none: true, asOf: '2026-01-01', confidence: 'secondary', authority: 'Idaho levies no real-estate transfer tax' },
+    UT: { none: true, asOf: '2026-01-01', confidence: 'secondary', authority: 'Utah levies no real-estate transfer tax' },
+    KS: { none: true, asOf: '2026-01-01', confidence: 'secondary', authority: 'Kansas levies no real-estate transfer tax (and repealed its mortgage registration tax in 2019)' },
+    AK: { none: true, asOf: '2026-01-01', confidence: 'secondary', authority: 'Alaska levies no real-estate transfer tax' },
     AZ: { none: true, asOf: '2026-01-01', confidence: 'verified', authority: 'Arizona levies no real-estate transfer tax (a $2 affidavit fee only)' },
     MO: { none: true, asOf: '2026-01-01', confidence: 'verified', authority: 'Missouri levies no real-estate transfer tax' },
     IN: { none: true, asOf: '2026-01-01', confidence: 'verified', authority: 'Indiana levies no real-estate transfer tax' },
@@ -361,8 +375,49 @@
     ND: { none: true, asOf: '2026-01-01', confidence: 'verified', authority: 'North Dakota levies no real-estate transfer tax' },
     MT: { none: true, asOf: '2026-01-01', confidence: 'verified', authority: 'Montana levies no real-estate transfer tax' },
     WY: { none: true, asOf: '2026-01-01', confidence: 'verified', authority: 'Wyoming levies no real-estate transfer tax' },
+    /* VERMONT — genuinely the BUYER's, and not a small number on an investment
+       property. A principal residence is taxed 0.5% on the first $100,000 and
+       1.25% above it; anything that is NOT a principal residence — which is every
+       loan on this book — is 1.25% of the whole price, plus the clean-water
+       surcharge. Quoted at the investment rate because that is what an RTL deal is. */
+    VT: { stateRate: 0.0125, buyerShare: 1, surcharge: 0.002, asOf: '2026-01-01', confidence: 'secondary',
+      authority: '32 V.S.A. § 9602 — property transfer tax, buyer-paid; 1.25% on property that is not the buyer’s principal residence, plus the clean water surcharge',
+      note: 'Vermont taxes the BUYER. A principal residence would be cheaper on the first $100,000 — this quotes the investment-property rate.' },
+    /* NEW HAMPSHIRE — 0.75% on EACH side, so the buyer's half is its own real
+       number, with a $20 minimum per side. */
+    NH: { stateRate: 0.015, buyerShare: 0.5, minTax: 20, asOf: '2026-01-01', confidence: 'secondary',
+      authority: 'RSA 78-B:1 — $0.75 per $100 from the buyer and $0.75 per $100 from the seller ($20 minimum each)' },
+    /* MAINE — $2.20 per $500 of value, split down the middle by statute. */
+    ME: { stateRate: 0.0044, buyerShare: 0.5, asOf: '2026-01-01', confidence: 'secondary',
+      authority: '36 M.R.S. § 4641-A — $2.20 per $500, half from the buyer and half from the seller' },
     AL: { stateRate: 0.001, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
       authority: 'Ala. Code § 40-22-1 — $0.50 per $500 on the deed; seller-paid' },
+    /* The rest of the states that levy a transfer tax the SELLER customarily pays.
+       Recorded rather than left out, because "we have no entry for Iowa" and "Iowa
+       charges the buyer nothing" look identical from a quote and are completely
+       different facts. A $0 with a reason is an answer; a silence is a gap. */
+    HI: { stateRate: 0.001, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
+      authority: 'HRS § 247-2 — conveyance tax, graduated from 0.10%; customarily the seller’s' },
+    AR: { stateRate: 0.0033, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
+      authority: 'Ark. Code § 26-60-105 — $3.30 per $1,000; customarily the seller’s' },
+    IA: { stateRate: 0.0016, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
+      authority: 'Iowa Code § 428A.1 — $1.60 per $1,000 over the first $500; customarily the seller’s' },
+    KY: { stateRate: 0.001, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
+      authority: 'KRS 142.050 — $0.50 per $500; customarily the seller’s' },
+    NE: { stateRate: 0.00225, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
+      authority: 'Neb. Rev. Stat. § 76-901 — $2.25 per $1,000; customarily the seller’s' },
+    OK: { stateRate: 0.0015, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
+      authority: '68 O.S. § 3201 — documentary stamp tax $0.75 per $500; customarily the seller’s' },
+    OR: { stateRate: 0, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
+      authority: 'Oregon bars local transfer taxes; only Washington County levies one (0.10%), customarily the seller’s' },
+    RI: { stateRate: 0.0046, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
+      authority: 'R.I. Gen. Laws § 44-25-1 — $2.30 per $500; customarily the seller’s' },
+    SD: { stateRate: 0.001, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
+      authority: 'SDCL § 43-4-21 — $0.50 per $500; customarily the seller’s' },
+    WV: { stateRate: 0.0044, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
+      authority: 'W. Va. Code § 11-22-2 — $1.10 per $500 state plus county; customarily the seller’s' },
+    WI: { stateRate: 0.003, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
+      authority: 'Wis. Stat. § 77.22 — $3 per $1,000; customarily the seller’s' },
     NC: { stateRate: 0.002, buyerShare: 0, asOf: '2026-01-01', confidence: 'secondary',
       authority: 'N.C. Gen. Stat. § 105-228.30 — $1 per $500; seller-paid' },
     TN: { stateRate: 0.0037, buyerShare: 1, asOf: '2026-01-01', confidence: 'secondary',
@@ -450,7 +505,18 @@
      ===================================================================== */
 
 
-  const DISCLAIMER = 'Estimated government charges for planning cash to close. The settlement agent issues the binding figures at closing.';
+  /* THE DISCLAIMER IS THE POINT, not a hedge (owner-directed 2026-08-23: *"You can
+     make a disclaimer that it's just estimated … It's not actually going to be
+     charged. It's just for an estimate."*).
+
+     Nothing here is billed. It exists so a borrower is told, early and roughly
+     right, what these taxes will cost them — because the alternative was telling
+     them nothing at all and letting them find out at the table. So the rates are
+     researched rather than certified, the estimate always errs high, and the
+     wording says both out loud on every surface that prints a figure. */
+  const DISCLAIMER = 'Estimated government charges, from published state and county rates, for planning cash to close. '
+    + 'They are deliberately rounded up so the estimate does not run short. '
+    + 'Your settlement agent issues the binding figures at closing.';
 
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
   const up2 = (v) => Math.ceil(num(v) * 100) / 100;         // round UP to the cent
@@ -609,8 +675,8 @@
        it in overstates the borrower's cash to close by 0.25% of the loan — $1,500
        on a $600,000 loan — and leaving it out of OUR costs understates what the
        company pays on every New York residential closing it funds. */
-    const lenderPays = cfg.lenderPaysSpecialAdditional && units <= cfg.lenderPaysUpToUnits;
-    const borrowerRate = lenderPays ? Math.max(0, total - cfg.specialAdditionalRate) : total;
+    // The borrower pays the whole combined rate — nothing is carved out for us.
+    const borrowerRate = total;
 
     let borrowerAmount = loan * borrowerRate;
     // The 1-2 family MCTD credit: the first $10,000 of principal is exempt from
@@ -629,18 +695,6 @@
       rate: borrowerRate, authority, confidence, note: creditNote,
     }));
 
-    if (lenderPays) {
-      out.lines.push(line({
-        key: 'mortgage_tax_lender', label: 'New York special additional mortgage tax (paid by the lender)',
-        amount: ceilDollar(loan * cfg.specialAdditionalRate),
-        payer: 'lender',
-        basis: `$${Math.round(loan).toLocaleString('en-US')} (mortgage amount)`,
-        rate: cfg.specialAdditionalRate,
-        authority: 'NY Tax Law § 253(1-a)(a) — the 0.25% special additional tax is the mortgagee’s on a residence of six units or fewer',
-        confidence: 'verified',
-        note: 'Not part of the borrower’s cash to close — this is the company’s own cost on this loan.',
-      }));
-    }
   }
 
   /* ── TRANSFER / DEED TAX — purchases only ────────────────────────────────── */
@@ -670,12 +724,26 @@
     if (cfg.stateHighOver && price >= cfg.stateHighOver && cfg.stateHighRate) stateRate = cfg.stateHighRate;
 
     if (stateRate > 0 && share > 0) {
+      /* A FLOOR AND A SURCHARGE, because a state that levies one and is quoted
+         without it is quoted light — which is the direction that leaves a borrower
+         short at the table. New Hampshire charges each side a $20 minimum however
+         small the deal; Vermont adds its clean-water surcharge on top of the rate.
+         Both are absent from every other state, so both are no-ops elsewhere. */
+      let amount = price * stateRate * share;
+      const surcharge = num(cfg.surcharge);
+      if (surcharge > 0) amount += price * surcharge * share;
+      const floor = num(cfg.minTax);
+      const flooredTo = floor > 0 && amount < floor ? floor : null;
+      if (flooredTo != null) amount = flooredTo;
       out.lines.push(line({
         key: 'transfer_tax_state', label: `${st} state transfer tax — buyer’s share`,
-        amount: price * stateRate * share, payer: 'borrower',
-        basis: `$${Math.round(price).toLocaleString('en-US')} × ${(stateRate * 100).toFixed(3)}% × ${(share * 100).toFixed(0)}% buyer share`,
-        rate: stateRate * share, authority: cfg.authority, confidence: cfg.confidence,
-        note: share < 1 ? 'Split per local custom — the purchase contract governs. Override this if the contract says otherwise.' : null,
+        amount, payer: 'borrower',
+        basis: flooredTo != null
+          ? `$${Math.round(price).toLocaleString('en-US')} × ${(stateRate * 100).toFixed(3)}% × ${(share * 100).toFixed(0)}% buyer share, raised to the $${floor} minimum`
+          : `$${Math.round(price).toLocaleString('en-US')} × ${((stateRate + surcharge) * 100).toFixed(3)}% × ${(share * 100).toFixed(0)}% buyer share`
+            + (surcharge > 0 ? ` (includes the ${(surcharge * 100).toFixed(2)}% surcharge)` : ''),
+        rate: (stateRate + surcharge) * share, authority: cfg.authority, confidence: cfg.confidence,
+        note: cfg.note || (share < 1 ? 'Split per local custom — the purchase contract governs. Override this if the contract says otherwise.' : null),
       }));
     } else if (stateRate > 0) {
       out.notes.push(`${st} transfer tax is customarily the seller’s — nothing in the buyer’s cash to close. Confirm against the contract.`);

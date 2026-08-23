@@ -47,11 +47,15 @@ const lineOf = (r, key) => r.lines.find((l) => l.key === key) || null;
 const amt = (r, key) => (lineOf(r, key) ? lineOf(r, key).amount : 0);
 
 // ── NEW YORK CITY — the one the owner named first ──────────────────────────
-// 1-3 family, loan >= $500k: 2.175% combined, of which 0.25% is the lender's.
+// 1-3 family, loan >= $500k: 2.175% combined, ALL of it the borrower's.
+// The statute puts the 0.25% special additional tax on the mortgagee for a 1-6
+// family, and exempts a mortgagee that is not an institutional lender — so on this
+// private-money book the borrower pays the whole rate (owner-directed 2026-08-23:
+// "we don't pay our portion since it's private money … We never pay the portion").
 let r = cc.governmentCharges({ state: 'NY', county: 'Kings', city: 'Brooklyn', units: 3, loanAmount: 600000, purchasePrice: 800000, transactionType: 'purchase' });
-near(amt(r, 'mortgage_tax'), 600000 * 0.01925, 'NYC 1-3 family $600k loan → 1.925% borrower share = $11,550');
-near(r.lenderTotal, 600000 * 0.0025, 'and the 0.25% special additional tax is the LENDER’s = $1,500');
-ok(lineOf(r, 'mortgage_tax_lender').payer === 'lender', 'the lender line is attributed to the lender, not the borrower');
+near(amt(r, 'mortgage_tax'), 600000 * 0.02175, 'NYC 1-3 family $600k loan → the whole 2.175% = $13,050');
+ok(r.lenderTotal === 0, 'and we pay none of it — nothing is carved out as the company’s cost');
+ok(r.lines.every((l) => l.payer === 'borrower'), 'every line on a New York deal is the borrower’s');
 // The LINE is named for the charge — "New York City mortgage recording tax" — and
 // the rate class it was taxed under rides in the basis. The class alone printed as a
 // line item on a term sheet ("NYC — 1-3 family / condo, loan $500k+") reads as
@@ -61,25 +65,25 @@ ok(/1-3 family/.test(lineOf(r, 'mortgage_tax').basis), 'and the rate class it wa
 
 // THE UNIT COUNT MOVES THE RATE — a 4-family is "all other property" at 2.80%.
 const r4 = cc.governmentCharges({ state: 'NY', county: 'Bronx', units: 4, loanAmount: 600000, purchasePrice: 800000, transactionType: 'purchase' });
-near(amt(r4, 'mortgage_tax'), 600000 * 0.0255, 'NYC 4-family $600k loan → 2.80% less the lender’s 0.25% = $15,300');
+near(amt(r4, 'mortgage_tax'), 600000 * 0.028, 'NYC 4-family $600k loan → the whole 2.80% = $16,800');
 ok(amt(r4, 'mortgage_tax') > amt(r, 'mortgage_tax') + 3000,
   'ONE MORE UNIT costs this borrower over $3,700 — which is why unit count is an input');
 
 // The sub-$500k tier, and the $30 one-or-two-family exemption.
 const rSmall = cc.governmentCharges({ state: 'NY', county: 'Queens', units: 2, loanAmount: 400000, transactionType: 'refinance' });
-near(amt(rSmall, 'mortgage_tax'), 400000 * 0.018 - 30, 'NYC 2-family $400k loan → 1.80% less the $30 exemption');
+near(amt(rSmall, 'mortgage_tax'), 400000 * 0.0205 - 30, 'NYC 2-family $400k loan → the whole 2.05% under-$500k tier, less the $30 exemption');
 
 // Every borough spelling resolves to NYC. "Brooklyn" taxed as an upstate county
 // would understate this borrower by more than 1% of the loan.
 for (const [county, city] of [['Kings', 'Brooklyn'], ['Richmond', 'Staten Island'], ['New York', 'Manhattan'], ['', 'Bronx']]) {
   const b = cc.governmentCharges({ state: 'NY', county, city, units: 1, loanAmount: 600000, transactionType: 'refinance' });
-  near(amt(b, 'mortgage_tax'), 600000 * 0.01925 - 30, `${city} is taxed as New York City`);
+  near(amt(b, 'mortgage_tax'), 600000 * 0.02175 - 30, `${city} is taxed as New York City`);
 }
 
 // ── NEW YORK STATE — "a little cheaper", as the owner put it ───────────────
 const rUp = cc.governmentCharges({ state: 'NY', county: 'Erie', units: 2, loanAmount: 400000, transactionType: 'refinance' });
-near(amt(rUp, 'mortgage_tax'), 400000 * 0.0075 - 30, 'Erie County $400k → 1.00% less the lender’s 0.25%, less $30');
-ok(amt(rUp, 'mortgage_tax') < 400000 * 0.018, 'and it IS cheaper than the city — by more than $4,000 here');
+near(amt(rUp, 'mortgage_tax'), 400000 * 0.01 - 30, 'Erie County $400k → the whole 1.00%, less the $30 one-or-two-family credit');
+ok(amt(rUp, 'mortgage_tax') < 400000 * 0.0205, 'and it IS cheaper than the city — by more than $4,000 here');
 // The county genuinely moves it: Cortland is 1.25% where Chenango is 1.00%.
 const cort = cc.governmentCharges({ state: 'NY', county: 'Cortland', units: 1, loanAmount: 400000, transactionType: 'refinance' });
 const chen = cc.governmentCharges({ state: 'NY', county: 'Chenango', units: 1, loanAmount: 400000, transactionType: 'refinance' });
@@ -194,8 +198,8 @@ if (pricing.enginesReady && pricing.enginesReady()) {
     'and they arrive as LINE ITEMS, as the owner asked — not one blended number');
   ok(nyQuote.closingCosts.dueAtClosing > gc, 'they are inside what is due at closing');
   ok(nyQuote.cashToClose > gc, 'and therefore inside cash to close — the number that was falling short');
-  ok(nyQuote.closingCosts.governmentChargesLender > 0,
-    'and the company’s own New York cost (the lender-borne 0.25%) is reported separately');
+  ok(nyQuote.closingCosts.governmentChargesLender === 0,
+    'and no part of it is booked as a company cost — this book charges the borrower the whole rate');
 
   // The same deal in a state with no such taxes is untouched — the change is
   // additive, not a re-pricing of every loan in the book.
@@ -361,5 +365,81 @@ if (pricing) {
   ok(/Number\(qClosing\.dueAtClosing\)/.test(gate),
     'the rate-and-term cash limit reads dueAtClosing, so it inherits the government charges');
 }
+
+// ===========================================================================
+// EVERY STATE HAS AN ANSWER (owner-directed 2026-08-23: "confirm all the states …
+// Every state has their own caps, their own gaps")
+// ===========================================================================
+// "We have no entry for Iowa" and "Iowa charges the buyer nothing" look identical
+// from a quote and are completely different facts. So every state is in the table,
+// and a $0 always comes with a reason.
+{
+  const US = ('AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT '
+    + 'NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY').split(' ');
+  const missing = US.filter((st) => !cc.tables.TRANSFER_TAX[st]);
+  ok(missing.length === 0, `every state is in the transfer-tax table (missing: ${missing.join(' ') || 'none'})`);
+  const silent = [];
+  for (const st of US) {
+    const r = cc.governmentCharges({ state: st, units: 1, loanAmount: 300000, purchasePrice: 400000, transactionType: 'purchase' });
+    // Either it charges something, or it explains the zero. Never both empty.
+    if (!(r.borrowerTotal > 0) && !r.notes.length && !r.warnings.length) silent.push(st);
+  }
+  ok(silent.length === 0, `no state answers $0 in silence (silent: ${silent.join(' ') || 'none'})`);
+}
+
+// ── THE BUYER-PAID STATES THAT WERE MISSING ───────────────────────────────
+// These are the ones that actually move cash to close, so each is pinned to the
+// arithmetic rather than to "greater than zero".
+{
+  const buy = (st, price) => cc.governmentCharges({ state: st, units: 1, loanAmount: Math.round(price * 0.75), purchasePrice: price, transactionType: 'purchase' });
+  // Vermont taxes the BUYER, and an investment property pays the full 1.25% plus
+  // the 0.2% clean-water surcharge — no first-$100,000 break, because that break
+  // is for a principal residence and nothing on this book is one.
+  near(amt(buy('VT', 400000), 'transfer_tax_state'), 400000 * 0.0145, 'Vermont $400k investment purchase → 1.45% on the BUYER = $5,800');
+  ok(/surcharge/i.test(lineOf(buy('VT', 400000), 'transfer_tax_state').basis), 'and the basis says the surcharge is in there');
+  // New Hampshire charges each side 0.75%.
+  near(amt(buy('NH', 400000), 'transfer_tax_state'), 400000 * 0.0075, 'New Hampshire $400k → the buyer’s own 0.75% = $3,000');
+  // Maine splits $2.20 per $500 down the middle.
+  near(amt(buy('ME', 400000), 'transfer_tax_state'), 400000 * 0.0022, 'Maine $400k → half of 0.44% = $880');
+  // Delaware's 4% is customarily halved.
+  near(amt(buy('DE', 400000), 'transfer_tax_state'), 400000 * 0.02, 'Delaware $400k → half of 4% = $8,000');
+}
+
+// ── A FLOOR IS A FLOOR ────────────────────────────────────────────────────
+// New Hampshire's $20-per-side minimum is the only one of its kind in the table,
+// so it has to be right on the small deal AND inert on every other state.
+{
+  const tiny = cc.governmentCharges({ state: 'NH', units: 1, loanAmount: 1500, purchasePrice: 2000, transactionType: 'purchase' });
+  near(amt(tiny, 'transfer_tax_state'), 20, 'a $2,000 New Hampshire lot pays the $20 minimum, not $15');
+  ok(/minimum/i.test(lineOf(tiny, 'transfer_tax_state').basis), 'and the line says it was raised to the minimum rather than quietly showing $20');
+  const me = cc.governmentCharges({ state: 'ME', units: 1, loanAmount: 1500, purchasePrice: 2000, transactionType: 'purchase' });
+  near(amt(me, 'transfer_tax_state'), 2000 * 0.0022, 'a state with no minimum is untouched by it — Maine still charges its rate');
+}
+
+// ── AND THE OWNER'S RULE: WE NEVER PAY A PORTION ──────────────────────────
+// Owner-directed 2026-08-23: "we don't pay our portion since it's private money.
+// Everything pays the borrower … We never pay the portion." The statute puts New
+// York's 0.25% special additional tax on the mortgagee and exempts a mortgagee
+// that is not an institutional lender — so on this book the borrower pays the lot.
+{
+  const nyDeals = [
+    { state: 'NY', county: 'Kings', city: 'Brooklyn', units: 3, loanAmount: 600000, purchasePrice: 750000, transactionType: 'purchase' },
+    { state: 'NY', county: 'Erie', units: 2, loanAmount: 400000, transactionType: 'refinance' },
+    { state: 'NY', county: 'Westchester', units: 1, loanAmount: 900000, purchasePrice: 1200000, transactionType: 'purchase' },
+  ];
+  for (const d of nyDeals) {
+    const r = cc.governmentCharges(d);
+    ok(r.lenderTotal === 0, `${d.county}: no part of the tax is booked as ours`);
+    ok(r.lines.every((l) => l.payer === 'borrower'), `${d.county}: every line is the borrower’s`);
+  }
+  ok(!cc.CHARGE_KEYS.some((k) => /lender/.test(k)), 'and there is no lender-paid charge key left to reintroduce one');
+  const srcEngine = fs.readFileSync(R + '/web/v2/tools/gov-charges.js', 'utf8');
+  ok(!/mortgage_tax_lender/.test(srcEngine), 'the lender-paid line is gone from the engine, not merely unused');
+}
+
+// ── THE DISCLAIMER SAYS BOTH THINGS ───────────────────────────────────────
+ok(/[Ee]stimat/.test(cc.DISCLAIMER), 'the disclaimer says these are estimates');
+ok(/rounded up/i.test(cc.DISCLAIMER), 'and that they err high on purpose, which is why they can be trusted not to run short');
+ok(/settlement agent/i.test(cc.DISCLAIMER), 'and names who issues the binding figures');
 
 console.log(`test-closing-costs-pure: OK (${passed} assertions)`);
