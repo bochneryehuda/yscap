@@ -192,8 +192,8 @@ check(/cols\.columns\.some\(\(c\) => c\.key === 'conditions'\)/.test(routeCode),
   'the counts are fetched ONLY when the column is actually being drawn — two more queries on every pipeline load for a column nobody is looking at is a cost with no reader');
 check(!/<th style=\{th\}>Loan #<\/th>/.test(uiCode),
   '…and the hard-coded headings are gone');
-check(/i === 0 \?/.test(uiCode) && /<ProductStamp/.test(uiCode),
-  'THE ONE THAT MATTERS: the product stamp rides the FIRST column, whichever column that is — hanging it off the loan number would let a configuration that drops that column drop the stamp with it, and the stamp is not configurable (CLAUDE.md §7)');
+check(!/<ProductStamp/.test(uiCode),
+  'the pipeline renders NO per-row product stamp (owner-directed 2026-08-23: a single-product pipeline does not stamp every row; the file header keeps its stamp and a future COMBINED pipeline demands the per-row stamp back — CLAUDE.md §7 is about that combined case)');
 check(/data\.unavailable/.test(uiCode) && /data\.unknown/.test(uiCode),
   'a configured column we cannot draw, and a key nobody recognises, are both SHOWN — the screen explains the difference between what it drew and what was asked for');
 
