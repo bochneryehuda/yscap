@@ -5,7 +5,7 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
-import { labelize, compRowsOf, feeRowsOf, groupByLender } from './priceBuild.js';
+import { labelize, compRowsOf, feeRowsOf, groupByLender, priceMoney, toneColor } from './priceBuild.js';
 // The form's own rules — which options exist, when a field appears, and the amount triangle. Also a
 // plain `.js` module, and for the same reason: CI can run it, and a rule CI cannot run is a rule
 // nobody is holding. See scenarioFields.js.
@@ -115,6 +115,18 @@ const START = {
 
 export { toScenario };
 
+/* HOW HARD THIS PAGE CHASES THE INELIGIBLE SIDE ON ITS OWN.
+   ⛔ BOUNDED, AND THE BOUND IS THE POINT. Lender Price computes the ineligible side AFTER the price
+   — the owner measured it at about ten seconds — and every ask is an upstream call. The old rule
+   was one press, one request, which is safe and which left the screen saying "Lender Price reported
+   nothing ruled out" on every scenario until somebody pressed. The owner's direction is that this
+   belongs in the workflow, so the page asks on its own — six times, two and a half seconds apart,
+   about fifteen seconds in all — and then STOPS and leaves the button. It also stops the moment the
+   answer lands, the moment anything errors, and the moment a new price replaces the search it was
+   waiting on, so it can never run on a screen somebody walked away from. */
+const DQ_AUTO_TRIES = 6;
+const DQ_AUTO_EVERY_MS = 2500;
+
 
 /** The LTV implied by a value and a loan amount, for the screen to show.
  *
@@ -161,7 +173,6 @@ export function buildRateStack(programs) {
         noteRate: nn(b.noteRate) ? b.noteRate : null,
         price: nn(b.price) ? b.price : null,
         adjustedPoints: nn(b.adjustedPoints) ? b.adjustedPoints : null,
-        apr: nn(b.apr) ? b.apr : null,
         monthlyPi: o && o.monthlyPayment && nn(o.monthlyPayment.monthlyPI) ? o.monthlyPayment.monthlyPI : null,
         expired: !!(o && o.rateSheet && o.rateSheet.expired),
       };
@@ -297,6 +308,42 @@ function Check({ id, checked, onChange, children }) {
   );
 }
 
+/**
+ * THE THREE MONEY COLUMNS — the price, the points it implies, and what those points come to on this
+ * loan, coloured by the ONE verdict they share.
+ *
+ * ⛔ ONE FACT, THREE COLUMNS, ONE COLOUR. They are the same number said three ways, so they take the
+ * same verdict — a row that read green in one column and red in the next would be claiming two
+ * different things about one price. The rule is the owner's, stated by them: at or above 100 is
+ * GREEN (money comes back), below 100 is RED (it costs money), and par costs nothing so par is
+ * green. The arithmetic and the colour both live in `priceBuild.priceMoney` / `toneColor`, which CI
+ * can run — a rule the screen keeps to itself is a rule nobody is holding.
+ *
+ * ⛔ AND NEVER A COLOURED EM DASH. A price the vendor did not quote, or a loan amount we cannot
+ * read, is shown as an em dash with NO colour: colouring it would be a verdict on a number nobody
+ * has. Colour is not the only carrier either — the dollar figure keeps its sign, so the meaning
+ * survives a grayscale print and a reader who cannot tell the two hues apart.
+ */
+function MoneyCells({ m, strong }) {
+  const c = toneColor(m.tone, SLATE);
+  const w = strong ? 700 : 600;
+  const sz = strong ? 14 : 13;
+  const cell = { textAlign: 'right', ...NUM };
+  return (
+    <>
+      <span style={{ ...cell, flex: '0 0 82px', fontSize: sz, fontWeight: w, color: m.tone ? c : INK }}>
+        {price(m.price)}
+      </span>
+      <span style={{ ...cell, flex: '0 0 82px', fontSize: sz - 0.5, fontWeight: 600, color: c }}>
+        {pts(m.points)}
+      </span>
+      <span style={{ ...cell, flex: '0 0 108px', fontSize: sz - 0.5, fontWeight: 600, color: c }}>
+        {m.dollars == null ? '—' : `${m.dollars < 0 ? '−' : ''}${money(Math.abs(m.dollars))}`}
+      </span>
+    </>
+  );
+}
+
 /** The loan-amount / LTV switch — a real segmented control, sized to sit INSIDE the field's own
  *  name band. It is a BUTTON, not a styled div: it does something on this page, it takes keyboard
  *  focus for free, and a screen reader is told which one is on. */
@@ -321,7 +368,6 @@ function ModeTab({ on, onClick, children }) {
 export function PriceBuild({ o }) {
   const b = (o && o.priceBuild) || {};
   const adj = Array.isArray(o && o.adjustments) ? o.adjustments : [];
-  const radj = Array.isArray(o && o.rateAdjustments) ? o.rateAdjustments : [];
 
   let run = nn(b.basePoints) ? b.basePoints : null;
   const stack = adj.map((a) => {
@@ -352,19 +398,6 @@ export function PriceBuild({ o }) {
   return (
     <div style={{ background: '#fff', borderRadius: 10, padding: 14, marginTop: 10, border: `1px solid ${GOLD}33` }}>
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
-        <Track title="Rate build"
-          note="Par is the un-bought-down rate. Rate adjustments move the note rate; point adjustments move the price.">
-          <Row k="Par rate" v={rate(b.parRate)} />
-          <Row k="Base rate" v={rate(b.baseRate)} />
-          {radj.length === 0
-            ? <Row k="Rate adjustments" v={nn(b.rateAdjustment) ? pts(b.rateAdjustment) : 'none'} />
-            : radj.map((a, i) => <Row key={i} k={a.reason || a.group || 'adjustment'} v={pts(a.value)} indent />)}
-          <Row k="Note rate" v={rate(b.noteRate)} strong />
-          <div style={{ height: 10 }} />
-          <Row k="APR" v={rate(b.apr)} />
-          <Row k="APOR" v={rate(b.apor)} title="The average prime offer rate the vendor compared against." />
-        </Track>
-
         <Track title="Price build"
           note="Price is 100 minus points. Every line came from Lender Price; the right-hand column is this page adding them up so the build can be followed.">
           <Row k="Base price" v={price(nn(b.basePoints) ? 100 - b.basePoints : null)}
@@ -500,7 +533,7 @@ export function PriceBuild({ o }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    ONE RATE, AND EVERY INVESTOR AT IT.
    ────────────────────────────────────────────────────────────────────────── */
-export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender }) {
+export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender, loanAmount }) {
   return (
     <div style={{ border: `1px solid ${open ? GOLD : 'rgba(20,27,34,.12)'}`, borderRadius: 10, marginBottom: 8, overflow: 'hidden' }}>
       <button type="button" onClick={onToggle}
@@ -519,7 +552,11 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
         }</span>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: MUTED }}>best price</span>
-        <span style={{ fontSize: 16, fontWeight: 700, color: INK, ...NUM }}>{price(row.bestPrice)}</span>
+        {/* THE SAME VERDICT AS THE COLUMNS UNDERNEATH. A headline reading in plain ink over a red
+            column would be the row disagreeing with itself about its own price. */}
+        <span style={{ fontSize: 16, fontWeight: 700, ...NUM, color: toneColor(priceMoney(row.bestPrice, loanAmount).tone, INK) }}>
+          {price(row.bestPrice)}
+        </span>
         <span style={{ fontSize: 12, color: MUTED, marginLeft: 8 }}>{open ? '▾' : '▸'}</span>
       </button>
 
@@ -527,10 +564,10 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
         <div style={{ padding: '0 14px 12px' }}>
           <div style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid ${GOLD}44`, fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
             <span style={{ flex: '2 1 200px' }}>Investor / programme</span>
-            <span style={{ flex: '0 0 90px', textAlign: 'right' }}>Price</span>
-            <span style={{ flex: '0 0 90px', textAlign: 'right' }}>Points</span>
-            <span style={{ flex: '0 0 90px', textAlign: 'right' }}>APR</span>
-            <span style={{ flex: '0 0 110px', textAlign: 'right' }}>Monthly P&amp;I</span>
+            <span style={{ flex: '0 0 82px', textAlign: 'right' }}>Price</span>
+            <span style={{ flex: '0 0 82px', textAlign: 'right' }}>Points</span>
+            <span style={{ flex: '0 0 108px', textAlign: 'right' }}>Cost / credit</span>
+            <span style={{ flex: '0 0 104px', textAlign: 'right' }}>Monthly P&amp;I</span>
             <span style={{ flex: '0 0 70px' }} />
           </div>
           {groupByLender(row.quotes).map((g) => {
@@ -574,10 +611,8 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                       </div>
                     )}
                   </span>
-                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 14, fontWeight: 700, color: INK, ...NUM }}>{price(g.bestPrice)}</span>
-                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{pts(g.best && g.best.adjustedPoints)}</span>
-                  <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{rate(g.best && g.best.apr)}</span>
-                  <span style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{money2(g.best && g.best.monthlyPi)}</span>
+                  <MoneyCells m={priceMoney(g.bestPrice, loanAmount)} strong />
+                  <span style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{money2(g.best && g.best.monthlyPi)}</span>
                   <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
                     <button type="button" className="btn ghost" style={{ fontSize: 12 }}
                       onClick={() => onOpenQuote(openQuote === (g.best && g.best.key) ? null : (g.best && g.best.key))}>
@@ -608,10 +643,8 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                             <div style={{ fontSize: 11, color: CAUTION, fontWeight: 700 }}>rate sheet expired</div>
                           )}
                         </span>
-                        <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 13.5, fontWeight: 700, color: INK, ...NUM }}>{price(q.price)}</span>
-                        <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{pts(q.adjustedPoints)}</span>
-                        <span style={{ flex: '0 0 90px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{rate(q.apr)}</span>
-                        <span style={{ flex: '0 0 110px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{money2(q.monthlyPi)}</span>
+                        <MoneyCells m={priceMoney(q.price, loanAmount)} />
+                        <span style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{money2(q.monthlyPi)}</span>
                         <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
                           <button type="button" className="btn ghost" style={{ fontSize: 12 }}
                             onClick={() => onOpenQuote(isOpen ? null : q.key)}>
@@ -645,28 +678,41 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
    loop would keep spending on a screen somebody walked away from, so a press asks once and
    the screen says plainly whether to ask again. No timer, nothing to leak.
    ────────────────────────────────────────────────────────────────────────── */
-export function IneligibleView({ dq, count, onAsk }) {
+export function IneligibleView({ dq, onAsk }) {
   const d = dq.data && dq.data.disqualified ? dq.data.disqualified : null;
+  // ⛔ THE ONLY NUMBER THAT MEANS ANYTHING IS THE ONE FROM A READY ANSWER. See the header note.
+  const ruledOut = dq.status === 'ready' && d && d.itemCount != null ? d.itemCount : null;
 
   return (
     <div style={card}>
       <div style={eyebrow}>Ineligible products</div>
       <div style={{ ...sub, marginTop: 6 }}>
-        {count > 0
-          ? `Lender Price ruled out ${count} ${count === 1 ? 'product' : 'products'} on this scenario. It works this side out after the price, so it is fetched on its own.`
-          : 'Lender Price reported nothing ruled out on this scenario.'}
+        {ruledOut == null
+          ? 'Lender Price works the ineligible side out AFTER the price — usually within about ten seconds. This page asks for it on its own as soon as a price lands.'
+          : ruledOut === 0
+            ? 'Lender Price ruled nothing out on this scenario — every product it carries was quoted.'
+            : `Lender Price ruled out ${ruledOut} ${ruledOut === 1 ? 'product' : 'products'} on this scenario.`}
       </div>
 
+      {/* ⛔ THE BUTTON IS ONLY EVER DISABLED WHILE SOMETHING IS ACTUALLY HAPPENING. Disabling it for
+          the whole of `waiting` looked tidy and left a DEAD END: once the page's own asking gave
+          up, the loop had stopped, the button was grey and unpressable, and there was nothing left
+          on the screen that could move. `dq.auto` is true only while the loop is still running, so
+          the moment it gives up this becomes "Ask again" and works. */}
       {dq.status !== 'ready' && (
-        <button type="button" className="btn" disabled={dq.status === 'loading'} onClick={onAsk}
+        <button type="button" className="btn primary" onClick={onAsk}
+          disabled={dq.status === 'loading' || (dq.status === 'waiting' && dq.auto)}
           style={{ marginTop: 4 }}>
-          {dq.status === 'loading' ? 'Asking…' : dq.tries ? 'Ask again' : 'Show me why'}
+          {dq.status === 'loading' ? 'Asking…'
+            : (dq.status === 'waiting' && dq.auto) ? 'Waiting for Lender Price…'
+              : dq.tries ? 'Ask again' : 'Show me why'}
         </button>
       )}
 
       {dq.status === 'waiting' && (
         <div style={{ marginTop: 10, fontSize: 13, color: CAUTION }}>
-          {dq.message || 'Lender Price is still working this side out. Give it a moment and ask again.'}
+          {dq.message || 'Lender Price is still working this side out.'}
+          {dq.auto ? ' This page is checking again on its own.' : ' Give it a moment and ask again.'}
         </div>
       )}
       {dq.status === 'error' && (
@@ -732,15 +778,25 @@ export default function LtPricer() {
   const [openQuote, setOpenQuote] = useState(null);
   const [elapsed, setElapsed] = useState(0);
   const [showScenario, setShowScenario] = useState(false);
-  const [dq, setDq] = useState({ status: 'idle', tries: 0, data: null, message: null });
+  const [dq, setDq] = useState({ status: 'idle', tries: 0, data: null, message: null, auto: false });
   const [zip, setZip] = useState({ status: 'idle', data: null, message: null });
   // WHICH LENDERS ARE OPENED OUT, keyed `<rate>|<lender>` so opening a lender on one rate row does
   // not open the same lender on every other. A Set rather than a single key: comparing two lenders'
   // programme lists side by side is the whole reason the dropdown exists.
   const [openLenders, setOpenLenders] = useState(() => new Set());
   const timer = useRef(null);
+  // The auto-ask loop's own bookkeeping: which search it is chasing, how many asks it has spent, and
+  // the pending timer. Refs rather than state — none of it is drawn, and putting it in state would
+  // re-render the board on every tick of a background poll.
+  const dqAuto = useRef({ key: null, tries: 0, timer: null });
+  const dqBusy = useRef(false);
 
-  useEffect(() => () => { if (timer.current) clearInterval(timer.current); }, []);
+  useEffect(() => () => {
+    if (timer.current) clearInterval(timer.current);
+    // A page that is gone must not keep asking Lender Price questions on somebody's bill.
+    dqAuto.current.key = null;
+    if (dqAuto.current.timer) clearTimeout(dqAuto.current.timer);
+  }, []);
 
   /* ZIP -> STATE / COUNTY, AS YOU TYPE.
      ⛔ THIS IS THE ONE REQUEST ON THIS SCREEN THAT MAY FIRE FROM AN EFFECT, and only because it
@@ -825,18 +881,55 @@ export default function LtPricer() {
   const um = unitsMode(f.propertyType);
   const stack = res ? buildRateStack(res.programs) : null;
 
+  /* THE LOAN AMOUNT THE DOLLAR COLUMN IS COUNTED AGAINST.
+     ⛔ IT IS THE ONE LENDER PRICE ACTUALLY PRICED, not the one in the box. On an LTV scenario the
+     loan amount is DERIVED upstream — the screen never sends it — so reading the box would count a
+     cost against a figure this page worked out rather than the figure the quote belongs to. The
+     effective scenario is the vendor's own echo of what it ran, so it is the authority; the typed
+     box is only a fallback for a loan-amount scenario, where the two are the same number anyway.
+     Unreadable → null → the column shows an em dash, uncoloured. Never a guess. */
+  /* HOW MANY WERE RULED OUT — from the READY answer and from nowhere else. The price response
+     carries a `disqualifiedCount` of its own and it is always zero: it is read off the price at
+     price time, and the vendor has not computed the ineligible side yet (the route stamps every
+     price `disqualifyStatus: 'computing'` saying so). Reading it was the whole bug — the screen
+     printed "nothing ruled out" as a finding about a question it had not asked. */
+  const dqCount = (dq.status === 'ready' && dq.data && dq.data.disqualified
+    && dq.data.disqualified.itemCount != null) ? dq.data.disqualified.itemCount : null;
+
+  const loanAmount = (() => {
+    const eff = res && res.effectiveScenario;
+    const fromEff = eff && toNumber(eff.loanAmount);
+    if (fromEff != null && fromEff > 0) return fromEff;
+    const typed = f.amountMode === 'ltv' ? (amt && amt.loan) : toNumber(f.loan);
+    return typed != null && typed > 0 ? typed : null;
+  })();
+
   async function run(e) {
     if (e) e.preventDefault();
     setBusy(true); setErr(null); setRes(null); setElapsed(0);
     setOpenRate(null); setOpenQuote(null); setOpenLenders(new Set()); setView('priced');
     // A new scenario means a new searchKey, so the last scenario's refusals go with it. Leaving
     // them beside a fresh price would attribute one search's declines to another.
-    setDq({ status: 'idle', tries: 0, data: null, message: null });
+    setDq({ status: 'idle', tries: 0, data: null, message: null, auto: false });
+    // …and the chase for the PREVIOUS search stops here, before the new one begins. Left running it
+    // would land one scenario's refusals beside another scenario's price.
+    dqAuto.current.key = null;
+    if (dqAuto.current.timer) { clearTimeout(dqAuto.current.timer); dqAuto.current.timer = null; }
     const t0 = Date.now();
     timer.current = setInterval(() => setElapsed(Math.round((Date.now() - t0) / 100) / 10), 200);
     try {
       const r = await ltApi.dscrPrice(toScenario(f), { full: true });
       setRes(r);
+      /* ASK FOR THE INELIGIBLE SIDE STRAIGHT AWAY — the owner's "we need to add the ineligible into
+         the workflow". A price is ALSO the kickoff for it upstream, so this is a POLL of a search
+         that is already running, not a second search. */
+      if (dqAuto.current.timer) clearTimeout(dqAuto.current.timer);
+      if (r && r.searchKey) {
+        dqAuto.current = { key: r.searchKey, tries: 0, timer: null };
+        askDisqualified({ auto: true, searchKey: r.searchKey });
+      } else {
+        dqAuto.current = { key: null, tries: 0, timer: null };
+      }
       // Open the cheapest rate so the answer is readable the moment it lands.
       const s = buildRateStack(r && r.programs);
       if (s.rates.length) setOpenRate(s.rates[0].key);
@@ -848,16 +941,39 @@ export default function LtPricer() {
     }
   }
 
-  async function askDisqualified() {
-    const key = res && res.searchKey;
-    if (!key || dq.status === 'loading') return;
-    setDq((s) => ({ ...s, status: 'loading', tries: s.tries + 1, message: null }));
+  async function askDisqualified(opts) {
+    const auto = !!(opts && opts.auto);
+    const key = (opts && opts.searchKey) || (res && res.searchKey);
+    if (!key || dqBusy.current) return;
+    dqBusy.current = true;
+    setDq((s) => ({ ...s, status: 'loading', tries: s.tries + 1, message: null, auto }));
     try {
       const r = await ltApi.dscrDisqualifications(key);
       // 202 arrives as an ordinary body (`ready:false`) rather than a throw, so "still computing"
       // is READ from the answer and never inferred from a status code the client already swallowed.
-      if (r && r.ready === false) setDq((s) => ({ ...s, status: 'waiting', data: null, message: r.message || null }));
-      else setDq((s) => ({ ...s, status: 'ready', data: r, message: null }));
+      if (r && r.ready === false) {
+        setDq((s) => ({ ...s, status: 'waiting', data: null, message: r.message || null, auto }));
+        // STILL COMPUTING — keep asking, but only while THIS search is the one on screen and only
+        // within the window. Every ask is an upstream call, so the loop is bounded and stops of its
+        // own accord rather than running on a screen somebody walked away from.
+        if (auto && dqAuto.current.key === key && dqAuto.current.tries < DQ_AUTO_TRIES) {
+          dqAuto.current.tries += 1;
+          dqAuto.current.timer = setTimeout(() => {
+            if (dqAuto.current.key === key) askDisqualified({ auto: true, searchKey: key });
+          }, DQ_AUTO_EVERY_MS);
+        } else if (auto) {
+          // ⛔ GIVEN UP — AND THE SCREEN MUST STOP SAYING IT IS STILL CHECKING. Leaving `auto` set
+          // would have the panel read "This page is checking again on its own" beside a loop that
+          // has stopped, which is a plain untruth on the screen and the reason nobody would press
+          // the button that is now the only way forward. Clearing it swaps the wording to "ask
+          // again" and re-enables that button.
+          dqAuto.current.key = null;
+          setDq((s2) => ({ ...s2, auto: false }));
+        }
+      } else {
+        setDq((s) => ({ ...s, status: 'ready', data: r, message: null, auto: false }));
+        dqAuto.current.key = null;   // it answered; nothing left to wait for
+      }
     } catch (e2) {
       // A 409 is its own answer: the kickoff behind this key has expired and the only way back is a
       // fresh price. Saying that is worth more than "that did not work".
@@ -869,7 +985,11 @@ export default function LtPricer() {
         message: expired
           ? 'This search has expired at Lender Price. Price the scenario again to ask for its refusals.'
           : ((e2 && e2.message) || 'Lender Price could not be reached.'),
+        auto: false,
       }));
+      dqAuto.current.key = null;   // an error stops the loop; the button is the way back
+    } finally {
+      dqBusy.current = false;
     }
   }
 
@@ -1123,6 +1243,18 @@ export default function LtPricer() {
                     </div>
                   )}
                 </div>
+                {/* THE BUSINESS-PURPOSE LINE, WHICH IS WHY THERE IS NO APR ON THIS SCREEN
+                    (owner-directed 2026-08-23: "you can remove all the details from every borrower
+                    about APR because it's business purpose. You can put a business purpose
+                    disclosure, but we should ignore the APR"). An APR is a consumer-credit
+                    disclosure; a DSCR loan is made to an entity for a business purpose and is not
+                    consumer credit, so an APR beside it is a figure that answers a question this
+                    product does not raise — and a figure people then compare across products it
+                    does not apply to. Saying WHY it is absent is worth more than the number was. */}
+                <div style={{ flex: '1 1 100%', order: 3, fontSize: 11.5, color: MUTED, lineHeight: 1.6, marginTop: 8 }}>
+                  Business-purpose loans, made to an entity for an investment property. Not consumer
+                  credit — so no APR is quoted, and none of these figures is a consumer disclosure.
+                </div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <button type="button" className="btn ghost" onClick={() => setView('priced')}
                     style={{ borderColor: view === 'priced' ? GOLD : undefined, fontWeight: view === 'priced' ? 700 : 550 }}>
@@ -1130,7 +1262,12 @@ export default function LtPricer() {
                   </button>
                   <button type="button" className="btn ghost" onClick={() => setView('ineligible')}
                     style={{ borderColor: view === 'ineligible' ? GOLD : undefined, fontWeight: view === 'ineligible' ? 700 : 550 }}>
-                    Ineligible{res.disqualifiedCount ? ` (${res.disqualifiedCount})` : ''}
+                    {/* ⛔ THE COUNT COMES FROM THE READY ANSWER, NEVER FROM THE PRICE. The price
+                        response's own disqualifiedCount is taken at price time, which is BEFORE
+                        Lender Price has worked this side out — the route stamps every price
+                        `disqualifyStatus: 'computing'` for exactly that reason. Printing that zero
+                        was the screen answering a question nobody had asked yet. */}
+                    {`Ineligible${dqCount != null && dqCount > 0 ? ` (${dqCount})` : ''}`}
                   </button>
                 </div>
               </div>
@@ -1162,14 +1299,14 @@ export default function LtPricer() {
                     says which products it looked at and why each was ruled out.
                   </div>
                 ) : stack.rates.map((row) => (
-                  <RateRow key={row.key} row={row}
+                  <RateRow key={row.key} row={row} loanAmount={loanAmount}
                     open={openRate === row.key}
                     onToggle={() => { setOpenRate(openRate === row.key ? null : row.key); setOpenQuote(null); }}
                     openQuote={openQuote} onOpenQuote={setOpenQuote} openLenders={openLenders} onToggleLender={toggleLender} />
                 ))}
               </div>
             ) : (
-              <IneligibleView dq={dq} count={res.disqualifiedCount || 0} onAsk={askDisqualified} />
+              <IneligibleView dq={dq} onAsk={askDisqualified} />
             )}
           </>
         )}

@@ -146,3 +146,52 @@ export function groupByLender(quotes) {
   out.sort((a, b) => byBestPrice(a.best, b.best));
   return out;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   WHAT A PRICE COSTS, IN DOLLARS — the owner's three columns (2026-08-23).
+
+   ⛔ THIS IS ARITHMETIC, NOT A JUDGEMENT, and that is the only reason a MIRROR may compute it.
+   The engine shows what Lender Price returned and never re-derives a price. These three columns are
+   ONE number said three ways: the vendor's own price, the points that price implies, and what those
+   points come to on this loan. Nothing here decides anything — change the price and all three move
+   together, by definition.
+
+   THE VOCABULARY IS THE INDUSTRY'S, checked rather than invented (the owner asked for the research):
+     • PRICE — the price as a percentage of par. 102 means the loan sells for 102% of its face value.
+     • POINTS — `100 − price`. POSITIVE points are DISCOUNT POINTS: money the borrower pays up front.
+       NEGATIVE points are REBATE POINTS, also called negative points or a LENDER CREDIT: money that
+       comes back. So 102 → −2.000 and 98 → +2.000, which is the owner's own convention and the one
+       every rate sheet uses.
+     • COST / CREDIT — those points in dollars: `points ÷ 100 × loan amount`. Two points on a
+       $500,000 loan is $10,000. It is called cost-or-credit rather than "points $" because the one
+       column genuinely carries both, and naming it for only one of them would mislabel half the
+       board. (Sources: CFPB on points and lender credits; Optimal Blue / Loansifter PPE screens.)
+
+   THE COLOUR IS THE OWNER'S RULE, STATED BY THEM EXPLICITLY: at or above 100 is GREEN (money comes
+   back), below 100 is RED (it costs money). All three columns take the PRICE's verdict, so a row
+   cannot read green in one column and red in the next — they are the same fact. Par (exactly 100)
+   is green: it costs nothing.
+
+   ⛔ NEVER A GUESS. A price the vendor did not quote, or a loan amount we cannot read, yields null
+   for that figure and NO colour — a coloured em dash would be a verdict on a number nobody has. */
+
+/** At or above par is a credit; below par is a cost; unknown is neither. */
+export const PRICE_TONE = { credit: 'credit', cost: 'cost' };
+
+export function priceMoney(priceValue, loanAmount) {
+  const p = Number.isFinite(priceValue) ? priceValue : null;
+  const loan = Number.isFinite(loanAmount) && loanAmount > 0 ? loanAmount : null;
+  if (p == null) return { price: null, points: null, dollars: null, tone: null };
+  // Rounded to a thousandth of a point, which is how a rate sheet quotes one — and it stops
+  // 100 − 99.875 arriving as 0.12500000000000355 and printing a figure nobody typed.
+  const points = Math.round((100 - p) * 1000) / 1000;
+  const dollars = loan == null ? null : Math.round((points / 100) * loan * 100) / 100;
+  return { price: p, points, dollars, tone: p >= 100 ? PRICE_TONE.credit : PRICE_TONE.cost };
+}
+
+/** The one place the two colours live, so a screen cannot invent a third. Dark enough to read on
+ *  the white PILOT canvas — never an `--ink*` token, which is a LIGHT paper colour in this palette. */
+export const TONE_COLOR = { credit: '#2F6B45', cost: '#8A2F2F' };
+export function toneColor(tone, fallback) {
+  return tone && TONE_COLOR[tone] ? TONE_COLOR[tone] : fallback;
+}

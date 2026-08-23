@@ -384,11 +384,36 @@ const stack = buildRateStack(capture.programs);
   })));
   ok(expired.err === null && /expired at Lender Price/.test(expired.html || ''),
     'R39 …an expired key says to price again, not "that did not work"');
+  /* ⛔ R40 USED TO ENFORCE THE DEFECT. It asserted that before anybody asked, the panel "says how
+     many" — from a `count` prop fed by the PRICE response's own `disqualifiedCount`. That figure is
+     read off the price at price time, and Lender Price has not computed the ineligible side yet
+     (the route stamps every price `disqualifyStatus: 'computing'` for exactly that reason), so it
+     is ALWAYS zero — and the panel printed "Lender Price reported nothing ruled out on this
+     scenario" on every scenario ever priced. That is the screen answering a question it had not
+     asked. The guard now holds the opposite: before an answer, NO number. */
   const idle = attempt(() => render(React.createElement(IneligibleView, {
-    dq: { status: 'idle', tries: 0, data: null, message: null }, count: 27, onAsk: () => {},
+    dq: { status: 'idle', tries: 0, data: null, message: null }, onAsk: () => {},
   })));
-  ok(idle.err === null && /27 products/.test(idle.html || '') && /Show me why/.test(idle.html || ''),
-    'R40 …and before anybody asks, it says how many and offers to fetch the reasons');
+  ok(idle.err === null && /Show me why/.test(idle.html || ''),
+    'R40 …and before anybody asks, it offers to fetch the reasons');
+  ok(!/ruled out \d/.test(idle.html || '') && !/ruled nothing out/.test(idle.html || ''),
+    'R40a …and states NO count, because nothing has answered yet');
+  ok(/works the ineligible side out AFTER the price/.test(idle.html || ''),
+    'R40b …it says WHY there is nothing to show yet, and that this page asks on its own');
+
+  // A READY answer is the only thing that may state a number — in either direction.
+  const readyNone = attempt(() => render(React.createElement(IneligibleView, {
+    dq: { status: 'ready', tries: 1, message: null, data: { disqualified: { itemCount: 0, lenderCount: 0, reasonCount: 0, lenders: [] } } },
+    onAsk: () => {},
+  })));
+  ok(readyNone.err === null && /ruled nothing out/.test(readyNone.html || ''),
+    'R40c a READY answer of zero is the only thing that may say nothing was ruled out');
+  const readySome = attempt(() => render(React.createElement(IneligibleView, {
+    dq: { status: 'ready', tries: 1, message: null, data: { disqualified: { itemCount: 27, lenderCount: 3, reasonCount: 9, lenders: [] } } },
+    onAsk: () => {},
+  })));
+  ok(readySome.err === null && /ruled out 27 products/.test(readySome.html || ''),
+    'R40d …and a READY answer with refusals states how many');
 
   // A page the server said it TRUNCATED must say so and name the numbers. A silent cap reads as
   // "that was the whole list".
