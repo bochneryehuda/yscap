@@ -574,7 +574,7 @@ for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/ppeSty
   // The panel itself, rendered with what the screen hands it.
   const c = { rent: '3,500', tax: '500', taxBasis: 'monthly', insurance: '1,800', insBasis: 'yearly', hoa: '', rate: '7.375' };
   const r = attempt(() => render(React.createElement(DscrCalc, {
-    c, setC: () => {}, loanAmount: 375000, termYears: 30, interestOnly: false, onUse: () => {},
+    c, setC: () => {}, loanAmount: 375000, termYears: 30, interestOnly: false, onRatio: () => {},
   })));
   ok(r.err === null, `R58 the calculator renders${r.err ? ` — ${r.err.message}` : ''}`);
   const ch = r.html || '';
@@ -595,7 +595,7 @@ for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/ppeSty
 
   // Interest-only says so, and says the term stops mattering — the owner's own rule.
   const io = attempt(() => render(React.createElement(DscrCalc, {
-    c, setC: () => {}, loanAmount: 375000, termYears: 30, interestOnly: true, onUse: () => {},
+    c, setC: () => {}, loanAmount: 375000, termYears: 30, interestOnly: true, onRatio: () => {},
   })));
   ok((io.html || '').includes('interest-only'), 'R63 an interest-only scenario says so on the panel');
   const ioWant = D.dscrFrom({ loanAmount: 375000, ratePct: 7.375, termYears: 30, interestOnly: true,
@@ -606,10 +606,41 @@ for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/ppeSty
   // NOTHING IS GUESSED: with a figure missing it names what is missing rather than showing a number.
   const bare = attempt(() => render(React.createElement(DscrCalc, {
     c: { rent: '', tax: '', taxBasis: 'monthly', insurance: '', insBasis: 'monthly', hoa: '', rate: '' },
-    setC: () => {}, loanAmount: 375000, termYears: 30, interestOnly: false, onUse: () => {},
+    setC: () => {}, loanAmount: 375000, termYears: 30, interestOnly: false, onRatio: () => {},
   })));
   ok(/Still needed/.test(bare.html || ''), 'R65 an incomplete calculator says what is still needed');
-  ok(!/Use this ratio/.test(bare.html || ''), 'R66 …and offers no ratio to use');
+  // R66 USED TO ASSERT THE ABSENCE OF A "Use this ratio" BUTTON. That button no longer exists
+  // anywhere in the codebase, so the assertion had become one that CANNOT FAIL — decoration. What
+  // is actually worth pinning now is that an incomplete panel makes no claim about a ratio having
+  // gone anywhere, since the complete one says exactly that.
+  ok(!/in the DSCR box above/.test(bare.html || ''),
+    'R66 …and claims no ratio went into the form');
+
+  /* ─────────────────────────────────────────────────────────────────────────────
+     R67..R71 — EVERY BOX SAYS WHICH FIGURE IT WANTS (owner-reported 2026-08-23).
+
+     ⛔ THESE PIN A REAL `<label for=…>`, NOT THE TEXT APPEARING SOMEWHERE. That distinction is the
+     whole lesson: R59 above asserts "Property tax" and "Hazard insurance" are in the markup and it
+     PASSED THROUGHOUT the period when both names were being discarded — because the money inputs
+     carry the same words in an `aria-label`. A screen reader was fine; a person looking at it saw
+     two unlabelled boxes with a Mo|Yr switch and no way to tell which was which. A guard that
+     matches text anywhere in the document cannot tell a visible name from an accessibility
+     attribute, so these match the element that draws the name.
+     ────────────────────────────────────────────────────────────────────────── */
+  const labelled = (html, id, text) => new RegExp(`<label[^>]*for="${id}"[^>]*>${text}</label>`).test(html);
+  ok(labelled(ch, 'dc-tax', 'Property tax'), 'R67 the property-tax box says it is the property tax');
+  ok(labelled(ch, 'dc-ins', 'Hazard insurance'), 'R68 …and the insurance box says it is the insurance');
+  // …and the switch that displaced them is still there. Both, or the fix traded one bug for another.
+  ok((ch.match(/aria-pressed=/g) || []).length >= 4,
+    'R69 …with both monthly/yearly switches still on those two fields');
+  // The same defect hit the ratio's own name on the main form, which is how it was noticed: the
+  // field read CLOSE instead of DSCR.
+  ok(labelled(h, 'pe-dscr', 'DSCR') && /Calculate<\/button>/.test(h),
+    'R70 the ratio keeps its name AND its Calculate control');
+  // ⛔ AND THE ONE FIELD THAT DELIBERATELY HAS NO NAME KEEPS NONE. The loan amount's Loan $ / LTV %
+  // switch IS its name; a fix that started drawing a label there would be a different regression.
+  ok(!/<label[^>]*for="pe-loan"/.test(h) && !/<label[^>]*for="pe-ltv"/.test(h),
+    'R71 …while the loan amount, whose switch is its name, still has no separate one');
 }
 console.log(`\n${failures === 0 ? `OFFLINE: all ${n} passed` : `FAILURES: ${failures} of ${n}`}`);
 process.exit(failures ? 1 : 0);
