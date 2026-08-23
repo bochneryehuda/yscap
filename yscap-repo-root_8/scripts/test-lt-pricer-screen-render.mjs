@@ -167,7 +167,10 @@ const attempt = (fn) => { try { return { html: fn(), err: null }; } catch (e) { 
   // The money boxes hold GROUPED text now (owner-directed: "as dollars with a dollar sign with
   // commas"), so the prefill reads 500,000. The guard's subject has not moved — it is still "the
   // scenario arrives filled in" — only the spelling the screen fills it in with.
-  ok(/value="500,000"/.test(html || '') && /value="760"/.test(html || ''),
+  // EVERY STARTING VALUE THE OWNER HAS SET, not a sample of them: the property value, the FICO and
+  // the DSCR. The DSCR was the one default nobody pinned, so it could have been changed by accident
+  // and no test anywhere would have noticed — which is the whole reason a guard exists.
+  ok(/value="500,000"/.test(html || '') && /value="760"/.test(html || '') && /value="1\.25"/.test(html || ''),
     'R4a …already filled in, so a staffer can price on arrival without typing plumbing');
   ok(/\$<\/span>/.test(html || '') || />\$</.test(html || ''),
     'R4a2 …with the dollar sign DRAWN beside the figure, not typed into it');
