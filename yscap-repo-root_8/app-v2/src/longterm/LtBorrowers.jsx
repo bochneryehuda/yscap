@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
+import { ltPost } from './http.js';
 
 /**
  * THE BORROWER MAP — which client each long-term loan belongs to.
@@ -28,6 +29,20 @@ import { ltApi } from './api.js';
 export default function LtBorrowers() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
+
+  // SEE THEIR SCREEN (owner-directed 2026-08-23) — the EXISTING borrower-view
+  // door, reached the identity-zone way http.js documents: the shared token key,
+  // no RTL module imported. The server holds every rule (who may, what is
+  // blocked inside, the 4-hour cap); this only parks our own token and adopts
+  // the one the door mints, then boots the borrower app the person really uses.
+  const seeTheirScreen = async (borrowerId) => {
+    try {
+      const r = await ltPost('/api/borrower-view/start', { borrowerId });
+      try { sessionStorage.setItem('ys_portal_staff_token', localStorage.getItem('ys_portal_token') || ''); } catch { /* private mode */ }
+      try { localStorage.setItem('ys_portal_token', r.token); } catch { /* private mode */ }
+      window.location.assign(r.landing || '/dashboard');
+    } catch (e) { setErr(e.message || 'Could not open their screen.'); }
+  };
   const [busy, setBusy] = useState('');
   // Said INLINE rather than in a modal: Long-Term may not import RTL's dialog
   // module (the separation gate refuses it), and on a table the answer belongs
@@ -138,6 +153,8 @@ export default function LtBorrowers() {
                               Yes, that&rsquo;s them
                             </button>
                             <button className="btn small ghost" disabled={busy === s.email}
+                              onClick={() => seeTheirScreen(s.borrowerId)}>See their screen</button>
+                            <button className="btn small ghost" disabled={busy === s.email}
                               title="Recorded for good — this match is never suggested again."
                               onClick={() => act(s.email, () => ltApi.rejectBorrower(s.email), 'record that')}>
                               No
@@ -194,6 +211,10 @@ export default function LtBorrowers() {
                               onClick={() => act(u.email, () => ltApi.unlinkBorrower(u.email), 'undo that')}>
                               Undo ({u.decided === 'confirmed' ? 'linked' : 'said no'})
                             </button>
+                          )}
+                          {u.decided === 'confirmed' && u.borrowerId && (
+                            <button className="btn small ghost" style={{ marginLeft: 6 }} disabled={busy === u.email}
+                              onClick={() => seeTheirScreen(u.borrowerId)}>See their screen</button>
                           )}
                         </td>
                       )}

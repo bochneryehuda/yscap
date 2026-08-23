@@ -258,5 +258,45 @@ function get(router, url, headers) {
     eq(b.type_id, null, 'and a card with no type reads as null, not 0');
   }
 
+  // ── I. "HAS THE BOOK BEEN SWEPT?" IS NOT "WHEN WAS A LOAN LAST READ?" ────
+  // This distinction cost a real hour. /count reports max(encompass_synced_at) —
+  // the newest SINGLE loan — and read as "the book is current" it is actively
+  // misleading: two loans read a minute ago make a book whose folder data came
+  // from this morning look fresh. `lastSweep` must therefore pick the newest pass
+  // that actually DISCOVERED rows, not merely the newest pass.
+  console.log('\nI. the sync log separates a real sweep from a couple of loans');
+  {
+    const dbPath = require.resolve('../src/longterm/db');
+    const routePath = require.resolve('../src/longterm/routes/book-diag');
+    delete require.cache[routePath];
+    const RUNS = [
+      // newest first, as the route's ORDER BY hands them over
+      // This row is the trap, and mutation testing is what found it missing: a
+      // conditions pass that DID discover rows. With `kind` ignored it is the
+      // newest row with discovered > 0, so it would be reported as the book's
+      // last sweep — which it is not. An earlier fixture had discovered: 0 here
+      // and the kind filter could be deleted with every check still green.
+      { kind: 'conditions', trigger: 'worker', discovered: 97, read_count: 4, ok: true },
+      { kind: 'loans', trigger: 'worker', discovered: 0, read_count: 2, ok: true },   // read 2 due loans; swept nothing
+      { kind: 'loans', trigger: 'worker', discovered: 480, read_count: 31, ok: true }, // THE sweep
+      { kind: 'loans', trigger: 'manual', discovered: 480, read_count: 480, ok: true },
+    ];
+    require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true,
+      exports: { query: async () => ({ rows: RUNS }) } };
+    const clientPath = require.resolve('../src/longterm/clickup/client');
+    require.cache[clientPath] = { id: clientPath, filename: clientPath, loaded: true,
+      exports: { configured: () => true, pipelineTasksPage: async () => ({ tasks: [], last_page: true }) } };
+    const router = require(routePath);
+    const r = await get(router, '/runs', H);
+    eq(r.status, 200, 'the log is readable');
+    eq(r.body.runs.length, 4, 'it hands over the passes it was given');
+    ok(!!r.body.lastSweep, 'and names the last real sweep');
+    eq(r.body.lastSweep.discovered, 480, 'which is the pass that DISCOVERED the book');
+    eq(r.body.lastSweep.read_count, 31, 'not the one that just read two due loans');
+    eq(r.body.lastSweep.kind, 'loans', 'and never a conditions pass');
+    delete require.cache[dbPath];
+    delete require.cache[routePath];
+  }
+
   console.log(`\nall good — ${checks} checks`);
 })().catch((e) => { console.error('\nFAILED:', e && e.message, '\n', e && e.stack); process.exit(1); });

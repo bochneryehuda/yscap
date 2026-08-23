@@ -202,6 +202,60 @@ async function main() {
       'and no longer holds its prose — so the strip removed comments, not everything');
     ok(!/\b(INSERT|UPDATE|DELETE|ALTER|DROP)\b/i.test(code),
       'and there is no write statement anywhere inside it');
+    // ── H. applyLink against the REAL constraints ───────────────────────────
+    // The pure suite proves the planner; this proves the WRITE — because the two
+    // guards that matter most live in the database, not in JavaScript: the
+    // one-card-one-loan unique index, and the WHERE that refuses to touch a loan
+    // that gained a link mid-pass. A stub cannot prove either.
+    console.log('\nH. applyLink writes the tie, the trail, and respects the index');
+    {
+      const linkMod = require('../src/longterm/clickup/link');
+      // The sections above exercised the columns by linking these same rows, so H
+      // starts from the state applyLink is FOR: an unlinked loan.
+      await db.query(
+        `UPDATE lt_loans
+            SET clickup_task_id = NULL, clickup_custom_id = NULL, clickup_url = NULL,
+                clickup_linked_at = NULL, clickup_link_source = NULL,
+                clickup_link_confidence = NULL, clickup_stamped_at = NULL
+          WHERE id = ANY($1::uuid[])`, [[A, B]]);
+      await db.query('DELETE FROM lt_clickup_link_log WHERE lt_loan_id = ANY($1::uuid[])', [[A, B]]);
+      const cardA = { id: TASK + '_h', custom_id: 'FILLE-9001', url: 'https://app.clickup.com/t/x' };
+      const r1 = await linkMod.applyLink({ loan: { id: A, loan_number: 'YSTEST-A' }, card: cardA,
+                                           reason: 'the card carries this loan number' });
+      eq(r1.ok, true, 'the first link lands');
+      const { rows: [rowA] } = await db.query(
+        `SELECT clickup_task_id, clickup_custom_id, clickup_url, clickup_link_source,
+                clickup_link_confidence, clickup_linked_at
+           FROM lt_loans WHERE id = $1::uuid`, [A]);
+      eq(rowA.clickup_task_id, cardA.id, 'the loan row now names the card');
+      eq(rowA.clickup_custom_id, 'FILLE-9001', 'with the FILLE number a person reads');
+      eq(rowA.clickup_link_source, 'reconciliation', 'sourced as the reconciliation');
+      eq(rowA.clickup_link_confidence, 'confirmed', 'and confirmed — stampable');
+      ok(rowA.clickup_linked_at != null, 'with the moment it happened');
+      const { rows: trail } = await db.query(
+        `SELECT action, to_task_id, reason FROM lt_clickup_link_log WHERE lt_loan_id = $1::uuid`, [A]);
+      eq(trail.length, 1, 'exactly one trail row');
+      eq(trail[0].action, 'linked', 'saying linked');
+      eq(trail[0].to_task_id, cardA.id, 'to that card');
+
+      const r2 = await linkMod.applyLink({ loan: { id: B, loan_number: 'YSTEST-B' }, card: cardA,
+                                           reason: 'x' });
+      eq(r2.ok, false, 'a second loan claiming the SAME card is refused');
+      ok(/one card, one loan/.test(r2.reason), 'by the index, said in words');
+      const { rows: [rowB] } = await db.query(
+        `SELECT clickup_task_id FROM lt_loans WHERE id = $1::uuid`, [B]);
+      eq(rowB.clickup_task_id, null, 'and loan B is untouched — refused means refused');
+
+      const r3 = await linkMod.applyLink({ loan: { id: A, loan_number: 'YSTEST-A' },
+                                           card: { id: 'tsk_other', custom_id: 'FILLE-9002', url: 'u' },
+                                           reason: 'x' });
+      eq(r3.ok, false, 'a loan that already holds a link is not re-pointed');
+      ok(/mid-pass|left alone/.test(r3.reason), 'the refusal says why');
+      const { rows: [rowA2] } = await db.query(
+        `SELECT clickup_task_id FROM lt_loans WHERE id = $1::uuid`, [A]);
+      eq(rowA2.clickup_task_id, cardA.id, 'and the original link is exactly as it was');
+    }
+
   } finally {
     await db.query('DELETE FROM lt_clickup_link_log WHERE lt_loan_id = ANY($1::uuid[])', [[A, B]]).catch(() => {});
     await db.query('DELETE FROM lt_properties WHERE loan_id = ANY($1::uuid[])', [[A, B]]).catch(() => {});

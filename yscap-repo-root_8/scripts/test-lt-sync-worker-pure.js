@@ -33,6 +33,22 @@ let condBehaviour = async () => { calls.push('conditions'); return { ok: true, d
 require.cache[loansPath] = { id: loansPath, filename: loansPath, loaded: true, exports: { syncOnce: (...a) => loanBehaviour(...a) } };
 require.cache[condPath] = { id: condPath, filename: condPath, loaded: true, exports: { syncOnce: (...a) => condBehaviour(...a) } };
 
+// The link pass is stubbed the same way the other passes are: this file proves
+// the WORKER calls it, and the pass's own behaviour is proven where it lives
+// (test-lt-clickup-link-pass-pure). A tick that quietly stopped calling it is a
+// book where new files never gain their card — nothing errors, ClickUp just
+// slowly drifts out of date, which is precisely the failure nobody notices.
+const linkPath = require.resolve('../src/longterm/clickup/link');
+let linkCalls = 0;
+require.cache[linkPath] = { id: linkPath, filename: linkPath, loaded: true,
+  exports: { linkPass: async () => { linkCalls += 1; calls.push('clickup_link'); return { ok: true, discovered: 0, read: 0 }; },
+             enabled: () => true } };
+const autolinkPath = require.resolve('../src/longterm/borrower-autolink');
+let autolinkCalls = 0;
+require.cache[autolinkPath] = { id: autolinkPath, filename: autolinkPath, loaded: true,
+  exports: { autoLinkPass: async () => { autolinkCalls += 1; calls.push('borrower_links'); return { ok: true, discovered: 0, read: 0 }; },
+             enabled: () => true } };
+
 const worker = require('../src/longterm/sync/worker');
 
 // The log line is the only thing anybody watching a deployment sees, so it is
@@ -81,8 +97,9 @@ console.log = (...a) => { logged.push(a.join(' ')); };
 
   calls.length = 0;
   const out = await worker.tickOnce();
-  check(calls.join() === 'loans,conditions',
-    'the loans first, then the Condition Center — a scheduled pass that calls neither is the same failure as a mirror with no writer, one level up');
+  check(calls.join() === 'loans,conditions,clickup_link,borrower_links',
+    'the loans, the Condition Center, the ClickUp link pass, then the borrower auto-link — pinned '
+    + 'as the exact list, so a pass silently dropped from the tick fails here instead of just never running again');
   check(out.loans && out.loans.ok === true && out.conditions && out.conditions.ok === true,
     'and both answers are returned, so a caller can see what happened');
 
@@ -260,6 +277,36 @@ console.log = (...a) => { logged.push(a.join(' ')); };
   }
 
   console.log(failures ? `\n${failures} FAILED` : '\nall passed');
+  // ── THE LINK PASS RIDES EVERY TICK ───────────────────────────────────────
+  {
+    const before = linkCalls;
+    await worker.tickOnce();
+    check(linkCalls === before + 1,
+      `every tick runs the ClickUp link pass exactly once (got ${linkCalls - before})`);
+    check(calls.indexOf('loans') < calls.indexOf('clickup_link'),
+      'and it runs AFTER the loan drain, so a file discovered this tick can link this tick');
+    check(autolinkCalls > 0 && calls.indexOf('clickup_link') < calls.lastIndexOf('borrower_links'),
+      'the borrower auto-link rides every tick too, after it');
+  }
+
+  // ── THE PACING PAIR, AND WHY IT IS ONE ASSERTION AND NOT TWO ─────────────
+  // A drain budget longer than the gap between ticks is worse than useless: every
+  // other tick lands mid-drain, `running` skips it, and a schedule that reads as
+  // "every 5 minutes" syncs no more often than the 20-minute one it replaced. The
+  // two numbers are a PAIR, so the invariant is what is asserted — change either
+  // alone and this fails, which is exactly the drift it exists to catch.
+  {
+    const { POLL_MIN, DRAIN_SEC } = worker._internals;
+    check(POLL_MIN === 5, `a pass runs every 5 minutes by default (got ${POLL_MIN})`);
+    check(DRAIN_SEC * 1000 < POLL_MIN * 60 * 1000,
+      `the drain budget (${DRAIN_SEC}s) finishes inside the poll gap (${POLL_MIN * 60}s), `
+      + 'so a tick never arrives mid-drain and gets skipped');
+    // And a real margin, not a photo-finish: a drain that ends one second before the
+    // next tick is a drain that overruns the moment Encompass is slow.
+    check(DRAIN_SEC * 1000 <= POLL_MIN * 60 * 1000 * 0.9,
+      'with room to spare, so a slow Encompass does not push a drain past the next tick');
+  }
+
   process.exit(failures ? 1 : 0);
 })().catch((e) => {
   console.log = realLog;
