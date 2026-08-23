@@ -229,3 +229,31 @@ stops a "no" quietly turning into a "yes" months later.
 | 2026-08-02 | Sharing the database connection pool (`src/db.js`) with Long-Term | **Not asked yet** — until it is, Long-Term opens its own pool in `src/longterm/db.js`, which needs no authorization (open question 11 in the charter) |
 | 2026-08-03 | **Long-Term WRITING the borrower record** (`sql-write borrowers`) | **No — confirmed by the owner: "keep borrower read only".** An officer CAN change a borrower profile from a long-term file, but through the ONE shared editor and the existing borrower endpoint — not through Long-Term write code. The person record keeps a single owner, which matters because a dozen RTL modules already heal, enrich and de-duplicate it (Encompass enrich, ClickUp sync, credit store, name-heal, merge). |
 | 2026-08-03 | Long-Term re-using RTL's **workflow, statuses, document sets, conditions or integrations** | **No — explicitly.** *"the workflow will be different, the sets will be different, integrations will be different, it will be a brand new build."* **EXCEPTION (2026-08-14): the Encompass integration was later authorized to be brought into Long-Term** (see the log row above). That exception is Encompass-only; every other integration (ClickUp, SharePoint, DocuSign, Sitewire, Trustpoint) still stays separate unless the owner authorizes it by name. |
+
+# ---------------------------------------------------------------------------
+# THE CLICKUP WRITER'S INHERITANCE — authorized in writing by the owner,
+# 2026-08-23, before any of it is copied:
+#
+#   "for the click-up syncing, we put in a lot of hours and effort to make sure
+#    the RTL side works perfectly and a lot of guards are in place ... Bring over
+#    that logic over here ... Use all the logic from there, all the mapping from
+#    here, and all the requests from there. You can bring everything over and use
+#    what we need."
+#
+# and, same day, on the shape of the tie itself:
+#
+#   "please use the same kind of logic that we're using on the RTL side, where
+#    everything is stamped in pilot and everything is stamped and clicked up and
+#    holding them together tied."
+#
+# WHAT THIS AUTHORIZES: copying the RTL ClickUp machinery's PROVEN logic into
+# src/longterm/clickup/** as the Long-Term field writer is built — the date rule
+# (4 AM America/New_York epochs, round-trip asserted), the chokepoint guards
+# (no deletion, no field clearing, allowlisted task updates), read-before-write
+# with no-op suppression, the write journal, the overwrite storm alarm and the
+# volume circuit breaker, the dropdown read/write asymmetry, and the per-field
+# type transforms. Each file copied under this authorization still gets its own
+# entry here naming source and destination, per the standing rule — this block
+# is the owner's sanction those entries cite, not a blanket import license.
+# LT copies stay copies: no LT file imports RTL logic modules directly.
+# ---------------------------------------------------------------------------

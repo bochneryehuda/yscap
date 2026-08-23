@@ -32,6 +32,7 @@ const loans = require('./loans');
 const conditions = require('../conditions/sync');
 const milestoneCatalog = require('./milestone-catalog');
 const contacts = require('../people/contacts');
+const clickupLink = require('../clickup/link');
 const runLog = require('./run-log');
 
 /**
@@ -168,7 +169,7 @@ async function tickOnce({ trigger = 'worker' } = {}) {
   if (running) return { ok: false, reason: 'a pass is already running' };
   running = true;
   const started_at = Date.now();
-  const out = { loans: null, conditions: null, milestoneCatalog: null, pilotRoles: null };
+  const out = { loans: null, conditions: null, milestoneCatalog: null, pilotRoles: null, clickupLink: null };
   try {
     // EVERY PASS RECORDS WHAT IT DID (db/616). The log line below says the same
     // thing, and a log line is not an answer: the owner asked twice why nothing was
@@ -206,6 +207,19 @@ async function tickOnce({ trigger = 'worker' } = {}) {
       out.pilotRoles = await runLog.record('pilot_roles', trigger, () => contacts.backfillPilotRoles({}));
     } catch (e) {
       out.pilotRoles = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    // WHICH CLICKUP CARD IS EACH LOAN'S CARD — the tie the owner asked for, kept
+    // from BOTH sides exactly like RTL keeps it: the loan row holds the card's id,
+    // the card holds PILOT's file id in its Portal File Id field. One pass links
+    // the reconciled book; every later pass links whatever new file gained a card
+    // since — same code path, so "already stamped" and "stamp the new one" can
+    // never drift apart. Runs AFTER the loan drain, so a file discovered this very
+    // tick can link this very tick. Its own off switch (LT_CLICKUP_LINK_ENABLED=0),
+    // and the ClickUp-side write stays behind stamp.js's separate switch.
+    try {
+      out.clickupLink = await runLog.record('clickup_link', trigger, () => clickupLink.linkPass({}));
+    } catch (e) {
+      out.clickupLink = { ok: false, reason: (e && e.message) || String(e) };
     }
   } finally {
     running = false;

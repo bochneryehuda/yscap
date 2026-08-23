@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import ProductStamp from './ProductStamp.jsx';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
 // One definition of how a value is written down, shared with the file screen — two
@@ -164,7 +163,11 @@ function DscrCell({ row }) {
   const shown = ratio(row.dscr_ratio);
   if (!v) return <span>{shown}</span>;
   const tone = v.level === 'below' ? '#8A2D2D' : v.level === 'thin' ? '#8A6A22' : '#2C5E3F';
-  const word = v.level === 'below' ? 'below' : v.level === 'thin' ? 'thin' : 'ok';
+  // A healthy ratio needs NO word (owner-directed 2026-08-23: *"after the ratio, it
+  // says 'OK.' I don't need that word over there"*): green is the answer, and an
+  // "ok" on four hundred healthy rows is what trains eyes to skip the column. The
+  // two WARNING words stay — they are the rows a desk has to catch.
+  const word = v.level === 'below' ? 'below' : v.level === 'thin' ? 'thin' : null;
   // WHOSE NUMBER. "this company set" is a claim about authorship, and it is false
   // whenever the company has not configured that threshold — we fall back to the
   // shipped one, which is right, but saying they chose it is not. The verdict now
@@ -179,7 +182,7 @@ function DscrCell({ row }) {
   return (
     <span style={{ color: tone, fontWeight: 700 }} title={why}>
       {shown}
-      <span style={{ color: '#4B585C', fontWeight: 400, fontSize: 11 }}> {word}</span>
+      {word && <span style={{ color: '#4B585C', fontWeight: 400, fontSize: 11 }}> {word}</span>}
     </span>
   );
 }
@@ -221,14 +224,16 @@ function Cell({ col, row, stageLabel }) {
     // on four hundred rows is a badge nobody reads.
     case 'borrower': {
       if (raw == null || raw === '') return <span style={muted}>—</span>;
+      // The name stands ALONE (owner-directed 2026-08-23: the "from Encompass" tag
+      // *"doesn't need to be over there"*). Whether it is linked to a PILOT profile
+      // still matters to whoever is doing the linking, so that fact survives as the
+      // HOVER — visible to the person who asks, invisible to everyone scanning.
+      const unlinked = row.borrower_is_linked === false;
       return (
-        <span>
+        <span title={unlinked
+          ? 'This is the name on the Encompass loan. Nobody has matched it to a PILOT borrower profile yet.'
+          : undefined}>
           {String(raw)}
-          {row.borrower_is_linked === false && (
-            <span style={{ marginLeft: 6, fontSize: 11, color: '#4B585C' }} title="This is the name on the Encompass loan. Nobody has matched it to a PILOT borrower profile yet.">
-              from Encompass
-            </span>
-          )}
         </span>
       );
     }
@@ -607,18 +612,18 @@ export default function LtPipeline() {
                     <td key={c.key}
                       style={{ ...td, textAlign: c.align === 'right' ? 'right' : 'left',
                         fontWeight: c.emphasis ? 600 : 400 }}>
-                      {/* THE PRODUCT STAMP, on every row (CLAUDE.md §7) — on the FIRST
-                          column, whichever column that is. Hanging it off the loan
-                          number would let a configuration that drops that column drop
-                          the stamp with it, and the stamp is not configurable. It is
-                          rendered from what the ROW carries, so it stays correct on a
-                          combined pipeline instead of labelling everything the same. */}
-                      {i === 0 ? (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                          <ProductStamp product={l.product} label={l.productLabel} />
-                          <Cell col={c} row={l} stageLabel={stageLabel} />
-                        </span>
-                      ) : <Cell col={c} row={l} stageLabel={stageLabel} />}
+                      {/* NO per-row product stamp here, and that is not a drift from
+                          CLAUDE.md §7 — read the rule: the stamp-on-every-row demand is
+                          for a COMBINED pipeline listing both products, where a row's
+                          product is a fact the eye needs. This screen lists ONE product
+                          by construction (its own route, its own tables), says so in
+                          its title, and the rule's author directed the per-row copy
+                          removed (owner, 2026-08-23: *"This entire pipeline is only
+                          long term, so you don't need to stamp every file
+                          separately"*). The FILE header keeps its stamp — §7 asks for
+                          that one by name, and LtLoan.jsx renders it. A future combined
+                          pipeline brings the per-row stamp back with the merge. */}
+                      <Cell col={c} row={l} stageLabel={stageLabel} />
                     </td>
                   ))}
                 </tr>

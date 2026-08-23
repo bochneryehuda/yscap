@@ -77,11 +77,28 @@ check(!/['"`]Long-term['"`]/.test(stampSrc),
 check(/if \(!product \|\| !label\) return null/.test(stampSrc),
   'an UNTAGGED row renders no stamp at all — an honest blank beats a confident wrong label');
 
-for (const f of ['app-v2/src/longterm/LtPipeline.jsx', 'app-v2/src/longterm/LtLoan.jsx']) {
-  const src = strip(read(f));
-  check(/<ProductStamp/.test(src), `${path.basename(f)} renders the stamp`);
+// THE FILE HEADER keeps its stamp — §7 names it, and it is the one marker saying
+// which book a file belongs to when somebody lands on it from anywhere.
+{
+  const src = strip(read('app-v2/src/longterm/LtLoan.jsx'));
+  check(/<ProductStamp/.test(src), 'LtLoan.jsx renders the stamp');
   check(/label=\{[a-zA-Z.]*[Pp]roductLabel\}/.test(src),
-    `${path.basename(f)} passes the label FROM THE DATA, not a literal`);
+    'LtLoan.jsx passes the label FROM THE DATA, not a literal');
+}
+
+// THE PIPELINE'S ROWS DO NOT (owner-directed 2026-08-23: "This entire pipeline is
+// only long term, so you don't need to stamp every file separately"). This is not
+// a walk-back of §7 — read the rule: the per-row stamp is demanded of a COMBINED
+// pipeline listing both products, and this screen lists one product by
+// construction. The assertion is written in the direction the owner chose, so the
+// stamp cannot quietly come back row-by-row; the day a combined pipeline exists,
+// its own test demands the per-row stamp there and THIS check does not apply to it.
+{
+  const src = strip(read('app-v2/src/longterm/LtPipeline.jsx'));
+  check(!/<ProductStamp/.test(src),
+    'LtPipeline.jsx renders NO per-row stamp — the single-product pipeline reads clean');
+  check(!/from '.\/ProductStamp/.test(src) && !/from ".\/ProductStamp/.test(src),
+    'and does not even import it — an unused import is how it creeps back');
 }
 
 // The file header's stamp must not hang off another request succeeding. The scope
