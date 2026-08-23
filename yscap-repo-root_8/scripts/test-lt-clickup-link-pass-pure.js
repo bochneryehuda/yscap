@@ -101,7 +101,7 @@ const loan = (id, num, over) => Object.assign({ id, loan_number: num, clickup_ta
         pipelineTasksPage: async (page) => (page === 0
           ? { tasks: [ { id: 't1', custom_id: 'FILLE-1', url: 'u1', custom_fields: [{ id: require('../src/clickup/fields').PIPELINE.ysLoanNumber, value: 'YSCAP111' }] } ], last_page: true }
           : { tasks: [], last_page: true }) },
-      stamp: { enabled: () => false, stampTask: async (a) => { stamps.push(a); return { ok: true, wrote: true }; } },
+      stamp: { enabled: () => false, stampTask: async (a) => { stamps.push(a); return { ok: true, wrote: ['f1'] }; } },
     };
     const out = await link.linkPass(deps);
     eq(out.ok, true, 'the pass reports itself');
@@ -124,7 +124,7 @@ const loan = (id, num, over) => Object.assign({ id, loan_number: num, clickup_ta
         ? { rows: [loan('L1', 'YSCAP111')] } : { rowCount: 1, rows: [] }) },
       client: { configured: () => true,
         pipelineTasksPage: async () => ({ tasks: [ { id: 't1', custom_id: 'FILLE-1', url: 'u1', custom_fields: [{ id: require('../src/clickup/fields').PIPELINE.ysLoanNumber, value: 'YSCAP111' }] } ], last_page: true }) },
-      stamp: { enabled: () => true, stampTask: async (a) => { stamps.push(a); return { ok: true, wrote: true }; } },
+      stamp: { enabled: () => true, stampTask: async (a) => { stamps.push(a); return { ok: true, wrote: ['f1'] }; } },
     };
     const out = await link.linkPass(deps);
     eq(out.read, 1, 'the link lands');
@@ -146,6 +146,89 @@ const loan = (id, num, over) => Object.assign({ id, loan_number: num, clickup_ta
     eq(out2.ok, false, 'no ClickUp connection is a REAL refusal');
     ok(/not connected/.test(out2.reason), 'in words');
   }
+
+  // ── I. THE STAMP CONVERGES: budget, retry, and the book's own record ──────
+  // Four hundred stamps cannot land in one pass without tripping ClickUp's rate
+  // limit, so the pass takes a bounded bite and the RETRY SWEEP finishes the rest
+  // over later passes. That only works if every attempt is RECORDED — a stamp
+  // that happened but was never written down gets re-sent forever, and one that
+  // failed silently never gets retried at all. Both directions are proven here.
+  console.log('\nI. the stamp budget, the retry sweep, and the record');
+  process.env.LT_CLICKUP_STAMP_GAP_MS = '0';
+  const FIELDS = require('../src/clickup/fields');
+  const mkCard = (id, ys) => ({ id, custom_id: 'FILLE-' + id, url: 'u',
+    custom_fields: [{ id: FIELDS.PIPELINE.ysLoanNumber, value: ys }] });
+  {
+    // Two linkable loans, budget of ONE: the second stamp waits for the next pass.
+    process.env.LT_CLICKUP_STAMP_PER_PASS = '1';
+    const stamps = []; const writes = [];
+    const deps = {
+      db: { query: async (sql, params) => {
+        writes.push({ sql, params });
+        if (/SELECT id, loan_number/.test(sql)) return { rows: [loan('L1', 'YSCAP111'), loan('L2', 'YSCAP222')] };
+        if (/clickup_stamped_at IS NULL/.test(sql) && /SELECT/.test(sql)) return { rows: [] };
+        return { rowCount: 1, rows: [] };
+      } },
+      client: { configured: () => true,
+        pipelineTasksPage: async () => ({ tasks: [mkCard('t1', 'YSCAP111'), mkCard('t2', 'YSCAP222')], last_page: true }) },
+      stamp: { enabled: () => true, stampTask: async (a) => { stamps.push(a); return { ok: true, wrote: ['f'] }; } },
+    };
+    const out = await link.linkPass(deps);
+    eq(out.read, 2, 'both loans link — linking is never rationed');
+    eq(stamps.length, 1, 'but only ONE stamp goes out: the budget is the rate-limit guard');
+    eq(out.stamped, 1, 'and the pass says so');
+    const rec = writes.filter((w) => /clickup_stamped_at = now\(\)/.test(w.sql));
+    eq(rec.length, 1, 'the stamp that went out is RECORDED on the loan row');
+    delete process.env.LT_CLICKUP_STAMP_PER_PASS;
+  }
+  {
+    // The retry sweep: nothing new to link, one confirmed link still unstamped.
+    const stamps = []; const writes = [];
+    const deps = {
+      db: { query: async (sql, params) => {
+        writes.push({ sql, params });
+        if (/SELECT id, loan_number/.test(sql)) return { rows: [] };
+        if (/clickup_stamped_at IS NULL/.test(sql) && /SELECT/.test(sql)) {
+          return { rows: [{ id: 'L9', clickup_task_id: 't9' }] };
+        }
+        return { rowCount: 1, rows: [] };
+      } },
+      client: { configured: () => true, pipelineTasksPage: async () => ({ tasks: [], last_page: true }) },
+      stamp: { enabled: () => true, stampTask: async (a) => { stamps.push(a); return { ok: true, wrote: [], skipped: 'already_stamped' }; } },
+    };
+    const out = await link.linkPass(deps);
+    eq(stamps.length, 1, 'the sweep picks up the link an earlier pass could not stamp');
+    eq(stamps[0].taskId, 't9', 'and sends it to the recorded card');
+    eq(out.stamped, 1, '"already stamped" IS stamped — the tie holds, however it got there');
+    ok(writes.some((w) => /clickup_stamped_at = now\(\)/.test(w.sql)),
+      'and is recorded, so it is never re-sent');
+  }
+  {
+    // A failed stamp: the error is written where a person reads it, and it does
+    // not count as stamped — which is exactly what keeps it in the sweep.
+    const writes = [];
+    const deps = {
+      db: { query: async (sql, params) => {
+        writes.push({ sql, params });
+        if (/SELECT id, loan_number/.test(sql)) return { rows: [] };
+        if (/clickup_stamped_at IS NULL/.test(sql) && /SELECT/.test(sql)) {
+          return { rows: [{ id: 'L9', clickup_task_id: 't9' }] };
+        }
+        return { rowCount: 1, rows: [] };
+      } },
+      client: { configured: () => true, pipelineTasksPage: async () => ({ tasks: [], last_page: true }) },
+      stamp: { enabled: () => true, stampTask: async () => ({ ok: false, wrote: [], reason: 'occupied', heldBy: 'someone-else' }) },
+    };
+    const out = await link.linkPass(deps);
+    eq(out.stamped, 0, 'a refusal is not a stamp');
+    eq(out.stampFailed, 1, 'it is a failure, counted as one');
+    const err = writes.find((w) => /clickup_stamp_error = \$2/.test(w.sql));
+    ok(!!err, 'the reason lands on the row');
+    ok(/occupied/.test(err.params[1]) && /someone-else/.test(err.params[1]),
+      'naming what refused AND who holds the card — the contradiction a person must untangle');
+    ok(writes.some((w) => /stamp_failed/.test(w.sql)), 'and the trail records the attempt');
+  }
+  delete process.env.LT_CLICKUP_STAMP_GAP_MS;
 
   console.log(`\nall good — ${checks} checks`);
 })().catch((e) => { console.error('\nFAILED:', e && e.message); process.exit(1); });
