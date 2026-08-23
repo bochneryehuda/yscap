@@ -29,10 +29,8 @@
  */
 const {
   countBorrowersExperience, fileBorrowerIds, requestedFromApp,
-  hasRequirement, requirementMet,
+  hasRequirement, requirementMet, registeredExperienceNeed,
 } = require('../experience');
-
-function int(v) { const n = parseInt(v, 10); return isFinite(n) && n > 0 ? n : 0; }
 
 /**
  * Is the file's REGISTERED experience requirement fully VERIFIED against the track record?
@@ -57,19 +55,18 @@ async function experienceCompleteness(client, appId) {
     out.hasRequirement = hasRequirement(required);
     if (!out.hasRequirement) return out;   // nothing claimed → not applicable
 
-    // The THRESHOLD PILOT verifies against = the SAME one the sign-off gate's `met` uses:
-    // the CURRENT registered product's experience, falling back to the application's claim
-    // when nothing is registered yet (in that pre-registration state the gate blocks
-    // sign-off anyway, so the fallback is never the effective gate).
-    let gateNeed = required;
-    try {
-      const cur = await client.query(
-        `SELECT inputs FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
-      if (cur.rows[0]) {
-        const pin = cur.rows[0].inputs || {};
-        gateNeed = { flips: int(pin.expFlips), holds: int(pin.expHolds), ground: int(pin.expGround) };
-      }
-    } catch (_) { /* best-effort — fall back to the application claim */ }
+    /* The THRESHOLD PILOT verifies against = the SAME one the sign-off gate's `met` uses: the
+       CURRENT registered product's experience, falling back to the application's claim when
+       nothing is registered yet (in that pre-registration state the gate blocks sign-off anyway,
+       so the fallback is never the effective gate).
+
+       ASKED, NOT RE-IMPLEMENTED (2026-08-23). This used to run its own copy of that query and
+       its own `int()`, while the header above claimed the threshold was "reused 1:1". It was not
+       — it was a second implementation that happened to agree, and the one that drifts is the one
+       that leaks. `registeredExperienceNeed` is the single definition the condition sync, the
+       sign-off gate and the track-record to-do list all read; it takes the fallback as an
+       argument and never throws. */
+    const gateNeed = await registeredExperienceNeed(appId, client, required);
 
     // VERIFIED experience for the FILE = primary borrower + co-borrower, summed, in the
     // frozen 3-year exit window (REUSES experience.js — never re-derived).

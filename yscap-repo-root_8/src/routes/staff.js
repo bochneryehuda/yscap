@@ -876,7 +876,11 @@ router.get('/applications', async (req, res) => {
     let offset = parseInt(q.offset, 10);
     if (!Number.isFinite(offset) || offset < 0) offset = 0;
 
-    const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
+    // `sold_at` rides along so the pipeline can show the Sold STAGE (db/611). The stored status
+    // stays `funded` — 139 places read it and moving it would switch servicing off — so the row
+    // carries both and the list decides the word. One definition of that decision:
+    // app-v2/src/lib/soldStage.js, the browser twin of lib/sold-status.displayStatus.
+    const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,a.sold_at,
                         a.clickup_pipeline_task_id,a.property_address,a.lender,
                         a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,a.actual_closing,
                         b.first_name,b.last_name,b.email,
@@ -16537,10 +16541,14 @@ router.post('/applications/:id/purchasing/status', purchasingGate, async (req, r
   const status = req.body && req.body.status;
   if (!purchasing.PURCHASING_STATUSES.includes(status))
     return res.status(400).json({ error: 'unknown purchasing status' });
-  // THE TWO PURCHASE ADVICE DATES MUST AGREE BEFORE THE PURCHASE IS FINISHED (owner-directed
-  // 2026-08-13: "the purchase advice date you enter manually in PILOT needs to match the purchase
-  // advice date in Encompass … and Encompass needs to have a purchase advice date filled in in
-  // order for you to be able to mark purchase completed").
+  // ENCOMPASS MUST RECORD THE SALE, AND THE ADVICE MUST BE ON FILE, BEFORE THE PURCHASE IS
+  // FINISHED (owner-directed 2026-08-13, revised 2026-08-23).
+  //
+  // 2026-08-13 asked for two dates that agree — PILOT's hand-typed one and Encompass's. 2026-08-23
+  // removed the typing: the date is entered in Encompass and read from there, so the two can no
+  // longer disagree and that half of the rule can no longer fail. What the owner put in its place
+  // is the advice DOCUMENT. `postPurchase.adviceGate` owns both checks; this route only reads the
+  // two facts and reports the refusal.
   //
   // ONLY ON THE WAY TO COMPLETE. Moving a file BACK to outstanding is always allowed — that is how
   // somebody corrects a mistake, and a gate on it would trap the file.
@@ -16549,10 +16557,11 @@ router.post('/applications/:id/purchasing/status', purchasingGate, async (req, r
   // this is purely about finishing the purchase record here.
   if (status === 'complete') {
     const dates = (await db.query(
-      `SELECT a.purchase_advice_date AS encompass_date, pa.advice_date AS pilot_date
+      `SELECT a.purchase_advice_date AS encompass_date, pa.document_id AS advice_document_id
          FROM applications a LEFT JOIN purchasing_advice pa ON pa.application_id = a.id
         WHERE a.id=$1`, [req.params.id])).rows[0] || {};
-    const gate = postPurchase.adviceGate({ encompassDate: dates.encompass_date, pilotDate: dates.pilot_date });
+    const gate = postPurchase.adviceGate({
+      encompassDate: dates.encompass_date, adviceDocumentId: dates.advice_document_id });
     if (!gate.ok) {
       // A SUPER-ADMIN MAY STILL FINISH IT, with a typed reason that is journaled. Encompass is
       // read-only to PILOT, so without a way through, a file whose date is wrong THERE could never
@@ -16563,7 +16572,7 @@ router.post('/applications/:id/purchasing/status', purchasingGate, async (req, r
       if (!(req.actor && req.actor.role === 'super_admin')) return res.status(403).json({ error: `${gate.message}\n\nOnly a super admin can complete the purchase anyway.`, code: gate.code });
       if (reason.length < 8) return res.status(400).json({ error: 'Say why the purchase is being completed with the dates as they are (at least 8 characters).', code: gate.code });
       await audit(req, 'purchasing_complete_override', 'application', req.params.id,
-        { code: gate.code, pilot_date: gate.pilot_date || null, encompass_date: gate.encompass_date || null, reason: reason.slice(0, 500) });
+        { code: gate.code, encompass_date: gate.encompass_date || null, reason: reason.slice(0, 500) });
     }
   }
   try {
@@ -16684,10 +16693,12 @@ router.delete('/applications/:id/purchasing/conditions/:cid', purchasingGate, as
 router.post('/applications/:id/purchasing/advice', purchasingGate, async (req, res) => {
   const b = req.body || {};
   const patch = {};
+  /* THE DATE IS TYPED IN ENCOMPASS, NOT HERE (owner-directed 2026-08-23). Answered at the
+     door as well as in the library so the caller gets the plain sentence rather than a 500
+     from a thrown library error — and the library keeps the rule, so this cannot be the only
+     thing enforcing it. The refusal is a 422 with a code, so the screen can recognise it. */
   if ('date' in b) {
-    const d = b.date ? require('../lib/fields').normalizeTypedDate(b.date, 'closing') : null;
-    if (b.date && !d) return res.status(400).json({ error: 'That purchase advice date is not a real date.' });
-    patch.date = d;
+    return res.status(422).json({ error: purchasing.ADVICE_DATE_IS_ENCOMPASS_MSG, code: 'advice_date_is_encompass' });
   }
   if ('documentId' in b) {
     if (b.documentId) {
@@ -16726,7 +16737,12 @@ router.post('/applications/:id/purchasing/advice', purchasingGate, async (req, r
       await audit(req, 'purchasing_advice_restricted', 'document', patch.documentId,
         { now: 'staff_only', priorVisibility: advice && advice.document_prior_visibility, applicationId: req.params.id });
     res.json({ ok: true, advice });
-  } catch (e) { console.warn('[purchasing] advice error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+  } catch (e) {
+    // The library's own refusal (a caller that reached setPurchaseAdvice another way) carries
+    // a status and must reach the user as its sentence, not as "server error".
+    if (e && e.status === 422) return res.status(422).json({ error: e.message, code: e.code || undefined });
+    console.warn('[purchasing] advice error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
 });
 
 // #84 — super-admin STRUCTURAL UNLOCK. A clear-to-close / funded file's loan

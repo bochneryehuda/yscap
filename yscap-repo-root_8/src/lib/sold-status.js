@@ -133,11 +133,17 @@ async function syncSoldStage(db, appId, { announce = true, client = null } = {})
         RETURNING id`, [appId, plan.mark, plan.source]);
     if (!r || !r.rowCount) return { skipped: 'unchanged' };
 
+    let cardMoved = null;
     if (announce) {
-      /* THE CARD FOLLOWS, through the ONE post-closing stage mover — the same call the purchase
-         advice sync already makes, so a file cannot be Sold here and somewhere else in ClickUp. */
+      /* THE CARD FOLLOWS, through the ONE post-closing stage mover — and since 2026-08-23 this is
+         the ONLY place it is pushed for a sale. `syncPurchaseAdviceDate` used to push it too; two
+         pushes from two conditions is two answers to "when does the card move", and they already
+         disagreed on a cleared date and on a table-funded file. Here is the right owner, because
+         this function is the one that carries the owner's table-funded exclusion.
+         What it did is RETURNED, not swallowed: the sweep logs a per-pass summary, and a summary
+         that cannot say whether the card moved cannot tell a working pass from a silent one. */
       try {
-        await require('../clickup/post-closing-stage')
+        cardMoved = await require('../clickup/post-closing-stage')
           .advanceCard(appId, 'sold', { client: client || undefined, reason: 'sold_stage' });
       } catch (_) { /* the card is best-effort */ }
       try {
@@ -151,7 +157,7 @@ async function syncSoldStage(db, appId, { announce = true, client = null } = {})
         });
       } catch (_) { /* best-effort */ }
     }
-    return { marked: plan.mark, source: plan.source };
+    return { marked: plan.mark, source: plan.source, cardMoved };
   } catch (e) {
     return { skipped: (e && e.message) ? String(e.message).slice(0, 120) : 'error' };
   }
@@ -170,17 +176,29 @@ async function syncSoldStage(db, appId, { announce = true, client = null } = {})
  * Bounded and self-draining: it looks only at funded files that have a purchase advice date and no
  * stage yet, so once they are stamped the query returns nothing and the pass costs one index scan.
  * Never throws — a boot pass may not break boot.
+ *
+ * EITHER SOURCE COUNTS (owner-directed 2026-08-23, on the back book: keep the hand-recorded ones
+ * Sold). Until today this looked ONLY at `applications.purchase_advice_date`, so a file whose only
+ * advice date was typed on the purchasing desk before the Encompass-only rule was invisible to it —
+ * permanently, because the pass is self-draining and would never come back for those files. Such a
+ * file already read as Sold on the draw desk (`soldStatus` accepts either source) while Critical
+ * Dates said "this loan has not been marked sold": one file, two answers. The join closes that.
+ *
+ * It is NOT a second definition of "sold": each row still goes through `syncSoldStage`, which asks
+ * `releaseStateFor` how the loan funded and applies the table-funded exclusion. This query only
+ * decides which files are WORTH ASKING ABOUT, and asking about one costs a skip.
  */
 async function backfillSoldOnce(db, { limit = 500 } = {}) {
   const out = { looked: 0, marked: 0, skipped: 0 };
   try {
     const rows = (await db.query(
-      `SELECT id FROM applications
-        WHERE deleted_at IS NULL
-          AND status = 'funded'
-          AND purchase_advice_date IS NOT NULL
-          AND sold_at IS NULL
-        ORDER BY purchase_advice_date
+      `SELECT a.id FROM applications a
+         LEFT JOIN purchasing_advice pa ON pa.application_id = a.id
+        WHERE a.deleted_at IS NULL
+          AND a.status = 'funded'
+          AND (a.purchase_advice_date IS NOT NULL OR pa.advice_date IS NOT NULL)
+          AND a.sold_at IS NULL
+        ORDER BY COALESCE(a.purchase_advice_date, pa.advice_date)
         LIMIT $1`, [Math.max(1, Math.min(2000, Number(limit) || 500))])).rows;
     for (const r of rows) {
       out.looked += 1;
