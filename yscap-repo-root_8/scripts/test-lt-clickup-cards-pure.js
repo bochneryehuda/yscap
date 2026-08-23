@@ -152,6 +152,47 @@ function get(router, url, headers) {
     eq(r.body.cards[1].portal, null, 'a blank stamp reads as null, never as an empty string');
   }
 
+  // ── E2. THE SHAPE CLICKUP ACTUALLY SENDS: a drop-down reads back as a NUMBER
+  // This is the bug that shipped and was caught on the first real pull. *Program is
+  // a drop-down, so ClickUp hands back the option's `orderindex` — 0, 3 — and the
+  // labels sit beside it in `type_config.options`. The product rule decides a file
+  // is long-term unless it is one of the five RTL programs BY NAME, so an
+  // unresolved number is a program it has never heard of: MEASURED on the live
+  // workspace, 216 Fix & Flip files were classified long-term, silently, and the
+  // reconciliation would have proposed ClickUp cards for short-term deals.
+  console.log('\nE2. a drop-down arrives as an orderindex and must be resolved to its label');
+  {
+    const OPTIONS = [
+      { id: 'opt-ff', orderindex: 0, name: 'Fix & Flip With Construction' },
+      { id: 'opt-gu', orderindex: 1, name: 'Ground-Up' },
+      { id: 'opt-dscr', orderindex: 3, name: 'Non-QM - DSCR Ratio' },
+    ];
+    // A card exactly as the live API sends it: a number, plus the option list.
+    const real = (i, orderindex) => {
+      const c = card(i, null);
+      c.custom_fields = c.custom_fields.map((f) => (f.id === PIPELINE.program
+        ? { id: PIPELINE.program, type: 'drop_down', value: orderindex, type_config: { options: OPTIONS } }
+        : f));
+      return c;
+    };
+    const { router } = loadWithStub([{ tasks: [real(1, 0), real(2, 3), real(3, 1)], last_page: true }]);
+    const long = await get(router, '/cards?product=long', H);
+    eq(long.body.count, 1, 'only the DSCR file is long-term');
+    eq(long.body.cards[0].program, 'Non-QM - DSCR Ratio', 'and its program reads as the LABEL, not "3"');
+    ok(!long.body.cards.some((c) => /^\d+$/.test(String(c.program))),
+      'no card carries a bare number as its program');
+    const all = await get(router, '/cards?product=all', H);
+    const ff = all.body.cards.find((c) => c.id === 'task1');
+    eq(ff.program, 'Fix & Flip With Construction', 'the Fix & Flip card resolves to its real name');
+    eq(ff.product, 'short_term', 'and is therefore correctly SHORT-term, not long');
+
+    // An option the field does not list is shown as it came, never dropped: an
+    // unknown value must be visible, not read as "no program set".
+    const { router: r2 } = loadWithStub([{ tasks: [real(9, 77)], last_page: true }]);
+    const odd = await get(r2, '/cards?product=all', H);
+    eq(String(odd.body.cards[0].program), '77', 'an unlisted option is reported as-is rather than blanked');
+  }
+
   // ── F. it never answers with an empty list it cannot stand behind ────────
   console.log('\nF. not connected is said in words');
   {
