@@ -68,11 +68,13 @@ export default function LtArchive() {
   return (
     <LtLayout title="Archive — deleted in Encompass">
       <div className="card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
-        These files sit in Encompass's own trash folder — deleted there, so they are out of the
-        pipeline here (test files, training files, old duplicates). Deleting one below removes
-        PILOT's copy <strong style={{ color: '#141B22' }}>permanently</strong>; the Encompass copy
-        stays in Encompass's trash, and restoring it there brings the file back here on the next
-        sync. <Link to="/internal/lt/pipeline" style={{ color: '#2F7F86' }}>Back to the pipeline</Link>
+        Two kinds of file live here, and neither is part of the pipeline: files sitting in
+        Encompass&rsquo;s own trash folder (test files, training files &mdash; deleted there), and
+        stale <em>archived copies</em> of a live file &mdash; a duplicate record Encompass itself
+        has archived out of sight, superseded by the real one. Deleting one below removes
+        PILOT&rsquo;s copy <strong style={{ color: '#141B22' }}>permanently</strong>; the Encompass
+        copy stays where it is in Encompass, and restoring it there brings the file back here on
+        the next sync. <Link to="/internal/lt" style={{ color: '#2F7F86' }}>Back to the pipeline</Link>
       </div>
 
       {err && <div className="card" style={{ color: '#8A2D2D', marginBottom: 12 }}>{err}</div>}
@@ -106,7 +108,14 @@ export default function LtArchive() {
             <tbody>
               {data.loans.map((l) => (
                 <tr key={l.id}>
-                  <td style={{ ...td, fontWeight: 600 }}>{l.loan_number || '—'}</td>
+                  <td style={{ ...td, fontWeight: 600 }}>
+                    {l.loan_number || '—'}
+                    {l.reason === 'archived_duplicate' ? (
+                      <div style={{ fontSize: 11, fontWeight: 600, color: '#8A6A17' }}>
+                        archived copy of a live file
+                      </div>
+                    ) : null}
+                  </td>
                   <td style={td}>{l.borrower_name || '—'}</td>
                   <td style={td}>{l.program_name || '—'}</td>
                   <td style={{ ...td, textAlign: 'right' }}>{money(l.loan_amount)}</td>

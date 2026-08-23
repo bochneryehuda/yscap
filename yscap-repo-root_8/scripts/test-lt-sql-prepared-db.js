@@ -173,6 +173,7 @@ async function main() {
     'clickup/link.js': 'test-lt-trash-db.js drives linkPass — the selection live, the retry sweep in a rolled-back transaction',
     'borrower-autolink.js': 'test-lt-trash-db.js drives autoLinkPass (reads live, writes stubbed)',
     'borrower-links.js': 'test-lt-borrower-link-db.js drives confirmLink, whose two-names guard this is',
+    'sync/loans.js': 'test-lt-trash-db.js section H2 drives syncOnce — the never-reinsert twin check runs live there',
     'routes/borrowers.js': 'GET /api/lt/borrowers, in the route smoke test',
     'routes/my-loans.js': 'test-lt-borrower-switch-db.js drives the handler directly against the real schema',
     'routes/sync.js': 'GET /api/lt/sync, in the route smoke test',

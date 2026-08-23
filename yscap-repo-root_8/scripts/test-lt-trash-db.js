@@ -24,12 +24,21 @@
  *   F. every other reader carries the guard (source-held, so removing one fails)
  *   G. the officer picker lists linked AND unlinked officers, and the login
  *      filter narrows to that officer's files
+ *   H. a superseded ARCHIVED Encompass copy (db/621) is retired into the archive,
+ *      the mirror maintains the flags from the flag-less diff, a permanently
+ *      deleted archived copy never boomerangs back, and a failed flag-less sweep
+ *      marks nothing
+ *   I. db/622 (the owner's own ybochner link) waits for the roster, links +
+ *      reattributes once, converges, and never overrules a human's decision
  *
  * Mutation-proven (each reverted in a scratch copy; the suite went red):
  *   1. buildWhere without the trash guard          → B fails (trash listed)
  *   2. the mirror loop without the trash branch    → C fails (fresh trash inserted)
  *   3. deleteArchivedLoan without the trash WHERE  → E fails (live loan deleted)
  *   4. linkPass selection without the guard        → D fails (dup refusal returns)
+ *   5. sweepArchivedDuplicates marking neutralized → H fails (stale copy stays)
+ *   6. the mirror's never-reinsert guard removed   → H2 fails (deleted copy back)
+ *   7. db/622 without its human-decision guards    → I fails (a confirm overruled)
  */
 
 const assert = require('assert');
@@ -53,9 +62,13 @@ async function main() {
   ok(!trash.isTrashFolder('Pipeline') && !trash.isTrashFolder('Withdrawn files'),
     'a real folder is never trash');
   ok(!trash.isTrashFolder('') && !trash.isTrashFolder(null), 'no folder reads as LIVE, never trash');
-  ok(trash.trashSql('l').startsWith(book.folderNormSql('l')),
+  ok(trash.trashSql('l').includes(book.folderNormSql('l')),
     'the SQL half is built on the SAME normalisation the book filters compare with');
-  ok(trash.notTrashSql('x').includes("<> '(trash)'"), 'and the guard is its negation');
+  ok(trash.trashSql('l').includes('l.archived_duplicate'),
+    'and carries the superseded-archived-copy half (db/621)');
+  ok(trash.notTrashSql('x').includes("<> '(trash)'")
+    && trash.notTrashSql('x').includes('NOT x.archived_duplicate'),
+  'and the guard is its negation — both halves');
 
   // ── fixtures ──────────────────────────────────────────────────────────────
   const L = {};
@@ -331,6 +344,124 @@ async function main() {
     ok(loaded.archiveCount >= 2, 'the pipeline hands a sees-all viewer the archive total');
     eq(loaded.viewerLinked, false,
       'and says this viewer\'s own login is not linked — the reason "My files" reads empty');
+
+    console.log('\nH. a superseded ARCHIVED copy joins the archive (the YSCAP258134474 shape)');
+    // The archived flag is the sync's diff; set it directly first to prove the RULE
+    // in isolation, then H2 proves the sync maintains the flag itself.
+    await db.query(`UPDATE lt_loans SET encompass_archived = true WHERE id = $1::uuid`, [L.dupB]);
+    const sweep1 = await trash.sweepArchivedDuplicates(db);
+    ok(sweep1.marked >= 1, 'the stale archived copy is MARKED — archived in Encompass, live twin holds the number');
+    const dupRow = async () => (await db.query(
+      `SELECT archived_duplicate, encompass_archived FROM lt_loans WHERE id = $1::uuid`, [L.dupB])).rows[0];
+    eq((await dupRow()).archived_duplicate, true, '…as archived_duplicate');
+    const afterH = await run();
+    ok(!afterH.rows.some((r) => r.id === L.dupB), 'the archived copy leaves the pipeline');
+    ok(afterH.rows.some((r) => r.id === L.dupA), 'the LIVE record stays');
+    eq((await trash.liveDuplicates(`${stamp}-3000`, L.dupA)).length, 0,
+      'and the live file stops reporting a duplicate record — the owner sees ONE again');
+    const archH = await trash.listArchive();
+    const mineH = archH.find((r) => r.id === L.dupB);
+    ok(!!mineH && mineH.reason === 'archived_duplicate',
+      'the archive lists it and says which kind it is');
+    // Self-healing: un-archive it in Encompass and the next sweep walks it back.
+    await db.query(`UPDATE lt_loans SET encompass_archived = false WHERE id = $1::uuid`, [L.dupB]);
+    const sweep2 = await trash.sweepArchivedDuplicates(db);
+    ok(sweep2.cleared >= 1, 'un-archiving in Encompass clears the mark on the next sweep');
+    eq((await dupRow()).archived_duplicate, false, '…and the record walks back into the book');
+
+    console.log('\nH2. the mirror maintains the flags — and never re-inserts a deleted archived copy');
+    // Option-aware discovery: the flag-less sweep sees only what Encompass shows.
+    const fullFx = { loans: [], pages: 1, truncated: false, classifyFields: 'answered' };
+    const plainFx = { loans: [], pages: 1, truncated: false, classifyFields: 'answered' };
+    require.cache[discPath].exports.discoverLoans = async (opts) => (
+      opts && opts.includeArchived === false ? plainFx : fullFx);
+    const rowA = { ...row('dupA'), loanNumber: `${stamp}-3000`, loanFolder: 'Corr Post Purchase' };
+    const rowB = { ...row('dupB'), loanNumber: `${stamp}-3000`, loanFolder: 'Pipeline' };
+    fullFx.loans = [rowA, rowB];
+    plainFx.loans = [rowA]; // the stale copy is invisible without the archived flag
+    const passH = await loans.syncOnce({ readBudget: 0 });
+    ok(passH.ok === true, 'the pass ran');
+    eq(passH.archivedDuplicates, 1, 'the stale copy is retired, and the retirement is COUNTED');
+    eq((await dupRow()).encompass_archived, true, 'the diff stamped the archived flag');
+    eq((await dupRow()).archived_duplicate, true, 'and the marking sweep retired it');
+    // Permanently delete it, then run the SAME discovery again: never re-inserted.
+    ok(!!(await trash.deleteArchivedLoan(L.dupB)), 'a super-admin permanently deletes the archived copy');
+    const passH2 = await loans.syncOnce({ readBudget: 0 });
+    ok(passH2.ok === true, 'the next pass ran');
+    eq(passH2.archivedDupSkipped, 1, 'the deleted archived copy is SKIPPED, not brought back — and counted');
+    eq((await db.query(`SELECT count(*)::int AS n FROM lt_loans WHERE encompass_loan_guid = $1`,
+      [`${stamp}-dupB`])).rows[0].n, 0, 'a permanently deleted archive row STAYS deleted');
+    // Fail closed: a flag-less sweep that dies marks nothing.
+    require.cache[discPath].exports.discoverLoans = async (opts) => {
+      if (opts && opts.includeArchived === false) throw new Error('flag-less sweep down');
+      return fullFx;
+    };
+    fullFx.loans = [rowA];
+    const passH3 = await loans.syncOnce({ readBudget: 0 });
+    ok(passH3.ok === true, 'a pass whose flag-less sweep fails still mirrors');
+    eq((await db.query(`SELECT encompass_archived FROM lt_loans WHERE id = $1::uuid`,
+      [L.dupA])).rows[0].encompass_archived, false,
+    'and marks NOTHING — a hiccup must never retire a live loan');
+
+    console.log('\nI. db/622 — the owner\'s own link: guarded, idempotent, reattributes');
+    const mig = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'db', '622_lt_link_ybochner_to_the_owner.sql'), 'utf8');
+    const cx = await db.getClient();
+    try {
+      await cx.query('BEGIN');
+      // A clean stage INSIDE the transaction — the committed book is untouched.
+      await cx.query(`DELETE FROM lt_staff_links WHERE lower(encompass_login_id) = 'ybochner'`);
+      await cx.query(`DELETE FROM lt_encompass_users WHERE lower(login_id) = 'ybochner'`);
+      await cx.query(`UPDATE staff_users SET email = 'parked+' || id::text || '@example.test'
+                       WHERE lower(email) = 'yehuda@yscapgroup.com'`);
+      const ownerId = uuid();
+      await cx.query(`INSERT INTO staff_users (id, email, full_name, role, is_active)
+                      VALUES ($1::uuid, 'yehuda@yscapgroup.com', 'Yehuda Bochner', 'super_admin', true)`, [ownerId]);
+      // 1) No roster row yet → the guard stands down, linking nothing.
+      await cx.query(mig);
+      eq((await cx.query(`SELECT count(*)::int AS n FROM lt_staff_links
+                           WHERE lower(encompass_login_id) = 'ybochner'`)).rows[0].n, 0,
+      'no roster row — nothing is linked (the migration waits for the roster)');
+      // 2) Roster + an unattributed contact → linked, confirmed, reattributed.
+      await cx.query(`INSERT INTO lt_encompass_users (login_id, full_name, email)
+                      VALUES ('ybochner', 'Yehuda Bochner', 'yehuda@yscapgroup.com')`);
+      await cx.query(`INSERT INTO lt_loan_contacts (id, loan_id, role, encompass_name, encompass_login_id)
+                      VALUES ($1::uuid, $2::uuid, 'loan_officer', 'Yehuda Bochner', 'ybochner')`,
+      [uuid(), L.halfA]);
+      await cx.query(mig);
+      const lk = (await cx.query(`SELECT staff_id, status, match_method FROM lt_staff_links
+                                   WHERE lower(encompass_login_id) = 'ybochner'`)).rows[0];
+      ok(!!lk && lk.status === 'confirmed' && String(lk.staff_id) === ownerId,
+        'the owner is linked and CONFIRMED — the shared-email dead end is over');
+      eq((await cx.query(`SELECT staff_id FROM lt_loan_contacts
+                           WHERE encompass_login_id = 'ybochner' AND loan_id = $1::uuid`,
+      [L.halfA])).rows[0].staff_id, ownerId,
+      'and their files became theirs on the same boot (reattributed)');
+      // 3) A second boot converges: nothing rewritten.
+      const t1 = String((await cx.query(`SELECT confirmed_at FROM lt_staff_links
+                                          WHERE lower(encompass_login_id) = 'ybochner'`)).rows[0].confirmed_at);
+      await cx.query(mig);
+      const t2 = String((await cx.query(`SELECT confirmed_at FROM lt_staff_links
+                                          WHERE lower(encompass_login_id) = 'ybochner'`)).rows[0].confirmed_at);
+      eq(t1, t2, 'a second boot changes nothing — converged');
+      // 4) A human's different decision stands, forever.
+      const otherId = uuid();
+      await cx.query(`INSERT INTO staff_users (id, email, full_name, role, is_active)
+                      VALUES ($1::uuid, $2, 'Somebody Else', 'loan_officer', true)`,
+      [otherId, `${stamp}.else@example.test`]);
+      await cx.query(`UPDATE lt_staff_links SET staff_id = $1::uuid
+                       WHERE lower(encompass_login_id) = 'ybochner'`, [otherId]);
+      await cx.query(mig);
+      eq(String((await cx.query(`SELECT staff_id FROM lt_staff_links
+                                  WHERE lower(encompass_login_id) = 'ybochner'`)).rows[0].staff_id), otherId,
+      'a link a human confirmed to somebody else is NEVER overruled by the migration');
+      await cx.query('ROLLBACK');
+    } catch (e) {
+      try { await cx.query('ROLLBACK'); } catch (_) { /* the first error matters */ }
+      throw e;
+    } finally {
+      cx.release();
+    }
   } finally {
     await cleanup();
   }

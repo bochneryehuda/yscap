@@ -449,8 +449,8 @@ export default function LtLoan() {
               {d.encompass_last_modified ? `, last touched ${day(d.encompass_last_modified)}` : ''})
             </span>
           ))}
-          . The stale copy should be deleted in Encompass — once it is in Encompass's trash,
-          it leaves PILOT on the next sync.
+          . The stale copy should be deleted in Encompass &mdash; once it is in
+          Encompass&rsquo;s trash, it leaves PILOT on the next sync.
         </div>
       )}
 

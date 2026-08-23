@@ -67,14 +67,24 @@ function isTrashFolder(name) {
   return book.folderKey(name) === TRASH_KEY;
 }
 
-/** SQL: "this row is in the trash". Constant, no placeholder — the name is fixed. */
+/**
+ * SQL: "this row is archived". TWO populations, one definition (owner-directed
+ * 2026-08-23, both the same day):
+ *   · the `(Trash)` folder — Encompass's recycle bin;
+ *   · `archived_duplicate` — a record ARCHIVED inside Encompass whose loan
+ *     number a LIVE record also carries (db/621; the sync marks it). The owner,
+ *     on YSCAP258134474's stale copy: "I only see one copy in Encompass … Get
+ *     rid of the other one." Encompass hides an archived record from its own
+ *     pipeline view too, which is why the owner could not find it there.
+ * Constant, no placeholder — the folder name is fixed and the flag is a column.
+ */
 function trashSql(alias) {
-  return `${book.folderNormSql(alias)} = '${TRASH_KEY}'`;
+  return `(${book.folderNormSql(alias)} = '${TRASH_KEY}' OR ${alias}.archived_duplicate)`;
 }
 
-/** SQL: "this row is NOT in the trash" — the guard every reader composes. */
+/** SQL: "this row is NOT archived" — the guard every reader composes. */
 function notTrashSql(alias) {
-  return `${book.folderNormSql(alias)} <> '${TRASH_KEY}'`;
+  return `(${book.folderNormSql(alias)} <> '${TRASH_KEY}' AND NOT ${alias}.archived_duplicate)`;
 }
 
 /**
@@ -91,6 +101,39 @@ async function liveDuplicates(loanNumber, excludeId, dbc = null) {
       ORDER BY d.encompass_last_modified DESC NULLS LAST`,
     [loanNumber, excludeId]);
   return rows;
+}
+
+/**
+ * Mark and unmark `archived_duplicate` from the STORED `encompass_archived`
+ * flags (db/621; the sync's flag-less discovery diff maintains those). The rule:
+ * a record archived inside Encompass whose loan number a LIVE record also
+ * carries is superseded — it joins the archive and leaves every book. SELF-
+ * HEALING: un-archive the record in Encompass, or lose the live twin, and the
+ * next pass clears the mark. Runs inside the caller's transaction.
+ */
+async function sweepArchivedDuplicates(dbc) {
+  const liveTwin = (me) => `EXISTS (
+      SELECT 1 FROM lt_loans t
+       WHERE t.loan_number = ${me}.loan_number AND t.id <> ${me}.id
+         AND t.encompass_archived = false
+         AND ${book.folderNormSql('t')} <> '${TRASH_KEY}')`;
+  const marked = await dbc.query(
+    `UPDATE lt_loans l
+        SET archived_duplicate = true, updated_at = now()
+      WHERE l.encompass_archived
+        AND NOT l.archived_duplicate
+        AND l.loan_number IS NOT NULL
+        AND ${book.folderNormSql('l')} <> '${TRASH_KEY}'
+        AND ${liveTwin('l')}`);
+  const cleared = await dbc.query(
+    `UPDATE lt_loans l
+        SET archived_duplicate = false, updated_at = now()
+      WHERE l.archived_duplicate
+        AND NOT (l.encompass_archived
+                 AND l.loan_number IS NOT NULL
+                 AND ${book.folderNormSql('l')} <> '${TRASH_KEY}'
+                 AND ${liveTwin('l')})`);
+  return { marked: marked.rowCount || 0, cleared: cleared.rowCount || 0 };
 }
 
 /** How many deleted-in-Encompass loans the archive holds. Never throws — a count
@@ -112,7 +155,9 @@ async function listArchive(dbc = null) {
     `SELECT l.id, l.loan_number, l.encompass_loan_guid, l.borrower_name,
             l.program_name, l.loan_amount, l.milestone_name, l.loan_folder,
             l.encompass_last_modified, l.updated_at,
-            l.clickup_task_id, l.clickup_custom_id
+            l.clickup_task_id, l.clickup_custom_id,
+            CASE WHEN ${book.folderNormSql('l')} = '${TRASH_KEY}' THEN 'trash'
+                 ELSE 'archived_duplicate' END AS reason
        FROM lt_loans l
       WHERE ${trashSql('l')}
       ORDER BY l.encompass_last_modified DESC NULLS LAST, l.loan_number NULLS LAST`);
@@ -193,6 +238,7 @@ module.exports = {
   isTrashFolder,
   trashSql,
   notTrashSql,
+  sweepArchivedDuplicates,
   archiveCount,
   liveDuplicates,
   listArchive,
