@@ -308,6 +308,23 @@ model LtLoan {
   /// correspondent post-close folders and NONE in the active Pipeline folder.
   loanFolder String? @map("loan_folder")
 
+  // ── The PURCHASED step (db/615) ───────────────────────────────────────────
+  // The owner's workflow carries a step Encompass's nineteen milestones do not
+  // (owner-directed 2026-08-23). It is the one step in the ladder marked from a
+  // FACT rather than from a position, and these two columns are that fact.
+
+  /// Encompass field 2031 (`rateLock.sellSideInvestorStatus`), verbatim. Whether
+  /// the word means PURCHASED is decided by `milestones.purchasedStatusValues` and
+  /// never stored — a boolean here would be a second answer, free to drift from the
+  /// word beside it, and "not purchased" covers four states a boolean cannot tell
+  /// apart (unassigned, assigned, shipped, rejected).
+  purchasedStatus String? @map("purchased_status")
+
+  /// Encompass field 2370 (the purchase advice date) — the day the investor bought
+  /// the loan, from Encompass rather than from the day we happened to look. NULL
+  /// means unknown, NEVER "not sold".
+  purchasedAt DateTime? @map("purchased_at") @db.Date
+
   // ── Bookkeeping ───────────────────────────────────────────────────────────
   /// When Encompass was last read for this file. Encompass is the source of truth;
   /// this records how fresh our copy is.

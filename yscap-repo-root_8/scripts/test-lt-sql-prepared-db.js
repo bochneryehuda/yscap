@@ -153,6 +153,11 @@ async function main() {
     'application/sync.js': 'test-lt-application-db.js drives it',
     'conditions/sync.js': 'test-lt-conditions-db.js drives it',
     'lib/encompass-milestones.js': 'GET /api/lt/encompass/milestones and /milestones/:id, in the route smoke test',
+    // The back-book fill for the roles WE assign, whose WHERE is the pipeline's own
+    // live-book fragment. Section E of that suite runs it against a real table with
+    // the fragment assembled, and asserts which folders it reaches and which it
+    // deliberately leaves alone.
+    'people/contacts.js': 'test-lt-file-setup-role-db.js drives it',
     'ppe/rule-store.js': 'test-lt-ppe-rule-store-db.js drives it',
     'ppe/run-store.js': 'test-lt-ppe-run-store-db.js drives it',
     'product-book.js': 'GET /api/lt/book, in the route smoke test',

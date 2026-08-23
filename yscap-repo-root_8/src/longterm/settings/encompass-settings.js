@@ -254,6 +254,61 @@ const SETTINGS = [
       + 'MS.STATUS (and loan.milestoneCurrentName) are 100% filled.',
     notWired: NW_PINNED_FIELD },
 
+  // ── The PURCHASED step: OURS, not Encompass's (owner-directed 2026-08-23) ──
+  //
+  // The owner's own workflow carries a step Encompass's milestone list does not:
+  // *"the purchase is a new milestone, and yes, you can build this up."* Encompass
+  // has nineteen milestones and none of them is "the investor bought this loan" —
+  // its late steps (Investor Delivery → Purchasing Conditions → Final Docs) are
+  // about the WORK around the sale, not the sale itself.
+  //
+  // So this one step is PILOT's, and it is the only step in the ladder whose
+  // "reached" is a FACT rather than a position: every other step is reached because
+  // the loan is standing past it, and this one is reached because Encompass's own
+  // sell-side investor status says the loan was purchased. A file sitting at Final
+  // Docs has necessarily passed Purchasing Conditions; it has NOT necessarily been
+  // bought, and marking it so would be a confident wrong answer on the one fact
+  // this step exists to state.
+  { key: 'milestones.purchasedName', group: 'Workflow', label: 'The "purchased" step',
+    type: 'string', default: 'Purchased',
+    description: 'What to call the step that means the investor has bought this loan. '
+      + 'It is OURS — Encompass has no milestone for it.',
+    evidence: 'The tenant\'s 19 Encompass milestones carry no purchase step; the owner\'s own '
+      + 'workflow does (owner-directed 2026-08-23).' },
+  { key: 'milestones.purchasedAfter', group: 'Workflow', label: 'It comes after',
+    type: 'string', default: 'Purchasing Conditions',
+    description: 'Which Encompass milestone the purchased step follows in the ladder. A name this '
+      + 'tenant does not have puts the step at the END rather than dropping it.',
+    evidence: 'Purchasing Conditions (16 of 19) is where the buyer\'s post-purchase conditions are '
+      + 'worked, so the purchase itself lands on its heels.' },
+  { key: 'milestones.purchasedStatusFieldId', group: 'Workflow', label: 'Investor status field',
+    type: 'fieldId', default: '2031',
+    description: 'The Encompass field that says what the investor has done with this loan.',
+    evidence: 'Field 2031, loan.rateLock.sellSideInvestorStatus — a READ-ONLY Encompass dropdown '
+      + '(Unassigned / Assigned - Bulk / Assigned - Flow / Shipped / Purchased / Rejected), filled '
+      + 'on 100% of loans at Investor Delivery, Purchasing Conditions and Final Docs, and reading '
+      + '"Purchased" on 187 of the 188 loans that carry it (772-loan census, 2026-08-14).' },
+  { key: 'milestones.purchasedStatusValues', group: 'Workflow', label: 'Values that mean PURCHASED',
+    type: 'list', default: ['Purchased'],
+    description: 'Which values of that field mean the investor has bought the loan. Anything else '
+      + 'the field says means it has NOT.',
+    evidence: 'Of the six values Encompass allows, exactly one — "Purchased" — is the sale. '
+      + '"Shipped" and the two "Assigned" values are the loan on its way there.' },
+  { key: 'milestones.purchaseAdviceDateFieldId', group: 'Workflow', label: 'Purchase advice date field',
+    type: 'fieldId', default: '2370',
+    description: 'Where the DATE the investor bought the loan is recorded. Without it the step '
+      + 'still reads as reached and simply says the date is not known.',
+    evidence: 'Field 2370, "Purchase Advice Date" — filled on 175 of the 490 long-term loans, the '
+      + 'same population as the investor status (176), and 100% at the three post-delivery '
+      + 'milestones.' },
+  { key: 'milestones.purchasedConsumerStatus', group: 'Workflow', label: 'What the borrower sees',
+    type: 'string', default: 'Funded',
+    description: 'The borrower-facing wording for the purchased step. It deliberately matches the '
+      + 'other post-closing steps: who bought the loan is not the borrower\'s business.',
+    evidence: 'All five post-closing milestones (Investor Delivery through Completion) carry the '
+      + 'consumer wording "Funded" in Encompass\'s own catalog (db/547). The investor-name rule '
+      + '(CLAUDE.md rule 10) forbids any client-facing hint of who the buyer is.' },
+
   // ── Conditions ────────────────────────────────────────────────────────────
   { key: 'conditions.model', group: 'Conditions', label: 'Condition model',
     type: 'enum', default: 'enhanced', options: ['enhanced', 'legacy'],
@@ -445,9 +500,28 @@ const SETTINGS = [
       + 'Officer; the role the tenant assigns does not. "Loan Opener", "Shipper" and "Insurer" '
       + 'are standard Encompass roles that do not exist here at all — which is why this is a '
       + 'setting and why contact role is text rather than an enum.' },
+  { key: 'contacts.pilotRoles', group: 'Contacts', label: 'Roles WE assign (Encompass has nobody for them)',
+    type: 'list', default: ['file_setup'],
+    description: 'Loan-team roles PILOT owns. Encompass never names them, so nothing read from '
+      + 'Encompass may create, refresh or remove one — they are assigned here and stay here.',
+    evidence: 'Owner-directed 2026-08-23: *"the workflow assignment on Encompass doesn\'t have '
+      + 'anyone for file setup. It has processors, it has closers, it has funders, and it has '
+      + 'officers. This one should be the starter of the file … the loan officer submits it to '
+      + 'the processor, it goes to her workflow to set it up, and she is setting up the file."* '
+      + 'Verified against the live tenant: its role list carries Loan Coordinator, Loan Processor, '
+      + 'Underwriter, Closer, Funder and Post Closer, and no setup role at all.' },
+  { key: 'contacts.fileSetupDefault', group: 'Contacts', label: 'Who sets a file up by default',
+    type: 'string', default: 'Chaya Gruber',
+    description: 'The person every long-term file starts assigned to for setup. An email address '
+      + 'or a full name; whoever it names must be an active member of staff. It only ever FILLS an '
+      + 'empty slot — it can never move a file somebody has already assigned.',
+    evidence: 'Owner-directed 2026-08-23. A name (or an email) rather than an account id on '
+      + 'purpose: an id is meaningless in any database but the one it came from, so a settings '
+      + 'value carrying one would silently assign nobody the day this is set up anywhere else.' },
   { key: 'contacts.roleLabels', group: 'Contacts', label: 'What we call each role on screen',
     type: 'map',
     default: {
+      file_setup: 'File setup',
       loan_officer: 'Loan officer',
       processor: 'Processor',
       underwriter: 'Underwriter',

@@ -131,11 +131,21 @@ function sectionMenu(loan, opts = {}) {
  * milestone the catalog does not carry (a tenant added one today) leaves `currentIndex`
  * at -1, and NOTHING is marked reached — inventing progress from an unknown position
  * is worse than showing none.
+ *
+ * WITH ONE EXCEPTION, AND IT IS DELIBERATE. A step marked `pilot` is OURS rather than
+ * Encompass's, and it is reached from a FACT the caller passes in, never from where
+ * the loan stands. Today that is the PURCHASED step: a loan at Final Docs has
+ * certainly passed Purchasing Conditions and has NOT certainly been bought, so
+ * positional reachedness would state the one thing that step exists to state, wrongly,
+ * on exactly the files that matter. See `milestone-purchased.js`.
  */
 function milestoneStepper(loan, catalog = [], opts = {}) {
   const current = stages.normalizeMilestone((loan || {}).milestone_name);
   const ordered = (catalog || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-  const currentIndex = ordered.findIndex((m) => stages.normalizeMilestone(m.name) === current);
+  // A PILOT step is never the loan's CURRENT milestone — Encompass names that, and
+  // Encompass has never heard of our step. Excluding it from the match also stops a
+  // tenant that happens to name a milestone "Purchased" from resolving to ours.
+  const currentIndex = ordered.findIndex((m) => !m.pilot && stages.normalizeMilestone(m.name) === current);
 
   return {
     currentIndex,
@@ -153,12 +163,32 @@ function milestoneStepper(loan, catalog = [], opts = {}) {
     // Encompass's own completion dates are unreadable on this tenant (the milestone
     // log answers 403), so a step we did not witness has NO date — never a guess, and
     // never the day we first noticed the loan sitting there.
-    steps: ordered.map((m, i) => ({
-      name: m.name,
-      reached: currentIndex >= 0 && i <= currentIndex,
-      current: i === currentIndex,
-      reachedAt: (opts.reachedAt || {})[String(m.name || '').trim().toLowerCase()] || null,
-    })),
+    // A PILOT STEP IS REACHED FROM A FACT, NEVER FROM A POSITION — and that
+    // distinction is the whole reason it exists. Positional reachedness says "the
+    // loan is standing past this, so it happened", which is sound for a workflow
+    // step and FALSE for the purchase: a loan at Final Docs has certainly passed
+    // Purchasing Conditions and has NOT certainly been bought. So `opts.pilotReached`
+    // decides, and its THREE answers survive to the screen: true, false, and
+    // `undefined` for "Encompass has not said" — which draws as not-yet with a
+    // sentence, never as a no.
+    steps: ordered.map((m, i) => {
+      const pilot = !!m.pilot;
+      const fact = pilot ? (opts.pilotReached || {})[m.milestoneId] : undefined;
+      return {
+        name: m.name,
+        pilot,
+        reached: pilot ? fact === true : (currentIndex >= 0 && i <= currentIndex),
+        // Only when we asked and were told nothing. A `false` is an answer.
+        unknown: pilot ? (fact !== true && fact !== false) : false,
+        // Ours is a fact about the loan, not a place it stands, so it is never
+        // "current" however far along the file is.
+        current: !pilot && i === currentIndex,
+        note: pilot ? ((opts.pilotNotes || {})[m.milestoneId] || null) : null,
+        reachedAt: pilot
+          ? ((opts.pilotReachedAt || {})[m.milestoneId] || null)
+          : ((opts.reachedAt || {})[String(m.name || '').trim().toLowerCase()] || null),
+      };
+    }),
   };
 }
 

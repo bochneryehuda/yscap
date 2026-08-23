@@ -31,6 +31,7 @@
 const loans = require('./loans');
 const conditions = require('../conditions/sync');
 const milestoneCatalog = require('./milestone-catalog');
+const contacts = require('../people/contacts');
 
 /** Minutes between passes. The tenant's own pacing makes a tighter loop pointless. */
 const POLL_MIN = (() => {
@@ -145,7 +146,7 @@ async function tickOnce() {
   if (running) return { ok: false, reason: 'a pass is already running' };
   running = true;
   const started_at = Date.now();
-  const out = { loans: null, conditions: null, milestoneCatalog: null };
+  const out = { loans: null, conditions: null, milestoneCatalog: null, pilotRoles: null };
   try {
     try {
       out.loans = await drainLoans(Date.now);
@@ -166,6 +167,17 @@ async function tickOnce() {
     } catch (e) {
       out.milestoneCatalog = { ok: false, reason: (e && e.message) || String(e) };
     }
+    // THE ROLES ENCOMPASS HAS NOBODY FOR — today, who sets a file up. It cannot ride
+    // the loan read, because a loan is only re-read when Encompass's own stamp moves
+    // (`loans.needsRead`), so a caught-up book would never gain the assignment. It
+    // costs NO Encompass call at all — it is one statement per role against our own
+    // database, fill-only, and a caught-up book inserts nothing. Independent of the
+    // three passes above, like they are of each other.
+    try {
+      out.pilotRoles = await contacts.backfillPilotRoles({});
+    } catch (e) {
+      out.pilotRoles = { ok: false, reason: (e && e.message) || String(e) };
+    }
   } finally {
     running = false;
   }
@@ -181,6 +193,16 @@ async function tickOnce() {
         + `${l.failed ? `, ${l.failed} failed` : ''}`
         + `${l.caughtUp === false ? `, ${l.remaining} still to backfill` : ''}`,
     c.ok === false ? `skipped (${c.reason})` : `${c.read || 0} read of ${c.due || 0}${c.failed ? `, ${c.failed} failed` : ''}${c.more ? ', more to go' : ''}`);
+
+  // Said separately, and ONLY when it did something or could not. A pass that filled
+  // nothing on a caught-up book is the normal case and needs no line; a company whose
+  // setup default names nobody must be able to find that out from the log.
+  const r = out.pilotRoles || {};
+  if (r.filled || r.reason) {
+    console.log('[lt-sync] file setup: %s%s',
+      r.filled ? `${r.filled} file(s) assigned${r.more ? ', more to go' : ''}` : 'nothing assigned',
+      r.reason ? ` — ${r.reason}` : '');
+  }
 
   return out;
 }
