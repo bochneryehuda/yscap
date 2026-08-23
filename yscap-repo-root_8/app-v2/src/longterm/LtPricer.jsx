@@ -12,8 +12,13 @@ import { labelize, compRowsOf, feeRowsOf, groupByLender } from './priceBuild.js'
 import {
   PROPERTY_TYPES, PURPOSES, BORROWER_TYPES, PREPAY_TERMS, PREPAY_STRUCTURES,
   unitsMode, unitsFor, showsNonWarrantable, deriveAmount, toScenario,
+  formatMoney, digitsOf, toNumber,
 } from './scenarioFields.js';
-import { INK, MUTED, SLATE, GOLD, PAPER, DANGER, CAUTION, card, eyebrow, sub, input, label } from './ppeStyles.js';
+import {
+  INK, MUTED, SLATE, GOLD, PAPER, DANGER, CAUTION, card, eyebrow, sub, input, label,
+  band, bandHead, bandBody, fieldLabel, fieldHint, control, select as selectStyle,
+  moneyWrap, moneyMark, moneyInput, segTrack, segBtn, checkRow, checkBox, fieldNote, LINE,
+} from './ppeStyles.js';
 
 /**
  * THE PRICING ENGINE — every rate Lender Price is quoting, and every investor at each one.
@@ -67,16 +72,28 @@ const NUM = { fontVariantNumeric: 'tabular-nums' };
    of every ladder it will quote, and the board shows all of them. */
 const START = {
   purpose: 'Purchase',
-  value: '500000',
+  value: '500,000',
   // AMOUNT MODE — the owner's ask: "instead of typing in the loan amount, you can type the LTV, and
   // it fills in the loan amount automatically." Whichever box you are in is the one that is SENT;
   // the other is shown filled in and labelled as ours. See `deriveAmount` in scenarioFields.js.
   amountMode: 'loan',
-  loan: '375000',
+  loan: '375,000',
   ltv: '',
   fico: '740',
   dscr: '1.20',
-  zip: '33101',
+  // ⛔ THE ZIP STARTS EMPTY, BY OWNER DIRECTION (2026-08-23): *"Zip code should not default to
+  // anything. Right now, it's defaulting to Miami."* And they are right about more than tidiness —
+  // the ZIP decides the STATE and the COUNTY a loan is priced in, and those move the answer. A
+  // pre-filled 33101 makes Miami-Dade the silent default on every scenario nobody edited, which is
+  // exactly the class this screen's own note warns about: a default that is not visibly a default
+  // is how somebody quotes a borrower off a number nobody chose. Every other box here is a starting
+  // point a person can sanity-check at a glance; a ZIP is not — 33101 looks like an answer.
+  zip: '',
+  // A STATE AND COUNTY TYPED BY HAND, used only when the ZIP cannot be resolved. Blank normally,
+  // and blanks are omitted from the scenario entirely, so on the ordinary path the server's own
+  // ZIP → county table is still the single authority. See the ZIP field below.
+  state: '',
+  county: '',
   propertyType: 'SingleFamily',
   units: '1',
   nonWarrantable: false,
@@ -84,6 +101,10 @@ const START = {
   lockDays: '30',
   io: false,
   escrowWaive: false,
+  // FIRST-TIME HOMEBUYER — the owner's ask, and it is the SAME checkbox Lender Price's own screen
+  // carries: the route has accepted `fthb` all along and the builder writes it to
+  // `criteria.firstTimeHomeBuyer`. It had simply never been reachable from a screen.
+  fthb: false,
   // PREPAYMENT PENALTY — TERM and TYPE, as two facts. Five-year Standard is the connector's own
   // profile default, so stating it here changes nothing about what is priced; it makes the default
   // VISIBLE, which is the point. Leaving it blank would price a five-year penalty that nobody on
@@ -189,51 +210,99 @@ function Track({ title, note, children }) {
   );
 }
 
-function Field({ id, children, hint }) {
+/**
+ * A FIELD — three bands, always, in the same order and at the same heights: the NAME, the CONTROL,
+ * and a HINT line that is reserved whether or not there is anything to put in it.
+ *
+ * ⛔ THE RESERVED HINT BAND IS THE FIX, and it is worth saying why rather than leaving it as a
+ * curious `minHeight`. The owner reported three fields that did not line up — the loan amount/LTV
+ * pair sitting "higher than everything", the ZIP not level with the property type, the borrower
+ * type off on its own. All three were ONE defect: fields were laid out in a flex row bottom-aligned
+ * (`align-items: flex-end`), so a field with a line of text UNDER its box had its box pushed up by
+ * exactly that line's height while its neighbours sat lower. Reserving the line on EVERY field
+ * makes them the same height by construction, so there is nothing left to align — and the next
+ * field that gains a note cannot re-open it.
+ *
+ * `label` is the name; `control` is what the person touches; `hint` is what we worked out or what
+ * went wrong. `head` replaces the name with something richer (the amount switch) and still occupies
+ * exactly the same band.
+ */
+function Field({ id, label: name, head, hint, hintTone, basis = '1 1 170px', min = 150, children }) {
   return (
-    <div style={{ flex: '1 1 130px', minWidth: 120 }}>
-      <label style={label} htmlFor={id}>{children}</label>
-      {hint}
+    <div style={{ flex: basis, minWidth: min }}>
+      <div style={fieldLabel}>{head || (name ? <label htmlFor={id}>{name}</label> : null)}</div>
+      {children}
+      <div style={{ ...fieldHint, color: hintTone || fieldHint.color }}>{hint}</div>
     </div>
   );
 }
 
-/** A named band of fields. The scenario grew from nine boxes to twenty, and twenty in one wrapping
- *  row is a wall — the bands are what make it readable: the deal, the property, the borrower and
- *  the structure, then the prepayment penalty on its own. */
+/** A named band of fields. The scenario grew from nine boxes to twenty-one, and twenty-one in one
+ *  wrapping row is a wall — the bands are what make it readable: the deal, the property, the
+ *  borrower and the structure, then the prepayment penalty on its own. */
 function Group({ title, children }) {
   return (
-    <div style={{ marginTop: 14 }}>
-      <div style={{ ...eyebrow, marginBottom: 8 }}>{title}</div>
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>{children}</div>
+    <section style={band}>
+      <div style={bandHead}>{title}</div>
+      <div style={bandBody}>{children}</div>
+    </section>
+  );
+}
+
+/** MONEY, AS A PERSON WRITES IT — the owner's ask: the property value and the loan amount "laid out
+ *  as dollars with a dollar sign with commas". The `$` is DRAWN, never typed: a mark somebody has
+ *  to delete before they can retype a figure is a mark that gets left behind in the number.
+ *
+ *  The grouping is re-applied on every keystroke, so the caret would jump to the end of the line
+ *  each time a comma appeared. It is put back where the person was — counted in DIGITS rather than
+ *  characters, because the commas around the caret move as they type. */
+function Money({ id, value, onChange, ariaLabel }) {
+  const ref = useRef(null);
+  const caret = useRef(null);
+  useEffect(() => {
+    const el = ref.current; const want = caret.current;
+    if (!el || want == null) return;
+    caret.current = null;
+    let pos = 0; let seen = 0;
+    const text = el.value;
+    while (pos < text.length && seen < want) { if (/\d/.test(text[pos])) seen += 1; pos += 1; }
+    try { el.setSelectionRange(pos, pos); } catch { /* a control that has lost focus cannot be set */ }
+  });
+  const onInput = (e) => {
+    const el = e.target;
+    const before = el.value.slice(0, el.selectionStart == null ? el.value.length : el.selectionStart);
+    caret.current = digitsOf(before).length;
+    onChange(formatMoney(el.value));
+  };
+  return (
+    <div style={moneyWrap}>
+      <span aria-hidden="true" style={moneyMark}>$</span>
+      <input
+        id={id} ref={ref} style={moneyInput} inputMode="numeric" autoComplete="off"
+        value={value} onChange={onInput} aria-label={ariaLabel} placeholder="0"
+      />
     </div>
   );
 }
 
-/** A checkbox with its label tied to it, so the words are a click target too. 16px on the control
- *  for the same reason every input here is 16px: iOS zooms the page on a smaller one. */
+/** A checkbox, sitting in the same 40px control band as every box beside it — which is what stops a
+ *  column of tick-boxes floating at a different height from the fields it belongs with. 17px on the
+ *  control for the same reason every input here is 16px: iOS zooms the page on a smaller one. */
 function Check({ id, checked, onChange, children }) {
   return (
-    <label htmlFor={id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13.5, color: INK, cursor: 'pointer' }}>
-      <input id={id} type="checkbox" checked={!!checked} onChange={onChange} style={{ width: 16, height: 16, margin: 0, accentColor: GOLD }} />
+    <label htmlFor={id} style={checkRow}>
+      <input id={id} type="checkbox" checked={!!checked} onChange={onChange} style={checkBox} />
       {children}
     </label>
   );
 }
 
-/** The loan-amount / LTV switch. It is a BUTTON, not a link and not a styled div: it does something
- *  on this page, it takes keyboard focus for free, and a screen reader is told which one is on. */
+/** The loan-amount / LTV switch — a real segmented control, sized to sit INSIDE the field's own
+ *  name band. It is a BUTTON, not a styled div: it does something on this page, it takes keyboard
+ *  focus for free, and a screen reader is told which one is on. */
 function ModeTab({ on, onClick, children }) {
   return (
-    <button
-      type="button" onClick={onClick} aria-pressed={on}
-      style={{
-        border: 'none', background: 'none', padding: 0, cursor: 'pointer', font: 'inherit',
-        letterSpacing: 'inherit', textTransform: 'inherit',
-        color: on ? INK : MUTED, fontWeight: on ? 800 : 600,
-        textDecoration: on ? 'underline' : 'none', textUnderlineOffset: 3,
-      }}
-    >{children}</button>
+    <button type="button" onClick={onClick} aria-pressed={on} style={segBtn(on)}>{children}</button>
   );
 }
 
@@ -685,17 +754,46 @@ export default function LtPricer() {
     if (!/^\d{5}$/.test(z)) { setZip({ status: 'idle', data: null, message: null }); return undefined; }
     let live = true;
     setZip({ status: 'loading', data: null, message: null });
-    ltApi.dscrZip(z)
-      .then((r) => { if (live) setZip({ status: 'ok', data: r, message: null }); })
+    /* ONE RETRY, AND ONLY ON OUR OWN SIDE FAILING. A 404 means the table genuinely does not carry
+       that ZIP and asking again will answer the same thing; a 5xx means something at our end did
+       not answer, which a deploy restart produces for a few seconds. Retrying the first and not the
+       second would be backwards. The delay is short because a person is watching a form field. */
+    const ask = (attempt) => ltApi.dscrZip(z)
+      .then((r) => {
+        if (!live) return;
+        setZip({ status: 'ok', data: r, message: null });
+        // A COUNTY WE RESOLVED WINS OVER ONE SOMEBODY TYPED EARLIER. Leaving a hand-typed state or
+        // county behind would put two views of one fact on the wire — and it would be the stale one
+        // from whichever ZIP failed last, on a scenario that now resolves perfectly well.
+        setF((s2) => (s2.state || s2.county ? { ...s2, state: '', county: '' } : s2));
+      })
       .catch((e) => {
         if (!live) return;
+        const status = e && e.status;
+        if (attempt === 0 && (!status || status >= 500)) {
+          setTimeout(() => { if (live) ask(1); }, 900);
+          return;
+        }
         setZip({ status: 'error', data: null, message: (e && e.message) || 'We could not look that ZIP up.' });
       });
+    ask(0);
     return () => { live = false; };
   }, [f.zip]);
 
   const set = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.value }));
   const setBool = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.checked }));
+  /** A value handed straight in rather than read off an event — the money boxes format as you type,
+   *  so the text they produce is not the text the control held. */
+  const setVal = (k) => (v) => setF((s) => ({ ...s, [k]: v }));
+  /** A state code is two letters and the pricer's own list is upper case, so the box does the
+   *  shifting rather than refusing what somebody typed in lower case. */
+  const setUpper = (k) => (e) => setF((s) => ({ ...s, [k]: String(e.target.value || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2) }));
+
+  /* THE STATE / COUNTY ESCAPE HATCH APPEARS ONLY WHEN IT IS NEEDED — a complete ZIP that we could
+     not turn into a county. `idle` (nothing typed yet) and `loading` never show it: offering two
+     more boxes while an answer is on its way is how a person fills in a fact that was about to
+     arrive. */
+  const zipUnresolved = /^\d{5}$/.test(String(f.zip || '').trim()) && zip.status === 'error';
 
   const toggleLender = (k) => setOpenLenders((prev) => {
     const next = new Set(prev);
@@ -788,82 +886,107 @@ export default function LtPricer() {
           </div>
 
           {/* ── THE DEAL ──────────────────────────────────────────────────── */}
+          {/* ── THE DEAL ──────────────────────────────────────────────────── */}
           <Group title="The deal">
-            <Field id="pe-purpose">
-              Purpose
-              <select id="pe-purpose" style={input} value={f.purpose} onChange={set('purpose')}>
+            <Field id="pe-purpose" label="Purpose" basis="1 1 200px" min={180}>
+              <select id="pe-purpose" style={selectStyle} value={f.purpose} onChange={set('purpose')}>
                 {PURPOSES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
               </select>
             </Field>
-            <Field id="pe-value">
-              Property value
-              <input id="pe-value" style={input} inputMode="numeric" value={f.value} onChange={set('value')} />
+
+            <Field id="pe-value" label="Property value" basis="1 1 170px" min={150}>
+              <Money id="pe-value" value={f.value} onChange={setVal('value')} ariaLabel="Property value in dollars" />
             </Field>
 
-            {/* THE AMOUNT, TYPED EITHER WAY. The owner's ask, and the reason it is a TOGGLE rather
+            {/* THE AMOUNT, TYPED EITHER WAY. The owner's ask, and the reason it is a SWITCH rather
                 than two live boxes: two editable amounts that each rewrite the other fight the
                 person typing, and whichever one the screen "helpfully" filled in is the one that
                 gets sent. Here exactly one is typed and it is the one on the wire; the other is a
-                read-only figure this page worked out, labelled as such. */}
-            <div style={{ flex: '1 1 200px', minWidth: 190 }}>
-              <div style={{ ...label, display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
-                <ModeTab on={f.amountMode !== 'ltv'} onClick={() => setF((s) => ({ ...s, amountMode: 'loan' }))}>Loan amount</ModeTab>
-                <span aria-hidden="true" style={{ color: 'rgba(20,27,34,.28)' }}>|</span>
-                <ModeTab on={f.amountMode === 'ltv'} onClick={() => setF((s) => ({ ...s, amountMode: 'ltv' }))}>LTV</ModeTab>
-              </div>
-              {f.amountMode === 'ltv' ? (
-                <>
-                  <input
-                    id="pe-ltv" style={input} inputMode="decimal" value={f.ltv} onChange={set('ltv')}
-                    aria-label="LTV percent" placeholder="75"
-                  />
-                  <div style={{ fontSize: 12, color: MUTED, marginTop: 4, ...NUM }}>
-                    Loan {amt.loan == null ? '—' : money(amt.loan)} <em>(worked out here)</em>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <input id="pe-loan" style={input} inputMode="numeric" value={f.loan} onChange={set('loan')} aria-label="Loan amount" />
-                  <div style={{ fontSize: 12, color: MUTED, marginTop: 4, ...NUM }}>
-                    LTV {amt.ltv == null ? '—' : `${(amt.ltv * 100).toFixed(2)}%`} <em>(worked out here)</em>
-                  </div>
-                </>
-              )}
-            </div>
+                read-only figure this page worked out, labelled as such.
 
-            <Field id="pe-fico">
-              FICO
-              <input id="pe-fico" style={input} inputMode="numeric" value={f.fico} onChange={set('fico')} />
+                The switch lives in the field's own NAME band. It used to sit on a line of its own
+                ABOVE the label, which is precisely what made this field ride higher than every
+                other one on the row — the owner's "it's higher than everything". */}
+            <Field
+              id={f.amountMode === 'ltv' ? 'pe-ltv' : 'pe-loan'}
+              basis="1 1 190px" min={175}
+              head={(
+                <span style={segTrack}>
+                  <ModeTab on={f.amountMode !== 'ltv'} onClick={() => setF((s2) => ({ ...s2, amountMode: 'loan' }))}>Loan $</ModeTab>
+                  <ModeTab on={f.amountMode === 'ltv'} onClick={() => setF((s2) => ({ ...s2, amountMode: 'ltv' }))}>LTV %</ModeTab>
+                </span>
+              )}
+              hint={f.amountMode === 'ltv'
+                ? <>Loan {amt.loan == null ? '—' : money(amt.loan)} <em>· worked out here</em></>
+                : <>LTV {amt.ltv == null ? '—' : `${(amt.ltv * 100).toFixed(2)}%`} <em>· worked out here</em></>}
+            >
+              {f.amountMode === 'ltv' ? (
+                <div style={moneyWrap}>
+                  <input
+                    id="pe-ltv" style={moneyInput} inputMode="decimal" value={f.ltv} onChange={set('ltv')}
+                    aria-label="LTV percent" placeholder="75" autoComplete="off"
+                  />
+                  <span aria-hidden="true" style={moneyMark}>%</span>
+                </div>
+              ) : (
+                <Money id="pe-loan" value={f.loan} onChange={setVal('loan')} ariaLabel="Loan amount in dollars" />
+              )}
             </Field>
-            <Field id="pe-dscr">
-              DSCR
-              <input id="pe-dscr" style={input} inputMode="decimal" value={f.dscr} onChange={set('dscr')} />
+
+            <Field id="pe-fico" label="FICO" basis="0 1 110px" min={100}>
+              <input id="pe-fico" style={control} inputMode="numeric" value={f.fico} onChange={set('fico')} autoComplete="off" />
+            </Field>
+            <Field id="pe-dscr" label="DSCR" basis="0 1 110px" min={100}>
+              <input id="pe-dscr" style={control} inputMode="decimal" value={f.dscr} onChange={set('dscr')} autoComplete="off" />
             </Field>
           </Group>
 
           {/* ── THE PROPERTY ──────────────────────────────────────────────── */}
           <Group title="The property">
-            <div style={{ flex: '1 1 170px', minWidth: 150 }}>
-              <label style={label} htmlFor="pe-zip">ZIP</label>
-              <input id="pe-zip" style={input} inputMode="numeric" maxLength={5} value={f.zip} onChange={set('zip')} />
-              {/* WHAT THE ZIP RESOLVED TO, SAID OUT LOUD. A county nobody chose is still a county on
-                  the quote, so it is shown rather than resolved silently — and when the ZIP spans
-                  more than one county (28% of them do) the screen says which one was assumed. */}
-              <div style={{ fontSize: 12, color: zip.status === 'error' ? DANGER : MUTED, marginTop: 4, minHeight: 16 }}>
-                {zip.status === 'loading' && 'Looking up…'}
-                {zip.status === 'ok' && zip.data && (
-                  <>
-                    {zip.data.state} · {zip.data.county} County
-                    {zip.data.split && <em style={{ color: CAUTION }}> — this ZIP spans more than one county; this is the largest</em>}
-                  </>
-                )}
-                {zip.status === 'error' && zip.message}
-              </div>
-            </div>
+            {/* WHAT THE ZIP RESOLVED TO, SAID OUT LOUD, IN THE FIELD'S OWN HINT BAND. A county
+                nobody chose is still a county on the quote, so it is shown rather than resolved
+                silently — and when the ZIP spans more than one county (28% of them do) the screen
+                says which one was assumed. */}
+            <Field
+              id="pe-zip" label="ZIP" basis="0 1 164px" min={150}
+              hintTone={zip.status === 'error' ? DANGER : undefined}
+              hint={
+                zip.status === 'loading' ? 'Looking up…'
+                  : zip.status === 'ok' && zip.data ? (
+                    <>
+                      {zip.data.state} · {zip.data.county} County
+                      {zip.data.split && <em style={{ color: CAUTION }}> · largest of several</em>}
+                    </>
+                  )
+                    : zip.status === 'error' ? zip.message
+                      : 'Sets the state and county'
+              }
+            >
+              <input id="pe-zip" style={control} inputMode="numeric" maxLength={5} value={f.zip}
+                onChange={set('zip')} placeholder="Five digits" autoComplete="off" />
+            </Field>
 
-            <Field id="pe-ptype">
-              Property type
-              <select id="pe-ptype" style={input} value={f.propertyType} onChange={setPropertyType}>
+            {/* NEVER A DEAD END. A ZIP the Census table does not carry (a PO-box-only ZIP has no
+                ZCTA) and a lookup that failed both leave a person unable to price at all, because
+                the state and county are what the pricer sizes eligibility on. So when — and only
+                when — the ZIP could not be resolved, the two facts it would have supplied become
+                typeable. On the ordinary path these stay hidden and blank, and a blank is omitted
+                from the scenario entirely, so the server's own ZIP table remains the one authority. */}
+            {zipUnresolved && (
+              <>
+                <Field id="pe-state" label="State" basis="0 1 100px" min={92} hint="ZIP not recognised">
+                  <input id="pe-state" style={control} maxLength={2} value={f.state}
+                    onChange={setUpper('state')} placeholder="NJ" autoComplete="off" />
+                </Field>
+                <Field id="pe-county" label="County" basis="1 1 170px" min={150} hint="Type it as the county is named">
+                  <input id="pe-county" style={control} value={f.county} onChange={set('county')}
+                    placeholder="Union" autoComplete="off" />
+                </Field>
+              </>
+            )}
+
+            <Field id="pe-ptype" label="Property type" basis="1 1 200px" min={180}>
+              <select id="pe-ptype" style={selectStyle} value={f.propertyType} onChange={setPropertyType}>
                 {PROPERTY_TYPES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
               </select>
             </Field>
@@ -873,47 +996,49 @@ export default function LtPricer() {
                 answered wrongly; the server refuses a single-family with 4 units, so offering the
                 choice would offer a refusal. */}
             {um.mode === 'choice' && (
-              <Field id="pe-units">
-                Units
-                <select id="pe-units" style={input} value={f.units} onChange={set('units')}>
+              <Field id="pe-units" label="Units" basis="0 1 100px" min={92}>
+                <select id="pe-units" style={selectStyle} value={f.units} onChange={set('units')}>
                   {um.options.map((n) => <option key={n} value={String(n)}>{n}</option>)}
                 </select>
               </Field>
             )}
             {um.mode === 'free' && (
-              <Field id="pe-units">
-                Units
-                <input id="pe-units" style={input} inputMode="numeric" value={f.units} onChange={set('units')} />
+              <Field id="pe-units" label="Units" basis="0 1 110px" min={100} hint="Five or more">
+                <input id="pe-units" style={control} inputMode="numeric" value={f.units} onChange={set('units')} autoComplete="off" />
               </Field>
             )}
 
             {showsNonWarrantable(f.propertyType) && (
-              <div style={{ flex: '1 1 200px', minWidth: 190, paddingBottom: 6 }}>
+              <Field basis="1 1 210px" min={190} label="Condo">
                 <Check id="pe-nonwarr" checked={!!f.nonWarrantable} onChange={setBool('nonWarrantable')}>
-                  Non-warrantable condo
+                  Non-warrantable
                 </Check>
-              </div>
+              </Field>
             )}
           </Group>
 
           {/* ── THE BORROWER AND THE STRUCTURE ────────────────────────────── */}
           <Group title="The borrower and the structure">
-            <Field id="pe-btype">
-              Borrower type
-              <select id="pe-btype" style={input} value={f.borrowerType} onChange={set('borrowerType')}>
+            <Field id="pe-btype" label="Borrower type" basis="0 1 190px" min={170}>
+              <select id="pe-btype" style={selectStyle} value={f.borrowerType} onChange={set('borrowerType')}>
                 {BORROWER_TYPES.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
               </select>
             </Field>
             {/* A lock is two digits. The box was the same width as the loan amount, which is why the
                 owner asked for it to be smaller — a control's size is a claim about what goes in it. */}
-            <div style={{ flex: '0 0 110px', minWidth: 110 }}>
-              <label style={label} htmlFor="pe-lock">Lock (days)</label>
-              <input id="pe-lock" style={input} inputMode="numeric" value={f.lockDays} onChange={set('lockDays')} />
-            </div>
-            <div style={{ flex: '1 1 260px', minWidth: 220, display: 'grid', gap: 6, paddingBottom: 6 }}>
-              <Check id="pe-io" checked={!!f.io} onChange={setBool('io')}>Interest-only</Check>
-              <Check id="pe-escrow" checked={!!f.escrowWaive} onChange={setBool('escrowWaive')}>Waive escrow</Check>
-            </div>
+            <Field id="pe-lock" label="Lock (days)" basis="0 0 112px" min={112}>
+              <input id="pe-lock" style={control} inputMode="numeric" value={f.lockDays} onChange={set('lockDays')} autoComplete="off" />
+            </Field>
+            {/* THE THREE FLAGS, IN ONE FIELD ON THE SAME 40px CONTROL LINE as the boxes beside them.
+                First-time homebuyer is the owner's ask and is the same fact Lender Price's own
+                screen carries — `criteria.firstTimeHomeBuyer`, which the route has always accepted. */}
+            <Field label="Loan options" basis="1 1 400px" min={260}>
+              <div style={{ ...checkRow, gap: 20, flexWrap: 'wrap', cursor: 'default' }}>
+                <Check id="pe-io" checked={!!f.io} onChange={setBool('io')}>Interest-only</Check>
+                <Check id="pe-escrow" checked={!!f.escrowWaive} onChange={setBool('escrowWaive')}>Waive escrow</Check>
+                <Check id="pe-fthb" checked={!!f.fthb} onChange={setBool('fthb')}>First-time homebuyer</Check>
+              </div>
+            </Field>
           </Group>
 
           {/* ── PREPAYMENT PENALTY ────────────────────────────────────────────
@@ -922,28 +1047,32 @@ export default function LtPricer() {
               different note from a five-year 5%-fixed, so collapsing them into one list would make
               a real combination unreachable. */}
           <Group title="Prepayment penalty">
-            <Field id="pe-ppterm">
-              How long
-              <select id="pe-ppterm" style={input} value={f.prepayMonths} onChange={set('prepayMonths')}>
+            <Field id="pe-ppterm" label="How long" basis="0 1 210px" min={190}>
+              <select id="pe-ppterm" style={selectStyle} value={f.prepayMonths} onChange={set('prepayMonths')}>
                 {PREPAY_TERMS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </Field>
-            <Field id="pe-ppstruct">
-              How it is charged
-              <select id="pe-ppstruct" style={input} value={f.prepayStructure} onChange={set('prepayStructure')}
+            <Field id="pe-ppstruct" label="How it is charged" basis="0 1 210px" min={190}>
+              <select id="pe-ppstruct" style={selectStyle} value={f.prepayStructure} onChange={set('prepayStructure')}
                 disabled={f.prepayMonths === '0'}>
                 {PREPAY_STRUCTURES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </Field>
-            <div style={{ flex: '2 1 260px', minWidth: 220, fontSize: 12.5, color: MUTED, paddingBottom: 8 }}>
-              {f.prepayMonths === '0'
-                ? 'No penalty, so there is nothing to charge.'
-                : 'The penalty runs for the term on the left and is charged the way the middle box says.'}
-            </div>
+            <Field basis="1 1 280px" min={240}>
+              <div style={fieldNote}>
+                {f.prepayMonths === '0'
+                  ? 'No penalty, so there is nothing to charge.'
+                  : 'The penalty runs for that term and is charged the way the middle box says.'}
+              </div>
+            </Field>
           </Group>
 
           <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
-            <button type="submit" className="btn" disabled={busy}>
+            {/* THE HOUSE PRIMARY, not a button this screen invents. `.btn` on its own is the
+                neutral base — transparent border, no fill — so the one action the page exists for
+                was rendering as though it were switched off. `.btn.primary` is the same control
+                every other PILOT screen uses for the thing you came to do. */}
+            <button type="submit" className="btn primary" disabled={busy}>
               {busy ? `Pricing… ${elapsed.toFixed(1)}s` : 'Price it'}
             </button>
             <button type="button" className="btn ghost" disabled={busy} onClick={() => setF(START)}>
@@ -952,10 +1081,14 @@ export default function LtPricer() {
             {/* WHAT IS ACTUALLY GOING ON THE WIRE, in one line. The amount triangle means the
                 figure this page shows and the figure it sends are deliberately not always the same
                 one — so the screen says which. */}
+            {/* ⛔ THROUGH `toNumber`, NEVER `Number(f.value)`. The money boxes hold grouped text
+                now, and `Number("500,000")` is NaN — which `money()` would print as an em dash, so
+                the one line that states what is going on the wire would read "Sending value —" on
+                every ordinary scenario. */}
             <span style={{ fontSize: 12.5, color: MUTED, ...NUM }}>
               Sending {f.amountMode === 'ltv'
-                ? <>value {money(Number(f.value))} and LTV {f.ltv === '' ? '—' : `${f.ltv}%`}; Lender Price works out the loan amount</>
-                : <>value {money(Number(f.value))} and loan {money(Number(f.loan))}</>}
+                ? <>value {money(toNumber(f.value))} and LTV {f.ltv === '' ? '—' : `${f.ltv}%`}; Lender Price works out the loan amount</>
+                : <>value {money(toNumber(f.value))} and loan {money(toNumber(f.loan))}</>}
             </span>
           </div>
         </form>

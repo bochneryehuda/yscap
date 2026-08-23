@@ -164,8 +164,21 @@ const attempt = (fn) => { try { return { html: fn(), err: null }; } catch (e) { 
     'R4 …and the scenario fields, so the screen is usable on arrival');
   // THE DEFAULTS ARE THERE AND ARE VISIBLY DEFAULTS. A prefilled scenario nobody can tell is a
   // prefill is how somebody quotes a borrower off a number nobody chose.
-  ok(/value="500000"/.test(html || '') && /value="740"/.test(html || ''),
+  // The money boxes hold GROUPED text now (owner-directed: "as dollars with a dollar sign with
+  // commas"), so the prefill reads 500,000. The guard's subject has not moved — it is still "the
+  // scenario arrives filled in" — only the spelling the screen fills it in with.
+  ok(/value="500,000"/.test(html || '') && /value="740"/.test(html || ''),
     'R4a …already filled in, so a staffer can price on arrival without typing plumbing');
+  ok(/\$<\/span>/.test(html || '') || />\$</.test(html || ''),
+    'R4a2 …with the dollar sign DRAWN beside the figure, not typed into it');
+  // ⛔ AND THE ZIP IS NOT ONE OF THE PREFILLS (owner-directed 2026-08-23: "Zip code should not
+  // default to anything. Right now, it's defaulting to Miami"). The ZIP decides the state and the
+  // county a loan is priced in, so a pre-filled one is a silent answer, not a starting point.
+  ok(!/33101/.test(html || ''), 'R4c the ZIP does not default to Miami — or to anything');
+  ok(/id="pe-zip"[^>]*value=""/.test(html || '') || !/id="pe-zip"[^>]*value="[^"]/.test(html || ''),
+    'R4d …the ZIP box starts empty');
+  ok(/First-time homebuyer/.test(html || ''),
+    'R4e the first-time-homebuyer flag is on the screen — the same fact Lender Price carries');
   ok(/starting point you can change/.test(html || ''),
     'R4b …and the screen says they are a starting point, not a fact about any loan');
 }
