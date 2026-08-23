@@ -166,27 +166,42 @@ ok('C13 …but the funded event itself is allowed to move a pre-closing file',
   ok('D4 …AFTER the email is actually sent, so the card never claims a delivery that failed',
     tape.indexOf('advanceCard') > tape.indexOf('await email.sendMail('));
 
+  /* THE SOLD PUSH MOVED, AND WHERE IT MOVED TO IS THE POINT (2026-08-23).
+     It used to live HERE, in release-party.syncPurchaseAdviceDate — which ALSO called
+     sold-status.syncSoldStage, which pushes `sold` too. Two pushes for one sale, from two
+     conditions that already disagreed on a cleared date and on a table-funded file; the second
+     was a no-op only because decideStage refuses a card that is already there, which is a
+     collision being absorbed rather than a design.
+     The card now follows the STAGE, once, in sold-status.js — the right owner, because that is
+     the module carrying the owner's table-funded exclusion, and a table-funded loan must not be
+     dragged to `pa issued-post closing.` either. */
   const pa = code('src/sitewire/release-party.js');
-  ok('D5 a purchase advice date moves the card', /advanceCard\(appId, 'sold'/.test(pa));
-  /* The guard's SUBJECT is "the push sits inside the date-actually-changed branch", and the
-     condition is allowed to be STRICTER than that — it has since gained `&& !silentDiscovery`,
-     so the back-book sweep can land a months-old purchase advice without announcing it as
-     news. Pinning the exact condition text would have made this fail on a change that makes
-     the rule tighter, which is the wrong way round: it would force the production code to be
-     bent to fit a test about structure. So it requires `changed && paDate` to LEAD the
-     condition and tolerates further terms — the same widening this file's own header
-     describes for comments. */
-  ok('D6 …only when the date CHANGED, so a re-read of the same date never re-pushes',
-    /if \(changed && paDate[^)]*\) \{[\s\S]{0,700}advanceCard\(appId, 'sold'/.test(pa));
-  ok('D6b …and a first read by the back-book sweep lands the date without moving the card',
-    /if \(changed && paDate && !silentDiscovery\) \{[\s\S]{0,700}advanceCard\(appId, 'sold'/.test(pa));
+  const stage = code('src/lib/sold-status.js');
+
+  ok('D5 the sold STAGE moves the card', /advanceCard\(appId, 'sold'/.test(stage));
+  /* The guard's SUBJECT is "the push sits inside the announce branch", and the condition is
+     allowed to be STRICTER than that. Pinning exact text would make this fail on a change that
+     makes the rule tighter, which is the wrong way round. */
+  ok('D6 …only when announcing, so the back-book backfill stamps the stage silently',
+    /if \(announce[^)]*\) \{[\s\S]{0,700}advanceCard\(appId, 'sold'/.test(stage));
+  ok('D6b …and the stage is only reached once the file ACTUALLY moved, so a re-read never re-pushes',
+    stage.indexOf("advanceCard(appId, 'sold'") > stage.indexOf("if (!r || !r.rowCount) return { skipped: 'unchanged' };"));
+  ok('D6c the back-book sweep lands the date without announcing it, through the same one door',
+    /syncSoldStage\(db, appId, \{ announce: !silentDiscovery \}\)/.test(pa));
+
+  /* EXACTLY ONE PLACE PUSHES THE SOLD STAGE. This is the guard that stops the double-push
+     coming back — the failure it describes is invisible at runtime (the second push is
+     absorbed), so nothing but a structural test can hold the line. */
+  ok('D6d release-party no longer pushes the card itself — one sale, one push',
+    !/advanceCard\(appId, 'sold'/.test(pa));
 
   /* A hard-coded stage string in a caller is a second definition waiting to drift from the
      live list — and a drifted one is a push ClickUp silently refuses. The list is EVERY
      stage on the ladder, not only the three targeted today: a caller reaching for
      `closed reconciled` would be just as wrong, and adding a rung must not silently fall
      outside the guard. Read off LADDER so the two can never disagree. */
-  for (const [f, body] of [['encompass-funded.js', funded], ['investor-send.js', tape], ['release-party.js', pa]]) {
+  for (const [f, body] of [['encompass-funded.js', funded], ['investor-send.js', tape],
+    ['release-party.js', pa], ['sold-status.js', stage]]) {
     const named = S.LADDER.filter((stage) => body.includes(`'${stage}'`) || body.includes(`"${stage}"`));
     ok(`D7 ${f} names no ClickUp stage of its own`, named.length === 0);
   }

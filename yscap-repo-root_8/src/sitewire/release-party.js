@@ -587,25 +587,17 @@ async function syncPurchaseAdviceDate(db, appId, fieldValues, { silentDiscovery 
     const discovered = !!(silentDiscovery && changed && paDate);
     if (changed && paDate && !silentDiscovery) {
       try { await require('../lib/post-purchase').announceSold(appId, paDate); } catch (_) { /* best-effort */ }
-      /* AND THE CLICKUP CARD MOVES ON (owner-directed 2026-08-21, corrected the same day:
-         *"Sold (PA date from Encompass) — should update in our system as sold and should
-         update in ClickUp as pa issued-post closing."*). The stage is
-         `pa issued-post closing.` — ClickUp's own spelling INCLUDING the trailing full
-         stop, which is part of the status name; the stage this originally landed on
-         (`waiting for final docs`) is a LATER rung and stays on the ladder, so a card a
-         human has already moved there is never dragged back.
-
-         "Update in our system as sold" is the UPDATE above: a purchase advice date on the
-         file is what `release-party.soldStatus` reads as sold, on the draw desk and the
-         purchasing desk alike. There is no separate stored "sold" status to write, and
-         inventing one would be a second place the same fact lives.
-
-         Only when the date actually CHANGED, so a re-read of the same date never re-pushes;
-         and only forward — `advanceCard` refuses to drag a card back from a later stage.
-         A CLEARED date (paDate null) moves nothing: un-selling is a human's correction. */
-      cardMoved = await require('../clickup/post-closing-stage')
-        .advanceCard(appId, 'sold', { client: db, reason: 'encompass_purchase_advice_date' });
     }
+    /* THE CLICKUP CARD IS NOT MOVED HERE (owner-directed 2026-08-21, restructured 2026-08-23).
+       It used to be: this function pushed `sold` itself AND then called `syncSoldStage`, which
+       pushes `sold` too. Two pushes for one sale, from two different conditions — this one fired
+       on `changed && paDate && !silentDiscovery`, that one on `marked && announce` — so "when
+       does the card move?" had two answers that already disagreed on a CLEARED date and on a
+       table-funded file. The second push was a no-op only because `decideStage` refuses to move a
+       card that is already there; that is a collision being absorbed, not a design.
+       The card now follows the STAGE, in `sold-status.syncSoldStage`, once. That is also the
+       correct owner, because the stage is the thing that carries the owner's table-funded
+       exclusion — a table-funded loan must not be dragged to `pa issued-post closing.` either. */
     /* AND THE FILE'S OWN SOLD STAGE FOLLOWS (owner-directed 2026-08-21: *"the files that are
        being sold should have a status of 'Sold', and that status should automatically change
        when the PA date is filled"*). It runs on EVERY change, including a silent first read and
@@ -618,6 +610,9 @@ async function syncPurchaseAdviceDate(db, appId, fieldValues, { silentDiscovery 
     if (changed) {
       soldStage = await require('../lib/sold-status')
         .syncSoldStage(db, appId, { announce: !silentDiscovery });
+      // What the card did, reported by the one thing that moves it. `cardMoved` keeps its old name
+      // and shape so the sweep summary and every existing caller read exactly as before.
+      cardMoved = (soldStage && soldStage.cardMoved) || null;
     }
     return { paDate, changed, cardMoved, discovered, soldStage };
   } catch (_) { return { skipped: 'error' }; }
