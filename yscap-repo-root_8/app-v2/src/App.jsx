@@ -40,6 +40,7 @@ import LtConditions from './longterm/LtConditions.jsx';
 import LtSync from './longterm/LtSync.jsx';
 import LtSettings from './longterm/LtSettings.jsx';
 import LtPpe from './longterm/LtPpe.jsx';
+import LtPricer from './longterm/LtPricer.jsx';
 import LtLoan from './longterm/LtLoan.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
@@ -266,6 +267,10 @@ export default function App() {
           <Route path="/internal/lt/sync" element={<StaffPrivate><LtSync /></StaffPrivate>} />
           <Route path="/internal/lt/settings" element={<StaffPrivate><LtSettings /></StaffPrivate>} />
           <Route path="/internal/lt/ppe" element={<StaffPrivate><LtPpe /></StaffPrivate>} />
+          {/* THE PRICING ENGINE. Staff-only, and the investor name is why: every line on it
+              names a lender and an investor, and an investor name never reaches a borrower
+              or a TPO. It is inside StaffPrivate and the API sits behind the staff guard. */}
+          <Route path="/internal/lt/pricer" element={<StaffPrivate><LtPricer /></StaffPrivate>} />
           <Route path="/internal/lt/loan/:loanId" element={<StaffPrivate><LtLoan /></StaffPrivate>} />
           <Route path="/internal/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
           <Route path="/internal/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />

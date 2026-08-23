@@ -1,0 +1,2215 @@
+{
+  "_capture": {
+    "what": "A REDUCED capture of a real POST /api/lt/dscr/price {full:true} answer from the LIVE Lender Price system.",
+    "capturedAt": "2026-08-23T01:56:06Z",
+    "trimmedTo": "4 of the 32 programs the run returned, and 3 of each program's rate rungs — enough to carry every part of the option shape (price build, itemized point LLPAs, holdback, comp, fees, terms, an EXPIRED rate sheet and a live one) without committing the 6.5 MB payload.",
+    "fullRun": {
+      "programCount": 32,
+      "lenderCount": 17,
+      "optionCount": 1055,
+      "disqualifiedCount": 0
+    },
+    "note": "A real vendor answer carries NO _capture key. It is here so nobody mistakes this trimmed copy for the whole run. Every count below describes THIS FILE, recomputed from what it holds — not the run it was cut from, which is recorded in fullRun."
+  },
+  "programCount": 4,
+  "lenderCount": 4,
+  "optionCount": 12,
+  "disqualifiedCount": 0,
+  "pricedAt": "2026-08-23T01:56:06Z",
+  "rateSheets": {
+    "pricedAt": "2026-08-23T01:56:06Z",
+    "optionCount": 12,
+    "expiredCount": 6,
+    "liveCount": 6,
+    "expiredPct": 50,
+    "expiredLenders": [
+      "AD Mortgage LLC",
+      "Onity Mortgage Corp"
+    ],
+    "oldestSheet": "2026-08-21T13:40:51.093Z",
+    "newestSheet": "2026-08-22T04:03:36.099Z"
+  },
+  "lenders": [
+    {
+      "id": "629a0f74ce8ad00001037ab1",
+      "name": "Onity Mortgage Corp",
+      "shortName": "Onity Mortgage Corp",
+      "ratePeriodId": "6a0f4eb284187f000196b02b"
+    },
+    {
+      "id": "60edcf7cce8ad000013c2309",
+      "name": "AD Mortgage LLC",
+      "shortName": "AD Mortgage LLC",
+      "ratePeriodId": "68ed600b25fb420001b69a08"
+    },
+    {
+      "id": "6000a8acce8ad0000197f754",
+      "name": "ARC Home Loans",
+      "shortName": "ARC Home Loans",
+      "ratePeriodId": "6a46dbc0d668150001fba02c"
+    }
+  ],
+  "programs": [
+    {
+      "lender": "Onslow",
+      "investor": "Onslow Bay Financial LLC",
+      "lenderId": "60f0a94dce8ad00001969611",
+      "lenderShort": "Onslow",
+      "program": "30yr Fixed - DSCR Plus",
+      "product": "30yr Fixed - DSCR Plus",
+      "rateGridId": "60f6014fce8ad00001aa96ad",
+      "options": [
+        {
+          "lender": "Onslow",
+          "lenderId": "60f0a94dce8ad00001969611",
+          "investor": "Onslow Bay Financial LLC",
+          "lenderShort": "Onslow",
+          "program": "30yr Fixed - DSCR Plus",
+          "product": "30yr Fixed - DSCR Plus",
+          "rateGridId": "60f6014fce8ad00001aa96ad",
+          "rateGridName": "30yr Fixed - DSCR Plus",
+          "priceBuild": {
+            "parRate": 5.875,
+            "baseRate": 5.625,
+            "rateAdjustment": 0,
+            "noteRate": 5.625,
+            "basePoints": 3.439,
+            "adjustmentPoints": -2,
+            "adjustedPoints": 1.439,
+            "borrowerPaidPoints": 1.439,
+            "price": 98.561,
+            "priceDerivedFromPoints": true,
+            "apr": 5.7577,
+            "apor": 6.06
+          },
+          "adjustments": [
+            {
+              "group": "Adjustments - DSCR Plus Prepay LLPAs",
+              "reason": "5yr Prepay",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 1.75
+            },
+            {
+              "group": "Adjustments - DSCR Plus LLPAs",
+              "reason": "FICO/LTV - 760 - 779 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "FicoRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.375
+            },
+            {
+              "group": "Adjustments - DSCR Plus LLPAs",
+              "reason": "Additional LLPAs - DSCR 1.25 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.375
+            },
+            {
+              "group": "Adjustments - DSCR Plus LLPAs",
+              "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.25
+            }
+          ],
+          "rateAdjustments": [],
+          "holdback": null,
+          "comp": {
+            "borrowerPaid": 5036.5,
+            "lenderPaid": 5036.5,
+            "compPlanBorrowerPaid": 0,
+            "borrowerPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 1.439 (Points) x $350,000.00 (Loan Amount)",
+                "points": 1.439,
+                "amount": 5036.5,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ],
+            "lenderPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 1.439 (Points) x $350,000.00 (Loan Amount)",
+                "points": 1.439,
+                "amount": 5036.5,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ]
+          },
+          "fees": {
+            "totalOriginationFee": 0,
+            "totalLenderFees": 0,
+            "finalClosingCost": 5036.5,
+            "cashToClose": 0,
+            "pointsFinanced": 0
+          },
+          "terms": {
+            "loanAmount": 350000,
+            "term": 30,
+            "termInMonths": false,
+            "dayLock": 30,
+            "mortgageType": "Conventional",
+            "loanPurpose": "Purchase",
+            "interestOnly": false,
+            "dscr": 1.25,
+            "fico": 760,
+            "ltv": 0.7,
+            "cltv": 0.7,
+            "dti": 0.44086,
+            "hti": 0.12089
+          },
+          "monthlyPayment": {
+            "start": 0,
+            "end": 0,
+            "rate": 0,
+            "monthlyPI": 2014.8,
+            "buyDown": 0,
+            "buyDownRate": 0,
+            "totalBuyDown": 0,
+            "totalPrincipal": 350000,
+            "totalInterest": 375325.62,
+            "propertyTaxes": 0,
+            "homeOwnerInsurance": 0,
+            "mi": 0,
+            "rent": 0,
+            "otherExpenses": 0,
+            "rentalPropertyCashFlowAmount": 0,
+            "total": 2014.8
+          },
+          "flags": {
+            "disqualified": false,
+            "interpolated": false,
+            "expired": false,
+            "highBalance": true
+          },
+          "rateSheet": {
+            "expired": false,
+            "validAsOf": "2026-08-21T13:40:51.093Z",
+            "rateValidDate": "2026-08-05T16:15:50.369Z",
+            "name": "Onslow Bay ND",
+            "id": "69d93c1f7423d20001c94056",
+            "parentInvalid": false
+          }
+        },
+        {
+          "lender": "Onslow",
+          "lenderId": "60f0a94dce8ad00001969611",
+          "investor": "Onslow Bay Financial LLC",
+          "lenderShort": "Onslow",
+          "program": "30yr Fixed - DSCR Plus",
+          "product": "30yr Fixed - DSCR Plus",
+          "rateGridId": "60f6014fce8ad00001aa96ad",
+          "rateGridName": "30yr Fixed - DSCR Plus",
+          "priceBuild": {
+            "parRate": 5.875,
+            "baseRate": 5.75,
+            "rateAdjustment": 0,
+            "noteRate": 5.75,
+            "basePoints": 2.689,
+            "adjustmentPoints": -2,
+            "adjustedPoints": 0.689,
+            "borrowerPaidPoints": 0.689,
+            "price": 99.311,
+            "priceDerivedFromPoints": true,
+            "apr": 5.8136,
+            "apor": 6.06
+          },
+          "adjustments": [
+            {
+              "group": "Adjustments - DSCR Plus Prepay LLPAs",
+              "reason": "5yr Prepay",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 1.75
+            },
+            {
+              "group": "Adjustments - DSCR Plus LLPAs",
+              "reason": "FICO/LTV - 760 - 779 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "FicoRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.375
+            },
+            {
+              "group": "Adjustments - DSCR Plus LLPAs",
+              "reason": "Additional LLPAs - DSCR 1.25 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.375
+            },
+            {
+              "group": "Adjustments - DSCR Plus LLPAs",
+              "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.25
+            }
+          ],
+          "rateAdjustments": [],
+          "holdback": null,
+          "comp": {
+            "borrowerPaid": 2411.5,
+            "lenderPaid": 2411.5,
+            "compPlanBorrowerPaid": 0,
+            "borrowerPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 0.689 (Points) x $350,000.00 (Loan Amount)",
+                "points": 0.689,
+                "amount": 2411.5,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ],
+            "lenderPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 0.689 (Points) x $350,000.00 (Loan Amount)",
+                "points": 0.689,
+                "amount": 2411.5,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ]
+          },
+          "fees": {
+            "totalOriginationFee": 0,
+            "totalLenderFees": 0,
+            "finalClosingCost": 2411.5,
+            "cashToClose": 0,
+            "pointsFinanced": 0
+          },
+          "terms": {
+            "loanAmount": 350000,
+            "term": 30,
+            "termInMonths": false,
+            "dayLock": 30,
+            "mortgageType": "Conventional",
+            "loanPurpose": "Purchase",
+            "interestOnly": false,
+            "dscr": 1.25,
+            "fico": 760,
+            "ltv": 0.7,
+            "cltv": 0.7,
+            "dti": 0.44252,
+            "hti": 0.12255
+          },
+          "monthlyPayment": {
+            "start": 0,
+            "end": 0,
+            "rate": 0,
+            "monthlyPI": 2042.51,
+            "buyDown": 0,
+            "buyDownRate": 0,
+            "totalBuyDown": 0,
+            "totalPrincipal": 350000,
+            "totalInterest": 385298.63,
+            "propertyTaxes": 0,
+            "homeOwnerInsurance": 0,
+            "mi": 0,
+            "rent": 0,
+            "otherExpenses": 0,
+            "rentalPropertyCashFlowAmount": 0,
+            "total": 2042.51
+          },
+          "flags": {
+            "disqualified": false,
+            "interpolated": false,
+            "expired": false,
+            "highBalance": true
+          },
+          "rateSheet": {
+            "expired": false,
+            "validAsOf": "2026-08-21T13:40:51.093Z",
+            "rateValidDate": "2026-08-05T16:15:50.369Z",
+            "name": "Onslow Bay ND",
+            "id": "69d93c1f7423d20001c94056",
+            "parentInvalid": false
+          }
+        },
+        {
+          "lender": "Onslow",
+          "lenderId": "60f0a94dce8ad00001969611",
+          "investor": "Onslow Bay Financial LLC",
+          "lenderShort": "Onslow",
+          "program": "30yr Fixed - DSCR Plus",
+          "product": "30yr Fixed - DSCR Plus",
+          "rateGridId": "60f6014fce8ad00001aa96ad",
+          "rateGridName": "30yr Fixed - DSCR Plus",
+          "priceBuild": {
+            "parRate": 5.875,
+            "baseRate": 5.875,
+            "rateAdjustment": 0,
+            "noteRate": 5.875,
+            "basePoints": 1.939,
+            "adjustmentPoints": -2,
+            "adjustedPoints": -0.061,
+            "borrowerPaidPoints": -0.061,
+            "price": 100.061,
+            "priceDerivedFromPoints": true,
+            "apr": 5.875,
+            "apor": 6.06
+          },
+          "adjustments": [
+            {
+              "group": "Adjustments - DSCR Plus Prepay LLPAs",
+              "reason": "5yr Prepay",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 1.75
+            },
+            {
+              "group": "Adjustments - DSCR Plus LLPAs",
+              "reason": "FICO/LTV - 760 - 779 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "FicoRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.375
+            },
+            {
+              "group": "Adjustments - DSCR Plus LLPAs",
+              "reason": "Additional LLPAs - DSCR 1.25 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.375
+            },
+            {
+              "group": "Adjustments - DSCR Plus LLPAs",
+              "reason": "Additional LLPAs - Purchase / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.25
+            }
+          ],
+          "rateAdjustments": [],
+          "holdback": null,
+          "comp": {
+            "borrowerPaid": -213.5,
+            "lenderPaid": -213.5,
+            "compPlanBorrowerPaid": 0,
+            "borrowerPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : -0.061 (Points) x $350,000.00 (Loan Amount)",
+                "points": -0.061,
+                "amount": -213.5,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ],
+            "lenderPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : -0.061 (Points) x $350,000.00 (Loan Amount)",
+                "points": -0.061,
+                "amount": -213.5,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ]
+          },
+          "fees": {
+            "totalOriginationFee": 0,
+            "totalLenderFees": 0,
+            "finalClosingCost": -213.5,
+            "cashToClose": 0,
+            "pointsFinanced": 0
+          },
+          "terms": {
+            "loanAmount": 350000,
+            "term": 30,
+            "termInMonths": false,
+            "dayLock": 30,
+            "mortgageType": "Conventional",
+            "loanPurpose": "Purchase",
+            "interestOnly": false,
+            "dscr": 1.25,
+            "fico": 760,
+            "ltv": 0.7,
+            "cltv": 0.7,
+            "dti": 0.44419,
+            "hti": 0.12422
+          },
+          "monthlyPayment": {
+            "start": 0,
+            "end": 0,
+            "rate": 0,
+            "monthlyPI": 2070.38,
+            "buyDown": 0,
+            "buyDownRate": 0,
+            "totalBuyDown": 0,
+            "totalPrincipal": 350000,
+            "totalInterest": 395338.7,
+            "propertyTaxes": 0,
+            "homeOwnerInsurance": 0,
+            "mi": 0,
+            "rent": 0,
+            "otherExpenses": 0,
+            "rentalPropertyCashFlowAmount": 0,
+            "total": 2070.38
+          },
+          "flags": {
+            "disqualified": false,
+            "interpolated": false,
+            "expired": false,
+            "highBalance": true
+          },
+          "rateSheet": {
+            "expired": false,
+            "validAsOf": "2026-08-21T13:40:51.093Z",
+            "rateValidDate": "2026-08-05T16:15:50.369Z",
+            "name": "Onslow Bay ND",
+            "id": "69d93c1f7423d20001c94056",
+            "parentInvalid": false
+          }
+        }
+      ],
+      "optionCount": 3,
+      "minRate": 5.625
+    },
+    {
+      "lender": "AD Mortgage LLC",
+      "investor": "AD Mortgage LLC",
+      "lenderId": "60edcf7cce8ad000013c2309",
+      "lenderShort": "AD Mortgage LLC",
+      "program": "DSCR 30 Year Fixed",
+      "product": "30 Year Fixed",
+      "rateGridId": "60ede3b4ce8ad00001ceb25e",
+      "options": [
+        {
+          "lender": "AD Mortgage LLC",
+          "lenderId": "60edcf7cce8ad000013c2309",
+          "investor": "AD Mortgage LLC",
+          "lenderShort": "AD Mortgage LLC",
+          "program": "DSCR 30 Year Fixed",
+          "product": "30 Year Fixed",
+          "rateGridId": "60ede3b4ce8ad00001ceb25e",
+          "rateGridName": "DSCR 30 Year Fixed",
+          "priceBuild": {
+            "parRate": 6.125,
+            "baseRate": 5.75,
+            "rateAdjustment": 0,
+            "noteRate": 5.75,
+            "basePoints": 2.875,
+            "adjustmentPoints": -0.875,
+            "adjustedPoints": 2,
+            "borrowerPaidPoints": 2,
+            "price": 98,
+            "priceDerivedFromPoints": true,
+            "apr": 5.9366,
+            "apor": 6.06
+          },
+          "adjustments": [
+            {
+              "group": "Adjustments - DSCR - All (Wholesale / Non-Del Correspondent)",
+              "reason": "CLTV/FICO - 760 - 779 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "FicoRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.25
+            },
+            {
+              "group": "Adjustments - DSCR - All (Wholesale / Non-Del Correspondent)",
+              "reason": "Other Adjustments - DSCR ≥ 1.25 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.25
+            },
+            {
+              "group": "Adjustments - Non-QM Prepay Penalty PPP (Wholesale / Non-Del Correspondent)",
+              "reason": "5Y PPP (inv only)",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.375
+            }
+          ],
+          "rateAdjustments": [],
+          "holdback": {
+            "broker": [
+              {
+                "reason": "NDC Margin - 0.25%",
+                "type": "Margin",
+                "valueType": "Points",
+                "value": 0.25
+              }
+            ]
+          },
+          "comp": {
+            "borrowerPaid": 7000,
+            "lenderPaid": 7000,
+            "compPlanBorrowerPaid": 0,
+            "borrowerPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 2.000 (Points) x $350,000.00 (Loan Amount)",
+                "points": 2,
+                "amount": 7000,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ],
+            "lenderPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 2.000 (Points) x $350,000.00 (Loan Amount)",
+                "points": 2,
+                "amount": 7000,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ]
+          },
+          "fees": {
+            "totalOriginationFee": 0,
+            "totalLenderFees": 0,
+            "finalClosingCost": 7000,
+            "cashToClose": 0,
+            "pointsFinanced": 0
+          },
+          "terms": {
+            "loanAmount": 350000,
+            "term": 30,
+            "termInMonths": false,
+            "dayLock": 30,
+            "mortgageType": "Conventional",
+            "loanPurpose": "Purchase",
+            "interestOnly": false,
+            "dscr": 1.25,
+            "fico": 760,
+            "ltv": 0.7,
+            "cltv": 0.7,
+            "dti": 0.44252,
+            "hti": 0.12255
+          },
+          "monthlyPayment": {
+            "start": 0,
+            "end": 0,
+            "rate": 0,
+            "monthlyPI": 2042.51,
+            "buyDown": 0,
+            "buyDownRate": 0,
+            "totalBuyDown": 0,
+            "totalPrincipal": 350000,
+            "totalInterest": 385298.63,
+            "propertyTaxes": 0,
+            "homeOwnerInsurance": 0,
+            "mi": 0,
+            "rent": 0,
+            "otherExpenses": 0,
+            "rentalPropertyCashFlowAmount": 0,
+            "total": 2042.51
+          },
+          "flags": {
+            "disqualified": false,
+            "interpolated": false,
+            "expired": true,
+            "highBalance": true
+          },
+          "rateSheet": {
+            "expired": true,
+            "validAsOf": "2026-08-22T04:03:36.099Z",
+            "rateValidDate": "2026-03-27T21:03:33.871Z",
+            "name": "AD Mortgage Corr NonDel Combined",
+            "id": "68ed600b25fb420001b69a08",
+            "parentInvalid": false
+          }
+        },
+        {
+          "lender": "AD Mortgage LLC",
+          "lenderId": "60edcf7cce8ad000013c2309",
+          "investor": "AD Mortgage LLC",
+          "lenderShort": "AD Mortgage LLC",
+          "program": "DSCR 30 Year Fixed",
+          "product": "30 Year Fixed",
+          "rateGridId": "60ede3b4ce8ad00001ceb25e",
+          "rateGridName": "DSCR 30 Year Fixed",
+          "priceBuild": {
+            "parRate": 6.125,
+            "baseRate": 5.875,
+            "rateAdjustment": 0,
+            "noteRate": 5.875,
+            "basePoints": 2.125,
+            "adjustmentPoints": -0.875,
+            "adjustedPoints": 1.25,
+            "borrowerPaidPoints": 1.25,
+            "price": 98.75,
+            "priceDerivedFromPoints": true,
+            "apr": 5.9918,
+            "apor": 6.06
+          },
+          "adjustments": [
+            {
+              "group": "Adjustments - DSCR - All (Wholesale / Non-Del Correspondent)",
+              "reason": "CLTV/FICO - 760 - 779 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "FicoRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.25
+            },
+            {
+              "group": "Adjustments - DSCR - All (Wholesale / Non-Del Correspondent)",
+              "reason": "Other Adjustments - DSCR ≥ 1.25 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.25
+            },
+            {
+              "group": "Adjustments - Non-QM Prepay Penalty PPP (Wholesale / Non-Del Correspondent)",
+              "reason": "5Y PPP (inv only)",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.375
+            }
+          ],
+          "rateAdjustments": [],
+          "holdback": {
+            "broker": [
+              {
+                "reason": "NDC Margin - 0.25%",
+                "type": "Margin",
+                "valueType": "Points",
+                "value": 0.25
+              }
+            ]
+          },
+          "comp": {
+            "borrowerPaid": 4375,
+            "lenderPaid": 4375,
+            "compPlanBorrowerPaid": 0,
+            "borrowerPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 1.250 (Points) x $350,000.00 (Loan Amount)",
+                "points": 1.25,
+                "amount": 4375,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ],
+            "lenderPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 1.250 (Points) x $350,000.00 (Loan Amount)",
+                "points": 1.25,
+                "amount": 4375,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ]
+          },
+          "fees": {
+            "totalOriginationFee": 0,
+            "totalLenderFees": 0,
+            "finalClosingCost": 4375,
+            "cashToClose": 0,
+            "pointsFinanced": 0
+          },
+          "terms": {
+            "loanAmount": 350000,
+            "term": 30,
+            "termInMonths": false,
+            "dayLock": 30,
+            "mortgageType": "Conventional",
+            "loanPurpose": "Purchase",
+            "interestOnly": false,
+            "dscr": 1.25,
+            "fico": 760,
+            "ltv": 0.7,
+            "cltv": 0.7,
+            "dti": 0.44419,
+            "hti": 0.12422
+          },
+          "monthlyPayment": {
+            "start": 0,
+            "end": 0,
+            "rate": 0,
+            "monthlyPI": 2070.38,
+            "buyDown": 0,
+            "buyDownRate": 0,
+            "totalBuyDown": 0,
+            "totalPrincipal": 350000,
+            "totalInterest": 395338.7,
+            "propertyTaxes": 0,
+            "homeOwnerInsurance": 0,
+            "mi": 0,
+            "rent": 0,
+            "otherExpenses": 0,
+            "rentalPropertyCashFlowAmount": 0,
+            "total": 2070.38
+          },
+          "flags": {
+            "disqualified": false,
+            "interpolated": false,
+            "expired": true,
+            "highBalance": true
+          },
+          "rateSheet": {
+            "expired": true,
+            "validAsOf": "2026-08-22T04:03:36.099Z",
+            "rateValidDate": "2026-03-27T21:03:33.871Z",
+            "name": "AD Mortgage Corr NonDel Combined",
+            "id": "68ed600b25fb420001b69a08",
+            "parentInvalid": false
+          }
+        },
+        {
+          "lender": "AD Mortgage LLC",
+          "lenderId": "60edcf7cce8ad000013c2309",
+          "investor": "AD Mortgage LLC",
+          "lenderShort": "AD Mortgage LLC",
+          "program": "DSCR 30 Year Fixed",
+          "product": "30 Year Fixed",
+          "rateGridId": "60ede3b4ce8ad00001ceb25e",
+          "rateGridName": "DSCR 30 Year Fixed",
+          "priceBuild": {
+            "parRate": 6.125,
+            "baseRate": 5.99,
+            "rateAdjustment": 0,
+            "noteRate": 5.99,
+            "basePoints": 1.375,
+            "adjustmentPoints": -0.875,
+            "adjustedPoints": 0.5,
+            "borrowerPaidPoints": 0.5,
+            "price": 99.5,
+            "priceDerivedFromPoints": true,
+            "apr": 6.0368,
+            "apor": 6.06
+          },
+          "adjustments": [
+            {
+              "group": "Adjustments - DSCR - All (Wholesale / Non-Del Correspondent)",
+              "reason": "CLTV/FICO - 760 - 779 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "FicoRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.25
+            },
+            {
+              "group": "Adjustments - DSCR - All (Wholesale / Non-Del Correspondent)",
+              "reason": "Other Adjustments - DSCR ≥ 1.25 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.25
+            },
+            {
+              "group": "Adjustments - Non-QM Prepay Penalty PPP (Wholesale / Non-Del Correspondent)",
+              "reason": "5Y PPP (inv only)",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.375
+            }
+          ],
+          "rateAdjustments": [],
+          "holdback": {
+            "broker": [
+              {
+                "reason": "NDC Margin - 0.25%",
+                "type": "Margin",
+                "valueType": "Points",
+                "value": 0.25
+              }
+            ]
+          },
+          "comp": {
+            "borrowerPaid": 1750,
+            "lenderPaid": 1750,
+            "compPlanBorrowerPaid": 0,
+            "borrowerPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 0.500 (Points) x $350,000.00 (Loan Amount)",
+                "points": 0.5,
+                "amount": 1750,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ],
+            "lenderPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 0.500 (Points) x $350,000.00 (Loan Amount)",
+                "points": 0.5,
+                "amount": 1750,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ]
+          },
+          "fees": {
+            "totalOriginationFee": 0,
+            "totalLenderFees": 0,
+            "finalClosingCost": 1750,
+            "cashToClose": 0,
+            "pointsFinanced": 0
+          },
+          "terms": {
+            "loanAmount": 350000,
+            "term": 30,
+            "termInMonths": false,
+            "dayLock": 30,
+            "mortgageType": "Conventional",
+            "loanPurpose": "Purchase",
+            "interestOnly": false,
+            "dscr": 1.25,
+            "fico": 760,
+            "ltv": 0.7,
+            "cltv": 0.7,
+            "dti": 0.44574,
+            "hti": 0.12577
+          },
+          "monthlyPayment": {
+            "start": 0,
+            "end": 0,
+            "rate": 0,
+            "monthlyPI": 2096.18,
+            "buyDown": 0,
+            "buyDownRate": 0,
+            "totalBuyDown": 0,
+            "totalPrincipal": 350000,
+            "totalInterest": 404622,
+            "propertyTaxes": 0,
+            "homeOwnerInsurance": 0,
+            "mi": 0,
+            "rent": 0,
+            "otherExpenses": 0,
+            "rentalPropertyCashFlowAmount": 0,
+            "total": 2096.18
+          },
+          "flags": {
+            "disqualified": false,
+            "interpolated": false,
+            "expired": true,
+            "highBalance": true
+          },
+          "rateSheet": {
+            "expired": true,
+            "validAsOf": "2026-08-22T04:03:36.099Z",
+            "rateValidDate": "2026-03-27T21:03:33.871Z",
+            "name": "AD Mortgage Corr NonDel Combined",
+            "id": "68ed600b25fb420001b69a08",
+            "parentInvalid": false
+          }
+        }
+      ],
+      "optionCount": 3,
+      "minRate": 5.75
+    },
+    {
+      "lender": "ARC Home Loans",
+      "investor": "ARC Home Loans",
+      "lenderId": "6000a8acce8ad0000197f754",
+      "lenderShort": "ARC Home Loans",
+      "program": "30yr Fixed - Edge DSCR",
+      "product": "30yr Fixed - Edge DSCR",
+      "rateGridId": "65563934ce8ad00001c7391a",
+      "options": [
+        {
+          "lender": "ARC Home Loans",
+          "lenderId": "6000a8acce8ad0000197f754",
+          "investor": "ARC Home Loans",
+          "lenderShort": "ARC Home Loans",
+          "program": "30yr Fixed - Edge DSCR",
+          "product": "30yr Fixed - Edge DSCR",
+          "rateGridId": "65563934ce8ad00001c7391a",
+          "rateGridName": "30yr Fixed - Edge DSCR",
+          "priceBuild": {
+            "parRate": 6.125,
+            "baseRate": 5.99,
+            "rateAdjustment": 0,
+            "noteRate": 5.99,
+            "basePoints": 2.813,
+            "adjustmentPoints": -2.168,
+            "adjustedPoints": 0.645,
+            "borrowerPaidPoints": 0.645,
+            "price": 99.355,
+            "priceDerivedFromPoints": true,
+            "apr": 6.0504,
+            "apor": 6.06
+          },
+          "adjustments": [
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Purchase/R&T, FICO/LTV - 760+ / CLTV >65.01 % <= 70.0 %",
+              "adjType": "FicoRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.875
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Loan Amounts - >225,000 to 500,000 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "LoanAmountRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.207
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Product Feature, Other - Purchase / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.125
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Product Feature, Other - DSCR >=1.25 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.5
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "60 Months Prepay",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.625
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Purchase Special",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.25
+            }
+          ],
+          "rateAdjustments": [],
+          "holdback": {
+            "broker": [
+              {
+                "reason": "NDC Margin - 0.25%",
+                "type": "Margin",
+                "valueType": "Points",
+                "value": 0.25
+              }
+            ]
+          },
+          "comp": {
+            "borrowerPaid": 2257.5,
+            "lenderPaid": 2257.5,
+            "compPlanBorrowerPaid": 0,
+            "borrowerPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 0.645 (Points) x $350,000.00 (Loan Amount)",
+                "points": 0.645,
+                "amount": 2257.5,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ],
+            "lenderPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 0.645 (Points) x $350,000.00 (Loan Amount)",
+                "points": 0.645,
+                "amount": 2257.5,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ]
+          },
+          "fees": {
+            "totalOriginationFee": 0,
+            "totalLenderFees": 0,
+            "finalClosingCost": 2257.5,
+            "cashToClose": 0,
+            "pointsFinanced": 0
+          },
+          "terms": {
+            "loanAmount": 350000,
+            "term": 30,
+            "termInMonths": false,
+            "dayLock": 30,
+            "mortgageType": "Conventional",
+            "loanPurpose": "Purchase",
+            "interestOnly": false,
+            "dscr": 1.25,
+            "fico": 760,
+            "ltv": 0.7,
+            "cltv": 0.7,
+            "dti": 0.44574,
+            "hti": 0.12577
+          },
+          "monthlyPayment": {
+            "start": 0,
+            "end": 0,
+            "rate": 0,
+            "monthlyPI": 2096.18,
+            "buyDown": 0,
+            "buyDownRate": 0,
+            "totalBuyDown": 0,
+            "totalPrincipal": 350000,
+            "totalInterest": 404622,
+            "propertyTaxes": 0,
+            "homeOwnerInsurance": 0,
+            "mi": 0,
+            "rent": 0,
+            "otherExpenses": 0,
+            "rentalPropertyCashFlowAmount": 0,
+            "total": 2096.18
+          },
+          "flags": {
+            "disqualified": false,
+            "interpolated": false,
+            "expired": false,
+            "highBalance": true
+          },
+          "rateSheet": {
+            "expired": false,
+            "validAsOf": "2026-08-21T21:29:16.586Z",
+            "rateValidDate": "2026-07-06T17:54:20.899Z",
+            "name": "YS - ARC Home - Correspondent Non-Del A0",
+            "id": "6a46dbc0d668150001fba02c",
+            "parentInvalid": false
+          }
+        },
+        {
+          "lender": "ARC Home Loans",
+          "lenderId": "6000a8acce8ad0000197f754",
+          "investor": "ARC Home Loans",
+          "lenderShort": "ARC Home Loans",
+          "program": "30yr Fixed - Edge DSCR",
+          "product": "30yr Fixed - Edge DSCR",
+          "rateGridId": "65563934ce8ad00001c7391a",
+          "rateGridName": "30yr Fixed - Edge DSCR",
+          "priceBuild": {
+            "parRate": 6.125,
+            "baseRate": 6,
+            "rateAdjustment": 0,
+            "noteRate": 6,
+            "basePoints": 2.783,
+            "adjustmentPoints": -2.168,
+            "adjustedPoints": 0.615,
+            "borrowerPaidPoints": 0.615,
+            "price": 99.385,
+            "priceDerivedFromPoints": true,
+            "apr": 6.0576,
+            "apor": 6.06
+          },
+          "adjustments": [
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Purchase/R&T, FICO/LTV - 760+ / CLTV >65.01 % <= 70.0 %",
+              "adjType": "FicoRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.875
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Loan Amounts - >225,000 to 500,000 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "LoanAmountRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.207
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Product Feature, Other - Purchase / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.125
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Product Feature, Other - DSCR >=1.25 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.5
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "60 Months Prepay",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.625
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Purchase Special",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.25
+            }
+          ],
+          "rateAdjustments": [],
+          "holdback": {
+            "broker": [
+              {
+                "reason": "NDC Margin - 0.25%",
+                "type": "Margin",
+                "valueType": "Points",
+                "value": 0.25
+              }
+            ]
+          },
+          "comp": {
+            "borrowerPaid": 2152.5,
+            "lenderPaid": 2152.5,
+            "compPlanBorrowerPaid": 0,
+            "borrowerPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 0.615 (Points) x $350,000.00 (Loan Amount)",
+                "points": 0.615,
+                "amount": 2152.5,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ],
+            "lenderPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 0.615 (Points) x $350,000.00 (Loan Amount)",
+                "points": 0.615,
+                "amount": 2152.5,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ]
+          },
+          "fees": {
+            "totalOriginationFee": 0,
+            "totalLenderFees": 0,
+            "finalClosingCost": 2152.5,
+            "cashToClose": 0,
+            "pointsFinanced": 0
+          },
+          "terms": {
+            "loanAmount": 350000,
+            "term": 30,
+            "termInMonths": false,
+            "dayLock": 30,
+            "mortgageType": "Conventional",
+            "loanPurpose": "Purchase",
+            "interestOnly": false,
+            "dscr": 1.25,
+            "fico": 760,
+            "ltv": 0.7,
+            "cltv": 0.7,
+            "dti": 0.44588,
+            "hti": 0.1259
+          },
+          "monthlyPayment": {
+            "start": 0,
+            "end": 0,
+            "rate": 0,
+            "monthlyPI": 2098.43,
+            "buyDown": 0,
+            "buyDownRate": 0,
+            "totalBuyDown": 0,
+            "totalPrincipal": 350000,
+            "totalInterest": 405431.84,
+            "propertyTaxes": 0,
+            "homeOwnerInsurance": 0,
+            "mi": 0,
+            "rent": 0,
+            "otherExpenses": 0,
+            "rentalPropertyCashFlowAmount": 0,
+            "total": 2098.43
+          },
+          "flags": {
+            "disqualified": false,
+            "interpolated": false,
+            "expired": false,
+            "highBalance": true
+          },
+          "rateSheet": {
+            "expired": false,
+            "validAsOf": "2026-08-21T21:29:16.586Z",
+            "rateValidDate": "2026-07-06T17:54:20.899Z",
+            "name": "YS - ARC Home - Correspondent Non-Del A0",
+            "id": "6a46dbc0d668150001fba02c",
+            "parentInvalid": false
+          }
+        },
+        {
+          "lender": "ARC Home Loans",
+          "lenderId": "6000a8acce8ad0000197f754",
+          "investor": "ARC Home Loans",
+          "lenderShort": "ARC Home Loans",
+          "program": "30yr Fixed - Edge DSCR",
+          "product": "30yr Fixed - Edge DSCR",
+          "rateGridId": "65563934ce8ad00001c7391a",
+          "rateGridName": "30yr Fixed - Edge DSCR",
+          "priceBuild": {
+            "parRate": 6.125,
+            "baseRate": 6.125,
+            "rateAdjustment": 0,
+            "noteRate": 6.125,
+            "basePoints": 2.094,
+            "adjustmentPoints": -2.168,
+            "adjustedPoints": -0.074,
+            "borrowerPaidPoints": -0.074,
+            "price": 100.074,
+            "priceDerivedFromPoints": true,
+            "apr": 6.125,
+            "apor": 6.06
+          },
+          "adjustments": [
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Purchase/R&T, FICO/LTV - 760+ / CLTV >65.01 % <= 70.0 %",
+              "adjType": "FicoRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.875
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Loan Amounts - >225,000 to 500,000 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "LoanAmountRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.207
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Product Feature, Other - Purchase / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.125
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Product Feature, Other - DSCR >=1.25 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.5
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "60 Months Prepay",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.625
+            },
+            {
+              "group": "Adjustment - Edge DSCR LLPAs (NDC)",
+              "reason": "Purchase Special",
+              "adjType": "SimpleRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.25
+            }
+          ],
+          "rateAdjustments": [],
+          "holdback": {
+            "broker": [
+              {
+                "reason": "NDC Margin - 0.25%",
+                "type": "Margin",
+                "valueType": "Points",
+                "value": 0.25
+              }
+            ]
+          },
+          "comp": {
+            "borrowerPaid": -259,
+            "lenderPaid": -259,
+            "compPlanBorrowerPaid": 0,
+            "borrowerPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : -0.074 (Points) x $350,000.00 (Loan Amount)",
+                "points": -0.074,
+                "amount": -259,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ],
+            "lenderPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : -0.074 (Points) x $350,000.00 (Loan Amount)",
+                "points": -0.074,
+                "amount": -259,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ]
+          },
+          "fees": {
+            "totalOriginationFee": 0,
+            "totalLenderFees": 0,
+            "finalClosingCost": -259,
+            "cashToClose": 0,
+            "pointsFinanced": 0
+          },
+          "terms": {
+            "loanAmount": 350000,
+            "term": 30,
+            "termInMonths": false,
+            "dayLock": 30,
+            "mortgageType": "Conventional",
+            "loanPurpose": "Purchase",
+            "interestOnly": false,
+            "dscr": 1.25,
+            "fico": 760,
+            "ltv": 0.7,
+            "cltv": 0.7,
+            "dti": 0.44757,
+            "hti": 0.1276
+          },
+          "monthlyPayment": {
+            "start": 0,
+            "end": 0,
+            "rate": 0,
+            "monthlyPI": 2126.64,
+            "buyDown": 0,
+            "buyDownRate": 0,
+            "totalBuyDown": 0,
+            "totalPrincipal": 350000,
+            "totalInterest": 415587.29,
+            "propertyTaxes": 0,
+            "homeOwnerInsurance": 0,
+            "mi": 0,
+            "rent": 0,
+            "otherExpenses": 0,
+            "rentalPropertyCashFlowAmount": 0,
+            "total": 2126.64
+          },
+          "flags": {
+            "disqualified": false,
+            "interpolated": false,
+            "expired": false,
+            "highBalance": true
+          },
+          "rateSheet": {
+            "expired": false,
+            "validAsOf": "2026-08-21T21:29:16.586Z",
+            "rateValidDate": "2026-07-06T17:54:20.899Z",
+            "name": "YS - ARC Home - Correspondent Non-Del A0",
+            "id": "6a46dbc0d668150001fba02c",
+            "parentInvalid": false
+          }
+        }
+      ],
+      "optionCount": 3,
+      "minRate": 5.99
+    },
+    {
+      "lender": "Onity Mortgage Corp",
+      "investor": "Onity Mortgage Corp",
+      "lenderId": "629a0f74ce8ad00001037ab1",
+      "lenderShort": "Onity Mortgage Corp",
+      "program": "30 Year Fixed DSCR",
+      "product": "30 Year Fixed DSCR",
+      "rateGridId": "68ed51f6afb89f18b256c876",
+      "options": [
+        {
+          "lender": "Onity Mortgage Corp",
+          "lenderId": "629a0f74ce8ad00001037ab1",
+          "investor": "Onity Mortgage Corp",
+          "lenderShort": "Onity Mortgage Corp",
+          "program": "30 Year Fixed DSCR",
+          "product": "30 Year Fixed DSCR",
+          "rateGridId": "68ed51f6afb89f18b256c876",
+          "rateGridName": "30 Year Fixed DSCR",
+          "priceBuild": {
+            "parRate": 6.375,
+            "baseRate": 6,
+            "rateAdjustment": 0,
+            "noteRate": 6,
+            "basePoints": 2.591,
+            "adjustmentPoints": -0.125,
+            "adjustedPoints": 2.466,
+            "borrowerPaidPoints": 2.466,
+            "price": 97.534,
+            "priceDerivedFromPoints": true,
+            "apr": 6.2345,
+            "apor": 6.06
+          },
+          "adjustments": [
+            {
+              "group": "Adjustments - DSCR",
+              "reason": "DSCR FICO/CLTV - 760 - 779 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "FicoRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.125
+            }
+          ],
+          "rateAdjustments": [],
+          "holdback": {
+            "broker": [
+              {
+                "reason": "NDC Margin - 0.25%",
+                "type": "Margin",
+                "valueType": "Points",
+                "value": 0.25
+              }
+            ]
+          },
+          "comp": {
+            "borrowerPaid": 8631,
+            "lenderPaid": 8631,
+            "compPlanBorrowerPaid": 0,
+            "borrowerPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 2.466 (Points) x $350,000.00 (Loan Amount)",
+                "points": 2.466,
+                "amount": 8631,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ],
+            "lenderPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 2.466 (Points) x $350,000.00 (Loan Amount)",
+                "points": 2.466,
+                "amount": 8631,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ]
+          },
+          "fees": {
+            "totalOriginationFee": 0,
+            "totalLenderFees": 0,
+            "finalClosingCost": 8631,
+            "cashToClose": 0,
+            "pointsFinanced": 0
+          },
+          "terms": {
+            "loanAmount": 350000,
+            "term": 30,
+            "termInMonths": false,
+            "dayLock": 30,
+            "mortgageType": "Conventional",
+            "loanPurpose": "Purchase",
+            "interestOnly": false,
+            "dscr": 1.25,
+            "fico": 760,
+            "ltv": 0.7,
+            "cltv": 0.7,
+            "dti": 0.44588,
+            "hti": 0.1259
+          },
+          "monthlyPayment": {
+            "start": 0,
+            "end": 0,
+            "rate": 0,
+            "monthlyPI": 2098.43,
+            "buyDown": 0,
+            "buyDownRate": 0,
+            "totalBuyDown": 0,
+            "totalPrincipal": 350000,
+            "totalInterest": 405431.84,
+            "propertyTaxes": 0,
+            "homeOwnerInsurance": 0,
+            "mi": 0,
+            "rent": 0,
+            "otherExpenses": 0,
+            "rentalPropertyCashFlowAmount": 0,
+            "total": 2098.43
+          },
+          "flags": {
+            "disqualified": false,
+            "interpolated": false,
+            "expired": true,
+            "highBalance": true
+          },
+          "rateSheet": {
+            "expired": true,
+            "validAsOf": "2026-08-22T03:36:29.610Z",
+            "rateValidDate": "2026-05-21T18:32:03.113Z",
+            "name": "ONITY ND Non Agency NA2",
+            "id": "6a0f4eb284187f000196b02b",
+            "parentInvalid": false
+          }
+        },
+        {
+          "lender": "Onity Mortgage Corp",
+          "lenderId": "629a0f74ce8ad00001037ab1",
+          "investor": "Onity Mortgage Corp",
+          "lenderShort": "Onity Mortgage Corp",
+          "program": "30 Year Fixed DSCR",
+          "product": "30 Year Fixed DSCR",
+          "rateGridId": "68ed51f6afb89f18b256c876",
+          "rateGridName": "30 Year Fixed DSCR",
+          "priceBuild": {
+            "parRate": 6.375,
+            "baseRate": 6.125,
+            "rateAdjustment": 0,
+            "noteRate": 6.125,
+            "basePoints": 1.847,
+            "adjustmentPoints": -0.125,
+            "adjustedPoints": 1.722,
+            "borrowerPaidPoints": 1.722,
+            "price": 98.278,
+            "priceDerivedFromPoints": true,
+            "apr": 6.289,
+            "apor": 6.06
+          },
+          "adjustments": [
+            {
+              "group": "Adjustments - DSCR",
+              "reason": "DSCR FICO/CLTV - 760 - 779 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "FicoRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.125
+            }
+          ],
+          "rateAdjustments": [],
+          "holdback": {
+            "broker": [
+              {
+                "reason": "NDC Margin - 0.25%",
+                "type": "Margin",
+                "valueType": "Points",
+                "value": 0.25
+              }
+            ]
+          },
+          "comp": {
+            "borrowerPaid": 6027,
+            "lenderPaid": 6027,
+            "compPlanBorrowerPaid": 0,
+            "borrowerPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 1.722 (Points) x $350,000.00 (Loan Amount)",
+                "points": 1.722,
+                "amount": 6027,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ],
+            "lenderPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 1.722 (Points) x $350,000.00 (Loan Amount)",
+                "points": 1.722,
+                "amount": 6027,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ]
+          },
+          "fees": {
+            "totalOriginationFee": 0,
+            "totalLenderFees": 0,
+            "finalClosingCost": 6027,
+            "cashToClose": 0,
+            "pointsFinanced": 0
+          },
+          "terms": {
+            "loanAmount": 350000,
+            "term": 30,
+            "termInMonths": false,
+            "dayLock": 30,
+            "mortgageType": "Conventional",
+            "loanPurpose": "Purchase",
+            "interestOnly": false,
+            "dscr": 1.25,
+            "fico": 760,
+            "ltv": 0.7,
+            "cltv": 0.7,
+            "dti": 0.44757,
+            "hti": 0.1276
+          },
+          "monthlyPayment": {
+            "start": 0,
+            "end": 0,
+            "rate": 0,
+            "monthlyPI": 2126.64,
+            "buyDown": 0,
+            "buyDownRate": 0,
+            "totalBuyDown": 0,
+            "totalPrincipal": 350000,
+            "totalInterest": 415587.29,
+            "propertyTaxes": 0,
+            "homeOwnerInsurance": 0,
+            "mi": 0,
+            "rent": 0,
+            "otherExpenses": 0,
+            "rentalPropertyCashFlowAmount": 0,
+            "total": 2126.64
+          },
+          "flags": {
+            "disqualified": false,
+            "interpolated": false,
+            "expired": true,
+            "highBalance": true
+          },
+          "rateSheet": {
+            "expired": true,
+            "validAsOf": "2026-08-22T03:36:29.610Z",
+            "rateValidDate": "2026-05-21T18:32:03.113Z",
+            "name": "ONITY ND Non Agency NA2",
+            "id": "6a0f4eb284187f000196b02b",
+            "parentInvalid": false
+          }
+        },
+        {
+          "lender": "Onity Mortgage Corp",
+          "lenderId": "629a0f74ce8ad00001037ab1",
+          "investor": "Onity Mortgage Corp",
+          "lenderShort": "Onity Mortgage Corp",
+          "program": "30 Year Fixed DSCR",
+          "product": "30 Year Fixed DSCR",
+          "rateGridId": "68ed51f6afb89f18b256c876",
+          "rateGridName": "30 Year Fixed DSCR",
+          "priceBuild": {
+            "parRate": 6.375,
+            "baseRate": 6.25,
+            "rateAdjustment": 0,
+            "noteRate": 6.25,
+            "basePoints": 0.871,
+            "adjustmentPoints": -0.125,
+            "adjustedPoints": 0.746,
+            "borrowerPaidPoints": 0.746,
+            "price": 99.254,
+            "priceDerivedFromPoints": true,
+            "apr": 6.321,
+            "apor": 6.06
+          },
+          "adjustments": [
+            {
+              "group": "Adjustments - DSCR",
+              "reason": "DSCR FICO/CLTV - 760 - 779 / CLTV >65.01 % <= 70.0 %",
+              "adjType": "FicoRateAdjustment",
+              "type": "LLPA",
+              "valueType": "Points",
+              "value": 0.125
+            }
+          ],
+          "rateAdjustments": [],
+          "holdback": {
+            "broker": [
+              {
+                "reason": "NDC Margin - 0.25%",
+                "type": "Margin",
+                "valueType": "Points",
+                "value": 0.25
+              }
+            ]
+          },
+          "comp": {
+            "borrowerPaid": 2611,
+            "lenderPaid": 2611,
+            "compPlanBorrowerPaid": 0,
+            "borrowerPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 0.746 (Points) x $350,000.00 (Loan Amount)",
+                "points": 0.746,
+                "amount": 2611,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ],
+            "lenderPaidDetails": [
+              {
+                "line": "",
+                "description": "Origination : 0.746 (Points) x $350,000.00 (Loan Amount)",
+                "points": 0.746,
+                "amount": 2611,
+                "type": "Origination",
+                "aprRelated": false,
+                "nbrPayments": 1,
+                "code": null,
+                "name": null,
+                "payeeName": null,
+                "mismoName": null,
+                "additionalDetail": null,
+                "paidTo": null,
+                "borrowDidShopForIndicator": null,
+                "borrowCanShopForIndicator": null,
+                "isDiscount": false,
+                "isOrigination": true,
+                "external": false,
+                "includeInQmCriteria": false,
+                "premiumRate": false,
+                "discountedRate": false,
+                "tax": false,
+                "insurance": false
+              }
+            ]
+          },
+          "fees": {
+            "totalOriginationFee": 0,
+            "totalLenderFees": 0,
+            "finalClosingCost": 2611,
+            "cashToClose": 0,
+            "pointsFinanced": 0
+          },
+          "terms": {
+            "loanAmount": 350000,
+            "term": 30,
+            "termInMonths": false,
+            "dayLock": 30,
+            "mortgageType": "Conventional",
+            "loanPurpose": "Purchase",
+            "interestOnly": false,
+            "dscr": 1.25,
+            "fico": 760,
+            "ltv": 0.7,
+            "cltv": 0.7,
+            "dti": 0.44927,
+            "hti": 0.1293
+          },
+          "monthlyPayment": {
+            "start": 0,
+            "end": 0,
+            "rate": 0,
+            "monthlyPI": 2155.01,
+            "buyDown": 0,
+            "buyDownRate": 0,
+            "totalBuyDown": 0,
+            "totalPrincipal": 350000,
+            "totalInterest": 425803.72,
+            "propertyTaxes": 0,
+            "homeOwnerInsurance": 0,
+            "mi": 0,
+            "rent": 0,
+            "otherExpenses": 0,
+            "rentalPropertyCashFlowAmount": 0,
+            "total": 2155.01
+          },
+          "flags": {
+            "disqualified": false,
+            "interpolated": false,
+            "expired": true,
+            "highBalance": true
+          },
+          "rateSheet": {
+            "expired": true,
+            "validAsOf": "2026-08-22T03:36:29.610Z",
+            "rateValidDate": "2026-05-21T18:32:03.113Z",
+            "name": "ONITY ND Non Agency NA2",
+            "id": "6a0f4eb284187f000196b02b",
+            "parentInvalid": false
+          }
+        }
+      ],
+      "optionCount": 3,
+      "minRate": 6
+    }
+  ]
+}
