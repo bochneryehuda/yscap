@@ -2,6 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
 import { money, money2, noteRate as rate, price, points as pts } from './format.js';
+// The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
+// so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
+// installs the front end's build tools. See priceBuild.js.
+import { labelize, compRowsOf, feeRowsOf } from './priceBuild.js';
 import { INK, MUTED, SLATE, GOLD, PAPER, DANGER, CAUTION, card, eyebrow, sub, input, label } from './ppeStyles.js';
 
 /**
@@ -161,67 +165,6 @@ export function buildRateStack(programs) {
   return { rates, unpriced, quoteCount, rateCount: rates.length };
 }
 
-/* ── reading the vendor's own blocks ──────────────────────────────────────────
-   `parseFull` hands the fee and comp blocks over as the vendor states them, which means
-   camelCase keys, nulls for anything the vendor did not carry, and — in the comp block —
-   two ARRAYS of itemised lines sitting beside their own totals. Rendering that with
-   `String(v)` is what put "[object Object]" on every quote. */
-
-/** A vendor key as a readable label. Typography only — `borrowerPaid` → "Borrower paid".
- *  It invents no meaning: the raw key still rides along in the row's tooltip, so the
- *  screen can always be checked back against the vendor's own field name. */
-export function labelize(key) {
-  const s = String(key || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim();
-  return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : '';
-}
-
-/**
- * ⛔ THE ONLY TWO COMP FIGURES THIS SCREEN CALLS DOLLARS, and it calls them that because it
- * was MEASURED: on all twelve options of the captured Lender Price answer, `borrowerPaid`
- * and `lenderPaid` each equal the sum of their own detail lines' `amount`, and those lines
- * read "Origination : 1.439 (Points) x $350,000.00 (Loan Amount)" → $5,036.50.
- *
- * Everything else in the block is printed with NO unit. `compPlanBorrowerPaid` is 0 on every
- * captured option and its name reads as a flag; nothing available here can prove whether it
- * is dollars, points or a yes/no, and a guessed unit is exactly the defect this replaced.
- */
-const COMP_DOLLARS = new Set(['borrowerPaid', 'lenderPaid']);
-
-/**
- * The comp block as rows: each figure with the vendor's own itemisation underneath it.
- *
- * A `…Details` array is attached to the figure it belongs to (`borrowerPaidDetails` →
- * `borrowerPaid`) rather than rendered as a row of its own, because the lines ARE the
- * explanation of that figure. A details array whose figure is absent still gets its own
- * row — dropping it would hide part of a paid answer.
- *
- * Pure, and never throws on a shape it has not seen: a non-object comp block yields no rows.
- */
-export function compRowsOf(comp) {
-  if (!comp || typeof comp !== 'object') return [];
-  const entries = Object.entries(comp);
-  const detailOf = new Map();
-  for (const [k, v] of entries) {
-    if (/Details$/.test(k) && Array.isArray(v)) detailOf.set(k.replace(/Details$/, ''), v);
-  }
-  const rows = [];
-  for (const [k, v] of entries) {
-    if (/Details$/.test(k) && Array.isArray(v)) {
-      if (Object.prototype.hasOwnProperty.call(comp, k.replace(/Details$/, ''))) continue; // shown under its figure
-      rows.push({ key: k, text: '', lines: v });
-      continue;
-    }
-    let text;
-    if (nn(v)) text = COMP_DOLLARS.has(k) ? money2(v) : v.toFixed(3);
-    else if (v == null) text = '—';
-    else if (typeof v === 'string') text = v;               // the vendor's own word, kept
-    else if (typeof v === 'boolean') text = v ? 'yes' : 'no';
-    else text = '—';                                        // never "[object Object]"
-    rows.push({ key: k, text, lines: detailOf.get(k) || [] });
-  }
-  return rows;
-}
-
 /* ── small pieces ─────────────────────────────────────────────────────────── */
 function Row({ k, v, strong, indent, tone, title }) {
   return (
@@ -294,7 +237,7 @@ export function PriceBuild({ o }) {
     ? Object.entries(holdback).filter(([, lines]) => Array.isArray(lines) && lines.length)
     : [];
 
-  const feeLines = (o && o.fees && typeof o.fees === 'object') ? Object.entries(o.fees) : [];
+  const feeLines = feeRowsOf(o && o.fees);
   const compRows = compRowsOf(o && o.comp);
 
   return (
@@ -389,7 +332,7 @@ export function PriceBuild({ o }) {
         <Track title="Fees">
           {feeLines.length === 0
             ? <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no fee lines on this quote.</div>
-            : feeLines.map(([k, v]) => <Row key={k} k={labelize(k)} v={nn(v) ? money2(v) : '—'} title={k} />)}
+            : feeLines.map((r) => <Row key={r.key} k={labelize(r.key)} v={r.text} title={r.key} />)}
         </Track>
 
         {/* COMP — the compensation on this quote, in DOLLARS, with the vendor's own itemization.

@@ -63,7 +63,34 @@ console.log('LT Pricing Engine — it renders, against a real Lender Price answe
 // The screen imports `./api.js`, which reaches for the browser's fetch at CALL time only — but the
 // module is imported at load, so the whole graph still has to bundle. It is stubbed because this
 // test is about RENDERING; a real fetch would make it about the network instead.
-const esbuild = require2('esbuild');
+// ⛔ THIS SUITE CANNOT RUN ON THE BUILD SERVER, AND SAYS SO RATHER THAN PRETENDING.
+//
+// The screen is JSX, so rendering it means bundling it, and esbuild is installed under
+// `app-v2/` — which NO CI job installs (the workflow runs `npm ci` at the project root only,
+// and the root's dependencies are express/pg and a handful of document libraries). So on CI
+// this file has nothing to render with. It used to require esbuild outright and CRASH there,
+// which is how it failed the very first run of this branch.
+//
+// Skipping is the incumbent pattern here (`test-payoff-studio-prefill.mjs` does the same) and
+// it is the only option available, but a QUIET skip is the failure that looks like success:
+// dozens of assertions would vanish from CI and the log would read like a pass. So the skip
+// is LOUD, it names the count that did not run, it never prints "all passed", and — the part
+// that actually matters — the rules whose being wrong would COST money (what a fee or comp
+// figure MEANS, and its unit) were moved OUT of the JSX into `priceBuild.js` so that
+// `test-lt-pricer-screen.mjs` proves them on every CI run with no bundler in reach.
+let esbuild;
+try {
+  esbuild = require2('esbuild');
+} catch {
+  console.log('SKIPPED — esbuild is not installed under app-v2/, so the screen cannot be bundled here.');
+  console.log('  This is expected on CI: no CI job installs the front end.');
+  console.log('  NOT RUN: every assertion in this file (the rendered first paint, the rate stack on a');
+  console.log('           real Lender Price answer, the breakdown, and the ineligible view).');
+  console.log('  STILL RUN on CI, with no bundler: scripts/test-lt-pricer-screen.mjs — the structural');
+  console.log('           guards AND the fee/comp unit rules (PE-41..PE-52), which are the ones that');
+  console.log('           cost money when wrong. Run this file locally after `npm install` in app-v2/.');
+  process.exit(0);
+}
 
 const STUB_API = `
 export const ltApi = new Proxy({}, { get: () => () => new Promise(() => {}) });
@@ -73,7 +100,7 @@ export default ltApi;
 const entry = `
 import React from 'react';
 import { renderToString } from 'react-dom/server';
-import LtPricer, { PriceBuild, RateRow, IneligibleView, buildRateStack, toScenario, ltvOf, compRowsOf, labelize } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
+import LtPricer, { PriceBuild, RateRow, IneligibleView, buildRateStack, toScenario, ltvOf } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
 globalThis.__React = React;
 globalThis.__renderToString = renderToString;
 globalThis.__LtPricer = LtPricer;
@@ -83,8 +110,6 @@ globalThis.__IneligibleView = IneligibleView;
 globalThis.__buildRateStack = buildRateStack;
 globalThis.__toScenario = toScenario;
 globalThis.__ltvOf = ltvOf;
-globalThis.__compRowsOf = compRowsOf;
-globalThis.__labelize = labelize;
 `;
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lt-pricer-render-'));
@@ -123,8 +148,6 @@ const RateRow = globalThis.__RateRow;
 const IneligibleView = globalThis.__IneligibleView;
 const buildRateStack = globalThis.__buildRateStack;
 const toScenario = globalThis.__toScenario;
-const compRowsOf = globalThis.__compRowsOf;
-const labelize = globalThis.__labelize;
 
 const render = (el) => renderToString(el);
 const attempt = (fn) => { try { return { html: fn(), err: null }; } catch (e) { return { html: null, err: e }; } };
@@ -454,23 +477,10 @@ for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/ppeSty
     'R52 …never the words "null" or "undefined"');
 }
 {
-  // The pure rule, so the shapes that never occur in one capture are still pinned.
-  const rows = compRowsOf({ borrowerPaid: 1234.5, borrowerPaidDetails: [{ description: 'x', amount: 1234.5 }] });
-  ok(rows.length === 1 && rows[0].key === 'borrowerPaid' && rows[0].lines.length === 1,
-    'R53 a details array is attached to the figure it explains, not listed as its own row');
-  const orphan = compRowsOf({ lenderPaidDetails: [{ description: 'y' }] });
-  ok(orphan.length === 1 && orphan[0].lines.length === 1,
-    'R54 …but a details array with no figure is still shown — never silently dropped');
-  const odd = compRowsOf({ someObject: { a: 1 }, missing: null, flag: true, word: 'Tier 2' });
-  const byKey = Object.fromEntries(odd.map((r) => [r.key, r.text]));
-  ok(byKey.someObject === '—' && byKey.missing === '—',
-    'R55 an unreadable value is a dash, never "[object Object]"');
-  ok(byKey.flag === 'yes' && byKey.word === 'Tier 2',
-    'R56 …a yes/no reads as yes/no, and the vendor\'s own word is kept');
-  ok(compRowsOf(null).length === 0 && compRowsOf('nope').length === 0,
-    'R57 …and a comp block that is not an object yields nothing rather than throwing');
-  ok(labelize('borrowerPaid') === 'Borrower paid' && labelize('totalLenderFees') === 'Total lender fees',
-    'R58 a vendor key reads as words — typography only, no meaning invented');
+  // NOTE the pure truth table for `compRowsOf` / `labelize` USED to sit here and has moved to
+  // scripts/test-lt-pricer-screen.mjs (PE-41..PE-52). It needs no DOM, and this file cannot run
+  // on CI — so keeping it here would have meant the unit rule on a money figure was proven only
+  // on a developer's machine. What stays here is what genuinely needs a rendered page.
 }
 
 console.log(`\n${failures === 0 ? `OFFLINE: all ${n} passed` : `FAILURES: ${failures} of ${n}`}`);

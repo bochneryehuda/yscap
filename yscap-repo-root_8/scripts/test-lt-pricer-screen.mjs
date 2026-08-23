@@ -204,5 +204,54 @@ console.log('LT Pricing Engine — structural guards\n');
   ok(/not sent/.test(src), 'PE-40 the LTV the page works out is labelled as the page\'s own and is not sent');
 }
 
+// ---------------------------------------------------------------------------
+// 9) what a fee and comp figure MEAN — run for real, in CI, with no bundler
+//
+// These rules decide the UNIT on a money figure, which is the single most expensive thing
+// this screen can get wrong: `borrowerPaid` was being printed with the points formatter, so
+// $5,036.50 of compensation rendered as "+5036.500" on a $350,000 loan.
+//
+// They live in a plain-JS module rather than inside the screen for one reason: a `.jsx`
+// module can only be loaded by bundling it through esbuild, esbuild is installed under
+// `app-v2/` and NO CI job installs the front end — so every render-through-esbuild suite in
+// this repo skips on the build server. Left in the screen, the unit rule would have been
+// checked on a developer's machine and nowhere else.
+// ---------------------------------------------------------------------------
+{
+  const PB = await import(new URL('../app-v2/src/longterm/priceBuild.js', import.meta.url));
+
+  ok(PB.labelize('borrowerPaid') === 'Borrower paid' && PB.labelize('totalLenderFees') === 'Total lender fees',
+    'PE-41 a vendor key reads as words — typography only, no meaning invented');
+
+  const dollars = PB.compRowsOf({ borrowerPaid: 5036.5 })[0];
+  ok(dollars.text === '$5,036.50', `PE-42 a comp figure that IS dollars prints as dollars (got ${dollars.text})`);
+  ok(!/^[+-]?\d+(\.\d+)?$/.test(dollars.text), 'PE-43 …and never as a bare or points-style number');
+
+  const unknown = PB.compRowsOf({ compPlanBorrowerPaid: 0 })[0];
+  ok(unknown.text === '0.000',
+    'PE-44 a figure whose unit nobody can prove carries NO unit — a guessed unit is how PE-42 broke');
+
+  const withLines = PB.compRowsOf({ borrowerPaid: 1, borrowerPaidDetails: [{ description: 'x' }] });
+  ok(withLines.length === 1 && withLines[0].lines.length === 1,
+    'PE-45 the vendor\'s itemisation is attached to the figure it explains');
+  const orphan = PB.compRowsOf({ lenderPaidDetails: [{ description: 'y' }] });
+  ok(orphan.length === 1 && orphan[0].lines.length === 1,
+    'PE-46 …and an itemisation with no figure is still shown, never silently dropped');
+
+  const odd = Object.fromEntries(PB.compRowsOf({ o: { a: 1 }, n: null, b: true, s: 'Tier 2' }).map((r) => [r.key, r.text]));
+  ok(odd.o === '—' && odd.n === '—', 'PE-47 an unreadable value is a dash — never "[object Object]" or "null"');
+  ok(odd.b === 'yes' && odd.s === 'Tier 2', 'PE-48 …a yes/no reads as yes/no, and the vendor\'s own word is kept');
+  ok(PB.compRowsOf(null).length === 0 && PB.compRowsOf('nope').length === 0,
+    'PE-49 …and a comp block that is not an object yields nothing rather than throwing');
+
+  ok(PB.feeRowsOf({ totalLenderFees: null })[0].text === '—',
+    'PE-50 a fee the vendor did not quote is an em dash, never the word "null"');
+  ok(PB.feeRowsOf({ totalLenderFees: 1595 })[0].text === '$1,595.00', 'PE-51 …and a quoted fee is money');
+
+  // THE SCREEN MUST USE THEM. A pure module nothing imports proves nothing about the page.
+  ok(/from '\.\/priceBuild\.js'/.test(src) && /compRowsOf\(/.test(code) && /feeRowsOf\(/.test(code),
+    'PE-52 the screen reads its fee and comp rows from that module — one definition, not a second copy');
+}
+
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
 process.exit(failures ? 1 : 0);
