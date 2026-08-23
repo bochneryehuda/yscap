@@ -76,6 +76,35 @@ sql-ref   borrower_officers
 sql-write borrower_officers
 
 # ---------------------------------------------------------------------------
+# CLICKUP FOR LONG-TERM — authorized in writing by the owner, 2026-08-23:
+#   "Bring over the basic details of the ClickUp connector and actual
+#    credentials from the ClickUp connector from the RTL side over to the
+#    long-term side … You already have the officer syncing and all the
+#    folders … you can just take it over and bring it over to the long-term
+#    side the correct folder ids for every officer."
+#
+# WHAT CROSSES, AND WHY IT IS THESE TWO FILES AND NOT THE INTEGRATION. The
+# ClickUp WORKSPACE is the company's, not RTL's: both products' files sit in
+# one Loan Pipeline space, in the same per-officer folders. So the field ids
+# and the officer->folder map are FACTS ABOUT THE TENANT, not RTL behaviour,
+# and a second copy of them in src/longterm would be two hand-kept lists of
+# the same ids drifting apart — the failure this ledger exists to prevent.
+# Both modules are pure data with no requires and no behaviour.
+#
+# WHAT DOES NOT CROSS: the RTL ClickUp CLIENT, orchestrator, ingest, mapper,
+# crosswalk, enqueue and status machinery. Long-Term gets its own client under
+# src/longterm/clickup/, exactly as it has its own Encompass client, reading
+# LT_CLICKUP_* and falling back to the shared CLICKUP_* environment values —
+# which is what "the actual credentials" means: the same token, named in the
+# environment, never a value in code.
+# ---------------------------------------------------------------------------
+
+# The tenant's ClickUp custom-field ids (including the YS loan number and the
+# portal-file-id stamp) and the per-officer folder routing. Data, not logic.
+import src/clickup/fields.js
+import src/clickup/routing.js
+
+# ---------------------------------------------------------------------------
 # THE FRONT-END MOUNT SEAM — authorized in writing by the owner, 2026-08-14:
 #   "You were authorized to touch that switch of the short-term shell."
 #
