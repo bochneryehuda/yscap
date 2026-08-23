@@ -449,8 +449,47 @@ export default function StaffLayout({ children }) {
   // roles, so they stay 0 for everyone else and the sum is naturally scoped.
   const approvalsCount = escCount + excCount + fescCount + reviewCount + myExcCount + trReviewCount;
   const roleLabel = ROLE_LABEL[role] || role || 'Internal';
+
+  // STAFF VIEW BANNER — when this console is somebody ELSE'S, seen through a
+  // super-admin's read-only session, it must say so on every screen, both
+  // products, unmissably. Probed once per mount: the answer cannot change
+  // without the token changing, and a token change remounts the app.
+  const [staffViewOf, setStaffViewOf] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    api.staffViewSession().then((s) => {
+      if (alive && s && s.active) setStaffViewOf(s.viewing || {});
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const exitStaffView = async () => {
+    let own = '';
+    try { const r = await api.staffViewExit(); own = (r && r.token) || ''; } catch { /* parked below */ }
+    try { if (!own) own = sessionStorage.getItem('ys_portal_staff_token') || ''; } catch { /* private mode */ }
+    try { sessionStorage.removeItem('ys_portal_staff_token'); } catch { /* private mode */ }
+    if (own) {
+      try { localStorage.setItem('ys_portal_token', own); } catch { /* private mode */ }
+      window.location.assign('/internal');
+      return;
+    }
+    // Neither the server nor the parked copy produced a session — sign in again,
+    // never stay inside somebody else's console.
+    try { localStorage.removeItem('ys_portal_token'); } catch { /* private mode */ }
+    window.location.assign('/');
+  };
+
   return (
     <div className="app">
+      {staffViewOf && (
+        <div role="alert" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1001,
+          background: '#1F3864', color: '#fff', padding: '8px 14px', display: 'flex',
+          alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14 }}>
+          <span>You are seeing <strong>{staffViewOf.name || 'a team member'}</strong>’s screen — read-only.
+            Switch Long-term / Short-term above to see everything they see.</span>
+          <button className="btn small" style={{ background: '#fff', color: '#141B22', border: 'none' }}
+            onClick={exitStaffView}>Back to my own screen</button>
+        </div>
+      )}
       {staleBuild && (
         <div role="alert" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1000,
           background: '#AE8746', color: '#fff', padding: '8px 14px', display: 'flex',
@@ -474,7 +513,7 @@ export default function StaffLayout({ children }) {
             <div className="sb-sec">Long-term</div>
             <NavLink className="sb-link" to="/internal/lt" end><NavIcon name="pipeline" />Pipeline</NavLink>
             <NavLink className="sb-link" to="/internal/lt/book" title="Every long-term file, with the folder, the status and the milestone it sits in."><NavIcon name="book" />The book</NavLink>
-            <NavLink className="sb-link" to="/internal/lt/people"><NavIcon name="team" />People</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/people"><NavIcon name="team" />Team</NavLink>
             <NavLink className="sb-link" to="/internal/lt/borrowers" title="Which client each long-term file belongs to — what puts it on their own login."><NavIcon name="borrowers" />Borrowers</NavLink>
             <NavLink className="sb-link" to="/internal/lt/statuses" title="Encompass's milestones, our own stage names, and what the borrower is told — side by side."><NavIcon name="conditions" />Statuses</NavLink>
             <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
