@@ -250,6 +250,10 @@ function Cell({ col, row, stageLabel }) {
 export default function LtPipeline() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
+  // The on-demand Encompass pull, offered on an empty pipeline. Its own two pieces
+  // of state so a pull in flight can never be confused with the list loading.
+  const [pulling, setPulling] = useState(false);
+  const [pullNote, setPullNote] = useState('');
   const [search, setSearch] = useState('');
   const [stage, setStage] = useState('');
   // The second control row: '' (everyone's) | 'mine' | 'unassigned'.
@@ -494,6 +498,34 @@ export default function LtPipeline() {
         <div className="card" style={{ color: '#141B22' }}>
           {data.emptyReason
             || 'No long-term files yet. They appear here once the sync has brought them in from Encompass.'}
+          {/* THE ACTION BELONGS WHERE THE PROBLEM IS SEEN. An empty pipeline is
+              exactly the moment somebody wants to press "bring them in", and sending
+              them off to find another screen is how a working system reads as broken.
+              Offered only when there is genuinely nothing here, and only to somebody
+              allowed to run it — the button hides itself rather than 403-ing, and the
+              server re-checks the permission on the press either way. */}
+          {!data.emptyReason && (
+            <div style={{ marginTop: 12 }}>
+              <button type="button" className="btn primary" disabled={pulling}
+                onClick={async () => {
+                  setPulling(true); setPullNote('');
+                  try {
+                    const out = await ltApi.pullFromEncompass();
+                    setPullNote(out.note || 'Pulling from Encompass now.');
+                    setTimeout(() => load(), 8000);
+                  } catch (e) {
+                    // A staffer who may not run it is TOLD so, rather than left
+                    // pressing a button that appears to do nothing.
+                    setPullNote(e.message || 'Could not start the pull.');
+                  } finally { setPulling(false); }
+                }}>
+                {pulling ? 'Starting…' : 'Pull everything from Encompass'}
+              </button>
+              {pullNote && (
+                <div style={{ marginTop: 8, fontSize: 13, color: '#4B585C' }}>{pullNote}</div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

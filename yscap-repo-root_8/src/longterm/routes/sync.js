@@ -17,6 +17,7 @@ const router = express.Router();
 const loanSync = require('../sync/loans');
 const conditionSync = require('../conditions/sync');
 const milestoneCatalogSync = require('../sync/milestone-catalog');
+const worker = require('../sync/worker');
 const access = require('../access');
 const settingsStore = require('../settings/store');
 const db = require('../db');
@@ -153,6 +154,51 @@ router.post('/', requireSyncAdmin, async (req, res) => {
     console.error('[lt] sync failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not run the sync.' });
   }
+});
+
+/**
+ * POST /api/lt/sync/pull — PULL EVERYTHING FROM ENCOMPASS, NOW.
+ *
+ * Owner-directed 2026-08-23: *"Add, for the super admin, a syncing button. Like we
+ * have 'pull from click up', you should have a button to pull from Encompass as well.
+ * That should trigger it right away."*
+ *
+ * WHY THIS IS NOT THE BUTTON THAT ALREADY EXISTED. `POST /` runs ONE pass — 25 loans
+ * — which is right for "refresh what moved" and is the wrong answer entirely for
+ * somebody who has just been told the book is empty: they would press it, watch 25 of
+ * 772 files arrive, and reasonably conclude it was broken. This runs the SAME drain
+ * the background worker runs (`worker.tickOnce`), which keeps calling until the book
+ * is caught up or its budget is spent, and brings the conditions and the milestone
+ * catalog with it.
+ *
+ * IT ANSWERS IMMEDIATELY AND WORKS IN THE BACKGROUND, and that is a correctness
+ * requirement rather than a nicety: a full drain is bounded at TEN MINUTES, and no
+ * browser, proxy or load balancer between here and the user will hold a request open
+ * that long. Waiting would give them a timeout on a pull that is in fact running
+ * perfectly — the worst possible reading. So the answer is "started", and the Sync
+ * screen's own state query is what shows the numbers climbing.
+ *
+ * IT CANNOT STACK. `tickOnce` refuses while a pass is already running (its own
+ * `running` flag), so a second press — or a press that lands while the 20-minute
+ * timer is mid-pass — is a no-op that says so rather than a second sweep of the
+ * tenant's shared API budget.
+ *
+ * ENCOMPASS STAYS ONE-WAY: every call this schedules is a read.
+ */
+router.post('/pull', requireSyncAdmin, async (req, res) => {
+  // Answer first, then work. Nothing after this line may reach the response.
+  res.json({
+    started: true,
+    note: 'Pulling from Encompass now. This runs in the background and works through the whole book — '
+      + 'refresh this screen in a minute or two to watch the count climb.',
+  });
+  setImmediate(() => {
+    worker.tickOnce().catch((e) => {
+      // The pass reports its own failures on the loans themselves and in the log;
+      // this catch exists only so a rejection can never take the process down.
+      console.error('[lt] manual Encompass pull failed:', (e && e.message) || e);
+    });
+  });
 });
 
 /**

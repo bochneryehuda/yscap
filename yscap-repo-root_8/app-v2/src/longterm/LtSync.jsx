@@ -62,6 +62,23 @@ export default function LtSync() {
     finally { setBusy(false); }
   };
 
+  // THE FULL PULL. `run` above refreshes what moved (25 loans); this one works
+  // through the WHOLE book, which is what somebody staring at an empty pipeline
+  // actually wants. It returns immediately and keeps going in the background, so the
+  // screen re-reads its own state on a timer rather than pretending to wait.
+  const pullAll = async () => {
+    setBusy(true); setNote('');
+    try {
+      const out = await ltApi.pullFromEncompass();
+      setNote(out.note || 'Pulling from Encompass now.');
+      // First refresh soon (the first loans land within seconds), then again once
+      // the drain has had a real run at it. Cleared on unmount by the effect below.
+      setTimeout(load, 4000);
+      setTimeout(load, 30000);
+    } catch (e) { setNote(e.message || 'Could not start the pull.'); }
+    finally { setBusy(false); }
+  };
+
   const runConditions = async () => {
     setBusy(true); setNote('');
     try {
@@ -146,8 +163,15 @@ export default function LtSync() {
 
       {state && state.canRun && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
-          <button className="btn" onClick={run} disabled={busy}>
-            {busy ? 'Reading Encompass…' : 'Sync now'}
+          {/* THE PRIMARY ACTION, and deliberately first and loudest: on a book that
+              has never been pulled, "bring everything in" is the thing somebody
+              wants, and the 25-loan refresh beside it reads as broken if it is all
+              that is offered. */}
+          <button className="btn primary" onClick={pullAll} disabled={busy}>
+            {busy ? 'Starting…' : 'Pull everything from Encompass'}
+          </button>
+          <button className="btn ghost" onClick={run} disabled={busy}>
+            {busy ? 'Reading Encompass…' : 'Refresh what changed'}
           </button>
           {/* Offered even while the switch is off: the button answers WHY rather
               than vanishing, which is the difference between a control somebody

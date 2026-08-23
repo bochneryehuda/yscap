@@ -309,6 +309,33 @@ const SETTINGS = [
       + 'consumer wording "Funded" in Encompass\'s own catalog (db/547). The investor-name rule '
       + '(CLAUDE.md rule 10) forbids any client-facing hint of who the buyer is.' },
 
+  // ── What the mirror is allowed to bring in ────────────────────────────────
+  //
+  // Owner-directed 2026-08-23: *"make sure it's only gonna pull according to our
+  // rule: only long-term files."*
+  //
+  // Discovery asks Encompass for the WHOLE book, because no folder separates the
+  // two products at the source — 772 loans, of which 251 are fix-and-flip and are
+  // not ours. Up to now every one of them was mirrored and sorted out afterwards.
+  // These two settings are what stop that: a loan the RULE PROVES is short-term is
+  // never written and never read, and one already in the book is never listed.
+  { key: 'sync.mirrorShortTerm', group: 'Sync', label: 'Bring short-term (RTL) loans in too',
+    type: 'boolean', default: false,
+    description: 'OFF means a loan our own rule proves is short-term is never mirrored — it is not '
+      + 'written, and no Encompass call is spent reading it. A loan the rule CANNOT place is still '
+      + 'brought in: refusing to mirror what we cannot classify would make files disappear with '
+      + 'nothing saying so.',
+    evidence: 'The tenant\'s book is 772 loans — 490 long-term and 251 short-term (product-term.js '
+      + 'over the 2026-08-14 census). Mirroring the short-term half cost 251 loan reads per full '
+      + 'pass and put files on the long-term side that were never ours.' },
+  { key: 'pipeline.hideShortTerm', group: 'Pipeline', label: 'Hide short-term (RTL) files from the pipeline',
+    type: 'boolean', default: true,
+    description: 'A loan the rule proves is short-term is left off the long-term pipeline. It is '
+      + 'still COUNTED in the census, so totals reconcile against Encompass and nothing vanishes '
+      + 'without a trace — it simply stops appearing on a screen it does not belong on.',
+    evidence: 'Owner-directed 2026-08-23. Needed as well as the mirror rule, because a short-term '
+      + 'loan pulled in before that rule existed is already in the book.' },
+
   // ── Conditions ────────────────────────────────────────────────────────────
   { key: 'conditions.model', group: 'Conditions', label: 'Condition model',
     type: 'enum', default: 'enhanced', options: ['enhanced', 'legacy'],
