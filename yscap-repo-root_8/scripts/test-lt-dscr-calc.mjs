@@ -125,6 +125,18 @@ console.log('\na blank is never a zero — and the screen is told what is missin
 
   ok(D.dscrFrom(null).dscr === null && D.dscrFrom(undefined).missing.length > 0,
     'B5 no input at all is answered, not thrown');
+
+  // WHAT IS MISSING MUST BE THE THING THAT IS MISSING. Sending somebody to the rate box because
+  // the loan amount happened to be filled in is a message that wastes their time.
+  const noLoan = D.dscrFrom({ ratePct: 7, termYears: 30, rentMonthly: 3500, taxMonthly: 500, insuranceMonthly: 150 });
+  ok(noLoan.missing.includes('loan amount') && !noLoan.missing.includes('rate'),
+    'B6 no loan amount names the loan amount, not the rate');
+  const noTerm = D.dscrFrom({ loanAmount: 375000, ratePct: 7, rentMonthly: 3500, taxMonthly: 500, insuranceMonthly: 150 });
+  ok(noTerm.dscr === null && noTerm.missing.includes('loan term') && !noTerm.missing.includes('rate'),
+    'B7 an amortising payment with no term names the term, not the rate');
+  // …and interest-only genuinely does not need one, which is the whole reason B7 can be true.
+  const ioNoTerm = D.dscrFrom({ loanAmount: 375000, ratePct: 7, interestOnly: true, rentMonthly: 3500, taxMonthly: 500, insuranceMonthly: 150 });
+  ok(ioNoTerm.dscr != null, 'B8 …while interest-only needs no term at all');
 }
 
 // ── 5. IT MOVES WITH THE SCENARIO ───────────────────────────────────────────

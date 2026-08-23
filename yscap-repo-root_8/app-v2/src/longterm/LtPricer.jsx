@@ -125,6 +125,14 @@ const START = {
   prepayStructure: 'Standard',
 };
 
+/** What the DSCR calculator starts on — its own scratch pad, cleared with the scenario. HOA is the
+ *  one field with a default and it is the owner's: blank means none. */
+const CALC_START = {
+  rent: '', tax: '', taxBasis: 'monthly', insurance: '', insBasis: 'monthly',
+  hoa: '',
+  rate: '',
+};
+
 export { toScenario };
 
 /* HOW HARD THIS PAGE CHASES THE INELIGIBLE SIDE ON ITS OWN.
@@ -1020,11 +1028,7 @@ export default function LtPricer() {
   // costs are not priced facts and are never sent to Lender Price — they exist to work out ONE
   // number, the ratio, which the person then chooses to use or not.
   const [calcOpen, setCalcOpen] = useState(false);
-  const [calc, setCalc] = useState({
-    rent: '', tax: '', taxBasis: 'monthly', insurance: '', insBasis: 'monthly',
-    hoa: '',                 // blank means none — the owner's own default
-    rate: '',
-  });
+  const [calc, setCalc] = useState(CALC_START);
   const timer = useRef(null);
   // The auto-ask loop's own bookkeeping: which search it is chasing, how many asks it has spent, and
   // the pending timer. Refs rather than state — none of it is drawn, and putting it in state would
@@ -1476,7 +1480,11 @@ export default function LtPricer() {
             <button type="submit" className="btn primary" disabled={busy}>
               {busy ? `Pricing… ${elapsed.toFixed(1)}s` : 'Price it'}
             </button>
-            <button type="button" className="btn ghost" disabled={busy} onClick={() => setF(START)}>
+            {/* RESET CLEARS THE CALCULATOR TOO. The rent and the carrying costs are facts about
+                THIS property, so leaving them behind on a fresh scenario would quietly work out a
+                ratio from the last deal's numbers. */}
+            <button type="button" className="btn ghost" disabled={busy}
+              onClick={() => { setF(START); setCalc(CALC_START); setCalcOpen(false); }}>
               Reset to the starting scenario
             </button>
             {/* WHAT IS ACTUALLY GOING ON THE WIRE, in one line. The amount triangle means the

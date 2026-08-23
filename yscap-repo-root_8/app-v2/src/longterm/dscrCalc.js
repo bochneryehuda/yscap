@@ -102,7 +102,14 @@ export function dscrFrom(input) {
 
   const missing = [];
   if (rent == null) missing.push('rent');
-  if (pi == null) missing.push(nn(i.loanAmount) && i.loanAmount > 0 ? 'rate' : 'loan amount');
+  if (pi == null) {
+    // Name the piece that is ACTUALLY missing, in the order the payment needs them. Reporting
+    // "rate" because the loan amount happens to be present would send somebody to a box that is
+    // already filled in.
+    if (!nn(i.loanAmount) || i.loanAmount <= 0) missing.push('loan amount');
+    else if (!nn(i.ratePct) || i.ratePct < 0) missing.push('rate');
+    else missing.push('loan term');
+  }
   if (tax == null) missing.push('property tax');
   if (insurance == null) missing.push('insurance');
 
