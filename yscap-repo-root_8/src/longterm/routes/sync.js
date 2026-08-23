@@ -23,6 +23,7 @@ const settingsStore = require('../settings/store');
 const db = require('../db');
 const encClient = require('../encompass/client');
 const killSwitch = require('../encompass/enabled');
+const runLog = require('../sync/run-log');
 
 async function requireSyncAdmin(req, res, next) {
   try {
@@ -96,10 +97,25 @@ router.get('/', async (req, res) => {
       canRun = access.mayManagePeople(req.actor, settings);
       conditionsEnabled = settings['conditions.enabled'] === true;
     } catch (_) { /* the figures are still worth showing; the button simply stays off */ }
+    // WHAT THE LAST PASS ACTUALLY DID (db/616) — the one thing every figure above
+    // cannot say. Everything else on this response is counted out of `lt_loans`, so a
+    // pass that produced no loans (Encompass refused, the switch is off, the search
+    // came back empty) renders as an untouched screen with no explanation anywhere.
+    // This is the explanation. It is best-effort: a diary we cannot read must not
+    // cost the figures we can.
+    const lastRuns = await runLog.latest();
     res.json({
       ...rows[0],
       failing,
       canRun,
+      // Keyed by pass so the screen can lead with the one that matters — the loans —
+      // and still say something about the others without a second request.
+      lastRuns,
+      lastLoanRun: lastRuns.find((r) => r.kind === 'loans') || null,
+      // A pass in flight is a different state from a pass that finished, and an
+      // empty screen during the first drain is the moment somebody most wants to
+      // know which one they are looking at.
+      running: worker.isRunning(),
       conditions: { enabled: conditionsEnabled, ...cond[0], ...mirrored[0] },
       milestoneCatalog: cat[0] || {},
     });
@@ -199,6 +215,16 @@ router.post('/pull', requireSyncAdmin, async (req, res) => {
     : (encClient.configured() ? null : 'Encompass is not connected yet — add the long-term Encompass credentials first.');
   if (offReason) return res.json({ started: false, reason: offReason, note: offReason });
 
+  // A PASS ALREADY RUNNING IS SAID OUT LOUD. `tickOnce` refuses one, but it refuses
+  // by RETURN VALUE — and the call below is fired through setImmediate, where nothing
+  // reads it. So without this the button answers "pulling now" and then quietly does
+  // nothing, which is the one answer worse than a refusal.
+  if (worker.isRunning()) {
+    const busy = 'A pull is already running. Give it a minute and refresh this screen — '
+      + 'starting a second one would only make both slower.';
+    return res.json({ started: false, reason: busy, note: busy });
+  }
+
   // Answer first, then work. Nothing after this line may reach the response.
   res.json({
     started: true,
@@ -206,7 +232,7 @@ router.post('/pull', requireSyncAdmin, async (req, res) => {
       + 'refresh this screen in a minute or two to watch the count climb.',
   });
   setImmediate(() => {
-    worker.tickOnce().catch((e) => {
+    worker.tickOnce({ trigger: 'manual' }).catch((e) => {
       // The pass reports its own failures on the loans themselves and in the log;
       // this catch exists only so a rejection can never take the process down.
       console.error('[lt] manual Encompass pull failed:', (e && e.message) || e);

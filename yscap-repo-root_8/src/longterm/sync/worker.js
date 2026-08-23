@@ -32,6 +32,7 @@ const loans = require('./loans');
 const conditions = require('../conditions/sync');
 const milestoneCatalog = require('./milestone-catalog');
 const contacts = require('../people/contacts');
+const runLog = require('./run-log');
 
 /** Minutes between passes. The tenant's own pacing makes a tighter loop pointless. */
 const POLL_MIN = (() => {
@@ -142,19 +143,26 @@ let started = false;
  * conditions, because the two read different things and fail for different
  * reasons.
  */
-async function tickOnce() {
+async function tickOnce({ trigger = 'worker' } = {}) {
   if (running) return { ok: false, reason: 'a pass is already running' };
   running = true;
   const started_at = Date.now();
   const out = { loans: null, conditions: null, milestoneCatalog: null, pilotRoles: null };
   try {
+    // EVERY PASS RECORDS WHAT IT DID (db/616). The log line below says the same
+    // thing, and a log line is not an answer: the owner asked twice why nothing was
+    // arriving and nobody could tell them, because a refusal or an outage leaves NO
+    // loan row and the Sync screen is built entirely out of loan rows. `runLog.record`
+    // writes the verdict — including the reason — somewhere a screen can read it.
+    // It can never change what a pass does: it re-throws whatever the pass threw, into
+    // the same catch that was already there.
     try {
-      out.loans = await drainLoans(Date.now);
+      out.loans = await runLog.record('loans', trigger, () => drainLoans(Date.now));
     } catch (e) {
       out.loans = { ok: false, reason: (e && e.message) || String(e) };
     }
     try {
-      out.conditions = await conditions.syncOnce({});
+      out.conditions = await runLog.record('conditions', trigger, () => conditions.syncOnce({}));
     } catch (e) {
       out.conditions = { ok: false, reason: (e && e.message) || String(e) };
     }
@@ -163,7 +171,7 @@ async function tickOnce() {
     // stops a step a buyer added from blanking the progress bar on every file
     // sitting at it. Independent of the other two, like they are of each other.
     try {
-      out.milestoneCatalog = await milestoneCatalog.refreshOnce({});
+      out.milestoneCatalog = await runLog.record('milestone_catalog', trigger, () => milestoneCatalog.refreshOnce({}));
     } catch (e) {
       out.milestoneCatalog = { ok: false, reason: (e && e.message) || String(e) };
     }
@@ -174,7 +182,7 @@ async function tickOnce() {
     // database, fill-only, and a caught-up book inserts nothing. Independent of the
     // three passes above, like they are of each other.
     try {
-      out.pilotRoles = await contacts.backfillPilotRoles({});
+      out.pilotRoles = await runLog.record('pilot_roles', trigger, () => contacts.backfillPilotRoles({}));
     } catch (e) {
       out.pilotRoles = { ok: false, reason: (e && e.message) || String(e) };
     }
@@ -247,4 +255,13 @@ function start() {
   return true;
 }
 
-module.exports = { start, tickOnce, _internals: { enabled, drainLoans, POLL_MIN, FIRST_RUN_MS, DRAIN_SEC, MAX_PASSES } };
+/**
+ * Is a pass in flight right now?
+ *
+ * Exported so the manual pull button can SAY "one is already running" rather than
+ * answering "started" about a pass `tickOnce` is about to refuse — the refusal is a
+ * return value, and the button fires it through `setImmediate` where nothing reads it.
+ */
+function isRunning() { return running; }
+
+module.exports = { start, tickOnce, isRunning, _internals: { enabled, drainLoans, POLL_MIN, FIRST_RUN_MS, DRAIN_SEC, MAX_PASSES } };
