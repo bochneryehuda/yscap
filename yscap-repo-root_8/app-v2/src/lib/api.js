@@ -17,6 +17,11 @@ export const clearToken = () => localStorage.removeItem(KEY);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const RETRYABLE = [502, 503, 504];
+// The shared record of what is uploading right now (see lib/upload-progress.js).
+// The TRANSPORT writes to it, so every upload surface gets a live row without
+// any call site remembering to report progress.
+import * as up from './upload-progress.js';
+
 const RETRY_DELAYS = [700, 1800, 3500];   // ~6s total — covers a restart blip
 
 function friendlyError(status, data) {
@@ -257,6 +262,34 @@ async function downloadPost(path, body) {
   const m = /filename="([^"]+)"/.exec(cd);
   return { blob: await res.blob(), filename: m ? m[1] : 'document' };
 }
+/* AN UPLOAD THAT DOES NOT GO THROUGH ONE OF THE DOCUMENT DOORS STILL GETS A ROW.
+ *
+ * A handful of endpoints take their own shape — a draw's supporting documents post a
+ * batch of files with a category, the manual wire form posts one. They are still
+ * uploads, so the owner's rule still applies to them (2026-08-23: "everywhere in our
+ * system … it's just blank, and it sounds like it's not uploading"), and a helper is
+ * the honest way to say so: one line at the call site, no bespoke progress state, and
+ * impossible to half-do. Sizeless rows render indeterminate (see `trackJsonUpload`) —
+ * these payloads are already in memory, so what is being waited on is the server, and
+ * a percentage would be invented.
+ */
+export function trackUploads(target, names, run) {
+  const list = (Array.isArray(names) ? names : [names]).filter(Boolean);
+  const ids = list.map((n) => {
+    const id = up.startUpload({ target, filename: String(n), size: 0 });
+    up.finishSending(id);
+    return id;
+  });
+  return Promise.resolve()
+    .then(run)
+    .then((r) => { ids.forEach((i) => up.completeUpload(i)); return r; })
+    .catch((e) => {
+      const msg = (e && e.data && (e.data.error || e.data.message)) || (e && e.message);
+      ids.forEach((id) => up.failUpload(id, msg));
+      throw e;
+    });
+}
+
 // The authenticated-GET download, exported so feature clients (e.g. the Arena)
 // can fetch a file behind the login instead of pointing an <a href> at it.
 export const downloadAuthed = download;
@@ -317,23 +350,103 @@ function b64json(o) {
 }
 async function uploadBinary(path, b) {
   const { file, dataBase64, dataUrl, ...meta } = b || {};
+  const filename = meta.filename || (file && file.name) || 'upload';
   const headers = { 'Content-Type': 'application/octet-stream' };
   const t = getToken();
   if (t) headers.Authorization = `Bearer ${t}`;
   headers['x-upload-meta'] = b64json({
     ...meta,
-    filename: meta.filename || (file && file.name) || 'upload',
+    filename,
     contentType: meta.contentType || (file && file.type) || 'application/octet-stream',
   });
-  const res = await resilientFetch(path, { method: 'POST', headers, body: file });
-  let data = null;
-  try { data = await res.json(); } catch { /* empty */ }
-  if (!res.ok) {
-    const err = new Error(friendlyError(res.status, data));
-    err.status = res.status; err.data = data;
-    throw err;
+
+  /* XMLHttpRequest, NOT fetch — and this is the whole reason uploads showed nothing.
+     Owner-reported 2026-08-23: *"when you upload a document, right now it's not doing
+     anything while it's uploading. It's just blank, and it sounds like it's not
+     uploading."*  `fetch()` has no way to report how much of the REQUEST BODY has been
+     sent: its promise settles when the response arrives, and there is no event in
+     between. So no surface could have shown a percentage even if it had wanted to —
+     there was no number to show. `xhr.upload.onprogress` is the only browser API that
+     reports bytes sent, which is why the transport moves here.
+
+     Everything else is deliberately identical: same path, same headers, same streamed
+     File body (XHR streams a File exactly as fetch does — the browser sends it in
+     chunks, so the "sky is the limit" upload size from 2026-08-21 is untouched), same
+     JSON result, same error shape. Every existing caller is unchanged.
+
+     Progress is published to lib/upload-progress.js under a target derived from the
+     upload's own metadata, so a surface gets a live row by rendering <UploadRows/>
+     where the document will land — no call site has to remember to report anything. */
+  const rowId = up.startUpload({ target: up.uploadTarget(meta), filename, size: file ? file.size : 0 });
+
+  try {
+    const data = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', path, true);
+      for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+      xhr.responseType = 'text';
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) up.updateUpload(rowId, { loaded: e.loaded, total: e.total });
+      };
+      // The body is out; from here the server is storing it and we are waiting.
+      xhr.upload.onload = () => up.finishSending(rowId);
+
+      xhr.onload = () => {
+        let parsed = null;
+        try { parsed = JSON.parse(xhr.responseText); } catch { /* a non-JSON body is handled below */ }
+        if (xhr.status >= 200 && xhr.status < 300) { resolve(parsed); return; }
+        const err = new Error(friendlyError(xhr.status, parsed));
+        err.status = xhr.status; err.data = parsed;
+        reject(err);
+      };
+      // A network failure, a CORS refusal and an abort are three different things to
+      // the person watching, and "Upload failed" for all three is what makes a system
+      // feel broken. Say which one it was.
+      xhr.onerror = () => reject(new Error('The connection dropped while uploading. Check your connection and try again.'));
+      xhr.ontimeout = () => reject(new Error('The upload timed out. Try again, or try a smaller file.'));
+      xhr.onabort = () => reject(Object.assign(new Error('Upload cancelled.'), { cancelled: true }));
+
+      xhr.send(file);
+    });
+
+    // A 401 on an upload must trigger the same session-expiry probe every other call
+    // gets; `resilientFetch` used to do that for this path and XHR does not, so it is
+    // done explicitly rather than quietly lost.
+    up.completeUpload(rowId);
+    return data;
+  } catch (e) {
+    if (e && e.status === 401 && getToken()) handle401(e.data);
+    up.failUpload(rowId, (e && e.data && (e.data.error || e.data.message)) || (e && e.message));
+    throw e;
   }
-  return data;
+}
+
+/* THE OLDER, BASE64 UPLOAD PATH GETS A ROW TOO — because "everywhere in our system"
+   means everywhere, and a surface that still hands over bytes rather than a File would
+   otherwise be the one place that still looks broken.
+
+   It cannot show a real PERCENTAGE and does not pretend to: the bytes were already in
+   memory before the request started, so what the person is waiting on is the server
+   storing them, not a transfer. The row says the file's name and that it is working,
+   with an indeterminate bar — which is the honest version of the same message. A
+   surface that wants a true percentage hands `api` a File and gets the streaming door
+   (see `uploadBinary`). */
+function trackJsonUpload(meta, run) {
+  const m = meta || {};
+  const id = up.startUpload({
+    target: up.uploadTarget(m),
+    filename: m.filename || (m.file && m.file.name) || 'file',
+    size: 0,                       // 0 → no percentage; the row renders indeterminate
+  });
+  up.finishSending(id);            // straight to "working on it"
+  return Promise.resolve()
+    .then(run)
+    .then((r) => { up.completeUpload(id); return r; })
+    .catch((e) => {
+      up.failUpload(id, (e && e.data && (e.data.error || e.data.message)) || (e && e.message));
+      throw e;
+    });
 }
 
 // Upload idempotency, client side (#87): a document upload that fires twice in
@@ -490,7 +603,7 @@ export const api = {
   readNotif:    (id) => req('POST', `/api/borrower/notifications/${id}/read`),
   uploadDoc:    (b) => coalesceUpload('uploadDoc', b, () => (b && b.file
     ? uploadBinary('/api/borrower/documents/binary', b)
-    : req('POST', '/api/borrower/documents', normalizeUpload(b)))),
+    : trackJsonUpload(b, () => req('POST', '/api/borrower/documents', normalizeUpload(b))))),
   documents:    (appId) => req('GET', `/api/borrower/documents${appId ? `?applicationId=${appId}` : ''}`),
   downloadDoc:  (id) => download(`/api/borrower/documents/${id}/download`),
   // borrower completes an in-portal tool task (Rehab Budget / Track Record)
@@ -580,7 +693,7 @@ export const api = {
   tpoDocuments:      (id) => req('GET', `/api/tpo/applications/${id}/documents`),
   tpoUploadDocument: (b) => (b && b.file
     ? uploadBinary('/api/tpo/documents/binary', b)
-    : req('POST', '/api/tpo/documents', normalizeUpload(b))),
+    : trackJsonUpload(b, () => req('POST', '/api/tpo/documents', normalizeUpload(b)))),
   // Answer an information condition (a deal field). A person field (fico) is
   // redirected to the borrower's profile by the server.
   tpoAnswerInfoCondition: (appId, itemId, value) => req('POST', `/api/tpo/applications/${appId}/checklist/${itemId}/info`, { value }),
@@ -931,13 +1044,13 @@ export const api = {
      caller that still holds bytes. */
   staffUploadLlcDoc: (llcId, b) => coalesceUpload('llcDoc:' + llcId, b, () => (b && b.file
     ? uploadBinary(`/api/staff/llcs/${llcId}/documents/binary`, b)
-    : req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b)))),
+    : trackJsonUpload({ llcId, ...b }, () => req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b))))),
   /* THE SAME, for the doors whose callers post by path rather than through a named method:
      hand it a File and it streams, hand it base64 and it does not. One helper, so a new upload
      surface cannot quietly land on the small transport again. */
   uploadStream: (path, b) => (b && b.file
     ? uploadBinary(path.endsWith('/binary') ? path : `${path}/binary`, b)
-    : req('POST', path, normalizeUpload(b))),
+    : trackJsonUpload(b, () => req('POST', path, normalizeUpload(b)))),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
   staffVerifyTrackRecord:    (id, body) => req('POST', `/api/staff/track-records/${id}/verify`, body),
   /* Remove a file from ONE workflow view (pipeline | closing | purchasing) —
@@ -1301,7 +1414,7 @@ export const api = {
   },
   staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => (b && b.file
     ? uploadBinary(`/api/staff/applications/${appId}/documents/binary`, b)
-    : req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b)))),
+    : trackJsonUpload(b, () => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b))))),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
   // `override` (optional) = { adminOverride:true, overrideReason } from
   // lib/condition-override.askOverride — a super-admin clearing/waiving a
@@ -1455,7 +1568,7 @@ export const api = {
   staffLeadDocuments:(id) => req('GET', `/api/staff/leads/${id}/documents`),
   staffAddLeadDocument:(id, b) => (b && b.file
     ? uploadBinary(`/api/staff/leads/${id}/documents/binary`, b)
-    : req('POST', `/api/staff/leads/${id}/documents`, b)),
+    : trackJsonUpload(b, () => req('POST', `/api/staff/leads/${id}/documents`, b))),
   // Authed download — a plain <a href> can't send the Bearer token, so fetch
   // the bytes and hand them to saveBlob (matches every other doc download).
   staffDownloadLeadDoc:(id, docId) => download(`/api/staff/leads/${id}/documents/${docId}`),

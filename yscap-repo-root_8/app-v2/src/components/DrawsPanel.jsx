@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
-import { api, saveBlob } from '../lib/api.js';
+import { api, saveBlob, trackUploads } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
 import DropZone from './DropZone.jsx';
@@ -9,6 +9,7 @@ import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js'
 import { ScheduleButton, ScheduledSends } from './ScheduleSend.jsx';
 import { useLightbox } from './MediaLightbox.jsx';
 import { useReportOpener } from './ReportOpener.jsx';
+import UploadRows from './UploadRows.jsx';
 
 /* Per-file construction-draw desk (staff). One place tying draws ↔ Scope of Work ↔
    construction budget: the unified per-line/per-unit rollup, each draw's per-line
@@ -612,7 +613,8 @@ function DrawRequestCard({ appId }) {
     setBusy(true); setMsg('');
     try {
       const up = await readAsUpload(f);
-      await api.post(`/api/sitewire/files/${appId}/draw-request/upload-manual`, up);
+      await trackUploads(`draw:${appId}-wire`, f.name,
+        () => api.post(`/api/sitewire/files/${appId}/draw-request/upload-manual`, up));
       setMsg('Manual wire form uploaded. Review it below and accept it — once accepted it goes to the investor with the draw.');
       reload();
     } catch (ex) { setMsg((ex && ex.data && ex.data.error) || ex.message || 'Could not upload the wire form.'); }
@@ -875,6 +877,7 @@ function DrawRequestCard({ appId }) {
             <input ref={manualRef} type="file" accept="application/pdf,image/*" disabled={busy} onChange={uploadManual} style={{ display: 'none' }} />
           </DropZone>
         )}
+        <UploadRows target={`draw:${appId}-wire`} />
         {/* CLEAR the DocuSign form while it is OUT for signature, so a manual one can replace it. */}
         {env && !terminal && env.clearable && (
           <button className="btn btn-sm ghost" disabled={busy} onClick={clearDocuSign}
@@ -3695,7 +3698,12 @@ function DrawAttachments({ appId, drawId }) {
       // The one upload contract this app uses everywhere: {filename, contentType, dataBase64}.
       const payload = [];
       for (const f of files) payload.push({ ...(await readAsUpload(f)), category: cat });
-      const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/attachments`, { files: payload });
+      /* Each file gets its live row in the list below, from the moment it is chosen
+         (owner-reported 2026-08-23). This endpoint takes its own batch shape rather
+         than one of the document doors, so it says so explicitly instead of silently
+         being the one place that still looks broken. */
+      const r = await trackUploads(`draw:${drawId}`, files.map((f) => f.name),
+        () => api.post(`/api/sitewire/files/${appId}/draws/${drawId}/attachments`, { files: payload }));
       const skipped = (r.skipped || []);
       setMsg(`${r.added.length} file${r.added.length === 1 ? '' : 's'} attached.${skipped.length ? ` ${skipped.length} could not be: ${skipped.map((s) => `${s.what} — ${s.reason}`).join('; ')}` : ''}`);
       setD(r.attachments ? { ...(d || {}), attachments: r.attachments } : d);
@@ -3762,6 +3770,8 @@ function DrawAttachments({ appId, drawId }) {
           ))}
         </ul>
       )}
+      {/* the files, on their bars, in the list they are joining */}
+      <UploadRows target={`draw:${drawId}`} />
       {preview && <AttachmentPreview key={preview.id} appId={appId} drawId={drawId} att={preview} onClose={() => setPreview(null)} />}
       <DropZone className="row dz-inline" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}
         onFiles={addFiles} enabled={!busy} title="Drop invoices, receipts or photos here">

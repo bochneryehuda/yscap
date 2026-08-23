@@ -86,6 +86,7 @@ import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import LoudHint from '../components/LoudHint.jsx';
 import { statusLabel } from '../lib/soldStage.js';
+import UploadRows from '../components/UploadRows.jsx';
 
 /* The draft-commit closing-date input that used to live here ("you can't even
    type in dates" — a date input fires change with each intermediate value while
@@ -1952,6 +1953,14 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
               )}
             </>
           )}
+          {/* THE DOCUMENT, ON ITS BAR, BEFORE IT HAS FINISHED UPLOADING
+              (owner-reported 2026-08-23: *"in the condition center, you upload a
+              document. It waits till it actually uploads a document, and only then
+              does it populate … it already has the document over there with a bar
+              and a percentage"*). It sits at the foot of this condition's document
+              list — exactly where the finished row appears — and is fed by the
+              transport, so nothing here has to track anything. */}
+          <UploadRows target={`condition:${it.id}`} />
         </div>
       )}
 
@@ -2503,6 +2512,8 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                           )
                         )}
                         {rs === 'rejected' && s.rejection_reason && <span className="small" style={{ color: 'var(--danger)', width: '100%', paddingLeft: 170 }}>{s.rejection_reason}</span>}
+                        {/* the file, on its bar, in the slot it is going into */}
+                        <div style={{ width: '100%', paddingLeft: 170 }}><UploadRows target={`condition:${s.item_id}`} /></div>
                       </div>
                     );
                   })}

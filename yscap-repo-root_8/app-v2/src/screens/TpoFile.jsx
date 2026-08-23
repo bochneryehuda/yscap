@@ -10,6 +10,7 @@ import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import TpoDraws from '../components/TpoDraws.jsx';
 import TpoOrders from '../components/TpoOrders.jsx';
 import TpoMessages from '../components/TpoMessages.jsx';
+import UploadRows from '../components/UploadRows.jsx';
 
 /* A single TPO file — the loan's basics, PRICE & register the deal (the Term
    Sheet Studio), the conditions we need, the documents provided, and the
@@ -235,6 +236,8 @@ export default function TpoFile() {
                 )}
               </div>
             </div>
+            {/* the file, on its bar, on the condition it is being filed against */}
+            <UploadRows target={`condition:${c.id}`} />
             {/* An information condition the broker can answer inline (a deal field). */}
             {c.answerable && (
               <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
@@ -345,6 +348,8 @@ export default function TpoFile() {
             </button>
           </DropZone>
         </div>
+        {/* an unattached upload lands in this list, so its bar belongs here */}
+        <UploadRows target={`file:${id}`} />
         {documents.length === 0 && <div className="muted small">No documents yet.</div>}
         {documents.map((d) => (
           <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)', gap: 12 }}>
