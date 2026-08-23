@@ -725,7 +725,10 @@ export function DscrCalc({ c, setC, loanAmount, termYears, interestOnly, onUse }
     rentMonthly: num(c.rent), taxMonthly: taxM, insuranceMonthly: insM, hoaMonthly: hoaM,
   });
 
-  const money = (v) => (v == null ? '—' : `$${formatMoney(String(Math.round(v)))}`);
+  // ⛔ NO LOCAL `money` HERE. `format.js` already exports one and this file already imports it,
+  // so a second definition would make the SAME name mean two things inside one screen — the
+  // class `test-lt-pipeline-columns-pure.js` guards, and it caught this. The shared one writes
+  // whole dollars and answers an em dash on nothing, which is exactly what this panel wants.
   const setK = (k) => (e) => setC((p) => ({ ...p, [k]: e.target.value }));
   const basisTab = (k, val, label) => (
     <button type="button" onClick={() => setC((p) => ({ ...p, [k]: val }))}
