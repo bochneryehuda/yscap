@@ -15,6 +15,8 @@ const express = require('express');
 const lp = require('../lenderprice/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
 const zipCounty = require('../lenderprice/zip-county');
+const settingsStore = require('../settings/store');
+const { resolveCompPlan } = require('../comp-plan');
 const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
@@ -448,12 +450,42 @@ function zipLookup(req, res) {
   return res.json({ ok: true, zip: hit.zip, state: hit.state, county: hit.countyName, countyFps: hit.countyFps, split: !!hit.split });
 }
 
+// GET /comp-plan — the COMPENSATION PLAN the signed-in person prices with (owner-directed
+// 2026-08-23). The pricing engine's three-way switch (borrower-paid / raw / lender-paid) is a
+// DISPLAY overlay: Lender Price is always searched borrower-paid and nothing about the search
+// changes — this endpoint only says which figures the overlay applies. Resolution per figure:
+// the person's own settings row → the company's value → the declared default (comp-plan.js).
+// The two lender fees are company-only. A caller with no session (the diagnostics mount) gets
+// the company plan — there is nobody to resolve a personal figure for.
+async function compPlanHandler(req, res) {
+  const staffId = req.actor && req.actor.id != null ? String(req.actor.id) : null;
+  const [company, user] = await Promise.all([
+    settingsStore.load(),
+    staffId
+      ? settingsStore.load(`user:${staffId}`)
+      : Promise.resolve({ settings: {}, stored: new Set(), degraded: false }),
+  ]);
+  const { plan, source } = resolveCompPlan({
+    defaults: settingsStore.defaults(),
+    company: company.settings,
+    user: user.settings,
+    userStored: user.stored,
+  });
+  res.json({ ok: true, plan, source, degraded: !!(company.degraded || user.degraded) });
+}
+
 // A router with the endpoints wired. Auth is applied by the mount (staff at /api/lt, or the
 // secret gate at /api/lt/_diag/lenderprice).
 function makeRouter() {
   const router = express.Router();
   router.use(express.json({ limit: '256kb' }));
   router.get('/zip/:zip', zipLookup);
+  router.get('/comp-plan', (req, res) => compPlanHandler(req, res).catch((e) => {
+    console.error('[lt-dscr] comp-plan failed:', (e && e.message) || e);
+    // ⛔ NO PLAN IS THE ANSWER, never a guessed one — the screen falls back to raw pricing
+    // with a notice, which is the fail-safe the whole overlay is built around.
+    res.status(500).json({ ok: false, error: 'lt_dscr_comp_plan_error' });
+  }));
   router.get('/health', (req, res) => health(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_health_error' })));
   router.get('/login-check', (req, res) => loginCheck(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_login_error' })));
   router.post('/price', (req, res) => price(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_error' })));

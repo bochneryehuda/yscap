@@ -499,5 +499,47 @@ console.log('LT Pricing Engine — structural guards\n');
     'PE-107 ...and the receiver is stable, so an unrelated re-render cannot re-write the ratio');
 }
 
+
+{
+  /* PE-108..PE-116 — THE COMPENSATION OVERLAY (owner-directed 2026-08-23). The behaviour is
+     proven by the render suite (R72..R81), which SKIPS on the build server; the structural
+     halves live here so CI holds them on every run. `code` is the comment-stripped source. */
+  const overlay = read('app-v2/src/longterm/compOverlay.js');
+  const overlayCode = overlay.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const scen = read('app-v2/src/longterm/scenarioFields.js');
+
+  // (1) THE SWITCH IS WIRED AND DEFAULTS TO RAW.
+  ok(/from '\.\/compOverlay\.js'/.test(code) && /<CompSwitch\b/.test(code),
+    'PE-108 the three-way switch is mounted and reads the shared overlay module');
+  ok(/useState\(DEFAULT_COMP_MODE\)/.test(code) && /DEFAULT_COMP_MODE = 'raw'/.test(overlayCode),
+    'PE-109 the default position is RAW pricing — the owner\'s stated default');
+
+  // (2) NOTHING ABOUT THE OVERLAY EVER REACHES THE WIRE. The scenario builder carries no comp
+  //     key, and the screen's price call sends the scenario alone — the switch is a lens.
+  ok(!/comp/i.test(scen.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+      .replace(/complete/gi, '')),
+    'PE-110 the scenario builder knows nothing called comp — the wire is untouched');
+  ok(/dscrPrice\(toScenario\(f\)/.test(code) || /dscrPrice\(\s*toScenario\(/.test(code),
+    'PE-111 ...and the price call sends the scenario and nothing else about the switch');
+
+  // (3) FAIL TO RAW, NEVER TO A WRONG NUMBER — the null-plan path forces the raw identity.
+  ok(/compProblem\s*\?\s*\{ mode: 'raw', shift: 0/.test(code),
+    'PE-112 a plan that could not load forces the RAW identity, never a guessed shift');
+  ok(/if \(v == null \|\| \(typeof v === 'string' && v\.trim\(\) === ''\)\) return null;/.test(overlayCode),
+    'PE-113 a null figure is refused BEFORE Number() — Number(null) is 0, the silent-zero trap');
+
+  // (4) EVERY PRICE CELL ON BOTH BOARDS GOES THROUGH THE SHIFT. A bare call on a board price
+  //     would show one product two ways between the header and its row.
+  ok(!/priceMoney\(row\.bestPrice/.test(code) && !/priceMoney\(g\.bestPrice/.test(code)
+    && !/priceMoney\(q\.price/.test(code),
+    'PE-114 no board price bypasses the shift — every cell reads dP(...)');
+  ok((code.match(/priceMoney\(dP\(/g) || []).length >= 4,
+    'PE-115 ...and the shifted read is used at every price cell on the two boards');
+
+  // (5) THE COMP IS INVISIBLE IN A COMP POSITION: the vendor comp block is withheld there.
+  ok(/\{!compActive && <Track title="Comp">/.test(code),
+    'PE-116 the vendor comp block renders only in RAW — comp figures never show in a comp position');
+}
+
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
 process.exit(failures ? 1 : 0);

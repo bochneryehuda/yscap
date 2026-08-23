@@ -85,6 +85,7 @@ async function main() {
   const stamp = `ltsmoke-${Date.now().toString(36)}`;
   const email = `${stamp}@example.test`;
   let staffId = null;
+  let scopedId = null;
   let server = null;
 
   try {
@@ -178,6 +179,11 @@ async function main() {
       // map, then one read of `lt_lp_disqualify_search` — and returns BEFORE any
       // call to LenderPrice. The route turns that into a 409, which is a pass here.
       '/api/lt/dscr/disqualifications/no-such-search-key',
+      // The signed-in person's compensation plan (the comp overlay, 2026-08-23):
+      // two settings-scope reads + the pure resolver — no vendor call, so it is
+      // exactly the kind of door this smoke test exists to open. On a fresh
+      // database it answers the DECLARED defaults (source 'standard' throughout).
+      '/api/lt/dscr/comp-plan',
     ];
 
     // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────
@@ -242,6 +248,39 @@ async function main() {
     check(sync.status === 200 && sync.body && typeof sync.body.loans === 'number',
       'the sync screen can say how fresh the book is');
 
+    // ── THE TWO RUN-TIME-ASSEMBLED STATEMENTS THE PREPARE SUITE CANNOT JUDGE ──
+    //
+    // test-lt-sql-prepared-db.js PREPAREs every whole statement, and its ledger
+    // names where each interpolation-built one is executed. These two are driven
+    // HERE, and each needs more than the status check above:
+    //
+    // (1) pipeline.js's officer-picker list runs only for a sees-all viewer and
+    //     its call site SWALLOWS its own failure (`.catch(() => null)`) — so a
+    //     phantom column would answer a silent null while the door still said 200.
+    //     `officers` being an ARRAY (empty is fine) is what proves the assembled
+    //     statement genuinely ran; null is exactly the swallowed failure.
+    check(Array.isArray(pipeline.body && pipeline.body.officers),
+      'the officer picker arrived as an ARRAY — its query swallows failure into null, so this assertion is what makes its execution provable');
+
+    // (2) routes/borrowers.js assembles `WHERE ${scope.where}` — which is EMPTY
+    //     for the sees-all admin every other call here runs as. A scoped loan
+    //     officer is what makes the interpolated branch a real statement.
+    {
+      const { rows: lo } = await db.query(
+        `INSERT INTO staff_users (email, full_name, role, is_active)
+         VALUES ($1, 'LT Smoke Officer', 'loan_officer', true)
+         RETURNING id, token_version`, [`${stamp}-lo@example.test`],
+      );
+      scopedId = lo[0].id;
+      const loToken = crypto.signJwt({
+        sub: String(scopedId), kind: 'staff', role: 'loan_officer',
+        tv: lo[0].token_version, sid: 'smoke-lo',
+      });
+      const res = await fetch(`${base}/api/lt/borrowers`, { headers: { authorization: `Bearer ${loToken}` } });
+      check(res.status === 200,
+        `a SCOPED officer's borrower list answers 200 (got ${res.status}) — that caller is what assembles the scope's WHERE into a real statement`);
+    }
+
     console.log('\na door nobody may open stays shut');
 
     const anon = await fetch(`${base}/api/lt/pipeline`);
@@ -250,6 +289,7 @@ async function main() {
   } finally {
     if (server) await new Promise((r) => server.close(r));
     if (staffId) await db.query('DELETE FROM staff_users WHERE id = $1', [staffId]).catch(() => {});
+    if (scopedId) await db.query('DELETE FROM staff_users WHERE id = $1', [scopedId]).catch(() => {});
     await db.pool.end().catch(() => {});
   }
 
