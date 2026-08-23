@@ -17,6 +17,12 @@
 // It cannot go stale silently: `test-schema-picture-pure.js` asserts every key
 // here is still a real table, so a rename fails the build rather than quietly
 // dropping the note.
+//
+// AND IT CANNOT BE WRITTEN TWICE. This is an object literal, so a repeated key is
+// not an error — the later line wins and the earlier sentence is dropped with
+// nothing said. That happened: `arena_spins` carried two different descriptions
+// and the page had only ever shown the second. The same suite now reads this
+// FILE for a duplicate key, because the parsed object cannot show one.
 
 const GLOSSARY = {
   applications: 'One loan file — one property, one deal. Almost everything in the system hangs off this.',
@@ -55,7 +61,6 @@ const GLOSSARY = {
   document_findings: 'Something the system noticed in a document that a person should look at.',
   amc_orders: 'An appraisal ordered through an appraisal management company, and where that order has got to.',
   messages: 'Messages inside the system — between the team, and with a borrower or a broker.',
-  arena_spins: 'One spin of the wheel on a company game day — what is being played for, who was in it, and who won.',
   finding_decisions: 'A human’s verdict on a finding, kept so it is never asked again.',
   lt_loans: 'One long-term loan file. The long-term product is a separate system that shares only the login and the person, so this is its own spine — nothing here touches a short-term loan.',
   arena_sessions: 'One sales day of the staff game — who is playing, and whether it has started.',
