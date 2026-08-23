@@ -9,6 +9,62 @@ const when = (v) => {
 };
 
 /**
+ * The last pull, in one sentence a person can act on.
+ *
+ * THREE STATES, NEVER COLLAPSED, because each sends somebody somewhere different:
+ * a pass RUNNING right now (wait), a pass that FAILED or refused (here is why), and
+ * a pass that WORKED (here is what it found — including "Encompass had nothing for
+ * us", which is a real and different answer from "we could not ask"). A fourth
+ * state matters just as much on a fresh deployment: NO pass has been recorded yet,
+ * which must never be drawn as a success.
+ */
+function LastPull({ state }) {
+  const r = state.lastLoanRun;
+  const running = state.running === true;
+
+  const box = (tone, title, body) => (
+    <div className="card" style={{ marginBottom: 12, color: '#141B22', borderLeft: `4px solid ${tone}` }}>
+      <div style={{ fontWeight: 700, marginBottom: body ? 4 : 0 }}>{title}</div>
+      {body && <div style={{ color: '#4B585C', fontSize: 13, lineHeight: 1.55 }}>{body}</div>}
+    </div>
+  );
+
+  if (running) {
+    return box('#2F7F86', 'A pull is running right now.',
+      'It works through the whole book, so give it a minute or two and refresh this screen.');
+  }
+  if (!r) {
+    // Deliberately not styled as a problem: on a fresh deployment this is simply
+    // the truth, and dressing it in red would send somebody hunting for a fault.
+    return box('#4B585C', 'No pull has been recorded yet.',
+      'Press "Pull everything from Encompass" below to start one. From then on this line says what the last one did.');
+  }
+  if (r.ok === false) {
+    return box('#B4331F', 'The last pull did not work.',
+      <>
+        {r.reason || 'No reason was recorded.'}
+        <div style={{ marginTop: 6 }}>{when(r.started_at)}{r.trigger === 'manual' ? ' · you started this one' : ''}</div>
+      </>);
+  }
+  // It worked. Say what it FOUND — "nothing" is an answer, and it is the answer
+  // that tells somebody the connection is fine and the book is genuinely empty.
+  const found = r.discovered == null ? null : Number(r.discovered);
+  const read = r.read_count == null ? 0 : Number(r.read_count);
+  const left = r.remaining == null ? null : Number(r.remaining);
+  const skipped = r.skipped == null ? 0 : Number(r.skipped);
+  return box('#2F7F86',
+    found === 0
+      ? 'The last pull worked — Encompass had no long-term files for us.'
+      : `The last pull worked${found == null ? '' : ` — it found ${found} loan(s)`}.`,
+    <>
+      {`Read ${read} of them.`}
+      {skipped ? ` Skipped ${skipped} short-term file(s), which belong on the other side.` : ''}
+      {left ? ` ${left} still to read — the next pass picks them up.` : ''}
+      <div style={{ marginTop: 6 }}>{when(r.started_at)}{r.trigger === 'manual' ? ' · you started this one' : ''}</div>
+    </>);
+}
+
+/**
  * How fresh the long-term book is, and what is failing.
  *
  * ANY staff member may read this: "why does this file look old?" has to be
@@ -62,6 +118,23 @@ export default function LtSync() {
     finally { setBusy(false); }
   };
 
+  // THE FULL PULL. `run` above refreshes what moved (25 loans); this one works
+  // through the WHOLE book, which is what somebody staring at an empty pipeline
+  // actually wants. It returns immediately and keeps going in the background, so the
+  // screen re-reads its own state on a timer rather than pretending to wait.
+  const pullAll = async () => {
+    setBusy(true); setNote('');
+    try {
+      const out = await ltApi.pullFromEncompass();
+      setNote(out.note || 'Pulling from Encompass now.');
+      // First refresh soon (the first loans land within seconds), then again once
+      // the drain has had a real run at it. Cleared on unmount by the effect below.
+      setTimeout(load, 4000);
+      setTimeout(load, 30000);
+    } catch (e) { setNote(e.message || 'Could not start the pull.'); }
+    finally { setBusy(false); }
+  };
+
   const runConditions = async () => {
     setBusy(true); setNote('');
     try {
@@ -91,6 +164,13 @@ export default function LtSync() {
       </p>
 
       {note && <div className="card" style={{ color: '#141B22', marginBottom: 12 }}>{note}</div>}
+
+      {/* WHAT THE LAST PULL ACTUALLY DID — the first thing on the screen, because it
+          is the only thing here that can explain an empty book. Every figure below is
+          counted out of the loans we HAVE, so a pass that brought none back (Encompass
+          refused, the switch is off, the search came back empty) used to render as an
+          untouched screen with the reason written to a log nobody can read. */}
+      {state && <LastPull state={state} />}
 
       {state && (
         <div className="card" style={{ display: 'flex', gap: 26, flexWrap: 'wrap', color: '#141B22' }}>
@@ -146,8 +226,15 @@ export default function LtSync() {
 
       {state && state.canRun && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
-          <button className="btn" onClick={run} disabled={busy}>
-            {busy ? 'Reading Encompass…' : 'Sync now'}
+          {/* THE PRIMARY ACTION, and deliberately first and loudest: on a book that
+              has never been pulled, "bring everything in" is the thing somebody
+              wants, and the 25-loan refresh beside it reads as broken if it is all
+              that is offered. */}
+          <button className="btn primary" onClick={pullAll} disabled={busy}>
+            {busy ? 'Starting…' : 'Pull everything from Encompass'}
+          </button>
+          <button className="btn ghost" onClick={run} disabled={busy}>
+            {busy ? 'Reading Encompass…' : 'Refresh what changed'}
           </button>
           {/* Offered even while the switch is off: the button answers WHY rather
               than vanishing, which is the difference between a control somebody

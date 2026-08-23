@@ -33,6 +33,7 @@ const contacts = require('./people/contacts');
 const product = require('./product');
 const stages = require('./stages');
 const book = require('./pipeline-book');
+const productTerm = require('./product-term');
 
 const lazy = {
   get db() { return require('./db'); },
@@ -172,6 +173,26 @@ function buildWhere(viewerAccess, staffId, filters = {}, omit = new Set(), opts 
   if (!skip('book')) {
     const bookSql = book.bookWhereSql(filters.book, opts.books, p);
     if (bookSql) where.push(bookSql);
+  }
+
+  // THIS IS THE LONG-TERM PIPELINE, SO IT LISTS LONG-TERM FILES (owner-directed
+  // 2026-08-23). The mirror no longer brings short-term loans IN, but one pulled
+  // before that rule existed is already in the book, and the two halves are needed
+  // together or the screen keeps showing files that were never ours.
+  //
+  // `productSql` is the SQL twin of `classifyProduct` — the SAME rule, proven to
+  // agree with the JS half row for row by `test-lt-product-term-db.js`. Never a
+  // hand-written program test here: a second copy is how the pipeline and the census
+  // come to disagree about whose loan this is.
+  //
+  // ONLY A PROVABLE SHORT-TERM LOAN IS HIDDEN. `boundary` and `unknown` stay on the
+  // screen — a file we cannot place must never vanish — and the census still counts
+  // ALL FOUR buckets, including the hidden ones, so totals reconcile against
+  // Encompass and nothing disappears without a trace. This is NOT omittable by a
+  // facet: a count that included files the list refuses to show would be a number
+  // nobody could reconcile with what is in front of them.
+  if (opts.hideShortTerm !== false) {
+    where.push(`(${productTerm.productSql('l.program_name', 'l.term_months')}) <> '${productTerm.PRODUCT.SHORT}'`);
   }
 
   // "Somebody else's files" — only meaningful to a viewer who sees everything; a
@@ -431,7 +452,10 @@ async function loadPipeline(staff, filters = {}) {
   // into both builders, so the list, its total and every chip count are describing the
   // same book — reading it twice is how a count comes to disagree with the page.
   const books = book.bookFolders(settings);
-  const opts = { books };
+  // Read here, with the books, and threaded into BOTH builders for the same reason:
+  // the list and every chip count have to be describing one book. A tenant that turns
+  // it off gets exactly the query this screen ran before the rule existed.
+  const opts = { books, hideShortTerm: settings['pipeline.hideShortTerm'] !== false };
 
   const q = buildPipelineQuery(viewerAccess, staffId, filters, opts);
   const f = buildFacetQueries(viewerAccess, staffId, filters, opts);

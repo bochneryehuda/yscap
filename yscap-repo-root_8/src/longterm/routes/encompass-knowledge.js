@@ -6,6 +6,7 @@
 // the server seam. Read-only reference knowledge — nothing here is enforced.
 
 const express = require('express');
+const killSwitch = require('../encompass/enabled');
 const router = express.Router();
 const enc = require('../encompass');
 
@@ -208,7 +209,11 @@ router.get('/settings', (req, res) => {
 router.get('/status', async (req, res) => {
   try {
     const configured = enc.client.configured();
-    if (!configured || String(req.query.ping) !== 'true') return res.json({ configured, readOnly: enc.client.READ_ONLY });
+    // WHY it is not connected, not only THAT it is not — a switched-off connection
+    // and a missing credential need two different actions from whoever is reading.
+    const reason = !killSwitch.encompassEnabled() ? killSwitch.OFF_REASON
+      : (configured ? null : 'Encompass is not connected yet — add the long-term Encompass credentials first.');
+    if (!configured || String(req.query.ping) !== 'true') return res.json({ configured, reason, readOnly: enc.client.READ_ONLY });
     const ping = await enc.client.ping();
     res.json({ configured, readOnly: enc.client.READ_ONLY, reachable: ping.ok, reason: ping.reason });
   } catch (e) { console.error('[lt] encompass status failed:', e && e.message); res.status(500).json({ error: 'Could not check Encompass status.' }); }

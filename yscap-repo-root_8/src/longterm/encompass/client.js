@@ -38,6 +38,7 @@
  * in code — only env-var names.
  */
 const cfg = require('../config').encompass;
+const killSwitch = require('./enabled');
 
 // The three endpoints on the base URL allowed to see a non-GET request. All are
 // READ-SHAPED (return data, mutate nothing). Adding to this list needs the owner's
@@ -61,7 +62,16 @@ function _isFieldReaderPath(url) {
 
 // Configured = the app credentials + instance are present. The user login is only
 // required for the password grant.
-function configured() { return !!(cfg.clientId && cfg.clientSecret && cfg.instanceId); }
+// THE MASTER SWITCH COMES FIRST. One env var (`ENCOMPASS_ENABLED=0`) reports this
+// connection as not connected however complete the credentials are, so the sync
+// worker, the manual pull button and every file screen all answer the same way from
+// one place. The credentials are untouched — they are simply not used while it is
+// off. Long-Term reads that switch through its OWN mirror (`./enabled`), because it
+// may not import RTL code; the two are pinned together by a test.
+function configured() {
+  if (!killSwitch.encompassEnabled()) return false;
+  return !!(cfg.clientId && cfg.clientSecret && cfg.instanceId);
+}
 
 /**
  * STRIP ANY SECRET THAT MIGHT SLIP INTO A STRING LEAVING THIS MODULE.
@@ -92,7 +102,13 @@ function scrub(s) {
   out = out.replace(/((?:client_secret|password)=)[^&\s"]+/gi, '$1<redacted>');
   return out;
 }
-function ensure() { if (!configured()) throw new Error('LT Encompass not configured — add LT_ENCOMPASS_CLIENT_ID / _SECRET / _INSTANCE_ID (or the shared ENCOMPASS_* vars)'); }
+
+// The reason has to tell the two states apart: "not configured" on a tenant whose
+// credentials are sitting right there sends somebody hunting for a missing value.
+function ensure() {
+  if (!killSwitch.encompassEnabled()) throw new Error(killSwitch.OFF_REASON);
+  if (!configured()) throw new Error('LT Encompass not configured — add LT_ENCOMPASS_CLIENT_ID / _SECRET / _INSTANCE_ID (or the shared ENCOMPASS_* vars)');
+}
 
 const withTimeout = (ms) => { const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms); return { signal: ac.signal, done: () => clearTimeout(t) }; };
 
@@ -137,6 +153,12 @@ function paced(run) {
 // (OAuth token + pipeline search + fieldReader).
 async function _fetchGuarded(url, init) {
   const method = String((init && init.method) || 'GET').toUpperCase();
+  // THE MASTER SWITCH, STRUCTURALLY — nothing reaches the wire while Encompass is
+  // switched off, even if some path skipped `configured()`. Same belt-and-suspenders
+  // shape as the read-only rule below it.
+  if (!killSwitch.encompassEnabled()) {
+    throw new Error(killSwitch.OFF_REASON);
+  }
   const allowedPost = [...POST_ALLOWLIST].some((p) => url === cfg.baseUrl + p || url.startsWith(cfg.baseUrl + p + '?'))
     || _isFieldReaderPath(url);
   if (method !== 'GET' && !allowedPost) {
@@ -277,6 +299,7 @@ async function tokenProbe(scope) {
 
 // Cheap reachability check: authenticate only.
 async function ping() {
+  if (!killSwitch.encompassEnabled()) return { ok: false, reason: killSwitch.OFF_REASON };
   if (!configured()) return { ok: false, reason: 'LT_ENCOMPASS_CLIENT_ID / _SECRET / _INSTANCE_ID not set' };
   try { await getToken(); return { ok: true }; }
   catch (e) { return { ok: false, reason: e.message }; }
