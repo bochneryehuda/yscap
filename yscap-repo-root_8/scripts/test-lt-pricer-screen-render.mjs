@@ -164,8 +164,24 @@ const attempt = (fn) => { try { return { html: fn(), err: null }; } catch (e) { 
     'R4 …and the scenario fields, so the screen is usable on arrival');
   // THE DEFAULTS ARE THERE AND ARE VISIBLY DEFAULTS. A prefilled scenario nobody can tell is a
   // prefill is how somebody quotes a borrower off a number nobody chose.
-  ok(/value="500000"/.test(html || '') && /value="740"/.test(html || ''),
+  // The money boxes hold GROUPED text now (owner-directed: "as dollars with a dollar sign with
+  // commas"), so the prefill reads 500,000. The guard's subject has not moved — it is still "the
+  // scenario arrives filled in" — only the spelling the screen fills it in with.
+  // EVERY STARTING VALUE THE OWNER HAS SET, not a sample of them: the property value, the FICO and
+  // the DSCR. The DSCR was the one default nobody pinned, so it could have been changed by accident
+  // and no test anywhere would have noticed — which is the whole reason a guard exists.
+  ok(/value="500,000"/.test(html || '') && /value="760"/.test(html || '') && /value="1\.25"/.test(html || ''),
     'R4a …already filled in, so a staffer can price on arrival without typing plumbing');
+  ok(/\$<\/span>/.test(html || '') || />\$</.test(html || ''),
+    'R4a2 …with the dollar sign DRAWN beside the figure, not typed into it');
+  // ⛔ AND THE ZIP IS NOT ONE OF THE PREFILLS (owner-directed 2026-08-23: "Zip code should not
+  // default to anything. Right now, it's defaulting to Miami"). The ZIP decides the state and the
+  // county a loan is priced in, so a pre-filled one is a silent answer, not a starting point.
+  ok(!/33101/.test(html || ''), 'R4c the ZIP does not default to Miami — or to anything');
+  ok(/id="pe-zip"[^>]*value=""/.test(html || '') || !/id="pe-zip"[^>]*value="[^"]/.test(html || ''),
+    'R4d …the ZIP box starts empty');
+  ok(/First-time homebuyer/.test(html || ''),
+    'R4e the first-time-homebuyer flag is on the screen — the same fact Lender Price carries');
   ok(/starting point you can change/.test(html || ''),
     'R4b …and the screen says they are a starting point, not a fact about any loan');
 }
@@ -340,7 +356,10 @@ const stack = buildRateStack(capture.programs);
   // The wrapper is the SHAPE THE PARSER READS — `results.disqualifiedData`, walked for `leafs`.
   // Getting this wrong is what a hand-typed fixture does: it produced an empty answer and the two
   // assertions below then failed for a reason that had nothing to do with the screen.
-  const parsed = lp.parseDisqualified({ results: { disqualifiedData: { leafs: [leaf] } } });
+  // NESTED UNDER A `RateKey`, because that is how the vendor's tree carries the rate — the leaf
+  // itself has none. Wrapping it flat is what the first version of this fixture did, and it proved
+  // the parser could read a leaf while proving nothing about the rate the board groups on.
+  const parsed = lp.parseDisqualified({ results: { disqualifiedData: { childs: [{ type: 'RateKey', keyLabel: '7.375', leafs: [leaf] }] } } });
   const shaped = router._internals.shapeDisqualified(parsed, {});
   ok(shaped && shaped.disqualified && Array.isArray(shaped.disqualified.lenders),
     'R34 the server\'s own parser + shaper produce the payload the view reads');
@@ -348,16 +367,34 @@ const stack = buildRateStack(capture.programs);
   const dq = { status: 'ready', tries: 1, data: shaped, message: null };
   const r = attempt(() => render(React.createElement(IneligibleView, { dq, count: 1, onAsk: () => {} })));
   ok(r.err === null, `R35 the ineligible view renders it${r.err ? ` — ${r.err.message}` : ''}`);
+
+  // ⛔ STEP 1 IS THE RATE, AND IT IS PROVEN BOTH WAYS. Owner-directed 2026-08-23: "You see all the
+  // rates. You click on the rate, and you see all the lenders." So the board arrives showing the
+  // RATE the parser read off the tree, with the lender and the reason NOT yet on the page — and
+  // asserting that absence is what stops the board quietly reverting to the old flat list.
+  const itemRate = shaped.disqualified.lenders[0].items[0].rate;
+  ok(itemRate === 7.375, `R36pre the rate comes off the RateKey grouping node (${itemRate})`);
+  ok((r.html || '').includes('7.375%'), 'R36a the collapsed board shows the rate');
+
   // The lender is whatever the PARSER read off the leaf, not a name typed here — a hard-coded
   // expectation would be a claim about the fixture rather than about the screen.
   const refusedBy = shaped.disqualified.lenders[0].lender;
-  ok(!!refusedBy && (r.html || '').includes(refusedBy), `R36 …naming the lender that refused (${refusedBy})`);
+  ok(!!refusedBy && !(r.html || '').includes(refusedBy),
+    'R36b …and NOT the lender, which is one click in');
+
+  // Now the same board with the three levels opened, which is what a person sees after the clicks.
+  const openAll = { rate: '7.375', lenders: ['7.375|Deephaven Mortgage'], item: '7.375|Deephaven Mortgage|0:0' };
+  const ro = attempt(() => render(React.createElement(IneligibleView, { dq, count: 1, onAsk: () => {}, initialOpen: openAll })));
+  ok(ro.err === null, `R36c the opened board renders${ro.err ? ` — ${ro.err.message}` : ''}`);
+  ok(!!refusedBy && (ro.html || '').includes(refusedBy), `R36 …naming the lender that refused (${refusedBy})`);
+  ok((ro.html || '').includes('Why it is ineligible'),
+    'R36d …and the band the eligible side does not have');
 
   // THE VENDOR'S SENTENCE, WORD FOR WORD. Re-wording one, or grouping them under a heading of ours,
   // would be a rule — and this engine holds none.
   const firstRule = shaped.disqualified.lenders[0].items[0].reasons[0].rule;
   const escRule = String(firstRule).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  ok((r.html || '').includes(escRule), 'R37 …and printing Lender Price\'s reason exactly as it wrote it');
+  ok((ro.html || '').includes(escRule), 'R37 …and printing Lender Price\'s reason exactly as it wrote it');
 
   // The three states a reader must never see collapsed: they are three different next steps.
   const waiting = attempt(() => render(React.createElement(IneligibleView, {
@@ -371,11 +408,36 @@ const stack = buildRateStack(capture.programs);
   })));
   ok(expired.err === null && /expired at Lender Price/.test(expired.html || ''),
     'R39 …an expired key says to price again, not "that did not work"');
+  /* ⛔ R40 USED TO ENFORCE THE DEFECT. It asserted that before anybody asked, the panel "says how
+     many" — from a `count` prop fed by the PRICE response's own `disqualifiedCount`. That figure is
+     read off the price at price time, and Lender Price has not computed the ineligible side yet
+     (the route stamps every price `disqualifyStatus: 'computing'` for exactly that reason), so it
+     is ALWAYS zero — and the panel printed "Lender Price reported nothing ruled out on this
+     scenario" on every scenario ever priced. That is the screen answering a question it had not
+     asked. The guard now holds the opposite: before an answer, NO number. */
   const idle = attempt(() => render(React.createElement(IneligibleView, {
-    dq: { status: 'idle', tries: 0, data: null, message: null }, count: 27, onAsk: () => {},
+    dq: { status: 'idle', tries: 0, data: null, message: null }, onAsk: () => {},
   })));
-  ok(idle.err === null && /27 products/.test(idle.html || '') && /Show me why/.test(idle.html || ''),
-    'R40 …and before anybody asks, it says how many and offers to fetch the reasons');
+  ok(idle.err === null && /Show me why/.test(idle.html || ''),
+    'R40 …and before anybody asks, it offers to fetch the reasons');
+  ok(!/ruled out \d/.test(idle.html || '') && !/ruled nothing out/.test(idle.html || ''),
+    'R40a …and states NO count, because nothing has answered yet');
+  ok(/works the ineligible side out AFTER the price/.test(idle.html || ''),
+    'R40b …it says WHY there is nothing to show yet, and that this page asks on its own');
+
+  // A READY answer is the only thing that may state a number — in either direction.
+  const readyNone = attempt(() => render(React.createElement(IneligibleView, {
+    dq: { status: 'ready', tries: 1, message: null, data: { disqualified: { itemCount: 0, lenderCount: 0, reasonCount: 0, lenders: [] } } },
+    onAsk: () => {},
+  })));
+  ok(readyNone.err === null && /ruled nothing out/.test(readyNone.html || ''),
+    'R40c a READY answer of zero is the only thing that may say nothing was ruled out');
+  const readySome = attempt(() => render(React.createElement(IneligibleView, {
+    dq: { status: 'ready', tries: 1, message: null, data: { disqualified: { itemCount: 27, lenderCount: 3, reasonCount: 9, lenders: [] } } },
+    onAsk: () => {},
+  })));
+  ok(readySome.err === null && /ruled out 27 products/.test(readySome.html || ''),
+    'R40d …and a READY answer with refusals states how many');
 
   // A page the server said it TRUNCATED must say so and name the numbers. A silent cap reads as
   // "that was the whole list".

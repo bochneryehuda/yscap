@@ -146,3 +146,134 @@ export function groupByLender(quotes) {
   out.sort((a, b) => byBestPrice(a.best, b.best));
   return out;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   WHAT A PRICE COSTS, IN DOLLARS — the owner's three columns (2026-08-23).
+
+   ⛔ THIS IS ARITHMETIC, NOT A JUDGEMENT, and that is the only reason a MIRROR may compute it.
+   The engine shows what Lender Price returned and never re-derives a price. These three columns are
+   ONE number said three ways: the vendor's own price, the points that price implies, and what those
+   points come to on this loan. Nothing here decides anything — change the price and all three move
+   together, by definition.
+
+   THE VOCABULARY IS THE INDUSTRY'S, checked rather than invented (the owner asked for the research):
+     • PRICE — the price as a percentage of par. 102 means the loan sells for 102% of its face value.
+     • POINTS — `100 − price`. POSITIVE points are DISCOUNT POINTS: money the borrower pays up front.
+       NEGATIVE points are REBATE POINTS, also called negative points or a LENDER CREDIT: money that
+       comes back. So 102 → −2.000 and 98 → +2.000, which is the owner's own convention and the one
+       every rate sheet uses.
+     • COST / CREDIT — those points in dollars: `points ÷ 100 × loan amount`. Two points on a
+       $500,000 loan is $10,000. It is called cost-or-credit rather than "points $" because the one
+       column genuinely carries both, and naming it for only one of them would mislabel half the
+       board. (Sources: CFPB on points and lender credits; Optimal Blue / Loansifter PPE screens.)
+
+   THE COLOUR IS THE OWNER'S RULE, STATED BY THEM EXPLICITLY: at or above 100 is GREEN (money comes
+   back), below 100 is RED (it costs money). All three columns take the PRICE's verdict, so a row
+   cannot read green in one column and red in the next — they are the same fact. Par (exactly 100)
+   is green: it costs nothing.
+
+   ⛔ NEVER A GUESS. A price the vendor did not quote, or a loan amount we cannot read, yields null
+   for that figure and NO colour — a coloured em dash would be a verdict on a number nobody has. */
+
+/** At or above par is a credit; below par is a cost; unknown is neither. */
+export const PRICE_TONE = { credit: 'credit', cost: 'cost' };
+
+export function priceMoney(priceValue, loanAmount) {
+  const p = Number.isFinite(priceValue) ? priceValue : null;
+  const loan = Number.isFinite(loanAmount) && loanAmount > 0 ? loanAmount : null;
+  if (p == null) return { price: null, points: null, dollars: null, tone: null };
+  // Rounded to a thousandth of a point, which is how a rate sheet quotes one — and it stops
+  // 100 − 99.875 arriving as 0.12500000000000355 and printing a figure nobody typed.
+  // NAMED `pointsValue`, not `points`: `format.js` exports a `points` FORMATTER (a number → a
+  // signed string), and in this codebase that name means the formatter and nothing else. A second
+  // `points` here is the first step of the two-definitions drift the shared-format rule exists to
+  // stop — the returned KEY stays `points`, which is the figure itself.
+  const pointsValue = Math.round((100 - p) * 1000) / 1000;
+  const dollars = loan == null ? null : Math.round((pointsValue / 100) * loan * 100) / 100;
+  return { price: p, points: pointsValue, dollars, tone: p >= 100 ? PRICE_TONE.credit : PRICE_TONE.cost };
+}
+
+/** The one place the two colours live, so a screen cannot invent a third. Dark enough to read on
+ *  the white PILOT canvas — never an `--ink*` token, which is a LIGHT paper colour in this palette. */
+export const TONE_COLOR = { credit: '#2F6B45', cost: '#8A2F2F' };
+export function toneColor(tone, fallback) {
+  return tone && TONE_COLOR[tone] ? TONE_COLOR[tone] : fallback;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   THE INELIGIBLE BOARD — the SAME SHAPE as the eligible one (owner-directed 2026-08-23).
+
+   The owner's words: *"You see all the rates. You click on the rate, and you see all the lenders.
+   If a lender has a few programs, you click on the lender the same way you do it on the eligible
+   side, and you see all the programs. You can click on the program details, and you see all the
+   LLPAs, eligibility, and ineligibility, including the disqualifying rule."*
+
+   So this is deliberately NOT a second grouping engine. The lender level is `groupByLender` — the
+   very function the eligible board groups with — so "how many programmes does this lender have
+   here, and which is in front" has ONE answer on both sides. What differs is only the SORT at the
+   rate level, and only because it must: a declined programme usually has no price to rank by, so
+   lenders are ordered by name rather than by a number that is not there. Ranking by a missing
+   price would put whoever happens to sort first at the top and read as a judgement.
+
+   NOTHING IS EVER DROPPED. An item whose rate we could not read (no price build, no rate field on
+   the leaf, no `RateKey` above it) is NOT discarded and NOT filed under a guessed rate — it goes to
+   its own `noRate` group, which the screen shows last under its own heading. A silently missing
+   programme on an ineligible board is exactly the defect this board was built to end.
+
+   Pure; never throws; a non-array yields an empty stack. */
+export function buildIneligibleStack(lenders) {
+  const src = Array.isArray(lenders) ? lenders : [];
+  const entries = [];
+  src.forEach((g, gi) => {
+    const items = g && Array.isArray(g.items) ? g.items : [];
+    items.forEach((it, ii) => {
+      if (!it || typeof it !== 'object') return;
+      const pb = (it.option && it.option.priceBuild) || {};
+      entries.push({
+        key: `${gi}:${ii}`,
+        // `lender` is the key `groupByLender` groups on — the vendor's own spelling, never normalized.
+        lender: (g && g.lender) || null,
+        investor: (g && g.investor) || null,
+        program: it.program || null,
+        product: it.product || null,
+        rate: Number.isFinite(it.rate) ? it.rate : null,
+        // A declined leaf often carries no price at all. NULL is the honest answer and the screen
+        // draws an em dash for it — never a zero, which would read as par.
+        price: Number.isFinite(pb.price) ? pb.price : null,
+        option: it.option || null,
+        reasons: Array.isArray(it.reasons) ? it.reasons : [],
+      });
+    });
+  });
+
+  const byRate = new Map();
+  const noRate = [];
+  for (const e of entries) {
+    if (e.rate == null) { noRate.push(e); continue; }
+    const k = e.rate.toFixed(3);
+    if (!byRate.has(k)) byRate.set(k, { key: k, rate: e.rate, entries: [] });
+    byRate.get(k).entries.push(e);
+  }
+
+  // By NAME, not by price — see the note above. `localeCompare` on the vendor's own spelling, with
+  // an unnamed lender last rather than sorting as an empty string at the top.
+  const byLenderName = (a, b) => {
+    const x = a.lender || ''; const y = b.lender || '';
+    if (!x && !y) return 0;
+    if (!x) return 1;
+    if (!y) return -1;
+    return x.localeCompare(y);
+  };
+
+  const shape = (list) => groupByLender(list).sort(byLenderName);
+  const rates = [...byRate.values()].sort((a, b) => a.rate - b.rate)
+    .map((r) => ({ key: r.key, rate: r.rate, lenders: shape(r.entries), itemCount: r.entries.length }));
+
+  return {
+    rates,
+    noRate: noRate.length ? { lenders: shape(noRate), itemCount: noRate.length } : null,
+    rateCount: rates.length,
+    itemCount: entries.length,
+    lenderCount: new Set(entries.map((e) => e.lender || ' no-lender')).size,
+  };
+}
