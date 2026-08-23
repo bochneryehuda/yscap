@@ -178,6 +178,24 @@ export function overridesFromSnapshot(snap, mode) {
       // deal's own fee"; a typed amount (0 included, which waives it) is a per-file override.
       feasibilityFee: f.tsFeasFee,
       titleFee: f.tsFeeTitle,
+      /* THE GOVERNMENT CHARGES — the county, the contract's transfer-tax split, and
+         a per-charge manual amount (owner-directed 2026-08-23). The keys are the
+         engine's own (`ovrTax_<charge>`), so a charge added to the closing-cost
+         engine needs a box and a line here and nothing else — no third list to keep
+         in step. compact() drops every blank, so an untouched section changes
+         nothing about how the deal prices. */
+      county: f.tsTaxCounty,
+      // Tax-only, by NAME — never `city` / `units`. The server keeps them apart so a
+      // figure typed in a tax box can never reach a frozen engine's ineligible-city
+      // scan or restate how many dwellings the building holds.
+      taxCity: f.tsTaxCity,
+      taxUnits: f.tsTaxUnits,
+      buyerTransferShare: f.tsTaxBuyerShare,
+      ovrTax_mortgage_tax: f.tsTaxMortgage,
+      ovrTax_intangible_tax: f.tsTaxIntangible,
+      ovrTax_transfer_tax_state: f.tsTaxTransferState,
+      ovrTax_transfer_tax_local: f.tsTaxTransferLocal,
+      ovrTax_mansion_tax: f.tsTaxMansion,
       ovrAcqLTVPct: f.tsManualOn ? f.tsMLtv : null,
       ovrARLTVPct: f.tsManualOn ? f.tsMArv : null,
       ovrLTCPct: f.tsManualOn ? f.tsMLtc : null,
@@ -419,6 +437,31 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
             {Array.isArray(cc.extraFees) && cc.extraFees.map((f, i) => (
               <Row key={i} k={f.name} v={money2(f.amount)} />
             ))}
+            {/* GOVERNMENT CHARGES, EACH ON ITS OWN LINE (owner-directed 2026-08-23:
+                *"New York City mortgage tax needs to be a line item calculated
+                separately"*). These used to be missing entirely — the title
+                estimator excludes transfer and mortgage taxes by design and nothing
+                else added them — so a New York or Philadelphia quote was short by
+                the biggest number on the closing statement.
+
+                Each row says what it was computed from, so a person can check it
+                against the settlement statement instead of taking it on faith. A
+                figure our table had to fall back on is marked, rather than being
+                presented with the same confidence as one we can cite. */}
+            {Array.isArray(cc.governmentChargeLines) && cc.governmentChargeLines.map((g) => (
+              <Row key={g.key}
+                k={<>
+                  {g.label}
+                  {g.auto === false && <span className="gc-tag gc-typed" title="Typed by hand on this file">typed</span>}
+                  {g.auto !== false && g.confidence === 'default' && <span className="gc-tag gc-est" title="Our rate table does not have this jurisdiction — this is the conservative fallback. Confirm with the title company.">verify</span>}
+                </>}
+                v={money2(g.amount)} />
+            ))}
+            {Array.isArray(cc.governmentChargeWarnings) && cc.governmentChargeWarnings.length > 0 && (
+              <div className="gc-warn">
+                {cc.governmentChargeWarnings.map((w, i) => <div key={i}>{w}</div>)}
+              </div>
+            )}
             <Total k="Total closing costs due at closing" v={money2(cc.dueAtClosing)} />
             <Row k="Appraisal (est., paid outside closing)" v={money2(cc.appraisalPoc)} sub />
             <Total k="Total closing costs including the appraisal" v={money2(cc.totalIncludingPoc)} />
@@ -1012,7 +1055,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // CURRENT address always prefills; the registered scenario's stored copy is
       // only a fallback for a file with no address yet. The old order kept the
       // registration-era address on the term sheet forever after a correction.
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff(), ...(filePricingFico ? { fico: filePricingFico } : {}) }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: addrLine(app.property_address) || inp.address, state: (app.property_address && app.property_address.state) || inp.state, city: (app.property_address && app.property_address.city) || inp.city, units: app.units ?? inp.units, estClosingDate: app.est_closing_date || app.expected_closing, coBorrowerPgWaived: app.co_borrower_pg_waived, liqBufferWaived: app.liquidity_buffer_waived, ...econFallback(inp), ...fileEcon(), ...filePayoff(), ...(filePricingFico ? { fico: filePricingFico } : {}) }));
       if (isStaff) {
         // The registered scenario's admin knobs (markup, points, fees, and any
         // manual LTV/LTC/ARV/rate basis) restore for EVERY staff role — the zone
@@ -1031,6 +1074,11 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         // File-owned address/state — same rule as the registered-scenario path.
         address: addrLine(app.property_address) || inp.address,
         state: (app.property_address && app.property_address.state) || inp.state,
+        // The city and the unit count travel for the government charges — the studio
+        // has neither field of its own, and New York City taxes a 3-family and a
+        // 4-family at different rates on the same loan. File-owned, like the address.
+        city: (app.property_address && app.property_address.city) || inp.city,
+        units: app.units ?? inp.units,
         expFlips: app.requested_exp_flips ?? inp.expFlips,
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
@@ -1046,6 +1094,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         entityName: entity, borrowerName: name, coBorrowerName: coName,
         address: addrLine(app.property_address),
         state: (app.property_address && app.property_address.state) || '',
+        city: (app.property_address && app.property_address.city) || '',
         loanType: app.loan_type,
         program: app.program,
         propertyType: app.property_type,

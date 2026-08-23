@@ -185,6 +185,15 @@ export function buildStudioState(x) {
     // pricing ignores any client value (file-owned in buildInputs).
     liqBufferWaived: (x.liqBufferWaived === true || x.liqBufferWaived === 1 ||
       String(x.liqBufferWaived).toLowerCase() === 'true' || String(x.liqBufferWaived) === '1') ? 'true' : '',
+    /* The file's own unit count and city, READ-ONLY (the same shape as
+       coBorrowerPgWaived). The term sheet's property question is "1 unit" or "2-4
+       units", which cannot tell a 3-family from a 4-family — and New York City taxes
+       those at 2.175% and 2.80% of the same loan, a $3,750 difference on a $600,000
+       loan. So the file hands the studio the real figures; without them the studio
+       assumes 4 (never short) and says so on the panel. The city matters for the same
+       reason — New York, Philadelphia, Pittsburgh and Yonkers each levy their own. */
+    fileUnits: Number(x.units) > 0 ? String(Math.round(Number(x.units))) : '',
+    fileCity: x.city ? String(x.city) : '',
   };
   const c = {
     isAssign,
@@ -277,6 +286,17 @@ export function readSnapshot(win) {
       tsFeeUW: moneyVal('tsFeeUW'), tsFeeCredit: moneyVal('tsFeeCredit'),
       tsFeeAppr: moneyVal('tsFeeAppr'), tsFeeTitle: moneyVal('tsFeeTitle'),
       tsFeasFee: moneyVal('tsFeasFee'),
+      /* GOVERNMENT CHARGES — the manual section (owner-directed 2026-08-23). Each
+         box is blank unless somebody typed in it; a typed figure overrides the
+         automatic one for that ONE charge and leaves the rest calculated. The
+         COUNTY is here because New York and Maryland set their mortgage /
+         recordation tax by county — without it the estimate has to fall back to the
+         state's highest known rate and say so. */
+      tsTaxUnits: val('tsTaxUnits'), tsTaxCity: val('tsTaxCity'),
+      tsTaxCounty: val('tsTaxCounty'), tsTaxBuyerShare: val('tsTaxBuyerShare'),
+      tsTaxMortgage: moneyVal('tsTaxMortgage'), tsTaxIntangible: moneyVal('tsTaxIntangible'),
+      tsTaxTransferState: moneyVal('tsTaxTransferState'), tsTaxTransferLocal: moneyVal('tsTaxTransferLocal'),
+      tsTaxMansion: moneyVal('tsTaxMansion'),
       tsManualOn: chk('tsManualOn'),
       tsMLtv: val('tsMLtv'), tsMArv: val('tsMArv'), tsMLtc: val('tsMLtc'),
       tsMRate: val('tsMRate'), tsMIr: val('tsMIr'),

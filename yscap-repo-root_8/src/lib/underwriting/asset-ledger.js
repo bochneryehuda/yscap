@@ -201,6 +201,22 @@ async function computeAssetLedger(appId, client) {
     closingBufferWaived: !!(liq && liq.closingBufferWaived),
     requiredLiquidity: liq && liq.required != null ? Number(liq.required) : null,
     estimateCashToClose: liq && liq.cashToClose != null ? Number(liq.cashToClose) : null,
+    /* THE GOVERNMENT CHARGES INSIDE THAT REQUIREMENT (owner-directed 2026-08-23).
+       The figure has been right since the mortgage tax reached the quote — this is
+       the SENTENCE, so the assets screen can say WHY the requirement is what it is
+       instead of showing a number an underwriter has to go and reconstruct. Composed
+       on the server through `liquidity.governmentChargeLine`, the SAME function the
+       condition and the internal approval email use, because the assets screen and
+       the condition describing the same money must describe it the same way. */
+    governmentCharges: liq && liq.governmentCharges != null ? Number(liq.governmentCharges) : 0,
+    governmentChargeNote: (() => {
+      try {
+        return require('../liquidity').governmentChargeLine({
+          governmentCharges: liq && liq.governmentCharges,
+          governmentChargeLines: liq && liq.governmentChargeLines,
+        }).replace(/^\s*—\s*/, '');
+      } catch (_) { return ''; }
+    })(),
     maxCashToClose,
     registered: !!liq,
   };

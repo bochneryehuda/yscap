@@ -9,6 +9,7 @@ import { fmtDate } from '../lib/dates.js';
 import { FINDING_SEVERITY as SEV, severityCount } from '../lib/findings-vocab.js';
 import { uadWords } from '../lib/uadWords.js';
 import VariancePanel from './VariancePanel.jsx';
+import { useLightbox } from './MediaLightbox.jsx';
 
 /* The PILOT property report. Imports the appraisal XML (staff), renders the property profile
    built from it — hero + value story, photo gallery, collateral snapshot, comparable sales — and
@@ -105,13 +106,27 @@ function photoFetcherFor(source, readOnly) {
   if (source === 'tpo') return api.tpoAppraisalPhotoBlob;
   return readOnly ? api.appraisalPhotoBlobBorrower : api.appraisalPhotoBlob;
 }
+/* The same three doors as AUTHENTICATED PATHS, so the shared viewer can fetch a
+   photo itself. The gallery grid still uses the fetchers above for its thumbnails;
+   the viewer needs the path because it loads only what you are looking at. */
+function photoPathFor(source, readOnly, docId) {
+  if (source === 'tpo') return `/api/tpo/appraisal-photo/${docId}?inline=1`;
+  return readOnly ? `/api/borrower/documents/${docId}/download?inline=1`
+                  : `/api/staff/documents/${docId}/download?inline=1`;
+}
 
 // Photo gallery — fetches each stored photo as an authorated blob, shows a grid + a full-screen
 // lightbox. Object URLs are revoked on unmount so nothing leaks.
 function PhotoGallery({ photos, readOnly, source }) {
+  /* THE VIEWER IS THE SHARED ONE (MediaLightbox.jsx), not a private copy.
+     This panel used to carry its own — arrows and a ✕, but no keyboard, no focus
+     handling, no scroll lock and no video. The draw galleries had none at all,
+     which is where the owner hit it: *"you can't then exit it, and you can't
+     click to see the next photo."* Two half-viewers is how one surface gets fixed
+     and the other does not, so there is now exactly one. */
+  const lb = useLightbox('Appraisal photographs');
   const [urls, setUrls] = useState({});   // documentId -> objectURL
   const [failed, setFailed] = useState({}); // documentId -> true (fetch failed)
-  const [open, setOpen] = useState(-1);
   const madeRef = useRef([]);
   // Key on the SET of document ids, not the array identity — so resolving a finding (which
   // reloads `data` and rebuilds the photos array with the SAME ids) does not revoke + refetch
@@ -138,14 +153,24 @@ function PhotoGallery({ photos, readOnly, source }) {
   }, [photoKey, readOnly, source]);
 
   if (!photos || !photos.length) return null;
-  const withUrl = photos.filter((p) => urls[p.document_id]);
+  // Every photo goes into the viewer's set — including any whose thumbnail has not
+  // finished loading yet, because the viewer fetches what it shows. Stopping at the
+  // loaded ones is how "next" used to run out halfway through a gallery.
+  const viewerItems = photos.filter((p) => p.document_id).map((p) => ({
+    id: p.document_id, kind: 'image',
+    path: photoPathFor(source, readOnly, p.document_id),
+    title: p.caption || 'Appraisal photograph',
+    caption: p.caption || undefined,
+    filename: (p.caption || 'appraisal-photo') + '.jpg',
+  }));
+  const viewerIndexOf = (p) => Math.max(0, viewerItems.findIndex((v) => v.id === p.document_id));
   return (
     <div style={{ marginTop: 22 }}>
       <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 12px' }}>Photographs <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', fontWeight: 400 }}>({photos.length})</span></h4>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 10 }}>
         {photos.map((p, i) => (
-          <button key={p.id} onClick={() => urls[p.document_id] && setOpen(i)} title="View" style={{
-            padding: 0, border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, overflow: 'hidden', cursor: urls[p.document_id] ? 'pointer' : 'default',
+          <button key={p.id} onClick={() => lb.open(viewerItems, viewerIndexOf(p))} title="View" style={{
+            padding: 0, border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, overflow: 'hidden', cursor: 'pointer',
             aspectRatio: '4 / 3', background: 'var(--line-soft,#EFEADD)', display: 'block' }}>
             {urls[p.document_id]
               ? <img src={urls[p.document_id]} alt={p.caption || 'Appraisal photo'} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
@@ -153,26 +178,9 @@ function PhotoGallery({ photos, readOnly, source }) {
           </button>
         ))}
       </div>
-      {open >= 0 && withUrl.length > 0 && (() => {
-        const list = photos.filter((p) => urls[p.document_id]);
-        const idx = Math.max(0, list.findIndex((p) => p === photos[open]));
-        const cur = list[idx] || list[0];
-        const go = (d) => setOpen(photos.indexOf(list[(idx + d + list.length) % list.length]));
-        return (
-          <div onClick={() => setOpen(-1)} style={{ position: 'fixed', inset: 0, background: 'rgba(20,27,34,.86)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-            <button onClick={(e) => { e.stopPropagation(); go(-1); }} style={lightBtn('left')}>‹</button>
-            <img src={urls[cur.document_id]} alt={cur.caption || 'Appraisal photo'} onClick={(e) => e.stopPropagation()} style={{ maxWidth: '92%', maxHeight: '88%', objectFit: 'contain', borderRadius: 6, boxShadow: '0 8px 40px rgba(0,0,0,.5)' }} />
-            <button onClick={(e) => { e.stopPropagation(); go(1); }} style={lightBtn('right')}>›</button>
-            <button onClick={() => setOpen(-1)} style={{ ...lightBtn('right'), right: 18, top: 18, transform: 'none', width: 40, height: 40 }}>✕</button>
-          </div>
-        );
-      })()}
+      {lb.node}
     </div>
   );
-}
-function lightBtn(side) {
-  return { position: 'fixed', top: '50%', [side]: 22, transform: 'translateY(-50%)', width: 48, height: 48, borderRadius: '50%',
-    border: 'none', background: 'rgba(255,255,255,.16)', color: '#fff', fontSize: 26, cursor: 'pointer', lineHeight: 1 };
 }
 
 // Which finding fields can be previewed against the pricing engine, and the engine override key

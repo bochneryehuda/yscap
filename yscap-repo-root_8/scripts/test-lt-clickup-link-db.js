@@ -184,8 +184,24 @@ async function main() {
     ok(bookAt > 0, 'server.js mounts it');
     ok(staffAt > 0 && bookAt < staffAt,
       'BEFORE the staff-gated /api/lt — a back end nobody can reach is not a feature');
+    // THE COMMENTS ARE STRIPPED FIRST, and that is not a convenience. The file has to
+    // EXPLAIN itself — it says "a DROP-DOWN reads back as a number", and `\bDROP\b`
+    // matches inside "DROP-DOWN" because a hyphen is a word boundary. A guard that
+    // reads prose fails on the very sentence explaining the code, and the next person
+    // "fixes" it by deleting the guard. What is being proven is that the ROUTE runs no
+    // write, so the ROUTE is what gets read.
     const rsrc = require('fs').readFileSync(require.resolve('../src/longterm/routes/book-diag'), 'utf8');
-    ok(!/\b(INSERT|UPDATE|DELETE|ALTER|DROP)\b/i.test(rsrc), 'and there is no write statement anywhere inside it');
+    const code = rsrc.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+    // AND THE STRIP IS ITSELF CHECKED, BOTH WAYS. A strip that quietly ate the whole
+    // file would satisfy the write test perfectly while proving nothing — so the
+    // remains must still carry the route's real code, and must no longer carry its
+    // prose. Asserting only the second half passes on an empty string.
+    ok(/router\.get\(/.test(code) && /BOOK_SQL/.test(code) && /pipelineTasksPage/.test(code),
+      'the stripped copy still holds the route\'s actual code');
+    ok(/DROP-DOWN/i.test(rsrc) && !/DROP-DOWN/i.test(code),
+      'and no longer holds its prose — so the strip removed comments, not everything');
+    ok(!/\b(INSERT|UPDATE|DELETE|ALTER|DROP)\b/i.test(code),
+      'and there is no write statement anywhere inside it');
   } finally {
     await db.query('DELETE FROM lt_clickup_link_log WHERE lt_loan_id = ANY($1::uuid[])', [[A, B]]).catch(() => {});
     await db.query('DELETE FROM lt_properties WHERE loan_id = ANY($1::uuid[])', [[A, B]]).catch(() => {});

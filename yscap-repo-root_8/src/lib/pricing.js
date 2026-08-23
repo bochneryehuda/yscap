@@ -23,7 +23,47 @@ try {
   loadErr = e && e.message ? e.message : String(e);
 }
 
+/* THE GOVERNMENT CHARGES ON A CLOSING — mortgage / recordation tax, the buyer's
+   share of any transfer tax, the mansion tax, recording fees. Pure (no DB, no
+   network), and deliberately OUTSIDE the engines' try/catch: those three are
+   loaded defensively because they are the frozen browser tools that also ship to
+   the client, and a failure there must degrade to `enginesReady() === false`
+   rather than throw at import. This is an ordinary in-repo module — if it cannot
+   load, that is a broken deploy and should say so loudly at boot, not be swallowed
+   into a `loadErr` string that reads as "the pricing engines are missing". */
+const closingCosts = require('./closing-costs');
+
 function enginesReady() { return !!(YSP && GSP && SVP && YSTitle); }
+
+/* THE MANUAL SECTION FOR EVERY GOVERNMENT CHARGE (owner-directed 2026-08-23:
+   *"All those line items should also be able to be added to the manual section to
+   be overwritten and should automatically fill based on the unit count, the loan
+   type, the county, the state."*).
+
+   Each charge the engine can compute gets its own `ovrTax_<key>` knob, so a
+   settlement agent's actual figure — which always beats a table — can be typed on
+   the file without touching code, AND a charge our table does not produce for a
+   jurisdiction can be ADDED by hand. That second case is the one that matters
+   most: a rate table can be wrong, and a wrong table is fixable; a table that is
+   merely INCOMPLETE leaves the person quoting with no way at all to say what they
+   know. Both are now typeable.
+
+   A typed 0 is a real decision ("this closing does not owe it") and is honoured.
+   A blank leaves the automatic figure alone — the studio's explicit-blank contract,
+   the same as every other knob. */
+const TAX_OVERRIDE_PREFIX = 'ovrTax_';
+function taxOverridesFrom(input) {
+  const out = {};
+  if (!input || typeof input !== 'object') return out;
+  for (const key of closingCosts.CHARGE_KEYS) {
+    const k = TAX_OVERRIDE_PREFIX + key;
+    if (!Object.prototype.hasOwnProperty.call(input, k)) continue;
+    const v = input[k];
+    if (v == null || v === '') continue;
+    out[key] = v;
+  }
+  return out;
+}
 
 const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program', silver: 'Silver Program', manual: 'Manual Program' };
 // Hardcoded fee fallback (used only if the company-settings cache is stone
@@ -161,6 +201,15 @@ function buildInputs(app, experience, overrides) {
     // ZIP feeds the Silver engine's geography exclusions + NYC-market detection
     // (Standard/Gold ignore it). Falls back to a ZIP inside the address text.
     zip: clean(addrIsString ? '' : (addr.zip || addr.postal_code || addr.postalCode || '')),
+    /* THE COUNTY — a real pricing input since 2026-08-23, not metadata.
+       The mortgage recording tax is set BY COUNTY in New York (Cortland 1.25%,
+       Chenango 1.00%) and the recordation tax by county in Maryland, so a
+       state-level estimate cannot be right in either place. `property_address` is
+       JSONB and already carries whatever the address canonicalizer stored, so this
+       needs no column; when it is absent the closing-cost engine falls back to the
+       state's HIGHEST rate and says so out loud, rather than quietly guessing low.
+       A staffer can type it on the file (the studio's manual section). */
+    county: clean(addrIsString ? '' : (addr.county || addr.countyName || '')),
     propertyType: normPropertyType(app.property_type),
     units: num(app.units) || 0,
     /* A REFINANCE IS SIZED ON THE AS-IS VALUE, AND ON NOTHING ELSE
@@ -275,6 +324,46 @@ function buildInputs(app, experience, overrides) {
   };
 
   // Staff overrides win. Only copy known keys; coerce numeric fields.
+  /* THE PER-CHARGE TAX OVERRIDES. Copied ahead of the numeric allowlist below
+     because they are a GENERATED set (one per charge the engine knows how to
+     compute), not a hand-kept list — adding a charge to the engine must not also
+     require remembering to add its knob here, which is exactly the kind of
+     hand-maintained second list that silently drops a typed value. */
+  if (overrides && typeof overrides === 'object') {
+    for (const key of closingCosts.CHARGE_KEYS) {
+      const k = TAX_OVERRIDE_PREFIX + key;
+      if (Object.prototype.hasOwnProperty.call(overrides, k)) base[k] = overrides[k];
+    }
+    // The buyer's share of a transfer tax is set by the PURCHASE CONTRACT, not by
+    // local custom — so it is typeable per file (0..1, or a percent 0..100).
+    if (Object.prototype.hasOwnProperty.call(overrides, 'buyerTransferShare')) {
+      const raw = Number(overrides.buyerTransferShare);
+      if (Number.isFinite(raw)) base.buyerTransferShare = raw > 1 ? Math.min(1, raw / 100) : Math.max(0, raw);
+    }
+  }
+  // The county is a STRING input that moves a real number (the mortgage recording
+  // tax), so it rides with the other overridable deal inputs rather than being
+  // read only from the stored address.
+  if (overrides && typeof overrides.county === 'string' && overrides.county.trim()) base.county = overrides.county.trim();
+  /* THE TAX CITY AND THE TAX UNIT COUNT — deliberately their OWN keys, never
+     `city` and `units`.
+
+     Both would otherwise reach a frozen engine: the engines scan the CITY text for
+     the ineligible-city and adverse-market checks, and `units` is a real recorded
+     fact about the building that other readers compare against. A figure someone
+     typed into a tax box must not be able to make a property eligible, or to
+     restate how many dwellings it holds. So they are tax-only by NAME, read by
+     nothing except the government-charge engine below.
+
+     They exist because the term sheet's property question is "1 unit" or "2-4
+     units" and it has no city field at all — while New York City taxes a 3-family
+     at 2.175% and a 4-family at 2.80% of the same loan, and Philadelphia,
+     Pittsburgh and Yonkers each levy their own. */
+  if (overrides && typeof overrides.taxCity === 'string' && overrides.taxCity.trim()) base.taxCity = overrides.taxCity.trim();
+  if (overrides && overrides.taxUnits != null && overrides.taxUnits !== '') {
+    const tu = Math.round(Number(overrides.taxUnits));
+    if (Number.isFinite(tu) && tu >= 1) base.taxUnits = tu;
+  }
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
     'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC', 'targetARLTV', 'targetLoan',
     // THE PAYOFF THE STUDIO WAS PRICED ON (owner-directed 2026-08-07). A refinance
@@ -691,7 +780,62 @@ function normalize(program, input, ev, ladder, opts) {
     manual: hasInput(input, 'feasibilityFee') ? input.feasibilityFee : null,
   });
   const feasibilityFee = feasibility ? num(feasibility.amount) : 0;
-  const closingDueAtClose = round2(origination + brokerFee + lenderFee + creditFee + titleTotal + extraFeesTotal + feasibilityFee);
+  /* GOVERNMENT CHARGES — the mortgage / recordation tax, the buyer's share of any
+     transfer tax, the mansion tax and the recording fees (owner-directed
+     2026-08-23: *"how we can make sure that we're not falling short on cash to
+     close"*).
+
+     THIS IS THE HOLE THAT WAS BEING QUOTED AROUND. `web/tools/title-cost.js` says
+     so in its own header — it EXCLUDES transfer and mortgage taxes on purpose,
+     because it is a title estimator. Nothing else added them, so every quote in a
+     tax state was short by the largest single number on the closing statement: on a
+     $600,000 NYC loan the mortgage recording tax alone is ~$11,550, against a whole
+     title estimate of about $2,600.
+
+     Driven by exactly what the owner listed — the unit count, the loan type, the
+     county and the state — plus the two amounts the taxes are levied on. Each line
+     is separately overridable on the file (`ovrTax_*`), because a settlement agent's
+     actual figure beats any table and must be typeable without editing code.
+
+     NO FROZEN NUMBER MOVES. The loan amount, the note rate, every cap and the whole
+     sizing waterfall are computed ABOVE this line and never read it. A state with no
+     such taxes adds $0 and is byte-identical to before. */
+  const govCharges = closingCosts.applyOverrides(
+    closingCosts.governmentCharges({
+      state,
+      county: input.county,
+      // The tax-only city when one was typed, otherwise the property's own recorded
+      // city. See the note on `taxCity`/`taxUnits` in buildInputs for why these are
+      // separate keys and not overrides of `city` / `units`.
+      city: input.taxCity || input.city,
+      // The unit ladder is the ENGINE's own (typed -> the file's count -> the top of
+      // a "2-4" range). The Term Sheet Studio faces the identical ambiguity and calls
+      // the identical function, so the printed sheet and the registered quote cannot
+      // answer "how many units" differently — which on a New York City loan is a
+      // $3,750 gap between the two documents.
+      units: closingCosts.resolveUnits({
+        typed: input.taxUnits, knownUnits: input.units, propType: input.propertyType,
+      }).units,
+      loanAmount: totalLoan,
+      // The taxable SALE price, by the engine's own rule — zero on a refinance, and
+      // on an assignment the REAL total the buyer pays rather than the capped
+      // effective price the loan is sized against (the deed records what changed
+      // hands). Same call the studio makes.
+      purchasePrice: closingCosts.taxableSalePrice({
+        isRefinance: require('./deal-basis').sizesOnAsIsValue(input.loanType),
+        totalPrice: num(input.purchasePrice),
+      }),
+      // `sizesOnAsIsValue` is deal-basis.js's ONE definition of "is this a
+      // refinance" — the same test buildInputs uses to pick the sizing basis. A
+      // second, local `loanType === 'Refinance'` here is exactly how the two come
+      // to disagree about the same file.
+      transactionType: require('./deal-basis').sizesOnAsIsValue(input.loanType) ? 'refinance' : 'purchase',
+      buyerTransferShare: hasInput(input, 'buyerTransferShare') ? num(input.buyerTransferShare) : undefined,
+    }),
+    taxOverridesFrom(input));
+  const govChargesTotal = num(govCharges.borrowerTotal);
+
+  const closingDueAtClose = round2(origination + brokerFee + lenderFee + creditFee + titleTotal + extraFeesTotal + feasibilityFee + govChargesTotal);
   /* REFINANCE CASH TO CLOSE (owner-directed 2026-08-04). On a purchase this is the
      down payment (equity) plus the closing costs. On a REFINANCE there is no down
      payment (the frozen engine returns downPayment=0 for a refi), and instead the
@@ -886,6 +1030,25 @@ function normalize(program, input, ev, ladder, opts) {
         feasibilityFee: round2(feasibilityFee),
         feasibility: { amount: round2(feasibilityFee), kind: feasibility.kind, label: feasibility.label, note: feasibility.note, manual: feasibility.manual },
       } : {}),
+      /* THE GOVERNMENT CHARGES, ITEMIZED — the owner asked for line items by name
+         ("New York City mortgage tax needs to be a line item calculated
+         separately"), and a blended number could not be checked against a
+         settlement statement, overridden, or explained to a borrower. */
+      governmentCharges: govChargesTotal,
+      governmentChargeLines: govCharges.borrowerLines,
+      /* What the COMPANY pays on this closing — $0 on every deal today, and kept
+         for two reasons rather than deleted. It is a LIVE channel: the engine still
+         sums anything a rate table marks `payer: 'lender'`, so a future state or
+         programme that genuinely puts a charge on the mortgagee reports it here
+         with no new wiring. And quotes stored before 2026-08-23 carry a real
+         figure in this field — New York's 0.25% special additional tax, which was
+         split out until the owner ruled that this book never pays a portion
+         ("it's private money … Everything pays the borrower"). Removing the field
+         would rewrite what those files say they were quoted. */
+      governmentChargesLender: num(govCharges.lenderTotal),
+      governmentChargesConfidence: govCharges.confidence,
+      governmentChargeWarnings: govCharges.warnings,
+      governmentChargeNotes: govCharges.notes,
       dueAtClosing: closingDueAtClose,
       appraisalPoc: appraisalFee,
       totalIncludingPoc: round2(closingDueAtClose + appraisalFee),

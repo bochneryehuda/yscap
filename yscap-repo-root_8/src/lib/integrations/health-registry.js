@@ -451,12 +451,31 @@ const INTEGRATIONS = [
     async probe() {
       if (cfg.emailProvider !== 'resend') return { configured: false, live: null, detail: `Not the active email provider (currently "${cfg.emailProvider}"). Set EMAIL_PROVIDER=resend to use Resend.` };
       if (!cfg.resendApiKey) return { configured: false, live: null, detail: 'The Resend API key is not set.' };
+      /* THE SEND QUEUE'S LIVE STATE, ON THE PAGE SOMEBODY ALREADY LOOKS AT.
+         Owner-reported 2026-08-23: emails were failing with "Resend 429, too many
+         requests" and nothing anywhere said so — the only evidence was a delivery
+         error on one message. The rate gate (src/lib/email/rate-limit.js) knows
+         exactly how fast we are allowed to send, how many sends are waiting, how
+         long they have waited and whether the provider has actually refused us.
+         Saying it HERE means "is the mail backed up?" is answerable without
+         reading a log, and it costs one function call. Never throws — a health
+         page that falls over is worse than one that omits a line. */
+      let queueNote = '';
+      try {
+        const q = require('../email').rateStatus();
+        const bits = [`paced at ${q.rps}/second (shared across every process)`];
+        if (q.queueDepth) bits.push(`${q.queueDepth} waiting`);
+        if (q.retried) bits.push(`${q.retried} send${q.retried === 1 ? '' : 's'} retried after a 429`);
+        if (q.refused) bits.push(`${q.refused} gave up waiting`);
+        if (q.sharedDegraded) bits.push('shared budget unreachable — limiting per process only');
+        queueNote = ' Outbound queue: ' + bits.join(', ') + '.';
+      } catch (_) { /* the queue note is a courtesy, never a failure mode */ }
       try {
         const r = await timebox(fetch('https://api.resend.com/domains', { headers: { Authorization: `Bearer ${cfg.resendApiKey}` } }));
-        if (r.ok) return { configured: true, live: true, detail: 'Reached Resend with the key.' };
-        if (r.status === 401 || r.status === 403) return { configured: true, live: false, detail: `Resend rejected the key (HTTP ${r.status}).` };
-        return { configured: true, live: false, detail: `Resend returned HTTP ${r.status}.` };
-      } catch (e) { return { configured: true, live: false, detail: e.message === 'timed out' ? 'Timed out reaching Resend.' : (e.message || 'Not reachable.') }; }
+        if (r.ok) return { configured: true, live: true, detail: 'Reached Resend with the key.' + queueNote };
+        if (r.status === 401 || r.status === 403) return { configured: true, live: false, detail: `Resend rejected the key (HTTP ${r.status}).` + queueNote };
+        return { configured: true, live: false, detail: `Resend returned HTTP ${r.status}.` + queueNote };
+      } catch (e) { return { configured: true, live: false, detail: (e.message === 'timed out' ? 'Timed out reaching Resend.' : (e.message || 'Not reachable.')) + queueNote }; }
     },
   },
   {

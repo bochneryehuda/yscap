@@ -139,9 +139,33 @@ router.get('/count', async (_req, res) => {
 const fieldValue = (task, id) => {
   const list = (task && Array.isArray(task.custom_fields)) ? task.custom_fields : [];
   const f = list.find((x) => x && x.id === id);
-  const v = f ? f.value : null;
-  const s = (v == null) ? '' : (typeof v === 'object' ? v : String(v).trim());
-  return (s === '' ? null : s);
+  if (!f) return null;
+  let v = f.value;
+  if (v == null) return null;
+
+  // A DROP-DOWN READS BACK AS A NUMBER, NOT ITS LABEL — and the number is the
+  // option's `orderindex`, not anything a person would recognise. The labels sit
+  // beside it in `type_config.options`. Skipping this step is not a cosmetic bug:
+  // *Program is a drop-down, so "Fix & Flip With Construction" arrives as 0 and
+  // "Non-QM - DSCR Ratio" as 3, and the product rule — which decides a file is
+  // long-term unless it is one of the five RTL programs by NAME — then reads every
+  // number as a program it has never heard of and calls the whole workspace
+  // long-term. Measured before this was fixed: 216 Fix & Flip files classified as
+  // long-term, silently.
+  const opts = (f.type_config && Array.isArray(f.type_config.options)) ? f.type_config.options : null;
+  if (opts) {
+    // Match the orderindex the way the rest of the system does; fall back to the
+    // option's id, because some fields hand back the uuid instead.
+    const byIdx = opts.find((o) => o && Number(o.orderindex) === Number(v));
+    const byId = opts.find((o) => o && o.id === v);
+    const hit = byIdx || byId;
+    // NEVER GUESS: an option the field does not list is reported as-is rather than
+    // dropped, so an unknown value is visible instead of reading as "not set".
+    v = hit ? (hit.name != null ? hit.name : hit.label) : v;
+  }
+
+  const out = (typeof v === 'object') ? v : String(v).trim();
+  return (out === '' ? null : out);
 };
 
 router.get('/cards', async (req, res) => {
