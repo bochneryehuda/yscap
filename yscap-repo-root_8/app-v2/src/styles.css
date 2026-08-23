@@ -6391,3 +6391,27 @@ video.mlb-media{min-width:min(720px,88vw)}
 
 /* A ticked row, so a long list still reads at a glance. */
 tr.tape-row-on{background:rgba(47,127,134,.07)}
+
+/* ── GOVERNMENT CHARGES ON THE QUOTE (ProductStudioPanel) — 2026-08-23 ───────
+   The mortgage / recordation tax, the buyer's share of any transfer tax, the
+   mansion tax and the recording fees, each on its own line. They were missing
+   entirely before: the title estimator excludes them by design and nothing else
+   added them, so a New York or Philadelphia quote was short by the largest single
+   number on the closing statement.
+
+   The two chips are about TRUST, not decoration. `typed` says a human replaced our
+   figure with the settlement agent's — which is better information, and the reader
+   should know the automatic number is not what they are looking at. `verify` says
+   our rate table had no entry for this county and fell back to the state's highest
+   known rate, so the estimate is deliberately conservative and somebody should
+   confirm it. A quote that presents a fallback with the same confidence as a cited
+   rate is how an estimate gets trusted further than it has earned. */
+.gc-tag{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;
+  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  vertical-align:middle;white-space:nowrap}
+.gc-typed{background:rgba(47,127,134,.14);color:var(--teal-br,#256168)}
+.gc-est{background:rgba(174,135,70,.18);color:var(--gold-ink,#7A5C28)}
+.gc-warn{margin:6px 0 2px;padding:8px 10px;border-radius:8px;font-size:12px;
+  line-height:1.45;border-left:3px solid var(--gold,#AE8746);
+  background:rgba(174,135,70,.09);color:var(--ivory,#141B22)}
+.gc-warn > div + div{margin-top:4px}

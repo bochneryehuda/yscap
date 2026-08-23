@@ -120,14 +120,48 @@ const ENGAGED_OVERRIDE_KEYS = Object.freeze({
      it is a per-key flag and not a change to the shared `engaged()`, whose "0 means
      unset" reading is correct for every other knob here. */
   feasibilityFee: { label: 'Construction feasibility / project review fee', unit: 'money', zeroIsEngaged: true },
+  /* THE BUYER'S SHARE OF A TRANSFER TAX (owner-directed 2026-08-23). The engine
+     starts from LOCAL CUSTOM — Pennsylvania splits it 50/50, New York's is the
+     seller's, Virginia's deed recordation is the buyer's — but custom is not law
+     anywhere: the PURCHASE CONTRACT decides, and a contract that shifts the whole
+     tax onto the buyer moves real cash to close. Typeable per file, and an
+     exception because it changes what the borrower must bring. */
+  buyerTransferShare: { label: 'Transfer tax — buyer’s share (per the contract)', unit: 'pct', zeroIsEngaged: true },
   oopRehabMax:   { label: 'Out-of-pocket rehab — raise the initial to its max', unit: 'flag' },
   manualPricing: { label: 'Manual scenario (admin-set basis)',         unit: 'flag'  },
   forcePrice:    { label: 'Force-price past the guideline limits',     unit: 'flag'  },
 });
 
+/* THE GOVERNMENT-CHARGE OVERRIDES — one knob per charge the closing-cost engine
+   can compute (owner-directed 2026-08-23: *"All those line items should also be
+   able to be added to the manual section to be overwritten"*).
+
+   GENERATED FROM THE ENGINE'S OWN KEY LIST, never hand-typed. A charge added to
+   the engine appears here — and therefore on the manual screen, in the approval
+   detector, and in the audit line — without anybody remembering to add it. A
+   hand-kept parallel list is how the eighth charge ends up silently unoverridable.
+
+   `zeroIsEngaged` on every one of them: typing 0 WAIVES a real tax on a real
+   closing, and waiving a $11,550 mortgage recording tax is precisely the decision
+   an admin should see. That is the same reasoning as the feasibility fee above,
+   and the opposite of a leverage knob where 0 simply means "unset".
+
+   They are ENGAGED overrides rather than defaulted ones because there is no single
+   company default to compare against: the automatic figure depends on the state,
+   the county, the unit count and the loan size, so any typed amount is by
+   definition a departure from what this deal would otherwise be charged. */
+const closingCosts = require('./closing-costs');
+const TAX_OVERRIDE_KEYS = Object.freeze(Object.fromEntries(
+  closingCosts.CHARGE_KEYS.map((k) => [`ovrTax_${k}`, {
+    label: `${closingCosts.CHARGE_LABELS[k] || k} — typed on this file`,
+    unit: 'money', zeroIsEngaged: true,
+  }])));
+
 // Every knob in the studio's admin zone, in one list.
 const APPROVAL_OVERRIDE_KEYS = Object.freeze(
-  Object.keys(DEFAULTED_OVERRIDE_KEYS).concat(Object.keys(ENGAGED_OVERRIDE_KEYS)));
+  Object.keys(DEFAULTED_OVERRIDE_KEYS)
+    .concat(Object.keys(ENGAGED_OVERRIDE_KEYS))
+    .concat(Object.keys(TAX_OVERRIDE_KEYS)));
 
 // "Meaningfully engaged": a truthy flag, or a numeric override carrying a real
 // NON-ZERO value — NOT a present-but-default key (manualPricing:false is sent on
@@ -200,8 +234,9 @@ function pricingOverridesEngaged(raw, defaults) {
     }
     out.push({ key, label: meta.label, unit: meta.unit, value, defaultValue });
   }
-  for (const key of Object.keys(ENGAGED_OVERRIDE_KEYS)) {
-    const meta = ENGAGED_OVERRIDE_KEYS[key];
+  const engagedKeys = { ...ENGAGED_OVERRIDE_KEYS, ...TAX_OVERRIDE_KEYS };
+  for (const key of Object.keys(engagedKeys)) {
+    const meta = engagedKeys[key];
     // `zeroIsEngaged` (today only the feasibility fee): a typed 0 is a real decision —
     // it WAIVES a fee the deal would otherwise be charged — rather than the "unset"
     // that 0 means for every other knob here. It still has to be a value somebody
@@ -352,7 +387,7 @@ function borrowerPricingOverrides(raw) {
 }
 
 module.exports = {
-  DEFAULTED_OVERRIDE_KEYS, ENGAGED_OVERRIDE_KEYS, APPROVAL_OVERRIDE_KEYS,
+  DEFAULTED_OVERRIDE_KEYS, ENGAGED_OVERRIDE_KEYS, TAX_OVERRIDE_KEYS, APPROVAL_OVERRIDE_KEYS,
   pricingOverridesEngaged, needsPricingApproval, describeOverrides,
   sanitizeStaffOverrides, normalizeCompanyDefaultKnobs, borrowerPricingOverrides, isAdminRole, engaged,
 };

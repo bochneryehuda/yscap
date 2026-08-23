@@ -1792,6 +1792,13 @@
       setVal("tsYspGoldT1", "");   // blank = Gold top tier keeps its normal (0 / company-default) markup
       setVal("tsFeeUW", ""); setVal("tsFeeCredit", ""); setVal("tsFeeAppr", ""); setVal("tsFeeTitle", "");
       setVal("tsFeasFee", "");   // blank = the deal's own construction feasibility fee governs
+      // blank = the government charges calculate themselves from the state, county,
+      // units and loan. Clearing the zone must clear these too, or a "cleared" file
+      // silently keeps a typed tax nobody can see any more.
+      setVal("tsTaxCounty", ""); setVal("tsTaxBuyerShare", "");
+      setVal("tsTaxMortgage", ""); setVal("tsTaxIntangible", "");
+      setVal("tsTaxTransferState", ""); setVal("tsTaxTransferLocal", "");
+      setVal("tsTaxMansion", ""); setVal("tsTaxRecDeed", ""); setVal("tsTaxRecMortgage", "");
       seedAdminDefaults();
       var mo = el("tsManualOn"); if (mo) mo.checked = false;
       setVal("tsMLtv", ""); setVal("tsMArv", ""); setVal("tsMLtc", ""); setVal("tsMRate", ""); setVal("tsMIr", "");
@@ -3918,7 +3925,12 @@
     // A typed loan amount is the largest number anyone enters in the admin zone, so
     // it groups like every other money box — 1,207,500 rather than 1207500, which is
     // genuinely hard to read at a glance and easy to mistype by a factor of ten.
-    "tsTargetLoan"];
+    "tsTargetLoan",
+    // The government-charge boxes (owner-directed 2026-08-23) group like every other
+    // dollar field — a mortgage recording tax is routinely five figures, and 11550
+    // is exactly the kind of number that gets mistyped by a factor of ten.
+    "tsTaxMortgage", "tsTaxIntangible", "tsTaxTransferState", "tsTaxTransferLocal",
+    "tsTaxMansion", "tsTaxRecDeed", "tsTaxRecMortgage"];
   function isMoneyInput(inp) { return inp && inp.id && MONEY_IDS.indexOf(inp.id) !== -1; }
   function groupDigits(s) {
     var d = String(s == null ? "" : s).replace(/[^\d]/g, "");

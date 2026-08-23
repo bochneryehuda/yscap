@@ -178,6 +178,21 @@ export function overridesFromSnapshot(snap, mode) {
       // deal's own fee"; a typed amount (0 included, which waives it) is a per-file override.
       feasibilityFee: f.tsFeasFee,
       titleFee: f.tsFeeTitle,
+      /* THE GOVERNMENT CHARGES — the county, the contract's transfer-tax split, and
+         a per-charge manual amount (owner-directed 2026-08-23). The keys are the
+         engine's own (`ovrTax_<charge>`), so a charge added to the closing-cost
+         engine needs a box and a line here and nothing else — no third list to keep
+         in step. compact() drops every blank, so an untouched section changes
+         nothing about how the deal prices. */
+      county: f.tsTaxCounty,
+      buyerTransferShare: f.tsTaxBuyerShare,
+      ovrTax_mortgage_tax: f.tsTaxMortgage,
+      ovrTax_intangible_tax: f.tsTaxIntangible,
+      ovrTax_transfer_tax_state: f.tsTaxTransferState,
+      ovrTax_transfer_tax_local: f.tsTaxTransferLocal,
+      ovrTax_mansion_tax: f.tsTaxMansion,
+      ovrTax_recording_deed: f.tsTaxRecDeed,
+      ovrTax_recording_mortgage: f.tsTaxRecMortgage,
       ovrAcqLTVPct: f.tsManualOn ? f.tsMLtv : null,
       ovrARLTVPct: f.tsManualOn ? f.tsMArv : null,
       ovrLTCPct: f.tsManualOn ? f.tsMLtc : null,
@@ -419,7 +434,39 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
             {Array.isArray(cc.extraFees) && cc.extraFees.map((f, i) => (
               <Row key={i} k={f.name} v={money2(f.amount)} />
             ))}
+            {/* GOVERNMENT CHARGES, EACH ON ITS OWN LINE (owner-directed 2026-08-23:
+                *"New York City mortgage tax needs to be a line item calculated
+                separately"*). These used to be missing entirely — the title
+                estimator excludes transfer and mortgage taxes by design and nothing
+                else added them — so a New York or Philadelphia quote was short by
+                the biggest number on the closing statement.
+
+                Each row says what it was computed from, so a person can check it
+                against the settlement statement instead of taking it on faith. A
+                figure our table had to fall back on is marked, rather than being
+                presented with the same confidence as one we can cite. */}
+            {Array.isArray(cc.governmentChargeLines) && cc.governmentChargeLines.map((g) => (
+              <Row key={g.key}
+                k={<>
+                  {g.label}
+                  {g.auto === false && <span className="gc-tag gc-typed" title="Typed by hand on this file">typed</span>}
+                  {g.auto !== false && g.confidence === 'default' && <span className="gc-tag gc-est" title="Our rate table does not have this jurisdiction — this is the conservative fallback. Confirm with the title company.">verify</span>}
+                </>}
+                v={money2(g.amount)} />
+            ))}
+            {Array.isArray(cc.governmentChargeWarnings) && cc.governmentChargeWarnings.length > 0 && (
+              <div className="gc-warn">
+                {cc.governmentChargeWarnings.map((w, i) => <div key={i}>{w}</div>)}
+              </div>
+            )}
             <Total k="Total closing costs due at closing" v={money2(cc.dueAtClosing)} />
+            {/* What the COMPANY pays on this closing — New York's lender-borne 0.25%
+                special additional mortgage tax. Never part of the borrower's cash to
+                close, and never invisible either: it is a real cost of funding a New
+                York residential loan. */}
+            {Number(cc.governmentChargesLender) > 0 && (
+              <Row k="New York special additional mortgage tax (we pay this)" v={money2(cc.governmentChargesLender)} sub />
+            )}
             <Row k="Appraisal (est., paid outside closing)" v={money2(cc.appraisalPoc)} sub />
             <Total k="Total closing costs including the appraisal" v={money2(cc.totalIncludingPoc)} />
           </Sec>

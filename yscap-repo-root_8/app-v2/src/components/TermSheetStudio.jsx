@@ -277,6 +277,17 @@ export function readSnapshot(win) {
       tsFeeUW: moneyVal('tsFeeUW'), tsFeeCredit: moneyVal('tsFeeCredit'),
       tsFeeAppr: moneyVal('tsFeeAppr'), tsFeeTitle: moneyVal('tsFeeTitle'),
       tsFeasFee: moneyVal('tsFeasFee'),
+      /* GOVERNMENT CHARGES — the manual section (owner-directed 2026-08-23). Each
+         box is blank unless somebody typed in it; a typed figure overrides the
+         automatic one for that ONE charge and leaves the rest calculated. The
+         COUNTY is here because New York and Maryland set their mortgage /
+         recordation tax by county — without it the estimate has to fall back to the
+         state's highest known rate and say so. */
+      tsTaxCounty: val('tsTaxCounty'), tsTaxBuyerShare: val('tsTaxBuyerShare'),
+      tsTaxMortgage: moneyVal('tsTaxMortgage'), tsTaxIntangible: moneyVal('tsTaxIntangible'),
+      tsTaxTransferState: moneyVal('tsTaxTransferState'), tsTaxTransferLocal: moneyVal('tsTaxTransferLocal'),
+      tsTaxMansion: moneyVal('tsTaxMansion'),
+      tsTaxRecDeed: moneyVal('tsTaxRecDeed'), tsTaxRecMortgage: moneyVal('tsTaxRecMortgage'),
       tsManualOn: chk('tsManualOn'),
       tsMLtv: val('tsMLtv'), tsMArv: val('tsMArv'), tsMLtc: val('tsMLtc'),
       tsMRate: val('tsMRate'), tsMIr: val('tsMIr'),
