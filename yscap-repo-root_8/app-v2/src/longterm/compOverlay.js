@@ -20,8 +20,8 @@
  *     raw 103  →  shows 101       — the borrower receives a 1.000 credit.
  *     raw 101  →  shows  99       — the borrower pays a 1.000 buydown.
  *
- * (The dictation said "1.4" on that last row; the rule the owner stated — subtract the
- *  comp, then measure from 100 — gives 1.000, and the flag is with the owner.)
+ * (The dictation said "1.4" on that last row; the owner confirmed 2026-08-23 it was a
+ *  slip of language — the rule as stated gives 1.000.)
  *
  * Borrower-paid keeps the raw price on the board (less any YSP, below) and charges the
  * comp as ORIGINATION on the fee list instead. The owner's YSP example: raw 100.25 with

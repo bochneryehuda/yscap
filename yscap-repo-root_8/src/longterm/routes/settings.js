@@ -159,6 +159,7 @@ router.get('/mine', async (req, res) => {
       settingsStore.load(userScope(staffId)),
       settingsStore.load(),
     ]);
+    const declared = settingsStore.defaults();
     const settings = mine.groups
       .flatMap((g) => g.settings)
       .filter((s) => PERSONAL_KEYS.has(s.key))
@@ -177,14 +178,23 @@ router.get('/mine', async (req, res) => {
         // sitting beside one answering the right question is how the next person
         // picks the wrong one — which is exactly how this bug arrived.
         const { isOverridden: _dropped, ...rest } = s;
+        // AND SHOW WHAT THEY ACTUALLY GET. `describe` on a personal scope layers
+        // that scope's rows over the DECLARED defaults, so a person with no row
+        // of their own read back our pre-filled value — not the company's, which
+        // is what the application serves them. The screen said RTL while the
+        // shell opened them on Long-Term.
+        let value = chosen ? s.value : company.settings[s.key];
+        // THE FLOOR SHOWS HERE TOO (owner-directed 2026-08-23). A comp row stored
+        // BEFORE the company default was raised can sit below today's floor, where
+        // the resolver prices the COMPANY figure — so showing the stale lower number
+        // would tell a person they price at a figure the application refuses to
+        // price at. Same "what they actually get" rule as the line above.
+        if (chosen && compPlan.personalFloorProblem(s.key, value, company.settings, declared)) {
+          value = compPlan.companyFloor(s.key, company.settings, declared);
+        }
         return {
           ...rest,
-          // AND SHOW WHAT THEY ACTUALLY GET. `describe` on a personal scope layers
-          // that scope's rows over the DECLARED defaults, so a person with no row
-          // of their own read back our pre-filled value — not the company's, which
-          // is what the application serves them. The screen said RTL while the
-          // shell opened them on Long-Term.
-          value: chosen ? s.value : company.settings[s.key],
+          value,
           // `default` on a personal setting means the COMPANY's value, not the
           // declared one — that is what "back to the default" means to a person.
           default: company.settings[s.key],
@@ -221,6 +231,23 @@ router.patch('/mine', async (req, res) => {
     // personal does not make 25 points of compensation a price anybody may quote from.
     const problem = compBoundsProblem(patch);
     if (problem) return res.status(400).json({ error: problem });
+
+    // THE FLOOR (owner-directed 2026-08-23): a personal comp figure may only be AT OR
+    // ABOVE the company's current value — "they cannot put it on their profile as a
+    // setting for lower … for now, on both sides, they can only put it higher." The
+    // floor is the company's EFFECTIVE setting read fresh at the door, so raising the
+    // company default raises this floor with it. Equal is allowed. Going lower on a
+    // specific FILE is a future exception workflow the owner explicitly deferred — it
+    // does not belong on this door.
+    const floorKeys = keys.filter((k) => compPlan.PERSONAL_COMP_KEYS.includes(k));
+    if (floorKeys.length) {
+      const { settings: company } = await settingsStore.load();
+      const declared = settingsStore.defaults();
+      for (const k of floorKeys) {
+        const fp = compPlan.personalFloorProblem(k, patch[k], company, declared);
+        if (fp) return res.status(400).json({ error: fp, rejected: [k] });
+      }
+    }
 
     // keepDefault — a person choosing the value that HAPPENS to equal the declared
     // default is still a choice, and the store would otherwise delete the row and

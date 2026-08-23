@@ -5,8 +5,8 @@
 //
 //   · lender-paid 2.0: raw 102 shows 100 (par, no origination); raw 103 shows 101 and the
 //     borrower receives a 1.000 credit; raw 101 shows 99 and the borrower pays a buydown.
-//     (The dictation said "1.4" on that last row; the rule as stated — subtract the comp,
-//     then measure from 100 — gives 1.000, and the flag is with the owner.)
+//     (The dictation said "1.4" on that last row; the owner confirmed 2026-08-23 it was a
+//     slip of language — the rule as stated gives 1.000.)
 //   · borrower-paid 2.0 at raw 99: "two points borrower paid origination and one point buydown".
 //   · YSP 0.25 at raw 100.25: shows 100, the fee list carries the origination only, and the
 //     YSP itself is invisible.
@@ -83,7 +83,7 @@ console.log('\nE. lender-paid charges — the owner’s three rows');
 {
   const c = quoteCharges('lenderPaid', PLAN, 101, LOAN, false);
   eq(c.displayPrice, 99, 'E12 raw 101 → 99');
-  eq(lineOf(c, 'buydown').points, 1, 'E13 a 1.000 buydown — the stated rule’s own arithmetic (the "1.4" was flagged)');
+  eq(lineOf(c, 'buydown').points, 1, 'E13 a 1.000 buydown — the owner confirmed the "1.4" was a slip; 1.000 is the rule');
   eq(lineOf(c, 'buydown').dollars, 3500, 'E14 $3,500 of buydown on $350k');
   eq(c.borrowerPaysDollars, 5595, 'E15 buydown + the two fees');
 }

@@ -36,8 +36,17 @@ group **Compensation**):
 | `comp.commitmentFee` ($) | 500 | **super admin only** — company-wide |
 
 The company screen and the personal screen both draw these automatically (the settings store
-describes itself); bounds are enforced at both doors (points 0–5, fees $0–$10,000), and a
+describes itself); bounds are enforced at both doors (points 0–10 — the ceiling is a typo
+guard, since upward the owner said "whatever they want"; fees $0–$10,000), and a
 non-super-admin admin is refused a company comp change with a message naming the keys.
+
+**THE FLOOR (owner-directed 2026-08-23):** a person may set their own figure only **at or
+above the company's current value** — on lender-paid, borrower-paid AND the YSP alike.
+Equal is allowed. Enforced twice: the personal settings door refuses a below-floor save
+(naming the floor), and the resolver lifts a stale below-floor row up to the company
+figure at read time — so raising the company default raises every officer's floor with
+it, automatically. Going lower on a **specific file** is a future exception workflow the
+owner explicitly deferred; it is not built.
 
 The pricer fetches the signed-in person's effective plan once
 (`GET /api/lt/dscr/comp-plan`). **A plan that cannot be loaded fails to raw with a notice** —
@@ -51,8 +60,8 @@ Displayed price = raw price − the lender-paid comp. With the standard 2.0:
 * raw **102 → 100** (par). The investor pays us the 2; the borrower pays **no origination**.
 * raw **103 → 101** — the borrower **receives a 1.000 credit**.
 * raw **101 → 99** — the borrower **pays a 1.000 buydown**.
-  *(The dictation said "1.4" on this row; the rule as stated — subtract the comp, measure from
-  100 — gives 1.000. Flagged to the owner.)*
+  *(The dictation said "1.4" on this row; the owner confirmed 2026-08-23 it was a slip of
+  language — the rule as stated gives 1.000.)*
 
 **Waive lender fees** (lender-paid only): the $1,595 + $500 lines do not populate, and the
 $2,095 comes out **in cash** — off the credit first, onto the buydown when the credit cannot
@@ -62,7 +71,8 @@ cover it. Cash, not points: on a $100k loan the waive is worth ~2.1 points, on a
 ## Borrower-paid
 
 The board keeps the raw price (less any YSP). The comp is charged as **origination** on the
-fee list (standard 2.0; each person may set their own, down or up). No waive option.
+fee list (standard 2.0; each person may set their own, at or above the company's figure —
+the floor). No waive option.
 
 **YSP** (default 0; each person may set their own): the displayed price drops by the YSP and
 nothing on the fee list says why. Owner's example: raw 100.25 with a 0.25 YSP shows **100**,
@@ -98,12 +108,16 @@ On every quote's drill-down, in a comp position — **What this quote charges**:
 * Tests: `scripts/test-lt-comp-overlay.mjs`, `scripts/test-lt-comp-plan.mjs`, plus the
   R72–R81 render checks and PE-108–116 source guards.
 
-## Flagged with the owner (2026-08-23)
+## Answered by the owner (2026-08-23, same day — all three settled)
 
-1. **"1.4 buydown"** — built as 1.000 per the stated rule; say the word if 1.4 meant
-   something else.
-2. **May a loan officer set their lender-paid comp BELOW the company default?** Built
-   permissive (any value 0–5, like borrower-paid, which the owner explicitly said moves both
-   ways). If lender-paid should floor at the company default, that is a one-line bound.
-3. The two lender fees are **settings seeded at $1,595 / $500** (super-admin editable) rather
-   than hard-coded — "always" is preserved unless the super admin changes them.
+1. **"1.4 buydown" was a slip of language.** *"If the raw pricing is 101 and you have two
+   points lender paid, then the pricing should be 99, which means you need a one-point
+   buydown."* Built exactly so; nothing changed.
+2. **THE FLOOR — officers may only go higher, on BOTH sides and the YSP.** *"They cannot
+   put it on their profile as a setting for lower … For now, on both sides, they can only
+   put it higher. The floor is zero [on] YSP, two points Borrower-Paid and two points
+   Lender-Paid, whatever that is. Higher, they can do whatever they want."* Built as the
+   floor rule above (door refusal + read-time lift, equal allowed). A per-FILE lower
+   figure is an exception workflow the owner will define later — deliberately not built.
+3. **Fees as settings: "Perfect."** The $1,595 / $500 stay seeded as super-admin-editable
+   settings — "always" is preserved unless the super admin changes them.

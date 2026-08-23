@@ -15,6 +15,10 @@
  * a fee a person could set for themselves would be a person deciding what the company
  * charges, which is not what "their own compensation" means.
  *
+ * A PERSONAL figure is FLOORED at the company's (owner-directed 2026-08-23): the door
+ * refuses a below-floor save, and a stale row stored before the company default was
+ * raised is LIFTED to the company figure at read time. Equal is allowed.
+ *
  * ⛔ EVERY FIGURE IS GUARDED, AND A BAD ONE FALLS DOWN THE CHAIN RATHER THAN THROUGH IT.
  * A row holding "abc" or −1 (a hand-edited database, a stale client) resolves to the next
  * source down, and `source` says which one actually answered — so the screen can say
@@ -45,9 +49,11 @@ const PERSONAL_COMP_KEYS = ['comp.lenderPaid', 'comp.borrowerPaid', 'comp.ysp'];
  * nobody's compensation is 40 points, and a fee is dollars.
  */
 const COMP_BOUNDS = {
-  'comp.lenderPaid': { min: 0, max: 5, unit: 'points' },
-  'comp.borrowerPaid': { min: 0, max: 5, unit: 'points' },
-  'comp.ysp': { min: 0, max: 5, unit: 'points' },
+  // The ceiling is a TYPO GUARD, not policy — the owner (2026-08-23): upward "they can do
+  // whatever they want". 10 points still catches the 25-typed-for-2.5 class.
+  'comp.lenderPaid': { min: 0, max: 10, unit: 'points' },
+  'comp.borrowerPaid': { min: 0, max: 10, unit: 'points' },
+  'comp.ysp': { min: 0, max: 10, unit: 'points' },
   'comp.applicationFee': { min: 0, max: 10000, unit: 'dollars' },
   'comp.commitmentFee': { min: 0, max: 10000, unit: 'dollars' },
 };
@@ -81,6 +87,42 @@ function validateCompValue(key, value) {
 }
 
 /**
+ * THE FLOOR (owner-directed 2026-08-23, answering the flagged question): an officer may set
+ * their own figure only AT OR ABOVE the company's — on lender-paid, borrower-paid AND the
+ * YSP alike. "They cannot put it on their profile as a setting for lower … For now, on both
+ * sides, they can only put it higher." A per-FILE lower figure is a future EXCEPTION
+ * workflow the owner described and explicitly deferred — do not build it into settings.
+ *
+ * The floor is the company's CURRENT effective value ("whatever that is"), never a
+ * hard-coded 2.0 — so raising the company default lifts every officer's floor with it.
+ */
+function companyFloor(key, company = {}, defaults = {}) {
+  const co = figureOf(company[key]);
+  if (co != null && co >= 0) return co;
+  const std = figureOf(defaults[key]);
+  if (std != null && std >= 0) return std;
+  return 0;
+}
+
+/**
+ * Refuse a PERSONAL comp figure below the company's, naming the floor. Equal is allowed —
+ * choosing the company's own figure is following the company, not undercutting it. Junk is
+ * not this function's business (the bounds check already refused it); a non-personal key
+ * has no floor.
+ */
+function personalFloorProblem(key, value, company = {}, defaults = {}) {
+  if (!PERSONAL_COMP_KEYS.includes(key)) return null;
+  const n = figureOf(value);
+  if (n == null) return null;
+  const floor = companyFloor(key, company, defaults);
+  if (n < floor) {
+    return `${key} cannot be set below the company's ${floor} — a personal figure may only be `
+      + 'the same or higher. Going lower on a specific file is an exception the company approves.';
+  }
+  return null;
+}
+
+/**
  * The effective plan for one person.
  *
  *   defaults    — the DECLARED defaults (settingsStore.defaults()).
@@ -102,7 +144,17 @@ function resolveCompPlan({ defaults = {}, company = {}, user = {}, userStored = 
     const own = personal && userStored.has(key) ? figureOf(user[key]) : null;
     const co = figureOf(company[key]);
     const std = figureOf(defaults[key]);
-    if (own != null && own >= 0) { plan[name] = own; source[name] = 'yours'; continue; }
+    if (own != null && own >= 0) {
+      // THE FLOOR APPLIES AT READ TIME TOO. A row stored before the company default was
+      // raised can legitimately sit below today's floor; the company figure governs then,
+      // and the provenance says so — pricing the officer's stale lower figure would be
+      // exactly the undercut the rule forbids.
+      const fl = companyFloor(key, company, defaults);
+      if (own >= fl) { plan[name] = own; source[name] = 'yours'; continue; }
+      plan[name] = fl;
+      source[name] = (co != null && co >= 0) ? 'company' : 'standard';
+      continue;
+    }
     if (co != null && co >= 0) { plan[name] = co; source[name] = 'company'; continue; }
     if (std != null && std >= 0) { plan[name] = std; source[name] = 'standard'; continue; }
     // ⛔ EVEN THE DECLARED DEFAULT WAS UNREADABLE — a code bug, not a data state. The
@@ -116,4 +168,4 @@ function resolveCompPlan({ defaults = {}, company = {}, user = {}, userStored = 
   return { plan, source };
 }
 
-module.exports = { COMP_KEYS, PERSONAL_COMP_KEYS, COMP_BOUNDS, figureOf, validateCompValue, resolveCompPlan };
+module.exports = { COMP_KEYS, PERSONAL_COMP_KEYS, COMP_BOUNDS, figureOf, validateCompValue, companyFloor, personalFloorProblem, resolveCompPlan };
