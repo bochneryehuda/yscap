@@ -51,7 +51,10 @@ const SORTABLE = {
   loan_amount: 'l.loan_amount',
   stage: 'l.stage_key',
   milestone: 'l.milestone_name',
-  borrower: 'b.full_name',
+  // Sorted on the SAME expression the row displays. Sorting on b.full_name alone put
+  // every unlinked loan in one undifferentiated block at the end while the page
+  // showed real names -- a list that disagrees with its own ordering.
+  borrower: "COALESCE(b.full_name, NULLIF(TRIM(l.borrower_name), ''))",
   synced: 'l.encompass_synced_at',
   // The lock desk's own order: whatever expires soonest, first.
   lock_expiration: 'k.expiration_date',
@@ -265,7 +268,25 @@ function buildPipelineQuery(viewerAccess, staffId, filters = {}, opts = {}) {
                             NULLIF(p.state,''), NULLIF(p.zip,'')), '') AS property_address,
            p.ltv_pct,
            l.encompass_last_modified, l.encompass_synced_at, l.encompass_sync_error,
-           b.full_name AS borrower_name,
+           -- THE NAME WE ALREADY HAVE, RATHER THAN A DASH (owner-reported
+           -- 2026-08-23: "None of the files have borrower information").
+           --
+           -- This read b.full_name alone -- the LINKED shared profile. That link is
+           -- made by a human on the borrower-match screen, so on a freshly mirrored
+           -- book borrower_id is NULL on every loan, nothing sits on the other side
+           -- of that outer join, and the column reads a dash. Which says WE DO NOT
+           -- KNOW WHO THIS BORROWER IS, on a book where discovery stored the name Encompass
+           -- gave us for every single loan (lt_loans.borrower_name). Showing a dash
+           -- over a fact we hold is the confident wrong answer in its cheapest form,
+           -- and here it made the entire pipeline look broken.
+           --
+           -- THE LINKED PROFILE STILL WINS when there is one: it is the name a human
+           -- confirmed, and it is what every other PILOT surface shows this person
+           -- as. Encompass's copy is the fallback, and borrower_is_linked travels
+           -- with it so the screen can say which of the two it is drawing rather than
+           -- letting an unconfirmed name pass for a confirmed one.
+           COALESCE(b.full_name, NULLIF(TRIM(l.borrower_name), '')) AS borrower_name,
+           (l.borrower_id IS NOT NULL) AS borrower_is_linked,
            k.lock_status, k.expiration_date AS lock_expiration_date,
            k.note_rate_pct AS locked_rate_pct,
            -- Days to expiry is computed HERE rather than in JS so the pipeline can
