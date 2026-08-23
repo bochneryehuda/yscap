@@ -289,6 +289,12 @@ const stack = buildRateStack(capture.programs);
   const bare = attempt(() => render(React.createElement(PriceBuild, { o: {} })));
   ok(bare.err === null, `R32 an option with nothing in it still renders${bare.err ? ` — ${bare.err.message}` : ''}`);
   ok((bare.html || '').includes('—'), 'R33 …as em dashes, never as 0.000');
+
+  // …and never as "NaN" or "$NaN" either, which is the third way a missing figure can land
+  // on screen and the ugliest: it reads as a broken page rather than as an absent value.
+  // Worth pinning because the shared money formatters take null/'' but not NaN.
+  ok(!/NaN/.test(html) && !/NaN/.test(bare.html || ''),
+    'R33a …and no figure anywhere renders as NaN');
 }
 
 // ---------------------------------------------------------------------------

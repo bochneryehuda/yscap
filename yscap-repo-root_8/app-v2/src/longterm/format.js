@@ -57,6 +57,47 @@ export const rate = (v) => (typeof v === 'number' && Number.isFinite(v) ? `${(v 
  * places, and four surfaces agreeing matters more than which convention is nicer.
  * Changing how a DSCR is quoted is a product decision, not a side effect of tidying up.
  */
+/**
+ * A NOTE RATE — a whole percent to three places. 5.875 → "5.875%".
+ *
+ * ⛔ IT IS NOT `rate`, AND THE TWO MUST NEVER BE SWAPPED. `rate` above takes a FRACTION
+ * (0.97 → "97.0%") because that is what dividing two counts gives you; this takes a whole
+ * percent, because that is how a rate sheet quotes a note rate and how the column holds it.
+ * Feed a note rate to `rate` and 5.875 prints as "587.5%"; feed an agreement fraction to
+ * this one and 0.97 prints as "0.970%". Neither is a rounding difference — both are simply
+ * the wrong number, which is why they are named separately and each says what it takes.
+ *
+ * THREE PLACES, not two: rate ladders step in eighths (5.875, 6.125), and two places would
+ * print two different rungs as the same rate.
+ *
+ * Non-finite is a DASH. A rate the vendor never quoted must never be drawn as 0.000%.
+ */
+export const noteRate = (v) => (typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(3)}%` : '—');
+
+/**
+ * A PRICE — three places, no percent sign. 100.061 → "100.061".
+ *
+ * A price is not a percent even though it looks like one: par is 100, and 98.5 means the
+ * buyer pays 98.5% of par. Printing it with a "%" invites somebody to read 98.5 as a rate.
+ *
+ * Non-finite is a DASH, for the standing reason: a price nobody quoted is not 0.000, and a
+ * price of zero is a real (catastrophic) figure that must stay distinguishable from it.
+ */
+export const price = (v) => (typeof v === 'number' && Number.isFinite(v) ? v.toFixed(3) : '—');
+
+/**
+ * POINTS — three places, SIGNED, with the plus kept. -0.689 → "-0.689", 2 → "+2.000".
+ *
+ * The sign is the whole meaning: points ADDED to a price cost the borrower money and points
+ * SUBTRACTED pay them. An unsigned "2.000" beside a "0.689" reads as two costs when one of
+ * them is a credit, so the plus is printed rather than left implied.
+ *
+ * Non-finite is a DASH: an adjustment the vendor never itemized is not a zero adjustment.
+ */
+export const points = (v) => (typeof v === 'number' && Number.isFinite(v)
+  ? (v > 0 ? `+${v.toFixed(3)}` : v.toFixed(3))
+  : '—');
+
 export const ratio = (v) => (v == null || v === ''
   ? '—' : Number(v).toFixed(3).replace(/0+$/, '').replace(/\.$/, ''));
 

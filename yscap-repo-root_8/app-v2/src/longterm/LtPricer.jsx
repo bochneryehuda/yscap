@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
+import { money, money2, noteRate as rate, price, points as pts } from './format.js';
 import { INK, MUTED, SLATE, GOLD, PAPER, DANGER, CAUTION, card, eyebrow, sub, input, label } from './ppeStyles.js';
 
 /**
@@ -29,15 +30,18 @@ import { INK, MUTED, SLATE, GOLD, PAPER, DANGER, CAUTION, card, eyebrow, sub, in
  */
 
 /* ── formatting ───────────────────────────────────────────────────────────────
-   Absent is an EM DASH, decided by Number.isFinite — never 0.000. A quoted zero and
-   a figure the vendor never mentioned are different facts, and printing the second
-   as the first is how a screen talks somebody into believing a fee was waived. */
+   ⛔ EVERY FORMATTER COMES FROM `format.js`, THE ONE PLACE THAT DECIDES HOW A VALUE IS
+   WRITTEN DOWN. This screen hand-rolled its own and that was wrong twice over: a second
+   copy drifts from the first (the reason that module exists at all), and one of the names
+   it took — `rate` — already means something ELSE there. `format.rate` takes a FRACTION
+   (0.97 → "97.0%"); a note rate is a whole percent. Swap them and 5.875 prints as
+   "587.5%". So the three the engine needed are declared THERE, named for what they take:
+   `noteRate`, `price` and `points`.
+
+   Absent is an EM DASH in all of them, never 0.000. A quoted zero and a figure the vendor
+   never mentioned are different facts, and printing the second as the first is how a screen
+   talks somebody into believing a fee was waived. */
 const nn = (v) => Number.isFinite(v);
-const rate = (v) => (nn(v) ? `${v.toFixed(3)}%` : '—');
-const price = (v) => (nn(v) ? v.toFixed(3) : '—');
-const pts = (v) => (nn(v) ? (v > 0 ? `+${v.toFixed(3)}` : v.toFixed(3)) : '—');
-const money = (v) => (nn(v) ? `$${Math.round(v).toLocaleString()}` : '—');
-const money2 = (v) => (nn(v) ? `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—');
 const NUM = { fontVariantNumeric: 'tabular-nums' };
 
 /* ── the starting scenario ────────────────────────────────────────────────────
