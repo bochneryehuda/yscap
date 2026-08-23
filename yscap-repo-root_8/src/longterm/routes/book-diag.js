@@ -39,6 +39,7 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../db');
 const clickup = require('../clickup/client');
+const encompass = require('../encompass/client');
 const program = require('../clickup/program');
 const { PIPELINE, SYNC } = require('../../clickup/fields');
 
@@ -117,6 +118,96 @@ router.get('/count', async (_req, res) => {
     res.json({ ok: true, ...rows[0] });
   } catch (e) {
     res.status(500).json({ ok: false, error: (e && e.message) || String(e) });
+  }
+});
+
+/**
+ * WHEN THE BOOK WAS LAST SWEPT — and why the count endpoint cannot answer it.
+ *
+ * `/count` reports `max(encompass_synced_at)`, which is the newest SINGLE loan read.
+ * That is not the same question as "has the whole book been refreshed", and reading
+ * it as if it were is actively misleading: two loans read a minute ago make a book
+ * last swept this morning look current. Measured on the live book — a `/count` of
+ * 18:02 over a set whose folder data came from the 07:00 sweep.
+ *
+ * The difference decides whether "the owner's change is not here yet" means "PILOT
+ * has not looked" or "Encompass does not have it either", and those send you to two
+ * different places. `lt_sync_runs` (db/616) already records every pass with what it
+ * discovered and what it read; this hands the last few of them over the same gated
+ * door so the question is answered from the record instead of from an inference.
+ */
+router.get('/runs', async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50);
+  try {
+    const { rows } = await db.query(
+      `SELECT kind, trigger, started_at, finished_at, ok, reason,
+              discovered, read_count, failed, skipped, remaining, passes
+         FROM lt_sync_runs
+        ORDER BY started_at DESC
+        LIMIT $1`, [limit]);
+    // The newest pass that actually SWEPT the book, as opposed to one that read a
+    // couple of due loans. A sweep is what makes the folder on every row current.
+    const swept = rows.find((r) => r.kind === 'loans' && Number(r.discovered) > 0) || null;
+    res.json({ ok: true, runs: rows, lastSweep: swept });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: (e && e.message) || String(e) });
+  }
+});
+
+/**
+ * ASK ENCOMPASS ABOUT ONE LOAN, BOTH WAYS, AND PRINT THE DIFFERENCE.
+ *
+ * WHY THIS EXISTS. An officer moved files into the Withdrawn folder; PILOT went on
+ * showing them as working. Three explanations fit that equally well from the outside
+ * — the save did not happen, the pipeline view lags, or the sweep cannot see the
+ * folder at all — and they need three different fixes. Nothing we had could tell
+ * them apart, so the argument was unwinnable in either direction.
+ *
+ * The one question that separates them: what does Encompass say about this loan RIGHT
+ * NOW, and does the answer change when we ask for archived loans? So it asks twice —
+ * once exactly as discovery used to, once with `includeArchivedLoans` — and hands
+ * back both, beside what PILOT currently has stored. A difference between the two
+ * columns IS the diagnosis.
+ *
+ * Read-only: two pipeline searches for ONE loan number and one row from our own
+ * table. No write path, and it cannot touch a loan.
+ */
+router.get('/probe', async (req, res) => {
+  const loanNumber = String(req.query.loan || '').trim();
+  if (!loanNumber) return res.status(400).json({ ok: false, error: 'pass ?loan=<loan number>' });
+  if (!encompass.configured()) {
+    return res.status(503).json({ ok: false, error: 'Encompass is not connected on this deployment.' });
+  }
+  const fields = ['Loan.LoanNumber', 'Loan.LoanFolder', 'Loan.LastModified',
+                  'Loan.CurrentMilestoneName', 'Loan.LoanAmount'];
+  const ask = async (withArchived) => {
+    const request = {
+      fields,
+      filter: { terms: [{ canonicalName: 'Loan.LoanNumber', matchType: 'exact', value: loanNumber }] },
+      sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'Descending' }],
+    };
+    if (withArchived) request.includeArchivedLoans = true;
+    try {
+      const body = await encompass.pipelineSearch(request, { limit: 10, start: 0 });
+      const rows = Array.isArray(body) ? body : ((body && body.loans) || []);
+      return {
+        found: rows.length,
+        loans: rows.map((r) => {
+          const f = (r && r.fields) || r || {};
+          return { folder: f['Loan.LoanFolder'] || null, lastModified: f['Loan.LastModified'] || null,
+                   milestone: f['Loan.CurrentMilestoneName'] || null, amount: f['Loan.LoanAmount'] || null };
+        }),
+      };
+    } catch (e) { return { error: (e && e.message) || String(e) }; }
+  };
+  try {
+    const [asDiscoveryUsedTo, withArchived] = await Promise.all([ask(false), ask(true)]);
+    const { rows } = await db.query(
+      `SELECT loan_number, loan_folder, milestone_name, encompass_last_modified, encompass_synced_at
+         FROM lt_loans WHERE loan_number = $1`, [loanNumber]);
+    res.json({ ok: true, loanNumber, asDiscoveryUsedTo, withArchived, pilotHas: rows[0] || null });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: (e && e.message) || String(e) });
   }
 });
 

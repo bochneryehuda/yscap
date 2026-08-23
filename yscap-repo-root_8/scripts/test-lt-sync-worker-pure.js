@@ -260,6 +260,24 @@ console.log = (...a) => { logged.push(a.join(' ')); };
   }
 
   console.log(failures ? `\n${failures} FAILED` : '\nall passed');
+  // ── THE PACING PAIR, AND WHY IT IS ONE ASSERTION AND NOT TWO ─────────────
+  // A drain budget longer than the gap between ticks is worse than useless: every
+  // other tick lands mid-drain, `running` skips it, and a schedule that reads as
+  // "every 5 minutes" syncs no more often than the 20-minute one it replaced. The
+  // two numbers are a PAIR, so the invariant is what is asserted — change either
+  // alone and this fails, which is exactly the drift it exists to catch.
+  {
+    const { POLL_MIN, DRAIN_SEC } = worker._internals;
+    check(POLL_MIN === 5, `a pass runs every 5 minutes by default (got ${POLL_MIN})`);
+    check(DRAIN_SEC * 1000 < POLL_MIN * 60 * 1000,
+      `the drain budget (${DRAIN_SEC}s) finishes inside the poll gap (${POLL_MIN * 60}s), `
+      + 'so a tick never arrives mid-drain and gets skipped');
+    // And a real margin, not a photo-finish: a drain that ends one second before the
+    // next tick is a drain that overruns the moment Encompass is slow.
+    check(DRAIN_SEC * 1000 <= POLL_MIN * 60 * 1000 * 0.9,
+      'with room to spare, so a slow Encompass does not push a drain past the next tick');
+  }
+
   process.exit(failures ? 1 : 0);
 })().catch((e) => {
   console.log = realLog;

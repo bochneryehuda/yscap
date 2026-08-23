@@ -34,10 +34,27 @@ const milestoneCatalog = require('./milestone-catalog');
 const contacts = require('../people/contacts');
 const runLog = require('./run-log');
 
-/** Minutes between passes. The tenant's own pacing makes a tighter loop pointless. */
+/**
+ * Minutes between passes.
+ *
+ * WAS 20, on the reasoning that the tenant's own pacing makes a tighter loop
+ * pointless. That reasoning was about the COST of a pass and it is still true; what
+ * it missed is the WAIT, which is what an office actually feels. Owner-directed
+ * 2026-08-23: *"we need to make PILOT refresh themselves more often from Encompass,
+ * so everything should go simultaneously."*
+ *
+ * Twenty minutes is also what turned a simple question into an hour of digging: an
+ * officer withdrew files in Encompass, PILOT still showed them working, and there
+ * was no way to tell "not fetched yet" from "not saved" — because a book last swept
+ * twenty minutes ago looks exactly like a book that missed the change.
+ *
+ * Five keeps a pass cheap — `needsRead` is answered from the database, so a caught-up
+ * book costs one discovery call and stops — while putting the worst-case wait inside
+ * the time it takes someone to switch windows and look.
+ */
 const POLL_MIN = (() => {
   const raw = Number(process.env.LT_SYNC_POLL_MIN);
-  return Number.isFinite(raw) && raw >= 1 ? Math.trunc(raw) : 20;
+  return Number.isFinite(raw) && raw >= 1 ? Math.trunc(raw) : 5;
 })();
 
 /** How long after boot the first pass runs — long enough for migrations to finish. */
@@ -75,8 +92,12 @@ const enabled = () => {
  * up or this budget is spent. It is a WALL-CLOCK bound rather than a pass count
  * because what has to be protected is the gap before the next tick, and a pass takes
  * as long as the tenant's pacing makes it take. Default 10 minutes, comfortably
- * inside the 20-minute poll so a drain can never still be running when the next tick
- * lands (and `running` would skip it anyway).
+ * inside the poll gap so a drain can never still be running when the next tick lands
+ * (and `running` would skip it anyway). IT MOVES WITH THE POLL: when the gap dropped
+ * from 20 minutes to 5 this had to come down from 10 minutes to 4 or every other tick
+ * would arrive mid-drain and be skipped — a faster schedule that silently syncs no
+ * more often than the old one. The invariant, not the number, is the point, and
+ * `test-lt-sync-worker-pure` asserts it so the pair cannot drift apart again.
  *
  * ONCE THE HISTORY IS IN, THIS COSTS NOTHING. `needsRead` is answered from the
  * database — a loan is due only if it has never been read or Encompass has touched
@@ -84,7 +105,7 @@ const enabled = () => {
  */
 const DRAIN_SEC = (() => {
   const raw = Number(process.env.LT_SYNC_DRAIN_SEC);
-  return Number.isFinite(raw) && raw >= 0 ? Math.trunc(raw) : 600;
+  return Number.isFinite(raw) && raw >= 0 ? Math.trunc(raw) : 240;
 })();
 
 /**
