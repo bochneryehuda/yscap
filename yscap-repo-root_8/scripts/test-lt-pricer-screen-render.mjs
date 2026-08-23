@@ -100,13 +100,14 @@ export default ltApi;
 const entry = `
 import React from 'react';
 import { renderToString } from 'react-dom/server';
-import LtPricer, { PriceBuild, RateRow, IneligibleView, buildRateStack, toScenario, ltvOf } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
+import LtPricer, { PriceBuild, RateRow, IneligibleView, DscrCalc, buildRateStack, toScenario, ltvOf } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
 globalThis.__React = React;
 globalThis.__renderToString = renderToString;
 globalThis.__LtPricer = LtPricer;
 globalThis.__PriceBuild = PriceBuild;
 globalThis.__RateRow = RateRow;
 globalThis.__IneligibleView = IneligibleView;
+globalThis.__DscrCalc = DscrCalc;
 globalThis.__buildRateStack = buildRateStack;
 globalThis.__toScenario = toScenario;
 globalThis.__ltvOf = ltvOf;
@@ -146,6 +147,7 @@ const LtPricer = globalThis.__LtPricer;
 const PriceBuild = globalThis.__PriceBuild;
 const RateRow = globalThis.__RateRow;
 const IneligibleView = globalThis.__IneligibleView;
+const DscrCalc = globalThis.__DscrCalc;
 const buildRateStack = globalThis.__buildRateStack;
 const toScenario = globalThis.__toScenario;
 
@@ -545,5 +547,69 @@ for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/ppeSty
   // on a developer's machine. What stays here is what genuinely needs a rendered page.
 }
 
+
+// ---------------------------------------------------------------------------
+// 6) THE LOAN TERM AND THE DSCR CALCULATOR (owner-directed 2026-08-23)
+// ---------------------------------------------------------------------------
+{
+  const full = attempt(() => render(React.createElement(LtPricer)));
+  const h = full.html || '';
+  // The term box is on the form, offering exactly the three the owner named, defaulting to 30.
+  ok(/id="pe-term"/.test(h), 'R53 the loan-term box is on the form');
+  // `[^>]*` because renderToString writes the SELECTED option's own attribute between `value` and
+  // the label (`<option value="30" selected="">30-year</option>`), so a regex that assumes the two
+  // are adjacent fails on whichever term happens to be the default — a defect in the test, not the
+  // screen. Pin the value and its label on the SAME tag, and let anything sit between them.
+  ok(/value="15"[^>]*>15-year</.test(h) && /value="30"[^>]*>30-year</.test(h)
+    && /value="40"[^>]*>40-year</.test(h),
+    'R54 …offering 15, 30 and 40');
+  // `selected` is how renderToString marks a <select>'s chosen option.
+  ok(/<option selected="" value="30">30-year<\/option>/.test(h) || /value="30" selected/.test(h),
+    'R55 …and 30-year is the one it arrives on');
+  // The way IN to the calculator is on the ratio's own field, and the panel is NOT open yet —
+  // asserting that absence is what stops the form quietly growing a permanent panel.
+  ok(/Calculate<\/button>/.test(h), 'R56 the ratio carries a Calculate control');
+  ok(!/Work out the DSCR/.test(h), 'R57 …and the calculator is closed until it is asked for');
+
+  // The panel itself, rendered with what the screen hands it.
+  const c = { rent: '3,500', tax: '500', taxBasis: 'monthly', insurance: '1,800', insBasis: 'yearly', hoa: '', rate: '7.375' };
+  const r = attempt(() => render(React.createElement(DscrCalc, {
+    c, setC: () => {}, loanAmount: 375000, termYears: 30, interestOnly: false, onUse: () => {},
+  })));
+  ok(r.err === null, `R58 the calculator renders${r.err ? ` — ${r.err.message}` : ''}`);
+  const ch = r.html || '';
+  ok(/Monthly rent/.test(ch) && /Property tax/.test(ch) && /Hazard insurance/.test(ch)
+    && /Monthly HOA/.test(ch) && /Target rate/.test(ch),
+  'R59 …asking for every figure the owner named');
+  // The ratio it shows is the one dscrCalc computes — read from the module, never typed here, so
+  // this cannot pass against a screen that draws a different number from the one the rule gives.
+  const D = await import(new URL('../app-v2/src/longterm/dscrCalc.js', import.meta.url));
+  const want = D.dscrFrom({ loanAmount: 375000, ratePct: 7.375, termYears: 30, interestOnly: false,
+    rentMonthly: 3500, taxMonthly: 500, insuranceMonthly: D.perMonth(1800, 'yearly') }).dscr;
+  ok(want != null && ch.includes(want.toFixed(2)), `R60 …and shows the rule's own ratio (${want})`);
+  // A yearly figure states its monthly equivalent, so nobody has to trust the division blind.
+  ok(/150 a month/.test(ch), 'R61 …with a yearly figure showing what it is a month');
+  // The arithmetic is on screen, not just the answer.
+  ok(/P&amp;I/.test(ch) && /tax/.test(ch) && /insurance/.test(ch),
+    'R62 …and the parts that made it');
+
+  // Interest-only says so, and says the term stops mattering — the owner's own rule.
+  const io = attempt(() => render(React.createElement(DscrCalc, {
+    c, setC: () => {}, loanAmount: 375000, termYears: 30, interestOnly: true, onUse: () => {},
+  })));
+  ok((io.html || '').includes('interest-only'), 'R63 an interest-only scenario says so on the panel');
+  const ioWant = D.dscrFrom({ loanAmount: 375000, ratePct: 7.375, termYears: 30, interestOnly: true,
+    rentMonthly: 3500, taxMonthly: 500, insuranceMonthly: D.perMonth(1800, 'yearly') }).dscr;
+  ok(ioWant > want && (io.html || '').includes(ioWant.toFixed(2)),
+    `R64 …and the ratio follows it (${want} -> ${ioWant})`);
+
+  // NOTHING IS GUESSED: with a figure missing it names what is missing rather than showing a number.
+  const bare = attempt(() => render(React.createElement(DscrCalc, {
+    c: { rent: '', tax: '', taxBasis: 'monthly', insurance: '', insBasis: 'monthly', hoa: '', rate: '' },
+    setC: () => {}, loanAmount: 375000, termYears: 30, interestOnly: false, onUse: () => {},
+  })));
+  ok(/Still needed/.test(bare.html || ''), 'R65 an incomplete calculator says what is still needed');
+  ok(!/Use this ratio/.test(bare.html || ''), 'R66 …and offers no ratio to use');
+}
 console.log(`\n${failures === 0 ? `OFFLINE: all ${n} passed` : `FAILURES: ${failures} of ${n}`}`);
 process.exit(failures ? 1 : 0);

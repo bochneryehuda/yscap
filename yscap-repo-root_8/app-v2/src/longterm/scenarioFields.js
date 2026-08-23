@@ -92,6 +92,26 @@ export const BORROWER_TYPES_PARKED = [
   { value: 'Non-Profit', label: 'Non-profit' },
 ];
 
+/* ── the loan term ────────────────────────────────────────────────────────────
+   Owner-directed 2026-08-23: a small box for the term of the loan, offering "15-year, 30-year and
+   40-year".
+
+   A CURATED SUBSET, NOT THE VENDOR'S WHOLE LIST, and that is deliberate. The connector accepts 5,
+   then 8 through 30, then 40 (`ALLOWED_TERMS` in search-model.js — the live frontend's own list),
+   so every one of these three is a term Lender Price will price; what this menu does is offer the
+   three anybody actually asks for instead of twenty-five. Adding one back is one line here, and it
+   cannot be refused downstream as long as it stays inside that list. */
+export const LOAN_TERMS = [
+  { value: '15', label: '15-year' },
+  { value: '30', label: '30-year' },
+  { value: '40', label: '40-year' },
+];
+
+/** 30 is also what the SERVER already falls back to when no term is sent (`effTermYears`), so
+ *  putting this box on the screen changes nothing about what today's scenarios ask for — it makes
+ *  the existing default visible and movable. */
+export const DEFAULT_TERM_YEARS = '30';
+
 /* ── prepayment penalty ───────────────────────────────────────────────────────
    TWO INDEPENDENT FACTS, which is the owner's own reading: the TERM is how long the penalty runs,
    the TYPE is how it is charged. They are separate fields upstream too — `PrepayTerm` and
@@ -227,7 +247,7 @@ export function deriveAmount({ value, loan, ltv }) {
    Numbers as numbers, blanks omitted ENTIRELY. An empty string sent as a value IS a value — the
    pricer would have to guess what it meant, and this engine never guesses. Omitting the key lets
    the server's own default apply and say so in `effectiveScenario`. */
-const NUMERIC = new Set(['value', 'loan', 'fico', 'dscr', 'units', 'lockDays', 'prepayMonths', 'ltv']);
+const NUMERIC = new Set(['value', 'loan', 'fico', 'dscr', 'units', 'lockDays', 'prepayMonths', 'ltv', 'termYears']);
 // `fthb` is the first-time-homebuyer flag the owner asked for, and it is the SAME fact Lender
 // Price's own screen carries: the route already accepts it and the builder writes it to
 // `criteria.firstTimeHomeBuyer`. Nothing server-side had to change — it had simply never been
