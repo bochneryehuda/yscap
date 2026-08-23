@@ -79,7 +79,10 @@ const START = {
   amountMode: 'loan',
   loan: '375,000',
   ltv: '',
-  fico: '740',
+  // 760 BY OWNER DIRECTION (2026-08-23). It is a STARTING POINT, not a rule: the score a
+  // borrower actually has is typed over it, and nothing here decides eligibility — the
+  // number is sent to Lender Price and their answer is what the board shows.
+  fico: '760',
   dscr: '1.20',
   // ⛔ THE ZIP STARTS EMPTY, BY OWNER DIRECTION (2026-08-23): *"Zip code should not default to
   // anything. Right now, it's defaulting to Miami."* And they are right about more than tidiness —
