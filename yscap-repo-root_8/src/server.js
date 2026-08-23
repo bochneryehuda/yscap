@@ -485,6 +485,12 @@ app.use('/api/tpo', require('./routes/tpo'));
   // staff login; it is OFF (404s) unless LP_DIAG_TOKEN is set. Still src/server.js →
   // src/longterm/routes/ — the permitted seam.
   app.use('/api/lt/_diag/lenderprice', require('./longterm/routes/lenderprice-diag'));
+  // Secret-gated LT BOOK read (match keys only) — the same shape and the same seam,
+  // for the one-time job of telling every long-term loan which ClickUp card is already
+  // its own before PILOT starts opening cards itself. OFF (404s) unless
+  // LT_BOOK_DIAG_TOKEN is set, and removing that variable turns it off again with no
+  // deploy. Read-only: there is no write path inside it.
+  app.use('/api/lt/_diag/book', require('./longterm/routes/book-diag'));
   const { requireAuth, requireStaff, requireBorrower } = require('./auth');
   // THE BORROWER'S OWN long-term files — the client-facing half of the owner's
   // switch (2026-08-16). Mounted BEFORE the staff-gated /api/lt because that one

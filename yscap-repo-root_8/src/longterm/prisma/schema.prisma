@@ -364,6 +364,27 @@ model LtLoan {
   /// as a fresh one — see db/554.
   milestoneSinceIsBaseline Boolean @default(true) @map("milestone_since_is_baseline")
 
+  /// WHICH CLICKUP CARD BELONGS TO THIS LOAN (db/618). Long-Term is becoming
+  /// Encompass-first — the office opens the file in Encompass and PILOT opens its
+  /// ClickUp card — so a loan that cannot say which card is already its own would
+  /// have a SECOND one opened for it on the first pass.
+  /// `clickupTaskId` is ClickUp's own id and is unique across the book: one card,
+  /// one loan. `clickupCustomId`/`clickupUrl` are display copies of what ClickUp
+  /// holds and nothing keys on them.
+  clickupTaskId    String? @map("clickup_task_id")
+  clickupCustomId  String? @map("clickup_custom_id")
+  clickupUrl       String? @map("clickup_url")
+  clickupLinkedAt  DateTime? @map("clickup_linked_at") @db.Timestamptz(6)
+  /// 'reconciliation' (the one-time pass over the book that already existed),
+  /// 'created' (PILOT opened the card, so the link is a fact not a match), 'manual'.
+  clickupLinkSource String? @map("clickup_link_source")
+  /// 'confirmed' or 'probable'. Only a CONFIRMED link may carry a stamp time — the
+  /// database refuses the other combination, so a guess can never be written into
+  /// ClickUp as though it were settled.
+  clickupLinkConfidence String? @map("clickup_link_confidence")
+  clickupStampedAt DateTime? @map("clickup_stamped_at") @db.Timestamptz(6)
+  clickupStampError String? @map("clickup_stamp_error")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -1973,4 +1994,38 @@ model LtSyncRun {
   /// kind do?"
   @@index([kind, startedAt(sort: Desc)], map: "lt_sync_runs_kind_started_idx")
   @@map("lt_sync_runs")
+}
+
+
+/// EVERY TIME A LONG-TERM LOAN GAINED, CHANGED, LOST OR STAMPED ITS CLICKUP CARD
+/// (db/618). The loan row holds the CURRENT answer; this holds how it got there.
+///
+/// It exists because a link that changes silently is the one thing that could
+/// quietly re-point a deal at somebody else's card, and the loan row alone can
+/// never answer "who tied these two together, and what did they match on?".
+model LtClickupLinkLog {
+  id       String @id @default(uuid()) @db.Uuid
+  ltLoanId String @map("lt_loan_id") @db.Uuid
+
+  /// linked | relinked | unlinked | confirmed | stamped | stamp_failed. Free text
+  /// for the same reason LtSyncRun.kind is: a new action must be able to record
+  /// itself without a migration, and an unrecognised one costs a row grouped under
+  /// its own name, never a lost write on the table whose job is to explain.
+  action String
+
+  fromTaskId String? @map("from_task_id")
+  toTaskId   String? @map("to_task_id")
+  confidence String?
+  source     String?
+
+  /// Plain language: what it was matched on, or what refused. Read by a person.
+  reason String?
+
+  /// The staff_users row that did it. NULL for a pass PILOT ran on its own.
+  actedBy String? @map("acted_by") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_clickup_link_log_loan_idx")
+  @@map("lt_clickup_link_log")
 }
