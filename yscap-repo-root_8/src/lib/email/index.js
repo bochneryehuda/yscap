@@ -59,7 +59,7 @@ async function sendMail(opts = {}) {
      applied to every provider, with no call-site change anywhere in the app.
 
      `schedule` serializes the send into a FIFO, spends one token from the budget
-     shared by every process (db/617), and — if the provider refuses anyway —
+     shared by every process (db/618), and — if the provider refuses anyway —
      pauses the whole fleet for the provider's stated reset and re-offers this
      same message. The `note` callback it hands back is threaded to the provider
      as `onRate` so the provider's own ratelimit headers train the budget. */

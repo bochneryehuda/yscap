@@ -29,6 +29,11 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
 const SCREEN = 'app-v2/src/longterm/LtPricer.jsx';
 const src = read(SCREEN);
+// The form's rules moved into their own plain-JS module so CI can RUN them (scenarioFields.js).
+// The two source guards below moved with them: a guard that keeps naming the old expression reads
+// as a broken feature and gets "fixed" by loosening it, which is worse than the drift it was
+// watching for.
+const fieldsSrc = read('app-v2/src/longterm/scenarioFields.js');
 const api = read('app-v2/src/longterm/api.js');
 const app = read('app-v2/src/App.jsx');
 const layout = read('app-v2/src/components/StaffLayout.jsx');
@@ -197,11 +202,20 @@ console.log('LT Pricing Engine — structural guards\n');
   // NOTHING NARROWS THE ANSWER. The ask is to see all rates and all products.
   ok(!/maxRate|minPrice|hideExpired|lenderFilter/.test(code),
     'PE-38 the screen applies no filter of its own — every rate and every product comes back');
-  // A blank is OMITTED rather than sent as "", which the pricer would have to guess at.
-  ok(/if \(v === '' \|\| v == null\) continue;/.test(code),
+  // A blank is OMITTED rather than sent as "", which the pricer would have to guess at. The rule
+  // lives in scenarioFields.js now; `test-lt-pricer-fields.mjs` D9 proves the BEHAVIOUR, and this
+  // stays as the source guard so the line cannot quietly disappear.
+  ok(/if \(v === '' \|\| v == null\) continue;/.test(fieldsSrc),
     'PE-39 a blank field is omitted from the request, never sent as an empty value');
-  // LTV is ours and says so; it is never sent.
-  ok(/not sent/.test(src), 'PE-40 the LTV the page works out is labelled as the page\'s own and is not sent');
+  // PE-40 USED TO SAY "the LTV is never sent", and that is no longer the design: the owner asked to
+  // be able to type an LTV instead of a loan amount, so on this screen an LTV genuinely can go on
+  // the wire. What must NEVER happen is BOTH — the server refuses a supplied LTV that disagrees
+  // with loan ÷ value, so shipping the typed figure alongside the one we derived would turn a
+  // rounding difference into `ltv_conflict` instead of a price. So the guard now watches the
+  // exclusion that makes exactly one of them authoritative.
+  ok(/if \(mode === 'ltv' && k === 'loan'\) continue;/.test(fieldsSrc)
+    && /if \(mode === 'loan' && k === 'ltv'\) continue;/.test(fieldsSrc),
+    'PE-40 only the amount the person typed is sent — never the one this page worked out beside it');
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +265,194 @@ console.log('LT Pricing Engine — structural guards\n');
   // THE SCREEN MUST USE THEM. A pure module nothing imports proves nothing about the page.
   ok(/from '\.\/priceBuild\.js'/.test(src) && /compRowsOf\(/.test(code) && /feeRowsOf\(/.test(code),
     'PE-52 the screen reads its fee and comp rows from that module — one definition, not a second copy');
+
+  // ── ONE LINE PER LENDER (owner-directed 2026-08-23) ───────────────────────
+  // Runs on CI, deliberately: this rule decides WHICH PRICE a lender is fronted with, so it is the
+  // same class as the unit on a money figure — expensive to get wrong and invisible when it is.
+  const Q = (lender, program, price) => ({ key: `${lender}:${program}`, lender, program, price });
+  {
+    const g = PB.groupByLender([
+      Q('Alpha', 'P1', 100.25), Q('Beta', 'Q1', 101.0),
+      Q('Alpha', 'P2', 100.75), Q('Alpha', 'P3', null),
+    ]);
+    ok(g.length === 3 - 1, 'PE-53 a lender with three programmes is ONE line, not three');
+    ok(g[0].lender === 'Beta' && g[0].bestPrice === 101.0,
+      'PE-54 lenders are ordered by their own best price, best first');
+    const alpha = g.find((x) => x.lender === 'Alpha');
+    ok(alpha.bestPrice === 100.75,
+      'PE-55 …and the line fronts that lender\'s BEST price, not their first or their worst');
+    ok(alpha.best.program === 'P2', 'PE-56 …so the programme named on the line is the one that price belongs to');
+    ok(alpha.programCount === 3, 'PE-57 …while the line says how many it is hiding');
+    ok(alpha.quotes.length === 3 && alpha.quotes[2].price === null,
+      'PE-58 …every quote survives, and an unpriced one sorts last rather than counting as zero');
+  }
+  {
+    // NOTHING IS EVER DROPPED, and nothing is ever attributed to the wrong lender.
+    const input = [Q('A', '1', 100), Q('B', '2', 99), Q('A', '3', 98), Q('', '4', 97), Q('A', '5', 101)];
+    const g = PB.groupByLender(input);
+    const total = g.reduce((n, x) => n + x.quotes.length, 0);
+    ok(total === input.length, `PE-59 every quote lands in exactly one lender group (${total} of ${input.length})`);
+    ok(g.every((x) => x.quotes.every((q) => (q.lender || '') === (x.lender || ''))),
+      'PE-60 …and no quote is ever listed under a lender that did not quote it');
+    ok(g.some((x) => x.lender === null && x.quotes.length === 1),
+      'PE-61 a quote with no lender name is its own row, never folded into somebody else\'s');
+  }
+  {
+    // An unpriced lender must not front a figure nobody quoted.
+    const g = PB.groupByLender([Q('Solo', 'S', null)]);
+    ok(g[0].bestPrice === null, 'PE-62 a lender with nothing priced fronts NO price (the screen shows a dash)');
+    ok(PB.groupByLender(null).length === 0 && PB.groupByLender('x').length === 0,
+      'PE-63 …and a non-list yields nothing rather than throwing');
+  }
+  ok(/groupByLender\(/.test(code),
+    'PE-64 the board actually groups by lender — a rule the screen does not call is a rule nobody is following');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   PE-65..PE-88 — WHAT A PRICE COSTS, AND WHAT THE SCREEN NO LONGER SAYS.
+
+   The owner asked the board to say, beside the price, the points it implies and what those points
+   come to in dollars on this loan — coloured so a cost and a credit cannot be mistaken for one
+   another. The arithmetic is a MIRROR's arithmetic: one number said three ways, nothing decided.
+   What is worth guarding is that the three can never disagree, and that a figure nobody has is
+   never given a colour. */
+{
+  const PB2 = await import(new URL('../app-v2/src/longterm/priceBuild.js', import.meta.url));
+  const PM = PB2.priceMoney;
+
+  const above = PM(102, 500000);
+  ok(above.points === -2 && above.dollars === -10000 && above.tone === 'credit',
+    `PE-65 102 on a $500,000 loan is -2 points and $10,000 back (got ${above.points} / ${above.dollars} / ${above.tone})`);
+  const below = PM(98, 500000);
+  ok(below.points === 2 && below.dollars === 10000 && below.tone === 'cost',
+    `PE-66 ...and 98 is +2 points and $10,000 out (got ${below.points} / ${below.dollars} / ${below.tone})`);
+  const par = PM(100, 500000);
+  ok(par.points === 0 && par.dollars === 0 && par.tone === 'credit',
+    'PE-67 par is zero points, zero dollars, and green - it costs nothing');
+  ok(PM(100.001, 1).tone === 'credit' && PM(99.999, 1).tone === 'cost',
+    'PE-68 the line is exactly par - a hair above is a credit, a hair below is a cost');
+
+  // ONE FACT, ONE VERDICT: the three columns take the same tone by construction.
+  for (const p of [90, 97.5, 99.875, 100, 100.25, 103.75]) {
+    const m2 = PM(p, 400000);
+    ok(m2.tone === (m2.points <= 0 ? 'credit' : 'cost'),
+      `PE-69 price ${p}: the tone and the sign of the points agree (${m2.tone})`);
+    ok(m2.dollars === 0 || (m2.dollars > 0) === (m2.points > 0),
+      `PE-70 price ${p}: the dollars carry the same sign as the points`);
+  }
+
+  /* A rate sheet quotes to a thousandth of a point; binary floating point does not. These prices
+     are chosen because `100 - p` genuinely DRIFTS on each of them (99.875 does not — 0.875 is 7/8
+     and exactly representable, which is why an earlier version of this guard passed with the
+     rounding taken out and proved nothing). Verified by running the subtraction, not assumed. */
+  ok(PM(99.99, 500000).points === 0.01,
+    `PE-71 100 minus 99.99 is 0.010, not 0.010000000000005116 (got ${PM(99.99, 500000).points})`);
+  ok(PM(97.3, 500000).points === 2.7, `PE-71a ...and 97.3 is 2.700 (got ${PM(97.3, 500000).points})`);
+  ok(PM(101.7, 500000).points === -1.7, `PE-71b ...and 101.7 is -1.700 (got ${PM(101.7, 500000).points})`);
+  ok(PM(99.99, 500000).dollars === 50, `PE-72 ...and 0.01 of a point on $500,000 is $50 (got ${PM(99.99, 500000).dollars})`);
+  ok(PM(99.875, 500000).dollars === 625, 'PE-72a ...and an eighth of a point on it is $625');
+
+  // NEVER A GUESS, AND NEVER A COLOURED EM DASH.
+  const noPrice = PM(null, 500000);
+  ok(noPrice.price === null && noPrice.points === null && noPrice.dollars === null && noPrice.tone === null,
+    'PE-73 a price the vendor did not quote yields nothing at all - and NO colour');
+  ok(PM(101, null).points === -1 && PM(101, null).dollars === null,
+    'PE-74 a loan amount we cannot read costs the DOLLAR column only - the points still stand');
+  for (const bad of [undefined, NaN, 'abc', {}]) {
+    ok(PM(bad, 500000).tone === null, `PE-75 an unreadable price (${String(bad)}) is never given a verdict`);
+    ok(PM(101, bad).dollars === null, `PE-76 ...and an unreadable loan amount (${String(bad)}) never yields dollars`);
+  }
+  ok(PM(101, 0).dollars === null && PM(101, -5).dollars === null,
+    'PE-77 a zero or negative loan amount is not a loan amount');
+
+  ok(PB2.toneColor('credit') === '#2F6B45' && PB2.toneColor('cost') === '#8A2F2F',
+    'PE-78 there are exactly two tone colours, and they come from the shared module');
+  ok(PB2.toneColor(null, '#3A4550') === '#3A4550' && PB2.toneColor(undefined, '#3A4550') === '#3A4550',
+    'PE-79 ...and no verdict falls back to the caller\'s ordinary text colour');
+  ok(!/var\(--ink/.test(String(PB2.toneColor('credit')) + String(PB2.toneColor('cost'))),
+    'PE-80 ...and never an --ink* token, which is a LIGHT paper colour in this palette');
+
+  // ── WHAT THE SCREEN NO LONGER SAYS ────────────────────────────────────────
+  // NO APR ANYWHERE (owner-directed 2026-08-23). A DSCR loan is business-purpose credit made to an
+  // entity; an APR is a consumer disclosure, so quoting one answers a question this product does not
+  // raise - and invites a comparison against products it does not apply to.
+  // ⛔ THE TEST IS FOR A QUOTED FIGURE, NOT FOR THE LETTERS. The disclosure the owner asked for
+  // necessarily SAYS "no APR is quoted" — a guard that matched the word would fail on the very
+  // sentence that explains the removal, and would then get "fixed" by deleting the explanation.
+  // So: no APR value may be read off a quote, and no column may be headed by one.
+  ok(!/\.apr\b|\bapr:/i.test(code), 'PE-81 no APR figure is read off a quote anywhere on the screen');
+  ok(!/\.apor\b|\bapor:|>\s*APOR\s*</i.test(code),
+    'PE-82 ...and no APOR, which only exists to be compared to an APR');
+  ok(!/>\s*APR\s*</i.test(code) && !/'APR'|"APR"/.test(code),
+    'PE-82a ...and no column, row or label is headed APR');
+  // The one surviving mention is the disclosure itself, and it must actually be there.
+  ok(/no APR is quoted/i.test(src), 'PE-82b ...while the screen says plainly that none is quoted');
+  ok(/business-purpose/i.test(src), 'PE-83 ...and it says WHY, which is worth more than the number was');
+  ok(!/Rate build/.test(code), 'PE-84 the rate-build block is gone');
+  ok(!/Par rate/.test(code), 'PE-85 ...including the par-rate line it led with');
+
+  // THE INELIGIBLE SIDE IS ASKED FOR AS PART OF THE WORKFLOW, and the ask is BOUNDED.
+  ok(/askDisqualified\(\{ auto: true/.test(code),
+    'PE-86 a price asks for the ineligible side on its own - the owner\'s "add it into the workflow"');
+  ok(/DQ_AUTO_TRIES/.test(code) && /tries < DQ_AUTO_TRIES/.test(code),
+    'PE-87 ...and the asking is bounded, so it can never run on a screen somebody walked away from');
+  // THE COUNT COMES FROM THE READY ANSWER. The price response carries a disqualifiedCount of its own
+  // that is ALWAYS zero - read at price time, before the vendor has computed this side - and printing
+  // it is what made the panel report "nothing ruled out" on every scenario ever priced.
+  ok(!/res\.disqualifiedCount/.test(code),
+    'PE-88 ...and the screen never reads the price response\'s own disqualified count');
+}
+
+/* ── THE INELIGIBLE BOARD'S GROUPING (owner-directed 2026-08-23) ─────────────
+   Rate -> lender -> programmes, the same three levels as the eligible board, and the LENDER level
+   is the eligible board's own `groupByLender` so the two can never disagree. Pure, so unlike the
+   render suite this runs on CI, where no front-end bundler is installed. */
+{
+  const PB3 = await import(new URL('../app-v2/src/longterm/priceBuild.js', import.meta.url));
+  const B = PB3.buildIneligibleStack;
+
+  const payload = [
+    { lender: 'Deephaven Mortgage', items: [
+      { program: 'DSCR 1.00-1.24 - 30 Yr Fixed', rate: 7.375, reasons: [{ rule: 'a' }], option: { priceBuild: {} } },
+      { program: 'DSCR 30 Yr IO', rate: 7.375, reasons: [{ rule: 'b' }], option: { priceBuild: { price: 98.5 } } },
+    ] },
+    { lender: 'AD Mortgage', items: [{ program: 'X', rate: 7.25, reasons: [], option: null }] },
+    { lender: 'Zed Capital', items: [{ program: 'Y', rate: null, reasons: [], option: null }] },
+  ];
+  const st = B(payload);
+
+  ok(st.rates.map((r) => r.key).join(',') === '7.250,7.375',
+    'PE-89 the rates stack ASCENDING, like the eligible board');
+  ok(st.rates.find((r) => r.key === '7.375').lenders[0].programCount === 2,
+    'PE-90 a lender with several programmes at one rate is ONE line that opens out');
+
+  // NOTHING IS DROPPED. An item whose rate could not be read is its own group, never discarded and
+  // never filed under a guessed rate — a silently missing programme is the defect this board ends.
+  ok(st.noRate && st.noRate.itemCount === 1 && st.noRate.lenders[0].lender === 'Zed Capital',
+    'PE-91 an item with no readable rate is KEPT, in its own group');
+  ok(st.itemCount === 4, 'PE-92 ...so every item is accounted for, in one group or another');
+
+  // A declined programme usually has no price. NULL must survive as null — a 0 would read as par.
+  const dh = st.rates.find((r) => r.key === '7.375').lenders[0];
+  ok(dh.quotes.some((q) => q.price === null) && dh.quotes.some((q) => q.price === 98.5),
+    'PE-93 a price is carried when the vendor gave one and stays NULL when it did not');
+
+  // The lender level IS groupByLender — asserted by running both and comparing, never by reading
+  // the source, so a re-implementation that merely looked similar would still fail here.
+  const flat = st.rates.find((r) => r.key === '7.375').lenders;
+  const direct = PB3.groupByLender(dh.quotes);
+  ok(flat[0].programCount === direct[0].programCount && flat[0].lender === direct[0].lender,
+    'PE-94 the lender level is the eligible board\'s own grouping, not a second one');
+
+  ok(JSON.stringify(B(null)) === JSON.stringify(B(undefined)) && B(null).rates.length === 0,
+    'PE-95 a non-array yields an empty stack rather than throwing');
+
+  // Lenders inside a rate are ordered by NAME, because a declined programme has no price to rank
+  // by and ranking on a missing number would read as a judgement this mirror does not hold.
+  const two = B([{ lender: 'Zed', items: [{ program: 'p', rate: 7, reasons: [] }] },
+                 { lender: 'Able', items: [{ program: 'q', rate: 7, reasons: [] }] }]);
+  ok(two.rates[0].lenders.map((l) => l.lender).join(',') === 'Able,Zed',
+    'PE-96 lenders within a rate are ordered by name, not by an absent price');
 }
 
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);

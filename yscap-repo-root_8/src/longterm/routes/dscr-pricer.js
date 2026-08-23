@@ -14,6 +14,7 @@
 const express = require('express');
 const lp = require('../lenderprice/client');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
+const zipCounty = require('../lenderprice/zip-county');
 const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
@@ -408,11 +409,51 @@ async function selftest(req, res) {
   res.json({ ok: results.every((x) => x.ok), count: results.length, results });
 }
 
+// ---- ZIP -> state / county / county FIPS -------------------------------------
+// WHAT IT IS FOR: the vendor's own screen fills the state and county in from a five-digit ZIP
+// before it searches, and the owner asked for the same here. It is a LOOKUP, not a price — it costs
+// no vendor call and touches no session, so it is safe to fire as somebody types.
+//
+// IT NEVER GUESSES. A ZIP the table does not carry (a PO-box-only ZIP has no ZCTA) answers 404 with
+// a plain reason, so the screen says "we do not know this ZIP" instead of showing a county nobody
+// resolved. And a ZIP that genuinely SPANS more than one county — 28% of them do — answers with the
+// dominant one AND `split: true`, so the screen can say the county was inferred and let a human
+// override it. Hiding that would put a confident county on a quote that nobody chose.
+function zipLookup(req, res) {
+  const raw = String((req.params && req.params.zip) || '').trim();
+  if (!/^\d{5}$/.test(raw)) {
+    return res.status(400).json({ ok: false, error: 'invalid_zip', message: 'A ZIP code is five digits.' });
+  }
+  // ⛔ AN UNEXPECTED THROW HERE MUST NOT LEAVE THE SCREEN WITH "something went wrong at our end".
+  // The lookup is a pure read of a committed table and every one of the 33,791 ZIPs in it was swept
+  // through this function without one throwing — but an unhandled throw in an Express handler ends
+  // as a bare 500 with no reason attached, and a bare 500 on this field is indistinguishable to the
+  // person in front of it from the connector being down. Catching it turns "we cannot tell you why"
+  // into a sentence that names the field and tells them what they can do instead, which is what the
+  // state/county boxes on the screen are for. It NEVER guesses a county: an unreadable table
+  // answers as unreadable.
+  let hit = null;
+  try {
+    hit = zipCounty.lookupZip(raw);
+  } catch (e) {
+    return res.status(500).json({
+      ok: false, error: 'zip_lookup_failed',
+      message: `We could not read the ZIP table just now. Type the state and county for ${raw} instead.`,
+    });
+  }
+  if (!hit) {
+    return res.status(404).json({ ok: false, error: 'unknown_zip',
+      message: `We do not have a county on file for ZIP ${raw}. Type the state and county instead.` });
+  }
+  return res.json({ ok: true, zip: hit.zip, state: hit.state, county: hit.countyName, countyFps: hit.countyFps, split: !!hit.split });
+}
+
 // A router with the endpoints wired. Auth is applied by the mount (staff at /api/lt, or the
 // secret gate at /api/lt/_diag/lenderprice).
 function makeRouter() {
   const router = express.Router();
   router.use(express.json({ limit: '256kb' }));
+  router.get('/zip/:zip', zipLookup);
   router.get('/health', (req, res) => health(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_health_error' })));
   router.get('/login-check', (req, res) => loginCheck(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_login_error' })));
   router.post('/price', (req, res) => price(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_error' })));
@@ -424,5 +465,5 @@ function makeRouter() {
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
+module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest, zipLookup }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
   _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf } };

@@ -1428,8 +1428,10 @@ function disqualifyRulesOf(leaf) {
   if (!out.length) { const set = new Set(); collectReasons(leaf, set, 0); for (const r of set) add(r); }
   return out;
 }
-// Parse the DISQUALIFIED tree: which lender/investor declined which program, and the exact rules
-// that failed. Same Program→Rate→Lender grouping and lender identity as the qualified parser.
+// Parse the DISQUALIFIED tree: which lender/investor declined which program, at what rate, read
+// exactly as the qualified side reads it, and the exact rules that failed. It really does walk the
+// same Program→Rate→Lender grouping now — `RateKey` included — and describes each leaf through the
+// SAME `optionOf` the qualified parser uses, so the two boards can never disagree about one leaf.
 function parseDisqualified(raw) {
   const R = (raw && typeof raw === 'object' && raw.results) ? raw.results : null;
   const root = R && R.disqualifiedData;
@@ -1444,6 +1446,14 @@ function parseDisqualified(raw) {
     if (node.plenderId) next.plenderId = node.plenderId;
     if (node.type === 'CriteriaFromLineResultKey' && node.keyLabel) next.program = node.keyLabel;
     else if (node.type === 'LenderKey' && node.keyLabel) next.lender = node.keyLabel;
+    // ⛔ THE RATE COMES FROM THE TREE, and not reading it is what made the ineligible side
+    // un-stackable. `disqualifiedData` is the SAME Program → Rate → Lender → leaf tree the
+    // qualified containers use (docs/longterm/LENDERPRICE-RESPONSE-SCHEMA.md §2), and a declined
+    // leaf frequently carries no rate field of its own — the rate is the `RateKey` GROUPING NODE
+    // above it. This parser's header claimed "Same Program→Rate→Lender grouping" while reading only
+    // two of the three, so an ineligible item's rate was null unless its leaf happened to repeat
+    // it, and the screen had no rate to group by.
+    else if (node.type === 'RateKey' && node.keyLabel != null) next.rate = node.keyLabel;
     if (Array.isArray(node.leafs)) for (const lf of node.leafs) {
       if (!lf || typeof lf !== 'object') continue;
       const plenderId = unquote(next.plenderId) || lf.companyId || null;
@@ -1453,7 +1463,21 @@ function parseDisqualified(raw) {
       const rules = disqualifyRulesOf(lf);
       let g = lenders.get(lender);
       if (!g) { g = { lender, investor: dto ? dto.name : null, lenderId: plenderId, items: [] }; lenders.set(lender, g); }
-      g.items.push({ program, product: lf.productName || null, rate: firstNum(lf, RATE_KEYS), reasons: rules });
+      // ⛔ THE SAME READER AS THE ELIGIBLE SIDE — `optionOf`, never a second description of a
+      // programme. Owner-directed 2026-08-23: the ineligible side shows "everything the same as on
+      // the eligible side ... only a few more lines ... which is the ineligibility". A declined
+      // leaf carries `groupAdjustmentProperties` (its LLPAs) and `borrowerPaidDetails` (its comp)
+      // exactly as a priced leaf does — MEASURED on the captured leaf in
+      // scripts/fixtures/lp-disqualify-leaf.json — so reading it any other way would be a second
+      // definition of one thing, and the one that drifts is the one somebody quotes off.
+      const option = optionOf(lf, next, dtoMap, false);
+      // The rate, in order of authority: the leaf's own price build, then a rate field on the leaf,
+      // then the RateKey grouping node above it. NEVER a guess — all three absent leaves it null,
+      // and the screen lists such an item under "no rate given" rather than inventing one.
+      const pbRate = option.priceBuild ? num(option.priceBuild.noteRate) : null;
+      const leafRate = firstNum(lf, RATE_KEYS);
+      const rate = pbRate != null ? pbRate : (leafRate != null ? leafRate : num(unquote(next.rate)));
+      g.items.push({ program, product: lf.productName || null, rate, option, reasons: rules });
       itemCount += 1; reasonCount += rules.length;
     }
     if (Array.isArray(node.childs)) for (const c of node.childs) walk(c, next);
