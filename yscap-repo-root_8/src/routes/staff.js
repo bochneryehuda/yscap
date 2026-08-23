@@ -484,6 +484,152 @@ router.get('/tapes/:tapeKey/loans', async (req, res) => {
   } catch (e) { console.error('[tape loans]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
+/* SEARCH EVERY LOAN, NOT JUST THE ONES ALREADY ASSIGNED TO THIS PROVIDER.
+   Owner-directed 2026-08-23: *"the bulk tape needs to be enhanced so that we can
+   export any kind of tape that we currently have for different investors. We can
+   import and select different loans to be included in that tape … We can search
+   loans by loan numbers and by address … I can include any kind of loans that I
+   want."*
+
+   WHY THIS IS A NEW DOOR AND NOT A FILTER ON THE OLD ONE. `/tapes/:tapeKey/loans`
+   answers a different question — "which loans are ALREADY assigned to this
+   provider" — and that list is still the right default to open on. What was
+   missing is the ability to go and FIND a loan that is not on it. Widening the old
+   endpoint would have destroyed the default view to add a search; this adds the
+   search beside it.
+
+   NO RULE IS RELAXED HERE. The export gate is untouched: an admin/super-admin has
+   always been able to export any provider's tape for any loan (buyer-rule.js
+   `exportGate` — `if (isAdmin) return { ok: true }`), and a non-admin has always
+   needed the provider and program to line up. The defect was never the gate — it
+   was that the PICKER could not show a loan the gate would happily have exported.
+   So every row comes back stamped with whether THIS staffer could export it and,
+   when not, the plain reason, computed from the same pure gate the builder
+   enforces. Nothing is hidden and nothing is silently permitted.
+
+   `q` matches a loan number (ours or the investor's), any part of the property
+   address, or the borrower's name. Several loan numbers may be pasted at once,
+   separated by commas / spaces / new lines — which is how a tape request actually
+   arrives from an investor. */
+router.get('/tapes/:tapeKey/search', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
+  try {
+    const tapes = require('../lib/tapes');
+    const tape = tapes.registry.getTape(req.params.tapeKey);
+    if (!tape) return res.status(404).json({ error: 'unknown tape type' });
+
+    const raw = String((req.query && req.query.q) || '').trim();
+    if (raw.length < 2) return res.json({ tape: tapes.registry.publicTape(tape), count: 0, loans: [], hint: 'Type at least two characters — a loan number, an address, or a borrower name.' });
+
+    /* MANY LOAN NUMBERS AT ONCE. A pasted list is the common case, so the query is
+       split on commas / semicolons / new lines / runs of spaces and EVERY token is
+       matched. A single phrase with spaces ("123 Main St") is still matched WHOLE
+       as well, so an address search is not shredded into three useless tokens. */
+    const tokens = Array.from(new Set(
+      raw.split(/[\s,;\n]+/).map((t) => t.trim()).filter((t) => t.length >= 2)
+    )).slice(0, 200);                      // a bounded paste, never an unbounded OR
+    // Wildcards are added HERE rather than in SQL so the parameter is a plain
+    // text[] and each ILIKE ANY(...) is an array comparison, not a per-row subquery.
+    const needles = Array.from(new Set([raw, ...tokens])).map((t) => `%${t}%`);
+
+    const params = [needles];
+    let scopeSql = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scopeSql = ' AND ' + VISIBLE_OFFICERS_SQL('a', '$' + params.length); }
+
+    /* ONE `ILIKE ANY` per searchable field rather than a concatenated haystack: a
+       concatenation would let "1044" match a loan whose ZIP is 1044x, and a tape
+       exported for the wrong loan is the expensive mistake here. The address is
+       matched on its assembled one-line form so "123 Main, Brooklyn" works the way
+       a person types it. */
+    const sql = `
+      SELECT a.id, a.ys_loan_number, a.investor_loan_number, a.lender, a.status, a.loan_amount,
+             COALESCE(a.property_address->>'oneLine',
+                      NULLIF(concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
+                                       a.property_address->>'state', a.property_address->>'zip'), '')) AS address,
+             b.first_name, b.last_name,
+             pr.program AS program
+        FROM applications a
+        JOIN borrowers b ON b.id = a.borrower_id
+        LEFT JOIN product_registrations pr ON pr.application_id = a.id AND pr.is_current
+       WHERE a.deleted_at IS NULL${scopeSql}
+         AND (
+              a.ys_loan_number       ILIKE ANY ($1::text[])
+           OR a.investor_loan_number ILIKE ANY ($1::text[])
+           OR COALESCE(a.property_address->>'oneLine',
+                       concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
+                                 a.property_address->>'state', a.property_address->>'zip'))
+                                    ILIKE ANY ($1::text[])
+           OR concat_ws(' ', b.first_name, b.last_name)
+                                    ILIKE ANY ($1::text[])
+         )
+       ORDER BY a.updated_at DESC
+       LIMIT 200`;
+    const r = await db.query(sql, params);
+
+    // Stamp each row with whether THIS staffer could export it on THIS tape, using
+    // the same pure gate the builder enforces — so the picker can never offer
+    // something the export would then refuse, and never hide something it would allow.
+    const isAdmin = tapeAdmin(req);
+    const loans = r.rows.map((row) => {
+      const gate = tapes.exportGate({ noteBuyerRaw: row.lender }, tape,
+        { isAdmin, registeredProgram: row.program });
+      return {
+        ...row,
+        eligible: gate.ok,
+        ineligibleReason: gate.ok ? null : (gate.error && gate.error.message) || 'Not exportable on this tape.',
+        ineligibleCode: gate.ok ? null : (gate.error && gate.error.code) || null,
+        // Is this loan already assigned to this tape's provider? Shown as a chip so
+        // a staffer can SEE they are putting a Blue Lake loan on a Fidelis tape
+        // rather than discovering it in the workbook.
+        buyerMatches: tapes.buyerMatches({ noteBuyerRaw: row.lender }, tape),
+      };
+    });
+    res.json({ tape: tapes.registry.publicTape(tape), count: loans.length, loans, isAdmin, truncated: loans.length >= 200 });
+  } catch (e) { console.error('[tape search]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// Look up a specific set of loans by id — so the export screen can re-hydrate a
+// selection (its "basket") that was built across several different searches, and
+// re-check each one's eligibility, without re-running any of those searches.
+router.post('/tapes/:tapeKey/selected', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
+  try {
+    const tapes = require('../lib/tapes');
+    const tape = tapes.registry.getTape(req.params.tapeKey);
+    if (!tape) return res.status(404).json({ error: 'unknown tape type' });
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const ids = Array.from(new Set(
+      (Array.isArray(req.body && req.body.applicationIds) ? req.body.applicationIds : [])
+        .filter((x) => UUID.test(String(x))))).slice(0, 1000);
+    if (!ids.length) return res.json({ loans: [] });
+    const params = [ids];
+    let scopeSql = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scopeSql = ' AND ' + VISIBLE_OFFICERS_SQL('a', '$' + params.length); }
+    const r = await db.query(`
+      SELECT a.id, a.ys_loan_number, a.investor_loan_number, a.lender, a.status, a.loan_amount,
+             COALESCE(a.property_address->>'oneLine',
+                      NULLIF(concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
+                                       a.property_address->>'state', a.property_address->>'zip'), '')) AS address,
+             b.first_name, b.last_name, pr.program AS program
+        FROM applications a
+        JOIN borrowers b ON b.id = a.borrower_id
+        LEFT JOIN product_registrations pr ON pr.application_id = a.id AND pr.is_current
+       WHERE a.id = ANY($1::uuid[]) AND a.deleted_at IS NULL${scopeSql}`, params);
+    const isAdmin = tapeAdmin(req);
+    const loans = r.rows.map((row) => {
+      const gate = tapes.exportGate({ noteBuyerRaw: row.lender }, tape, { isAdmin, registeredProgram: row.program });
+      return {
+        ...row,
+        eligible: gate.ok,
+        ineligibleReason: gate.ok ? null : (gate.error && gate.error.message) || 'Not exportable on this tape.',
+        ineligibleCode: gate.ok ? null : (gate.error && gate.error.code) || null,
+        buyerMatches: tapes.buyerMatches({ noteBuyerRaw: row.lender }, tape),
+      };
+    });
+    res.json({ loans, isAdmin });
+  } catch (e) { console.error('[tape selected]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
 // Export a BULK tape (many loans on one workbook) for :tapeKey. Body:
 // { applicationIds: [uuid, ...] }. Every loan must belong to this provider (the
 // builder rejects the whole batch, listing any that don't); the requested ids

@@ -6348,3 +6348,46 @@ video.mlb-media{min-width:min(720px,88vw)}
   .upr-fill{transition:none}
   .upr-fill.is-indeterminate{width:100%;opacity:.35;background:rgba(47,127,134,.18)}
 }
+
+/* ── DATA TAPES — building a tape from any loans (StaffTapes.jsx) ────────────
+   Owner-directed 2026-08-23: *"We can import and select different loans to be
+   included in that tape … We can search loans by loan numbers and by address …
+   We can check mark which loans should be included … I can include any kind of
+   loans that I want."*
+
+   The basket sits ABOVE the lists because it is the thing being built — what is on
+   the tape, and the one button that produces it. A selection assembled across three
+   different searches is only trustworthy if you can SEE all of it at once, which is
+   what the chips are for: each one names its loan and can be taken off. */
+.tape-basket{border-left:3px solid var(--teal,#2F7F86)}
+.tape-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.tape-chip{display:inline-flex;align-items:center;gap:7px;max-width:100%;
+  padding:4px 5px 4px 10px;border-radius:999px;font-size:12.5px;
+  border:1px solid var(--line,#D9D4C8);background:var(--ink-1,#fff)}
+.tape-chip-no{font-weight:700;white-space:nowrap}
+.tape-chip-addr{color:var(--muted,#4B585C);max-width:230px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A loan on this tape whose capital provider is someone ELSE. Not an error — an
+   admin may deliberately put it here — but it must never be invisible. */
+.tape-chip-flag{font-size:10.5px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.04em;padding:2px 6px;border-radius:999px;
+  background:rgba(174,135,70,.16);color:var(--gold-ink,#7A5C28);white-space:nowrap}
+.tape-chip.is-blocked{border-color:var(--danger,#A32A2A);
+  background:rgba(163,42,42,.05)}
+.tape-chip-x{width:20px;height:20px;border-radius:50%;cursor:pointer;flex:0 0 auto;
+  border:none;background:var(--line-soft,#EFEADD);color:var(--muted,#4B585C);
+  font-size:10px;line-height:1;display:inline-flex;align-items:center;justify-content:center}
+.tape-chip-x:hover{background:var(--danger,#A32A2A);color:#fff}
+.tape-chip-x:focus-visible{outline:2px solid var(--teal-br,#256168);outline-offset:2px}
+
+/* Said BEFORE the export, in the basket — not as a refusal afterwards. */
+.tape-warn{margin-top:10px;padding:9px 11px;border-radius:9px;
+  border-left:3px solid var(--danger,#A32A2A);background:rgba(163,42,42,.06);font-size:13px}
+
+/* On a row: this loan cannot go on this tape with your access. */
+.tape-flag{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;
+  font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  background:rgba(163,42,42,.12);color:var(--danger,#A32A2A);white-space:nowrap}
+
+/* A ticked row, so a long list still reads at a glance. */
+tr.tape-row-on{background:rgba(47,127,134,.07)}

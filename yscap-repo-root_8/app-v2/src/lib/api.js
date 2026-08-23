@@ -1266,6 +1266,13 @@ export const api = {
   staffTapeSend:        (appId, tapeKey, body) => req('POST', `/api/staff/applications/${appId}/tape-send/${tapeKey}`, body || {}),
   staffTapeSendSchedule: (appId, tapeKey, body) => req('POST', `/api/staff/applications/${appId}/tape-send/${tapeKey}/schedule`, body || {}),
   staffTapeLoans:    (tapeKey) => req('GET', `/api/staff/tapes/${tapeKey}/loans`),
+  /* SEARCH EVERY LOAN FOR A TAPE, not just the ones already assigned to its
+     provider (owner-directed 2026-08-23). `q` takes a loan number, an address, a
+     borrower name — or a pasted LIST of loan numbers, which is how a tape request
+     actually arrives from an investor. `staffTapeSelected` re-checks a selection
+     built across several searches, so the basket survives changing the query. */
+  staffTapeSearch:   (tapeKey, q) => req('GET', `/api/staff/tapes/${tapeKey}/search${qs({ q })}`),
+  staffTapeSelected: (tapeKey, applicationIds) => req('POST', `/api/staff/tapes/${tapeKey}/selected`, { applicationIds }),
   staffTapeBulkExport: (tapeKey, applicationIds, encompassOverrideReason) => downloadPost(`/api/staff/tapes/${tapeKey}/export/bulk${encompassOverrideReason ? qs({ encompassOverrideReason }) : ''}`, { applicationIds }),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),
   // #152 — export the current pipeline VIEW (same filter params as staffApplications).
