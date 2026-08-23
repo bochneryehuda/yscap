@@ -110,14 +110,14 @@ footer p{max-width:74ch;margin:0 0 9px}
   <p class="lede">Every table in the system, what it holds, and what it is connected to.
   This is a picture of a copy — nothing here can change anything.</p>
   <div class="figs">
-    <div class="fig"><b>380</b><span>tables</span></div>
-    <div class="fig"><b>6,136</b><span>fields</span></div>
+    <div class="fig"><b>381</b><span>tables</span></div>
+    <div class="fig"><b>6,146</b><span>fields</span></div>
     <div class="fig"><b>791</b><span>connections</span></div>
     <div class="fig"><b>35</b><span>automatic rules</span></div>
-    <div class="fig"><b>313</b><span>value guards</span></div>
-    <div class="fig"><b>1,311</b><span>lookups</span></div>
+    <div class="fig"><b>316</b><span>value guards</span></div>
+    <div class="fig"><b>1,312</b><span>lookups</span></div>
   </div>
-  <p class="stamp">Generated from the committed schema map — built from 615 migration files, up to db/618. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
+  <p class="stamp">Generated from the committed schema map — built from 616 migration files, up to db/619. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
 </div></header>
 
 <section><div class="wrap">
@@ -177,7 +177,7 @@ footer p{max-width:74ch;margin:0 0 9px}
 
 <section><div class="wrap">
   <h2>Everything, by what it is for</h2>
-  <p class="sub">All 380 tables, grouped. Open a group, then open a table to see its
+  <p class="sub">All 381 tables, grouped. Open a group, then open a table to see its
   fields and what it connects to. <strong>“Deleted with it”</strong> marks a connection where removing the
   parent record removes these too — the single most consequential thing a connection can say.</p>
   <div class="search">
@@ -3538,7 +3538,7 @@ footer p{max-width:74ch;margin:0 0 9px}
   </div>
 </div></details></div>
   </details><details class="grp">
-    <summary><span class="gn">Messages, email and notifications</span><span class="gc">15 tables</span></summary>
+    <summary><span class="gn">Messages, email and notifications</span><span class="gc">16 tables</span></summary>
     <div class="body"><p class="blurb">Everything the system says to a person, and everything said back — in-app messages, the email threads a file collects, and the record of what was sent to whom.</p><details class="tbl" data-name="messages" data-note="Messages inside the system — between the team, and with a borrower or a broker.">
 <summary><span class="tn">messages</span>
 <span class="tm">27 fields · 11 links</span>
@@ -3687,6 +3687,16 @@ footer p{max-width:74ch;margin:0 0 9px}
   <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">borrower_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">category <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">email <span class="req">required</span></td><td class="t">boolean</td><td class="t">true</td></tr><tr><td class="c">in_app <span class="req">required</span></td><td class="t">boolean</td><td class="t">true</td></tr></tbody></table></div>
   <div class="links">
     <div><h4>Depends on</h4><ul><li><span class="a">borrower_id</span> → <span class="a">borrowers</span><span class="tag cascade">on delete cascade</span></li></ul></div>
+    <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>
+  </div>
+</div></details><details class="tbl" data-name="email_rate_budget" data-note="">
+<summary><span class="tn">email_rate_budget</span>
+<span class="tm">10 fields · 0 links</span>
+</summary>
+<div class="detail">
+  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">burst <span class="req">required</span></td><td class="t">numeric</td><td class="t">1</td></tr><tr><td class="c">granted_count <span class="req">required</span></td><td class="t">bigint</td><td class="t">0</td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">boolean</td><td class="t">true</td></tr><tr><td class="c">pause_reason</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">paused_until</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">refused_count <span class="req">required</span></td><td class="t">bigint</td><td class="t">0</td></tr><tr><td class="c">rps <span class="req">required</span></td><td class="t">numeric</td><td class="t">10</td></tr><tr><td class="c">tokens <span class="req">required</span></td><td class="t">numeric</td><td class="t">1</td></tr><tr><td class="c">updated_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">waited_count <span class="req">required</span></td><td class="t">bigint</td><td class="t">0</td></tr></tbody></table></div>
+  <div class="links">
+    <div><h4>Depends on</h4><ul><li style="color:var(--ink-3)">Nothing — this table stands on its own.</li></ul></div>
     <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>
   </div>
 </div></details></div>

@@ -36,6 +36,7 @@ import { fileToBase64 } from '../lib/files.js';
 import { fullNameOf } from '../lib/personName.js';
 import { splitLoudHint, LoudBanner } from '../components/LoudHint.jsx';
 import FileOverviewSlideOver from '../components/FileOverviewSlideOver.jsx';
+import UploadRows from '../components/UploadRows.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -1404,6 +1405,8 @@ export default function Application() {
                         <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>{dlBusy === d.id ? '…' : '⤓'}</button>
                       </div>
                     ))}
+                    {/* the file, on its bar, where the document will land */}
+                    <UploadRows target={`condition:${assetsItem.id}`} />
                   </ConditionRow>
                 );
               })()}
@@ -1461,6 +1464,7 @@ export default function Application() {
                         <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>{dlBusy === d.id ? '…' : '⤓'}</button>
                       </div>
                     ))}
+                    <UploadRows target={`condition:${it.id}`} />
                     </>)}
                   </ConditionRow>
                 );

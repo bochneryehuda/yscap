@@ -32,7 +32,7 @@ const borrowerSafe = require('../lib/borrower-safe');
 const storage = require('../lib/storage');
 const drawReport = require('../sitewire/draw-report');
 const { serveDocument } = require('../lib/serve-document');
-const { setMediaHeaders } = require('../lib/media-headers');
+const { serveMedia } = require('../lib/media-headers');
 const { keyedRateLimit } = require('../lib/rate-limit');
 const scrub = (s) => (s == null ? null : borrowerSafe.scrubText(String(s)));
 
@@ -128,20 +128,18 @@ router.get('/:token/media/:mediaId', tokenThrottleReadMedia, async (req, res) =>
   if (!m || !m.storage_ref) return res.status(404).end();
   let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
   if (!buf || !buf.length) return res.status(404).end();
-  // THE BYTES DECIDE THE TYPE, never the CDN's archived header (owner-reported 2026-08-10:
-  // every photo tile rendered as a broken image). media-archive stores the content type the
-  // Sitewire CDN happened to send — often `application/octet-stream` or nothing — and under
-  // setMediaHeaders' nosniff a non-image type makes the browser REFUSE to render perfectly
-  // good JPEG bytes in an <img>. Sniffing the magic bytes is the same "vendor header is not
-  // evidence" rule draw-report.js already applies to these very rows for the PDF embeds.
-  const SNIFF_MIME = { jpg: 'image/jpeg', png: 'image/png', gif: 'image/gif', heic: 'image/heic', tiff: 'image/tiff', pdf: 'application/pdf' };
-  let ctype = m.content_type;
-  try {
-    const kind = require('../lib/upload-bytes').sniffKind(buf);
-    if (kind && SNIFF_MIME[kind]) ctype = SNIFF_MIME[kind];
-  } catch (_) { /* fall back to the stored type */ }
-  setMediaHeaders(res, ctype);   // safe-type allowlist + sandbox CSP
-  return res.end(buf);
+  /* THE BYTES DECIDE THE TYPE, never the CDN's archived header (owner-reported 2026-08-10:
+     every photo tile rendered as a broken image). media-archive stores the content type the
+     Sitewire CDN happened to send — often `application/octet-stream` or nothing — and under
+     nosniff a non-image type makes the browser REFUSE to render perfectly good JPEG bytes.
+
+     That rule USED TO LIVE HERE, as a private mime table this route kept for itself. It is now
+     one definition in src/lib/media-headers.js (`resolveMediaType`), shared by every media door,
+     because the same defect then showed up on the VIDEOS this route's private table did not
+     cover — owner-reported 2026-08-23: "the video format is not readable in our system … those
+     videos are blacked out". A second copy of a rule is how the second surface gets missed.
+     `serveMedia` also answers HTTP ranges, without which a <video> shows a black frame. */
+  return serveMedia(req, res, buf, m.content_type);
 });
 
 // ---- GET /:token/report — the PILOT-branded, borrower-safe inspection PDF ----
@@ -150,20 +148,18 @@ router.get('/:token/report', tokenThrottleReport, async (req, res) => {
   if (!f) return res.status(404).json({ error: 'not found' });
   if (isExpired(f.delivered_at) && f.status !== 'accepted') return res.status(410).json({ error: 'This link has expired — please sign in to your portal.', expired: true });
   try {
+    /* THE SHARED BUILDER, NOT A FOURTH COPY OF IT. This was the last of four routes
+       carrying its own inline load → attach photos → render → store sequence, and it
+       is the one most exposed to a burst: it is the link in the borrower's email, so
+       a forwarded message can put several opens on the same report inside a second.
+       The shared builder runs ONE render for all of them (owner-reported 2026-08-23:
+       the report "takes a very long time, and sometimes it's not even opening").
+       `mode` stays HARD-FORCED to 'borrower' — a token holder can never obtain the
+       staff copy. */
     const appId = f.application_id; const drawId = String(f.sitewire_draw_id);
-    const meta = await drawReport.loadReportMeta(appId, { sitewireDrawId: drawId, mode: 'borrower' });
-    if (!meta || !meta.hasScope || !meta.sections.length) return res.status(404).json({ error: 'Your inspection report isn’t ready yet.' });
-    const drawNumber = meta.sections[0] ? meta.sections[0].number : null;
-    const filename = drawReport.reportFilename({ scope: 'draw', mode: 'borrower', drawNumber, version: meta.version, loanNo: meta.app.loanNo });
-    const borrowerId = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || {};
-    let doc = (await db.query(`SELECT * FROM documents WHERE application_id=$1 AND doc_kind='draw_inspection_report' AND filename=$2 LIMIT 1`, [appId, filename])).rows[0];
-    if (!doc) {
-      await drawReport.attachPhotoBytes(meta.sections);
-      const bytes = drawReport.buildDrawReport({ app: meta.app, rollup: meta.rollup, sections: meta.sections, scope: 'draw', mode: 'borrower' });
-      const docId = await drawReport.storeDrawReport({ appId, borrowerId: borrowerId.borrower_id, filename, bytes, mode: 'borrower' });
-      doc = (await db.query(`SELECT * FROM documents WHERE id=$1`, [docId])).rows[0];
-    }
-    return serveDocument(res, doc, { inline: true });
+    const r = await drawReport.buildOrGetReportDoc(appId, { sitewireDrawId: drawId, scope: 'draw', mode: 'borrower' });
+    if (!r || !r.doc) return res.status(404).json({ error: 'Your inspection report isn’t ready yet.' });
+    return serveDocument(res, r.doc, { inline: true });
   } catch (e) { return res.status(500).json({ error: 'Could not build your report right now — please try again shortly.' }); }
 });
 

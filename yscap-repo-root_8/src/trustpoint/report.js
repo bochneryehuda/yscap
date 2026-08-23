@@ -109,7 +109,19 @@ async function buildPdf({ mode, addr, loanNumber, draw, lines, photos }) {
 }
 
 /** Build (or reuse) the stored report document for a draw+mode. Returns { documentId, filename, bytes? }. */
+/* ONE BUILD PER REPORT, NEVER N — the same rule as the Sitewire report
+   (src/sitewire/draw-report.js), for the same reason: the render is synchronous and
+   CPU-bound, so two of them in flight is a web service that has stopped answering.
+   Keyed on the loan + draw + mode, which is what decides the output. */
+const { singleFlight } = require('../lib/single-flight');
+const _tpBuildsInFlight = new Map();
+
 async function buildOrGetReport(appId, tpDrawId, mode = 'staff') {
+  const key = `${appId}:${tpDrawId}:${mode === 'borrower' ? 'borrower' : 'staff'}`;
+  return singleFlight(_tpBuildsInFlight, key, () => _buildOrGetReport(appId, tpDrawId, mode));
+}
+
+async function _buildOrGetReport(appId, tpDrawId, mode = 'staff') {
   if (mode !== 'staff' && mode !== 'borrower') mode = 'staff';
   const draw = (await db.query(`SELECT * FROM trustpoint_draws WHERE tp_draw_id=$1 AND application_id=$2`, [tpDrawId, appId])).rows[0];
   if (!draw) { const e = new Error('draw not found'); e.status = 404; throw e; }

@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**875 objects**, and a database rebuilt from the Prisma
+**878 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 615 numbered migrations in `db/` (highest `db/618`) remain the only thing that builds this database.
+rebuild a database from them.** The 616 numbered migrations in `db/` (highest `db/619`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 380 |
-| Columns | 6136 |
+| Tables | 381 |
+| Columns | 6146 |
 | Triggers | 35 |
 | Functions | 138 |
-| CHECK constraints | 313 |
+| CHECK constraints | 316 |
 | Generated columns | 12 |
 | Partial indexes | 377 |
-| Primary keys | 380 |
+| Primary keys | 381 |
 | Foreign keys | 791 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1311 |
+| Indexes (all kinds) | 1312 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -607,7 +607,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (313)
+## CHECK constraints (316)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -769,6 +769,9 @@ the live database.
 - **elementix_skip_traces_source_check** on `elementix_skip_traces`
 - **elementix_skip_traces_status_check** on `elementix_skip_traces`
 - **email_messages_direction_check** on `email_messages`
+- **email_rate_budget_burst_positive** on `email_rate_budget`
+- **email_rate_budget_rps_positive** on `email_rate_budget`
+- **email_rate_budget_single_row** on `email_rate_budget`
 - **email_tokens_kind_check** on `email_tokens`
 - **email_tokens_owner_chk** on `email_tokens`
 - **email_tokens_secret_chk** on `email_tokens`
@@ -1791,7 +1794,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 380 primary keys and 1311 indexes is
+Every one of the 381 primary keys and 1312 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

@@ -113,6 +113,12 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
       downPayment: Number(sizing.downPayment) || 0,
       assignmentExcess: Number(sizing.assignmentExcessOOP) || 0,
       closingCosts: Number(cc.dueAtClosing) || 0,
+      // The government charges INSIDE those closing costs (owner-directed
+      // 2026-08-23), kept as line items on the condition's own payload so the
+      // requirement can be reconciled against a settlement statement later
+      // without re-pricing the deal.
+      governmentCharges: Number(quote.governmentCharges) || 0,
+      governmentChargeLines: Array.isArray(quote.governmentChargeLines) ? quote.governmentChargeLines : [],
       reserveRequirement: Number(quote.reserveRequirement) || 0,
       reserveBasis: quote.reserveBasis || null,
       // 1% closing-cost buffer (owner-authorized 2026-07-31) — extra cash the
@@ -135,6 +141,7 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
     // − funds advanced at closing), NOT "down payment + closing" — which on a refi
     // reads "Down payment $0.00 + closing $X = cash to close $Y", an equation that
     // is internally false. Owner-directed 2026-08-04.
+    const govSeg = governmentChargeLine(quote);
     const cashToCloseSeg = breakdown.refi
       // CASH-OUT: the funds advanced exceed the payoff + closing, so cash-to-close is
       // $0 and the payoff/less-funds equation would sum NEGATIVE against it (the exact
@@ -143,11 +150,11 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
       // reconciliation reads correctly.
       ? (breakdown.refi.cashOut > 0
           ? `Cash to close ${money2(breakdown.cashToClose)} — the new loan covers the existing payoff and closing costs; the borrower takes ${money2(breakdown.refi.cashOut)} cash out`
-          : `Loan payoff ${money2(breakdown.refi.payoff)} + closing costs due at closing ${money2(breakdown.refi.closing)} ` +
+          : `Loan payoff ${money2(breakdown.refi.payoff)} + closing costs due at closing ${money2(breakdown.refi.closing)}${govSeg} ` +
             `− funds advanced at closing ${money2(breakdown.refi.fundedAtClose)} = cash to close ${money2(breakdown.cashToClose)}`)
       : `Down payment ${money2(breakdown.downPayment)} + ` +
         `${breakdown.assignmentExcess > 0 ? `assignment excess ${money2(breakdown.assignmentExcess)} + ` : ''}` +
-        `closing costs due at closing ${money2(breakdown.closingCosts)} = cash to close ${money2(breakdown.cashToClose)}`;
+        `closing costs due at closing ${money2(breakdown.closingCosts)}${govSeg} = cash to close ${money2(breakdown.cashToClose)}`;
     const hint =
       `${bankStatementLine(program, assetMonths, noteBuyer)} ` +
       `Required liquidity: ${money2(required)} — the borrower's bank statements must show at least this in liquid assets. ` +
@@ -284,7 +291,41 @@ async function setClosingBufferWaiver(appId, waived, client = db) {
   return { waived: on, closingBuffer: newBuffer, liquidityRequired: newRequired };
 }
 
+/* WHAT IS INSIDE THE CLOSING COSTS — the government charges, named.
+
+   Owner-directed 2026-08-23. The number was already right the moment the mortgage
+   tax landed in the quote (cash to close is built from the closing costs, and the
+   liquidity from the cash to close), but the SENTENCE still said only "closing
+   costs due at closing $14,150" — and on a New York City loan roughly $11,550 of
+   that is one line the borrower has never been told about. A total nobody can
+   break down is a total nobody can check, and the first time it gets checked is at
+   the closing table, which is the worst possible moment to discover it.
+
+   So the two charges that actually move the number are named, largest first, with
+   the rest summed. ONE definition, because `product-registration.assetDetail`
+   prints the same reconciliation into the internal approval email and the two must
+   read the same. Returns '' when the deal carries none, leaving every existing
+   sentence in a state with no such tax byte-identical. */
+function governmentChargeLine(quote) {
+  const lines = (quote && Array.isArray(quote.governmentChargeLines)) ? quote.governmentChargeLines : [];
+  const total = Number(quote && quote.governmentCharges) || 0;
+  if (!lines.length || !(total > 0)) return '';
+  const sorted = lines.slice().filter((l) => l && Number(l.amount) > 0)
+    .sort((a, b) => Number(b.amount) - Number(a.amount));
+  if (!sorted.length) return '';
+  // The label is printed VERBATIM. Lower-casing it reads better mid-sentence right
+  // up until the label is "New York City mortgage recording tax", which then comes
+  // out as "new york city" — a proper noun destroyed to tidy one letter.
+  const named = sorted.slice(0, 2).map((l) => `${money2(l.amount)} ${String(l.label || 'government charge')}`);
+  const restCount = sorted.length - named.length;
+  const rest = restCount > 0
+    ? `, and ${money2(sorted.slice(2).reduce((n, l) => n + Number(l.amount), 0))} of other government charges`
+    : '';
+  return ` — including ${named.join(' and ')}${rest}`;
+}
+
 module.exports = {
+  governmentChargeLine,
   syncLiquidityCondition, backfillLiquidityConditions, resyncLiquidityForFile,
   setClosingBufferWaiver,
   bankStatementMonths, bankStatementLine, GENERIC_BANK_STMT_HINT, currentProgram,
