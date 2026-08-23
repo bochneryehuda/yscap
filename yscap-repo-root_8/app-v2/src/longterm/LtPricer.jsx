@@ -6,11 +6,12 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
 import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor } from './priceBuild.js';
+import { perMonth, monthlyPI, dscrFrom } from './dscrCalc.js';
 // The form's own rules — which options exist, when a field appears, and the amount triangle. Also a
 // plain `.js` module, and for the same reason: CI can run it, and a rule CI cannot run is a rule
 // nobody is holding. See scenarioFields.js.
 import {
-  PROPERTY_TYPES, PURPOSES, BORROWER_TYPES, PREPAY_TERMS, PREPAY_STRUCTURES,
+  PROPERTY_TYPES, PURPOSES, BORROWER_TYPES, PREPAY_TERMS, PREPAY_STRUCTURES, LOAN_TERMS, DEFAULT_TERM_YEARS,
   unitsMode, unitsFor, showsNonWarrantable, deriveAmount, toScenario,
   formatMoney, digitsOf, toNumber,
 } from './scenarioFields.js';
@@ -112,12 +113,24 @@ const START = {
   // carries: the route has accepted `fthb` all along and the builder writes it to
   // `criteria.firstTimeHomeBuyer`. It had simply never been reachable from a screen.
   fthb: false,
+  // THE LOAN TERM — owner-directed 2026-08-23. 30 is also what the SERVER already falls back to
+  // when no term is sent, so putting it on screen changes nothing about what today's scenarios
+  // ask for; it makes the existing default visible and movable.
+  termYears: DEFAULT_TERM_YEARS,
   // PREPAYMENT PENALTY — TERM and TYPE, as two facts. Five-year Standard is the connector's own
   // profile default, so stating it here changes nothing about what is priced; it makes the default
   // VISIBLE, which is the point. Leaving it blank would price a five-year penalty that nobody on
   // this screen ever saw.
   prepayMonths: '60',
   prepayStructure: 'Standard',
+};
+
+/** What the DSCR calculator starts on — its own scratch pad, cleared with the scenario. HOA is the
+ *  one field with a default and it is the owner's: blank means none. */
+const CALC_START = {
+  rent: '', tax: '', taxBasis: 'monthly', insurance: '', insBasis: 'monthly',
+  hoa: '',
+  rate: '',
 };
 
 export { toScenario };
@@ -685,6 +698,111 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
    loop would keep spending on a screen somebody walked away from, so a press asks once and
    the screen says plainly whether to ask again. No timer, nothing to leak.
    ────────────────────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════════════
+   THE DSCR CALCULATOR (owner-directed 2026-08-23).
+
+   *"Build something in our frontend to calculate the dscr ratio next to it, like a calculate button
+   next to the radio ... ask him for the monthly rent, monthly property tax, monthly hazard insurance
+   and monthly HOA. Monthly HOA should be defaulted to zero. Next to the property tax and the
+   insurance you should be able to switch it to yearly ... you should also be able to enter a
+   targeted rate ... that ratio should live live if you change the details of the scenario."*
+
+   ⛔ IT HOLDS NO RULE OF ITS OWN. Every number here comes from `dscrCalc.js`, which mirrors the
+   tenant's own owner-confirmed formula — Round(monthly rent / total monthly housing expense, 2) —
+   and is held to the SERVER's `computeDscr` by a test that runs both. This component decides only
+   what to draw.
+
+   ⛔ AND IT NEVER WRITES THE RATIO BY ITSELF. It shows the answer and offers to put it in the box;
+   the person decides. A calculator that silently overwrote the DSCR somebody typed would be making
+   a pricing decision on their behalf. */
+export function DscrCalc({ c, setC, loanAmount, termYears, interestOnly, onUse }) {
+  const num = (v) => toNumber(v);
+  const taxM = perMonth(num(c.tax), c.taxBasis);
+  const insM = perMonth(num(c.insurance), c.insBasis);
+  const hoaM = c.hoa === '' ? 0 : perMonth(num(c.hoa), 'monthly');
+  const out = dscrFrom({
+    loanAmount, ratePct: num(c.rate), termYears, interestOnly,
+    rentMonthly: num(c.rent), taxMonthly: taxM, insuranceMonthly: insM, hoaMonthly: hoaM,
+  });
+
+  // ⛔ NO LOCAL `money` HERE. `format.js` already exports one and this file already imports it,
+  // so a second definition would make the SAME name mean two things inside one screen — the
+  // class `test-lt-pipeline-columns-pure.js` guards, and it caught this. The shared one writes
+  // whole dollars and answers an em dash on nothing, which is exactly what this panel wants.
+  const setK = (k) => (e) => setC((p) => ({ ...p, [k]: e.target.value }));
+  const basisTab = (k, val, label) => (
+    <button type="button" onClick={() => setC((p) => ({ ...p, [k]: val }))}
+      aria-pressed={c[k] === val} style={segBtn(c[k] === val)}>{label}</button>
+  );
+
+  return (
+    <div style={{ ...band, marginTop: 10, borderColor: `${GOLD}66` }}>
+      <div style={{ ...bandHead, background: '#FBF7EE' }}>Work out the DSCR</div>
+      <div style={bandBody}>
+        <Field id="dc-rent" label="Monthly rent" basis="0 1 150px" min={140}>
+          <Money id="dc-rent" value={c.rent} onChange={(v) => setC((p) => ({ ...p, rent: v }))} ariaLabel="Monthly rent" />
+        </Field>
+
+        {/* TAX AND INSURANCE CARRY THEIR OWN MONTHLY/YEARLY SWITCH, in the label band — the same
+            place the loan-amount/LTV switch lives, so the boxes stay level with their neighbours. */}
+        <Field id="dc-tax" label="Property tax" basis="0 1 180px" min={170}
+          head={<span style={segTrack}>{basisTab('taxBasis', 'monthly', 'Mo')}{basisTab('taxBasis', 'yearly', 'Yr')}</span>}
+          hint={c.taxBasis === 'yearly' && taxM != null ? `${money(taxM)} a month` : ''}>
+          <Money id="dc-tax" value={c.tax} onChange={(v) => setC((p) => ({ ...p, tax: v }))} ariaLabel="Property tax" />
+        </Field>
+
+        <Field id="dc-ins" label="Hazard insurance" basis="0 1 190px" min={180}
+          head={<span style={segTrack}>{basisTab('insBasis', 'monthly', 'Mo')}{basisTab('insBasis', 'yearly', 'Yr')}</span>}
+          hint={c.insBasis === 'yearly' && insM != null ? `${money(insM)} a month` : ''}>
+          <Money id="dc-ins" value={c.insurance} onChange={(v) => setC((p) => ({ ...p, insurance: v }))} ariaLabel="Hazard insurance" />
+        </Field>
+
+        {/* HOA IS THE ONE FIELD WITH A DEFAULT, and it is the owner's: blank means none. */}
+        <Field id="dc-hoa" label="Monthly HOA" basis="0 1 150px" min={140} hint="Blank means none">
+          <Money id="dc-hoa" value={c.hoa} onChange={(v) => setC((p) => ({ ...p, hoa: v }))} ariaLabel="Monthly HOA" />
+        </Field>
+
+        <Field id="dc-rate" label="Target rate" basis="0 1 130px" min={120} hint="The rate to work the payment out at">
+          <input id="dc-rate" style={control} inputMode="decimal" value={c.rate} onChange={setK('rate')} autoComplete="off" />
+        </Field>
+      </div>
+
+      {/* THE ANSWER, AND THE ARITHMETIC BEHIND IT — never just a number. Somebody about to price a
+          loan on this ratio should be able to see every part that made it. */}
+      <div style={{ borderTop: `1px solid ${LINE}`, padding: '10px 12px', background: WASH }}>
+        {out.dscr == null ? (
+          <div style={{ fontSize: 12.5, color: CAUTION }}>
+            {`Still needed: ${out.missing.join(', ')}.`}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12.5, color: SLATE, ...NUM }}>
+              {`${money(out.pi)} ${interestOnly ? 'interest' : 'P&I'}`
+                + ` + ${money(out.tax)} tax + ${money(out.insurance)} insurance`
+                + (out.hoa ? ` + ${money(out.hoa)} HOA` : '')
+                + ` = ${money(out.pitia)} a month`}
+            </span>
+            <span style={{ flex: 1 }} />
+            <span style={{ fontSize: 11, color: MUTED, letterSpacing: '.07em', textTransform: 'uppercase', fontWeight: 700 }}>DSCR</span>
+            <span style={{ fontSize: 20, fontWeight: 700, color: INK, ...NUM }}>{out.dscr.toFixed(2)}</span>
+            <button type="button" className="btn ghost" style={{ fontSize: 12 }}
+              onClick={() => onUse(out.dscr.toFixed(2))}>Use this ratio</button>
+          </div>
+        )}
+        {/* WHAT IT IS ASSUMING, SAID OUT LOUD. The payment shape and the term come from the scenario
+            above, not from anything typed here, so the reader can see WHY the number moved when they
+            ticked a box. */}
+        <div style={{ fontSize: 11.5, color: MUTED, marginTop: 6 }}>
+          {`On ${money(loanAmount)} over ${termYears ? `${termYears} years` : 'the term above'}, `
+            + (interestOnly
+              ? 'interest-only — nothing is being repaid, so the term does not change the payment.'
+              : 'fully amortising. Tick interest-only above and this follows.')}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* THE INELIGIBLE BOARD — the SAME THREE LEVELS as the eligible one, in the owner's own order
    (2026-08-23): "You see all the rates. You click on the rate, and you see all the lenders. If a
    lender has a few programs, you click on the lender ... and you see all the programs. You can
@@ -909,6 +1027,11 @@ export default function LtPricer() {
   // not open the same lender on every other. A Set rather than a single key: comparing two lenders'
   // programme lists side by side is the whole reason the dropdown exists.
   const [openLenders, setOpenLenders] = useState(() => new Set());
+  // THE CALCULATOR'S OWN BOXES. Separate from the scenario on purpose: the rent and the carrying
+  // costs are not priced facts and are never sent to Lender Price — they exist to work out ONE
+  // number, the ratio, which the person then chooses to use or not.
+  const [calcOpen, setCalcOpen] = useState(false);
+  const [calc, setCalc] = useState(CALC_START);
   const timer = useRef(null);
   // The auto-ask loop's own bookkeeping: which search it is chasing, how many asks it has spent, and
   // the pending timer. Refs rather than state — none of it is drawn, and putting it in state would
@@ -1003,6 +1126,12 @@ export default function LtPricer() {
   const amt = f.amountMode === 'ltv'
     ? deriveAmount({ value: f.value, ltv: f.ltv })
     : deriveAmount({ value: f.value, loan: f.loan });
+  /* THE LOAN AMOUNT THE CALCULATOR WORKS ON — the FORM's, deliberately, not the priced one.
+     The calculator runs BEFORE anything is priced (that is the point of a target rate), so the
+     priced figure does not exist yet; and on an LTV scenario the loan is derived rather than typed,
+     which is exactly the case `amt` already solves for the rest of the screen. Falls back to the
+     typed box so it still works the moment a property value has not been entered. */
+  const formLoanAmount = toNumber(amt && amt.loan != null ? amt.loan : f.loan);
   const um = unitsMode(f.propertyType);
   const stack = res ? buildRateStack(res.programs) : null;
 
@@ -1181,10 +1310,37 @@ export default function LtPricer() {
             <Field id="pe-fico" label="FICO" basis="0 1 110px" min={100}>
               <input id="pe-fico" style={control} inputMode="numeric" value={f.fico} onChange={set('fico')} autoComplete="off" />
             </Field>
-            <Field id="pe-dscr" label="DSCR" basis="0 1 110px" min={100}>
+            {/* THE RATIO, AND THE WAY TO WORK IT OUT. Owner-directed 2026-08-23: a Calculate
+                control beside the ratio that asks for the rent and the carrying costs and answers
+                LIVE — it follows the scenario, so ticking interest-only or moving the term moves
+                the ratio without anybody pressing anything again. The control sits IN the label
+                band, which is the one place a field can carry an action without pushing its own box
+                out of line with its neighbours (the whole point of the three-band layout). */}
+            <Field id="pe-dscr" label="DSCR" basis="0 1 150px" min={140}
+              head={(
+                <button type="button" onClick={() => setCalcOpen((v) => !v)} aria-expanded={calcOpen}
+                  style={{
+                    border: 0, background: 'none', padding: 0, cursor: 'pointer', font: 'inherit',
+                    fontSize: 10.5, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase',
+                    color: GOLD, textDecoration: 'underline', textUnderlineOffset: 3,
+                  }}>
+                  {calcOpen ? 'Close' : 'Calculate'}
+                </button>
+              )}>
               <input id="pe-dscr" style={control} inputMode="decimal" value={f.dscr} onChange={set('dscr')} autoComplete="off" />
             </Field>
           </Group>
+
+          {/* THE CALCULATOR sits directly under the band its ratio belongs to, and it is LIVE: it
+              reads the loan amount, the term and the interest-only flag straight off the scenario
+              above, so ticking a box up there moves the ratio down here with nothing to press. */}
+          {calcOpen && (
+            <DscrCalc c={calc} setC={setCalc}
+              loanAmount={formLoanAmount}
+              termYears={toNumber(f.termYears)}
+              interestOnly={!!f.io}
+              onUse={(v) => setF((p) => ({ ...p, dscr: v }))} />
+          )}
 
           {/* ── THE PROPERTY ──────────────────────────────────────────────── */}
           <Group title="The property">
@@ -1271,6 +1427,13 @@ export default function LtPricer() {
             </Field>
             {/* A lock is two digits. The box was the same width as the loan amount, which is why the
                 owner asked for it to be smaller — a control's size is a claim about what goes in it. */}
+            {/* THE LOAN TERM — owner-directed 2026-08-23. It also feeds the DSCR calculator, because
+                a fully amortising payment depends on it (an interest-only one does not). */}
+            <Field id="pe-term" label="Term" basis="0 0 130px" min={130}>
+              <select id="pe-term" style={selectStyle} value={f.termYears} onChange={set('termYears')}>
+                {LOAN_TERMS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </Field>
             <Field id="pe-lock" label="Lock (days)" basis="0 0 112px" min={112}>
               <input id="pe-lock" style={control} inputMode="numeric" value={f.lockDays} onChange={set('lockDays')} autoComplete="off" />
             </Field>
@@ -1320,7 +1483,11 @@ export default function LtPricer() {
             <button type="submit" className="btn primary" disabled={busy}>
               {busy ? `Pricing… ${elapsed.toFixed(1)}s` : 'Price it'}
             </button>
-            <button type="button" className="btn ghost" disabled={busy} onClick={() => setF(START)}>
+            {/* RESET CLEARS THE CALCULATOR TOO. The rent and the carrying costs are facts about
+                THIS property, so leaving them behind on a fresh scenario would quietly work out a
+                ratio from the last deal's numbers. */}
+            <button type="button" className="btn ghost" disabled={busy}
+              onClick={() => { setF(START); setCalc(CALC_START); setCalcOpen(false); }}>
               Reset to the starting scenario
             </button>
             {/* WHAT IS ACTUALLY GOING ON THE WIRE, in one line. The amount triangle means the

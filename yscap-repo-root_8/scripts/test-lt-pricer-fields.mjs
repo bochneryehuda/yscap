@@ -219,6 +219,33 @@ ok(!('state' in blankLoc) && !('county' in blankLoc), 'P1 a blank state/county i
 const typedLoc = F.toScenario({ purpose: 'Purchase', zip: '00501', state: 'NY', county: 'Suffolk' });
 ok(typedLoc.state === 'NY' && typedLoc.county === 'Suffolk', 'P2 …and a typed one is carried');
 
+/* ── T) THE LOAN TERM REACHES THE WIRE ────────────────────────────────────────
+   Owner-directed 2026-08-23: a small box for the term of the loan, 15 / 30 / 40 years. A dropdown
+   that never reaches Lender Price would be decoration — the vendor would keep pricing the profile's
+   forced 30 while the screen said 40 — so what is asserted here is that `toScenario` carries it as
+   a NUMBER under the key the route allowlists and the request builder reads (`termYears`, which
+   `search-model` turns into `loanYear` + `termsCriteria`). Every offered value is checked, because
+   a list is only as good as its least-used entry. */
+for (const t of ['15', '30', '40']) {
+  const sc = F.toScenario({ purpose: 'Purchase', value: '500,000', loan: '375,000', termYears: t });
+  ok(sc.termYears === Number(t), `T1.${t} a ${t}-year term reaches the wire as the number ${t}`);
+}
+ok(F.LOAN_TERMS.map((x) => x.value).join(',') === '15,30,40',
+  'T2 the box offers exactly the three terms the owner named');
+ok(F.DEFAULT_TERM_YEARS === '30' && F.LOAN_TERMS.some((x) => x.value === F.DEFAULT_TERM_YEARS),
+  'T3 …and the one it starts on is 30-year, and is one of them');
+ok(!('termYears' in F.toScenario({ purpose: 'Purchase', termYears: '' })),
+  'T4 a blank term is omitted rather than sent as a guess');
+
+// A VALUE WE OFFER IS A VALUE WE ACCEPT. The server refuses a term outside its own live list with
+// `unsupported_term`, so an option on the dropdown that is not on that list is a dead choice that
+// answers with an error nobody on the screen can act on. Asserted against the server's OWN list,
+// not a retyped copy of it.
+for (const t of F.LOAN_TERMS) {
+  ok(model._internals.ALLOWED_TERMS.includes(Number(t.value)),
+    `T5.${t.value} the server accepts the ${t.label} the box offers`);
+}
+
 /* ── report ───────────────────────────────────────────────────────────────── */
 if (fails.length) {
   console.error(`\nFAILED ${fails.length} of ${pass + fails.length}:`);
