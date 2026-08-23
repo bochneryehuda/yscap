@@ -137,7 +137,7 @@ const UNASSIGNED_SQL = `NOT EXISTS (
  * @param staffId      the viewer's PILOT id
  * @param filters      {stage, folder, search, officerStaffId, unassigned, book}
  * @param omit         Set of filter names to leave out
- * @param opts         {inactiveFolders} — TENANT CONFIG, not a filter. It is passed in
+ * @param opts         {books} — TENANT CONFIG, not a filter. It is passed in
  *                     rather than read here so this stays pure and unit-testable; with
  *                     it absent (or empty, which is the shipped default) the SQL is
  *                     byte-identical to what it was before the live/closed split.
@@ -170,7 +170,7 @@ function buildWhere(viewerAccess, staffId, filters = {}, omit = new Set(), opts 
   // has named no folders, so this adds nothing to the query on a tenant that has not
   // configured it. An unlisted folder, and a loan with no folder, are always LIVE.
   if (!skip('book')) {
-    const bookSql = book.bookWhereSql(filters.book, opts.inactiveFolders, p);
+    const bookSql = book.bookWhereSql(filters.book, opts.books, p);
     if (bookSql) where.push(bookSql);
   }
 
@@ -327,18 +327,33 @@ function buildFacetQueries(viewerAccess, staffId, filters = {}, opts = {}) {
   // than as "nobody has said which folders mean finished".
   let bookSql = null;
   let bookParams = null;
-  if (book.bookSplitApplies(opts.inactiveFolders)) {
+  if (book.bookSplitApplies(opts.books)) {
     const forBook = buildWhere(viewerAccess, staffId, filters, new Set(['book']), opts);
-    const ph = `$${forBook.params.length + 1}`;
     // Normalized for the same reason `bookWhereSql` does it: the SQL lower-cases only
     // its own side, so a raw list here would count zero closed loans on a tenant that
     // has plenty — a chip reading 0 that nobody would think to doubt.
-    forBook.params.push(book.normalizeFolders(opts.inactiveFolders));
-    const closed = book.closedFolderSql('l', ph);
+    const cfg = opts.books || {};
+    // Each list becomes ONE parameter, referenced by every count that needs it. A
+    // list nobody configured is the literal `false` rather than an empty array, so
+    // `= ANY('{}')` — which is false for every row but still a comparison — never
+    // gets built for a book this tenant does not have.
+    const bind = (list) => {
+      const clean = book.normalizeFolders(list);
+      if (!clean.length) return 'false';
+      forBook.params.push(clean);
+      return book.folderInSql('l', `$${forBook.params.length}`);
+    };
+    const closed = bind(cfg.closed);
+    const withdrawn = bind(cfg.withdrawn);
+    const excluded = bind(cfg.excluded);
+    // `live` is neither finished nor dead nor hidden; `all` is the three books
+    // together and still not the hidden folders — an excluded folder is not a book,
+    // so counting it into the total would make the chips fail to sum to the header.
     bookSql = `
-    SELECT count(*) FILTER (WHERE NOT (${closed}))::int AS live_n,
+    SELECT count(*) FILTER (WHERE NOT (${closed}) AND NOT (${withdrawn}) AND NOT (${excluded}))::int AS live_n,
            count(*) FILTER (WHERE ${closed})::int AS closed_n,
-           count(*)::int AS all_n
+           count(*) FILTER (WHERE ${withdrawn})::int AS withdrawn_n,
+           count(*) FILTER (WHERE NOT (${excluded}))::int AS all_n
       ${FROM} ${forBook.whereSql}`;
     bookParams = forBook.params;
   }
@@ -381,6 +396,7 @@ async function loadFacets(f, staffId) {
     book: bk ? {
       live: Number(bk.live_n) || 0,
       closed: Number(bk.closed_n) || 0,
+      withdrawn: Number(bk.withdrawn_n) || 0,
       all: Number(bk.all_n) || 0,
     } : null,
     // What the "Every stage" chip must show. It is NOT the list's own total: that is
@@ -414,8 +430,8 @@ async function loadPipeline(staff, filters = {}) {
   // Which folders this tenant says mean the deal is over. Read ONCE here and threaded
   // into both builders, so the list, its total and every chip count are describing the
   // same book — reading it twice is how a count comes to disagree with the page.
-  const inactive = book.inactiveFolders(settings);
-  const opts = { inactiveFolders: inactive };
+  const books = book.bookFolders(settings);
+  const opts = { books };
 
   const q = buildPipelineQuery(viewerAccess, staffId, filters, opts);
   const f = buildFacetQueries(viewerAccess, staffId, filters, opts);
@@ -460,13 +476,13 @@ async function loadPipeline(staff, filters = {}) {
     // control (the same rule the scope row follows for a viewer who sees only their
     // own files).
     book: book.normalizeBook(filters.book),
-    bookControl: book.bookSplitApplies(inactive),
+    bookControl: book.bookSplitApplies(books),
     bookCounts: facets ? facets.book : null,
     // A filter this tenant's own configuration makes moot — NAMED, so the screen can
     // say so rather than showing a book that quietly ignores what was asked for.
     filtersIgnored: [
       ...ignoredScopeFilters(viewerAccess, filters),
-      ...[book.ignoredBookFilter(filters.book, inactive)].filter(Boolean),
+      ...[book.ignoredBookFilter(filters.book, books)].filter(Boolean),
     ],
   };
 }

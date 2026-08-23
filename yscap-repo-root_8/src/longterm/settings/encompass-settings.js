@@ -473,8 +473,12 @@ const SETTINGS = [
       'processor', 'conditions', 'lock_status', 'expected_closing',
     ],
     description: 'Which columns the long-term pipeline shows, in order.' },
-  { key: 'pipeline.inactiveFolders', group: 'Pipeline', label: 'Loan folders that mean the deal is over',
-    type: 'list', default: [],
+  { key: 'pipeline.inactiveFolders', group: 'Pipeline', label: 'Loan folders whose files are CLOSED (finished deals, funded included)',
+    type: 'list',
+    // ANSWERED BY THE OWNER 2026-08-23 (§11 q13). Until this date the default was []
+    // and nothing was hidden from anybody, because which folder means "over" is a
+    // business rule nobody here may guess. It is no longer a guess.
+    default: ['Corr Post Purchase', 'Broker CLOSED RECONCILED', 'Broker CLOSED'],
     // The screen offers the folder names the book ACTUALLY uses, with a count each.
     // See `src/longterm/observed.js` for why that is now possible.
     suggestFrom: 'loanFolders',
@@ -490,6 +494,45 @@ const SETTINGS = [
       + 'nobody here may guess — treating a folder called "Archive" as finished on a hunch would '
       + 'silently empty part of an officer\'s pipeline. So the names are offered and a human picks; '
       + 'until somebody picks, nothing is hidden from anybody.' },
+
+  // ── The withdrawn book (owner-directed 2026-08-23) ────────────────────────
+  // *"The canceled and withdrawn files should be in another view … It shouldn't be
+  // mixing them up, just keeping status separately."*
+  //
+  // A deal that COMPLETED and a deal that DIED are different facts. Folding both into
+  // one "not live" bucket is the mixing the owner ruled out, and it is not cosmetic:
+  // a funded loan is revenue and a withdrawn one is a lost opportunity, and a desk
+  // counting "closed files" wants the first without the second.
+  { key: 'pipeline.withdrawnFolders', group: 'Pipeline', label: 'Loan folders whose files were WITHDRAWN or CANCELLED',
+    type: 'list',
+    default: ['Withdrawn files'],
+    suggestFrom: 'loanFolders',
+    description: 'Encompass loan folders holding deals that died — withdrawn, cancelled, declined. '
+      + 'These get their own view, separate from both the active pipeline and the closed book, '
+      + 'so a finished deal is never counted alongside a lost one. A folder on BOTH this list '
+      + 'and the closed list is treated as withdrawn, because that is the more specific claim.',
+    evidence: 'Owner-directed 2026-08-23, answering §11 q13: "Withdrawn files - this is with '
+      + 'withdrawn and canceled files." 35 of the 772 files in the 2026-08-14 census sit there.' },
+
+  // ── Folders that are not a book at all (owner-directed 2026-08-23) ────────
+  // "Training - this is the training folder that you can ignore", "Prospect - this is
+  // a prospect folder that you can ignore", "Pre-Approval - which you can also ignore
+  // for now."
+  //
+  // HIDDEN IS NOT THE SAME AS FINISHED, which is why this is a third list and not more
+  // entries on the closed one. A training file is not a deal in any state; putting it
+  // in the closed book would inflate a number somebody reports.
+  { key: 'pipeline.excludedFolders', group: 'Pipeline', label: 'Loan folders to hide entirely (not a real deal)',
+    type: 'list',
+    default: ['Training', 'Prospect', 'Pre-Approval'],
+    suggestFrom: 'loanFolders',
+    description: 'Encompass loan folders that are not real deals at all — training files, '
+      + 'prospects, pre-approvals. Hidden from every pipeline view and from the borrower, but '
+      + 'STILL COUNTED in the census, so the totals continue to reconcile against Encompass. '
+      + 'This list loses to the other two: a folder named here AND on one of them still shows, '
+      + 'because a configuration mistake must not make a file vanish from every screen.',
+    evidence: 'Owner-directed 2026-08-23: Training (9 files), Prospect (7) and Pre-Approval (1) '
+      + 'are each "you can ignore" in the owner\'s own words. 17 of 772 in the 2026-08-14 census.' },
 
   // ── The product switch (owner-directed 2026-08-14) ────────────────────────
   // "everybody should have a switch on his login to switch to the long-term side".
