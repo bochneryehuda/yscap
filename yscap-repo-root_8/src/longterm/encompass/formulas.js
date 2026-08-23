@@ -28,10 +28,10 @@ const DSCR_RATIO = {
   // knowledge rather than an inference — do not re-derive it.
   ownerConfirmed: '2026-08-14',
   plainEnglish:
-    'Gross monthly market rent on the subject property (field 1005) divided by the '
+    'The monthly QUALIFYING rent on the subject property (field 1005 — owner-named 2026-08-23) divided by the '
     + 'proposed TOTAL monthly housing expense (field 912) — principal + interest + taxes '
     + '+ insurance + association dues, i.e. the true PITIA — rounded to two decimals.',
-  numerator: { fieldId: '1005', label: 'Subject Property Gross Rent',
+  numerator: { fieldId: '1005', label: 'Subject Property Monthly Qualifying Rent',
     path: 'loan.subjectPropertyGrossRentalIncomeAmount' },
   denominator: { fieldId: '912', label: 'Expenses Proposed Total Housing',
     path: 'loan.proposedHousingExpenseTotal' },
@@ -46,7 +46,7 @@ const DSCR_RATIO = {
     '1.20 and above': 'the conventional DSCR comfort zone',
   },
   note:
-    'Field 1005 is monthly gross rent, NOT annual and NOT net of vacancy. Field 912 is the '
+    'Field 1005 is the MONTHLY QUALIFYING rent — monthly, NOT annual, and NOT net of vacancy. Field 912 is the '
     + 'PROPOSED (post-close) housing expense, not the current one — so the ratio only becomes '
     + 'meaningful once the new payment has been built on the file.',
 };

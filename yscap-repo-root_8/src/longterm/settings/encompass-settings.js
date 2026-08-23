@@ -102,10 +102,20 @@ const SETTINGS = [
     description: 'The custom field holding the computed DSCR.',
     evidence: "Tenant custom field CUST01FV, description 'DSCR', calculation Round([1005]/[912],2).",
     notWired: NW_PINNED_FIELD },
-  { key: 'dscr.rentFieldId', group: 'DSCR', label: 'Gross monthly rent field',
+  { key: 'dscr.rentFieldId', group: 'DSCR', label: 'Monthly qualifying rent field',
     type: 'fieldId', default: '1005',
-    description: 'Numerator: gross monthly market rent on the subject property.',
-    evidence: 'loan.subjectPropertyGrossRentalIncomeAmount.',
+    description: 'Numerator: the MONTHLY QUALIFYING RENT on the subject property — the figure '
+      + 'this loan actually qualifies on.',
+    // NAMED BY THE OWNER, 2026-08-23: *"The amount that we are using for our rent
+    // calculation is the monthly qualifying rent field ID 1005."* The field id was
+    // already right; what was wrong was calling it "gross monthly MARKET rent". Those
+    // are two different numbers on the same appraisal — live files show gaps of 56%
+    // between the rent in place and the market rent an appraiser supports — so a
+    // settings screen that names the wrong one tells an underwriter the ratio rests
+    // on a figure nobody chose. 1005 holds whatever qualified the file; it is not, by
+    // definition, the market figure.
+    evidence: 'Owner-named 2026-08-23: field 1005 is the monthly qualifying rent. '
+      + 'loan.subjectPropertyGrossRentalIncomeAmount.',
     notWired: NW_PINNED_FIELD },
   { key: 'dscr.housingExpenseFieldId', group: 'DSCR', label: 'Total housing expense (PITIA) field',
     type: 'fieldId', default: '912',
@@ -124,13 +134,24 @@ const SETTINGS = [
     evidence: 'Industry convention.',
   },
   { key: 'dscr.rentBasis', group: 'DSCR', label: 'Which rent feeds the DSCR',
-    type: 'enum', default: 'estimated-market', options: ['estimated-market', 'actual-in-place', 'lower-of-both'],
-    description: 'The appraisal reports BOTH the rent in place and the market rent the appraiser '
-      + 'supports. Which one qualifies the file is a credit-policy decision, not a technical one.',
-    evidence: 'Live appraisals show gaps of 56% (2,500 in place vs 3,900 market) and vacant '
-      + 'properties where no actual rent exists at all. Encompass field 1005 currently receives '
-      + 'the market figure, so that is the shipped default — but it is the more generous of the two.',
-    notWired: 'Not in use yet, and it is the OWNER\'s to answer rather than a developer\'s: which rent qualifies a file — the rent in place, the market rent the appraiser supports, or the lower of the two — is credit policy. Live appraisals show gaps of 56% between them and vacant properties where no actual rent exists at all, so guessing would price loans on a number nobody chose.' },
+    type: 'enum', default: 'qualifying', options: ['qualifying', 'estimated-market', 'actual-in-place', 'lower-of-both'],
+    description: 'THE QUALIFYING RENT — whatever Encompass field 1005 holds for this loan. The '
+      + 'appraisal reports both the rent in place and the market rent an appraiser supports; which '
+      + 'of them qualified a given file was decided when 1005 was filled, and PILOT reads that '
+      + 'answer rather than re-deciding it.',
+    // ANSWERED BY THE OWNER, 2026-08-23. This shipped as an OPEN QUESTION, deliberately
+    // left for the owner because "which rent qualifies a file" is credit policy and no
+    // developer may guess it. The answer is that the question does not belong to PILOT
+    // at all: the qualifying rent is the number in 1005, and reading anything else —
+    // or applying a rule of our own over it — would price a loan on a figure the credit
+    // decision did not use. The three older options are KEPT rather than deleted so a
+    // buyer who genuinely wants a rule of their own has somewhere to put it, and so the
+    // record still shows what was considered.
+    evidence: 'Owner-named 2026-08-23: *"The amount that we are using for our rent calculation '
+      + 'is the monthly qualifying rent field ID 1005."* Live appraisals show gaps of 56% '
+      + '(2,500 in place vs 3,900 market) and vacant properties where no actual rent exists at '
+      + 'all — which is exactly why the figure is read rather than derived.',
+    notWired: NW_SETTLED_RULE },
   { key: 'dscr.carryBothRents', group: 'DSCR', label: 'Always store both rents',
     type: 'boolean', default: true,
     description: 'Keep actual rent, market rent and the occupancy state on the file so an '
