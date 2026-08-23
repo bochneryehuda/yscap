@@ -18,6 +18,7 @@ const contacts = require('../people/contacts');
 const workspace = require('../workspace');
 const locks = require('../locks');
 const milestones = require('../milestones');
+const purchased = require('../milestone-purchased');
 const product = require('../product');
 const pipelineColumns = require('../pipeline-columns');
 const roster = require('../people/roster');
@@ -52,7 +53,7 @@ router.get('/', async (req, res) => {
       // `officer` filter is the deliberate, named way to look at another officer's
       // files, and it exists for exactly that.
       mine: String(req.query.mine || '') === 'true',
-      // Which book — live (the default), closed, or both. The tenant's own list of
+      // Which book — active (the default), closed, withdrawn, or all. The tenant's own list of
       // finished folders decides what those mean; with none configured all three are
       // the same book and the screen draws no control for it.
       book: req.query.book,
@@ -109,6 +110,28 @@ router.get('/', async (req, res) => {
   }
 });
 
+/**
+ * The file's team, in reading order: OUR roles first, then Encompass's in the order
+ * the settings name them, then anything neither list carries.
+ *
+ * The last bucket is the one that matters. A role that is on the file and on neither
+ * list still has to appear — a buyer who renames a role in Encompass must not watch a
+ * contact vanish off the file screen while the sync happily keeps mirroring it.
+ */
+function orderTeam(team, settings) {
+  const ours = contacts.pilotRoles(settings);
+  const theirs = Array.isArray(settings['contacts.roles']) && settings['contacts.roles'].length
+    ? settings['contacts.roles'].map(String)
+    : contacts.DEFAULT_ROLES;
+  const order = [...ours, ...theirs];
+  const rank = (r) => {
+    const i = order.indexOf(String(r));
+    return i < 0 ? order.length : i;
+  };
+  return (team || []).slice().sort((a, b) => rank(a.role) - rank(b.role)
+    || String(a.role || '').localeCompare(String(b.role || '')));
+}
+
 // GET /api/lt/pipeline/:loanId — one file's header and its team.
 //
 // The access check is `mayOpenLoan` against this loan's OWN contacts — the same
@@ -164,12 +187,28 @@ router.get('/:loanId', async (req, res) => {
     // `expected_days` rides along so the workspace can say whether the loan has been
     // sitting where it is for longer than the TENANT's own expectation — the plan's
     // "a stalled file reads as stalled without a word of text".
-    const { rows: catalog } = await db.query(
+    const { rows: encompassCatalog } = await db.query(
       `SELECT milestone_name AS name, sequence AS sort_order, expected_days
          FROM lt_encompass_milestones
         WHERE COALESCE(is_archived, false) = false
         ORDER BY sequence`,
     ).catch(() => ({ rows: [] }));
+
+    // OUR OWN STEP, spliced in. Encompass has nineteen milestones and none of them
+    // is "the investor bought this loan" (owner-directed 2026-08-23), so the
+    // PURCHASED step is declared in settings and added to the ladder here rather
+    // than stored in the tenant's catalog — where the catalog sync, which archives
+    // anything Encompass stops listing, would retire it on its very first pass.
+    //
+    // A catalog we could not read stays EMPTY rather than becoming a one-step
+    // ladder: a stepper showing "Purchased" alone would read as a loan that has
+    // skipped its whole workflow, which is worse than the honest blank the file
+    // already draws when the catalog is unreadable.
+    const saleCfg = purchased.configFrom(settings);
+    const catalog = encompassCatalog.length
+      ? purchased.insertInto(encompassCatalog, saleCfg)
+      : encompassCatalog;
+    const sale = purchased.describePurchase(rows[0], saleCfg);
 
     // When PILOT watched this loan reach each milestone. Best-effort and EMPTY when
     // unreadable, which draws the stepper with no dates rather than with wrong ones.
@@ -221,7 +260,18 @@ router.get('/:loanId', async (req, res) => {
         // investor decides whether the section is drawn at all.
         investor: file && file.investor,
       }),
-      stepper: workspace.milestoneStepper(rows[0], catalog, { reachedAt }),
+      stepper: workspace.milestoneStepper(rows[0], catalog, {
+        reachedAt,
+        // The purchase is reached from Encompass's own answer, never from where the
+        // loan stands — and `undefined` (Encompass has not said) is carried through
+        // as its own state rather than flattened into a no.
+        pilotReached: { [purchased.PILOT_MILESTONE_ID]: sale.purchased === null ? undefined : sale.purchased },
+        pilotReachedAt: { [purchased.PILOT_MILESTONE_ID]: sale.at },
+        pilotNotes: { [purchased.PILOT_MILESTONE_ID]: sale.note },
+      }),
+      // The same fact in one place, so a screen can state it without re-reading the
+      // stepper — and so the two can never disagree, because both come from here.
+      sale,
       // How long it has been at this milestone — and, when the first sighting is all
       // we have, a plain sentence saying we do not know rather than a number we made up.
       milestoneHistory,
@@ -235,11 +285,17 @@ router.get('/:loanId', async (req, res) => {
         property: file && file.property,
         income: file && file.income,
       }),
-      contacts: team.map((t) => contacts.describeContact(t, {
+      // WHO IS ON THIS FILE, in the order the work happens — the person who SET IT UP
+      // first, because she is the one who starts it (owner-directed 2026-08-23), then
+      // the Encompass team in the order the settings list them. Sorting here rather
+      // than in SQL keeps `lt_loan_contacts` a plain map and lets one settings list
+      // decide the order everywhere it is read.
+      contacts: orderTeam(team, settings).map((t) => contacts.describeContact(t, {
         staffName: t.staff_id ? names.get(String(t.staff_id)) : null,
         overrideName: t.override_staff_id ? names.get(String(t.override_staff_id)) : null,
         overrideByName: t.override_by ? names.get(String(t.override_by)) : null,
         labels,
+        pilotRoleList: contacts.pilotRoles(settings),
       })),
       canReassign,
       assignableStaff,
@@ -296,6 +352,7 @@ router.post('/:loanId/contacts/:role/override', async (req, res) => {
         overrideName: row.override_staff_id ? names.get(String(row.override_staff_id)) : null,
         overrideByName: row.override_by ? names.get(String(row.override_by)) : null,
         labels: settings['contacts.roleLabels'] || {},
+        pilotRoleList: contacts.pilotRoles(settings),
       }),
     });
   } catch (e) {

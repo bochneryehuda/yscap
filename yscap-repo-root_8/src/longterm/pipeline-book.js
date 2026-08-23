@@ -39,8 +39,21 @@
  * PURE — no database, no settings store, nothing that can fail.
  */
 
-/** The three books. `live` is the default because it is what a desk works out of. */
-const BOOKS = ['live', 'closed', 'all'];
+/**
+ * THE THREE BOOKS, owner-directed 2026-08-23: *"Active pipeline: one view / Closed
+ * files: another view / Funded files should be in the closed files view / The
+ * canceled and withdrawn files should be in another view … It shouldn't be mixing
+ * them up."*
+ *
+ * A deal that COMPLETED and a deal that DIED are not the same fact, and folding both
+ * into one "not live" bucket is exactly the mixing the owner ruled out. Funded sits
+ * in `closed` because a funded loan is a finished deal, not a dead one.
+ *
+ * `live` keeps its key rather than being renamed to `active`: saved views are stored
+ * rows carrying this string, and renaming the key would strand every view somebody
+ * has already saved. The LABEL is a settings value and says "Active pipeline".
+ */
+const BOOKS = ['live', 'closed', 'withdrawn', 'all'];
 const DEFAULT_BOOK = 'live';
 
 /** Read a book name off a request or a saved view. Anything unrecognised is the default. */
@@ -85,14 +98,38 @@ function inactiveFolders(settings) {
 }
 
 /**
+ * The three configured lists, cleaned and made DISJOINT — because a folder in two
+ * lists is an administrator's typo, and a typo must not decide a file's book by
+ * whichever branch the SQL happens to reach first.
+ *
+ * THE PRECEDENCE IS `withdrawn` > `closed` > `excluded`, and the ordering is the
+ * fail-toward-showing rule again rather than a preference. Withdrawn beats closed
+ * because "this died" is the more specific claim. Excluded LOSES to both because it
+ * is the only one of the three that makes a file vanish from every screen: given
+ * contradictory configuration, the safe reading is the one that still shows the file
+ * somewhere. An excluded folder is never a place a file is worked, so nothing is
+ * stranded by that choice.
+ */
+function bookFolders(settings) {
+  const s = settings || {};
+  const withdrawn = normalizeFolders(s['pipeline.withdrawnFolders']);
+  const claimed = new Set(withdrawn);
+  const closed = normalizeFolders(s['pipeline.inactiveFolders']).filter((f) => !claimed.has(f));
+  for (const f of closed) claimed.add(f);
+  const excluded = normalizeFolders(s['pipeline.excludedFolders']).filter((f) => !claimed.has(f));
+  return { closed, withdrawn, excluded };
+}
+
+/**
  * Is there anything to split? With no folder named, every book is the same book.
  *
  * Normalizes first rather than trusting its caller: a list of nothing but blanks has a
  * length, and answering "yes" for it would draw a control row whose three chips all
  * select the same rows.
  */
-function bookSplitApplies(folders) {
-  return normalizeFolders(folders).length > 0;
+function bookSplitApplies(cfg) {
+  const c = cfg && cfg.closed !== undefined ? cfg : { closed: normalizeFolders(cfg), withdrawn: [], excluded: [] };
+  return normalizeFolders(c.closed).length > 0 || normalizeFolders(c.withdrawn).length > 0;
 }
 
 /**
@@ -112,7 +149,7 @@ function bookSplitApplies(folders) {
  * nothing anywhere saying why. Collapse first, then trim: a leading run of whitespace
  * becomes one space and `btrim` takes it, which is what `String.trim()` does too.
  */
-function closedFolderSql(alias, ph) {
+function folderInSql(alias, ph) {
   return `lower(btrim(regexp_replace(COALESCE(${alias}.loan_folder, ''), '\\s+', ' ', 'g'))) = ANY(${ph}::text[])`;
 }
 
@@ -127,18 +164,52 @@ function closedFolderSql(alias, ph) {
  * @param folders the cleaned list from `inactiveFolders`
  * @param p       the caller's placeholder helper (see pipeline.js — never a literal `$1`)
  */
-function bookWhereSql(book, folders, p, alias = 'l') {
+function bookWhereSql(book, cfg, p, alias = 'l') {
   // NORMALIZED HERE, not trusted from the caller — and that is a correctness rule, not
   // tidiness. The SQL lower-cases only ITS side of the comparison, so a caller who
   // passed the raw setting through would produce a clause that matches nothing: the
   // closed book would read empty and the live book would quietly be the whole table.
   // Silent, and in the direction that looks like "we have no finished loans".
-  const list = normalizeFolders(folders);
-  if (!list.length) return null;
+  const c = cfg && cfg.closed !== undefined ? cfg : { closed: cfg, withdrawn: [], excluded: [] };
+  const closed = normalizeFolders(c.closed);
+  const withdrawn = normalizeFolders(c.withdrawn);
+  const excluded = normalizeFolders(c.excluded);
   const b = normalizeBook(book);
-  if (b === 'all') return null;
-  const sql = closedFolderSql(alias, p(list));
-  return b === 'closed' ? sql : `NOT (${sql})`;
+
+  // NOTHING CONFIGURED, NOTHING ADDED. With all three lists empty every book is the
+  // same book and this returns NULL for each — so the statement is byte-identical to
+  // the one built before this module existed. That is what keeps the whole feature
+  // inert until a human fills the setting in, and it is asserted by the pure suite.
+  const away = [];                                  // folders this book must NOT contain
+  let hereList = null;                              // the one list this book IS, if any
+
+  if (b === 'withdrawn') hereList = withdrawn;
+  else if (b === 'closed') hereList = closed;
+  else {
+    // `live` is everything neither finished nor dead. `all` is every book at once —
+    // still not the excluded folders, which are not a book, they are hidden.
+    if (b === 'live') { away.push(closed, withdrawn); }
+    away.push(excluded);
+  }
+
+  const parts = [];
+  if (hereList) {
+    if (hereList.length) {
+      parts.push(folderInSql(alias, p(hereList)));
+    } else {
+      // ASKED FOR A BOOK THIS TENANT HAS NOT CONFIGURED. The book filter is dropped
+      // (and `ignoredBookFilter` says so out loud), but HIDDEN STAYS HIDDEN — falling
+      // all the way back to "no clause at all" would make a cleared closed-folder list
+      // the one request that shows a training file, which is the opposite of what
+      // hiding it meant. Found by the database suite, not by reading.
+      away.push(excluded);
+    }
+  }
+  for (const list of away) {
+    if (list.length) parts.push(`NOT (${folderInSql(alias, p(list))})`);
+  }
+  if (!parts.length) return null;
+  return parts.length === 1 ? parts[0] : parts.join(' AND ');
 }
 
 /**
@@ -154,14 +225,28 @@ function bookWhereSql(book, folders, p, alias = 'l') {
  * `all` needs no notice: with nothing configured it is genuinely identical to `live`,
  * so obeying it literally shows exactly the book that was asked for.
  */
-function ignoredBookFilter(book, folders) {
-  if (bookSplitApplies(folders)) return null;
-  if (normalizeBook(book) !== 'closed') return null;
-  return {
-    key: 'book',
-    why: 'No loan folders have been marked as finished yet, so there is no closed book to show — '
-      + 'the whole pipeline is listed. An administrator sets that list in Settings.',
-  };
+function ignoredBookFilter(book, cfg) {
+  const c = cfg && cfg.closed !== undefined ? cfg : { closed: cfg, withdrawn: [], excluded: [] };
+  const b = normalizeBook(book);
+  // Each book is stranded by ITS OWN empty list, not by the other's. Asking the pair
+  // together would tell somebody who opened "Withdrawn" that the CLOSED list is
+  // unset, which is true and useless.
+  if (b === 'closed' && !normalizeFolders(c.closed).length) {
+    return {
+      key: 'book',
+      why: 'No loan folders have been marked as closed yet, so there is no closed book to show — '
+        + 'the whole pipeline is listed. An administrator sets that list in Settings.',
+    };
+  }
+  if (b === 'withdrawn' && !normalizeFolders(c.withdrawn).length) {
+    return {
+      key: 'book',
+      why: 'No loan folders have been marked as withdrawn or cancelled yet, so there is no '
+        + 'withdrawn book to show — the whole pipeline is listed. An administrator sets that '
+        + 'list in Settings.',
+    };
+  }
+  return null;
 }
 
 module.exports = {
@@ -171,8 +256,9 @@ module.exports = {
   folderKey,
   normalizeFolders,
   inactiveFolders,
+  bookFolders,
   bookSplitApplies,
-  closedFolderSql,
+  folderInSql,
   bookWhereSql,
   ignoredBookFilter,
 };

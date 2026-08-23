@@ -128,9 +128,25 @@ async function main() {
   const folderDecl = declList.find((d) => d && d.key === 'pipeline.inactiveFolders');
   ok(folderDecl, 'the finished-folder setting is declared');
   eq(folderDecl.suggestFrom, 'loanFolders', '…and asks the screen to offer the observed folders');
-  assert.deepStrictEqual(folderDecl.default, [],
-    'IT STILL DECIDES NOTHING — the default is empty, so nothing is hidden from anybody until a human picks');
-  checks++;
+  // CHANGED 2026-08-23. This asserted the default was EMPTY, because which folder
+  // means "over" was a business rule nobody here could guess. The owner answered it
+  // (§11 q13), so the default now carries that answer — and the screen still OFFERS
+  // the observed folder names above, so a different tenant re-picks rather than
+  // inheriting this one's classification.
+  ok(Array.isArray(folderDecl.default) && folderDecl.default.length > 0,
+    'the finished-folder default carries the owner\'s 2026-08-23 classification');
+  const withdrawnDecl = declList.find((d) => d && d.key === 'pipeline.withdrawnFolders');
+  const hiddenDecl = declList.find((d) => d && d.key === 'pipeline.excludedFolders');
+  ok(withdrawnDecl && hiddenDecl, 'the withdrawn and hidden folder settings are declared beside it');
+  ok(withdrawnDecl.suggestFrom === 'loanFolders' && hiddenDecl.suggestFrom === 'loanFolders',
+    '…and both offer the observed folder names too, so nobody types a folder that does not exist');
+  // The three lists must not name the same folder, or the shipped default would be
+  // asking the precedence rule to resolve a contradiction we wrote ourselves.
+  const flat = [...folderDecl.default, ...withdrawnDecl.default, ...hiddenDecl.default]
+    .map((f) => String(f).trim().toLowerCase());
+  eq(new Set(flat).size, flat.length,
+    'THE ONE THAT MATTERS: no folder appears on two of the three shipped lists — the precedence rule exists for '
+    + 'an administrator\'s typo, not to paper over one of ours');
 
   const tag = `ltscr-${Date.now().toString(36)}`;
   const loanIds = [];
