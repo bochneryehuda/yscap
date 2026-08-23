@@ -184,9 +184,13 @@ export function priceMoney(priceValue, loanAmount) {
   if (p == null) return { price: null, points: null, dollars: null, tone: null };
   // Rounded to a thousandth of a point, which is how a rate sheet quotes one — and it stops
   // 100 − 99.875 arriving as 0.12500000000000355 and printing a figure nobody typed.
-  const points = Math.round((100 - p) * 1000) / 1000;
-  const dollars = loan == null ? null : Math.round((points / 100) * loan * 100) / 100;
-  return { price: p, points, dollars, tone: p >= 100 ? PRICE_TONE.credit : PRICE_TONE.cost };
+  // NAMED `pointsValue`, not `points`: `format.js` exports a `points` FORMATTER (a number → a
+  // signed string), and in this codebase that name means the formatter and nothing else. A second
+  // `points` here is the first step of the two-definitions drift the shared-format rule exists to
+  // stop — the returned KEY stays `points`, which is the figure itself.
+  const pointsValue = Math.round((100 - p) * 1000) / 1000;
+  const dollars = loan == null ? null : Math.round((pointsValue / 100) * loan * 100) / 100;
+  return { price: p, points: pointsValue, dollars, tone: p >= 100 ? PRICE_TONE.credit : PRICE_TONE.cost };
 }
 
 /** The one place the two colours live, so a screen cannot invent a third. Dark enough to read on
