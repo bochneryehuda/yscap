@@ -199,3 +199,81 @@ export const TONE_COLOR = { credit: '#2F6B45', cost: '#8A2F2F' };
 export function toneColor(tone, fallback) {
   return tone && TONE_COLOR[tone] ? TONE_COLOR[tone] : fallback;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   THE INELIGIBLE BOARD — the SAME SHAPE as the eligible one (owner-directed 2026-08-23).
+
+   The owner's words: *"You see all the rates. You click on the rate, and you see all the lenders.
+   If a lender has a few programs, you click on the lender the same way you do it on the eligible
+   side, and you see all the programs. You can click on the program details, and you see all the
+   LLPAs, eligibility, and ineligibility, including the disqualifying rule."*
+
+   So this is deliberately NOT a second grouping engine. The lender level is `groupByLender` — the
+   very function the eligible board groups with — so "how many programmes does this lender have
+   here, and which is in front" has ONE answer on both sides. What differs is only the SORT at the
+   rate level, and only because it must: a declined programme usually has no price to rank by, so
+   lenders are ordered by name rather than by a number that is not there. Ranking by a missing
+   price would put whoever happens to sort first at the top and read as a judgement.
+
+   NOTHING IS EVER DROPPED. An item whose rate we could not read (no price build, no rate field on
+   the leaf, no `RateKey` above it) is NOT discarded and NOT filed under a guessed rate — it goes to
+   its own `noRate` group, which the screen shows last under its own heading. A silently missing
+   programme on an ineligible board is exactly the defect this board was built to end.
+
+   Pure; never throws; a non-array yields an empty stack. */
+export function buildIneligibleStack(lenders) {
+  const src = Array.isArray(lenders) ? lenders : [];
+  const entries = [];
+  src.forEach((g, gi) => {
+    const items = g && Array.isArray(g.items) ? g.items : [];
+    items.forEach((it, ii) => {
+      if (!it || typeof it !== 'object') return;
+      const pb = (it.option && it.option.priceBuild) || {};
+      entries.push({
+        key: `${gi}:${ii}`,
+        // `lender` is the key `groupByLender` groups on — the vendor's own spelling, never normalized.
+        lender: (g && g.lender) || null,
+        investor: (g && g.investor) || null,
+        program: it.program || null,
+        product: it.product || null,
+        rate: Number.isFinite(it.rate) ? it.rate : null,
+        // A declined leaf often carries no price at all. NULL is the honest answer and the screen
+        // draws an em dash for it — never a zero, which would read as par.
+        price: Number.isFinite(pb.price) ? pb.price : null,
+        option: it.option || null,
+        reasons: Array.isArray(it.reasons) ? it.reasons : [],
+      });
+    });
+  });
+
+  const byRate = new Map();
+  const noRate = [];
+  for (const e of entries) {
+    if (e.rate == null) { noRate.push(e); continue; }
+    const k = e.rate.toFixed(3);
+    if (!byRate.has(k)) byRate.set(k, { key: k, rate: e.rate, entries: [] });
+    byRate.get(k).entries.push(e);
+  }
+
+  // By NAME, not by price — see the note above. `localeCompare` on the vendor's own spelling, with
+  // an unnamed lender last rather than sorting as an empty string at the top.
+  const byLenderName = (a, b) => {
+    const x = a.lender || ''; const y = b.lender || '';
+    if (!x && !y) return 0;
+    if (!x) return 1;
+    if (!y) return -1;
+    return x.localeCompare(y);
+  };
+
+  const shape = (list) => groupByLender(list).sort(byLenderName);
+  const rates = [...byRate.values()].sort((a, b) => a.rate - b.rate)
+    .map((r) => ({ key: r.key, rate: r.rate, lenders: shape(r.entries), itemCount: r.entries.length }));
+
+  return {
+    rates,
+    noRate: noRate.length ? { lenders: shape(noRate), itemCount: noRate.length } : null,
+    rateCount: rates.length,
+    itemCount: entries.length,
+    lenderCount: new Set(entries.map((e) => e.lender || ' no-lender')).size,
+  };
+}
