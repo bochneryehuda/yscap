@@ -99,10 +99,13 @@ BEGIN
        AND l.status = 'confirmed'
        AND l.staff_id IS NOT NULL
        AND c.staff_id IS DISTINCT FROM l.staff_id;
-    -- … and stop attributing what no confirmed link backs.
+    -- … and stop attributing what no confirmed link backs. Only a row that
+    -- CARRIES a login can have been attributed from a link — a login-less row
+    -- is PILOT's own assignment (the file-setup default) and is never touched.
     UPDATE lt_loan_contacts c
        SET staff_id = NULL, updated_at = now()
      WHERE c.staff_id IS NOT NULL
+       AND c.encompass_login_id IS NOT NULL
        AND NOT EXISTS (
          SELECT 1 FROM lt_staff_links l
           WHERE l.encompass_login_id = c.encompass_login_id

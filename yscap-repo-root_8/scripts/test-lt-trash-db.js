@@ -29,7 +29,10 @@
  *      deleted archived copy never boomerangs back, and a failed flag-less sweep
  *      marks nothing
  *   I. db/622 (the owner's own ybochner link) waits for the roster, links +
- *      reattributes once, converges, and never overrules a human's decision
+ *      reattributes once, converges, never overrules a human's decision — and
+ *      PILOT's own login-less role assignment (the file-setup default) SURVIVES
+ *      both the migration's reattribution and contacts.reattributeAll itself
+ *      (the pre-merge audit proved the unguarded clear stripped it permanently)
  *
  * Mutation-proven (each reverted in a scratch copy; the suite went red):
  *   1. buildWhere without the trash guard          → B fails (trash listed)
@@ -39,6 +42,8 @@
  *   5. sweepArchivedDuplicates marking neutralized → H fails (stale copy stays)
  *   6. the mirror's never-reinsert guard removed   → H2 fails (deleted copy back)
  *   7. db/622 without its human-decision guards    → I fails (a confirm overruled)
+ *   8. reattributeAll's login-carrying guard gone  → I fails (setup row stripped)
+ *   9. db/622's copy of that guard gone            → I fails (same strip, at boot)
  */
 
 const assert = require('assert');
@@ -417,6 +422,19 @@ async function main() {
       const ownerId = uuid();
       await cx.query(`INSERT INTO staff_users (id, email, full_name, role, is_active)
                       VALUES ($1::uuid, 'yehuda@yscapgroup.com', 'Yehuda Bochner', 'super_admin', true)`, [ownerId]);
+      // PILOT's OWN login-less assignment (the file-setup default). The pre-merge
+      // audit proved the unguarded reattribute-clear stripped exactly this row,
+      // permanently — it must SURVIVE both the migration and the live function.
+      const keeperId = uuid();
+      await cx.query(`INSERT INTO staff_users (id, email, full_name, role, is_active)
+                      VALUES ($1::uuid, $2, 'Setup Keeper', 'processor', true)`,
+      [keeperId, `${stamp}.keeper@example.test`]);
+      const setupRowId = uuid();
+      await cx.query(`INSERT INTO lt_loan_contacts (id, loan_id, role, staff_id)
+                      VALUES ($1::uuid, $2::uuid, 'file_setup', $3::uuid)`,
+      [setupRowId, L.live2, keeperId]);
+      const setupStaff = async () => String((await cx.query(
+        `SELECT staff_id FROM lt_loan_contacts WHERE id = $1::uuid`, [setupRowId])).rows[0].staff_id);
       // 1) No roster row yet → the guard stands down, linking nothing.
       await cx.query(mig);
       eq((await cx.query(`SELECT count(*)::int AS n FROM lt_staff_links
@@ -437,6 +455,11 @@ async function main() {
                            WHERE encompass_login_id = 'ybochner' AND loan_id = $1::uuid`,
       [L.halfA])).rows[0].staff_id, ownerId,
       'and their files became theirs on the same boot (reattributed)');
+      eq(await setupStaff(), keeperId,
+        'PILOT\'s own login-less assignment SURVIVES the migration\'s reattribution');
+      await require('../src/longterm/people/contacts').reattributeAll(cx);
+      eq(await setupStaff(), keeperId,
+        '…and survives contacts.reattributeAll itself — only a login-carrying row is ever cleared');
       // 3) A second boot converges: nothing rewritten.
       const t1 = String((await cx.query(`SELECT confirmed_at FROM lt_staff_links
                                           WHERE lower(encompass_login_id) = 'ybochner'`)).rows[0].confirmed_at);
