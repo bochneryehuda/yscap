@@ -40,6 +40,7 @@ async function main() {
 
   const tag = `pt-${Date.now().toString(36)}`;
   const ids = [];
+  const staffIds = [];
 
   // The cases: the owner's two sentences, the two answers we decline to give, and
   // a Flip program whose term contradicts it.
@@ -153,11 +154,101 @@ async function main() {
     eq(Number(after.rows[0].term_months), 360, 'a read with no term leaves the stored term alone');
     eq(after.rows[0].program_name, 'Investor DSCR 30 YEAR FRM',
       '…and leaves the stored program alone');
+
+    // -----------------------------------------------------------------------
+    // D. WHO THE OFFICER IS — the census must give the pipeline's answer.
+    //    It used to join `staff_users` on `lt_loans.loan_officer_id`, a column
+    //    nothing in the repository has ever written, so this whole section read
+    //    "no loan officer" on every file while the pipeline showed one.
+    // -----------------------------------------------------------------------
+    console.log('\nwho the census says the officer is');
+
+    const { rows: staff } = await db.query(
+      `INSERT INTO staff_users (email, full_name, role, is_active)
+            VALUES ($1, 'Encompass Officer', 'loan_officer', true),
+                   ($2, 'Reassigned Officer', 'loan_officer', true)
+         RETURNING id, full_name`,
+      [`${tag}.a@example.test`, `${tag}.b@example.test`],
+    );
+    const encompassOfficer = staff.find((r) => r.full_name === 'Encompass Officer');
+    const localOfficer = staff.find((r) => r.full_name === 'Reassigned Officer');
+    staffIds.push(...staff.map((r) => r.id));
+
+    const subject = (await db.query(
+      'SELECT id FROM lt_loans WHERE encompass_loan_guid = $1', [`${tag}-dscr-360`],
+    )).rows[0].id;
+
+    const censusRow = async () => {
+      const b2 = await productBook.longTermBook(viewer, { db });
+      return [...b2.longTerm, ...b2.shortTerm, ...b2.boundary, ...b2.unknown]
+        .find((r) => r.loanNumber === `${tag}-dscr-360`);
+    };
+
+    const before = await censusRow();
+    eq(before.officerLinked, false, 'a loan with no loan team says so — nobody is on it yet');
+
+    // Encompass names somebody we have NOT matched to a PILOT account.
+    await db.query(
+      `INSERT INTO lt_loan_contacts (id, loan_id, role, encompass_name, updated_at)
+       VALUES (gen_random_uuid(), $1::uuid, 'loan_officer', 'Someone In Encompass', now())`,
+      [subject],
+    );
+    const unmatched = await censusRow();
+    ok(unmatched, 'a loan whose officer we cannot match is still LISTED — the join never drops the row it exists to report');
+    eq(unmatched.officerLinked, false,
+      '…and counts as unlinked, which is exactly the mapping work this census was built to surface');
+    eq(unmatched.officerName, 'Someone In Encompass',
+      '…while still SAYING WHO IT IS, in Encompass\'s own wording: a census whose whole job is "these files need somebody matched" that answers "no officer" on a file Encompass plainly names an officer on is telling the reader to go and look it up somewhere else');
+
+    // Now Encompass's person IS one of ours.
+    await db.query(
+      `UPDATE lt_loan_contacts SET staff_id = $2::uuid WHERE loan_id = $1::uuid AND role = 'loan_officer'`,
+      [subject, encompassOfficer.id],
+    );
+    const matched = await censusRow();
+    eq(matched.officerLinked, true, 'once the person is matched the census says the file has an officer');
+    eq(matched.officerName, 'Encompass Officer', '…and names them');
+
+    // A LOCAL REASSIGNMENT. This is the case the whole one-expression rule exists
+    // for: the pipeline, the file screen and the officer filter all moved the file
+    // when this was set, and the census used to be blind to it.
+    await db.query(
+      `UPDATE lt_loan_contacts SET override_staff_id = $2::uuid
+        WHERE loan_id = $1::uuid AND role = 'loan_officer'`,
+      [subject, localOfficer.id],
+    );
+    const reassigned = await censusRow();
+    eq(reassigned.officerName, 'Reassigned Officer',
+      'THE ONE THAT MATTERS: a locally reassigned file names the NEW person on the census, the same person the pipeline\'s officer filter now returns — one question, one answer, on every screen that asks it');
+    eq(reassigned.officerLinked, true, '…and still counts as linked');
+
+    // A second ROLE must not turn one loan into two census rows.
+    const rowsBefore = (await productBook.longTermBook(viewer, { db })).counts.read;
+    await db.query(
+      `INSERT INTO lt_loan_contacts (id, loan_id, role, encompass_name, staff_id, updated_at)
+       VALUES (gen_random_uuid(), $1::uuid, 'processor', 'A Processor', $2::uuid, now())`,
+      [subject, encompassOfficer.id],
+    );
+    const rowsAfter = (await productBook.longTermBook(viewer, { db })).counts.read;
+    eq(rowsAfter, rowsBefore,
+      'adding a SECOND role leaves the census the same length — lt_loan_contacts holds one row per role, and a plain join would have counted this loan twice and every six-role loan six times');
+    eq((await censusRow()).officerName, 'Reassigned Officer',
+      '…and the officer column still names the officer, not whichever contact row came back first');
   } finally {
     if (ids.length) {
+      // One DELETE: the loan team cascades from the loan.
       await db.query('DELETE FROM lt_loans WHERE id = ANY($1::uuid[])', [ids]).catch(() => {});
     }
+    if (staffIds.length) {
+      await db.query('DELETE FROM staff_users WHERE id = ANY($1::uuid[])', [staffIds]).catch(() => {});
+    }
     await db.pool.end().catch(() => {});
+    // AND THE RTL POOL. These suites require the app, which opens `src/db`'s pool
+    // transitively; `db` here is the LONG-TERM one. Leaving the other open kept a
+    // Postgres socket alive until its 30-second idle timeout, so the suite printed
+    // its result and then sat there doing nothing. Across nine suites that was 270
+    // of the 286 seconds the long-term database suites took.
+    await require('../src/db').pool.end().catch(() => {});
   }
 
   console.log(`\n✓ lt product-term (db): ${checks} assertions passed`);

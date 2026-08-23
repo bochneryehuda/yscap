@@ -67,7 +67,14 @@ function SettingRow({ setting, canManage, pending, onChange, onReset }) {
   const kind = editorFor(setting);
   const value = pending !== undefined ? pending : setting.value;
   const dirty = pending !== undefined && !sameValue(pending, setting.value);
-  const editable = canManage && kind && (kind !== 'list' || plainList(value));
+  // A SETTING NOTHING READS IS NEVER EDITABLE. Forty of these were declared ahead
+  // of the code that would read them, so the screen offered knobs that changed
+  // NOTHING and said so nowhere — which is worse than not offering them, because
+  // somebody renames a status, saves, sees no error and believes the system knows.
+  // The reason comes from the server with the setting, so it can never drift from
+  // what is actually wired.
+  const notWired = typeof setting.notWired === 'string' && setting.notWired ? setting.notWired : null;
+  const editable = !notWired && canManage && kind && (kind !== 'list' || plainList(value));
 
   const label = (
     <div style={{ minWidth: 0 }}>
@@ -76,11 +83,31 @@ function SettingRow({ setting, canManage, pending, onChange, onReset }) {
         <code style={{ fontSize: 11 }}>{setting.key}</code>
         {setting.description ? <> — {setting.description}</> : null}
       </div>
+      {notWired && (
+        <div style={{
+          marginTop: 6, padding: '6px 9px', borderRadius: 8,
+          background: '#FBF6E9', border: '1px solid rgba(174,135,70,.35)',
+          color: '#6B5320', fontSize: 12, lineHeight: 1.45,
+        }}>
+          <strong style={{ fontWeight: 700 }}>Not in use yet.</strong>{' '}
+          {notWired.replace(/^Not in use yet[.,]?\s*/i, '')}
+        </div>
+      )}
     </div>
   );
 
   let control = null;
-  if (!editable) {
+  if (notWired) {
+    // Shown, never editable: the value is real and worth reading — it is what a
+    // buyer would be changing once it IS wired — but a box you can type into is a
+    // promise that typing does something.
+    control = (
+      <pre style={{
+        margin: 0, padding: '8px 10px', borderRadius: 8, background: '#F4F1EA',
+        color: MUTED, fontSize: 12, maxHeight: 180, overflow: 'auto', whiteSpace: 'pre-wrap',
+      }} aria-readonly="true" data-not-wired="true">{JSON.stringify(setting.value, null, 2)}</pre>
+    );
+  } else if (!editable) {
     control = (
       <pre style={{
         margin: 0, padding: '8px 10px', borderRadius: 8, background: '#F4F1EA',
@@ -170,9 +197,11 @@ function SettingRow({ setting, canManage, pending, onChange, onReset }) {
       <div style={{ minWidth: 0, display: 'grid', gap: 6 }}>
         {control}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 12 }}>
-          {setting.isOverridden
+          {notWired && <span style={{ color: '#8A6A22', fontWeight: 600 }}>Nothing reads this yet</span>}
+          {!notWired && setting.isOverridden
             ? <span style={{ color: '#8A6A22', fontWeight: 600 }}>Changed from ours</span>
-            : <span style={{ color: MUTED }}>Our pre-filled value</span>}
+            : null}
+          {!notWired && !setting.isOverridden && <span style={{ color: MUTED }}>Our pre-filled value</span>}
           {dirty && <span style={{ color: '#2F7F86', fontWeight: 600 }}>Unsaved</span>}
           {canManage && setting.isOverridden && (
             <button type="button" className="btn ghost" style={{ padding: '2px 10px', fontSize: 12 }}

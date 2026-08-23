@@ -72,6 +72,14 @@ router.use('/book', require('./routes/book'));
 // /api/lt/views
 router.use('/views', require('./routes/views'));
 
+// The Condition Center, READ side: this loan's conditions with the documents that
+// answer each one, plus the eFolder needs list — which is where the work actually
+// is on a live file, since every condition in this tenant sits on a loan that is
+// already sold. Behind `conditions.enabled` (off by default) and the same file
+// scope as the workspace. READ-ONLY: no route here writes to Encompass or to us.
+// /api/lt/conditions
+router.use('/conditions', require('./routes/conditions'));
+
 // The signed-in person's own long-term preferences — today, which product side
 // they open on (the owner's switch), remembered per user. /api/lt/me
 router.use('/me', require('./routes/me'));
@@ -91,5 +99,17 @@ router.use('/dscr', require('./routes/dscr-pricer').makeRouter());
 // admin-gated inside the router. /api/lt/ppe/{health,settings,investors,
 // findings,scoreboard,quote,canary}
 router.use('/ppe', require('./routes/ppe'));
+
+// THE PASS THAT RUNS ON ITS OWN.
+//
+// Started HERE rather than from src/server.js on purpose: this module is the one
+// seam RTL is permitted to touch, and having it schedule its own background work
+// keeps the whole of Long-Term behind that one door. A second call from server.js
+// would be a second seam — exactly what the separation gate refuses.
+//
+// OFF by default (`LT_SYNC_ENABLED`), and it says so in the log either way. With
+// the switch off nothing is scheduled, so requiring this module — which a test or
+// a script may do — starts no timers and reads nothing.
+require('./sync/worker').start();
 
 module.exports = { router };

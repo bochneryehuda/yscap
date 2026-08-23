@@ -1053,7 +1053,11 @@ function mapPrepay(months) {
   if (!m) return { PrepayTerm: null, PrePayment_Plan_Type: null, ppp: 'No PPP' };
   return { PrepayTerm: m + ' Months', PrePayment_Plan_Type: 'Standard', ppp: (m / 12) + ' Yr PPP' };
 }
-function num(v) { if (v == null || v === '') return null; const n = parseFloat(String(v).replace(/[^0-9.]/g, '')); return isFinite(n) ? n : null; }
+// The vendor number parse is ONE definition, shared with search-model + field-registry.
+// It used to live here as `parseFloat(String(v).replace(/[^0-9.]/g, ''))`, which
+// deleted the MINUS SIGN — so every negative LLPA and every negative margin was
+// read as its positive twin, a credit shown as a charge. See parse-num.js.
+const { num } = require('./parse-num');
 
 // ---- parser (blueprint step 6): flatten the raw tree to clean ladders ------
 // The raw searchRaw response is a deep nested tree. This flattens it to a per-lender/

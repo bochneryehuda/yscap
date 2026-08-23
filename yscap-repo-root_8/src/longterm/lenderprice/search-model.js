@@ -82,26 +82,10 @@ function smoRegistryFromList(list) {
 // Numeric parse used to BUILD the payload. Tolerates currency formatting ($ , %) but — unlike the
 // old `replace(/[^0-9.]/g,'')` — it PRESERVES the sign and REJECTS exponent/garbage instead of
 // corrupting them (the §27.10 bug: "-1" became 1, "1e3" became 13). Returns a finite number or null.
-function num(v) {
-  if (v == null || v === '') return null;
-  if (typeof v === 'number') return isFinite(v) ? v : null;
-  const s = String(v).trim();
-  if (/^-?\d*\.?\d+$/.test(s)) return parseFloat(s);
-  const cleaned = s.replace(/[$,%\s]/g, '');            // strip only currency formatting, never a sign
-  if (/^-?\d*\.?\d+$/.test(cleaned)) return parseFloat(cleaned);
-  return null;                                          // exponent notation, letters, multiple dots → not a number
-}
+const { num } = require('./parse-num');
 // Strict numeric parse used for VALIDATION only: distinguishes ABSENT (null) from PRESENT-BUT-INVALID
 // (undefined), so the validator can 422 a garbage value instead of silently treating it as absent.
-function strictNum(v) {
-  if (v == null || v === '') return null;
-  if (typeof v === 'number') return isFinite(v) ? v : undefined;
-  const s = String(v).trim();
-  if (/^-?\d*\.?\d+$/.test(s)) return parseFloat(s);
-  const cleaned = s.replace(/[$,%\s]/g, '');
-  if (/^-?\d*\.?\d+$/.test(cleaned)) return parseFloat(cleaned);
-  return undefined;
-}
+const { strictNum } = require('./parse-num');
 
 // §26.4 — EXPLICIT loan-purpose alias table. The old exact-match version defaulted EVERYTHING it
 // did not recognize to 'Refinance', so a lowercase `purchase`/`cashout` (or any typo) was silently

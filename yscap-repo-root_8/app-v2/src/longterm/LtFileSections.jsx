@@ -50,12 +50,27 @@ export function Facts({ rows, columns = 2 }) {
       display: 'grid', gridTemplateColumns: `repeat(${columns}, minmax(0,1fr))`,
       gap: '8px 18px', margin: 0,
     }}>
-      {shown.map(([label, value]) => (
-        <div key={label} style={{ minWidth: 0 }}>
-          <dt style={{ fontSize: 11, letterSpacing: '.04em', textTransform: 'uppercase', color: MUTED }}>{label}</dt>
-          <dd style={{ margin: 0, color: INK, fontSize: 14, overflowWrap: 'anywhere' }}>{value}</dd>
-        </div>
-      ))}
+      {shown.map(([label, value, notSourced]) => {
+        // A THIRD ANSWER, BESIDE A VALUE AND A DASH. Some of these fields can never
+        // fill — Encompass does not record the fact, or nobody has decided where it
+        // is read from — and a dash there reads as an ANSWER: "not in a flood zone",
+        // "no rent". So the server sends the reason and it is shown IN PLACE of the
+        // value, in the reader's own language. It never hides a real value: the
+        // moment one arrives the sentence gives way to it.
+        const blank = value == null || value === '' || value === '—';
+        return (
+          <div key={label} style={{ minWidth: 0 }}>
+            <dt style={{ fontSize: 11, letterSpacing: '.04em', textTransform: 'uppercase', color: MUTED }}>{label}</dt>
+            {notSourced && blank ? (
+              <dd style={{ margin: 0, color: MUTED, fontSize: 12, fontStyle: 'italic', overflowWrap: 'anywhere' }}>
+                {notSourced}
+              </dd>
+            ) : (
+              <dd style={{ margin: 0, color: INK, fontSize: 14, overflowWrap: 'anywhere' }}>{value}</dd>
+            )}
+          </div>
+        );
+      })}
     </dl>
   );
 }
@@ -215,6 +230,9 @@ function Borrowers({ data }) {
 }
 
 function Property({ data }) {
+  // What PILOT knowingly does not hold, keyed by column, straight from the one
+  // ledger on the server (src/longterm/application/unsourced.js).
+  const ns = data.notSourced || {};
   if (data.error) return <Unreadable error={data.error} />;
   if (!data.recorded) {
     return <p style={{ margin: 0, color: MUTED, fontSize: 13 }}>No property has been read from Encompass for this loan yet.</p>;
@@ -234,10 +252,51 @@ function Property({ data }) {
       ['LTV', data.ltvPct != null ? pct(data.ltvPct) : '—'],
       ['CLTV', data.cltvPct != null ? pct(data.cltvPct) : '—'],
       // A determination that the property is NOT in a flood zone is a real answer and
-      // reads as "No"; one nobody has made yet reads as a dash.
-      ['In a flood zone', yesNo(data.inFloodZone)],
-      ['Flood zone', plain(data.floodZone)],
+      // reads as "No". PILOT has no field it can read one from, so rather than a
+      // dash — which reads as "No" too — the reason says so in words.
+      ['In a flood zone', yesNo(data.inFloodZone), ns.in_flood_zone],
+      ['Flood zone', plain(data.floodZone), ns.flood_zone],
     ]} />
+  );
+}
+
+/**
+ * The adjustable-rate terms, or ONE sentence saying we do not hold them.
+ *
+ * Eight rows of dashes under "Adjustable-rate terms" is not an empty table — it is
+ * eight answers nobody gave: no cap, no floor, no margin. And repeating the same
+ * explanation in all eight rows is just as bad in the other direction, so when we
+ * hold NONE of them the block says it once, in the reader's language, with the
+ * reason the server sent.
+ *
+ * It gives way field by field: the moment any term is written the table draws, and
+ * whichever terms are still missing carry the reason on their own row through
+ * `Facts`, exactly as the property section does.
+ */
+function ArmTerms({ arm }) {
+  const ns = arm.notSourced || {};
+  if (arm.notHeld) {
+    return (
+      <Group title="Adjustable-rate terms">
+        <p style={{ margin: 0, color: MUTED, fontSize: 13, fontStyle: 'italic', overflowWrap: 'anywhere' }}>
+          {ns.arm_index_name || 'PILOT does not hold this loan\'s adjustable-rate terms.'}
+        </p>
+      </Group>
+    );
+  }
+  return (
+    <Group title="Adjustable-rate terms">
+      <Facts rows={[
+        ['Index', plain(arm.indexName), ns.arm_index_name],
+        ['Margin', arm.marginPct != null ? pct(arm.marginPct) : '—', ns.arm_margin_pct],
+        ['First adjustment', arm.firstAdjustmentMonths != null ? `${arm.firstAdjustmentMonths} months` : '—', ns.arm_first_adjustment_months],
+        ['Adjusts every', arm.adjustmentFrequencyMonths != null ? `${arm.adjustmentFrequencyMonths} months` : '—', ns.arm_adjustment_frequency_months],
+        ['Initial cap', arm.initialCapPct != null ? pct(arm.initialCapPct) : '—', ns.arm_initial_cap_pct],
+        ['Periodic cap', arm.periodicCapPct != null ? pct(arm.periodicCapPct) : '—', ns.arm_periodic_cap_pct],
+        ['Lifetime cap', arm.lifetimeCapPct != null ? pct(arm.lifetimeCapPct) : '—', ns.arm_lifetime_cap_pct],
+        ['Floor', arm.floorPct != null ? pct(arm.floorPct) : '—', ns.arm_floor_pct],
+      ]} />
+    </Group>
   );
 }
 
@@ -260,32 +319,59 @@ function Terms({ data }) {
       {/* The ARM block appears only on an adjustable loan. A fixed loan showing a row
           of empty ARM fields reads as data we failed to fetch rather than terms that
           do not exist — so the server returns it as null and nothing renders. */}
-      {data.arm ? (
-        <Group title="Adjustable-rate terms">
-          <Facts rows={[
-            ['Index', plain(data.arm.indexName)],
-            ['Margin', data.arm.marginPct != null ? pct(data.arm.marginPct) : '—'],
-            ['First adjustment', data.arm.firstAdjustmentMonths != null ? `${data.arm.firstAdjustmentMonths} months` : '—'],
-            ['Adjusts every', data.arm.adjustmentFrequencyMonths != null ? `${data.arm.adjustmentFrequencyMonths} months` : '—'],
-            ['Initial cap', data.arm.initialCapPct != null ? pct(data.arm.initialCapPct) : '—'],
-            ['Periodic cap', data.arm.periodicCapPct != null ? pct(data.arm.periodicCapPct) : '—'],
-            ['Lifetime cap', data.arm.lifetimeCapPct != null ? pct(data.arm.lifetimeCapPct) : '—'],
-            ['Floor', data.arm.floorPct != null ? pct(data.arm.floorPct) : '—'],
-          ]} />
-        </Group>
-      ) : null}
+      {data.arm ? <ArmTerms arm={data.arm} /> : null}
     </>
   );
 }
 
+/**
+ * The DSCR, and which side of THIS COMPANY'S own thresholds it fell on.
+ *
+ * A bare 1.28 means one thing to somebody who works these loans every day and
+ * nothing at all to anybody else. The verdict comes from the server, computed
+ * against the company's configured minimum and comfortable lines, and the
+ * threshold travels with it — so this says what was compared rather than
+ * pronouncing on the loan, and a buyer who works to a different figure changes a
+ * setting rather than this file.
+ *
+ * NO VERDICT ON A RATIO WE DO NOT HOLD: the server sends none, and a mark on a
+ * loan nobody has measured would be worse than no mark.
+ */
+function DscrFigure({ value, verdict }) {
+  const shown = ratio(value);
+  if (!verdict) return <span>{shown}</span>;
+  const tone = verdict.level === 'below' ? '#8A2D2D'
+    : verdict.level === 'thin' ? '#8A6A22' : '#2C5E3F';
+  const word = verdict.level === 'below' ? 'below the minimum'
+    : verdict.level === 'thin' ? 'thin' : 'comfortable';
+  // WHOSE NUMBER. "this company set" is a claim about authorship, and it is false
+  // whenever the company has not configured that threshold — we fall back to the
+  // shipped one, which is right, but saying they chose it is not. The verdict now
+  // says which, so a red mark is never attributed to a rule nobody wrote.
+  const whose = (isCompany) => (isCompany ? ' this company set' : ' PILOT ships by default');
+  const comfortWhose = (isCompany) => (isCompany ? 'this company calls comfortable' : 'PILOT treats as comfortable by default');
+  const why = verdict.level === 'below'
+    ? `Under the ${verdict.minimum} minimum${whose(verdict.minimumIsCompany)} — on these figures the property does not cover its own debt service.`
+    : verdict.level === 'thin'
+      ? `Over the ${verdict.minimum} minimum${whose(verdict.minimumIsCompany)} but under the ${verdict.comfort} ${comfortWhose(verdict.comfortIsCompany)}.`
+      : `At or over the ${verdict.comfort} ${comfortWhose(verdict.comfortIsCompany)}.`;
+  return (
+    <span style={{ color: tone, fontWeight: 700 }} title={why}>
+      {shown}
+      <span style={{ color: MUTED, fontWeight: 400, fontSize: 12 }}> · {word}</span>
+    </span>
+  );
+}
+
 function Income({ data }) {
+  const ns = data.notSourced || {};
   const e = data.housingExpense || {};
   return (
     <>
       <Facts columns={3} rows={[
-        ['DSCR', ratio(data.dscr)],
+        ['DSCR', <DscrFigure key="dscr" value={data.dscr} verdict={data.dscrVerdict} />],
         ['Gross monthly rent', money2(data.grossMonthlyRent)],
-        ['Actual monthly rent', money2(data.actualMonthlyRent)],
+        ['Actual monthly rent', money2(data.actualMonthlyRent), ns.actual_monthly_rent],
       ]} />
       <Group
         title="Monthly housing expense"
@@ -591,6 +677,54 @@ function Summary({ data, file, sections, lock, contacts, history }) {
   );
 }
 
+/**
+ * WHO BOUGHT THIS LOAN — INTERNAL. Never a borrower or a TPO surface.
+ *
+ * The investor's name, their own loan number, their email and the funding channel
+ * are internal knowledge (CLAUDE.md rule 10). The channel counts because it names
+ * HOW a loan is funded, which implies WHO. This screen is behind the staff mount
+ * and there is no client version of it; if one is ever built it takes its strings
+ * through `audience.js`, never from here.
+ *
+ * The two names are shown SEPARATELY on purpose. The shorthand is typed early and
+ * the accurate name arrives later, and the difference between them is often the
+ * question — 117 recorded spellings resolve to about thirty companies, so seeing
+ * both is how somebody spots that a file is filed under a name nobody else uses.
+ * The canonical key is what the system compares; it is shown because it is the
+ * answer to "are these two files with the same investor?".
+ */
+function Investor({ data }) {
+  if (data.error) return <Unreadable error={data.error} />;
+  if (!data.recorded) {
+    return (
+      <p style={{ margin: 0, color: MUTED, fontSize: 13 }}>
+        Encompass names no investor on this loan yet — either it has not been sold,
+        or the investor has not been recorded on the file.
+      </p>
+    );
+  }
+  return (
+    <>
+      <Facts rows={[
+        ['Investor', plain(data.accurateName || data.shorthandName)],
+        ['Their loan number', plain(data.investorLoanNumber)],
+        ['Name typed early', plain(data.shorthandName)],
+        ['Name on the file', plain(data.accurateName)],
+        ['Contact', plain(data.investorEmail)],
+        ['Funding channel', plain(data.fundingChannel)],
+      ]} />
+      <p style={{ margin: '10px 0 0', color: MUTED, fontSize: 12 }}>
+        Internal only — an investor’s name never reaches a borrower or a broker.
+        {data.canonicalKey ? <> PILOT files this one under <code>{data.canonicalKey}</code>,
+          which is what it compares rather than the spelling.</> : <> PILOT does not
+          recognise this spelling, so it is stored as typed and compared to nothing —
+          worth a look if you expected a match.</>}
+        {data.readAt ? <> Read from Encompass {data.readAt}.</> : null}
+      </p>
+    </>
+  );
+}
+
 const RENDERERS = {
   // `summary` reads the loan's TERMS and then borrows from the other sections, so it is
   // given the whole file rather than one slice.
@@ -603,6 +737,7 @@ const RENDERERS = {
   assets: Assets,
   reo: Reo,
   declarations: Declarations,
+  investor: Investor,
 };
 
 /** The section key each renderer takes its own slice from. */

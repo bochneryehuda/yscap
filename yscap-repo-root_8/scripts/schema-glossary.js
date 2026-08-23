@@ -57,6 +57,7 @@ const GLOSSARY = {
   messages: 'Messages inside the system — between the team, and with a borrower or a broker.',
   arena_spins: 'One spin of the wheel on a company game day — what is being played for, who was in it, and who won.',
   finding_decisions: 'A human’s verdict on a finding, kept so it is never asked again.',
+  lt_loans: 'One long-term loan file. The long-term product is a separate system that shares only the login and the person, so this is its own spine — nothing here touches a short-term loan.',
   arena_sessions: 'One sales day of the staff game — who is playing, and whether it has started.',
   arena_spins: 'One draw in that day: the wheel, what is being won, and how the winner is picked.',
   arena_challenges: 'A timed task the room is set during the day, and what winning it is worth.',

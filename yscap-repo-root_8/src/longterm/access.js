@@ -175,11 +175,30 @@ function pipelineScopeSql(access, staffId, firstParamIndex = 1) {
  * arithmetic — a hard-coded `$1` becomes an unreferenced parameter the moment a
  * sees-all caller drops the clause, and Postgres answers 42P18.
  */
+/**
+ * THE EFFECTIVE PERSON IN ONE CONTACT ROW — the expression everything above is
+ * built out of, written ONCE.
+ *
+ * It was correct in five places and typed out in all five: here, both of the
+ * pipeline's predicates, the row's own `staffId`, and `describeContact`. Five
+ * copies of a rule agreeing today is not the same as one rule — the drift this
+ * whole comment describes is what five copies look like a year later, and the
+ * one that went wrong was the one nobody thought of as a copy. So the SQL half
+ * is this function and the JS half is `effectiveStaffIdOf` below, and a sixth
+ * reader (the owner's census, which used to read a dead column on `lt_loans`)
+ * asks here rather than typing a sixth.
+ *
+ * Takes the row ALIAS because each caller joins the table under its own name.
+ */
+function effectiveStaffSql(alias) {
+  return `COALESCE(${alias}.override_staff_id, ${alias}.staff_id)`;
+}
+
 function onFileSql(ph) {
   return `EXISTS (
       SELECT 1 FROM lt_loan_contacts c
        WHERE c.loan_id = l.id
-         AND COALESCE(c.override_staff_id, c.staff_id) = ${ph}::uuid
+         AND ${effectiveStaffSql('c')} = ${ph}::uuid
     )`;
 }
 
@@ -302,6 +321,7 @@ module.exports = {
   accessFor,
   pipelineScopeSql,
   onFileSql,
+  effectiveStaffSql,
   effectiveStaffIdOf,
   mayOpenLoan,
   emptyPipelineReason,

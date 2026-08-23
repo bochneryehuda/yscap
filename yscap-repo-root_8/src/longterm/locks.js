@@ -1,4 +1,5 @@
 'use strict';
+const { num, text } = require('./num');
 /**
  * LONG-TERM — Phase 7: where a loan's rate lock stands right now.
  *
@@ -76,17 +77,7 @@ function dayDiff(from, to) {
   return Math.round(ms / 86400000);
 }
 
-const num = (v) => {
-  if (v === null || v === undefined || v === '') return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-};
 
-const text = (v) => {
-  if (v === null || v === undefined) return null;
-  const s = String(v).trim();
-  return s === '' ? null : s;
-};
 
 /** The first path that carries a value. Encompass spells one fact several ways. */
 function pick(obj, paths) {

@@ -74,6 +74,22 @@ export const day = (v) => {
 };
 
 /**
+ * How big a file is, in the units a person reads.
+ *
+ * A size nobody stated is a DASH, and a stated ZERO is "0 KB" — those are different
+ * facts about a document, and an empty file somebody uploaded by mistake is worth
+ * seeing rather than hiding behind the same dash as "we do not know". Rounded up to
+ * the KB so a 400-byte file does not read as nothing at all.
+ */
+export const fileSize = (v) => {
+  if (v == null || v === '' || !Number.isFinite(Number(v))) return '—';
+  const n = Number(v);
+  if (n < 1024) return `${Math.max(0, Math.round(n))} B`;
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+/**
  * A yes/no that was ANSWERED false is "No"; one nobody answered is a dash.
  *
  * Strictly booleans, deliberately: anything else — a 0, a '', an 'N' — is a value we

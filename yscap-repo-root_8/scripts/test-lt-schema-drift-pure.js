@@ -207,16 +207,25 @@ if (fs.existsSync(LT_SCHEMA) && fs.existsSync(SNAPSHOT)) {
     + (stale ? '\n  (the map is behind the migrations, so only non-abstained problems are listed)' : ''));
   checks++;
 
-  // AND THE ABSTENTION IS NOT A BLIND SPOT. A stale map excuses only the
-  // "declared but missing" direction; everything else is still compared, and a
-  // CURRENT map still answers strictly. Assert both, so "stale" can never
-  // quietly become "skip the whole check".
+  // AND THE ABSTENTION IS NOT A BLIND SPOT. A stale map excuses ONE DIRECTION —
+  // "the schema declares it and the photograph does not show it" — because that
+  // is the ordinary shape of a migration landing after the map was taken. It
+  // comes in TWO forms and the rule is the same for both: a whole new TABLE, and
+  // new COLUMNS on a table the map already knew (db/612 added four to lt_loans,
+  // which is what showed this assertion had only ever named the first form).
+  //
+  // The OTHER direction is never excused, and that is what makes the abstention
+  // safe: a column the photograph DOES show and the schema does not declare, or
+  // an lt_ table no model describes, existed when the picture was taken, so a
+  // stale map is no excuse for either. Assert the superset AND the direction, so
+  // "stale" can never quietly become "skip the whole check".
   if (stale) {
     const strict = compareLtSchema(declared, real, { stale: false });
     ok(strict.length >= problems.length,
       'the strict comparison is a superset — abstaining only ever REMOVES accusations');
-    ok(strict.every((p) => /has no such table/.test(p) || problems.includes(p)),
-      'and the only thing a stale map excuses is a table the map has not caught up with yet');
+    const excusedOnly = strict.filter((p) => !problems.includes(p));
+    ok(excusedOnly.every((p) => /has no such table/.test(p) || /declares \d+ field\(s\) with no column/.test(p)),
+      'and a stale map excuses ONLY what it could not have seen — never a column it photographed that the schema fails to declare, and never an lt_ table no model describes');
   }
 
   // AND THE PARSER IS NOT SIMPLY RETURNING NOTHING. A parser that produced an

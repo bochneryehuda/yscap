@@ -21,12 +21,26 @@ export default function LtConditions() {
     return () => { alive = false; };
   }, []);
 
+  // Switched ON: the centre itself lives on each LOAN, because a condition is
+  // about one file and there is no such thing as a condition list across the
+  // book. Rather than leave a nav entry that goes nowhere, this says where it is
+  // and takes you there.
   if (me && me.conditionsEnabled) {
     return (
       <LtLayout title="Condition Center">
         <div className="card" style={{ color: '#141B22' }}>
-          The Condition Center has been switched on, but its screens have not been built yet.
-          Turn <code>conditions.enabled</code> back off until they are.
+          <h2 style={{ margin: '0 0 8px', fontSize: 18, color: '#141B22' }}>It lives on the loan</h2>
+          <p style={{ margin: '0 0 12px', color: '#4B585C', lineHeight: 1.55, maxWidth: 560 }}>
+            Open a long-term file and pick <strong>Conditions</strong>. You get that loan’s
+            conditions with the documents that answer each one, plus its eFolder needs list —
+            which is where the work actually is on a live file, since every condition on this
+            Encompass instance sits on a loan that has already closed and been sold.
+          </p>
+          <p style={{ margin: '0 0 14px', color: '#4B585C', lineHeight: 1.55, maxWidth: 560, fontSize: 13 }}>
+            It is read-only in both directions: nothing there writes to Encompass, and filing a
+            document into the eFolder from PILOT is not switched on.
+          </p>
+          <a className="btn" href="#/internal/lt">Open the pipeline</a>
         </div>
       </LtLayout>
     );

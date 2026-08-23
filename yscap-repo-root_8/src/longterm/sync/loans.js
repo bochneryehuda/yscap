@@ -36,6 +36,7 @@ const locks = require('../locks');
 const milestones = require('../milestones');
 const productTerm = require('../product-term');
 const borrowerMatch = require('../borrower-match');
+const application = require('../application/sync');
 
 const lazy = {
   get db() { return require('../db'); },
@@ -230,13 +231,64 @@ async function readLoan(loanId, guid, settings) {
 
   const team = await contacts.syncLoanContacts(loanId, guid, { values });
 
+  // THE SUBJECT PROPERTY RIDES THE PAYLOAD WE ALREADY HAVE. db/549 shipped
+  // `lt_properties` and the file's Property section, the summary rail and the
+  // pipeline's own address and LTV columns all READ it — while nothing wrote it,
+  // so all three answered blank on every loan from the day they shipped. It costs
+  // no call: the figures are on the loan JSON in hand, and any value this caller
+  // already read BY NUMBER wins over the path. Best-effort — a property we could
+  // not read must never undo the loan we just mirrored.
+  let property = null;
+  try {
+    property = await application.syncSubjectProperty(loanId, loan, { values });
+  } catch (e) {
+    property = { ok: false, reason: (e && e.message) || String(e) };
+  }
+
+  // The people on the file ride the same payload, for the same reason and at the
+  // same cost. `lt_borrower_pairs` and `lt_parties` are what the file's Borrowers
+  // section reads and what its residences, employments, incomes, assets,
+  // liabilities and declarations all hang off — so nothing else in the 1003 can
+  // fill until these do. The SSN itself is never written; see application/sync.js.
+  // The loan's OWN terms — its amortization, its interest-only period, its
+  // prepayment penalty, the whole PITIA block and the DSCR. Twenty-seven columns
+  // db/549 carries, all of them read by the file's Terms section and the summary
+  // rail, none of them ever written. Same payload, same pass, no extra call.
+  let terms = null;
+  try {
+    terms = await application.syncLoanTerms(loanId, loan, { values });
+  } catch (e) {
+    terms = { ok: false, reason: (e && e.message) || String(e) };
+  }
+
+  let pairs = null;
+  try {
+    pairs = await application.syncBorrowerPairs(loanId, loan);
+  } catch (e) {
+    pairs = { ok: false, reason: (e && e.message) || String(e) };
+  }
+
+  // WHO BOUGHT IT. db/549 built the investor identity chain the owner said must
+  // "survive like crazy" — the shorthand name, the accurate name, their OWN loan
+  // number, their email domain and the funding channel — and nothing has ever
+  // written a row into it. Every condition in this tenant sits on a loan that is
+  // already sold, so "who is this with?" is a question staff ask on almost every
+  // file. Same payload, same pass, no extra call. STAFF-ONLY: nothing here goes
+  // near a client surface.
+  let investor = null;
+  try {
+    investor = await application.syncLoanInvestor(loanId, loan, { values });
+  } catch (e) {
+    investor = { ok: false, reason: (e && e.message) || String(e) };
+  }
+
   // The lock posture rides the loan we already have — no lock endpoint is called,
   // and none would answer: every lock-specific endpoint on this tenant is 403.
   const lock = locks.lockFromLoan(loan, values, settings);
   const lockWrite = await locks.writeLock(loanId, lock);
 
   return { ok: true, milestoneName, stageKey, team, milestone: milestoneWrite,
-    lock: { ...lockWrite, posture: lock.posture } };
+    lock: { ...lockWrite, posture: lock.posture }, property, terms, pairs, investor };
 }
 
 /**
