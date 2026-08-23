@@ -34,6 +34,7 @@ const discover = require('./discover');
 const contacts = require('../people/contacts');
 const locks = require('../locks');
 const milestones = require('../milestones');
+const purchased = require('../milestone-purchased');
 const productTerm = require('../product-term');
 const borrowerMatch = require('../borrower-match');
 const application = require('../application/sync');
@@ -180,6 +181,27 @@ async function readLoan(loanId, guid, settings) {
     byNum(1240) ?? (b0 && b0.emailAddressText),
   ) || null;
 
+  // HAS THE INVESTOR BOUGHT THIS LOAN? The owner's own workflow carries a PURCHASED
+  // step that Encompass's nineteen milestones do not (owner-directed 2026-08-23), and
+  // the fact behind it has been sitting on the loan payload unread all along: field
+  // 2031, `$.rateLock.sellSideInvestorStatus` — a read-only Encompass dropdown filled
+  // on 100% of loans at Investor Delivery, Purchasing Conditions and Final Docs — with
+  // field 2370, `$.rateLock.date`, carrying the purchase advice DATE beside it.
+  //
+  // Read off the JSON for exactly the reason the term and the borrower's email are:
+  // the long-term client does NOT split a failed fieldReader batch, so adding two ids
+  // to it would risk blanking the team AND the lock read for every loan in the book to
+  // learn one fact that is already in hand. A value read BY NUMBER still wins where a
+  // caller has one.
+  //
+  // THREE ANSWERS, NOT TWO. A status Encompass did not give is `null` — not "no" —
+  // and it leaves both columns exactly as they are, because an absent reading is not
+  // evidence of anything. A status that is present but is NOT a purchased value
+  // CLEARS the stamp: a sale corrected away in Encompass must not leave "Purchased"
+  // standing here. That is why these two columns are written PLAINLY and are the only
+  // two on this statement not wrapped in COALESCE.
+  const sale = purchased.readPurchase(loan, purchased.configFrom(settings || {}));
+
   // What we held BEFORE the write, because the write is what destroys the evidence.
   // Encompass's own milestone log is 403 on this tenant, so noticing that the
   // milestone is not what it was is the only history available — and it can only be
@@ -195,6 +217,8 @@ async function readLoan(loanId, guid, settings) {
             borrower_first_name = COALESCE($6, borrower_first_name),
             borrower_last_name = COALESCE($7, borrower_last_name),
             borrower_email = COALESCE($8, borrower_email),
+            purchased_status = CASE WHEN $9::boolean THEN $10 ELSE purchased_status END,
+            purchased_at = CASE WHEN $9::boolean THEN $11::date ELSE purchased_at END,
             encompass_synced_at = now(),
             encompass_sync_error = NULL,
             updated_at = now()
@@ -206,8 +230,12 @@ async function readLoan(loanId, guid, settings) {
     // here than anywhere else on the row: blanking an email would silently drop
     // every loan on that address out of its confirmed link, and the borrower would
     // watch their own files disappear from their login with nothing having changed.
+    // $9 is "Encompass answered about the sale at all". Only then are $10/$11 written,
+    // so a read that could not see the field leaves a recorded purchase alone while a
+    // read that saw "Shipped" genuinely clears one.
     [loanId, milestoneName, stageKey, termMonths, programName,
-      borrowerFirst, borrowerLast, borrowerEmail],
+      borrowerFirst, borrowerLast, borrowerEmail,
+      sale.purchased !== null, sale.status, sale.at],
   );
 
   // A first sighting is recorded as a BASELINE, never as an arrival — we cannot know
@@ -287,7 +315,7 @@ async function readLoan(loanId, guid, settings) {
   const lock = locks.lockFromLoan(loan, values, settings);
   const lockWrite = await locks.writeLock(loanId, lock);
 
-  return { ok: true, milestoneName, stageKey, team, milestone: milestoneWrite,
+  return { ok: true, milestoneName, stageKey, team, milestone: milestoneWrite, sale,
     lock: { ...lockWrite, posture: lock.posture }, property, terms, pairs, investor };
 }
 

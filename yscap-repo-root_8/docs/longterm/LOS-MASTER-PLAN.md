@@ -760,7 +760,7 @@ changed without a migration:
 | Clear to Close | Clear To Close | Final Approval |
 | Closing | Schedule Closing, Ready for Docs, Docs Out, Wire Order | Closing Scheduled · Closing Preparation · Active Closing |
 | Funded | Funding | Funded |
-| Post-Closing | Investor Delivery, Purchasing Conditions, Final Docs, Closed, Completion | Funded |
+| Post-Closing | Investor Delivery, Purchasing Conditions, **Purchased** (ours — see Phase 9), Final Docs, Closed, Completion | Funded |
 
 **Two rules this arrangement has to keep:**
 
@@ -1456,6 +1456,64 @@ file**: with `override_staff_id` NULL the expression IS `staff_id`, asserted rat
 argued. The reassign control states the consequence in words, so nobody presses it thinking
 it only adds somebody.
 
+### Phase 9 — the two things the owner's own workflow has and Encompass does not — **BUILT (2026-08-23)**
+
+Owner-directed 2026-08-23, in two sentences that turn out to describe the same gap from two
+sides: Encompass's workflow does not model everything this company actually does.
+
+**1. THE PURCHASED STEP.** *"The first one, the purchase, is a new milestone, and yes, you can
+build this up."* Encompass has nineteen milestones and none of them is *the investor bought
+this loan* — its late steps (Investor Delivery → Purchasing Conditions → Final Docs) are about
+the WORK around a sale, not the sale.
+
+- The fact was already in Encompass and had never been mirrored: **field 2031**
+  (`rateLock.sellSideInvestorStatus`), a read-only dropdown — Unassigned / Assigned - Bulk /
+  Assigned - Flow / Shipped / Purchased / Rejected — filled on **100% of loans at Investor
+  Delivery, Purchasing Conditions and Final Docs**, reading `Purchased` on **187 of the 188**
+  loans that carry it (772-loan census). **Field 2370** (Purchase Advice Date) carries the day,
+  on **175 of the 490** long-term loans — the same population. Both are read off the loan
+  payload the sync already holds, so it costs **no extra Encompass call**.
+- **It is the one step in the ladder marked from a FACT rather than a position.** Every other
+  step is reached because the loan stands past it; applied to the purchase that inference is
+  false — a loan at Final Docs has certainly passed Purchasing Conditions and has NOT certainly
+  been bought. `workspace.milestoneStepper` therefore treats a `pilot` step non-positionally.
+- **Three answers, never two.** Sold / not sold / *Encompass has not said*. The third leaves a
+  recorded sale alone and draws as "we have not been told", never as a no. A status corrected
+  away in Encompass CLEARS the stamp.
+- **It reaches no borrower.** `milestones.purchasedConsumerStatus` is `Funded`, the same wording
+  as every other post-closing step, so who bought a loan can never leak through it (rule 10).
+- Name, anchor, both field ids, the values that count and the borrower wording are **settings**
+  (`milestones.purchased*`). db/615 adds `lt_loans.purchased_status` + `purchased_at`.
+
+**2. FILE SETUP IS AN ASSIGNMENT, NOT A CONTACT.** *"I'm talking about a file assignment and a
+workflow, not a contact on the file… the workflow assignment on Encompass doesn't have anyone
+for file setup. It has processors, it has closers, it has funders, and it has officers. This
+one should be the starter of the file… the loan officer submits it to the processor, it goes to
+her workflow to set it up, and she is setting up the file."*
+
+- A `file_setup` role on `lt_loan_contacts`, **owned by PILOT**, defaulted by a company setting
+  (`contacts.fileSetupDefault`) and reassignable per file through the machinery that already
+  exists — the same override columns, the same audit stamp, the same access scope. So the
+  person named genuinely has those files in her pipeline, which is what *"her workflow"* means.
+- **THE BLOCKER, AND IT WAS REAL.** `writeContacts` ends by DELETING every role Encompass did
+  not name — correct for an unassigned closer, and fatal to a role Encompass has never heard
+  of. Unguarded, a file assigned on Monday would be unassigned by the next sync tick, silently,
+  for ever. `contacts.pilotRoles` is what the removal now spares.
+- **It fills, it never takes.** The INSERT carries its own `NOT EXISTS`, so a default can never
+  move a file a human has assigned, and a full Encompass sync cannot take it back either.
+- **It refuses rather than picks.** Nobody by that name, two people by that name, a deactivated
+  account or an outside broker all assign NOBODY and say why — this grants file access, so a
+  wrong pick is a disclosure rather than a typo. Resolved by **email or name, never an id**.
+- **The back book gets LIVE files only.** Writing a setup assignment onto seven hundred closed
+  loans would state, on each, that this person set that file up — which we do not know. The
+  same rule the milestone clock keeps about a first sighting.
+
+Proven by `test-lt-purchased-milestone-pure.js`, `test-lt-purchased-milestone-db.js` and
+`test-lt-file-setup-role-db.js` (all three in the deploy gate); **eight mutations of the
+production code were each proven to fail them**, with unmutated controls green either side.
+
+---
+
 ### What is PARKED — owner-directed 2026-08-23
 
 Three things are set aside deliberately. None of them is finished and none of them is
@@ -1664,7 +1722,34 @@ read-only, so a write is refused by Encompass itself and not only by our own gat
     Long-Term would need its own subscription — which is a **write** to Encompass configuration
     and would need its own pad entry. Worth knowing who owns the existing one before anything
     is added beside it.
-13. **Which loan folders mean the deal is over?** §4.1 says inactive loans stay in the one table,
+13. ~~**Which loan folders mean the deal is over?**~~ **ANSWERED (owner, 2026-08-23), and it is
+    THREE books rather than two.** *"Active pipeline: one view / Closed files: another view /
+    Funded files should be in the closed files view / The canceled and withdrawn files should be
+    in another view … It shouldn't be mixing them up, just keeping status separately."*
+
+    A deal that COMPLETED and a deal that DIED are different facts, so they are different books.
+    Funded sits in `closed`, because a funded loan is a finished deal rather than a dead one. A
+    fourth list is not a book at all — Training, Prospect and Pre-Approval are each "you can
+    ignore", hidden from every view but still COUNTED in the census so the totals reconcile.
+
+    | List | Folders | Files |
+    |---|---|---|
+    | `closed` | Corr Post Purchase · Broker CLOSED RECONCILED · Broker CLOSED | 316 |
+    | `withdrawn` | Withdrawn files | 35 |
+    | hidden | Training · Prospect · Pre-Approval | 17 |
+    | `active` | Pipeline active · Started · Corr Post Closing · Corr Clear To Close · On Hold | 373 |
+
+    741 of 772; the other 31 carry no folder at all and stay ACTIVE, by the fail-toward-showing
+    rule. Two of these were the owner's judgement rather than the census's: **Broker CLOSED** is
+    closed (its reconciliation is bookkeeping after the finish line, not work outstanding), and
+    **Started** is active (milestone 1 is literally "Started", so a sandbox file is the newest
+    file rather than a hidden one). Built as `pipeline.inactiveFolders`,
+    `pipeline.withdrawnFolders` and `pipeline.excludedFolders`; the original question is kept
+    below because its reasoning is why the setting exists at all.
+
+    ---
+
+    §4.1 says inactive loans stay in the one table,
     "distinguished by status — no separate archive screen", and today nothing distinguishes them:
     the sweep discovers every folder Encompass returns for a loan amount over zero, so a file
     somebody moved to Adverse or Trash sits in an officer's live book looking exactly like a

@@ -254,7 +254,7 @@ export default function LtPipeline() {
   const [stage, setStage] = useState('');
   // The second control row: '' (everyone's) | 'mine' | 'unassigned'.
   const [whose, setWhose] = useState('');
-  // Which book: 'live' (the default a desk works out of) | 'closed' | 'all'. The row
+  // Which book: 'live' (the default a desk works out of) | 'closed' | 'withdrawn' | 'all'. The row
   // is only DRAWN when the tenant has named folders that mean the deal is over — see
   // `data.bookControl`.
   const [book, setBook] = useState('live');
@@ -465,13 +465,17 @@ export default function LtPipeline() {
           only ever sees their own files. */}
       {data && data.bookControl && data.bookCounts && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-          <Chip group="book" on={book === 'live'} onClick={() => setBook('live')} label="Live"
+          <Chip group="book" on={book === 'live'} onClick={() => setBook('live')} label="Active"
             count={data.bookCounts.live}
-            note="Everything still in play — a folder nobody has marked as finished always counts as live" />
-          <Chip group="book" on={book === 'closed'} onClick={() => setBook('closed')} label="Finished"
+            note="Everything still in play — a folder nobody has classified always counts as active" />
+          <Chip group="book" on={book === 'closed'} onClick={() => setBook('closed')} label="Closed"
             count={data.bookCounts.closed}
-            note="Declined, withdrawn or otherwise done — kept in the same table, one click away" />
-          <Chip group="book" on={book === 'all'} onClick={() => setBook('all')} label="Both"
+            note="Deals that completed, funded files included — kept in the same table, one click away" />
+          <Chip group="book" on={book === 'withdrawn'} onClick={() => setBook('withdrawn')} label="Withdrawn"
+            count={data.bookCounts.withdrawn}
+            note="Deals that died — withdrawn or cancelled. Kept apart from the closed book on purpose: a
+                  finished deal and a lost one are not the same fact (owner-directed 2026-08-23)" />
+          <Chip group="book" on={book === 'all'} onClick={() => setBook('all')} label="All"
             count={data.bookCounts.all} />
         </div>
       )}
