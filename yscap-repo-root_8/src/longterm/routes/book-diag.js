@@ -121,6 +121,39 @@ router.get('/count', async (_req, res) => {
 });
 
 /**
+ * WHEN THE BOOK WAS LAST SWEPT — and why the count endpoint cannot answer it.
+ *
+ * `/count` reports `max(encompass_synced_at)`, which is the newest SINGLE loan read.
+ * That is not the same question as "has the whole book been refreshed", and reading
+ * it as if it were is actively misleading: two loans read a minute ago make a book
+ * last swept this morning look current. Measured on the live book — a `/count` of
+ * 18:02 over a set whose folder data came from the 07:00 sweep.
+ *
+ * The difference decides whether "the owner's change is not here yet" means "PILOT
+ * has not looked" or "Encompass does not have it either", and those send you to two
+ * different places. `lt_sync_runs` (db/616) already records every pass with what it
+ * discovered and what it read; this hands the last few of them over the same gated
+ * door so the question is answered from the record instead of from an inference.
+ */
+router.get('/runs', async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 12, 1), 50);
+  try {
+    const { rows } = await db.query(
+      `SELECT kind, trigger, started_at, finished_at, ok, reason,
+              discovered, read_count, failed, skipped, remaining, passes
+         FROM lt_sync_runs
+        ORDER BY started_at DESC
+        LIMIT $1`, [limit]);
+    // The newest pass that actually SWEPT the book, as opposed to one that read a
+    // couple of due loans. A sweep is what makes the folder on every row current.
+    const swept = rows.find((r) => r.kind === 'loans' && Number(r.discovered) > 0) || null;
+    res.json({ ok: true, runs: rows, lastSweep: swept });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: (e && e.message) || String(e) });
+  }
+});
+
+/**
  * THE OTHER HALF OF THE SAME QUESTION — the long-term cards, read with PILOT'S OWN
  * ClickUp credentials.
  *
