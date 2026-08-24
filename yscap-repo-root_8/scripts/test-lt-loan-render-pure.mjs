@@ -37,6 +37,28 @@ const stub = (name, source) => ({ name, setup(b) {
   }
 } });
 
+// ── The Milestones board, built by the REAL server function ────────────────
+// `milestoneBoard` is pure (a catalog + ladder rows in, display rows out), so
+// the screen can be rendered against exactly what the route would send it
+// rather than against somebody's recollection of the shape. Funding is DONE
+// here on purpose: that is the row whose label must read "Funded".
+const requireSrv = createRequire(path.join(here, '..', 'package.json'));
+const workspaceMod = requireSrv(path.join(here, '..', 'src', 'longterm', 'workspace.js'));
+const REAL_BOARD = workspaceMod.milestoneBoard(
+  [
+    { name: 'Started', sequence: 1, expected_days: 1 },
+    { name: 'Funding', sequence: 2, expected_days: 2 },
+    { name: 'Submittal', sequence: 3, expected_days: 3 },
+  ],
+  [
+    { milestone_name: 'Started', position: 0, done: true, start_date: '2026-06-01',
+      associate_name: 'Rivka Processor', associate_role: 'Loan Processor', associate_email: 'rp@x.test' },
+    { milestone_name: 'Funding', position: 1, done: true, start_date: '2026-08-23' },
+    { milestone_name: 'Submittal', position: 2, done: false, start_date: '2026-07-15', role_required: 'Loan Officer' },
+  ],
+  { reachedAt: [], sale: { purchased: null, status: null, at: null, note: 'Encompass has not said what the investor has done with this loan yet.' } },
+);
+
 // The canned section payload the ClickUp section fetches.
 const CU_SECTION = {
   link: { taskId: 'cutask1', customId: 'FILLE-1234', url: 'https://app.clickup.com/t/cutask1', linkedAt: '2026-08-20', source: 'reconciliation', confidence: 'confirmed', stampedAt: '2026-08-20', pushedAt: null, pushError: null, stampError: null },
@@ -69,11 +91,14 @@ const LOAN = {
     { key: 'closed', label: 'Closed', pilot: false, reached: false, at: null },
     { key: 'purchased', label: 'Purchased', pilot: true, reached: false, unknown: true, at: null, note: 'Encompass has not said what the investor has done with this loan yet.' },
   ] },
-  milestoneBoard: { ladderRead: true, rows: [
-    { name: 'Started', pilot: false, inLadder: true, done: true, date: '2026-06-01', dateKind: 'worked', witnessedAt: null, associate: { name: 'Rivka Processor', role: 'Loan Processor', email: 'rp@x.test' }, roleRequired: null, expectedDays: 1 },
-    { name: 'Submittal', pilot: false, inLadder: true, done: false, date: '2026-07-15', dateKind: 'planned', witnessedAt: null, associate: null, roleRequired: 'Loan Officer', expectedDays: 3 },
-    { name: 'Purchased', pilot: true, done: false, unknown: true, date: null, dateKind: null, witnessedAt: null, associate: null, roleRequired: null, expectedDays: null, note: 'Encompass has not said what the investor has done with this loan yet.' },
-  ] },
+  // DERIVED from the REAL `workspace.milestoneBoard`, never hand-written
+  // (audit round 5, defect 4). A hand-written fixture is only ever as complete
+  // as whoever typed it remembered: this one carried no `label` key at all, so
+  // the screen drawing the raw `name` instead of the completed wording — the
+  // one thing #44 is about — rendered green here for as long as it was wrong.
+  // Building the rows from the function that really feeds this screen means a
+  // key the server adds cannot be missing from the fixture.
+  milestoneBoard: REAL_BOARD,
   sale: { purchased: null, status: null, at: null, note: 'Encompass has not said what the investor has done with this loan yet.' },
   milestoneHistory: [
     { eventType: 'moved', isBaseline: false, fromMilestone: 'Started', toMilestone: 'LO Prep', observedAt: '2026-06-03' },
@@ -156,6 +181,22 @@ async function renderEntry(entry, propsJs = '{}') {
   }
   ok(!/investor delivery/i.test(html), 'Investor Delivery is NOT on the bar (rejected by name)');
   ok(!/not funding/i.test(html), 'no "not funding" wording anywhere (rejected by name)');
+  // ── #44 ON THE SCREEN, not merely on the payload (round 5, defect 4) ──────
+  // The server resolved "Funding" (done) to "Funded" onto the row's `label`,
+  // and the board drew the raw `name` instead — so a funded loan's board read
+  // "Funding · done", the active form the owner said must never label a
+  // completed milestone. A back end is not a feature: this asserts what a
+  // person actually sees.
+  ok(REAL_BOARD.rows.some((r) => r.done && r.label === 'Funded'),
+    'the server resolves a DONE Funding step to the completed wording "Funded"');
+  ok(html.includes('Funded'),
+    '…and the Milestones board RENDERS that wording — the label reaches the screen');
+  ok(!/>Funding</.test(html),
+    '…and never draws the active form "Funding" as a completed step\'s name');
+  // An OPEN step keeps its own name, so the completed wording is not smeared
+  // across steps nobody has finished.
+  ok(html.includes('Submittal') && !html.includes('Submitted to closing'),
+    'an OPEN step still reads under its own name');
   ok(html.includes('Rivka Processor') && html.includes('Loan Processor'),
     'the milestone board renders the associate on the step');
   ok(html.includes('(planned)'), '…and says a planned date is planned, never an arrival');

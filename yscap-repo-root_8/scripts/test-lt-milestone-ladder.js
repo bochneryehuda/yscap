@@ -145,6 +145,48 @@ async function main() {
   eq(ladder.itemsOf({ value: BIRCH }).length, 4, 'a value envelope');
   eq(ladder.itemsOf('nonsense').length, 0, 'junk answers empty, never throws');
 
+  // ── E. awaitingOf — the step the ladder is WAITING ON (round 5, defect 2) ──
+  //
+  // The naive "first not-done row anywhere" reading was live in the pipeline
+  // route: on a NON-CONTIGUOUS ladder it names a step already passed, and four
+  // of this tenant's milestones carry expected_days = 0, which describeClock
+  // reads as "no expectation set" — so naming one of those turns the stall
+  // alarm OFF on a genuinely stalled file. This is the case that separates the
+  // two readings; a contiguous ladder cannot tell them apart.
+  console.log('E. awaitingOf — the awaited step, never one already passed');
+  const GAPPED = [
+    { milestone_name: 'Started', position: 0, done: true },
+    { milestone_name: 'Loan Setup', position: 1, done: false },   // optional, left unticked
+    { milestone_name: 'Submittal', position: 2, done: true },
+    { milestone_name: 'Docs Out', position: 3, done: true },
+    { milestone_name: 'Funding', position: 4, done: false },
+  ];
+  eq(ladder.sittingOf(GAPPED), 'Docs Out', 'the loan STANDS at its last done step');
+  eq(ladder.awaitingOf(GAPPED), 'Funding', '…and AWAITS the first not-done step AFTER it');
+  ok((GAPPED.find((r) => !r.done) || {}).milestone_name === 'Loan Setup'
+    && ladder.awaitingOf(GAPPED) !== 'Loan Setup',
+  '…never the naive first-not-done-anywhere answer, which names a step already passed');
+
+  // Both row shapes must answer identically. A SQL-shaped row reaching a reader
+  // that only knows the live shape is filtered away silently, so the whole
+  // ladder reads EMPTY — a wrong answer, not an error.
+  const camel = GAPPED.map((r) => ({ milestoneName: r.milestone_name, position: r.position, done: r.done }));
+  eq(ladder.awaitingOf(camel), 'Funding', 'the camelCase (live-read) shape answers the same');
+  eq(ladder.sittingOf(camel), 'Docs Out', '…and so does the standing');
+
+  eq(ladder.awaitingOf([{ milestone_name: 'A', position: 0, done: false },
+    { milestone_name: 'B', position: 1, done: false }]), 'A',
+  'nothing done yet — the ladder awaits its FIRST step');
+  eq(ladder.awaitingOf([{ milestone_name: 'A', position: 0, done: true },
+    { milestone_name: 'B', position: 1, done: true }]), null,
+  'every step done — NOTHING is awaited, so the caller claims no bar');
+  eq(ladder.awaitingOf([]), null, 'an empty ladder awaits nothing');
+  eq(ladder.awaitingOf(null), null, 'junk answers null, never throws');
+  // Order is positional, not array order: rows read back out of SQL arrive in
+  // whatever order the planner chose.
+  eq(ladder.awaitingOf(GAPPED.slice().reverse()), 'Funding',
+    'the answer is positional — shuffling the rows changes nothing');
+
   // ── The DB half ────────────────────────────────────────────────────────────
   if (!process.env.DATABASE_URL) {
     console.log(`\nNo DATABASE_URL — the pure half passed (${checks} checks); DB half skipped.`);
@@ -291,7 +333,133 @@ async function main() {
     const trashed = (await db.query('SELECT milestone_name FROM lt_loans WHERE id = $1::uuid', [loanId])).rows[0];
     eq(trashed.milestone_name, 'Investor Delivery', 'a TRASHED loan is not realigned — it is out of the book');
     await db.query("UPDATE lt_loans SET loan_folder = 'Pipeline' WHERE id = $1::uuid", [loanId]);
+    // ── J. THE SQL TWIN AND THE JS READING MUST NEVER DISAGREE ──────────────
+    //
+    // `awaitingOf` is answered a second time in SQL by the my-loans list query
+    // (a LATERAL, because it runs once per loan across a whole book). Two copies
+    // of one rule drift, and the one that drifts is the one that shows a
+    // borrower the wrong step — so the SAME ladders go through BOTH and any
+    // disagreement fails the build. The SQL here is the my-loans predicate
+    // verbatim; if that query changes, this must change with it.
+    console.log('J. the SQL twin agrees with awaitingOf on every ladder');
+    const TWIN_SQL = `
+      SELECT m.milestone_name
+        FROM lt_loan_milestones m
+       WHERE m.loan_id = $1::uuid AND m.done = false
+         AND m.position > COALESCE(
+               (SELECT max(d.position) FROM lt_loan_milestones d
+                 WHERE d.loan_id = $1::uuid AND d.done), -1)
+       ORDER BY m.position ASC
+       LIMIT 1`;
+    const LADDERS = [
+      { what: 'the gapped ladder (a not-done step BEHIND the standing one)', rows: GAPPED },
+      { what: 'a contiguous ladder', rows: [
+        { milestone_name: 'Started', position: 0, done: true },
+        { milestone_name: 'Submittal', position: 1, done: true },
+        { milestone_name: 'Funding', position: 2, done: false }] },
+      { what: 'nothing done yet', rows: [
+        { milestone_name: 'Started', position: 0, done: false },
+        { milestone_name: 'Submittal', position: 1, done: false }] },
+      { what: 'every step done', rows: [
+        { milestone_name: 'Started', position: 0, done: true },
+        { milestone_name: 'Funding', position: 1, done: true }] },
+      { what: 'a single not-done step', rows: [{ milestone_name: 'Started', position: 0, done: false }] },
+      { what: 'a reopened step with later ones still done', rows: [
+        { milestone_name: 'Started', position: 0, done: true },
+        { milestone_name: 'Submittal', position: 1, done: false },
+        { milestone_name: 'Cond. Approval', position: 2, done: true },
+        { milestone_name: 'Funding', position: 3, done: false }] },
+    ];
+    for (const L of LADDERS) {
+      await db.query('DELETE FROM lt_loan_milestones WHERE loan_id = $1::uuid', [loanId]);
+      for (const r of L.rows) {
+        await db.query(
+          `INSERT INTO lt_loan_milestones (loan_id, milestone_name, position, done)
+           VALUES ($1::uuid, $2, $3, $4)`,
+          [loanId, r.milestone_name, r.position, r.done]);
+      }
+      const { rows: sqlRows } = await db.query(TWIN_SQL, [loanId]);
+      const fromSql = sqlRows.length ? sqlRows[0].milestone_name : null;
+      const fromJs = ladder.awaitingOf(L.rows);
+      eq(fromJs, fromSql, `the two readings agree on ${L.what} (both say ${fromJs === null ? 'nothing awaited' : fromJs})`);
+    }
+    await db.query('DELETE FROM lt_loan_milestones WHERE loan_id = $1::uuid', [loanId]);
+
+    // ── K. THE FIRST LADDER READ IS A RE-DEFINITION, NOT A MOVE (defect 1) ──
+    //
+    // Before db/623 the mirror stored the LAGGING active milestone and stamped
+    // `milestone_since`. So on the first ladder read the last-done standing
+    // legitimately differs from what is stored — and treating that as a move
+    // writes a BACKWARD event that never happened, resets the clock to now, and
+    // clears the honest "we never watched it arrive" flag. On every already-
+    // synced loan, in one pass. `realignStanding` cannot prevent it: it runs
+    // afterwards and finds prior == next.
+    console.log('K. the first ladder read re-defines the position — it does not move the loan');
+    const fakeClient = {
+      getLoanMilestones: async () => ([
+        { id: 's', name: 'Submittal', doneIndicator: true },
+        { id: 'f', name: 'Funding', doneIndicator: true },
+        { id: 'i', name: 'Investor Delivery', doneIndicator: false },
+      ]),
+      fieldReader: async () => ({}),
+    };
+    const since = '2026-07-10T00:00:00.000Z';
+    await db.query(
+      `UPDATE lt_loans
+          SET milestone_name = 'Investor Delivery', stage_key = 'post_closing',
+              milestone_since = $2, milestone_since_is_baseline = true,
+              ladder_synced_at = NULL
+        WHERE id = $1::uuid`, [loanId, since]);
+    await db.query('DELETE FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId]);
+
+    const first = await ladder.ladderOne(loanId, 'test-guid', {}, { client: fakeClient, db });
+    eq(first.ok, true, 'the first ladder read succeeds');
+    eq(first.sitting, 'Funding', '…and reads the standing as the LAST DONE step');
+    eq(first.redefinition, true, '…and REPORTS that it took the re-definition path, never silently');
+    const { rows: evAfterFirst } = await db.query(
+      'SELECT count(*)::int AS n FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId]);
+    eq(evAfterFirst[0].n, 0, 'NO history event is written — the loan did not move, we renamed the position we read');
+    const { rows: aft } = await db.query(
+      `SELECT milestone_name, milestone_since, milestone_since_is_baseline
+         FROM lt_loans WHERE id = $1::uuid`, [loanId]);
+    eq(aft[0].milestone_name, 'Funding', 'the standing IS updated to the new reading');
+    eq(new Date(aft[0].milestone_since).toISOString(), since,
+      '…while `milestone_since` is left EXACTLY as it was — the clock is not restarted');
+    eq(aft[0].milestone_since_is_baseline, true,
+      '…and the honest "we never watched it arrive" flag survives, never replaced by a confident 0 days');
+
+    // A GENUINELY NEW loan is untouched by the rule: it has no clock, so the
+    // ordinary baseline still stamps one. Getting this wrong would leave every
+    // new loan with no clock at all.
+    await db.query(
+      `UPDATE lt_loans SET milestone_name = NULL, stage_key = NULL, milestone_since = NULL,
+              milestone_since_is_baseline = false, ladder_synced_at = NULL
+        WHERE id = $1::uuid`, [loanId]);
+    await db.query('DELETE FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId]);
+    const freshRead = await ladder.ladderOne(loanId, 'test-guid', {}, { client: fakeClient, db });
+    eq(freshRead.redefinition, false, 'a loan with no clock is NOT a re-definition…');
+    const { rows: fs2 } = await db.query(
+      'SELECT milestone_since FROM lt_loans WHERE id = $1::uuid', [loanId]);
+    ok(fs2[0].milestone_since != null, '…so a brand-new loan still gets its baseline clock stamped');
+
+    // And once laddered, a LATER change IS a real move and is recorded.
+    await db.query('DELETE FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId]);
+    const movedClient = {
+      getLoanMilestones: async () => ([
+        { id: 's', name: 'Submittal', doneIndicator: true },
+        { id: 'f', name: 'Funding', doneIndicator: true },
+        { id: 'i', name: 'Investor Delivery', doneIndicator: true },
+      ]),
+      fieldReader: async () => ({}),
+    };
+    const second = await ladder.ladderOne(loanId, 'test-guid', {}, { client: movedClient, db });
+    eq(second.redefinition, false, 'a loan already laddered is past the conversion…');
+    const { rows: ev2 } = await db.query(
+      'SELECT count(*)::int AS n FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId]);
+    ok(ev2[0].n >= 1, '…so a REAL later move is recorded normally — the rule only silences the conversion');
   } finally {
+    await db.query('DELETE FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId]).catch(() => {});
+    await db.query('DELETE FROM lt_loan_milestones WHERE loan_id = $1::uuid', [loanId]).catch(() => {});
     await db.query('DELETE FROM lt_loans WHERE id = $1::uuid', [loanId]).catch(() => {});
     await db.query("DELETE FROM lt_loans WHERE loan_number IN ('TESTLADDER1','TESTLADDER2')").catch(() => {});
   }

@@ -190,7 +190,7 @@ async function readLoan(loanId, guid, settings) {
     const { rows: lr } = await lazy.db.query(
       'SELECT ladder_synced_at FROM lt_loans WHERE id = $1::uuid', [String(loanId)]);
     laddered = !!(lr.length && lr[0].ladder_synced_at);
-  } catch (_) {
+  } catch (e) {
     // FAIL TOWARD THE SAFE READING (audit round 4). Defaulting to `false`
     // here means an unreadable probe reinstates the very fallback D3
     // removed — so on the one path that reaches this line (the ladder read
@@ -199,6 +199,12 @@ async function readLoan(loanId, guid, settings) {
     // nothing; the only loan it under-serves is a brand-new one, which
     // waits a pass.
     laddered = true;
+    // …but SAY SO. Failing closed silently is only half the rule (round 5,
+    // defect 6): without this line a loan that quietly claims no milestone,
+    // pass after pass, looks identical to one Encompass has nothing to say
+    // about, and nobody would know which. Value-free, like every log here.
+    console.warn('[lt-sync] could not read ladder_synced_at for a loan — claiming no milestone this pass:',
+      String((e && e.message) || e).slice(0, 200));
   }
 
   const standing = ladder.ok ? ladder.sitting : (laddered ? null : laggingMilestone);

@@ -262,7 +262,15 @@ function MilestoneBoard({ board, history }) {
             }} />
             <div style={{ flex: '1 1 auto', minWidth: 0 }}>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
-                <span style={{ color: INK, fontWeight: m.done ? 700 : 550, fontSize: 14 }}>{m.name}</span>
+                {/* A DONE step is named in its COMPLETED wording (#44) — the
+                    server already resolved it onto `label` (workspace.milestoneBoard
+                    -> stages.completedFormLabel), and this line drew the raw
+                    `name` instead, so a finished Funding step read "Funding ·
+                    done": the active form the owner said must never label a
+                    completed milestone. Falls back to the raw name, which is
+                    what `label` already carries for an open step and for any
+                    milestone with no proven completed wording. */}
+                <span style={{ color: INK, fontWeight: m.done ? 700 : 550, fontSize: 14 }}>{m.label || m.name}</span>
                 <span style={{ fontSize: 12, color: m.done ? '#1F5F3F' : MUTED }}>
                   {m.pilot
                     ? (m.unknown ? 'Encompass has not said' : m.done ? 'done' : 'not yet')

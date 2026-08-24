@@ -63,7 +63,7 @@ router.get('/', async (req, res) => {
     const byMilestone = new Map();
     const byStage = new Map();
     for (const r of counts) {
-      byMilestone.set(stages.normalizeMilestone(r.milestone), (byMilestone.get(stages.normalizeMilestone(r.milestone)) || 0) + r.n);
+      byMilestone.set(stages.milestoneKey(r.milestone), (byMilestone.get(stages.milestoneKey(r.milestone)) || 0) + r.n);
       if (r.stage_key) byStage.set(r.stage_key, (byStage.get(r.stage_key) || 0) + r.n);
     }
 
@@ -80,10 +80,17 @@ router.get('/', async (req, res) => {
     try { catalog = await milestoneCatalog.listMilestones({ includeArchived: false }); }
     catch (_) { catalog = []; }
 
-    const seen = new Set(catalog.map((m) => stages.normalizeMilestone(m.milestoneName)));
+    // PUNCTUATION-BLIND on BOTH sides (audit round 5, obs 2). This was the one
+    // milestone-name join left on `normalizeMilestone`, which KEEPS punctuation:
+    // consistent today only because the live ladder and the catalog happen to
+    // spell "Cond. Approval" identically. The day they differ by a dot, a real
+    // milestone is listed as a catalog STRAY and its file count is attached to
+    // neither row — the same class obs 4 found in the board. Every other join
+    // over these names already keys through `milestoneKey`.
+    const seen = new Set(catalog.map((m) => stages.milestoneKey(m.milestoneName)));
     const strays = [...new Set(counts
       .map((r) => r.milestone)
-      .filter((m) => m && !seen.has(stages.normalizeMilestone(m))))];
+      .filter((m) => m && !seen.has(stages.milestoneKey(m))))];
 
     const describe = (name, row) => {
       const stage = stages.stageForMilestone(name, cfg);
@@ -96,7 +103,7 @@ router.get('/', async (req, res) => {
         borrowerWording: row ? stages.consumerStatusOf(row) : null,
         stageKey: stage.mapped ? stage.key : null,
         mapped: stage.mapped,
-        files: byMilestone.get(stages.normalizeMilestone(name)) || 0,
+        files: byMilestone.get(stages.milestoneKey(name)) || 0,
         // A milestone the catalog does not carry: it is on real loans, so it is
         // real, and it is exactly the row somebody has to answer for.
         inCatalog: !!row,

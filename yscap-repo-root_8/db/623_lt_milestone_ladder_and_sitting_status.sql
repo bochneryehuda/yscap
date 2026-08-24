@@ -8,8 +8,19 @@
 --
 --   · GET /loans/{guid}/milestones returns the loan's OWN ladder — every
 --     milestone with `doneIndicator`, its date, and WHO is assigned to that
---     step. The file SITS in the FIRST milestone whose doneIndicator is false
---     (Birch: Funding done=true → sitting = "Investor Delivery").
+--     step. The file STANDS at the LAST milestone whose doneIndicator is TRUE
+--     (Birch: Funding done=true → standing = "Funding", displayed in its
+--     completed wording "Funded").
+--
+--     CORRECTED IN PLACE, while this file is still unmerged and therefore
+--     still editable: the first cut of this header said the file sits in the
+--     FIRST milestone whose doneIndicator is false, which on Birch answered
+--     "Investor Delivery" — a step nobody had worked. The owner reversed that
+--     on 2026-08-24 ("the name of the status in our system should always be
+--     the last milestone that is completed"), and Encompass's own vocabulary
+--     agrees: MS.STATUS reads "Funded" on that loan. Left as written it would
+--     have become a permanent contradiction in the schema record, since a
+--     landed migration is never edited.
 --   · Virtual field MS.STATUS is the tenant's own status WORDING, stamped at
 --     the last milestone transition ("Funded" on Birch) — the field their
 --     existing Encompass automation fires webhooks on. MS.STATUSDATE is the

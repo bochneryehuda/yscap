@@ -46,12 +46,46 @@ const lazy = {
  * interpolated into SQL — there is no placeholder for an identifier, so the only
  * safe sort is one we named ourselves.
  */
+/**
+ * The Milestone column's sort expression, GENERATED from `stages.COMPLETED_FORM`
+ * rather than written out (audit round 5, observation 1).
+ *
+ * The column DISPLAYS the completed wording (`milestone_label`), so sorting on
+ * the raw `l.milestone_name` made the list disagree with itself: four of the
+ * nine covered wordings change initial letter (Started → **F**ile started,
+ * LO Prep → **A**ssigned to Processor, Resubmittal → **I**n Underwriting,
+ * Schedule Closing → **C**losing Scheduled), so an alphabetical sort looked
+ * random on screen. That is the same defect the `borrower` entry below already
+ * records having fixed, and the same remedy: sort on the expression the row
+ * actually shows.
+ *
+ * GENERATED, NEVER HAND-WRITTEN. A second copy of the wording table in SQL is
+ * exactly the drift trap this codebase keeps being bitten by, so the CASE is
+ * built from the one JS table every time the query is built — it cannot fall
+ * behind it, and adding a wording needs no SQL change at all. The keys are
+ * matched through the SAME punctuation-blind normalisation `stages.milestoneKey`
+ * applies, so a ladder spelled "Cond Approval" sorts with the catalog's
+ * "Cond. Approval". Values are our own source literals, not user input; they are
+ * escaped anyway because a quote in a wording would otherwise end the string.
+ */
+function completedFormOrderSql(col) {
+  const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+  const key = `lower(regexp_replace(${col}, '[^a-zA-Z0-9]+', ' ', 'g'))`;
+  const whens = Object.entries(stages.COMPLETED_FORM)
+    .map(([k, v]) => `WHEN btrim(${key}) = ${q(k)} THEN ${q(v)}`)
+    .join(' ');
+  // No wording for this milestone → it is displayed under its own name, so it
+  // sorts under its own name too.
+  return `CASE ${whens} ELSE ${col} END`;
+}
+
 const SORTABLE = {
   last_modified: 'l.encompass_last_modified',
   loan_number: 'l.loan_number',
   loan_amount: 'l.loan_amount',
   stage: 'l.stage_key',
-  milestone: 'l.milestone_name',
+  // Sorted on the SAME wording the row displays — see completedFormOrderSql.
+  milestone: completedFormOrderSql('l.milestone_name'),
   // Sorted on the SAME expression the row displays. Sorting on b.full_name alone put
   // every unlinked loan in one undifferentiated block at the end while the page
   // showed real names -- a list that disagrees with its own ordering.
@@ -795,5 +829,5 @@ module.exports = {
   // fragment that actually runs — which matters here because it and the ACCESS scope
   // (access.onFileSql) deliberately disagree about a reassigned file, and that
   // disagreement is asserted rather than assumed.
-  _internals: { officerIsSql, UNASSIGNED_SQL },
+  _internals: { officerIsSql, UNASSIGNED_SQL, completedFormOrderSql, SORTABLE },
 };

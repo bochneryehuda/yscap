@@ -172,8 +172,16 @@ async function main() {
       `UPDATE lt_loans SET milestone_name = 'Docs Out', stage_key = 'closing',
               milestone_since = now() - interval '9 days', milestone_since_is_baseline = false
         WHERE id = $1::uuid`, [loanId]);
-    // This loan's ladder SKIPS Wire Order, exactly as the live trace records.
-    for (const [nm, pos, done] of [['Docs Out', 12, true], ['Funding', 13, false]]) {
+    // This loan's ladder SKIPS Wire Order, exactly as the live trace records —
+    // AND carries a not-done step BEHIND the standing one (round 5, obs 1).
+    // That second property is what makes this test able to fail: on a
+    // CONTIGUOUS ladder "the first not-done row anywhere" and "the first
+    // not-done row after the standing one" give the same answer, so the earlier
+    // fixture passed green against the naive reading that was actually live in
+    // this very route. Loan Setup is left unticked on purpose — its
+    // expected_days is 0, so the naive reading claims NO bar and the stall
+    // alarm goes silent, which is the exact defect being pinned.
+    for (const [nm, pos, done] of [['Loan Setup', 2, false], ['Docs Out', 12, true], ['Funding', 13, false]]) {
       await db.query(
         `INSERT INTO lt_loan_milestones (loan_id, milestone_name, position, done)
          VALUES ($1::uuid, $2, $3, $4)
@@ -187,6 +195,12 @@ async function main() {
       "the bar is FUNDING's expectation (1) — the step this loan actually awaits, not the catalog's Wire Order (C1)");
     eq(mc.stalled, true,
       '…so a 9-day wait against a 1-day bar still reports STALLED — the alarm is not silently switched off');
+    // The sentence must NAME the step the bar came from (round 5, defect 5).
+    // Saying "at this milestone … longer than the 1 expected" would put
+    // Funding's number under Docs Out's name, and the Milestones board on the
+    // same screen shows Docs Out's own (different) expectation.
+    ok(/Waiting on Funding/.test(String(mc.note || '')),
+      '…and the sentence names FUNDING — the step the bar belongs to — not the step the loan stands at');
 
     // Every step done → nothing is awaited, so there is NO bar. Measuring
     // against the FINISHED step would restart the alarm on a completed file.
@@ -199,6 +213,9 @@ async function main() {
       'with every step done nothing is awaited, so no bar is claimed');
     eq(doneClock.body.milestoneClock.stalled, null,
       '…and a finished file is never reported stalled');
+    ok(/nothing is being waited on/i.test(String(doneClock.body.milestoneClock.note || ''))
+      && !/catalog/.test(String(doneClock.body.milestoneClock.note || '')),
+    '…and it SAYS nothing is being waited on, rather than blaming the catalog for a bar that is absent because the ladder is finished');
     await db.query('DELETE FROM lt_loan_milestones WHERE loan_id = $1::uuid', [loanId]);
     await db.query(
       `UPDATE lt_loans SET milestone_name = 'Submittal', stage_key = 'submitted',

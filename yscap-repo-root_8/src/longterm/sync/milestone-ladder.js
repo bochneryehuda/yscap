@@ -129,15 +129,77 @@ function rowFrom(item, index) {
  * PURE — this is the one sentence the whole rebuild exists for, so it is a
  * function a test can hold still.
  */
-function sittingOf(rows) {
-  const list = (rows || []).filter((r) => r && r.milestoneName);
-  if (!list.length) return null;
+/**
+ * A ladder row reaches these two functions in TWO shapes and they must answer
+ * identically about both: `milestoneName` from the live Encompass read, and
+ * `milestone_name` when a caller hands back rows selected out of
+ * `lt_loan_milestones`. Reading only one of them is a silent wrong answer
+ * rather than an error — a SQL-shaped row would simply be filtered away and the
+ * whole ladder would look empty — so the shape is normalised in ONE place that
+ * both readings share.
+ */
+function ladderName(r) {
+  const v = r && (r.milestoneName != null ? r.milestoneName : r.milestone_name);
+  const s = v == null ? '' : String(v).trim();
+  return s === '' ? null : s;
+}
+function ladderPos(r) {
+  const n = Number(r && r.position);
+  return Number.isFinite(n) ? n : 0;
+}
+/** The ladder in positional order, rows with no name dropped. */
+function orderedLadder(rows) {
   // Ladder order is positional; sort defensively so a caller handing rows read
   // back out of SQL (any order) gets the same answer as the live read.
-  list.sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0));
+  return (rows || []).filter((r) => ladderName(r))
+    .sort((a, b) => ladderPos(a) - ladderPos(b));
+}
+
+function sittingOf(rows) {
+  const list = orderedLadder(rows);
+  if (!list.length) return null;
   let lastDone = null;
   for (const r of list) { if (r.done) lastDone = r; }
-  return (lastDone || list[0]).milestoneName;
+  return ladderName(lastDone || list[0]);
+}
+
+/**
+ * THE STEP THIS LADDER IS WAITING ON — the first not-done row **after the one
+ * the loan STANDS at** (audit round 5, defect 2).
+ *
+ * The naive reading ("the first not-done row anywhere") is wrong on this data
+ * for the same reason `sittingOf` scans for the LAST done row rather than
+ * assuming the ladder is contiguous: a not-done row may sit BEHIND a done one —
+ * an optional step left unticked, or a step reopened for rework while later
+ * ones stay done. On such a ladder the naive read names a step the loan has
+ * already passed, and the damage is not cosmetic: four of the tenant's own
+ * milestones carry `expected_days = 0`, which `milestones.describeClock` reads
+ * as "nobody set an expectation", so naming one of those SILENTLY TURNS THE
+ * STALL ALARM OFF on a genuinely stalled file. Measured on a real ladder the
+ * two readings disagreed by five steps.
+ *
+ * Nothing done yet → the ladder awaits its FIRST step. Every step after the
+ * standing one done → nothing is awaited, so the caller must claim NO bar
+ * rather than fall back to the finished step's (which would restart the alarm
+ * on a completed file).
+ *
+ * THIS IS THE JS HALF OF A DELIBERATE MIRROR. The my-loans list query answers
+ * the same question in SQL (a LATERAL, because it runs once per loan across a
+ * whole book and cannot load every ladder into memory). The two are kept
+ * structurally identical — a `position` threshold defaulting to -1, then the
+ * first not-done row above it — and `test-lt-milestone-ladder.js` runs the SAME
+ * fixtures through BOTH and fails the moment they disagree.
+ */
+function awaitingOf(rows) {
+  const list = orderedLadder(rows);
+  if (!list.length) return null;
+  // The SQL twin's `COALESCE(max(position) WHERE done, -1)`: with nothing done
+  // the threshold is -1, so the first row qualifies and the ladder awaits its
+  // first step.
+  let threshold = -1;
+  for (const r of list) { if (r.done) { const p = ladderPos(r); if (p > threshold) threshold = p; } }
+  for (const r of list) { if (!r.done && ladderPos(r) > threshold) return ladderName(r); }
+  return null;
 }
 
 /**
@@ -290,6 +352,48 @@ async function ladderOne(loanId, guid, settings, opts = {}) {
   // Notice the move BEFORE the write destroys the evidence — the observed-clock
   // rule (milestones.js): a first sighting is a baseline, a change is an event.
   const prior = await milestones.loadPrior(loanId);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // THE FIRST LADDER READ OF AN ALREADY-SYNCED LOAN IS A RE-DEFINITION, NOT A
+  // MOVE (audit round 5, defect 1).
+  //
+  // Before db/623 the mirror derived the milestone from `Log.MS.CurrentMilestone`
+  // — the LAGGING active form — and stamped `milestone_since`. So on the first
+  // ladder read the last-DONE standing legitimately differs from what is
+  // stored, and `writeMilestone` would read that as a movement: it would write
+  // a BACKWARD "Investor Delivery → Funding" event that never happened, reset
+  // `milestone_since` to now, and clear `milestone_since_is_baseline` — turning
+  // an honest "we never watched it arrive" into a confident "0 days at this
+  // milestone". On every already-synced loan, in one pass.
+  //
+  // `realignStanding` was written to avoid exactly that and CANNOT: it runs
+  // after this and finds prior == next, so it realigns nothing. The conversion
+  // happens HERE, so the doctrine has to be applied HERE — write the standing
+  // directly, record NO event, and leave the clock exactly as it was. The
+  // moment a loan actually enters that milestone is unchanged by our having
+  // renamed the position we read it from.
+  //
+  // A genuinely NEW loan is untouched: it has no `milestone_since`, so
+  // `prior.hasRecord` is false and the ordinary baseline still stamps its clock.
+  //
+  // HONEST COST, stated rather than hidden: if a loan really did move between
+  // its last pre-ladder sync and this first ladder read, that one event is not
+  // recorded. That is the cheap direction — the ladder itself carries Encompass's
+  // own per-step dates, the next real move records normally, and the alternative
+  // is a false event plus a destroyed clock on the whole book.
+  //
+  // FAILS TOWARD THE SAFE READING: an unreadable `ladder_synced_at` is treated
+  // as a first read, because skipping one event self-heals and writing a
+  // spurious one does not.
+  // ═══════════════════════════════════════════════════════════════════════
+  let firstLadderRead = true;
+  try {
+    const { rows: lr } = await db.query(
+      'SELECT ladder_synced_at FROM lt_loans WHERE id = $1::uuid', [String(loanId)]);
+    firstLadderRead = !(lr.length && lr[0].ladder_synced_at);
+  } catch (_) { firstLadderRead = true; }
+  const redefinition = firstLadderRead && prior.hasRecord;
+
   try {
     await db.query(
       `UPDATE lt_loans
@@ -302,9 +406,11 @@ async function ladderOne(loanId, guid, settings, opts = {}) {
   } catch (e) {
     return { ok: false, reason: String((e && e.message) || e).slice(0, 300) };
   }
-  await milestones.writeMilestone(loanId, prior, {
-    milestoneName: ladder.sitting, stageKey: stage.key,
-  });
+  if (!redefinition) {
+    await milestones.writeMilestone(loanId, prior, {
+      milestoneName: ladder.sitting, stageKey: stage.key,
+    });
+  }
 
   const wrote = await writeLadder(loanId, ladder.rows, { db });
   if (!wrote.ok) return wrote;
@@ -317,7 +423,9 @@ async function ladderOne(loanId, guid, settings, opts = {}) {
   } catch (_) { /* the wording is best-effort; the ladder is the ground truth */ }
   await writeMsStatus(loanId, ms, { db });
 
-  return { ok: true, sitting: ladder.sitting, stageKey: stage.key, steps: ladder.rows.length };
+  // `redefinition` is reported so a caller (and the test) can see WHICH of the
+  // two paths a loan took — a silent skip is indistinguishable from a bug.
+  return { ok: true, sitting: ladder.sitting, stageKey: stage.key, steps: ladder.rows.length, redefinition };
 }
 
 /**
@@ -462,6 +570,7 @@ module.exports = {
   itemsOf,
   rowFrom,
   sittingOf,
+  awaitingOf,
   msStatusOf,
   readLadder,
   writeLadder,

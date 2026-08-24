@@ -43,7 +43,7 @@ below the table.
 
 | Milestone | Completed wording | Evidence |
 |---|---|---|
-| Started | File started | CENSUS — observed on this tenant |
+| Started | File started | CENSUS — the sweep's own note pairs these two names |
 | LO Prep | **Assigned to Processor** | **the owner's own words** |
 | Submittal | **Submitted** | **the owner's own words** |
 | Cond. Approval | Conditionally Approved | the owner's seven-stop vocabulary |
@@ -51,7 +51,7 @@ below the table.
 | Clear To Close | Clear to Close | the owner's seven-stop vocabulary |
 | Schedule Closing | Closing Scheduled | db/547 — the tenant's own `tpo_status` for that step |
 | Funding | **Funded** | **the owner's own words** |
-| Completion | Completed | CENSUS — observed on this tenant |
+| Completion | Completed | CENSUS — observed, but **attributed by name**: see below |
 
 > ⚠ **A PER-MILESTONE `MS.STATUS` SAMPLE IS NOT EVIDENCE, and this table used to contain one.**
 > Audit round 3 removed `Loan Setup → "Sent to Processing"`: that string appears only in Encompass's
@@ -62,6 +62,24 @@ below the table.
 > survive because the census actually observed them; every other row above rests on the owner's own
 > words or on db/547.
 
+> **HOW STRONG THE TWO CENSUS ROWS ACTUALLY ARE — corrected in audit round 5, because the first
+> wording of this legend claimed more than was measured.** The sweep records a flat list of
+> **distinct values** with no per-milestone breakdown, so on its own it proves a string EXISTS on
+> this tenant and nothing about which milestone produces it.
+> · `Started → "File started"` is the stronger of the two: the sweep's own note pairs the names in
+>   words — *"the field says 'File started' where the milestone settings say 'Started'"* — which is
+>   a recorded statement about this milestone, not an inference.
+> · `Completion → "Completed"` is the **weakest row in the table**. The string is genuinely observed
+>   (so it is not invented, unlike the row round 3 removed), but nothing ties it to COMPLETION
+>   rather than to some other step — that pairing is the two names resembling each other. It is kept
+>   because the fallback, the raw "Completion", is no better evidenced, and it is **added to the
+>   owner's question list below** rather than presented as settled.
+>
+> Worth stating plainly because it cuts the other way: the only per-milestone sample anywhere in this
+> repo is the one this very warning rules inadmissible, and it points elsewhere — Loan Setup files
+> answering "File started". That is a reason to keep per-milestone samples out of the table, not a
+> reason to doubt the pairing above; but it is why "Completed" is now flagged rather than asserted.
+
 **Anything not in that table keeps its own name.** That is honest rather than lazy: inventing a
 past-tense wording for a step nobody has stated one for would put a word on a loan file that no
 person chose. db/547 seeds **19** milestones and the table covers **9**, so **ten** are open:
@@ -70,6 +88,16 @@ person chose. db/547 seeds **19** milestones and the table covers **9**, so **te
 > Investor Delivery · Purchasing Conditions · Final Docs · **Closed**
 
 **These are the open questions for the owner.** Adding a wording is one line in `COMPLETED_FORM`.
+
+**One more to confirm rather than add:** `Completion → "Completed"` is already in the table but is
+attributed by name similarity alone (see the note above), so it belongs on the same list — the
+question there is *"is this right?"* rather than *"what should it be?"*.
+
+**And a caution to raise with them about three of the ten.** For an uncovered milestone the file
+keeps the step's own name, which is honest but reads as the ACTIVE form on the seven-stop bar's
+`Status:` line — so a file that has FINISHED waiting for documents reads "Waiting for Docs", one
+whose documents are back reads "Docs Out", and one whose wire is ordered reads "Wire Order". The
+wording is not wrong so much as inverted, which is worth a sentence when the ten go to the owner.
 
 **A note that matters for the post-closing ones:** the tenant's own db/547 catalog collapses *every*
 post-Funding step (Investor Delivery, Purchasing Conditions, Final Docs, Closed, Completion) to the

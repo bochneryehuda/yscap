@@ -143,7 +143,11 @@ function milestoneKey(name) {
  * ═══════════════════════════════════════════════════════════════════════════
  */
 const COMPLETED_FORM = {
-  'started': 'File started',                 // CENSUS (observed on this tenant)
+  // CENSUS-PAIRED. The 490-loan sweep's own note pairs these two names in
+  // words — "the field says 'File started' where the milestone settings say
+  // 'Started'" (encompass/dropdowns.js) — so this is a recorded statement
+  // about THIS milestone, not merely a string seen somewhere in the book.
+  'started': 'File started',
   'lo prep': 'Assigned to Processor',        // OWNER
   'submittal': 'Submitted',                  // OWNER
   'cond approval': 'Conditionally Approved', // OWNER (stop vocabulary)
@@ -151,7 +155,16 @@ const COMPLETED_FORM = {
   'clear to close': 'Clear to Close',        // OWNER (stop vocabulary)
   'schedule closing': 'Closing Scheduled',   // SETTINGS (db/547, re-verified)
   'funding': 'Funded',                       // OWNER
-  'completion': 'Completed',                 // CENSUS (observed on this tenant)
+  // CENSUS-OBSERVED, ATTRIBUTION INFERRED — the weakest row in this table, and
+  // labelled so deliberately (audit round 5, defect 5). "Completed" IS a value
+  // this tenant's MS.STATUS was observed returning, so unlike the wording D6
+  // removed it is not invented. But the sweep records a flat list of DISTINCT
+  // values with no per-milestone breakdown, so nothing establishes that it is
+  // COMPLETION's wording rather than another step's — that pairing rests on the
+  // two names resembling each other. It is kept because the fallback (the raw
+  // "Completion") is no better evidenced, and it is on the owner's question
+  // list rather than presented as proven.
+  'completion': 'Completed',
 };
 
 /**
