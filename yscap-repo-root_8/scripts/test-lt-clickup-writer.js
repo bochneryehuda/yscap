@@ -251,7 +251,7 @@ async function pureHalf() {
     loan: { loan_number: 'YSCAPTEST0001', borrower_name: 'Avery Testborrower', loan_amount: '157500',
       note_rate_pct: '7.375', term_months: 360, interest_only_months: 0, prepayment_penalty_months: null,
       dscr_ratio: '1.25', loan_purpose: 'Cash-Out Refinance', program_name: 'Investor DSCR 30 YEAR FRM',
-      vesting_type: 'Individual', vesting_entity_name: '400 Birchwood LLC' /* STALE — must never write */,
+      vesting_type: 'Individual', vesting_entity_name: 'Sample Holdings LLC' /* STALE — must never write */,
       borrower_email: null, expense_hazard_insurance: '120', expense_real_estate_taxes: '300', expense_association_dues: null },
     prop: { street: '1 TEST LN', city: 'SAMPLETOWN', state: 'PA', zip: '18326', unit_count: 1,
       estimated_value: '300000', appraised_value: '450000', purchase_price: null, ltv_pct: '35' },
@@ -262,7 +262,7 @@ async function pureHalf() {
     processor: { name: 'Sarah', email: 'sarah@yscapgroup.com', clickupUserId: null }, // no id → BOTH dropped
     investorLoanNumber: null, investorName: null,
     portalFileId: 'lt-loan-uuid-1', portalFileLink: 'https://x/portal/#/long-term/file/lt-loan-uuid-1',
-    subjectGeo: { lat: 41.09, lng: -75.26, formatted_address: '363 Birch Dr, Cresco, PA 18326' },
+    subjectGeo: { lat: 41.09, lng: -75.26, formatted_address: '1 Test Ln, Sampletown, PA 18326' },
     borrowerGeo: null, priorGeo: null,
   };
   const bf = mapper.buildTaskFields(birchBag, options);
@@ -293,7 +293,7 @@ async function pureHalf() {
 
   const bwBag = { ...birchBag,
     loan: { ...birchBag.loan, loan_number: 'YSCAPTEST0002', borrower_name: 'B Sampleborrower',
-      loan_purpose: 'Purchase', vesting_type: 'Officer', vesting_entity_name: '400 Birchwood LLC', prepayment_penalty_months: 12 },
+      loan_purpose: 'Purchase', vesting_type: 'Officer', vesting_entity_name: 'Sample Holdings LLC', prepayment_penalty_months: 12 },
     prop: { ...birchBag.prop, purchase_price: '580000' },
     ex: EX_BIRCHWOOD,
     processor: { name: 'Sarah', email: 'sarah@yscapgroup.com', clickupUserId: 87335667 },
@@ -301,7 +301,7 @@ async function pureHalf() {
   const bw = mapper.buildTaskFields(bwBag, options);
   const by2 = (key) => bw.find((f) => f.key === key);
   eq(by2('purchase_or_estimate').value, '580000', 'purchase → field 136 (the contract price), always');
-  eq(by2('llc_name').value, '400 Birchwood LLC', 'an Officer vesting writes the entity name');
+  eq(by2('llc_name').value, 'Sample Holdings LLC', 'an Officer vesting writes the entity name');
   eq(by2('vesting').value, 'opt-llc-corp', 'Officer → LLC / Corp');
   eq(by2('year_purchased'), undefined, 'Year Purchased (refi only) is silent on a purchase');
   eq(by2('date_acquired'), undefined, "CX.DATEACQUIRED '//' (unreached) writes nothing");
@@ -349,7 +349,7 @@ async function pureHalf() {
   eq(mapper.reviewPreview(CU.borrowerSSN, '123-45-6789'), '✱✱✱-✱✱-6789', 'a review preview masks the SSN');
   const push = require('../src/longterm/clickup/push');
   const PI = push._internals;
-  eq(PI.providerTextSafe('363 Birch Dr, Cresco, PA 18326', '363 Birch Dr, Cresco, PA 18326-7761'), true,
+  eq(PI.providerTextSafe('1 Test Ln, Sampletown, PA 18326', '1 Test Ln, Sampletown, PA 18326-0000'), true,
     'a provider restyle keeping house number + ZIP is safe');
   eq(PI.providerTextSafe('1727 S 2nd St, Piscataway, NJ 08854', '2nd St, Piscataway, NJ 07063'), false,
     'the Piscataway corruption (house number dropped) is refused');
@@ -576,7 +576,7 @@ async function dbHalf() {
 
     push._internals._resetBreaker();
     console.log('J. the DOB gate');
-    exLive = { ...EX_BIRCH, 1402: '05/15/1985' };   // Encompass moved the DOB a day
+    exLive = { ...EX_BIRCH, 1402: '05/15/1985' };   // Encompass reads a DIFFERENT DOB than the card's 1985-01-15
     fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2, borrowerDOB: String(T.dateOnlyToClickUpEpoch('1985-01-15')) }) };
     wire.setField.length = 0;
     await push.pushLoan(loanId, { source: 'full_repush' });
@@ -899,7 +899,7 @@ async function dbHalf() {
         `INSERT INTO lt_loans (id, encompass_loan_guid, loan_number, borrower_name, encompass_synced_at, created_at)
          VALUES (gen_random_uuid(), 'test-writer-' || gen_random_uuid(), $1, $2, now(), $3) RETURNING id`,
         [num, name, createdAt]);
-      await db.query(`INSERT INTO lt_properties (loan_id, street, city, state, zip) VALUES ($1::uuid, '1 Test St', 'Cresco', 'PA', '18326')`, [rows[0].id]);
+      await db.query(`INSERT INTO lt_properties (loan_id, street, city, state, zip) VALUES ($1::uuid, '1 Test St', 'Sampletown', 'PA', '18326')`, [rows[0].id]);
       await db.query(`INSERT INTO lt_loan_contacts (id, loan_id, role, encompass_name, encompass_email)
                       VALUES (gen_random_uuid(), $1::uuid, 'loan_officer', $2, $3)`, [rows[0].id, officer, email]);
       return rows[0].id;
@@ -999,6 +999,28 @@ async function dbHalf() {
     out = await push.pushLoan(loanId, { subtaskOnly: ['co_name'], approvedReview: true, source: 'review_approval' });
     eq(out.subtaskSkipped, 'subtask_missing', 'with the subtask gone the approve reports subtask_missing…');
     eq(wire.createTask.length, 0, '…and a scoped approve NEVER creates a subtask');
+
+    // O12 — an UNREADABLE subtask is reported DISTINCTLY from a missing one.
+    // Both correctly leave the approval unresolved and write nothing, but they
+    // send a person to two different places: "it is gone" means the review is
+    // moot, "we could not read it" means try again. Reporting the wrong one is
+    // the confident-wrong direction, so the two words are pinned apart here.
+    const beforeUnreadable = writerStub.getTask;
+    fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
+      subtasks: [{ id: 'subtask1', name: 'Rivka Testborrower' }], custom_fields: mkCustomFields({ program: 2 }) };
+    writerStub.getTask = async (id) => {
+      wire.getTask++;
+      if (String(id) === 'subtask1') { const e = new Error('ClickUp GET /task/subtask1 -> 502'); e.status = 502; e.retryable = true; throw e; }
+      return fakeTask;
+    };
+    wire.createTask.length = 0; wire.setField.length = 0;
+    out = await push.pushLoan(loanId, { subtaskOnly: ['co_name'], approvedReview: true, source: 'review_approval' });
+    eq(out.subtaskSkipped, 'subtask_unreadable',
+      'a subtask we could not READ reports subtask_unreadable — never subtask_missing (obs O12)');
+    eq(wire.setField.filter((w) => w.taskId === 'subtask1').length, 0,
+      '…and an unreadable subtask is NEVER written blind');
+    eq(wire.createTask.length, 0, '…and it is never replaced by a fresh create');
+    writerStub.getTask = beforeUnreadable;
   } finally {
     await db.query(`DELETE FROM lt_loans WHERE loan_number LIKE 'TESTWR%'`).catch(() => {});
     await db.query(`DELETE FROM lt_clickup_write_log WHERE task_id IN ('task1','subtask1','stshort') OR task_id LIKE 'newtask%' OR task_id = 'co-subtask'`).catch(() => {});

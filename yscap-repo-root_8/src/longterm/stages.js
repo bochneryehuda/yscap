@@ -137,8 +137,9 @@ function milestoneKey(name) {
  *
  * A milestone with no proven completed wording falls back to ITS OWN NAME —
  * honest, and listed as an open wording question for the owner rather than
- * invented: Loan Setup, Processing, Waiting for Docs, Ready for Docs, Docs Out,
- * Wire Order, Investor Delivery, Purchasing Conditions, Final Docs.
+ * invented. db/547 seeds NINETEEN milestones and this table covers nine, so ten
+ * are open: Loan Setup, Processing, Waiting for Docs, Ready for Docs, Docs Out,
+ * Wire Order, Investor Delivery, Purchasing Conditions, Final Docs, Closed.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 const COMPLETED_FORM = {

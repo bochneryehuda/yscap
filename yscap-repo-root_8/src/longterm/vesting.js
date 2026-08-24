@@ -7,7 +7,7 @@
  * field 4008 shows 'officer'."*
  *
  * Verified live both ways (2026-08-24): an Officer-vested loan answers
- * `{"4008":"Officer","1859":"400 Birchwood LLC"}`; an Individual-vested loan
+ * `{"4008":"Officer","1859":"Sample Holdings LLC"}`; an Individual-vested loan
  * answers `{"4008":"Individual","1859":""}`. Across the whole book (486 loans)
  * field 4008 holds exactly Officer (445) / Individual (22) / blank (19).
  *

@@ -254,18 +254,36 @@ router.get('/:loanId', async (req, res) => {
       (m) => stages.milestoneKey(m.name) === stages.milestoneKey(rows[0].milestone_name),
     );
     const currentMs = currentIdx >= 0 ? catalog[currentIdx] : undefined;
-    // WHICH STEP'S EXPECTATION THE CLOCK IS MEASURED AGAINST (audit round 3, D4).
-    // Under the last-completed rule `milestone_since` is "when the last step
-    // COMPLETED" — i.e. when the loan STARTED WAITING on the next one. So the bar
-    // to judge that wait against is the AWAITED step's `expected_days`, not the
-    // finished step's. Measuring against the finished step's bar UNDER-reports
-    // stalls (a 3-day wait on a 2-day step read as "within the 3 expected"),
-    // which is the confident-wrong direction. The PILOT step is skipped — it is
-    // our own fact, not a workflow step with a duration.
-    const awaitingMs = currentIdx >= 0
-      ? catalog.slice(currentIdx + 1).find((m) => !m.pilot)
+    // ═══════════════════════════════════════════════════════════════════════
+    // WHICH STEP'S EXPECTATION THE CLOCK IS MEASURED AGAINST (audit round 3 D4,
+    // CORRECTED in round 4 C1).
+    //
+    // Under the last-completed rule `milestone_since` means "when the last step
+    // COMPLETED" — i.e. when the loan STARTED WAITING on the next one. So the
+    // bar to judge that wait against is the AWAITED step's `expected_days`.
+    //
+    // THE AWAITED STEP COMES FROM THIS LOAN'S OWN LADDER, NEVER FROM THE
+    // COMPANY CATALOG. They are different lists and the difference is recorded
+    // live (docs/longterm/ENCOMPASS-LIVE-API-PROBE.md): a real funded loan's
+    // ladder runs "Docs Out → Funding" with WIRE ORDER ABSENT, while the
+    // catalog runs "Docs Out → Wire Order → Funding"; the two also order
+    // Waiting for Docs / Processing differently. Taking "the next catalog row"
+    // therefore names a step this loan does not have — and because Wire Order's
+    // expected_days is 0, and `describeClock` reads a 0 as "nobody set an
+    // expectation", it SILENTLY TURNED THE STALL ALARM OFF on a genuinely
+    // stalled Docs Out file. That is the confident-wrong direction twice over.
+    //
+    // With the ladder read: the awaited step is its first not-done row, mapped
+    // back to the catalog for that step's expectation. Every step done means
+    // nothing is awaited, so there is NO bar — never the finished step's, which
+    // would restart the alarm on a completed file. With no ladder mirrored at
+    // all we keep the pre-D4 reading rather than losing the clock entirely.
+    // ═══════════════════════════════════════════════════════════════════════
+    const awaitingName = (ladderRows.find((r) => r && !r.done) || {}).milestone_name || null;
+    const awaitingMs = awaitingName
+      ? catalog.find((m) => !m.pilot && stages.milestoneKey(m.name) === stages.milestoneKey(awaitingName))
       : undefined;
-    const clockMs = awaitingMs || currentMs;
+    const clockMs = ladderRows.length ? (awaitingMs || null) : currentMs;
 
     // The lock's own detail — the posture, the countdown, and what PILOT watched
     // change. Best-effort: a loan still opens when its lock cannot be read.

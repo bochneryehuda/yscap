@@ -832,7 +832,7 @@ function fieldValueEquivalent(fieldId, oldVal, newVal, options, pushOpts) {
       }
       return false;  // unknown object shape — always write
     }
-    // PHONE fields: '347-9070483', '+13479070483', '(347) 907-0483' are the
+    // PHONE fields: '555-5550142', '+15555550142', '(555) 555-0142' are the
     // SAME number. Compare by the last 10 digits; shorter/garbled values fall
     // through to the exact-string compare.
     if (PHONE_FIELD_IDS.has(fieldId)) {

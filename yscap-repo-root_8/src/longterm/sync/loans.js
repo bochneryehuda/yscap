@@ -190,7 +190,16 @@ async function readLoan(loanId, guid, settings) {
     const { rows: lr } = await lazy.db.query(
       'SELECT ladder_synced_at FROM lt_loans WHERE id = $1::uuid', [String(loanId)]);
     laddered = !!(lr.length && lr[0].ladder_synced_at);
-  } catch (_) { laddered = false; }   // unreadable → behave as before
+  } catch (_) {
+    // FAIL TOWARD THE SAFE READING (audit round 4). Defaulting to `false`
+    // here means an unreadable probe reinstates the very fallback D3
+    // removed — so on the one path that reaches this line (the ladder read
+    // ALREADY failed) a second failure would bring back the phantom event
+    // and the reset clock. Treating the loan as laddered simply claims
+    // nothing; the only loan it under-serves is a brand-new one, which
+    // waits a pass.
+    laddered = true;
+  }
 
   const standing = ladder.ok ? ladder.sitting : (laddered ? null : laggingMilestone);
   // CLAIMING NOTHING MEANS CLAIMING NOTHING — including the STAGE.

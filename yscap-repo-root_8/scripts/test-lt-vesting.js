@@ -5,7 +5,7 @@
  * look for the entity name is if that field 4008 shows 'officer'."*).
  *
  * Fixtures are the LIVE answers captured 2026-08-24:
- *   Officer-vested:    {"4008":"Officer","1859":"400 Birchwood LLC"}
+ *   Officer-vested:    {"4008":"Officer","1859":"Sample Holdings LLC"}
  *   Individual-vested: {"4008":"Individual","1859":""}
  *
  * What this proves:
@@ -31,10 +31,10 @@ async function main() {
   const vesting = require('../src/longterm/vesting');
 
   console.log('A. vestingOf — the rule');
-  let v = vesting.vestingOf({ 4008: 'Officer', 1859: '400 Birchwood LLC' });
+  let v = vesting.vestingOf({ 4008: 'Officer', 1859: 'Sample Holdings LLC' });
   eq(v.answered, true, 'Officer answers');
   eq(v.vestsInEntity, true, 'Officer = an entity takes title');
-  eq(v.entityName, '400 Birchwood LLC', '…and 1859 is its legal name (the live fixture)');
+  eq(v.entityName, 'Sample Holdings LLC', '…and 1859 is its legal name (the live fixture)');
   eq(v.entityNameMissing, false, 'a named entity is not missing');
 
   v = vesting.vestingOf({ 4008: 'Individual', 1859: 'STALE COMPANY LLC' });
@@ -59,8 +59,8 @@ async function main() {
 
   console.log('B. describeVesting — one wording everywhere');
   eq(vesting.describeVesting({ vesting_type: 'Individual' }).label, 'Individual', 'individual reads as Individual');
-  eq(vesting.describeVesting({ vesting_type: 'Officer', vesting_entity_name: '400 Birchwood LLC' }).label,
-    '400 Birchwood LLC', 'an entity vesting reads as the entity');
+  eq(vesting.describeVesting({ vesting_type: 'Officer', vesting_entity_name: 'Sample Holdings LLC' }).label,
+    'Sample Holdings LLC', 'an entity vesting reads as the entity');
   eq(vesting.describeVesting({ vesting_type: 'Officer' }).label,
     'Entity — name not entered yet', 'a nameless entity vesting says so');
   eq(vesting.describeVesting({}).known, false, 'nothing read yet claims nothing');
@@ -76,7 +76,7 @@ async function main() {
   const clientPath = path.resolve(__dirname, '../src/longterm/encompass/client.js');
   // The repo-wide stub pattern: replace the client wholesale in require.cache
   // BEFORE anything requires it.
-  let fields = { 4008: 'Officer', 1859: '400 Birchwood LLC', 'MS.STATUS': 'Funded' };
+  let fields = { 4008: 'Officer', 1859: 'Sample Holdings LLC', 'MS.STATUS': 'Funded' };
   const stub = {
     configured: () => true,
     getLoan: async () => ({ loanAmortizationTermMonths: 360, loanProgramName: 'Investor DSCR 30 YEAR FRM' }),
@@ -102,14 +102,14 @@ async function main() {
     eq(out.ok, true, 'the read runs against the stubbed client');
     let l = (await db.query('SELECT vesting_type, vesting_entity_name, milestone_name, ms_status FROM lt_loans WHERE id = $1::uuid', [loanId])).rows[0];
     eq(l.vesting_type, 'Officer', 'the vesting word landed');
-    eq(l.vesting_entity_name, '400 Birchwood LLC', 'the entity name landed on an Officer vesting');
+    eq(l.vesting_entity_name, 'Sample Holdings LLC', 'the entity name landed on an Officer vesting');
     eq(l.milestone_name, 'Funding',
       'and the STANDING milestone rode the same read — the LAST COMPLETED step (db/623 + owner-directed 2026-08-24)');
     eq(l.ms_status, 'Funded', 'with the tenant’s own wording');
 
     // The loan is RE-VESTED to an individual in Encompass. 1859 often keeps its
     // stale text there — the rule is that it must not survive here.
-    fields = { 4008: 'Individual', 1859: '400 Birchwood LLC', 'MS.STATUS': 'Funded' };
+    fields = { 4008: 'Individual', 1859: 'Sample Holdings LLC', 'MS.STATUS': 'Funded' };
     out = await loans.readLoan(loanId, made[0].guid, {});
     l = (await db.query('SELECT vesting_type, vesting_entity_name FROM lt_loans WHERE id = $1::uuid', [loanId])).rows[0];
     eq(l.vesting_type, 'Individual', 'the re-vest landed');

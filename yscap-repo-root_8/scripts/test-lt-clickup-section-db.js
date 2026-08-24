@@ -98,7 +98,7 @@ async function main() {
   require.cache[canonPath] = { id: canonPath, filename: canonPath, loaded: true, exports: {
     geocode: async (t) => ({ lat: 41.09, lng: -75.26, formatted: t }),
   } };
-  const exLive = { 65: '123456789', 'CX.TABLEFUNDER': 'Non Delegated Correspondent', 1402: '05/14/1985' };
+  const exLive = { 65: '123456789', 'CX.TABLEFUNDER': 'Non Delegated Correspondent', 1402: '01/15/1985' };
   require.cache[encPath] = { id: encPath, filename: encPath, loaded: true, exports: {
     configured: () => true,
     fieldReaderSplit: async () => ({ ...exLive }),
@@ -157,7 +157,7 @@ async function main() {
                CASE WHEN $3::text IS NULL THEN NULL ELSE now() END)
        RETURNING id`, [num, name, taskId]);
     const id = rows[0].id;
-    await db.query(`INSERT INTO lt_properties (loan_id, street, city, state, zip) VALUES ($1::uuid, '5 Section St', 'Cresco', 'PA', '18326')`, [id]);
+    await db.query(`INSERT INTO lt_properties (loan_id, street, city, state, zip) VALUES ($1::uuid, '5 Section St', 'Sampletown', 'PA', '18326')`, [id]);
     await db.query(`INSERT INTO lt_loan_contacts (id, loan_id, role, encompass_name, encompass_email)
                     VALUES (gen_random_uuid(), $1::uuid, 'loan_officer', 'Yehuda Bochner', $2)`, [id, officerEmail]);
     return id;

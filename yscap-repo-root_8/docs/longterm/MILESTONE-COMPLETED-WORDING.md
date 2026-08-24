@@ -64,14 +64,14 @@ below the table.
 
 **Anything not in that table keeps its own name.** That is honest rather than lazy: inventing a
 past-tense wording for a step nobody has stated one for would put a word on a loan file that no
-person chose. The nine without a proven completed form today:
+person chose. db/547 seeds **19** milestones and the table covers **9**, so **ten** are open:
 
 > **Loan Setup** · Processing · Waiting for Docs · Ready for Docs · Docs Out · Wire Order ·
-> Investor Delivery · Purchasing Conditions · Final Docs
+> Investor Delivery · Purchasing Conditions · Final Docs · **Closed**
 
 **These are the open questions for the owner.** Adding a wording is one line in `COMPLETED_FORM`.
 
-**A note that matters for those eight:** the tenant's own db/547 catalog collapses *every*
+**A note that matters for the post-closing ones:** the tenant's own db/547 catalog collapses *every*
 post-Funding step (Investor Delivery, Purchasing Conditions, Final Docs, Closed, Completion) to the
 single outward wording **"Funded"** for both TPOs and borrowers. So the tenant already treats
 everything after funding as "Funded" to the outside world. Whether our *internal* status should do

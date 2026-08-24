@@ -395,7 +395,10 @@ async function realignStanding(opts = {}) {
   }
   const cfg = stagesMod.configFrom(settings || {});
   const trash = require('../trash');
-  const limit = Math.max(1, Number(opts.limit) || DEFAULT_REALIGN_BUDGET);
+  // Bounded, integral and capped like `backfillLadders` (audit round 4):
+  // `limit: Infinity` otherwise interpolates as `LIMIT Infinity`, which
+  // Postgres reads as a column reference and fails the whole pass.
+  const limit = Math.min(2000, Math.max(1, Math.floor(Number(opts.limit) || DEFAULT_REALIGN_BUDGET)));
   try {
     const { rows } = await db.query(
       // ONE ordered subquery, not a COALESCE of two: the two-subquery form is

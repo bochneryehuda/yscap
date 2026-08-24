@@ -171,9 +171,21 @@ router.get('/loans', async (req, res) => {
               w.milestone_name AS awaiting_milestone
          FROM lt_loans l
          LEFT JOIN LATERAL (
+           -- THE FIRST NOT-DONE STEP **AFTER THE ONE THE LOAN STANDS AT**
+           -- (audit round 4, C2). A plain "first not-done anywhere" is wrong on
+           -- this data: a not-done row may sit BEHIND a done one — an optional
+           -- step left unticked, or a step reopened for rework while later ones
+           -- stay done — which is exactly why sittingOf scans for the LAST done
+           -- row rather than assuming the ladder is contiguous. On such a ladder
+           -- the naive read walked the borrower's wording five steps back.
+           -- Complementing sittingOf exactly keeps the two readings of one
+           -- ladder from disagreeing.
            SELECT m.milestone_name
              FROM lt_loan_milestones m
             WHERE m.loan_id = l.id AND m.done = false
+              AND m.position > COALESCE(
+                    (SELECT max(d.position) FROM lt_loan_milestones d
+                      WHERE d.loan_id = l.id AND d.done), -1)
             ORDER BY m.position ASC
             LIMIT 1
          ) w ON true
@@ -192,8 +204,15 @@ router.get('/loans', async (req, res) => {
     // and the stage LABEL answers instead, which is the documented fallback.
     const consumerByKey = new Map();
     try {
+      // ARCHIVED ROWS EXCLUDED, ORDERED (audit round 4). The catalog sync
+      // ARCHIVES rather than deletes, so an archived "Cond Approval" and a live
+      // "Cond. Approval" collapse to the same punctuation-blind key and the
+      // winner would be whichever row the planner happened to return last.
       const { rows: cat } = await db.query(
-        'SELECT milestone_name, consumer_status FROM lt_encompass_milestones');
+        `SELECT milestone_name, consumer_status
+           FROM lt_encompass_milestones
+          WHERE COALESCE(is_archived, false) = false
+          ORDER BY sequence`);
       for (const c of cat) {
         if (c.milestone_name) consumerByKey.set(stages.milestoneKey(c.milestone_name), c.consumer_status);
       }

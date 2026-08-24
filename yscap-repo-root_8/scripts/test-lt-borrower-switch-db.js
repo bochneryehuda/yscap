@@ -244,6 +244,30 @@ async function main() {
     eq(ctcRow.milestone, 'Clear To Close',
       '…while the milestone itself still reports the last COMPLETED step, as every staff surface does');
 
+    // A GAPPED LADDER (audit round 4, C2). A not-done row may sit BEHIND a done
+    // one — an optional step left unticked, or one reopened for rework while
+    // later steps stay done. "First not-done anywhere" then reads five steps
+    // back; the awaited step is the first not-done AFTER the standing one.
+    const gapId = await seedLoan('gap', me, 360, 'Investor DSCR 30 YEAR FRM');
+    await db.query(
+      `UPDATE lt_loans SET milestone_name = 'Clear To Close', stage_key = 'clear_to_close'
+        WHERE id = $1::uuid`, [gapId]);
+    for (const [name, pos, done] of [
+      ['Started', 0, true], ['LO Prep', 1, true], ['Loan Setup', 2, true], ['Submittal', 3, true],
+      ['Cond. Approval', 4, false],   // ← left unticked, BEHIND later done steps
+      ['Processing', 5, true], ['Clear To Close', 8, true], ['Schedule Closing', 9, false],
+    ]) {
+      await db.query(
+        `INSERT INTO lt_loan_milestones (loan_id, milestone_name, position, done)
+         VALUES ($1::uuid, $2, $3, $4)
+         ON CONFLICT (loan_id, milestone_name) DO UPDATE SET position = EXCLUDED.position, done = EXCLUDED.done`,
+        [gapId, name, pos, done]);
+    }
+    const gap = await call(me);
+    const gapRow = gap.body.loans.find((l) => l.file.endsWith('gap'));
+    eq(gapRow && gapRow.status, 'Closing Scheduled',
+      'a GAPPED ladder still reads the step after the STANDING one — never five steps back (C2)');
+
     // A loan with NO ladder mirror still answers, falling back to milestone_name.
     const noLadderId = await seedLoan('noladder', me, 360, 'Investor DSCR 30 YEAR FRM');
     await db.query(

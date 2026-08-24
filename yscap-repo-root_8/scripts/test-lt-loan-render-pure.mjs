@@ -87,7 +87,7 @@ const LOAN = {
     { key: 'employment', label: 'Employment', available: false, why: 'A DSCR loan qualifies on the property’s income.' },
   ],
   contacts: [], lock: null,
-  file: { property: { address: '363 Birch Dr, Cresco, PA, 18326' }, income: {} },
+  file: { property: { address: '1 Test Ln, Sampletown, PA, 18326' }, income: {} },
   canReassign: false, assignableStaff: [],
 };
 
@@ -148,7 +148,7 @@ async function renderEntry(entry, propsJs = '{}') {
   fn(requireApp, { exports: {} }, {});
   const html = globalThis.__HTML__;
   ok(html.includes('YSCAP258000001'), 'the header renders the loan number in its box');
-  ok(html.includes('363 Birch Dr'), '…and the property address');
+  ok(html.includes('1 Test Ln'), '…and the property address');
   ok(html.includes('Individual'), '…and the vesting answer');
   for (const label of ['Started', 'Assigned to processor', 'Submitted to underwriting',
     'Conditionally approved', 'Clear to close', 'Closed', 'Purchased']) {
