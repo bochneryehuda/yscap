@@ -78,10 +78,11 @@ work.** That is not a hope; it is what the receiver does, and it is covered by t
 
 ```vb
 Try
-    ' Render will only talk TLS 1.2. 3072 is TLS 1.2; the numeric form compiles on
-    ' every .NET version, where the named SecurityProtocolType.Tls12 does not. It is
-    ' OR'd in rather than assigned, so nothing another rule already relies on is
-    ' switched off.
+    ' Render will not negotiate below TLS 1.2 - measured, it refuses 1.0 and 1.1
+    ' outright - and the .NET Framework default may still offer only those. 3072
+    ' IS TLS 1.2: the numeric form compiles on every .NET version, where the named
+    ' SecurityProtocolType.Tls12 does not. It is OR'd in rather than assigned over,
+    ' so nothing another rule already relies on gets switched off.
     System.Net.ServicePointManager.SecurityProtocol = _
         System.Net.ServicePointManager.SecurityProtocol Or CType(3072, System.Net.SecurityProtocolType)
 
@@ -129,6 +130,14 @@ Render prints one line per ping:
 - `[lt-encompass-hook] nudged 1 loan(s) (YSCAP…)` — the bracket WAS substituted; the ping named the loan.
 - `[lt-encompass-hook] unnamed ping — asked Encompass what moved: checked …, nudged …` — it was
   not, and the fallback did the work.
+- **No line at all** — the ping never reached PILOT. That is the one thing the Try/Catch hides, so
+  it is the one thing worth checking after you activate the rule: change a milestone on any file
+  and look for a line. Nothing means the secret is wrong, the URL is wrong, or the network out of
+  Encompass is blocked — in that order of likelihood. Step 5's `curl` tells you which, because it
+  answers `403` for a wrong secret and `503` if the secret was never set on Render at all.
+
+Either address works — `https://yscap.onrender.com/...` and `https://yscapgroup.com/...` are the
+same service. Use the onrender one in the rule; it does not depend on the domain's DNS.
 
 ## Step 4 — the NEW-FILE rule (one more copy)
 
