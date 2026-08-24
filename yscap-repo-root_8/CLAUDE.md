@@ -133,6 +133,16 @@ Everything else about a schema change is unchanged and unaffected by any of the 
 idempotent `db/NNN_*.sql`, applied by the existing runner. If a migration lands and the map is somehow
 still not regenerated, `check-schema-behind.js` says so on the next test run, with no database needed.
 
+**A LONG-TERM (`lt_*`) schema change has a THIRD step the bot does not do for you (learned 2026-08-23,
+the red main behind PR #1325): declare the new column/table in `src/longterm/prisma/schema.prisma` in
+the SAME commit as the migration.** `check-lt-schema-drift` (and its blocking test
+`test-lt-schema-drift-pure`) compares that MODEL against the schema map, and the schema-push bot
+refreshes ONLY `docs/schema/` — never the model. db/621 added two `lt_loans` columns, the bot's map
+refresh landed as a `[skip ci]` commit seconds before the squash, and the map+model mismatch was first
+exercised ON MAIN, holding the gated deploy. The check abstains on a stale map for "declared but no
+column yet" (a model landing with its migration), but a column the map PHOTOGRAPHS that the model does
+not declare is never excused — so the model edit cannot wait for a later pass.
+
 ## Repository layout gotcha
 
 The entire project lives in the **`yscap-repo-root_8/`** subfolder of the git root — `package.json`, `src/`, `db/`, `web/`, `app/` are all there, not at the git top level. Run all `npm` commands from inside `yscap-repo-root_8/`. Render auto-detects this nested `package.json`; deploys run from that folder.
