@@ -266,6 +266,72 @@ ok(
   + `(use path.join(__dirname, '..')): ${rooted.join(', ')}`,
 );
 
+// -----------------------------------------------------------------------------
+// 7. Every *-db step SURVIVES having no database.
+//
+//    `npm test` is ONE chain and BOTH CI jobs run it: `test-db` with a Postgres
+//    service, and `test` with no database at all. A suite that dials one and
+//    does not catch takes the whole build down — and the DEPLOY with it, because
+//    `deploy` is `needs: test`. `scripts/lib/db-gate.js` exists for exactly this
+//    and its header records the first time it happened (#1224); it happened
+//    again on 2026-08-24 in `test-esign-sign-link-db.js`, which went straight
+//    into its first INSERT and died with ECONNREFUSED, stopping every step
+//    behind it. Both times it passed perfectly on the machine it was written on.
+//
+//    TWO STAGES, because the cheap one alone cannot answer it. The source screen
+//    below recognises the three house shapes (a DATABASE_URL check, an emitted
+//    SKIPPED, or the shared `skipUnlessDb`) — but a suite that is simply built to
+//    run OFFLINE uses none of them and is perfectly fine, so a source-only guard
+//    would fail working code and grow an exception list. So anything the screen
+//    cannot vouch for is RUN, with no database, and has to exit 0. That is the
+//    real invariant, it needs no list, and it self-maintains: a genuinely
+//    offline-capable suite passes because it genuinely passes.
+// -----------------------------------------------------------------------------
+{
+  const { execFileSync } = require('child_process');
+  const HOUSE_SHAPES = /DATABASE_URL|SKIPPED|skipUnlessDb|db-gate/;
+  const stripComments = (t) => t
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+
+  const candidates = [...inChainNow]
+    .filter((f) => /-db\.js$/.test(f))
+    .filter((f) => fs.existsSync(path.join(ROOT, f)))
+    .filter((f) => !HOUSE_SHAPES.test(stripComments(fs.readFileSync(path.join(ROOT, f), 'utf8'))))
+    .sort();
+
+  /* A CAP, and it is REPORTED rather than silent. The screen normally leaves a
+     handful; if a change ever leaves dozens, spawning them all would turn an
+     instant gate into a slow one, so it says so and stops instead. */
+  const SPAWN_CAP = 12;
+  ok(
+    candidates.length <= SPAWN_CAP,
+    `${candidates.length} *-db suites in the chain declare no missing-database handling — too many `
+    + `to verify here. Give them scripts/lib/db-gate.js: ${candidates.slice(0, 15).join(', ')}`,
+  );
+
+  const crashed = [];
+  for (const f of candidates.slice(0, SPAWN_CAP)) {
+    // A clean environment: dropping DATABASE_URL is not enough on its own, since
+    // libpq also reads PGHOST/PGPORT/PGUSER and a developer with those exported
+    // would get a pass this check has not earned.
+    const env = { ...process.env };
+    for (const k of Object.keys(env)) if (k === 'DATABASE_URL' || /^PG[A-Z]/.test(k)) delete env[k];
+    try {
+      execFileSync(process.execPath, [path.join(ROOT, f)], {
+        cwd: ROOT, env, timeout: 60000, stdio: 'ignore',
+      });
+    } catch (e) {
+      crashed.push(`${f} (${e && e.signal === 'SIGTERM' ? 'timed out' : `exit ${e && e.status}`})`);
+    }
+  }
+  ok(
+    crashed.length === 0,
+    'a *-db suite in npm test does not survive having no database, so the no-database CI job — and '
+    + `the deploy behind it — dies there. Use scripts/lib/db-gate.js: ${crashed.join(', ')}`,
+  );
+}
+
 console.log(`\n✓ test-chain coverage: ${n} assertions passed`);
 console.log(`  ${suiteFiles().length} suites on disk, ${inChainNow.size} steps in the chain, `
   + `${Object.keys(QUARANTINE).length} quarantined with a written reason`);

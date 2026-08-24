@@ -76,6 +76,15 @@ const read = (loc) => ({
 });
 
 (async () => {
+  /* NO DATABASE HERE? SKIP, DO NOT CRASH. `npm test` is ONE chain and BOTH CI jobs run it —
+     `test-db` with a Postgres service and `test` with no database at all — so a suite that dials
+     one and does not catch takes the whole build down, and the deploy with it (`deploy` is
+     `needs: test`). This one did exactly that: it went straight into its first INSERT and died
+     with ECONNREFUSED, stopping every step behind it. `scripts/lib/db-gate.js` is the shared
+     answer and its header documents this precise failure (#1224) — use it rather than a fourth
+     hand-rolled probe, and note it must be the FIRST thing this function does. */
+  await require(`${__dirname}/lib/db-gate`).skipUnlessDb('esign-sign-link');
+
   const sfx = () => Math.random().toString(36).slice(2, 8);
   const bor = (await db.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('Shmuel','Wolosow',$1) RETURNING id`, [`b-${sfx()}@x.test`])).rows[0].id;
   const off = (await db.query(`INSERT INTO staff_users (email, full_name, role, is_active) VALUES ($1,'Simcha Officer','loan_officer',true) RETURNING id, email`, [`simcha-${sfx()}@yscapgroup.com`])).rows[0];
