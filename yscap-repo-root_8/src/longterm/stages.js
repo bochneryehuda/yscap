@@ -127,13 +127,33 @@ function milestoneKey(name) {
  *     "In Underwriting". Both re-verified against the seeded catalog.
  *
  * ⚠ DO NOT ADD A WORDING FROM A PER-MILESTONE `MS.STATUS` SAMPLE. That is how
- * "Loan Setup → Sent to Processing" got in, and it was wrong twice over:
- * (1) "Sent to processing" appears ONLY in Encompass's STOCK declared list and
- * was never once observed on this tenant, whose MS.STATUS returns its own
- * milestone names; and (2) MS.STATUS LAGS on older loans, so a per-milestone
- * sample attributes each wording to the milestone one step off wherever the lag
- * is present. A sample of a lagging field against a contradicted vocabulary is
- * not evidence. Use the owner's words, the observed census, or db/547.
+ * "Loan Setup → Sent to Processing" got in, and it stays out — but for ONE reason,
+ * not the two this note used to give.
+ *
+ * CORRECTED 2026-08-24 (owner-reported). This note claimed "Sent to processing"
+ * had "never once been observed on this tenant". THAT WAS FALSE, and our own
+ * sweep says so: MS.STATUS returned it on 27 of the 490 long-term loans. The
+ * mistake came from reading a HAND-TYPED summary list in `encompass/dropdowns.js`
+ * instead of the machine-recorded census beside it — that list omitted eleven
+ * values the sweep saw and invented two it never did. It is now derived from the
+ * census, so this class of claim cannot be made from it again.
+ *
+ * WHAT THE SWEEP ACTUALLY SHOWS, and it is more interesting than the wrong claim:
+ * MS.STATUS RETURNS A MIX. On 342 of 490 loans it gives a tenant milestone name;
+ * on the other 148 it gives one of Encompass's seven STOCK bucket names
+ * (Completed 79, Submitted 32, "Sent to processing" 27, Started 6, Funded 4). So
+ * a value from this field may belong to EITHER vocabulary, and nothing about the
+ * value itself says which.
+ *
+ * THE REASON THE MAPPING STAYS OUT is (2), which never depended on (1): MS.STATUS
+ * LAGS on older loans, so a per-milestone sample attributes each wording to the
+ * milestone one step off wherever the lag is present. A sample of a lagging field
+ * is not evidence about which milestone a word belongs to — and that is exactly
+ * the question this table answers. The owner's 2026-08-24 rule seals it from the
+ * other side: a milestone with no different Encompass wording keeps its Encompass
+ * name, and "Sent to processing" is a STOCK BUCKET word, not this tenant's name
+ * for Loan Setup. Use the owner's words, a census value tied to a NAMED milestone,
+ * or db/547.
  *
  * A milestone with no proven completed wording falls back to ITS OWN NAME.
  *
@@ -180,9 +200,11 @@ const COMPLETED_FORM = {
   //
   // `Completion -> "Completed"` was the ONE row here attributed by name
   // similarity rather than by anything stated. The string is genuinely observed
-  // in the tenant's MS.STATUS sweep, so it was never invented — but the sweep
-  // records a flat list of DISTINCT values with no per-milestone breakdown, so
-  // nothing tied it to COMPLETION rather than to some other step. Under the
+  // in the tenant's MS.STATUS sweep — on 79 of the 490 loans — so it was never
+  // invented. But the sweep counts values, it does not BREAK THEM DOWN BY
+  // MILESTONE, so nothing ties those 79 to COMPLETION rather than to some other
+  // step; and "Completed" is also one of Encompass's seven stock bucket words,
+  // which a loan can carry for reasons of its own. Under the
   // owner's rule an unproven wording is not a wording: the milestone keeps its
   // Encompass name and now reads "Completion".
   //
