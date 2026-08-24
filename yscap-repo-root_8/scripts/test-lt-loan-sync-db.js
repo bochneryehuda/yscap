@@ -212,7 +212,13 @@ async function main() {
     for (const bad of ['', '   ', 'not a number', '-5']) {
       stub.loanById[guid(1)] = { id: guid(1), _fieldValues: { 1109: bad } };
       stub.loans = [discovered(1)];
-      await sync.syncOnce({ readBudget: 5 });
+      // FORCE THE READ INSIDE THE LOOP TOO. Without this the loan is not due, no
+      // read happens, and the assertion below passes because nothing ran — which
+      // is exactly what it looked like until a mutation that made junk write 0
+      // sailed through it. A test that cannot fail is not a test.
+      await db.query('UPDATE lt_loans SET encompass_synced_at = NULL WHERE encompass_loan_guid = $1', [guid(1)]);
+      const readBack = await sync.syncOnce({ readBudget: 5 });
+      eq(readBack.read, 1, `…the loan really was re-read for ${JSON.stringify(bad)}`);
       eq(Number((await loanRow(1)).loan_amount), 750000,
         `…and an unreadable amount (${JSON.stringify(bad)}) never overwrites it`);
     }

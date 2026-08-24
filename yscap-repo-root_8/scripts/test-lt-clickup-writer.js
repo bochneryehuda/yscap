@@ -862,6 +862,116 @@ async function dbHalf() {
     await push.pushLoan(loanId, { source: 'scoped_push', only: ['loan_amount'] });
     eq(wire.updateTask.length, 0, 'a SCOPED push (one field) never touches the status');
 
+    // ── O2. AN UNUSABLE `orderindex` MAKES THE ORDER UNKNOWN ───────────────
+    // A missing/non-numeric index used to collapse to rank 0, pulling that
+    // status to the FRONT of the ladder; sort is stable so nothing else moved
+    // and nothing signalled a thing, and a move the true order calls BACKWARDS
+    // was written. The whole suite was blind to it because the stub carried no
+    // indexes at all, so this case supplies a REALISTIC list with one gap.
+    push._internals._resetBreaker();
+    console.log('O2. a status order we cannot trust is no order');
+    {
+      await clearEvents();
+      await setWatermark('2026-08-20T00:00:00Z');
+      await fireMilestone('2026-08-24T00:00:00Z');
+      const good = writerStub.getList;
+      // 'active closing' loses its index. Under the old rule it ranked 0, which
+      // put it FIRST — making the ladder's 'workflow' look like a forward move
+      // off it. It is not: 'workflow' sits well behind 'active closing'.
+      writerStub.getList = async () => ({
+        statuses: LIST_STATUSES.map((s, i) => (s === 'active closing'
+          ? { status: s }
+          : { status: s, orderindex: i })),
+      });
+      fakeTask = { id: 'task1', status: { status: 'active closing' }, list: { id: 'list-77' },
+        custom_fields: mkCustomFields({ program: 2 }) };
+      wire.updateTask.length = 0;
+      await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+      const o2 = await push.pushLoan(loanId, { source: 'full_repush' });
+      eq(wire.updateTask.length, 0,
+        'THE ONE THAT MATTERS: one status missing its orderindex makes the order untrustworthy, so nothing is written');
+      eq(o2.statusDecision && o2.statusDecision.act, 'review', '…it is raised for a person instead');
+      writerStub.getList = good;
+    }
+
+    // ── O3. A MILESTONE THAT LANDS MID-PUSH IS NOT SWALLOWED ───────────────
+    // The watermark used to be read AFTER the bag — separated by every field
+    // write, the subtask sync and a getList — so a milestone arriving DURING a
+    // push was consumed by the stamp while the PREVIOUS milestone's status was
+    // the one written. The newer move then read as "already answered" and was
+    // never pushed at all. The event is inserted from inside the getList stub,
+    // which is exactly the window that was open.
+    push._internals._resetBreaker();
+    console.log('O3. a milestone that arrives mid-push survives it');
+    {
+      await clearEvents();
+      await setWatermark('2026-08-20T00:00:00Z');
+      await fireMilestone('2026-08-21T00:00:00Z');          // E1 — the one this push answers
+      const good = writerStub.getList;
+      let fired = false;
+      writerStub.getList = async (id) => {
+        if (!fired) {
+          fired = true;
+          await fireMilestone('2026-08-23T00:00:00Z');      // E2 — lands mid-push
+        }
+        return good(id);
+      };
+      fakeTask = { id: 'task1', status: { status: 'starting' }, list: { id: 'list-77' },
+        custom_fields: mkCustomFields({ program: 2 }) };
+      wire.updateTask.length = 0;
+      await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+      await push.pushLoan(loanId, { source: 'full_repush' });
+      writerStub.getList = good;
+
+      const { rows: wm } = await db.query('SELECT clickup_status_event_at w FROM lt_loans WHERE id = $1::uuid', [loanId]);
+      eq(wm[0].w.toISOString(), new Date('2026-08-21T00:00:00Z').toISOString(),
+        'THE ONE THAT MATTERS: the watermark advances to the event this push ANSWERED, not to one that arrived while it ran');
+      ok(wm[0].w.getTime() < new Date('2026-08-23T00:00:00Z').getTime(),
+        '…so the mid-push milestone is still waiting, not silently spent');
+    }
+
+    // ── O4. A LIST WE COULD NOT READ DOES NOT SPEND THE MILESTONE ──────────
+    // The owner's one carve-out — 'assigned to processor', so a file can be
+    // handed to a different processor — skips the direction test, so a getList
+    // that throws lands it straight in the not-on-list branch. That branch
+    // ANSWERS the event, which for a transient 502 turns the carve-out into a
+    // permanent no-op. A list we could not READ must leave the event for the
+    // next pass; a status genuinely NOT ON the list is a configuration problem a
+    // retry cannot fix, and that one is answered.
+    push._internals._resetBreaker();
+    console.log('O4. a list PILOT could not read leaves the milestone for the next pass');
+    {
+      await clearEvents();
+      await setWatermark('2026-08-20T00:00:00Z');
+      await fireMilestone('2026-08-24T00:00:00Z');
+      for (let i = 0; i < L18.length; i++) {
+        await db.query(`UPDATE lt_loan_milestones SET done = $3 WHERE loan_id = $1::uuid AND milestone_name = $2`,
+          [loanId, L18[i], i <= 1]);          // -> assigned to processor, the exempt status
+      }
+      const good = writerStub.getList;
+      writerStub.getList = async () => { const e = new Error('ClickUp 502'); e.retryable = true; throw e; };
+      fakeTask = { id: 'task1', status: { status: 'active closing' }, list: { id: 'list-77' },
+        custom_fields: mkCustomFields({ program: 2 }) };
+      wire.updateTask.length = 0;
+      await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+      const o4 = await push.pushLoan(loanId, { source: 'full_repush' });
+      writerStub.getList = good;
+
+      eq(wire.updateTask.length, 0, 'an unreadable list writes no status');
+      eq(o4.statusSkipped && o4.statusSkipped.reason, 'status_list_unreadable',
+        '…and says the list could not be READ, not that the status is missing from it');
+      const { rows: wm } = await db.query('SELECT clickup_status_event_at w FROM lt_loans WHERE id = $1::uuid', [loanId]);
+      eq(wm[0].w.toISOString(), new Date('2026-08-20T00:00:00Z').toISOString(),
+        'THE ONE THAT MATTERS: the milestone is NOT spent — a transient blip must not swallow a reassignment for good');
+      const { rows: rev } = await db.query(
+        `SELECT count(*)::int n FROM lt_clickup_review_queue WHERE lt_loan_id = $1::uuid AND field_key = '__status' AND status = 'open'`, [loanId]);
+      ok(rev[0].n >= 1, '…and a person is told, rather than it failing in silence');
+      for (let i = 0; i < L18.length; i++) {
+        await db.query(`UPDATE lt_loan_milestones SET done = $3 WHERE loan_id = $1::uuid AND milestone_name = $2`,
+          [loanId, L18[i], i <= 4]);
+      }
+    }
+
     // Section O now drives several more full pushes than it used to (every
     // status case needs its own fired milestone), so the write budget is reset
     // here — the breaker's own behaviour is proven in section N, not here.
