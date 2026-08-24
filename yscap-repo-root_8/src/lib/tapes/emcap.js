@@ -32,6 +32,9 @@ const path = require('path');
 const reg = require('../conditions/field-registry');
 // One wording for "what does this file vest in" across every tape + screen.
 const { vestingCell } = require('../vesting-label');
+// The shared display formats — a rate cell must never DISPLAY rounded (the
+// lib/rate-format rule, owner-directed 2026-08-04, reaching the tapes 2026-08-24).
+const { FMT } = require('./xlsx-template');
 
 // Template cell-style indices (from the EMCAP workbook's row-2 cells / styles.xml):
 const S = {
@@ -39,7 +42,9 @@ const S = {
   CUR4: 4,   // $#,##0   — Interest Reserve, Proj. Rental
   CUR5: 5,   // $#,##0   — Acquisition Loan, Current Balance
   DATE: 6,   // mm-dd-yy — Funding Date, Maturity Date, Lot Purchase Date
-  PCT: 7,    // 0.00%    — Note Rate
+  PCT: 7,    // 0.00%    — Note Rate's TEMPLATE style; the written cell overrides
+             //            the format to FMT.RATE ('0.00#%') so a 3-decimal rate
+             //            (10.625%) displays whole, never truncated to "10.63%".
   INT: 8,    // 0        — Term
   THOUS: 9,  // #,##0    — SqFt
   ZIP: 10,   // @ text   — Zip
@@ -191,9 +196,11 @@ function economics(loan) {
 }
 
 // ---- the 38-column map (A..AL) --------------------------------------------
-// Each entry: [column, type, styleIndex|null, getter(loan, econ)]. Current
-// rehab / balance reflect SEASONING (with an origination fallback when no
-// snapshot is attached — e.g. a direct buildRow in a unit test).
+// Each entry: [column, type, styleIndex|null, getter(loan, econ), displayFmt?].
+// The optional 5th element is an Excel number-format code the written cell must
+// DISPLAY with (resolved at fill time — xlsx-template.makeFormatResolver).
+// Current rehab / balance reflect SEASONING (with an origination fallback when
+// no snapshot is attached — e.g. a direct buildRow in a unit test).
 const COLUMNS = [
   ['A', 's', null, (l) => l.app.ys_loan_number || l.app.investor_loan_number || ''],   // Loan #
   ['B', 's', null, (l) => vestingCell(l.vesting)],                                       // Borrowing Entity ("Individual" when there is no entity)
@@ -216,7 +223,7 @@ const COLUMNS = [
   ['S', 'n', S.CUR2, (l, e) => e.asIs],                                                  // As Is Value
   ['T', 'n', S.CUR2, (l, e) => e.arv],                                                   // ARV
   ['U', 'n', S.CUR4, (l, e) => e.estRent],                                               // Proj. Rental (estimated monthly rent)
-  ['V', 'n', S.PCT, (l, e) => e.noteRate],                                               // Note Rate (fraction)
+  ['V', 'n', S.PCT, (l, e) => e.noteRate, FMT.RATE],                                     // Note Rate (fraction; displays every decimal)
   ['W', 'd', S.DATE, (l) => l.app.actual_closing || l.app.est_closing_date || l.app.expected_closing], // Funding Date
   ['X', 'd', S.DATE, (l) => l.app.maturity_date],                                        // Maturity Date
   ['Y', 'n', S.INT, (l) => termMonths(l)],                                               // Term (months)
@@ -237,7 +244,7 @@ const COLUMNS = [
 
 function buildRow(loan) {
   const econ = economics(loan);
-  return COLUMNS.map(([col, type, style, get]) => ({ col, type, style, value: get(loan, econ) }));
+  return COLUMNS.map(([col, type, style, get, fmt]) => ({ col, type, style, value: get(loan, econ), fmt }));
 }
 
 function filename(loan) {

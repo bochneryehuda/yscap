@@ -44,7 +44,24 @@ const STATUS_LABEL = {
   approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded',
   on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn',
 };
-const loanNo = (l) => l.investor_loan_number || l.ys_loan_number || '—';
+/* OUR loan number identifies the file, ALWAYS — the investor's own number is kept
+   in the back (owner-directed 2026-08-24: "we always prefer our loan number and
+   keep the investor's loan number somewhere else in the back").
+
+   This screen used to lead with `investor_loan_number`, so a file the pipeline,
+   search and its own header all call YSCAP258134680 appeared here as "32536" —
+   the number the INVESTOR uses, pulled from ClickUp's separate "Investor Loan No"
+   field (clickup/mapper.js, dir:'pull'). On the one screen where you tick which
+   loans to send to a capital provider, a row you cannot match to your own file is
+   worse than cosmetic. `ys_loan_number` is what every other surface identifies a
+   loan by, so it is what this one shows too. */
+const loanNo = (l) => l.ys_loan_number || l.investor_loan_number || '—';
+/* The investor's own number, shown as quiet secondary context — and only when it
+   ADDS something (present, and not simply a repeat of ours). */
+const investorNo = (l) => {
+  const inv = l.investor_loan_number;
+  return inv && inv !== l.ys_loan_number ? inv : null;
+};
 const borrower = (l) => [l.first_name, l.last_name].filter(Boolean).join(' ');
 
 export default function StaffTapes() {
@@ -452,7 +469,16 @@ function LoanTable({ rows, basket, onToggle, tapeName, onExportRow, busyRow }) {
                   <input type="checkbox" checked={picked} onChange={() => onToggle(l)}
                     aria-label={`Put ${loanNo(l)} on the ${tapeName} tape`} />
                 </td>
-                <td style={{ padding: '6px 8px', fontWeight: picked ? 700 : 400 }}>{loanNo(l)}</td>
+                <td style={{ padding: '6px 8px', fontWeight: picked ? 700 : 400 }}>
+                  {loanNo(l)}
+                  {/* the investor's own number, in the back */}
+                  {investorNo(l) && (
+                    <div className="small" style={{ fontWeight: 400, color: '#4B585C' }}
+                      title="The capital provider’s own loan number for this file">
+                      Investor #{investorNo(l)}
+                    </div>
+                  )}
+                </td>
                 <td style={{ padding: '6px 8px' }}>{l.address || '—'}</td>
                 <td style={{ padding: '6px 8px' }}>{borrower(l) || '—'}</td>
                 <td style={{ padding: '6px 8px' }}>

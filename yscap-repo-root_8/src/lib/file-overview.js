@@ -31,6 +31,28 @@ const money = (n) => {
   const x = Number(n);
   return Number.isFinite(x) ? `$${Math.round(x).toLocaleString('en-US')}` : null;
 };
+/* THE FEE / CASH / LIQUIDITY MONEY SHOWS ITS CENTS — money() above is for the
+   figures that are whole dollars BY RULE (the loan and its three pieces, floored
+   by the frozen 2026-07-09 rounding rule) and for the deal's headline values.
+   A FEE is not one of those: origination is round2(totalLoan * origPct), so
+   1.50% of $367,500 is $5,512.50 and rounding it printed $5,513 — half a dollar
+   the borrower is not being charged, on the panel an officer quotes from
+   (owner-reported 2026-08-24, file YSCAP258134663).
+
+   This is not a new convention, it is the one this repo already settled: the
+   Term Sheet Studio panel carries "Fees / cash-to-close / liquidity show EXACT
+   cents (owner-directed 2026-07-16)" and renders every one of these through its
+   own money2, and liquidity.js does the same for the assets condition. The
+   overview was the one surface that did not, so it disagreed with the studio,
+   the term sheet PDF and the Excel export about the same fee. Same 2-decimal
+   shape as those, deliberately, so the four now agree byte for byte. */
+const money2 = (n) => {
+  if (n == null || n === '') return null;
+  const x = Number(n);
+  return Number.isFinite(x)
+    ? `$${x.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : null;
+};
 const pctOf = (frac) => {
   // Ratios here are engine FRACTIONS (pricing.normalize) — no percent-form
   // tolerance knee: a ratio past 150% is an ordinary ground-up figure and must
@@ -128,7 +150,7 @@ async function buildFileOverview(appId, { audience = 'internal' } = {}, client =
   const origPct = quote && quote.origPct != null ? Number(quote.origPct) : null;
   const origDollars = quote && quote.origination != null ? Number(quote.origination) : null;
   const origination = (origPct || origDollars)
-    ? [origPct ? `${RF.fmtRatePct(origPct)}%` : null, origDollars ? money(origDollars) : null].filter(Boolean).join(' · ')
+    ? [origPct ? `${RF.fmtRatePct(origPct)}%` : null, origDollars ? money2(origDollars) : null].filter(Boolean).join(' · ')
     : null;
 
   section('The loan', [
@@ -154,13 +176,13 @@ async function buildFileOverview(appId, { audience = 'internal' } = {}, client =
     if (ledger) {
       const oop = Number(s.oopRehab) > 0 ? Number(s.oopRehab) : null;
       section('Liquidity', [
-        { label: 'Cash to close (estimate)', value: ledger.estimateCashToClose != null ? money(ledger.estimateCashToClose) : null },
-        { label: 'Reserves to show', value: ledger.reserveRequirement != null ? money(ledger.reserveRequirement) : null },
-        { label: 'Closing-cost buffer (1%)', value: Number(ledger.closingBuffer) > 0 && !ledger.closingBufferWaived ? money(ledger.closingBuffer) : null },
-        { label: 'Out-of-pocket rehab', value: oop != null ? money(oop) : null },
-        { label: 'Total liquidity required', value: ledger.requiredLiquidity != null ? money(ledger.requiredLiquidity) : null, strong: true },
-        { label: 'Verified funds', value: ledger.haveCountable ? money(ledger.verifiedTotal) : null, strong: true },
-        { label: 'Max cash to close (verified)', value: ledger.maxCashToClose != null ? money(ledger.maxCashToClose) : null },
+        { label: 'Cash to close (estimate)', value: ledger.estimateCashToClose != null ? money2(ledger.estimateCashToClose) : null },
+        { label: 'Reserves to show', value: ledger.reserveRequirement != null ? money2(ledger.reserveRequirement) : null },
+        { label: 'Closing-cost buffer (1%)', value: Number(ledger.closingBuffer) > 0 && !ledger.closingBufferWaived ? money2(ledger.closingBuffer) : null },
+        { label: 'Out-of-pocket rehab', value: oop != null ? money2(oop) : null },
+        { label: 'Total liquidity required', value: ledger.requiredLiquidity != null ? money2(ledger.requiredLiquidity) : null, strong: true },
+        { label: 'Verified funds', value: ledger.haveCountable ? money2(ledger.verifiedTotal) : null, strong: true },
+        { label: 'Max cash to close (verified)', value: ledger.maxCashToClose != null ? money2(ledger.maxCashToClose) : null },
       ]);
     }
   } catch (_) { /* no liquidity section */ }
