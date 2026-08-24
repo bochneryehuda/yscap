@@ -29,7 +29,12 @@
  * Run: DATABASE_URL=... node scripts/test-esign-sign-link-db.js
  */
 process.env.APP_URL = process.env.APP_URL || 'https://pilot.example.com';
-const R = '/home/user/yscap/yscap-repo-root_8';
+/* THE REPO ROOT, DERIVED — never a machine's absolute path. An absolute root resolves on the
+   machine it was typed on and NOWHERE else: CI checks out to /home/runner/work/..., so a
+   hard-coded one is a MODULE_NOT_FOUND on the first require and the whole chain stops there.
+   It is needed at all because the DocuSign module is stubbed through `require.cache`, which
+   needs the resolved path — `path.join(__dirname, '..')` gives the same thing, anywhere. */
+const R = require('path').join(__dirname, '..');
 const db = require(R + '/src/db');
 const magic = require(R + '/src/lib/esign/magic-link');
 const dsPath = require.resolve(R + '/src/lib/integrations/docusign.js');

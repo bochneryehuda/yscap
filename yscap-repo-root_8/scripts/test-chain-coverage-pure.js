@@ -232,6 +232,40 @@ for (const step of pkgChain) {
 for (const [f, count] of seen) if (count > 1) dupes.push(`${f} x${count}`);
 ok(dupes.length === 0, `npm test runs the same suite more than once: ${dupes.join(', ')}`);
 
+// -----------------------------------------------------------------------------
+// 6. No step in the chain hard-codes an ABSOLUTE filesystem root.
+//
+//    A step that requires `/home/<somebody>/…/src/db` resolves on the ONE machine
+//    it was typed on and nowhere else: CI checks out to /home/runner/work/…, so
+//    the very first require is a MODULE_NOT_FOUND, the process dies before its
+//    first assertion, and the whole `&&` chain stops there. It is the same class
+//    section 4 guards — a step that cannot run — and it is worse in one way: it
+//    passes perfectly on the machine where it was written, so nothing says so
+//    until CI. (Found 2026-08-24 in `test-esign-sign-link-db.js`, which needed a
+//    resolved path to stub a module through `require.cache` and used an absolute
+//    one to get it. `path.join(__dirname, '..')` is the same value, anywhere.)
+//
+//    Scoped to the CHAIN rather than to all of `scripts/`, deliberately: the
+//    one-off local rendering helpers are not run by anything and are not the
+//    hazard this describes.
+// -----------------------------------------------------------------------------
+const ABSOLUTE_ROOT = /(?:require\(|require\.resolve\(|from\s+)['"`]\/(?:home|Users|root|mnt|var)\//;
+const rooted = [];
+for (const f of inChainNow) {
+  const full = path.join(ROOT, f);
+  if (!fs.existsSync(full)) continue;               // section 4 already reports those
+  const body = fs.readFileSync(full, 'utf8');
+  // Also catch the two-step form: a root in a variable, then required off it.
+  const viaVar = /=\s*['"`]\/(?:home|Users|root|mnt|var)\/[^'"`]*['"`]\s*;/.test(body)
+    && /require\([A-Za-z_$][\w$]*\s*\+/.test(body);
+  if (ABSOLUTE_ROOT.test(body) || viaVar) rooted.push(f);
+}
+ok(
+  rooted.length === 0,
+  'a suite in npm test hard-codes an absolute filesystem root, so it can only run on one machine '
+  + `(use path.join(__dirname, '..')): ${rooted.join(', ')}`,
+);
+
 console.log(`\n✓ test-chain coverage: ${n} assertions passed`);
 console.log(`  ${suiteFiles().length} suites on disk, ${inChainNow.size} steps in the chain, `
   + `${Object.keys(QUARANTINE).length} quarantined with a written reason`);
