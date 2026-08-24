@@ -367,6 +367,30 @@ const LOCATION_FIELD_IDS = new Set([mapper.CU.subjectAddress, mapper.CU.borrower
  *   opts.source        journal source: 'scoped_push' | 'full_repush'
  * Returns { ok, wrote, suppressed, blocked, reasons } or throws retryable.
  */
+/**
+ * The ONE derivation of the status the card should carry (#39), shared by the
+ * push and by the section route's compare view (pre-merge audit round 2, obs 7
+ * — the two used to carry byte-identical copies of this block, a drift risk).
+ *
+ * ANSWERED beats UNREAD (the defect-1 class, status side): the engine's
+ * Submittal fork gets a real channel label only when the live field was
+ * ANSWERED ('CX.TABLEFUNDER' key present — '' means answered-blank) or the
+ * mirror holds a channel; otherwise null, and the engine claims nothing
+ * rather than asserting the non-del default during an outage.
+ */
+function desiredStatusFor(bag, loan) {
+  const liveAnswered = !!(bag.ex && ('CX.TABLEFUNDER' in bag.ex));
+  const mirrorChannel = bag.investorChannel != null && String(bag.investorChannel).trim() !== '';
+  return statusEngine.desiredStatus({
+    ladder: bag.ladder,
+    folder: loan.loan_folder,
+    f1393: bag.ex && bag.ex['1393'],
+    channelLabel: (liveAnswered || mirrorChannel)
+      ? mapper._internals.channelLabel(liveAnswered ? bag.ex['CX.TABLEFUNDER'] : bag.investorChannel)
+      : null,
+  });
+}
+
 async function pushLoan(loanId, opts = {}) {
   await seedBreakerFromDb();
   if (!writer.configured()) return { ok: false, skipped: 'not_configured' };
@@ -405,7 +429,12 @@ async function pushLoan(loanId, opts = {}) {
   // fills it); a positively SHORT-TERM label refuses.
   const cls = program.classifyProgram(cardProgramLabel(before), {});
   if (cls.product === program.PRODUCT.SHORT) {
-    await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__card', oldValue: cardProgramLabel(before), newValue: null, changed: false, blocked: true, source: opts.source || 'scoped_push' });
+    // A DRY RUN journals nothing durable (pre-merge audit round 2, defect 2a):
+    // the rehearsal reports the refusal in its result, and only a REAL pass
+    // writes the blocked-write journal row.
+    if (!dryRun()) {
+      await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__card', oldValue: cardProgramLabel(before), newValue: null, changed: false, blocked: true, source: opts.source || 'scoped_push' });
+    }
     return { ok: false, skipped: 'short_term_card' };
   }
 
@@ -509,21 +538,7 @@ async function pushLoan(loanId, opts = {}) {
   // review approval re-pushing one field) deliberately does not touch status.
   if (!onlyIds && !subtaskKeys) {
     try {
-      // ANSWERED beats UNREAD (the defect-1 class, status side): the engine's
-      // Submittal fork gets a real channel label only when the live field was
-      // ANSWERED ('CX.TABLEFUNDER' key present — '' means answered-blank) or
-      // the mirror holds a channel; otherwise null, and the engine claims
-      // nothing rather than asserting the non-del default during an outage.
-      const liveAnswered = !!(bag.ex && ('CX.TABLEFUNDER' in bag.ex));
-      const mirrorChannel = bag.investorChannel != null && String(bag.investorChannel).trim() !== '';
-      const desired = statusEngine.desiredStatus({
-        ladder: bag.ladder,
-        folder: loan.loan_folder,
-        f1393: bag.ex && bag.ex['1393'],
-        channelLabel: (liveAnswered || mirrorChannel)
-          ? mapper._internals.channelLabel(liveAnswered ? bag.ex['CX.TABLEFUNDER'] : bag.investorChannel)
-          : null,
-      });
+      const desired = desiredStatusFor(bag, loan);
       const current = String((before.status && before.status.status) || '').trim();
       const want = desired.status ? String(desired.status).trim() : null;
       if (want && current.toLowerCase() !== want.toLowerCase()) {
@@ -793,8 +808,10 @@ async function pushPass({ limit } = {}) {
         // A PER-LOAN refusal (a short-term card, a link that lost its
         // confidence) is stamped so the loan sinks behind healthy work — a
         // GLOBAL stand-down (off / not_configured cannot reach here; pushLoan
-        // answers those before the loan is read) never is.
-        if (res.skipped !== 'off' && res.skipped !== 'not_configured') {
+        // answers those before the loan is read) never is. A DRY RUN stamps
+        // nothing (audit round 2, defect 2b): a rehearsal must not reorder
+        // the REAL queue — its skips live in this pass result alone.
+        if (!dryRun() && res.skipped !== 'off' && res.skipped !== 'not_configured') {
           try {
             await db.query('UPDATE lt_loans SET clickup_push_error = $2, updated_at = now() WHERE id = $1::uuid',
               [r.id, `push skipped: ${res.skipped}`]);
@@ -803,10 +820,12 @@ async function pushPass({ limit } = {}) {
       }
     } catch (e) {
       out.problems.push({ loanId: r.id, error: String((e && e.message) || e).slice(0, 200), retryable: !!(e && e.retryable) });
-      try {
-        await db.query('UPDATE lt_loans SET clickup_push_error = $2, updated_at = now() WHERE id = $1::uuid',
-          [r.id, String((e && e.message) || e).slice(0, 500)]);
-      } catch (_) { /* best-effort */ }
+      if (!dryRun()) {
+        try {
+          await db.query('UPDATE lt_loans SET clickup_push_error = $2, updated_at = now() WHERE id = $1::uuid',
+            [r.id, String((e && e.message) || e).slice(0, 500)]);
+        } catch (_) { /* best-effort */ }
+      }
       if (e && e.code === 'CLICKUP_CIRCUIT_OPEN') break;   // the window has to drain — stop the pass
     }
   }
@@ -830,6 +849,15 @@ async function createPass({ limit } = {}) {
   //    read), so a pass can never fan out unbounded.
   const scan = Math.max(cap, 10);
   const maxAttempts = Math.max(cap * 3, 6);
+  // THE STAMPED COHORT ROTATES (pre-merge audit round 2, defect 1). Ordering
+  // the stamped loans by static created_at let >=maxAttempts permanently-
+  // skipping older heads spend the whole attempt budget every pass, so a
+  // stamped loan whose problem was later FIXED was never attempted again —
+  // deterministically, forever. Every skip/error stamp touches updated_at, so
+  // ordering the stamped cohort by updated_at ASC makes each pass take the
+  // least-recently-ATTEMPTED loans first: attempted heads sink, and every
+  // stamped loan comes round within ceil(cohort/attempts) passes. Fresh
+  // (unstamped) loans still come first, oldest first, exactly as before.
   const { rows } = await db.query(
     `SELECT l.id FROM lt_loans l
       WHERE l.clickup_task_id IS NULL
@@ -837,7 +865,9 @@ async function createPass({ limit } = {}) {
         AND l.created_at >= $2::date
         AND l.loan_number IS NOT NULL AND l.loan_number <> ''
         AND l.encompass_synced_at IS NOT NULL
-      ORDER BY (l.clickup_push_error IS NOT NULL) ASC, l.created_at ASC
+      ORDER BY (l.clickup_push_error IS NOT NULL) ASC,
+               (CASE WHEN l.clickup_push_error IS NOT NULL THEN l.updated_at END) ASC,
+               l.created_at ASC
       LIMIT $1`, [scan, createSince()]);
   const out = { ok: true, considered: rows.length, created: 0, skipped: [], problems: [] };
   let attempts = 0;
@@ -851,9 +881,11 @@ async function createPass({ limit } = {}) {
         out.skipped.push({ loanId: r.id, reason: res.skipped });
         // Stamp PER-LOAN reasons so this loan stops blocking the queue head; a
         // global stand-down ('off') must never sink every loan at once. The
-        // stamp is advisory ordering only — the loan is still selected (last)
-        // and retried, and a successful create clears it below.
-        if (res.skipped !== 'off' && res.skipped !== 'not_configured') {
+        // stamp is advisory ordering only — the loan is still selected (last,
+        // rotating) and retried, and a successful create clears it below. A
+        // DRY RUN stamps nothing (audit round 2, defect 2b): a rehearsal must
+        // not reorder the REAL queue.
+        if (!dryRun() && res.skipped !== 'off' && res.skipped !== 'not_configured') {
           try {
             await db.query('UPDATE lt_loans SET clickup_push_error = $2, updated_at = now() WHERE id = $1::uuid',
               [r.id, `create skipped: ${res.skipped}`]);
@@ -862,10 +894,12 @@ async function createPass({ limit } = {}) {
       }
     } catch (e) {
       out.problems.push({ loanId: r.id, error: String((e && e.message) || e).slice(0, 200) });
-      try {
-        await db.query('UPDATE lt_loans SET clickup_push_error = $2, updated_at = now() WHERE id = $1::uuid',
-          [r.id, String((e && e.message) || e).slice(0, 500)]);
-      } catch (_) { /* best-effort */ }
+      if (!dryRun()) {
+        try {
+          await db.query('UPDATE lt_loans SET clickup_push_error = $2, updated_at = now() WHERE id = $1::uuid',
+            [r.id, String((e && e.message) || e).slice(0, 500)]);
+        } catch (_) { /* best-effort */ }
+      }
       if (e && e.code === 'CLICKUP_CIRCUIT_OPEN') break;
     }
   }
@@ -874,7 +908,7 @@ async function createPass({ limit } = {}) {
 }
 
 module.exports = {
-  pushLoan, createForLoan, pushPass, createPass,
+  pushLoan, createForLoan, pushPass, createPass, desiredStatusFor,
   writeEnabled, dryRun, createSince,
   _internals: {
     circuitCheck, countWrite, seedBreakerFromDb, breakerLimit,

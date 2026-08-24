@@ -189,14 +189,19 @@ function loanTypeLabel(purpose) {
 }
 const isRefi = (purpose) => { const l = loanTypeLabel(purpose); return !!l && l.startsWith('Refi'); };
 
-/** field 1401 program name -> '*Program'. The owner's rule: default DSCR.
- * Live vocabulary: Investor DSCR 429 / Fix & Flip 229 (short-term — never
- * written) / DSCR I/O 29 / Conventional 6 / HELOC 1. A SHORT-TERM program is
- * skipped, never defaulted — writing DSCR onto a bridge card would be a lie. */
+/** field 1401 program name -> '*Program'. The owner's rule: "if it has any NEW
+ * loan program, it should be mapped to this DSCR till the mapping is updated" —
+ * a PRESENT-but-unmapped program defaults to DSCR (line at the bottom). A BLANK
+ * mirror value is NOT a program (pre-merge audit round 2, obs 2): defaulting a
+ * blank would rewrite a hand-set card label to DSCR on every full push during
+ * a read gap, so a blank writes nothing. Live vocabulary: Investor DSCR 429 /
+ * Fix & Flip 229 (short-term — never written) / DSCR I/O 29 / Conventional 6 /
+ * HELOC 1. A SHORT-TERM program is skipped, never defaulted — writing DSCR
+ * onto a bridge card would be a lie. */
 function programLabel(programName) {
   const v = norm(programName);
   if (v.includes('flip') || v.includes('bridge') || v.includes('ground') || v.includes('hard money')) return null;
-  if (!v) return 'Non-QM - DSCR Ratio';
+  if (!v) return null;
   if (v.includes('dscr')) return 'Non-QM - DSCR Ratio';
   if (v.includes('conventional')) return 'Conventional';
   if (v.includes('heloc')) return 'HELOC';

@@ -49,10 +49,25 @@ const P = clickupPush._internals;
 
 // ── access: the pipeline's one per-loan rule, verbatim ───────────────────────
 async function loadScopedLoan(req, res) {
-  const { rows } = await db.query(
-    `SELECT l.*, ${trash.notTrashSql('l')} AS not_trash FROM lt_loans l WHERE l.id = $1::uuid`,
-    [String(req.params.loanId)],
-  ).catch(() => ({ rows: [] }));
+  // A DATABASE failure is a 503, never the 404 disguise (audit round 2, obs 8):
+  // "no such loan" is an ANSWER about the loan, and an outage is not one. A
+  // malformed id, though, IS "no such loan" — refuse it before the query so a
+  // garbage URL cannot masquerade as an outage.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(req.params.loanId || ''))) {
+    res.status(404).json({ error: 'No such long-term loan.' });
+    return null;
+  }
+  let rows;
+  try {
+    ({ rows } = await db.query(
+      `SELECT l.*, ${trash.notTrashSql('l')} AS not_trash FROM lt_loans l WHERE l.id = $1::uuid`,
+      [String(req.params.loanId)],
+    ));
+  } catch (e) {
+    console.error('[lt-clickup] loan read failed:', (e && e.message) || e);
+    res.status(503).json({ error: 'Could not read this loan just now. Try again in a moment.' });
+    return null;
+  }
   if (!rows.length) { res.status(404).json({ error: 'No such long-term loan.' }); return null; }
   const loan = rows[0];
   const { settings } = await settingsStore.load();
@@ -242,17 +257,8 @@ router.get('/loans/:loanId', async (req, res) => {
             same,
           };
         });
-        // ANSWERED beats UNREAD, exactly as the push decides it (defect-1 class).
-        const liveAnswered = !!(bag.ex && ('CX.TABLEFUNDER' in bag.ex));
-        const mirrorChannel = bag.investorChannel != null && String(bag.investorChannel).trim() !== '';
-        const desired = statusEngine.desiredStatus({
-          ladder: bag.ladder,
-          folder: loan.loan_folder,
-          f1393: bag.ex && bag.ex['1393'],
-          channelLabel: (liveAnswered || mirrorChannel)
-            ? mapper._internals.channelLabel(liveAnswered ? bag.ex['CX.TABLEFUNDER'] : bag.investorChannel)
-            : null,
-        });
+        // The push's OWN derivation, shared — never a second copy (audit round 2, obs 7).
+        const desired = clickupPush.desiredStatusFor(bag, loan);
         const subtask = coName
           ? (Array.isArray(task.subtasks) ? task.subtasks : []).find((st) => {
             try { return mapper._internals.sameNameLoose(String(st.name || ''), coName); } catch (_) { return false; }
@@ -392,9 +398,6 @@ router.post('/loans/:loanId/link', requireLtAdmin, async (req, res) => {
     }
 
     // §10.18 — never tie a long-term loan to a short-term card.
-
-
-    // §10.18 — never tie a long-term loan to a short-term card.
     const cls = program.classifyProgram(P.cardProgramLabel(task), {});
     if (cls.product === program.PRODUCT.SHORT) {
       return res.status(409).json({ error: 'That card is a SHORT-TERM card — a long-term loan is never linked to one.' });
@@ -489,6 +492,21 @@ router.post('/loans/:loanId/reviews/:reviewId/approve', async (req, res) => {
     if (!out || !out.ok) return pushAnswer(res, out);
     if (clickupPush.dryRun()) {
       return res.json({ ok: true, dryRun: true, plan: out.plan, note: 'Dry run — the write was rehearsed, nothing was sent and the review stays open.' });
+    }
+    // AN APPROVAL THAT LANDED NOTHING RESOLVES NOTHING (audit round 2, obs 6).
+    // `wrote` means the value reached the card; `suppressed` means the card
+    // already holds it (equally settled). Neither — the co-borrower's subtask
+    // is gone, or the field no longer resolves on this card — means the
+    // approved value is NOT on the card, and resolving the review would record
+    // a decision as carried out when it was not. The review stays open.
+    if (!(out.wrote > 0 || out.suppressed > 0)) {
+      const why = out.subtaskSkipped === 'subtask_missing'
+        ? 'the co-borrower subtask is no longer on this card'
+        : 'the approved field did not land on the card';
+      return res.status(409).json({
+        error: `Nothing was written — ${why}. The review stays open; re-check the card link and try again.`,
+        subtaskSkipped: out.subtaskSkipped,
+      });
     }
 
     const { rows } = await db.query(

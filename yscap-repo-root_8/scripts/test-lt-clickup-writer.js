@@ -56,12 +56,13 @@ const throwsCode = (fn, code, w) => {
   assert.fail(`${w} — did not throw`);
 };
 
-// The live probe answers (2026-08-24), SSN replaced with a test value.
+// The live probe answers (2026-08-24) — SSN AND the borrower emails replaced
+// with test values (audit round 2, obs 9: no real person's contact pair in the repo).
 const EX_BIRCH = { // cash-out refi, Individual vesting
   3: '7.375', 11: '363 BIRCH DR', 12: 'CRESCO', 14: 'PA', 15: '18326-7761', 16: '1',
   19: 'Cash-Out Refinance', 24: '2022', 25: '365,000.00', 52: 'Married', 65: '123456789',
   136: '', 353: '35.000', 356: '450,000', 745: '07/01/2026', 763: '08/14/2026',
-  1005: '15,286.60', 1177: '', 1240: 'parnesjoseph@gmail.com', 1268: '', 1402: '05/14/1985',
+  1005: '15,286.60', 1177: '', 1240: 'lt.writer.one@example.com', 1268: '', 1402: '05/14/1985',
   1811: 'Investor', 1821: '300,000',
   'CX.TABLEFUNDER': 'Non Delegated Correspondent', 'CX.COMPANYLEAD': '',
   'CX.FILENOTESTASKPAGE': 'owned under individual name not under entity',
@@ -74,7 +75,7 @@ const EX_BIRCH = { // cash-out refi, Individual vesting
 const EX_BIRCHWOOD = { // purchase, Officer vesting
   3: '7.250', 16: '1', 19: 'Purchase', 24: '', 25: '', 52: 'Married', 65: '987654321',
   136: '580,000.00', 353: '80.000', 356: '600,000', 745: '06/08/2026', 763: '07/28/2026',
-  1005: '4,000.00', 1240: 'cjpolatsek@gmail.com', 1268: '', 1402: '03/02/1990',
+  1005: '4,000.00', 1240: 'lt.writer.two@example.com', 1268: '', 1402: '03/02/1990',
   1811: 'Investor', 1821: '600,000',
   'CX.TABLEFUNDER': 'Correspondent', 'CX.PPPTERM': '1 Year', 'CX.PPPTYPE': '5% Fixed',
   'CX.PROPERTYTYPE': 'Single Family Residence', 'CX.DATEACQUIRED': '//',
@@ -172,7 +173,12 @@ async function pureHalf() {
   eq(I.vestingLabel('Trustee'), 'Trust', '4008 Trustee → Trust');
   eq(I.vestingLabel('Something New'), null, 'an unmeasured vesting word is never guessed');
   eq(I.programLabel('Investor DSCR 30 YEAR FRM'), 'Non-QM - DSCR Ratio', 'the DSCR family maps');
-  eq(I.programLabel(''), 'Non-QM - DSCR Ratio', 'a blank program defaults DSCR (owner rule)');
+  // Audit round 2, obs 2: the owner's default rule is PRESENT-but-unmapped →
+  // DSCR ("the bottom line"). A BLANK mirror value states nothing and writes
+  // nothing — defaulting a blank rewrote hand-set card labels during read gaps.
+  eq(I.programLabel(''), null, 'a BLANK program writes NOTHING — never a defaulted rewrite (obs 2)');
+  eq(I.programLabel('Some Brand New LT Program'), 'Non-QM - DSCR Ratio',
+    'a PRESENT-but-unmapped long-term program still defaults DSCR (the owner\'s bottom line)');
   eq(I.programLabel('Fix & Flip Purchase'), null, 'a SHORT-TERM program is skipped, never defaulted to DSCR');
   eq(I.loanTypeLabel('Cash-Out Refinance'), 'Refi Cash-Out', 'field 19 cash-out maps');
   eq(I.loanTypeLabel('NoCash-Out Refinance'), 'Refi Rate & Term', 'field 19 no-cash-out maps');
