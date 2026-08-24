@@ -5,10 +5,22 @@ investor (e.g. 106–110 where the known Deephaven maximum rebate is 104.25), an
 lender sometimes reads e.g. "109, then 106 at the next rate up." Lender Price normally pins
 a lender's price at its maximum by adding a growing **"Max Price Cap"** LLPA.
 
-**Verdict, measured live (read-only pricing calls, owner-authorized):** the PILOT pricer is
-a faithful mirror — the wrong number comes from Lender Price's own answer, and the fix for
-the cap itself belongs at Lender Price. A second, separate display bug (the "109 then 106"
-signature) WAS ours and is fixed in the same commit (§38 in `lenderprice/client.js`).
+**Verdict, measured live (read-only pricing calls, owner-authorized) — three separate answers:**
+
+1. **The uncapped Deephaven ladder is Lender Price's own** (§1–§2). Their response carries the
+   cap for every other investor and not for Deephaven, because Deephaven alone prices from our
+   custom Tier 0 sheet, which has no cap configured at the vendor. The remedy is a Lender Price
+   support ticket; PILOT adds no cap rule of its own.
+2. **The "109 then 106 on the same lender" the owner saw on the BOARD is also Lender Price's
+   own, and is not an error** (§4). It is the cap working exactly as the owner described — the
+   price pinned at the maximum by an LLPA that grows with the rate — followed by the
+   higher-capped PROGRAMME no longer being offered at the next rate, so a lower-capped one
+   becomes that lender's best. Measured on live data.
+3. **A real defect of ours was found and fixed on the way** (§3, §38 in `lenderprice/client.js`):
+   two rate sheets sharing one programme name were merged into a single ladder, so 4 programmes
+   quoted two different prices at the same rate. That is fixed and guarded — but it is a
+   different defect from what the owner reported, and it should not be described as the cause of
+   the owner's symptom.
 
 ## 1. The cap is missing from Lender Price's own response — Deephaven only
 
@@ -68,3 +80,54 @@ capture: 0 merged ladders after the fix (was 32 non-monotonic steps).
 
 Guards: §13c in `scripts/test-lt-lenderprice.js` (mutation-proven — reverting the key fails
 6 assertions) and PE-64a…e in `scripts/test-lt-pricer-screen.mjs`.
+
+**CORRECTION (post-merge, 2026-08-24).** The PR body and the merge commit for #1329 state
+"32 non-monotonic ladder steps before, 0 after." **That was inferred, not measured, and it is
+wrong.** The measured figures on the same live capture are:
+
+| grouping key | programs | programs quoting TWO prices at one rate | falling steps |
+|---|---:|---:|---:|
+| old (`lender+program`) | 30 | **4** | 32 |
+| new (`+ grid + rate period`) | 34 | **0** | 35 |
+
+The defect §38 fixes is the **4 → 0**: a program that quoted two different prices at the same
+rate because two sheets' rungs were interleaved. Falling steps are NOT the bug metric and went
+32 → 35 — and all 35 are **byte-for-byte the vendor's own** (counting falls directly on Lender
+Price's raw leaves under the identical grouping yields exactly 35 too). A sheet whose ladder
+genuinely declines is mirrored, never corrected.
+
+## 4. What the owner actually saw on the board — MEASURED, and it is not a defect
+
+The owner's report was "you price on 109, and then on the next rate one higher, you price the
+same lender as 106." Measured at the BOARD level (per lender, their best price at each rate) on
+the live capture, a lender's best price falls at the next rate up in exactly **3** places — and
+every one of them comes from a **single sheet**, i.e. straight from Lender Price:
+
+```
+NQM Funding LLC        10.5   -> 105.000     then 10.625 -> 104.000
+ResiCentral Mortgage    8.875 -> 104.275     then  8.99  -> 103.650
+ARC Home Loans          6.375 -> 101.774     then  6.49  -> 101.605
+```
+
+**The mechanism is the max-price cap doing exactly what the owner described, plus a programme
+dropping out.** NQM's own data:
+
+```
+rate 10.375   105.000  capped (cap LLPA 3.420)  30 YR Fixed DSCR Supreme
+              104.000  capped (cap LLPA 5.449)  30 YR Fixed Investor DSCR
+rate 10.500   105.000  capped (cap LLPA 3.520)  30 YR Fixed DSCR Supreme     <- pinned, LLPA grew
+              104.000  capped (cap LLPA 5.549)  30 YR Fixed Investor DSCR    <- pinned, LLPA grew
+rate 10.625   104.000  capped (cap LLPA 5.649)  30 YR Fixed Investor DSCR
+              (DSCR Supreme is NO LONGER OFFERED at this rate)
+```
+
+So the price is pinned at the maximum by a cap LLPA that grows with the rate — the owner's own
+description, confirmed on live data — and the apparent "drop" is a **different programme**
+becoming that lender's best once the higher-capped one stops being offered. ResiCentral is the
+same shape (`DSCR Select`, capped 104.275, is absent from 8.99 up, leaving `Premier` at 103.650).
+
+The board is therefore honest: it shows the best price each lender actually offers at each rate.
+What it does not currently SAY is that the programme changed between the two rows — the sub-line
+carries the programme name, but a reader scanning the price column sees only the drop. Making
+that switch explicit is a presentation change and is **not** made here; it needs the owner's
+direction before a mirror surface starts annotating.
