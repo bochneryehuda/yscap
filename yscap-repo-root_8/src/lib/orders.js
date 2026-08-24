@@ -178,13 +178,45 @@ async function getOrderData(appId) {
             l.llc_name AS entity_name,
             lo.full_name AS lo_name, lo.email AS lo_email, lo.title AS lo_title,
             lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls,
-            pr.full_name AS proc_name, pr.email AS proc_email
+            pr.full_name AS proc_name, pr.email AS proc_email,
+            uspsc.cleared AS usps_condition_cleared
        FROM applications a
        JOIN borrowers b ON b.id = a.borrower_id
        LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
        LEFT JOIN llcs l ON l.id = a.llc_id
        LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id AND lo.is_active = true
        LEFT JOIN staff_users pr ON pr.id = a.processor_id AND pr.is_active = true
+       /* HAS A HUMAN ANSWERED THE ADDRESS QUESTION? (owner-reported 2026-08-24: "even though
+          I'm waiving the USPS condition as an admin ... I approve the exception, but he still
+          can't order title and insurance.")
+
+          They could not, and the reason is that the blocker below read ONLY
+          applications.usps_imported_at — a stamp written by one thing, importing a
+          USPS-standardised address. Waiving the condition does not write it. Approving a
+          condition_waiver exception does not write it either: that approval's whole effect is
+          the satisfied-write onto the condition (routes/admin-exceptions.js). So BOTH recorded
+          ways through ended at the same cleared condition, and the gate was looking somewhere
+          else entirely — a refusal whose own remedies cannot produce the state it demands, which
+          is the definition of a dead end.
+
+          Every clearance shape counts, because they are all a person deciding the same thing:
+          signed off, waived, super-admin overridden (db/344), or made not-required. Scoped to
+          the USPS condition BY TEMPLATE CODE, so no other waiver on the file can open this gate.
+          Newest instance wins — the engine suppresses duplicates, and a re-created row after a
+          re-evaluation is the live one. */
+       LEFT JOIN LATERAL (
+         SELECT (ci.signed_off_at IS NOT NULL
+              OR ci.waived_at     IS NOT NULL
+              OR ci.override_at   IS NOT NULL
+              OR ci.is_required   = false   -- there is no waived STATUS: checklist_items_status_check
+              OR ci.status = 'satisfied') AS cleared
+           FROM checklist_items ci
+           JOIN checklist_templates t ON t.id = ci.template_id
+          WHERE ci.application_id = a.id
+            AND t.code = 'usps_address_verification'
+          ORDER BY ci.created_at DESC
+          LIMIT 1
+       ) uspsc ON true
       WHERE a.id = $1 AND a.deleted_at IS NULL`, [appId]);
   const a = r.rows[0];
   if (!a) return null;
@@ -251,6 +283,10 @@ async function getOrderData(appId) {
     // actually configured and the condition is required (so nothing is blocked in an
     // environment that hasn't turned USPS on).
     uspsImported: !!a.usps_imported_at,
+    // A person cleared the USPS condition — by sign-off, waiver, super-admin override, or by
+    // making it optional. See the LATERAL above for why this is a SECOND way past the gate and
+    // not a replacement: an imported address still satisfies it with nobody having to decide.
+    uspsCleared: !!a.usps_condition_cleared,
     uspsGate: uspsGateActive(),
   };
 }
@@ -277,8 +313,12 @@ function blockers(kind, data) {
   // null) would otherwise read as having no contact at all and block its own order
   // — a gate refusing on a technicality that the send path itself does not share.
   if (!vendorEmails(kind, data).length) out.push('contact');
-  // No order may be placed until a USPS-verified address has been imported.
-  if (data.uspsGate && !data.uspsImported) out.push('usps');
+  /* No order may be placed until the subject address has been settled — an order transmits it
+     to an outside vendor and a wrong one is expensive to unwind. TWO ways it can be settled: a
+     USPS-standardised address was imported, or a person with the authority to do so cleared the
+     condition. Before 2026-08-24 only the first counted, so waiving the condition (and approving
+     the exception that waives it) left the order blocked with no remaining way through. */
+  if (data.uspsGate && !data.uspsImported && !data.uspsCleared) out.push('usps');
   return out;
 }
 
