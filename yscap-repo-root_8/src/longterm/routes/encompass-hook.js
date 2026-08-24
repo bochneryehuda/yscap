@@ -68,9 +68,47 @@ router.post('/', async (req, res) => {
   }
   const id = identityFrom(req);
   if (!id.guid && !id.loanNumber) {
-    // Authenticated but unidentifiable — still not an error worth a retry storm
-    // from Encompass's side; say what was missing.
-    return res.status(200).json({ ok: true, nudged: false, note: 'no loan GUID or YSCAP loan number found in the payload' });
+    // A RING WITH NO NAME ON IT. The tenant's advanced-code rule can POST but
+    // cannot always name the loan (see sync/nudge-sweep.js for what is proven
+    // and what is not), so rather than answer "I could not tell" and do nothing,
+    // PILOT asks ENCOMPASS which loans just moved and nudges those.
+    //
+    // STILL NUDGE-ONLY: nothing in the body is read, believed or applied — the
+    // sweep's single write clears `encompass_synced_at`, which makes the
+    // ordinary sync re-read those loans over the authenticated read-only
+    // connection. It FAILS CLOSED: an unreadable answer nudges nothing.
+    //
+    // Switchable off without a deploy; a ring is then answered exactly as before.
+    if (String(process.env.LT_ENCOMPASS_HOOK_SWEEP_DISABLED || '').trim() === '1') {
+      return res.status(200).json({ ok: true, nudged: false, note: 'no loan GUID or YSCAP loan number found in the payload' });
+    }
+    let sweep = null;
+    try {
+      const { sweepRecentlyChanged } = require('../sync/nudge-sweep');
+      let client = null;
+      try { client = require('../encompass/client'); } catch (_) { client = null; }
+      sweep = await sweepRecentlyChanged({ client, db });
+    } catch (e) {
+      sweep = { ok: false, reason: String((e && e.message) || e).slice(0, 200) };
+    }
+    if (sweep && sweep.ok) {
+      console.log(`[lt-encompass-hook] unnamed ping — asked Encompass what moved: checked ${sweep.checked}, nudged ${sweep.nudged.length}, unchanged ${sweep.unchanged}${sweep.capped ? ' (capped — the rest come round on the rota)' : ''}`);
+      return res.status(200).json({
+        ok: true,
+        nudged: sweep.nudged.length > 0,
+        via: 'recently-changed sweep',
+        checked: sweep.checked,
+        count: sweep.nudged.length,
+        capped: !!sweep.capped,
+        note: 'the payload named no loan, so PILOT asked Encompass which loans changed',
+      });
+    }
+    console.warn('[lt-encompass-hook] unnamed ping — could not ask Encompass what moved:', sweep && sweep.reason);
+    return res.status(200).json({
+      ok: true, nudged: false,
+      note: 'no loan GUID or YSCAP loan number found in the payload, and Encompass could not be asked what changed',
+      reason: (sweep && sweep.reason) || null,
+    });
   }
   try {
     // Clearing encompass_synced_at is the whole nudge: the sync's own drain

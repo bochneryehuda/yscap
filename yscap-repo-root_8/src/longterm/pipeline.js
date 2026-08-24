@@ -32,6 +32,7 @@ const access = require('./access');
 const contacts = require('./people/contacts');
 const product = require('./product');
 const stages = require('./stages');
+const readState = require('./read-state');
 const book = require('./pipeline-book');
 const trash = require('./trash');
 const productTerm = require('./product-term');
@@ -703,6 +704,19 @@ async function loadPipeline(staff, filters = {}) {
   // "Funding". The raw Encompass name stays on `milestone_name`; the screen's
   // Milestone column draws this label.
   for (const r of rows) r.milestone_label = stages.completedFormLabel(r.milestone_name);
+
+  // WHY A ROW IS HALF EMPTY (owner-reported 2026-08-24, three Sherman Ave files:
+  // "All these files somehow are not updating in pilot. I don't know why I'm not
+  // getting the information"). A loan arrives in two steps and only the second
+  // fills the file in; PILOT has always known which step each loan is at and said
+  // so nowhere the person looking at the row would find it. ONE definition —
+  // read-state.js — so the pipeline, the file screen and the sync screen can never
+  // give three answers about one loan.
+  for (const r of rows) {
+    const rs = readState.readStateOf(r);
+    r.read_state = rs.state;
+    r.read_why = rs.why;
+  }
 
   return {
     // EVERY ROW CARRIES ITS OWN PRODUCT STAMP (CLAUDE.md §7). Tagged here, at the
