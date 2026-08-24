@@ -129,7 +129,7 @@ function inspectorApproved({ draw = {}, requests = [], findingLines = [] } = {})
  * exists (set `feeRecorded:true`) so the report stops calling it a projection.
  */
 function drawMoney({ draw = {}, requests = [], findingLines = [], feeCents = 0, feeRecorded = false,
-  retainageHeldCents = 0, netReleaseCents = null, released = false, finding = null } = {}) {
+  feeKnown = true, retainageHeldCents = 0, netReleaseCents = null, released = false, finding = null } = {}) {
   const requested = draw.total_requested_cents != null
     ? N(draw.total_requested_cents)
     : (Array.isArray(requests) ? requests : []).reduce((s, r) => s + N(r && r.requested_cents), 0);
@@ -153,6 +153,12 @@ function drawMoney({ draw = {}, requests = [], findingLines = [], feeCents = 0, 
     not_approved_cents: Math.max(0, requested - insp.cents),
     fee_cents: fee,
     fee_projected: fee > 0 && !feeRecorded,
+    // IS A ZERO FEE AN ANSWER, OR SILENCE? Every surface below prints "no draw fee on this
+    // release" whenever `fee_cents` is 0 — which is TRUE for a genuinely zero-fee draw and a
+    // FALSE CLAIM when the fee simply never resolved. A caller that cannot establish the fee
+    // passes feeKnown:false and the wording stops asserting an absence it cannot support.
+    // Defaults to true, so every existing caller is byte-identical.
+    fee_known: !!feeKnown,
     retainage_held_cents: retainage,
     net_release_cents: net,
     is_final_approved: isFinal,

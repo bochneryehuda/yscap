@@ -50,6 +50,23 @@ function usd(v) {
   return n == null ? null : '$' + Math.round(n).toLocaleString('en-US');
 }
 
+/* THE MONEY THE BORROWER BRINGS OR MUST SHOW, TO THE CENT (owner-directed
+   2026-08-24; the standing rule is owner-directed 2026-07-16, "Fees /
+   cash-to-close / liquidity show EXACT cents").
+
+   This is the email an ADMIN approves a deal from, and it was rounding the two
+   figures the borrower's own email, the term sheet, the studio and the assets
+   condition all state to the cent. So the person granting the approval and the
+   person receiving the terms could read different numbers for the same money —
+   and on a fee override the approval record itself said "$2,000" about a $1,999.50
+   the officer typed. usd() stays for the DEAL values and the loan pieces, which
+   are whole dollars by rule; usd2() is for everything that must reconcile. */
+function usd2(v) {
+  const n = num(v);
+  return n == null ? null
+    : '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 /** A percentage that keeps real precision — 87.5 stays 87.5, 10 renders as 10%. */
 function pct(v) {
   const n = num(v);
@@ -68,7 +85,7 @@ function fmtOverrideValue(unit, v) {
   if (unit === 'flag') return 'on';
   if (unit === 'pct') return `${Number(v)}%`;
   if (unit === 'frac') return `${(Number(v) * 100).toFixed(2)}%`;
-  if (unit === 'money') return '$' + Math.round(Number(v)).toLocaleString('en-US');
+  if (unit === 'money') return usd2(v);
   return String(v);
 }
 
@@ -187,8 +204,8 @@ function dealFacts(deal = {}, { skip = null } = {}) {
   add('Rehab budget', usd(deal.rehabBudget));
   add('Initial advance', usd(deal.initialAdvance));
   add('Rehab holdback', usd(deal.rehabHoldback));
-  add('Cash to close', usd(deal.cashToClose), 'cashToClose');
-  add('Liquidity to verify', usd(deal.liquidity), 'liquidity');
+  add('Cash to close', usd2(deal.cashToClose), 'cashToClose');
+  add('Liquidity to verify', usd2(deal.liquidity), 'liquidity');
   // Leverage at FULL precision (the frozen display rule — 87.5 never rounds to 87).
   add('Initial / as-is LTV', pct(deal.acqLtvPct));
   add('ARV LTV', pct(deal.arvPct));
@@ -215,9 +232,9 @@ function dealFigures(deal = {}, { label = 'Loan amount' } = {}) {
   if (!amount) return null;
   const secondary = [];
   const push = (l, v, key) => { if (v != null && v !== '') secondary.push({ label: l, value: v, _key: key }); };
-  push('Cash to close', usd(deal.cashToClose), 'cashToClose');
-  push('Liquidity to verify', usd(deal.liquidity), 'liquidity');
-  push('Down payment', usd(deal.downPayment), 'downPayment');
+  push('Cash to close', usd2(deal.cashToClose), 'cashToClose');
+  push('Liquidity to verify', usd2(deal.liquidity), 'liquidity');
+  push('Down payment', usd2(deal.downPayment), 'downPayment');
   const shown = secondary.slice(0, 3);
   return {
     primary: {

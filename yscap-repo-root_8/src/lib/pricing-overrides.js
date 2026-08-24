@@ -267,7 +267,16 @@ function describeOverrides(changes) {
     if (unit === 'flag') return 'on';
     if (unit === 'pct') return `${Number(v)}%`;
     if (unit === 'frac') return `${(Number(v) * 100).toFixed(2)}%`;
-    if (unit === 'money') return '$' + Math.round(Number(v)).toLocaleString('en-US');
+    // A money knob here is a FEE somebody typed — the underwriting/legal fee, the
+    // credit-report fee, the appraisal fee, the title fee, the feasibility fee, an
+    // approved effective price. Rounding it made the approval record disagree with
+    // what was actually entered ("$1,995 → $2,000" for a typed $1,999.50), on the
+    // card an admin approves from, in its notification and in the audit trail that
+    // outlives both. Kept in step with `email/pricing-email.fmtOverrideValue` on
+    // purpose — those three surfaces must never describe one change differently.
+    if (unit === 'money') {
+      return '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
     return String(v);
   };
   return (Array.isArray(changes) ? changes : []).map((c) => {

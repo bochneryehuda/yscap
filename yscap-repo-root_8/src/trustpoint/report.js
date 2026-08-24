@@ -14,6 +14,7 @@
 const crypto = require('crypto');
 const db = require('../db');
 const borrowerSafe = require('../lib/borrower-safe');
+const mirror = require('./mirror');
 
 const usd = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -46,7 +47,18 @@ async function buildPdf({ mode, addr, loanNumber, draw, lines, photos }) {
   y -= 8;
 
   line('Amounts', { f: bold, size: 11, color: gold });
-  line(`Requested: ${usd(draw.requested_cents)}    Approved: ${usd(draw.approved_cents)}${draw.to_disburse_cents != null ? `    Net to release: ${usd(draw.to_disburse_cents)}` : ''}`, { size: 10 });
+  // A NET IS ONLY "RELEASED" ONCE THE ADMINISTRATOR HAS WIRED IT — this line printed
+  // "Net to release: $X" off `to_disburse_cents` whenever it was non-null, and that field is
+  // TrustPoint's PROJECTION, pre-populated at submission as requested minus the draw fee. It is
+  // the exact field behind YSCAP258134629 ("Released to you $6,200" on a $6,450 draft) and
+  // YSCAP258134754 before it, and this PDF is the "report saying it was approved to release"
+  // the owner was looking at. Same ONE predicate the ledger writer and the desk ask, so the
+  // document, the screen and the money can never describe one draw three ways.
+  const wired = mirror.releaseConfirmed(draw);
+  const netTxt = draw.to_disburse_cents == null ? ''
+    : (wired ? `    Net released: ${usd(draw.to_disburse_cents)}`
+             : `    Projected net: ${usd(draw.to_disburse_cents)} (not yet released)`);
+  line(`Requested: ${usd(draw.requested_cents)}    Approved: ${usd(draw.approved_cents)}${netTxt}`, { size: 10 });
   if (mode === 'staff') {
     const fees = Array.isArray(draw.fees) ? draw.fees : [];
     if (fees.length) line(`Fees: ${fees.map((f) => `${f.name || 'fee'} ${usd(Math.round(Number(f.amount || 0) * 100))}`).join(' · ')}`, { size: 9, color: muted });
@@ -144,7 +156,11 @@ async function _buildOrGetReport(appId, tpDrawId, mode = 'staff') {
   } catch (_) { /* no photos archived yet */ }
   const version = crypto.createHash('sha256').update(JSON.stringify({
     m: mode, a: draw.approved_cents, r: draw.requested_cents, n: draw.to_disburse_cents,
-    s: draw.status, l: lines.map((l) => [l.sitewire_job_item_id, l.approved_cents]),
+    // THE WIRE DATE IS PART OF WHAT THIS DOCUMENT SAYS, so it has to be part of what
+    // identifies it: the amounts line now reads "Net released" vs "Projected net" off
+    // `disbursed_at`, and without it here a report drawn before the wire landed would be
+    // reused forever and would never pick up the release it now qualifies for.
+    d: draw.disbursed_at, s: draw.status, l: lines.map((l) => [l.sitewire_job_item_id, l.approved_cents]),
     // a newly archived photo must mint a FRESH report, not reuse the photo-less one
     p: photos.length,
   })).digest('hex').slice(0, 12);

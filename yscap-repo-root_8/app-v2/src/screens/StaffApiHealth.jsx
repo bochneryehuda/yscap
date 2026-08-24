@@ -165,24 +165,38 @@ function Toggle({ on, disabled, onClick, danger, label }) {
 }
 
 // One runtime, toggleable switch (a real control, not a read-out).
+//
+// A PARKED integration’s switch decides NOTHING, so the control is disabled and the row SAYS
+// why. Without this the row would read “Off · overridden — the hosting default is on” beside a
+// toggle an admin can click, which flips the stored flag and changes nothing — the confident
+// wrong answer this page exists to prevent. The server is the one that decides (it sends
+// `parked` + `parkedReason` from src/trustpoint/parked.js); this only renders it.
 function SwitchRow({ s, busy, onToggle, onReset }) {
-  const sub = [
-    s.on ? 'On' : 'Off',
-    s.overridden ? `overridden — the hosting default is ${s.envDefault ? 'on' : 'off'}` : 'matches the hosting default',
-  ];
-  if (s.resume && s.on) sub.push('turning off applies right away; the background reader fully stops on the next restart');
+  const parked = !!s.parked;
+  const sub = parked
+    ? ['Off', String(s.parkedReason || 'This integration is parked, so this switch has no effect.')]
+    : [
+      s.on ? 'On' : 'Off',
+      s.overridden ? `overridden — the hosting default is ${s.envDefault ? 'on' : 'off'}` : 'matches the hosting default',
+    ];
+  if (!parked && s.resume && s.on) sub.push('turning off applies right away; the background reader fully stops on the next restart');
   return (
     <div className="ah-sw">
-      <Toggle on={s.on} danger={s.dangerous} disabled={busy} onClick={() => onToggle(s)} label={s.label} />
+      <Toggle on={parked ? false : s.on} danger={s.dangerous} disabled={busy || parked} onClick={() => onToggle(s)} label={s.label} />
       <div className="ah-sw-l">
         <div className="ah-sw-t">
           {s.label}
+          {parked && (
+            <span className="ah-tag ah-t-warn" title={String(s.parkedReason || '')}>
+              parked
+            </span>
+          )}
           {s.dangerous && (
             <span className="ah-tag ah-t-bad" title="Changes what the platform actually sends to the outside world — you’ll be asked to confirm.">
               changes live behavior
             </span>
           )}
-          {s.overridden && (
+          {!parked && s.overridden && (
             <span className="ah-tag ah-t-warn" title="An admin flipped this from the hosting default. Reset returns it to the default.">
               overridden
             </span>
@@ -190,7 +204,7 @@ function SwitchRow({ s, busy, onToggle, onReset }) {
         </div>
         <div className="ah-sw-s">{sub.join(' · ')}</div>
       </div>
-      {s.overridden && (
+      {!parked && s.overridden && (
         <button className="btn ghost small" disabled={busy} onClick={() => onReset(s)}
           title="Return this switch to the hosting default">Reset</button>
       )}

@@ -315,6 +315,29 @@ function feeLinesCents(fees) {
   return out.length ? out : null;
 }
 
+/**
+ * DID THE ADMINISTRATOR ACTUALLY WIRE THIS DRAW? — the ONE definition, and the one
+ * thing on a TrustPoint draw that may ever be described as released.
+ *
+ * `disbursed_amount` is NOT that answer and never was: TrustPoint pre-populates it at
+ * SUBMISSION with the projected net (requested minus the per-draw fee), so a draft draw
+ * nobody has inspected carries a plausible-looking dollar figure. Reading it as money
+ * that moved has now produced two live incidents — YSCAP258134754 ("your construction
+ * draw of $49,750.00 is on its way" on a $50,000 request) and YSCAP258134629 ("Released
+ * to you $6,200" on a $6,450 draft) — and the second happened because the LEDGER writer
+ * below was fixed in 2026-07-27 while the SCREEN and db/302 kept reading the raw field.
+ *
+ * So the rule lives here and every surface asks it: the wire DATE must exist (the only
+ * field TrustPoint sets when money actually goes out) and the draw must have been
+ * decided. Pure; never throws; a row it cannot read is not a release.
+ */
+function releaseConfirmed(row) {
+  if (!row || typeof row !== 'object') return false;
+  const wired = row.disbursed_at != null;
+  const decided = row.status === 'APPROVED' || row.status === 'COMPLETED';
+  return wired && decided;
+}
+
 // The calendar DAY of a wire, in the office timezone — never UTC (a 9pm ET wire is
 // that evening's date, not tomorrow's; house rule: dates are calendar strings).
 function nyDay(ts) {
@@ -349,9 +372,9 @@ async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the pr
     // been decided. Never infer a release from an amount alone.
     // Under-announcing is safe — `drawReleaseOverdueOnce` already alerts the team when an
     // accepted draw's wire has not been recorded in time.
-    const wired = row.disbursed_at != null;
-    const decided = row.status === 'APPROVED' || row.status === 'COMPLETED';
-    if (!wired || !decided) return { skipped: 'not_disbursed' };
+    // ONE definition, shared with the desk and with db/627 (restated there in SQL,
+    // because a migration cannot require this module) — see `releaseConfirmed`.
+    if (!releaseConfirmed(row)) return { skipped: 'not_disbursed' };
     // the Sitewire draw this money belongs to: the live intake tie, or the portal close-out
     let swDrawId = row.sitewire_draw_id != null ? Number(row.sitewire_draw_id) : null;
     if (swDrawId == null && row.portal_draw_request_id != null) {
@@ -835,4 +858,4 @@ async function drainInbox(limit = 50) {
   return { ok, failed, drained: rows.length };
 }
 
-module.exports = { upsertDraw, reactDraw, reactReturned, upsertServiceOrder, hydrateProject, processEvent, drainInbox, archiveReport, linkedAppFor, linkFor, linkToSitewireIntake, mirrorDisbursement, verifyPartnerFee, _drawRow: drawRow, _feeLinesCents: feeLinesCents, _fetchDocumentBytes: fetchReportBytes, _isTrustpointDocHost: isTrustpointDocHost };
+module.exports = { upsertDraw, reactDraw, reactReturned, upsertServiceOrder, hydrateProject, processEvent, drainInbox, archiveReport, linkedAppFor, linkFor, linkToSitewireIntake, mirrorDisbursement, releaseConfirmed, verifyPartnerFee, _drawRow: drawRow, _feeLinesCents: feeLinesCents, _fetchDocumentBytes: fetchReportBytes, _isTrustpointDocHost: isTrustpointDocHost };
