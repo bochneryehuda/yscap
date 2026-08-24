@@ -88,8 +88,15 @@ async function upsertDiscovered(dbc, loan, settings) {
        loan_number = COALESCE(EXCLUDED.loan_number, lt_loans.loan_number),
        borrower_name = COALESCE(EXCLUDED.borrower_name, lt_loans.borrower_name),
        loan_amount = COALESCE(lt_loans.loan_amount, EXCLUDED.loan_amount),
-       milestone_name = COALESCE(EXCLUDED.milestone_name, lt_loans.milestone_name),
-       stage_key = COALESCE(EXCLUDED.stage_key, lt_loans.stage_key),
+       -- FILL-ONLY since db/623. The pipeline's milestone column is the LAGGING
+       -- active-form reading (it stays on the last WORKED step — Birch read
+       -- "Funding" after Funding completed), while the full read establishes the
+       -- SITTING milestone from the loan's own ladder. New-wins here would flip a
+       -- healed loan back to the lagging form on every discovery pass; a real
+       -- move still lands, because it bumps encompass_last_modified and the full
+       -- read follows on the same tick.
+       milestone_name = COALESCE(lt_loans.milestone_name, EXCLUDED.milestone_name),
+       stage_key = COALESCE(lt_loans.stage_key, EXCLUDED.stage_key),
        loan_folder = COALESCE(EXCLUDED.loan_folder, lt_loans.loan_folder),
        -- THE TWO THAT SAY WHOSE LOAN THIS IS. Discovery now reads them (fields 1401
        -- and 4), and storing them here rather than waiting for the per-loan read is
@@ -149,9 +156,19 @@ async function readLoan(loanId, guid, settings) {
     return { ok: false, reason };
   }
 
-  const milestone = loan && (loan.currentMilestone || loan.currentMilestoneName
+  // WHERE THE FILE SITS (db/623, owner-reported on 363 Birch Dr). The loan's own
+  // milestone LADDER decides: the file sits in the first step whose doneIndicator
+  // is false. The loan JSON's `currentMilestone` LAGS — it stays on the last
+  // WORKED step until somebody starts the next, which is how a file whose
+  // Funding step had COMPLETED still read "Funding". The lagging form is kept
+  // only as the fallback for a ladder that could not be read.
+  const ladderMod = require('./milestone-ladder');
+  const ladder = await ladderMod.readLadder(guid, { client: lazy.client });
+  const laggingMilestone = loan && (loan.currentMilestone || loan.currentMilestoneName
     || (loan.loanProductData && loan.loanProductData.currentMilestone));
-  const { milestoneName, stageKey } = stageFor(milestone, settings);
+  const { milestoneName, stageKey } = stageFor(
+    (ladder.ok && ladder.sitting) || laggingMilestone, settings,
+  );
 
   // WHICH PRODUCT IS THIS LOAN? The pipeline discovers with `Loan.LoanAmount > 0`
   // — the WHOLE Encompass book — because no folder separates the two products at
@@ -220,6 +237,24 @@ async function readLoan(loanId, guid, settings) {
   // two on this statement not wrapped in COALESCE.
   const sale = purchased.readPurchase(loan, purchased.configFrom(settings || {}));
 
+  // ONE fieldReader for everything read by number — the team's ids, the lock's and
+  // the two status-wording ids together. The pacing rule on this tenant is a
+  // self-imposed gap between calls, so two calls per loan is twice as long holding
+  // a connection the whole company shares. Every id in this batch is VERIFIED
+  // (MS.STATUS/MS.STATUSDATE live-probed 2026-08-24 — the FR0117 lesson: the LT
+  // client does NOT split a failed batch, so one bad id blanks every read).
+  // A failure here is its own: a loan whose team or lock could not be read is
+  // still a loan we successfully mirrored, and the failure must not undo that.
+  let values = null;
+  try {
+    const ids = [...new Set([
+      ...contacts.fieldIdsFor(settings), ...locks.fieldIdsFor(settings),
+      ...ladderMod.MS_FIELD_IDS,
+    ])];
+    if (ids.length) values = await lazy.client.fieldReader(guid, ids);
+  } catch (_) { /* each consumer below reports its own miss */ }
+  const ms = ladderMod.msStatusOf(values);
+
   // What we held BEFORE the write, because the write is what destroys the evidence.
   // Encompass's own milestone log is 403 on this tenant, so noticing that the
   // milestone is not what it was is the only history available — and it can only be
@@ -237,6 +272,8 @@ async function readLoan(loanId, guid, settings) {
             borrower_email = COALESCE($8, borrower_email),
             purchased_status = CASE WHEN $9::boolean THEN $10 ELSE purchased_status END,
             purchased_at = CASE WHEN $9::boolean THEN $11::date ELSE purchased_at END,
+            ms_status = COALESCE($12, ms_status),
+            ms_status_date = COALESCE($13, ms_status_date),
             encompass_synced_at = now(),
             encompass_sync_error = NULL,
             updated_at = now()
@@ -250,10 +287,12 @@ async function readLoan(loanId, guid, settings) {
     // watch their own files disappear from their login with nothing having changed.
     // $9 is "Encompass answered about the sale at all". Only then are $10/$11 written,
     // so a read that could not see the field leaves a recorded purchase alone while a
-    // read that saw "Shipped" genuinely clears one.
+    // read that saw "Shipped" genuinely clears one. $12/$13 are the tenant's own
+    // status wording + stamp (MS.STATUS/MS.STATUSDATE), same never-blank rule.
     [loanId, milestoneName, stageKey, termMonths, programName,
       borrowerFirst, borrowerLast, borrowerEmail,
-      sale.purchased !== null, sale.status, sale.at],
+      sale.purchased !== null, sale.status, sale.at,
+      ms.status, ms.date],
   );
 
   // A first sighting is recorded as a BASELINE, never as an arrival — we cannot know
@@ -264,16 +303,11 @@ async function readLoan(loanId, guid, settings) {
     loanId, priorMilestone, { milestoneName, stageKey },
   );
 
-  // ONE fieldReader for everything read by number — the team's ids and the lock's
-  // together. The pacing rule on this tenant is a self-imposed gap between calls, so
-  // two calls per loan is twice as long holding a connection the whole company
-  // shares. A failure here is its own: a loan whose team or lock could not be read
-  // is still a loan we successfully mirrored, and the failure must not undo that.
-  let values = null;
-  try {
-    const ids = [...new Set([...contacts.fieldIdsFor(settings), ...locks.fieldIdsFor(settings)])];
-    if (ids.length) values = await lazy.client.fieldReader(guid, ids);
-  } catch (_) { /* each consumer below reports its own miss */ }
+  // The ladder itself — every step with done/date/associate — mirrored beside the
+  // loan and stamping `ladder_synced_at` (which is what drains this loan out of
+  // the backfill). Best-effort: an unrecordable ladder must not undo the mirror.
+  let ladderWrite = null;
+  if (ladder.ok) ladderWrite = await ladderMod.writeLadder(loanId, ladder.rows);
 
   const team = await contacts.syncLoanContacts(loanId, guid, { values });
 
@@ -334,6 +368,8 @@ async function readLoan(loanId, guid, settings) {
   const lockWrite = await locks.writeLock(loanId, lock);
 
   return { ok: true, milestoneName, stageKey, team, milestone: milestoneWrite, sale,
+    ladder: ladder.ok ? { steps: ladder.rows.length, sitting: ladder.sitting, ...(ladderWrite || {}) } : { ok: false, reason: ladder.reason },
+    msStatus: ms.status,
     lock: { ...lockWrite, posture: lock.posture }, property, terms, pairs, investor };
 }
 

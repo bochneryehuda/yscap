@@ -299,10 +299,24 @@ model LtLoan {
   // comes from the milestone's own consumerStatus (db/547), so our internal
   // renaming can never leak into what a borrower reads.
 
-  /// The Encompass milestone NAME, mirrored verbatim. Read it from MS.STATUS —
-  /// the pipeline's own Loan.CurrentMilestone column is BLANK on every loan in
-  /// this tenant.
+  /// The milestone this file is SITTING in — the first not-done step of the
+  /// loan's own ladder (db/623, owner-directed 2026-08-23: a completed milestone
+  /// means the file sits in the NEXT one). Written from GET /loans/{id}/milestones
+  /// by the sync; the lagging `Log.MS.CurrentMilestone` reading is only the
+  /// fallback for a loan whose ladder has not been read yet.
   milestoneName String? @map("milestone_name")
+
+  /// The tenant's own status WORDING (virtual field MS.STATUS — "Funded" once the
+  /// Funding step completes), stamped by Encompass at each milestone transition.
+  /// This is the field the tenant's own webhook automation fires on. Verbatim.
+  msStatus String? @map("ms_status")
+  /// MS.STATUSDATE, verbatim ("08/23/2026 04:07:53 PM" — US format, no timezone,
+  /// so it is mirrored as text and never parsed into a guess).
+  msStatusDate String? @map("ms_status_date")
+  /// When this loan's milestone LADDER (lt_loan_milestones) was last mirrored.
+  /// The backfill pass drains on IS NULL, so it doubles as the "never laddered"
+  /// marker for the already-mirrored book.
+  ladderSyncedAt DateTime? @map("ladder_synced_at") @db.Timestamptz(6)
 
   /// OUR stage. Stored rather than derived on read so the pipeline can group and
   /// sort on it in SQL. A milestone with no mapping leaves this NULL, and an
@@ -416,6 +430,7 @@ model LtLoan {
   lock          LtLock?
   lockEvents    LtLockEvent[]
   milestoneEvents LtMilestoneEvent[]
+  ladder        LtLoanMilestone[]
   conditions    LtCondition[]
   documents     LtDocument[]
 
@@ -1286,6 +1301,49 @@ model LtMilestoneEvent {
 
   @@index([loanId, observedAt])
   @@map("lt_milestone_events")
+}
+
+/// THE LOAN'S OWN MILESTONE LADDER (db/623) — every step of THIS loan's workflow,
+/// mirrored from GET /loans/{id}/milestones. This is what settles where a file
+/// actually is: the file SITS in the first row whose `done` is false (Birch: the
+/// Funding step done → sitting in "Investor Delivery"), while the old
+/// `Log.MS.CurrentMilestone` reading lags on the last WORKED step.
+///
+/// It is also the per-milestone PERSONA record: each step carries WHO is assigned
+/// to it (the associate's name, Encompass login, role, email, phone) — which is
+/// how "I was assigned only to the Closer and Funder milestone" becomes a fact a
+/// pipeline filter can honour.
+model LtLoanMilestone {
+  loanId        String @map("loan_id") @db.Uuid
+  milestoneName String @map("milestone_name")
+
+  /// The ladder's own order, as Encompass returned it (0-based).
+  position Int     @default(0)
+  done     Boolean @default(false)
+
+  /// One date per step, Encompass's own: the actual start for a step that has
+  /// been worked, the PLANNED/expected date for one that has not. `done` says
+  /// which reading applies.
+  startDate DateTime? @map("start_date") @db.Timestamptz(6)
+
+  /// The assigned associate on THIS step. `associateId` is the Encompass LOGIN id
+  /// — the same join key the people map (lt_staff_links) is built on.
+  associateId    String? @map("associate_id")
+  associateName  String? @map("associate_name")
+  associateRole  String? @map("associate_role")
+  associateEmail String? @map("associate_email")
+  associatePhone String? @map("associate_phone")
+  roleRequired   String? @map("role_required")
+
+  encompassSyncedAt DateTime @default(now()) @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([loanId, milestoneName])
+  @@index([loanId, position], map: "lt_loan_milestones_loan_pos_idx")
+  @@map("lt_loan_milestones")
 }
 
 /// A mapping is either awaiting a human, accepted, or refused. The one enum this
