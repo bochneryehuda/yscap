@@ -363,6 +363,61 @@ const money = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { mini
     for (const b of made.borrowers) await db.query(`DELETE FROM borrowers WHERE id=$1`, [b]).catch(() => {});
   }
 
+  // ---- H. THE PDF SAYS WHICH IT IS ----------------------------------------------------
+  // The owner's own words about this document: "this stupid PDF report ... it says that it was
+  // approved to release." It printed "Net to release: $X" off `to_disburse_cents` whenever that
+  // field was non-null — the SAME projection field as the rest of this incident — so a draft
+  // draw's forecast was rendered, in a document that goes out, as money on its way.
+  //
+  // Rendered rather than grepped: the text is what the reader sees, and a source check cannot
+  // tell a reworded template from a rewired one. pdf-lib writes hex-encoded strings inside
+  // Flate streams, so the assertions read the actual drawn text back out of the bytes.
+  {
+    const zlib = require('zlib');
+    const pdfText = (buf) => {
+      const str = buf.toString('latin1'); let out = '';
+      const re = /stream\r?\n([\s\S]*?)endstream/g; let m;
+      while ((m = re.exec(str))) {
+        let t; try { t = zlib.inflateSync(Buffer.from(m[1], 'latin1')).toString('latin1'); } catch (_) { continue; }
+        t.replace(/<([0-9A-Fa-f]+)>\s*Tj/g, (_x, h) => { out += Buffer.from(h, 'hex').toString('latin1') + '\n'; return ''; });
+      }
+      return out;
+    };
+    const { _buildPdf } = require(R + '/src/trustpoint/report.js');
+    const base = { number: 1, requested_cents: 645000, approved_cents: 645000, to_disburse_cents: 620000, submitted_at: '2026-08-20' };
+    const amounts = async (d) => {
+      const bytes = await _buildPdf({ mode: 'staff', addr: '117 Brook St', loanNumber: 'YSCAP258134629',
+        draw: { ...base, ...d }, lines: [], photos: [] });
+      return (pdfText(Buffer.from(bytes)).match(/Requested:.*/) || [''])[0];
+    };
+
+    // The owner's file exactly: a submitted draw carrying TrustPoint's forecast.
+    const draft = await amounts({ status: 'SUBMITTED', disbursed_at: null });
+    ok('the PDF calls an unwired figure a PROJECTION, not a release', /Projected net: \$6,200\.00 \(not yet released\)/.test(draft));
+    ok('...and never says released on a draw nobody released', !/Net released/.test(draft));
+
+    // A genuine wire: date AND decided.
+    const wired = await amounts({ status: 'COMPLETED', disbursed_at: '2026-08-22' });
+    ok('a genuinely wired draw does say released', /Net released: \$6,200\.00/.test(wired));
+    ok('...and drops the projection wording', !/Projected net/.test(wired));
+
+    // A wire date with no decision is NOT a release — the predicate needs both halves, and
+    // this is the case a date-only check would wave through.
+    const half = await amounts({ status: 'SUBMITTED', disbursed_at: '2026-08-22' });
+    ok('a wire date on an undecided draw is still only a projection', /Projected net/.test(half) && !/Net released/.test(half));
+
+    // Nothing to state is stated as nothing — never "$0.00 released".
+    const none = await amounts({ status: 'COMPLETED', disbursed_at: '2026-08-22', to_disburse_cents: null });
+    ok('with no net figure at all the line simply omits it', !/net/i.test(none) && /Requested: \$6,450\.00/.test(none));
+
+    // THE CACHE MUST NOTICE. The stored report is keyed by a version hash built from the draw's
+    // own figures; the wording now depends on the wire DATE, so a report drawn before the wire
+    // landed would be reused forever and never pick up the release it now qualifies for.
+    const src = fs.readFileSync(R + '/src/trustpoint/report.js', 'utf8');
+    ok('the report version hash includes the wire date, so the wording can refresh',
+      /d:\s*draw\.disbursed_at/.test(src));
+  }
+
   console.log(`test-phantom-draw-release-db: ${fail ? 'FAILED' : 'OK'} (${pass} assertions${fail ? `, ${fail} failed` : ''})`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('test-phantom-draw-release-db CRASHED:', e && e.stack || e); process.exit(1); });
