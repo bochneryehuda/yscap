@@ -102,9 +102,26 @@ if (headerRead) {
 const envVar = (route.match(/process\.env\.(LT_ENCOMPASS_WEBHOOK_SECRET)/) || [])[1];
 check(!!envVar && doc.includes(envVar),
   'and it names the environment variable the secret has to be set in — never the secret itself');
-// The secret is a CREDENTIAL. It may be spoken in chat; it may never live in the repo.
-check(/PASTE-THE-STEP-1-VALUE-HERE|<the step-1 value>|<the value from step 1>/.test(doc),
-  'the secret appears in the document ONLY as a placeholder');
+// The secret is a CREDENTIAL. It may be spoken in chat; it may NEVER live in the
+// repo. Asserting "a placeholder exists somewhere" is not enough — a real value
+// pasted over one of two placeholders leaves the other one standing. So every
+// place the document hands over a secret is checked to BE a placeholder, and the
+// check is structural: this file must never itself contain a real secret to
+// compare against.
+const PLACEHOLDER = /^(PASTE-|<|your-|YOUR-|\.\.\.)/;
+const headerArgs = [...doc.matchAll(/Headers\.Add\(\s*"X-Encompass-Secret"\s*,\s*"([^"]*)"\s*\)/gi)].map((m) => m[1]);
+check(headerArgs.length >= 1, `the document shows the secret header being set (${headerArgs.length}x)`);
+for (const v of headerArgs) {
+  check(PLACEHOLDER.test(v),
+    `the secret header's value is a PLACEHOLDER, not a real secret ("${v}")`);
+}
+const curlSecrets = [...doc.matchAll(/X-Encompass-Secret:\s*(\S+)/gi)].map((m) => m[1]);
+for (const v of curlSecrets) {
+  check(PLACEHOLDER.test(v),
+    `every X-Encompass-Secret shown in a test command is a placeholder too ("${v}")`);
+}
+check(!/LT_ENCOMPASS_WEBHOOK_SECRET\s*=\s*(?!<)\S/.test(doc),
+  'and the environment variable is never shown with a value beside it');
 
 // ── 3. The promise: the rule works whether or not [364] is substituted ───────
 console.log('');
