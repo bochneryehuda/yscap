@@ -366,7 +366,20 @@ function purchaseOrEstimate(bag) {
 // means "nothing to write" — the push SKIPS it (never clears, G2).
 const FIELD_MAP = [
   { cu: CU.channel, key: 'channel', name: '*Wholesale / correspondent', type: 'dropdown',
-    src: (b) => channelLabel(exv(b, 'CX.TABLEFUNDER')) },
+    // ANSWERED beats UNREAD (pre-merge audit 2026-08-24, defect 1). The
+    // fieldReader returns '' for a genuinely BLANK field — the key is PRESENT —
+    // and omits a field it could not read; readExtras collapses a whole outage
+    // into {}. The owner's blank→'Non Del Correspondent' default may only ever
+    // stand in for Encompass ANSWERING blank: defaulting on an UNREAD channel
+    // rewrote every occupied '*Wholesale / correspondent' dropdown (139 live
+    // cards carry 'Table funding') to the default during any Encompass outage.
+    // Unread live → the mirror's channel if the mirror holds one; else claim
+    // NOTHING (absent = not written, never cleared — the file's own contract).
+    src: (b) => {
+      if (b && b.ex && ('CX.TABLEFUNDER' in b.ex)) return channelLabel(b.ex['CX.TABLEFUNDER']);
+      const mirror = s(b && b.investorChannel);
+      return mirror ? channelLabel(mirror) : null;
+    } },
   { cu: CU.companyLead, key: 'company_lead', name: '*Company lead', type: 'checkbox',
     src: (b) => (isChecked(exv(b, 'CX.COMPANYLEAD')) ? true : null) },
   { cu: CU.loanOfficerEmail, key: 'loan_officer_email', name: '*Loan Officer Email', type: 'email',

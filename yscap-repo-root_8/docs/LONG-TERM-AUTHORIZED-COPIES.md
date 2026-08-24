@@ -302,4 +302,14 @@ stops a "no" quietly turning into a "yes" months later.
 # per task+field+proposal) — recorded here since the shape, not the text, was
 # reused. src/lib/address.js was NOT copied and is NOT imported: the fill-only
 # location posture removed the need.
+#
+# PURPOSE NOTE for the existing `import src/lib/address-canon.js` grant
+# (pre-merge audit 2026-08-24): src/longterm/clickup/push.js reads
+# addressCanon.geocode() to resolve coordinates for the two ClickUp LOCATION
+# fields (a ClickUp location write requires real lat/lng). That is a READ of
+# the shared geocoder whose own permanent cache (address_canon_cache) it fills
+# as designed — the same behavior every RTL caller gets. The 2026-08-16 grant
+# above was worded for the DSCR pricer's ZIP lookup; this records the writer's
+# use of the SAME authorized import for geocoding, so the per-item rule stays
+# honest. No RTL address RECORD is read or written — only the geocode cache.
 # ---------------------------------------------------------------------------

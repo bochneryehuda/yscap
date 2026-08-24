@@ -119,8 +119,19 @@ function desiredStatus({ ladder, folder, f1393, channelLabel } = {}) {
     latest = { name: r.milestone_name, mapped };
   }
   if (!latest) return { status: 'starting', reason: 'no mapped milestone is completed yet — the file is starting' };
-  const status = latest.mapped && latest.mapped.channel ? submittalStatus(channelLabel) : latest.mapped;
-  return { status, reason: `"${latest.name}" is the latest completed milestone` };
+  if (latest.mapped && latest.mapped.channel) {
+    // The Submittal fork needs the funding channel, and an UNREAD channel is
+    // not a blank one (the defect-1 class): with channelLabel null — the caller
+    // could read neither the live CX.TABLEFUNDER nor a mirrored channel — the
+    // engine claims NOTHING rather than asserting the non-del default status
+    // onto a delegate loan during an Encompass outage. An ANSWERED blank
+    // arrives as the mapper's default label and forks normally.
+    if (channelLabel == null) {
+      return { status: null, reason: 'Submittal is complete but the funding channel could not be read — no status asserted' };
+    }
+    return { status: submittalStatus(channelLabel), reason: `"${latest.name}" is the latest completed milestone` };
+  }
+  return { status: latest.mapped, reason: `"${latest.name}" is the latest completed milestone` };
 }
 
 module.exports = {

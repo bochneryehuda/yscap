@@ -420,6 +420,16 @@ async function pushLoan(loanId, opts = {}) {
   const onlyIds = opts.only ? mapper.resolveOnly(opts.only) : null;
   if (onlyIds) fields = fields.filter((f) => onlyIds.has(f.id));
 
+  // A SUBTASK-SCOPED push (a review approval on the co-borrower's subtask):
+  // ONLY the subtask sync runs, for exactly the named co-borrower field keys.
+  // The parent loop, the status assert and the pushed_at stamp are all skipped
+  // — approving one blocked subtask field must not become a full repush with
+  // the shield down everywhere.
+  const subtaskKeys = opts.subtaskOnly
+    ? new Set((Array.isArray(opts.subtaskOnly) ? opts.subtaskOnly : [opts.subtaskOnly]).map(String))
+    : null;
+  if (subtaskKeys) fields = [];
+
   const out = { ok: true, wrote: 0, suppressed: 0, blocked: 0, failed: [], plan: [] };
   let overwrites = 0;
 
@@ -437,9 +447,12 @@ async function pushLoan(loanId, opts = {}) {
     // G21 — a sweep nobody asked for may only ADD.
     if (opts.fillOnly && !oldBlank) { out.suppressed++; continue; }
 
-    // G20 — ANY change to an existing DOB is a human decision.
+    // G20 — ANY change to an existing DOB is a human decision. A DRY RUN
+    // reports the block in the plan and writes NOTHING (audit 2026-08-24: a
+    // rehearsal was seeding real review-queue + journal rows).
     if (mapper.isDobChange(f.id, oldVal, f.value) && !opts.approvedReview) {
       out.blocked++;
+      if (dryRun()) { out.plan.push({ field: f.name, key: f.key, wouldBlock: 'dob_change_blocked_pending_review' }); continue; }
       await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldId: f.id, fieldKey: f.key, oldValue: oldVal, newValue: f.value, changed: false, blocked: true, source: opts.source || 'scoped_push' });
       await queueReview({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: mapper.PII_REVIEW_KEY[f.id] || f.key, currentValue: mapper.reviewPreview(f.id, oldVal), proposedValue: mapper.reviewPreview(f.id, f.value), reason: 'dob_change_blocked_pending_review' });
       continue;
@@ -448,6 +461,7 @@ async function pushLoan(loanId, opts = {}) {
     // G19 — the PII overwrite shield: fill a blank, never rewrite a difference.
     if (mapper.PII_OVERWRITE_SHIELD[f.id] && !oldBlank && !opts.approvedReview) {
       out.blocked++;
+      if (dryRun()) { out.plan.push({ field: f.name, key: f.key, wouldBlock: 'pii_overwrite_blocked' }); continue; }
       await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldId: f.id, fieldKey: f.key, oldValue: oldVal, newValue: f.value, changed: false, blocked: true, source: opts.source || 'scoped_push' });
       await queueReview({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: mapper.PII_REVIEW_KEY[f.id] || f.key, currentValue: mapper.reviewPreview(f.id, oldVal), proposedValue: mapper.reviewPreview(f.id, f.value), reason: 'pii_overwrite_blocked' });
       continue;
@@ -480,9 +494,9 @@ async function pushLoan(loanId, opts = {}) {
   // shield + DOB gate key on those ids, so the co-borrower's identity gets the
   // same protection). Found by NAME on every push (stateless + idempotent) and
   // created once when missing. Full pushes only.
-  if (!onlyIds && bag.coborrower) {
+  if ((subtaskKeys || !onlyIds) && bag.coborrower) {
     try {
-      await syncCoBorrowerSubtask({ loanId, loan, bag, before, options, out, opts });
+      await syncCoBorrowerSubtask({ loanId, loan, bag, before, options, out, opts, subtaskKeys });
     } catch (e) {
       console.warn('[lt-clickup-push] co-borrower subtask sync skipped:', (e && e.message) || e);
     }
@@ -493,14 +507,22 @@ async function pushLoan(loanId, opts = {}) {
   // manual change in ClickUp is corrected on the next mirror movement
   // ("Encompass always wins, even after manual changes"). A SCOPED push (a
   // review approval re-pushing one field) deliberately does not touch status.
-  if (!onlyIds) {
+  if (!onlyIds && !subtaskKeys) {
     try {
-      const channelRaw = (bag.ex && bag.ex['CX.TABLEFUNDER']) || bag.investorChannel;
+      // ANSWERED beats UNREAD (the defect-1 class, status side): the engine's
+      // Submittal fork gets a real channel label only when the live field was
+      // ANSWERED ('CX.TABLEFUNDER' key present — '' means answered-blank) or
+      // the mirror holds a channel; otherwise null, and the engine claims
+      // nothing rather than asserting the non-del default during an outage.
+      const liveAnswered = !!(bag.ex && ('CX.TABLEFUNDER' in bag.ex));
+      const mirrorChannel = bag.investorChannel != null && String(bag.investorChannel).trim() !== '';
       const desired = statusEngine.desiredStatus({
         ladder: bag.ladder,
         folder: loan.loan_folder,
         f1393: bag.ex && bag.ex['1393'],
-        channelLabel: mapper._internals.channelLabel(channelRaw),
+        channelLabel: (liveAnswered || mirrorChannel)
+          ? mapper._internals.channelLabel(liveAnswered ? bag.ex['CX.TABLEFUNDER'] : bag.investorChannel)
+          : null,
       });
       const current = String((before.status && before.status.status) || '').trim();
       const want = desired.status ? String(desired.status).trim() : null;
@@ -557,8 +579,11 @@ async function pushLoan(loanId, opts = {}) {
   }
 
   // A dry run never stamps — the drain must keep offering the loan until a
-  // REAL clean push lands.
-  if (!dryRun()) {
+  // REAL clean push lands. Neither does a SCOPED push (audit 2026-08-24, obs 3):
+  // clickup_pushed_at means "the whole card was synced", and a one-field review
+  // approval stamping it would drain the loan out of the refresh queue with the
+  // rest of its mirror movement unpushed.
+  if (!dryRun() && !onlyIds && !subtaskKeys) {
     await db.query(
       `UPDATE lt_loans SET clickup_pushed_at = now(), clickup_push_error = NULL, updated_at = now()
         WHERE id = $1::uuid`, [loanId]);
@@ -568,11 +593,13 @@ async function pushLoan(loanId, opts = {}) {
 
 /** The co-borrower's profile subtask: find by name, create once, then push
  *  the co fields with the SAME per-field guards a primary field gets. */
-async function syncCoBorrowerSubtask({ loanId, loan, bag, before, options, out, opts }) {
+async function syncCoBorrowerSubtask({ loanId, loan, bag, before, options, out, opts, subtaskKeys = null }) {
   const coName = [bag.coborrower.first_name, bag.coborrower.middle_name, bag.coborrower.last_name, bag.coborrower.name_suffix]
     .filter(Boolean).join(' ').trim();
   if (!coName || T.isPlaceholderName(coName)) return;
-  const coFields = mapper.buildCoBorrowerFields(bag, options);
+  let coFields = mapper.buildCoBorrowerFields(bag, options);
+  // A subtask-SCOPED push carries only its own approved keys.
+  if (subtaskKeys) coFields = coFields.filter((f) => subtaskKeys.has(f.key));
   if (!coFields.length) return;
 
   const subtasks = Array.isArray(before.subtasks) ? before.subtasks : [];
@@ -581,6 +608,9 @@ async function syncCoBorrowerSubtask({ loanId, loan, bag, before, options, out, 
   });
 
   if (!existing) {
+    // A scoped approval NEVER creates (G16's spirit): the review was raised on
+    // an existing subtask; with the subtask gone there is nothing to approve.
+    if (subtaskKeys) { out.subtaskSkipped = 'subtask_missing'; return; }
     if (dryRun()) { out.plan.push({ field: '__co_subtask', wouldWrite: `create subtask "${coName}" with ${coFields.length} fields` }); return; }
     circuitCheck();
     const listId = before.list && before.list.id;
@@ -611,12 +641,14 @@ async function syncCoBorrowerSubtask({ loanId, loan, bag, before, options, out, 
     const oldBlank = mapper.isBlankClickupValue(oldVal);
     if (mapper.isDobChange(f.id, oldVal, f.value) && !opts.approvedReview) {
       out.blocked++;
+      if (dryRun()) { out.plan.push({ field: `${f.name} [subtask]`, key: f.key, wouldBlock: 'dob_change_blocked_pending_review' }); continue; }
       await journalFieldWrite({ ltLoanId: loanId, taskId: existing.id, fieldId: f.id, fieldKey: f.key, oldValue: oldVal, newValue: f.value, changed: false, blocked: true, source: opts.source || 'full_repush' });
       await queueReview({ ltLoanId: loanId, taskId: existing.id, fieldKey: f.key, currentValue: mapper.reviewPreview(f.id, oldVal), proposedValue: mapper.reviewPreview(f.id, f.value), reason: 'dob_change_blocked_pending_review' });
       continue;
     }
     if (mapper.PII_OVERWRITE_SHIELD[f.id] && !oldBlank && !opts.approvedReview) {
       out.blocked++;
+      if (dryRun()) { out.plan.push({ field: `${f.name} [subtask]`, key: f.key, wouldBlock: 'pii_overwrite_blocked' }); continue; }
       await journalFieldWrite({ ltLoanId: loanId, taskId: existing.id, fieldId: f.id, fieldKey: f.key, oldValue: oldVal, newValue: f.value, changed: false, blocked: true, source: opts.source || 'full_repush' });
       await queueReview({ ltLoanId: loanId, taskId: existing.id, fieldKey: f.key, currentValue: mapper.reviewPreview(f.id, oldVal), proposedValue: mapper.reviewPreview(f.id, f.value), reason: 'pii_overwrite_blocked' });
       continue;
@@ -736,20 +768,39 @@ async function pushPass({ limit } = {}) {
   if (!writer.configured()) return { ok: true, skipped: 'not_configured' };
   if (!writeEnabled() && !dryRun()) return { ok: true, skipped: 'off' };
   const cap = Math.max(1, parseInt(process.env.LT_CLICKUP_PUSH_PER_PASS || String(limit || 5), 10) || 5);
+  // A LOAN WITH A RECORDED PROBLEM SORTS LAST (pre-merge audit 2026-08-24,
+  // defect 3). `NULLS FIRST` alone let a handful of never-pushable heads (a
+  // deleted card, a short-term-classified card — pushed_at stays NULL forever)
+  // occupy the whole cap every pass and starve every healthy refresh behind
+  // them. clickup_push_error is the durable "this one has a problem" stamp:
+  // healthy loans always outrank stamped ones, stamped ones still retry when
+  // no healthy work remains, and a clean full push clears the stamp.
   const { rows } = await db.query(
     `SELECT l.id FROM lt_loans l
       WHERE l.clickup_task_id IS NOT NULL
         AND COALESCE(l.clickup_link_confidence, 'confirmed') = 'confirmed'
         AND ${trash.notTrashSql('l')}
         AND (l.clickup_pushed_at IS NULL OR l.encompass_synced_at > l.clickup_pushed_at)
-      ORDER BY l.clickup_pushed_at ASC NULLS FIRST, l.encompass_last_modified DESC
+      ORDER BY (l.clickup_push_error IS NOT NULL) ASC, l.clickup_pushed_at ASC NULLS FIRST, l.encompass_last_modified DESC
       LIMIT $1`, [cap]);
   const out = { ok: true, considered: rows.length, pushed: 0, problems: [] };
   for (const r of rows) {
     try {
       const res = await pushLoan(r.id, { source: 'full_repush' });
       if (res && res.ok) out.pushed++;
-      else if (res && res.skipped) out.problems.push({ loanId: r.id, skipped: res.skipped });
+      else if (res && res.skipped) {
+        out.problems.push({ loanId: r.id, skipped: res.skipped });
+        // A PER-LOAN refusal (a short-term card, a link that lost its
+        // confidence) is stamped so the loan sinks behind healthy work — a
+        // GLOBAL stand-down (off / not_configured cannot reach here; pushLoan
+        // answers those before the loan is read) never is.
+        if (res.skipped !== 'off' && res.skipped !== 'not_configured') {
+          try {
+            await db.query('UPDATE lt_loans SET clickup_push_error = $2, updated_at = now() WHERE id = $1::uuid',
+              [r.id, `push skipped: ${res.skipped}`]);
+          } catch (_) { /* best-effort */ }
+        }
+      }
     } catch (e) {
       out.problems.push({ loanId: r.id, error: String((e && e.message) || e).slice(0, 200), retryable: !!(e && e.retryable) });
       try {
@@ -768,6 +819,17 @@ async function createPass({ limit } = {}) {
   if (!writer.configured()) return { ok: true, skipped: 'not_configured' };
   if (!writeEnabled() && !dryRun()) return { ok: true, skipped: 'off' };
   const cap = Math.max(1, parseInt(process.env.LT_CLICKUP_CREATE_PER_PASS || String(limit || 2), 10) || 2);
+  // NO HEAD-OF-LINE STARVATION (pre-merge audit 2026-08-24, defect 2). The old
+  // shape — LIMIT cap, oldest first, nothing stamped on a skip — meant two
+  // permanently-unskippable heads (an officer with no folder, a placeholder
+  // borrower) re-selected forever and no newer file EVER got a card. Now:
+  //  · loans with a recorded problem sort LAST (fresh files always come first),
+  //  · a SKIP is stamped onto clickup_push_error so it sinks on the next pass,
+  //  · the SCAN window is wider than the create budget, and skips do not spend
+  //    it — but the scan itself is bounded (each attempt costs an Encompass
+  //    read), so a pass can never fan out unbounded.
+  const scan = Math.max(cap, 10);
+  const maxAttempts = Math.max(cap * 3, 6);
   const { rows } = await db.query(
     `SELECT l.id FROM lt_loans l
       WHERE l.clickup_task_id IS NULL
@@ -775,14 +837,29 @@ async function createPass({ limit } = {}) {
         AND l.created_at >= $2::date
         AND l.loan_number IS NOT NULL AND l.loan_number <> ''
         AND l.encompass_synced_at IS NOT NULL
-      ORDER BY l.created_at ASC
-      LIMIT $1`, [cap, createSince()]);
+      ORDER BY (l.clickup_push_error IS NOT NULL) ASC, l.created_at ASC
+      LIMIT $1`, [scan, createSince()]);
   const out = { ok: true, considered: rows.length, created: 0, skipped: [], problems: [] };
+  let attempts = 0;
   for (const r of rows) {
+    if (out.created >= cap || attempts >= maxAttempts) break;
+    attempts++;
     try {
       const res = await createForLoan(r.id);
       if (res && res.created) out.created++;
-      else if (res && res.skipped) out.skipped.push({ loanId: r.id, reason: res.skipped });
+      else if (res && res.skipped) {
+        out.skipped.push({ loanId: r.id, reason: res.skipped });
+        // Stamp PER-LOAN reasons so this loan stops blocking the queue head; a
+        // global stand-down ('off') must never sink every loan at once. The
+        // stamp is advisory ordering only — the loan is still selected (last)
+        // and retried, and a successful create clears it below.
+        if (res.skipped !== 'off' && res.skipped !== 'not_configured') {
+          try {
+            await db.query('UPDATE lt_loans SET clickup_push_error = $2, updated_at = now() WHERE id = $1::uuid',
+              [r.id, `create skipped: ${res.skipped}`]);
+          } catch (_) { /* best-effort */ }
+        }
+      }
     } catch (e) {
       out.problems.push({ loanId: r.id, error: String((e && e.message) || e).slice(0, 200) });
       try {
@@ -798,7 +875,7 @@ async function createPass({ limit } = {}) {
 
 module.exports = {
   pushLoan, createForLoan, pushPass, createPass,
-  writeEnabled, dryRun,
+  writeEnabled, dryRun, createSince,
   _internals: {
     circuitCheck, countWrite, seedBreakerFromDb, breakerLimit,
     journalFieldWrite, queueReview, resolvePerson, providerTextSafe, geoFor,

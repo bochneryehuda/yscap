@@ -391,6 +391,22 @@ async function pureHalf() {
   eq(st({ ladder: [] }), null, 'no ladder read yet → the engine claims NOTHING');
   eq(st({ ladder: ladderDoneThrough('Funding'), f1393: 'Loan Originated' }), 'closed (6-email funded)',
     "1393 'Loan Originated' is not a cancellation");
+
+  console.log('Q. audit 2026-08-24 — ANSWERED beats UNREAD (the channel default, both sides)');
+  const chan = mapper.FIELD_MAP.find((f) => f.key === 'channel');
+  eq(chan.src({ ex: { 'CX.TABLEFUNDER': 'Table Funding' } }), 'Table funding', 'an ANSWERED channel maps');
+  eq(chan.src({ ex: { 'CX.TABLEFUNDER': '' } }), 'Non Del Correspondent',
+    "an ANSWERED BLANK takes the owner's default (the key is present)");
+  eq(chan.src({ ex: {} }), null, 'an UNREAD channel (an outage collapses to {} — no key) claims NOTHING');
+  eq(chan.src({}), null, '…and with no ex at all, still nothing');
+  eq(chan.src({ ex: {}, investorChannel: 'Table Funding' }), 'Table funding',
+    '…unless the MIRROR holds a channel, which maps normally');
+  eq(st({ ladder: ladderDoneThrough('Submittal'), channelLabel: null }), null,
+    'Submittal done + an UNREADABLE channel → the engine asserts NO status (never the non-del default)');
+  eq(st({ ladder: ladderDoneThrough('Submittal'), channelLabel: 'Non Del Correspondent' }), 'non del imported ba(2-em)',
+    '…while an answered-blank default forks normally');
+  eq(st({ ladder: ladderDoneThrough('Submittal'), channelLabel: 'Delegate Correspondent' }), 'delegated initial',
+    '…and a delegate channel forks the other way');
 }
 
 // ── the DB half ──────────────────────────────────────────────────────────────
@@ -406,19 +422,22 @@ async function dbHalf() {
 
   const realWriter = require(writerPath);   // keep the REAL guards on the stub's writes
   const wire = { setField: [], createTask: [], getTask: 0, updateTask: [] };
+  let createSeq = 8;   // the suite's first real create stays 'newtask9'
   let LIST_STATUSES = ['starting', 'assigned to processor', 'workflow', 'delegated initial',
     'non del imported ba(2-em)', 'ctc (4-email)', 'scheduling closing', 'active closing',
     'closed (6-email funded)', 'in purchase review', 'pa issued-post closing.', 'closed reconciled',
     'cancelled', 'inactive / on hold'];
   let fakeTask;
+  let fakeTasksById = null;          // per-task cards for the multi-loan pass tests
   let taskFailNext = false;
   let failFieldIds = new Set();
   const writerStub = {
     configured: () => true,
     teamId: () => '9011888435',
-    getTask: async () => {
+    getTask: async (taskId) => {
       wire.getTask++;
       if (taskFailNext) { const e = new Error('ClickUp GET /task -> 502'); e.status = 502; e.retryable = true; throw e; }
+      if (fakeTasksById && fakeTasksById[String(taskId)]) return fakeTasksById[String(taskId)];
       return fakeTask;
     },
     setField: async (taskId, fieldId, value) => {
@@ -429,7 +448,10 @@ async function dbHalf() {
     },
     createTask: async (listId, payload) => {
       wire.createTask.push({ listId, payload });
-      return { id: 'newtask9', url: 'https://app.clickup.com/t/newtask9', custom_id: 'FILLE-9999' };
+      // Unique per create — two loans can never share one card (the DB's own
+      // one-card-one-loan index would refuse the second link).
+      const id = `newtask${++createSeq}`;
+      return { id, url: `https://app.clickup.com/t/${id}`, custom_id: 'FILLE-9999' };
     },
     getFolderLists: async () => ({ lists: [{ id: 'list-77', name: 'Loan Pipeline' }] }),
     getList: async () => ({ statuses: LIST_STATUSES.map((s) => ({ status: s })) }),
@@ -447,10 +469,11 @@ async function dbHalf() {
     geocode: async (t) => ({ lat: 41.09, lng: -75.26, formatted: t }),
   } };
   let exLive = {};
+  let encFail = false;               // simulate an Encompass outage (defect 1)
   require.cache[encPath] = { id: encPath, filename: encPath, loaded: true, exports: {
     configured: () => true,
-    fieldReaderSplit: async () => ({ ...exLive }),
-    fieldReader: async () => ({ ...exLive }),
+    fieldReaderSplit: async () => { if (encFail) throw new Error('Encompass unreachable (test outage)'); return { ...exLive }; },
+    fieldReader: async () => { if (encFail) throw new Error('Encompass unreachable (test outage)'); return { ...exLive }; },
   } };
 
   const mapper = require('../src/longterm/clickup/mapper');
@@ -827,10 +850,147 @@ async function dbHalf() {
       'the PII shield holds on the subtask — a differing co name is not rewritten');
     writerStub.getTask = realGetTask;
     exLive = { ...EX_BIRCH };
+
+    push._internals._resetBreaker();
+    console.log('Q2. audit defect 1 end to end — an Encompass outage never rewrites the channel');
+    // The card HOLDS 'Table funding '; Encompass is unreachable (the client
+    // throws), so readExtras collapses to {} — the push proceeds mirror-only
+    // and the occupied dropdown must be left exactly as it stands.
+    encFail = true;
+    fakeTasksById = null;
+    fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
+      subtasks: [{ id: 'subtask1', name: 'Rivka Parnes' }],
+      custom_fields: mkCustomFields({ program: 2, channel: 3 /* Table funding */ }) };
+    wire.setField.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    out = await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(out.ok, true, 'the outage push still completes (mirror-only)');
+    ok(!wire.setField.some((w) => w.fieldId === CU.channel),
+      "the occupied '*Wholesale / correspondent' dropdown is NOT rewritten to the default");
+    encFail = false;
+    // …and the same push against a HEALTHY read (which answers non-del) rewrites
+    // it, proving the guard keys on readability, not on the field being skipped.
+    wire.setField.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    out = await push.pushLoan(loanId, { source: 'full_repush' });
+    ok(wire.setField.some((w) => w.fieldId === CU.channel),
+      '…while an ANSWERED channel that differs still writes normally');
+
+    push._internals._resetBreaker();
+    console.log('R. audit defects 2+3 — no head-of-line starvation in either pass');
+    // Quiet any stray drain rows other suites may have left in this database.
+    await db.query(`UPDATE lt_loans SET clickup_pushed_at = now()
+                     WHERE loan_number NOT LIKE 'TESTWR%' AND clickup_task_id IS NOT NULL
+                       AND (clickup_pushed_at IS NULL OR encompass_synced_at > clickup_pushed_at)`);
+    const mkLoan = async (num, name, officer, email, createdAt) => {
+      const { rows } = await db.query(
+        `INSERT INTO lt_loans (id, encompass_loan_guid, loan_number, borrower_name, encompass_synced_at, created_at)
+         VALUES (gen_random_uuid(), 'test-writer-' || gen_random_uuid(), $1, $2, now(), $3) RETURNING id`,
+        [num, name, createdAt]);
+      await db.query(`INSERT INTO lt_properties (loan_id, street, city, state, zip) VALUES ($1::uuid, '1 Test St', 'Cresco', 'PA', '18326')`, [rows[0].id]);
+      await db.query(`INSERT INTO lt_loan_contacts (id, loan_id, role, encompass_name, encompass_email)
+                      VALUES (gen_random_uuid(), $1::uuid, 'loan_officer', $2, $3)`, [rows[0].id, officer, email]);
+      return rows[0].id;
+    };
+    const oldA = await mkLoan('TESTWR2', 'Old Head One', 'Nobody Nofolder', 'nobody1@nowhere.test', '2026-08-01');
+    await mkLoan('TESTWR3', 'Old Head Two', 'Nobody Nofolder', 'nobody2@nowhere.test', '2026-08-02');
+    const fresh = await mkLoan('TESTWR4', 'Fresh Creatable', 'Yehuda Bochner', 'yehuda@yscapgroup.com', '2026-08-21');
+    process.env.LT_CLICKUP_CREATE_PER_PASS = '1';
+    const cp2 = await push.createPass({});
+    eq(cp2.created, 1, 'a ONE-create budget still lands a card with two dead heads in front (the scan window)');
+    const { rows: freshRow } = await db.query('SELECT clickup_task_id FROM lt_loans WHERE id = $1::uuid', [fresh]);
+    ok(freshRow[0].clickup_task_id, '…and it is the FRESH loan that got it, not a wedged head');
+    const { rows: headRow } = await db.query('SELECT clickup_push_error FROM lt_loans WHERE id = $1::uuid', [oldA]);
+    ok(/no_officer_folder/.test(headRow[0].clickup_push_error || ''),
+      'the dead head is STAMPED with its skip reason (it sorts last from now on)');
+    delete process.env.LT_CLICKUP_CREATE_PER_PASS;
+
+    // Defect 3: a wedged short-term-linked loan must not starve a healthy refresh.
+    const wedged = await mkLoan('TESTWR5', 'Wedged Shortterm', 'Yehuda Bochner', 'yehuda@yscapgroup.com', '2026-08-05');
+    await db.query(`UPDATE lt_loans SET clickup_task_id = 'stshort', clickup_link_confidence = 'confirmed',
+                    clickup_linked_at = now() WHERE id = $1::uuid`, [wedged]);
+    await db.query(`UPDATE lt_loans SET encompass_synced_at = now(), clickup_pushed_at = now() - interval '1 day',
+                    clickup_push_error = NULL WHERE id = $1::uuid`, [loanId]);
+    fakeTasksById = {
+      stshort: { id: 'stshort', custom_fields: mkCustomFields({ program: 0 /* Fix & Flip … — SHORT */ }) },
+      task1: { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
+        subtasks: [{ id: 'subtask1', name: 'Rivka Parnes' }], custom_fields: mkCustomFields({ program: 2 }) },
+    };
+    process.env.LT_CLICKUP_PUSH_PER_PASS = '2';
+    let pp2 = await push.pushPass({});
+    ok(pp2.problems.some((x) => x.skipped === 'short_term_card'), 'pass 1: the wedged loan is refused (short-term card)…');
+    const { rows: wedgeRow } = await db.query('SELECT clickup_push_error FROM lt_loans WHERE id = $1::uuid', [wedged]);
+    ok(/short_term_card/.test(wedgeRow[0].clickup_push_error || ''), '…and STAMPED with the refusal');
+    const { rows: h1 } = await db.query('SELECT clickup_pushed_at FROM lt_loans WHERE id = $1::uuid', [loanId]);
+    ok(h1[0].clickup_pushed_at && (Date.now() - new Date(h1[0].clickup_pushed_at).getTime()) < 60000,
+      '…while the healthy loan was refreshed in the SAME pass');
+    // The healthy loan needs a refresh again; a ONE-loan budget must now pick
+    // IT, not the wedged head (the starvation the audit reproduced).
+    await db.query(`UPDATE lt_loans SET encompass_synced_at = now() + interval '1 second' WHERE id = $1::uuid`, [loanId]);
+    push._internals._resetBreaker();
+    process.env.LT_CLICKUP_PUSH_PER_PASS = '1';
+    pp2 = await push.pushPass({});
+    const { rows: h2 } = await db.query('SELECT clickup_pushed_at FROM lt_loans WHERE id = $1::uuid', [loanId]);
+    ok(new Date(h2[0].clickup_pushed_at) > new Date(h1[0].clickup_pushed_at),
+      'pass 2 (budget 1): the HEALTHY loan outranks the stamped head — no starvation');
+    delete process.env.LT_CLICKUP_PUSH_PER_PASS;
+
+    push._internals._resetBreaker();
+    console.log('S. scoped pushes never stamp; a dry run writes NOTHING; a subtask approve is narrow');
+    fakeTasksById = null;
+    fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
+      subtasks: [{ id: 'subtask1', name: 'Rivka Parnes' }], custom_fields: mkCustomFields({ program: 2 }) };
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    out = await push.pushLoan(loanId, { only: ['ys_loan_number'], source: 'manual' });
+    eq(out.ok, true, 'a scoped one-field push completes');
+    let { rows: sc } = await db.query('SELECT clickup_pushed_at FROM lt_loans WHERE id = $1::uuid', [loanId]);
+    eq(sc[0].clickup_pushed_at, null,
+      'a SCOPED push never stamps clickup_pushed_at — the drain still owes the card its full sync (obs 3)');
+
+    // A REHEARSAL writes nothing durable: no journal rows, no review rows.
+    await db.query(`DELETE FROM lt_clickup_review_queue WHERE task_id = 'task1'`);
+    process.env.LT_CLICKUP_WRITE_DRYRUN = '1';
+    fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
+      subtasks: [], custom_fields: mkCustomFields({ program: 2, borrowerName: 'Someone Quitedifferent' }) };
+    const { rows: jb } = await db.query(`SELECT count(*)::int AS n FROM lt_clickup_write_log WHERE task_id = 'task1'`);
+    out = await push.pushLoan(loanId, { source: 'full_repush' });
+    ok(out.plan.some((p) => p.wouldBlock === 'pii_overwrite_blocked'),
+      'the dry-run PLAN reports the shielded overwrite it would hold');
+    const { rows: rv } = await db.query(`SELECT count(*)::int AS n FROM lt_clickup_review_queue WHERE task_id = 'task1'`);
+    eq(rv[0].n, 0, 'a REHEARSAL queues NO real review rows (obs 4)');
+    const { rows: ja } = await db.query(`SELECT count(*)::int AS n FROM lt_clickup_write_log WHERE task_id = 'task1'`);
+    eq(ja[0].n, jb[0].n, '…and journals nothing');
+    delete process.env.LT_CLICKUP_WRITE_DRYRUN;
+
+    // The subtask-scoped approve: EXACTLY the approved key, on the SUBTASK,
+    // parent untouched, no stamp, and never a create.
+    push._internals._resetBreaker();
+    fakeTasksById = {
+      task1: { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
+        subtasks: [{ id: 'subtask1', name: 'Rivka Parnes' }], custom_fields: mkCustomFields({ program: 2 }) },
+      subtask1: { id: 'subtask1', custom_fields: mkCustomFields({ borrowerName: 'Somebody Else' }) },
+    };
+    wire.setField.length = 0;
+    out = await push.pushLoan(loanId, { subtaskOnly: ['co_name'], approvedReview: true, source: 'review_approval' });
+    eq(out.ok, true, 'the subtask-scoped approve completes');
+    ok(wire.setField.some((w) => w.taskId === 'subtask1' && w.fieldId === CU.borrowerName),
+      'the approved co-borrower name landed on the SUBTASK (the shield stepped aside for exactly it)');
+    ok(!wire.setField.some((w) => w.taskId === 'task1'),
+      '…and the PARENT card was not touched at all');
+    ({ rows: sc } = await db.query('SELECT clickup_pushed_at FROM lt_loans WHERE id = $1::uuid', [loanId]));
+    eq(sc[0].clickup_pushed_at, null, '…and no pushed_at stamp landed');
+    // Subtask gone → the approve stands down; it NEVER creates one.
+    fakeTasksById = null;
+    fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
+      subtasks: [], custom_fields: mkCustomFields({ program: 2 }) };
+    wire.createTask.length = 0;
+    out = await push.pushLoan(loanId, { subtaskOnly: ['co_name'], approvedReview: true, source: 'review_approval' });
+    eq(out.subtaskSkipped, 'subtask_missing', 'with the subtask gone the approve reports subtask_missing…');
+    eq(wire.createTask.length, 0, '…and a scoped approve NEVER creates a subtask');
   } finally {
     await db.query(`DELETE FROM lt_loans WHERE loan_number LIKE 'TESTWR%'`).catch(() => {});
-    await db.query(`DELETE FROM lt_clickup_write_log WHERE task_id IN ('task1','newtask9')`).catch(() => {});
-    await db.query(`DELETE FROM lt_clickup_review_queue WHERE task_id = 'task1'`).catch(() => {});
+    await db.query(`DELETE FROM lt_clickup_write_log WHERE task_id IN ('task1','subtask1','stshort') OR task_id LIKE 'newtask%' OR task_id = 'co-subtask'`).catch(() => {});
+    await db.query(`DELETE FROM lt_clickup_review_queue WHERE task_id IN ('task1','subtask1','stshort')`).catch(() => {});
   }
 }
 
