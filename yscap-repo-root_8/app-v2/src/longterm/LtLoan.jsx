@@ -161,59 +161,133 @@ function SevenStops({ stops, clock, sale, statusLabel }) {
   // unreached stop is merely what is being waited on. The old rendering wrote
   // "now" under the UNREACHED stop, which read as the file being somewhere it
   // has not got to yet.
+  //
+  // THE PLATE'S TREATMENT (owner: "I like this big arrow by the milestones and
+  // the way the milestones are set up"). A single hairline SPINE runs the width,
+  // gold as far as the file has got and quiet after it; the stops sit ON it; and
+  // their labels ALTERNATE above and below so seven of them have room to breathe
+  // instead of colliding. The big chevron is the plate's watermark — drawn
+  // behind at low opacity, aria-hidden, and it carries no information, so losing
+  // it costs nothing.
   const nextStop = stops.currentIndex >= 0 ? stops.stops[stops.currentIndex] : null;
+  const n = stops.stops.length;
+  // How far the gold runs: to the stop the file WEARS. Measured in column
+  // centres so the line ends ON a node rather than between two.
+  const doneIdx = stops.atIndex >= 0 ? stops.atIndex : -1;
+  const pct = (i) => ((i + 0.5) / n) * 100;
+
   return (
-    <div className="card" style={{ color: INK, marginBottom: 12 }}>
+    <div className="card" style={{ color: INK, marginBottom: 12, position: 'relative', overflow: 'hidden' }}>
+      {/* The plate's chevron. Decoration only — never a carrier of meaning. */}
+      <svg aria-hidden="true" viewBox="0 0 100 100" preserveAspectRatio="none"
+        style={{
+          position: 'absolute', right: -18, top: 8, width: 190, height: 150,
+          opacity: 0.05, pointerEvents: 'none',
+        }}>
+        <path d="M20 8 L78 50 L20 92 L36 50 Z" fill="none" stroke={INK} strokeWidth="1.4" />
+      </svg>
+
       {statusLabel ? (
-        <div style={{ marginBottom: 10, fontSize: 13, color: INK }}>
+        <div style={{ marginBottom: 12, fontSize: 13, color: INK, position: 'relative' }}>
           Status: <strong style={{ fontWeight: 750 }}>{statusLabel}</strong>
           {nextStop ? <span style={{ color: MUTED }}> &middot; up next: {nextStop.label}</span> : null}
         </div>
       ) : null}
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', rowGap: 10 }}>
-        {stops.stops.map((s, i) => {
-          const at = i === stops.atIndex;          // the stop the file WEARS
-          const next = i === stops.currentIndex;   // the stop being waited on
-          const dotColor = s.pilot
-            ? (s.reached ? TEAL : 'rgba(20,27,34,.25)')
-            : (s.reached ? GOLD : next ? GOLD : 'rgba(20,27,34,.22)');
-          return (
-            <div key={s.key} style={{ display: 'flex', alignItems: 'flex-start', flex: '1 1 auto', minWidth: 96 }}>
-              {i > 0 && (
-                <div aria-hidden style={{
-                  height: 2, flex: '1 1 12px', margin: '9px 4px 0',
-                  background: s.reached ? (s.pilot ? TEAL : GOLD) : 'rgba(20,27,34,.14)',
-                }} />
-              )}
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, minWidth: 84 }}
-                title={s.pilot && s.note ? s.note : undefined}>
-                <span aria-hidden style={{
-                  width: 18, height: 18, borderRadius: 999, boxSizing: 'border-box',
-                  border: s.pilot && s.unknown ? `2px dashed ${dotColor}` : `2px solid ${dotColor}`,
-                  background: s.reached ? dotColor : next ? 'rgba(174,135,70,.15)' : 'transparent',
-                  boxShadow: at ? '0 0 0 3px rgba(174,135,70,.25)' : 'none',
-                }} />
-                <span style={{
-                  fontSize: 12, textAlign: 'center', lineHeight: 1.25, maxWidth: 110,
+
+      {/* The spine scrolls in its OWN box rather than stretching the page: seven
+          stops cannot fit a phone, and a column that stretches its container is
+          how a table ends up unreachable off the right edge. */}
+      <div style={{ overflowX: 'auto', position: 'relative' }}>
+        <div style={{
+          position: 'relative', minWidth: Math.max(360, n * 104),
+          display: 'grid', gridTemplateColumns: `repeat(${n}, 1fr)`,
+          // ROOM FOR A TWO-LINE LABEL PLUS ITS DATE, on both sides. Measured, not
+          // guessed: 11px label at 1.3 over two lines (~29px) + the 10px date and
+          // its 3px margin (~13px) + the 14px stand-off from the spine = ~56px.
+          // At 34px the first line of "Submitted to UW" was CLIPPED by the card's
+          // own overflow:hidden and the stop read as "UW" — a geometry check that
+          // only looked for OVERLAP could not see it, because clipped text still
+          // reports a full bounding box. It was caught by rendering and LOOKING.
+          paddingTop: 62, paddingBottom: 62,
+        }}>
+          {/* the quiet rail, then the gold the file has actually earned */}
+          <div aria-hidden style={{
+            position: 'absolute', left: `${pct(0)}%`, right: `${100 - pct(n - 1)}%`,
+            top: '50%', height: 1, marginTop: -0.5, background: 'rgba(20,27,34,.16)',
+          }} />
+          {doneIdx > 0 && (
+            <div aria-hidden style={{
+              position: 'absolute', left: `${pct(0)}%`, width: `${pct(doneIdx) - pct(0)}%`,
+              top: '50%', height: 2, marginTop: -1, background: GOLD,
+            }} />
+          )}
+
+          {stops.stops.map((s, i) => {
+            const at = i === stops.atIndex;          // the stop the file WEARS
+            const next = i === stops.currentIndex;   // the stop being waited on
+            const above = i % 2 === 0;               // alternate, the plate's rhythm
+            const dotColor = s.pilot
+              ? (s.reached ? TEAL : 'rgba(20,27,34,.25)')
+              : (s.reached ? GOLD : next ? GOLD : 'rgba(20,27,34,.22)');
+            const when = s.reached && s.at ? day(s.at)
+              : next ? 'up next'
+                : s.pilot && s.unknown ? 'not said' : '';
+            const label = (
+              <div style={{
+                position: 'absolute', left: '50%', transform: 'translateX(-50%)',
+                [above ? 'bottom' : 'top']: 'calc(50% + 14px)',
+                textAlign: 'center', width: 128, pointerEvents: 'none',
+              }}>
+                <div style={{
+                  fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase',
+                  lineHeight: 1.3,
                   color: s.reached ? INK : MUTED,
                   fontWeight: at ? 750 : s.reached ? 650 : 500,
-                }}>{s.label}</span>
-                <span style={{ fontSize: 10, color: MUTED, minHeight: 12 }}>
-                  {s.reached && s.at ? day(s.at) : s.reached && at ? 'here now' : next ? 'up next' : s.pilot && s.unknown ? 'not said' : ''}
-                </span>
+                }}>{s.label}</div>
+                {when ? (
+                  <div style={{ fontSize: 10, letterSpacing: '.1em', color: MUTED, marginTop: 3 }}>{when}</div>
+                ) : null}
               </div>
-            </div>
-          );
-        })}
+            );
+            return (
+              <div key={s.key} style={{ position: 'relative', minHeight: 18 }}
+                title={s.pilot && s.note ? s.note : undefined}>
+                {label}
+                <span aria-hidden style={{
+                  position: 'absolute', left: '50%', top: '50%',
+                  transform: 'translate(-50%,-50%)',
+                  width: at ? 13 : 10, height: at ? 13 : 10, borderRadius: 999, boxSizing: 'border-box',
+                  border: s.pilot && s.unknown ? `2px dashed ${dotColor}` : `1.5px solid ${dotColor}`,
+                  background: s.reached ? dotColor : next ? 'rgba(174,135,70,.15)' : '#FFFFFF',
+                  boxShadow: at ? `0 0 0 4px rgba(47,127,134,.18)` : 'none',
+                }} />
+              </div>
+            );
+          })}
+        </div>
       </div>
+
+      {/* Where it SITS, said once, at the end of the run — the plate's own line. */}
+      {statusLabel ? (
+        <div style={{ textAlign: 'right', marginTop: 2, position: 'relative' }}>
+          <span style={{ fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', color: MUTED }}>
+            Sitting here
+          </span>
+          <span style={{
+            fontSize: 12, letterSpacing: '.1em', textTransform: 'uppercase',
+            color: TEAL, fontWeight: 750, marginLeft: 8,
+          }}>{statusLabel}</span>
+        </div>
+      ) : null}
+
       {!stops.ladderRead && (
-        <div style={{ marginTop: 8, fontSize: 12, color: MUTED }}>
+        <div style={{ marginTop: 8, fontSize: 12, color: MUTED, position: 'relative' }}>
           Encompass&rsquo;s milestone ladder has not been read for this loan yet, so no progress is claimed.
         </div>
       )}
       {clock && clock.note ? (
         <div style={{
-          marginTop: 8, fontSize: 12,
+          marginTop: 8, fontSize: 12, position: 'relative',
           color: clock.stalled ? '#8A2D2D' : MUTED,
           fontWeight: clock.stalled ? 600 : 400,
         }}>{clock.note}</div>
@@ -223,7 +297,7 @@ function SevenStops({ stops, clock, sale, statusLabel }) {
           news, decided on the server. Shown when the loan is far enough along that
           the answer is the question somebody opened the file with. */}
       {sale && sale.note && (stops.currentIndex === -1 || stops.currentIndex >= 5) ? (
-        <div style={{ marginTop: 6, fontSize: 12, color: sale.purchased ? TEAL : MUTED }}>{sale.note}</div>
+        <div style={{ marginTop: 6, fontSize: 12, color: sale.purchased ? TEAL : MUTED, position: 'relative' }}>{sale.note}</div>
       ) : null}
     </div>
   );
