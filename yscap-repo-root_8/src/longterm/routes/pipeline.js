@@ -18,6 +18,7 @@ const contacts = require('../people/contacts');
 const workspace = require('../workspace');
 const locks = require('../locks');
 const milestones = require('../milestones');
+const ladder = require('../sync/milestone-ladder');
 const purchased = require('../milestone-purchased');
 const product = require('../product');
 const pipelineColumns = require('../pipeline-columns');
@@ -56,6 +57,10 @@ router.get('/', async (req, res) => {
       // `officer` filter is the deliberate, named way to look at another officer's
       // files, and it exists for exactly that.
       mine: String(req.query.mine || '') === 'true',
+      // Narrows "Mine" to ONE of the viewer's hats, deliberately — "files where I
+      // am the closer". Still resolved against the SESSION's identity; it names a
+      // ROLE, never a person, so it can widen nothing.
+      mineRole: req.query.mineRole,
       // The screen asks for the whole (filtered) book in one answer so its
       // per-column search can be honest; the cap in pipeline.js still bounds it.
       limit: req.query.limit,
@@ -233,11 +238,71 @@ router.get('/:loanId', async (req, res) => {
     // When PILOT watched this loan reach each milestone. Best-effort and EMPTY when
     // unreadable, which draws the stepper with no dates rather than with wrong ones.
     const reachedAt = await milestones.reachedAtByMilestone(rows[0].id).catch(() => ({}));
+    // THIS LOAN'S OWN LADDER (db/623) — the done flags, Encompass's own per-step
+    // date, and the associate assigned to each step. It is what the seven-stop
+    // header bar and the Milestones board are keyed on (#33: completion
+    // semantics, never MS.STATUS prose). Best-effort: unread draws honestly
+    // empty, never invented.
+    // A FAILED read is NOT an empty ladder (round 5, observation 4). Both used
+    // to arrive here as `rows: []`, so a database hiccup was indistinguishable
+    // from "this loan has no ladder mirrored" and quietly fell back to the
+    // pre-D4 clock reading. `ladderReadOk` keeps the two apart so the fallback
+    // is taken for the reason it was written for, and so a read failure can
+    // never be reported to a person as "nothing is being waited on".
+    let ladderReadOk = true;
+    const { rows: ladderRows } = await db.query(
+      'SELECT * FROM lt_loan_milestones WHERE loan_id = $1::uuid ORDER BY position',
+      [rows[0].id],
+    ).catch(() => { ladderReadOk = false; return { rows: [] }; });
     // The movement history itself — what PILOT watched, in order. Best-effort.
     const milestoneHistory = await milestones.loadHistory(rows[0].id, 25).catch(() => []);
-    const currentMs = catalog.find(
-      (m) => String(m.name || '').trim().toLowerCase() === String(rows[0].milestone_name || '').trim().toLowerCase(),
+    const currentIdx = catalog.findIndex(
+      // Punctuation-blind (audit round 2, obs 4): "Cond Approval" must land on
+      // the catalog's "Cond. Approval" row.
+      (m) => stages.milestoneKey(m.name) === stages.milestoneKey(rows[0].milestone_name),
     );
+    const currentMs = currentIdx >= 0 ? catalog[currentIdx] : undefined;
+    // ═══════════════════════════════════════════════════════════════════════
+    // WHICH STEP'S EXPECTATION THE CLOCK IS MEASURED AGAINST (audit round 3 D4,
+    // CORRECTED in round 4 C1).
+    //
+    // Under the last-completed rule `milestone_since` means "when the last step
+    // COMPLETED" — i.e. when the loan STARTED WAITING on the next one. So the
+    // bar to judge that wait against is the AWAITED step's `expected_days`.
+    //
+    // THE AWAITED STEP COMES FROM THIS LOAN'S OWN LADDER, NEVER FROM THE
+    // COMPANY CATALOG. They are different lists and the difference is recorded
+    // live (docs/longterm/ENCOMPASS-LIVE-API-PROBE.md): a real funded loan's
+    // ladder runs "Docs Out → Funding" with WIRE ORDER ABSENT, while the
+    // catalog runs "Docs Out → Wire Order → Funding"; the two also order
+    // Waiting for Docs / Processing differently. Taking "the next catalog row"
+    // therefore names a step this loan does not have — and because Wire Order's
+    // expected_days is 0, and `describeClock` reads a 0 as "nobody set an
+    // expectation", it SILENTLY TURNED THE STALL ALARM OFF on a genuinely
+    // stalled Docs Out file. That is the confident-wrong direction twice over.
+    //
+    // With the ladder read: the awaited step is `ladder.awaitingOf` — the first
+    // not-done row AFTER the one the loan STANDS at — mapped back to the
+    // catalog for that step's expectation. Every step done means nothing is
+    // awaited, so there is NO bar; never the finished step's, which would
+    // restart the alarm on a completed file. With no ladder mirrored at all we
+    // keep the pre-D4 reading rather than losing the clock entirely.
+    //
+    // "AFTER the standing one" is the round-5 correction (defect 2). This line
+    // read the first not-done row ANYWHERE, which on a non-contiguous ladder —
+    // an optional step left unticked, or one reopened for rework while later
+    // ones stay done — names a step already passed. Measured on a real ladder
+    // it named "Loan Setup" (expected_days 0, so the alarm went SILENT) where
+    // the correct answer was "Funding" (expected_days 1, stalled). That is the
+    // very outcome the paragraph above describes, reached by a second route,
+    // and it is why the rule now lives in ONE place beside `sittingOf` instead
+    // of being written out at each consumer.
+    // ═══════════════════════════════════════════════════════════════════════
+    const awaitingName = ladder.awaitingOf(ladderRows);
+    const awaitingMs = awaitingName
+      ? catalog.find((m) => !m.pilot && stages.milestoneKey(m.name) === stages.milestoneKey(awaitingName))
+      : undefined;
+    const clockMs = ladderRows.length ? (awaitingMs || null) : currentMs;
 
     // The lock's own detail — the posture, the countdown, and what PILOT watched
     // change. Best-effort: a loan still opens when its lock cannot be read.
@@ -296,11 +361,22 @@ router.get('/:loanId', async (req, res) => {
       // The same fact in one place, so a screen can state it without re-reading the
       // stepper — and so the two can never disagree, because both come from here.
       sale,
+      // THE SEVEN STOPS — the header bar's at-a-glance ladder (owner's exact
+      // list), keyed on this loan's own done flags with Encompass's own dates.
+      stops: workspace.sevenStops(ladderRows, { reachedAt, sale }),
+      // THE MILESTONE BOARD — every step, with its date, its kind (worked vs
+      // planned), the day PILOT watched it, and the associate on the step.
+      milestoneBoard: workspace.milestoneBoard(catalog, ladderRows, { reachedAt, sale }),
       // How long it has been at this milestone — and, when the first sighting is all
       // we have, a plain sentence saying we do not know rather than a number we made up.
       milestoneHistory,
+      // The sentence NAMES the awaited step, because the bar is that step's
+      // expectation and not the standing one's (round 5, defect 5) — and says
+      // so differently when the ladder is simply finished.
       milestoneClock: milestones.describeClock(rows[0], {
-        expectedDays: currentMs ? currentMs.expected_days : null,
+        expectedDays: clockMs ? clockMs.expected_days : null,
+        awaiting: awaitingName,
+        nothingAwaited: ladderReadOk && ladderRows.length > 0 && !awaitingName,
       }),
       // The rail's property figures come from the SAME sections the Property tab
       // renders, so the two can never state different values for one loan.

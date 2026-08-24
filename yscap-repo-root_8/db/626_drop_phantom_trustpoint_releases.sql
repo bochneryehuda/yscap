@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/623 — drop the phantom TrustPoint "releases" db/302 invents from a projection
+-- db/626 — drop the phantom TrustPoint "releases" db/302 invents from a projection
 --
 -- WHAT THIS CHANGES, AND WHY. Owner-reported 2026-08-24 on YSCAP258134629
 -- (117 Brook St, Barnegat NJ, draw #1): a draw the borrower had just submitted

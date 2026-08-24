@@ -398,6 +398,33 @@ async function fieldReader(loanGuid, ids) {
   } finally { g.done(); }
 }
 
+/**
+ * fieldReader with the RTL split discipline: Encompass v3 fails the WHOLE call
+ * with HTTP 400 if ANY one id in the list is invalid or unpermitted (the
+ * FR0117 lesson), so one bad id must not blank forty good values. On a 400 the
+ * id list is recursively bisected and the halves merged; a single id that
+ * still 400s is OMITTED (absent = not read, never a guessed value). The split
+ * happens ONLY on the fieldReader's own 400 — a network/timeout/auth error
+ * propagates unsplit, so an Encompass outage can never fan one read into a
+ * request storm.
+ */
+async function fieldReaderSplit(loanGuid, ids) {
+  const list = (Array.isArray(ids) ? ids : []).map((x) => String(x)).filter(Boolean);
+  if (!list.length) return {};
+  try {
+    return await fieldReader(loanGuid, list);
+  } catch (e) {
+    const msg = String((e && e.message) || '');
+    const invalidField = /fieldReader 400/.test(msg);
+    if (!invalidField) throw e;
+    if (list.length === 1) return {};                    // the one bad id — omitted
+    const mid = Math.ceil(list.length / 2);
+    const left = await fieldReaderSplit(loanGuid, list.slice(0, mid));
+    const right = await fieldReaderSplit(loanGuid, list.slice(mid));
+    return { ...left, ...right };
+  }
+}
+
 // ── Settings / catalog reads (GET) ────────────────────────────────────────────
 // The audit (2026-08-14) verified these two CURRENT paths against the live tenant
 // and found the old RTL paths outdated — Long-Term uses the CORRECTED ones:
@@ -440,7 +467,7 @@ module.exports = {
   configured, ensure, ping,
   // diagnostic-only, read-only: see scripts/test-lt-encompass-access-probe.js
   tokenProbe,
-  apiGet, pipelineSearch, fieldReader,
+  apiGet, pipelineSearch, fieldReader, fieldReaderSplit,
   getMilestoneSettings, getMilestoneSetting, getStandardFieldSchema, getCustomFieldSettings,
   getLoan, getLoanMilestones, getLoanMilestoneLogs,
   // exported for the read-only self-test

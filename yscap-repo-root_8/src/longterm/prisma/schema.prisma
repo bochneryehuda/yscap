@@ -299,10 +299,35 @@ model LtLoan {
   // comes from the milestone's own consumerStatus (db/547), so our internal
   // renaming can never leak into what a borrower reads.
 
-  /// The Encompass milestone NAME, mirrored verbatim. Read it from MS.STATUS —
-  /// the pipeline's own Loan.CurrentMilestone column is BLANK on every loan in
-  /// this tenant.
+  /// The milestone this file is SITTING in — the first not-done step of the
+  /// loan's own ladder (db/623, owner-directed 2026-08-23: a completed milestone
+  /// means the file sits in the NEXT one). Written from GET /loans/{id}/milestones
+  /// by the sync; the lagging `Log.MS.CurrentMilestone` reading is only the
+  /// fallback for a loan whose ladder has not been read yet.
   milestoneName String? @map("milestone_name")
+
+  // ── How title vests (db/624, owner-directed 2026-08-23) ───────────────────
+  /// Field 4008, VERBATIM ("Officer" / "Individual"). Whether that means an
+  /// entity is decided by ONE rule (src/longterm/vesting.js), never re-read off
+  /// this text.
+  vestingType String? @map("vesting_type")
+  /// Field 1859 — the vesting entity's legal name, stored ONLY when 4008 says
+  /// the loan vests in an entity. On an Individual vesting it stays NULL even if
+  /// 1859 carries text: "individual" means individual, and a stale company name
+  /// on a re-vested loan is exactly the trap the owner's rule closes.
+  vestingEntityName String? @map("vesting_entity_name")
+
+  /// The tenant's own status WORDING (virtual field MS.STATUS — "Funded" once the
+  /// Funding step completes), stamped by Encompass at each milestone transition.
+  /// This is the field the tenant's own webhook automation fires on. Verbatim.
+  msStatus String? @map("ms_status")
+  /// MS.STATUSDATE, verbatim ("08/23/2026 04:07:53 PM" — US format, no timezone,
+  /// so it is mirrored as text and never parsed into a guess).
+  msStatusDate String? @map("ms_status_date")
+  /// When this loan's milestone LADDER (lt_loan_milestones) was last mirrored.
+  /// The backfill pass drains on IS NULL, so it doubles as the "never laddered"
+  /// marker for the already-mirrored book.
+  ladderSyncedAt DateTime? @map("ladder_synced_at") @db.Timestamptz(6)
 
   /// OUR stage. Stored rather than derived on read so the pipeline can group and
   /// sort on it in SQL. A milestone with no mapping leaves this NULL, and an
@@ -406,6 +431,15 @@ model LtLoan {
   clickupStampedAt DateTime? @map("clickup_stamped_at") @db.Timestamptz(6)
   clickupStampError String? @map("clickup_stamp_error")
 
+  /// db/625 — the ClickUp FIELD WRITER's stamps. clickup_pushed_at is the last
+  /// CLEAN push (every intended field landed; a lossy push is never marked done,
+  /// so the drain retries it). The drain is
+  /// `encompass_synced_at > clickup_pushed_at OR clickup_pushed_at IS NULL` on
+  /// linked, confirmed, non-trash loans.
+  clickupPushedAt DateTime? @map("clickup_pushed_at") @db.Timestamptz(6)
+  /// The last push failure, plain text; cleared on the next clean push.
+  clickupPushError String? @map("clickup_push_error")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -416,6 +450,7 @@ model LtLoan {
   lock          LtLock?
   lockEvents    LtLockEvent[]
   milestoneEvents LtMilestoneEvent[]
+  ladder        LtLoanMilestone[]
   conditions    LtCondition[]
   documents     LtDocument[]
 
@@ -1288,6 +1323,49 @@ model LtMilestoneEvent {
   @@map("lt_milestone_events")
 }
 
+/// THE LOAN'S OWN MILESTONE LADDER (db/623) — every step of THIS loan's workflow,
+/// mirrored from GET /loans/{id}/milestones. This is what settles where a file
+/// actually is: the file SITS in the first row whose `done` is false (Birch: the
+/// Funding step done → sitting in "Investor Delivery"), while the old
+/// `Log.MS.CurrentMilestone` reading lags on the last WORKED step.
+///
+/// It is also the per-milestone PERSONA record: each step carries WHO is assigned
+/// to it (the associate's name, Encompass login, role, email, phone) — which is
+/// how "I was assigned only to the Closer and Funder milestone" becomes a fact a
+/// pipeline filter can honour.
+model LtLoanMilestone {
+  loanId        String @map("loan_id") @db.Uuid
+  milestoneName String @map("milestone_name")
+
+  /// The ladder's own order, as Encompass returned it (0-based).
+  position Int     @default(0)
+  done     Boolean @default(false)
+
+  /// One date per step, Encompass's own: the actual start for a step that has
+  /// been worked, the PLANNED/expected date for one that has not. `done` says
+  /// which reading applies.
+  startDate DateTime? @map("start_date") @db.Timestamptz(6)
+
+  /// The assigned associate on THIS step. `associateId` is the Encompass LOGIN id
+  /// — the same join key the people map (lt_staff_links) is built on.
+  associateId    String? @map("associate_id")
+  associateName  String? @map("associate_name")
+  associateRole  String? @map("associate_role")
+  associateEmail String? @map("associate_email")
+  associatePhone String? @map("associate_phone")
+  roleRequired   String? @map("role_required")
+
+  encompassSyncedAt DateTime @default(now()) @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([loanId, milestoneName])
+  @@index([loanId, position], map: "lt_loan_milestones_loan_pos_idx")
+  @@map("lt_loan_milestones")
+}
+
 /// A mapping is either awaiting a human, accepted, or refused. The one enum this
 /// migration adds, and only because those three states are true of the domain
 /// rather than of us.
@@ -2049,4 +2127,62 @@ model LtClickupLinkLog {
 
   @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_clickup_link_log_loan_idx")
   @@map("lt_clickup_link_log")
+}
+
+/// db/625 — the ClickUp field writer's JOURNAL: every outbound field write,
+/// before + after values (SSN masked BEFORE insert — a readable Social never
+/// lands here), including writes a guardrail refused (blocked=true). Append-
+/// only and best-effort: a journal failure never blocks a push. The volume
+/// circuit breaker seeds its rolling 10-minute window from this table on boot,
+/// so a restart mid-storm cannot reset the budget.
+model LtClickupWriteLog {
+  id       BigInt  @id @default(autoincrement())
+  ltLoanId String? @map("lt_loan_id") @db.Uuid
+  taskId   String  @map("task_id")
+  /// NULL for a non-field event (e.g. a refused short-term card).
+  fieldId  String? @map("field_id")
+  /// The mapper's logical key ('ssn', 'loan_amount', …).
+  fieldKey String? @map("field_key")
+  /// ClickUp's value immediately before (NULL = unknown / a brand-new card).
+  oldValue Json?   @map("old_value")
+  /// What we wrote — or tried to, or were refused to.
+  newValue Json?   @map("new_value")
+  /// false = nothing landed on the card.
+  changed  Boolean @default(true)
+  /// true = a guardrail refused it (PII shield, DOB gate, wire failure).
+  blocked  Boolean @default(false)
+  /// 'create' | 'scoped_push' | 'full_repush'
+  source   String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([taskId, createdAt(sort: Desc)], map: "lt_cu_write_log_task_idx")
+  @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_cu_write_log_loan_idx")
+  @@map("lt_clickup_write_log")
+}
+
+/// db/625 — outbound ClickUp writes a guardrail held for a PERSON: a differing
+/// identity field a push may only FILL (pii_overwrite_blocked), or a change to
+/// an existing ClickUp DOB (dob_change_blocked_pending_review). Values arrive
+/// MASKED — an SSN is never stored here. One OPEN row per (task, field,
+/// proposal) — the partial unique index dedupes a retried pass. Resolving one
+/// re-pushes the single field with approvedReview; rejecting keeps the card.
+model LtClickupReviewQueue {
+  id            BigInt  @id @default(autoincrement())
+  ltLoanId      String? @map("lt_loan_id") @db.Uuid
+  taskId        String  @map("task_id")
+  direction     String  @default("outbound")
+  fieldKey      String  @map("field_key")
+  /// What the card holds (masked where PII).
+  currentValue  String? @map("current_value")
+  /// What the mirror wanted to write (masked).
+  proposedValue String? @map("proposed_value")
+  reason        String
+  /// 'open' | 'resolved' | 'rejected' (CHECK lt_cu_review_status_chk)
+  status        String  @default("open")
+  resolvedBy    String?   @map("resolved_by") @db.Uuid
+  resolvedAt    DateTime? @map("resolved_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_cu_review_loan_idx")
+  @@map("lt_clickup_review_queue")
 }

@@ -24,7 +24,7 @@
  *   B. THE OWNER'S FILE, REPRODUCED. A CONTROL first — the phantom really does appear, with
  *      every figure they saw, or the rest of this suite proves nothing. It takes TWO boots:
  *      db/302 writes the untied row, db/184 correctly binds the file's one free draw. Then
- *      db/623 removes it and the desk reads the truth.
+ *      db/626 removes it and the desk reads the truth.
  *   C+D. IT MUST NEVER EAT A REAL RELEASE. A genuinely wired draw, and a release a human
  *      typed, both survive — that is the whole risk of a migration that DELETES money rows.
  *   E. Idempotent across boots, and AUDITED: the row is gone afterwards, so the audit line
@@ -108,13 +108,13 @@ const { ensureSchema } = require(R + '/src/migrate-boot');
 const SQL = (f) => fs.readFileSync(path.join(R, 'db', f), 'utf8');
 const M184 = '184_disbursement_require_draw_backfill.sql';
 const M302 = '302_trustpoint_money_baseline.sql';
-const M623 = '623_drop_phantom_trustpoint_releases.sql';
+const M626 = '626_drop_phantom_trustpoint_releases.sql';
 
 /** One deploy, in filename order — the only order production ever runs these in. */
 async function boot({ withFix = true } = {}) {
   await db.query(SQL(M184));
   await db.query(SQL(M302));
-  if (withFix) await db.query(SQL(M623));
+  if (withFix) await db.query(SQL(M626));
 }
 
 const money = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -167,7 +167,7 @@ const money = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { mini
     {
       const f = await file({ tpStatus: 'DRAFT', disbursedCents: 620000, disbursedAt: null });
 
-      // --- CONTROL: without db/623, the phantom really does appear ---
+      // --- CONTROL: without db/626, the phantom really does appear ---
       await boot({ withFix: false });                 // deploy 1: db/302 writes it untied
       let rows = await ledgerOf(f.appId);
       ok('CONTROL deploy 1 — db/302 invents a release from the projection alone', rows.length === 1);
@@ -187,9 +187,9 @@ const money = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { mini
         ['$70,200.00', '$0.00', '$0.00', '$6,200.00']);
 
       // --- THE FIX ---
-      await boot();                                    // the next deploy, with db/623 last
+      await boot();                                    // the next deploy, with db/626 last
       rows = await ledgerOf(f.appId);
-      eq('db/623 removes the phantom release', rows.length, 0);
+      eq('db/626 removes the phantom release', rows.length, 0);
 
       const good = await deskMoney(f.appId, f.swId);
       ok('the draw is no longer "Released"', good && good.approval_stage !== 'released');
@@ -207,7 +207,7 @@ const money = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { mini
       await boot(); await boot();
       const rows = await ledgerOf(f.appId);
       ok('a genuinely wired draw still records its release', rows.length === 1);
-      ok('and db/623 leaves it exactly where it is, across two more deploys',
+      ok('and db/626 leaves it exactly where it is, across two more deploys',
         rows[0] && Number(rows[0].net_release_cents) === 620000 && rows[0].funded_status === 'released');
       const m = await deskMoney(f.appId, f.swId);
       ok('so the desk still reports it as released', m && m.approval_stage === 'released');
@@ -220,7 +220,7 @@ const money = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { mini
     // opinion. db/302 records the projection while the draw is still a draft (no wire
     // date, so the row carries no release_date either); TrustPoint then wires it for
     // real. From that moment the row can no longer be PROVEN phantom — the money did
-    // move — so db/623 must leave it and let the live mirror correct the figures. Fail
+    // move — so db/626 must leave it and let the live mirror correct the figures. Fail
     // closed: deleting a release we cannot judge is the expensive direction.
     {
       const f = await file({ tpStatus: 'DRAFT', disbursedCents: 620000, disbursedAt: null });
@@ -238,7 +238,7 @@ const money = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { mini
       // release short in between.
       const after = (await db.query(
         `SELECT id FROM draw_disbursements WHERE application_id=$1`, [f.appId])).rows;
-      ok('once the money has actually moved, db/623 no longer removes the row',
+      ok('once the money has actually moved, db/626 no longer removes the row',
         after.length === 1 && String(after[0].id) === String(before[0].id));
     }
 
@@ -246,7 +246,7 @@ const money = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { mini
     // C3. A ROW THE LIVE MIRROR WROTE IS NOT db/302's TO REMOVE
     // -----------------------------------------------------------------------
     // What makes the note guard load-bearing: `mirrorDisbursement` writes its own row
-    // with its own wording, and db/623 must only ever undo db/302's work.
+    // with its own wording, and db/626 must only ever undo db/302's work.
     {
       const f = await file({ tpStatus: 'DRAFT', disbursedCents: 0, disbursedAt: null });
       await db.query(
@@ -299,7 +299,7 @@ const money = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { mini
       eq('and the audit names the amount and the draw it came from',
         a1[0] && [Number(a1[0].detail.net_release_cents), a1[0].detail.trustpoint_draw_id],
         [620000, f.tpId]);
-      // db/302 re-inserts on the next boot and db/623 removes it again — one audit line per
+      // db/302 re-inserts on the next boot and db/626 removes it again — one audit line per
       // removal, and the ledger never carries the row into a running system.
       await boot();
       ok('a further deploy leaves no phantom behind', (await ledgerOf(f.appId)).length === 0);

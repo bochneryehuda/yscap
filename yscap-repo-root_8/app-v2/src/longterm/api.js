@@ -164,6 +164,19 @@ export const ltApi = {
   // (borrower-paid / raw / lender-paid) overlays on the displayed numbers. Display only:
   // the Lender Price search itself never changes (owner-directed 2026-08-23).
   dscrCompPlan: () => ltGet(lt('/dscr/comp-plan')),
+
+  // THE CLICKUP SYNCING SECTION (#36): everything the writer does automatically,
+  // visible + manually drivable per file. Every write goes through the guarded
+  // writer on the server — these calls only press its buttons.
+  clickupSection: (loanId, { compare = false } = {}) => ltGet(
+    lt(`/clickup/loans/${encodeURIComponent(loanId)}${compare ? '?compare=1' : ''}`)),
+  clickupPush: (loanId) => ltPost(lt(`/clickup/loans/${encodeURIComponent(loanId)}/push`), {}),
+  clickupPushField: (loanId, key) => ltPost(lt(`/clickup/loans/${encodeURIComponent(loanId)}/push-field`), { key }),
+  clickupCreate: (loanId) => ltPost(lt(`/clickup/loans/${encodeURIComponent(loanId)}/create`), {}),
+  clickupLink: (loanId, taskId, confirm = false) => ltPost(
+    lt(`/clickup/loans/${encodeURIComponent(loanId)}/link`), { taskId, confirm }),
+  clickupReview: (loanId, reviewId, decision) => ltPost(
+    lt(`/clickup/loans/${encodeURIComponent(loanId)}/reviews/${encodeURIComponent(reviewId)}/${decision === 'approve' ? 'approve' : 'reject'}`), {}),
   dscrDisqualifications: (searchKey, params) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, String(v));

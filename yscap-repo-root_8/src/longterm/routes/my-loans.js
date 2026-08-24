@@ -142,16 +142,63 @@ router.get('/loans', async (req, res) => {
     const borrowerId = req.actor && req.actor.id;
     if (!borrowerId) return res.status(401).json({ error: 'Please sign in again.' });
 
-    // A LEFT JOIN, deliberately: a milestone the tenant has not published consumer
-    // wording for — or one added since we last read the list — must still return
-    // the loan. An INNER join would make a client's own file disappear because of
-    // a gap in OUR reference data, which is the worst possible failure here.
+    // ═══════════════════════════════════════════════════════════════════════
+    // THE BORROWER'S WORDING IS KEYED ON THE STEP BEING WAITED ON, NOT THE ONE
+    // JUST FINISHED (audit round 3, D1).
+    //
+    // db/547's `consumer_status` was authored against the ORIGINAL first-not-done
+    // reading of `milestone_name` — it is "what the borrower is told WHILE the
+    // file sits at this step". Its own rows prove it: Cond. Approval carries
+    // "Submitted for Approval" (true while awaiting that approval) and Processing
+    // carries "Conditionally Approved" (true once Cond. Approval is behind you).
+    //
+    // #44 redefined `milestone_name` as the LAST COMPLETED step — right for every
+    // STAFF surface, and it would silently shift this borrower-facing column one
+    // step BACKWARD: a loan clear to close would tell its borrower "Final
+    // Approval". So this door keeps asking the question db/547 answers, by
+    // reading the first NOT-done step off the ladder mirror.
+    //
+    // Re-wording db/547 for completion semantics is a business decision (and
+    // would also settle the pre-existing oddity that its Funding row says
+    // "Funded" while Funding is still being worked) — it is on the owner's
+    // question list, not something to infer here.
+    //
+    // A LEFT JOIN LATERAL, deliberately: a loan with no ladder mirror yet must
+    // still be returned, falling back to whatever `milestone_name` it holds.
     const { rows } = await db.query(
       `SELECT l.id, l.loan_number, l.stage_key, l.milestone_name, l.loan_amount,
               l.term_months, l.program_name, l.encompass_synced_at,
-              m.consumer_status
+              w.milestone_name AS awaiting_milestone
          FROM lt_loans l
-         LEFT JOIN lt_encompass_milestones m ON m.milestone_name = l.milestone_name
+         LEFT JOIN LATERAL (
+           -- THE FIRST NOT-DONE STEP **AFTER THE ONE THE LOAN STANDS AT**
+           -- (audit round 4, C2). A plain "first not-done anywhere" is wrong on
+           -- this data: a not-done row may sit BEHIND a done one — an optional
+           -- step left unticked, or a step reopened for rework while later ones
+           -- stay done — which is exactly why sittingOf scans for the LAST done
+           -- row rather than assuming the ladder is contiguous. On such a ladder
+           -- the naive read walked the borrower's wording five steps back.
+           -- Complementing sittingOf exactly is what stops the two readings of
+           -- one ladder disagreeing.
+           --
+           -- KEEP THIS COMMENT CLAUSE-FREE. It lives inside a SQL template
+           -- literal, so the product-separation gate parses it AS SQL, and an
+           -- ordinary English sentence can read as a table reference: the word
+           -- "f-r-o-m" followed by any word is taken to name an RTL table and
+           -- fails the build. It has now happened twice here — once on this
+           -- comment's own closing phrase, and once on the sentence that was
+           -- added to warn about it. A backtick would be worse still: it ends
+           -- the literal outright and breaks the file. So keep the prose clear
+           -- of the SQL keywords, and never put a backtick in this string.
+           SELECT m.milestone_name
+             FROM lt_loan_milestones m
+            WHERE m.loan_id = l.id AND m.done = false
+              AND m.position > COALESCE(
+                    (SELECT max(d.position) FROM lt_loan_milestones d
+                      WHERE d.loan_id = l.id AND d.done), -1)
+            ORDER BY m.position ASC
+            LIMIT 1
+         ) w ON true
         WHERE l.borrower_id = $1::uuid
           -- A loan deleted in Encompass (its trash folder) is not one of their
           -- files. The archive is internal; a client never sees a deleted loan.
@@ -159,6 +206,31 @@ router.get('/loans', async (req, res) => {
         ORDER BY l.encompass_synced_at DESC NULLS LAST, l.loan_number NULLS LAST`,
       [borrowerId],
     );
+
+    // The milestone → borrower-wording table, mapped in JS rather than joined in
+    // SQL so the key has ONE definition (`stages.milestoneKey`) instead of a
+    // PL/pgSQL twin that would drift from it — the trap this repo has been bitten
+    // by twice. The catalog is 19 rows. A failed read leaves every wording null
+    // and the stage LABEL answers instead, which is the documented fallback.
+    const consumerByKey = new Map();
+    try {
+      // ARCHIVED ROWS EXCLUDED, ORDERED (audit round 4). The catalog sync
+      // ARCHIVES rather than deletes, so an archived "Cond Approval" and a live
+      // "Cond. Approval" collapse to the same punctuation-blind key and the
+      // winner would be whichever row the planner happened to return last.
+      const { rows: cat } = await db.query(
+        `SELECT milestone_name, consumer_status
+           FROM lt_encompass_milestones
+          WHERE COALESCE(is_archived, false) = false
+          ORDER BY sequence`);
+      for (const c of cat) {
+        if (c.milestone_name) consumerByKey.set(stages.milestoneKey(c.milestone_name), c.consumer_status);
+      }
+    } catch (_) { /* wording unavailable — the stage label answers */ }
+    for (const r of rows) {
+      const key = stages.milestoneKey(r.awaiting_milestone || r.milestone_name);
+      r.consumer_status = key ? (consumerByKey.get(key) || null) : null;
+    }
 
     // The stage list is only the FALLBACK wording, so a settings read that fails
     // must not fail the request — the consumer status is what normally answers.

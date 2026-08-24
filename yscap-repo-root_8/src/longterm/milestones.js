@@ -138,11 +138,44 @@ function describeClock(loan, opts = {}) {
   // future must read as "today", never as a negative age.
   out.days = Math.max(0, Math.floor((now - t) / 86400000));
   if (expected !== null) out.stalled = out.days > expected;
-  out.note = expected === null
-    ? `At this milestone for ${out.days} day${out.days === 1 ? '' : 's'}. The milestone catalog sets no expected duration for it.`
-    : out.stalled
-      ? `At this milestone for ${out.days} days — longer than the ${expected} expected.`
-      : `At this milestone for ${out.days} day${out.days === 1 ? '' : 's'}, within the ${expected} expected.`;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // THE SENTENCE MUST NAME THE STEP THE BAR CAME FROM (audit round 5, defect 5).
+  //
+  // Under the last-completed rule `milestone_since` means "when the last step
+  // COMPLETED", so the clock measures how long the loan has been WAITING on the
+  // NEXT step, and the expectation is that next step's. The wording predates
+  // that change and still said "at THIS milestone … longer than the N
+  // expected", which attributes the awaited step's number to the standing one —
+  // so the header could read "longer than the 3 expected" while the Milestones
+  // board on the same screen showed "2 days expected" for the step named in the
+  // header, with nothing on the page to reconcile them.
+  //
+  // And "nothing is awaited" is NOT "the catalog set no duration": on a loan
+  // whose every step is done the old wording blamed the catalog for a bar that
+  // is absent because there is nothing left to wait for. Two different facts,
+  // now two different sentences.
+  //
+  // `awaiting` is optional, so a caller that does not pass it keeps the older
+  // wording rather than inventing a step name.
+  // ═══════════════════════════════════════════════════════════════════════
+  const awaiting = typeof opts.awaiting === 'string' && opts.awaiting.trim() ? opts.awaiting.trim() : null;
+  const d = `${out.days} day${out.days === 1 ? '' : 's'}`;
+  if (opts.nothingAwaited === true) {
+    out.note = `Every step on this loan's ladder is done, so nothing is being waited on (${d} since the last one completed).`;
+  } else if (awaiting) {
+    out.note = expected === null
+      ? `Waiting on ${awaiting} for ${d}. The milestone catalog sets no expected duration for ${awaiting}.`
+      : out.stalled
+        ? `Waiting on ${awaiting} for ${d} — longer than the ${expected} expected for it.`
+        : `Waiting on ${awaiting} for ${d}, within the ${expected} expected for it.`;
+  } else {
+    out.note = expected === null
+      ? `At this milestone for ${d}. The milestone catalog sets no expected duration for it.`
+      : out.stalled
+        ? `At this milestone for ${out.days} days — longer than the ${expected} expected.`
+        : `At this milestone for ${d}, within the ${expected} expected.`;
+  }
   return out;
 }
 
