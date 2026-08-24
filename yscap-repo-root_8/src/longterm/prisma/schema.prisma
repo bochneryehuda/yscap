@@ -306,6 +306,17 @@ model LtLoan {
   /// fallback for a loan whose ladder has not been read yet.
   milestoneName String? @map("milestone_name")
 
+  // ── How title vests (db/624, owner-directed 2026-08-23) ───────────────────
+  /// Field 4008, VERBATIM ("Officer" / "Individual"). Whether that means an
+  /// entity is decided by ONE rule (src/longterm/vesting.js), never re-read off
+  /// this text.
+  vestingType String? @map("vesting_type")
+  /// Field 1859 — the vesting entity's legal name, stored ONLY when 4008 says
+  /// the loan vests in an entity. On an Individual vesting it stays NULL even if
+  /// 1859 carries text: "individual" means individual, and a stale company name
+  /// on a re-vested loan is exactly the trap the owner's rule closes.
+  vestingEntityName String? @map("vesting_entity_name")
+
   /// The tenant's own status WORDING (virtual field MS.STATUS — "Funded" once the
   /// Funding step completes), stamped by Encompass at each milestone transition.
   /// This is the field the tenant's own webhook automation fires on. Verbatim.

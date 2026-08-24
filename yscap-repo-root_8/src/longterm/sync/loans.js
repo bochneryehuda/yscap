@@ -44,6 +44,7 @@ const trash = require('../trash');
 const book = require('../pipeline-book');
 const borrowerMatch = require('../borrower-match');
 const application = require('../application/sync');
+const vesting = require('../vesting');
 
 const lazy = {
   get db() { return require('../db'); },
@@ -249,11 +250,14 @@ async function readLoan(loanId, guid, settings) {
   try {
     const ids = [...new Set([
       ...contacts.fieldIdsFor(settings), ...locks.fieldIdsFor(settings),
-      ...ladderMod.MS_FIELD_IDS,
+      ...ladderMod.MS_FIELD_IDS, ...vesting.FIELD_IDS,
     ])];
     if (ids.length) values = await lazy.client.fieldReader(guid, ids);
   } catch (_) { /* each consumer below reports its own miss */ }
   const ms = ladderMod.msStatusOf(values);
+  // HOW TITLE VESTS (db/624, owner-directed): field 4008 decides, and only an
+  // entity vesting ever reads the entity name — "individual" means individual.
+  const vest = vesting.vestingOf(values);
 
   // What we held BEFORE the write, because the write is what destroys the evidence.
   // Encompass's own milestone log is 403 on this tenant, so noticing that the
@@ -274,6 +278,8 @@ async function readLoan(loanId, guid, settings) {
             purchased_at = CASE WHEN $9::boolean THEN $11::date ELSE purchased_at END,
             ms_status = COALESCE($12, ms_status),
             ms_status_date = COALESCE($13, ms_status_date),
+            vesting_type = CASE WHEN $14::boolean THEN $15 ELSE vesting_type END,
+            vesting_entity_name = CASE WHEN $14::boolean THEN $16 ELSE vesting_entity_name END,
             encompass_synced_at = now(),
             encompass_sync_error = NULL,
             updated_at = now()
@@ -289,10 +295,15 @@ async function readLoan(loanId, guid, settings) {
     // so a read that could not see the field leaves a recorded purchase alone while a
     // read that saw "Shipped" genuinely clears one. $12/$13 are the tenant's own
     // status wording + stamp (MS.STATUS/MS.STATUSDATE), same never-blank rule.
+    // $14 is "field 4008 answered at all": only then are $15/$16 written PLAINLY —
+    // a loan re-vested from an entity to an individual must have its entity name
+    // CLEARED (the owner's "individual means individual"), which COALESCE could
+    // never do; while a read that saw nothing leaves both columns alone.
     [loanId, milestoneName, stageKey, termMonths, programName,
       borrowerFirst, borrowerLast, borrowerEmail,
       sale.purchased !== null, sale.status, sale.at,
-      ms.status, ms.date],
+      ms.status, ms.date,
+      vest.answered, vest.vestingType, vest.entityName],
   );
 
   // A first sighting is recorded as a BASELINE, never as an arrival — we cannot know
