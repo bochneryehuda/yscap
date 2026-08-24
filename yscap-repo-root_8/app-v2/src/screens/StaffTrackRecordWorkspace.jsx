@@ -6,6 +6,7 @@ import { canDeleteDoc } from '../lib/condition-actions.js';
 import LineDetail from '../components/track-record/LineDetail.jsx';
 import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import ExportRecord from '../components/track-record/ExportRecord.jsx';
+import SpreadsheetEditor from '../components/track-record/SpreadsheetEditor.jsx';
 
 /* THE TRACK-RECORD WORKSPACE — ONE screen: the queue of every borrower with
    unfinished track-record work on the left, and one line's whole story on the
@@ -154,6 +155,12 @@ export default function StaffTrackRecordWorkspace() {
                 {g.contradicted > 0 && <span className="ts-badge warn small">{g.contradicted} disagree</span>}
                 <div className="spacer" />
                 <Link className="btn ghost small" to={`/internal/borrowers/${g.borrowerId}`}>Profile</Link>
+                {/* THE LEGACY TOOL, WITH ITS EXCEL IMPORT (owner-directed 2026-08-24). This screen
+                    became the destination of "Open full screen" on 2026-08-19 — correctly, it is
+                    the record you read — which left it as a place a person could stand with the
+                    whole record in front of them and no way to import a spreadsheet into it. The
+                    SAME component the loan file and the profile mount. */}
+                <SpreadsheetEditor borrowerId={g.borrowerId} onClosed={loadQueue} />
               </div>
               {/* Hand this borrower's record to somebody (item 7) — the regular
                   export is verified only; "Export all" / "Unverified only" are
