@@ -135,11 +135,29 @@ function milestoneKey(name) {
  * is present. A sample of a lagging field against a contradicted vocabulary is
  * not evidence. Use the owner's words, the observed census, or db/547.
  *
- * A milestone with no proven completed wording falls back to ITS OWN NAME —
- * honest, and listed as an open wording question for the owner rather than
- * invented. db/547 seeds NINETEEN milestones and this table covers nine, so ten
- * are open: Loan Setup, Processing, Waiting for Docs, Ready for Docs, Docs Out,
- * Wire Order, Investor Delivery, Purchasing Conditions, Final Docs, Closed.
+ * A milestone with no proven completed wording falls back to ITS OWN NAME.
+ *
+ * THAT FALLBACK IS NOW THE OWNER'S STATED RULE, not a placeholder waiting on an
+ * answer (owner-directed 2026-08-24, answering the ten open questions in one
+ * sentence): *"Keep the milestones the same way it is in Encompass if a certain
+ * milestone doesn't have different language, and keep it in the language it is
+ * in Encompass. Potentially, if we switch the language in Encompass and we
+ * rename something, then you should rename your system as well. It should be
+ * exactly as it is in Encompass."*
+ *
+ * So the ten milestones this table does not cover are SETTLED, not outstanding:
+ * they read as Encompass names them. The table is only for a milestone Encompass
+ * itself words differently once it completes — which is what the owner's own
+ * examples always were ("when LO Prep is completed, it's Assigned to Processor
+ * BECAUSE THAT'S THE NAME OF THE MILESTONE when it's completed").
+ *
+ * AND THE RENAME HALF IS ALREADY STRUCTURAL, which is worth knowing before
+ * anyone "implements" it: nothing here stores a copy of an Encompass name. The
+ * label falls back to the name on the loan's own ladder row, which is re-read
+ * from Encompass on every sync, so a rename there reaches every screen on the
+ * next pass with no code change. The lookup is keyed on `milestoneKey`, so a
+ * renamed milestone also stops matching a row in this table and correctly falls
+ * back to its new Encompass name rather than to a wording chosen for the old one.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 const COMPLETED_FORM = {
@@ -155,16 +173,22 @@ const COMPLETED_FORM = {
   'clear to close': 'Clear to Close',        // OWNER (stop vocabulary)
   'schedule closing': 'Closing Scheduled',   // SETTINGS (db/547, re-verified)
   'funding': 'Funded',                       // OWNER
-  // CENSUS-OBSERVED, ATTRIBUTION INFERRED — the weakest row in this table, and
-  // labelled so deliberately (audit round 5, defect 5). "Completed" IS a value
-  // this tenant's MS.STATUS was observed returning, so unlike the wording D6
-  // removed it is not invented. But the sweep records a flat list of DISTINCT
-  // values with no per-milestone breakdown, so nothing establishes that it is
-  // COMPLETION's wording rather than another step's — that pairing rests on the
-  // two names resembling each other. It is kept because the fallback (the raw
-  // "Completion") is no better evidenced, and it is on the owner's question
-  // list rather than presented as proven.
-  'completion': 'Completed',
+  // REMOVED 2026-08-24, by the owner's own answer to the question round 5 raised
+  // about it: *"Keep the milestones the same way it is in Encompass if a certain
+  // milestone doesn't have different language, and keep it in the language it is
+  // in Encompass … It should be exactly as it is in Encompass."*
+  //
+  // `Completion -> "Completed"` was the ONE row here attributed by name
+  // similarity rather than by anything stated. The string is genuinely observed
+  // in the tenant's MS.STATUS sweep, so it was never invented — but the sweep
+  // records a flat list of DISTINCT values with no per-milestone breakdown, so
+  // nothing tied it to COMPLETION rather than to some other step. Under the
+  // owner's rule an unproven wording is not a wording: the milestone keeps its
+  // Encompass name and now reads "Completion".
+  //
+  // Re-adding it is one line, and the bar for doing so is exactly the bar the
+  // owner set — Encompass itself showing a different word once that milestone
+  // completes, not a value seen somewhere in the book.
 };
 
 /**
