@@ -151,8 +151,16 @@ function ladderPos(r) {
 function orderedLadder(rows) {
   // Ladder order is positional; sort defensively so a caller handing rows read
   // back out of SQL (any order) gets the same answer as the live read.
+  // Ties are broken by NAME so the ordering is TOTAL. Position alone leaves two
+  // rows at the same position resolved by whatever order the caller happened to
+  // hand them over (and, in the SQL twin, by whatever the planner chose) — so
+  // the two halves of the mirror could answer differently about one ladder.
+  // Unreachable through the write path today (positions are array indices and
+  // the primary key collapses a duplicate name), which is exactly why it is
+  // worth closing now rather than after something makes it reachable.
   return (rows || []).filter((r) => ladderName(r))
-    .sort((a, b) => ladderPos(a) - ladderPos(b));
+    .sort((a, b) => (ladderPos(a) - ladderPos(b))
+      || String(ladderName(a)).localeCompare(String(ladderName(b))));
 }
 
 function sittingOf(rows) {

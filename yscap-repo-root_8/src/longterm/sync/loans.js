@@ -186,11 +186,20 @@ async function readLoan(loanId, guid, settings) {
   // we hold, and `writeMilestone` sees no change). Only a loan with no ladder
   // at all still takes the lagging reading, which is better than nothing.
   let laddered = false;
+  // Whether the probe ANSWERED at all. Two different rules read this one fact
+  // and they need it to fail in OPPOSITE directions, so a single boolean cannot
+  // carry both (see `redefinition` below): the D3 fallback is safe when an
+  // unreadable probe reads as ALREADY laddered, and the phantom-event guard is
+  // safe when it reads as a FIRST read. Both conservative answers hold at once
+  // — claim no milestone, and record no movement — but only if the failure
+  // itself is remembered rather than collapsed into `laddered`.
+  let probeAnswered = true;
   try {
     const { rows: lr } = await lazy.db.query(
       'SELECT ladder_synced_at FROM lt_loans WHERE id = $1::uuid', [String(loanId)]);
     laddered = !!(lr.length && lr[0].ladder_synced_at);
   } catch (e) {
+    probeAnswered = false;
     // FAIL TOWARD THE SAFE READING (audit round 4). Defaulting to `false`
     // here means an unreadable probe reinstates the very fallback D3
     // removed — so on the one path that reaches this line (the ladder read
@@ -351,13 +360,50 @@ async function readLoan(loanId, guid, settings) {
       vest.answered, vest.vestingType, vest.entityName],
   );
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // THE FIRST LADDER READ IS A RE-DEFINITION, NOT A MOVE — THE SECOND CALL
+  // SITE (post-merge audit, defect 1).
+  //
+  // `ladderOne` got this guard in round 5; THIS function performs the IDENTICAL
+  // conversion and did not, which made the fix worth nothing in practice: the
+  // worker drains loans through here BEFORE it runs the ladder backfill, so on
+  // the ordinary sync path every already-synced loan still gained a BACKWARD
+  // "Investor Delivery -> Funding" event that never happened, had
+  // `milestone_since` reset to now, and had `milestone_since_is_baseline`
+  // cleared — the exact outcome round 5 believed it had closed. The
+  // Encompass webhook nudges a loan straight down this path, so it is also the
+  // path that runs on a real milestone change.
+  //
+  // THE LESSON, which is the standing rule in CLAUDE.md and was broken anyway:
+  // a rule pinned at one of its two call sites is not fixed, it is half-fixed,
+  // and the half that is left is the one that runs first.
+  //
+  // Same reading as the ladder twin: before db/623 the mirror stored the
+  // LAGGING active milestone and stamped `milestone_since`, so on the FIRST
+  // ladder read the last-done standing legitimately differs from what is
+  // stored. That is a re-definition of the position we were already looking at,
+  // not a movement — so the standing is written (the UPDATE above already did
+  // it) and NO event is recorded, leaving the clock and its honest baseline
+  // flag exactly as they were.
+  //
+  // Gated on `ladder.ok` because the conversion only happens when a ladder was
+  // actually read; with no ladder in hand the ordinary rules still apply. A
+  // genuinely new loan has no `milestone_since`, so `hasRecord` is false and it
+  // still gets its baseline. An unanswered probe counts as a first read, so it
+  // fails toward recording nothing.
+  // ═══════════════════════════════════════════════════════════════════════
+  const firstLadderRead = !probeAnswered || !laddered;
+  const redefinition = ladder.ok && firstLadderRead && priorMilestone.hasRecord;
+
   // A first sighting is recorded as a BASELINE, never as an arrival — we cannot know
   // how long the loan had already been sitting there, and dating it from today would
   // make the whole back book look freshly moved. Best-effort: never undoes the
   // mirror above.
-  const milestoneWrite = await milestones.writeMilestone(
-    loanId, priorMilestone, { milestoneName, stageKey },
-  );
+  const milestoneWrite = redefinition
+    ? { ok: true, action: 'none', reason: 'redefinition' }
+    : await milestones.writeMilestone(
+      loanId, priorMilestone, { milestoneName, stageKey },
+    );
 
   // The ladder itself — every step with done/date/associate — mirrored beside the
   // loan and stamping `ladder_synced_at` (which is what drains this loan out of
