@@ -405,8 +405,14 @@ const FIELD_MAP = [
     src: (b) => b.subjectGeo || null },
   { cu: CU.borrowerName, key: 'borrower_name', name: '*Borrower Name', type: 'text',
     src: (b) => {
-      const v = s(b.loan && b.loan.borrower_name) || fullNameOf(b.borrower);
-      return T.isPlaceholderName(v) ? null : v;
+      // THE PARSED NAME WINS (owner-reported 2026-08-24 — the card read surname
+      // first). `loan.borrower_name` is the Encompass PIPELINE display string in
+      // "LAST, FIRST" order; the parsed parts are already in reading order AND
+      // carry the middle name and suffix, so preferring them fixes the order and
+      // gains detail. The pipeline name is the fallback for a loan we have only
+      // discovered and not yet fully read — reordered when it is provably safe.
+      const v = fullNameOf(b.borrower) || T.reorderCommaName(s(b.loan && b.loan.borrower_name));
+      return T.isPlaceholderName(v) ? null : (s(v) || null);
     } },
   { cu: CU.borrowerDOB, key: 'date_of_birth', name: 'Borrower DOB', type: 'date',
     src: (b) => exv(b, '1402') || s(b.borrower && b.borrower.date_of_birth) },
@@ -878,5 +884,8 @@ module.exports = {
     propertyTypeLabel, occupancyLabel, termLabel, pppLabel, pppText, lenderLabel,
     appSubmittedLabel, ltvText, yearsAtResidenceText, purchaseOrEstimate,
     sameNameLoose, emailIn, isChecked,
+    // exported as a TEST SEAM so a guard can reach the real field row rather than
+    // restating its logic — a test that re-types the rule proves nothing about it.
+    FIELD_MAP,
   },
 };
