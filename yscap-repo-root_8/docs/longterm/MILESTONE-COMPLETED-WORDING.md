@@ -38,25 +38,36 @@ is always current; `MS.STATUS` is still mirrored onto the loan for reference.
 
 ## The table (`stages.COMPLETED_FORM`) and where each wording comes from
 
+Only three kinds of evidence count, and a fourth was **rejected** in audit round 3 — see the warning
+below the table.
+
 | Milestone | Completed wording | Evidence |
 |---|---|---|
-| Started | File started | `MS.STATUS`, 6 of 8 sampled |
+| Started | File started | CENSUS — observed on this tenant |
 | LO Prep | **Assigned to Processor** | **the owner's own words** |
-| Loan Setup | Sent to Processing | `MS.STATUS` ("Sent to processing"), 6 of 8 |
-| Submittal | **Submitted** | **the owner's own words** + `MS.STATUS` 6 of 8 |
+| Submittal | **Submitted** | **the owner's own words** |
 | Cond. Approval | Conditionally Approved | the owner's seven-stop vocabulary |
 | Resubmittal | In Underwriting | db/547 — the tenant's own `tpo_status` for that step |
 | Clear To Close | Clear to Close | the owner's seven-stop vocabulary |
 | Schedule Closing | Closing Scheduled | db/547 — the tenant's own `tpo_status` for that step |
-| Funding | **Funded** | **the owner's own words** + `MS.STATUS` 5 of 5 |
-| Completion | Completed | `MS.STATUS`, 8 of 8 |
+| Funding | **Funded** | **the owner's own words** |
+| Completion | Completed | CENSUS — observed on this tenant |
+
+> ⚠ **A PER-MILESTONE `MS.STATUS` SAMPLE IS NOT EVIDENCE, and this table used to contain one.**
+> Audit round 3 removed `Loan Setup → "Sent to Processing"`: that string appears only in Encompass's
+> **stock declared list** and was never once OBSERVED in this tenant's 490-loan MS.STATUS census
+> (`src/longterm/encompass/dropdowns.js`), whose loans return their own milestone names. And
+> MS.STATUS **lags**, so a per-milestone sample of it attributes each wording to the milestone one
+> step off wherever the lag is present. `Started → "File started"` and `Completion → "Completed"`
+> survive because the census actually observed them; every other row above rests on the owner's own
+> words or on db/547.
 
 **Anything not in that table keeps its own name.** That is honest rather than lazy: inventing a
 past-tense wording for a step nobody has stated one for would put a word on a loan file that no
-person chose. The eight without a proven completed form today:
+person chose. The nine without a proven completed form today:
 
-> Processing · Waiting for Docs · Ready for Docs · Docs Out · Wire Order · Investor Delivery ·
-> Purchasing Conditions · Final Docs
+> **Loan Setup** · Processing · Waiting for Docs · Ready for Docs · Docs Out · Wire Order ·
+> Investor Delivery · Purchasing Conditions · Final Docs
 
 **These are the open questions for the owner.** Adding a wording is one line in `COMPLETED_FORM`.
 
