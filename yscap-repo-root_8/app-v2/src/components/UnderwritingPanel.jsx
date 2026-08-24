@@ -1310,7 +1310,17 @@ function BankLiquidity({ bankLiquidity, assetLedger, appId, readOnly }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   useEffect(() => { setLed(assetLedger || null); }, [assetLedger]);
-  const money = (n) => n == null ? '—' : `$${Math.round(n).toLocaleString('en-US')}`;
+  /* EVERY figure this component prints is the LIQUIDITY family — a bank-statement
+     balance, the reserve requirement, the closing buffer, the verified total, the
+     shortfall, max cash to close — so all of it shows exact cents (owner-directed
+     2026-07-16, restated 2026-08-24). It was rounding them, which mattered twice:
+     a statement balance genuinely carries cents, and the derivation line below
+     ("verified − reserves − buffer") has to reconcile to the figure printed above
+     it, which three independently rounded numbers cannot be relied on to do. The
+     closing desk, the studio and the assets condition already state these to the
+     cent, so this was also the one place the desk disagreed with them. */
+  const money = (n) => (n == null ? '—'
+    : `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
   const rows = led ? (led.rows || []) : null;
   if ((!bankLiquidity || !(bankLiquidity.accounts || []).length) && !(rows && rows.length)) return null;
   const req = led && led.requiredLiquidity != null ? led.requiredLiquidity : (bankLiquidity ? bankLiquidity.requiredLiquidity : null);

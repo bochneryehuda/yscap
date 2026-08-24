@@ -111,9 +111,12 @@ function drawFigures(m, { borrower = false } = {}) {
       // repeat the headline — so on a zero-fee draw the two ARE the same number and saying so
       // once is honest. Spelling the subtraction out here covers all three figures in one line
       // whichever way it falls.
+      // A ZERO FEE IS ONLY WORTH STATING WHEN IT IS AN ANSWER. `fee_known:false` means the fee
+      // never resolved, and printing "no draw fee on this release" there is a claim we cannot
+      // support — on a Blue Lake file the wire really is $250 lighter than this line implies.
       sub: fee > 0
         ? `${usd(approved)} approved − ${usd(fee)} draw fee${borrower ? ' — wired to you' : ''}`
-        : (borrower ? 'wired to you' : 'no draw fee on this release'),
+        : (borrower ? 'wired to you' : (m.fee_known === false ? 'draw fee not confirmed' : 'no draw fee on this release')),
     };
   } else if (hasApproval && approved <= 0) {
     // The inspector's explicit $0 — stated as the answer it is. The money is never "lost":

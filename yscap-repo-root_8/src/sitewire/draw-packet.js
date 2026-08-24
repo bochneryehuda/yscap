@@ -61,6 +61,14 @@ async function buildDrawPacket(appId, drawId) {
     feeCents: ledgerRow ? Number(ledgerRow.fee_cents) : (feeInfo ? feeInfo.fee_cents : 0),
     feeRecorded: !!ledgerRow,
     retainageHeldCents: ledgerRow ? Number(ledgerRow.retainage_held_cents) : 0,
+    // THE STORED NET WINS WHATEVER THE ROW'S FUNDED STATUS, and it must stay that way — see the
+    // long note at the same call site in ./rollup.js. A `pending` or `held` row's net was computed
+    // by `money.computeRelease` and already carries the borrower's OUT-OF-POCKET FLOOR, which
+    // `drawMoney` knows nothing about; discarding it makes the packet recompute
+    // `approved − fee − retainage` and OVERSTATE the wire by the whole floor. The packet and the
+    // desk read one figure for one draw, so gating this on `released` here and not there (or the
+    // reverse) would state two different nets for the same draw. `released:` below is where "this
+    // is not a wire yet" belongs, and it already says so.
     netReleaseCents: ledgerRow ? Number(ledgerRow.net_release_cents) : null,
     released: !!(ledgerRow && ledgerRow.funded_status === 'released'),
     finding: findingRow,

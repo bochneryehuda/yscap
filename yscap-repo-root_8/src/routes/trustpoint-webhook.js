@@ -24,6 +24,7 @@ const F = require('../lib/fields');           // jsonbText: this router is mount
 const db = require('../db');
 const cfg = require('../config');
 const { rateLimit } = require('../lib/rate-limit');
+const parked = require('../trustpoint/parked');
 
 router.use(rateLimit({ bucket: 'trustpoint-webhook', windowMs: 60000, max: 240 }));
 router.use(express.json({ limit: '1mb' }));
@@ -41,6 +42,13 @@ function tokenOk(req) {
 
 router.post('/', async (req, res) => {
   try {
+    // PARKED = THE DOOR IS SHUT, and nothing is kept to replay later. This receiver used to
+    // accept and STORE every delivery regardless of TRUSTPOINT_ENABLED (the switch gated only
+    // the drain), so "TrustPoint is off" still meant a queue quietly building up that would
+    // pour in the moment it came back on. While parked we refuse before reading the body, so
+    // there is no inbox to drain and no stale figure can reach a file months from now.
+    // 410 Gone rather than 401: TrustPoint's own retry logic should stop, not re-authenticate.
+    if (parked.isParked()) return res.status(410).json({ error: 'trustpoint_parked', message: parked.PARKED_REASON });
     if (!tokenOk(req)) return res.status(401).json({ error: 'unauthorized' });
     const p = req.body || {};
     const event = String(p.event || p.event_type || '').toUpperCase().replace(/\s+/g, '_').slice(0, 64);

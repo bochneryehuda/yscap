@@ -16,6 +16,17 @@ import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 const INK = '#141B22';
 const MUTED = '#4B585C';
 const usd = (n) => `$${Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+// FEES / CASH-TO-CLOSE SHOW EXACT CENTS (owner-directed 2026-07-16), and on THIS card the cents
+// are the whole point: the server computes `cashToBorrower` to the cent and compares it to the
+// $2,000 limit at full precision, so a file at $2,000.40 is genuinely OVER and blocked while
+// `usd` printed it as "$2,000 to the borrower · limit $2,000" — reading as exactly at the limit.
+// An officer could not tell from this card why the term sheet refused to send.
+//
+// A SECOND formatter beside the first, never a change to the first: the initial advance is a
+// FLOORED WHOLE DOLLAR by the frozen 2026-07-09 reconciliation rule and the limit is a round
+// constant, so those two stay on `usd` and the arithmetic sentence still reconciles
+// (whole − cents − cents = cents).
+const usd2 = (n) => `$${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export default function RateTermCashCard({ appId, onChanged }) {
   const [data, setData] = useState(null);
@@ -84,9 +95,9 @@ export default function RateTermCashCard({ appId, onChanged }) {
         <div style={{ color: INK, fontWeight: 700, fontSize: 14.5 }}>Rate-&-term cash check — within the $2,000 limit</div>
       )}
       <div style={{ marginTop: 6, fontSize: 13.5, color: c.over && !c.exception ? '#8A1F1F' : MUTED, lineHeight: 1.5 }}>
-        Initial loan {usd(c.initialAdvance)} − payoff {usd(c.payoff)}{c.freeAndClear ? ' (free and clear)' : ''} − closing costs {usd(c.closingCosts)}
-        {c.itemizedClosingCosts > 0 ? <> (incl. {usd(c.itemizedClosingCosts)} validated below)</> : null}
-        {' '}= <b style={{ color: c.over ? '#8A1F1F' : INK }}>{usd(c.cashToBorrower)} to the borrower</b> · limit {usd(c.limit)}.
+        Initial loan {usd(c.initialAdvance)} − payoff {usd2(c.payoff)}{c.freeAndClear ? ' (free and clear)' : ''} − closing costs {usd2(c.closingCosts)}
+        {c.itemizedClosingCosts > 0 ? <> (incl. {usd2(c.itemizedClosingCosts)} validated below)</> : null}
+        {' '}= <b style={{ color: c.over ? '#8A1F1F' : INK }}>{usd2(c.cashToBorrower)} to the borrower</b> · limit {usd(c.limit)}.
         {c.over && !c.exception && <> Switch the transaction to a <b>cash-out</b>, validate the closing costs below, or request a super-admin exception — the term sheet will not send for e-signature until one of those happens.</>}
       </div>
 
@@ -111,7 +122,7 @@ export default function RateTermCashCard({ appId, onChanged }) {
                 <b>{it.label}</b>
                 <span style={{ color: MUTED }}> — {(data.costKinds || {})[it.kind] || it.kind}{it.note ? ` · ${it.note}` : ''}</span>
               </div>
-              <div style={{ fontWeight: 700, color: INK }}>{usd(it.amount)}</div>
+              <div style={{ fontWeight: 700, color: INK }}>{usd2(it.amount)}</div>
               <button className="btn btn-sm ghost" disabled={busy} onClick={() => removeCost(it.id, it.label)}>Remove</button>
             </div>
           ))}
