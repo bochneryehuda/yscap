@@ -168,7 +168,13 @@ function milestoneStepper(loan, catalog = [], opts = {}) {
   // tenant that happens to name a milestone "Purchased" from resolving to ours.
   const currentIndex = ordered.findIndex((m) => !m.pilot && stages.milestoneKey(m.name) === current);
   const witnessedByKey = {};
-  for (const [k, v] of Object.entries(opts.reachedAt || {})) witnessedByKey[stages.milestoneKey(k)] = v;
+  // FIRST WINS on a key collision: `reachedAtByMilestone` inserts newest-first,
+  // so a plain assignment would let an older spelling of the same milestone
+  // overwrite the NEWEST witnessed day with an older one.
+  for (const [k, v] of Object.entries(opts.reachedAt || {})) {
+    const kk = stages.milestoneKey(k);
+    if (!(kk in witnessedByKey)) witnessedByKey[kk] = v;
+  }
 
   return {
     currentIndex,
@@ -305,7 +311,11 @@ function sevenStops(ladder, { reachedAt = {}, sale = null } = {}) {
   // a ladder spelled "Cond Approval" against a stop/catalog "Cond. Approval"
   // used to miss (audit round 2, obs 4) and silently drop the date.
   const witnessedByKey = {};
-  for (const [k, v] of Object.entries(reachedAt || {})) witnessedByKey[stages.milestoneKey(k)] = v;
+  for (const [k, v] of Object.entries(reachedAt || {})) {
+    // First wins — reachedAtByMilestone is newest-first (see milestoneStepper).
+    const kk = stages.milestoneKey(k);
+    if (!(kk in witnessedByKey)) witnessedByKey[kk] = v;
+  }
   const done = new Map();
   for (const r of (Array.isArray(ladder) ? ladder : [])) {
     if (!r || !r.done || !r.milestone_name) continue;
@@ -368,7 +378,11 @@ function milestoneBoard(catalog = [], ladder = [], { reachedAt = {}, sale = null
     if (r && r.milestone_name) byName.set(stages.milestoneKey(r.milestone_name), r);
   }
   const witnessedByKey = {};
-  for (const [k, v] of Object.entries(reachedAt || {})) witnessedByKey[stages.milestoneKey(k)] = v;
+  for (const [k, v] of Object.entries(reachedAt || {})) {
+    // First wins — reachedAtByMilestone is newest-first (see milestoneStepper).
+    const kk = stages.milestoneKey(k);
+    if (!(kk in witnessedByKey)) witnessedByKey[kk] = v;
+  }
   const rows = (catalog || [])
     .slice()
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))

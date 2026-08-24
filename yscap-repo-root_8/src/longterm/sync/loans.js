@@ -170,9 +170,36 @@ async function readLoan(loanId, guid, settings) {
   const ladder = await ladderMod.readLadder(guid, { client: lazy.client });
   const laggingMilestone = loan && (loan.currentMilestone || loan.currentMilestoneName
     || (loan.loanProductData && loan.loanProductData.currentMilestone));
-  const { milestoneName, stageKey } = stageFor(
-    (ladder.ok && ladder.sitting) || laggingMilestone, settings,
-  );
+
+  // …BUT THE FALLBACK IS ONLY FOR A LOAN THAT HAS NO LADDER YET (audit round 3,
+  // D3). On an ALREADY-LADDERED loan the lagging field is the last WORKED step,
+  // which under the last-completed rule is the step AHEAD of where the loan
+  // stands the moment somebody starts working it — so a failed ladder read used
+  // to walk the standing forward, record an `entered` event for a move that
+  // never happened, and RESET `milestone_since` to the moment of the failure
+  // (the "at this milestone N days" figure dropping to 0 on a step the loan had
+  // been past for weeks). `realignStanding` would then quietly put the
+  // milestone back, leaving the bogus event and the reset clock behind.
+  //
+  // So: a ladder we could read decides; a ladder we could NOT read on a loan
+  // that already has one claims NOTHING (null → the COALESCE below keeps what
+  // we hold, and `writeMilestone` sees no change). Only a loan with no ladder
+  // at all still takes the lagging reading, which is better than nothing.
+  let laddered = false;
+  try {
+    const { rows: lr } = await lazy.db.query(
+      'SELECT ladder_synced_at FROM lt_loans WHERE id = $1::uuid', [String(loanId)]);
+    laddered = !!(lr.length && lr[0].ladder_synced_at);
+  } catch (_) { laddered = false; }   // unreadable → behave as before
+
+  const standing = ladder.ok ? ladder.sitting : (laddered ? null : laggingMilestone);
+  // CLAIMING NOTHING MEANS CLAIMING NOTHING — including the STAGE.
+  // `stageFor(null)` answers the UNMAPPED bucket ('other'), which is a real
+  // value, and the UPDATE below COALESCEs it OVER the stage we already hold —
+  // so a failed ladder read would drop a correctly-bucketed loan into "Other".
+  const { milestoneName, stageKey } = standing
+    ? stageFor(standing, settings)
+    : { milestoneName: null, stageKey: null };
 
   // WHICH PRODUCT IS THIS LOAN? The pipeline discovers with `Loan.LoanAmount > 0`
   // — the WHOLE Encompass book — because no folder separates the two products at

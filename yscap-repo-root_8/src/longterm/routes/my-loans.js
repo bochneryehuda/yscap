@@ -142,16 +142,41 @@ router.get('/loans', async (req, res) => {
     const borrowerId = req.actor && req.actor.id;
     if (!borrowerId) return res.status(401).json({ error: 'Please sign in again.' });
 
-    // A LEFT JOIN, deliberately: a milestone the tenant has not published consumer
-    // wording for — or one added since we last read the list — must still return
-    // the loan. An INNER join would make a client's own file disappear because of
-    // a gap in OUR reference data, which is the worst possible failure here.
+    // ═══════════════════════════════════════════════════════════════════════
+    // THE BORROWER'S WORDING IS KEYED ON THE STEP BEING WAITED ON, NOT THE ONE
+    // JUST FINISHED (audit round 3, D1).
+    //
+    // db/547's `consumer_status` was authored against the ORIGINAL first-not-done
+    // reading of `milestone_name` — it is "what the borrower is told WHILE the
+    // file sits at this step". Its own rows prove it: Cond. Approval carries
+    // "Submitted for Approval" (true while awaiting that approval) and Processing
+    // carries "Conditionally Approved" (true once Cond. Approval is behind you).
+    //
+    // #44 redefined `milestone_name` as the LAST COMPLETED step — right for every
+    // STAFF surface, and it would silently shift this borrower-facing column one
+    // step BACKWARD: a loan clear to close would tell its borrower "Final
+    // Approval". So this door keeps asking the question db/547 answers, by
+    // reading the first NOT-done step off the ladder mirror.
+    //
+    // Re-wording db/547 for completion semantics is a business decision (and
+    // would also settle the pre-existing oddity that its Funding row says
+    // "Funded" while Funding is still being worked) — it is on the owner's
+    // question list, not something to infer here.
+    //
+    // A LEFT JOIN LATERAL, deliberately: a loan with no ladder mirror yet must
+    // still be returned, falling back to whatever `milestone_name` it holds.
     const { rows } = await db.query(
       `SELECT l.id, l.loan_number, l.stage_key, l.milestone_name, l.loan_amount,
               l.term_months, l.program_name, l.encompass_synced_at,
-              m.consumer_status
+              w.milestone_name AS awaiting_milestone
          FROM lt_loans l
-         LEFT JOIN lt_encompass_milestones m ON m.milestone_name = l.milestone_name
+         LEFT JOIN LATERAL (
+           SELECT m.milestone_name
+             FROM lt_loan_milestones m
+            WHERE m.loan_id = l.id AND m.done = false
+            ORDER BY m.position ASC
+            LIMIT 1
+         ) w ON true
         WHERE l.borrower_id = $1::uuid
           -- A loan deleted in Encompass (its trash folder) is not one of their
           -- files. The archive is internal; a client never sees a deleted loan.
@@ -159,6 +184,24 @@ router.get('/loans', async (req, res) => {
         ORDER BY l.encompass_synced_at DESC NULLS LAST, l.loan_number NULLS LAST`,
       [borrowerId],
     );
+
+    // The milestone → borrower-wording table, mapped in JS rather than joined in
+    // SQL so the key has ONE definition (`stages.milestoneKey`) instead of a
+    // PL/pgSQL twin that would drift from it — the trap this repo has been bitten
+    // by twice. The catalog is 19 rows. A failed read leaves every wording null
+    // and the stage LABEL answers instead, which is the documented fallback.
+    const consumerByKey = new Map();
+    try {
+      const { rows: cat } = await db.query(
+        'SELECT milestone_name, consumer_status FROM lt_encompass_milestones');
+      for (const c of cat) {
+        if (c.milestone_name) consumerByKey.set(stages.milestoneKey(c.milestone_name), c.consumer_status);
+      }
+    } catch (_) { /* wording unavailable — the stage label answers */ }
+    for (const r of rows) {
+      const key = stages.milestoneKey(r.awaiting_milestone || r.milestone_name);
+      r.consumer_status = key ? (consumerByKey.get(key) || null) : null;
+    }
 
     // The stage list is only the FALLBACK wording, so a settings read that fails
     // must not fail the request — the consumer status is what normally answers.

@@ -115,34 +115,42 @@ function milestoneKey(name) {
  * is displayed as "Funded" — never "Funding" (the active form, which reads as
  * not-yet-funded) and never "Investor Delivery" (a step that has not happened).
  *
- * WHERE EACH WORDING COMES FROM — verified live 2026-08-24, never guessed:
+ * WHERE EACH WORDING COMES FROM. Only three kinds of evidence count here, and
+ * the weakest of them was REMOVED in audit round 3 (D6) — see the warning below:
  *   · OWNER — stated in the owner's own words (LO Prep, Submittal, Funding,
- *     and the Cond. Approval / Clear to Close stop vocabulary).
- *   · MS.STATUS — the tenant's own status field, stamped by their Encompass
- *     rules at milestone completion; sampled per-milestone across the book
- *     (Funding→"Funded" 5/5, Submittal→"Submitted" 6/8, Loan Setup→"Sent to
- *     processing" 6/8, Started→"File started" 6/8, Completion→"Completed" 8/8).
- *   · SETTINGS — the tenant's milestone settings (db/547): Schedule Closing's
- *     own external wording is "Closing Scheduled", Resubmittal's is
- *     "In Underwriting" — their words for a loan PAST that step.
+ *     and the Cond. Approval / Clear to Close stop vocabulary). The strongest.
+ *   · CENSUS — a value this tenant's MS.STATUS was actually OBSERVED returning
+ *     across the 490-loan live sweep recorded in `encompass/dropdowns.js`
+ *     ("File started", "Completed").
+ *   · SETTINGS — the tenant's own milestone settings (db/547): Schedule
+ *     Closing's external wording is "Closing Scheduled", Resubmittal's is
+ *     "In Underwriting". Both re-verified against the seeded catalog.
+ *
+ * ⚠ DO NOT ADD A WORDING FROM A PER-MILESTONE `MS.STATUS` SAMPLE. That is how
+ * "Loan Setup → Sent to Processing" got in, and it was wrong twice over:
+ * (1) "Sent to processing" appears ONLY in Encompass's STOCK declared list and
+ * was never once observed on this tenant, whose MS.STATUS returns its own
+ * milestone names; and (2) MS.STATUS LAGS on older loans, so a per-milestone
+ * sample attributes each wording to the milestone one step off wherever the lag
+ * is present. A sample of a lagging field against a contradicted vocabulary is
+ * not evidence. Use the owner's words, the observed census, or db/547.
  *
  * A milestone with no proven completed wording falls back to ITS OWN NAME —
  * honest, and listed as an open wording question for the owner rather than
- * invented (Processing, Waiting for Docs, Ready for Docs, Docs Out, Wire
- * Order, Investor Delivery, Purchasing Conditions, Final Docs).
+ * invented: Loan Setup, Processing, Waiting for Docs, Ready for Docs, Docs Out,
+ * Wire Order, Investor Delivery, Purchasing Conditions, Final Docs.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 const COMPLETED_FORM = {
-  'started': 'File started',                 // MS.STATUS
+  'started': 'File started',                 // CENSUS (observed on this tenant)
   'lo prep': 'Assigned to Processor',        // OWNER
-  'loan setup': 'Sent to Processing',        // MS.STATUS ("Sent to processing")
-  'submittal': 'Submitted',                  // OWNER + MS.STATUS
+  'submittal': 'Submitted',                  // OWNER
   'cond approval': 'Conditionally Approved', // OWNER (stop vocabulary)
-  'resubmittal': 'In Underwriting',          // SETTINGS (tenant's own wording)
+  'resubmittal': 'In Underwriting',          // SETTINGS (db/547, re-verified)
   'clear to close': 'Clear to Close',        // OWNER (stop vocabulary)
-  'schedule closing': 'Closing Scheduled',   // SETTINGS (tenant's own wording)
-  'funding': 'Funded',                       // OWNER + MS.STATUS
-  'completion': 'Completed',                 // MS.STATUS
+  'schedule closing': 'Closing Scheduled',   // SETTINGS (db/547, re-verified)
+  'funding': 'Funded',                       // OWNER
+  'completion': 'Completed',                 // CENSUS (observed on this tenant)
 };
 
 /**

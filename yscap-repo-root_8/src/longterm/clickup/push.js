@@ -649,7 +649,14 @@ async function syncCoBorrowerSubtask({ loanId, loan, bag, before, options, out, 
   let subBefore;
   try {
     subBefore = await writer.getTask(existing.id);
-  } catch (_) { return; }   // an unreadable subtask waits for the next pass — never written blind
+  } catch (_) {
+    // An unreadable subtask waits for the next pass — never written blind. It is
+    // reported DISTINCTLY from a missing one (audit round 3, O12): both correctly
+    // leave an approval unresolved, but "we could not read it" and "it is gone"
+    // send a person to two different places.
+    out.subtaskSkipped = 'subtask_unreadable';
+    return;
+  }
   for (const f of coFields) {
     const oldVal = taskFieldValue(subBefore, f.id);
     if (mapper.fieldValueEquivalent(f.id, oldVal, f.value, options, opts)) { out.suppressed++; continue; }
@@ -820,7 +827,12 @@ async function pushPass({ limit } = {}) {
       }
     } catch (e) {
       out.problems.push({ loanId: r.id, error: String((e && e.message) || e).slice(0, 200), retryable: !!(e && e.retryable) });
-      if (!dryRun()) {
+      // A GLOBAL STAND-DOWN IS NOT THIS LOAN'S PROBLEM (audit round 3, O9). The
+      // breaker is open for the whole writer, so stamping the loan it happened to
+      // reach demotes a perfectly healthy file into the stamped cohort and sinks
+      // it behind every real problem — the same reasoning the `skipped` branch
+      // above already applies to 'off' and 'not_configured'.
+      if (!dryRun() && !(e && e.code === 'CLICKUP_CIRCUIT_OPEN')) {
         try {
           await db.query('UPDATE lt_loans SET clickup_push_error = $2, updated_at = now() WHERE id = $1::uuid',
             [r.id, String((e && e.message) || e).slice(0, 500)]);
@@ -894,7 +906,12 @@ async function createPass({ limit } = {}) {
       }
     } catch (e) {
       out.problems.push({ loanId: r.id, error: String((e && e.message) || e).slice(0, 200) });
-      if (!dryRun()) {
+      // A GLOBAL STAND-DOWN IS NOT THIS LOAN'S PROBLEM (audit round 3, O9). The
+      // breaker is open for the whole writer, so stamping the loan it happened to
+      // reach demotes a perfectly healthy file into the stamped cohort and sinks
+      // it behind every real problem — the same reasoning the `skipped` branch
+      // above already applies to 'off' and 'not_configured'.
+      if (!dryRun() && !(e && e.code === 'CLICKUP_CIRCUIT_OPEN')) {
         try {
           await db.query('UPDATE lt_loans SET clickup_push_error = $2, updated_at = now() WHERE id = $1::uuid',
             [r.id, String((e && e.message) || e).slice(0, 500)]);

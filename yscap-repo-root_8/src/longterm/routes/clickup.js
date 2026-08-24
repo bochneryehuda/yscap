@@ -43,7 +43,6 @@ const mapper = require('../clickup/mapper');
 const writer = require('../clickup/writer-client');
 const T = require('../clickup/transforms');
 const program = require('../clickup/program');
-const statusEngine = require('../clickup/status-engine');
 
 const P = clickupPush._internals;
 
@@ -502,7 +501,9 @@ router.post('/loans/:loanId/reviews/:reviewId/approve', async (req, res) => {
     if (!(out.wrote > 0 || out.suppressed > 0)) {
       const why = out.subtaskSkipped === 'subtask_missing'
         ? 'the co-borrower subtask is no longer on this card'
-        : 'the approved field did not land on the card';
+        : out.subtaskSkipped === 'subtask_unreadable'
+          ? 'the co-borrower subtask could not be read just now'
+          : 'the approved field did not land on the card';
       return res.status(409).json({
         error: `Nothing was written — ${why}. The review stays open; re-check the card link and try again.`,
         subtaskSkipped: out.subtaskSkipped,

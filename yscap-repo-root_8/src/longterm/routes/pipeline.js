@@ -248,11 +248,24 @@ router.get('/:loanId', async (req, res) => {
     ).catch(() => ({ rows: [] }));
     // The movement history itself — what PILOT watched, in order. Best-effort.
     const milestoneHistory = await milestones.loadHistory(rows[0].id, 25).catch(() => []);
-    const currentMs = catalog.find(
+    const currentIdx = catalog.findIndex(
       // Punctuation-blind (audit round 2, obs 4): "Cond Approval" must land on
       // the catalog's "Cond. Approval" row.
       (m) => stages.milestoneKey(m.name) === stages.milestoneKey(rows[0].milestone_name),
     );
+    const currentMs = currentIdx >= 0 ? catalog[currentIdx] : undefined;
+    // WHICH STEP'S EXPECTATION THE CLOCK IS MEASURED AGAINST (audit round 3, D4).
+    // Under the last-completed rule `milestone_since` is "when the last step
+    // COMPLETED" — i.e. when the loan STARTED WAITING on the next one. So the bar
+    // to judge that wait against is the AWAITED step's `expected_days`, not the
+    // finished step's. Measuring against the finished step's bar UNDER-reports
+    // stalls (a 3-day wait on a 2-day step read as "within the 3 expected"),
+    // which is the confident-wrong direction. The PILOT step is skipped — it is
+    // our own fact, not a workflow step with a duration.
+    const awaitingMs = currentIdx >= 0
+      ? catalog.slice(currentIdx + 1).find((m) => !m.pilot)
+      : undefined;
+    const clockMs = awaitingMs || currentMs;
 
     // The lock's own detail — the posture, the countdown, and what PILOT watched
     // change. Best-effort: a loan still opens when its lock cannot be read.
@@ -321,7 +334,7 @@ router.get('/:loanId', async (req, res) => {
       // we have, a plain sentence saying we do not know rather than a number we made up.
       milestoneHistory,
       milestoneClock: milestones.describeClock(rows[0], {
-        expectedDays: currentMs ? currentMs.expected_days : null,
+        expectedDays: clockMs ? clockMs.expected_days : null,
       }),
       // The rail's property figures come from the SAME sections the Property tab
       // renders, so the two can never state different values for one loan.

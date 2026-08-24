@@ -62,6 +62,12 @@ const MS_FIELD_IDS = ['MS.STATUS', 'MS.STATUSDATE'];
 /** How many loans one backfill pass will ladder. Each costs one milestones GET
  *  plus one two-id fieldReader, on a tenant whose pacing is a shared budget. */
 const DEFAULT_BACKFILL_BUDGET = 40;
+// The realign is LOCAL work (one indexed probe per mismatched loan, no
+// Encompass call), but it is still bounded like every other pass here — an
+// unbounded serial loop over the whole book on every tick is how a cheap pass
+// becomes an expensive one the day the book doubles. It self-drains, so a
+// remainder is simply picked up next tick and reported as `more`.
+const DEFAULT_REALIGN_BUDGET = 500;
 
 const text = (v) => {
   const s = String(v == null ? '' : v).trim();
@@ -388,25 +394,39 @@ async function realignStanding(opts = {}) {
     try { ({ settings } = await lazy.settings.load()); } catch (_) { settings = {}; }
   }
   const cfg = stagesMod.configFrom(settings || {});
+  const trash = require('../trash');
+  const limit = Math.max(1, Number(opts.limit) || DEFAULT_REALIGN_BUDGET);
   try {
     const { rows } = await db.query(
+      // ONE ordered subquery, not a COALESCE of two: the two-subquery form is
+      // re-evaluated per reference (the planner inlined it as SubPlan 1..6 —
+      // six correlated probes per laddered loan, every tick). Sorting done
+      // FIRST, then position DESC among the done ones, then position ASC,
+      // picks the last DONE step and falls back to the first step when
+      // nothing is done — the same answer `sittingOf` gives, in one probe.
       `SELECT l.id, d.name
          FROM lt_loans l
          JOIN LATERAL (
-           SELECT COALESCE(
-             (SELECT m.milestone_name FROM lt_loan_milestones m
-               WHERE m.loan_id = l.id AND m.done = true
-               ORDER BY m.position DESC LIMIT 1),
-             (SELECT m.milestone_name FROM lt_loan_milestones m
-               WHERE m.loan_id = l.id
-               ORDER BY m.position ASC LIMIT 1)
-           ) AS name
+           SELECT m.milestone_name AS name
+             FROM lt_loan_milestones m
+            WHERE m.loan_id = l.id
+            ORDER BY m.done DESC,
+                     CASE WHEN m.done THEN m.position END DESC,
+                     m.position ASC
+            LIMIT 1
          ) d ON true
         WHERE l.ladder_synced_at IS NOT NULL
+          -- A trashed loan is not part of the book (the module's own rule,
+          -- applied here as it is in ladderDue) — its archive row renders the
+          -- label it already holds.
+          AND ${trash.notTrashSql('l')}
           AND d.name IS NOT NULL
-          AND d.name IS DISTINCT FROM l.milestone_name`,
+          AND d.name IS DISTINCT FROM l.milestone_name
+        LIMIT ${limit}`,
     );
     let realigned = 0;
+    let failed = 0;
+    let reason = null;
     for (const r of rows) {
       /* eslint-disable no-await-in-loop */
       const stage = stagesMod.stageForMilestone(r.name, cfg);
@@ -417,9 +437,16 @@ async function realignStanding(opts = {}) {
           [String(r.id), r.name, stage.key],
         );
         realigned += 1;
-      } catch (_) { /* best-effort per loan */ }
+      } catch (e) {
+        // NEVER SILENT: a pass where every write was refused must not report
+        // the same {ok:true, realigned:0} as a pass with nothing to do
+        // (`backfillLadders` in this file already draws that distinction).
+        failed += 1;
+        if (!reason) reason = String((e && e.message) || e).slice(0, 200);
+      }
     }
-    return { ok: true, realigned };
+    if (realigned === 0 && failed > 0) return { ok: false, realigned, failed, reason };
+    return { ok: true, realigned, failed, reason, more: rows.length >= limit };
   } catch (e) {
     return { ok: false, reason: String((e && e.message) || e).slice(0, 300) };
   }
@@ -428,6 +455,7 @@ async function realignStanding(opts = {}) {
 module.exports = {
   MS_FIELD_IDS,
   DEFAULT_BACKFILL_BUDGET,
+  DEFAULT_REALIGN_BUDGET,
   itemsOf,
   rowFrom,
   sittingOf,

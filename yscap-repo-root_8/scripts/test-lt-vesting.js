@@ -122,6 +122,47 @@ async function main() {
     l = (await db.query('SELECT vesting_type, vesting_entity_name FROM lt_loans WHERE id = $1::uuid', [loanId])).rows[0];
     eq(l.vesting_type, 'Individual', 'a blank 4008 left the vesting word alone');
     eq(l.vesting_entity_name, null, '…and the (correctly cleared) name stayed cleared');
+
+    // ── D3 (audit round 3): a FAILED ladder read on an ALREADY-LADDERED loan
+    // must claim NOTHING — no milestone move, no stage move, no history event
+    // and no clock reset. Before the fix it fell back to the lagging
+    // `currentMilestone`, which under the last-completed rule is the step AHEAD
+    // of where the loan stands: it recorded a move that never happened and
+    // reset "at this milestone" to zero, and realignStanding then quietly put
+    // the milestone back, leaving the bogus event and clock behind.
+    console.log('D. a failed ladder read on a laddered loan claims NOTHING (audit round 3, D3)');
+    const ladderMod = require('../src/longterm/sync/milestone-ladder');
+    await ladderMod.writeLadder(loanId, [
+      { milestoneName: 'Cond. Approval', position: 4, done: true, startDate: '2026-07-01' },
+      { milestoneName: 'Processing', position: 5, done: false, startDate: '2026-07-20' },
+    ], { db });
+    await db.query(
+      `UPDATE lt_loans SET milestone_name = 'Cond. Approval', stage_key = 'underwriting',
+              milestone_since = '2026-07-01T00:00:00Z', milestone_since_is_baseline = false
+        WHERE id = $1::uuid`, [loanId]);
+    const evBefore = (await db.query(
+      'SELECT count(*)::int AS n FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId])).rows[0].n;
+
+    // Encompass answers the loan but NOT the ladder, and its lagging field says
+    // "Processing" — the step being worked, i.e. one AHEAD of where we stand.
+    stub.getLoanMilestones = async () => { throw new Error('milestones unreachable'); };
+    stub.getLoan = async () => ({
+      loanAmortizationTermMonths: 360, loanProgramName: 'Investor DSCR 30 YEAR FRM',
+      currentMilestone: 'Processing',
+    });
+    out = await loans.readLoan(loanId, made[0].guid, {});
+    eq(out.ok, true, 'the read still succeeds — a ladder outage never loses the loan');
+    l = (await db.query(
+      'SELECT milestone_name, stage_key, milestone_since FROM lt_loans WHERE id = $1::uuid', [loanId])).rows[0];
+    eq(l.milestone_name, 'Cond. Approval',
+      'the standing did NOT walk forward to the lagging reading');
+    eq(l.stage_key, 'underwriting',
+      "…and the stage was not dropped into the unmapped 'other' bucket");
+    eq(new Date(l.milestone_since).toISOString(), '2026-07-01T00:00:00.000Z',
+      '…and the milestone clock was not reset to the moment of the failure');
+    const evAfter = (await db.query(
+      'SELECT count(*)::int AS n FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId])).rows[0].n;
+    eq(evAfter, evBefore, '…and no phantom "entered" event was written');
   } finally {
     await db.query('DELETE FROM lt_loans WHERE id = $1::uuid', [loanId]).catch(() => {});
   }

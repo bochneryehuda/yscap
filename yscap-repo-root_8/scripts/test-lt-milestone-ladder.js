@@ -98,8 +98,15 @@ async function main() {
   eq(stages.completedFormLabel('Submittal'), 'Submitted', 'Submittal completed reads Submitted');
   eq(stages.completedFormLabel('Cond. Approval'), 'Conditionally Approved', 'Cond. Approval — punctuation-blind — reads Conditionally Approved');
   eq(stages.completedFormLabel('Clear To Close'), 'Clear to Close', "Clear To Close keeps the owner's stop wording");
-  eq(stages.completedFormLabel('Loan Setup'), 'Sent to Processing', "Loan Setup reads the tenant's own MS.STATUS wording");
-  eq(stages.completedFormLabel('Started'), 'File started', 'Started reads File started');
+  // AUDIT ROUND 3, D6: 'Sent to processing' is in Encompass's STOCK declared
+  // list and was never once OBSERVED on this tenant (the 490-loan MS.STATUS
+  // census in encompass/dropdowns.js), and MS.STATUS lags — so a per-milestone
+  // sample of it is not evidence. Loan Setup keeps its own name and joins the
+  // open owner questions.
+  eq(stages.completedFormLabel('Loan Setup'), 'Loan Setup',
+    'Loan Setup keeps its OWN name — its only evidence was a lagging, stock-contradicted sample (D6)');
+  eq(stages.completedFormLabel('Started'), 'File started',
+    'Started reads File started — one of the two wordings the live census actually OBSERVED');
   eq(stages.completedFormLabel('Completion'), 'Completed', 'Completion reads Completed');
   eq(stages.completedFormLabel('Investor Delivery'), 'Investor Delivery',
     'a milestone with NO proven completed wording keeps its own name — honest, never invented');
@@ -260,6 +267,30 @@ async function main() {
     const evAfterOne = (await db.query(
       'SELECT count(*)::int AS n FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId])).rows[0].n;
     eq(evAfterOne, evBefore, 'the next ordinary sync sees prior == next — still no spurious event');
+
+    // A PASS WHERE EVERY WRITE FAILED IS NOT A QUIET PASS (audit round 3, D5).
+    // Same {realigned:0} either way, so the two must be told apart by `ok`.
+    await db.query("UPDATE lt_loans SET milestone_name = 'Investor Delivery' WHERE id = $1::uuid", [loanId]);
+    const brokenDb = {
+      query: async (sql, params) => {
+        if (/^\s*UPDATE lt_loans SET milestone_name/.test(sql)) throw new Error('write refused');
+        return db.query(sql, params);
+      },
+    };
+    const raFail = await ladder.realignStanding({ db: brokenDb, settings: {} });
+    eq(raFail.ok, false, 'a pass whose every write was refused reports ok:false — never a silent success');
+    ok(raFail.failed >= 1 && /refused/.test(raFail.reason || ''),
+      '…and it says how many failed and why');
+    // Put it back for the trash assertion below.
+    await ladder.realignStanding({ db, settings: {} });
+
+    // A TRASHED loan is not part of the book, so the realign leaves it alone.
+    await db.query("UPDATE lt_loans SET milestone_name = 'Investor Delivery', loan_folder = '(Trash)' WHERE id = $1::uuid", [loanId]);
+    const raTrash = await ladder.realignStanding({ db, settings: {} });
+    eq(raTrash.ok, true, 'the realign still runs with a trashed loan present');
+    const trashed = (await db.query('SELECT milestone_name FROM lt_loans WHERE id = $1::uuid', [loanId])).rows[0];
+    eq(trashed.milestone_name, 'Investor Delivery', 'a TRASHED loan is not realigned — it is out of the book');
+    await db.query("UPDATE lt_loans SET loan_folder = 'Pipeline' WHERE id = $1::uuid", [loanId]);
   } finally {
     await db.query('DELETE FROM lt_loans WHERE id = $1::uuid', [loanId]).catch(() => {});
     await db.query("DELETE FROM lt_loans WHERE loan_number IN ('TESTLADDER1','TESTLADDER2')").catch(() => {});

@@ -56,13 +56,19 @@ const throwsCode = (fn, code, w) => {
   assert.fail(`${w} — did not throw`);
 };
 
-// The live probe answers (2026-08-24) — SSN AND the borrower emails replaced
-// with test values (audit round 2, obs 9: no real person's contact pair in the repo).
+// The live probe answers (2026-08-24), with EVERY value that identifies a real
+// person replaced by a synthetic one (audit round 2 obs 9, completed in round 3
+// D2 — the first pass swapped only the emails, which were derived from names
+// still sitting three lines away). Nothing here identifies anybody: names,
+// mobile, DOBs, the subject address and both loan numbers are invented. The
+// SHAPES are the live ones (dashed SSN, comma money, `//` empty dates,
+// trailing-space dropdown labels) because those shapes are what the mapper is
+// being tested against — no assertion depends on whose loan it was.
 const EX_BIRCH = { // cash-out refi, Individual vesting
-  3: '7.375', 11: '363 BIRCH DR', 12: 'CRESCO', 14: 'PA', 15: '18326-7761', 16: '1',
+  3: '7.375', 11: '1 TEST LN', 12: 'SAMPLETOWN', 14: 'PA', 15: '18326-0000', 16: '1',
   19: 'Cash-Out Refinance', 24: '2022', 25: '365,000.00', 52: 'Married', 65: '123456789',
   136: '', 353: '35.000', 356: '450,000', 745: '07/01/2026', 763: '08/14/2026',
-  1005: '15,286.60', 1177: '', 1240: 'lt.writer.one@example.com', 1268: '', 1402: '05/14/1985',
+  1005: '15,286.60', 1177: '', 1240: 'lt.writer.one@example.com', 1268: '', 1402: '01/15/1985',
   1811: 'Investor', 1821: '300,000',
   'CX.TABLEFUNDER': 'Non Delegated Correspondent', 'CX.COMPANYLEAD': '',
   'CX.FILENOTESTASKPAGE': 'owned under individual name not under entity',
@@ -75,7 +81,7 @@ const EX_BIRCH = { // cash-out refi, Individual vesting
 const EX_BIRCHWOOD = { // purchase, Officer vesting
   3: '7.250', 16: '1', 19: 'Purchase', 24: '', 25: '', 52: 'Married', 65: '987654321',
   136: '580,000.00', 353: '80.000', 356: '600,000', 745: '06/08/2026', 763: '07/28/2026',
-  1005: '4,000.00', 1240: 'lt.writer.two@example.com', 1268: '', 1402: '03/02/1990',
+  1005: '4,000.00', 1240: 'lt.writer.two@example.com', 1268: '', 1402: '02/20/1990',
   1811: 'Investor', 1821: '600,000',
   'CX.TABLEFUNDER': 'Correspondent', 'CX.PPPTERM': '1 Year', 'CX.PPPTYPE': '5% Fixed',
   'CX.PROPERTYTYPE': 'Single Family Residence', 'CX.DATEACQUIRED': '//',
@@ -156,7 +162,7 @@ async function pureHalf() {
   eq(T.dateOnlyToClickUpEpoch('08/14/2026'), epoch, 'the US MM/DD/YYYY form writes the same day');
   eq(T.dateOnlyToClickUpEpoch('0026-08-14'), null, 'a mid-typing year-0026 artifact refuses');
   eq(T.isPlaceholderLoanNumber('TBD'), true, 'a TBD loan number is a placeholder');
-  eq(T.isPlaceholderLoanNumber('YSCAP258134741'), false, 'a real loan number is not');
+  eq(T.isPlaceholderLoanNumber('YSCAPTEST0001'), false, 'a real loan number is not');
   eq(T.maskSSN('123456789'), '✱✱✱-✱✱-6789', 'maskSSN keeps last-4 only');
 
   console.log('C. the label mappers');
@@ -223,8 +229,8 @@ async function pureHalf() {
   eq(mapper.writeValue(chanRow, 'An Option Nobody Made', options), undefined,
     'an unmatched label no-ops — never invent an option');
   const dobRow = mapper.FIELD_MAP.find((f) => f.key === 'date_of_birth');
-  const dobEpoch = mapper.writeValue(dobRow, '05/14/1985', options);
-  eq(T.fromEpochMs(dobEpoch), '1985-05-14',
+  const dobEpoch = mapper.writeValue(dobRow, '01/15/1985', options);
+  eq(T.fromEpochMs(dobEpoch), '1985-01-15',
     'a date field writes the right calendar day');
   const dobHour = new Date(Number(dobEpoch)).getUTCHours();
   ok(dobHour >= 8 && dobHour <= 10,
@@ -242,14 +248,14 @@ async function pureHalf() {
 
   console.log('E. buildTaskFields on the two live-probed loans');
   const birchBag = {
-    loan: { loan_number: 'YSCAP258134741', borrower_name: 'Joseph Parnes', loan_amount: '157500',
+    loan: { loan_number: 'YSCAPTEST0001', borrower_name: 'Avery Testborrower', loan_amount: '157500',
       note_rate_pct: '7.375', term_months: 360, interest_only_months: 0, prepayment_penalty_months: null,
       dscr_ratio: '1.25', loan_purpose: 'Cash-Out Refinance', program_name: 'Investor DSCR 30 YEAR FRM',
       vesting_type: 'Individual', vesting_entity_name: '400 Birchwood LLC' /* STALE — must never write */,
       borrower_email: null, expense_hazard_insurance: '120', expense_real_estate_taxes: '300', expense_association_dues: null },
-    prop: { street: '363 BIRCH DR', city: 'CRESCO', state: 'PA', zip: '18326', unit_count: 1,
+    prop: { street: '1 TEST LN', city: 'SAMPLETOWN', state: 'PA', zip: '18326', unit_count: 1,
       estimated_value: '300000', appraised_value: '450000', purchase_price: null, ltv_pct: '35' },
-    borrower: { first_name: 'Joseph', last_name: 'Parnes', mobile_phone: '3479070483', fico_representative: 780 },
+    borrower: { first_name: 'Avery', last_name: 'Testborrower', mobile_phone: '5555550142', fico_representative: 780 },
     coborrower: null,   // KNOWN none
     residence: null, priorResidence: null,
     ex: EX_BIRCH, officer: { name: 'Yehuda Bochner', email: 'yehuda@yscapgroup.com', clickupUserId: 120151948 },
@@ -275,7 +281,7 @@ async function pureHalf() {
   eq(by('ppp_type_term').value, 'No PPP', 'the PPP text says it once');
   eq(by('co_borrower_flag').value, 'opt-no', 'a KNOWN-none co-borrower writes NO');
   eq(by('fico').value, '787', 'FICO comes from the LIVE VASUMM.X23, not the mirror');
-  eq(by('ys_loan_number').value, 'YSCAP258134741', 'the YS loan number writes');
+  eq(by('ys_loan_number').value, 'YSCAPTEST0001', 'the YS loan number writes');
   eq(by('portal_file_id').value, 'lt-loan-uuid-1', 'the portal stamp rides the field set');
   eq(by('term').value, 'opt-30-year', '360 months → 30 year');
   eq(by('lender').value, 'opt-deephaven', 'VEND.X263 Deephaven Mortgage → the Deephaven option');
@@ -286,7 +292,7 @@ async function pureHalf() {
   eq(by('subject_rental').value, '15286.6', 'the rental income parses the comma money');
 
   const bwBag = { ...birchBag,
-    loan: { ...birchBag.loan, loan_number: 'YSCAP258134742', borrower_name: 'C Polatsek',
+    loan: { ...birchBag.loan, loan_number: 'YSCAPTEST0002', borrower_name: 'B Sampleborrower',
       loan_purpose: 'Purchase', vesting_type: 'Officer', vesting_entity_name: '400 Birchwood LLC', prepayment_penalty_months: 12 },
     prop: { ...birchBag.prop, purchase_price: '580000' },
     ex: EX_BIRCHWOOD,
@@ -317,7 +323,7 @@ async function pureHalf() {
     'emails compare case-insensitively');
   eq(mapper.fieldValueEquivalent(CU.borrowerSSN, '123-45-6789', '123456789'.replace(/(\d{3})(\d{2})(\d{4})/, '$1-$2-$3'), options), true,
     'SSNs compare digits-only');
-  eq(mapper.fieldValueEquivalent(CU.borrowerCell, '(347) 907-0483', '+13479070483', options), true,
+  eq(mapper.fieldValueEquivalent(CU.borrowerCell, '(555) 555-0142', '+15555550142', options), true,
     'phones compare by last 10 digits');
   eq(mapper.fieldValueEquivalent(CU.borrowerName, 'Issac Grunzweig', 'Issac Michael Grunzweig', options), true,
     'a middle name ADDED is the same person, not an overwrite');
@@ -326,9 +332,9 @@ async function pureHalf() {
   eq(mapper.fieldValueEquivalent(CU.borrowerName, 'Issac Grunzweig', 'Issac Michael Grunzweig', options, { approvedReview: true }), false,
     'an approved review compares STRICTLY so the human-approved value writes');
   eq(mapper.fieldValueEquivalent(CU.loanAmount, undefined, '100', options), false, 'unknown before → write');
-  eq(mapper.isDobChange(CU.borrowerDOB, String(T.dateOnlyToClickUpEpoch('1985-05-14')), T.dateOnlyToClickUpEpoch('1985-05-15')), true,
+  eq(mapper.isDobChange(CU.borrowerDOB, String(T.dateOnlyToClickUpEpoch('1985-01-15')), T.dateOnlyToClickUpEpoch('1985-01-16')), true,
     'a DOB day change is detected');
-  eq(mapper.isDobChange(CU.borrowerDOB, null, T.dateOnlyToClickUpEpoch('1985-05-15')), false,
+  eq(mapper.isDobChange(CU.borrowerDOB, null, T.dateOnlyToClickUpEpoch('1985-01-16')), false,
     'filling a BLANK DOB is not a change');
 
   console.log('G. resolveOnly / shield shape / providerTextSafe');
@@ -508,12 +514,12 @@ async function dbHalf() {
   const { rows: made } = await db.query(
     `INSERT INTO lt_loans (id, encompass_loan_guid, loan_number, borrower_name, loan_amount, loan_purpose,
                            program_name, vesting_type, term_months, encompass_synced_at, created_at)
-     VALUES (gen_random_uuid(), 'test-writer-' || gen_random_uuid(), 'TESTWR1', 'Joseph Parnes', 157500,
+     VALUES (gen_random_uuid(), 'test-writer-' || gen_random_uuid(), 'TESTWR1', 'Avery Testborrower', 157500,
              'cash_out_refinance', 'Investor DSCR 30 YEAR FRM', 'Individual', 360, now(), '2026-08-20')
      RETURNING id`);
   const loanId = made[0].id;
   await db.query(`INSERT INTO lt_properties (loan_id, street, city, state, zip, unit_count, estimated_value, appraised_value)
-                  VALUES ($1::uuid, '363 BIRCH DR', 'CRESCO', 'PA', '18326', 1, 300000, 450000)`, [loanId]);
+                  VALUES ($1::uuid, '1 TEST LN', 'SAMPLETOWN', 'PA', '18326', 1, 300000, 450000)`, [loanId]);
   await db.query(`INSERT INTO lt_loan_contacts (id, loan_id, role, encompass_name, encompass_email)
                   VALUES (gen_random_uuid(), $1::uuid, 'loan_officer', 'Yehuda Bochner', 'yehuda@yscapgroup.com')`, [loanId]);
 
@@ -571,7 +577,7 @@ async function dbHalf() {
     push._internals._resetBreaker();
     console.log('J. the DOB gate');
     exLive = { ...EX_BIRCH, 1402: '05/15/1985' };   // Encompass moved the DOB a day
-    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2, borrowerDOB: String(T.dateOnlyToClickUpEpoch('1985-05-14')) }) };
+    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2, borrowerDOB: String(T.dateOnlyToClickUpEpoch('1985-01-15')) }) };
     wire.setField.length = 0;
     await push.pushLoan(loanId, { source: 'full_repush' });
     ok(!wire.setField.some((w) => w.fieldId === CU.borrowerDOB), 'a DOB CHANGE is blocked — a human decision');
@@ -805,10 +811,10 @@ async function dbHalf() {
       `INSERT INTO lt_borrower_pairs (id, loan_id, pair_number) VALUES (gen_random_uuid(), $1::uuid, 1) RETURNING id`, [loanId]);
     await db.query(
       `INSERT INTO lt_parties (id, pair_id, role, first_name, last_name)
-       VALUES (gen_random_uuid(), $1::uuid, 'borrower', 'Joseph', 'Parnes')`, [pairMade[0].id]);
+       VALUES (gen_random_uuid(), $1::uuid, 'borrower', 'Avery', 'Testborrower')`, [pairMade[0].id]);
     await db.query(
       `INSERT INTO lt_parties (id, pair_id, role, first_name, last_name, email, mobile_phone, date_of_birth)
-       VALUES (gen_random_uuid(), $1::uuid, 'coborrower', 'Rivka', 'Parnes', 'rivka@example.com', '9175551234', '1987-03-02')`,
+       VALUES (gen_random_uuid(), $1::uuid, 'coborrower', 'Rivka', 'Testborrower', 'rivka@example.com', '5555550188', '1987-06-11')`,
       [pairMade[0].id]);
     exLive = { ...EX_BIRCH, 97: '456789123', 1268: '' };
     fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
@@ -818,7 +824,7 @@ async function dbHalf() {
     let co = await push.pushLoan(loanId, { source: 'full_repush' });
     const sub = wire.createTask.find((c) => c.payload && c.payload.parent === 'task1');
     ok(sub, 'a co-borrower with no subtask gets one CREATED under the loan card');
-    eq(sub.payload.name, 'Rivka Parnes', '…named for the co-borrower');
+    eq(sub.payload.name, 'Rivka Testborrower', '…named for the co-borrower');
     const subSsn = sub.payload.custom_fields.find((f) => f.id === CU.borrowerSSN);
     eq(subSsn && subSsn.value, '456-78-9123', "…carrying the CO-borrower's Social (live field 97), dashed");
     const subEmail = sub.payload.custom_fields.find((f) => f.id === CU.borrowerEmail);
@@ -826,11 +832,11 @@ async function dbHalf() {
     const parentFlag = wire.setField.find((w) => w.taskId === 'task1' && w.fieldId === CU.coBorrowerFlag);
     ok(parentFlag, 'the PARENT card writes the co-borrower flag…');
     const parentName = wire.setField.find((w) => w.taskId === 'task1' && w.fieldId === CU.coBorrowerName);
-    eq(parentName && parentName.value, 'Rivka Parnes', '…and the co-borrower name in the parent (owner rule)');
+    eq(parentName && parentName.value, 'Rivka Testborrower', '…and the co-borrower name in the parent (owner rule)');
 
     // Second push: the subtask exists by name — no duplicate, fields update it.
     fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
-      subtasks: [{ id: 'subtask1', name: 'Rivka Parnes' }], custom_fields: mkCustomFields({ program: 2 }) };
+      subtasks: [{ id: 'subtask1', name: 'Rivka Testborrower' }], custom_fields: mkCustomFields({ program: 2 }) };
     const realGetTask = writerStub.getTask;
     writerStub.getTask = async (id) => {
       wire.getTask++;
@@ -865,7 +871,7 @@ async function dbHalf() {
     encFail = true;
     fakeTasksById = null;
     fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
-      subtasks: [{ id: 'subtask1', name: 'Rivka Parnes' }],
+      subtasks: [{ id: 'subtask1', name: 'Rivka Testborrower' }],
       custom_fields: mkCustomFields({ program: 2, channel: 3 /* Table funding */ }) };
     wire.setField.length = 0;
     await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
@@ -920,7 +926,7 @@ async function dbHalf() {
     fakeTasksById = {
       stshort: { id: 'stshort', custom_fields: mkCustomFields({ program: 0 /* Fix & Flip … — SHORT */ }) },
       task1: { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
-        subtasks: [{ id: 'subtask1', name: 'Rivka Parnes' }], custom_fields: mkCustomFields({ program: 2 }) },
+        subtasks: [{ id: 'subtask1', name: 'Rivka Testborrower' }], custom_fields: mkCustomFields({ program: 2 }) },
     };
     process.env.LT_CLICKUP_PUSH_PER_PASS = '2';
     let pp2 = await push.pushPass({});
@@ -945,7 +951,7 @@ async function dbHalf() {
     console.log('S. scoped pushes never stamp; a dry run writes NOTHING; a subtask approve is narrow');
     fakeTasksById = null;
     fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
-      subtasks: [{ id: 'subtask1', name: 'Rivka Parnes' }], custom_fields: mkCustomFields({ program: 2 }) };
+      subtasks: [{ id: 'subtask1', name: 'Rivka Testborrower' }], custom_fields: mkCustomFields({ program: 2 }) };
     await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
     out = await push.pushLoan(loanId, { only: ['ys_loan_number'], source: 'manual' });
     eq(out.ok, true, 'a scoped one-field push completes');
@@ -973,7 +979,7 @@ async function dbHalf() {
     push._internals._resetBreaker();
     fakeTasksById = {
       task1: { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
-        subtasks: [{ id: 'subtask1', name: 'Rivka Parnes' }], custom_fields: mkCustomFields({ program: 2 }) },
+        subtasks: [{ id: 'subtask1', name: 'Rivka Testborrower' }], custom_fields: mkCustomFields({ program: 2 }) },
       subtask1: { id: 'subtask1', custom_fields: mkCustomFields({ borrowerName: 'Somebody Else' }) },
     };
     wire.setField.length = 0;

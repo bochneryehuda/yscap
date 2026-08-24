@@ -214,6 +214,47 @@ async function main() {
     eq(bareRow.status, null, 'with no wording anywhere the door invents nothing');
 
     // -------------------------------------------------------------------------
+    // G2. THE BORROWER'S WORDING IS KEYED ON THE STEP BEING WAITED ON — NOT the
+    //     one just finished (audit round 3, D1).
+    //
+    // db/547's consumer_status was authored against the ORIGINAL first-not-done
+    // reading of `milestone_name`; its own rows prove it (Cond. Approval carries
+    // "Submitted for Approval", Processing carries "Conditionally Approved").
+    // #44 redefined `milestone_name` as the LAST COMPLETED step for every staff
+    // surface, which would have shifted this client-facing column one step
+    // BACKWARD — a loan clear to close telling its borrower "Final Approval".
+    // -------------------------------------------------------------------------
+    const ctcId = await seedLoan('ctc', me, 360, 'Investor DSCR 30 YEAR FRM');
+    // The loan STANDS at Clear To Close (done) and is WAITING on Schedule Closing.
+    await db.query(
+      `UPDATE lt_loans SET milestone_name = 'Clear To Close', stage_key = 'clear_to_close'
+        WHERE id = $1::uuid`, [ctcId]);
+    for (const [name, pos, done] of [['Clear To Close', 9, true], ['Schedule Closing', 10, false]]) {
+      await db.query(
+        `INSERT INTO lt_loan_milestones (loan_id, milestone_name, position, done)
+         VALUES ($1::uuid, $2, $3, $4)
+         ON CONFLICT (loan_id, milestone_name) DO UPDATE SET position = EXCLUDED.position, done = EXCLUDED.done`,
+        [ctcId, name, pos, done]);
+    }
+    const ctc = await call(me);
+    const ctcRow = ctc.body.loans.find((l) => l.file.endsWith('ctc'));
+    ok(ctcRow, 'the clear-to-close loan is returned');
+    eq(ctcRow.status, 'Closing Scheduled',
+      "the borrower reads the AWAITED step's wording — never the finished step's \"Final Approval\" (D1)");
+    eq(ctcRow.milestone, 'Clear To Close',
+      '…while the milestone itself still reports the last COMPLETED step, as every staff surface does');
+
+    // A loan with NO ladder mirror still answers, falling back to milestone_name.
+    const noLadderId = await seedLoan('noladder', me, 360, 'Investor DSCR 30 YEAR FRM');
+    await db.query(
+      `UPDATE lt_loans SET milestone_name = 'Submittal', stage_key = 'submitted' WHERE id = $1::uuid`,
+      [noLadderId]);
+    const nl = await call(me);
+    const nlRow = nl.body.loans.find((l) => l.file.endsWith('noladder'));
+    eq(nlRow && nlRow.status, 'Submitted for Approval',
+      'a loan with no ladder mirror still gets its wording from the milestone it holds');
+
+    // -------------------------------------------------------------------------
     // F. THE SETTINGS READ FAILS CLOSED. An unreadable setting is not permission to
     //    show a client an unfinished product.
     // -------------------------------------------------------------------------
