@@ -431,6 +431,15 @@ model LtLoan {
   clickupStampedAt DateTime? @map("clickup_stamped_at") @db.Timestamptz(6)
   clickupStampError String? @map("clickup_stamp_error")
 
+  /// db/625 — the ClickUp FIELD WRITER's stamps. clickup_pushed_at is the last
+  /// CLEAN push (every intended field landed; a lossy push is never marked done,
+  /// so the drain retries it). The drain is
+  /// `encompass_synced_at > clickup_pushed_at OR clickup_pushed_at IS NULL` on
+  /// linked, confirmed, non-trash loans.
+  clickupPushedAt DateTime? @map("clickup_pushed_at") @db.Timestamptz(6)
+  /// The last push failure, plain text; cleared on the next clean push.
+  clickupPushError String? @map("clickup_push_error")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -2118,4 +2127,62 @@ model LtClickupLinkLog {
 
   @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_clickup_link_log_loan_idx")
   @@map("lt_clickup_link_log")
+}
+
+/// db/625 — the ClickUp field writer's JOURNAL: every outbound field write,
+/// before + after values (SSN masked BEFORE insert — a readable Social never
+/// lands here), including writes a guardrail refused (blocked=true). Append-
+/// only and best-effort: a journal failure never blocks a push. The volume
+/// circuit breaker seeds its rolling 10-minute window from this table on boot,
+/// so a restart mid-storm cannot reset the budget.
+model LtClickupWriteLog {
+  id       BigInt  @id @default(autoincrement())
+  ltLoanId String? @map("lt_loan_id") @db.Uuid
+  taskId   String  @map("task_id")
+  /// NULL for a non-field event (e.g. a refused short-term card).
+  fieldId  String? @map("field_id")
+  /// The mapper's logical key ('ssn', 'loan_amount', …).
+  fieldKey String? @map("field_key")
+  /// ClickUp's value immediately before (NULL = unknown / a brand-new card).
+  oldValue Json?   @map("old_value")
+  /// What we wrote — or tried to, or were refused to.
+  newValue Json?   @map("new_value")
+  /// false = nothing landed on the card.
+  changed  Boolean @default(true)
+  /// true = a guardrail refused it (PII shield, DOB gate, wire failure).
+  blocked  Boolean @default(false)
+  /// 'create' | 'scoped_push' | 'full_repush'
+  source   String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([taskId, createdAt(sort: Desc)], map: "lt_cu_write_log_task_idx")
+  @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_cu_write_log_loan_idx")
+  @@map("lt_clickup_write_log")
+}
+
+/// db/625 — outbound ClickUp writes a guardrail held for a PERSON: a differing
+/// identity field a push may only FILL (pii_overwrite_blocked), or a change to
+/// an existing ClickUp DOB (dob_change_blocked_pending_review). Values arrive
+/// MASKED — an SSN is never stored here. One OPEN row per (task, field,
+/// proposal) — the partial unique index dedupes a retried pass. Resolving one
+/// re-pushes the single field with approvedReview; rejecting keeps the card.
+model LtClickupReviewQueue {
+  id            BigInt  @id @default(autoincrement())
+  ltLoanId      String? @map("lt_loan_id") @db.Uuid
+  taskId        String  @map("task_id")
+  direction     String  @default("outbound")
+  fieldKey      String  @map("field_key")
+  /// What the card holds (masked where PII).
+  currentValue  String? @map("current_value")
+  /// What the mirror wanted to write (masked).
+  proposedValue String? @map("proposed_value")
+  reason        String
+  /// 'open' | 'resolved' | 'rejected' (CHECK lt_cu_review_status_chk)
+  status        String  @default("open")
+  resolvedBy    String?   @map("resolved_by") @db.Uuid
+  resolvedAt    DateTime? @map("resolved_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_cu_review_loan_idx")
+  @@map("lt_clickup_review_queue")
 }

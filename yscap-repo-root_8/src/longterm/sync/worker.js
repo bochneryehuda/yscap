@@ -34,6 +34,7 @@ const milestoneCatalog = require('./milestone-catalog');
 const milestoneLadder = require('./milestone-ladder');
 const contacts = require('../people/contacts');
 const clickupLink = require('../clickup/link');
+const clickupPush = require('../clickup/push');
 const borrowerAutolink = require('../borrower-autolink');
 const runLog = require('./run-log');
 
@@ -243,6 +244,22 @@ async function tickOnce({ trigger = 'worker' } = {}) {
       out.borrowerLinks = await runLog.record('borrower_links', trigger, () => borrowerAutolink.autoLinkPass({}));
     } catch (e) {
       out.borrowerLinks = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    // THE FIELD WRITER (db/625, owner-directed 2026-08-23): a brand-new
+    // Encompass file gets its card in the officer's folder, and a linked card
+    // gets its fields refreshed whenever the mirror moved. Runs AFTER the link
+    // pass so a card linked this tick pushes this tick, and a file the link
+    // pass could not match is the one the create pass may card. OFF until the
+    // owner flips LT_CLICKUP_WRITE_ENABLED (blank = off; DRYRUN logs the plan).
+    try {
+      out.clickupCreate = await runLog.record('clickup_create', trigger, () => clickupPush.createPass({}));
+    } catch (e) {
+      out.clickupCreate = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    try {
+      out.clickupPush = await runLog.record('clickup_push', trigger, () => clickupPush.pushPass({}));
+    } catch (e) {
+      out.clickupPush = { ok: false, reason: (e && e.message) || String(e) };
     }
   } finally {
     running = false;

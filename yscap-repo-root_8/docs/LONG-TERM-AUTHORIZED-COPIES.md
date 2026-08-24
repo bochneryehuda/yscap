@@ -257,3 +257,49 @@ stops a "no" quietly turning into a "yes" months later.
 # is the owner's sanction those entries cite, not a blanket import license.
 # LT copies stay copies: no LT file imports RTL logic modules directly.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# FILES COPIED UNDER THE CLICKUP WRITER'S INHERITANCE (owner, 2026-08-23 — the
+# sanction quoted above). BY-VALUE copies: each destination imports ZERO RTL
+# logic modules and touches NO RTL table, so none of these is a machine-read
+# `import` entry (the Encompass-copy precedent, 2026-08-14). One line per file,
+# source -> destination, added in the same PR as the copy (2026-08-24):
+#
+#   copy src/clickup/transforms.js   -> src/longterm/clickup/transforms.js
+#        (the 4AM America/New_York date rule + round-trip assert, dropdown
+#         read/write asymmetry, money/phone/marital transforms, placeholder +
+#         shadow-email + loan-number sentinels, SSN masking. LT additions: the
+#         US 'MM/DD/YYYY' parse and Encompass's '//' unreached-date convention.
+#         The RTL-only card-line and marital-AI hooks did NOT cross.)
+#   copy src/clickup/client.js       -> src/longterm/clickup/writer-client.js
+#        (the wire chokepoint guards: no task deletion — v2 AND v3 — no field
+#         clearing incl. the nested-null JSON class, status-only task updates,
+#         the retry/idempotency contract, value-free errors. MINUS the RTL
+#         assignment-clear carve-out — the LT writer clears NOTHING, ever —
+#         and MINUS the shared lib/api-rate-limit bucket: LT self-paces.)
+#   copy src/clickup/registry.js     -> src/longterm/clickup/registry.js
+#        (the live dropdown option map, 10-min TTL — dropdowns READ orderindex
+#         ints and WRITE option UUIDs, and the UUIDs churn, so write-ids are
+#         resolved live, never hardcoded.)
+#   copy src/clickup/mapper.js       -> src/longterm/clickup/mapper.js
+#        (writeValue per type, isBlankClickupValue, the addressField finite-
+#         coordinate refusal, fieldValueEquivalent per-type no-op suppression,
+#         resolveOnly, the DOB-change detector, the PII-shield/review-key
+#         shape. The FIELD MAP DATA is Long-Term's own — every ClickUp id read
+#         off the live catalog, every Encompass id live-verified 2026-08-24.
+#         LT departure, SAFER: locations are fill-only, never rewritten, so
+#         the RTL address comparator was not needed and did not cross.)
+#   copy src/clickup/orchestrator.js -> src/longterm/clickup/push.js
+#        (read-before-write with fail-closed scoped pushes, no-op suppression,
+#         the PII overwrite shield + review queue, fill-only mode, the write
+#         journal, the volume circuit breaker + boot seed, the overwrite-storm
+#         alarm, push-failure accounting — a lossy push is never marked done —
+#         and the create-then-link flow. Journal/review/breaker state lives in
+#         LT's OWN tables (db/625) — never RTL's.)
+#
+# The queue-dedupe shape in db/625's lt_clickup_review_queue open-row partial
+# unique index follows src/lib/sync-review.js's dedupe design (one open row
+# per task+field+proposal) — recorded here since the shape, not the text, was
+# reused. src/lib/address.js was NOT copied and is NOT imported: the fill-only
+# location posture removed the need.
+# ---------------------------------------------------------------------------
