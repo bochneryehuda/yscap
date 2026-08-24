@@ -76,14 +76,24 @@ function Rail({ rail }) {
           </div>
         ))}
       </div>
-      {/* How fresh this is. A rail of figures with no read date invites somebody to
-          trust a month-old number. */}
-      <div style={{ marginTop: 10, fontSize: 12, color: MUTED }}>
-        Read from Encompass {day(rail.syncedAt)}
-      </div>
-      {rail.syncError && (
-        <div style={{ marginTop: 6, fontSize: 12, color: '#8A2D2D' }}>
-          The last read failed: {rail.syncError}
+      {/* HOW FRESH THIS IS, AND WHETHER IT HAS BEEN READ AT ALL. A rail of figures
+          with no read date invites somebody to trust a month-old number — and a
+          loan PILOT has discovered but not yet opened used to render this line as
+          "Read from Encompass —", a dash where a date belongs, which reads as a
+          formatting glitch rather than as the answer. The sentence comes from the
+          server's own `read-state`, so this rail, the pipeline and the sync screen
+          can never give three answers about one loan. */}
+      {rail.readState === 'failed' || rail.readState === 'waiting' ? (
+        // A state the server NAMED. An older server that sends none falls through
+        // to the date line below and behaves exactly as it always did — a screen
+        // must never go blank because the other half of a deploy has not landed.
+        <div style={{
+          marginTop: 10, fontSize: 12, lineHeight: 1.45,
+          color: rail.readState === 'failed' ? '#8A2D2D' : MUTED,
+        }}>{rail.readWhy || 'Encompass has not been read for this loan yet.'}</div>
+      ) : (
+        <div style={{ marginTop: 10, fontSize: 12, color: MUTED }}>
+          Read from Encompass {day(rail.syncedAt)}
         </div>
       )}
     </aside>

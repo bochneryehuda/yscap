@@ -243,6 +243,23 @@ function Cell({ col, row, stageLabel, mineRoles }) {
             {dups + 1} RECORDS
           </span>
         )}
+        {/* WHY THIS ROW IS HALF EMPTY (owner-reported 2026-08-24, three Sherman
+            Ave files: "All these files somehow are not updating in pilot. I don't
+            know why I'm not getting the information"). A loan reaches PILOT in two
+            steps and only the second fills the file in — and until now nothing on
+            the screen said which step a row was at, so a brand-new file and a
+            broken one looked identical. The wording is the SERVER'S (read-state.js),
+            never retyped here. Quiet on a read row, or every row would carry a chip. */}
+        {row.read_state && row.read_state !== 'read' && (
+          <span title={row.read_why || ''}
+            style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em',
+              verticalAlign: 'middle', whiteSpace: 'nowrap', borderRadius: 999, padding: '1px 7px',
+              color: row.read_state === 'failed' ? '#8A2D2D' : '#8A6A22',
+              border: row.read_state === 'failed' ? '1px solid #E4C7C7' : '1px solid #E6D6AE',
+              background: row.read_state === 'failed' ? '#FBEFEF' : '#FBF6E9' }}>
+            {row.read_state === 'failed' ? 'READ REFUSED' : 'NOT READ YET'}
+          </span>
+        )}
         {/* WHY this file is in front of you, when the reason is a hat OTHER than
             your own function (owner-directed 2026-08-23: "for each and every
             person, why they are looped into the file" — a closer-only file must
