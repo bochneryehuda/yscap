@@ -41,7 +41,6 @@ function Rail({ rail }) {
   // Every row the plan names, in its order. A figure that is MISSING reads as a dash,
   // never as zero — "no DSCR on file" and "a DSCR of 0" are different loans.
   const rows = [
-    ['Loan number', plain(rail.loanNumber)],
     ['Borrower', plain(rail.borrower)],
     ['Purpose', plain(rail.purpose)],
     ['Occupancy', plain(rail.occupancy)],
@@ -64,7 +63,7 @@ function Rail({ rail }) {
   return (
     <aside className="card" style={{ color: INK, alignSelf: 'start', position: 'sticky', top: 12 }}>
       <div style={{ fontSize: 11, letterSpacing: '.09em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
-        Summary
+        File Details
       </div>
       <div style={{ marginTop: 8 }}>
         {rows.map(([k, v]) => (
@@ -593,7 +592,7 @@ export default function LtLoan() {
   const showFile = !!(current && current.available && hasFileSection(current.key));
 
   return (
-    <LtLayout title={rail && rail.loanNumber ? `Loan ${rail.loanNumber}` : 'Long-term file'}>
+    <LtLayout title={(rail && (rail.milestoneLabel || rail.milestone)) || 'Long-term file'}>
       {/* THE FILE HEADER'S PRODUCT STAMP (CLAUDE.md §7) — which book this loan is
           in, stated on the file itself rather than inferred from the screen, and
           NOT dependent on any other request having succeeded. */}
