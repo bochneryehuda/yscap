@@ -178,8 +178,18 @@ router.get('/loans', async (req, res) => {
            -- stay done — which is exactly why sittingOf scans for the LAST done
            -- row rather than assuming the ladder is contiguous. On such a ladder
            -- the naive read walked the borrower's wording five steps back.
-           -- Complementing sittingOf exactly keeps the two readings of one
-           -- ladder from disagreeing.
+           -- Complementing sittingOf exactly is what stops the two readings of
+           -- one ladder disagreeing.
+           --
+           -- KEEP THIS COMMENT CLAUSE-FREE. It lives inside a SQL template
+           -- literal, so the product-separation gate parses it AS SQL, and an
+           -- ordinary English sentence can read as a table reference: the word
+           -- "f-r-o-m" followed by any word is taken to name an RTL table and
+           -- fails the build. It has now happened twice here — once on this
+           -- comment's own closing phrase, and once on the sentence that was
+           -- added to warn about it. A backtick would be worse still: it ends
+           -- the literal outright and breaks the file. So keep the prose clear
+           -- of the SQL keywords, and never put a backtick in this string.
            SELECT m.milestone_name
              FROM lt_loan_milestones m
             WHERE m.loan_id = l.id AND m.done = false
