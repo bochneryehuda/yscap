@@ -160,12 +160,12 @@ console.log('\nD+E. the webhook and the whole /api/trustpoint surface refuse');
     require.cache[authPath].exports = realAuth;
     srv.close();
 
-    finish();
+    await finish();
   })().catch((e) => { console.error('D+E CRASHED:', e && e.stack || e); process.exit(1); });
 }
 
 // ---------------------------------------------------------------- F. what must SURVIVE
-function finish() {
+async function finish() {
   console.log('\nF. the Blue Lake workflow the owner KEPT is untouched');
   {
     // The coordinator's "enter it in TrustPoint" task + email. If parking ever reached this,
@@ -216,6 +216,43 @@ function finish() {
     // The "overridden — the hosting default is on" line is TRUE but misleading while parked:
     // it invites a reset that changes nothing. It is suppressed, and the Reset button with it.
     ok('the misleading override line is suppressed while parked', /!parked\s*&&\s*s\.overridden/.test(code));
+  }
+
+  // ------------------------------------------------------------ H. the health probe's REASON
+  console.log('\nH. the API Health PROBE names the parking, not the switch');
+  {
+    // Both states mean "nothing mirrors", so a probe that only reports OFF is not wrong — it is
+    // UNACTIONABLE, and worse, it points the reader at a control that is now greyed out. This is
+    // run as a real CALL rather than a source grep: the probe is a function, and only calling it
+    // proves which branch a parked integration actually takes.
+    const cfg = require(R + '/src/config');
+    const flags = require(R + '/src/lib/flags');   // section B's handle is block-scoped
+    const reg = require(R + '/src/lib/integrations/health-registry');
+    const tp = (reg.INTEGRATIONS || reg.REGISTRY || []).find((x) => x && x.key === 'trustpoint');
+    ok('the TrustPoint integration is still on the health page', !!tp && typeof tp.probe === 'function');
+
+    const prevKey = cfg.trustpointApiKey;
+    const prevEnv = process.env.TRUSTPOINT_PARKED;
+    cfg.trustpointApiKey = 'test-key';        // else it short-circuits on "no key" and proves nothing
+
+    delete process.env.TRUSTPOINT_PARKED;     // parked
+    const parkedRes = tp ? await tp.probe() : {};
+    eq('parked: the probe reports it not enabled', parkedRes.enabled, false);
+    ok('parked: ...and never claims to have reached TrustPoint', parkedRes.live !== true);
+    ok('parked: the reason SAYS parked', /parked/i.test(String(parkedRes.detail || '')));
+    ok('parked: it does NOT blame the master switch — that control is greyed out',
+      !/master switch/i.test(String(parkedRes.detail || '')));
+
+    // CONTROL: un-parked with the switch off, the old wording is exactly what should be shown.
+    process.env.TRUSTPOINT_PARKED = '0';
+    flags._internals.setOverrideForTest('TRUSTPOINT_ENABLED', false);
+    const offRes = tp ? await tp.probe() : {};
+    ok('CONTROL un-parked + switch off: the switch wording comes back',
+      /master switch/i.test(String(offRes.detail || '')));
+    flags._internals.clearOverrideForTest('TRUSTPOINT_ENABLED');
+
+    cfg.trustpointApiKey = prevKey;
+    if (prevEnv === undefined) delete process.env.TRUSTPOINT_PARKED; else process.env.TRUSTPOINT_PARKED = prevEnv;
   }
 
   console.log(`\ntest-trustpoint-parked: ${fail ? 'FAILED' : 'OK'} (${pass} assertions${fail ? `, ${fail} failed` : ''})`);

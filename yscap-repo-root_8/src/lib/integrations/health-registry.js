@@ -214,7 +214,15 @@ const INTEGRATIONS = [
     liveProbe: true,
     async probe() {
       if (!cfg.trustpointApiKey) return { configured: false, live: null, detail: 'The TrustPoint API key is not set.' };
-      if (!require('./switches').on('TRUSTPOINT_ENABLED')) return { configured: true, enabled: false, live: null, detail: 'The key is set, but the master switch (TRUSTPOINT_ENABLED) is off, so nothing mirrors yet.' };
+      // PARKED READS DIFFERENTLY FROM SWITCHED OFF, and the difference is what the reader does
+      // next. Both mean nothing mirrors, but "the master switch is off" sends an admin to a
+      // control that is now greyed out and decides nothing, while the parked reason names the
+      // real state and how to reverse it. Asked BEFORE the switch, because while parked the
+      // switch's own answer is a consequence rather than the cause.
+      const sw = require('./switches');
+      const eff = sw.effective('TRUSTPOINT_ENABLED');
+      if (eff && eff.parked) return { configured: true, enabled: false, live: null, detail: eff.parkedReason || 'The TrustPoint integration is parked.' };
+      if (!sw.on('TRUSTPOINT_ENABLED')) return { configured: true, enabled: false, live: null, detail: 'The key is set, but the master switch (TRUSTPOINT_ENABLED) is off, so nothing mirrors yet.' };
       try {
         const c = require('../../trustpoint/client');
         await timebox(c.call('/projects/', { query: { page_size: 1 } }));
