@@ -42,6 +42,7 @@
  */
 
 const db = require('../db');
+const trash = require('../trash');
 const clickup = require('./client');
 const stamp = require('./stamp');
 const { PIPELINE } = require('../../clickup/fields');
@@ -246,7 +247,13 @@ async function linkPass(deps = {}) {
 
   const cards = await pullCards({ client });
   const { rows: loans } = await dbc.query(
-    `SELECT id, loan_number, clickup_task_id FROM lt_loans`);
+    `SELECT id, loan_number, clickup_task_id FROM lt_loans l
+      -- A DELETED LOAN NEVER CLAIMS A CARD (owner-directed 2026-08-23). Encompass's
+      -- trash used to ride into this selection, where it did two kinds of damage: a
+      -- trashed loan could take a live card's stamp, and a trashed twin made a real
+      -- loan read as "duplicate Encompass records" and held its link — six of the
+      -- seven held numbers on the live book were exactly that.
+      WHERE ${trash.notTrashSql('l')}`);
   const { links, skipped } = planLinks(loans, cards);
 
   let linked = 0; let refused = 0; let stamped = 0; let stampFailed = 0;
@@ -282,6 +289,8 @@ async function linkPass(deps = {}) {
         WHERE clickup_task_id IS NOT NULL
           AND clickup_link_confidence = 'confirmed'
           AND clickup_stamped_at IS NULL
+          -- Same rule as the selection above: no stamp is spent on a deleted loan.
+          AND ${trash.notTrashSql('lt_loans')}
         ORDER BY (clickup_stamp_error IS NOT NULL), clickup_linked_at NULLS LAST
         LIMIT $1`, [stampBudget]);
     for (const row of pending) {

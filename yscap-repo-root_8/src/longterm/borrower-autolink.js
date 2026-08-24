@@ -31,6 +31,7 @@
 
 const db = require('./db');
 const borrowerMatch = require('./borrower-match');
+const trash = require('./trash');
 const borrowerLinks = require('./borrower-links');
 const settingsStore = require('./settings/store');
 
@@ -51,7 +52,11 @@ async function autoLinkPass(deps = {}) {
   const settings = await loadSettings();
   const { rows: loans } = await dbc.query(
     `SELECT id, loan_number, borrower_email, borrower_name, borrower_id
-       FROM lt_loans`);
+       FROM lt_loans l
+      -- A deleted loan proposes nothing: Encompass's trash carries test borrowers
+      -- ("testing, tesing") whose emails must never reach a real person's profile
+      -- (owner-directed 2026-08-23).
+      WHERE ${trash.notTrashSql('l')}`);
   const emails = [...new Set(loans.map((l) => l.borrower_email).filter(Boolean))];
   const { rows: profiles } = emails.length
     ? await dbc.query(

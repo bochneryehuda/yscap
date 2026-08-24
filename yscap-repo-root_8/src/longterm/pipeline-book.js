@@ -149,8 +149,12 @@ function bookSplitApplies(cfg) {
  * nothing anywhere saying why. Collapse first, then trim: a leading run of whitespace
  * becomes one space and `btrim` takes it, which is what `String.trim()` does too.
  */
+function folderNormSql(alias) {
+  return `lower(btrim(regexp_replace(COALESCE(${alias}.loan_folder, ''), '\\s+', ' ', 'g')))`;
+}
+
 function folderInSql(alias, ph) {
-  return `lower(btrim(regexp_replace(COALESCE(${alias}.loan_folder, ''), '\\s+', ' ', 'g'))) = ANY(${ph}::text[])`;
+  return `${folderNormSql(alias)} = ANY(${ph}::text[])`;
 }
 
 /**
@@ -258,6 +262,7 @@ module.exports = {
   inactiveFolders,
   bookFolders,
   bookSplitApplies,
+  folderNormSql,
   folderInSql,
   bookWhereSql,
   ignoredBookFilter,

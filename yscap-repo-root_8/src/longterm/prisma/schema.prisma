@@ -315,6 +315,27 @@ model LtLoan {
   /// correspondent post-close folders and NONE in the active Pipeline folder.
   loanFolder String? @map("loan_folder")
 
+  // ── The archive (db/621, owner-directed 2026-08-23) ───────────────────────
+  // "Whatever is in the trash can should not be visible in the pipeline" — and
+  // Encompass has a SECOND way a file leaves the working book besides the
+  // (Trash) folder: the archive flag on the loan itself. These two columns are
+  // that second way, computed by the sync, read by ONE definition
+  // (src/longterm/trash.js) so the pipeline, the archive screen and the counts
+  // can never disagree about what is out.
+
+  /// Whether Encompass itself holds this loan as ARCHIVED — computed each sync by
+  /// diffing a flag-less discovery (which omits archived loans) against the full
+  /// sweep. FAIL CLOSED: an errored or truncated flag-less read marks nothing.
+  encompassArchived Boolean @default(false) @map("encompass_archived")
+
+  /// PILOT's own conclusion that this archived loan is a stale COPY of a live
+  /// twin — same loan number, another live row holds it (the duplicated-record
+  /// shape the owner reported on YSCAP258134474). Marked and CLEARED by
+  /// trash.sweepArchivedDuplicates, self-healing in both directions; a marked
+  /// row leaves the pipeline (trash.notTrashSql) and shows on the archive screen
+  /// with the reason "archived copy of a live file".
+  archivedDuplicate Boolean @default(false) @map("archived_duplicate")
+
   // ── The PURCHASED step (db/615) ───────────────────────────────────────────
   // The owner's workflow carries a step Encompass's nineteen milestones do not
   // (owner-directed 2026-08-23). It is the one step in the ladder marked from a

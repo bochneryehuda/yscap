@@ -30,6 +30,12 @@ export const ltApi = {
   },
   loan: (id) => ltGet(lt(`/pipeline/${encodeURIComponent(id)}`)),
 
+  // The archive — Encompass's deleted loans, out of every pipeline view. Listing is
+  // for admins; the permanent delete is the super-admin's (the server enforces both).
+  archive: () => ltGet(lt('/archive')),
+  archiveDelete: (id) => ltDel(lt(`/archive/${encodeURIComponent(id)}`)),
+  archiveDeleteAll: () => ltPost(lt('/archive/delete-all'), {}),
+
   // Reassign one role on one file to a PILOT person — or, with `staffId` null,
   // clear the reassignment and go back to what Encompass says. Nothing is written
   // to Encompass either way; this only decides whose pipeline the file is in here.
@@ -154,6 +160,10 @@ export const ltApi = {
   // committed Census table on our own server — no vendor call, no session, no billing — which is
   // why this one MAY be fired as somebody types, unlike the two above.
   dscrZip: (zip) => ltGet(lt(`/dscr/zip/${encodeURIComponent(String(zip || '').trim())}`)),
+  // The signed-in person's COMPENSATION PLAN — what the pricing engine's three-way switch
+  // (borrower-paid / raw / lender-paid) overlays on the displayed numbers. Display only:
+  // the Lender Price search itself never changes (owner-directed 2026-08-23).
+  dscrCompPlan: () => ltGet(lt('/dscr/comp-plan')),
   dscrDisqualifications: (searchKey, params) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, String(v));

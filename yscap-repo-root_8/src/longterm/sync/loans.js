@@ -40,6 +40,8 @@ const locks = require('../locks');
 const milestones = require('../milestones');
 const purchased = require('../milestone-purchased');
 const productTerm = require('../product-term');
+const trash = require('../trash');
+const book = require('../pipeline-book');
 const borrowerMatch = require('../borrower-match');
 const application = require('../application/sync');
 
@@ -365,6 +367,24 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
     return { ok: true, discovered: 0, read: 0, failed: 0, truncated: found.truncated, note: 'The pipeline returned no loans, so nothing was changed.' };
   }
 
+  // WHICH RECORDS ARE ARCHIVED INSIDE ENCOMPASS (owner-reported 2026-08-23,
+  // YSCAP258134474: "I only see one copy in Encompass … Get rid of the other
+  // one"). Discovery runs WITH `includeArchivedLoans` because a withdrawn file
+  // needs it — and that flag also returns records Encompass has ARCHIVED, which
+  // its own pipeline view hides. A stale archived copy of a live loan then shows
+  // in PILOT with numbers the owner cannot even find in Encompass. The tell is a
+  // DIFF: a second, flag-less search — a record present only WITH the flag is
+  // archived. FAIL CLOSED: if the flag-less sweep errors, truncates, or comes
+  // back implausibly empty while the main sweep found loans, NOTHING is marked
+  // this pass — a hiccup here must never retire a live loan.
+  let visibleGuids = null;
+  try {
+    const plain = await discover.discoverLoans({ loanFolder, includeArchived: false });
+    if (!plain.truncated && plain.loans.length) {
+      visibleGuids = new Set(plain.loans.map((l) => l.encompassLoanGuid).filter(Boolean));
+    }
+  } catch (_) { /* fail closed — the flags keep last pass's answer */ }
+
   const dbc = await lazy.db.getClient();
   // ONLY OUR OWN LOANS COME IN (owner-directed 2026-08-23: *"make sure it's only
   // gonna pull according to our rule: only long-term files"*).
@@ -392,6 +412,21 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
   let skippedShortTerm = 0;
 
   const due = [];
+  // ENCOMPASS'S TRASH GOES TO THE ARCHIVE, NEVER THE BOOK (owner-directed
+  // 2026-08-23: "real trash … should not be part of the pipeline at all"). The
+  // pipeline search returns the `(Trash)` folder because `includeArchivedLoans` —
+  // which a WITHDRAWN file genuinely needs — brings the recycle bin along with the
+  // archives. The rule here is UPDATE-ONLY: a loan we already hold that somebody
+  // deletes in Encompass gets its folder moved (which retires it into the archive
+  // on this very pass), and a loan that was ALREADY trash when first seen is never
+  // inserted — so a permanently deleted archive row stays deleted, and a loan
+  // RESTORED from Encompass's trash comes straight back as an ordinary discovery.
+  // Counted, never silent.
+  let archivedTrash = 0;
+  // Superseded archived copies: marked into the archive, and never re-inserted
+  // after a permanent delete. Counted like the trash.
+  let archivedDupSkipped = 0;
+  let archivedDuplicates = 0;
   // ONE LOAN THAT WILL NOT SAVE MUST NOT DISCARD THE BOOK (owner-reported
   // 2026-08-23, and the run log is what finally named it: *"The last pull did not
   // work — Could not save the discovered loans: duplicate key value violates unique
@@ -431,6 +466,43 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
       }
       await dbc.query('SAVEPOINT lt_loan_row');
       try {
+        if (trash.isTrashFolder(loan.loanFolder)) {
+          await dbc.query(
+            `UPDATE lt_loans
+                SET loan_folder = $2,
+                    encompass_last_modified = GREATEST(
+                      COALESCE($3::timestamptz, encompass_last_modified),
+                      COALESCE(encompass_last_modified, $3::timestamptz)),
+                    updated_at = now()
+              WHERE encompass_loan_guid = $1`,
+            [loan.encompassLoanGuid, loan.loanFolder, loan.lastModified],
+          );
+          archivedTrash += 1;
+          await dbc.query('RELEASE SAVEPOINT lt_loan_row');
+          continue; // never scheduled for a full read — nobody spends a call on trash
+        }
+        // AN ARCHIVED RECORD SUPERSEDED BY A LIVE TWIN IS NEVER BROUGHT IN FRESH —
+        // the same update-only rule the trash branch applies, for the same reason:
+        // a permanently deleted archive row must stay deleted, not boomerang back
+        // on the next sweep (the record still exists inside Encompass, archived).
+        // A record we already hold falls through to the ordinary upsert; the
+        // marking sweep below is what retires it.
+        if (visibleGuids && !visibleGuids.has(loan.encompassLoanGuid) && loan.loanNumber) {
+          const { rows: held } = await dbc.query(
+            'SELECT 1 FROM lt_loans WHERE encompass_loan_guid = $1', [loan.encompassLoanGuid]);
+          if (!held.length) {
+            const { rows: twin } = await dbc.query(
+              `SELECT 1 FROM lt_loans t
+                WHERE t.loan_number = $1 AND t.encompass_archived = false
+                  AND ${book.folderNormSql('t')} <> '(trash)'
+                LIMIT 1`, [loan.loanNumber]);
+            if (twin.length) {
+              archivedDupSkipped += 1;
+              await dbc.query('RELEASE SAVEPOINT lt_loan_row');
+              continue;
+            }
+          }
+        }
         const row = await upsertDiscovered(dbc, loan, settings);
         await dbc.query('RELEASE SAVEPOINT lt_loan_row');
         if (needsRead(row)) due.push({ id: row.id, guid: loan.encompassLoanGuid });
@@ -447,6 +519,31 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
         });
       }
     }
+
+    // THE ARCHIVED FLAGS, refreshed from the diff — only for the loans THIS pass
+    // discovered, and only when the flag-less sweep genuinely answered. Then the
+    // retirement: an archived record whose loan number a live record also carries
+    // is `archived_duplicate`, which `trash.trashSql` reads as the archive — it
+    // leaves every pipeline read and shows on the archive screen instead. SELF-
+    // HEALING both ways: un-archive the record in Encompass (or lose the live
+    // twin) and the next pass clears the mark, bringing it straight back.
+    if (visibleGuids) {
+      const discoveredGuids = found.loans.map((l) => l.encompassLoanGuid).filter(Boolean);
+      const archivedNow = discoveredGuids.filter((g) => !visibleGuids.has(g));
+      const liveNow = discoveredGuids.filter((g) => visibleGuids.has(g));
+      await dbc.query(
+        `UPDATE lt_loans SET encompass_archived = true, updated_at = now()
+          WHERE encompass_loan_guid = ANY($1::text[]) AND encompass_archived = false`, [archivedNow]);
+      await dbc.query(
+        `UPDATE lt_loans SET encompass_archived = false, updated_at = now()
+          WHERE encompass_loan_guid = ANY($1::text[]) AND encompass_archived = true`, [liveNow]);
+    }
+    // The marking runs every pass off the STORED flags (idempotent), so a pass
+    // whose flag-less sweep failed still converges on last pass's facts. ONE
+    // definition — trash.js owns what "superseded archived copy" means.
+    const swept = await trash.sweepArchivedDuplicates(dbc);
+    archivedDuplicates = swept.marked;
+
     await dbc.query('COMMIT');
   } catch (e) {
     try { await dbc.query('ROLLBACK'); } catch (_) { /* the original error is the one that matters */ }
@@ -520,6 +617,13 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
     // NO SILENT FILTERING. How many of Encompass's loans were left where they belong,
     // and — when the classifying fields were refused — that none could be.
     skippedShortTerm,
+    // Deleted-in-Encompass loans seen this pass: existing rows retired into the
+    // archive, brand-new trash never brought in. Reported, never silent.
+    archivedTrash,
+    // Superseded archived copies: newly retired this pass, and fresh ones never
+    // brought back after a permanent delete.
+    archivedDuplicates,
+    archivedDupSkipped,
     classifyFields: found.classifyFields || 'answered',
     // NO SILENT CAPS. Loans Postgres refused, named so a human can go and look at
     // them in Encompass; `refusedLoans` carries the first few with their reason.

@@ -50,6 +50,10 @@ const FILTER_KEYS = {
   folder: (v) => str(v),
   search: (v) => str(v),
   officerStaffId: (v) => uuid(v),
+  // The unlinked twin — an officer picked by their Encompass LOGIN because nobody
+  // has confirmed their PILOT link yet. A plain token, same length rule as any
+  // other stored filter string.
+  officerLoginId: (v) => str(v),
   unassigned: (v) => (v === true || v === 'true' ? true : null),
   // `mine` is stored as a FLAG, never as a staff id, and that is what makes a SHARED
   // view of it behave sensibly: it resolves against whoever is looking, so "Mine, at

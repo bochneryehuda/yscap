@@ -237,12 +237,20 @@ const scopeFrag = fOn.bookSql.slice(fOn.bookSql.indexOf('FROM'));
 // wrongly APPLIED would appear here WITHOUT the negation — the check would sail past the
 // exact bug it is named after. Proven: applying the filter to its own facet leaves this
 // assertion green and only the database suite red.
-const closedFrag = bookMod.folderInSql('l', '$1').slice(0, 40);
+//
+// The marker is normalisation + MEMBERSHIP (`= ANY(`), placeholder-agnostic. It used
+// to be a 40-character prefix — which stopped meaning "the book filter" the day the
+// archive guard (trash.notTrashSql, 2026-08-23) started composing the SAME
+// folderNormSql into every WHERE: the prefix matched that always-on guard and this
+// check cried wolf on a correctly LIFTED filter. Membership is what the lift removes;
+// the shared normalisation legitimately stays.
+const closedFrag = `${bookMod.folderNormSql('l')} = ANY(`;
 check(!scopeFrag.includes(closedFrag),
   'THE ONE THAT MATTERS: the book filter is LIFTED from its own WHERE — with "Finished" selected, a "Live" chip '
   + 'counted under the closed filter would read zero and the way back would be the chip claiming there is nothing there');
-check(closedFrag.length === 40 && live.sql.includes(closedFrag),
-  '…and that fragment is the real one, so the check above could actually have failed');
+check(live.sql.includes(closedFrag) && bookMod.folderInSql('l', '$9').includes(closedFrag),
+  '…and that fragment is the real one — it appears verbatim where the filter IS applied, '
+  + 'and it prefixes folderInSql whatever the placeholder — so the check above could actually have failed');
 check(/ = ANY\(\$\d+::text\[\]\)/.test(live.sql),
   'the loan\'s folder is tested for MEMBERSHIP of the finished list — an inverted operator would put every '
   + 'unlisted folder in the finished book, which is the whole thing this module exists to prevent');

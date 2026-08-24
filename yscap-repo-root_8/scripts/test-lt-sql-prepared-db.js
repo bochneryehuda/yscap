@@ -158,11 +158,35 @@ async function main() {
     // the fragment assembled, and asserts which folders it reaches and which it
     // deliberately leaves alone.
     'people/contacts.js': 'test-lt-file-setup-role-db.js drives it',
+    // The officer-picker list for a sees-all viewer. Its call site SWALLOWS its own
+    // failure (`.catch(() => null)` — the picker degrades, the pipeline survives),
+    // so mere execution could not prove it: the smoke test ASSERTS `officers` comes
+    // back as an ARRAY, which the swallowed failure (null) fails.
+    'pipeline.js': 'GET /api/lt/pipeline in the route smoke test, which asserts the officers list is an ARRAY — the call site swallows failure into null, so the assertion is what makes the execution provable',
     'ppe/rule-store.js': 'test-lt-ppe-rule-store-db.js drives it',
     'ppe/run-store.js': 'test-lt-ppe-run-store-db.js drives it',
     'product-book.js': 'GET /api/lt/book, in the route smoke test',
     'routes/stages.js': 'GET /api/lt/stages, in the route smoke test',
+    // The borrowers list assembles `WHERE ${scope.where}`, which is EMPTY for the
+    // sees-all admin the smoke test mostly runs as — so that suite also calls it
+    // as a SCOPED loan officer, which is what makes the interpolated branch a real
+    // statement (un-swallowed: a phantom column 500s and the smoke test sees it).
+    'routes/borrowers.js': 'GET /api/lt/borrowers in the route smoke test — the whole-book branch by the admin caller AND the assembled-WHERE branch by a scoped loan officer',
     'views.js': 'GET /api/lt/views, in the route smoke test',
+    // THE TRASH RULE (owner-directed 2026-08-23) composes its guard into many
+    // readers, and this map went STALE for two of them the day it landed — which
+    // held every main merge (#1319–#1323) out of the gated deploy until it was
+    // noticed. Each entry below names a suite that genuinely EXECUTES the
+    // assembled statement against a real Postgres in this same job.
+    'trash.js': 'test-lt-trash-db.js drives every statement (list, count, guarded delete, duplicates)',
+    'pipeline.js': 'test-lt-trash-db.js drives loadPipeline (the officer picker) against the real schema',
+    'clickup/link.js': 'test-lt-trash-db.js drives linkPass — the selection live, the retry sweep in a rolled-back transaction',
+    'borrower-autolink.js': 'test-lt-trash-db.js drives autoLinkPass (reads live, writes stubbed)',
+    'borrower-links.js': 'test-lt-borrower-link-db.js drives confirmLink, whose two-names guard this is',
+    'sync/loans.js': 'test-lt-trash-db.js section H2 drives syncOnce — the never-reinsert twin check runs live there',
+    'routes/borrowers.js': 'GET /api/lt/borrowers, in the route smoke test',
+    'routes/my-loans.js': 'test-lt-borrower-switch-db.js drives the handler directly against the real schema',
+    'routes/sync.js': 'GET /api/lt/sync, in the route smoke test',
   };
   const byFile = new Map();
   for (const b of built) byFile.set(b.rel, (byFile.get(b.rel) || 0) + 1);

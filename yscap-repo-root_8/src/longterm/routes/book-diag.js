@@ -321,4 +321,38 @@ router.get('/cards', async (req, res) => {
   }
 });
 
+/**
+ * THE PEOPLE MAP, AS IT STANDS — for diagnosing "my name is not in the officer
+ * picker" from outside a browser session. Match keys only: the Encompass login,
+ * the two display names, the LINK state, and whether the two sides' emails AGREE
+ * (computed here — the addresses themselves are not handed out). No token, no
+ * phone, no write path.
+ */
+router.get('/people', async (_req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT u.login_id,
+              u.full_name AS encompass_name,
+              l.status AS link_status,
+              l.match_method,
+              s.full_name AS staff_name,
+              s.role AS staff_role,
+              (lower(btrim(COALESCE(u.email,''))) <> ''
+               AND EXISTS (SELECT 1 FROM staff_users sx
+                            WHERE sx.is_active = true AND sx.is_external = false
+                              AND lower(btrim(COALESCE(sx.email,''))) = lower(btrim(COALESCE(u.email,''))))) AS email_matches_some_staff,
+              (SELECT count(*)::int FROM lt_loan_contacts c
+                 JOIN lt_loans ll ON ll.id = c.loan_id
+                WHERE c.encompass_login_id = u.login_id AND c.role = 'loan_officer'
+                  AND lower(btrim(regexp_replace(COALESCE(ll.loan_folder, ''), '\\s+', ' ', 'g'))) <> '(trash)') AS officer_on_loans
+         FROM lt_encompass_users u
+         LEFT JOIN lt_staff_links l ON l.encompass_login_id = u.login_id
+         LEFT JOIN staff_users s ON s.id = l.staff_id
+        ORDER BY u.full_name NULLS LAST`);
+    res.json({ ok: true, count: rows.length, people: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: (e && e.message) || String(e) });
+  }
+});
+
 module.exports = router;
