@@ -206,6 +206,39 @@ function isPlaceholderName(v) {
 }
 const isShadowEmail = (v) => /@(clickup|import)\.local$/i.test(String(v || '').trim());
 
+/**
+ * "LAST, FIRST" -> "FIRST LAST" (owner-reported 2026-08-24: the ClickUp card was
+ * carrying the borrower back-to-front).
+ *
+ * ROOT CAUSE it exists for: the Encompass PIPELINE field `Loan.BorrowerName`
+ * (sync/discover.js) is a DISPLAY string in surname-first order, and the mapper
+ * PREFERRED it over the parsed first/middle/last we already hold — and the
+ * pipeline name is always present, so the parsed one could never win. The
+ * ordering fix is preferring the parsed name; this helper is the FALLBACK for a
+ * loan we have only ever seen in the pipeline (discovered, not yet fully read).
+ *
+ * CONSERVATIVE BY CONSTRUCTION — it rewrites only what it can prove, because a
+ * name is what a borrower is called on a legal document and a clever guess here
+ * is worse than leaving it alone. It fires ONLY on exactly one comma with real
+ * text either side and no digits; everything else is returned UNCHANGED:
+ *   "Stern, Aharon"      -> "Aharon Stern"
+ *   "Stern Jr, Aharon M" -> "Aharon M Stern Jr"   (the suffix rides the surname)
+ *   "Aharon Stern"       -> unchanged (no comma — already in reading order)
+ *   "Stern, Aharon, III" -> unchanged (two commas — unprovable, leave it)
+ *   "Smith &, Jones"     -> unchanged (a blank side is not a name)
+ */
+function reorderCommaName(v) {
+  const raw = String(v == null ? '' : v).trim().replace(/\s+/g, ' ');
+  if (!raw) return raw;
+  const parts = raw.split(',');
+  if (parts.length !== 2) return raw;              // 0 commas, or too many to judge
+  const surname = parts[0].trim();
+  const given = parts[1].trim();
+  if (!surname || !given) return raw;              // a blank side is not a name
+  if (/\d/.test(raw)) return raw;                  // digits mean this is not a person's name
+  return `${given} ${surname}`;
+}
+
 // ---- masking (for the journal / logs) -------------------------------------
 function maskSSN(ssn) {
   const d = String(ssn || '').replace(/\D/g, '');
@@ -218,7 +251,7 @@ module.exports = {
   normalizePhone, phoneDigits,
   normalizeMarried,
   dropdownIndexToLabel, dropdownIndexToId, dropdownLabelToId, dropdownIdToLabel,
-  isPlaceholderLoanNumber, isPlaceholderName, isShadowEmail,
+  isPlaceholderLoanNumber, isPlaceholderName, isShadowEmail, reorderCommaName,
   maskSSN,
   CLICKUP_DATE_TZ, CLICKUP_DATE_HOUR,
 };
