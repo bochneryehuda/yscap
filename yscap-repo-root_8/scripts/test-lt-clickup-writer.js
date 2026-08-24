@@ -217,8 +217,12 @@ async function pureHalf() {
   eq(mapper.writeValue(chanRow, 'An Option Nobody Made', options), undefined,
     'an unmatched label no-ops — never invent an option');
   const dobRow = mapper.FIELD_MAP.find((f) => f.key === 'date_of_birth');
-  eq(T.fromEpochMs(mapper.writeValue(dobRow, '05/14/1985', options)), '1985-05-14',
-    'a date field writes the 4AM epoch for the right calendar day');
+  const dobEpoch = mapper.writeValue(dobRow, '05/14/1985', options);
+  eq(T.fromEpochMs(dobEpoch), '1985-05-14',
+    'a date field writes the right calendar day');
+  const dobHour = new Date(Number(dobEpoch)).getUTCHours();
+  ok(dobHour >= 8 && dobHour <= 10,
+    `writeValue writes the 4AM-New-York epoch, NEVER UTC midnight (got ${dobHour}:00Z — a midnight epoch renders as the previous day to the whole US team)`);
   const usersRow = mapper.FIELD_MAP.find((f) => f.key === 'loan_officer');
   assert.deepStrictEqual(mapper.writeValue(usersRow, 120151948, options), { add: [120151948] });
   ok(true, 'a users field writes {add:[id]} — never a bare id');
