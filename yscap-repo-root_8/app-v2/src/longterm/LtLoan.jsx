@@ -633,7 +633,7 @@ export default function LtLoan() {
       <SevenStops stops={stops} clock={milestoneClock} sale={sale}
         statusLabel={rail && rail.milestoneLabel} />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 300px', gap: 14, alignItems: 'start' }}
+      <div style={{ display: 'grid', gridTemplateColumns: '186px minmax(0,1fr) 300px', gap: 14, alignItems: 'start' }}
         className="lt-workspace">
         {/* `gridTemplateColumns:'minmax(0,1fr)'` is load-bearing, not decoration. A grid
             with no declared column gets an IMPLICIT `auto` one, which sizes to its
@@ -642,33 +642,48 @@ export default function LtLoan() {
             the page reported no sideways scroll while half of every row was cut off and
             unreachable. `minmax(0,…)` pins the column to the container, which is what
             lets each table scroll inside its OWN box the way it was meant to. */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 12, minWidth: 0 }}>
-          {/* The section menu. A section that does not apply is GREYED WITH ITS
-              REASON — the reason comes from the server, and clicking it says so
-              rather than doing nothing, which is what makes a greyed control
-              honest instead of broken. */}
-          <div className="card" style={{ color: INK }}>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {sections.map((s) => (
-                <button key={s.key} type="button" className="btn ghost"
-                  title={s.why || ''}
-                  // A greyed section is still CLICKABLE, and clicking it shows the
-                  // reason. A disabled button that does nothing when pressed teaches
-                  // people the screen is broken; one that answers "the Condition
-                  // Center is coming soon" answers the question they had.
-                  onClick={() => setActive(s.key)}
-                  style={{
-                    padding: '4px 10px', fontSize: 13,
-                    opacity: s.available ? 1 : 0.55,
-                    borderColor: s.key === active && s.available ? GOLD : undefined,
-                    fontWeight: s.key === active && s.available ? 700 : 550,
-                  }}>{s.label}</button>
-              ))}
-            </div>
-            {current && !current.available && (
-              <div style={{ marginTop: 8, fontSize: 13, color: MUTED }}>{current.why}</div>
-            )}
+        {/* THE ROOMS (the plate's section index). A VERTICAL list, not a row of
+            buttons: the plate reads top-to-bottom and so does a loan file, and a
+            wrapping button row gave the eye no order to follow. A section that does
+            not apply is greyed WITH ITS REASON and stays CLICKABLE — a disabled
+            control that does nothing when pressed teaches people the screen is
+            broken; one that answers the question is honest. */}
+        <nav className="card lt-rooms" style={{ color: INK, alignSelf: 'start', position: 'sticky', top: 12, padding: '12px 12px 10px' }}>
+          <div style={{ fontSize: 10, letterSpacing: '.14em', textTransform: 'uppercase', color: GOLD, fontWeight: 700 }}>
+            The file
           </div>
+          <div style={{ display: 'grid', gap: 1, marginTop: 8 }}>
+            {sections.map((s2) => {
+              const on = s2.key === active && s2.available;
+              return (
+                <button key={s2.key} type="button" title={s2.why || ''}
+                  onClick={() => setActive(s2.key)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                    background: on ? 'rgba(174,135,70,.08)' : 'transparent',
+                    border: 0, borderRadius: 6, cursor: 'pointer',
+                    padding: '6px 8px', textAlign: 'left',
+                    font: 'inherit', fontSize: 12, letterSpacing: '.055em',
+                    textTransform: 'uppercase',
+                    fontWeight: on ? 700 : 550,
+                    color: on ? INK : (s2.available ? MUTED : 'rgba(75,88,92,.55)'),
+                  }}>
+                  <span aria-hidden="true" style={{
+                    width: 6, height: 6, flex: '0 0 6px',
+                    background: on ? GOLD : 'transparent',
+                    border: on ? 0 : '1px solid rgba(20,27,34,.28)',
+                  }} />
+                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s2.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          {current && !current.available && (
+            <div style={{ marginTop: 8, fontSize: 12, color: MUTED, lineHeight: 1.45 }}>{current.why}</div>
+          )}
+        </nav>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 12, minWidth: 0 }}>
 
           {active === 'milestones' ? (
             <div className="card" style={{ color: INK }}>
