@@ -62,7 +62,11 @@ ok(toExcelSerial('bad-date') === null, 'garbage date → null');
 
 // ---- 2. Fidelis column mapping / coercion ----------------------------------
 const loan = synthLoan();
-ok(cellOf(loan, 'A').value === 'FID-90', 'A loan number prefers investor number');
+/* A carries OUR loan number, even though this fixture also has the investor's
+   (owner-directed 2026-08-24: "we always prefer our loan number, not the
+   investor's"). Fidelis was the only tape that led with the investor number;
+   test-tape-loan-number-pure guards the rule across every tape and module. */
+ok(cellOf(loan, 'A').value === 'YSCAP-2201', 'A loan number is OURS, not the investor’s');
 ok(cellOf(loan, 'C').value === "Jane O'Brien & John Smith", 'C guarantor joins co-borrower');
 ok(cellOf(loan, 'F').value === 'IL', 'F state normalized Illinois → IL');
 ok(cellOf(loan, 'G').value === '02108' && cellOf(loan, 'G').type === 's', 'G zip is a string (leading zero safe)');
@@ -212,13 +216,16 @@ ok(registry.tapesForBuyer('fidelis').length === 1, 'tapesForBuyer(fidelis) = 1')
 ok(registry.listTapes().every((t) => !t.buildRow && t.key), 'listTapes is function-free (browser-safe)');
 
 // ---- 6. Bulk: one row per loan, widened dropdowns --------------------------
-const loans = [synthLoan({ app: Object.assign({}, synthLoan().app, { investor_loan_number: 'FID-1' }) }),
-  synthLoan({ app: Object.assign({}, synthLoan().app, { investor_loan_number: 'FID-2' }) }),
-  synthLoan({ app: Object.assign({}, synthLoan().app, { investor_loan_number: 'FID-3' }) })];
+/* Distinct by OUR loan number — column A carries `ys_loan_number` now, so making
+   the rows differ by the investor's number would leave all three rows reading
+   the same value and the "one row per loan" assertion below would prove nothing. */
+const loans = [synthLoan({ app: Object.assign({}, synthLoan().app, { ys_loan_number: 'YSCAP-B1' }) }),
+  synthLoan({ app: Object.assign({}, synthLoan().app, { ys_loan_number: 'YSCAP-B2' }) }),
+  synthLoan({ app: Object.assign({}, synthLoan().app, { ys_loan_number: 'YSCAP-B3' }) })];
 const bulk = fillXlsxTemplate(TEMPLATE, { sheetPart: SHEET, firstRow: 2, rows: loans.map((l) => fidelis.buildRow(l)), lastCol: 'AV', extendValidations: true });
 const bulkXml = unzip(bulk).find((p) => p.name === SHEET).data.toString('utf8');
 ok(/<row r="2"[^>]*>/.test(bulkXml) && /<row r="3"[^>]*>/.test(bulkXml) && /<row r="4"[^>]*>/.test(bulkXml), 'bulk wrote rows 2,3,4');
-ok(/<c r="A2"[^>]*>[\s\S]*?FID-1/.test(bulkXml) && /<c r="A4"[^>]*>[\s\S]*?FID-3/.test(bulkXml), 'bulk rows carry distinct loan numbers');
+ok(/<c r="A2"[^>]*>[\s\S]*?YSCAP-B1/.test(bulkXml) && /<c r="A4"[^>]*>[\s\S]*?YSCAP-B3/.test(bulkXml), 'bulk rows carry distinct loan numbers');
 ok(bulkXml.indexOf('sqref="AC2:AC4"') > -1, 'bulk widened AC dropdown to all rows');
 ok(/<dimension ref="A1:AV4"\/>/.test(bulkXml), 'bulk dimension covers all rows');
 

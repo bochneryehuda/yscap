@@ -342,10 +342,14 @@ ok(cf.ownershipPctOf({ owned_personally: false, entity_ownership_pct: null }) ==
   ok(w.noTitleName.length === 0, 'a line that does have a title name is not flagged');
 }
 
-// ── 10) The file name follows CorrFirst's own ("Track Record_ 32856.csv") ────
+// ── 10) The file name follows CorrFirst's own SHAPE ("Track Record_ 32856.csv"),
+//        but is named by OUR loan number (owner-directed 2026-08-24: "we always
+//        prefer our loan number, not the investor's … across the board").
+ok(cf.corrfirstFilename({ ys_loan_number: 'YS-1001', investor_loan_number: '32856' }) === 'Track Record_YS-1001.csv',
+  'named by OUR loan number even when the investor number is on the file');
 ok(cf.corrfirstFilename({ investor_loan_number: '32856' }) === 'Track Record_32856.csv',
-  'named after the investor loan number, like the file they sent');
-ok(cf.corrfirstFilename({ ys_loan_number: 'YS-1001' }) === 'Track Record_YS-1001.csv', 'falls back to our loan number');
+  'falls back to the investor number when we have none of our own');
+ok(cf.corrfirstFilename({ ys_loan_number: 'YS-1001' }) === 'Track Record_YS-1001.csv', 'our loan number alone');
 ok(cf.corrfirstFilename({ last_name: 'Doe' }) === 'Track Record_Doe.csv', 'then to the borrower');
 ok(cf.corrfirstFilename({}) === 'Track Record_Export.csv', 'and always produces a name');
 

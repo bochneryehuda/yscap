@@ -254,7 +254,17 @@ function economics(loan) {
 // never rounds a real rate; FMT.RATE additionally makes the tape read exactly
 // like every PILOT screen (10.25 → "10.25%", 10.625 → "10.625%").
 const COLUMNS = [
-  ['A', 's', null, (l) => l.app.investor_loan_number || l.app.ys_loan_number || ''],
+  /* OUR loan number, ALWAYS (owner-directed 2026-08-24: "we always prefer our
+     loan number and keep the investor's loan number somewhere else in the back").
+     This column led with `investor_loan_number` and was the ONLY tape that did —
+     EMCAP and Blue Lake have always sent `ys_loan_number`. That mattered once the
+     bulk tape let any loan go on any provider's tape (owner-directed 2026-08-23):
+     `investor_loan_number` is a SINGLE column that records no WHICH-investor, so a
+     loan carrying CorrFirst's number would have shipped that number to Fidelis as
+     the loan number — a stranger's identifier on their sheet, and one that could
+     collide with a real Fidelis loan. Fidelis's own Definitions tab asks only for
+     "Loan Number / Text"; it does not ask for THEIR number. */
+  ['A', 's', null, (l) => l.app.ys_loan_number || l.app.investor_loan_number || ''],
   ['B', 's', null, (l) => vestingCell(l.vesting)],   // Borrowing Entity ("Individual" when there is no entity)
   ['C', 's', null, (l) => guarantorC(l)],
   ['D', 's', null, (l) => l.address.line1 || ''],
@@ -318,7 +328,8 @@ function buildRow(loan) {
 }
 
 function filename(loan) {
-  const ln = (loan.app.investor_loan_number || loan.app.ys_loan_number || 'loan').replace(/[^A-Za-z0-9._-]+/g, '-');
+  // Named by OUR loan number, like every other tape (see column A above).
+  const ln = (loan.app.ys_loan_number || loan.app.investor_loan_number || 'loan').replace(/[^A-Za-z0-9._-]+/g, '-');
   const last = (loan.borrower && loan.borrower.last) ? '-' + String(loan.borrower.last).replace(/[^A-Za-z0-9]+/g, '') : '';
   return `Fidelis-Tape-${ln}${last}.xlsx`;
 }
