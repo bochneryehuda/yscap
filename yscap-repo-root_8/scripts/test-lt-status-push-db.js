@@ -192,6 +192,57 @@ async function main() {
     ok(rows[0].reason.length <= 500, 'trimmed to the column\'s working length');
   }
 
+  // ── 5. THE DISAGREEMENT LIST IS SCOPED TO THE OFFICER ─────────────────────
+  // A pre-merge audit proved the first cut of GET /status-reviews applied NO
+  // scope at all: it passed `viewer.access` and `viewer.staffId` to
+  // pipelineScopeSql, and `accessFor` returns neither — so the function's
+  // `if (!access || access.seesAll)` short-circuit handed back an EMPTY
+  // predicate for every role, and a scoped officer saw the whole book's
+  // borrower names, loan numbers and card ids.
+  //
+  // The bug was in the ARGUMENTS, so the guard is on the arguments: a scoped
+  // viewer must produce a NON-EMPTY predicate. A behavioural test through HTTP
+  // would also catch it, but this states the actual invariant and cannot pass
+  // for the wrong reason.
+  console.log('5. the status-review list is scoped to the officer');
+  {
+    const access = require('../src/longterm/access');
+    const settings = {};
+    const staffId = '00000000-0000-4000-8000-00000626b001';
+
+    // What the route now does.
+    const officer = access.accessFor({ id: staffId, role: 'loan_officer' }, settings);
+    const scoped = access.pipelineScopeSql(officer, staffId, 1);
+    ok(!officer.seesAll, 'a loan officer does not see the whole book');
+    ok(scoped.where && scoped.where.trim() !== '', 'a scoped officer gets a REAL predicate, not an empty one');
+    eq(scoped.params.length, 1, 'and the predicate carries its parameter');
+    ok(/lt_loan_contacts/.test(scoped.where), 'the predicate narrows by who is on the file');
+
+    // What the first cut did — pinned so the exact regression cannot return.
+    const broken = access.pipelineScopeSql(officer.access, officer.staffId, 1);
+    eq(broken.where, '', 'passing viewer.access / viewer.staffId yields NO predicate — the bug this pins');
+
+    // An admin genuinely sees everything, and that must stay true.
+    const admin = access.accessFor({ id: staffId, role: 'super_admin' }, { longTerm: { adminRoles: ['super_admin'] } });
+    if (admin.seesAll) {
+      eq(access.pipelineScopeSql(admin, staffId, 1).where, '', 'a sees-all viewer is deliberately unfiltered');
+    } else {
+      ok(true, 'this deployment does not grant sees-all by default — nothing to assert');
+    }
+
+    // The route's own SQL must survive the scope being ANDed on. Both branches
+    // are executed, because a placeholder miscount is a 42P18 the eye misses.
+    const trash = require('../src/longterm/trash');
+    const base = `SELECT q.id, l.loan_number FROM lt_clickup_review_queue q
+                    JOIN lt_loans l ON l.id = q.lt_loan_id
+                   WHERE q.status = 'open' AND q.field_key = '__status' AND q.direction = 'outbound'
+                     AND ${trash.notTrashSql('l')}`;
+    await db.query(`${base} ORDER BY q.created_at DESC LIMIT $1`, [10]);
+    ok(true, 'the sees-all branch is valid SQL');
+    await db.query(`${base} AND ${scoped.where} ORDER BY q.created_at DESC LIMIT $2`, [staffId, 10]);
+    ok(true, 'the officer-scoped branch is valid SQL with its placeholders in step');
+  }
+
   await cleanup([loanId, linkedId], [taskId]);
   console.log(`\ntest-lt-status-push-db: ${pass} passed, ${fails.length} failed`);
   if (fails.length) process.exitCode = 1;

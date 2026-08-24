@@ -39,6 +39,7 @@ const access = require('../access');
 const settingsStore = require('../settings/store');
 const trash = require('../trash');
 const clickupPush = require('../clickup/push');
+const statusPush = require('../clickup/status-push');
 const mapper = require('../clickup/mapper');
 const writer = require('../clickup/writer-client');
 const T = require('../clickup/transforms');
@@ -181,8 +182,14 @@ router.get('/status-reviews', async (req, res) => {
     // Scoped exactly like the pipeline: an officer sees the disagreements on
     // their own files and nobody else's. Never a wider list than the screen the
     // reader already has.
+    // `accessFor` returns {ltRole, scope, seesAll} — it has NO `.access` and no
+    // `.staffId`. Passing those (as this route first did) hands pipelineScopeSql
+    // two undefineds, and its `if (!access || access.seesAll)` short-circuit then
+    // returns an EMPTY predicate for every role — so a scoped officer silently
+    // saw the whole book. The viewer object itself is the first argument and the
+    // actor's own id the second, exactly as routes/borrowers.js does it.
     const params = [];
-    const scope = access.pipelineScopeSql(viewer && viewer.access, viewer && viewer.staffId, params.length + 1);
+    const scope = access.pipelineScopeSql(viewer, req.actor && req.actor.id, params.length + 1);
     params.push(...scope.params);
     const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
     params.push(limit);
@@ -315,12 +322,39 @@ router.get('/loans/:loanId', async (req, res) => {
             try { return mapper._internals.sameNameLoose(String(st.name || ''), coName); } catch (_) { return false; }
           })
           : null;
+        // WHAT THE NEXT PUSH WILL ACTUALLY DO — asked, never assumed. This screen
+        // used to say "the next full push moves it", which stopped being true on
+        // 2026-08-24: a status now follows a milestone FIRING and is never written
+        // to reconcile a card. Saying otherwise on the one screen an officer opens
+        // to decide whether to fix ClickUp by hand is worse than saying nothing, so
+        // the real decision is computed here from the SAME function the push runs.
+        const cardStatus = String((task.status && task.status.status) || '').trim() || null;
+        let decision = null;
+        try {
+          const listInfo = task.list && task.list.id ? await writer.getList(task.list.id) : null;
+          const sts = (listInfo && listInfo.statuses) || null;
+          const names = Array.isArray(sts)
+            ? sts.slice().sort((a, b) => (Number(a.orderindex) || 0) - (Number(b.orderindex) || 0)).map((st) => String(st.status || ''))
+            : null;
+          const wm = await clickupPush._internals.readStatusWatermark(loan.id);
+          const d = statusPush.decideStatusPush({
+            desired, current: cardStatus, watermark: wm.watermark, latestEntered: wm.latestEntered,
+            statusOrder: names, now: new Date(),
+          });
+          decision = { act: d.act, reason: d.reason };
+        } catch (_) {
+          // Best-effort: an unreadable decision shows no promise at all, which is
+          // the honest failure — never the old sentence back by default.
+          decision = null;
+        }
+
         out.compare = {
           fields: cmp,
           status: {
-            current: String((task.status && task.status.status) || '').trim() || null,
+            current: cardStatus,
             desired: desired.status,
             reason: desired.reason,
+            decision,
           },
           cardProgram: P.cardProgramLabel(task),
           subtask: { found: !!subtask, name: subtask ? subtask.name : null },

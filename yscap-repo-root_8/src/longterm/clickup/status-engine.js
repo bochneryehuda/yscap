@@ -11,8 +11,23 @@
  *   closing; Funded done → closed; Investor Delivery done → in purchase
  *   review; Purchased done → PA issued post closing; Final Docs done → closed
  *   and reconciled; 1393 withdrawn/declined or the Adverse folder → cancelled;
- *   On Hold folder → on hold, back → workflow. **Encompass always wins, even
- *   after manual changes.**
+ *   On Hold folder → on hold, back → workflow.
+ *
+ * ⚠ THAT SPEC ALSO SAID "ENCOMPASS ALWAYS WINS, EVEN AFTER MANUAL CHANGES", AND
+ * THE OWNER OVERTURNED IT ON 2026-08-24. Do not restore it, and do not use this
+ * module's answer to re-assert a status: *"Only when Encompass is changing a
+ * milestone should ClickUp be changing milestones, not go back to all the ClickUp
+ * tasks and update everything according to how Encompass is."* ClickUp is allowed
+ * to be AHEAD — a card the team moved forward is left alone, and the disagreement
+ * is raised for a person instead of corrected.
+ *
+ * THIS MODULE IS UNAFFECTED, and the distinction is the whole point: it answers
+ * WHICH status the ladder implies. WHETHER PILOT may write it is a different
+ * question, answered by `status-push.js` — which requires a milestone to have
+ * FIRED since the loan's watermark, and refuses a backwards move except for the
+ * owner's one exclusion (assigned to processor, so a file can be handed to a
+ * different processor). Anything that takes the answer below and writes it
+ * unconditionally has reintroduced the bug.
  *
  * KEYED ON THE LADDER'S DONE FLAGS (lt_loan_milestones, db/623) — never on
  * MS.STATUS wording, which is frozen tenant prose that renames leave stale
@@ -30,7 +45,9 @@
  *
  * "Back from hold → workflow": the ladder decision IS the generalization —
  * a file leaving the On Hold folder lands wherever its milestones say it is,
- * which for a mid-underwriting file is exactly 'workflow' (Encompass wins).
+ * which for a mid-underwriting file is exactly 'workflow' — that is what the
+ * ladder IMPLIES, which is all this module ever claims; whether it is written is
+ * status-push.js's call.
  *
  * PURE — no database, no client. push.js hands it the ladder + folder + the
  * live 1393/channel values and enforces the answer.

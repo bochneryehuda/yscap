@@ -466,7 +466,13 @@ async function dbHalf() {
       return { id, url: `https://app.clickup.com/t/${id}`, custom_id: 'FILLE-9999' };
     },
     getFolderLists: async () => ({ lists: [{ id: 'list-77', name: 'Loan Pipeline' }] }),
-    getList: async () => ({ statuses: LIST_STATUSES.map((s) => ({ status: s })) }),
+    // REAL ClickUp lists carry an `orderindex` on every status, and the writer
+    // now REQUIRES one: a status whose orderindex is not a finite number makes
+    // the whole order UNKNOWN rather than silently ranking 0 and jumping to the
+    // front of the ladder (pre-merge audit 2026-08-24 — with one missing index a
+    // move the true order calls BACKWARDS was written). A stub without them
+    // exercised only the array-order path and could not have seen that.
+    getList: async () => ({ statuses: LIST_STATUSES.map((s, i) => ({ status: s, orderindex: i })) }),
     updateTask: async (taskId, payload) => {
       realWriter.guardTaskUpdatePayload(payload);              // the real status-only allowlist still bites
       wire.updateTask.push({ taskId, payload });
