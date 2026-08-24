@@ -318,6 +318,42 @@ const CONTACT_KEYS = ['payoffLender', 'payoffLoanNumber'];
  * else at all? Used by the freeze carve-out, so it is deliberately strict: any
  * other key in the body, or an empty body, answers false.
  */
+/**
+ * THE CONDITIONS "the property is free and clear" ANSWERS — one list, in one place.
+ *
+ * Owner-directed 2026-08-24: *"There are a few conditions: asking for a payoff, asking to verify
+ * the payoff, asking maybe for a VOM. Those payoff conditions are about the old mortgage … mark
+ * over there that the property is free and clear, and that should waive the payoff condition, the
+ * verified payoff condition, and the VOM condition."*
+ *
+ * Every one of these asks about a loan that does not exist once the property is confirmed free and
+ * clear, so every one of them is answered by that confirmation rather than left for somebody to
+ * chase a statement nobody can produce.
+ *
+ * WHY IT IS A CONSTANT. The free-and-clear route names this set THREE times — waive, un-waive, and
+ * strip the stale note — and a fourth list lives in the engine's own rules. Three hand-typed
+ * `IN (…)` lists in one route is three chances to add a condition to one and forget the others,
+ * and the failure is silent and asymmetric: a condition added to the WAIVE list but not the
+ * UN-WAIVE list can never be reopened, so turning free-and-clear off would leave it waived on a
+ * file that genuinely has a mortgage to pay off. Adding a condition here adds it to all three.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. There is NO verification-of-mortgage (VOM) condition on the
+ * short-term side — checked across the template library, the rule-driven refinance set and every
+ * hand-typed condition on file, and it does not exist. It exists only in the LONG-TERM Encompass
+ * condition library, which is a different product and may not be copied here without the owner's
+ * written authorisation (`docs/LONG-TERM-AUTHORIZED-COPIES.md`). Whether the short-term product
+ * should ask for one at all is a business rule, so it is the owner's to state — and when they do,
+ * it is ONE entry in this array and nothing else.
+ *
+ * `cond_cashout_letter` is the other refinance-gated condition and is deliberately absent: it asks
+ * the borrower WHY they are taking cash out, which is a question about this new loan, not about
+ * an old mortgage — a free-and-clear cash-out refinance still has to answer it.
+ */
+const FREE_AND_CLEAR_WAIVES = Object.freeze([
+  'cond_payoff_external',   // "Current mortgage / payoff statement (existing loan)" — the payoff
+  'cond_payoff_internal',   // "Payoff verified — statement ordered, figure & lender confirmed"
+]);
+
 function isPayoffContactOnlyEdit(body) {
   const keys = Object.keys(body || {});
   if (!keys.length) return false;
@@ -326,6 +362,7 @@ function isPayoffContactOnlyEdit(body) {
 
 module.exports = {
   CONTACT_KEYS,
+  FREE_AND_CLEAR_WAIVES,
   isPayoffContactOnlyEdit,
   KIND,
   KIND_LABEL,
