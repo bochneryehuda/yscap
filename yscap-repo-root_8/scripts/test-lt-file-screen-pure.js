@@ -106,6 +106,46 @@ const stray = [...blurbKeys].filter((k) => !serverKeys.includes(k));
 check(stray.length === 0,
   `and there is no line for a section that does not exist${stray.length ? ` — stray: ${stray.join(', ')}` : ''}`);
 
+// ── 5b. The plate's opening: the big gold name, and the facts on top ────────
+console.log('the milestone the file has attained is the page\'s heading, in gold');
+
+const css = read('app-v2/src/styles.css');
+check(/<h1 className="lt-utter">/.test(ui),
+  'the milestone name IS the page heading — not a line inside a card under a second heading');
+check(/<LtLayout>/.test(ui),
+  'and the layout renders no <h1> of its own on this screen, so the milestone is never said twice');
+check(/\.lt-utter \.lt-now\{[^}]*color:#AE8746/.test(css),
+  'the attained name is the brand GOLD (owner: "the whole big gold name of the Milestone")');
+check(/\.lt-utter \.lt-now\{[^}]*font-size:clamp\(/.test(css),
+  'and it is sized to the viewport, so it is big on a desk and still fits a phone');
+check(/wasDifferent \? <span className="lt-was">not \{raw\}/.test(ui),
+  'the raw Encompass name is shown beside it ONLY when the two differ — "not Started — Started." explains nothing');
+
+console.log('the facts strip sits on top of the file, and carries the loan number');
+check(/<div className="lt-facts">/.test(ui), 'the strip is drawn');
+check(/\.lt-facts\{[^}]*border-top:[^}]*border-bottom:/.test(css),
+  'ruled top and bottom, the way the plate rules it');
+check(/\['Loan number', plain\(rail && rail\.loanNumber\), true/.test(ui),
+  'the loan number is the strip\'s first cell, in gold — the identity somebody quotes on the phone');
+check(/\.lt-fact:first-child \.v\{white-space:nowrap/.test(css),
+  'and it can never break across two lines');
+check(/\.lt-fact\{[^}]*flex:0 1 auto/.test(css),
+  'the cells do not stretch — eight facts do not divide evenly into a row, and a grow factor turns the two that wrap onto a second line into absurdly wide boxes');
+
+// ── 5c. Which column each region sits in ────────────────────────────────────
+console.log('the file\'s own details on the left, the picker on the right');
+
+const iRail = ui.indexOf('<Rail rail={rail} />');
+const iSecs = ui.indexOf('className="lt-sections"');
+const iNav = ui.indexOf('className="card lt-rooms"');
+check(iRail > 0 && iSecs > 0 && iNav > 0, 'all three regions are on the page');
+check(iRail < iSecs && iSecs < iNav,
+  'and in this order: File Details, then the file, then the picker (owner-directed: "on the left side … file details, like the overview section that we have on the RTL side"; "on the right side … all these things for you to select assets, liabilities, click up")');
+check(/gridTemplateColumns: '300px minmax\(0,1fr\) 186px'/.test(ui),
+  'the ledger takes the first track and the picker the last');
+check(/@media\(max-width:900px\)\{\s*\.lt-rooms\{order:-1\}/.test(css),
+  'stacked on a phone the jump menu comes FIRST — a sixteen-row table of figures between the menu and the content would be a long scroll to reach the work');
+
 // ── 6. The ledger keeps its industry name, and the loan number is said once ──
 console.log('the ledger and the loan number');
 

@@ -61,7 +61,7 @@ function Rail({ rail }) {
   ];
 
   return (
-    <aside className="card" style={{ color: INK, alignSelf: 'start', position: 'sticky', top: 12 }}>
+    <aside className="card lt-ledger" style={{ color: INK, alignSelf: 'start', position: 'sticky', top: 12 }}>
       <div style={{ fontSize: 11, letterSpacing: '.09em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
         File Details
       </div>
@@ -91,57 +91,66 @@ function Rail({ rail }) {
 }
 
 /**
- * THE FILE HEADER (owner-directed 2026-08-23, the approved meridian design):
- * the loan number as ONE BOX, beside the property address and the deal's
- * headline chips — purpose, program, DSCR, loan amount, LTV, and whether the
- * loan vests in an entity or an individual. PILOT style, dark on paper.
+ * THE FILE HEADER — the plate's own opening (owner-directed 2026-08-24: "you
+ * missed the whole big gold name of the Milestone that is right now, and you
+ * missed that box that is on top of the main details of the file").
+ *
+ * THE BIG GOLD NAME IS THE PAGE'S HEADING, so the screen says where the loan
+ * stands before it says anything else. It is the COMPLETED form of the last
+ * milestone Encompass finished — "Funded", never "Funding" — which is the owner's
+ * own status rule, and the plate states that rule out loud: the raw Encompass name
+ * quietly beside the attained one. That quiet half is drawn ONLY when the two
+ * genuinely differ; "not Started — Started." explains nothing and would be noise
+ * on most of the book. There is no <h1> in the layout under it: two headings for
+ * one fact is the duplication this screen was called out for.
+ *
+ * THE FACTS STRIP is the box that sits on top of the main details — the figures
+ * somebody quotes on the phone, ruled top and bottom with each in its own cell,
+ * always up whatever section is open. THE LOAN NUMBER LIVES HERE AND NOWHERE ELSE
+ * on this screen; a test counts it.
+ *
+ * A MISSING FIGURE READS AS A DASH, never as zero — "no DSCR on file" and "a DSCR
+ * of 0" are different loans.
  */
 function FileHeader({ rail, loan, file }) {
   const address = (file && file.property && file.property.address) || null;
   const vesting = !loan || !loan.vesting_type ? null
     : String(loan.vesting_type).trim().toLowerCase() === 'individual' ? 'Individual'
       : (loan.vesting_entity_name || 'Entity');
-  const chips = [
-    ['Purpose', plain(rail && rail.purpose)],
-    ['Program', plain(rail && rail.program)],
-    ['DSCR', ratio(rail && rail.dscr)],
-    ['Loan amount', money(rail && rail.loanAmount)],
-    ['LTV', pct(rail && rail.ltv)],
-    ['Vesting', vesting || '—'],
+  const attained = (rail && rail.milestoneLabel) || (rail && rail.milestone) || null;
+  const raw = (rail && rail.milestone) || null;
+  const wasDifferent = !!(raw && attained && String(raw).trim().toLowerCase() !== String(attained).trim().toLowerCase());
+
+  // key, value, gold?, wide?
+  const facts = [
+    ['Loan number', plain(rail && rail.loanNumber), true, false],
+    ['Subject', address || '—', false, true],
+    ['Purpose', plain(rail && rail.purpose), false, false],
+    ['Program', plain(rail && rail.program), false, false],
+    ['Loan', money(rail && rail.loanAmount), false, false],
+    ['LTV', pct(rail && rail.ltv), false, false],
+    ['DSCR', ratio(rail && rail.dscr), false, false],
+    ['Vesting', vesting || '\u2014', false, false],
   ];
+
   return (
     <div className="card" style={{ color: INK, marginBottom: 12 }}>
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'stretch' }}>
-        {/* The loan number, as ONE box — the identity somebody quotes on the phone. */}
-        <div style={{
-          border: `1.5px solid ${GOLD}`, borderRadius: 10, padding: '10px 16px',
-          display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 170,
-          background: 'rgba(174,135,70,.06)',
-        }}>
-          <span style={{ fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
-            Loan number
-          </span>
-          <span style={{ fontSize: 20, fontWeight: 800, color: INK, letterSpacing: '.02em', whiteSpace: 'nowrap' }}>
-            {plain(rail && rail.loanNumber)}
-          </span>
-        </div>
-        <div style={{ flex: '1 1 320px', minWidth: 0 }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: INK, lineHeight: 1.3 }}>
-            {address || 'No property address read from Encompass yet'}
+      {attained ? (
+        <h1 className="lt-utter">
+          {wasDifferent ? <span className="lt-was">not {raw} &mdash;</span> : null}
+          <span className="lt-now">{attained}</span>
+        </h1>
+      ) : null}
+      {wasDifferent ? (
+        <div className="lt-law">A finished step takes the past tense &middot; the file sits in the next</div>
+      ) : null}
+      <div className="lt-facts">
+        {facts.map(([k, v, gold, wide]) => (
+          <div key={k} className={wide ? 'lt-fact wide' : 'lt-fact'}>
+            <div className="k">{k}</div>
+            <div className={gold ? 'v gold' : 'v'}>{v}</div>
           </div>
-          <div style={{ fontSize: 13, color: MUTED, marginTop: 2 }}>{plain(rail && rail.borrower)}</div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-            {chips.map(([k, v]) => (
-              <span key={k} style={{
-                display: 'inline-flex', gap: 5, alignItems: 'baseline', fontSize: 12,
-                padding: '3px 9px', borderRadius: 999, border: '1px solid rgba(20,27,34,.14)', background: '#FFFFFF',
-              }}>
-                <span style={{ color: MUTED, fontSize: 10, textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 700 }}>{k}</span>
-                <span style={{ color: INK, fontWeight: 650 }}>{v}</span>
-              </span>
-            ))}
-          </div>
-        </div>
+        ))}
       </div>
     </div>
   );
@@ -830,7 +839,7 @@ export default function LtLoan() {
   };
 
   return (
-    <LtLayout title={(rail && (rail.milestoneLabel || rail.milestone)) || 'Long-term file'}>
+    <LtLayout>
       {/* THE FILE HEADER'S PRODUCT STAMP (CLAUDE.md §7) — which book this loan is
           in, stated on the file itself rather than inferred from the screen, and
           NOT dependent on any other request having succeeded. */}
@@ -871,7 +880,7 @@ export default function LtLoan() {
       <SevenStops stops={stops} clock={milestoneClock} sale={sale}
         statusLabel={rail && rail.milestoneLabel} />
 
-      <div style={{ display: 'grid', gridTemplateColumns: '186px minmax(0,1fr) 300px', gap: 14, alignItems: 'start' }}
+      <div style={{ display: 'grid', gridTemplateColumns: '300px minmax(0,1fr) 186px', gap: 14, alignItems: 'start' }}
         className="lt-workspace">
         {/* `gridTemplateColumns:'minmax(0,1fr)'` is load-bearing, not decoration. A grid
             with no declared column gets an IMPLICIT `auto` one, which sizes to its
@@ -880,6 +889,27 @@ export default function LtLoan() {
             the page reported no sideways scroll while half of every row was cut off and
             unreachable. `minmax(0,…)` pins the column to the container, which is what
             lets each table scroll inside its OWN box the way it was meant to. */}
+        {/* THE FILE'S OWN DETAILS, ON THE LEFT (owner-directed 2026-08-24: "on the
+            left side, there are a lot of file details, like the overview section that
+            we have on the RTL side. I want that to be on the same side"). The picker
+            takes the right-hand column it used to sit in. */}
+        <Rail rail={rail} />
+
+        {/* THE FILE ITSELF, top to bottom, each section opening in place. The order
+            is the SERVER'S (`workspace.js`), which is why ClickUp syncing — the
+            plumbing rather than the loan — sits at the bottom of the stack. */}
+        <div className="lt-sections" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 10, minWidth: 0 }}>
+          {sections.map((s2) => (
+            <LtSection key={s2.key} id={`lt-sec-${s2.key}`} label={s2.label}
+              blurb={s2.available ? (SECTION_BLURB[s2.key] || null) : null}
+              available={s2.available} open={openSecs.has(s2.key)}
+              onToggle={() => toggleSection(s2.key)}>
+              {bodyFor(s2)}
+            </LtSection>
+          ))}
+        </div>
+
+
         {/* THE ROOMS (the plate's section index). A VERTICAL list, not a row of
             buttons: the plate reads top-to-bottom and so does a loan file, and a
             wrapping button row gave the eye no order to follow. Since the sections
@@ -916,22 +946,6 @@ export default function LtLoan() {
             })}
           </div>
         </nav>
-
-        {/* THE FILE ITSELF, top to bottom, each section opening in place. The order
-            is the SERVER'S (`workspace.js`), which is why ClickUp syncing — the
-            plumbing rather than the loan — sits at the bottom of the stack. */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 10, minWidth: 0 }}>
-          {sections.map((s2) => (
-            <LtSection key={s2.key} id={`lt-sec-${s2.key}`} label={s2.label}
-              blurb={s2.available ? (SECTION_BLURB[s2.key] || null) : null}
-              available={s2.available} open={openSecs.has(s2.key)}
-              onToggle={() => toggleSection(s2.key)}>
-              {bodyFor(s2)}
-            </LtSection>
-          ))}
-        </div>
-
-        <Rail rail={rail} />
       </div>
     </LtLayout>
   );

@@ -5048,6 +5048,49 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .lt-sec-body{padding:12px 14px 14px 37px}
 @media(max-width:720px){ .lt-sec-body{padding-left:14px} }
 
+/* THE PLATE'S OPENING — the big gold name of the milestone the file HAS ATTAINED,
+   with the raw Encompass name quietly beside it, and the facts strip that sits on
+   top of everything else. Every colour is an explicit dark or the brand gold: in
+   this palette every --ink* token is a LIGHT paper colour, so one used as a text
+   colour renders white on white. */
+.lt-utter{margin:2px 0 8px;line-height:1.05;display:flex;flex-wrap:wrap;align-items:baseline;gap:10px}
+.lt-utter .lt-was{font-size:clamp(15px,2.2vw,24px);font-style:italic;color:#4B585C;font-weight:400}
+.lt-utter .lt-now{font-size:clamp(27px,4.4vw,44px);font-weight:800;letter-spacing:.005em;color:#AE8746}
+.lt-law{font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:#4B585C;margin:0 0 12px}
+.lt-facts{display:flex;flex-wrap:wrap;
+  border-top:1px solid rgba(20,27,34,.16);border-bottom:1px solid rgba(20,27,34,.16)}
+/* The cells DO NOT STRETCH. Eight facts do not divide evenly into one row, and a
+   grow factor turns the two that wrap onto a second line into a pair of absurdly
+   wide boxes. Sized to their own content, they pack left and the unused tail of
+   the last row reads like a ledger rather than a mistake. */
+.lt-fact{flex:0 1 auto;min-width:104px;padding:11px 14px;border-left:1px solid rgba(20,27,34,.08)}
+.lt-fact.wide{min-width:200px;max-width:320px}
+/* The loan number is the one value that must never break across two lines —
+   it is what somebody reads down a telephone — so its cell neither stretches
+   nor wraps. */
+.lt-fact:first-child{flex:0 0 auto}
+.lt-fact:first-child .v{white-space:nowrap;overflow-wrap:normal}
+.lt-fact:first-child{border-left:0;padding-left:2px}
+.lt-fact .k{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:#4B585C;font-weight:700;margin-bottom:6px}
+.lt-fact .v{font-size:15.5px;color:#141B22;font-weight:650;overflow-wrap:anywhere}
+.lt-fact .v.gold{color:#AE8746;font-weight:800}
+/* Two to a row on a phone; the subject address takes the whole width because it is
+   the one value that cannot be shortened without changing what it says. */
+@media(max-width:720px){
+  .lt-fact{flex:1 1 44%;padding:10px 12px;border-left:0}
+  .lt-fact:first-child{padding-left:12px}
+  .lt-fact.wide{flex:1 1 100%}
+}
+
+/* Stacked on a phone the three columns keep the order that is useful there: the
+   jump menu, then the file, then its details — a sixteen-row table of figures
+   between the menu and the content would be a long scroll to reach the work. */
+@media(max-width:900px){
+  .lt-rooms{order:-1}
+  .lt-sections{order:0}
+  .lt-ledger{order:1}
+}
+
 /* The 1003 sections' label/value lists. Two columns is right on a desktop and is a
    guaranteed one-word-per-line on a phone, so they stack — the table rows inside a
    section scroll in their own box instead (the page body must never scroll sideways). */
