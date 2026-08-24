@@ -32,6 +32,7 @@
  */
 
 const stages = require('./stages');
+const readState = require('./read-state');
 const { num } = require('./num');
 
 /**
@@ -275,6 +276,13 @@ function summaryRail(loan, opts = {}) {
     // invites somebody to trust a month-old number.
     syncedAt: l.encompass_synced_at || null,
     syncError: l.encompass_sync_error || null,
+    // WHICH OF THE TWO STEPS THIS LOAN IS AT. A discovered-but-unread loan is a
+    // real row with only the pipeline search's fields on it, and the rail used to
+    // render that as "Read from Encompass —" — a dash where a date belongs, which
+    // reads as a formatting glitch rather than as the answer. ONE definition, so
+    // the pipeline, this rail and the sync screen cannot disagree.
+    readState: readState.readStateOf(l).state,
+    readWhy: readState.readStateOf(l).why,
   };
 }
 

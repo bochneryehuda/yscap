@@ -20,7 +20,7 @@ import {
   formatMoney, digitsOf, toNumber, searchProblem, searchChips,
 } from './scenarioFields.js';
 import {
-  INK, MUTED, SLATE, GOLD, PAPER, DANGER, CAUTION, card, eyebrow, sub, input, label,
+  INK, MUTED, SLATE, GOLD, GOLD_TEXT, PAPER, DANGER, CAUTION, card, eyebrow, sub, input, label,
   band, bandHead, bandBody, fieldLabel, fieldHint, control, select as selectStyle,
   moneyWrap, moneyMark, moneyInput, segTrack, segBtn, checkRow, checkBox, fieldNote, LINE, WASH,
 } from './ppeStyles.js';
@@ -907,14 +907,14 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                         disagree. */}
                     {gi === 0 && (
                       <span aria-hidden="true" title="the best price at this rate"
-                        style={{ color: GOLD, marginRight: 6, fontSize: 11 }}>●</span>
+                        style={{ color: GOLD_TEXT, marginRight: 6, fontSize: 11 }}>●</span>
                     )}
                     <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{g.lender || '—'}</span>
                     {many && (
                       <button type="button" onClick={() => onToggleLender(gKey)} aria-expanded={gOpen}
                         style={{
                           border: 0, background: 'none', padding: '0 0 0 8px', cursor: 'pointer',
-                          font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD,
+                          font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD_TEXT,
                           textDecoration: 'underline', textUnderlineOffset: 3,
                         }}>{
                         /* ONE template string: react-dom puts `<!-- -->` between adjacent JSX
@@ -1230,7 +1230,7 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
                                   <button type="button" onClick={() => toggleLender(gKey)} aria-expanded={gOpen}
                                     style={{
                                       border: 0, background: 'none', padding: '0 0 0 8px', cursor: 'pointer',
-                                      font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD,
+                                      font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD_TEXT,
                                       textDecoration: 'underline', textUnderlineOffset: 3,
                                     }}>
                                     {gOpen ? 'hide' : `${g.programCount} programmes`}
@@ -1724,7 +1724,7 @@ export default function LtPricer() {
                   style={{
                     border: 0, background: 'none', padding: 0, cursor: 'pointer', font: 'inherit',
                     fontSize: 10.5, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase',
-                    color: GOLD, textDecoration: 'underline', textUnderlineOffset: 3,
+                    color: GOLD_TEXT, textDecoration: 'underline', textUnderlineOffset: 3,
                   }}>
                   {calcOpen ? 'Close' : 'Calculate'}
                 </button>

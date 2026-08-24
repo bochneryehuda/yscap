@@ -99,6 +99,18 @@ function LastPull({ state }) {
  * It NAMES what is failing rather than only counting it — the reason is already
  * stored on the loan, and a bare count sends somebody hunting.
  */
+/** How long a loan has waited, in words. Seconds are never shown — nobody acts on
+ *  "waiting 94 seconds", and rounding up to "under a minute" is honest either way. */
+function waitedFor(secs) {
+  const n = Number(secs);
+  if (!Number.isFinite(n) || n < 0) return 'an unknown time';
+  if (n < 60) return 'under a minute';
+  if (n < 3600) { const m = Math.floor(n / 60); return `${m} minute${m === 1 ? '' : 's'}`; }
+  if (n < 86400) { const h = Math.floor(n / 3600); return `${h} hour${h === 1 ? '' : 's'}`; }
+  const d = Math.floor(n / 86400);
+  return `${d} day${d === 1 ? '' : 's'}`;
+}
+
 export default function LtSync() {
   const [state, setState] = useState(null);
   const [note, setNote] = useState('');
@@ -271,6 +283,47 @@ export default function LtSync() {
           <button className="btn ghost" onClick={runConditions} disabled={busy}>
             Read conditions only
           </button>
+        </div>
+      )}
+
+      {/* LOANS STILL WAITING FOR THEIR FIRST READ (owner-reported 2026-08-24, three
+          Sherman Ave files: "All these files somehow are not updating in pilot. I
+          don't know why I'm not getting the information").
+
+          A loan reaches PILOT in two steps. Discovery finds it and stores what the
+          pipeline SEARCH returns — number, officer, address, program, amount,
+          borrower. The full read then opens the file and brings back everything
+          else. Between the two the row is real and half empty, and until now that
+          state was named on no screen: the count was implicit and the loans
+          themselves were listed nowhere, so a file that arrived an hour ago and one
+          that has been stuck for days looked exactly the same.
+
+          THE WAIT IS WHAT TELLS THEM APART, so it is the thing shown. */}
+      {state && state.waiting_count > 0 && (
+        <div className="card" style={{ marginTop: 16, color: '#141B22' }}>
+          <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#141B22' }}>
+            Waiting for their first read ({state.waiting_count})
+          </h2>
+          <p style={{ margin: '0 0 8px', color: '#4B585C', fontSize: 13, lineHeight: 1.5 }}>
+            PILOT has found these loans in Encompass but has not opened the files themselves yet, so
+            only what the pipeline search returns is filled in. They are in the queue and fill in on
+            their own &mdash; a loan that has been waiting minutes is the queue working, one that has
+            been waiting days is worth looking at.
+          </p>
+          <ul style={{ margin: 0, paddingLeft: 18, color: '#4B585C', lineHeight: 1.6 }}>
+            {(state.waiting || []).map((w) => (
+              <li key={w.encompass_loan_guid}>
+                <strong style={{ color: '#141B22' }}>{w.loan_number || w.encompass_loan_guid}</strong>
+                {' '}&mdash; waiting {waitedFor(w.waiting_secs)}
+              </li>
+            ))}
+          </ul>
+          {state.waiting_count > (state.waiting || []).length && (
+            <p style={{ margin: '8px 0 0', color: '#4B585C', fontSize: 12 }}>
+              The {state.waiting_count - (state.waiting || []).length} others are not listed here &mdash;
+              the oldest twenty are the ones worth looking at.
+            </p>
+          )}
         </div>
       )}
 

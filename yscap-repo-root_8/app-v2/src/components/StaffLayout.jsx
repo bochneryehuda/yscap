@@ -516,6 +516,7 @@ export default function StaffLayout({ children }) {
             <NavLink className="sb-link" to="/internal/lt/people"><NavIcon name="team" />Team</NavLink>
             <NavLink className="sb-link" to="/internal/lt/borrowers" title="Which client each long-term file belongs to — what puts it on their own login."><NavIcon name="borrowers" />Borrowers</NavLink>
             <NavLink className="sb-link" to="/internal/lt/statuses" title="Encompass's milestones, our own stage names, and what the borrower is told — side by side."><NavIcon name="conditions" />Statuses</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/status-reviews" title="Every file where the ClickUp status and the Encompass milestones disagree — PILOT reports these and never settles them itself."><NavIcon name="health" />Status disagreements</NavLink>
             <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
             <NavLink className="sb-link" to="/internal/lt/pricer" title="Price a scenario through Lender Price and see every rate, every investor at each rate, and the whole build behind each price."><NavIcon name="pricing" />Pricing Engine</NavLink>
             {/* The rules/parity console is PARKED FOR REAL now (owner-directed 2026-08-23,

@@ -93,13 +93,27 @@ const NOTABLE = [
 
   { fieldId: 'MS.STATUS', label: 'Current Milestone Name', severity: 'medium', loans: 490,
     declared: ['Started', 'Sent to processing', 'Submitted', 'Approved', 'Doc signed', 'Funded', 'Completed'],
-    observed: ['File started', 'LO Prep', 'Loan Setup', 'Submittal', 'Cond. Approval', 'Purchasing Conditions', 'Investor Delivery', 'Final Docs', 'Completed'],
+    // DERIVED FROM THE SWEEP ITSELF, never hand-typed — filled in below, after
+    // the catalog is in scope. The hand-written list this replaces was wrong in
+    // BOTH directions: it omitted eleven values the sweep actually recorded
+    // (including 'Sent to processing', on 27 loans) and it INVENTED two that the
+    // sweep never saw in this field at all ('Loan Setup', 'Submittal' — those are
+    // stage names from `fillByStage`, a different fact). A decision was then made
+    // from it: stages.js recorded that 'Sent to processing' had "never once been
+    // observed on this tenant", which was false, and dropped a mapping partly on
+    // that basis. A summary sitting beside the data it summarises will drift, and
+    // the one that drifts is the one somebody reads.
+    observed: [],
     why: "The declared list is Encompass's stock milestone set. This tenant configured its "
-      + 'own 19 milestones, and MS.STATUS returns those. The two lists overlap only partly, '
-      + "and the names are not even consistent — the field says 'File started' where the "
-      + "milestone settings say 'Started'.",
+      + 'own 19 milestones — and MS.STATUS RETURNS A MIX OF BOTH VOCABULARIES: on 342 of the '
+      + '490 long-term loans swept it returns a tenant milestone name, and on the other 148 '
+      + "it returns one of the seven stock bucket names (Completed 79, Submitted 32, "
+      + "'Sent to processing' 27, Started 6, Funded 4). The names are not even consistent "
+      + "within a vocabulary — the field says 'File started' where the milestone settings "
+      + "say 'Started'.",
     action: 'Drive milestone logic from GET /encompass/v3/settings/milestones (the real 19), '
-      + 'never from this field\'s declared options.' },
+      + "never from this field's declared options — and never assume a value here is one of "
+      + 'the tenant\'s own names, because on nearly a third of the book it is not.' },
 
   { fieldId: '299', label: 'Refinance Purpose', severity: 'low', loans: 238,
     declared: ['CashOutDebtConsolidation', 'CashOutHomeImprovement', 'CashOutLimited', 'CashOutOther', 'CashOutOriginalLender', 'ChangeInRateTerm'],
@@ -122,6 +136,16 @@ function normalizeValue(v) {
 
 /** One field's option set and observed usage. */
 function field(id) { return FIELDS[String(id)] || null; }
+
+/* THE ONE DERIVED `observed` LIST. Generated rather than maintained, because the
+   hand-written version of exactly this list is what produced a false statement in
+   stages.js — see the note on the MS.STATUS entry above. Ordered by how many loans
+   carry each value, most first, so the list reads as a census rather than a set. */
+for (const n of NOTABLE) {
+  if (n.fieldId !== 'MS.STATUS') continue;
+  const f = field(n.fieldId);
+  n.observed = ((f && f.observedOnDscr) || []).map((o) => o.value);
+}
 
 /** Every constrained field, optionally filtered. */
 function list({ kind = null, minLoans = 0, inferredOnly = false, driftOnly = false } = {}) {

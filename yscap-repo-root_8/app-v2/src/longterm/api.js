@@ -177,6 +177,13 @@ export const ltApi = {
     lt(`/clickup/loans/${encodeURIComponent(loanId)}/link`), { taskId, confirm }),
   clickupReview: (loanId, reviewId, decision) => ltPost(
     lt(`/clickup/loans/${encodeURIComponent(loanId)}/reviews/${encodeURIComponent(reviewId)}/${decision === 'approve' ? 'approve' : 'reject'}`), {}),
+
+  // Every file where the ClickUp status and the Encompass milestones disagree, as
+  // of the last time PILOT looked at that card. Scoped by the server exactly like
+  // the pipeline, and it reads OUR OWN rows — no ClickUp call, so it can never be
+  // rate-limited into being wrong.
+  clickupStatusReviews: (limit) => ltGet(
+    lt(`/clickup/status-reviews${limit ? `?limit=${encodeURIComponent(limit)}` : ''}`)),
   dscrDisqualifications: (searchKey, params) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, String(v));
