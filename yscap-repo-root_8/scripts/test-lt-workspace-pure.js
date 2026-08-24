@@ -219,5 +219,104 @@ check(ws.summaryRail({}).loanAmount === null && ws.summaryRail({}).dscr === null
   'a missing figure is NULL, never 0 — "we have not read it" is not "it is zero"');
 check(ws.summaryRail(null).loanNumber === null, 'no loan at all does not throw');
 
+// ── THE SEVEN STOPS + THE MILESTONE BOARD (#37, owner-directed 2026-08-23) ──
+console.log('\nthe seven stops — the owner\'s exact list, keyed on done flags');
+{
+  const labels = ws.SEVEN_STOPS.map((s) => s.label);
+  check(JSON.stringify(labels) === JSON.stringify([
+    'Started', 'Assigned to processor', 'Submitted to underwriting',
+    'Conditionally approved', 'Clear to close', 'Closed', 'Purchased',
+  ]), 'EXACTLY the owner\'s seven stops, in the owner\'s order and words');
+  check(!labels.some((l) => /investor delivery/i.test(l)), 'Investor Delivery is NOT on the bar (rejected by name)');
+  check(!JSON.stringify(ws.SEVEN_STOPS).toLowerCase().includes('not funding'),
+    'no "not funding" wording anywhere (rejected by name)');
+
+  const ladder = [
+    { milestone_name: 'Started', position: 1, done: true, start_date: '2026-06-01' },
+    { milestone_name: 'LO Prep', position: 2, done: true, start_date: '2026-06-03' },
+    { milestone_name: 'Loan Setup', position: 3, done: true, start_date: '2026-06-04' },
+    { milestone_name: 'Submittal', position: 4, done: false, start_date: '2026-07-01' },
+    { milestone_name: 'Cond. Approval', position: 5, done: false },
+  ];
+  const out = ws.sevenStops(ladder, { sale: { purchased: null, note: 'Encompass has not said.' } });
+  check(out.ladderRead === true, 'a read ladder is said to be read');
+  check(out.stops[0].reached && out.stops[0].at === '2026-06-01',
+    'Started done → the stop is reached with Encompass\'s OWN date');
+  check(out.stops[1].reached && out.stops[1].at === '2026-06-03',
+    'LO Prep done → Assigned to processor reached (completion semantics, #33)');
+  check(!out.stops[2].reached && out.currentIndex === 2,
+    'Submittal not done → Submitted to underwriting is the CURRENT stop — its planned date is never shown as reached');
+  check(out.stops[6].pilot && out.stops[6].unknown && !out.stops[6].reached,
+    'Purchased with no answer stays UNKNOWN — never a no, never a yes');
+
+  const funded = ws.sevenStops(
+    [{ milestone_name: 'Funding', position: 14, done: true, start_date: '2026-08-01' }],
+    { sale: { purchased: true, at: '2026-08-20', note: 'The investor bought this loan on 2026-08-20.' } });
+  check(funded.stops[5].reached && funded.stops[5].label === 'Closed' && funded.stops[5].at === '2026-08-01',
+    'Funding done → the CLOSED stop (the owner\'s word — never "funded/not funding")');
+  check(funded.stops[6].reached && funded.stops[6].at === '2026-08-20',
+    'a bought loan reaches Purchased with the purchase date');
+
+  const empty = ws.sevenStops([], { sale: null });
+  check(empty.ladderRead === false && empty.currentIndex === -1
+    && empty.stops.every((s) => !s.reached),
+    'an UNREAD ladder claims nothing — no stop reached, none current');
+
+  // The witnessed-day fallback: a done step with no Encompass date still shows
+  // the day PILOT watched it flip.
+  const witnessed = ws.sevenStops(
+    [{ milestone_name: 'Started', position: 1, done: true }],
+    { reachedAt: { started: '2026-06-09' } });
+  check(witnessed.stops[0].reached && witnessed.stops[0].at === '2026-06-09',
+    'a done step with no Encompass date falls back to the day PILOT watched it');
+}
+
+console.log('the milestone board — every step, date kind, associate');
+{
+  const catalog = [
+    { name: 'Started', sort_order: 1, expected_days: 1 },
+    { name: 'LO Prep', sort_order: 2, expected_days: 3 },
+    { name: 'Purchased', sort_order: 99, expected_days: null, pilot: true, milestoneId: 'pilot_purchased' },
+  ];
+  const ladder = [
+    { milestone_name: 'Started', position: 1, done: true, start_date: '2026-06-01',
+      associate_name: 'Rivka Processor', associate_role: 'Loan Processor', associate_email: 'rp@x.test' },
+    { milestone_name: 'LO Prep', position: 2, done: false, start_date: '2026-07-15', role_required: 'Loan Officer' },
+  ];
+  const board = ws.milestoneBoard(catalog, ladder, {
+    reachedAt: { started: '2026-06-02' },
+    sale: { purchased: false, note: 'Not bought yet — Encompass has this loan as "Shipped".' },
+  });
+  check(board.ladderRead === true && board.rows.length === 3, 'every catalog step gets a row');
+  const started = board.rows[0];
+  check(started.done === true && started.date === '2026-06-01' && started.dateKind === 'worked',
+    'a DONE step carries Encompass\'s date as the WORKED date');
+  check(started.associate && started.associate.name === 'Rivka Processor'
+    && started.associate.role === 'Loan Processor',
+    'the associate on the step rides straight off the ladder row (#34\'s ground truth)');
+  check(started.witnessedAt === '2026-06-02', 'the day PILOT watched it rides beside it');
+  const prep = board.rows[1];
+  check(prep.done === false && prep.dateKind === 'planned',
+    'an UNWORKED step\'s date is said to be PLANNED — never shown as an arrival');
+  check(!prep.associate && prep.roleRequired === 'Loan Officer',
+    'a step with nobody assigned says which role it needs instead');
+  const bought = board.rows[2];
+  check(bought.pilot && bought.done === false && bought.unknown === false && /Shipped/.test(bought.note),
+    'the Purchased row keeps the pilot fact\'s own sentence — a NO is an answer, not an unknown');
+  const noLadder = ws.milestoneBoard(catalog, [], {});
+  check(noLadder.ladderRead === false && noLadder.rows[0].done === null && noLadder.rows[0].inLadder === false,
+    'an unread ladder answers done NULL ("the ladder has not said"), never false');
+}
+
+// The menu carries the two new sections, always available.
+{
+  const menu2 = ws.sectionMenu({}, {});
+  const ms = menu2.find((x) => x.key === 'milestones');
+  const cu = menu2.find((x) => x.key === 'clickup');
+  check(ms && ms.available === true && menu2[1] && menu2[1].key === 'milestones',
+    'Milestones is on the menu RIGHT AFTER the summary, always available');
+  check(cu && cu.available === true, 'the ClickUp syncing section is on the menu, always available');
+}
+
 console.log(`\n${failures ? `${failures} FAILED` : 'all passed'}`);
 process.exit(failures ? 1 : 0);

@@ -237,6 +237,15 @@ router.get('/:loanId', async (req, res) => {
     // When PILOT watched this loan reach each milestone. Best-effort and EMPTY when
     // unreadable, which draws the stepper with no dates rather than with wrong ones.
     const reachedAt = await milestones.reachedAtByMilestone(rows[0].id).catch(() => ({}));
+    // THIS LOAN'S OWN LADDER (db/623) — the done flags, Encompass's own per-step
+    // date, and the associate assigned to each step. It is what the seven-stop
+    // header bar and the Milestones board are keyed on (#33: completion
+    // semantics, never MS.STATUS prose). Best-effort: unread draws honestly
+    // empty, never invented.
+    const { rows: ladderRows } = await db.query(
+      'SELECT * FROM lt_loan_milestones WHERE loan_id = $1::uuid ORDER BY position',
+      [rows[0].id],
+    ).catch(() => ({ rows: [] }));
     // The movement history itself — what PILOT watched, in order. Best-effort.
     const milestoneHistory = await milestones.loadHistory(rows[0].id, 25).catch(() => []);
     const currentMs = catalog.find(
@@ -300,6 +309,12 @@ router.get('/:loanId', async (req, res) => {
       // The same fact in one place, so a screen can state it without re-reading the
       // stepper — and so the two can never disagree, because both come from here.
       sale,
+      // THE SEVEN STOPS — the header bar's at-a-glance ladder (owner's exact
+      // list), keyed on this loan's own done flags with Encompass's own dates.
+      stops: workspace.sevenStops(ladderRows, { reachedAt, sale }),
+      // THE MILESTONE BOARD — every step, with its date, its kind (worked vs
+      // planned), the day PILOT watched it, and the associate on the step.
+      milestoneBoard: workspace.milestoneBoard(catalog, ladderRows, { reachedAt, sale }),
       // How long it has been at this milestone — and, when the first sighting is all
       // we have, a plain sentence saying we do not know rather than a number we made up.
       milestoneHistory,

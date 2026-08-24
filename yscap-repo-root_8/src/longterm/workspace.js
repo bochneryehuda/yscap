@@ -41,6 +41,16 @@ const { num } = require('./num');
  */
 const SECTIONS = [
   { key: 'summary', label: 'Loan summary' },
+  {
+    // EVERY milestone, with Encompass's own date and associate on each step
+    // (owner-directed 2026-08-23: a Milestones section right after the
+    // overview — "outside of the file overview, it needs to be only the most
+    // important milestones", which is what the seven-stop header bar carries;
+    // the FULL ladder lives here). Always available: an unread ladder is a
+    // fact the section states, not a reason to grey it.
+    key: 'milestones',
+    label: 'Milestones',
+  },
   { key: 'borrowers', label: 'Borrowers' },
   { key: 'property', label: 'Property' },
   { key: 'terms', label: 'Loan terms' },
@@ -254,10 +264,136 @@ function summaryRail(loan, opts = {}) {
   };
 }
 
+/**
+ * THE SEVEN STOPS (owner-directed 2026-08-23, the approved "meridian" design):
+ * the file header's progress bar carries ONLY the most important milestones —
+ * the owner's exact list, verbatim: *"Started, Assigned to processor,
+ * Submitted to underwrting, Conditionally approved, Clear to close, Closed,
+ * purchased. That's it."* Rejected by name: any "not funding" wording, and
+ * Investor Delivery on the bar. The full ladder lives in the Milestones
+ * section; this is the at-a-glance answer.
+ *
+ * KEYED ON THE LADDER'S DONE FLAGS (#33: a completed milestone means the work
+ * up to that stop has happened) — never MS.STATUS prose, never position. Each
+ * stop names the milestone spellings whose COMPLETION means the stop is
+ * reached; the date shown is Encompass's own `start_date` for that step (the
+ * worked date), falling back to the day PILOT watched it flip. PURCHASED is
+ * the pilot FACT — describePurchase's answer — with its three states kept:
+ * bought, not bought, and "Encompass has not said".
+ */
+const SEVEN_STOPS = [
+  { key: 'started', label: 'Started', milestones: ['started'] },
+  { key: 'processor', label: 'Assigned to processor', milestones: ['lo prep'] },
+  { key: 'underwriting', label: 'Submitted to underwriting', milestones: ['submittal', 'submitted'] },
+  { key: 'cond_approved', label: 'Conditionally approved', milestones: ['cond. approval', 'cond approval', 'conditional approval'] },
+  { key: 'ctc', label: 'Clear to close', milestones: ['clear to close', 'ctc'] },
+  { key: 'closed', label: 'Closed', milestones: ['funding', 'funded', 'closed'] },
+  { key: 'purchased', label: 'Purchased', pilot: true },
+];
+
+function sevenStops(ladder, { reachedAt = {}, sale = null } = {}) {
+  // done: normalized milestone name -> the best date we hold for it.
+  const done = new Map();
+  for (const r of (Array.isArray(ladder) ? ladder : [])) {
+    if (!r || !r.done || !r.milestone_name) continue;
+    const k = stages.normalizeMilestone(r.milestone_name);
+    // reachedAt is keyed the stepper's way — trim().toLowerCase() of the name.
+    const witnessed = reachedAt[String(r.milestone_name).trim().toLowerCase()] || null;
+    const at = r.start_date || witnessed || null;
+    if (!done.has(k) || (at && !done.get(k).at)) done.set(k, { at });
+  }
+  const ladderRead = Array.isArray(ladder) && ladder.length > 0;
+
+  const stops = SEVEN_STOPS.map((s) => {
+    if (s.pilot) {
+      const purchased = sale ? sale.purchased : null;
+      return {
+        key: s.key, label: s.label, pilot: true,
+        reached: purchased === true,
+        // Three states survive to the screen: true, false, and "not said".
+        unknown: purchased == null,
+        at: purchased === true ? (sale && sale.at) || null : null,
+        note: sale ? sale.note : null,
+      };
+    }
+    let hit = null;
+    for (const name of s.milestones) { if (done.has(name)) { hit = done.get(name); break; } }
+    return { key: s.key, label: s.label, pilot: false, reached: !!hit, at: hit ? hit.at : null };
+  });
+
+  // The stop being WORKED: the first unreached Encompass stop past the last
+  // reached one. With no ladder read, nothing is current — inventing progress
+  // from an unread ladder is the stepper's own rule, kept here.
+  let currentIndex = -1;
+  if (ladderRead) {
+    let lastReached = -1;
+    stops.forEach((s, i) => { if (!s.pilot && s.reached) lastReached = i; });
+    currentIndex = stops.findIndex((s, i) => i > lastReached && !s.pilot && !s.reached);
+  }
+  return { ladderRead, currentIndex, stops };
+}
+
+/**
+ * THE MILESTONE BOARD — the Milestones section's rows: EVERY step of the
+ * spliced catalog (ours included), each carrying what the LADDER read for this
+ * loan holds — done, Encompass's own date for the step (`start_date`: the
+ * worked date on a done step, the PLANNED date on one not yet worked — the
+ * board says which), the day PILOT watched it flip, and the ASSOCIATE Encompass
+ * assigns to that step (#34's persona ground truth, straight off the row).
+ *
+ * A catalog step the ladder does not carry answers `inLadder:false` with done
+ * NULL — "the ladder has not said", which is a different fact from "not done".
+ */
+function milestoneBoard(catalog = [], ladder = [], { reachedAt = {}, sale = null } = {}) {
+  const byName = new Map();
+  for (const r of (Array.isArray(ladder) ? ladder : [])) {
+    if (r && r.milestone_name) byName.set(stages.normalizeMilestone(r.milestone_name), r);
+  }
+  const rows = (catalog || [])
+    .slice()
+    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+    .map((m) => {
+      if (m.pilot) {
+        return {
+          name: m.name, pilot: true,
+          done: sale ? sale.purchased === true : null,
+          unknown: !sale || sale.purchased == null,
+          date: sale && sale.purchased === true ? (sale.at || null) : null,
+          dateKind: sale && sale.purchased === true ? 'worked' : null,
+          witnessedAt: null,
+          associate: null,
+          roleRequired: null,
+          expectedDays: m.expected_days == null ? null : Number(m.expected_days),
+          note: sale ? sale.note : null,
+        };
+      }
+      const r = byName.get(stages.normalizeMilestone(m.name)) || null;
+      return {
+        name: m.name, pilot: false,
+        inLadder: !!r,
+        done: r ? !!r.done : null,
+        date: r ? (r.start_date || null) : null,
+        dateKind: r ? (r.done ? 'worked' : 'planned') : null,
+        witnessedAt: reachedAt[String(m.name || '').trim().toLowerCase()] || null,
+        associate: r && (r.associate_name || r.associate_role || r.associate_email) ? {
+          name: r.associate_name || null,
+          role: r.associate_role || null,
+          email: r.associate_email || null,
+        } : null,
+        roleRequired: r ? (r.role_required || null) : null,
+        expectedDays: m.expected_days == null ? null : Number(m.expected_days),
+      };
+    });
+  return { ladderRead: byName.size > 0, rows };
+}
+
 module.exports = {
   hasIncomeFigures,
   SECTIONS,
+  SEVEN_STOPS,
   sectionMenu,
   milestoneStepper,
+  sevenStops,
+  milestoneBoard,
   summaryRail,
 };
