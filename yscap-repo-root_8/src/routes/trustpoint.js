@@ -18,6 +18,7 @@ const { can, assigneeExistsSql } = require('../lib/permissions');
 const client = require('../trustpoint/client');
 const mirror = require('../trustpoint/mirror');
 const discovery = require('../trustpoint/discovery');
+const parked = require('../trustpoint/parked');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 async function canSeeFile(req, appId) {
@@ -34,6 +35,23 @@ async function canSeeFile(req, appId) {
 // mounted separately before the JSON parser). requirePermission alone never authenticates —
 // it needs req.actor from requireAuth (phase-2 audit BLOCKER #1).
 router.use(requireAuth, requireStaff);
+
+// ---- PARKED: the whole surface is closed (owner-directed 2026-08-24) --------------------
+// Every route under /api/trustpoint is about the TrustPoint mirror — status, the linking desk,
+// per-file reads, per-line entry, write-back, the report, webhook registration — so while the
+// integration is parked they are refused as ONE gate rather than shape-by-shape. That also
+// removes the TrustPoint SCREEN from the draw centre for free: `TrustpointPanel` loads
+// `/files/:id/overview`, does `.catch(() => setOv(null))`, and renders nothing on null — so a
+// refusal here hides the panel at BOTH of its mount points with no front-end change, and it
+// comes back the moment the integration is un-parked. See ../trustpoint/parked.js.
+//
+// This does NOT touch the Blue Lake workflow the owner kept: the coordinator's "enter it in
+// TrustPoint" task and email come from sitewire/trustpoint-intake.js off the SITEWIRE reconcile
+// and never load this router, and the manual approve + release controls are /api/sitewire.
+router.use((req, res, next) => {
+  if (!parked.isParked()) return next();
+  return res.status(410).json({ error: 'trustpoint_parked', parked: true, linked: false, message: parked.PARKED_REASON });
+});
 
 // ---- staff: status ----
 router.get('/status', requirePermission('manage_draws'), async (req, res) => {

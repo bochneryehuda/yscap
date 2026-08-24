@@ -17,7 +17,12 @@ const flags = require('../flags');
 const SWITCHES = [
   { key: 'SITEWIRE_ENABLED', integration: 'sitewire', label: 'Sitewire sync (reading)', dangerous: false, resume: true, envDefault: () => cfg.sitewireEnabled },
   { key: 'SITEWIRE_OUTBOUND_ENABLED', integration: 'sitewire', label: 'Sitewire writing (push to Sitewire)', dangerous: true, envDefault: () => cfg.sitewireOutboundEnabled },
-  { key: 'TRUSTPOINT_ENABLED', integration: 'trustpoint', label: 'TrustPoint mirror (reading + webhooks)', dangerous: false, resume: true, envDefault: () => cfg.trustpointEnabled },
+  // PARKED (owner-directed 2026-08-24). While ../../trustpoint/parked says so, this switch
+  // decides NOTHING — the integration is off whatever it or a stored override says — so the
+  // page must SAY that rather than offer a control that quietly does nothing. The label also
+  // used to claim it covered webhooks and never did: the receiver was gated only by its token,
+  // so deliveries were accepted and queued while this read "off". Both are true now.
+  { key: 'TRUSTPOINT_ENABLED', integration: 'trustpoint', label: 'TrustPoint mirror (reading + webhooks)', dangerous: false, resume: true, envDefault: () => cfg.trustpointEnabled, parked: () => require('../../trustpoint/parked').isParked() },
   // Trinity — the PHYSICAL inspection company we order from on the general physical
   // program (a physical draw whose note buyer is NOT Blue Lake). Same three-stage shape
   // as the AMC / Class / flood integrations: a master switch for reads + the poller, a
@@ -149,13 +154,25 @@ function effective(key) {
   const s = BY_KEY[key];
   if (!s) return null;
   const envDefault = !!s.envDefault();
+  // A PARKED integration reports OFF and says WHY. Reporting the raw switch here would show
+  // "on" for something that cannot run, which is exactly the confident wrong answer this page
+  // exists to prevent — and would leave an admin flipping a control that decides nothing.
+  const parked = typeof s.parked === 'function' ? !!s.parked() : false;
   return {
     key, label: s.label, integration: s.integration, dangerous: !!s.dangerous, resume: !!s.resume,
-    on: flags.enabled(key, envDefault), overridden: flags.hasOverride(key), envDefault,
+    on: parked ? false : flags.enabled(key, envDefault), overridden: flags.hasOverride(key), envDefault,
+    parked, parkedReason: parked ? require('../../trustpoint/parked').PARKED_REASON : null,
   };
 }
 function list() { return SWITCHES.map((s) => effective(s.key)); }
 // A gate helper: `on('SITEWIRE_OUTBOUND_ENABLED')` = the effective runtime value (override ?? env).
-function on(key) { const s = BY_KEY[key]; return s ? flags.enabled(key, !!s.envDefault()) : false; }
+// PARKED BEATS EVERYTHING — the environment default and a stored `integration_flags`
+// override alike. Parking is a statement about the integration, not a per-run toggle.
+function on(key) {
+  const s = BY_KEY[key];
+  if (!s) return false;
+  if (typeof s.parked === 'function' && s.parked()) return false;
+  return flags.enabled(key, !!s.envDefault());
+}
 
 module.exports = { SWITCHES, BY_KEY, effective, list, on };

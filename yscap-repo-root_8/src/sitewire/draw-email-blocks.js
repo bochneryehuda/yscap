@@ -21,6 +21,7 @@
 const rollupMod = require('./rollup');
 const APPROVAL = require('./approval');
 const drawEmail = require('../lib/email/draw-email');
+const parked = require('../trustpoint/parked');
 
 /**
  * A TrustPoint-administered draw, expressed in the ONE money vocabulary.
@@ -34,6 +35,14 @@ const drawEmail = require('../lib/email/draw-email');
  */
 function moneyFromTrustpoint(row) {
   if (!row) return null;
+  // PARKED → a TrustPoint figure never reaches a reader (owner-directed 2026-08-24). The mirror
+  // is already switched off upstream, so in practice nothing calls this while parked — this is
+  // the belt to that brace, and it belongs HERE rather than at the callers because this is the
+  // ONE place a TrustPoint row becomes money in an email. Rows already mirrored stay in the
+  // database; they simply stop being stated. Required at the top, not lazily: `parked` is pure
+  // with no requires of its own, so it cannot cycle and cannot fail to load — and a lazy require
+  // wrapped in a catch would fail OPEN, stating the very figure this exists to withhold.
+  if (parked.isParked()) return null;
   const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   const approved = n(row.approved_cents);
   // The administrator's own fee lines on THIS draw, through the mirror's one reader (which already
