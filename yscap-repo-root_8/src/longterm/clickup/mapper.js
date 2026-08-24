@@ -115,7 +115,10 @@ const CU = Object.freeze({
 
 // ---- tiny value helpers ----------------------------------------------------
 const s = (v) => { const t = String(v == null ? '' : v).trim(); return t === '' ? null : t; };
-const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+// Reject null/blank BEFORE Number(): Number(null) is 0 (finite!), and a null
+// prepay-months answering 0 would write 'Non' — "no penalty" — as a fact about
+// a loan nobody has read. (The same trap addressField guards for coordinates.)
+const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
 /** Live Encompass value for an id, '' → null. */
 const exv = (bag, id) => s(bag && bag.ex && bag.ex[id]);
 /** normalize for label matching: lowercase, alnum+spaces, squeezed. */

@@ -46,7 +46,6 @@ const T = require('./transforms');
 const ltRouting = require('./routing');
 const program = require('./program');
 const trash = require('../trash');
-const link = require('./link');
 const rtlStaff = require('../../clickup/routing');   // DATA import — authorized in the ledger
 const addressCanon = require('../../lib/address-canon'); // authorized import (read-only lookup)
 
@@ -442,7 +441,8 @@ async function pushLoan(loanId, opts = {}) {
 
     if (!oldBlank) overwrites++;
 
-    if (dryRun() && !writeEnabled()) {
+    // DRYRUN wins over the write switch — a rehearsal never sends.
+    if (dryRun()) {
       out.plan.push({ field: f.name, key: f.key, wouldWrite: mapper.reviewPreview(f.id, typeof f.value === 'object' ? JSON.stringify(f.value) : f.value) });
       continue;
     }
@@ -474,7 +474,9 @@ async function pushLoan(loanId, opts = {}) {
     throw e;
   }
 
-  if (!dryRun() || writeEnabled()) {
+  // A dry run never stamps — the drain must keep offering the loan until a
+  // REAL clean push lands.
+  if (!dryRun()) {
     await db.query(
       `UPDATE lt_loans SET clickup_pushed_at = now(), clickup_push_error = NULL, updated_at = now()
         WHERE id = $1::uuid`, [loanId]);
@@ -529,7 +531,8 @@ async function createForLoan(loanId) {
   const fields = mapper.buildTaskFields(bag, options);
   const custom_fields = fields.map((f) => ({ id: f.id, value: f.value }));
 
-  if (dryRun() && !writeEnabled()) {
+  // DRYRUN wins over the write switch — a rehearsal never creates.
+  if (dryRun()) {
     return { ok: true, dryRun: true, wouldCreate: { name, listId, fields: fields.map((f) => f.key) } };
   }
 
@@ -650,7 +653,9 @@ module.exports = {
     journalFieldWrite, queueReview, resolvePerson, providerTextSafe, geoFor,
     loadBag, readExtras, cardProgramLabel, taskFieldValue, taskOptionsMap,
     staffTableEntryByEmail,
-    _resetBreaker: () => { _writeTimes = []; _breakerSeeded = false; },
+    _resetBreaker: () => { _writeTimes = []; _breakerSeeded = true; },
+    _unseed: () => { _writeTimes = []; _breakerSeeded = false; },
+    _windowSize: () => _writeTimes.length,
     _seedWrites: (times) => { _writeTimes = times.slice(); _breakerSeeded = true; },
   },
 };

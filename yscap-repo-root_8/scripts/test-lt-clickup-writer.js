@@ -1,0 +1,648 @@
+'use strict';
+/**
+ * LONG-TERM — the ClickUp FIELD WRITER (db/625): every inherited guard proven,
+ * the field map proven against the two LIVE-probed loans, and the push/create
+ * pipeline proven end to end through a stubbed wire.
+ *
+ * Fixtures are REAL: the `ex` bags below are the exact fieldReader answers the
+ * 2026-08-24 two-loan probe returned (SSNs replaced with a test value — the
+ * real ones were never stored anywhere).
+ *
+ * What this proves (letters = sections):
+ *   A. writer-client guards — delete refused (v2 AND v3, NO carve-out), clear
+ *      refused (incl. the nested-null JSON class), rename refused, retry truth
+ *      table
+ *   B. transforms — the 4AM date rule round-trips, '//' and garbage years
+ *      refuse, US dates parse
+ *   C. the label mappers — the owner's channel map, vesting, program (a
+ *      short-term program is never defaulted), lender certain-spellings,
+ *      PPP, property type, term, housing
+ *   D. writeValue / addressField / isBlankClickupValue
+ *   E. buildTaskFields against BOTH live-probed loans — the dynamic
+ *      purchase/estimate rule, refi-only fields, Individual-never-writes-the-
+ *      entity-name, SSN pass-through formatting, processor both-or-neither
+ *   F. fieldValueEquivalent per type + the DOB change detector
+ *   G. resolveOnly / PII shield shape / providerTextSafe
+ *   (DB, skipped without DATABASE_URL)
+ *   H. pushLoan end to end through a stubbed wire — writes land, journal rows
+ *      land, no-op suppression
+ *   I. the PII overwrite shield blocks + queues review (and the queue dedupes)
+ *   J. the DOB gate blocks a change, allows a fill
+ *   K. locations are fill-only; fillOnly mode fills blanks only
+ *   L. pre-read failure fails CLOSED; a scoped push never creates; a
+ *      short-term card refuses; the breaker opens; a lossy push is never
+ *      marked done
+ *   M. createForLoan — the card is born in the officer's folder with the
+ *      stamps, linked race-safe, journaled source='create'
+ *   N. the passes — createPass honors the go-live date; pushPass drains and
+ *      stamps; both stand down with the switch off
+ *
+ * Mutation-proven (each run by hand, suite red, control green):
+ *   1. guardNoTaskDeletion given RTL's carve-out        → A fails
+ *   2. writeValue dates via toEpochMs (UTC midnight)    → B/E fail
+ *   3. the PII shield check removed from push.js        → I fails
+ *   4. the pre-read made warn-only                      → L fails
+ *   5. the breaker check removed                        → L fails
+ */
+
+const assert = require('assert');
+const path = require('path');
+
+let checks = 0;
+const ok = (c, w) => { assert.ok(c, w); console.log('  ok  ', w); checks++; };
+const eq = (a, b, w) => { assert.strictEqual(a, b, w); console.log('  ok  ', w); checks++; };
+const throwsCode = (fn, code, w) => {
+  try { fn(); } catch (e) { assert.strictEqual(e.code, code, `${w} (code ${e.code})`); console.log('  ok  ', w); checks++; return; }
+  assert.fail(`${w} — did not throw`);
+};
+
+// The live probe answers (2026-08-24), SSN replaced with a test value.
+const EX_BIRCH = { // cash-out refi, Individual vesting
+  3: '7.375', 11: '363 BIRCH DR', 12: 'CRESCO', 14: 'PA', 15: '18326-7761', 16: '1',
+  19: 'Cash-Out Refinance', 24: '2022', 25: '365,000.00', 52: 'Married', 65: '123456789',
+  136: '', 353: '35.000', 356: '450,000', 745: '07/01/2026', 763: '08/14/2026',
+  1005: '15,286.60', 1177: '', 1240: 'parnesjoseph@gmail.com', 1268: '', 1402: '05/14/1985',
+  1811: 'Investor', 1821: '300,000',
+  'CX.TABLEFUNDER': 'Non Delegated Correspondent', 'CX.COMPANYLEAD': '',
+  'CX.FILENOTESTASKPAGE': 'owned under individual name not under entity',
+  'CX.PROPERTYTYPE': 'Single Family Residence', 'CX.PPPTERM': 'No PPP', 'CX.PPPTYPE': 'No PPP',
+  'CX.DATEACQUIRED': '11/29/2022', 'CORRESPONDENT.X141': '', 'CX.FREECLEAR': 'X',
+  'CX.TITLECONTACT': '', 'CX.INSURANCECONTACT': '', 'CX.FUNDEDDATE': '08/23/2026',
+  'CX.SUBMITEDTOINVESTOR': 'X', 'VEND.X276': '2000001166', 'VEND.X263': 'Deephaven Mortgage',
+  FR0115: 'Own', FR0116: '', FR0112: '17', FR0124: '0', 'VASUMM.X23': '787',
+};
+const EX_BIRCHWOOD = { // purchase, Officer vesting
+  3: '7.250', 16: '1', 19: 'Purchase', 24: '', 25: '', 52: 'Married', 65: '987654321',
+  136: '580,000.00', 353: '80.000', 356: '600,000', 745: '06/08/2026', 763: '07/28/2026',
+  1005: '4,000.00', 1240: 'cjpolatsek@gmail.com', 1268: '', 1402: '03/02/1990',
+  1811: 'Investor', 1821: '600,000',
+  'CX.TABLEFUNDER': 'Correspondent', 'CX.PPPTERM': '1 Year', 'CX.PPPTYPE': '5% Fixed',
+  'CX.PROPERTYTYPE': 'Single Family Residence', 'CX.DATEACQUIRED': '//',
+  'CX.SUBMITEDTOINVESTOR': 'X', 'VEND.X276': '3505001548', 'VEND.X263': 'Champions Funding, LLC (CF)',
+  FR0115: 'Rent', FR0116: '1,900.00', FR0112: '3', FR0124: '6', 'VASUMM.X23': '782',
+};
+
+function optionsFor(mapper) {
+  // Live labels off the 2026-08-24 catalog (incl. the real trailing spaces).
+  const CU = mapper.CU;
+  const mk = (labels) => labels.map((name, i) => ({ id: `opt-${name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, name, orderindex: i }));
+  return {
+    [CU.channel]: mk(['Non Del Correspondent ', 'Wholesale ', 'Delegate Correspondent', 'Table funding ', 'Evolve Underwriting']),
+    [CU.primaryHousing]: mk(['Rent', 'Mortgage', 'Free', 'own free and clear', 'Rent Free']),
+    [CU.vesting]: mk(['Individual', 'LLC / Corp', 'Trust', 'Need Transfer At Closing']),
+    [CU.maritalStatus]: mk(['YES', 'NO']),
+    [CU.coBorrowerFlag]: mk(['YES', 'NO']),
+    [CU.lender]: mk(['Deephaven', 'Champions', 'EMCAP Financial', 'Fidelis Investors LLC', 'Oak Tree', 'Roc Capital', 'RCN Capital', 'A&D Mortgage', 'Blue Lake Capital', 'CorrFirst', 'Acra Lending']),
+    [CU.occupancy]: mk(['Primary', 'Investment', 'Secondary']),
+    [CU.loanType]: mk(['Purchase', 'Refi Rate & Term', 'Refi Cash-Out', 'Delayed Purchase Financing', 'HELOC', 'Second Closed end Mortgage']),
+    [CU.program]: mk(['Fix & Flip With Construction', 'Ground-Up', 'Non-QM - DSCR Ratio', 'Conventional', 'HELOC']),
+    [CU.propertyType]: mk(['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Mixed Use']),
+    [CU.term]: mk(['30 year', '15 year', 'Other', 'Interest only', '12 Months', '40 year IO - 10 YEAR IO AND 30 Y FIXED', '30 year IO - 10 YEAR IO AND 20 Y FIXED']),
+    [CU.appSubmitted]: mk(['YES', 'NO', 'NOT YET']),
+    [CU.pppDropdown]: mk(['5 Years', '4 Years', '3 Years', '2 Years', '1 Years', '6 Months', 'Non']),
+  };
+}
+
+async function pureHalf() {
+  const writer = require('../src/longterm/clickup/writer-client');
+  const T = require('../src/longterm/clickup/transforms');
+  const mapper = require('../src/longterm/clickup/mapper');
+  const I = mapper._internals;
+  const CU = mapper.CU;
+
+  console.log('A. writer-client guards');
+  throwsCode(() => writer.guardNoTaskDeletion('DELETE', '/task/abc123'), 'CLICKUP_DELETE_FORBIDDEN',
+    'DELETE /task/{id} is refused');
+  throwsCode(() => writer.guardNoTaskDeletion('DELETE', '/list/9/task/abc123'), 'CLICKUP_DELETE_FORBIDDEN',
+    'DELETE /list/{id}/task/{id} (list removal) is refused');
+  // THE LT DIFFERENCE: RTL carves out two assignment money fields; LT has NO
+  // carve-out — the exact path RTL permits is refused here.
+  throwsCode(() => writer.guardNoTaskDeletion('DELETE', '/task/abc/field/273c41d1-10ee-4b02-aa74-7007f8023574'), 'CLICKUP_DELETE_FORBIDDEN',
+    'the RTL assignment-clear path is REFUSED here — LT clears nothing, ever');
+  writer.guardNoTaskDeletion('DELETE', '/webhook/123');
+  ok(true, 'webhook DELETE (not a task path) passes the deletion guard');
+  throwsCode(() => writer.guardV3TaskPath('PUT', '/workspaces/9/tasks/abc/home_list/1'), 'CLICKUP_V3_FORBIDDEN',
+    'even the v3 home-list move RTL allows is refused — the LT allowlist is EMPTY');
+  throwsCode(() => writer.guardV3TaskPath('GET', '/workspaces/9/tasks/abc'), 'CLICKUP_V3_FORBIDDEN',
+    'any v3 task path is refused whatever the verb');
+  throwsCode(() => writer.guardNoFieldClearing('f1', null), 'CLICKUP_EMPTY_WRITE_FORBIDDEN', 'null value refused');
+  throwsCode(() => writer.guardNoFieldClearing('f1', '   '), 'CLICKUP_EMPTY_WRITE_FORBIDDEN', 'blank string refused');
+  throwsCode(() => writer.guardNoFieldClearing('f1', []), 'CLICKUP_EMPTY_WRITE_FORBIDDEN', 'empty array refused');
+  throwsCode(() => writer.guardNoFieldClearing('f1', { add: [] }), 'CLICKUP_EMPTY_WRITE_FORBIDDEN', 'empty users add-list refused');
+  throwsCode(() => writer.guardNoFieldClearing('f1', { location: { lat: null, lng: -74 } }), 'CLICKUP_EMPTY_WRITE_FORBIDDEN',
+    'a nested null (JSON → clear) is refused');
+  throwsCode(() => writer.guardNoFieldClearing('f1', { location: { lat: NaN, lng: -74 } }), 'CLICKUP_EMPTY_WRITE_FORBIDDEN',
+    'a nested NaN (JSON → null → clear) is refused');
+  writer.guardNoFieldClearing('f1', { location: { lat: 40.1, lng: -74.2 }, formatted_address: 'x' });
+  ok(true, 'a real location value passes');
+  throwsCode(() => writer.guardTaskUpdatePayload({ name: 'renamed!' }), 'CLICKUP_RENAME_FORBIDDEN',
+    'a task rename is refused — updates are status-only');
+  throwsCode(() => writer.guardTaskUpdatePayload({ status: '  ' }), 'CLICKUP_EMPTY_WRITE_FORBIDDEN', 'an empty status is refused');
+  eq(writer.inCallRetryAllowed(false, null), false, 'a non-idempotent POST is never re-sent after a timeout (duplicate-card guard)');
+  eq(writer.inCallRetryAllowed(false, 429), true, 'a 429 is always safe to retry (rejected before processing)');
+  eq(writer.inCallRetryAllowed(false, 500), false, 'a 5xx create is not re-sent in-call');
+  eq(writer.inCallRetryAllowed(true, 500), true, 'an idempotent write retries a 5xx');
+  eq(writer.httpError('POST', '/task/x/field/y', 429, 3).retryable, true, 'httpError tags 429 retryable');
+  ok(!/token|value/i.test(writer.httpError('POST', '/task/x/field/y', 400).message.replace('/task/x/field/y', '')),
+    'the error message is value-free');
+
+  console.log('B. the date rule');
+  const epoch = T.dateOnlyToClickUpEpoch('2026-08-14');
+  eq(T.fromEpochMs(epoch), '2026-08-14', 'a written date round-trips to the same calendar day');
+  const hourUtc = new Date(epoch).getUTCHours();
+  ok(hourUtc >= 8 && hourUtc <= 10, `the epoch sits at 4AM New York ([08:00Z,10:00Z] — got ${hourUtc}:00Z)`);
+  eq(T.dateOnlyToClickUpEpoch('//'), null, "Encompass's '//' unreached-date is null, never an epoch");
+  eq(T.dateOnlyToClickUpEpoch('08/14/2026'), epoch, 'the US MM/DD/YYYY form writes the same day');
+  eq(T.dateOnlyToClickUpEpoch('0026-08-14'), null, 'a mid-typing year-0026 artifact refuses');
+  eq(T.isPlaceholderLoanNumber('TBD'), true, 'a TBD loan number is a placeholder');
+  eq(T.isPlaceholderLoanNumber('YSCAP258134741'), false, 'a real loan number is not');
+  eq(T.maskSSN('123456789'), '✱✱✱-✱✱-6789', 'maskSSN keeps last-4 only');
+
+  console.log('C. the label mappers');
+  eq(I.channelLabel('Non Delegated Correspondent'), 'Non Del Correspondent', 'Non Delegated Correspondent → non-del');
+  eq(I.channelLabel('Correspondent'), 'Non Del Correspondent', 'Correspondent → non-del (owner map)');
+  eq(I.channelLabel(''), 'Non Del Correspondent', 'blank → the default channel (owner: unmatched defaults non-del)');
+  eq(I.channelLabel('Table Funding'), 'Table funding', 'Table Funding → Table funding');
+  eq(I.channelLabel('Delegate correspondent / Evolve'), 'Evolve Underwriting', 'Delegate/Evolve → Evolve Underwriting');
+  eq(I.channelLabel('Delegate correspondent / In House'), 'Delegate Correspondent', 'Delegate/In-House → Delegate Correspondent');
+  eq(I.channelLabel('Brokering out'), 'Wholesale', 'Brokering out → Wholesale');
+  eq(I.channelLabel('Wholesale Out'), 'Wholesale', 'Wholesale Out → Wholesale');
+  eq(I.vestingLabel('Individual'), 'Individual', '4008 Individual → Individual');
+  eq(I.vestingLabel('Officer'), 'LLC / Corp', '4008 Officer → LLC / Corp');
+  eq(I.vestingLabel('Trustee'), 'Trust', '4008 Trustee → Trust');
+  eq(I.vestingLabel('Something New'), null, 'an unmeasured vesting word is never guessed');
+  eq(I.programLabel('Investor DSCR 30 YEAR FRM'), 'Non-QM - DSCR Ratio', 'the DSCR family maps');
+  eq(I.programLabel(''), 'Non-QM - DSCR Ratio', 'a blank program defaults DSCR (owner rule)');
+  eq(I.programLabel('Fix & Flip Purchase'), null, 'a SHORT-TERM program is skipped, never defaulted to DSCR');
+  eq(I.loanTypeLabel('Cash-Out Refinance'), 'Refi Cash-Out', 'field 19 cash-out maps');
+  eq(I.loanTypeLabel('NoCash-Out Refinance'), 'Refi Rate & Term', 'field 19 no-cash-out maps');
+  eq(I.propertyTypeLabel('Single Family Residence'), 'SFR', 'SFR maps');
+  eq(I.propertyTypeLabel('2-4 Family'), 'Multi 2-4', '2-4 Family maps');
+  eq(I.propertyTypeLabel('Multifamily (5+ Units)'), 'Multi 5+', '5+ maps');
+  eq(I.occupancyLabel('Investor'), 'Investment', '1811 Investor → Investment');
+  eq(I.termLabel(360, 0), '30 year', '360 months → 30 year');
+  eq(I.termLabel(360, 120), '30 year IO - 10 YEAR IO AND 20 Y FIXED', '360 + IO → the 30-year IO option');
+  eq(I.termLabel(480, 120), '40 year IO - 10 YEAR IO AND 30 Y FIXED', '480 + IO → the 40-year IO option');
+  eq(I.termLabel(240, 0), null, 'an unmapped term is never guessed');
+  eq(I.pppLabel('No PPP', null), 'Non', 'No PPP → Non');
+  eq(I.pppLabel('5 Year', null), '5 Years', '5 Year → 5 Years');
+  eq(I.pppLabel(null, 36), '3 Years', '36 months → 3 Years');
+  eq(I.pppLabel(null, null), null, 'no PPP data claims nothing');
+  eq(I.pppText('No PPP', 'No PPP'), 'No PPP', 'equal PPP term/type say it once');
+  eq(I.pppText('1 Year', '5% Fixed'), '1 Year — 5% Fixed', 'term + type join');
+  eq(I.lenderLabel('Deepahven'), 'Deephaven', 'the measured misspelling Deepahven maps');
+  eq(I.lenderLabel('Champions Funding, LLC (CF)'), 'Champions', 'the full Champions spelling maps');
+  eq(I.lenderLabel('rcn Capital (RCN)'), 'RCN Capital', 'RCN maps as a whole word');
+  eq(I.lenderLabel('--'), null, 'junk is skipped');
+  eq(I.lenderLabel('Some Brand New Shop'), null, 'an unmeasured lender is SKIPPED for the owner (#41), never guessed');
+  eq(I.lenderLabel('Fidelis Investors LLC'), 'Fidelis Investors LLC', 'Fidelis maps to its own option');
+  eq(I.housingLabel('Rent', ''), 'Rent', 'FR0115 Rent → Rent');
+  eq(I.housingLabel('Own', '1,200'), 'Mortgage', 'Own + a payment → Mortgage');
+  eq(I.housingLabel('Own', ''), 'own free and clear', 'Own + no payment → own free and clear');
+  eq(I.housingLabel('LiveRentFree', ''), 'Rent Free', 'LiveRentFree → Rent Free');
+  eq(I.ltvText('35.000'), '35', 'LTV 35.000 reads 35');
+  eq(I.ltvText('67.500'), '67.5', 'LTV 67.500 reads 67.5');
+  eq(I.yearsAtResidenceText('17', '0', null), '17 years', 'FR0112/FR0124 17y 0m');
+  eq(I.yearsAtResidenceText('3', '6', null), '3 years 6 months', '3y 6m');
+  eq(I.appSubmittedLabel('X'), 'YES', 'CX.SUBMITEDTOINVESTOR X → YES');
+  eq(I.appSubmittedLabel(''), null, 'blank claims nothing');
+  eq(I.emailIn('Jane Doe - jane@title.com - 555-1234'), 'jane@title.com', 'an email is extracted from contact text');
+  eq(I.emailIn('call the office'), null, 'no email in the text → nothing');
+
+  console.log('D. writeValue / addressField / isBlankClickupValue');
+  const options = optionsFor(mapper);
+  const chanRow = mapper.FIELD_MAP.find((f) => f.key === 'channel');
+  eq(mapper.writeValue(chanRow, 'Non Del Correspondent', options), 'opt-non-del-correspondent',
+    'a dropdown label resolves to the LIVE option UUID (trailing-space label tolerated)');
+  eq(mapper.writeValue(chanRow, 'An Option Nobody Made', options), undefined,
+    'an unmatched label no-ops — never invent an option');
+  const dobRow = mapper.FIELD_MAP.find((f) => f.key === 'date_of_birth');
+  eq(T.fromEpochMs(mapper.writeValue(dobRow, '05/14/1985', options)), '1985-05-14',
+    'a date field writes the 4AM epoch for the right calendar day');
+  const usersRow = mapper.FIELD_MAP.find((f) => f.key === 'loan_officer');
+  assert.deepStrictEqual(mapper.writeValue(usersRow, 120151948, options), { add: [120151948] });
+  ok(true, 'a users field writes {add:[id]} — never a bare id');
+  eq(mapper.addressField('f', { lat: null, lng: -74 }), null, 'a location without both coordinates refuses (null)');
+  eq(mapper.addressField('f', { lat: NaN, lng: -74 }), null, 'NaN coordinates refuse');
+  ok(mapper.addressField('f', { lat: 40.1, lng: -74.2, formatted_address: '1 Main St' }), 'real coordinates emit');
+  eq(mapper.isBlankClickupValue({ location: { lat: null, lng: null }, formatted_address: '' }), true,
+    'a coordinate-less location reads BLANK (fillable), not occupied');
+  eq(mapper.isBlankClickupValue({ location: { lat: 40, lng: -74 }, formatted_address: '1 Main St' }), false,
+    'a real location reads occupied');
+
+  console.log('E. buildTaskFields on the two live-probed loans');
+  const birchBag = {
+    loan: { loan_number: 'YSCAP258134741', borrower_name: 'Joseph Parnes', loan_amount: '157500',
+      note_rate_pct: '7.375', term_months: 360, interest_only_months: 0, prepayment_penalty_months: null,
+      dscr_ratio: '1.25', loan_purpose: 'Cash-Out Refinance', program_name: 'Investor DSCR 30 YEAR FRM',
+      vesting_type: 'Individual', vesting_entity_name: '400 Birchwood LLC' /* STALE — must never write */,
+      borrower_email: null, expense_hazard_insurance: '120', expense_real_estate_taxes: '300', expense_association_dues: null },
+    prop: { street: '363 BIRCH DR', city: 'CRESCO', state: 'PA', zip: '18326', unit_count: 1,
+      estimated_value: '300000', appraised_value: '450000', purchase_price: null, ltv_pct: '35' },
+    borrower: { first_name: 'Joseph', last_name: 'Parnes', mobile_phone: '3479070483', fico_representative: 780 },
+    coborrower: null,   // KNOWN none
+    residence: null, priorResidence: null,
+    ex: EX_BIRCH, officer: { name: 'Yehuda Bochner', email: 'yehuda@yscapgroup.com', clickupUserId: 120151948 },
+    processor: { name: 'Sarah', email: 'sarah@yscapgroup.com', clickupUserId: null }, // no id → BOTH dropped
+    investorLoanNumber: null, investorName: null,
+    portalFileId: 'lt-loan-uuid-1', portalFileLink: 'https://x/portal/#/long-term/file/lt-loan-uuid-1',
+    subjectGeo: { lat: 41.09, lng: -75.26, formatted_address: '363 Birch Dr, Cresco, PA 18326' },
+    borrowerGeo: null, priorGeo: null,
+  };
+  const bf = mapper.buildTaskFields(birchBag, options);
+  const by = (key) => bf.find((f) => f.key === key);
+  eq(by('channel').value, 'opt-non-del-correspondent', 'Birch: Non Delegated Correspondent → the non-del option');
+  eq(by('purchase_or_estimate').value, '450000',
+    'THE DYNAMIC PRICE RULE: refi with 356 set → the ACTUAL appraised 450,000 (not 1821, not blank 136)');
+  eq(by('vesting').value, 'opt-individual', 'Individual vesting → the Individual option');
+  eq(by('llc_name'), undefined,
+    'THE 4008 RULE: an Individual vesting NEVER writes the (stale) entity name');
+  eq(by('ssn').value, '123-45-6789', 'the live SSN passes through, dashed');
+  eq(by('year_purchased').value, '2022', 'refi-only Year Purchased writes on a refi');
+  eq(by('free_and_clear').value, 'true', 'CX.FREECLEAR X → checked');
+  eq(by('marital_status').value, 'opt-yes', 'Married → YES');
+  eq(by('ppp').value, 'opt-non', 'No PPP → the Non option');
+  eq(by('ppp_type_term').value, 'No PPP', 'the PPP text says it once');
+  eq(by('co_borrower_flag').value, 'opt-no', 'a KNOWN-none co-borrower writes NO');
+  eq(by('fico').value, '787', 'FICO comes from the LIVE VASUMM.X23, not the mirror');
+  eq(by('ys_loan_number').value, 'YSCAP258134741', 'the YS loan number writes');
+  eq(by('portal_file_id').value, 'lt-loan-uuid-1', 'the portal stamp rides the field set');
+  eq(by('term').value, 'opt-30-year', '360 months → 30 year');
+  eq(by('lender').value, 'opt-deephaven', 'VEND.X263 Deephaven Mortgage → the Deephaven option');
+  eq(by('processor'), undefined, 'processor with no ClickUp id → users field omitted…');
+  eq(by('processor_email'), undefined, '…AND the email dropped with it (BOTH-or-NEITHER)');
+  eq(by('date_submitted') && T.fromEpochMs(by('date_submitted').value), '2026-07-01', 'field 745 writes as its day');
+  eq(by('actual_closing') && T.fromEpochMs(by('actual_closing').value), '2026-08-23', 'CX.FUNDEDDATE writes as its day');
+  eq(by('subject_rental').value, '15286.6', 'the rental income parses the comma money');
+
+  const bwBag = { ...birchBag,
+    loan: { ...birchBag.loan, loan_number: 'YSCAP258134742', borrower_name: 'C Polatsek',
+      loan_purpose: 'Purchase', vesting_type: 'Officer', vesting_entity_name: '400 Birchwood LLC', prepayment_penalty_months: 12 },
+    prop: { ...birchBag.prop, purchase_price: '580000' },
+    ex: EX_BIRCHWOOD,
+    processor: { name: 'Sarah', email: 'sarah@yscapgroup.com', clickupUserId: 87335667 },
+  };
+  const bw = mapper.buildTaskFields(bwBag, options);
+  const by2 = (key) => bw.find((f) => f.key === key);
+  eq(by2('purchase_or_estimate').value, '580000', 'purchase → field 136 (the contract price), always');
+  eq(by2('llc_name').value, '400 Birchwood LLC', 'an Officer vesting writes the entity name');
+  eq(by2('vesting').value, 'opt-llc-corp', 'Officer → LLC / Corp');
+  eq(by2('year_purchased'), undefined, 'Year Purchased (refi only) is silent on a purchase');
+  eq(by2('date_acquired'), undefined, "CX.DATEACQUIRED '//' (unreached) writes nothing");
+  eq(by2('ppp').value, 'opt-1-years', '1 Year → 1 Years');
+  eq(by2('ppp_type_term').value, '1 Year — 5% Fixed', 'the PPP text joins term + type');
+  ok(by2('processor') && by2('processor_email'), 'a fully-resolved processor writes BOTH fields');
+
+  console.log('F. fieldValueEquivalent + the DOB detector');
+  eq(mapper.fieldValueEquivalent(CU.expectedClosing, String(epoch - 3600000), T.dateOnlyToClickUpEpoch('2026-08-14'), options), true,
+    'dates compare by CALENDAR DAY, not epoch');
+  eq(mapper.fieldValueEquivalent(CU.loanAmount, '157500.00', '157500', options), true, 'numbers compare numerically');
+  eq(mapper.fieldValueEquivalent(CU.channel, 0, 'opt-non-del-correspondent', options), true,
+    'a dropdown READ (orderindex 0) equals the UUID we would write');
+  eq(mapper.fieldValueEquivalent(CU.channel, 1, 'opt-non-del-correspondent', options), false,
+    'a different orderindex is a real change');
+  eq(mapper.fieldValueEquivalent(CU.loanOfficer, [{ id: 120151948 }], { add: [120151948] }, options), true,
+    'a users add of an already-assigned id is a no-op');
+  eq(mapper.fieldValueEquivalent(CU.borrowerEmail, 'Joe@Gmail.com', 'joe@gmail.com', options), true,
+    'emails compare case-insensitively');
+  eq(mapper.fieldValueEquivalent(CU.borrowerSSN, '123-45-6789', '123456789'.replace(/(\d{3})(\d{2})(\d{4})/, '$1-$2-$3'), options), true,
+    'SSNs compare digits-only');
+  eq(mapper.fieldValueEquivalent(CU.borrowerCell, '(347) 907-0483', '+13479070483', options), true,
+    'phones compare by last 10 digits');
+  eq(mapper.fieldValueEquivalent(CU.borrowerName, 'Issac Grunzweig', 'Issac Michael Grunzweig', options), true,
+    'a middle name ADDED is the same person, not an overwrite');
+  eq(mapper.fieldValueEquivalent(CU.borrowerName, 'Issac Grunzweig', 'Moshe Klein', options), false,
+    'a different person is never equivalent');
+  eq(mapper.fieldValueEquivalent(CU.borrowerName, 'Issac Grunzweig', 'Issac Michael Grunzweig', options, { approvedReview: true }), false,
+    'an approved review compares STRICTLY so the human-approved value writes');
+  eq(mapper.fieldValueEquivalent(CU.loanAmount, undefined, '100', options), false, 'unknown before → write');
+  eq(mapper.isDobChange(CU.borrowerDOB, String(T.dateOnlyToClickUpEpoch('1985-05-14')), T.dateOnlyToClickUpEpoch('1985-05-15')), true,
+    'a DOB day change is detected');
+  eq(mapper.isDobChange(CU.borrowerDOB, null, T.dateOnlyToClickUpEpoch('1985-05-15')), false,
+    'filling a BLANK DOB is not a change');
+
+  console.log('G. resolveOnly / shield shape / providerTextSafe');
+  const ids = mapper.resolveOnly(['portal_stamp']);
+  ok(ids.has(CU.portalFileId) && ids.has(CU.portalFileLink) && ids.size === 2,
+    "'portal_stamp' resolves to exactly the two stamp fields");
+  ok(mapper.resolveOnly(['processor']).has(CU.processorEmail), "'processor' carries BOTH processor fields");
+  ok(mapper.PII_OVERWRITE_SHIELD[CU.borrowerSSN] && mapper.PII_OVERWRITE_SHIELD[CU.borrowerName],
+    'the shield covers the identity fields');
+  ok(!mapper.PII_OVERWRITE_SHIELD[CU.borrowerDOB], 'DOB is NOT in the shield — it has its own stricter gate');
+  eq(mapper.PII_REVIEW_KEY[CU.borrowerSSN], 'ssn', 'the SSN review key re-pushes scoped');
+  eq(mapper.reviewPreview(CU.borrowerSSN, '123-45-6789'), '✱✱✱-✱✱-6789', 'a review preview masks the SSN');
+  const push = require('../src/longterm/clickup/push');
+  const PI = push._internals;
+  eq(PI.providerTextSafe('363 Birch Dr, Cresco, PA 18326', '363 Birch Dr, Cresco, PA 18326-7761'), true,
+    'a provider restyle keeping house number + ZIP is safe');
+  eq(PI.providerTextSafe('1727 S 2nd St, Piscataway, NJ 08854', '2nd St, Piscataway, NJ 07063'), false,
+    'the Piscataway corruption (house number dropped) is refused');
+  eq(PI.providerTextSafe('1727 S 2nd St, Piscataway, NJ 08854', '1727 S 2nd St, Plainfield, NJ 07063'), false,
+    'a contradicted ZIP is refused (the Plainfield case)');
+}
+
+// ── the DB half ──────────────────────────────────────────────────────────────
+async function dbHalf() {
+  process.env.LT_CLICKUP_WRITE_ENABLED = '1';
+  delete process.env.LT_CLICKUP_WRITE_DRYRUN;
+  process.env.LT_CLICKUP_CREATE_SINCE = '2026-01-01';
+
+  // Stub the WIRE and the GEOCODER wholesale before push.js loads.
+  const writerPath = path.resolve(__dirname, '../src/longterm/clickup/writer-client.js');
+  const canonPath = path.resolve(__dirname, '../src/lib/address-canon.js');
+  const encPath = path.resolve(__dirname, '../src/longterm/encompass/client.js');
+
+  const realWriter = require(writerPath);   // keep the REAL guards on the stub's writes
+  const wire = { setField: [], createTask: [], getTask: 0 };
+  let fakeTask;
+  let taskFailNext = false;
+  let failFieldIds = new Set();
+  const writerStub = {
+    configured: () => true,
+    teamId: () => '9011888435',
+    getTask: async () => {
+      wire.getTask++;
+      if (taskFailNext) { const e = new Error('ClickUp GET /task -> 502'); e.status = 502; e.retryable = true; throw e; }
+      return fakeTask;
+    },
+    setField: async (taskId, fieldId, value) => {
+      realWriter.guardNoFieldClearing(fieldId, value);          // the real chokepoint still bites
+      if (failFieldIds.has(fieldId)) { const e = new Error(`ClickUp POST /task/${taskId}/field/x -> 500`); e.status = 500; e.retryable = true; throw e; }
+      wire.setField.push({ taskId, fieldId, value });
+      return {};
+    },
+    createTask: async (listId, payload) => {
+      wire.createTask.push({ listId, payload });
+      return { id: 'newtask9', url: 'https://app.clickup.com/t/newtask9', custom_id: 'FILLE-9999' };
+    },
+    getFolderLists: async () => ({ lists: [{ id: 'list-77', name: 'Loan Pipeline' }] }),
+    getList: async () => ({}),
+    getTeams: async () => ({ teams: [] }),
+    getListFields: async () => ({ fields: [] }),
+    guardNoFieldClearing: realWriter.guardNoFieldClearing,
+  };
+  require.cache[writerPath] = { id: writerPath, filename: writerPath, loaded: true, exports: writerStub };
+  require.cache[canonPath] = { id: canonPath, filename: canonPath, loaded: true, exports: {
+    geocode: async (t) => ({ lat: 41.09, lng: -75.26, formatted: t }),
+  } };
+  let exLive = {};
+  require.cache[encPath] = { id: encPath, filename: encPath, loaded: true, exports: {
+    configured: () => true,
+    fieldReaderSplit: async () => ({ ...exLive }),
+    fieldReader: async () => ({ ...exLive }),
+  } };
+
+  const mapper = require('../src/longterm/clickup/mapper');
+  const T = require('../src/longterm/clickup/transforms');
+  const CU = mapper.CU;
+  // Section G loaded push.js (and its registry) against the REAL clients —
+  // evict both so this require binds the stubs above.
+  delete require.cache[path.resolve(__dirname, '../src/longterm/clickup/push.js')];
+  delete require.cache[path.resolve(__dirname, '../src/longterm/clickup/registry.js')];
+  const push = require('../src/longterm/clickup/push');
+  const db = require('../src/longterm/db');
+  push._internals._resetBreaker();
+
+  const options = optionsFor(mapper);
+  const mkCustomFields = (values = {}) => {
+    // Every mapped field present (as a live card would have), with options on
+    // the dropdowns; `values` overlays field values by CU key name.
+    return Object.entries(CU).map(([k, id]) => ({
+      id,
+      value: Object.prototype.hasOwnProperty.call(values, k) ? values[k] : null,
+      type_config: options[id] ? { options: options[id] } : {},
+    }));
+  };
+
+  // Seed a loan + property + contacts.
+  const { rows: made } = await db.query(
+    `INSERT INTO lt_loans (id, encompass_loan_guid, loan_number, borrower_name, loan_amount, loan_purpose,
+                           program_name, vesting_type, term_months, encompass_synced_at, created_at)
+     VALUES (gen_random_uuid(), 'test-writer-' || gen_random_uuid(), 'TESTWR1', 'Joseph Parnes', 157500,
+             'cash_out_refinance', 'Investor DSCR 30 YEAR FRM', 'Individual', 360, now(), '2026-08-20')
+     RETURNING id`);
+  const loanId = made[0].id;
+  await db.query(`INSERT INTO lt_properties (loan_id, street, city, state, zip, unit_count, estimated_value, appraised_value)
+                  VALUES ($1::uuid, '363 BIRCH DR', 'CRESCO', 'PA', '18326', 1, 300000, 450000)`, [loanId]);
+  await db.query(`INSERT INTO lt_loan_contacts (id, loan_id, role, encompass_name, encompass_email)
+                  VALUES (gen_random_uuid(), $1::uuid, 'loan_officer', 'Yehuda Bochner', 'yehuda@yscapgroup.com')`, [loanId]);
+
+  try {
+    console.log('H. pushLoan end to end (stubbed wire)');
+    await db.query(`UPDATE lt_loans SET clickup_task_id = 'task1', clickup_linked_at = now(),
+                    clickup_link_source = 'reconciliation', clickup_link_confidence = 'confirmed' WHERE id = $1::uuid`, [loanId]);
+    exLive = { ...EX_BIRCH };
+    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2 /* Non-QM - DSCR Ratio */ }) };
+    let out = await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(out.ok, true, 'the push completes');
+    ok(out.wrote >= 15, `a first push lands the mapped fields (${out.wrote} written)`);
+    const ssnWrite = wire.setField.find((w) => w.fieldId === CU.borrowerSSN);
+    eq(ssnWrite && ssnWrite.value, '123-45-6789', 'the REAL Social reached the card (pass-through, dashed)');
+    const { rows: jrows } = await db.query(
+      `SELECT * FROM lt_clickup_write_log WHERE lt_loan_id = $1::uuid AND field_id = $2`, [loanId, CU.borrowerSSN]);
+    eq(jrows.length, 1, 'the SSN write is journaled…');
+    eq(JSON.parse(JSON.stringify(jrows[0].new_value)), '✱✱✱-✱✱-6789', '…MASKED — a readable Social never lands in the journal');
+    const { rows: stamped } = await db.query('SELECT clickup_pushed_at FROM lt_loans WHERE id = $1::uuid', [loanId]);
+    ok(stamped[0].clickup_pushed_at, 'a clean push stamps clickup_pushed_at');
+
+    // No-op suppression: run again with the card now HOLDING what we wrote.
+    const wroteByField = new Map(wire.setField.map((w) => [w.fieldId, w.value]));
+    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2 }).map((cf) => {
+      if (!wroteByField.has(cf.id)) return cf;
+      let v = wroteByField.get(cf.id);
+      if (options[cf.id]) v = options[cf.id].findIndex((o) => o.id === v);      // dropdowns read back as orderindex
+      else if (v && typeof v === 'object' && Array.isArray(v.add)) v = v.add.map((id) => ({ id }));
+      return { ...cf, value: v };
+    }) };
+    wire.setField.length = 0;
+    out = await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(wire.setField.length, 0, 'a second push of the SAME values writes NOTHING (no-op suppression)');
+    ok(out.suppressed >= 15, `…every field suppressed as equivalent (${out.suppressed})`);
+
+    push._internals._resetBreaker();
+    console.log('I. the PII overwrite shield');
+    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2, borrowerName: 'A Different Human' }) };
+    wire.setField.length = 0;
+    out = await push.pushLoan(loanId, { source: 'full_repush' });
+    ok(!wire.setField.some((w) => w.fieldId === CU.borrowerName),
+      'a DIFFERING borrower name is NOT rewritten (fill-only shield)');
+    const { rows: rev } = await db.query(
+      `SELECT * FROM lt_clickup_review_queue WHERE lt_loan_id = $1::uuid AND field_key = 'borrower_name' AND status = 'open'`, [loanId]);
+    eq(rev.length, 1, 'the blocked overwrite queued ONE review row');
+    eq(rev[0].reason, 'pii_overwrite_blocked', '…with the pii_overwrite_blocked reason');
+    await push.pushLoan(loanId, { source: 'full_repush' });
+    const { rows: rev2 } = await db.query(
+      `SELECT count(*)::int AS n FROM lt_clickup_review_queue WHERE lt_loan_id = $1::uuid AND field_key = 'borrower_name' AND status = 'open'`, [loanId]);
+    eq(rev2[0].n, 1, 'a retried pass DEDUPES — still one open row');
+    const { rows: blockedJ } = await db.query(
+      `SELECT count(*)::int AS n FROM lt_clickup_write_log WHERE lt_loan_id = $1::uuid AND field_id = $2 AND blocked = true`, [loanId, CU.borrowerName]);
+    ok(blockedJ[0].n >= 1, 'the blocked write is journaled blocked=true');
+
+    push._internals._resetBreaker();
+    console.log('J. the DOB gate');
+    exLive = { ...EX_BIRCH, 1402: '05/15/1985' };   // Encompass moved the DOB a day
+    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2, borrowerDOB: String(T.dateOnlyToClickUpEpoch('1985-05-14')) }) };
+    wire.setField.length = 0;
+    await push.pushLoan(loanId, { source: 'full_repush' });
+    ok(!wire.setField.some((w) => w.fieldId === CU.borrowerDOB), 'a DOB CHANGE is blocked — a human decision');
+    const { rows: dobRev } = await db.query(
+      `SELECT count(*)::int AS n FROM lt_clickup_review_queue WHERE lt_loan_id = $1::uuid AND field_key = 'date_of_birth' AND status = 'open'`, [loanId]);
+    eq(dobRev[0].n, 1, '…and queued for review');
+    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2 }) };   // DOB blank on the card
+    wire.setField.length = 0;
+    await push.pushLoan(loanId, { source: 'full_repush' });
+    ok(wire.setField.some((w) => w.fieldId === CU.borrowerDOB), 'filling a BLANK DOB is allowed');
+
+    push._internals._resetBreaker();
+    console.log('K. locations fill-only + fillOnly mode');
+    exLive = { ...EX_BIRCH };
+    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2,
+      subjectAddress: { location: { lat: 1, lng: 2 }, formatted_address: 'Somewhere the officer typed' } }) };
+    wire.setField.length = 0;
+    await push.pushLoan(loanId, { source: 'full_repush' });
+    ok(!wire.setField.some((w) => w.fieldId === CU.subjectAddress),
+      'an OCCUPIED location is never rewritten (fill-only posture)');
+    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2 }) };
+    wire.setField.length = 0;
+    await push.pushLoan(loanId, { source: 'full_repush' });
+    const locWrite = wire.setField.find((w) => w.fieldId === CU.subjectAddress);
+    ok(locWrite && locWrite.value && locWrite.value.location, 'a BLANK location is filled, with real coordinates');
+    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2, loanAmount: '1' }) };
+    wire.setField.length = 0;
+    await push.pushLoan(loanId, { source: 'full_repush', fillOnly: true });
+    ok(!wire.setField.some((w) => w.fieldId === CU.loanAmount),
+      'fillOnly: an occupied ordinary field is left alone');
+
+    push._internals._resetBreaker();
+    console.log('L. fail-closed / never-create / short-term / breaker / lossy');
+    taskFailNext = true;
+    let threw = null;
+    try { await push.pushLoan(loanId, { source: 'scoped_push', only: ['loan_amount'] }); } catch (e) { threw = e; }
+    taskFailNext = false;
+    eq(threw && threw.code, 'CLICKUP_PREREAD_FAILED', 'a failed pre-read FAILS CLOSED (retryable, nothing written)');
+    eq(threw && threw.retryable, true, '…and is retryable for the next pass');
+
+    const { rows: made2 } = await db.query(
+      `INSERT INTO lt_loans (id, encompass_loan_guid, loan_number, borrower_name, encompass_synced_at)
+       VALUES (gen_random_uuid(), 'test-writer2-' || gen_random_uuid(), 'TESTWR2', 'Nobody Linked', now()) RETURNING id`);
+    const unlinkedId = made2[0].id;
+    wire.createTask.length = 0;
+    const scoped = await push.pushLoan(unlinkedId, { only: ['loan_amount'], source: 'scoped_push' });
+    eq(scoped.skipped, 'unlinked', 'an UNLINKED loan skips…');
+    eq(wire.createTask.length, 0, '…and a scoped push NEVER creates a card (G16)');
+
+    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 0 /* Fix & Flip With Construction */ }) };
+    const st = await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(st.skipped, 'short_term_card', 'a card whose *Program reads short-term REFUSES the whole push');
+
+    push._internals._seedWrites(new Array(300).fill(Date.now()));
+    threw = null;
+    try { await push.pushLoan(loanId, { source: 'full_repush' }); } catch (e) { threw = e; }
+    eq(threw && threw.code, 'CLICKUP_CIRCUIT_OPEN', 'the breaker opens at the cap — every push refuses');
+    push._internals._unseed();
+    await push._internals.seedBreakerFromDb();
+    ok(push._internals._windowSize() > 0,
+      'the BOOT SEED primes the window from the journal — a restart mid-storm cannot reset the budget');
+    push._internals._resetBreaker();
+
+    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2 }) };
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    failFieldIds = new Set([CU.loanAmount]);
+    threw = null;
+    try { await push.pushLoan(loanId, { source: 'full_repush' }); } catch (e) { threw = e; }
+    failFieldIds = new Set();
+    eq(threw && threw.code, 'CLICKUP_FIELD_WRITES_FAILED', 'a push with a failed write THROWS…');
+    const { rows: notDone } = await db.query('SELECT clickup_pushed_at FROM lt_loans WHERE id = $1::uuid', [loanId]);
+    eq(notDone[0].clickup_pushed_at, null, '…and is NEVER marked done (G23)');
+
+    push._internals._resetBreaker();
+    console.log('M. createForLoan — the card is born linked + stamped');
+    const { rows: made3 } = await db.query(
+      `INSERT INTO lt_loans (id, encompass_loan_guid, loan_number, borrower_name, loan_purpose, program_name,
+                             vesting_type, term_months, encompass_synced_at, created_at)
+       VALUES (gen_random_uuid(), 'test-writer3-' || gen_random_uuid(), 'TESTWR3', 'Chana Newfile',
+               'purchase', 'Investor DSCR 30 YEAR FRM', 'Officer', 360, now(), now()) RETURNING id`);
+    const newId = made3[0].id;
+    await db.query(`INSERT INTO lt_properties (loan_id, street, city, state, zip, purchase_price)
+                    VALUES ($1::uuid, '400 BIRCHWOOD RD', 'LINDEN', 'NJ', '07036', 580000)`, [newId]);
+    await db.query(`INSERT INTO lt_loan_contacts (id, loan_id, role, encompass_name, encompass_email)
+                    VALUES (gen_random_uuid(), $1::uuid, 'loan_officer', 'Yehuda Bochner', 'yehuda@yscapgroup.com')`, [newId]);
+    exLive = { ...EX_BIRCHWOOD };
+    wire.createTask.length = 0;
+    const created = await push.createForLoan(newId);
+    eq(created.created, true, 'the card is created');
+    eq(created.linked, true, '…and linked race-safe');
+    eq(wire.createTask[0].listId, 'list-77', "…in the officer folder's first list");
+    const payload = wire.createTask[0].payload;
+    eq(payload.name, 'Chana Newfile - 400 BIRCHWOOD RD, LINDEN', 'the card name is "<borrower> - <address>"');
+    ok(payload.status === undefined, 'no status is passed — the list opens the card at its first status (starting)');
+    const stampCf = payload.custom_fields.find((f) => f.id === CU.portalFileId);
+    eq(stampCf && stampCf.value, newId, 'the ysportal stamp rides the CREATE payload — the card is born bound');
+    ok(payload.custom_fields.some((f) => f.id === CU.llcName && f.value === undefined) === false, 'no undefined values in the payload');
+    const { rows: linkRow } = await db.query('SELECT * FROM lt_loans WHERE id = $1::uuid', [newId]);
+    eq(linkRow[0].clickup_task_id, 'newtask9', 'the loan row holds the new card');
+    eq(linkRow[0].clickup_link_source, 'created', "link_source 'created'");
+    eq(linkRow[0].clickup_link_confidence, 'confirmed', 'a created link is confirmed');
+    ok(linkRow[0].clickup_stamped_at, 'the stamp time is recorded (stamps rode the create)');
+    const { rows: trail } = await db.query(
+      `SELECT * FROM lt_clickup_link_log WHERE lt_loan_id = $1::uuid AND action = 'created'`, [newId]);
+    eq(trail.length, 1, "the trail records action='created'");
+    const { rows: createJ } = await db.query(
+      `SELECT count(*)::int AS n FROM lt_clickup_write_log WHERE lt_loan_id = $1::uuid AND source = 'create'`, [newId]);
+    ok(createJ[0].n >= 10, `every created field is journaled source='create' (${createJ[0].n})`);
+
+    // A loan whose officer nobody can place is REPORTED, never guessed into a folder.
+    const { rows: made4 } = await db.query(
+      `INSERT INTO lt_loans (id, encompass_loan_guid, loan_number, borrower_name, encompass_synced_at, created_at)
+       VALUES (gen_random_uuid(), 'test-writer4-' || gen_random_uuid(), 'TESTWR4', 'No Officer', now(), now()) RETURNING id`);
+    const nofolder = await push.createForLoan(made4[0].id);
+    eq(nofolder.skipped, 'no_officer_folder', 'no officer folder ⇒ DO NOT CREATE, reported');
+
+    push._internals._resetBreaker();
+    console.log('N. the passes + the switch');
+    const { rows: made5 } = await db.query(
+      `INSERT INTO lt_loans (id, encompass_loan_guid, loan_number, borrower_name, encompass_synced_at, created_at)
+       VALUES (gen_random_uuid(), 'test-writer5-' || gen_random_uuid(), 'TESTWR5', 'Old Backbook', now(), '2025-01-01') RETURNING id`);
+    process.env.LT_CLICKUP_CREATE_SINCE = '2026-01-01';
+    const cp = await push.createPass({ limit: 50 });
+    ok(!(cp.skipped === 'off'), 'createPass runs with the switch on');
+    const { rows: oldRow } = await db.query('SELECT clickup_task_id FROM lt_loans WHERE id = $1::uuid', [made5[0].id]);
+    eq(oldRow[0].clickup_task_id, null,
+      'a BACK-BOOK loan (discovered before the go-live day) never gains a card from the create pass');
+
+    delete process.env.LT_CLICKUP_WRITE_ENABLED;
+    const offPush = await push.pushLoan(loanId, {});
+    eq(offPush.skipped, 'off', 'with the switch blank the push stands down (blank = OFF)');
+    const offPass = await push.pushPass({});
+    eq(offPass.skipped, 'off', '…and the pass stands down');
+    process.env.LT_CLICKUP_WRITE_ENABLED = '1';
+
+    process.env.LT_CLICKUP_WRITE_DRYRUN = '1';
+    fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2 }) };
+    wire.setField.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    const dry = await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(wire.setField.length, 0, 'DRYRUN sends NOTHING — even with the write switch on');
+    ok(dry.plan.length > 0, '…but reports the exact plan');
+    const { rows: dryStamp } = await db.query('SELECT clickup_pushed_at FROM lt_loans WHERE id = $1::uuid', [loanId]);
+    eq(dryStamp[0].clickup_pushed_at, null, 'a dry run never stamps — the drain keeps offering the loan');
+    delete process.env.LT_CLICKUP_WRITE_DRYRUN;
+  } finally {
+    await db.query(`DELETE FROM lt_loans WHERE loan_number LIKE 'TESTWR%'`).catch(() => {});
+    await db.query(`DELETE FROM lt_clickup_write_log WHERE task_id IN ('task1','newtask9')`).catch(() => {});
+    await db.query(`DELETE FROM lt_clickup_review_queue WHERE task_id = 'task1'`).catch(() => {});
+  }
+}
+
+async function main() {
+  await pureHalf();
+  if (!process.env.DATABASE_URL) {
+    console.log(`\nNo DATABASE_URL — pure half passed (${checks} checks); DB half skipped.`);
+    return;
+  }
+  await dbHalf();
+  console.log(`\nAll ${checks} checks passed.`);
+  process.exit(0);
+}
+
+main().catch((e) => { console.error('FAIL:', e && (e.stack || e.message)); process.exit(1); });
